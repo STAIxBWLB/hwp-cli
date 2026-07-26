@@ -87,6 +87,12 @@ fn main() -> anyhow::Result<()> {
             tolerance,
         ),
         Cmd::Mcp { font_dir } => commands::mcp::run(font_dir),
+        Cmd::Update {
+            check,
+            tag,
+            force,
+            json,
+        } => commands::update::run(check, tag.as_deref(), force, json),
         Cmd::New {
             output,
             from,

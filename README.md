@@ -67,6 +67,23 @@
 | `render` / `diff` / `mcp` | `--font-dir <dir>` 플래그(반복 지정 가능) |
 | `convert` / 테스트 | 환경변수 `HWP_FONT_DIR`(미설정 시 프로젝트 `fonts/` 자동 사용) |
 
+### 설치 (한 줄 스크립트 — macOS / Linux)
+
+Homebrew 없이 릴리스 바이너리를 바로 설치한다. Rust 툴체인이 필요 없고, 설치 후에는 `hwp update`로 자체 갱신된다.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
+```
+
+기본 설치 위치는 `~/.local/bin`이다(PATH에 없으면 추가 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
+
+```sh
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.3.0
+HWP_INSTALL_DIR=~/bin sh scripts/install.sh
+```
+
+아카이브는 `.sha256` 자산과 대조한 뒤에만 설치한다. Windows는 아래 [사전 빌드 바이너리](#다운로드-사전-빌드-바이너리)를 쓴다.
+
 ### 설치 (Homebrew — macOS / Linux)
 
 저장소 자체가 tap이다(별도 `homebrew-*` 저장소 없음). 릴리스 바이너리를 받으므로 Rust 툴체인이 필요 없다.
@@ -103,6 +120,24 @@ cargo install --path crates/hwp-cli   # `hwp` 바이너리 설치
 
 압축을 풀어 `hwp`를 PATH에 두면 된다(체크섬 검증: `shasum -a 256 -c hwp-*.sha256`).
 렌더/PDF엔 CJK 폰트가 필요하고(위 폰트 지정 참고), 텍스트 추출·변환은 폰트 없이 동작한다.
+
+### 업데이트
+
+```sh
+hwp update            # 최신 릴리스로 자체 교체 (체크섬 대조 후 원자적 교체)
+hwp update --check    # 교체 없이 현재/최신 버전만 확인
+hwp update --tag v0.2.0   # 특정 버전으로 되돌리기
+```
+
+설치 방식을 스스로 판별한다:
+
+| 설치 방식 | `hwp update` 동작 |
+|---|---|
+| 한 줄 스크립트·릴리스 아카이브·`cargo install` | 릴리스 아카이브를 받아 **실행 중인 바이너리를 제자리 교체**(sha256 대조 → 같은 디렉터리에 임시 파일 → rename, 실패 시 원본 복원) |
+| Homebrew(Cellar) | `brew upgrade hwp`에 위임 — Cellar를 직접 덮어써 brew 상태가 어긋나는 것을 막는다. brew는 버전 고정이 안 되므로 `--tag`는 거부한다 |
+
+내려받기는 `curl`, 압축 해제는 `tar`에 위임한다(macOS·Linux·Windows 10 1803+ 기본 탑재 — 새 런타임 의존성 없음).
+`hwp update`는 0.4.0부터 있으므로 그 이전 버전은 위 설치 스크립트로 한 번만 갱신하면 된다.
 
 ### 릴리스 (메인테이너)
 
@@ -175,6 +210,10 @@ hwp diff report.hwp --ref hancom_p1.png --page 1 --dpi 150 --font-dir ./fonts
 
 # MCP stdio 서버
 hwp mcp --font-dir ./fonts
+
+# 자체 업데이트 (brew 설치본은 brew upgrade에 위임)
+hwp update --check
+hwp update
 ```
 
 ## 명령 레퍼런스
@@ -196,6 +235,7 @@ hwp mcp --font-dir ./fonts
 | `validate <file>` | `--json` | 구조 검증(mimetype·필수 엔트리·XML 파싱) — 유효 시 종료코드 0 |
 | `diff <input> --ref <png>` | `--page <n>`(기본 1), `--dpi <f64>`(기본 96), `-o/--out <png>`, `--font-dir <dir>`(반복), `--tolerance <u8>`(기본 16) | 렌더 결과를 한글 기준 PNG와 비교(잉크 적용률·dx/dy 오프셋·픽셀 차이율·MAE) |
 | `mcp` | `--font-dir <dir>`(반복) | MCP stdio 서버 실행 |
+| `update` | `--check`, `--tag <tag>`, `--force`, `--json` | 자체 업데이트 — 릴리스 아카이브를 받아(체크섬 대조) 실행 중인 바이너리 교체. brew 설치본은 `brew upgrade`에 위임 |
 | `dump <file>` | `--stream <name>`, `--raw`, `--json` | [개발자용] 레코드/패키지 구조 덤프 |
 
 > 출력 포맷은 대부분 출력 파일의 확장자(`.hwp` / `.hwpx` / `.md` / `.json` / `.png` / `.svg`)에서
