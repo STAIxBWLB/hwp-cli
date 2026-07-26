@@ -67,7 +67,20 @@
 | `render` / `diff` / `mcp` | `--font-dir <dir>` 플래그(반복 지정 가능) |
 | `convert` / 테스트 | 환경변수 `HWP_FONT_DIR`(미설정 시 프로젝트 `fonts/` 자동 사용) |
 
-### 빌드 / 설치
+### 설치 (Homebrew — macOS / Linux)
+
+저장소 자체가 tap이다(별도 `homebrew-*` 저장소 없음). 릴리스 바이너리를 받으므로 Rust 툴체인이 필요 없다.
+
+```sh
+brew tap staixbwlb/hwp https://github.com/STAIxBWLB/hwp-cli
+brew install hwp
+hwp --version
+```
+
+업그레이드는 `brew update && brew upgrade hwp`. 지원 플랫폼은 macOS(Apple Silicon·Intel)와 Linux x86_64이며,
+Windows는 아래 [사전 빌드 바이너리](#다운로드-사전-빌드-바이너리)를 쓴다.
+
+### 빌드 / 설치 (소스)
 
 ```sh
 git clone git@github.com:STAIxBWLB/hwp-cli.git && cd hwp-cli
@@ -101,6 +114,8 @@ git push origin main && git push origin v0.2.0  # 태그 푸시가 릴리스를 
 ```
 
 `vX.Y.Z` 태그를 푸시하면 `release.yml`이 ① 테스트(fmt/clippy/test) 통과 ② 태그↔`Cargo.toml` 버전 일치를 확인한 **뒤에만** 4개 플랫폼 바이너리를 빌드해 GitHub Release로 게시한다. 태그가 커밋된 버전과 다르면 릴리스가 차단된다.
+
+자산 업로드가 끝나면 `update-formula` 잡이 `Formula/hwp.rb`의 version·sha256을 릴리스 체크섬으로 갱신해 main에 커밋한다(brew tap 자동 추종). 잡이 실패했거나 수동 복구가 필요하면 `scripts/update_formula.sh X.Y.Z`를 로컬에서 돌리면 된다 — formula를 손으로 고치지 말 것.
 
 ## 빠른 시작 (Quickstart)
 

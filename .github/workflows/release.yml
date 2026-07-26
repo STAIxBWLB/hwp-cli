@@ -75,3 +75,30 @@ jobs:
           archive: $bin-$tag-$target
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Homebrew formula(저장소 자체가 tap) 의 version/sha256 을 방금 올라온 자산 기준으로
+  # 갱신해 main 에 커밋한다. 자산이 다 올라온 뒤라야 체크섬을 받을 수 있어 마지막 잡이다.
+  # 실패해도 릴리스 자체는 유효하며, 로컬에서 scripts/update_formula.sh X.Y.Z 로 복구한다.
+  update-formula:
+    needs: upload-assets
+    runs-on: ubuntu-latest
+    steps:
+      # 태그가 아니라 main 을 체크아웃한다 — 커밋 대상이 main 이기 때문.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: formula 갱신 + 커밋
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          scripts/update_formula.sh "$ver"
+          if git diff --quiet Formula/hwp.rb; then
+            echo "formula 변경 없음 — 커밋 생략"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/hwp.rb
+          git commit -m "정리(brew): formula v$ver"
+          git push origin HEAD:main
