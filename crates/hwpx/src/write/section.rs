@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hwp_model::{
-    BinRef, Cell, Control, Document, GenericControl, HwpChar, PageDef, Paragraph, Picture, Section,
-    SectionDef, ShapeKind, Table,
+    BinRef, Cell, Control, Document, Equation, GenericControl, HwpChar, PageDef, Paragraph,
+    Picture, Section, SectionDef, ShapeKind, Table,
 };
 
 use crate::write::templates::{color_attr, esc};
@@ -382,6 +382,15 @@ fn write_paragraph(
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         write_foot_end_note(out, doc, g, ids, bins, preserve_linesegs, warnings);
+                    }
+                    Control::Generic(g) if g.equation.is_some() => {
+                        // 수식 — hp:ctrl이 아닌 run 직속 개체(리더 parse_equation의 역).
+                        // hwpx 출신(hp:script)·hwp5 출신(EQEDIT 스크립트, parse_eqed) 모두
+                        // IR Equation을 채우므로 같은 경로로 방출한다.
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        let eq = g.equation.as_ref().expect("is_some 가드");
+                        write_equation(out, eq, ids);
                     }
                     Control::Generic(g) => {
                         warnings.push(format!(
@@ -977,6 +986,34 @@ fn write_foot_end_note(
         out.push_str("</hp:subList>");
     }
     let _ = write!(out, "</hp:{el}></hp:ctrl>");
+}
+
+/// 수식 → `<hp:equation>`(run 직속). 리더 `parse_equation`이 읽는 것은 `hp:script`
+/// 자식과 `hp:sz`·`hp:pos`뿐이라 왕복은 이 셋으로 닫힌다. 나머지 속성은 개체 공통
+/// 스캐폴드(`write_shape_element`·`hp:pic`과 동일 순서: sz → pos → outMargin)와
+/// 수식 전용 상수(baseUnit·version·font)로 채운다.
+///
+/// ⚠ 수식 전용 상수는 **한글 정답지 미확보 상태의 표준 추정값**이다(코퍼스에 수식 든
+/// hwpx가 없다). 실기에서 수식이 깨져 보이면 정품 저장본의 `<hp:equation>` 속성으로
+/// 교체할 것 — 12-feature-gaps.md GE-14 참조.
+fn write_equation(out: &mut String, eq: &Equation, ids: &mut IdSeq) {
+    // 인라인(글자처럼 취급)은 본문 흐름을 따르고, 부유는 겹침 허용 — gso_pos_xml과 같은
+    // 실측 규칙(부유에 flowWithText=1을 주면 한글이 개체를 배치하지 못한다).
+    let (treat, flow, overlap, wrap) = if eq.inline {
+        (1, 1, 0, "SQUARE")
+    } else {
+        (0, 0, 1, "IN_FRONT_OF_TEXT")
+    };
+    let id = ids.next();
+    let _ = write!(
+        out,
+        r##"<hp:equation id="{id}" zOrder="0" numberingType="EQUATION" textWrap="{wrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" version="Equation Version 60" baseLine="85" textColor="#000000" baseUnit="1000" lineMode="0" font="HYhwpEQ"><hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="{flow}" allowOverlap="{overlap}" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/><hp:outMargin left="0" right="0" top="0" bottom="0"/><hp:script>{}</hp:script></hp:equation>"##,
+        eq.width.max(0),
+        eq.height.max(0),
+        eq.y,
+        eq.x,
+        esc(&eq.script),
+    );
 }
 
 /// hwp5 gso 공통 개체 헤더(20B+): attr(u32)@0, 세로 오프셋@4, 가로 오프셋@8, 폭@12, 높이@16,

@@ -254,6 +254,15 @@ hwpx/렌더로 내보내는 것"이다 → 정답지로 레코드 레이아웃�
 | GE-12 | **문서 시작번호 hwpx read 미파싱** — write는 `<hh:beginNum>`을 방출하지만 read에 파싱이 없어(전체 grep 0건) hwpx 소스의 페이지/각주/미주/그림/표/수식 시작번호가 IR에 안 올라옴 | write `hwpx/src/write/header.rs:53-59` ↔ read 부재 | §4.2.1 / `hh:beginNum` | 드롭(read) | 왕복(hwpx→hwpx)·합성(hwpx→hwp5) | S(GE-3 계열 동일 패턴) |
 | GE-13 | **스타일 종류(PARA/CHAR) hwpx 양방향 무시** — read는 `type` 속성을 안 읽고(attr 항상 0) write는 `type="PARA"` 고정 → **글자 스타일이 항상 문단 스타일로 오기록**, hwpx→hwpx 왕복에서도 매번 유실 | read `hwpx/src/read/header.rs:589-597` ↔ write `hwpx/src/write/header.rs:527-538` | §4.2.11 표 48 / `hh:style@type` | 근사(PARA 고정) | 왕복(hwpx→hwpx)·합성 | S |
 
+| GE-14 | **수식(eqed) hwpx 쓰기 드롭** — read는 `<hp:equation>`을(hwp5는 EQEDIT 스크립트를) IR `Equation`으로 올리지만 writer arm이 없어 generic fallback으로 빠짐 → hwpx를 편집·변환만 해도 수식이 통째로 사라짐 | write `hwpx/src/write/section.rs`(`write_equation`) ↔ read `hwpx/src/read/section.rs`(`parse_equation`), hwp5 `body_text.rs`(`parse_eqed`) | §4.3.9.3 / `hp:equation` | ✅ **해소(2026-07-27)** — run 직속 `<hp:equation>` + `hp:sz`/`hp:pos`/`hp:script` 방출(`수식_hwpx_왕복` 락). ⚠ 수식 전용 속성(version·baseLine·baseUnit·font)은 **정답지 미확보 표준 추정값** — 한글 실기 확정 대기 | 왕복(hwpx→hwpx)·합성(hwp5→hwpx) | S |
+| GE-15 | **hp:script 엔티티·CDATA 유실(read)** — `read_element_text`가 `Event::GeneralRef`/`CData`를 무시해 `x &lt; y` 같은 수식 스크립트의 특수문자가 읽기에서 사라짐(`hp:t` 파서에는 있던 해석이 이 경로만 누락) | `hwpx/src/read/section.rs`(`resolve_entity` 공용 헬퍼 — `parse_text`와 공유) | XML 1.0 §4.6 미리 정의 엔티티 | ✅ **해소(2026-07-27)** — 참조 5종+숫자 참조 해석, CDATA 구획 수집. writer `esc()`와 짝을 이루는 역변환 | 왕복(hwpx→hwpx)·추출 | S |
+
+> **2026-07-27 (GE-14·GE-15)**: 외부 기여 PR #7의 진단(각주/미주·수식 writer arm 부재)에서
+> 각주/미주는 `e433462`(실측판)로 선행 해소됐고, 남은 수식 방출 arm + 엔티티 해석만 별도
+> 구현. 자체 왕복은 확정(`수식_hwpx_왕복`)이나 **`<hp:equation>` 속성값의 정답지 대조는
+> 미완**(코퍼스에 수식 든 hwpx 부재) — 한글 실기에서 수식 표시가 깨지면 정품 저장본 속성으로
+> 교체할 것.
+
 > **2026-07-19 (GK 배치)**: GK-1·GK-2 구현 — 정품 병합 표 1,816개 전수 실측으로 저장 구조
 > 5규칙 확정(만장일치) 후 프리미티브 4종+CLI 4종+불변식 게이트. 정품 병합 표 회귀·왕복·세트
 > 30/0(K1~K3 신설). 전체 테스트 322. **✅K 시리즈 실기 확정(2026-07-19)** — 병합·열 조작
