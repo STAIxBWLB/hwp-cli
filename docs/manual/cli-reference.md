@@ -19,6 +19,7 @@
 - [`hwp fill`](#hwp-fill)
 - [`hwp validate`](#hwp-validate)
 - [`hwp mcp`](#hwp-mcp)
+- [`hwp update`](#hwp-update)
 - [`hwp dump`](#hwp-dump)
 
 ## `hwp info`
@@ -208,6 +209,19 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
+
+## `hwp update`
+
+자체 업데이트 — GitHub 릴리스에서 최신 `hwp`를 받아 실행 중인 바이너리를 교체
+
+**사용법:** `hwp update [OPTIONS]`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `--check` |  |  | 교체 없이 현재/최신 버전만 확인 |
+| `--tag` | `<TAG>` |  | 특정 릴리스로 고정 (예: "v0.2.0" — 이전 버전으로 되돌릴 때) |
+| `--force` |  |  | 같은 버전이어도 다시 받아 교체 (손상된 설치 복구용) |
+| `--json` |  |  | JSON으로 출력 |
 
 ## `hwp dump`
 

@@ -258,6 +258,22 @@ pub enum Cmd {
         font_dir: Vec<PathBuf>,
     },
 
+    /// 자체 업데이트 — GitHub 릴리스에서 최신 `hwp`를 받아 실행 중인 바이너리를 교체
+    Update {
+        /// 교체 없이 현재/최신 버전만 확인
+        #[arg(long)]
+        check: bool,
+        /// 특정 릴리스로 고정 (예: "v0.2.0" — 이전 버전으로 되돌릴 때)
+        #[arg(long)]
+        tag: Option<String>,
+        /// 같은 버전이어도 다시 받아 교체 (손상된 설치 복구용)
+        #[arg(long)]
+        force: bool,
+        /// JSON으로 출력
+        #[arg(long)]
+        json: bool,
+    },
+
     /// [개발자용] 레코드/패키지 구조 덤프
     Dump {
         file: PathBuf,

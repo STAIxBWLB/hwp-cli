@@ -11,4 +11,5 @@ pub mod mcp;
 pub mod new;
 pub mod render;
 pub mod slots;
+pub mod update;
 pub mod validate;
