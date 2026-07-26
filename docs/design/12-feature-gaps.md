@@ -257,11 +257,22 @@ hwpx/렌더로 내보내는 것"이다 → 정답지로 레코드 레이아웃�
 | GE-14 | **수식(eqed) hwpx 쓰기 드롭** — read는 `<hp:equation>`을(hwp5는 EQEDIT 스크립트를) IR `Equation`으로 올리지만 writer arm이 없어 generic fallback으로 빠짐 → hwpx를 편집·변환만 해도 수식이 통째로 사라짐 | write `hwpx/src/write/section.rs`(`write_equation`) ↔ read `hwpx/src/read/section.rs`(`parse_equation`), hwp5 `body_text.rs`(`parse_eqed`) | §4.3.9.3 / `hp:equation` | ✅ **해소(2026-07-27)** — run 직속 `<hp:equation>` + `hp:sz`/`hp:pos`/`hp:script` 방출(`수식_hwpx_왕복` 락). ⚠ 수식 전용 속성(version·baseLine·baseUnit·font)은 **정답지 미확보 표준 추정값** — 한글 실기 확정 대기 | 왕복(hwpx→hwpx)·합성(hwp5→hwpx) | S |
 | GE-15 | **hp:script 엔티티·CDATA 유실(read)** — `read_element_text`가 `Event::GeneralRef`/`CData`를 무시해 `x &lt; y` 같은 수식 스크립트의 특수문자가 읽기에서 사라짐(`hp:t` 파서에는 있던 해석이 이 경로만 누락) | `hwpx/src/read/section.rs`(`resolve_entity` 공용 헬퍼 — `parse_text`와 공유) | XML 1.0 §4.6 미리 정의 엔티티 | ✅ **해소(2026-07-27)** — 참조 5종+숫자 참조 해석, CDATA 구획 수집. writer `esc()`와 짝을 이루는 역변환 | 왕복(hwpx→hwpx)·추출 | S |
 
-> **2026-07-27 (GE-14·GE-15)**: 외부 기여 PR #7의 진단(각주/미주·수식 writer arm 부재)에서
+| GE-16 | **속성값 엔티티 이중 이스케이프(hwpx read)** — `attr()`이 quick-xml raw 값을 그대로 올려(`A&amp;B` → IR `A&amp;amp;B`가 아니라 `A&amp;B` 원문), writer `esc()`가 다시 감싸 왕복마다 `&amp;`가 늘어남. 책갈피·필드·스타일 이름, 수식 `script` 속성 전부 해당 | `hwpx/src/read/xml.rs`(`attr` — unescape 적용) | XML 1.0 §4.6 | ✅ **해소(2026-07-27)** — 속성값을 읽는 즉시 엔티티 해석(해석 불가 참조는 원문 유지). 적대적 점검(codex) 발견 | 왕복(hwpx→hwpx)·합성 | S |
+| GE-17 | **XML 비문자(U+FFFE·U+FFFF) 방출** — `esc()`가 C0 제어문자만 걸러 비문자를 그대로 흘림 → well-formed하지 않은 패키지가 되어 파서·한글이 **파일 전체를 거부** | `hwpx/src/write/templates.rs`(`esc`) | XML 1.0 §2.2 Char 범위 | ✅ **해소(2026-07-27)** — C0와 동일하게 제거(`esc_금지문자_제거`). 적대적 점검(codex) 발견 | 모든 hwpx 쓰기 | S |
+
+> **2026-07-27 (GE-14~GE-17)**: 외부 기여 PR #7의 진단(각주/미주·수식 writer arm 부재)에서
 > 각주/미주는 `e433462`(실측판)로 선행 해소됐고, 남은 수식 방출 arm + 엔티티 해석만 별도
-> 구현. 자체 왕복은 확정(`수식_hwpx_왕복`)이나 **`<hp:equation>` 속성값의 정답지 대조는
-> 미완**(코퍼스에 수식 든 hwpx 부재) — 한글 실기에서 수식 표시가 깨지면 정품 저장본 속성으로
-> 교체할 것.
+> 구현. **적대적 점검(codex, 한컴 공식 OWPML 모델 소스 대조)** 으로 4건을 추가 수정했다:
+> ① `lineMode="0"` → 열거값 `CHAR`(`enumdef.h` `g_EquationLineList` = LINE|CHAR, 기본 CHAR),
+> ② hwpx 출신 수식의 비기본 속성·공통 자식 원문 pass-through(`Equation::raw_attrs`·`raw_props`
+> — 이전엔 zOrder·textWrap·baseUnit·글자색·수식 글꼴·PAGE 기준 배치가 전부 기본값으로 재작성),
+> ③ hwp5 출신 부유 수식 배치를 gso 공통 헤더에서 복원(`gso_pos_xml` 재사용 — 그림 GE-9와 동형),
+> ④ GE-16·GE-17. 수식을 run당 개체 한도 카운트에도 포함시켰다(과소 계상 = 개체 유실).
+>
+> **잔여**: `<hp:equation>` 합성 경로의 수식 전용 상수(version·baseLine·baseUnit·font)는
+> 여전히 **정답지 미확보 표준 추정값**이다(코퍼스에 수식 든 hwpx 부재). 한글 실기(`L1_수식.hwpx`,
+> `docs/실기검증-체크리스트.md` §L)에서 수식 표시가 깨지면 정품 저장본 속성으로 교체할 것.
+> read가 `hp:script`를 `trim()`하는 점(앞뒤 공백 비보존)도 미해결이나 조판 영향은 없다.
 
 > **2026-07-19 (GK 배치)**: GK-1·GK-2 구현 — 정품 병합 표 1,816개 전수 실측으로 저장 구조
 > 5규칙 확정(만장일치) 후 프리미티브 4종+CLI 4종+불변식 게이트. 정품 병합 표 회귀·왕복·세트

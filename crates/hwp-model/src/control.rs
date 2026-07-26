@@ -266,7 +266,7 @@ pub struct ColumnDef {
 }
 
 /// 수식 개체 — 렌더러가 상자+스크립트 텍스트로 근사한다.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Equation {
     /// HWP 수식 스크립트 원문.
     pub script: String,
@@ -278,6 +278,17 @@ pub struct Equation {
     /// 떠 있는 경우 페이지 절대 오프셋(HWPUNIT).
     pub x: i32,
     pub y: i32,
+    /// hwpx `<hp:equation>`의 시작 태그 속성 원문(`id` 제외 — writer가 재부여).
+    /// 글자색·기준선·baseUnit·수식 글꼴·zOrder·본문배치 등 IR이 의미 모델링하지 않는
+    /// 속성을 왕복에서 보존하기 위한 pass-through다([`SectionDef::secpr_raw_children`]
+    /// 와 같은 규약). 비어 있으면(hwp5 출신·합성) writer가 표준값을 방출한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_attrs: Option<String>,
+    /// 개체 공통 자식(`hp:sz`·`hp:pos`·`hp:outMargin`·caption 등)의 원문 XML을 등장
+    /// 순서대로 보존한다(`hp:script`는 제외 — script 필드가 정본). 비어 있으면 writer가
+    /// width/height/inline/x/y와 hwp5 gso 공통 헤더로 재구성한다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raw_props: Vec<String>,
 }
 
 /// 도형 종류 (hwpx 그리기 개체).

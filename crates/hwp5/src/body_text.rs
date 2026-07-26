@@ -591,6 +591,9 @@ fn parse_eqed(data: &[u8], children: &[RecordNode]) -> Option<Equation> {
         inline: attr & 1 == 1, // bit0 = 글자처럼 취급
         x: rd(8),              // hoff
         y: rd(4),              // voff
+        // hwpx 원문 pass-through는 hwpx 출신 전용 — hwp5 출신은 배치를 gso 공통 헤더
+        // (`GenericControl::data`)에서 그대로 읽을 수 있어 hwpx writer가 재구성한다.
+        ..Equation::default()
     })
 }
 

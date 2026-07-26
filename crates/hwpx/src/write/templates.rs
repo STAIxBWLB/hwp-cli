@@ -119,6 +119,9 @@ pub fn esc(s: &str) -> String {
             // 해도 무효이고, raw로 방출하면 한글이 파일을 거부한다. 탭/개행은 상위
             // (flush_text)에서 이미 <hp:tab …/>·<hp:lineBreak/> 요소로 변환돼 여기 오지 않는다.
             c if (c as u32) < 0x20 && c != '\t' && c != '\n' && c != '\r' => {}
+            // 비문자(U+FFFE·U+FFFF)도 XML 1.0 허용 범위 밖이다. 이걸 흘리면 well-formed
+            // 하지 않은 패키지가 나와 파서·한글이 파일 전체를 거부한다(C0와 같은 처리).
+            '\u{FFFE}' | '\u{FFFF}' => {}
             _ => out.push(c),
         }
     }
@@ -217,6 +220,16 @@ mod tests {
         assert_eq!(parsed.keywords, None);
         assert_eq!(parsed.create_time, None);
         assert_eq!(parsed.author.as_deref(), Some("hwp-cli"));
+    }
+
+    /// XML 1.0 허용 범위 밖 문자는 이스케이프가 아니라 제거다 — 흘리면 패키지가
+    /// well-formed하지 않아 파서·한글이 파일 전체를 거부한다(수식 스크립트에서 유입 가능).
+    #[test]
+    fn esc_금지문자_제거() {
+        assert_eq!(esc("a<b&c\"d"), "a&lt;b&amp;c&quot;d");
+        assert_eq!(esc("a\u{1}b\u{1F}c"), "abc"); // C0 제어문자
+        assert_eq!(esc("a\u{FFFE}b\u{FFFF}c"), "abc"); // 비문자
+        assert_eq!(esc("탭\t줄\n복귀\r"), "탭\t줄\n복귀\r"); // 허용 3종은 유지
     }
 
     /// 구형 형식(dc:subject, name="keywords" 복수형+content 속성)도 하위호환 파싱.

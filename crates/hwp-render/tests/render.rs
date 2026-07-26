@@ -265,6 +265,7 @@ fn 수식_조판_렌더() {
                     inline: false,
                     x: 8000,
                     y: 6000 + i as i32 * 5000,
+                    ..Equation::default()
                 }),
                 column_def: None,
             }));
