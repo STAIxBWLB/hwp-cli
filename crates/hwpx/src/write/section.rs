@@ -102,8 +102,10 @@ const SHAPE_RUN_LIMIT: usize = 12;
 
 /// 방출된 XML 조각에서 최상위 그리기 도형 요소 수를 센다. `<hp:line `은 뒤에 공백을 둬
 /// `<hp:lineShape`·`<hp:lineseg`·`<hp:lineBreak`와 구분한다(도형 요소는 항상 속성이 따름).
+/// 수식도 개체라 같이 센다 — 한글의 run당 한도가 수식까지 포함하는지는 미확정이나,
+/// 과다 계상은 run이 더 일찍 갈라질 뿐이고 과소 계상은 개체 유실이라 안전한 쪽을 택한다.
 fn count_shape_tags(s: &str) -> usize {
-    const OPENS: [&str; 8] = [
+    const OPENS: [&str; 9] = [
         "<hp:rect ",
         "<hp:ellipse ",
         "<hp:line ",
@@ -112,6 +114,7 @@ fn count_shape_tags(s: &str) -> usize {
         "<hp:curve ",
         "<hp:pic ",
         "<hp:connectLine ",
+        "<hp:equation ",
     ];
     OPENS.iter().map(|t| s.matches(t).count()).sum()
 }
@@ -389,8 +392,11 @@ fn write_paragraph(
                         // IR Equation을 채우므로 같은 경로로 방출한다.
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
+                        shape_break!();
                         let eq = g.equation.as_ref().expect("is_some 가드");
+                        let before = out.len();
                         write_equation(out, eq, ids);
+                        run_shapes += count_shape_tags(&out[before..]);
                     }
                     Control::Generic(g) => {
                         warnings.push(format!(
