@@ -7,7 +7,8 @@
 # version/sha256 은 태그 푸시 때 release.yml 의 update-formula 잡이 자동 갱신한다
 # (손으로 고치지 말 것 — 다음 릴리스에서 덮어써진다).
 class Hwp < Formula
-  desc "HWP 5.0/HWPX 문서 읽기·변환·렌더·편집 단일 바이너리"
+  # brew style: desc 는 formula 이름(hwp)으로 시작하면 안 된다.
+  desc "한글 문서(HWP 5.0·HWPX) 읽기·변환·렌더·편집 단일 바이너리"
   homepage "https://github.com/STAIxBWLB/hwp-cli"
   version "0.2.0"
   license any_of: ["MIT", "Apache-2.0"]
