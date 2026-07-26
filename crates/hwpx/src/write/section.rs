@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hwp_model::{
-    BinRef, Cell, Control, Document, GenericControl, HwpChar, PageDef, Paragraph, Picture, Section,
-    SectionDef, ShapeKind, Table,
+    BinRef, Cell, Control, Document, Equation, GenericControl, HwpChar, PageDef, Paragraph,
+    Picture, Section, SectionDef, ShapeKind, Table,
 };
 
 use crate::write::templates::{color_attr, esc};
@@ -102,8 +102,10 @@ const SHAPE_RUN_LIMIT: usize = 12;
 
 /// 방출된 XML 조각에서 최상위 그리기 도형 요소 수를 센다. `<hp:line `은 뒤에 공백을 둬
 /// `<hp:lineShape`·`<hp:lineseg`·`<hp:lineBreak`와 구분한다(도형 요소는 항상 속성이 따름).
+/// 수식도 개체라 같이 센다 — 한글의 run당 한도가 수식까지 포함하는지는 미확정이나,
+/// 과다 계상은 run이 더 일찍 갈라질 뿐이고 과소 계상은 개체 유실이라 안전한 쪽을 택한다.
 fn count_shape_tags(s: &str) -> usize {
-    const OPENS: [&str; 8] = [
+    const OPENS: [&str; 9] = [
         "<hp:rect ",
         "<hp:ellipse ",
         "<hp:line ",
@@ -112,6 +114,7 @@ fn count_shape_tags(s: &str) -> usize {
         "<hp:curve ",
         "<hp:pic ",
         "<hp:connectLine ",
+        "<hp:equation ",
     ];
     OPENS.iter().map(|t| s.matches(t).count()).sum()
 }
@@ -382,6 +385,18 @@ fn write_paragraph(
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         write_foot_end_note(out, doc, g, ids, bins, preserve_linesegs, warnings);
+                    }
+                    Control::Generic(g) if g.equation.is_some() => {
+                        // 수식 — hp:ctrl이 아닌 run 직속 개체(리더 parse_equation의 역).
+                        // hwpx 출신(hp:script)·hwp5 출신(EQEDIT 스크립트, parse_eqed) 모두
+                        // IR Equation을 채우므로 같은 경로로 방출한다.
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        shape_break!();
+                        let eq = g.equation.as_ref().expect("is_some 가드");
+                        let before = out.len();
+                        write_equation(out, g, eq, ids);
+                        run_shapes += count_shape_tags(&out[before..]);
                     }
                     Control::Generic(g) => {
                         warnings.push(format!(
@@ -977,6 +992,72 @@ fn write_foot_end_note(
         out.push_str("</hp:subList>");
     }
     let _ = write!(out, "</hp:{el}></hp:ctrl>");
+}
+
+/// 수식 → `<hp:equation>`(run 직속). 자식 순서는 개체 공통 규약(sz → pos → outMargin,
+/// 그 뒤 개체 전용)을 따른다 — 한컴 공식 모델 `AbstractShapeObjectType`과 동일.
+///
+/// 소스별 충실도 3단:
+/// 1. hwpx 출신 — 시작 태그 속성(`raw_attrs`)과 공통 자식(`raw_props`)을 원문 그대로
+///    되쓴다. 글자색·baseUnit·수식 글꼴·zOrder·배치기준이 왕복에서 살아남는다.
+/// 2. hwp5 출신 — 공통 자식은 gso 공통 헤더(`g.data`)로 재구성한다. 배치기준(PAGE/PARA)·
+///    정렬·z-order가 헤더에 있으므로 `gso_pos_xml`을 그대로 쓴다(그림·표와 같은 경로).
+/// 3. 합성(md/JSON 출신) — 아래 표준값. `lineMode`는 한컴 모델 열거값 LINE|CHAR 중
+///    기본값 CHAR다(`enumdef.h` g_EquationLineList).
+///
+/// ⚠ 3의 수식 전용 상수(version·baseLine·baseUnit·font)는 **정답지 미확보 상태의 표준
+/// 추정값**이다. 실기에서 수식이 깨져 보이면 정품 저장본 속성으로 교체할 것
+/// (12-feature-gaps.md GE-14).
+fn write_equation(out: &mut String, g: &GenericControl, eq: &Equation, ids: &mut IdSeq) {
+    let id = ids.next();
+    match &eq.raw_attrs {
+        Some(raw) => {
+            let _ = write!(out, r##"<hp:equation id="{id}" {raw}>"##);
+        }
+        None => {
+            // 인라인(글자처럼 취급)은 본문 흐름을 따르고, 부유는 겹침 허용 — gso_pos_xml과
+            // 같은 실측 규칙(부유에 flowWithText=1을 주면 한글이 개체를 배치하지 못한다).
+            let wrap = if eq.inline {
+                "SQUARE"
+            } else {
+                "IN_FRONT_OF_TEXT"
+            };
+            let z = parse_gso_header(&g.data).map_or(0, |h| h.5.max(0));
+            let _ = write!(
+                out,
+                r##"<hp:equation id="{id}" zOrder="{z}" numberingType="EQUATION" textWrap="{wrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" version="Equation Version 60" baseLine="85" textColor="#000000" baseUnit="1000" lineMode="CHAR" font="HYhwpEQ">"##
+            );
+        }
+    }
+    if eq.raw_props.is_empty() {
+        // hwp5 출신이면 gso 공통 헤더에서 배치를 복원하고(그림·표와 동일 경로), 없으면
+        // IR의 inline/오프셋으로 합성한다.
+        let pos_xml = match parse_gso_header(&g.data) {
+            Some((attr, voff, hoff, _, _, _)) => gso_pos_xml(attr, voff, hoff),
+            None => {
+                let (treat, flow, overlap) = if eq.inline { (1, 1, 0) } else { (0, 0, 1) };
+                format!(
+                    r##"<hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="{flow}" allowOverlap="{overlap}" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/>"##,
+                    eq.y, eq.x,
+                )
+            }
+        };
+        let _ = write!(
+            out,
+            r##"<hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/>{pos_xml}<hp:outMargin left="0" right="0" top="0" bottom="0"/>"##,
+            eq.width.max(0),
+            eq.height.max(0),
+        );
+    } else {
+        for p in &eq.raw_props {
+            out.push_str(p);
+        }
+    }
+    let _ = write!(
+        out,
+        "<hp:script>{}</hp:script></hp:equation>",
+        esc(&eq.script)
+    );
 }
 
 /// hwp5 gso 공통 개체 헤더(20B+): attr(u32)@0, 세로 오프셋@4, 가로 오프셋@8, 폭@12, 높이@16,

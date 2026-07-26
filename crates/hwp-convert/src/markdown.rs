@@ -1707,6 +1707,7 @@ mod tests {
                     inline,
                     x: 0,
                     y: 0,
+                    ..Equation::default()
                 }),
                 column_def: None,
             })
@@ -2486,6 +2487,7 @@ mod tests {
                 inline,
                 x: 0,
                 y: 0,
+                ..Equation::default()
             }),
             column_def: None,
         })

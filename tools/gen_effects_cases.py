@@ -1225,6 +1225,63 @@ def k3_cols_hwpx(dest):
     return out, "3열 표 열 추가+삭제 → 순 3열·6셀, validate ✅"
 
 
+# ── L 시리즈: 수식 방출 (GE-14·GE-15) ───────────────────────────────────────
+# hwpx writer 의 <hp:equation> arm 은 정답지(수식 든 정품 hwpx) 없이 표준 추정 속성으로
+# 방출한다. 한글이 이 수식을 열어 실제로 조판하는지가 유일한 최종 판정이라 실기 케이스를 둔다.
+
+EQED_ID = [101, 113, 101, 100]          # b"eqed"
+EQED_PAYLOAD = "646571650000000000000000"  # 역순 ctrl_id("deqe") + 0 패딩 12B
+
+
+def _attach_equation(p, script, width=4000, height=1300, inline=True):
+    """문단 p 끝에 수식 컨트롤(ExtCtrl 코드 11 + Generic.equation)을 단다."""
+    controls = p.setdefault("controls", [])
+    p["chars"].append({"ExtCtrl": {
+        "code": 11, "ctrl_id": EQED_ID, "payload": EQED_PAYLOAD,
+        "ctrl_index": len(controls),
+    }})
+    controls.append({"Generic": {
+        "ctrl_id": EQED_ID, "data": "", "paragraph_lists": [], "extras": [],
+        "equation": {"script": script, "width": width, "height": height,
+                     "inline": inline, "x": 0, "y": 0},
+    }})
+
+
+def l1_equation_hwpx(dest):
+    # 분수·근호·합·첨자 + XML 특수문자(<, &, >) — esc() ↔ 엔티티 해석의 짝을 실기로 검증.
+    scripts = [
+        "a over b + sqrt {x^2 + y^2}",
+        "sum from {i=1} to {n} i = {n(n+1)} over 2",
+        "x < y & y > z",
+    ]
+    ir = base_ir(
+        "# 수식 실기 검증\n\n아래 문단 끝에 수식 3개가 글자처럼 들어간다.\n\n"
+        "수식 자리:\n\n분수·근호·합기호와 부등호(<)·앰퍼샌드(&)가 모두 보여야 한다.\n",
+        "l1",
+    )
+    p = find_para(ir, "수식 자리")
+    for s in scripts:
+        _attach_equation(p, s)
+    out = os.path.join(dest, "L1_수식.hwpx")
+    r = emit(ir, out, "l1")
+    if not os.path.exists(out):
+        raise RuntimeError(f"생성 실패: {r.stderr.strip()[:200]}")
+    # 재읽기 단언: 3개가 다 살아 있고 스크립트 원문(특수문자 포함)이 그대로여야 한다.
+    got = [c["Generic"]["equation"]
+           for sec in reread(out)["sections"] for q in sec["paragraphs"]
+           for c in q.get("controls", [])
+           if isinstance(c, dict) and "Generic" in c and c["Generic"].get("equation")]
+    if len(got) != len(scripts):
+        raise RuntimeError(f"수식 {len(got)}개 왕복(3 기대) — writer arm 또는 read 유실")
+    for want, have in zip(scripts, got):
+        if have["script"] != want:
+            raise RuntimeError(f"스크립트 변형: {have['script']!r} != {want!r}")
+    ok, msg = validate_ok(out)
+    if not ok:
+        raise RuntimeError(f"validate 실패: {msg}")
+    return out, "수식 3종(분수·합·특수문자) hwpx 방출 → 스크립트 원문 왕복, validate ✅"
+
+
 CASES = [
     ("C1_그림자.hwpx", c1_shadow),
     ("C2_외곽선.hwpx", c2_outline),
@@ -1245,6 +1302,7 @@ CASES = [
     ("K1_셀병합.hwpx", k1_merge_hwpx),
     ("K2_셀병합.hwp", k2_merge_hwp),
     ("K3_열조작.hwpx", k3_cols_hwpx),
+    ("L1_수식.hwpx", l1_equation_hwpx),
 ]
 
 

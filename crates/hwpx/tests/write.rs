@@ -1086,6 +1086,231 @@ fn attach_gso(para: &mut hwp_model::Paragraph, g: hwp_model::GenericControl) {
     para.header.ctrl_mask = 0;
 }
 
+/// 적대적 점검(codex) 반영 ①: hwpx 출신 수식의 **비기본 속성**이 왕복에서 보존된다.
+/// 이전엔 read가 script/sz/pos만 취해 zOrder·textWrap·baseUnit·글자색·수식 글꼴·PAGE
+/// 기준 배치가 전부 기본값으로 재작성됐다(22pt 빨간 수식 → 10pt 검정). 원문 pass-through.
+/// ②: `lineMode`는 한컴 모델 열거값(LINE|CHAR)이라 합성 경로가 `"0"`을 쓰면 스키마 위반.
+#[test]
+fn 수식_속성_원문_보존() {
+    use hwp_model::Control;
+
+    // 정품 형태의 비기본 속성 수식 — 우리가 합성하는 값과 전부 다르게 잡았다.
+    let src = concat!(
+        r##"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"><hp:p><hp:run charPrIDRef="0">"##,
+        r##"<hp:equation id="9" zOrder="7" numberingType="EQUATION" textWrap="BEHIND_TEXT" textFlow="LEFT_ONLY" lock="1" version="Equation Version 60" baseLine="70" textColor="#FF0000" baseUnit="2200" lineMode="LINE" font="맑은 고딕">"##,
+        r##"<hp:sz width="4000" widthRelTo="ABSOLUTE" height="1200" heightRelTo="ABSOLUTE" protect="0"/>"##,
+        r##"<hp:pos treatAsChar="0" affectLSpacing="1" flowWithText="0" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PAGE" horzRelTo="PAGE" vertAlign="TOP" horzAlign="LEFT" vertOffset="1000" horzOffset="2000"/>"##,
+        r##"<hp:outMargin left="56" right="56" top="56" bottom="56"/><hp:script>x &lt; y</hp:script></hp:equation>"##,
+        r##"</hp:run></hp:p></hs:sec>"##,
+    );
+    let (section, w) = hwpx::read::section::parse_section(src).unwrap();
+    assert!(w.is_empty(), "{w:?}");
+    let mut doc = hwp_convert::from_markdown("본문");
+    doc.sections = vec![section];
+
+    let out = tmp("equation_attrs.hwpx");
+    assert!(
+        !hwpx::write_document(&doc, &out)
+            .unwrap()
+            .iter()
+            .any(|w| w.contains("DROP"))
+    );
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    zip.by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    for keep in [
+        r#"zOrder="7""#,
+        r#"textWrap="BEHIND_TEXT""#,
+        r#"lock="1""#,
+        r#"baseLine="70""#,
+        r##"textColor="#FF0000""##,
+        r#"baseUnit="2200""#,
+        r#"lineMode="LINE""#,
+        r#"font="맑은 고딕""#,
+        r#"vertRelTo="PAGE""#,
+        r#"horzOffset="2000""#,
+        r#"<hp:outMargin left="56""#,
+    ] {
+        assert!(xml.contains(keep), "속성 유실: {keep}\n{xml}");
+    }
+    // 스크립트는 여전히 IR 정본에서 나온다(원문 pass-through 대상이 아님).
+    let eq = hwpx::read_document(&out).unwrap().document.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Generic(g) => g.equation.clone(),
+            _ => None,
+        })
+        .expect("수식 왕복");
+    assert_eq!(eq.script, "x < y");
+
+    // 합성 경로(원문 없음)는 스키마 유효한 lineMode 열거값을 써야 한다.
+    let mut synth = hwp_convert::from_markdown("본문\n\n둘째");
+    attach_gso(
+        &mut synth.sections[0].paragraphs[1],
+        eqed_control(hwp_model::Equation {
+            script: "x".to_string(),
+            ..Default::default()
+        }),
+    );
+    let out2 = tmp("equation_synth.hwpx");
+    hwpx::write_document(&synth, &out2).unwrap();
+    let mut zip2 =
+        zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out2).unwrap())).unwrap();
+    let mut xml2 = String::new();
+    zip2.by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml2)
+        .unwrap();
+    assert!(xml2.contains(r#"lineMode="CHAR""#), "합성 lineMode: {xml2}");
+    assert!(
+        !xml2.contains(r#"lineMode="0""#),
+        "스키마 밖 lineMode: {xml2}"
+    );
+}
+
+/// 적대적 점검(codex) 반영 ③: hwp5 출신 부유 수식의 배치(PAGE 기준·오프셋·z-order)가
+/// gso 공통 헤더에서 복원된다. 이전엔 PARA/PARA·zOrder 0 상수라 페이지 기준으로 놓인
+/// 수식이 문단 기준으로 옮겨갔다(그림 GE-9와 같은 결함).
+#[test]
+fn 수식_hwp5출신_배치_복원() {
+    // gso 공통 헤더 24B: attr(bit0=인라인 off, bits3-4=vertRel PAGE, bits8-9=horzRel PAGE)
+    // + voff + hoff + width + height + zorder.
+    let mut data = Vec::new();
+    let attr: u32 = (1 << 3) | (1 << 8); // vertRelTo=PAGE(1), horzRelTo=PAGE(1), 부유
+    data.extend(attr.to_le_bytes());
+    data.extend(1000i32.to_le_bytes()); // voff
+    data.extend(2000i32.to_le_bytes()); // hoff
+    data.extend(4000i32.to_le_bytes()); // width
+    data.extend(1200i32.to_le_bytes()); // height
+    data.extend(7i32.to_le_bytes()); // z-order
+
+    let mut doc = hwp_convert::from_markdown("본문\n\n둘째");
+    let mut g = eqed_control(hwp_model::Equation {
+        script: "x over y".to_string(),
+        width: 4000,
+        height: 1200,
+        inline: false,
+        x: 2000,
+        y: 1000,
+        ..Default::default()
+    });
+    g.data = data;
+    attach_gso(&mut doc.sections[0].paragraphs[1], g);
+
+    let out = tmp("equation_hwp5_pos.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    zip.by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    let eq = &xml[xml.find("<hp:equation").expect("수식 방출")..];
+    for keep in [
+        r#"zOrder="7""#,
+        r#"vertRelTo="PAGE""#,
+        r#"horzRelTo="PAGE""#,
+        r#"vertOffset="1000""#,
+        r#"horzOffset="2000""#,
+        r#"treatAsChar="0""#,
+    ] {
+        assert!(eq.contains(keep), "배치 유실: {keep}\n{eq}");
+    }
+}
+
+/// eqed 컨트롤(수식) 하나를 만든다.
+fn eqed_control(equation: hwp_model::Equation) -> hwp_model::GenericControl {
+    hwp_model::GenericControl {
+        ctrl_id: *b"eqed",
+        data: Vec::new(),
+        paragraph_lists: Vec::new(),
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: Some(equation),
+        column_def: None,
+    }
+}
+
+/// GE-14: 수식이 `<hp:equation>`으로 방출되고 스크립트·크기·배치가 왕복에서 살아남는다.
+/// 이전엔 writer arm이 없어 통째로 DROP — 각주 든 문서를 편집만 해도 수식이 사라졌다.
+/// XML 특수문자(`<`·`&`) 케이스는 writer `esc()` ↔ reader 엔티티 해석의 짝을 고정한다.
+#[test]
+fn 수식_hwpx_왕복() {
+    use hwp_model::{Control, Equation, GenericControl};
+
+    let equations = [
+        Equation {
+            script: "a over b = c_1 ^2".to_string(),
+            width: 4000,
+            height: 1200,
+            inline: true,
+            x: 0,
+            y: 0,
+            ..Equation::default()
+        },
+        // 특수문자: esc()가 &lt;·&amp;로 쓰고 reader가 되돌리지 못하면 글자가 사라진다.
+        Equation {
+            script: "x < y & y > z".to_string(),
+            width: 2000,
+            height: 900,
+            inline: false,
+            x: 3000,
+            y: 5000,
+            ..Equation::default()
+        },
+    ];
+    let mut doc = hwp_convert::from_markdown("본문\n\n둘째");
+    for eq in equations.iter().cloned() {
+        attach_gso(
+            &mut doc.sections[0].paragraphs[1],
+            GenericControl {
+                ctrl_id: *b"eqed",
+                data: Vec::new(),
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: Some(eq),
+                column_def: None,
+            },
+        );
+    }
+
+    let out = tmp("equation.hwpx");
+    let warnings = hwpx::write_document(&doc, &out).unwrap();
+    assert!(!warnings.iter().any(|w| w.contains("DROP")), "{warnings:?}");
+
+    let reread = hwpx::read_document(&out).unwrap();
+    assert!(
+        !reread.warnings.iter().any(|w| w.contains("DROP")),
+        "{:?}",
+        reread.warnings
+    );
+    let got: Vec<_> = reread.document.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| match c {
+            Control::Generic(g) => g.equation.as_ref(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(got.len(), 2, "수식 2개 왕복");
+    for (got, want) in got.iter().zip(&equations) {
+        assert_eq!(got.script, want.script, "스크립트 원문");
+        assert_eq!((got.width, got.height), (want.width, want.height), "크기");
+        assert_eq!(got.inline, want.inline, "글자처럼 취급");
+    }
+    // 부유 수식의 오프셋은 <hp:pos>에 실려야 한다(0으로 뭉개면 좌상단에 몰린다).
+    assert_eq!((got[1].x, got[1].y), (3000, 5000), "부유 오프셋");
+}
+
 /// hwp5-출신 글상자(gso + 문단)가 hwpx `<hp:rect>+<hp:drawText>` 왕복을 통과한다 —
 /// 이전엔 통째로 드롭돼 안의 텍스트가 소실됐다.
 #[test]

@@ -286,19 +286,7 @@ fn parse_text(
             }
             // 엔티티 참조(&amp; &#x...;)는 별도 이벤트로 온다
             Event::GeneralRef(r) => {
-                let resolved = r
-                    .resolve_char_ref()
-                    .ok()
-                    .flatten()
-                    .or_else(|| match &r[..] {
-                        b"amp" => Some('&'),
-                        b"lt" => Some('<'),
-                        b"gt" => Some('>'),
-                        b"quot" => Some('"'),
-                        b"apos" => Some('\''),
-                        _ => None,
-                    });
-                if let Some(c) = resolved {
+                if let Some(c) = resolve_entity(&r) {
                     push_text_char(para, wchar_pos, c);
                 }
             }
@@ -1242,24 +1230,32 @@ fn parse_equation(
     let mut script = attr(start, "script").unwrap_or_default();
     let (mut width, mut height, mut x, mut y) = (0i32, 0i32, 0i32, 0i32);
     let mut inline = true;
+    // 의미 모델링하지 않는 속성(글자색·baseUnit·수식 글꼴·zOrder·본문배치…)은 원문으로
+    // 보존해 왕복에서 되쓴다. id 는 writer 가 문서 전역으로 다시 매기므로 제외한다.
+    let raw_attrs = raw_attrs_except(start, b"id");
+    let mut raw_props = Vec::new();
     if !empty {
         loop {
             let ev = next_event(reader)?;
             match &ev {
                 Event::Start(e) | Event::Empty(e) => {
                     let is_start = matches!(ev, Event::Start(_));
+                    let is_empty_el = matches!(ev, Event::Empty(_));
                     match e.local_name().as_ref() {
                         b"script" if is_start => script = read_element_text(reader, b"script")?,
                         b"sz" => {
                             width = attr_i32(e, "width").unwrap_or(width);
                             height = attr_i32(e, "height").unwrap_or(height);
+                            raw_props.push(capture_element(reader, e, is_empty_el)?);
                         }
                         b"pos" => {
                             inline = attr(e, "treatAsChar").as_deref() == Some("1");
                             x = attr_offset_i32(e, "horzOffset").unwrap_or(0);
                             y = attr_offset_i32(e, "vertOffset").unwrap_or(0);
+                            raw_props.push(capture_element(reader, e, is_empty_el)?);
                         }
-                        _ => {}
+                        // outMargin·caption·shapeComment 등 나머지 공통 자식도 원문 보존.
+                        _ => raw_props.push(capture_element(reader, e, is_empty_el)?),
                     }
                 }
                 Event::End(e) if e.local_name().as_ref() == b"equation" => break,
@@ -1275,7 +1271,44 @@ fn parse_equation(
         inline,
         x,
         y,
+        raw_attrs,
+        raw_props,
     })
+}
+
+/// 시작 태그의 속성을 `name="value"` 원문으로 되돌린다(`skip` 이름 하나는 제외).
+/// 값은 파일에 있던 이스케이프 형태 그대로 다시 쓰므로(재이스케이프 없음) 왕복이 닫힌다.
+fn raw_attrs_except(start: &BytesStart<'_>, skip: &[u8]) -> Option<String> {
+    let mut out = String::new();
+    for a in start.attributes().flatten() {
+        if a.key.local_name().as_ref() == skip {
+            continue;
+        }
+        let key = String::from_utf8_lossy(a.key.as_ref()).into_owned();
+        let val = String::from_utf8_lossy(&a.value).into_owned();
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("{key}=\"{val}\""));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// 엔티티 참조(`&amp;` `&#x2264;`)를 문자로 되돌린다. quick-xml은 참조를 텍스트에
+/// 합치지 않고 `Event::GeneralRef`로 따로 주므로, 텍스트를 모으는 쪽마다 이 해석이
+/// 필요하다. DTD 없이는 외부 엔티티를 풀 수 없어 미리 정의된 5종 + 숫자 참조만 푼다.
+fn resolve_entity(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+    r.resolve_char_ref()
+        .ok()
+        .flatten()
+        .or_else(|| match &r[..] {
+            b"amp" => Some('&'),
+            b"lt" => Some('<'),
+            b"gt" => Some('>'),
+            b"quot" => Some('"'),
+            b"apos" => Some('\''),
+            _ => None,
+        })
 }
 
 /// 주어진 요소가 닫힐 때까지 텍스트를 모은다.
@@ -1284,6 +1317,22 @@ fn read_element_text(reader: &mut XmlReader<'_>, end: &[u8]) -> Result<String> {
     loop {
         match next_event(reader)? {
             Event::Text(t) => {
+                let s = t.xml10_content().map_err(|e| HwpxError::Xml {
+                    entry: "section".to_string(),
+                    message: e.to_string(),
+                })?;
+                out.push_str(&s);
+            }
+            // 수식 스크립트는 `x &lt; y`처럼 XML 특수문자를 담는다 — 참조를 풀지 않으면
+            // 그 글자가 통째로 사라진다(writer의 esc()와 짝을 이루는 역변환).
+            Event::GeneralRef(r) => {
+                if let Some(c) = resolve_entity(&r) {
+                    out.push(c);
+                }
+            }
+            // CDATA 구획(`<![CDATA[a<b]]>`)은 Text가 아닌 별도 이벤트다. 내용은 이미
+            // 문자 그대로라 참조 해석 없이 붙인다.
+            Event::CData(t) => {
                 let s = t.xml10_content().map_err(|e| HwpxError::Xml {
                     entry: "section".to_string(),
                     message: e.to_string(),
