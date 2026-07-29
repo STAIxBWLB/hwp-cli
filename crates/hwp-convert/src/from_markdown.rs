@@ -450,11 +450,13 @@ struct Builder {
     in_blockquote: u32,        // 인용문 중첩 깊이(>0이면 인용 문단)
     in_codeblock: bool,        // 코드블록 구간(회색 배경 문단)
     heading: Option<u16>,      // 1..=6
-    // H1~H3 절 번호 사다리(1. / 1-1. / 1-1-1.) — 보고서 표준. 제목이 숫자로
-    // 시작하면 접두를 생략한다(이중 번호 방지).
+    // H1~H3 절 번호 사다리(1. / 1-1. / 1-1-1.) — 보고서 표준. 제목이 이미 번호로
+    // 시작하면(1. / Ⅰ. / 가.) 접두를 생략한다(이중 번호 방지).
     h_counters: [u32; 3],
     pending_heading_num: Option<String>,
     section_para_shape: Option<u16>, // H2/H3 들여쓰기(left 2000) 문단모양 인덱스
+    // 개조식 기호(□·○)로 시작하는 본문 문단의 내어쓰기 문단모양(기호별 1회 할당).
+    symbol_para_shapes: HashMap<char, u16>,
     // 표 수집 상태
     table: Option<TableBuilder>,
     // 목록 상태 — 수준별 프레임 스택(중첩), 항목 문단에 머리 문단모양을 부여.
@@ -583,7 +585,8 @@ impl Builder {
         }
         // 목록 항목이 열려 있으면 머리(NUMBER/BULLET) 문단모양을 우선한다.
         // 그 외: 코드블록→4(회색 배경), 인용→3(들여쓰기+막대), 제목→1,
-        // 표 셀→0(간격 없음), 본문→2.
+        // 표 셀→0(간격 없음), 개조식 기호 본문(□·○)→내어쓰기 모양, 본문→2.
+        let symbol = leading_symbol(&self.chars);
         let para_shape = if let Some(id) = self.active_list_para_shape() {
             id
         } else if self.in_codeblock {
@@ -599,6 +602,8 @@ impl Builder {
             }
         } else if self.table.is_some() {
             0
+        } else if let Some(sym) = symbol {
+            self.symbol_para_shape(sym)
         } else {
             2
         };
@@ -642,10 +647,12 @@ impl Builder {
                 self.numbering_levels.push(levels);
                 self.push_list_para_shape(2, level, def_id)
             }
-            // 글머리표 목록: 불릿 문자 + BULLET 머리.
+            // 글머리표 목록: 불릿 문자 + BULLET 머리. 글머리 문자는 개조식 사다리
+            // (□ → ○ → - → ·)의 아래 두 칸을 쓴다 — 이 도구의 대상이 한국 공문서라
+            // 1수준 `-`, 2수준 이하 `·`가 기본이다(`•`는 더 쓰지 않는다).
             None => {
                 let def_id = self.bullet_chars.len() as u16;
-                self.bullet_chars.push('•');
+                self.bullet_chars.push(if level >= 2 { '·' } else { '-' });
                 self.push_list_para_shape(3, level, def_id)
             }
         };
@@ -678,6 +685,30 @@ impl Builder {
             numbering_id: def_id,
             ..ParaShape::default()
         });
+        idx
+    }
+
+    /// 개조식 기호 문단(`□ `·`○ `)용 내어쓰기 문단모양을 만들어(기호별 1회) 인덱스를 준다.
+    /// push_list_para_shape와 같은 여백 사다리를 쓰되 머리(BULLET) 비트는 세우지 않는다 —
+    /// 기호가 이미 본문 텍스트에 있으므로 한글이 마커를 겹쳐 그리면 안 된다.
+    fn symbol_para_shape(&mut self, sym: char) -> u16 {
+        if let Some(&id) = self.symbol_para_shapes.get(&sym) {
+            return id;
+        }
+        let step = 2000i32;
+        // □=1단, ○=2단. 내어쓰기(-step)로 접힌 줄이 기호 뒤 본문에 맞춰 정렬된다.
+        let depth = if sym == '□' { 1 } else { 2 };
+        let idx = BASE_PARA_SHAPES + self.extra_para_shapes.len() as u16;
+        self.extra_para_shapes.push(ParaShape {
+            attr1: 0x180 | (1 << 2), // 정상 본문 + 왼쪽 정렬(머리 종류/수준 없음)
+            margin_left: depth * step,
+            indent: -step,
+            line_spacing_old: 160,
+            line_spacing: 160,
+            border_fill_id: 2,
+            ..ParaShape::default()
+        });
+        self.symbol_para_shapes.insert(sym, idx);
         idx
     }
 
@@ -867,10 +898,10 @@ impl Builder {
             Event::Start(Tag::Strikethrough) => self.strike = true,
             Event::End(TagEnd::Strikethrough) => self.strike = false,
             Event::Text(t) => {
-                // 절 번호 접두: 제목 첫 텍스트 앞에 삽입(숫자 시작 제목은 생략).
+                // 절 번호 접두: 제목 첫 텍스트 앞에 삽입(이미 번호가 있는 제목은 생략).
                 if self.heading.is_some()
                     && let Some(num) = self.pending_heading_num.take()
-                    && !t.starts_with(|c: char| c.is_ascii_digit())
+                    && !starts_with_literal_number(&t)
                 {
                     self.push_text(&num);
                 }
@@ -987,6 +1018,28 @@ impl Builder {
             _ => {}
         }
     }
+}
+
+/// 문단이 개조식 기호 `□ `/`○ `로 시작하면 그 기호를 준다. markdown은 줄 앞 공백을
+/// 지워 사다리가 평평해지므로, 이 문단만 여백으로 단을 복원한다(정확히 이 두 접두만).
+fn leading_symbol(chars: &[HwpChar]) -> Option<char> {
+    match (chars.first(), chars.get(1)) {
+        (Some(HwpChar::Text(sym @ ('□' | '○'))), Some(HwpChar::Text(' '))) => Some(*sym),
+        _ => None,
+    }
+}
+
+/// 제목이 이미 번호를 달고 있는지 — 자동 절번호 접두를 생략할 조건(이중 번호 방지).
+/// 아라비아 숫자(`1.`), 전각 로마 숫자(`Ⅰ.`·`ⅰ.`), 한글 항목 기호(`가.`·`나)`).
+/// 번호 없는 낱말 제목(`사업 개요`)은 걸리지 않아 자동 번호를 그대로 받는다.
+fn starts_with_literal_number(t: &str) -> bool {
+    let mut chars = t.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_digit()
+        || ('\u{2160}'..='\u{217F}').contains(&first)
+        || (('\u{AC00}'..='\u{D7A3}').contains(&first) && matches!(chars.next(), Some('.' | ')')))
 }
 
 fn heading_level(level: HeadingLevel) -> u16 {
@@ -1455,5 +1508,102 @@ mod tests {
         let text = doc.plain_text();
         assert!(text.contains("1. 서론"), "{text}");
         assert!(!text.contains("1. 1. 서론"), "이중 번호 금지: {text}");
+    }
+
+    /// 개조식 리터럴 번호(전각 로마 숫자·한글 항목 기호)도 자동 절번호를 막는다.
+    /// 단 번호 없는 낱말 제목은 그대로 자동 번호를 받는다(가드 과확장 방지).
+    #[test]
+    fn 헤딩_리터럴_번호_이중번호_방지() {
+        let doc = from_markdown("# Ⅰ. 사업 개요\n## 가. 배경\n## 나) 세부\n");
+        let text = doc.plain_text();
+        assert!(text.contains("Ⅰ. 사업 개요"), "{text}");
+        assert!(!text.contains("1. Ⅰ."), "전각 로마 숫자 이중 번호: {text}");
+        assert!(!text.contains("1-1. 가."), "한글 `가.` 이중 번호: {text}");
+        assert!(!text.contains("1-2. 나)"), "한글 `나)` 이중 번호: {text}");
+
+        let plain = from_markdown("## 사업 개요\n").plain_text();
+        assert!(
+            plain.contains("1-1. 사업 개요"),
+            "낱말 제목은 자동 번호: {plain}"
+        );
+    }
+
+    /// 글머리 문자 사다리: 1수준 `-`, 2수준 이하 `·`(개조식 표준, `•` 폐기).
+    #[test]
+    fn 글머리_사다리_수준별_문자() {
+        let doc = from_markdown("- 상위\n  - 하위\n");
+        assert_eq!(doc.header.bullet_chars, vec!['-', '·']);
+    }
+
+    /// `□ `/`○ ` 본문 문단은 내어쓰기 문단모양(여백 사다리)을 받고, 머리(BULLET)
+    /// 비트는 세우지 않는다(기호가 이미 텍스트에 있음). 그 외 문단은 그대로 본문(2).
+    #[test]
+    fn 개조식_기호_문단_내어쓰기() {
+        let doc = from_markdown("□ 현황\n\n○ 세부\n\n□ 계획\n\n일반 문단\n");
+        let ps_of = |needle: &str| {
+            doc.sections[0]
+                .paragraphs
+                .iter()
+                .find(|p| {
+                    p.chars
+                        .iter()
+                        .filter_map(|c| match c {
+                            HwpChar::Text(ch) => Some(*ch),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                        .contains(needle)
+                })
+                .unwrap_or_else(|| panic!("{needle} 문단 없음"))
+                .para_shape
+                .0
+        };
+        let square = ps_of("□ 현황");
+        let circle = ps_of("○ 세부");
+        assert_eq!(ps_of("□ 계획"), square, "같은 기호는 문단모양 재사용");
+        assert_eq!(ps_of("일반 문단"), 2, "기호 없는 본문은 기본 본문 모양");
+
+        let shape = |id: u16| &doc.header.para_shapes[id as usize];
+        assert_eq!(
+            (shape(square).margin_left, shape(square).indent),
+            (2000, -2000)
+        );
+        assert_eq!(
+            (shape(circle).margin_left, shape(circle).indent),
+            (4000, -2000)
+        );
+        assert_eq!(shape(square).head_type(), 0, "머리(BULLET) 비트 없음");
+        assert_eq!(shape(circle).head_type(), 0, "머리(BULLET) 비트 없음");
+    }
+
+    /// 표 셀·제목·목록 항목은 기호 문단모양의 영향을 받지 않는다.
+    #[test]
+    fn 개조식_기호_예외_경로() {
+        use hwp_model::Control;
+        let doc = from_markdown("# □ 제목\n\n- □ 항목\n\n| □ 머리 |\n|----|\n| □ 셀 |\n");
+        let heading = &doc.sections[0].paragraphs[0];
+        assert_eq!(heading.para_shape.0, 1, "제목은 제목 문단모양");
+        let table = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음");
+        for cell in &table.cells {
+            assert_eq!(cell.paragraphs[0].para_shape.0, 0, "표 셀은 셀 문단모양");
+        }
+        let item = doc.sections[0]
+            .paragraphs
+            .iter()
+            .find(|p| p.para_shape.0 >= BASE_PARA_SHAPES)
+            .expect("목록 항목 없음");
+        assert_eq!(
+            doc.header.para_shapes[item.para_shape.0 as usize].head_type(),
+            3,
+            "목록 항목은 BULLET 머리 유지"
+        );
     }
 }
