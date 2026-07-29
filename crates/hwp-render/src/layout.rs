@@ -462,6 +462,10 @@ pub fn layout_document(
                             left + (avail - natural) * if align == 3 { 0.5 } else { 1.0 },
                             0.0,
                         )
+                    } else if marker.is_some() && geom.first_indent < 0.0 {
+                        // 목록 문단의 내어쓰기 구간은 마커 자리다(한글 실기와 동일).
+                        // 첫 줄 텍스트를 left로 되돌리지 않으면 마커가 글자 밑에 깔린다.
+                        (left, 0.0)
                     } else {
                         (left, first_x - left)
                     };
@@ -1418,6 +1422,9 @@ fn layout_box_para_iter<'a>(
                         left + (avail - natural) * if align == 3 { 0.5 } else { 1.0 },
                         0.0,
                     )
+                } else if marker.is_some() && geom.first_indent < 0.0 {
+                    // 내어쓰기 구간은 마커 자리 — 본문 폴백 경로와 같은 규칙.
+                    (left, 0.0)
                 } else {
                     (left, first_x - left)
                 };
