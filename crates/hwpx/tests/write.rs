@@ -143,6 +143,7 @@ fn md_이미지_코드_hwpx_왕복() {
         "본문 `let x = 1;` 코드와 이미지.\n\n![alt](f.png)\n",
         &hwp_convert::MarkdownImportOptions {
             base_dir: Some(&dir),
+            preset: None,
         },
     );
     let out = tmp("md_imgcode.hwpx");
@@ -199,6 +200,7 @@ fn 부유_그림_배치_hwpx_방출() {
         "이미지.\n\n![alt](g.png)\n",
         &hwp_convert::MarkdownImportOptions {
             base_dir: Some(&dir),
+            preset: None,
         },
     );
     // 그림을 부유(글 앞) + 오프셋·z-order로 바꾼다(hwp5 read가 승계했을 값을 모사).

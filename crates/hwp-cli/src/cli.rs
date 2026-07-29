@@ -109,6 +109,10 @@ pub enum Cmd {
         /// 메타데이터 설정 "키=값" (키: title|author|subject|keywords, 반복 가능)
         #[arg(long = "set-meta")]
         set_meta: Vec<String>,
+        /// 공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt),
+        /// report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함
+        #[arg(long, value_enum)]
+        preset: Option<PresetArg>,
     },
 
     /// 렌더 결과를 한글 기준 PNG와 비교해 오차 측정 (위치 오프셋·픽셀 차이율)
@@ -306,6 +310,15 @@ pub enum ConvertFormat {
     Html,
     Pdf,
     Odt,
+}
+
+/// 공문서 프리셋 (`hwp new --preset`).
+#[derive(Clone, Copy, ValueEnum)]
+pub enum PresetArg {
+    /// 기안문·공문: 맑은 고딕 11.5pt
+    Gian,
+    /// 보고서·사업계획서: 함초롬바탕 15pt
+    Report,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]

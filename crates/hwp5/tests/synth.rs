@@ -253,6 +253,7 @@ fn md_이미지_코드_hwp5_왕복() {
         "본문 `let x = 1;` 코드와 이미지.\n\n![alt](f.png)\n",
         &hwp_convert::MarkdownImportOptions {
             base_dir: Some(&dir),
+            preset: None,
         },
     );
     let out = tmp("md_imgcode.hwp");
