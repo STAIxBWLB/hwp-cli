@@ -137,6 +137,35 @@ pub fn shape_range_notes(
     marks: &HashMap<u32, u32>,
     warnings: &mut Vec<String>,
 ) -> Vec<InlineItem> {
+    shape_range_dynamic(store, doc, para, range, marks, None, warnings)
+}
+
+/// `shape_range_notes` with page-aware automatic-number substitution.
+///
+/// Page-kind `atno` controls are resolved at layout time because the same
+/// header/footer paragraph is reused on every page. Other automatic-number
+/// kinds remain untouched for their dedicated renderers.
+pub(crate) fn shape_range_page(
+    store: &mut FontStore,
+    doc: &Document,
+    para: &Paragraph,
+    range: (u32, u32),
+    marks: &HashMap<u32, u32>,
+    page_number: Option<u32>,
+    warnings: &mut Vec<String>,
+) -> Vec<InlineItem> {
+    shape_range_dynamic(store, doc, para, range, marks, page_number, warnings)
+}
+
+fn shape_range_dynamic(
+    store: &mut FontStore,
+    doc: &Document,
+    para: &Paragraph,
+    range: (u32, u32),
+    marks: &HashMap<u32, u32>,
+    page_number: Option<u32>,
+    warnings: &mut Vec<String>,
+) -> Vec<InlineItem> {
     // 1. (문자모양, 언어) 경계로 텍스트 조각 수집
     struct Piece {
         shape_id: u16,
@@ -187,6 +216,37 @@ pub fn shape_range_notes(
                         items.push((pieces.len(), InlineItem::Run(run)));
                     }
                 }
+                // 쪽 자동번호(atno): 같은 머리말/꼬리말 문단도 페이지마다 현재 번호로
+                // 다시 셰이핑한다. 앞뒤 본문 조각이 합쳐져 순서가 뒤바뀌지 않도록
+                // 합성 런 뒤에 빈 조각 경계를 둔다.
+                HwpChar::ExtCtrl {
+                    ctrl_id,
+                    ctrl_index: Some(ci),
+                    ..
+                } if ctrl_id == b"atno" && page_number.is_some() => {
+                    let number = page_number.expect("is_some");
+                    if let Some(auto) = page_auto_control(para, *ci as usize) {
+                        let text = crate::page_number::format_page_number(
+                            number,
+                            auto.format,
+                            auto.user_char,
+                            auto.prefix_char,
+                            auto.suffix_char,
+                            warnings,
+                        );
+                        if let Some(run) =
+                            auto_number_run(store, doc, para, pos, &text, auto.superscript)
+                        {
+                            items.push((pieces.len(), InlineItem::Run(run)));
+                            pieces.push(Piece {
+                                shape_id: shape_id_at(para, pos + 8),
+                                lang: 0,
+                                text: String::new(),
+                                start: pos + 8,
+                            });
+                        }
+                    }
+                }
                 // 강제 줄바꿈: 같은 문단 안에서 줄을 나눈다(코드블록·shift+enter).
                 HwpChar::CharCtrl(code) if *code == ctrl_char::LINE_BREAK => {
                     items.push((pieces.len(), InlineItem::LineBreak(pos + 1)));
@@ -232,6 +292,56 @@ pub fn shape_range_notes(
         out.push(item);
     }
     out
+}
+
+fn page_auto_control(
+    para: &Paragraph,
+    control_index: usize,
+) -> Option<crate::page_number::AutoNumber> {
+    let hwp_model::Control::Generic(control) = para.controls.get(control_index)? else {
+        return None;
+    };
+    if control.ctrl_id != *b"atno" {
+        return None;
+    }
+    let auto = crate::page_number::parse_atno(&control.data)?;
+    (auto.kind == 0).then_some(auto)
+}
+
+fn auto_number_run(
+    store: &mut FontStore,
+    doc: &Document,
+    para: &Paragraph,
+    pos: u32,
+    text: &str,
+    superscript: bool,
+) -> Option<ShapedRun> {
+    let base_id = shape_id_at(para, pos);
+    let mut shape = doc
+        .header
+        .char_shapes
+        .get(base_id as usize)
+        .cloned()
+        .unwrap_or_else(|| CharShape {
+            ratios: [100; LANG_COUNT],
+            rel_sizes: [100; LANG_COUNT],
+            base_size: 1000,
+            shade_color: 0xFFFF_FFFF,
+            ..CharShape::default()
+        });
+    if superscript {
+        shape.attr |= 1 << 15;
+    }
+    let lang = if text.chars().any(|c| ('가'..='힣').contains(&c)) {
+        0
+    } else {
+        1
+    };
+    // Keep the whole decorated value in one run. Missing decoration glyphs
+    // become tofu rather than making later characters disappear.
+    let face_id = shape.face_ids.get(lang).copied().unwrap_or(0);
+    let font = store.resolve(doc, lang, face_id)?;
+    shape_with_font(&font, &shape, lang, text, pos, shape.is_bold())
 }
 
 /// 한 조각을 셰이핑한다. 해석된 주 글꼴이 일부 글자를 갖지 않으면(.notdef) 그

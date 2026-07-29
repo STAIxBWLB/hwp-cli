@@ -40,7 +40,7 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 
 ### 1.2 페이지 나누기 규칙 (세 가지 트리거)
 
-1. **본문 넘침**: `content_bottom > body_bottom && paras_on_page>0` → 각주 렌더 + 머리/꼬리말(`Furniture::render`) + 페이지 push, 상태 리셋.
+1. **본문 넘침**: `content_bottom > body_bottom && paras_on_page>0` → 각주 렌더 + 페이지 가구(`PageNumberState::finish`: 머리/꼬리말·쪽번호) + 페이지 push, 상태 리셋.
 2. **명시 쪽 나누기**: `para.header.break_type & 0x04 != 0 && paras_on_page>0`.
 3. **캐시 v_pos 리셋**: 저장된 lineseg를 그릴 때 `seg.v_pos < prev_v_pos && !page.items.is_empty()` → 정품 멀티페이지는 페이지마다 v_pos가 0으로 리셋되므로 감소를 페이지 경계로 본다.
 
@@ -103,6 +103,17 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 한글 수식은 글립이 아니라 **텍스트 스크립트**(EQN 호환)를 저장한다(hwp5 EQEDIT 레코드 0x58: attr(4)+len(2)+WCHAR[len]; hwpx `<hp:equation>`의 script). `equation.rs`가 스크립트를 토크나이즈→math 트리→box model로 조판해 글리프 런 + 분수선·근호선(`Item::Line`)을 **baseline 상대 좌표**로 방출한다.
 
 **문법(한컴 수식 spec rev1.2):** `over`/`atop`(분수), `sqrt`(근호), `^`/`_`(첨자), `{ }`(그룹), `#`(줄바꿈=행 세로 스택), `&`(열정렬 v1=공백), `~`·`` ` ``(공백), 그리스·연산자·함수어 매핑. AST = `Row/Stack/Sym/Frac/Script/Sqrt/Space`. **스택(다행)**은 각 행의 실제 높이(분수 행은 더 큼)로 세로 배치. **크기 2-pass:** 기준 12pt로 시험 조판→실제 높이를 재 `eq.height`에 맞춰 스케일(다행 수식 과대 방지)→상단 정렬. 검증: 정답지 `equation.hwp/.hwpx`(다행 ΑΒΓ·∑·분수·근호·첨자) → 한글과 구조 일치(테스트 `수식_정답지_렌더`). 후속: 변수 이탤릭/함수 로만 분화, 행렬, 큰연산자 극한.
+
+### 1.10 쪽번호 (`PageNumberState`, `page_number.rs`)
+
+문서 쪽번호는 `DocHeader.properties.start_numbers[0]`(0이면 1)에서 시작하며, 모든 페이지 마감 경로가 `PageNumberState::finish`를 거친 뒤 1씩 증가한다. 문단의 쪽번호 제어는 쪽 나누기 판정 후 적용하므로 새 쪽 첫 문단의 제어가 이전 쪽을 오염시키지 않는다.
+
+- `pgnp`: `props` 하위 8비트 번호 서식, bit8~11 위치를 해석한다. 위치 1~6은 위/아래의 왼쪽·가운데·오른쪽, 7~10은 홀짝 쪽에 따라 바뀌는 바깥쪽/안쪽이다. 위치 0은 표시 없음. 사용자·접두·접미·양옆 문자를 보존해 `sideChar='-'`는 `- 1 -`로 그린다.
+- `atno`: 종류가 PAGE(0)인 컨트롤만 `shape_range_page`가 현재 논리 쪽번호로 치환한다. 같은 머리말/꼬리말 문단을 페이지마다 다시 셰이핑하므로 저장된 `number` 값이 아니라 각 쪽의 실제 번호가 표시된다. PAGE 외 자동번호는 다른 번호 렌더러의 책임으로 남긴다.
+- `nwno`: PAGE 종류이면 해당 문단이 속한 쪽의 논리 번호를 즉시 재시작한다.
+- `pghd`: bit5가 설정된 쪽에서 위치형 쪽번호와 PAGE `atno`를 모두 숨긴다. 다음 쪽 마감 뒤 숨김 상태는 리셋한다.
+
+번호 서식은 IR이 표현하는 DIGIT·CIRCLED_DIGIT·ROMAN 대/소문자·LATIN 대/소문자·HANGUL_SYLLABLE·HANGUL_JAMO를 렌더한다. 그 밖의 형식은 번호 자체가 사라지지 않도록 십진수로 대체하고 한 번만 경고한다. 이는 렌더 동작이며, HWPX 변환에서 `pgnp formatType`을 DIGIT로 고정하는 GE-4는 별도 갭으로 유지한다.
 
 ---
 
@@ -168,7 +179,7 @@ rowH        = margins[2](상) + Σ문단 줄블록 + margins[3](하)
 
 ### 3.1 조각 분할 → 셰이핑 (`shape_range_notes`)
 
-1. **조각 수집**: `para.chars`를 순회하며 (문자모양 ID, 언어 슬롯) 경계로 텍스트를 `Piece`로 모은다. `shape_id_at(para,pos)`는 `char_shape_runs`를 역순 탐색해 `start<=pos`인 마지막 ID. `lang_slot_of(c)`: 한글 0, 라틴 0x0000–0x024F 1, CJK한자 2, 가나 3, 그 외 5. 탭(`ctrl_char::TAB`)은 `InlineItem::Tab`, 각주 앵커는 `note_mark_run`(윗첨자 번호).
+1. **조각 수집**: `para.chars`를 순회하며 (문자모양 ID, 언어 슬롯) 경계로 텍스트를 `Piece`로 모은다. `shape_id_at(para,pos)`는 `char_shape_runs`를 역순 탐색해 `start<=pos`인 마지막 ID. `lang_slot_of(c)`: 한글 0, 라틴 0x0000–0x024F 1, CJK한자 2, 가나 3, 그 외 5. 탭(`ctrl_char::TAB`)은 `InlineItem::Tab`, 각주 앵커는 `note_mark_run`(윗첨자 번호), PAGE `atno`는 `shape_range_page`가 현재 논리 쪽번호 런으로 치환한다.
 2. **조각별 셰이핑**(`shape_piece`): `face_id = cs.face_ids[lang]`, `store.resolve(doc,lang,face_id)`로 주 글꼴. 요청 글꼴이 heavy 계열(`is_heavy_name`: 견고딕/헤드라인/Bold 등)이면 `bold` 강제(faux-bold). **글자별 커버리지 폴백**: 주 글꼴이 글리프(.notdef 아님)를 가지면 primary, 아니면 `store.font_covering(c)`. 글꼴 경계마다 별도 `ShapedRun`으로 분할하며 `start_wchar`는 `len_utf16()`(BMP 1, 그 외 2)로 진행.
 
 ### 3.2 글꼴 하나로 셰이핑 (`shape_with_font`)

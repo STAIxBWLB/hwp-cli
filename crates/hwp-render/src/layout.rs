@@ -20,7 +20,7 @@ use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Sect
 use crate::display::{DisplayList, Item, PageList, PathCmd};
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
-use crate::shape::{InlineItem, shape_range, shape_range_notes};
+use crate::shape::{InlineItem, shape_range_page};
 
 /// 기본 탭 간격 (40pt = 4000 HWPUNIT).
 const TAB_INTERVAL_PT: f32 = 40.0;
@@ -217,12 +217,171 @@ fn prepend_page_borders(page: &mut PageList, edges: &[PageBorderEdge]) {
     page.items = items;
 }
 
+struct PageNumberState {
+    logical: u32,
+    placement: Option<crate::page_number::PageNumberPlacement>,
+    hidden: bool,
+}
+
+impl PageNumberState {
+    fn new(start: u16) -> Self {
+        Self {
+            logical: u32::from(start.max(1)),
+            placement: None,
+            hidden: false,
+        }
+    }
+
+    /// Page-level controls in a paragraph apply to the page containing that
+    /// paragraph. `pgnp` remains active until another placement replaces it;
+    /// `pghd` is reset after the current page is finalized.
+    fn apply_controls(&mut self, para: &Paragraph, warnings: &mut Vec<String>) {
+        for control in &para.controls {
+            let Control::Generic(control) = control else {
+                continue;
+            };
+            match &control.ctrl_id {
+                b"pgnp" => match crate::page_number::parse_pgnp(&control.data) {
+                    Some(placement) => self.placement = Some(placement),
+                    None => warn_once(warnings, "pgnp 페이로드가 12바이트 미만 - 생략"),
+                },
+                b"pghd" => {
+                    if control.data.len() < 4 {
+                        warn_once(warnings, "pghd 페이로드가 4바이트 미만 - 생략");
+                    } else {
+                        self.hidden |= crate::page_number::pghd_hides_page_number(&control.data);
+                    }
+                }
+                b"nwno" => match crate::page_number::parse_nwno_page(&control.data) {
+                    Some(number) => self.logical = number,
+                    None if control.data.len() < 6 => {
+                        warn_once(warnings, "nwno 페이로드가 6바이트 미만 - 생략");
+                    }
+                    None => {} // PAGE 외 자동번호 재시작은 해당 번호 렌더러가 담당.
+                },
+                _ => {}
+            }
+        }
+    }
+
+    fn visible_number(&self) -> Option<u32> {
+        (!self.hidden).then_some(self.logical)
+    }
+
+    fn finish(
+        &mut self,
+        doc: &Document,
+        store: &mut FontStore,
+        page: &mut PageList,
+        furniture: &Furniture<'_>,
+        warnings: &mut Vec<String>,
+    ) {
+        furniture.render(doc, store, page, self.visible_number(), warnings);
+        if self.visible_number().is_some()
+            && let Some(placement) = self.placement
+        {
+            render_positioned_page_number(
+                doc,
+                store,
+                page,
+                furniture,
+                self.logical,
+                placement,
+                warnings,
+            );
+        }
+        self.logical = self.logical.saturating_add(1);
+        self.hidden = false;
+    }
+}
+
+fn warn_once(warnings: &mut Vec<String>, message: &str) {
+    if !warnings.iter().any(|w| w == message) {
+        warnings.push(message.to_string());
+    }
+}
+
+fn page_control_is_rendered(control: &Control) -> bool {
+    let Control::Generic(control) = control else {
+        return false;
+    };
+    match &control.ctrl_id {
+        b"pgnp" => crate::page_number::parse_pgnp(&control.data).is_some(),
+        b"pghd" => control.data.len() >= 4,
+        b"nwno" => crate::page_number::parse_nwno_page(&control.data).is_some(),
+        b"atno" => crate::page_number::is_page_atno(&control.data),
+        _ => false,
+    }
+}
+
+fn page_number_alignment(position: u8, logical: u32) -> i8 {
+    let outside = matches!(position, 7 | 8);
+    let inside = matches!(position, 9 | 10);
+    if matches!(position, 1 | 4)
+        || outside && logical.is_multiple_of(2)
+        || inside && !logical.is_multiple_of(2)
+    {
+        -1
+    } else if matches!(position, 3 | 6)
+        || outside && !logical.is_multiple_of(2)
+        || inside && logical.is_multiple_of(2)
+    {
+        1
+    } else {
+        0
+    }
+}
+
+fn render_positioned_page_number(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &mut PageList,
+    furniture: &Furniture<'_>,
+    logical: u32,
+    placement: crate::page_number::PageNumberPlacement,
+    warnings: &mut Vec<String>,
+) {
+    if placement.position == 0 {
+        return;
+    }
+    if placement.position > 10 {
+        warn_once(
+            warnings,
+            &format!("쪽번호 위치 코드 {} 미지원 - 생략", placement.position),
+        );
+        return;
+    }
+    let text = crate::page_number::format_placement(logical, placement, warnings);
+    let Some(run) = crate::shape::shape_plain(store, doc, &text, 10.0, 0, false) else {
+        warn_once(warnings, "쪽번호 셰이핑 실패 - 표시 생략");
+        return;
+    };
+    let top = matches!(placement.position, 1..=3 | 7 | 9);
+    let x = if page_number_alignment(placement.position, logical) < 0 {
+        furniture.body_left
+    } else if page_number_alignment(placement.position, logical) > 0 {
+        furniture.body_left + furniture.body_width - run.width_pt
+    } else {
+        furniture.body_left + (furniture.body_width - run.width_pt) * 0.5
+    }
+    .clamp(0.0, (page.width_pt - run.width_pt).max(0.0));
+    let y = if top {
+        let margin = furniture.page_def.margin_top.to_pt() as f32;
+        (margin * 0.5 + run.size_pt * 0.35).clamp(run.size_pt, margin.max(run.size_pt))
+    } else {
+        let margin = furniture.page_def.margin_bottom.to_pt() as f32;
+        page.height_pt - (margin * 0.5 - run.size_pt * 0.35).max(run.size_pt * 0.2)
+    };
+    push_run(page, x, y, run);
+}
+
 pub fn layout_document(
     doc: &Document,
     store: &mut FontStore,
     warnings: &mut Vec<String>,
 ) -> DisplayList {
     let mut pages = Vec::new();
+    let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
 
     for section in &doc.sections {
         // 이 구역의 첫 페이지 인덱스 — 구역 끝에서 쪽 테두리를 전 페이지에 소급 삽입한다.
@@ -335,7 +494,8 @@ pub fn layout_document(
                     let rendered = matches!(
                         c,
                         Control::SectionDef(_) | Control::Table(_) | Control::Picture(_)
-                    ) || [*b"cold", *b"head", *b"foot", *b"fn  ", *b"en  "]
+                    ) || page_control_is_rendered(c)
+                        || [*b"cold", *b"head", *b"foot", *b"fn  ", *b"en  "]
                         .contains(&c.ctrl_id())
                         // 글상자(텍스트) + 도형(선/사각형/타원/호/다각형)은 렌더한다.
                         || matches!(c, Control::Generic(g)
@@ -364,7 +524,7 @@ pub fn layout_document(
                     warnings,
                 );
                 page_notes.clear();
-                furniture.render(doc, store, &mut page, warnings);
+                page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                 pages.push(std::mem::replace(
                     &mut page,
                     PageList {
@@ -392,7 +552,7 @@ pub fn layout_document(
                     warnings,
                 );
                 page_notes.clear();
-                furniture.render(doc, store, &mut page, warnings);
+                page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                 pages.push(std::mem::replace(
                     &mut page,
                     PageList {
@@ -405,6 +565,7 @@ pub fn layout_document(
                 prev_v_pos = -1;
                 paras_on_page = 0;
             }
+            page_numbers.apply_controls(para, warnings);
             paras_on_page += 1;
 
             // 본문 각주/미주 마커(윗첨자 번호)와 이 페이지에 속할 노트 수집.
@@ -436,7 +597,15 @@ pub fn layout_document(
                     content_bottom += 16.0; // 빈 문단 높이 근사
                 } else {
                     let end = para.wchar_len();
-                    let mut items = shape_range_notes(store, doc, para, (0, end), &marks, warnings);
+                    let mut items = shape_range_page(
+                        store,
+                        doc,
+                        para,
+                        (0, end),
+                        &marks,
+                        page_numbers.visible_number(),
+                        warnings,
+                    );
                     crate::shape::apply_link_style(&mut items, &links);
                     let max_size = items_max_size(&items).unwrap_or(10.0);
                     // 문단 들여쓰기/여백/위 간격(폴백 전용 — 캐시는 col_start에 반영됨).
@@ -540,7 +709,18 @@ pub fn layout_document(
                         content_bottom = body_top;
                     } else {
                         // 페이지 넘김(마지막 단 소진 또는 단일 단).
-                        furniture.render(doc, store, &mut page, warnings);
+                        render_page_notes(
+                            doc,
+                            store,
+                            &mut page,
+                            &page_notes,
+                            body_left,
+                            body_width,
+                            body_bottom,
+                            warnings,
+                        );
+                        page_notes.clear();
+                        page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                         pages.push(std::mem::replace(
                             &mut page,
                             PageList {
@@ -567,8 +747,15 @@ pub fn layout_document(
                     continue;
                 }
 
-                let mut items =
-                    shape_range_notes(store, doc, para, (line_start, line_end), &marks, warnings);
+                let mut items = shape_range_page(
+                    store,
+                    doc,
+                    para,
+                    (line_start, line_end),
+                    &marks,
+                    page_numbers.visible_number(),
+                    warnings,
+                );
                 crate::shape::apply_link_style(&mut items, &links);
                 let natural_width: f32 = items_width(&items);
 
@@ -675,7 +862,7 @@ pub fn layout_document(
             warnings,
         );
         page_notes.clear();
-        furniture.render(doc, store, &mut page, warnings);
+        page_numbers.finish(doc, store, &mut page, &furniture, warnings);
         pages.push(page);
 
         // 쪽 테두리를 이 구역의 모든 페이지 맨 앞(뒤에 그림)에 소급 삽입한다.
@@ -707,6 +894,7 @@ impl Furniture<'_> {
         doc: &Document,
         store: &mut FontStore,
         page: &mut PageList,
+        page_number: Option<u32>,
         warnings: &mut Vec<String>,
     ) {
         if let Some(h) = self.header {
@@ -722,6 +910,7 @@ impl Furniture<'_> {
                     self.body_width,
                     warnings,
                     None,
+                    page_number,
                 );
             }
         }
@@ -740,6 +929,7 @@ impl Furniture<'_> {
                     self.body_width,
                     warnings,
                     None,
+                    page_number,
                 );
             }
         }
@@ -834,6 +1024,7 @@ fn render_one_note(
             bottom,
             width - indent,
             warnings,
+            None,
             None,
         );
     }
@@ -1025,6 +1216,7 @@ fn layout_para_objects(
                         bw,
                         warnings,
                         None,
+                        None,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -1074,8 +1266,9 @@ fn layout_para_objects(
                     let bw = (s0.w as f32 / 100.0).max(8.0);
                     let bh = s0.h as f32 / 100.0;
                     let flat = g.paragraph_lists.iter().flat_map(|l| l.paragraphs.iter());
-                    let inner =
-                        layout_box_para_iter(doc, store, page, flat, bx, by, bw, warnings, None);
+                    let inner = layout_box_para_iter(
+                        doc, store, page, flat, bx, by, bw, warnings, None, None,
+                    );
                     if s0.anchored {
                         // 흐름 전진(hwp5 인라인 글상자와 동형).
                         let used = (inner - by).max(bh);
@@ -1196,6 +1389,7 @@ fn layout_table(
                 (cw - ml - mr).max(4.0),
                 &mut scratch_warn,
                 None, // 측정 패스: 마커 미표시(counter 미증가)
+                None,
             )
         };
         content_h_by_cell.push(content_h);
@@ -1273,6 +1467,7 @@ fn layout_table(
             (cw - ml - mr).max(4.0),
             warnings,
             Some(&mut cell_ls), // 렌더 패스: 셀 목록 마커 그림
+            None,
         );
 
         // 3) 테두리 (왼/오른/위/아래)
@@ -1348,6 +1543,7 @@ fn layout_box_paragraphs(
     width: f32,
     warnings: &mut Vec<String>,
     list_state: Option<&mut crate::list::ListState>,
+    page_number: Option<u32>,
 ) -> f32 {
     layout_box_para_iter(
         doc,
@@ -1359,6 +1555,7 @@ fn layout_box_paragraphs(
         width,
         warnings,
         list_state,
+        page_number,
     )
 }
 
@@ -1380,6 +1577,7 @@ fn layout_box_para_iter<'a>(
     width: f32,
     warnings: &mut Vec<String>,
     mut list_state: Option<&mut crate::list::ListState>,
+    page_number: Option<u32>,
 ) -> f32 {
     let mut content_bottom = origin_y;
     // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
@@ -1397,7 +1595,15 @@ fn layout_box_para_iter<'a>(
                 content_bottom += 12.0;
             } else {
                 let end = para.wchar_len();
-                let items = shape_range(store, doc, para, (0, end), warnings);
+                let items = shape_range_page(
+                    store,
+                    doc,
+                    para,
+                    (0, end),
+                    &std::collections::HashMap::new(),
+                    page_number,
+                    warnings,
+                );
                 let max_size = items_max_size(&items).unwrap_or(10.0);
                 let geom = para_geometry(doc, para);
                 let left = origin_x + geom.left;
@@ -1453,7 +1659,15 @@ fn layout_box_para_iter<'a>(
                 if line_end <= line_start {
                     continue;
                 }
-                let mut items = shape_range(store, doc, para, (line_start, line_end), warnings);
+                let mut items = shape_range_page(
+                    store,
+                    doc,
+                    para,
+                    (line_start, line_end),
+                    &std::collections::HashMap::new(),
+                    page_number,
+                    warnings,
+                );
                 let natural_width = items_width(&items);
 
                 let seg_width_pt = (seg.seg_width as f32 / 100.0).min(width);
@@ -1942,6 +2156,33 @@ fn place_wrapped(
         }
     }
     y
+}
+
+#[cfg(test)]
+mod page_number_layout_tests {
+    use super::page_number_alignment;
+
+    #[test]
+    fn 고정_위치_정렬() {
+        assert_eq!(page_number_alignment(1, 1), -1);
+        assert_eq!(page_number_alignment(2, 1), 0);
+        assert_eq!(page_number_alignment(3, 1), 1);
+        assert_eq!(page_number_alignment(4, 2), -1);
+        assert_eq!(page_number_alignment(5, 2), 0);
+        assert_eq!(page_number_alignment(6, 2), 1);
+    }
+
+    #[test]
+    fn 안쪽_바깥쪽은_홀짝에_따라_반전() {
+        for outside in [7, 8] {
+            assert_eq!(page_number_alignment(outside, 1), 1);
+            assert_eq!(page_number_alignment(outside, 2), -1);
+        }
+        for inside in [9, 10] {
+            assert_eq!(page_number_alignment(inside, 1), -1);
+            assert_eq!(page_number_alignment(inside, 2), 1);
+        }
+    }
 }
 
 #[cfg(test)]

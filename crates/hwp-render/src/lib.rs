@@ -17,6 +17,7 @@ pub mod gso;
 pub mod layout;
 pub mod lineseg;
 pub mod list;
+mod page_number;
 pub mod pdf;
 pub mod png;
 pub mod shape;

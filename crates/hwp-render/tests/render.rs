@@ -744,3 +744,127 @@ fn 목록_마커_내어쓰기_배치() {
         "마커는 내어쓰기 구간([{body_left}, {text_x}))에 와야: {marker_x}"
     );
 }
+
+fn generic_control(
+    ctrl_id: [u8; 4],
+    data: Vec<u8>,
+    paragraph_lists: Vec<hwp_model::ParagraphList>,
+) -> hwp_model::Control {
+    hwp_model::Control::Generic(hwp_model::GenericControl {
+        ctrl_id,
+        data,
+        paragraph_lists,
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+    })
+}
+
+fn page_texts(page: &hwp_render::display::PageList) -> Vec<&str> {
+    page.items
+        .iter()
+        .filter_map(|item| match item {
+            hwp_render::display::Item::Glyphs { run, .. } => Some(run.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn 쪽번호_시작_재시작_숨김() {
+    let mut doc = hwp_convert::from_markdown_with(
+        "첫 쪽\n\n둘째 쪽\n\n셋째 쪽\n",
+        &hwp_convert::MarkdownImportOptions {
+            base_dir: None,
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+        },
+    );
+    doc.header.properties.start_numbers[0] = 3;
+    let paras = &mut doc.sections[0].paragraphs;
+    assert!(paras.len() >= 3);
+    paras[1].header.break_type |= 0x04;
+    let mut nwno = vec![0u8; 6];
+    nwno[4..6].copy_from_slice(&10u16.to_le_bytes());
+    paras[1]
+        .controls
+        .push(generic_control(*b"nwno", nwno, Vec::new()));
+    paras[2].header.break_type |= 0x04;
+    paras[2].controls.push(generic_control(
+        *b"pghd",
+        (1u32 << 5).to_le_bytes().to_vec(),
+        Vec::new(),
+    ));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = Vec::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    if warnings.iter().any(|w| w.contains("쪽번호 셰이핑 실패")) {
+        eprintln!("스킵: 사용 가능한 폰트 없음 - 쪽번호 글리프 미생성");
+        return;
+    }
+    assert_eq!(list.pages.len(), 3);
+    assert!(page_texts(&list.pages[0]).contains(&"- 3 -"));
+    assert!(page_texts(&list.pages[1]).contains(&"- 10 -"));
+    assert!(
+        !page_texts(&list.pages[2])
+            .iter()
+            .any(|t| t.starts_with("- "))
+    );
+    assert!(
+        warnings.iter().all(|w| !w.contains("렌더 미지원 컨트롤")),
+        "쪽번호 제어가 미지원으로 집계됨: {warnings:?}"
+    );
+}
+
+#[test]
+fn 머리말_atno는_페이지마다_현재_쪽번호로_치환() {
+    let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n\n셋째 쪽\n");
+    doc.header.properties.start_numbers[0] = 5;
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+    doc.sections[0].paragraphs[1].controls.push(generic_control(
+        *b"pghd",
+        (1u32 << 5).to_le_bytes().to_vec(),
+        Vec::new(),
+    ));
+    doc.sections[0].paragraphs[2].header.break_type |= 0x04;
+
+    let atno = generic_control(*b"atno", vec![0u8; 12], Vec::new());
+    let header_para = hwp_model::Paragraph {
+        chars: vec![hwp_model::HwpChar::ExtCtrl {
+            code: 18,
+            ctrl_id: *b"atno",
+            payload: vec![0u8; 12],
+            ctrl_index: Some(0),
+        }],
+        char_shape_runs: vec![(0, hwp_model::CharShapeId(0))],
+        controls: vec![atno],
+        ..hwp_model::Paragraph::default()
+    };
+    let header = generic_control(
+        *b"head",
+        vec![0u8; 8],
+        vec![hwp_model::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: vec![header_para],
+        }],
+    );
+    doc.sections[0].paragraphs[0].controls.push(header);
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = Vec::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    if warnings.iter().any(|w| w.contains("셰이핑 실패")) {
+        eprintln!("스킵: 사용 가능한 폰트 없음 - atno 글리프 미생성");
+        return;
+    }
+    assert_eq!(list.pages.len(), 3);
+    assert!(page_texts(&list.pages[0]).contains(&"5"));
+    assert!(!page_texts(&list.pages[1]).contains(&"6"));
+    assert!(page_texts(&list.pages[2]).contains(&"7"));
+    assert!(
+        warnings.iter().all(|w| !w.contains("렌더 미지원 컨트롤")),
+        "atno/head가 미지원으로 집계됨: {warnings:?}"
+    );
+}

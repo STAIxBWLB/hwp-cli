@@ -123,6 +123,10 @@
   교차검증). 세트 27/0(J1 — 3층위: validate·승계 XML·렌더 잉크 0.95+). 전체 테스트 305.
   잔여: hwpx read enrich(hwpx 직접 렌더 시 테두리), EVEN/ODD·본문기준(정품 표본 부재).
   **⚠J1 실기 대기**(hwp5 raw→hwpx pageBorderFill 실속성 방출 = 새 방출 형태).
+- **2026-07-30 (GG-13)**: 쪽번호 렌더 해소 — 문서 시작번호·PAGE `nwno` 재시작·`pghd` 숨김,
+  `pgnp` 위치 1~10(안쪽/바깥쪽 홀짝 반전)·장식·지원 번호형식, 본문/머리말/꼬리말 PAGE `atno`
+  동적 치환을 공용 DisplayList 단계에 구현. PNG·SVG·PDF가 같은 결과를 사용하며, GE-4
+  (`pgnp formatType` HWPX 변환 DIGIT 고정)와 GG-16(머리말/꼬리말 종류 선택)은 잔존.
 
 ---
 
@@ -383,7 +387,7 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 | GG-10 | **취소선 모양 무시** — 이중 취소선 등 미반영, 실선 1줄 고정 | `hwp-render/src/shape.rs:34,369`, `layout.rs:1623` | 근사(실선 고정) | S |
 | GG-11 | **글자 그림자 오프셋 무시** — `CharShape.shadow_gap` 미사용, 고정 대각 오프셋(0.05~0.06em) | `hwp-model/src/header.rs:91`(무참조), `png.rs:138`, `pdf.rs:206` | 근사(고정 오프셋) | S |
 | GG-12 | **개요(outline) 번호 미렌더** — head_type 2(번호)·3(불릿)만 마커 생성, 1(개요)은 제외 | `hwp-render/src/list.rs:17-21` | 드롭(번호 없음) | M |
-| GG-13 | **쪽번호 미렌더** — 페이지 카운터 부재, pgnp/atno 컨트롤은 skipped 집계 후 미렌더 | `layout.rs:189`(렌더 대상 목록), pgnp 무참조 | 드롭(미표시) | M |
+| GG-13 | ~~**쪽번호 미렌더** — 페이지 카운터 부재, pgnp/atno 컨트롤은 skipped 집계 후 미렌더~~ | `hwp-render/src/page_number.rs`, `layout.rs`(`PageNumberState`), `shape.rs`(`shape_range_page`) | ✅ **해소(2026-07-30)** — 시작·재시작·숨김, pgnp 위치/장식/지원 서식, PAGE atno 동적 치환. 미지원 서식은 십진 경고 폴백; GE-4·GG-16은 별도 잔존 | M |
 | GG-14 | **미주(endnote) 배치 근사** — 문서/구역 끝이 아니라 **앵커 페이지 하단**에 각주와 동일 렌더(GC-3의 '모양'과 별개인 '위치' 문제) | `hwp-render/src/footnote.rs:35-72`, `layout.rs:263,598`(kind 미구분) | 근사(각주식 배치) | M |
 | GG-15 | **이미지 회전·자르기(imgClip)·반전·밝기/대비·워터마크·그림 효과 미렌더** — `Item::Image`에 변환 필드 없음, `common_data` 내 효과 미해석. 그림 효과(표 108~116: 그림자·네온·부드러운 가장자리·반사·색상 효과·투명도)도 파싱 자체가 없음(2026-07-19 감사 정밀화) | `layout.rs:741-760`, `display.rs:41-47`, `hwp-model/src/control.rs:43` | 근사(원본 배치) | M |
 | GG-16 | **머리말/꼬리말 홀수/짝수/첫쪽 구분 무시** — 최초 head/foot 하나를 모든 페이지에 반복(GC-7 구역 EVEN_ADJUST와 별개) | `layout.rs:152-165` | 근사(단일화) | S |
