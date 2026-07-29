@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 
 use hwp_model::{
     BinRef, BinStream, BorderFill, BorderFillId, BorderLine, Cell, CharShape, CharShapeId, Control,
-    DocMeta, Document, FaceName, GenericControl, HwpChar, HwpUnit, LANG_COUNT, NumLevel, ParaShape,
-    ParaShapeId, Paragraph, ParagraphList, Picture, Section, Style, StyleId, Table, ctrl_char,
+    DocMeta, Document, FaceName, GenericControl, HwpChar, HwpUnit, LANG_COUNT, NumFmt, NumLevel,
+    ParaShape, ParaShapeId, Paragraph, ParagraphList, Picture, Section, Style, StyleId, Table,
+    ctrl_char,
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -31,6 +32,20 @@ pub struct MarkdownImportOptions<'a> {
     /// 상대 경로 이미지(`![](fig.png)`)를 해석할 기준 디렉터리(md 파일의 위치).
     /// `None`이면 상대 경로 이미지는 경고 후 alt 텍스트만 보존한다(절대 경로는 그대로 시도).
     pub base_dir: Option<&'a Path>,
+    /// 공문서 프리셋 — 지정 시 용지 여백·글꼴·번호 체계·쪽번호를 규정에 맞춘다.
+    /// `None`이면 기존 기본값(변경 없음).
+    pub preset: Option<OfficialPreset>,
+}
+
+/// 한국 공문서 작성 규정(「행정 효율과 협업 촉진에 관한 규정」) 프리셋.
+/// 공통: A4 여백 위30/아래15/좌20/우15mm, 줄간격 160%, 순서 목록 4단계 번호
+/// (1. → 가. → 1) → 가)), 쪽번호 하단 중앙(pgnp, 정품 실측 sideChar '-').
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OfficialPreset {
+    /// 기안문·공문: 맑은 고딕 11.5pt (전자결재 시스템 표준).
+    Gian,
+    /// 보고서·사업계획서: 함초롬바탕 15pt (전통 관행).
+    Report,
 }
 
 /// 문자 모양 ID 배치 (default_header와 일치해야 함).
@@ -301,6 +316,47 @@ pub fn default_header() -> hwp_model::DocHeader {
     header
 }
 
+/// 공문서 프리셋을 헤더에 적용한다 — 글꼴·크기와 순서 목록 4단계 번호 체계.
+/// (여백·쪽번호는 inject_section_controls가 담당.)
+fn apply_official_preset(header: &mut hwp_model::DocHeader, preset: OfficialPreset) {
+    // 본문·제목 크기(HWPUNIT/100pt): 기안문 11.5pt·제목 15pt / 보고서 15pt·제목 18pt.
+    let (body, headings) = match preset {
+        OfficialPreset::Gian => (1150, [1500, 1400, 1300, 1200, 1150, 1150]),
+        OfficialPreset::Report => (1500, [1800, 1700, 1600, 1550, 1500, 1500]),
+    };
+    if preset == OfficialPreset::Gian {
+        // 슬롯 0(본문 글꼴)만 맑은 고딕으로 교체 — 1(함초롬돋움, 인라인 코드)은 유지.
+        for slot in 0..LANG_COUNT {
+            header.fonts[slot][0] = FaceName {
+                name: "맑은 고딕".to_string(),
+                attr: 0x01,
+                default_name: Some("Malgun Gothic".to_string()),
+                ..FaceName::default()
+            };
+        }
+    }
+    // 크기 재배치: 4~9 = H1~H6, 나머지(본문·강조·링크·취소선·코드)는 본문 크기.
+    for (i, cs) in header.char_shapes.iter_mut().enumerate() {
+        cs.base_size = match i.checked_sub(shapes::HEADING_BASE as usize) {
+            Some(h) if h < headings.len() => headings[h],
+            _ => body,
+        };
+    }
+    // 순서 목록 4단계 번호(규정 §5): 1. → 가. → 1) → 가), 5수준부터 반복.
+    for levels in &mut header.numbering_levels {
+        for (i, nl) in levels.iter_mut().enumerate() {
+            let (fmt, suffix) = match i % 4 {
+                0 => (NumFmt::Digit, "."),
+                1 => (NumFmt::HangulSyllable, "."),
+                2 => (NumFmt::Digit, ")"),
+                _ => (NumFmt::HangulSyllable, ")"),
+            };
+            nl.fmt = fmt;
+            nl.template = format!("^{}{suffix}", i + 1);
+        }
+    }
+}
+
 /// markdown 텍스트를 문서로 변환한다(기존 시그니처 — 상대 경로 이미지는 경고 후 alt 보존).
 pub fn from_markdown(md: &str) -> Document {
     from_markdown_with(md, &MarkdownImportOptions::default())
@@ -341,13 +397,16 @@ pub fn from_markdown_with(md: &str, opts: &MarkdownImportOptions) -> Document {
         b.paragraphs.push(Paragraph::default());
     }
     // 첫 문단에 구역/단 정의 주입 — hwp5/한글 호환의 전제 조건
-    inject_section_controls(&mut b.paragraphs[0]);
+    inject_section_controls(&mut b.paragraphs[0], opts.preset);
 
     // 목록에서 만든 문단 모양·번호/글머리 정의를 헤더에 합친다.
     let mut header = default_header();
     header.para_shapes.extend(b.extra_para_shapes);
     header.numbering_levels = b.numbering_levels;
     header.bullet_chars = b.bullet_chars;
+    if let Some(preset) = opts.preset {
+        apply_official_preset(&mut header, preset);
+    }
 
     Document {
         meta: DocMeta {
@@ -1057,8 +1116,9 @@ fn heading_level(level: HeadingLevel) -> u16 {
     }
 }
 
-/// 첫 문단 앞에 secd/cold 확장 컨트롤을 삽입한다 (16 WCHAR 시프트 포함).
-fn inject_section_controls(para: &mut Paragraph) {
+/// 첫 문단 앞에 secd/cold(프리셋 시 + pgnp) 확장 컨트롤을 삽입한다
+/// (컨트롤당 8 WCHAR 시프트 포함).
+fn inject_section_controls(para: &mut Paragraph, preset: Option<OfficialPreset>) {
     use hwp_model::{Control, GenericControl, HwpUnit, PageDef, SectionDef};
     if para
         .controls
@@ -1067,6 +1127,8 @@ fn inject_section_controls(para: &mut Paragraph) {
     {
         return;
     }
+    // 삽입할 확장 컨트롤 수: secd + cold (+ 프리셋 쪽번호 pgnp).
+    let n_ctrl = if preset.is_some() { 3 } else { 2 };
     // 기존 참조들 시프트
     for ch in &mut para.chars {
         if let HwpChar::ExtCtrl {
@@ -1074,14 +1136,14 @@ fn inject_section_controls(para: &mut Paragraph) {
             ..
         } = ch
         {
-            *i += 2;
+            *i += n_ctrl;
         }
     }
     for (pos, _) in &mut para.char_shape_runs {
-        *pos += 16;
+        *pos += n_ctrl * 8;
     }
     for seg in &mut para.line_segs {
-        seg.text_start += 16;
+        seg.text_start += n_ctrl * 8;
     }
     let first_shape = para
         .char_shape_runs
@@ -1093,13 +1155,20 @@ fn inject_section_controls(para: &mut Paragraph) {
     // 연속 동일 id run 병합(secd/cold 삽입으로 생기는 [(0,0),(16,0)] 중복 등)은
     // writer가 합성 경로 전체에 적용한다.
 
+    // 여백: 기본은 한글 새 문서(좌우 30·위 20·아래 15mm), 공문서 프리셋은
+    // 작성 규정(위 30·아래 15·좌 20·우 15mm). 머리말/꼬리말 15mm는 공통.
+    let (ml, mr, mt, mb) = if preset.is_some() {
+        (5668, 4252, 8504, 4252)
+    } else {
+        (8504, 8504, 5668, 4252)
+    };
     let page = PageDef {
         width: HwpUnit(59528),
         height: HwpUnit(84186),
-        margin_left: HwpUnit(8504),
-        margin_right: HwpUnit(8504),
-        margin_top: HwpUnit(5668),
-        margin_bottom: HwpUnit(4252),
+        margin_left: HwpUnit(ml),
+        margin_right: HwpUnit(mr),
+        margin_top: HwpUnit(mt),
+        margin_bottom: HwpUnit(mb),
         margin_header: HwpUnit(4252),
         margin_footer: HwpUnit(4252),
         gutter: HwpUnit(0),
@@ -1130,20 +1199,42 @@ fn inject_section_controls(para: &mut Paragraph) {
             column_def: None,
         }),
     );
-    let ext = |ctrl_id: [u8; 4], idx: u32| {
+    let ext = |code: u16, ctrl_id: [u8; 4], idx: u32| {
         let mut payload = vec![0u8; 12];
         let mut rev = ctrl_id;
         rev.reverse();
         payload[..4].copy_from_slice(&rev);
         HwpChar::ExtCtrl {
-            code: 2,
+            code,
             ctrl_id,
             payload,
             ctrl_index: Some(idx),
         }
     };
-    para.chars.insert(0, ext(*b"secd", 0));
-    para.chars.insert(1, ext(*b"cold", 1));
+    para.chars.insert(0, ext(2, *b"secd", 0));
+    para.chars.insert(1, ext(2, *b"cold", 1));
+    if preset.is_some() {
+        // 쪽번호 하단 중앙(pgnp, 규정 §10). 12B: props(u32: 서식 DIGIT=0 |
+        // 위치 BOTTOM_CENTER=5 <<8) + 예약 6B + sideChar WCHAR — 정품 실측
+        // (hwpx read build_pgnp와 동일 레이아웃)은 sideChar '-'("- 1 -" 표기).
+        let mut data = vec![0u8; 12];
+        data[..4].copy_from_slice(&(5u32 << 8).to_le_bytes());
+        data[10..12].copy_from_slice(&(u16::from(b'-')).to_le_bytes());
+        para.controls.insert(
+            2,
+            Control::Generic(GenericControl {
+                ctrl_id: *b"pgnp",
+                data,
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+            }),
+        );
+        para.chars.insert(2, ext(21, *b"pgnp", 2));
+    }
     // 구역 첫 문단의 break_type — 한글이 직접 저장한 단일 문단 표본 전수
     // (가나다·hello_world·outline·bookmark)가 모두 0x03(bit0 구역나눔 +
     // bit1 다단나눔)이다. secd/cold ExtCtrl를 품은 '구역 첫 문단'에 한글이
@@ -1356,6 +1447,7 @@ mod tests {
             "본문\n\n![대체텍스트](fig.png)\n",
             &MarkdownImportOptions {
                 base_dir: Some(&dir),
+                preset: None,
             },
         );
         assert_eq!(doc.bin_streams.len(), 1, "BinStream 1개 임베드");
@@ -1386,6 +1478,7 @@ mod tests {
             "![없음alt](nope.png)\n",
             &MarkdownImportOptions {
                 base_dir: Some(&dir),
+                preset: None,
             },
         );
         assert!(d1.bin_streams.is_empty(), "임베드 없음");
@@ -1411,6 +1504,7 @@ mod tests {
             "![x](rt.png)\n",
             &MarkdownImportOptions {
                 base_dir: Some(&dir),
+                preset: None,
             },
         );
         let media = dir.join("out_media");
@@ -1617,6 +1711,111 @@ mod tests {
             doc.header.para_shapes[item.para_shape.0 as usize].head_type(),
             3,
             "목록 항목은 BULLET 머리 유지"
+        );
+    }
+
+    /// 공문서 프리셋: 규정 여백·글꼴/크기·4단계 번호·쪽번호(pgnp)가 적용되고,
+    /// 프리셋 없는 기본 경로는 기존 값 그대로여야 한다.
+    #[test]
+    fn 공문서_프리셋() {
+        use hwp_model::{Control, NumFmt};
+        let md = "# 제목\n\n1. 하나\n   1. 둘\n\n본문\n";
+        let opts = |p| MarkdownImportOptions {
+            base_dir: None,
+            preset: p,
+        };
+        let page_of = |doc: &Document| {
+            doc.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::SectionDef(sd) => sd.page,
+                    _ => None,
+                })
+                .expect("PageDef 있어야")
+        };
+
+        // 기본(프리셋 없음): 기존 여백·크기·번호 형식 유지.
+        let plain = from_markdown_with(md, &opts(None));
+        let p = page_of(&plain);
+        assert_eq!(
+            (
+                p.margin_left.0,
+                p.margin_top.0,
+                p.margin_right.0,
+                p.margin_bottom.0
+            ),
+            (8504, 5668, 8504, 4252)
+        );
+        assert_eq!(plain.header.char_shapes[0].base_size, 1000);
+        assert!(plain.header.numbering_levels[0][1].template.is_empty());
+        assert!(
+            !plain.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Generic(g) if g.ctrl_id == *b"pgnp"))
+        );
+
+        // report: 여백 위30/아래15/좌20/우15mm, 함초롬바탕 15pt, H1 18pt.
+        let report = from_markdown_with(md, &opts(Some(OfficialPreset::Report)));
+        let p = page_of(&report);
+        assert_eq!(
+            (
+                p.margin_left.0,
+                p.margin_top.0,
+                p.margin_right.0,
+                p.margin_bottom.0
+            ),
+            (5668, 8504, 4252, 4252)
+        );
+        assert_eq!(report.header.fonts[0][0].name, "함초롬바탕");
+        assert_eq!(report.header.char_shapes[0].base_size, 1500);
+        assert_eq!(report.header.char_shapes[4].base_size, 1800); // H1
+        assert_eq!(report.header.char_shapes[15].base_size, 1500); // 인라인 코드도 본문 크기
+
+        // gian: 맑은 고딕 11.5pt, H1 15pt.
+        let gian = from_markdown_with(md, &opts(Some(OfficialPreset::Gian)));
+        assert_eq!(gian.header.fonts[0][0].name, "맑은 고딕");
+        assert_eq!(
+            gian.header.fonts[0][1].name, "함초롬돋움",
+            "인라인 코드 글꼴 유지"
+        );
+        assert_eq!(gian.header.char_shapes[0].base_size, 1150);
+        assert_eq!(gian.header.char_shapes[4].base_size, 1500);
+
+        // 4단계 번호 사다리: ^1. / ^2.(가나다) / ^3) / ^4)(가나다), 5수준부터 반복.
+        let levels = &report.header.numbering_levels[0];
+        let fmt_tpl: Vec<(NumFmt, &str)> = levels
+            .iter()
+            .map(|l| (l.fmt, l.template.as_str()))
+            .collect();
+        assert_eq!(fmt_tpl[0], (NumFmt::Digit, "^1."));
+        assert_eq!(fmt_tpl[1], (NumFmt::HangulSyllable, "^2."));
+        assert_eq!(fmt_tpl[2], (NumFmt::Digit, "^3)"));
+        assert_eq!(fmt_tpl[3], (NumFmt::HangulSyllable, "^4)"));
+        assert_eq!(fmt_tpl[4], (NumFmt::Digit, "^5."));
+
+        // 쪽번호: pgnp(하단 중앙 + sideChar '-') 컨트롤과 ExtCtrl 앵커.
+        let first = &report.sections[0].paragraphs[0];
+        let pgnp = first
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Generic(g) if g.ctrl_id == *b"pgnp" => Some(g),
+                _ => None,
+            })
+            .expect("pgnp 있어야");
+        let props = u32::from_le_bytes(pgnp.data[..4].try_into().unwrap());
+        assert_eq!((props >> 8) & 0xFF, 5, "BOTTOM_CENTER");
+        assert_eq!(
+            u16::from_le_bytes(pgnp.data[10..12].try_into().unwrap()),
+            u16::from(b'-')
+        );
+        assert!(
+            first
+                .chars
+                .iter()
+                .any(|ch| matches!(ch, HwpChar::ExtCtrl { ctrl_id, .. } if ctrl_id == b"pgnp"))
         );
     }
 }

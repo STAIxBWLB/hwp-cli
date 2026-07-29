@@ -97,7 +97,8 @@ fn main() -> anyhow::Result<()> {
             output,
             from,
             set_meta,
-        } => commands::new::run(&output, from.as_deref(), &set_meta),
+            preset,
+        } => commands::new::run(&output, from.as_deref(), &set_meta, preset),
         Cmd::Edit {
             input,
             output,
