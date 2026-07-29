@@ -155,11 +155,15 @@ fn 왕복_각주_목록_hwp5_규격() {
     );
 
     // 4) BULLET 레코드가 정품 필드 패턴과 일치(사업계획서 전수 대조): 25B, [8..12]=글자모양
-    //    id 없음(0xFFFFFFFF), [12..14]=글머리표 문자(우리 '•'=0x2022). 오프셋이 어긋나면
-    //    한글이 마커를 미표시한다(1차 H2 실기 결함).
+    //    id 없음(0xFFFFFFFF), [12..14]=글머리표 문자(IR bullet_chars 순서대로 — 개조식
+    //    사다리라 수준별로 다르다). 오프셋이 어긋나면 한글이 마커를 미표시한다(1차 H2 실기 결함).
     let bullets = all_records(&di, 0x18);
-    assert!(!bullets.is_empty(), "BULLET 레코드 존재");
-    for b in &bullets {
+    assert_eq!(
+        bullets.len(),
+        doc.header.bullet_chars.len(),
+        "BULLET 레코드 수 == IR 글머리 정의 수"
+    );
+    for (b, want) in bullets.iter().zip(&doc.header.bullet_chars) {
         assert_eq!(b.len(), 25, "BULLET 레코드 25B(정품 실측)");
         assert_eq!(
             &b[8..12],
@@ -168,8 +172,8 @@ fn 왕복_각주_목록_hwp5_규격() {
         );
         assert_eq!(
             u16::from_le_bytes([b[12], b[13]]),
-            0x2022,
-            "글머리표 문자 '•'가 오프셋 12에 있어야"
+            *want as u16,
+            "글머리표 문자 '{want}'가 오프셋 12에 있어야"
         );
     }
 
