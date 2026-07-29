@@ -703,6 +703,10 @@ impl Builder {
             attr1: 0x180 | (1 << 2), // 정상 본문 + 왼쪽 정렬(머리 종류/수준 없음)
             margin_left: depth * step,
             indent: -step,
+            // □ 블록 경계가 눈에 보이게 문단 간격을 준다 — □ 위 600은 제목(1)의
+            // spacing_top, 공통 아래 300은 제목의 spacing_bottom 관례와 맞춘 값.
+            spacing_top: if depth == 1 { 600 } else { 0 },
+            spacing_bottom: 300,
             line_spacing_old: 160,
             line_spacing: 160,
             border_fill_id: 2,
@@ -1574,6 +1578,15 @@ mod tests {
         );
         assert_eq!(shape(square).head_type(), 0, "머리(BULLET) 비트 없음");
         assert_eq!(shape(circle).head_type(), 0, "머리(BULLET) 비트 없음");
+        // 문단 간격: □ 블록 경계가 보이도록 위 600, 공통 아래 300 (○는 위 0).
+        assert_eq!(
+            (shape(square).spacing_top, shape(square).spacing_bottom),
+            (600, 300)
+        );
+        assert_eq!(
+            (shape(circle).spacing_top, shape(circle).spacing_bottom),
+            (0, 300)
+        );
     }
 
     /// 표 셀·제목·목록 항목은 기호 문단모양의 영향을 받지 않는다.
