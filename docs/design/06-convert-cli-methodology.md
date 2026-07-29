@@ -265,7 +265,7 @@ markdown→hwpx 전체 흐름: `new`/`convert` 커맨드가 `from_markdown`으�
 
 ### 7.1 정답지 문서에 우리 요소 주입
 
-`tools/gen_verification_set.sh`가 `~/Documents/hwp-실기검증/`에 11종 파일 생성 후 사용자가 **한컴오피스 한글에서 직접 열어** 수용 여부 확인. 방식: base.md(앵커 "제목"·"여기에" 포함)로 base.hwp 생성 → `edit --create-bookmark`/`--create-hyperlink`로 **우리 요소를 주입** → hwp·hwpx 양쪽 방출. 각 파일은 자체 재읽기 게이트(`check`: `cat`이 경고 없이 내용 출력)를 통과한 것만 넘긴다 — **깨진 파일을 사용자에게 넘기지 않기 위함**. A 시리즈(실무 문서 전체 파이프라인), B 시리즈(기능별 최소 파일 — 실패 시 원인 격리).
+`tools/gen_verification_set.sh`가 `~/Documents/hwp-verification/`에 11종 파일 생성 후 사용자가 **한컴오피스 한글에서 직접 열어** 수용 여부 확인. 방식: base.md(앵커 "제목"·"여기에" 포함)로 base.hwp 생성 → `edit --create-bookmark`/`--create-hyperlink`로 **우리 요소를 주입** → hwp·hwpx 양쪽 방출. 각 파일은 자체 재읽기 게이트(`check`: `cat`이 경고 없이 내용 출력)를 통과한 것만 넘긴다 — **깨진 파일을 사용자에게 넘기지 않기 위함**. A 시리즈(실무 문서 전체 파이프라인), B 시리즈(기능별 최소 파일 — 실패 시 원인 격리).
 
 ### 7.2 배치 진단
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 한글 실기 검증 세트 생성기 (⑬~㉓ 쓰기 경로 + 글자효과·요약정보).
 #
-# ~/Documents/hwp-실기검증/(또는 $1)에 검증 파일을 생성한다: A(실무 파이프라인)·
+# ~/Documents/hwp-verification/(또는 $1)에 검증 파일을 생성한다: A(실무 파이프라인)·
 # B(책갈피/하이퍼링크)·C(글자효과·요약정보, JSON IR 경유). 각 파일은 우리 리더로
 # 자체 재검증(재읽기 무경고 + C는 효과 보존 단언)한 뒤에만 통과 표시된다 — 깨진
 # 파일을 넘기지 않기 위함. 실제 한글 수용 여부는 사용자가 한컴오피스에서 열어
@@ -11,7 +11,7 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${1:-$HOME/Documents/hwp-실기검증}"
+DEST="${1:-$HOME/Documents/hwp-verification}"
 export HWP_FONT_DIR="$REPO/fonts"   # hwp5 합성 lineseg 계산에 필수(5.1.x)
 
 # 바이너리: debug가 있으면 재사용, 없으면 release 빌드.
