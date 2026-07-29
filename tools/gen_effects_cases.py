@@ -888,7 +888,7 @@ def i1_md_image_code(dest):
 # 읽기 경로(page_border_fills_raw, 정품 실측 확정)로만 구동되고, hwpx 읽기는
 # 이 필드를 채우지 않기(pass-through=secpr_raw_children) 때문이다. 산출물(hwpx)은
 # ①②로 구조 검증하고, 렌더 정합은 같은 문서의 hwp5 원본으로 확인한다.
-# 이 파일은 정답지 유래이므로 산출물만 dest(~/Documents/hwp-실기검증)에 두고,
+# 이 파일은 정답지 유래이므로 산출물만 dest(~/Documents/hwp-verification)에 두고,
 # 원본·중간 PNG는 저장소·fixtures에 남기지 않는다(PNG는 WORK에만 쓴다).
 
 
