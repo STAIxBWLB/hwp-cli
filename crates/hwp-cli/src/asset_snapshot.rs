@@ -513,7 +513,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "hwp-asset-snapshot-{}-{}-{suffix}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();

@@ -1,5 +1,8 @@
 # Hash-pinned corpus text must not be rewritten by core.autocrlf on Windows.
 corpus/structured-v1/** text eol=lf
+# examples/ 의 spec·template·data는 골든 리포트에 SHA-256으로 박혀 있다.
+examples/** text eol=lf
+crates/hwp-cli/tests/golden/** text eol=lf
 schemas/*.json text eol=lf
 docs/**/*.md text eol=lf
 *.rs text eol=lf

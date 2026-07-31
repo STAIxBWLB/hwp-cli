@@ -545,6 +545,9 @@ impl StagedOutput {
             .with_context(|| format!("임시 출력 동기화 실패: {}", self.staged.display()))
     }
 
+    // Windows에서는 아래 cfg(windows) 블록이 함수의 마지막이라 조기 return이 tail로 보인다.
+    // 다른 플랫폼에서는 뒤에 cfg 블록이 더 있어 return이 필요하다.
+    #[cfg_attr(windows, allow(clippy::needless_return))]
     fn publish(&mut self) -> anyhow::Result<Option<String>> {
         recheck_destination(&self.destination, &self.snapshot)?;
 
@@ -594,12 +597,16 @@ impl StagedOutput {
                 }
                 DestinationSnapshot::Missing => {
                     windows_apply_parent_default_dacl(&self.staged, &self.destination, false)?;
-                    fs::rename(&self.staged, &self.destination).with_context(|| {
-                        format!(
-                            "검증된 임시 출력을 최종 경로에 게시하지 못했습니다: {}",
-                            self.destination.display()
-                        )
-                    })?;
+                    fs::rename(&self.staged, &self.destination)
+                        .map_err(|error| {
+                            std::io::Error::new(error.kind(), format!("rename: {error}"))
+                        })
+                        .with_context(|| {
+                            format!(
+                                "검증된 임시 출력을 최종 경로에 게시하지 못했습니다: {}",
+                                self.destination.display()
+                            )
+                        })?;
                     None
                 }
             };
@@ -1865,9 +1872,12 @@ fn windows_security_descriptor(path: &Path, requested_information: u32) -> anyho
         )
     };
     if loaded == 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
-            format!("Windows 보안 설명자를 읽을 수 없습니다: {}", path.display())
-        });
+        let error = std::io::Error::last_os_error();
+        return Err(std::io::Error::new(
+            error.kind(),
+            format!("GetFileSecurityW: {error}"),
+        ))
+        .with_context(|| format!("Windows 보안 설명자를 읽을 수 없습니다: {}", path.display()));
     }
     Ok(descriptor)
 }
@@ -1923,6 +1933,55 @@ fn windows_apply_parent_default_dacl(
     windows_apply_inherited_dacl(path, parent, is_directory)
 }
 
+/// 닫히는 Windows 토큰 핸들.
+#[cfg(windows)]
+struct WindowsToken(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for WindowsToken {
+    fn drop(&mut self) {
+        // SAFETY: 생성 시에만 유효한 핸들을 담으며 여기서 한 번만 닫는다.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+/// `CreatePrivateObjectSecurityEx`는 임퍼소네이션 토큰을 요구한다. CLI는 임퍼소네이션을
+/// 하지 않으므로 프로세스 토큰을 복제해서 쓴다.
+#[cfg(windows)]
+fn windows_impersonation_token() -> anyhow::Result<WindowsToken> {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Security::{
+        DuplicateToken, SecurityImpersonation, TOKEN_DUPLICATE, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut primary: HANDLE = ptr::null_mut();
+    // SAFETY: 출력 핸들 포인터만 넘기며, 성공 시에만 사용한다.
+    let opened = unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_DUPLICATE | TOKEN_QUERY,
+            &mut primary,
+        )
+    };
+    if opened == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("Windows 프로세스 토큰을 열 수 없습니다");
+    }
+    let primary = WindowsToken(primary);
+
+    let mut impersonation: HANDLE = ptr::null_mut();
+    // SAFETY: primary는 살아 있는 토큰 핸들이고 출력만 새로 받는다.
+    let duplicated =
+        unsafe { DuplicateToken(primary.0, SecurityImpersonation, &mut impersonation) };
+    if duplicated == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("Windows 토큰을 임퍼소네이션 토큰으로 복제할 수 없습니다");
+    }
+    Ok(WindowsToken(impersonation))
+}
+
 #[cfg(windows)]
 fn windows_apply_inherited_dacl(
     path: &Path,
@@ -1945,6 +2004,10 @@ fn windows_apply_inherited_dacl(
         GenericExecute: FILE_GENERIC_EXECUTE,
         GenericAll: FILE_ALL_ACCESS,
     };
+    // Token을 NULL로 두면 스레드의 유효 토큰을 쓰는데, 임퍼소네이션 중이 아닌 일반
+    // 프로세스에서는 ERROR_NO_TOKEN(1008)이 된다. 프로세스 토큰을 임퍼소네이션 토큰으로
+    // 복제해 명시적으로 넘긴다.
+    let token = windows_impersonation_token()?;
     let mut inherited_descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
     let created = unsafe {
         CreatePrivateObjectSecurityEx(
@@ -1954,12 +2017,17 @@ fn windows_apply_inherited_dacl(
             ptr::null(),
             if is_directory { 1 } else { 0 },
             SEF_DACL_AUTO_INHERIT,
-            ptr::null_mut(),
+            token.0,
             &mapping,
         )
     };
     if created == 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
+        let error = std::io::Error::last_os_error();
+        return Err(std::io::Error::new(
+            error.kind(),
+            format!("CreatePrivateObjectSecurityEx: {error}"),
+        ))
+        .with_context(|| {
             format!(
                 "부모 디렉터리에서 Windows 기본 ACL을 계산할 수 없습니다: {}",
                 parent.display()
@@ -1983,7 +2051,12 @@ fn windows_apply_inherited_dacl(
             )
         };
         if applied == 0 {
-            return Err(std::io::Error::last_os_error()).with_context(|| {
+            let error = std::io::Error::last_os_error();
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!("SetFileSecurityW: {error}"),
+            ))
+            .with_context(|| {
                 format!(
                     "새 출력에 부모 디렉터리의 Windows 기본 ACL을 적용할 수 없습니다: {}",
                     path.display()
@@ -1992,7 +2065,7 @@ fn windows_apply_inherited_dacl(
         }
         Ok(())
     })();
-    let destroyed = unsafe { DestroyPrivateObjectSecurity(&mut inherited_descriptor) };
+    let destroyed = unsafe { DestroyPrivateObjectSecurity(&inherited_descriptor) };
     if destroyed == 0 && result.is_ok() {
         return Err(std::io::Error::last_os_error())
             .context("Windows 임시 보안 설명자를 해제할 수 없습니다");
@@ -2529,6 +2602,12 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    /// SDDL DACL에서 제어 플래그(`D:PAI` 등)를 떼고 ACE 목록만 남긴다.
+    #[cfg(windows)]
+    fn dacl_aces(sddl: &str) -> &str {
+        sddl.find('(').map_or("", |start| &sddl[start..])
+    }
+
     #[cfg(windows)]
     fn windows_dacl_sddl(path: &Path) -> String {
         use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
@@ -2703,7 +2782,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), b"NEW");
-        assert_eq!(windows_dacl_sddl(&destination), expected);
+        // ReplaceFileW는 ACE를 그대로 옮기면서 SE_DACL_AUTO_INHERITED(SDDL의 "AI") 표시만
+        // 덧붙일 수 있다. P(protected)가 남아 상속은 여전히 차단되므로 실효 권한은 같다.
+        // 검사 대상은 ACE 목록이다.
+        assert_eq!(
+            dacl_aces(&windows_dacl_sddl(&destination)),
+            dacl_aces(&expected)
+        );
         assert_no_debris(&dir);
         fs::remove_dir_all(dir).unwrap();
     }

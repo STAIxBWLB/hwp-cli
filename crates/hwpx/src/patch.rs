@@ -695,9 +695,16 @@ fn process_package(
 
     validate_staged_package(staged_guard.path(), limits)?;
     apply_destination_permissions(staged_guard.path(), &destination)?;
-    File::open(staged_guard.path())?.sync_all()?;
+    // Windows의 FlushFileBuffers는 쓰기 권한을 요구한다 — 읽기 전용 핸들이면
+    // ERROR_ACCESS_DENIED가 난다(유닉스는 읽기 fd로도 fsync가 된다).
+    OpenOptions::new()
+        .write(true)
+        .open(staged_guard.path())
+        .and_then(|file| file.sync_all())
+        .map_err(|error| labeled_io("staged sync", error))?;
     recheck_destination(output, &destination)?;
-    atomic_publish(staged_guard.path(), output)?;
+    atomic_publish(staged_guard.path(), output)
+        .map_err(|error| labeled_io("atomic_publish", error))?;
     staged_guard.disarm();
     sync_parent_directory(output);
     Ok(())
@@ -1008,7 +1015,7 @@ fn inspect_destination(path: &Path) -> Result<DestinationSnapshot> {
         )
         .into()),
         Ok(metadata) if metadata.file_type().is_file() => Ok(DestinationSnapshot::Regular {
-            identity: file_identity(&metadata),
+            identity: file_identity(path, &metadata),
             len: metadata.len(),
             modified: metadata.modified().ok(),
             permissions: metadata.permissions(),
@@ -1041,7 +1048,7 @@ fn recheck_destination(path: &Path, snapshot: &DestinationSnapshot) -> Result<()
             },
             Ok(metadata),
         ) if metadata.file_type().is_file()
-            && file_identity(&metadata) == *identity
+            && file_identity(path, &metadata) == *identity
             && metadata.len() == *len
             && metadata.modified().ok() == *modified =>
         {
@@ -1066,33 +1073,109 @@ fn apply_destination_permissions(path: &Path, snapshot: &DestinationSnapshot) ->
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FileIdentity {
-    first: u64,
-    second: u64,
+/// 파일 신원. `Unknown`은 자기 자신과도 같지 않다 — 신원을 못 읽었으면 "그대로다"를
+/// 증명할 수 없으므로 recheck가 실패(fail-closed)해야 한다. 그래서 `Eq`는 구현하지
+/// 않는다(반사성이 성립하지 않음).
+#[derive(Clone, Copy, Debug)]
+enum FileIdentity {
+    Known {
+        first: u64,
+        second: u64,
+    },
+    /// Windows에서 핸들을 못 열었을 때만 나온다. 다른 플랫폼은 metadata로 항상 구성된다.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Unknown,
+}
+
+impl PartialEq for FileIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                FileIdentity::Known { first, second },
+                FileIdentity::Known {
+                    first: other_first,
+                    second: other_second,
+                },
+            ) => first == other_first && second == other_second,
+            _ => false,
+        }
+    }
 }
 
 #[cfg(unix)]
-fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
+fn file_identity(_path: &Path, metadata: &fs::Metadata) -> FileIdentity {
     use std::os::unix::fs::MetadataExt;
-    FileIdentity {
+    FileIdentity::Known {
         first: metadata.dev(),
         second: metadata.ino(),
     }
 }
 
+// volume serial + file index는 핸들에서만 얻는다(std의 Metadata 경로는 nightly 전용
+// `windows_by_handle`). 링크는 따라가지 않고 열어, 검사 뒤 심볼릭 링크로 바뀌었으면
+// 다른 신원이 나와 recheck가 실패하도록 한다.
 #[cfg(windows)]
-fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
-    use std::os::windows::fs::MetadataExt;
-    FileIdentity {
-        first: u64::from(metadata.volume_serial_number().unwrap_or_default()),
-        second: metadata.file_index().unwrap_or_default(),
+fn file_identity(path: &Path, _metadata: &fs::Metadata) -> FileIdentity {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time_low: u32,
+        creation_time_high: u32,
+        last_access_time_low: u32,
+        last_access_time_high: u32,
+        last_write_time_low: u32,
+        last_write_time_high: u32,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+
+    let Ok(file) = fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    else {
+        return FileIdentity::Unknown;
+    };
+    let mut information = ByHandleFileInformation::default();
+    // SAFETY: 핸들은 이 스코프에서 살아 있는 File 소유이고, 출력 구조체는 Win32
+    // BY_HANDLE_FILE_INFORMATION과 같은 repr(C) 레이아웃이다.
+    let loaded = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    if loaded == 0 {
+        return FileIdentity::Unknown;
+    }
+    FileIdentity::Known {
+        first: u64::from(information.volume_serial_number),
+        second: (u64::from(information.file_index_high) << 32)
+            | u64::from(information.file_index_low),
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
-    FileIdentity {
+fn file_identity(_path: &Path, metadata: &fs::Metadata) -> FileIdentity {
+    FileIdentity::Known {
         first: metadata.len(),
         second: 0,
     }
@@ -1128,7 +1211,7 @@ impl SiblingTemp {
                     return Ok((Self { path, armed: true }, file));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(labeled_io("staged create", error).into()),
             }
         }
         Err(std::io::Error::new(
@@ -1156,6 +1239,11 @@ impl Drop for SiblingTemp {
             let _ = fs::remove_file(&self.path);
         }
     }
+}
+
+/// io 오류에 연산 이름을 남긴다 — 상위(MCP 등)에서 체인이 평탄화돼도 어느 단계인지 보인다.
+fn labeled_io(operation: &str, error: std::io::Error) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{operation}: {error}"))
 }
 
 fn open_private_new(path: &Path) -> std::io::Result<File> {
@@ -1220,6 +1308,8 @@ fn atomic_publish(staged: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 fn sync_parent_directory(path: &Path) {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         let parent = path
