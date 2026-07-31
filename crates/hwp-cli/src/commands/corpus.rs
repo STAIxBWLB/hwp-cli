@@ -2032,7 +2032,7 @@ fn collect_tree(root: &Path) -> Result<(Vec<Artifact>, BTreeSet<String>)> {
                 }
                 walk(root, &path, depth + 1, files, directories, total)?;
             } else if metadata.file_type().is_file() {
-                if has_multiple_links(&metadata) {
+                if hwp_cli::certification::has_multiple_links(&path, &metadata) {
                     anyhow::bail!("corpus artifact tree contains a multiply-linked file")
                 }
                 *total = total
@@ -2115,23 +2115,6 @@ fn audit_tree(root: &Path, manifest: &ArtifactManifest) -> Result<()> {
         anyhow::bail!("corpus artifact directories do not match the closed manifest")
     }
     Ok(())
-}
-
-#[cfg(unix)]
-fn has_multiple_links(metadata: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    metadata.nlink() != 1
-}
-
-#[cfg(windows)]
-fn has_multiple_links(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    metadata.number_of_links().is_none_or(|links| links != 1)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn has_multiple_links(_metadata: &fs::Metadata) -> bool {
-    true
 }
 
 struct AtomicCorpusDir {

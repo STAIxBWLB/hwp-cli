@@ -2333,10 +2333,10 @@ fn snapshot_file(
     if path_before.file_type().is_symlink() || !path_before.file_type().is_file() {
         anyhow::bail!("snapshot input must be a non-symlink regular file");
     }
-    if has_multiple_links(&path_before) {
+    if has_multiple_links(source, &path_before) {
         anyhow::bail!("snapshot input must not have hardlink aliases");
     }
-    if !same_file_identity(&opened_before, &path_before) {
+    if !open_file_still_matches_path(&input, source) {
         anyhow::bail!("snapshot input path changed before copy");
     }
     if opened_before.len() > max_bytes {
@@ -2374,8 +2374,7 @@ fn snapshot_file(
     let opened_after = input.metadata()?;
     let path_after = fs::symlink_metadata(source)?;
     if path_after.file_type().is_symlink()
-        || !same_file_identity(&opened_before, &opened_after)
-        || !same_file_identity(&opened_before, &path_after)
+        || !open_file_still_matches_path(&input, source)
         || opened_before.len() != opened_after.len()
         || opened_before.len() != path_after.len()
         || opened_before.modified()? != opened_after.modified()?
@@ -2407,22 +2406,80 @@ impl Drop for PartialFileGuard {
     }
 }
 
+/// 열어 둔 핸들이 지금도 `path`가 가리키는 바로 그 파일인지. 신원을 못 읽으면
+/// "그대로다"를 증명할 수 없으므로 false(fail-closed)를 돌려준다.
 #[cfg(unix)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+fn open_file_still_matches_path(file: &File, path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
-    left.dev() == right.dev() && left.ino() == right.ino()
+    let (Ok(opened), Ok(current)) = (file.metadata(), fs::symlink_metadata(path)) else {
+        return false;
+    };
+    opened.dev() == current.dev() && opened.ino() == current.ino()
 }
 
 #[cfg(windows)]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
+fn open_file_still_matches_path(file: &File, path: &Path) -> bool {
+    match (windows_handle_info(file), windows_path_info(path)) {
+        (Some(opened), Some(current)) => {
+            opened.volume == current.volume && opened.index == current.index
+        }
+        _ => false,
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    left.len() == right.len() && left.modified().ok() == right.modified().ok()
+fn open_file_still_matches_path(file: &File, path: &Path) -> bool {
+    let (Ok(opened), Ok(current)) = (file.metadata(), fs::symlink_metadata(path)) else {
+        return false;
+    };
+    opened.len() == current.len() && opened.modified().ok() == current.modified().ok()
+}
+
+/// Windows 파일 신원과 링크 수. std의 `Metadata` 경로(`volume_serial_number`·
+/// `file_index`·`number_of_links`)는 nightly 전용 `windows_by_handle`이라 핸들에서 읽는다.
+#[cfg(windows)]
+struct WindowsFileInfo {
+    volume: u32,
+    index: u64,
+    links: u32,
+}
+
+#[cfg(windows)]
+fn windows_handle_info(file: &File) -> Option<WindowsFileInfo> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: 핸들은 호출 동안 살아 있는 File이 소유하고, 출력 구조체는 Win32 정의다.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return None;
+    }
+    Some(WindowsFileInfo {
+        volume: information.dwVolumeSerialNumber,
+        index: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+        links: information.nNumberOfLinks,
+    })
+}
+
+/// 링크를 따라가지 않고 연다 — 검사와 열기 사이에 reparse point로 바뀌었으면 링크 자신의
+/// 신원이 나와 비교가 실패한다.
+#[cfg(windows)]
+fn windows_path_info(path: &Path) -> Option<WindowsFileInfo> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .ok()?;
+    windows_handle_info(&file)
 }
 
 fn snapshot_font_manifest(
@@ -2584,6 +2641,8 @@ fn validate_artifact_budget(artifacts: &[ArtifactReport]) -> Result<()> {
 }
 
 fn set_private_permissions(path: &Path) -> Result<()> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -2735,7 +2794,7 @@ fn audit_published_tree(root: &Path, expected_paths: &BTreeSet<String>) -> Resul
                 directories.insert(relative);
                 walk(root, &path, found, directories)?;
             } else if metadata.file_type().is_file() {
-                if has_multiple_links(&metadata) {
+                if has_multiple_links(&path, &metadata) {
                     anyhow::bail!("artifact tree contains a multiply-linked file");
                 }
                 let relative = path
@@ -2770,20 +2829,21 @@ fn audit_published_tree(root: &Path, expected_paths: &BTreeSet<String>) -> Resul
     Ok(())
 }
 
+/// 하드링크 별칭이 있는지. Windows는 링크 수를 핸들에서만 읽을 수 있으므로 열지 못하면
+/// 판정 불가이며, 호출부가 모두 거부 조건으로 쓰므로 true(fail-closed)를 돌려준다.
 #[cfg(unix)]
-fn has_multiple_links(metadata: &fs::Metadata) -> bool {
+pub fn has_multiple_links(_path: &Path, metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt as _;
     metadata.nlink() > 1
 }
 
 #[cfg(windows)]
-fn has_multiple_links(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    metadata.number_of_links().is_some_and(|links| links > 1)
+pub fn has_multiple_links(path: &Path, _metadata: &fs::Metadata) -> bool {
+    windows_path_info(path).is_none_or(|info| info.links > 1)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn has_multiple_links(_metadata: &fs::Metadata) -> bool {
+pub fn has_multiple_links(_path: &Path, _metadata: &fs::Metadata) -> bool {
     false
 }
 
@@ -3039,9 +3099,10 @@ fn run_oracle(
     let Some(trusted) = TrustedOracleConfig::from_environment() else {
         return unavailable("trusted_runner_not_configured");
     };
-    #[cfg(not(unix))]
-    {
-        let _ = trusted;
+    // 오라클은 process group kill에 의존한다(unix 전용). cfg! 로 두어 양쪽 플랫폼에서
+    // 같은 코드가 컴파일되게 한다 — #[cfg] 블록이면 Windows에서 이후 문장이 죽어 경고가 난다.
+    if cfg!(not(unix)) {
+        let _ = (&trusted, input_snapshot, input_extension, stage_root);
         return unavailable("oracle_process_group_unavailable_on_platform");
     }
     if !trusted
@@ -3563,7 +3624,7 @@ fn audit_oracle_output(directory: &Path) -> Result<BTreeSet<String>> {
         if !allowed.contains(&name.as_str())
             || metadata.file_type().is_symlink()
             || !metadata.file_type().is_file()
-            || has_multiple_links(&metadata)
+            || has_multiple_links(&entry.path(), &metadata)
         {
             anyhow::bail!("oracle output violates fixed allowlist");
         }
@@ -3626,7 +3687,7 @@ fn validate_pdf_structure(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink()
         || !metadata.file_type().is_file()
-        || has_multiple_links(&metadata)
+        || has_multiple_links(path, &metadata)
         || metadata.len() < 16
         || metadata.len() > MAX_ARTIFACT_TOTAL_BYTES
     {
@@ -3817,6 +3878,8 @@ fn run_bounded_command(
         }
     }
     let mut child = command.spawn()?;
+    // process group kill(unix)에서만 쓴다. 다른 플랫폼은 child.kill() 경로.
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let pid = child.id();
     let stdout = child.stdout.take().context("missing child stdout")?;
     let stderr = child.stderr.take().context("missing child stderr")?;
@@ -3889,6 +3952,60 @@ fn digest_pipe(mut pipe: impl Read) -> Result<PipeDigest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "hwp-certify-{label}-{}-{}",
+            std::process::id(),
+            random_token().unwrap()
+        ));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    /// 하드링크 별칭 판정. Windows에서는 링크 수를 핸들에서만 읽을 수 있어 구현이 갈리므로
+    /// 두 플랫폼 모두에서 돌려 회귀를 잡는다.
+    #[test]
+    fn hardlink_alias_is_detected_and_plain_file_is_not() {
+        let plain = scratch("plain");
+        fs::write(&plain, b"payload").unwrap();
+        let metadata = fs::symlink_metadata(&plain).unwrap();
+        assert!(!has_multiple_links(&plain, &metadata));
+
+        let alias = scratch("alias");
+        fs::hard_link(&plain, &alias).unwrap();
+        let metadata = fs::symlink_metadata(&plain).unwrap();
+        assert!(has_multiple_links(&plain, &metadata));
+
+        fs::remove_file(&alias).unwrap();
+        fs::remove_file(&plain).unwrap();
+    }
+
+    /// 열어 둔 핸들과 경로의 동일성. 경로가 다른 파일로 교체되면 false여야 한다(TOCTOU 게이트).
+    #[test]
+    fn open_handle_stops_matching_a_replaced_path() {
+        let path = scratch("swap");
+        fs::write(&path, b"original").unwrap();
+        let opened = File::open(&path).unwrap();
+        assert!(open_file_still_matches_path(&opened, &path));
+
+        let replacement = scratch("swap-replacement");
+        fs::write(&replacement, b"replacement").unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        assert!(!open_file_still_matches_path(&opened, &path));
+
+        drop(opened);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn open_handle_does_not_match_a_missing_path() {
+        let path = scratch("removed");
+        fs::write(&path, b"payload").unwrap();
+        let opened = File::open(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(!open_file_still_matches_path(&opened, &path));
+    }
 
     fn policy_json(mode: &str) -> serde_json::Value {
         serde_json::json!({

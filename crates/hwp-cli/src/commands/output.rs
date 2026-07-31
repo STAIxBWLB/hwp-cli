@@ -545,6 +545,9 @@ impl StagedOutput {
             .with_context(|| format!("임시 출력 동기화 실패: {}", self.staged.display()))
     }
 
+    // Windows에서는 아래 cfg(windows) 블록이 함수의 마지막이라 조기 return이 tail로 보인다.
+    // 다른 플랫폼에서는 뒤에 cfg 블록이 더 있어 return이 필요하다.
+    #[cfg_attr(windows, allow(clippy::needless_return))]
     fn publish(&mut self) -> anyhow::Result<Option<String>> {
         recheck_destination(&self.destination, &self.snapshot)?;
 
@@ -1992,7 +1995,7 @@ fn windows_apply_inherited_dacl(
         }
         Ok(())
     })();
-    let destroyed = unsafe { DestroyPrivateObjectSecurity(&mut inherited_descriptor) };
+    let destroyed = unsafe { DestroyPrivateObjectSecurity(&inherited_descriptor) };
     if destroyed == 0 && result.is_ok() {
         return Err(std::io::Error::last_os_error())
             .context("Windows 임시 보안 설명자를 해제할 수 없습니다");
