@@ -597,12 +597,16 @@ impl StagedOutput {
                 }
                 DestinationSnapshot::Missing => {
                     windows_apply_parent_default_dacl(&self.staged, &self.destination, false)?;
-                    fs::rename(&self.staged, &self.destination).with_context(|| {
-                        format!(
-                            "검증된 임시 출력을 최종 경로에 게시하지 못했습니다: {}",
-                            self.destination.display()
-                        )
-                    })?;
+                    fs::rename(&self.staged, &self.destination)
+                        .map_err(|error| {
+                            std::io::Error::new(error.kind(), format!("rename: {error}"))
+                        })
+                        .with_context(|| {
+                            format!(
+                                "검증된 임시 출력을 최종 경로에 게시하지 못했습니다: {}",
+                                self.destination.display()
+                            )
+                        })?;
                     None
                 }
             };
@@ -1868,9 +1872,12 @@ fn windows_security_descriptor(path: &Path, requested_information: u32) -> anyho
         )
     };
     if loaded == 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
-            format!("Windows 보안 설명자를 읽을 수 없습니다: {}", path.display())
-        });
+        let error = std::io::Error::last_os_error();
+        return Err(std::io::Error::new(
+            error.kind(),
+            format!("GetFileSecurityW: {error}"),
+        ))
+        .with_context(|| format!("Windows 보안 설명자를 읽을 수 없습니다: {}", path.display()));
     }
     Ok(descriptor)
 }
@@ -2015,7 +2022,12 @@ fn windows_apply_inherited_dacl(
         )
     };
     if created == 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
+        let error = std::io::Error::last_os_error();
+        return Err(std::io::Error::new(
+            error.kind(),
+            format!("CreatePrivateObjectSecurityEx: {error}"),
+        ))
+        .with_context(|| {
             format!(
                 "부모 디렉터리에서 Windows 기본 ACL을 계산할 수 없습니다: {}",
                 parent.display()
@@ -2039,7 +2051,12 @@ fn windows_apply_inherited_dacl(
             )
         };
         if applied == 0 {
-            return Err(std::io::Error::last_os_error()).with_context(|| {
+            let error = std::io::Error::last_os_error();
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!("SetFileSecurityW: {error}"),
+            ))
+            .with_context(|| {
                 format!(
                     "새 출력에 부모 디렉터리의 Windows 기본 ACL을 적용할 수 없습니다: {}",
                     path.display()
