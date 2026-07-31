@@ -695,7 +695,11 @@ fn process_package(
 
     validate_staged_package(staged_guard.path(), limits)?;
     apply_destination_permissions(staged_guard.path(), &destination)?;
-    File::open(staged_guard.path())
+    // Windows의 FlushFileBuffers는 쓰기 권한을 요구한다 — 읽기 전용 핸들이면
+    // ERROR_ACCESS_DENIED가 난다(유닉스는 읽기 fd로도 fsync가 된다).
+    OpenOptions::new()
+        .write(true)
+        .open(staged_guard.path())
         .and_then(|file| file.sync_all())
         .map_err(|error| labeled_io("staged sync", error))?;
     recheck_destination(output, &destination)?;
