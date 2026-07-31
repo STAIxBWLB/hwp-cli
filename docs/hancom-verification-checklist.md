@@ -1,3 +1,5 @@
+[한국어](hancom-verification-checklist.md) · [English](hancom-verification-checklist.en.md)
+
 # 한글 실기 검증 체크리스트 (⑬~㉓ 쓰기 경로)
 
 `tools/gen_verification_set.sh`가 `~/Documents/hwp-verification/`에 생성하는 파일들을

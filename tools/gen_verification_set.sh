@@ -5,7 +5,7 @@
 # B(책갈피/하이퍼링크)·C(글자효과·요약정보, JSON IR 경유). 각 파일은 우리 리더로
 # 자체 재검증(재읽기 무경고 + C는 효과 보존 단언)한 뒤에만 통과 표시된다 — 깨진
 # 파일을 넘기지 않기 위함. 실제 한글 수용 여부는 사용자가 한컴오피스에서 열어
-# 확인(docs/실기검증-체크리스트.md).
+# 확인(docs/hancom-verification-checklist.md).
 #
 # 사용: tools/gen_verification_set.sh [대상디렉터리]
 set -uo pipefail
@@ -108,7 +108,7 @@ else
 fi
 
 # 체크리스트 사본.
-cp "$REPO/docs/실기검증-체크리스트.md" "$DEST/README.md" 2>/dev/null || true
+cp "$REPO/docs/hancom-verification-checklist.md" "$DEST/README.md" 2>/dev/null || true
 
 echo
 echo "=== 자체 검증 결과 (통과 $pass / 실패 $fail) ==="
