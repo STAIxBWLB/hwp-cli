@@ -2112,7 +2112,18 @@ fn audit_tree(root: &Path, manifest: &ArtifactManifest) -> Result<()> {
         })
         .collect::<BTreeSet<_>>();
     if observed_directories != expected_directories {
-        anyhow::bail!("corpus artifact directories do not match the closed manifest")
+        // 경로는 닫힌 manifest에서 온 산출물 이름이라 진단에 실어도 된다.
+        let unexpected = observed_directories
+            .difference(&expected_directories)
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing = expected_directories
+            .difference(&observed_directories)
+            .cloned()
+            .collect::<Vec<_>>();
+        anyhow::bail!(
+            "corpus artifact directories do not match the closed manifest (unexpected: {unexpected:?}, missing: {missing:?})"
+        )
     }
     Ok(())
 }

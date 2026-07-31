@@ -1338,7 +1338,10 @@ mod tests {
         let output = std::env::temp_dir().join(format!(
             "hwp-compose-mcp-dry-run-{}-{}.hwpx",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
         ));
         let result = tool_compose(&json!({
             "spec": {
@@ -1411,7 +1414,10 @@ mod tests {
         let output = std::env::temp_dir().join(format!(
             "hwp-template-mcp-dry-run-{}-{}.hwpx",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
         ));
         let _ = std::fs::remove_file(&output);
         let result = tool_template(&json!({

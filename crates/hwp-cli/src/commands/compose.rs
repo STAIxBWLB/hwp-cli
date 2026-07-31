@@ -338,7 +338,10 @@ mod tests {
         let output = std::env::temp_dir().join(format!(
             "hwp-compose-dry-run-{}-{}.hwpx",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
         ));
         let report = execute_text_with_source(
             MINIMAL_SPEC,
