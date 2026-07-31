@@ -1,0 +1,65 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "생성형 AI 활용 수업계획서",
+    "author": "hwp-cli structured corpus",
+    "subject": "대학 교육 문서"
+  },
+  "styles": {
+    "body": { "font_family": "Noto Sans KR", "font_size_pt": 10, "line_height_percent": 150 },
+    "title": { "based_on": "body", "font_size_pt": 16, "bold": true, "align": "center", "spacing_after_pt": 10 },
+    "label": { "based_on": "body", "bold": true, "align": "center" }
+  },
+  "sections": [
+    {
+      "blocks": [
+        { "type": "paragraph", "style": "title", "runs": [{ "type": "text", "text": "생성형 AI 활용 수업계획서" }] },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [{ "width_mm": 35 }, { "width_mm": 50 }, { "width_mm": 35 }, { "width_mm": 50 }],
+          "rows": [
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "교과목명" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "생성형 AI 활용" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "학점" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "3학점" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "담당교수" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "이영준" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "이수구분" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "전공선택" }] }] }
+            ] }
+          ]
+        },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "교과목 개요: 생성형 AI의 원리와 책임 있는 활용 방법을 프로젝트 기반으로 학습함." }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "학습성과 1. 실제 문제를 분석하고 적절한 AI 도구를 선택할 수 있음." }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "학습성과 2. 결과의 정확성, 편향, 저작권 위험을 검증할 수 있음." }] },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [{ "width_mm": 25 }, { "width_mm": 95 }, { "width_mm": 50 }],
+          "rows": [
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "주차" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "학습내용" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "수업방법" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "1" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "생성형 AI 개요와 윤리" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "강의·토론" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "2" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "프롬프트 설계와 검증" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "실습" }] }] }
+            ] }
+          ]
+        },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "평가방법: 프로젝트 50%, 실습 30%, 성찰보고서 20%" }] }
+      ]
+    }
+  ]
+}

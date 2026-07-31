@@ -1,0 +1,104 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "AI 교육혁신 협의회 개최 안내",
+    "author": "hwp-cli structured corpus",
+    "subject": "한국어 공문서"
+  },
+  "page": {
+    "width_mm": 210,
+    "height_mm": 297,
+    "margin_left_mm": 20,
+    "margin_right_mm": 20,
+    "margin_top_mm": 18,
+    "margin_bottom_mm": 18
+  },
+  "styles": {
+    "body": {
+      "font_family": "Noto Sans KR",
+      "font_size_pt": 10.5,
+      "line_height_percent": 160
+    },
+    "title": {
+      "based_on": "body",
+      "font_size_pt": 16,
+      "bold": true,
+      "align": "center",
+      "spacing_after_pt": 12
+    },
+    "label": {
+      "based_on": "body",
+      "bold": true
+    }
+  },
+  "sections": [
+    {
+      "footer": {
+        "default": [
+          {
+            "type": "paragraph",
+            "style": "body",
+            "runs": [{ "type": "text", "text": "제주한라대학교 AI혁신처" }]
+          }
+        ]
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "style": "title",
+          "runs": [{ "type": "text", "text": "제주한라대학교" }]
+        },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [{ "width_mm": 35 }, { "width_mm": 135 }],
+          "rows": [
+            {
+              "cells": [
+                { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "문서번호" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "AI혁신처-2026-0801" }] }] }
+              ]
+            },
+            {
+              "cells": [
+                { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "수신" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "교내 전 부서장" }] }] }
+              ]
+            },
+            {
+              "cells": [
+                { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "제목" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "AI 교육혁신 협의회 개최 안내" }] }] }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [{ "type": "text", "text": "1. 대학 교육의 AI 전환 과제를 협의하기 위하여 다음과 같이 회의를 개최하오니 참석하여 주시기 바랍니다." }]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [{ "type": "text", "text": "가. 일시: 2026. 8. 12.(수) 14:00" }]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [{ "type": "text", "text": "나. 장소: AI혁신처 회의실" }]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [{ "type": "text", "text": "다. 안건: 2026학년도 AI 교육혁신 실행계획" }]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [{ "type": "text", "text": "붙임  회의자료 1부.  끝." }]
+        }
+      ]
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use hwp_model::{Control, HwpChar};
+use hwp_model::{Control, HwpChar, Paragraph};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -53,6 +53,56 @@ fn minimal_추출() {
     assert_eq!(doc.header.fonts[0].len(), 2);
     assert_eq!(doc.header.fonts[0][0].name, "함초롬돋움");
     assert!(doc.header.styles.iter().any(|s| s.name == "바탕글"));
+}
+
+#[test]
+fn 정품_shapecomment_설명_승격() {
+    fn collect(paragraph: &Paragraph, descriptions: &mut Vec<String>) {
+        for control in &paragraph.controls {
+            match control {
+                Control::Picture(picture) => {
+                    if let Some(value) = &picture.description {
+                        descriptions.push(value.clone());
+                    }
+                }
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        for nested in &cell.paragraphs {
+                            collect(nested, descriptions);
+                        }
+                    }
+                }
+                Control::Generic(generic) => {
+                    descriptions.extend(
+                        generic
+                            .gso_shapes
+                            .iter()
+                            .filter_map(|shape| shape.description.clone()),
+                    );
+                    for list in &generic.paragraph_lists {
+                        for nested in &list.paragraphs {
+                            collect(nested, descriptions);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx");
+    let doc = hwpx::read_document(&path).unwrap().document;
+    let mut descriptions = Vec::new();
+    for section in &doc.sections {
+        for paragraph in &section.paragraphs {
+            collect(paragraph, &mut descriptions);
+        }
+    }
+    assert!(
+        descriptions.iter().any(|value| value == "사각형입니다."),
+        "정품 fixture shapeComment: {descriptions:?}"
+    );
 }
 
 #[test]

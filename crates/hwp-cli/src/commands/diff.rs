@@ -17,24 +17,20 @@ pub fn run(
     font_dirs: Vec<PathBuf>,
     tolerance: u8,
 ) -> anyhow::Result<()> {
+    let dpi = crate::commands::render::validated_dpi(dpi)?;
     let doc = load_document(input)?;
-    let result = hwp_render::render_document(
+    let result = hwp_render::render_document_pages(
         &doc,
         &hwp_render::RenderOptions {
-            dpi: dpi as f32,
+            dpi,
             font_dirs: crate::commands::convert::resolve_font_dirs(font_dirs),
         },
+        Some(&[page]),
     )?;
-    for line in &result.report {
-        eprintln!("렌더: {line}");
+    for issue in result.report.info.iter().chain(&result.report.issues) {
+        eprintln!("렌더: {issue}");
     }
-    if page == 0 || page > result.pages.len() {
-        anyhow::bail!(
-            "페이지 범위 오류: 문서 {}쪽, 요청 {page}",
-            result.pages.len()
-        );
-    }
-    let ours = &result.pages[page - 1];
+    let ours = &result.pages[0];
 
     let reference_px = hwp_render::load_png(reference)?;
 
@@ -59,9 +55,26 @@ pub fn run(
     let out_path = out
         .map(Path::to_path_buf)
         .unwrap_or_else(|| reference.with_extension("diff.png"));
-    diff_img
-        .save_png(&out_path)
-        .map_err(|e| anyhow::anyhow!("차이 이미지 저장 실패 ({}): {e}", out_path.display()))?;
+    let png = diff_img
+        .encode_png()
+        .map_err(|error| anyhow::anyhow!("차이 이미지 인코딩 실패: {error}"))?;
+    crate::commands::output::write_validated(
+        &out_path,
+        Some(input),
+        |staged| {
+            std::fs::write(staged, &png)?;
+            Ok(())
+        },
+        |staged, _| {
+            if std::fs::read(staged)? != png {
+                anyhow::bail!(
+                    "차이 이미지 출력 검증 중 바이트 불일치: {}",
+                    staged.display()
+                );
+            }
+            Ok(())
+        },
+    )?;
     eprintln!("차이 이미지: {}", out_path.display());
     Ok(())
 }

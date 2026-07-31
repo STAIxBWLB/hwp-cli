@@ -1,0 +1,45 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "AI 교육과정위원회 회의록",
+    "author": "hwp-cli structured corpus",
+    "subject": "회의록"
+  },
+  "styles": {
+    "body": { "font_family": "Noto Sans KR", "font_size_pt": 10.5, "line_height_percent": 155 },
+    "title": { "based_on": "body", "font_size_pt": 16, "bold": true, "align": "center", "spacing_after_pt": 10 },
+    "label": { "based_on": "body", "bold": true }
+  },
+  "sections": [
+    {
+      "blocks": [
+        { "type": "paragraph", "style": "title", "runs": [{ "type": "text", "text": "AI 교육과정위원회 회의록" }] },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [{ "width_mm": 35 }, { "width_mm": 135 }],
+          "rows": [
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "일시" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "2026. 8. 1.(토) 10:00-11:30" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "장소" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "AI융합교육실" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "참석자" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "위원장 이교수 외 5명" }] }] }
+            ] }
+          ]
+        },
+        { "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "안건 1. 생성형 AI 교과목 신설" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "논의 내용: 기초 공통교과와 전공 심화교과의 선수체계를 검토함." }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "의결 사항: 2027학년도 1학기부터 3학점 교과목으로 개설하기로 함." }] },
+        { "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "안건 2. 현장 프로젝트 평가기준" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "의결 사항: 문제정의 20%, 구현 40%, 검증 30%, 발표 10%로 확정함." }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "폐회: 11:30" }] }
+      ]
+    }
+  ]
+}

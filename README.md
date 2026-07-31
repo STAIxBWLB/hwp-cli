@@ -27,7 +27,7 @@
   보장한다(전체 fixture 게이트).
 - **AI 편집** — IR을 JSON으로 내보내 고치고 되쓰는 read→edit→rewrite 왕복. 텍스트 치환, 표 셀 설정,
   누름틀/필드 채우기를 이미지·서식·미해석 레코드를 보존한 채 인메모리로 적용한다.
-- **MCP 서버** — 의존성 없는(serde_json만) stdio MCP 서버로 12개 도구를 노출. 에이전트가 문서를
+- **MCP 서버** — 의존성 없는(serde_json만) stdio MCP 서버로 14개 도구를 노출. 에이전트가 문서를
   읽고·렌더해서 직접 보고·편집·변환한다.
 
 ## 현재 범위와 한계
@@ -224,16 +224,20 @@ hwp update
 |---|---|---|
 | `info <file>` | `--json` | 포맷/버전/속성/스트림 진단 |
 | `cat <file>` | `--format plain\|markdown\|json` (기본 `plain`), `--preview`, `--with-header-footer`, `--with-hidden`, `--with-segments`(md 전용) | 본문 추출. `--preview`는 본문 파싱 없이 PrvText만 출력. `--with-*`는 머리말/꼬리말·숨은 설명 포함(기본 제외). `--with-segments`는 markdown과 함께 각 출력 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 낸다(아래 [`--with-segments`](#--with-segments-추출-근거-좌표) 참고) |
-| `convert <input> -o <output>` | `--to hwp\|hwpx\|md\|json`(생략 시 확장자 추론), `--strict`(예약 — 현재 미동작), `--preserve-layout`, `--embed-bin`, `--media-dir <dir>`(md), `--with-header-footer`(md), `--with-hidden`(md) | 포맷 변환. 출력이 `.pdf`이면 렌더 경로로 위임(시스템 글꼴 사용 — 정밀 글꼴은 `render --font-dir` 권장). `--preserve-layout`는 무수정 왕복 전용 줄 배치 보존. `--embed-bin`은 JSON에 이미지 base64 임베드. md 출력은 `--media-dir figs`처럼 이미지 추출 디렉터리 지정 가능(기본 `<스템>.media`, 상대경로는 출력 파일 기준·링크는 Markdown에 안전하게 직렬화). `--strict`는 향후 보존 불가 데이터 발견 시 실패 처리 예정(현재는 동작하지 않음) |
-| `render <input> -o <output>` | `--pages "1"\|"1-3"\|"all"`(기본 `all`), `--dpi <f64>`(기본 96, 래스터 전용), `--format png\|svg\|pdf`(생략 시 확장자 추론), `--font-dir <dir>`(반복) | 페이지를 PNG/SVG(페이지별 파일)·PDF(단일 멀티페이지)로 렌더. 번호 목록은 형식 템플릿(`^1.`→"1.", `(^5)`→"(5)", `제^1조`→"제1조")을 적용 |
+| `convert <input> -o <output>` | `--to hwp\|hwpx\|md\|json`(생략 시 확장자 추론), `--strict`, `--preserve-layout`, `--embed-bin`, `--media-dir <dir>`(md), `--with-header-footer`(md), `--with-hidden`(md) | 포맷 변환. 출력이 `.pdf`이면 렌더 경로로 위임(시스템 글꼴 사용 — 정밀 글꼴은 `render --font-dir` 권장). `--preserve-layout`는 무수정 왕복 전용 줄 배치 보존. `--embed-bin`은 JSON에 이미지 base64 임베드. md 출력은 `--media-dir figs`처럼 이미지 추출 디렉터리 지정 가능(기본 `<스템>.media`, 상대경로는 출력 파일 기준·링크는 Markdown에 안전하게 직렬화). `--strict`는 HWP/HWPX 변환에서 보존 불가(`DROP:`) 데이터를 발견하면 destination을 게시하지 않고 실패 |
+| `render <input> -o <output>` | `--pages "1"\|"1-3"\|"all"`(기본 `all`), `--dpi <f64>`(기본 96, 유한한 36..=600), `--format png\|svg\|pdf`(생략 시 확장자 추론), `--font-dir <dir>`(반복) | 페이지를 PNG/SVG(페이지별 파일)·PDF(단일 멀티페이지)로 렌더. PNG/SVG 다중 페이지는 전체 파일 집합을 검증한 뒤 한 게시 단위로 교체하며, 후반 실패 시 기존 집합을 복원. 번호 목록은 형식 템플릿(`^1.`→"1.", `(^5)`→"(5)", `제^1조`→"제1조")을 적용 |
 | `new -o <output>` | `--from <md\|json>`(생략 시 빈 문서) | markdown/JSON IR에서 새 문서 생성. markdown 목록은 진짜 번호(NUMBER)/글머리(BULLET) 머리 문단으로 들여오고(중첩=수준), H1~H3 제목엔 절 번호(`1.`/`1-1.`/`1-1-1.`, 숫자 시작 제목은 생략)를 접두한다 |
+| `compose <spec> -o <output>` | `--format json\|yaml`(생략 시 확장자 추론), `--dry-run`, `--report`, `--allow-visual-fallback`(deprecated, v1 호환 전용) | DocumentSpec v1/v2 구조 문서를 HWP/HWPX로 deterministic 합성. v2 visual policy는 spec의 타겟별 설정이 SSOT이며 deprecated flag를 같이 주면 `policy_conflict`로 거부 |
+| `template <template> --data <data> -o <output>` | `--template-format json\|yaml`, `--data-format json\|yaml`, `--dry-run`, `--report` | TemplateSpec/Data v1의 typed AST를 bounded expansion해 native HWP/HWPX 생성. `reference_hwpx`는 기존 패키지의 지정 텍스트/필드만 외과적으로 채우며, 구조 재생성은 명시적 strict gate 필요 |
 | `edit <input> -o <output>` | `--replace "찾기=>바꾸기"`, `--set-cell "표:행:열=값"`(0-기반), `--set-field "이름=값"`, `--create-field "앵커=>이름"`(또는 `"앵커=>이름=값"`, %clk 누름틀 생성), `--insert-image "앵커=>경로"`(또는 `"앵커=>경로@너비x높이"`mm, png/jpg/bmp/gif 삽입), `--seal "앵커=>경로"`(또는 `"앵커=>경로@크기mm"`, 도장 이미지를 앵커 문구 위에 글 앞 부유 배치 — 기본 20mm), `--set-format "찾기:bold=on,size=16,color=#RRGGBB"`, `--set-align "찾기=left\|right\|center\|justify\|distribute\|divide"`, `--insert-para "앵커=>텍스트"`(앵커 문단 뒤), `--insert-para-before "앵커=>텍스트"`(앞), `--delete-para "텍스트"`, `--add-row "표"`, `--add-col "표"`(또는 `"표:위치"`), `--delete-row "표:행"`, `--delete-col "표:열"`, `--merge-cells "표:r1:c1:r2:c2"`(사각 영역 병합), `--split-cell "표:행:열"`(병합 해제), `--verify` (모두 반복 가능) | 기존 문서 편집. 텍스트·서식·구조(문단/표 행·열·셀 병합/분할) 편집. 삽입 문단·행은 앵커/템플릿 모양을 상속하고 합성 경로로 저장(불변식 적용). 표 인덱스는 **재귀 깊이 우선**(중첩 표 포함, --set-cell과 동일). 열 추가·삭제·셀 병합/분할은 **병합 셀 표도 지원**(정품 1,816개 실측 규칙 — 피병합 셀 생략·행 우선·병합 cellSz). `--add-col`은 전체 표 폭을 유지하며 기존 열을 균등 축소(잔차는 행 마지막 기존 셀); 위치 생략 시 표 끝에 추가. `--add-row`는 병합 없는 템플릿 행이 필요(없으면 거부). `--replace`만 있고 hwpx→hwpx이면 **패키지 보존 고속 경로**(미리보기·호환 블록 바이트 유지, 런 분절 교차 매칭 미지원). `--verify`는 쓰기 후 재읽기로 검증 |
 | `fields <file>` | `--json` | 필드/누름틀 목록(이름·종류·값·명령) |
 | `bookmarks <file>` | `--json` | 책갈피(bokm) 목록(이름) |
 | `slots <file>` | `--json` | `{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록 |
 | `fill <input> -o <output>` | `--set "이름=값"`(반복), `--data <json>`, `--json` | 충실도 보존 템플릿 채우기 — hwpx의 `{{name}}` 치환(패키지 보존). `--data`는 이름→값 JSON 객체 파일로 일괄 채움 |
 | `validate <file>` | `--json` | 구조 검증(mimetype·필수 엔트리·XML 파싱) — 유효 시 종료코드 0 |
-| `diff <input> --ref <png>` | `--page <n>`(기본 1), `--dpi <f64>`(기본 96), `-o/--out <png>`, `--font-dir <dir>`(반복), `--tolerance <u8>`(기본 16) | 렌더 결과를 한글 기준 PNG와 비교(잉크 적용률·dx/dy 오프셋·픽셀 차이율·MAE) |
+| `certify <input> --policy <file> --report <dir>` | versioned JSON/YAML policy | package·반복 import·bounded native render와 선택적 독립 import를 인증해 새 디렉터리를 원자적으로 게시. 상세 계약은 [Certification v1](docs/design/16-certification-v1.md) 참고 |
+| `corpus --manifest <file> --report <dir>` | frozen structured corpus v1 | 자체 작성 한국어 7종 문서를 HWPX/HWP로 각각 2회 생성하고 두 출력 모두 재개방·구조검증·native 인증. 명시된 OFL 폰트만 사용하며 결과/렌더 hash를 bounded 원자적 report로 게시. [코퍼스 계약](docs/design/17-structured-corpus-v1.md) 참고 |
+| `diff <input> --ref <png>` | `--page <n>`(기본 1), `--dpi <f64>`(기본 96, 유한한 36..=600), `-o/--out <png>`, `--font-dir <dir>`(반복), `--tolerance <u8>`(기본 16) | 렌더 결과를 한글 기준 PNG와 비교(잉크 적용률·dx/dy 오프셋·픽셀 차이율·MAE) |
 | `mcp` | `--font-dir <dir>`(반복) | MCP stdio 서버 실행 |
 | `update` | `--check`, `--tag <tag>`, `--force`, `--json` | 자체 업데이트 — 릴리스 아카이브를 받아(체크섬 대조) 실행 중인 바이너리 교체. brew 설치본은 `brew upgrade`에 위임 |
 | `dump <file>` | `--stream <name>`, `--raw`, `--json` | [개발자용] 레코드/패키지 구조 덤프 |
@@ -311,6 +315,33 @@ HWP 요소 → markdown 매핑:
 
 `--with-segments`는 markdown 전용이라 다른 `--format`이나 `--preview`와 함께 쓰면 에러가 난다.
 
+## DocumentSpec v1/v2 구조 문서 합성
+
+`compose`는 v1 JSON/YAML 명세를 문단·런·스타일·목록·표·수식·필드·머리말/꼬리말·쪽 번호·구역으로 컴파일한다. v2는 그 문서를 감싸고 접근성 설명이 포함된 이미지, 닫힌 SVG→PNG fallback, HWPX 네이티브 사각형 글상자를 더한다. v2 fallback policy는 `policy.hwp`/`policy.hwpx`에서 타겟별로 명시하며 생략 시 native-only로 실패한다.
+
+```bash
+# 쓰지 않고 닫힌 스키마, 참조, 표 span, 자산, 네이티브 지원 여부 확인
+hwp compose examples/document-spec-v1/basic.json \
+  -o /tmp/basic.hwpx --dry-run --report
+
+# 검증된 파일을 원자적으로 게시
+hwp compose examples/document-spec-v1/comprehensive.yaml \
+  -o /tmp/report.hwpx --report
+
+# v2 닫힌 SVG를 deterministic PNG로 합성
+hwp compose examples/document-spec-v2/basic.json \
+  -o /tmp/visual.hwpx --report
+```
+
+v1 SSOT는 [`document-spec-v1.schema.json`](schemas/document-spec-v1.schema.json)과 [`13-document-spec-v1.md`](docs/design/13-document-spec-v1.md), v2 SSOT는 [`document-spec-v2.schema.json`](schemas/document-spec-v2.schema.json), [`document-report-v2.schema.json`](schemas/document-report-v2.schema.json), [`15-document-spec-v2.md`](docs/design/15-document-spec-v2.md)다. 자산 경로는 명세 파일 디렉터리 기준의 relative normal component만 허용한다.
+
+`template`은 문자열 보간이나 표현식 실행 없이 typed `value`/`if`/`each` AST만 허용한다.
+예제는 [`examples/template-spec-v1/`](examples/template-spec-v1/), normative schema는
+[`template-spec-v1.schema.json`](schemas/template-spec-v1.schema.json),
+[`template-data-v1.schema.json`](schemas/template-data-v1.schema.json),
+[`template-report-v1.schema.json`](schemas/template-report-v1.schema.json)에 있다. 실행·보존 계약과
+고정 제한은 [`docs/design/14-template-spec-v1.md`](docs/design/14-template-spec-v1.md)를 따른다.
+
 ## JSON IR로 문서 재생성 (regen)
 
 기존 문서를 편집하지 않고 **처음부터 똑같이 신규 생성**할 수 있다 — JSON IR이 무손실
@@ -333,21 +364,23 @@ hwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
 서버**다(프로토콜 버전 `2024-11-05`). stdout은 프로토콜 전용이고 로그는 stderr로 나간다.
 Windows/한컴이 필요한 COM 자동화와 달리 크로스플랫폼 오픈 엔진으로 동작한다.
 
-### 노출 도구 (12종)
+### 노출 도구 (14종)
 
 | 도구 | 필수 인자 | 기능 |
 |---|---|---|
 | `hwp_info` | `path` | 포맷/버전/속성/스트림 진단(JSON) |
-| `hwp_read` | `path` (`format` = `plain`\|`markdown`\|`json`) | 본문 추출. `json`이면 전체 IR 구조 |
+| `hwp_read` | `path` (`format`, `offset`, `max_bytes`) | 본문 추출. `json`이면 전체 IR 구조. UTF-8 byte 단위 페이지네이션이며 기본 256 KiB, 호출당 최대 1 MiB |
 | `hwp_list_fields` | `path` | 필드/누름틀 목록(이름·종류·값·명령) |
 | `hwp_list_bookmarks` | `path` | 책갈피(bokm) 목록(이름) |
-| `hwp_render` | `path` (`page`, `dpi`, `font_dir`) | 지정 페이지를 **PNG 이미지로 반환** — 에이전트가 문서를 직접 본다 |
-| `hwp_edit` | `input`, `output` (`replace[]`, `set_cell[]`, `set_field[]`) | 텍스트 치환·표 셀 설정·필드 채우기 후 되쓰기(이미지·서식 보존) |
-| `hwp_convert` | `input`, `output` (`embed_bin`) | 포맷 변환(확장자로 결정) |
-| `hwp_new` | `output` (`markdown` 또는 `json`) | markdown/JSON IR에서 새 문서 생성 |
-| `hwp_diff` | `input`, `ref` (`page`, `dpi`, `font_dir`) | 렌더 결과를 기준 PNG와 비교(잉크 적용률·오프셋·픽셀 차이율) |
+| `hwp_render` | `path` (`page`, `dpi`, `font_dir`) | 지정 페이지만 PNG로 렌더해 반환. `dpi`는 유한한 36..=600, 응답 PNG는 최대 16 MiB |
+| `hwp_edit` | `input`, `output` (편집 배열, `allow_partial`) | typed JSON 작업으로 치환, 셀·필드·metadata, 책갈피·링크·이미지·도장, 서식·정렬·문단, 표 행/열/병합을 strict atomic 편집. `add_col[].at`은 0-기반 삽입 위치 |
+| `hwp_convert` | `input`, `output` (`embed_bin`, `strict`) | 포맷 변환(확장자로 결정). MCP의 `strict` 기본값은 true |
+| `hwp_new` | `output` (`markdown` 또는 `json`, `set_meta[]`) | markdown/JSON IR과 metadata에서 새 문서 생성 |
+| `hwp_compose` | `output`, `spec` 또는 `spec_path` (`format`, `base_dir`, `dry_run`, `allow_visual_fallback`) | DocumentSpec v1/v2 객체/JSON/YAML을 CLI와 같은 deterministic·strict·atomic 경로로 HWP/HWPX 합성. `allow_visual_fallback`은 deprecated v1 호환 전용이며 v2에서는 `policy_conflict` |
+| `hwp_template` | `output`, `template` 또는 `template_path`, `data` 또는 `data_path` (`template_format`, `data_format`, `base_dir`, `dry_run`) | TemplateSpec/Data v1을 CLI와 같은 bounded·deterministic·strict 경로로 확장. reference fill은 package-surgical 보존 및 단일 source/destination snapshot 사용 |
+| `hwp_diff` | `input`, `ref` (`page`, `dpi`, `font_dir`) | 지정 페이지만 렌더해 기준 PNG와 비교. `dpi`는 유한한 36..=600 |
 | `hwp_slots` | `path` | `{{name}}` 자리표시자(템플릿 슬롯) 목록을 등장 순서로 |
-| `hwp_fill` | `input`, `output`, `values` | hwpx 템플릿의 `{{name}}` 치환(패키지·미리보기 보존, hwpx 전용) |
+| `hwp_fill` | `input`, `output`, `values` (`allow_partial`) | hwpx 템플릿의 `{{name}}` 치환(패키지·미리보기 보존, hwpx 전용). 기본은 미발견 키 하나라도 있으면 실패 |
 | `hwp_validate` | `path` | 구조 검증(mimetype·필수 엔트리·XML 파싱) — `{valid, errors, warnings}` |
 
 ### 클라이언트 설정 예

@@ -98,6 +98,40 @@ fn 패키지_mimetype_규칙() {
     assert_eq!(mime, "application/hwp+zip");
 }
 
+/// 같은 IR은 실행 시각과 출력 경로가 달라도 byte-identical HWPX여야 한다.
+/// ZIP writer 기본값이 현재 시각으로 바뀌어도 회귀하지 않도록 DOS epoch도 직접 확인한다.
+#[test]
+fn 새_패키지는_시간과_경로에_무관하게_결정적() {
+    let doc = hwp_convert::from_markdown("# 결정적 합성\n\n같은 입력은 같은 출력이어야 한다.\n");
+    let first = tmp("deterministic-first.hwpx");
+    let second = tmp("deterministic-second.hwpx");
+
+    hwpx::write_document(&doc, &first).unwrap();
+    // DOS timestamp 해상도(2초)를 넘겨 현재 시각 기반 기본값의 false green을 막는다.
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    hwpx::write_document(&doc, &second).unwrap();
+
+    assert_eq!(
+        std::fs::read(&first).unwrap(),
+        std::fs::read(&second).unwrap(),
+        "동일 IR의 HWPX package bytes"
+    );
+
+    for path in [&first, &second] {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index).unwrap();
+            assert_eq!(
+                entry.last_modified(),
+                Some(zip::DateTime::default()),
+                "{} timestamp",
+                entry.name()
+            );
+        }
+    }
+}
+
 /// markdown → hwpx → markdown 왕복: 구조 보존.
 #[test]
 fn markdown_생성_왕복() {
@@ -211,6 +245,7 @@ fn 부유_그림_배치_hwpx_방출() {
                 p.vert_offset = 5000;
                 p.horz_offset = 3000;
                 p.z_order = 7;
+                p.description = Some("제목 & <대체> 😀".to_string());
             }
         }
     }
@@ -240,6 +275,24 @@ fn 부유_그림_배치_hwpx_방출() {
         xml.contains(r#"treatAsChar="0""#),
         "부유(treatAsChar=0) 방출: {xml}"
     );
+    let picture_comment = "<hp:shapeComment>제목 &amp; &lt;대체&gt; 😀</hp:shapeComment>";
+    let comment_at = xml.find(picture_comment).expect("그림 설명 XML escape");
+    let out_margin_at = xml[..comment_at]
+        .rfind("<hp:outMargin ")
+        .expect("그림 outMargin");
+    let close_at = comment_at + xml[comment_at..].find("</hp:pic>").expect("그림 닫는 태그");
+    assert!(out_margin_at < comment_at && comment_at < close_at);
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let description = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Picture(picture) => picture.description.as_deref(),
+            _ => None,
+        });
+    assert_eq!(description, Some("제목 & <대체> 😀"));
 }
 
 /// GI-1/GI-2 왕복 (b): md(각주·취소선·순서목록·중첩) → hwpx 저장 → 재읽기 → md.
@@ -1413,6 +1466,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         arrow_start: 0,
         arrow_end: 0,
         anchored: false,
+        description: Some("사각형 설명".to_string()),
     };
     let poly = ShapeGeom {
         kind: ShapeKind::Polygon,
@@ -1430,6 +1484,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         arrow_start: 0,
         arrow_end: 0,
         anchored: false,
+        description: Some("다각형 설명".to_string()),
     };
     let gso = GenericControl {
         ctrl_id: *b"rect",
@@ -1446,6 +1501,31 @@ fn 도형_shapegeom_hwpx_왕복() {
     let out = tmp("gso_shapes.hwpx");
     let warnings = hwpx::write_document(&doc, &out).unwrap();
     assert!(!warnings.iter().any(|w| w.contains("DROP")), "{warnings:?}");
+
+    let bytes = std::fs::read(&out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut xml = String::new();
+    zip.by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    for (comment, close) in [
+        (
+            "<hp:shapeComment>사각형 설명</hp:shapeComment>",
+            "</hp:rect>",
+        ),
+        (
+            "<hp:shapeComment>다각형 설명</hp:shapeComment>",
+            "</hp:polygon>",
+        ),
+    ] {
+        let comment_at = xml.find(comment).expect("도형 shapeComment");
+        let out_margin_at = xml[..comment_at]
+            .rfind("<hp:outMargin ")
+            .expect("도형 outMargin");
+        let close_at = comment_at + xml[comment_at..].find(close).expect("도형 닫는 태그");
+        assert!(out_margin_at < comment_at && comment_at < close_at);
+    }
 
     let reread = hwpx::read_document(&out).unwrap().document;
     let shapes: Vec<&ShapeGeom> = reread.sections[0]
@@ -1465,11 +1545,13 @@ fn 도형_shapegeom_hwpx_왕복() {
     assert_eq!(r.border_width, rect.border_width);
     assert_eq!(r.border_style, rect.border_style);
     assert_eq!(r.round_ratio, rect.round_ratio);
+    assert_eq!(r.description, rect.description);
     let p = shapes
         .iter()
         .find(|s| s.kind == ShapeKind::Polygon)
         .unwrap();
     assert_eq!(p.points, poly.points, "폴리곤 점 왕복");
+    assert_eq!(p.description, poly.description);
 }
 
 /// hwp5-출신 장식 도형(텍스트 없는 gso)이 hwpx 도형 요소로 왕복된다 — 실쌍 바이트
@@ -1495,6 +1577,12 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
     data[0..4].copy_from_slice(&0x042a_2211u32.to_le_bytes());
     data[12..16].copy_from_slice(&49608i32.to_le_bytes());
     data[16..20].copy_from_slice(&4i32.to_le_bytes());
+    let description = "HWP 장식 & <선> 😀";
+    let encoded = description.encode_utf16().collect::<Vec<_>>();
+    data.extend_from_slice(&(encoded.len() as u16).to_le_bytes());
+    for unit in encoded {
+        data.extend_from_slice(&unit.to_le_bytes());
+    }
     let gso = GenericControl {
         ctrl_id: *b"gso ",
         data,
@@ -1539,6 +1627,10 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
         xml.contains(r#"vertRelTo="PARA" horzRelTo="COLUMN""#),
         "배치 역매핑: {xml}"
     );
+    assert!(
+        xml.contains("<hp:shapeComment>HWP 장식 &amp; &lt;선&gt; 😀</hp:shapeComment>"),
+        "HWP GSO 설명 승격: {xml}"
+    );
 
     // 재읽기 → 도형 기하 복원.
     let reread = hwpx::read_document(&out).unwrap().document;
@@ -1554,6 +1646,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
     assert_eq!(s.kind, ShapeKind::Line);
     assert_eq!((s.w, s.h), (49608, 4));
     assert_eq!(s.border_width, 32);
+    assert_eq!(s.description.as_deref(), Some(description));
     // 글자처럼취급(gso attr bit0=1)이 anchored로 복원 — 재렌더 시 흐름 위치 배치의 근거.
     assert!(s.anchored, "treatAsChar=1 → anchored");
 }

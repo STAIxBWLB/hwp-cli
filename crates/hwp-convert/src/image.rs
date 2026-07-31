@@ -214,6 +214,7 @@ pub fn insert_image(
         z_order: 0,
         vert_offset: 0,
         horz_offset: 0,
+        description: None,
         bin_ref: BinRef::ItemRef(name.clone()),
         extras: Vec::new(),
     };
@@ -275,6 +276,7 @@ fn insert_seal_in_para(
         z_order: SEAL_Z_ORDER,
         vert_offset: vert,
         horz_offset: horz.max(0),
+        description: None,
         bin_ref: BinRef::ItemRef(name.to_string()),
         extras: Vec::new(),
     };

@@ -3,7 +3,13 @@
 //! 글리프 윤곽선을 ttf-parser(rustybuzz 재수출)로 추출해 tiny-skia
 //! Path로 채운다. 합성 굵게 = fill+stroke, 합성 기울임 = skew 변환.
 
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::sync::Arc;
+
+use image::{ImageFormat, ImageReader, Limits};
 use rustybuzz::ttf_parser;
+use sha2::{Digest as _, Sha256};
 use tiny_skia::{
     Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point,
     RadialGradient, Shader, SpreadMode, Stroke, Transform,
@@ -11,18 +17,117 @@ use tiny_skia::{
 
 use crate::display::{DisplayList, Fill, Gradient, Item, PageList, PathCmd, path_bbox};
 use crate::error::RenderError;
+use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 
 /// 기울임 시뮬레이션 각도의 탄젠트 (≈12°).
 const ITALIC_SKEW: f32 = 0.2126;
+const MAX_RASTER_DIMENSION: u32 = 16_384;
+const MAX_RASTER_PIXELS: u64 = 32 * 1024 * 1024;
+const MAX_TOTAL_RASTER_PIXELS: u64 = 64 * 1024 * 1024;
+const MAX_SOURCE_IMAGE_DIMENSION: u32 = 8_192;
+const MAX_SOURCE_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
+const MAX_SOURCE_IMAGE_DECODED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_TOTAL_UNIQUE_IMAGE_PIXELS: u64 = 32 * 1024 * 1024;
+const MAX_TOTAL_UNIQUE_IMAGE_DECODED_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_IMAGE_REFERENCES: u64 = 100_000;
 
 pub fn render_png(list: &DisplayList, dpi: f32) -> Result<Vec<Pixmap>, RenderError> {
-    list.pages.iter().map(|p| render_page(p, dpi)).collect()
+    let mut issues = RenderIssueAccumulator::new();
+    render_png_pages_with_issues(list, dpi, None, &mut issues)
 }
 
-fn render_page(page: &PageList, dpi: f32) -> Result<Pixmap, RenderError> {
+/// 선택한 1-기반 페이지 번호만 래스터화한다. `None`이면 전체 페이지.
+///
+/// 레이아웃은 전체 문서 구조를 확인하지만 Pixmap은 선택된 페이지만 만들며, 선택 집합의
+/// 총 픽셀 수도 제한해 긴 문서가 페이지별 상한을 우회해 메모리를 소진하지 못하게 한다.
+pub fn render_png_pages(
+    list: &DisplayList,
+    dpi: f32,
+    pages: Option<&[usize]>,
+) -> Result<Vec<Pixmap>, RenderError> {
+    let mut issues = RenderIssueAccumulator::new();
+    render_png_pages_with_issues(list, dpi, pages, &mut issues)
+}
+
+pub fn render_png_pages_with_issues(
+    list: &DisplayList,
+    dpi: f32,
+    pages: Option<&[usize]>,
+    issues: &mut RenderIssueAccumulator,
+) -> Result<Vec<Pixmap>, RenderError> {
+    crate::validate_dpi(dpi)?;
+    let selected = match pages {
+        Some(pages) => pages.to_vec(),
+        None => (1..=list.pages.len()).collect(),
+    };
+    let mut total_pixels = 0_u64;
+    let mut dimensions = Vec::with_capacity(selected.len());
+    for &page_number in &selected {
+        let page = list.pages.get(page_number.wrapping_sub(1)).ok_or_else(|| {
+            RenderError::Backend(format!(
+                "페이지 범위 오류: 문서 {}쪽, 요청 {page_number}",
+                list.pages.len()
+            ))
+        })?;
+        let (width, height) = raster_dimensions(page, dpi)?;
+        total_pixels = total_pixels
+            .checked_add(u64::from(width) * u64::from(height))
+            .ok_or_else(|| RenderError::Backend("전체 픽셀 수 계산이 넘쳤습니다".to_string()))?;
+        if total_pixels > MAX_TOTAL_RASTER_PIXELS {
+            return Err(RenderError::Backend(format!(
+                "선택 페이지 래스터가 총 픽셀 상한 {MAX_TOTAL_RASTER_PIXELS}개를 초과합니다: {total_pixels}"
+            )));
+        }
+        dimensions.push((page, width, height));
+    }
+    let mut images = ImageDecodeContext::default();
+    let mut rendered = Vec::with_capacity(dimensions.len());
+    for (page, width, height) in dimensions {
+        rendered.push(render_page(page, dpi, width, height, issues, &mut images)?);
+    }
+    Ok(rendered)
+}
+
+fn raster_dimensions(page: &PageList, dpi: f32) -> Result<(u32, u32), RenderError> {
+    crate::validate_dpi(dpi)?;
     let px_scale = dpi / 72.0;
-    let w = (page.width_pt * px_scale).ceil().max(1.0) as u32;
-    let h = (page.height_pt * px_scale).ceil().max(1.0) as u32;
+    let dimension = |points: f32, label: &str| -> Result<u32, RenderError> {
+        let pixels = f64::from(points) * f64::from(px_scale);
+        if !points.is_finite() || points <= 0.0 || !pixels.is_finite() || pixels <= 0.0 {
+            return Err(RenderError::Backend(format!(
+                "페이지 {label}가 유효한 양의 유한값이 아닙니다: {points}pt"
+            )));
+        }
+        let pixels = pixels.ceil();
+        if pixels > f64::from(MAX_RASTER_DIMENSION) {
+            return Err(RenderError::Backend(format!(
+                "페이지 {label}가 래스터 상한 {MAX_RASTER_DIMENSION}px을 초과합니다: {pixels}px"
+            )));
+        }
+        Ok(pixels as u32)
+    };
+    let w = dimension(page.width_pt, "너비")?;
+    let h = dimension(page.height_pt, "높이")?;
+    let pixels = u64::from(w)
+        .checked_mul(u64::from(h))
+        .ok_or_else(|| RenderError::Backend("페이지 픽셀 수 계산이 넘쳤습니다".to_string()))?;
+    if pixels > MAX_RASTER_PIXELS {
+        return Err(RenderError::Backend(format!(
+            "페이지 래스터가 픽셀 상한 {MAX_RASTER_PIXELS}개를 초과합니다: {w}x{h}={pixels}"
+        )));
+    }
+    Ok((w, h))
+}
+
+fn render_page(
+    page: &PageList,
+    dpi: f32,
+    w: u32,
+    h: u32,
+    issues: &mut RenderIssueAccumulator,
+    images: &mut ImageDecodeContext,
+) -> Result<Pixmap, RenderError> {
+    let px_scale = dpi / 72.0;
     let mut pixmap =
         Pixmap::new(w, h).ok_or_else(|| RenderError::Backend("Pixmap 생성 실패".to_string()))?;
     pixmap.fill(Color::WHITE);
@@ -84,7 +189,7 @@ fn render_page(page: &PageList, dpi: f32) -> Result<Pixmap, RenderError> {
                 h: ih,
                 data,
             } => {
-                match decode_image(data) {
+                match images.decode(data, issues)? {
                     Some(src) => {
                         let sx = (iw * px_scale) / src.width() as f32;
                         let sy = (ih * px_scale) / src.height() as f32;
@@ -93,13 +198,14 @@ fn render_page(page: &PageList, dpi: f32) -> Result<Pixmap, RenderError> {
                         pixmap.draw_pixmap(
                             0,
                             0,
-                            src.as_ref(),
+                            src.as_ref().as_ref(),
                             &tiny_skia::PixmapPaint::default(),
                             t,
                             None,
                         );
                     }
                     None => {
+                        issues.push(RenderIssueCode::ImageDecodePlaceholder, b"png");
                         // 디코드 실패: 자홍색 placeholder (조용한 누락 금지)
                         if let Some(rect) = tiny_skia::Rect::from_xywh(
                             *x * px_scale,
@@ -265,20 +371,151 @@ fn gradient_shader(g: &Gradient, cmds: &[PathCmd], px_scale: f32) -> Option<Shad
 }
 
 /// 인코딩된 이미지를 tiny-skia Pixmap으로 디코드한다 (premultiplied RGBA).
-fn decode_image(data: &[u8]) -> Option<Pixmap> {
-    let img = image::load_from_memory(data).ok()?.to_rgba8();
-    let (w, h) = img.dimensions();
-    let mut pixmap = Pixmap::new(w, h)?;
-    for (dst, src) in pixmap.pixels_mut().iter_mut().zip(img.pixels()) {
-        let [r, g, b, a] = src.0;
-        *dst = tiny_skia::PremultipliedColorU8::from_rgba(
-            (u16::from(r) * u16::from(a) / 255) as u8,
-            (u16::from(g) * u16::from(a) / 255) as u8,
-            (u16::from(b) * u16::from(a) / 255) as u8,
-            a,
-        )?;
+#[derive(Default)]
+struct ImageDecodeContext {
+    identity_keys: HashMap<(usize, usize), (String, String)>,
+    decoded: HashMap<(String, String), Option<Arc<Pixmap>>>,
+    unique_pixels: u64,
+    unique_decoded_bytes: u64,
+    references: u64,
+}
+
+impl ImageDecodeContext {
+    fn decode(
+        &mut self,
+        data: &Arc<Vec<u8>>,
+        issues: &mut RenderIssueAccumulator,
+    ) -> Result<Option<Arc<Pixmap>>, RenderError> {
+        self.references = self.references.saturating_add(1);
+        if self.references > MAX_IMAGE_REFERENCES {
+            return image_budget_error(issues, "references");
+        }
+        let identity = (data.as_ptr() as usize, data.len());
+        let key = if let Some(key) = self.identity_keys.get(&identity) {
+            key.clone()
+        } else {
+            let digest = hex_digest(Sha256::digest(data.as_slice()).as_slice());
+            let format = image::guess_format(data)
+                .map(image_format_key)
+                .unwrap_or("unknown")
+                .to_string();
+            let key = (digest, format);
+            self.identity_keys.insert(identity, key.clone());
+            key
+        };
+        if let Some(cached) = self.decoded.get(&key) {
+            return Ok(cached.clone());
+        }
+
+        let mut dimensions_reader =
+            match ImageReader::new(Cursor::new(data.as_slice())).with_guessed_format() {
+                Ok(reader) => reader,
+                Err(_) => {
+                    self.decoded.insert(key, None);
+                    return Ok(None);
+                }
+            };
+        dimensions_reader.limits(image_limits());
+        let (width, height) = match dimensions_reader.into_dimensions() {
+            Ok(dimensions) => dimensions,
+            Err(image::ImageError::Limits(_)) => {
+                return image_budget_error(issues, "dimensions");
+            }
+            Err(_) => {
+                self.decoded.insert(key, None);
+                return Ok(None);
+            }
+        };
+        let pixels = u64::from(width) * u64::from(height);
+        let decoded_bytes = pixels * 4;
+        if width > MAX_SOURCE_IMAGE_DIMENSION
+            || height > MAX_SOURCE_IMAGE_DIMENSION
+            || pixels > MAX_SOURCE_IMAGE_PIXELS
+            || decoded_bytes > MAX_SOURCE_IMAGE_DECODED_BYTES
+        {
+            return image_budget_error(issues, "source_dimensions");
+        }
+        let next_pixels = self.unique_pixels.saturating_add(pixels);
+        let next_bytes = self.unique_decoded_bytes.saturating_add(decoded_bytes);
+        if next_pixels > MAX_TOTAL_UNIQUE_IMAGE_PIXELS
+            || next_bytes > MAX_TOTAL_UNIQUE_IMAGE_DECODED_BYTES
+        {
+            return image_budget_error(issues, "aggregate");
+        }
+
+        let mut reader = match ImageReader::new(Cursor::new(data.as_slice())).with_guessed_format()
+        {
+            Ok(reader) => reader,
+            Err(_) => {
+                self.decoded.insert(key, None);
+                return Ok(None);
+            }
+        };
+        reader.limits(image_limits());
+        let dynamic = match reader.decode() {
+            Ok(image) => image,
+            Err(image::ImageError::Limits(_)) => {
+                return image_budget_error(issues, "decoder_allocation");
+            }
+            Err(_) => {
+                self.decoded.insert(key, None);
+                return Ok(None);
+            }
+        };
+        let mut rgba = dynamic.into_rgba8().into_raw();
+        for pixel in rgba.chunks_exact_mut(4) {
+            let alpha = u16::from(pixel[3]);
+            pixel[0] = (u16::from(pixel[0]) * alpha / 255) as u8;
+            pixel[1] = (u16::from(pixel[1]) * alpha / 255) as u8;
+            pixel[2] = (u16::from(pixel[2]) * alpha / 255) as u8;
+        }
+        let Some(size) = tiny_skia::IntSize::from_wh(width, height) else {
+            return image_budget_error(issues, "dimensions");
+        };
+        let Some(pixmap) = Pixmap::from_vec(rgba, size) else {
+            return image_budget_error(issues, "pixmap_allocation");
+        };
+        self.unique_pixels = next_pixels;
+        self.unique_decoded_bytes = next_bytes;
+        let pixmap = Arc::new(pixmap);
+        self.decoded.insert(key, Some(pixmap.clone()));
+        Ok(Some(pixmap))
     }
-    Some(pixmap)
+}
+
+fn image_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_SOURCE_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_SOURCE_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_SOURCE_IMAGE_DECODED_BYTES);
+    limits
+}
+
+fn image_format_key(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpeg",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Bmp => "bmp",
+        _ => "other",
+    }
+}
+
+fn image_budget_error<T>(
+    issues: &mut RenderIssueAccumulator,
+    reason: &'static str,
+) -> Result<T, RenderError> {
+    issues.push_once(
+        RenderIssueCode::ImageDecodeBudgetExceeded,
+        reason.as_bytes(),
+    );
+    Err(RenderError::ImageDecodeBudgetExceeded {
+        resource: reason.to_string(),
+    })
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// 글리프 런 하나를 (x, y) 베이스라인에 그린다. (dx, dy) 평행이동(그림자용),
@@ -371,5 +608,138 @@ impl ttf_parser::OutlineBuilder for OutlinePath {
     }
     fn close(&mut self) {
         self.path.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::{DisplayList, PageList};
+
+    fn encoded(format: ImageFormat) -> Vec<u8> {
+        let image = image::DynamicImage::new_rgba8(1, 1);
+        let mut cursor = Cursor::new(Vec::new());
+        image.write_to(&mut cursor, format).unwrap();
+        cursor.into_inner()
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
+            }
+        }
+        !crc
+    }
+
+    fn huge_png() -> Vec<u8> {
+        let mut png = encoded(ImageFormat::Png);
+        png[16..20].copy_from_slice(&9_000u32.to_be_bytes());
+        png[20..24].copy_from_slice(&9_000u32.to_be_bytes());
+        let crc = crc32(&png[12..29]);
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        png
+    }
+
+    fn huge_jpeg() -> Vec<u8> {
+        let mut jpeg = encoded(ImageFormat::Jpeg);
+        let sof = jpeg
+            .windows(2)
+            .position(|bytes| matches!(bytes, [0xff, 0xc0] | [0xff, 0xc2]))
+            .expect("JPEG SOF");
+        jpeg[sof + 5..sof + 7].copy_from_slice(&9_000u16.to_be_bytes());
+        jpeg[sof + 7..sof + 9].copy_from_slice(&9_000u16.to_be_bytes());
+        jpeg
+    }
+
+    fn page(width_pt: f32, height_pt: f32) -> DisplayList {
+        DisplayList {
+            pages: vec![PageList {
+                width_pt,
+                height_pt,
+                items: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn rejects_non_finite_and_out_of_range_dpi() {
+        let normal = page(100.0, 100.0);
+        for dpi in [0.0, -1.0, f32::NAN, f32::INFINITY, crate::MAX_DPI + 1.0] {
+            assert!(render_png(&normal, dpi).is_err(), "dpi={dpi}");
+        }
+    }
+
+    #[test]
+    fn rejects_huge_page_before_pixmap_allocation() {
+        let huge = page(f32::MAX, 100.0);
+        let error = render_png(&huge, 96.0).unwrap_err().to_string();
+        assert!(
+            error.contains("래스터 상한") || error.contains("유효한"),
+            "{error}"
+        );
+
+        let too_many_pixels = page(10_000.0, 10_000.0);
+        let error = render_png(&too_many_pixels, 96.0).unwrap_err().to_string();
+        assert!(error.contains("픽셀 상한"), "{error}");
+    }
+
+    #[test]
+    fn selected_page_render_avoids_unselected_aggregate_budget() {
+        let list = DisplayList {
+            pages: (0..135)
+                .map(|_| PageList {
+                    width_pt: 1_024.0,
+                    height_pt: 1_024.0,
+                    items: Vec::new(),
+                })
+                .collect(),
+        };
+        assert!(render_png_pages(&list, 72.0, None).is_err());
+        let selected = render_png_pages(&list, 72.0, Some(&[2])).unwrap();
+        assert_eq!(selected.len(), 1);
+    }
+
+    #[test]
+    fn tiny_encoded_huge_dimension_png_and_jpeg_fail_before_decode() {
+        for bytes in [huge_png(), huge_jpeg()] {
+            assert!(bytes.len() < 1024);
+            let mut context = ImageDecodeContext::default();
+            let mut issues = RenderIssueAccumulator::new();
+            let error = context.decode(&Arc::new(bytes), &mut issues).unwrap_err();
+            assert!(matches!(
+                error,
+                RenderError::ImageDecodeBudgetExceeded { .. }
+            ));
+            let report = issues.finish();
+            assert_eq!(report.issue_count, 1);
+            assert_eq!(
+                report.issues[0].code,
+                RenderIssueCode::ImageDecodeBudgetExceeded
+            );
+        }
+    }
+
+    #[test]
+    fn twenty_thousand_equal_image_references_decode_once() {
+        let bytes = encoded(ImageFormat::Png);
+        let first = Arc::new(bytes.clone());
+        let duplicate_arc = Arc::new(bytes);
+        let mut context = ImageDecodeContext::default();
+        let mut issues = RenderIssueAccumulator::new();
+        for index in 0..20_000 {
+            let source = if index % 2 == 0 {
+                &first
+            } else {
+                &duplicate_arc
+            };
+            assert!(context.decode(source, &mut issues).unwrap().is_some());
+        }
+        assert_eq!(context.references, 20_000);
+        assert_eq!(context.decoded.len(), 1);
+        assert_eq!(context.unique_pixels, 1);
+        assert_eq!(context.unique_decoded_bytes, 4);
     }
 }

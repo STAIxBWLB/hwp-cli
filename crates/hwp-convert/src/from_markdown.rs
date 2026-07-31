@@ -193,6 +193,22 @@ pub fn default_header() -> hwp_model::DocHeader {
             children: Vec::new(),
         },
     ];
+    // HWPX writer/렌더러가 사용하는 의미 사본. raw TAB_DEF와 같은 순서로 좌/중/우
+    // 자동 탭 속성을 채워 교차 저장에서도 사용자 의미가 기본값으로 소실되지 않게 한다.
+    header.tab_stops = vec![
+        hwp_model::TabDef {
+            attr: 0,
+            items: Vec::new(),
+        },
+        hwp_model::TabDef {
+            attr: 1,
+            items: Vec::new(),
+        },
+        hwp_model::TabDef {
+            attr: 2,
+            items: Vec::new(),
+        },
+    ];
 
     // 0 기본·표 셀(양쪽, 간격 없음), 1 제목(왼쪽 + 위/아래 간격), 2 본문(양쪽 + 아래 간격).
     //
@@ -830,6 +846,7 @@ impl Builder {
                     z_order: 0,
                     vert_offset: 0,
                     horz_offset: 0,
+                    description: None,
                     bin_ref: BinRef::ItemRef(name.clone()),
                     extras: Vec::new(),
                 }));

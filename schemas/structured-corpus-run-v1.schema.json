@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.local/schemas/structured-corpus-run-v1.schema.json",
+  "title": "hwp structured corpus bounded run summary v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract",
+    "profile",
+    "platform",
+    "status",
+    "reason_codes",
+    "manifest_sha256",
+    "policy_sha256",
+    "fonts",
+    "cases",
+    "limits",
+    "claims"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "contract": { "const": "hwp-structured-corpus-run-v1" },
+    "profile": { "const": "structured-smoke-native-v1" },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch", "family"],
+      "properties": {
+        "os": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "arch": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "family": { "type": "string", "minLength": 1, "maxLength": 32 }
+      }
+    },
+    "status": { "$ref": "#/$defs/status" },
+    "reason_codes": {
+      "type": "array",
+      "maxItems": 1,
+      "items": { "const": "case_failed" }
+    },
+    "manifest_sha256": { "const": "03ef22e59a45a03d49de5e611f95edebb268a76665feaa63e8fc5d2e92f30dc5" },
+    "policy_sha256": { "const": "2da9ef212ac3c5e10c85229d62e307e0c29a8e06a848e47feb039db1fd09fdb8" },
+    "fonts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha256", "license", "source_revision", "source_url_sha256"],
+        "properties": {
+          "sha256": { "const": "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252" },
+          "license": { "const": "OFL-1.1" },
+          "source_revision": { "const": "2796410152d4f9524b68ed46e69c1b60f8e0f7c3" },
+          "source_url_sha256": { "const": "405bba3514cd264bc1775582cf90b100445e9ae5154b8b365b0a0faa80b1d631" }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        { "allOf": [{ "$ref": "#/$defs/case" }, { "type": "object", "properties": { "id": { "const": "official-letter" }, "category": { "const": "korean-official-letter" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/case" }, { "type": "object", "properties": { "id": { "const": "approval-memo" }, "category": { "const": "approval-draft-memo" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/case" }, { "type": "object", "properties": { "id": { "const": "report" }, "category": { "const": "report" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/case" }, { "type": "object", "properties": { "id": { "const": "business-plan" }, "category": { "const": "business-plan" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/case" }, { "type": "object", "properties": { "id": { "const": "meeting-minutes" }, "category": { "const": "meeting-minutes" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/case" }, { "type": "object", "properties": { "id": { "const": "academic-education" }, "category": { "const": "academic-education" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/case" }, { "type": "object", "properties": { "id": { "const": "print-form" }, "category": { "const": "print-form" } } }] }
+      ],
+      "items": false
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_manifest_bytes",
+        "max_report_bytes",
+        "max_cases",
+        "max_tree_files",
+        "max_tree_directories",
+        "max_tree_depth",
+        "max_artifact_path_bytes",
+        "max_artifact_file_bytes",
+        "max_tree_bytes",
+        "max_semantic_nodes",
+        "max_semantic_bytes"
+      ],
+      "properties": {
+        "max_manifest_bytes": { "const": 1048576 },
+        "max_report_bytes": { "const": 1048576 },
+        "max_cases": { "const": 32 },
+        "max_tree_files": { "const": 256 },
+        "max_tree_directories": { "const": 128 },
+        "max_tree_depth": { "const": 8 },
+        "max_artifact_path_bytes": { "const": 512 },
+        "max_artifact_file_bytes": { "const": 134217728 },
+        "max_tree_bytes": { "const": 536870912 },
+        "max_semantic_nodes": { "const": 100000 },
+        "max_semantic_bytes": { "const": 67108864 }
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coverage_scope",
+        "semantic_digest_profile",
+        "byte_determinism_scope",
+        "render_hash_scope",
+        "oracle_scope",
+        "manual_checks",
+        "limitations"
+      ],
+      "properties": {
+        "coverage_scope": { "const": "bounded_representative_structured_smoke" },
+        "semantic_digest_profile": { "const": "hwp-corpus-common-semantic-v1" },
+        "byte_determinism_scope": { "const": "same_process_same_platform_two_run" },
+        "render_hash_scope": { "const": "recorded_for_platform_profile_not_cross_platform_equivalence" },
+        "oracle_scope": { "const": "native_only_oracle_disabled" },
+        "manual_checks": { "const": false },
+        "limitations": {
+          "const": [
+            "no_hancom_parity_claim",
+            "no_independent_office_oracle",
+            "single_page_fixture_profile",
+            "no_advanced_drawing_or_chart_coverage",
+            "no_comments_revisions_or_security_controls",
+            "no_unparsed_target_specific_control_payloads_in_semantic_digest",
+            "no_line_layout_cache_or_opaque_record_bytes_in_semantic_digest",
+            "no_advanced_shape_geometry_or_style_in_semantic_digest",
+            "no_hwp5_ambiguous_strike_or_underline_shape_in_semantic_digest",
+            "category_labels_do_not_imply_complete_feature_coverage"
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "reason_codes": { "type": "array", "maxItems": 0 },
+          "cases": { "type": "array", "not": { "contains": { "type": "object", "properties": { "status": { "const": "failed" } }, "required": ["status"] } } }
+        }
+      },
+      "else": { "properties": { "reason_codes": { "type": "array", "const": ["case_failed"] } } }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "status": { "enum": ["passed", "failed"] },
+    "case_reason": { "enum": ["format_failed", "cross_format_semantic_mismatch"] },
+    "format_reason": {
+      "enum": [
+        "workspace_failed",
+        "input_snapshot_failed",
+        "generation_failed",
+        "output_read_failed",
+        "two_run_byte_mismatch",
+        "package_validation_failed",
+        "semantic_assertion_failed",
+        "certification_failed",
+        "certification_assertion_failed",
+        "certification_execution_failed",
+        "two_run_render_mismatch"
+      ]
+    },
+    "category": {
+      "enum": [
+        "korean-official-letter",
+        "approval-draft-memo",
+        "report",
+        "business-plan",
+        "meeting-minutes",
+        "academic-education",
+        "print-form"
+      ]
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "status", "reason_codes", "formats"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
+        "category": { "$ref": "#/$defs/category" },
+        "status": { "$ref": "#/$defs/status" },
+        "reason_codes": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/case_reason" }
+        },
+        "formats": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "allOf": [{ "$ref": "#/$defs/format" }, { "type": "object", "properties": { "format": { "const": "hwpx" } } }] },
+            { "allOf": [{ "$ref": "#/$defs/format" }, { "type": "object", "properties": { "format": { "const": "hwp" } } }] }
+          ],
+          "items": false
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "reason_codes": { "type": "array", "maxItems": 0 },
+              "formats": { "type": "array", "minItems": 2, "maxItems": 2 }
+            }
+          },
+          "else": { "properties": { "reason_codes": { "type": "array", "minItems": 1 } } }
+        }
+      ]
+    },
+    "format": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "status",
+        "reason_codes",
+        "two_run_byte_identical",
+        "output_sha256",
+        "output_bytes",
+        "two_run_render_identical",
+        "semantic",
+        "certification"
+      ],
+      "properties": {
+        "format": { "enum": ["hwpx", "hwp"] },
+        "status": { "$ref": "#/$defs/status" },
+        "reason_codes": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/format_reason" }
+        },
+        "two_run_byte_identical": { "type": "boolean" },
+        "output_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "output_bytes": { "type": ["integer", "null"], "minimum": 0, "maximum": 134217728 },
+        "two_run_render_identical": { "type": "boolean" },
+        "semantic": { "oneOf": [{ "$ref": "#/$defs/semantic" }, { "type": "null" }] },
+        "certification": { "oneOf": [{ "$ref": "#/$defs/certification" }, { "type": "null" }] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "passed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "reason_codes": { "type": "array", "maxItems": 0 },
+              "two_run_byte_identical": { "const": true },
+              "output_sha256": { "$ref": "#/$defs/sha256" },
+              "output_bytes": { "type": "integer", "minimum": 1 },
+              "two_run_render_identical": { "const": true },
+              "semantic": { "$ref": "#/$defs/semantic" },
+              "certification": { "$ref": "#/$defs/certification" }
+            }
+          },
+          "else": { "properties": { "reason_codes": { "type": "array", "minItems": 1 } } }
+        }
+      ]
+    },
+    "semantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plain_text_sha256", "structural_semantic_sha256", "text_chars", "sections", "paragraphs", "tables", "required_text_count"],
+      "properties": {
+        "plain_text_sha256": { "$ref": "#/$defs/sha256" },
+        "structural_semantic_sha256": { "$ref": "#/$defs/sha256" },
+        "text_chars": { "type": "integer", "minimum": 80, "maximum": 2000000 },
+        "sections": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "paragraphs": { "type": "integer", "minimum": 5, "maximum": 1000000 },
+        "tables": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "required_text_count": { "type": "integer", "minimum": 3, "maximum": 64 }
+      }
+    },
+    "certification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overall", "total_pages", "selected_pages", "render_issue_count", "render_issue_sha256", "fonts", "pages"],
+      "properties": {
+        "overall": { "const": "passed" },
+        "total_pages": { "const": 1 },
+        "selected_pages": {
+          "type": "array",
+          "const": [1]
+        },
+        "render_issue_count": { "const": 0 },
+        "render_issue_sha256": { "$ref": "#/$defs/sha256" },
+        "fonts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["font_file_sha256", "outcome"],
+            "properties": {
+              "font_file_sha256": { "const": "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252" },
+              "outcome": { "const": "matched" }
+            }
+          }
+        },
+        "pages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["page", "png_sha256", "visual_blank", "outside_page_bounds", "possible_collision"],
+            "properties": {
+              "page": { "const": 1 },
+              "png_sha256": { "$ref": "#/$defs/sha256" },
+              "visual_blank": { "const": false },
+              "outside_page_bounds": { "$ref": "#/$defs/clear_detection" },
+              "possible_collision": { "$ref": "#/$defs/clear_detection" }
+            }
+          }
+        }
+      }
+    },
+    "clear_detection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "count", "complete"],
+      "properties": {
+        "result": { "const": "not_detected" },
+        "count": { "const": 0 },
+        "complete": { "const": true }
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "2026년 상반기 AI 교육혁신 추진실적 보고",
+    "author": "hwp-cli structured corpus",
+    "subject": "성과 보고서"
+  },
+  "styles": {
+    "body": { "font_family": "Noto Sans KR", "font_size_pt": 10, "line_height_percent": 160 },
+    "title": { "based_on": "body", "font_size_pt": 17, "bold": true, "align": "center", "spacing_after_pt": 12 },
+    "heading": { "based_on": "body", "font_size_pt": 13, "bold": true, "spacing_before_pt": 8, "spacing_after_pt": 4 },
+    "label": { "based_on": "body", "bold": true, "align": "center" }
+  },
+  "sections": [
+    {
+      "blocks": [
+        { "type": "paragraph", "style": "title", "runs": [{ "type": "text", "text": "2026년 상반기 AI 교육혁신 추진실적 보고" }] },
+        { "type": "paragraph", "style": "heading", "runs": [{ "type": "text", "text": "Ⅰ. 추진 개요" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "전공·교양 교육과정에 생성형 AI 활용 역량을 단계적으로 반영하고 교수학습 지원체계를 정비함." }] },
+        { "type": "paragraph", "style": "heading", "runs": [{ "type": "text", "text": "Ⅱ. 주요 실적" }] },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [{ "width_mm": 55 }, { "width_mm": 55 }, { "width_mm": 60 }],
+          "rows": [
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "구분" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "목표" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "실적" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "교원 연수" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "4회" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "5회" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "교과목 개선" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "20개" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "24개" }] }] }
+            ] }
+          ]
+        },
+        { "type": "paragraph", "style": "heading", "runs": [{ "type": "text", "text": "Ⅲ. 향후 계획" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "학습성과 분석과 교육과정 환류를 통해 2026년 하반기 실행과제를 보완할 예정임." }] }
+      ]
+    }
+  ]
+}

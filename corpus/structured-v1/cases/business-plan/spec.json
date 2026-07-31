@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "지역산업 AI 전환 인재양성 사업계획",
+    "author": "hwp-cli structured corpus",
+    "subject": "사업계획서"
+  },
+  "styles": {
+    "body": { "font_family": "Noto Sans KR", "font_size_pt": 10, "line_height_percent": 155 },
+    "title": { "based_on": "body", "font_size_pt": 17, "bold": true, "align": "center", "spacing_after_pt": 12 },
+    "heading": { "based_on": "body", "font_size_pt": 13, "bold": true, "spacing_before_pt": 7 },
+    "label": { "based_on": "body", "bold": true, "align": "center" }
+  },
+  "sections": [
+    {
+      "blocks": [
+        { "type": "paragraph", "style": "title", "runs": [{ "type": "text", "text": "지역산업 AI 전환 인재양성 사업계획" }] },
+        { "type": "paragraph", "style": "heading", "runs": [{ "type": "text", "text": "1. 사업 개요" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "지역 주력산업의 현장 문제를 AI 프로젝트로 해결하는 실무형 인재양성 과정 운영" }] },
+        { "type": "paragraph", "style": "heading", "runs": [{ "type": "text", "text": "2. 추진 목표" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "수료생 120명, 기업연계 프로젝트 30건, 현장실습 참여기업 20개사 달성" }] },
+        { "type": "paragraph", "style": "heading", "runs": [{ "type": "text", "text": "3. 세부 일정 및 예산" }] },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [{ "width_mm": 55 }, { "width_mm": 55 }, { "width_mm": 60 }],
+          "rows": [
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "단계" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "기간" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "예산" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "교육과정 개발" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "2026. 9.-10." }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "50,000천원" }] }] }
+            ] },
+            { "cells": [
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "교육 운영" }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "2026. 11.-2027. 2." }] }] },
+              { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "150,000천원" }] }] }
+            ] }
+          ]
+        },
+        { "type": "paragraph", "style": "heading", "runs": [{ "type": "text", "text": "4. 성과관리" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "월별 진도점검, 참여자 만족도, 기업 멘토 평가를 종합하여 사업성과를 관리함." }] }
+      ]
+    }
+  ]
+}

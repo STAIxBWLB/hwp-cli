@@ -1,0 +1,131 @@
+version: "1.0"
+variables:
+  form_title:
+    type: string
+    required: true
+  applicant:
+    type: string
+    required: true
+  department:
+    type: string
+    required: true
+  purpose:
+    type: string
+    required: true
+source:
+  mode: compose
+  document:
+    version: "1.0"
+    metadata:
+      title:
+        node: value
+        pointer: /values/form_title
+        as: text
+      author: hwp-cli structured corpus
+      subject: 인쇄용 신청서
+    page:
+      width_mm: 210
+      height_mm: 297
+      margin_left_mm: 20
+      margin_right_mm: 20
+      margin_top_mm: 18
+      margin_bottom_mm: 18
+    styles:
+      body:
+        font_family: Noto Sans KR
+        font_size_pt: 10.5
+        line_height_percent: 150
+      title:
+        based_on: body
+        font_size_pt: 17
+        bold: true
+        align: center
+        spacing_after_pt: 12
+      label:
+        based_on: body
+        bold: true
+        align: center
+    sections:
+      - blocks:
+          - type: paragraph
+            style: title
+            runs:
+              - type: text
+                text:
+                  node: value
+                  pointer: /values/form_title
+                  as: text
+          - type: table
+            width_mm: 170
+            columns:
+              - width_mm: 40
+              - width_mm: 130
+            rows:
+              - cells:
+                  - blocks:
+                      - type: paragraph
+                        style: label
+                        runs:
+                          - type: text
+                            text: 신청인
+                  - blocks:
+                      - type: paragraph
+                        style: body
+                        runs:
+                          - type: text
+                            text:
+                              node: value
+                              pointer: /values/applicant
+                              as: text
+              - cells:
+                  - blocks:
+                      - type: paragraph
+                        style: label
+                        runs:
+                          - type: text
+                            text: 소속
+                  - blocks:
+                      - type: paragraph
+                        style: body
+                        runs:
+                          - type: text
+                            text:
+                              node: value
+                              pointer: /values/department
+                              as: text
+              - cells:
+                  - blocks:
+                      - type: paragraph
+                        style: label
+                        runs:
+                          - type: text
+                            text: 신청목적
+                  - blocks:
+                      - type: paragraph
+                        style: body
+                        runs:
+                          - type: text
+                            text:
+                              node: value
+                              pointer: /values/purpose
+                              as: text
+          - type: paragraph
+            style: body
+            runs:
+              - type: text
+                text: 위와 같이 시설 사용을 신청합니다.
+          - type: paragraph
+            style: body
+            runs:
+              - type: text
+                text: 2026년 8월 1일
+          - type: paragraph
+            style: body
+            runs:
+              - type: text
+                text: "신청인: ____________________ (서명)"
+          - type: paragraph
+            style: body
+            runs:
+              - type: text
+                text: 제주한라대학교 AI혁신처장 귀하

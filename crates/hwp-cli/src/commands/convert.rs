@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::commands::cat::load_document;
+use anyhow::Context as _;
 use hwp_cli::cli::ConvertFormat;
 
 /// markdown 출력 전용 추가 옵션 (다른 포맷에서는 무시).
@@ -19,6 +20,12 @@ pub struct MdOpts<'a> {
     pub with_hidden: bool,
 }
 
+/// 프로그래밍 가능한 변환 서비스의 결과. CLI와 MCP가 같은 경고 계약을 공유한다.
+#[derive(Debug, Default)]
+pub struct ConvertReport {
+    pub warnings: Vec<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     input: &Path,
@@ -30,108 +37,149 @@ pub fn run(
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
 ) -> anyhow::Result<()> {
-    // PDF는 문서 포맷 변환이 아니라 렌더 출력 — render 경로에 위임한다
-    // (사용자의 "변환" 프레이밍 대응: `hwp convert in.hwp -o out.pdf`).
-    if to.is_none()
-        && output
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-    {
-        return crate::commands::render::run(
-            input,
-            output,
-            "all",
-            96.0,
-            Some(hwp_cli::cli::RenderFormat::Pdf),
-            font_dirs,
-        );
-    }
+    let report = execute(
+        input,
+        output,
+        to,
+        strict,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+    )?;
+    print_warnings(&report.warnings);
+    eprintln!("변환 완료: {} → {}", input.display(), output.display());
+    Ok(())
+}
 
+/// `hwp convert`와 MCP가 함께 쓰는 변환 서비스.
+///
+/// 출력은 검증이 끝날 때까지 destination에 게시하지 않으며, Markdown 이미지 sidecar도
+/// 본문과 같은 복구 journal에 참여한다. 사용자 메시지 출력은 호출자가 담당한다.
+#[allow(clippy::too_many_arguments)]
+pub fn execute(
+    input: &Path,
+    output: &Path,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+) -> anyhow::Result<ConvertReport> {
     let target = match to {
         Some(t) => t,
         None => infer_format(output)?,
     };
-
-    match target {
-        ConvertFormat::Md => {
-            let doc = load_document(input)?;
-            // 이미지가 있으면 media 디렉터리에 추출해 상대참조한다(이미지 없으면
-            // 디렉터리를 만들지 않음 — to_markdown_with가 첫 이미지에서 지연 생성).
-            // --media-dir 지정 시: 상대경로는 출력 파일 기준으로 해석하고, 링크는
-            // 사용자가 준 경로 문자열을 그대로 쓴다(기본은 "<스템>.media" 관례).
-            let (dir, prefix) = match md_opts.media_dir {
-                Some(d) => {
-                    let resolved = if d.is_absolute() {
-                        d.to_path_buf()
-                    } else {
-                        output.parent().map_or_else(
-                            || d.to_path_buf(),
-                            |parent| {
-                                if parent.as_os_str().is_empty() {
-                                    d.to_path_buf()
-                                } else {
-                                    parent.join(d)
-                                }
-                            },
-                        )
-                    };
-                    (resolved, Some(d.to_string_lossy().into_owned()))
-                }
-                None => (output.with_extension("media"), None),
-            };
-            let md = hwp_convert::to_markdown_with(
-                &doc,
-                &hwp_convert::MarkdownOptions {
-                    media_dir: Some(&dir),
-                    media_prefix: prefix.as_deref(),
-                    text: hwp_model::TextOptions {
-                        include_header_footer: md_opts.with_header_footer,
-                        include_hidden: md_opts.with_hidden,
+    let doc = load_document(input)?;
+    if matches!(target, ConvertFormat::Md) {
+        let (media_destination, media_prefix) = markdown_media_paths(output, md_opts.media_dir)?;
+        let warnings = crate::commands::output::write_validated_with_sidecar(
+            output,
+            Some(input),
+            &media_destination,
+            |staged, staged_media| {
+                let md = hwp_convert::to_markdown_with(
+                    &doc,
+                    &hwp_convert::MarkdownOptions {
+                        media_dir: Some(staged_media),
+                        media_prefix: Some(&media_prefix),
+                        text: hwp_model::TextOptions {
+                            include_header_footer: md_opts.with_header_footer,
+                            include_hidden: md_opts.with_hidden,
+                        },
                     },
-                },
-            )?;
-            std::fs::write(output, md)?;
-        }
-        ConvertFormat::Html => {
-            let doc = load_document(input)?;
-            std::fs::write(output, hwp_convert::to_html(&doc))?;
-        }
-        ConvertFormat::Odt => {
-            let doc = load_document(input)?;
-            std::fs::write(output, hwp_convert::to_odt(&doc)?)?;
-        }
-        ConvertFormat::Pdf => {
-            let doc = load_document(input)?;
-            let result = hwp_render::render_document_pdf(&doc, &pdf_render_opts(font_dirs), None)?;
-            print_warnings(&result.report);
-            std::fs::write(output, &result.data)?;
-        }
-        ConvertFormat::Json => {
-            let doc = load_document(input)?;
-            std::fs::write(output, hwp_convert::to_json(&doc, true, embed_bin)?)?;
-        }
-        ConvertFormat::Hwpx => {
-            let doc = load_document(input)?;
-            let warnings = hwpx::write::write_document_with(
+                )?;
+                std::fs::write(staged, md)?;
+                Ok(Vec::new())
+            },
+            |_, _, _| Ok(()),
+        )?;
+        return Ok(ConvertReport { warnings });
+    }
+
+    let warnings = crate::commands::output::write_validated(
+        output,
+        Some(input),
+        |staged| match target {
+            ConvertFormat::Md => unreachable!("Markdown은 sidecar 트랜잭션 경로에서 처리"),
+            ConvertFormat::Html => {
+                std::fs::write(staged, hwp_convert::to_html(&doc))?;
+                Ok(Vec::new())
+            }
+            ConvertFormat::Odt => {
+                std::fs::write(staged, hwp_convert::to_odt(&doc)?)?;
+                Ok(Vec::new())
+            }
+            ConvertFormat::Pdf => {
+                let result =
+                    hwp_render::render_document_pdf(&doc, &pdf_render_opts(font_dirs), None)?;
+                std::fs::write(staged, &result.data)?;
+                Ok(render_issue_messages(&result.report))
+            }
+            ConvertFormat::Json => {
+                std::fs::write(staged, hwp_convert::to_json(&doc, true, embed_bin)?)?;
+                Ok(Vec::new())
+            }
+            ConvertFormat::Hwpx => Ok(hwpx::write::write_document_with(
                 &doc,
-                output,
+                staged,
                 &hwpx::write::HwpxWriteOptions {
                     preserve_linesegs: preserve_layout,
                 },
-            )?;
-            print_warnings(&warnings);
-            bail_on_strict(strict, &warnings)?;
+            )?),
+            ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout),
+        },
+        |staged, warnings| {
+            // DROP 여부를 게시 전에 판정한다. strict 실패 시 기존 destination은 그대로다.
+            if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
+                bail_on_strict(strict, warnings)?;
+                load_document(staged)
+                    .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
+            }
+            Ok(())
+        },
+    )?;
+    Ok(ConvertReport { warnings })
+}
+
+fn markdown_media_paths(
+    output: &Path,
+    requested: Option<&Path>,
+) -> anyhow::Result<(PathBuf, String)> {
+    match requested {
+        Some(directory) => {
+            let resolved = if directory.is_absolute() {
+                directory.to_path_buf()
+            } else {
+                output.parent().map_or_else(
+                    || directory.to_path_buf(),
+                    |parent| {
+                        if parent.as_os_str().is_empty() {
+                            directory.to_path_buf()
+                        } else {
+                            parent.join(directory)
+                        }
+                    },
+                )
+            };
+            Ok((resolved, directory.to_string_lossy().into_owned()))
         }
-        ConvertFormat::Hwp => {
-            let doc = load_document(input)?;
-            let warnings = write_hwp(&doc, output, preserve_layout)?;
-            print_warnings(&warnings);
-            bail_on_strict(strict, &warnings)?;
+        None => {
+            let directory = output.with_extension("media");
+            let prefix = directory
+                .file_name()
+                .with_context(|| {
+                    format!(
+                        "기본 미디어 디렉터리 이름을 확인할 수 없습니다: {}",
+                        directory.display()
+                    )
+                })?
+                .to_string_lossy()
+                .into_owned();
+            Ok((directory, prefix))
         }
     }
-    eprintln!("변환 완료: {} → {}", input.display(), output.display());
-    Ok(())
 }
 
 /// 경고 목록을 stderr로 출력.
@@ -164,61 +212,6 @@ fn bail_on_strict(strict: bool, warnings: &[String]) -> anyhow::Result<()> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-}
-
-/// 출력 확장자에 따라 문서를 쓴다 (edit/convert/new/MCP 공용).
-/// `edited`면 hwp 쓰기에 외과적 편집 경로(`write_hwp_edited`)를 쓴다.
-pub fn write_by_ext(
-    doc: &hwp_model::Document,
-    output: &Path,
-    edited: bool,
-    embed_bin: bool,
-) -> anyhow::Result<()> {
-    let warnings = match output
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("hwp") => {
-            if edited {
-                write_hwp_edited(doc, output)?
-            } else {
-                write_hwp(doc, output, false)?
-            }
-        }
-        Some("hwpx") => hwpx::write::write_document_with(
-            doc,
-            output,
-            &hwpx::write::HwpxWriteOptions {
-                preserve_linesegs: false,
-            },
-        )?,
-        Some("json") => {
-            std::fs::write(output, hwp_convert::to_json(doc, true, embed_bin)?)?;
-            Vec::new()
-        }
-        Some("md") | Some("markdown") => {
-            std::fs::write(output, hwp_convert::to_markdown(doc))?;
-            Vec::new()
-        }
-        Some("html") | Some("htm") => {
-            std::fs::write(output, hwp_convert::to_html(doc))?;
-            Vec::new()
-        }
-        Some("odt") => {
-            std::fs::write(output, hwp_convert::to_odt(doc)?)?;
-            Vec::new()
-        }
-        Some("pdf") => {
-            let result = hwp_render::render_document_pdf(doc, &pdf_render_opts(Vec::new()), None)?;
-            std::fs::write(output, &result.data)?;
-            result.report
-        }
-        other => anyhow::bail!("출력 포맷을 추론할 수 없습니다 (확장자: {other:?})"),
-    };
-    print_warnings(&warnings);
-    Ok(())
 }
 
 /// `--font-dir`가 비었으면 `HWP_FONT_DIR`(없으면 `fonts/`)로 기본 폰트 디렉터리를 정한다.
@@ -273,7 +266,7 @@ pub fn write_hwp(
     output: &std::path::Path,
     preserve_layout: bool,
 ) -> anyhow::Result<Vec<String>> {
-    write_hwp_impl(doc, output, preserve_layout, false)
+    write_hwp_impl(doc, output, preserve_layout, false, None)
 }
 
 /// 편집된 문서를 hwp로 다시 쓴다.
@@ -292,9 +285,9 @@ pub fn write_hwp_edited(
 ) -> anyhow::Result<Vec<String>> {
     if doc.meta.source_format == "hwp5" {
         // 원본 줄 배치 보존(preserve), 합성 정규화 없음 — 편집 문단만 count=0.
-        write_hwp_impl(doc, output, true, false)
+        write_hwp_impl(doc, output, true, false, None)
     } else {
-        write_hwp_impl(doc, output, false, true)
+        write_hwp_impl(doc, output, false, true, None)
     }
 }
 
@@ -306,10 +299,24 @@ pub fn write_hwp_edited(
 pub fn write_hwp_structural(
     doc: &hwp_model::Document,
     output: &std::path::Path,
-) -> anyhow::Result<()> {
-    let warnings = write_hwp_impl(doc, output, false, true)?;
-    print_warnings(&warnings);
-    Ok(())
+) -> anyhow::Result<Vec<String>> {
+    write_hwp_impl(doc, output, false, true, None)
+}
+
+/// 구조 문서를 시스템 글꼴 없이 명시된 파일만으로 HWP로 쓴다.
+///
+/// 인증 코퍼스처럼 환경 독립성이 필요한 경로가 사용한다. `font_files`의 순서는
+/// manifest 순서여야 하며 빈 목록은 거부한다. 일반 사용자 경로의 기존 ambient
+/// 글꼴 동작과 의도적으로 분리한다.
+pub fn write_hwp_structural_isolated(
+    doc: &hwp_model::Document,
+    output: &std::path::Path,
+    font_files: &[std::path::PathBuf],
+) -> anyhow::Result<Vec<String>> {
+    if font_files.is_empty() {
+        anyhow::bail!("isolated HWP writer requires at least one explicit font file");
+    }
+    write_hwp_impl(doc, output, false, true, Some(font_files))
 }
 
 fn write_hwp_impl(
@@ -317,6 +324,7 @@ fn write_hwp_impl(
     output: &std::path::Path,
     preserve_layout: bool,
     edited: bool,
+    isolated_font_files: Option<&[std::path::PathBuf]>,
 ) -> anyhow::Result<Vec<String>> {
     let font_dir =
         std::path::PathBuf::from(std::env::var("HWP_FONT_DIR").unwrap_or_else(|_| "fonts".into()));
@@ -346,24 +354,53 @@ fn write_hwp_impl(
     } else {
         // markdown 등 줄 배치 없는 출처: 폰트 셰이핑으로 합성.
         let mut d = doc.clone();
-        let mut store = hwp_render::FontStore::new();
-        store.load_dir(&font_dir);
-        let mut warns = Vec::new();
+        let mut store = if isolated_font_files.is_some() {
+            hwp_render::FontStore::new_isolated()
+        } else {
+            hwp_render::FontStore::new()
+        };
+        if let Some(files) = isolated_font_files {
+            for file in files {
+                store.load_file(file).with_context(|| {
+                    format!("isolated font file could not be loaded: {}", file.display())
+                })?;
+            }
+        } else {
+            store.load_dir(&font_dir);
+        }
+        let mut warns = hwp_render::RenderIssueAccumulator::new();
         hwp_render::lineseg::synthesize_linesegs(&mut d, &mut store, &mut warns);
-        report.append(&mut warns);
+        warns.absorb(store.issues.finish());
+        report.append(&mut render_issue_messages(&warns.finish()));
         owned = d;
         &owned
     };
 
-    let prv_image = hwp_render::render_document(
-        doc,
-        &hwp_render::RenderOptions {
-            dpi: 48.0,
-            font_dirs: vec![font_dir],
+    let render_options = hwp_render::RenderOptions {
+        dpi: 48.0,
+        font_dirs: if isolated_font_files.is_some() {
+            Vec::new()
+        } else {
+            vec![font_dir]
         },
-    )
-    .ok()
-    .and_then(|out| out.pages.first().and_then(|p| p.encode_png().ok()));
+    };
+    let prv_image = if let Some(files) = isolated_font_files {
+        let output =
+            hwp_render::render_document_pages_isolated(doc, &render_options, Some(&[1]), files)
+                .context("isolated HWP preview render failed")?;
+        Some(
+            output
+                .pages
+                .first()
+                .context("isolated HWP preview render returned no page")?
+                .encode_png()
+                .map_err(|error| anyhow::anyhow!("isolated HWP preview PNG failed: {error}"))?,
+        )
+    } else {
+        hwp_render::render_document_pages(doc, &render_options, Some(&[1]))
+            .ok()
+            .and_then(|out| out.pages.first().and_then(|p| p.encode_png().ok()))
+    };
 
     let warnings = hwp5::write_document(
         doc,
@@ -376,6 +413,18 @@ fn write_hwp_impl(
     )?;
     report.extend(warnings);
     Ok(report)
+}
+
+fn render_issue_messages(report: &hwp_render::RenderIssueReport) -> Vec<String> {
+    let mut messages = report
+        .issues
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if !report.complete {
+        messages.push("render_issue_accumulator_incomplete".to_string());
+    }
+    messages
 }
 
 /// 모든 문단(표 셀·머리말 등 중첩 포함)의 줄 배치를 제거한다 — 한글이 열 때
@@ -407,5 +456,60 @@ fn clear_linesegs(doc: &mut hwp_model::Document) {
         for para in &mut section.paragraphs {
             clear_para(para);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn staged_markdown_media_keeps_final_link_prefixes() {
+        let output = Path::new("/work/report.md");
+        let (default_directory, default_prefix) = markdown_media_paths(output, None).unwrap();
+        assert_eq!(default_directory, Path::new("/work/report.media"));
+        assert_eq!(default_prefix, "report.media");
+
+        let requested = Path::new("my figs");
+        let (custom_directory, custom_prefix) =
+            markdown_media_paths(output, Some(requested)).unwrap();
+        assert_eq!(custom_directory, Path::new("/work/my figs"));
+        assert_eq!(custom_prefix, "my figs");
+    }
+
+    #[test]
+    fn strict_drop_failure_preserves_existing_destination() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-convert-strict-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let destination = dir.join("result.hwp");
+        std::fs::write(&destination, b"ORIGINAL").unwrap();
+
+        let result = crate::commands::output::write_validated(
+            &destination,
+            None,
+            |staged| {
+                std::fs::write(staged, b"PARTIAL CONVERSION")?;
+                Ok(vec!["DROP: 지원하지 않는 테스트 컨트롤".to_string()])
+            },
+            |_, warnings| bail_on_strict(true, warnings),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn informational_render_events_are_not_writer_warnings() {
+        let mut issues = hwp_render::RenderIssueAccumulator::new();
+        issues.push(hwp_render::RenderIssueCode::FontMatched, b"font");
+        let report = issues.finish();
+        assert!(render_issue_messages(&report).is_empty());
     }
 }

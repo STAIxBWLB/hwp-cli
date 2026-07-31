@@ -975,6 +975,7 @@ fn default_picture() -> hwp_model::Picture {
         z_order: 0,
         vert_offset: 0,
         horz_offset: 0,
+        description: None,
         bin_ref: hwp_model::BinRef::ItemRef(String::new()),
         extras: Vec::new(),
     }
@@ -1005,6 +1006,10 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
                         if let Some(item) = attr(e, "binaryItemIDRef") {
                             pic.bin_ref = hwp_model::BinRef::ItemRef(item);
                         }
+                    }
+                    b"shapeComment" if matches!(event, Event::Start(_)) => {
+                        let value = read_element_text(reader, b"shapeComment")?;
+                        pic.description = (!value.is_empty()).then_some(value);
                     }
                     // 중첩 pic은 여는 태그만 깊이 증가 (Empty는 닫는 태그가 없음)
                     b"pic" if matches!(event, Event::Start(_)) => depth += 1,
@@ -1105,6 +1110,7 @@ fn collect_shape(
     let mut arrow_start = 0u8;
     let mut arrow_end = 0u8;
     let mut anchored = false;
+    let mut description = None;
     let mut read_attrs = |e: &BytesStart<'_>| match e.local_name().as_ref() {
         b"pos" => {
             x = attr_offset_i32(e, "horzOffset").unwrap_or(x);
@@ -1177,6 +1183,9 @@ fn collect_shape(
                         }
                     }
                     generic.paragraph_lists.push(list);
+                } else if n == b"shapeComment" {
+                    let value = read_element_text(reader, b"shapeComment")?;
+                    description = (!value.is_empty()).then_some(value);
                 } else if n == b"gradation" {
                     fill_gradient = parse_gradation(reader, &e)?;
                 } else {
@@ -1215,6 +1224,7 @@ fn collect_shape(
             arrow_start,
             arrow_end,
             anchored,
+            description,
         });
     }
     Ok(())

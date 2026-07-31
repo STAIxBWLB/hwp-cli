@@ -144,6 +144,16 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let empty = matches!(event, Event::Empty(_));
                 match e.local_name().as_ref() {
+                    b"beginNum" => {
+                        header.properties.start_numbers = [
+                            attr_u16(e, "page").unwrap_or(1),
+                            attr_u16(e, "footnote").unwrap_or(1),
+                            attr_u16(e, "endnote").unwrap_or(1),
+                            attr_u16(e, "pic").unwrap_or(1),
+                            attr_u16(e, "tbl").unwrap_or(1),
+                            attr_u16(e, "equation").unwrap_or(1),
+                        ];
+                    }
                     b"fontface" => {
                         current_lang = attr(e, "lang").as_deref().and_then(lang_slot);
                         if current_lang.is_none() {

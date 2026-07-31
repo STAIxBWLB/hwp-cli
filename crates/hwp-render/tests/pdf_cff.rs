@@ -81,8 +81,9 @@ fn cff_otf_pdf_임베드_구조() {
     // 글꼴이 매칭됐는지(폴백이 아닌 일치) — 매칭 실패 시 의미 없는 검증이므로 스킵.
     let matched = out
         .report
+        .info
         .iter()
-        .any(|r| r.contains("글꼴 일치") && r.contains(&family));
+        .any(|issue| issue.code == hwp_render::RenderIssueCode::FontMatched);
     if !matched {
         eprintln!("스킵: '{family}' 매칭 실패(env) — report={:?}", out.report);
         return;

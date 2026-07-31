@@ -9,6 +9,7 @@ use std::sync::Arc;
 use hwp_model::{CharShape, Document, HwpChar, LANG_COUNT, Paragraph, ctrl_char};
 
 use crate::fonts::{FontStore, LoadedFont};
+use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 
 /// 셰이핑된 글리프 하나 (단위: pt).
 #[derive(Debug, Clone, Copy)]
@@ -123,7 +124,7 @@ pub fn shape_range(
     doc: &Document,
     para: &Paragraph,
     range: (u32, u32),
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> Vec<InlineItem> {
     shape_range_notes(store, doc, para, range, &HashMap::new(), warnings)
 }
@@ -135,7 +136,7 @@ pub fn shape_range_notes(
     para: &Paragraph,
     range: (u32, u32),
     marks: &HashMap<u32, u32>,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> Vec<InlineItem> {
     shape_range_dynamic(store, doc, para, range, marks, None, warnings)
 }
@@ -152,7 +153,7 @@ pub(crate) fn shape_range_page(
     range: (u32, u32),
     marks: &HashMap<u32, u32>,
     page_number: Option<u32>,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> Vec<InlineItem> {
     shape_range_dynamic(store, doc, para, range, marks, page_number, warnings)
 }
@@ -164,7 +165,7 @@ fn shape_range_dynamic(
     range: (u32, u32),
     marks: &HashMap<u32, u32>,
     page_number: Option<u32>,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> Vec<InlineItem> {
     // 1. (문자모양, 언어) 경계로 텍스트 조각 수집
     struct Piece {
@@ -282,7 +283,10 @@ fn shape_range_dynamic(
         let shape = doc.header.char_shapes.get(piece.shape_id as usize);
         let runs = shape_piece(store, doc, shape, piece.lang, &piece.text, piece.start);
         if runs.is_empty() {
-            warnings.push(format!("셰이핑 실패: {:?}", piece.text));
+            warnings.push(
+                RenderIssueCode::ShapingFailed,
+                piece.text.len().to_le_bytes(),
+            );
         }
         for run in runs {
             out.push(InlineItem::Run(run));

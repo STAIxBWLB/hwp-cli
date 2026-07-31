@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/template-spec-v1.schema.json",
+  "title": "hwp-cli TemplateSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "variables", "source"],
+  "properties": {
+    "version": { "const": "1.0" },
+    "variables": {
+      "type": "object",
+      "maxProperties": 1024,
+      "propertyNames": { "$ref": "#/$defs/safeName" },
+      "additionalProperties": { "$ref": "#/$defs/variable" }
+    },
+    "source": {
+      "oneOf": [
+        { "$ref": "#/$defs/composeSource" },
+        { "$ref": "#/$defs/referenceSource" },
+        { "$ref": "#/$defs/regenerateSource" }
+      ]
+    }
+  },
+  "$defs": {
+    "safeName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "allOf": [
+        { "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+        { "not": { "enum": ["__proto__", "prototype", "constructor"] } }
+      ]
+    },
+    "commonRequired": {
+      "type": "boolean",
+      "default": false
+    },
+    "commonSecret": {
+      "type": "boolean",
+      "default": false
+    },
+    "stringVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "string" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "secret": { "$ref": "#/$defs/commonSecret" },
+        "default": { "type": "string" },
+        "regex": { "type": "string", "maxLength": 1024 },
+        "min_length": { "type": "integer", "minimum": 0, "maximum": 2000000 },
+        "max_length": { "type": "integer", "minimum": 0, "maximum": 2000000 }
+      }
+    },
+    "numberVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "number" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "secret": { "$ref": "#/$defs/commonSecret" },
+        "default": { "type": "number" },
+        "min": { "type": "number" },
+        "max": { "type": "number" }
+      }
+    },
+    "boolVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "bool" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "secret": { "$ref": "#/$defs/commonSecret" },
+        "default": { "type": "boolean" }
+      }
+    },
+    "dateVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "date" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "secret": { "$ref": "#/$defs/commonSecret" },
+        "default": { "$ref": "#/$defs/date" },
+        "min": { "$ref": "#/$defs/date" },
+        "max": { "$ref": "#/$defs/date" }
+      }
+    },
+    "enumVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "values"],
+      "properties": {
+        "type": { "const": "enum" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "secret": { "$ref": "#/$defs/commonSecret" },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "default": { "type": "string" }
+      }
+    },
+    "richBlocksVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "rich_blocks" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "secret": { "$ref": "#/$defs/commonSecret" },
+        "default": {
+          "type": "array",
+          "maxItems": 20000,
+          "items": { "type": "object" }
+        },
+        "min_items": { "type": "integer", "minimum": 0, "maximum": 20000 },
+        "max_items": { "type": "integer", "minimum": 0, "maximum": 20000 }
+      }
+    },
+    "itemField": {
+      "oneOf": [
+        { "$ref": "#/$defs/itemString" },
+        { "$ref": "#/$defs/itemNumber" },
+        { "$ref": "#/$defs/itemBool" },
+        { "$ref": "#/$defs/itemDate" },
+        { "$ref": "#/$defs/itemEnum" }
+      ]
+    },
+    "itemString": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "string" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "default": { "type": "string" },
+        "regex": { "type": "string", "maxLength": 1024 },
+        "min_length": { "type": "integer", "minimum": 0, "maximum": 2000000 },
+        "max_length": { "type": "integer", "minimum": 0, "maximum": 2000000 }
+      }
+    },
+    "itemNumber": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "number" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "default": { "type": "number" },
+        "min": { "type": "number" },
+        "max": { "type": "number" }
+      }
+    },
+    "itemBool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "bool" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "default": { "type": "boolean" }
+      }
+    },
+    "itemDate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "date" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "default": { "$ref": "#/$defs/date" },
+        "min": { "$ref": "#/$defs/date" },
+        "max": { "$ref": "#/$defs/date" }
+      }
+    },
+    "itemEnum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "values"],
+      "properties": {
+        "type": { "const": "enum" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "default": { "type": "string" }
+      }
+    },
+    "listVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "fields"],
+      "properties": {
+        "type": { "const": "list" },
+        "required": { "$ref": "#/$defs/commonRequired" },
+        "secret": { "$ref": "#/$defs/commonSecret" },
+        "fields": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 256,
+          "propertyNames": { "$ref": "#/$defs/safeName" },
+          "additionalProperties": { "$ref": "#/$defs/itemField" }
+        },
+        "default": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": { "type": "object" }
+        },
+        "min_items": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "max_items": { "type": "integer", "minimum": 0, "maximum": 10000 }
+      }
+    },
+    "variable": {
+      "oneOf": [
+        { "$ref": "#/$defs/stringVariable" },
+        { "$ref": "#/$defs/numberVariable" },
+        { "$ref": "#/$defs/boolVariable" },
+        { "$ref": "#/$defs/dateVariable" },
+        { "$ref": "#/$defs/enumVariable" },
+        { "$ref": "#/$defs/richBlocksVariable" },
+        { "$ref": "#/$defs/listVariable" }
+      ]
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "valueNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "pointer"],
+      "properties": {
+        "node": { "const": "value" },
+        "pointer": {
+          "type": "string",
+          "pattern": "^/(values|item)/[A-Za-z][A-Za-z0-9_]{0,63}$"
+        },
+        "as": { "enum": ["native", "text"], "default": "native" },
+        "region": { "$ref": "#/$defs/safeName" }
+      }
+    },
+    "ifNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "condition", "region", "then"],
+      "properties": {
+        "node": { "const": "if" },
+        "condition": {
+          "type": "string",
+          "pattern": "^/(values|item)/[A-Za-z][A-Za-z0-9_]{0,63}$"
+        },
+        "region": { "$ref": "#/$defs/safeName" },
+        "then": { "type": "array", "items": { "$ref": "#/$defs/templateValue" } },
+        "else": { "type": "array", "items": { "$ref": "#/$defs/templateValue" } }
+      }
+    },
+    "eachNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "items", "region", "body"],
+      "properties": {
+        "node": { "const": "each" },
+        "items": {
+          "type": "string",
+          "pattern": "^/values/[A-Za-z][A-Za-z0-9_]{0,63}$"
+        },
+        "region": { "$ref": "#/$defs/safeName" },
+        "body": { "type": "array", "items": { "$ref": "#/$defs/templateValue" } }
+      }
+    },
+    "literalObject": {
+      "type": "object",
+      "not": { "required": ["node"] },
+      "additionalProperties": { "$ref": "#/$defs/templateValue" }
+    },
+    "templateValue": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/templateValue" } },
+        { "$ref": "#/$defs/literalObject" },
+        { "$ref": "#/$defs/valueNode" },
+        { "$ref": "#/$defs/ifNode" },
+        { "$ref": "#/$defs/eachNode" }
+      ]
+    },
+    "composeSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "document"],
+      "properties": {
+        "mode": { "const": "compose" },
+        "document": { "$ref": "#/$defs/templateValue" }
+      }
+    },
+    "referenceBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["region", "variable", "target", "name"],
+          "properties": {
+            "region": { "$ref": "#/$defs/safeName" },
+            "variable": { "$ref": "#/$defs/safeName" },
+            "target": { "const": "placeholder" },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[^{}\\u0000-\\u001F\\u007F]+$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["region", "variable", "target", "name"],
+          "properties": {
+            "region": { "$ref": "#/$defs/safeName" },
+            "variable": { "$ref": "#/$defs/safeName" },
+            "target": { "const": "field" },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[^{}\\u0000-\\u001F\\u007F]+$"
+            }
+          }
+        }
+      ]
+    },
+    "referenceSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "path", "bindings"],
+      "properties": {
+        "mode": { "const": "reference_hwpx" },
+        "path": {
+          "type": "string",
+          "minLength": 6,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))[^/]+(?:/[^/]+)*\\.hwpx$",
+          "description": "Relative normal-component .hwpx path contained by the TemplateSpec directory; symlinks are rejected at runtime."
+        },
+        "bindings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/referenceBinding" }
+        }
+      }
+    },
+    "regenerateSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "path", "strict_unsupported_objects", "document"],
+      "properties": {
+        "mode": { "const": "reference_regenerate" },
+        "path": {
+          "type": "string",
+          "minLength": 6,
+          "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))[^/]+(?:/[^/]+)*\\.hwpx$",
+          "description": "Relative normal-component .hwpx path contained by the TemplateSpec directory; symlinks are rejected at runtime."
+        },
+        "strict_unsupported_objects": { "const": true },
+        "document": { "$ref": "#/$defs/templateValue" }
+      }
+    }
+  }
+}

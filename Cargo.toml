@@ -19,16 +19,21 @@ hwp-render = { path = "crates/hwp-render" }
 # 공용 외부 의존성
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 cfb = "0.14"
 flate2 = "1"
 quick-xml = "0.40"
+libc = "0.2"
+resvg = { version = "=0.47.0", default-features = false }
+regex = "1.11"
 zip = "8"
 # 자체 업데이트(hwp update)의 릴리스 아카이브 체크섬 대조 — zip이 이미 끌어오는 크레이트라
 # 의존성 그래프가 늘지 않는다.
 sha2 = "0.11"
+getrandom = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 
 # 렌더링
@@ -44,6 +49,7 @@ subsetter = "0.2"
 # 테스트 전용
 insta = { version = "1", features = ["json"] }
 proptest = "1"
+jsonschema = { version = "0.33", default-features = false }
 
 [profile.release]
 lto = "thin"

@@ -486,12 +486,21 @@ pub fn typeset(store: &mut FontStore, doc: &Document, script: &str, size: f32) -
 }
 
 /// 조판 상자를 페이지에 그린다. (ox, baseline_y) = 수식 원점 x + baseline의 페이지 y.
-pub fn render_into(page: &mut PageList, eq: EqBox, ox: f32, baseline_y: f32) {
+pub fn render_into(
+    page: &mut PageList,
+    eq: EqBox,
+    ox: f32,
+    baseline_y: f32,
+    issues: &mut crate::issues::RenderIssueAccumulator,
+) {
     use crate::display::Item;
     for (run, dx, dy) in eq.runs {
-        crate::layout::push_run(page, ox + dx, baseline_y + dy, run);
+        crate::layout::push_run(page, ox + dx, baseline_y + dy, run, issues);
     }
     for (x1, y1, x2, y2, wdt) in eq.lines {
+        if !issues.charge_display_items(1) {
+            return;
+        }
         page.items.push(Item::Line {
             x1: ox + x1,
             y1: baseline_y + y1,

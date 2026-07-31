@@ -24,15 +24,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 필수: ubuntu(CI 기준선) + macOS(소유자 주 사용 플랫폼)
+          # 필수: ubuntu(CI 기준선) + macOS(소유자 주 사용 플랫폼). 둘 다 local source
+          # build + corpus 게이트를 돈다.
           - { os: ubuntu-latest }
           - { os: macos-latest }
           # 참고용: Windows는 실패 허용(비차단) — 잡은 빨간색으로 보이되 워크플로는 통과.
+          # hwpx/hwp-cli가 nightly 전용 windows_by_handle API를 써 Windows에서 컴파일되지
+          # 않는다. release.yml의 Windows 바이너리 빌드도 같은 이유로 막히므로 릴리스 전에
+          # 반드시 고쳐야 한다(별도 이슈).
           - { os: windows-latest, experimental: true }
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
+      # 렌더 스모크 테스트는 시스템 CJK 글리프를 쓴다. 이 스텝이 빠지면 잉크 없는
+      # 페이지가 나와 크기 단언이 깨진다(코퍼스 게이트의 고정 폰트와는 별개).
       - name: 한국어 폰트 설치 (렌더링 테스트용)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
@@ -45,7 +51,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # 세 검사는 서로 독립이므로 앞 단계가 실패해도 모두 실행해 한 번에 보고한다
       # (fmt 실패가 clippy/test 실패를 가리지 않게 — 디버깅 왕복 감소).
-      # 아래 3개 커맨드는 scripts/check.sh(로컬 미러)와 **문자 그대로 동일**해야 한다.
+      # 아래 4개 게이트는 scripts/check.sh(로컬 미러)와 함께 유지한다.
       # 한쪽만 바꾸면 "로컬 green, CI red" 드리프트가 재발한다.
       - name: 포맷 검사
         run: cargo fmt --all --check
@@ -55,3 +61,8 @@ jobs:
       - name: 테스트
         if: ${{ !cancelled() }}
         run: cargo test --workspace
+      # 폰트는 커밋하지 않고 스크립트가 upstream에서 받아 manifest hash로 검증한다.
+      - name: 구조 문서 코퍼스 (명시 OFL 폰트, offline cargo)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/check-structured-corpus.sh

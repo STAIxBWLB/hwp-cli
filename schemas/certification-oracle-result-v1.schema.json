@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/certification-oracle-result-v1.schema.json",
+  "title": "hwp-certification-oracle-result-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "attestation"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "status": { "enum": ["passed", "failed"] },
+    "attestation": { "$ref": "#/$defs/attestation" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "const": "import.pdf" },
+        "bytes": { "type": "integer", "minimum": 16, "maximum": 536870912 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "status": { "const": "passed" } } }, "then": { "required": ["artifact"] } },
+    { "if": { "properties": { "status": { "const": "failed" } } }, "then": { "not": { "required": ["artifact"] } } }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_kind", "runtime_version", "runtime_sha256", "libreoffice_version", "libreoffice_executable_sha256", "extension_version", "extension_sha256", "image_digest"],
+      "properties": {
+        "runtime_kind": { "const": "docker" },
+        "runtime_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "runtime_sha256": { "$ref": "#/$defs/sha256" },
+        "libreoffice_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "libreoffice_executable_sha256": { "$ref": "#/$defs/sha256" },
+        "extension_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "extension_sha256": { "$ref": "#/$defs/sha256" },
+        "image_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

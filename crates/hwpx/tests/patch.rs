@@ -4,7 +4,7 @@
 //! 채우기 후에도 비대상 엔트리가 바이트 보존되고 본문 자리표시자만 치환되는지 검증.
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
@@ -19,6 +19,10 @@ fn build_fixture(path: &std::path::Path) {
 
     zip.start_file("mimetype", stored).unwrap();
     zip.write_all(b"application/hwp+zip").unwrap();
+
+    zip.start_file("version.xml", deflated).unwrap();
+    zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+        .unwrap();
 
     zip.start_file("Preview/PrvImage.png", deflated).unwrap();
     zip.write_all(PRV_IMAGE).unwrap();
@@ -98,28 +102,296 @@ fn fill_reports_unfilled_as_zero() {
 }
 
 #[test]
-fn fill_동일_입출력_경로_거부() {
-    // 제자리 치환(input==output)은 File::create(O_TRUNC)가 입력을 먼저 비워 손상되므로
-    // 즉시 거부돼야 한다(입력 파일은 그대로 보존).
+fn fill_동일_입출력_경로도_snapshot으로_안전하게_치환() {
     let dir = std::env::temp_dir();
     let f = dir.join("hwpx_patch_inplace.hwpx");
     build_fixture(&f);
-    let orig_len = std::fs::metadata(&f).unwrap().len();
 
     let mut values = BTreeMap::new();
     values.insert("기관명".to_string(), "x".to_string());
-    let err = hwpx::patch::fill_placeholders(&f, &f, &values).unwrap_err();
+    let counts = hwpx::patch::fill_placeholders(&f, &f, &values).unwrap();
+    assert_eq!(counts.get("기관명"), Some(&1));
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&f).unwrap()).unwrap();
+    let section = String::from_utf8(read_entry(&mut zip, "Contents/section0.xml")).unwrap();
     assert!(
-        err.to_string().contains("같습니다"),
-        "동일 경로는 거부돼야: {err}"
-    );
-    assert_eq!(
-        std::fs::metadata(&f).unwrap().len(),
-        orig_len,
-        "거부는 truncate 이전 — 입력 보존"
+        section.contains(">x 운영 보고<"),
+        "in-place 결과: {section}"
     );
 
     let _ = std::fs::remove_file(&f);
+}
+
+fn build_template_field_fixture(path: &std::path::Path, field_values: &[&str]) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    zip.start_file("mimetype", stored).unwrap();
+    zip.write_all(b"application/hwp+zip").unwrap();
+    zip.start_file("version.xml", deflated).unwrap();
+    zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+        .unwrap();
+    zip.start_file("Preview/PrvImage.png", deflated).unwrap();
+    zip.write_all(PRV_IMAGE).unwrap();
+    zip.start_file("Contents/header.xml", deflated).unwrap();
+    zip.write_all(b"<hh:head><hp:switch><hp:case>a</hp:case></hp:switch></hh:head>")
+        .unwrap();
+    let fields = field_values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let id = index + 1;
+            format!(
+                r#"<hp:ctrl><hp:fieldBegin id="{id}" type="CLICK_HERE" name="수신"/></hp:ctrl>{value}<hp:ctrl><hp:fieldEnd beginIDRef="{id}"/></hp:ctrl>"#
+            )
+        })
+        .collect::<String>();
+    zip.start_file("Contents/section0.xml", deflated).unwrap();
+    zip.write_all(
+        format!(
+            r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run><hp:t>{{{{기관명}}}}</hp:t>{fields}</hp:run></hp:p></hs:sec>"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    zip.start_file("Contents/section1.xml", deflated).unwrap();
+    zip.write_all(
+        br#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run><hp:t>untouched second section</hp:t></hp:run></hp:p></hs:sec>"#,
+    )
+    .unwrap();
+    zip.finish().unwrap();
+    set_central_external_attributes(path, "mimetype", 0x0180_0000);
+}
+
+fn set_central_external_attributes(path: &std::path::Path, name: &str, value: u32) {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let start = archive.by_name(name).unwrap().central_header_start();
+    drop(archive);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    file.seek(SeekFrom::Start(start + 38)).unwrap();
+    file.write_all(&value.to_le_bytes()).unwrap();
+    file.sync_all().unwrap();
+}
+
+fn central_record_without_offset(path: &std::path::Path, name: &str) -> Vec<u8> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let start = archive.by_name(name).unwrap().central_header_start();
+    drop(archive);
+    let mut file = std::fs::File::open(path).unwrap();
+    file.seek(SeekFrom::Start(start)).unwrap();
+    let mut fixed = [0u8; 46];
+    file.read_exact(&mut fixed).unwrap();
+    assert_eq!(&fixed[..4], b"PK\x01\x02");
+    let variable = usize::from(u16::from_le_bytes([fixed[28], fixed[29]]))
+        + usize::from(u16::from_le_bytes([fixed[30], fixed[31]]))
+        + usize::from(u16::from_le_bytes([fixed[32], fixed[33]]));
+    let mut record = fixed.to_vec();
+    record.resize(46 + variable, 0);
+    file.read_exact(&mut record[46..]).unwrap();
+    record[42..46].fill(0);
+    record
+}
+
+fn build_placeholder_metadata_fixture(path: &std::path::Path) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    zip.start_file("mimetype", stored).unwrap();
+    zip.write_all(b"application/hwp+zip").unwrap();
+    zip.start_file("version.xml", deflated).unwrap();
+    zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+        .unwrap();
+    zip.start_file("Contents/header.xml", deflated).unwrap();
+    zip.write_all(b"<hh:head/>").unwrap();
+    zip.start_file("Contents/section0.xml", deflated).unwrap();
+    zip.write_all(
+        r#"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run><hp:ctrl name="{{기관명}}"/><hp:t>visible</hp:t></hp:run></hp:p></hs:sec>"#
+            .as_bytes(),
+    )
+    .unwrap();
+    zip.finish().unwrap();
+}
+
+fn build_foreign_text_fixture(path: &std::path::Path) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    zip.start_file("mimetype", stored).unwrap();
+    zip.write_all(b"application/hwp+zip").unwrap();
+    zip.start_file("version.xml", deflated).unwrap();
+    zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+        .unwrap();
+    zip.start_file("Contents/header.xml", deflated).unwrap();
+    zip.write_all(b"<hh:head/>").unwrap();
+    zip.start_file("Contents/section0.xml", deflated).unwrap();
+    zip.write_all(
+        r#"<hs:sec xmlns:x="urn:not-hwpx"><x:t>{{기관명}}</x:t><hp:t xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">visible</hp:t></hs:sec>"#
+            .as_bytes(),
+    )
+    .unwrap();
+    zip.finish().unwrap();
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RawEntry {
+    compressed: Vec<u8>,
+    method: CompressionMethod,
+    crc32: u32,
+    compressed_size: u64,
+    modified: String,
+    unix_mode: Option<u32>,
+    comment: String,
+    extra: Vec<u8>,
+}
+
+fn raw_entry(path: &std::path::Path, name: &str) -> RawEntry {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let index = (0..archive.len())
+        .find(|index| archive.by_index(*index).unwrap().name() == name)
+        .unwrap();
+    let entry = archive.by_index(index).unwrap();
+    let metadata = (
+        entry.compression(),
+        entry.crc32(),
+        entry.compressed_size(),
+        format!("{:?}", entry.last_modified()),
+        entry.unix_mode(),
+        entry.comment().to_string(),
+        entry.extra_data().unwrap_or_default().to_vec(),
+    );
+    drop(entry);
+    let mut compressed = Vec::new();
+    archive
+        .by_index_raw(index)
+        .unwrap()
+        .read_to_end(&mut compressed)
+        .unwrap();
+    RawEntry {
+        compressed,
+        method: metadata.0,
+        crc32: metadata.1,
+        compressed_size: metadata.2,
+        modified: metadata.3,
+        unix_mode: metadata.4,
+        comment: metadata.5,
+        extra: metadata.6,
+    }
+}
+
+#[test]
+fn template_fill_changes_placeholder_and_simple_field_but_raw_copies_untouched_entries() {
+    let dir = std::env::temp_dir();
+    let src = dir.join("hwpx_template_fill_src.hwpx");
+    let out = dir.join("hwpx_template_fill_out.hwpx");
+    build_template_field_fixture(&src, &["<hp:t>old</hp:t>"]);
+    let before_preview = raw_entry(&src, "Preview/PrvImage.png");
+    let before_header = raw_entry(&src, "Contents/header.xml");
+    let before_untouched_section = raw_entry(&src, "Contents/section1.xml");
+    let placeholders = BTreeMap::from([("기관명".to_string(), "A&B".to_string())]);
+    let fields = BTreeMap::from([("수신".to_string(), "홍길동\n제주".to_string())]);
+
+    let counts = hwpx::patch::fill_template_values(&src, &out, &placeholders, &fields).unwrap();
+    assert_eq!(counts.placeholders["기관명"], 1);
+    assert_eq!(counts.fields["수신"], 1);
+    assert_eq!(raw_entry(&out, "Preview/PrvImage.png"), before_preview);
+    assert_eq!(raw_entry(&out, "Contents/header.xml"), before_header);
+    assert_eq!(
+        raw_entry(&out, "Contents/section1.xml"),
+        before_untouched_section,
+        "unchanged section must preserve compressed bytes and ZIP metadata"
+    );
+    for name in [
+        "mimetype",
+        "version.xml",
+        "Preview/PrvImage.png",
+        "Contents/header.xml",
+        "Contents/section1.xml",
+    ] {
+        assert_eq!(
+            central_record_without_offset(&out, name),
+            central_record_without_offset(&src, name),
+            "untouched central-directory metadata differs for {name}"
+        );
+    }
+    let mimetype = central_record_without_offset(&out, "mimetype");
+    assert_eq!(
+        u32::from_le_bytes(mimetype[38..42].try_into().unwrap()),
+        0x0180_0000,
+        "raw preservation must not normalize external attributes"
+    );
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+    let section = String::from_utf8(read_entry(&mut archive, "Contents/section0.xml")).unwrap();
+    assert!(section.contains("A&amp;B"));
+    assert!(section.contains("홍길동<hp:lineBreak/>제주"));
+    assert!(!section.contains(">old<"));
+
+    let _ = std::fs::remove_file(src);
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn template_fill_rejects_placeholder_in_metadata_and_preserves_destination() {
+    let dir = std::env::temp_dir();
+    let src = dir.join("hwpx_template_metadata_placeholder.hwpx");
+    let out = dir.join("hwpx_template_metadata_placeholder_out.hwpx");
+    build_placeholder_metadata_fixture(&src);
+    std::fs::write(&out, b"KEEP").unwrap();
+    let placeholders = BTreeMap::from([("기관명".to_string(), "secret".to_string())]);
+
+    let error = hwpx::patch::fill_template_values(&src, &out, &placeholders, &BTreeMap::new())
+        .expect_err("metadata placeholder must fail closed");
+    assert!(error.to_string().contains("outside a text node"));
+    assert_eq!(std::fs::read(&out).unwrap(), b"KEEP");
+
+    let _ = std::fs::remove_file(src);
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn template_fill_rejects_foreign_namespace_text_and_preserves_destination() {
+    let dir = std::env::temp_dir();
+    let src = dir.join("hwpx_template_foreign_text.hwpx");
+    let out = dir.join("hwpx_template_foreign_text_out.hwpx");
+    build_foreign_text_fixture(&src);
+    std::fs::write(&out, b"KEEP").unwrap();
+    let placeholders = BTreeMap::from([("기관명".to_string(), "secret".to_string())]);
+
+    let error = hwpx::patch::fill_template_values(&src, &out, &placeholders, &BTreeMap::new())
+        .expect_err("foreign namespace text must fail closed");
+    assert!(error.to_string().contains("outside a text node"));
+    assert_eq!(std::fs::read(&out).unwrap(), b"KEEP");
+
+    let _ = std::fs::remove_file(src);
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn template_fill_rejects_ambiguous_or_non_text_field_and_preserves_destination() {
+    let dir = std::env::temp_dir();
+    let ambiguous = dir.join("hwpx_template_ambiguous.hwpx");
+    let non_text = dir.join("hwpx_template_non_text.hwpx");
+    let out = dir.join("hwpx_template_reject_out.hwpx");
+    let fields = BTreeMap::from([("수신".to_string(), "secret".to_string())]);
+    build_template_field_fixture(&ambiguous, &["<hp:t>one</hp:t>", "<hp:t>two</hp:t>"]);
+    build_template_field_fixture(&non_text, &["<hp:tbl/>"]);
+
+    for input in [&ambiguous, &non_text] {
+        std::fs::write(&out, b"KEEP").unwrap();
+        let error = hwpx::patch::fill_template_values(input, &out, &BTreeMap::new(), &fields)
+            .expect_err("strict field gate");
+        assert!(error.to_string().contains("field fill rejected"));
+        assert_eq!(std::fs::read(&out).unwrap(), b"KEEP");
+    }
+
+    let _ = std::fs::remove_file(ambiguous);
+    let _ = std::fs::remove_file(non_text);
+    let _ = std::fs::remove_file(out);
 }
 
 // ---- patch::replace_texts ----
@@ -133,6 +405,10 @@ fn build_replace_fixture(path: &std::path::Path) {
 
     zip.start_file("mimetype", stored).unwrap();
     zip.write_all(b"application/hwp+zip").unwrap();
+
+    zip.start_file("version.xml", deflated).unwrap();
+    zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+        .unwrap();
 
     zip.start_file("Preview/PrvImage.png", deflated).unwrap();
     zip.write_all(PRV_IMAGE).unwrap();

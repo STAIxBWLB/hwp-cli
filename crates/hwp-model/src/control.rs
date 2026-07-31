@@ -53,6 +53,10 @@ pub struct Picture {
     pub vert_offset: i32,
     #[serde(default)]
     pub horz_offset: i32,
+    /// Accessible object description. HWP5 stores this in the GSO common
+    /// header description BSTR; HWPX stores it as `hp:shapeComment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// 바이너리 데이터 참조
     pub bin_ref: BinRef,
     pub extras: Vec<OpaqueRecord>,
@@ -338,6 +342,9 @@ pub struct ShapeGeom {
     /// 글자처럼 취급(hp:pos treatAsChar) — 참이면 x/y 대신 텍스트 흐름 위치에 배치.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anchored: bool,
+    /// Accessible object description (`hp:shapeComment` in HWPX).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {

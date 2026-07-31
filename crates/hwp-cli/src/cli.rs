@@ -6,7 +6,21 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+fn parse_dpi(value: &str) -> Result<f64, String> {
+    let dpi = value
+        .parse::<f64>()
+        .map_err(|_| format!("DPI가 숫자가 아닙니다: {value}"))?;
+    let min = f64::from(hwp_render::MIN_DPI);
+    let max = f64::from(hwp_render::MAX_DPI);
+    if !dpi.is_finite() || !(min..=max).contains(&dpi) {
+        return Err(format!(
+            "DPI는 유한한 {min}..={max} 범위여야 합니다: {value}"
+        ));
+    }
+    Ok(dpi)
+}
 
 #[derive(Parser)]
 #[command(name = "hwp", version, about = "HWP/HWPX 문서 처리 도구")]
@@ -89,7 +103,8 @@ pub enum Cmd {
         /// 페이지 범위: "1", "1-3", "all"
         #[arg(long, default_value = "all")]
         pages: String,
-        #[arg(long, default_value_t = 96.0)]
+        /// 해상도 DPI (유한한 36..=600)
+        #[arg(long, default_value_t = 96.0, value_parser = parse_dpi)]
         dpi: f64,
         /// 출력 포맷 (생략 시 확장자에서 추론)
         #[arg(long, value_enum)]
@@ -115,6 +130,51 @@ pub enum Cmd {
         preset: Option<PresetArg>,
     },
 
+    /// DocumentSpec v1/v2(JSON/YAML)에서 구조 문서를 deterministic 합성
+    Compose {
+        /// DocumentSpec v1/v2 입력 파일(.json, .yaml, .yml)
+        spec: PathBuf,
+        /// 출력 HWP/HWPX
+        #[arg(short, long)]
+        output: PathBuf,
+        /// 입력 포맷 (생략 시 spec 확장자에서 추론)
+        #[arg(long, value_enum)]
+        format: Option<SpecFormatArg>,
+        /// 검증·컴파일 보고서만 생성하고 파일은 쓰지 않음
+        #[arg(long)]
+        dry_run: bool,
+        /// 실행 보고서를 JSON으로 출력
+        #[arg(long)]
+        report: bool,
+        /// [deprecated] v1 compatibility only; v2 rejects this policy override
+        #[arg(long)]
+        allow_visual_fallback: bool,
+    },
+
+    /// TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
+    Template {
+        /// TemplateSpec v1 입력 파일(.json, .yaml, .yml)
+        template: PathBuf,
+        /// TemplateData v1 입력 파일(.json, .yaml, .yml)
+        #[arg(long)]
+        data: PathBuf,
+        /// 출력 HWP/HWPX
+        #[arg(short, long)]
+        output: PathBuf,
+        /// TemplateSpec 입력 포맷 (생략 시 확장자에서 추론)
+        #[arg(long, value_enum)]
+        template_format: Option<SpecFormatArg>,
+        /// TemplateData 입력 포맷 (생략 시 확장자에서 추론)
+        #[arg(long, value_enum)]
+        data_format: Option<SpecFormatArg>,
+        /// 실제 확장·writer·검증 경로를 실행하되 결과 파일은 게시하지 않음
+        #[arg(long)]
+        dry_run: bool,
+        /// preservation/expansion 보고서를 JSON으로 출력
+        #[arg(long)]
+        report: bool,
+    },
+
     /// 렌더 결과를 한글 기준 PNG와 비교해 오차 측정 (위치 오프셋·픽셀 차이율)
     Diff {
         input: PathBuf,
@@ -124,7 +184,8 @@ pub enum Cmd {
         /// 비교할 페이지 (1-기반)
         #[arg(long, default_value_t = 1)]
         page: usize,
-        #[arg(long, default_value_t = 96.0)]
+        /// 해상도 DPI (유한한 36..=600)
+        #[arg(long, default_value_t = 96.0, value_parser = parse_dpi)]
         dpi: f64,
         /// 차이 이미지 출력 경로 (생략 시 <ref>.diff.png)
         #[arg(short, long)]
@@ -138,74 +199,7 @@ pub enum Cmd {
     },
 
     /// 기존 문서 편집 (텍스트 치환·표 셀 설정) — 이미지·서식 보존
-    Edit {
-        input: PathBuf,
-        #[arg(short, long)]
-        output: PathBuf,
-        /// 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환)
-        #[arg(long)]
-        replace: Vec<String>,
-        /// 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스)
-        #[arg(long = "set-cell")]
-        set_cell: Vec<String>,
-        /// 필드/누름틀 채우기 "이름=값" (반복 가능 — hwp fields로 이름 확인)
-        #[arg(long = "set-field")]
-        set_field: Vec<String>,
-        /// 메타데이터 설정 "키=값" (키: title|author|subject|keywords, 반복 가능)
-        #[arg(long = "set-meta")]
-        set_meta: Vec<String>,
-        /// 누름틀 생성 "앵커=>이름" 또는 "앵커=>이름=값" — 앵커 텍스트 뒤에 %clk 필드 삽입 (반복 가능)
-        #[arg(long = "create-field")]
-        create_field: Vec<String>,
-        /// 책갈피 생성 "앵커=>이름" — 앵커 텍스트 뒤에 bokm 지점 표식 삽입 (반복 가능)
-        #[arg(long = "create-bookmark")]
-        create_bookmark: Vec<String>,
-        /// 하이퍼링크 생성 "앵커=>URL" 또는 "앵커=>표시=>URL" — 앵커 뒤에 %hlk 삽입 (반복 가능)
-        #[arg(long = "create-hyperlink")]
-        create_hyperlink: Vec<String>,
-        /// 이미지 삽입 "앵커=>경로" 또는 "앵커=>경로@너비x높이"(mm) — 앵커 뒤에 그림 삽입 (반복 가능)
-        #[arg(long = "insert-image")]
-        insert_image: Vec<String>,
-        /// 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치 (반복 가능)
-        #[arg(long = "seal")]
-        seal: Vec<String>,
-        /// 글자 서식 "찾기:속성=값,…" (예: "제목:bold=on,size=16,color=#FF0000")
-        #[arg(long = "set-format")]
-        set_format: Vec<String>,
-        /// 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute)
-        #[arg(long = "set-align")]
-        set_align: Vec<String>,
-        /// 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단 (반복 가능)
-        #[arg(long = "insert-para")]
-        insert_para: Vec<String>,
-        /// 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단 (반복 가능)
-        #[arg(long = "insert-para-before")]
-        insert_para_before: Vec<String>,
-        /// 문단 삭제 "텍스트" — 텍스트가 있는 문단 삭제 (반복 가능)
-        #[arg(long = "delete-para")]
-        delete_para: Vec<String>,
-        /// 표 행 추가 "표" — N번째 표 끝에 빈 행 (반복 가능, 0-기반; 병합 셀이 있는 표는 거부)
-        #[arg(long = "add-row")]
-        add_row: Vec<String>,
-        /// 표 열 추가 "표"(끝에) 또는 "표:위치"(삽입) — 전체 폭 유지(기존 열 균등 축소). 병합 셀 표도 지원 (반복 가능, 0-기반)
-        #[arg(long = "add-col")]
-        add_col: Vec<String>,
-        /// 표 행 삭제 "표:행" — N번째 표의 R행 (반복 가능, 0-기반; 병합 행은 거부)
-        #[arg(long = "delete-row")]
-        delete_row: Vec<String>,
-        /// 표 열 삭제 "표:열" — N번째 표의 열 삭제. 전체 폭 유지(남은 열에 재분배). 병합 셀은 축소 (반복 가능, 0-기반)
-        #[arg(long = "delete-col")]
-        delete_col: Vec<String>,
-        /// 셀 병합 "표:r1:c1:r2:c2" — 사각 영역을 좌상단 앵커로 병합 (반복 가능, 0-기반)
-        #[arg(long = "merge-cells")]
-        merge_cells: Vec<String>,
-        /// 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반)
-        #[arg(long = "split-cell")]
-        split_cell: Vec<String>,
-        /// 쓰기 후 재읽기로 검증
-        #[arg(long)]
-        verify: bool,
-    },
+    Edit(EditArgs),
 
     /// 필드/누름틀 목록 표시 (이름·종류·값)
     Fields {
@@ -245,6 +239,9 @@ pub enum Cmd {
         /// 치환 요약을 JSON으로 출력 ({output, replaced, counts})
         #[arg(long)]
         json: bool,
+        /// 일부 요청이 자리를 찾지 못해도 일치한 값만 게시 (기본: 하나라도 미치환이면 실패)
+        #[arg(long = "allow-partial")]
+        allow_partial: bool,
     },
 
     /// 구조 검증 (mimetype/필수 엔트리/XML 파싱) — 유효하면 종료코드 0
@@ -253,6 +250,28 @@ pub enum Cmd {
         /// JSON으로 출력
         #[arg(long)]
         json: bool,
+    },
+
+    /// versioned policy로 package/semantic/native render/independent import 인증
+    Certify {
+        /// 인증할 HWP/HWPX 입력
+        input: PathBuf,
+        /// hwp-certification-policy-v1 JSON/YAML
+        #[arg(long)]
+        policy: PathBuf,
+        /// 새로 만들 원자적 artifact 디렉터리(기존 경로 거부)
+        #[arg(long)]
+        report: PathBuf,
+    },
+
+    /// 버전 고정 구조 문서 코퍼스를 2회 생성·재개방·native 인증
+    Corpus {
+        /// hwp-structured-corpus-v1 manifest JSON
+        #[arg(long)]
+        manifest: PathBuf,
+        /// 새로 만들 원자적 실행 보고서 디렉터리(기존 경로 거부)
+        #[arg(long)]
+        report: PathBuf,
     },
 
     /// MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페이스
@@ -293,6 +312,80 @@ pub enum Cmd {
     },
 }
 
+/// `hwp edit` 입력. 편집 실행 전에 `EditPlan`의 타입화된 작업 목록으로 정규화한다.
+#[derive(Args)]
+pub struct EditArgs {
+    pub input: PathBuf,
+    #[arg(short, long)]
+    pub output: PathBuf,
+    /// 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환)
+    #[arg(long)]
+    pub replace: Vec<String>,
+    /// 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스)
+    #[arg(long = "set-cell")]
+    pub set_cell: Vec<String>,
+    /// 필드/누름틀 채우기 "이름=값" (반복 가능 — hwp fields로 이름 확인)
+    #[arg(long = "set-field")]
+    pub set_field: Vec<String>,
+    /// 메타데이터 설정 "키=값" (키: title|author|subject|keywords, 반복 가능)
+    #[arg(long = "set-meta")]
+    pub set_meta: Vec<String>,
+    /// 누름틀 생성 "앵커=>이름" 또는 "앵커=>이름=값" — 앵커 텍스트 뒤에 %clk 필드 삽입 (반복 가능)
+    #[arg(long = "create-field")]
+    pub create_field: Vec<String>,
+    /// 책갈피 생성 "앵커=>이름" — 앵커 텍스트 뒤에 bokm 지점 표식 삽입 (반복 가능)
+    #[arg(long = "create-bookmark")]
+    pub create_bookmark: Vec<String>,
+    /// 하이퍼링크 생성 "앵커=>URL" 또는 "앵커=>표시=>URL" — 앵커 뒤에 %hlk 삽입 (반복 가능)
+    #[arg(long = "create-hyperlink")]
+    pub create_hyperlink: Vec<String>,
+    /// 이미지 삽입 "앵커=>경로" 또는 "앵커=>경로@너비x높이"(mm) — 앵커 뒤에 그림 삽입 (반복 가능)
+    #[arg(long = "insert-image")]
+    pub insert_image: Vec<String>,
+    /// 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치 (반복 가능)
+    #[arg(long = "seal")]
+    pub seal: Vec<String>,
+    /// 글자 서식 "찾기:속성=값,…" (예: "제목:bold=on,size=16,color=#FF0000")
+    #[arg(long = "set-format")]
+    pub set_format: Vec<String>,
+    /// 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute)
+    #[arg(long = "set-align")]
+    pub set_align: Vec<String>,
+    /// 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단 (반복 가능)
+    #[arg(long = "insert-para")]
+    pub insert_para: Vec<String>,
+    /// 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단 (반복 가능)
+    #[arg(long = "insert-para-before")]
+    pub insert_para_before: Vec<String>,
+    /// 문단 삭제 "텍스트" — 텍스트가 있는 문단 삭제 (반복 가능)
+    #[arg(long = "delete-para")]
+    pub delete_para: Vec<String>,
+    /// 표 행 추가 "표" — N번째 표 끝에 빈 행 (반복 가능, 0-기반; 병합 셀이 있는 표는 거부)
+    #[arg(long = "add-row")]
+    pub add_row: Vec<String>,
+    /// 표 열 추가 "표"(끝에) 또는 "표:위치"(삽입) — 전체 폭 유지(기존 열 균등 축소). 병합 셀 표도 지원 (반복 가능, 0-기반)
+    #[arg(long = "add-col")]
+    pub add_col: Vec<String>,
+    /// 표 행 삭제 "표:행" — N번째 표의 R행 (반복 가능, 0-기반; 병합 행은 거부)
+    #[arg(long = "delete-row")]
+    pub delete_row: Vec<String>,
+    /// 표 열 삭제 "표:열" — N번째 표의 열 삭제. 전체 폭 유지(남은 열에 재분배). 병합 셀은 축소 (반복 가능, 0-기반)
+    #[arg(long = "delete-col")]
+    pub delete_col: Vec<String>,
+    /// 셀 병합 "표:r1:c1:r2:c2" — 사각 영역을 좌상단 앵커로 병합 (반복 가능, 0-기반)
+    #[arg(long = "merge-cells")]
+    pub merge_cells: Vec<String>,
+    /// 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반)
+    #[arg(long = "split-cell")]
+    pub split_cell: Vec<String>,
+    /// 쓰기 후 재읽기로 검증
+    #[arg(long)]
+    pub verify: bool,
+    /// 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패)
+    #[arg(long = "allow-partial")]
+    pub allow_partial: bool,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum TextFormat {
     Plain,
@@ -321,9 +414,39 @@ pub enum PresetArg {
     Report,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+pub enum SpecFormatArg {
+    Json,
+    Yaml,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RenderFormat {
     Png,
     Svg,
     Pdf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_and_diff_reject_non_finite_or_out_of_range_dpi() {
+        for command in ["render", "diff"] {
+            for dpi in ["0", "-1", "NaN", "inf", "601", "1e300"] {
+                let mut args = vec!["hwp", command, "input.hwpx"];
+                if command == "render" {
+                    args.extend(["--output", "out.png"]);
+                } else {
+                    args.extend(["--ref", "reference.png"]);
+                }
+                args.extend(["--dpi", dpi]);
+                assert!(
+                    Cli::try_parse_from(args).is_err(),
+                    "{command} accepted dpi={dpi}"
+                );
+            }
+        }
+    }
 }

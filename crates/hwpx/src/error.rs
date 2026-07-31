@@ -16,6 +16,12 @@ pub enum HwpxError {
     #[error("엔트리가 없습니다: {0}")]
     EntryNotFound(String),
 
+    #[error("HWPX 패키지 제한 위반: {0}")]
+    PackageLimit(String),
+
+    #[error("HWPX 패키지 무결성 오류: {0}")]
+    PackageIntegrity(String),
+
     #[error("XML 파싱 오류 ({entry}): {message}")]
     Xml { entry: String, message: String },
 }

@@ -61,6 +61,46 @@ impl Hwp5Container {
         v
     }
 
+    /// Certification-oriented stream enumeration. The entry and normalized
+    /// name budgets are enforced while walking the CFB directory, before a
+    /// caller can clone all paths into a stream cache.
+    pub fn list_streams_bounded(
+        &self,
+        max_streams: usize,
+        max_total_name_bytes: u64,
+    ) -> Result<Vec<StreamInfo>> {
+        let mut streams = Vec::new();
+        let mut total_name_bytes = 0u64;
+        for entry in self.cfb.walk().filter(|entry| entry.is_stream()) {
+            if streams.len() >= max_streams {
+                return Err(Hwp5Error::StructureLimitExceeded {
+                    resource: "CFB stream count".to_string(),
+                    limit: max_streams,
+                });
+            }
+            let path = entry.path().to_string_lossy().replace('\\', "/");
+            total_name_bytes =
+                total_name_bytes
+                    .checked_add(path.len() as u64)
+                    .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
+                        resource: "aggregate CFB stream names".to_string(),
+                        limit: max_total_name_bytes,
+                    })?;
+            if total_name_bytes > max_total_name_bytes {
+                return Err(Hwp5Error::ResourceLimitExceeded {
+                    resource: "aggregate CFB stream names".to_string(),
+                    limit: max_total_name_bytes,
+                });
+            }
+            streams.push(StreamInfo {
+                path,
+                size: entry.len(),
+            });
+        }
+        streams.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(streams)
+    }
+
     /// 본문 섹션 스트림 경로 목록 (`/BodyText/Section0`, `/BodyText/Section1`, …).
     pub fn body_sections(&self) -> Vec<String> {
         let mut v: Vec<String> = self
@@ -95,6 +135,33 @@ impl Hwp5Container {
         let raw = self.read_stream_raw(path)?;
         if self.header.is_compressed() && is_record_stream(path) {
             codec::decompress(&raw, path)
+        } else {
+            Ok(raw)
+        }
+    }
+
+    /// Certification-oriented record read that bounds both the stored stream and
+    /// the raw-deflate output before allocating the semantic record tree.
+    pub fn read_record_stream_bounded(&mut self, path: &str, limit: u64) -> Result<Vec<u8>> {
+        let info = self
+            .list_streams()
+            .into_iter()
+            .find(|info| info.path == path)
+            .ok_or_else(|| Hwp5Error::StreamNotFound(path.to_string()))?;
+        if info.size > limit {
+            return Err(Hwp5Error::ResourceLimitExceeded {
+                resource: format!("{path} stored stream"),
+                limit,
+            });
+        }
+        let raw = self.read_stream_raw(path)?;
+        if self.header.is_compressed() && is_record_stream(path) {
+            codec::decompress_bounded(&raw, path, limit)
+        } else if raw.len() as u64 > limit {
+            Err(Hwp5Error::ResourceLimitExceeded {
+                resource: format!("{path} record stream"),
+                limit,
+            })
         } else {
             Ok(raw)
         }

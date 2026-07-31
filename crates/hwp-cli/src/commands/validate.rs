@@ -15,10 +15,12 @@ pub fn validate_json(path: &Path) -> Value {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut format = "unknown";
+    let mut package_limits = None;
 
     match detect(path) {
         Ok(FileFormat::Hwpx) => {
             format = "hwpx";
+            package_limits = Some(json!(hwpx::NATIVE_PACKAGE_LIMITS_PROFILE));
             validate_hwpx(path, &mut errors, &mut warnings);
         }
         Ok(FileFormat::Hwp5) => {
@@ -37,6 +39,7 @@ pub fn validate_json(path: &Path) -> Value {
         "valid": errors.is_empty(),
         "errors": errors,
         "warnings": warnings,
+        "package_limits": package_limits,
     })
 }
 
@@ -100,7 +103,9 @@ fn validate_hwpx(path: &Path, errors: &mut Vec<String>, warnings: &mut Vec<Strin
         warnings.push("mimetype이 첫 엔트리가 아님 (패키징 규칙 위반)".to_string());
     }
 
-    match hwpx::read_document(path) {
+    // 구조 검증은 BinData를 메모리에 적재하지 않지만 모든 비디렉터리 엔트리를
+    // EOF까지 스트리밍한다. 따라서 raw-copy 대상의 CRC/deflate 손상도 검출한다.
+    match hwpx::read_structure(path) {
         Ok(r) => warnings.extend(r.warnings),
         Err(e) => errors.push(format!("XML 파싱 실패: {e}")),
     }

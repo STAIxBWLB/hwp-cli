@@ -241,6 +241,25 @@ pub fn write_document(doc: &Document, path: &Path, opts: &WriteOptions) -> Resul
         }
         cfb.create_new_stream(path.as_str())?.write_all(bytes)?;
     }
+    // 신규 합성 CFB의 directory timestamp는 내용과 무관한 현재 시각을 사용하면
+    // 동일 문서도 매번 다른 바이트가 된다. CFB epoch(1601-01-01)로 root/storage를
+    // 고정한다. stream timestamp는 CFB 규격상 이미 0이며 cfb API도 변경하지 않는다.
+    // 이 함수는 언제나 새 파일을 조립하는 경로라 기존 파일의 원본 timestamp 보존
+    // 계약에는 영향을 주지 않는다.
+    const SECONDS_FROM_CFB_TO_UNIX_EPOCH: u64 = 11_644_473_600;
+    let cfb_epoch = std::time::UNIX_EPOCH
+        .checked_sub(std::time::Duration::from_secs(
+            SECONDS_FROM_CFB_TO_UNIX_EPOCH,
+        ))
+        .expect("CFB epoch는 지원되는 SystemTime 범위");
+    let entry_paths = cfb
+        .walk()
+        .map(|entry| entry.path().to_path_buf())
+        .collect::<Vec<_>>();
+    for entry_path in entry_paths {
+        cfb.set_created_time(&entry_path, cfb_epoch)?;
+        cfb.set_modified_time(&entry_path, cfb_epoch)?;
+    }
     cfb.flush()?;
     Ok(warnings)
 }
@@ -465,6 +484,73 @@ fn build_picture_extras(
             children: Vec::new(),
         }],
     }]
+}
+
+/// Returns true only for the exact Picture scaffolding synthesized by this
+/// writer from an IR picture whose `common_data`/`extras` were empty.
+///
+/// The predicate is used by post-write semantic verification. It recomputes
+/// natural dimensions from the referenced media bytes and checks every common
+/// header and shape byte except the writer-assigned instance/storage IDs. A
+/// foreign or edited payload therefore remains part of the semantic digest.
+pub fn is_materialized_generated_picture(picture: &hwp_model::Picture, media: &[u8]) -> bool {
+    let common = &picture.common_data;
+    if common.len() < 42 {
+        return false;
+    }
+    let description_units = picture
+        .description
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::encode_utf16)
+        .map(Iterator::collect::<Vec<_>>)
+        .unwrap_or_default();
+    let Ok(description_len) = u16::try_from(description_units.len()) else {
+        return false;
+    };
+    if common.len() != 42 + description_units.len() * 2 {
+        return false;
+    }
+    let attr: u32 = if picture.treat_as_char {
+        0x042a_6001
+    } else {
+        (0x040a_6000 & !(1 << 13)) | (2 << 3) | (3 << 8) | (5 << 21)
+    };
+    let instance_id = u32::from_le_bytes(common[32..36].try_into().expect("checked length"));
+    if !(0x3000_0000..0x3010_0000).contains(&instance_id) {
+        return false;
+    }
+    let mut expected_common = Vec::with_capacity(common.len());
+    expected_common.extend_from_slice(&attr.to_le_bytes());
+    expected_common.extend_from_slice(&picture.vert_offset.to_le_bytes());
+    expected_common.extend_from_slice(&picture.horz_offset.to_le_bytes());
+    expected_common.extend_from_slice(&picture.width.0.to_le_bytes());
+    expected_common.extend_from_slice(&picture.height.0.to_le_bytes());
+    expected_common.extend_from_slice(&picture.z_order.to_le_bytes());
+    expected_common.extend_from_slice(&[0u8; 8]);
+    expected_common.extend_from_slice(&instance_id.to_le_bytes());
+    expected_common.extend_from_slice(&0u32.to_le_bytes());
+    expected_common.extend_from_slice(&description_len.to_le_bytes());
+    for unit in description_units {
+        expected_common.extend_from_slice(&unit.to_le_bytes());
+    }
+    if common != &expected_common {
+        return false;
+    }
+    let hwp_model::BinRef::Id(bin_id) = picture.bin_ref else {
+        return false;
+    };
+    let natural = image_pixel_size(media)
+        .map(natural_size_hwpunit)
+        .unwrap_or((picture.width.0, picture.height.0));
+    picture.extras
+        == build_picture_extras(
+            picture.width.0,
+            picture.height.0,
+            natural,
+            bin_id.0,
+            instance_id ^ 0x0010_0000,
+        )
 }
 
 // ── hwpx-출신 도형/글상자 안전 저하 ──────────────────────────────────────
@@ -806,9 +892,7 @@ fn synth_pictures_para(
                 common.extend_from_slice(&0u32.to_le_bytes()); // 쪽 나눔 방지(split)
                 // 개체 설명(description) BSTR — CommonControl ≥5.0.0.5 필수 필드.
                 // 빈 설명도 길이(u16=0)는 반드시 있어야 한다(정품 한글은 항상 기록).
-                // 누락 시 한글이 BSTR을 기대하다 레코드를 짧게 읽어 그림을 거부할 수
-                // 있다(pyhwp는 관대해 통과하나 한글은 다름).
-                common.extend_from_slice(&0u16.to_le_bytes()); // desc_len = 0
+                append_gso_description(&mut common, p.description.as_deref(), warnings);
                 p.common_data = common;
                 // 원본 이미지 자연 크기(픽셀×7200/96). 못 읽으면 표시 크기로
                 // 대체(구버전 동작) — 자르기가 일부만 보일 수 있으나 차선.
@@ -876,6 +960,27 @@ fn synth_pictures_para(
             }
             _ => {}
         }
+    }
+}
+
+fn append_gso_description(
+    common: &mut Vec<u8>,
+    description: Option<&str>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(description) = description.filter(|value| !value.is_empty()) else {
+        common.extend_from_slice(&0u16.to_le_bytes());
+        return;
+    };
+    let encoded = description.encode_utf16().collect::<Vec<_>>();
+    let Ok(len) = u16::try_from(encoded.len()) else {
+        warnings.push("DROP: 그림 개체 설명이 HWP5 u16 길이 한계를 초과해 생략".to_string());
+        common.extend_from_slice(&0u16.to_le_bytes());
+        return;
+    };
+    common.extend_from_slice(&len.to_le_bytes());
+    for unit in encoded {
+        common.extend_from_slice(&unit.to_le_bytes());
     }
 }
 
@@ -994,6 +1099,63 @@ const DEFAULT_PAGE_BORDER_FILLS: [[u8; 14]; 3] = [
     ],
 ];
 
+/// 합성 `SectionDef`가 HWP5 writer에서 materialize된 정확한 기본 payload/자식인지 확인한다.
+///
+/// semantic 재개방 검증에서 writer가 넣은 기본값만 원래의 빈 합성 표현과 동등하게
+/// 정규화하기 위한 predicate다. 사용자 payload나 opaque child가 한 바이트라도 다르면
+/// false이므로 활성 문서 의미를 숨기지 않는다.
+pub fn is_materialized_default_section_def(def: &SectionDef) -> bool {
+    if def.data != DEFAULT_SECD_DATA
+        || def.extras.len() != 5
+        || def.footnote_shape_raw.as_deref() != Some(DEFAULT_FOOTNOTE_SHAPE.as_slice())
+        || def.endnote_shape_raw.as_deref() != Some(DEFAULT_ENDNOTE_SHAPE.as_slice())
+        || def.page_border_fills_raw
+            != DEFAULT_PAGE_BORDER_FILLS
+                .iter()
+                .map(|bytes| bytes.to_vec())
+                .collect::<Vec<_>>()
+    {
+        return false;
+    }
+    let expected = [
+        (tag::FOOTNOTE_SHAPE, DEFAULT_FOOTNOTE_SHAPE.as_slice()),
+        (tag::FOOTNOTE_SHAPE, DEFAULT_ENDNOTE_SHAPE.as_slice()),
+        (
+            tag::PAGE_BORDER_FILL,
+            DEFAULT_PAGE_BORDER_FILLS[0].as_slice(),
+        ),
+        (
+            tag::PAGE_BORDER_FILL,
+            DEFAULT_PAGE_BORDER_FILLS[1].as_slice(),
+        ),
+        (
+            tag::PAGE_BORDER_FILL,
+            DEFAULT_PAGE_BORDER_FILLS[2].as_slice(),
+        ),
+    ];
+    def.extras
+        .iter()
+        .zip(expected)
+        .all(|(record, (tag, data))| {
+            record.tag == tag && record.data == data && record.children.is_empty()
+        })
+}
+
+/// 합성 단 정의가 HWP5 writer에서 materialize된 정확한 기본 payload인지 확인한다.
+pub fn is_materialized_default_column_def(generic: &hwp_model::GenericControl) -> bool {
+    generic.ctrl_id == *b"cold"
+        && generic.data == DEFAULT_COLD_DATA
+        && generic.column_def.as_ref().is_some_and(|column| {
+            column.count == 1
+                && column.kind == 0
+                && column.direction == 0
+                && column.same_width
+                && column.gap == 0
+                && column.widths.is_empty()
+                && column.divider.is_none()
+        })
+}
+
 /// 기본 번호 정의(NUMBERING) 페이로드 (226B — 5.1.0.1 표본 hello_world와 바이트 동일).
 /// 문단 머리 7수준(^1.~^7) + 시작번호 7개 + 5.1.x 확장 3수준. PARA_SHAPE가
 /// numbering_id=0 을 참조하므로 테이블이 비면 dangling reference가 되어 한글이
@@ -1015,6 +1177,103 @@ const DEFAULT_NUMBERING_DATA: [u8; 226] = [
     0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
     0x00, 0x00,
 ];
+
+/// 합성 DocInfo에 writer가 주입한 기본 TAB_DEF 3종인지 확인한다.
+pub fn is_materialized_default_tab_defs(raw: &[RawEntry], modeled: &[hwp_model::TabDef]) -> bool {
+    let expected_raw = [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 0, 0, 0, 0, 0, 0, 0],
+        [2, 0, 0, 0, 0, 0, 0, 0],
+    ];
+    let expected_attrs = [0, 1, 2];
+    raw.len() == expected_raw.len()
+        && modeled.len() == expected_attrs.len()
+        && raw
+            .iter()
+            .zip(expected_raw)
+            .all(|(entry, data)| entry.data == data && entry.children.is_empty())
+        && modeled
+            .iter()
+            .zip(expected_attrs)
+            .all(|(tab, attr)| tab.attr == attr && tab.items.is_empty())
+}
+
+/// 합성 DocInfo에 writer가 주입한 기본 NUMBERING과 그 의미 파싱 결과인지 확인한다.
+pub fn is_materialized_default_numberings(
+    raw: &[RawEntry],
+    modeled: &[Vec<hwp_model::NumLevel>],
+) -> bool {
+    const TEMPLATES: [&str; 7] = ["^1.", "^2.", "^3)", "^4)", "(^5)", "(^6)", "^7"];
+    !raw.is_empty()
+        && raw.len() == modeled.len()
+        && raw
+            .iter()
+            .all(|entry| entry.data == DEFAULT_NUMBERING_DATA && entry.children.is_empty())
+        && modeled.iter().all(|levels| {
+            levels.len() == TEMPLATES.len()
+                && levels.iter().zip(TEMPLATES).all(|(level, template)| {
+                    level.start == 1
+                        && level.fmt == hwp_model::NumFmt::Digit
+                        && level.template == template
+                })
+        })
+}
+
+/// 합성 DocInfo에 writer가 `bullet_chars`에서 만든 raw BULLET 레코드인지 확인한다.
+pub fn is_materialized_generated_bullets(raw: &[RawEntry], chars: &[char]) -> bool {
+    !raw.is_empty()
+        && raw.len() == chars.len()
+        && raw
+            .iter()
+            .zip(chars)
+            .all(|(entry, ch)| entry.data == make_bullet_data(*ch) && entry.children.is_empty())
+}
+
+/// 합성 문서에 writer가 추가한 정확한 COMPATIBLE_DOCUMENT 서브트리인지 확인한다.
+pub fn is_materialized_compatible_document(record: &OpaqueRecord) -> bool {
+    record.tag == tag::COMPATIBLE_DOCUMENT
+        && record.data == [0; 4]
+        && record.children.len() == 2
+        && record.children[0].tag == tag::LAYOUT_COMPATIBILITY
+        && record.children[0].data == [0; 20]
+        && record.children[0].children.is_empty()
+        && record.children[1].tag == tag::TRACKCHANGE
+        && record.children[1].data.len() == 1032
+        && record.children[1].data.first() == Some(&0x38)
+        && record.children[1].data[1..].iter().all(|byte| *byte == 0)
+        && record.children[1].children.is_empty()
+}
+
+/// 빈 `BorderFill::tail`을 writer가 채운 정확한 버전별 payload인지 확인한다.
+pub fn is_materialized_generated_border_fill_tail(fill: &hwp_model::BorderFill) -> bool {
+    let expected: &[u8] = if fill.fill_type & 0x1 != 0 {
+        &[0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0]
+    } else {
+        &[0, 0, 0, 0]
+    };
+    fill.tail == expected
+}
+
+/// 빈 `CharShape::tail`을 writer가 채운 정확한 6바이트 payload인지 확인한다.
+pub fn is_materialized_generated_char_shape_tail(shape: &CharShape) -> bool {
+    shape.border_fill_id >= 2
+        && shape.tail.len() == 6
+        && shape.tail[..2] == shape.border_fill_id.to_le_bytes()
+        && shape.tail[2..].iter().all(|byte| *byte == 0)
+}
+
+/// 빈 `ParaShape::tail`을 writer가 채운 정확한 5.1.x 16바이트 payload인지 확인한다.
+pub fn is_materialized_generated_para_shape_tail(shape: &ParaShape) -> bool {
+    shape.tail.len() == 16
+        && shape.tail[..8].iter().all(|byte| *byte == 0)
+        && shape.tail[8..12] == shape.line_spacing.to_le_bytes()
+        && shape.tail[12..].iter().all(|byte| *byte == 0)
+}
+
+/// 빈 `Style::tail`을 writer가 채운 정확한 잠금 기본값인지 확인한다.
+pub fn is_materialized_generated_style_tail(style: &Style) -> bool {
+    style.tail == [0, 0]
+}
 
 /// HWPTAG_BULLET 레코드 데이터 — **정품 실측 25B**(제주한라대 사업계획서 BULLET 전수 대조).
 /// 레이아웃: 문단 머리 정보(8B, attr 0x08=자동 내어쓰기·본문거리 50%) + **번호 글자모양
@@ -2093,6 +2352,9 @@ fn emit_picture(pic: &Picture, warnings: &mut Vec<String>) -> RecordNode {
         }
         w.write_u32(0); // instance id
         w.write_i32(0); // 쪽 나눔 방지
+        let mut description = Vec::new();
+        append_gso_description(&mut description, pic.description.as_deref(), warnings);
+        w.write_bytes(&description);
     } else {
         w.write_bytes(&pic.common_data);
     }
@@ -2181,6 +2443,32 @@ mod tests {
         assert_eq!(
             i32::from_le_bytes(pic.data[86..90].try_into().unwrap()),
             61875
+        );
+    }
+
+    #[test]
+    fn gso_설명_utf16_u16_경계() {
+        let mut warnings = Vec::new();
+        let mut common = Vec::new();
+        append_gso_description(&mut common, Some("😀"), &mut warnings);
+        assert_eq!(u16::from_le_bytes(common[0..2].try_into().unwrap()), 2);
+        assert_eq!(common.len(), 6);
+        assert!(warnings.is_empty());
+
+        let mut max_common = Vec::new();
+        append_gso_description(&mut max_common, Some(&"가".repeat(65_535)), &mut warnings);
+        assert_eq!(
+            u16::from_le_bytes(max_common[0..2].try_into().unwrap()),
+            u16::MAX
+        );
+        assert_eq!(max_common.len(), 2 + 65_535 * 2);
+
+        let mut overflow = Vec::new();
+        append_gso_description(&mut overflow, Some(&"가".repeat(65_536)), &mut warnings);
+        assert_eq!(overflow, 0u16.to_le_bytes());
+        assert_eq!(
+            warnings.last().map(String::as_str),
+            Some("DROP: 그림 개체 설명이 HWP5 u16 길이 한계를 초과해 생략")
         );
     }
 

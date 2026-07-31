@@ -37,6 +37,12 @@ pub enum Hwp5Error {
     #[error("레코드 구조가 손상되었습니다: {0}")]
     MalformedRecord(String),
 
+    #[error("리소스 제한 초과 ({resource}): 상한 {limit}바이트")]
+    ResourceLimitExceeded { resource: String, limit: u64 },
+
+    #[error("구조 제한 초과 ({resource}): 상한 {limit}")]
+    StructureLimitExceeded { resource: String, limit: usize },
+
     #[error("지원하지 않는 HWP 버전입니다: {0} (HWP 5.x만 지원)")]
     UnsupportedVersion(String),
 

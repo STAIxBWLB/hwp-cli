@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "contract": "hwp-oracle-primary-artifacts-audit-v1",
+  "status": "partial_not_buildable",
+  "artifacts": [
+    {
+      "id": "libreoffice-linux-x86_64-deb",
+      "version": "26.2.5",
+      "url": "https://download.documentfoundation.org/libreoffice/stable/26.2.5/deb/x86_64/LibreOffice_26.2.5_Linux_x86-64_deb.tar.gz",
+      "sha256": "2f03bfb2ac9f33ea7c77331b4b7a23300fb0ed7443566046bf8b5bc51c1bed1e",
+      "signature_url": "https://download.documentfoundation.org/libreoffice/stable/26.2.5/deb/x86_64/LibreOffice_26.2.5_Linux_x86-64_deb.tar.gz.asc",
+      "license_url": "https://www.libreoffice.org/about-us/licenses/"
+    },
+    {
+      "id": "h2orestart-oxt",
+      "version": "0.7.12",
+      "revision": "e24768ebeb8d080867e405ab3d0adbf10788ab5e",
+      "url": "https://github.com/ebandal/H2Orestart/releases/download/v0.7.12/H2Orestart.oxt",
+      "bytes": 588044,
+      "sha256": "7b5f6f247ed9213776f28a86f3c84d50c94e6d99751c20e2d62bb59e59a76566",
+      "license": "GPL-3.0",
+      "license_url": "https://raw.githubusercontent.com/ebandal/H2Orestart/e24768ebeb8d080867e405ab3d0adbf10788ab5e/COPYING"
+    }
+  ],
+  "image": {
+    "dockerfile_available": false,
+    "digest": null,
+    "missing_requirements": [
+      "base_image_digest",
+      "libreoffice_runtime_dependency_closure",
+      "built_image_id_and_repo_digest",
+      "offline_runner_attestation"
+    ]
+  }
+}

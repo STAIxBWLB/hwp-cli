@@ -16,7 +16,17 @@ use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
 use crate::error::Result;
+use crate::package::{PackageLimits, validate_output_entries};
 use section::BinCollector;
+
+/// writer가 문서에 별도 값이 없을 때 방출하는 표준 version.xml.
+///
+/// 저장 후 재읽기 semantic 검증이 writer가 materialize한 정확한 기본값만
+/// 정규화할 수 있도록 공개한다.
+pub const DEFAULT_VERSION_XML: &str = templates::VERSION_XML;
+
+/// writer가 문서에 별도 값이 없을 때 방출하는 표준 settings.xml.
+pub const DEFAULT_SETTINGS_XML: &str = templates::SETTINGS_XML;
 
 #[derive(Default)]
 pub struct HwpxWriteOptions {
@@ -36,6 +46,16 @@ pub fn write_document_with(
     doc: &Document,
     path: &Path,
     opts: &HwpxWriteOptions,
+) -> Result<Vec<String>> {
+    write_document_with_limits(doc, path, opts, &PackageLimits::default())
+}
+
+/// 옵션과 패키지 자원 제한을 지정해 저장한다.
+pub fn write_document_with_limits(
+    doc: &Document,
+    path: &Path,
+    opts: &HwpxWriteOptions,
+    limits: &PackageLimits,
 ) -> Result<Vec<String>> {
     let mut warnings = Vec::new();
 
@@ -63,10 +83,64 @@ pub fn write_document_with(
         .map(|(id, href, mime, _)| (id.clone(), href.clone(), mime.clone()))
         .collect();
 
+    let content_hpf = templates::content_hpf(sections.len(), &bin_meta, &doc.metadata);
+    let version_xml = doc
+        .hwpx_version_xml
+        .as_deref()
+        .unwrap_or(templates::VERSION_XML);
+    let settings_xml = doc
+        .hwpx_settings_xml
+        .as_deref()
+        .unwrap_or(templates::SETTINGS_XML);
+
+    // 실제 파일을 만들기 전에 생성 패키지도 읽기 경로와 같은 크기·중복 정책으로
+    // 검증한다. 직렬화된 XML과 이미 수집된 바이너리만 계상하므로 출력은 남지 않는다.
+    let mut output_entries: Vec<(String, u64)> = vec![
+        ("mimetype".to_string(), templates::MIMETYPE.len() as u64),
+        ("version.xml".to_string(), version_xml.len() as u64),
+        (
+            "META-INF/container.rdf".to_string(),
+            templates::CONTAINER_RDF.len() as u64,
+        ),
+        (
+            "META-INF/container.xml".to_string(),
+            templates::CONTAINER_XML.len() as u64,
+        ),
+        (
+            "META-INF/manifest.xml".to_string(),
+            templates::MANIFEST_XML.len() as u64,
+        ),
+        ("Contents/content.hpf".to_string(), content_hpf.len() as u64),
+        ("Contents/header.xml".to_string(), header_xml.len() as u64),
+    ];
+    output_entries.extend(
+        sections
+            .iter()
+            .enumerate()
+            .map(|(i, xml)| (format!("Contents/section{i}.xml"), xml.len() as u64)),
+    );
+    output_entries.extend(
+        bins.items
+            .iter()
+            .map(|(_, href, _, bytes)| (href.clone(), bytes.len() as u64)),
+    );
+    output_entries.push(("Preview/PrvText.txt".to_string(), preview.len() as u64));
+    output_entries.push(("settings.xml".to_string(), settings_xml.len() as u64));
+    validate_output_entries(output_entries, limits)?;
+
     let file = File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);
-    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    // Compose는 동일 입력에서 byte-identical 출력을 보장한다. `zip`의 기본 옵션은
+    // 빌드 feature에 따라 현재 시각을 기록하므로, 모든 새 HWPX 엔트리를 DOS ZIP
+    // epoch(1980-01-01 00:00:00)로 고정한다. 기존 패키지 엔트리를 raw-copy하는
+    // patch 경로는 이 writer를 사용하지 않으므로 원본 timestamp 보존 계약과 독립적이다.
+    let fixed_timestamp = zip::DateTime::default();
+    let stored = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Stored)
+        .last_modified_time(fixed_timestamp);
+    let deflated = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(fixed_timestamp);
 
     // 1. mimetype — 반드시 첫 엔트리 + 무압축
     zip.start_file("mimetype", stored)?;
@@ -79,10 +153,6 @@ pub fn write_document_with(
     };
 
     // version.xml — 슬롯이 있으면 원문 pass-through, 없으면 기본 상수(바이트 동일).
-    let version_xml = doc
-        .hwpx_version_xml
-        .as_deref()
-        .unwrap_or(templates::VERSION_XML);
     put(&mut zip, "version.xml", version_xml.as_bytes())?;
     put(
         &mut zip,
@@ -99,11 +169,7 @@ pub fn write_document_with(
         "META-INF/manifest.xml",
         templates::MANIFEST_XML.as_bytes(),
     )?;
-    put(
-        &mut zip,
-        "Contents/content.hpf",
-        templates::content_hpf(sections.len(), &bin_meta, &doc.metadata).as_bytes(),
-    )?;
+    put(&mut zip, "Contents/content.hpf", content_hpf.as_bytes())?;
     put(&mut zip, "Contents/header.xml", header_xml.as_bytes())?;
     for (i, xml) in sections.iter().enumerate() {
         put(
@@ -117,10 +183,6 @@ pub fn write_document_with(
     }
     put(&mut zip, "Preview/PrvText.txt", preview.as_bytes())?;
     // settings.xml — 슬롯이 있으면 원문 pass-through, 없으면 기본 상수(바이트 동일).
-    let settings_xml = doc
-        .hwpx_settings_xml
-        .as_deref()
-        .unwrap_or(templates::SETTINGS_XML);
     put(&mut zip, "settings.xml", settings_xml.as_bytes())?;
 
     zip.finish()?;

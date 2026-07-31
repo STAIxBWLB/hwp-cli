@@ -4,46 +4,89 @@ use std::path::Path;
 
 use hwp_cli::cli::PresetArg;
 
+pub enum NewInput<'a> {
+    Markdown {
+        text: &'a str,
+        base_dir: Option<&'a Path>,
+    },
+    Json(&'a str),
+    Empty,
+}
+
+#[derive(Debug)]
+pub struct NewReport {
+    pub output: String,
+    pub warnings: Vec<String>,
+}
+
 pub fn run(
     output: &Path,
     from: Option<&Path>,
     set_meta: &[String],
     preset: Option<PresetArg>,
 ) -> anyhow::Result<()> {
+    let owned;
+    let input = match from {
+        Some(src) => {
+            owned = std::fs::read_to_string(src)?;
+            if src
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            {
+                NewInput::Json(&owned)
+            } else {
+                NewInput::Markdown {
+                    text: &owned,
+                    base_dir: src.parent(),
+                }
+            }
+        }
+        None => NewInput::Empty,
+    };
+    let report = execute(output, input, set_meta, preset)?;
+    crate::commands::convert::print_warnings(&report.warnings);
+    eprintln!("생성 완료: {}", output.display());
+    Ok(())
+}
+
+pub fn execute(
+    output: &Path,
+    input: NewInput<'_>,
+    set_meta: &[String],
+    preset: Option<PresetArg>,
+) -> anyhow::Result<NewReport> {
     let ext = output
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
+    let write_hwp = match ext.as_deref() {
+        Some("hwp") => true,
+        Some("hwpx") => false,
+        Some(other) => anyhow::bail!(
+            "지원하지 않는 출력 확장자입니다: .{other} (`hwp new`는 .hwp 또는 .hwpx만 지원합니다)"
+        ),
+        None => anyhow::bail!(
+            "출력 파일에 확장자가 없습니다: {} (`hwp new`는 .hwp 또는 .hwpx만 지원합니다)",
+            output.display()
+        ),
+    };
     let preset = preset.map(|p| match p {
         PresetArg::Gian => hwp_convert::OfficialPreset::Gian,
         PresetArg::Report => hwp_convert::OfficialPreset::Report,
     });
-    let mut doc = match from {
-        Some(src) => {
-            let text = std::fs::read_to_string(src)?;
-            if src
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-            {
-                if preset.is_some() {
-                    anyhow::bail!("--preset은 markdown 입력 전용입니다 (JSON IR은 헤더 포함)");
-                }
-                // JSON IR(편집 왕복) 입력 — 헤더가 JSON에 포함됨
-                hwp_convert::from_json(&text)
-                    .map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패 ({}): {e}", src.display()))?
-            } else {
-                // md 파일의 디렉터리를 상대 경로 이미지의 기준으로 넘긴다.
-                hwp_convert::from_markdown_with(
-                    &text,
-                    &hwp_convert::MarkdownImportOptions {
-                        base_dir: src.parent(),
-                        preset,
-                    },
-                )
+    let mut doc = match input {
+        NewInput::Json(text) => {
+            if preset.is_some() {
+                anyhow::bail!("--preset은 markdown 입력 전용입니다 (JSON IR은 헤더 포함)");
             }
+            hwp_convert::from_json(text).map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?
         }
-        None => hwp_convert::from_markdown_with(
+        NewInput::Markdown { text, base_dir } => hwp_convert::from_markdown_with(
+            text,
+            &hwp_convert::MarkdownImportOptions { base_dir, preset },
+        ),
+        NewInput::Empty => hwp_convert::from_markdown_with(
             "",
             &hwp_convert::MarkdownImportOptions {
                 base_dir: None,
@@ -57,12 +100,25 @@ pub fn run(
         hwp_convert::apply_meta(&mut doc, spec).map_err(|e| anyhow::anyhow!(e))?;
     }
 
-    let warnings = if ext.as_deref() == Some("hwp") {
-        crate::commands::convert::write_hwp(&doc, output, false)?
-    } else {
-        hwpx::write_document(&doc, output)?
-    };
-    crate::commands::convert::print_warnings(&warnings);
-    eprintln!("생성 완료: {}", output.display());
-    Ok(())
+    let warnings = crate::commands::output::write_validated(
+        output,
+        None,
+        |staged| {
+            if write_hwp {
+                crate::commands::convert::write_hwp(&doc, staged, false)
+            } else {
+                Ok(hwpx::write_document(&doc, staged)?)
+            }
+        },
+        |staged, writer_warnings| {
+            crate::commands::reject_drop_warnings("new", writer_warnings)?;
+            crate::commands::cat::load_document(staged)
+                .map_err(|e| anyhow::anyhow!("생성 문서 재읽기 실패: {e:#}"))?;
+            Ok(())
+        },
+    )?;
+    Ok(NewReport {
+        output: output.display().to_string(),
+        warnings,
+    })
 }

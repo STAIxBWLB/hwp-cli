@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/template-data-v1.schema.json",
+  "title": "hwp-cli TemplateData v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "values"],
+  "properties": {
+    "version": { "const": "1.0" },
+    "values": {
+      "type": "object",
+      "maxProperties": 1024,
+      "propertyNames": {
+        "allOf": [
+          { "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+          { "not": { "enum": ["__proto__", "prototype", "constructor"] } }
+        ]
+      },
+      "additionalProperties": true
+    }
+  }
+}

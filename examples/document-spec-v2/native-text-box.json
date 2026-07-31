@@ -1,0 +1,34 @@
+{
+  "version": "2.0",
+  "document": {
+    "version": "1.0",
+    "sections": [
+      {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "runs": [
+              { "type": "text", "text": "Native HWPX text-box anchor" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "visuals": [
+    {
+      "id": "notice_box",
+      "location": { "section": 0, "paragraph": 0 },
+      "policy": { "hwpx": "required_native" },
+      "alt": "A two-line notice box.",
+      "width_mm": 60,
+      "height_mm": 24,
+      "content": {
+        "type": "text_box",
+        "text": "First line\nSecond line",
+        "fill": "#F2F4F7",
+        "border": "#344054"
+      }
+    }
+  ]
+}

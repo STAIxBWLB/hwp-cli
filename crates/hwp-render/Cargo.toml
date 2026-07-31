@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 flate2 = { workspace = true }
 pdf-writer = { workspace = true }
 subsetter = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 hwp5 = { workspace = true }

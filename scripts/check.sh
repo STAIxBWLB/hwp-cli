@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 로컬 CI 미러 — .github/workflows/ci.yml의 3종 게이트를 **문자 그대로 동일한 커맨드**로 실행.
+# 로컬 CI 미러 — .github/workflows/ci.yml의 4종 게이트를 동일한 커맨드로 실행.
 # ci.yml처럼 앞 게이트가 실패해도 나머지를 끝까지 실행해 한 번에 보고한다.
 # PR 전에 이 스크립트 한 방으로 로컬 검증을 끝낸다.
 set -uo pipefail
@@ -23,9 +23,10 @@ run() {
 run $CARGO fmt --all --check
 run $CARGO clippy --workspace --all-targets -- -D warnings
 run $CARGO test --workspace
+run bash scripts/check-structured-corpus.sh
 
 if [ "$fail" -ne 0 ]; then
     echo "== check: FAILED (위 게이트 중 실패 있음) =="
     exit 1
 fi
-echo "== check: OK (fmt/clippy/test = CI 게이트) =="
+echo "== check: OK (fmt/clippy/test/structured-corpus = CI 게이트) =="

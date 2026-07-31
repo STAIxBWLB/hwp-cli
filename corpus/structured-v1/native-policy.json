@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "document": {
+    "fonts": {
+      "manifest": [
+        {
+          "path": "fonts/NotoSansKR[wght].ttf",
+          "sha256": "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252"
+        }
+      ],
+      "allowed_requested": ["Noto Sans KR"],
+      "required_requested": ["Noto Sans KR"],
+      "forbid_substitution": true
+    },
+    "macros": "deny",
+    "external_references": "deny"
+  },
+  "render": {
+    "dpi": 96,
+    "pages": "all",
+    "page_count": {
+      "min": 1,
+      "max": 4
+    },
+    "allowed_blank_pages": [],
+    "fail_on_outside_page_bounds": true,
+    "fail_on_potential_collision": true,
+    "fail_on_unresolved_fields": true
+  },
+  "oracle": {
+    "mode": "disabled"
+  }
+}

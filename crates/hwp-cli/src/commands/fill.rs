@@ -12,12 +12,24 @@ use anyhow::Context;
 
 use crate::commands::cat::load_document;
 
+#[derive(Debug)]
+pub struct FillReport {
+    pub output: String,
+    pub mode: &'static str,
+    pub replaced: usize,
+    pub counts: BTreeMap<String, usize>,
+    pub filled: usize,
+    pub rows_added: usize,
+    pub warnings: Vec<String>,
+}
+
 pub fn run(
     input: &Path,
     output: &Path,
     set: &[String],
     data: Option<&Path>,
     json: bool,
+    allow_partial: bool,
 ) -> anyhow::Result<()> {
     let data_value: Option<serde_json::Value> = match data {
         Some(d) => {
@@ -30,6 +42,34 @@ pub fn run(
         None => None,
     };
 
+    let report = execute(input, output, set, data_value.as_ref(), allow_partial)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report_json(&report))?);
+    } else if report.mode == "tables" {
+        for warning in &report.warnings {
+            eprintln!("경고: {warning}");
+        }
+        eprintln!(
+            "[hwp] 표 채움: {}건 (+{}행) -> {}",
+            report.filled, report.rows_added, report.output
+        );
+    } else {
+        for warning in &report.warnings {
+            eprintln!("경고: {warning}");
+        }
+        eprintln!("[hwp] {}건 치환 -> {}", report.replaced, report.output);
+    }
+    Ok(())
+}
+
+pub fn execute(
+    input: &Path,
+    output: &Path,
+    set: &[String],
+    data_value: Option<&serde_json::Value>,
+    allow_partial: bool,
+) -> anyhow::Result<FillReport> {
     // 데이터에 `tables`가 (객체 항목의) 비어있지 않은 배열이면 IR 기반 표 채우기로 분기.
     // 객체-배열만 인정해, "tables"라는 이름의 평범한 자리표시자(예: 문자열 배열 값)가
     // 표 채우기로 오인 라우팅돼 실패하지 않게 한다(평문 fill 경로로 떨어뜨림).
@@ -39,12 +79,18 @@ pub fn run(
         .and_then(serde_json::Value::as_array)
         .is_some_and(|arr| !arr.is_empty() && arr.iter().all(serde_json::Value::is_object));
     if has_tables {
-        return fill_tables_ir(input, output, data_value.as_ref().unwrap(), set, json);
+        return fill_tables_ir(
+            input,
+            output,
+            data_value.expect("has_tables로 확인됨"),
+            set,
+            allow_partial,
+        );
     }
 
     // 기본 경로: {{name}} 자리표시자 바이트 보존 치환(hwpx 전용).
     let mut values: BTreeMap<String, String> = BTreeMap::new();
-    if let Some(serde_json::Value::Object(map)) = &data_value {
+    if let Some(serde_json::Value::Object(map)) = data_value {
         for (k, v) in map {
             values.insert(k.clone(), value_to_string(v));
         }
@@ -72,39 +118,86 @@ pub fn run(
         );
     }
 
-    let counts = hwpx::patch::fill_placeholders(input, output, &values)
-        .map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
-    let total: usize = counts.values().sum();
+    execute_values(input, output, &values, allow_partial)
+}
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "output": output.display().to_string(),
-                "replaced": total,
-                "counts": counts,
-            }))?
-        );
-    } else {
-        let unfilled: Vec<&String> = counts
-            .iter()
-            .filter(|(_, n)| **n == 0)
-            .map(|(k, _)| k)
-            .collect();
-        if !unfilled.is_empty() {
-            eprintln!(
-                "[hwp] ⚠️  미치환 자리표시자 {}개: {}",
-                unfilled.len(),
-                unfilled
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        eprintln!("[hwp] {total}건 치환 -> {}", output.display());
+pub fn execute_values(
+    input: &Path,
+    output: &Path,
+    values: &BTreeMap<String, String>,
+    allow_partial: bool,
+) -> anyhow::Result<FillReport> {
+    if values.is_empty() {
+        anyhow::bail!("치환 값이 없습니다");
     }
-    Ok(())
+    if crate::format::detect(input)? != crate::format::FileFormat::Hwpx {
+        anyhow::bail!(
+            "{}: 자리표시자 치환(기본 fill)은 HWPX 입력 전용입니다",
+            input.display()
+        );
+    }
+
+    let mut report_warnings = Vec::new();
+    let counts = crate::commands::output::write_validated(
+        output,
+        Some(input),
+        |staged| {
+            hwpx::patch::fill_placeholders(input, staged, values)
+                .map_err(|e| anyhow::anyhow!("fill 실패: {e}"))
+        },
+        |staged, counts| {
+            let total: usize = counts.values().sum();
+            if total == 0 {
+                anyhow::bail!("요청한 자리표시자를 하나도 찾지 못해 출력을 게시하지 않습니다");
+            }
+            let missing: Vec<&str> = counts
+                .iter()
+                .filter(|(_, count)| **count == 0)
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if !missing.is_empty() && !allow_partial {
+                anyhow::bail!(
+                    "요청한 자리표시자를 찾지 못했습니다: {} \
+                     (--allow-partial로 일치한 값만 적용 가능)",
+                    missing.join(", ")
+                );
+            }
+
+            ensure_valid_document(staged)?;
+            let staged_doc = load_document(staged)?;
+            let unresolved: Vec<String> = hwp_convert::scan_placeholders(&staged_doc)
+                .into_iter()
+                .filter(|slot| values.contains_key(&slot.name))
+                .map(|slot| slot.name)
+                .collect();
+            if !unresolved.is_empty() && !allow_partial {
+                anyhow::bail!(
+                    "치환 후에도 요청한 자리표시자가 남아 있습니다: {}",
+                    unresolved.join(", ")
+                );
+            }
+            Ok(())
+        },
+    )?;
+
+    let missing: Vec<String> = counts
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !missing.is_empty() {
+        report_warnings.push(format!("미치환 자리표시자: {}", missing.join(", ")));
+    }
+    let total = counts.values().sum();
+    Ok(FillReport {
+        output: output.display().to_string(),
+        mode: "placeholders",
+        replaced: total,
+        counts,
+        filled: total,
+        rows_added: 0,
+        warnings: report_warnings,
+    })
 }
 
 /// 데이터 구동 표 채우기. `data`는 다음 형태:
@@ -124,11 +217,14 @@ fn fill_tables_ir(
     output: &Path,
     data: &serde_json::Value,
     set: &[String],
-    json: bool,
-) -> anyhow::Result<()> {
+    allow_partial: bool,
+) -> anyhow::Result<FillReport> {
     let mut doc = load_document(input)?;
+    let original = doc.clone();
     let mut filled = 0usize;
     let mut added = 0usize;
+    let mut warnings = Vec::new();
+    let mut unmatched_fields = Vec::new();
 
     // 1) fields: {{키}} → 값. 우선순위: 최상위 스칼라(flat 스키마 호환) < data.fields < --set.
     let mut fields: BTreeMap<String, String> = BTreeMap::new();
@@ -152,7 +248,11 @@ fn fill_tables_ir(
         fields.insert(k.to_string(), v.to_string());
     }
     for (k, v) in &fields {
-        filled += hwp_convert::replace_text(&mut doc, &format!("{{{{{k}}}}}"), v, true);
+        let count = hwp_convert::replace_text(&mut doc, &format!("{{{{{k}}}}}"), v, true);
+        if count == 0 {
+            unmatched_fields.push(k.clone());
+        }
+        filled += count;
     }
 
     // 2) tables: 행 자동 증식 + 셀 채우기
@@ -182,10 +282,10 @@ fn fill_tables_ir(
             .ok_or_else(|| anyhow::anyhow!("표 #{table_index}를 찾을 수 없습니다"))?;
         // start_row가 현재 행 수를 넘으면 그 사이가 빈 행으로 채워진다 — 보통 실수이므로 경고.
         if start_row as usize > cur_rows as usize {
-            eprintln!(
-                "[hwp] ⚠️  tables[{ti}] start_row={start_row} > 현재 행 수 {cur_rows} — 사이 {}행이 빈 행으로 추가됩니다",
+            warnings.push(format!(
+                "tables[{ti}] start_row={start_row} > 현재 행 수 {cur_rows}: 사이 {}행을 빈 행으로 추가",
                 start_row as usize - cur_rows as usize
-            );
+            ));
         }
         let need = start_row as usize + rows.len();
         if need > cur_rows as usize {
@@ -207,24 +307,103 @@ fn fill_tables_ir(
         }
     }
 
-    crate::commands::convert::write_by_ext(&doc, output, true, true)?;
-
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "output": output.display().to_string(),
-                "filled": filled,
-                "rows_added": added,
-            }))?
-        );
-    } else {
-        eprintln!(
-            "[hwp] 표 채움: {filled}건 (+{added}행) -> {}",
-            output.display()
+    if !unmatched_fields.is_empty() && !allow_partial {
+        anyhow::bail!(
+            "요청한 자리표시자를 찾지 못했습니다: {} \
+             (--allow-partial로 일치한 값만 적용 가능)",
+            unmatched_fields.join(", ")
         );
     }
-    Ok(())
+    if doc == original {
+        anyhow::bail!("적용 가능한 표/자리표시자 변경이 없어 출력을 게시하지 않습니다");
+    }
+    if !unmatched_fields.is_empty() {
+        warnings.push(format!(
+            "미치환 자리표시자: {}",
+            unmatched_fields.join(", ")
+        ));
+    }
+
+    let writer_warnings = crate::commands::output::write_validated(
+        output,
+        Some(input),
+        |staged| write_table_fill(&doc, staged, added > 0),
+        |staged, writer_warnings| {
+            crate::commands::reject_drop_warnings("fill", writer_warnings)?;
+            ensure_valid_document(staged)?;
+            crate::commands::edit::verify_document(staged, &doc)?;
+            Ok(())
+        },
+    )?;
+    warnings.extend(writer_warnings);
+
+    Ok(FillReport {
+        output: output.display().to_string(),
+        mode: "tables",
+        replaced: filled,
+        counts: fields
+            .keys()
+            .map(|name| {
+                (
+                    name.clone(),
+                    usize::from(!unmatched_fields.iter().any(|missing| missing == name)),
+                )
+            })
+            .collect(),
+        filled,
+        rows_added: added,
+        warnings,
+    })
+}
+
+fn write_table_fill(
+    doc: &hwp_model::Document,
+    output: &Path,
+    structural: bool,
+) -> anyhow::Result<Vec<String>> {
+    match output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("hwp") if structural => crate::commands::convert::write_hwp_structural(doc, output),
+        Some("hwp") => crate::commands::convert::write_hwp_edited(doc, output),
+        Some("hwpx") => Ok(hwpx::write_document(doc, output)?),
+        other => anyhow::bail!("fill 출력은 .hwp 또는 .hwpx만 지원합니다 (확장자: {other:?})"),
+    }
+}
+
+fn ensure_valid_document(path: &Path) -> anyhow::Result<()> {
+    let validation = crate::commands::validate::validate_json(path);
+    if validation["valid"].as_bool() == Some(true) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "채운 문서 구조 검증 실패: {}",
+        serde_json::to_string(&validation)?
+    )
+}
+
+pub fn report_json(report: &FillReport) -> serde_json::Value {
+    if report.mode == "tables" {
+        serde_json::json!({
+            "output": report.output,
+            "mode": report.mode,
+            "filled": report.filled,
+            "rows_added": report.rows_added,
+            "counts": report.counts,
+            "warnings": report.warnings,
+        })
+    } else {
+        serde_json::json!({
+            "output": report.output,
+            "mode": report.mode,
+            "replaced": report.replaced,
+            "counts": report.counts,
+            "warnings": report.warnings,
+        })
+    }
 }
 
 /// JSON 값을 셀/필드 문자열로 — 문자열은 그대로, null은 빈 칸, 수/불리언은 표기.
