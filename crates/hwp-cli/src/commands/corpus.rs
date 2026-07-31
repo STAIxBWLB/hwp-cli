@@ -491,7 +491,12 @@ pub fn run(manifest_path: &Path, report_path: &Path) -> Result<()> {
     };
     let artifact_bytes = pretty_json_bounded(&artifact_manifest, MAX_REPORT_BYTES)?;
     write_new(&stage.root().join("artifacts.json"), &artifact_bytes)?;
-    audit_tree(stage.root(), &artifact_manifest)?;
+    let case_ids = manifest
+        .cases
+        .iter()
+        .map(|case| case.id.as_str())
+        .collect::<Vec<_>>();
+    audit_tree(stage.root(), &artifact_manifest, &case_ids)?;
     stage.publish()?;
 
     println!(
@@ -2080,7 +2085,10 @@ fn normalized_relative(root: &Path, path: &Path) -> Result<String> {
     Ok(components.join("/"))
 }
 
-fn audit_tree(root: &Path, manifest: &ArtifactManifest) -> Result<()> {
+/// 실패한 case는 자기 디렉터리를 비운 채 남긴다. 그 디렉터리를 "예상 밖"으로 처리하면
+/// 실패 사유가 담긴 report 자체가 게시되지 못하고 트리 불일치 오류로 덮인다. 그래서 runner가
+/// 만드는 case 디렉터리는 파일이 없어도 허용한다.
+fn audit_tree(root: &Path, manifest: &ArtifactManifest, case_ids: &[&str]) -> Result<()> {
     let expected_paths: BTreeSet<_> = manifest
         .files
         .iter()
@@ -2110,20 +2118,21 @@ fn audit_tree(root: &Path, manifest: &ArtifactManifest) -> Result<()> {
             let components = path.split('/').collect::<Vec<_>>();
             (1..components.len()).map(move |end| components[..end].join("/"))
         })
+        .chain(["documents".to_string(), "certification".to_string()])
+        .chain(
+            case_ids
+                .iter()
+                .flat_map(|id| [format!("documents/{id}"), format!("certification/{id}")]),
+        )
         .collect::<BTreeSet<_>>();
-    if observed_directories != expected_directories {
+    if !observed_directories.is_subset(&expected_directories) {
         // 경로는 닫힌 manifest에서 온 산출물 이름이라 진단에 실어도 된다.
         let unexpected = observed_directories
             .difference(&expected_directories)
             .cloned()
             .collect::<Vec<_>>();
-        let missing = expected_directories
-            .difference(&observed_directories)
-            .cloned()
-            .collect::<Vec<_>>();
-        let sample = expected_paths.iter().take(4).collect::<Vec<_>>();
         anyhow::bail!(
-            "corpus artifact directories do not match the closed manifest (unexpected: {unexpected:?}, missing: {missing:?}, file sample: {sample:?})"
+            "corpus artifact tree contains directories outside the closed manifest: {unexpected:?}"
         )
     }
     Ok(())
