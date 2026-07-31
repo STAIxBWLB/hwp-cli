@@ -2121,8 +2121,9 @@ fn audit_tree(root: &Path, manifest: &ArtifactManifest) -> Result<()> {
             .difference(&observed_directories)
             .cloned()
             .collect::<Vec<_>>();
+        let sample = expected_paths.iter().take(4).collect::<Vec<_>>();
         anyhow::bail!(
-            "corpus artifact directories do not match the closed manifest (unexpected: {unexpected:?}, missing: {missing:?})"
+            "corpus artifact directories do not match the closed manifest (unexpected: {unexpected:?}, missing: {missing:?}, file sample: {sample:?})"
         )
     }
     Ok(())
