@@ -11,6 +11,7 @@
 use hwp_model::{Control, Document, LineSeg, Paragraph, Table};
 
 use crate::fonts::FontStore;
+use crate::issues::RenderIssueAccumulator;
 use crate::shape::{InlineItem, shape_range};
 
 /// 탭 간격 (pt) — layout.rs place_wrapped와 동일해야 한다.
@@ -26,7 +27,11 @@ const TABLE_BLOCK_PADDING: i32 = 566;
 
 /// 합성 문서 전체에 줄 배치를 합성한다 (본문·표 셀 문단).
 /// `store`는 함초롬바탕이 로드된 FontStore여야 한글과 줄바꿈이 일치한다.
-pub fn synthesize_linesegs(doc: &mut Document, store: &mut FontStore, warnings: &mut Vec<String>) {
+pub fn synthesize_linesegs(
+    doc: &mut Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+) {
     let snap = doc.clone();
     for si in 0..doc.sections.len() {
         let page = snap.sections[si]
@@ -101,7 +106,7 @@ fn fill_nested(
     snap: &Document,
     doc: &mut Document,
     store: &mut FontStore,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) {
     let nctrl = doc.sections[si].paragraphs[pi].controls.len();
     for ci in 0..nctrl {
@@ -243,7 +248,7 @@ fn compute_linesegs(
     body_width: i32,
     content_h: i32,
     v_pos: &mut i32,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> Vec<LineSeg> {
     // 줄 높이/간격은 문단 첫 글자 모양의 기준 크기에서 유도(정품 가나다 실측:
     // line_height=base, baseline_gap=base*0.85, line_spacing=base*0.6=줄간격 160%).

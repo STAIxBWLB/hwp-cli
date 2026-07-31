@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.local/schemas/structured-corpus-v1.schema.json",
+  "title": "hwp structured corpus manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract", "profile", "policy", "fonts", "cases"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "contract": { "const": "hwp-structured-corpus-v1" },
+    "profile": { "type": "string", "pattern": "^[A-Za-z0-9._:+/-]{1,64}$" },
+    "policy": {
+      "allOf": [
+        { "$ref": "#/$defs/file_pin" },
+        {
+          "type": "object",
+          "properties": {
+            "path": { "const": "native-policy.json" },
+            "sha256": { "const": "2da9ef212ac3c5e10c85229d62e307e0c29a8e06a848e47feb039db1fd09fdb8" }
+          }
+        }
+      ]
+    },
+    "fonts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/font_pin" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*(?:^|/)[^/]*[. ](?:/|$))(?!.*[\\\\:\\u0000-\\u001f\\u007f])[^\\r\\n]+$"
+    },
+    "file_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relative_path" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "font_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "license_path",
+        "license_sha256",
+        "metadata_path",
+        "metadata_sha256",
+        "license",
+        "source_repository",
+        "source_revision",
+        "source_url"
+      ],
+      "properties": {
+        "path": { "const": "fonts/NotoSansKR[wght].ttf" },
+        "sha256": { "const": "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252" },
+        "license_path": { "const": "fonts/OFL.txt" },
+        "license_sha256": { "const": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9" },
+        "metadata_path": { "const": "fonts/METADATA.pb" },
+        "metadata_sha256": { "const": "9b8b27c0dd1adbb0057d1fbe9534207ab3606114ace6755453d14668912471a1" },
+        "license": { "const": "OFL-1.1" },
+        "source_repository": { "const": "https://github.com/google/fonts" },
+        "source_revision": { "const": "2796410152d4f9524b68ed46e69c1b60f8e0f7c3" },
+        "source_url": { "const": "https://raw.githubusercontent.com/google/fonts/2796410152d4f9524b68ed46e69c1b60f8e0f7c3/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf" }
+      }
+    },
+    "input_format": { "enum": ["json", "yaml"] },
+    "generator": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "source", "format"],
+          "properties": {
+            "kind": { "const": "document_spec" },
+            "source": { "$ref": "#/$defs/file_pin" },
+            "format": { "$ref": "#/$defs/input_format" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "template", "template_format", "data", "data_format"],
+          "properties": {
+            "kind": { "const": "template_spec_data" },
+            "template": { "$ref": "#/$defs/file_pin" },
+            "template_format": { "$ref": "#/$defs/input_format" },
+            "data": { "$ref": "#/$defs/file_pin" },
+            "data_format": { "$ref": "#/$defs/input_format" }
+          }
+        }
+      ]
+    },
+    "semantic_assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_text", "min_sections", "min_paragraphs", "min_tables", "min_text_chars"],
+      "properties": {
+        "required_text": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "min_sections": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "min_paragraphs": { "type": "integer", "minimum": 5, "maximum": 1000000 },
+        "min_tables": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "min_text_chars": { "type": "integer", "minimum": 80, "maximum": 2000000 }
+      }
+    },
+    "certification_assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_pages",
+        "page_count_min",
+        "page_count_max",
+        "require_nonblank",
+        "require_complete_diagnostics",
+        "max_render_issue_count"
+      ],
+      "properties": {
+        "selected_pages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "type": "integer", "minimum": 1, "maximum": 4096 }
+        },
+        "page_count_min": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "page_count_max": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "require_nonblank": { "const": true },
+        "require_complete_diagnostics": { "const": true },
+        "max_render_issue_count": { "const": 0 }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "generator", "formats", "expected"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
+        "category": {
+          "enum": [
+            "korean-official-letter",
+            "approval-draft-memo",
+            "report",
+            "business-plan",
+            "meeting-minutes",
+            "academic-education",
+            "print-form"
+          ]
+        },
+        "generator": { "$ref": "#/$defs/generator" },
+        "formats": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "allOf": [
+            { "contains": { "const": "hwpx" } },
+            { "contains": { "const": "hwp" } }
+          ],
+          "items": { "enum": ["hwpx", "hwp"] }
+        },
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["semantic", "certification"],
+          "properties": {
+            "semantic": { "$ref": "#/$defs/semantic_assertions" },
+            "certification": { "$ref": "#/$defs/certification_assertions" }
+          }
+        }
+      }
+    }
+  }
+}

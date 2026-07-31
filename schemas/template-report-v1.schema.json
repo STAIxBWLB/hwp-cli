@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/template-report-v1.schema.json",
+  "title": "hwp-cli TemplateReport v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "data_schema_version",
+    "output",
+    "dry_run",
+    "deterministic",
+    "mode",
+    "template_sha256",
+    "data_sha256",
+    "provided_variables",
+    "defaulted_variables",
+    "expansion",
+    "changed_regions",
+    "generated_regions",
+    "unsupported",
+    "fallback",
+    "dropped",
+    "template_validation",
+    "data_validation",
+    "semantic_validation",
+    "package_validation"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "data_schema_version": { "const": "1.0" },
+    "output": { "type": "string" },
+    "dry_run": { "type": "boolean" },
+    "deterministic": { "const": true },
+    "mode": {
+      "enum": ["compose", "reference_package_preserving", "reference_regenerate"]
+    },
+    "template_sha256": { "$ref": "#/$defs/sha256" },
+    "data_sha256": { "$ref": "#/$defs/sha256" },
+    "reference_sha256": { "$ref": "#/$defs/sha256" },
+    "output_sha256": { "$ref": "#/$defs/sha256" },
+    "provided_variables": { "$ref": "#/$defs/variableNames" },
+    "defaulted_variables": { "$ref": "#/$defs/variableNames" },
+    "expansion": { "$ref": "#/$defs/expansion" },
+    "changed_regions": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": { "$ref": "#/$defs/region" }
+    },
+    "generated_regions": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": { "$ref": "#/$defs/region" }
+    },
+    "unsupported": { "type": "array", "maxItems": 0 },
+    "fallback": { "type": "array", "maxItems": 0 },
+    "dropped": { "type": "array", "maxItems": 0 },
+    "template_validation": { "const": "passed" },
+    "data_validation": { "const": "passed" },
+    "semantic_validation": { "$ref": "#/$defs/validationStatus" },
+    "package_validation": { "$ref": "#/$defs/validationStatus" },
+    "compose": { "$ref": "#/$defs/composeReport" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "dry_run": { "const": true } }, "required": ["dry_run"] },
+      "then": { "not": { "required": ["output_sha256"] } },
+      "else": { "required": ["output_sha256"] }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "reference_package_preserving" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "required": ["reference_sha256"],
+        "not": { "required": ["compose"] },
+        "properties": {
+          "generated_regions": { "maxItems": 0 },
+          "semantic_validation": { "const": "passed" },
+          "package_validation": { "const": "passed" }
+        }
+      },
+      "else": {
+        "required": ["compose"],
+        "properties": {
+          "changed_regions": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "compose" } },
+        "required": ["mode"]
+      },
+      "then": { "not": { "required": ["reference_sha256"] } },
+      "else": { "required": ["reference_sha256"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "dry_run": { "const": true },
+          "mode": { "enum": ["compose", "reference_regenerate"] }
+        },
+        "required": ["dry_run", "mode"]
+      },
+      "then": {
+        "properties": {
+          "semantic_validation": { "const": "not_run" },
+          "package_validation": { "const": "not_run" }
+        }
+      },
+      "else": {
+        "properties": {
+          "semantic_validation": { "const": "passed" },
+          "package_validation": { "const": "passed" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "safeName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "allOf": [
+        { "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+        { "not": { "enum": ["__proto__", "prototype", "constructor"] } }
+      ]
+    },
+    "variableNames": {
+      "type": "array",
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/safeName" }
+    },
+    "validationStatus": {
+      "enum": ["passed", "not_run"]
+    },
+    "regionInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "input_items", "generated_items"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/(?:[0-9]+(?:/[0-9]+)*)?$" },
+        "input_items": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "generated_items": { "type": "integer", "minimum": 0, "maximum": 250000 }
+      }
+    },
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "template_pointer",
+        "input_items",
+        "generated_items",
+        "instances"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeName" },
+        "kind": {
+          "enum": ["conditional", "repeated", "rich_blocks", "placeholder", "field"]
+        },
+        "template_pointer": { "type": "string", "pattern": "^/" },
+        "input_items": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "generated_items": { "type": "integer", "minimum": 0, "maximum": 250000 },
+        "instances": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "$ref": "#/$defs/regionInstance" }
+        }
+      }
+    },
+    "expansion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_nodes",
+        "expanded_nodes",
+        "expanded_bytes",
+        "max_control_depth",
+        "each_iterations",
+        "conditions_evaluated",
+        "regions"
+      ],
+      "properties": {
+        "input_nodes": { "type": "integer", "minimum": 0, "maximum": 250000 },
+        "expanded_nodes": { "type": "integer", "minimum": 0, "maximum": 250000 },
+        "expanded_bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+        "max_control_depth": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "each_iterations": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "conditions_evaluated": { "type": "integer", "minimum": 0, "maximum": 250000 },
+        "regions": {
+          "type": "array",
+          "maxItems": 20000,
+          "items": { "$ref": "#/$defs/region" }
+        }
+      }
+    },
+    "composeReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "output",
+        "dry_run",
+        "deterministic",
+        "native",
+        "visual_fallback_allowed",
+        "visual_fallback_used",
+        "sections",
+        "paragraphs",
+        "tables",
+        "images",
+        "equations",
+        "fields",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "output": { "type": "string" },
+        "dry_run": { "type": "boolean" },
+        "deterministic": { "const": true },
+        "native": { "const": true },
+        "visual_fallback_allowed": { "type": "boolean" },
+        "visual_fallback_used": { "type": "array", "items": { "type": "string" } },
+        "sections": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "paragraphs": { "type": "integer", "minimum": 0 },
+        "tables": { "type": "integer", "minimum": 0 },
+        "images": { "type": "integer", "minimum": 0 },
+        "equations": { "type": "integer", "minimum": 0 },
+        "fields": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

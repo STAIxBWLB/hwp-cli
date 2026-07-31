@@ -11,6 +11,8 @@
 - [`hwp convert`](#hwp-convert)
 - [`hwp render`](#hwp-render)
 - [`hwp new`](#hwp-new)
+- [`hwp compose`](#hwp-compose)
+- [`hwp template`](#hwp-template)
 - [`hwp diff`](#hwp-diff)
 - [`hwp edit`](#hwp-edit)
 - [`hwp fields`](#hwp-fields)
@@ -18,6 +20,8 @@
 - [`hwp slots`](#hwp-slots)
 - [`hwp fill`](#hwp-fill)
 - [`hwp validate`](#hwp-validate)
+- [`hwp certify`](#hwp-certify)
+- [`hwp corpus`](#hwp-corpus)
 - [`hwp mcp`](#hwp-mcp)
 - [`hwp update`](#hwp-update)
 - [`hwp dump`](#hwp-dump)
@@ -78,7 +82,7 @@
 | `<INPUT>` |  |  |  |
 | `-o, --output` | `<OUTPUT>` |  |  |
 | `--pages` | `<PAGES>` | `all` | 페이지 범위: "1", "1-3", "all" |
-| `--dpi` | `<DPI>` | `96` |  |
+| `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
 | `--format` | `png` \| `svg` \| `pdf` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
 
@@ -95,6 +99,37 @@
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
 | `--preset` | `gian` \| `report` |  | 공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt), report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함 |
 
+## `hwp compose`
+
+DocumentSpec v1/v2(JSON/YAML)에서 구조 문서를 deterministic 합성
+
+**사용법:** `hwp compose [OPTIONS] --output <OUTPUT> <SPEC>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<SPEC>` |  |  | DocumentSpec v1/v2 입력 파일(.json, .yaml, .yml) |
+| `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX |
+| `--format` | `json` \| `yaml` |  | 입력 포맷 (생략 시 spec 확장자에서 추론) |
+| `--dry-run` |  |  | 검증·컴파일 보고서만 생성하고 파일은 쓰지 않음 |
+| `--report` |  |  | 실행 보고서를 JSON으로 출력 |
+| `--allow-visual-fallback` |  |  | [deprecated] v1 compatibility only; v2 rejects this policy override |
+
+## `hwp template`
+
+TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
+
+**사용법:** `hwp template [OPTIONS] --data <DATA> --output <OUTPUT> <TEMPLATE>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<TEMPLATE>` |  |  | TemplateSpec v1 입력 파일(.json, .yaml, .yml) |
+| `--data` | `<DATA>` |  | TemplateData v1 입력 파일(.json, .yaml, .yml) |
+| `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX |
+| `--template-format` | `json` \| `yaml` |  | TemplateSpec 입력 포맷 (생략 시 확장자에서 추론) |
+| `--data-format` | `json` \| `yaml` |  | TemplateData 입력 포맷 (생략 시 확장자에서 추론) |
+| `--dry-run` |  |  | 실제 확장·writer·검증 경로를 실행하되 결과 파일은 게시하지 않음 |
+| `--report` |  |  | preservation/expansion 보고서를 JSON으로 출력 |
+
 ## `hwp diff`
 
 렌더 결과를 한글 기준 PNG와 비교해 오차 측정 (위치 오프셋·픽셀 차이율)
@@ -106,7 +141,7 @@
 | `<INPUT>` |  |  |  |
 | `--ref` | `<REF>` |  | 한글에서 같은 페이지를 같은 DPI로 내보낸 기준 PNG |
 | `--page` | `<PAGE>` | `1` | 비교할 페이지 (1-기반) |
-| `--dpi` | `<DPI>` | `96` |  |
+| `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
 | `-o, --out` | `<OUT>` |  | 차이 이미지 출력 경로 (생략 시 <ref>.diff.png) |
 | `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
 | `--tolerance` | `<TOLERANCE>` | `16` | 채널 차이 허용 오차 (이하면 동일 취급) |
@@ -142,6 +177,7 @@
 | `--merge-cells` | `<MERGE_CELLS>` |  | 셀 병합 "표:r1:c1:r2:c2" — 사각 영역을 좌상단 앵커로 병합 (반복 가능, 0-기반) |
 | `--split-cell` | `<SPLIT_CELL>` |  | 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반) |
 | `--verify` |  |  | 쓰기 후 재읽기로 검증 |
+| `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
 
 ## `hwp fields`
 
@@ -189,6 +225,7 @@
 | `--set` | `<SET>` |  | 자리표시자 채우기 "이름=값" (반복 가능; `{{이름}}` 치환) |
 | `--data` | `<DATA>` |  | 이름→값 JSON 객체 파일 (일괄 채우기) |
 | `--json` |  |  | 치환 요약을 JSON으로 출력 ({output, replaced, counts}) |
+| `--allow-partial` |  |  | 일부 요청이 자리를 찾지 못해도 일치한 값만 게시 (기본: 하나라도 미치환이면 실패) |
 
 ## `hwp validate`
 
@@ -200,6 +237,29 @@
 |---|---|---|---|
 | `<FILE>` |  |  |  |
 | `--json` |  |  | JSON으로 출력 |
+
+## `hwp certify`
+
+versioned policy로 package/semantic/native render/independent import 인증
+
+**사용법:** `hwp certify --policy <POLICY> --report <REPORT> <INPUT>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<INPUT>` |  |  | 인증할 HWP/HWPX 입력 |
+| `--policy` | `<POLICY>` |  | hwp-certification-policy-v1 JSON/YAML |
+| `--report` | `<REPORT>` |  | 새로 만들 원자적 artifact 디렉터리(기존 경로 거부) |
+
+## `hwp corpus`
+
+버전 고정 구조 문서 코퍼스를 2회 생성·재개방·native 인증
+
+**사용법:** `hwp corpus --manifest <MANIFEST> --report <REPORT>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `--manifest` | `<MANIFEST>` |  | hwp-structured-corpus-v1 manifest JSON |
+| `--report` | `<REPORT>` |  | 새로 만들 원자적 실행 보고서 디렉터리(기존 경로 거부) |
 
 ## `hwp mcp`
 

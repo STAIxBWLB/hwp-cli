@@ -6,7 +6,7 @@
 //!
 //! 도구는 라이브러리 계층을 직접 감싼다(commands/*::run 아님 — 그건 stdout 출력).
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read as _, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -14,6 +14,9 @@ use serde_json::{Value, json};
 use crate::commands::cat::load_document;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
+const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
+const DEFAULT_READ_BYTES: usize = 256 * 1024;
+const MAX_READ_BYTES: usize = 1024 * 1024;
 
 /// 서버 컨텍스트 (렌더/diff 기본 폰트 디렉터리).
 pub struct Ctx {
@@ -30,7 +33,7 @@ pub fn run(font_dirs: Vec<PathBuf>) -> anyhow::Result<()> {
     let mut line = String::new();
     loop {
         line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        if read_line_bounded(&mut reader, &mut line, MAX_REQUEST_LINE_BYTES)? == 0 {
             break; // EOF
         }
         let trimmed = line.trim();
@@ -44,6 +47,22 @@ pub fn run(font_dirs: Vec<PathBuf>) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn read_line_bounded(
+    reader: &mut impl BufRead,
+    line: &mut String,
+    max_bytes: usize,
+) -> std::io::Result<usize> {
+    let mut limited = reader.take((max_bytes as u64).saturating_add(1));
+    let read = limited.read_line(line)?;
+    if line.len() > max_bytes || (read == max_bytes.saturating_add(1) && !line.ends_with('\n')) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("MCP 요청 한 줄이 {max_bytes} bytes 제한을 넘었습니다"),
+        ));
+    }
+    Ok(read)
 }
 
 /// 한 줄 JSON-RPC 요청 → 응답 JSON 문자열. 알림(id 없음)이면 None.
@@ -125,10 +144,13 @@ fn call_tool(name: &str, args: &Value, ctx: &Ctx) -> Value {
         "hwp_edit" => tool_edit(args),
         "hwp_convert" => tool_convert(args),
         "hwp_new" => tool_new(args),
+        "hwp_compose" => tool_compose(args),
+        "hwp_template" => tool_template(args),
         "hwp_diff" => tool_diff(args, ctx),
         "hwp_slots" => tool_slots(args),
         "hwp_fill" => tool_fill(args),
         "hwp_validate" => tool_validate(args),
+        "hwp_certify" => tool_certify(args),
         other => Err(format!("알 수 없는 도구: {other}")),
     };
     match result {
@@ -153,24 +175,130 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("필수 인자 누락: {key}"))
 }
 
-fn arg_str_opt<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(Value::as_str)
+fn arg_str_opt<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
+    args.get(key)
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| format!("{key}는 문자열이어야 합니다"))
+        })
+        .transpose()
 }
 
-fn arg_u64(args: &Value, key: &str, default: u64) -> u64 {
-    args.get(key).and_then(Value::as_u64).unwrap_or(default)
+fn arg_u64(args: &Value, key: &str, default: u64) -> Result<u64, String> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| format!("{key}는 0 이상의 정수여야 합니다")),
+    }
 }
 
-fn arg_f64(args: &Value, key: &str, default: f64) -> f64 {
-    args.get(key).and_then(Value::as_f64).unwrap_or(default)
+fn arg_f64(args: &Value, key: &str, default: f64) -> Result<f64, String> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(value) => value
+            .as_f64()
+            .ok_or_else(|| format!("{key}는 숫자여야 합니다")),
+    }
 }
 
-fn font_dirs_for(args: &Value, ctx: &Ctx) -> Vec<PathBuf> {
+fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| format!("{key}는 boolean이어야 합니다")),
+    }
+}
+
+fn arg_array<'a>(args: &'a Value, key: &str) -> Result<&'a [Value], String> {
+    match args.get(key) {
+        None => Ok(&[]),
+        Some(value) => value
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| format!("{key}는 배열이어야 합니다")),
+    }
+}
+
+fn required_item_str<'a>(item: &'a Value, operation: &str, key: &str) -> Result<&'a str, String> {
+    item.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{operation} 항목에 {key} 필요"))
+}
+
+fn required_item_u64(item: &Value, operation: &str, key: &str) -> Result<u64, String> {
+    item.get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{operation} 항목에 {key} 필요"))
+}
+
+fn required_item_usize(item: &Value, operation: &str, key: &str) -> Result<usize, String> {
+    usize::try_from(required_item_u64(item, operation, key)?)
+        .map_err(|_| format!("{operation} 항목의 {key}가 플랫폼 범위를 넘습니다"))
+}
+
+fn required_item_u16(item: &Value, operation: &str, key: &str) -> Result<u16, String> {
+    u16::try_from(required_item_u64(item, operation, key)?).map_err(|_| {
+        format!(
+            "{operation} 항목의 {key}는 0..={} 범위여야 합니다",
+            u16::MAX
+        )
+    })
+}
+
+fn optional_item_u16(item: &Value, operation: &str, key: &str) -> Result<Option<u16>, String> {
+    item.get(key)
+        .map(|_| required_item_u16(item, operation, key))
+        .transpose()
+}
+
+fn optional_item_str<'a>(
+    item: &'a Value,
+    operation: &str,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
+    item.get(key)
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| format!("{operation}.{key}는 문자열이어야 합니다"))
+        })
+        .transpose()
+}
+
+fn optional_item_bool(item: &Value, operation: &str, key: &str) -> Result<Option<bool>, String> {
+    item.get(key)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| format!("{operation}.{key}는 boolean이어야 합니다"))
+        })
+        .transpose()
+}
+
+fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<f32>, String> {
+    item.get(key)
+        .map(|value| {
+            let number = value
+                .as_f64()
+                .ok_or_else(|| format!("{operation}.{key}는 숫자여야 합니다"))?;
+            let number = number as f32;
+            if !number.is_finite() {
+                return Err(format!("{operation}.{key}는 유한한 f32 범위여야 합니다"));
+            }
+            Ok(number)
+        })
+        .transpose()
+}
+
+fn font_dirs_for(args: &Value, ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
     let mut dirs = ctx.font_dirs.clone();
-    if let Some(d) = arg_str_opt(args, "font_dir") {
+    if let Some(d) = arg_str_opt(args, "font_dir")? {
         dirs.push(PathBuf::from(d));
     }
-    dirs
+    Ok(dirs)
 }
 
 // ---- 도구 핸들러 ----
@@ -185,7 +313,7 @@ fn tool_info(args: &Value) -> Result<Vec<Value>, String> {
 
 fn tool_read(args: &Value) -> Result<Vec<Value>, String> {
     let path = arg_str(args, "path")?;
-    let format = arg_str_opt(args, "format").unwrap_or("plain");
+    let format = arg_str_opt(args, "format")?.unwrap_or("plain");
     let doc = load_document(Path::new(path)).map_err(|e| e.to_string())?;
     let text = match format {
         "plain" => doc.plain_text(),
@@ -193,7 +321,35 @@ fn tool_read(args: &Value) -> Result<Vec<Value>, String> {
         "json" => hwp_convert::to_json(&doc, true, false).map_err(|e| e.to_string())?,
         other => return Err(format!("알 수 없는 format: {other} (plain|markdown|json)")),
     };
-    Ok(vec![text_content(&text)])
+    let offset = usize::try_from(arg_u64(args, "offset", 0)?)
+        .map_err(|_| "offset이 플랫폼 범위를 넘습니다".to_string())?;
+    let max_bytes = usize::try_from(arg_u64(args, "max_bytes", DEFAULT_READ_BYTES as u64)?)
+        .map_err(|_| "max_bytes가 플랫폼 범위를 넘습니다".to_string())?;
+    if max_bytes == 0 || max_bytes > MAX_READ_BYTES {
+        return Err(format!("max_bytes는 1..={MAX_READ_BYTES} 범위여야 합니다"));
+    }
+    if offset > text.len() || !text.is_char_boundary(offset) {
+        return Err(format!(
+            "offset은 UTF-8 경계인 0..={} byte 범위여야 합니다",
+            text.len()
+        ));
+    }
+    let mut end = offset.saturating_add(max_bytes).min(text.len());
+    while end > offset && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let truncated = end < text.len();
+    let metadata = json!({
+        "offset": offset,
+        "returned_bytes": end - offset,
+        "total_bytes": text.len(),
+        "truncated": truncated,
+        "next_offset": truncated.then_some(end),
+    });
+    Ok(vec![
+        text_content(&text[offset..end]),
+        text_content(&serde_json::to_string(&metadata).unwrap_or_default()),
+    ])
 }
 
 fn tool_list_fields(args: &Value) -> Result<Vec<Value>, String> {
@@ -255,16 +411,16 @@ fn tool_fill(args: &Value) -> Result<Vec<Value>, String> {
             (k.clone(), s)
         })
         .collect();
-    let counts = hwpx::patch::fill_placeholders(Path::new(input), Path::new(output), &values)
-        .map_err(|e| format!("fill 실패: {e}"))?;
-    let total: usize = counts.values().sum();
+    let report = crate::commands::fill::execute_values(
+        Path::new(input),
+        Path::new(output),
+        &values,
+        arg_bool(args, "allow_partial", false)?,
+    )
+    .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
-        &serde_json::to_string_pretty(&json!({
-            "output": output,
-            "replaced": total,
-            "counts": counts,
-        }))
-        .unwrap_or_default(),
+        &serde_json::to_string_pretty(&crate::commands::fill::report_json(&report))
+            .unwrap_or_default(),
     )])
 }
 
@@ -276,36 +432,69 @@ fn tool_validate(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
+fn tool_certify(args: &Value) -> Result<Vec<Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "input" | "policy" | "report"))
+    {
+        return Err(format!("알 수 없는 hwp_certify 인자: {unknown}"));
+    }
+    let input = Path::new(arg_str(args, "input")?);
+    let policy = Path::new(arg_str(args, "policy")?);
+    let report = Path::new(arg_str(args, "report")?);
+    let outcome = hwp_cli::certification::execute(input, policy, report)
+        .map_err(|error| format!("{error:#}"))?;
+    let summary = serde_json::to_string_pretty(&json!({
+        "overall": outcome.overall,
+        "report": outcome.report_dir,
+    }))
+    .map_err(|error| error.to_string())?;
+    if outcome.overall != hwp_cli::certification::OverallStatus::Passed {
+        return Err(summary);
+    }
+    Ok(vec![text_content(&summary)])
+}
+
 fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let path = arg_str(args, "path")?;
-    let page = arg_u64(args, "page", 1) as usize;
-    let dpi = arg_f64(args, "dpi", 120.0) as f32;
+    let page = usize::try_from(arg_u64(args, "page", 1)?)
+        .map_err(|_| "page가 플랫폼 범위를 넘습니다".to_string())?;
+    let dpi = crate::commands::render::validated_dpi(arg_f64(args, "dpi", 120.0)?)
+        .map_err(|error| error.to_string())?;
     let doc = load_document(Path::new(path)).map_err(|e| e.to_string())?;
-    let out = hwp_render::render_document(
+    let out = hwp_render::render_document_pages(
         &doc,
         &hwp_render::RenderOptions {
             dpi,
-            font_dirs: font_dirs_for(args, ctx),
+            font_dirs: font_dirs_for(args, ctx)?,
         },
+        Some(&[page]),
     )
     .map_err(|e| e.to_string())?;
-    if page == 0 || page > out.pages.len() {
-        return Err(format!(
-            "페이지 범위 오류: 문서 {}쪽, 요청 {page}",
-            out.pages.len()
-        ));
-    }
-    let pixmap = &out.pages[page - 1];
+    let pixmap = &out.pages[0];
     let png = pixmap
         .encode_png()
         .ok()
         .ok_or_else(|| "PNG 인코딩 실패".to_string())?;
+    const MAX_MCP_PNG_BYTES: usize = 16 * 1024 * 1024;
+    if png.len() > MAX_MCP_PNG_BYTES {
+        return Err(format!(
+            "MCP 렌더 PNG가 응답 상한 {MAX_MCP_PNG_BYTES} bytes를 초과합니다: {} bytes",
+            png.len()
+        ));
+    }
     let summary = format!(
-        "페이지 {page}/{} 렌더 ({}×{}px, {dpi}dpi). {}",
-        out.pages.len(),
+        "페이지 {page}/{} 렌더 ({}×{}px, {dpi}dpi). issues={}, info={}, complete={}, sha256={}",
+        out.total_pages,
         pixmap.width(),
         pixmap.height(),
-        out.report.join("; ")
+        out.report.issue_count,
+        out.report.info_count,
+        out.report.complete,
+        out.report.sha256,
     );
     Ok(vec![text_content(&summary), image_content(&png)])
 }
@@ -313,290 +502,464 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
 fn tool_edit(args: &Value) -> Result<Vec<Value>, String> {
     let input = arg_str(args, "input")?;
     let output = arg_str(args, "output")?;
-    let mut doc = load_document(Path::new(input)).map_err(|e| e.to_string())?;
-    let mut summary = Vec::new();
+    use crate::commands::edit::TypedEditOperation as Op;
 
-    if let Some(arr) = args.get("replace").and_then(Value::as_array) {
-        for r in arr {
-            let from = r
-                .get("from")
-                .and_then(Value::as_str)
-                .ok_or("replace 항목에 from 필요")?;
-            let to = r
-                .get("to")
-                .and_then(Value::as_str)
-                .ok_or("replace 항목에 to 필요")?;
-            let n = hwp_convert::replace_text(&mut doc, from, to, true);
-            summary.push(format!("치환 {from:?}→{to:?}: {n}건"));
-        }
+    let mut operations = Vec::new();
+
+    for item in arg_array(args, "replace")? {
+        operations.push(Op::Replace {
+            from: required_item_str(item, "replace", "from")?.to_string(),
+            to: required_item_str(item, "replace", "to")?.to_string(),
+        });
     }
-    if let Some(arr) = args.get("set_cell").and_then(Value::as_array) {
-        for c in arr {
-            let table = c.get("table").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let row = c.get("row").and_then(Value::as_u64).unwrap_or(0) as u16;
-            let col = c.get("col").and_then(Value::as_u64).unwrap_or(0) as u16;
-            let text = c.get("text").and_then(Value::as_str).unwrap_or("");
-            hwp_convert::set_cell(&mut doc, table, row, col, text)?;
-            summary.push(format!("셀 표{table}({row},{col})={text:?}"));
-        }
+    for item in arg_array(args, "set_cell")? {
+        operations.push(Op::SetCell {
+            table: required_item_usize(item, "set_cell", "table")?,
+            row: required_item_u16(item, "set_cell", "row")?,
+            col: required_item_u16(item, "set_cell", "col")?,
+            text: required_item_str(item, "set_cell", "text")?.to_string(),
+        });
     }
-    // 누름틀 생성은 set_field보다 먼저 — 같은 호출에서 생성→채우기 가능.
-    if let Some(arr) = args.get("create_field").and_then(Value::as_array) {
-        for f in arr {
-            let anchor = f
-                .get("anchor")
-                .and_then(Value::as_str)
-                .ok_or("create_field 항목에 anchor 필요")?;
-            let name = f
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or("create_field 항목에 name 필요")?;
-            let value = f.get("value").and_then(Value::as_str).unwrap_or("");
-            if hwp_convert::create_field(&mut doc, anchor, name, value) {
-                summary.push(format!("누름틀 생성 {anchor:?}→{name:?}"));
-            } else {
-                summary.push(format!("경고: 앵커 {anchor:?} 못 찾음"));
-            }
-        }
+    for item in arg_array(args, "set_field")? {
+        operations.push(Op::SetField {
+            name: required_item_str(item, "set_field", "name")?.to_string(),
+            value: required_item_str(item, "set_field", "value")?.to_string(),
+        });
     }
-    if let Some(arr) = args.get("create_bookmark").and_then(Value::as_array) {
-        for b in arr {
-            let anchor = b
-                .get("anchor")
-                .and_then(Value::as_str)
-                .ok_or("create_bookmark 항목에 anchor 필요")?;
-            let name = b
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or("create_bookmark 항목에 name 필요")?;
-            if hwp_convert::create_bookmark(&mut doc, anchor, name) {
-                summary.push(format!("책갈피 생성 {anchor:?}→{name:?}"));
-            } else {
-                summary.push(format!("경고: 앵커 {anchor:?} 못 찾음"));
-            }
-        }
+    for item in arg_array(args, "set_meta")? {
+        operations.push(Op::SetMeta {
+            key: required_item_str(item, "set_meta", "key")?.to_string(),
+            value: required_item_str(item, "set_meta", "value")?.to_string(),
+        });
     }
-    if let Some(arr) = args.get("create_hyperlink").and_then(Value::as_array) {
-        for h in arr {
-            let anchor = h
-                .get("anchor")
-                .and_then(Value::as_str)
-                .ok_or("create_hyperlink 항목에 anchor 필요")?;
-            let url = h
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or("create_hyperlink 항목에 url 필요")?;
-            let display = h.get("display").and_then(Value::as_str).unwrap_or(url);
-            if hwp_convert::create_hyperlink(&mut doc, anchor, url, display) {
-                summary.push(format!("하이퍼링크 생성 {anchor:?}→{url:?}"));
-            } else {
-                summary.push(format!("경고: 앵커 {anchor:?} 못 찾음"));
-            }
-        }
-    }
-    let mut structural = false;
-    if let Some(arr) = args.get("insert_image").and_then(Value::as_array) {
-        for im in arr {
-            let anchor = im
-                .get("anchor")
-                .and_then(Value::as_str)
-                .ok_or("insert_image 항목에 anchor 필요")?;
-            let path = im
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or("insert_image 항목에 path 필요")?;
-            let wmm = im.get("width_mm").and_then(Value::as_f64);
-            let hmm = im.get("height_mm").and_then(Value::as_f64);
-            let size = match (wmm, hmm) {
-                (Some(w), Some(h)) => hwp_convert::ImageSize::Mm(w as f32, h as f32),
-                _ => hwp_convert::ImageSize::Natural,
-            };
-            structural = true;
-            hwp_convert::insert_image(&mut doc, anchor, Path::new(path), size)?;
-            summary.push(format!("이미지 삽입 {anchor:?}→{path:?}"));
-        }
-    }
-    if let Some(arr) = args.get("set_field").and_then(Value::as_array) {
-        for f in arr {
-            let name = f
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or("set_field 항목에 name 필요")?;
-            let value = f.get("value").and_then(Value::as_str).unwrap_or("");
-            let n = hwp_convert::set_field(&mut doc, name, value);
-            summary.push(format!("필드 {name:?}={value:?}: {n}건"));
-        }
-    }
-    if let Some(arr) = args.get("set_format").and_then(Value::as_array) {
-        for f in arr {
-            let pattern = f
-                .get("pattern")
-                .and_then(Value::as_str)
-                .ok_or("set_format 항목에 pattern 필요")?;
-            let fmt = hwp_convert::CharFormat {
-                bold: f.get("bold").and_then(Value::as_bool),
-                italic: f.get("italic").and_then(Value::as_bool),
-                underline: f.get("underline").and_then(Value::as_bool),
-                strike: f.get("strike").and_then(Value::as_bool),
-                size_pt: f.get("size").and_then(Value::as_f64).map(|v| v as f32),
-                color: f
-                    .get("color")
-                    .and_then(Value::as_str)
-                    .and_then(crate::commands::edit::parse_color),
-            };
-            let n = hwp_convert::set_char_format(&mut doc, pattern, &fmt);
-            summary.push(format!("글자서식 {pattern:?}: {n}건"));
-        }
-    }
-    if let Some(arr) = args.get("set_align").and_then(Value::as_array) {
-        for a in arr {
-            let pattern = a
-                .get("pattern")
-                .and_then(Value::as_str)
-                .ok_or("set_align 항목에 pattern 필요")?;
-            let align = match a.get("align").and_then(Value::as_str).unwrap_or("left") {
-                "right" => 2,
-                "center" => 3,
-                "justify" | "both" => 0,
-                "distribute" => 4,
-                "divide" => 5,
-                _ => 1, // left
-            };
-            let n = hwp_convert::set_para_align(&mut doc, pattern, align);
-            summary.push(format!("문단정렬 {pattern:?}: {n}건"));
-        }
-    }
-    if let Some(arr) = args.get("insert_para").and_then(Value::as_array) {
-        for p in arr {
-            let anchor = p
-                .get("anchor")
-                .and_then(Value::as_str)
-                .ok_or("insert_para 항목에 anchor 필요")?;
-            let text = p.get("text").and_then(Value::as_str).unwrap_or("");
-            let before = p.get("before").and_then(Value::as_bool).unwrap_or(false);
-            structural = true;
-            if hwp_convert::insert_paragraph(&mut doc, anchor, text, before) {
-                summary.push(format!(
-                    "문단삽입 {anchor:?} {}",
-                    if before { "앞" } else { "뒤" }
-                ));
-            } else {
-                summary.push(format!("경고: 앵커 {anchor:?} 못 찾음"));
-            }
-        }
-    }
-    if let Some(arr) = args.get("delete_para").and_then(Value::as_array) {
-        for p in arr {
-            let matching = p
-                .get("matching")
-                .and_then(Value::as_str)
-                .ok_or("delete_para 항목에 matching 필요")?;
-            structural = true;
-            let n = hwp_convert::delete_paragraph(&mut doc, matching);
-            summary.push(format!("문단삭제 {matching:?}: {n}건"));
-        }
-    }
-    if let Some(arr) = args.get("add_row").and_then(Value::as_array) {
-        for r in arr {
-            let table = r.get("table").and_then(Value::as_u64).unwrap_or(0) as usize;
-            structural = true;
-            hwp_convert::add_rows(&mut doc, table, None, 1)?;
-            summary.push(format!("표{table} 행 추가"));
-        }
-    }
-    if let Some(arr) = args.get("add_col").and_then(Value::as_array) {
-        for r in arr {
-            let table = r.get("table").and_then(Value::as_u64).unwrap_or(0) as usize;
-            structural = true;
-            hwp_convert::add_col(&mut doc, table)?;
-            summary.push(format!("표{table} 열 추가"));
-        }
-    }
-    if let Some(arr) = args.get("delete_row").and_then(Value::as_array) {
-        for r in arr {
-            let table = r.get("table").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let row = r.get("row").and_then(Value::as_u64).unwrap_or(0) as u16;
-            structural = true;
-            hwp_convert::delete_table_row(&mut doc, table, row)?;
-            summary.push(format!("표{table} 행{row} 삭제"));
-        }
-    }
-    if summary.is_empty() {
-        return Err(
-            "적용할 편집이 없습니다 (replace/set_cell/set_field/create_field/create_bookmark/create_hyperlink/set_format/set_align/insert_para/delete_para/add_row/add_col/delete_row 확인)"
+    for item in arg_array(args, "create_field")? {
+        operations.push(Op::CreateField {
+            anchor: required_item_str(item, "create_field", "anchor")?.to_string(),
+            name: required_item_str(item, "create_field", "name")?.to_string(),
+            value: optional_item_str(item, "create_field", "value")?
+                .unwrap_or("")
                 .to_string(),
-        );
+        });
+    }
+    for item in arg_array(args, "create_bookmark")? {
+        operations.push(Op::CreateBookmark {
+            anchor: required_item_str(item, "create_bookmark", "anchor")?.to_string(),
+            name: required_item_str(item, "create_bookmark", "name")?.to_string(),
+        });
+    }
+    for item in arg_array(args, "create_hyperlink")? {
+        let url = required_item_str(item, "create_hyperlink", "url")?.to_string();
+        operations.push(Op::CreateHyperlink {
+            anchor: required_item_str(item, "create_hyperlink", "anchor")?.to_string(),
+            display: optional_item_str(item, "create_hyperlink", "display")?
+                .unwrap_or(&url)
+                .to_string(),
+            url,
+        });
+    }
+    for item in arg_array(args, "insert_image")? {
+        let size_mm = match (
+            optional_item_f32(item, "insert_image", "width_mm")?,
+            optional_item_f32(item, "insert_image", "height_mm")?,
+        ) {
+            (Some(width), Some(height)) => Some((width, height)),
+            (None, None) => None,
+            _ => {
+                return Err(
+                    "insert_image는 유한한 width_mm와 height_mm를 함께 지정해야 합니다".into(),
+                );
+            }
+        };
+        operations.push(Op::InsertImage {
+            anchor: required_item_str(item, "insert_image", "anchor")?.to_string(),
+            path: PathBuf::from(required_item_str(item, "insert_image", "path")?),
+            size_mm,
+        });
+    }
+    for item in arg_array(args, "seal")? {
+        let size_mm = optional_item_f32(item, "seal", "size_mm")?;
+        operations.push(Op::Seal {
+            anchor: required_item_str(item, "seal", "anchor")?.to_string(),
+            path: PathBuf::from(required_item_str(item, "seal", "path")?),
+            size_mm,
+        });
+    }
+    for item in arg_array(args, "set_format")? {
+        let mut format = hwp_convert::CharFormat {
+            bold: optional_item_bool(item, "set_format", "bold")?,
+            italic: optional_item_bool(item, "set_format", "italic")?,
+            underline: optional_item_bool(item, "set_format", "underline")?,
+            strike: optional_item_bool(item, "set_format", "strike")?,
+            ..Default::default()
+        };
+        if let Some(value) = optional_item_f32(item, "set_format", "size")? {
+            format.size_pt = Some(value);
+        }
+        if let Some(value) = optional_item_str(item, "set_format", "color")? {
+            format.color = Some(
+                crate::commands::edit::parse_color(value)
+                    .ok_or_else(|| format!("set_format.color를 해석할 수 없습니다: {value:?}"))?,
+            );
+        }
+        operations.push(Op::SetFormat {
+            pattern: required_item_str(item, "set_format", "pattern")?.to_string(),
+            format,
+        });
+    }
+    for item in arg_array(args, "set_align")? {
+        operations.push(Op::SetAlign {
+            pattern: required_item_str(item, "set_align", "pattern")?.to_string(),
+            align: crate::commands::edit::parse_align(required_item_str(
+                item,
+                "set_align",
+                "align",
+            )?)
+            .map_err(|error| error.to_string())?,
+        });
+    }
+    for item in arg_array(args, "insert_para")? {
+        operations.push(Op::InsertPara {
+            anchor: required_item_str(item, "insert_para", "anchor")?.to_string(),
+            text: required_item_str(item, "insert_para", "text")?.to_string(),
+            before: optional_item_bool(item, "insert_para", "before")?.unwrap_or(false),
+        });
+    }
+    for item in arg_array(args, "delete_para")? {
+        operations.push(Op::DeletePara {
+            matching: required_item_str(item, "delete_para", "matching")?.to_string(),
+        });
+    }
+    for item in arg_array(args, "add_row")? {
+        operations.push(Op::AddRow {
+            table: required_item_usize(item, "add_row", "table")?,
+        });
+    }
+    for item in arg_array(args, "add_col")? {
+        operations.push(Op::AddCol {
+            table: required_item_usize(item, "add_col", "table")?,
+            at: optional_item_u16(item, "add_col", "at")?,
+        });
+    }
+    for item in arg_array(args, "delete_row")? {
+        operations.push(Op::DeleteRow {
+            table: required_item_usize(item, "delete_row", "table")?,
+            row: required_item_u16(item, "delete_row", "row")?,
+        });
+    }
+    for item in arg_array(args, "delete_col")? {
+        operations.push(Op::DeleteCol {
+            table: required_item_usize(item, "delete_col", "table")?,
+            col: required_item_u16(item, "delete_col", "col")?,
+        });
+    }
+    for item in arg_array(args, "merge_cells")? {
+        operations.push(Op::MergeCells {
+            table: required_item_usize(item, "merge_cells", "table")?,
+            r1: required_item_u16(item, "merge_cells", "r1")?,
+            c1: required_item_u16(item, "merge_cells", "c1")?,
+            r2: required_item_u16(item, "merge_cells", "r2")?,
+            c2: required_item_u16(item, "merge_cells", "c2")?,
+        });
+    }
+    for item in arg_array(args, "split_cell")? {
+        operations.push(Op::SplitCell {
+            table: required_item_usize(item, "split_cell", "table")?,
+            row: required_item_u16(item, "split_cell", "row")?,
+            col: required_item_u16(item, "split_cell", "col")?,
+        });
     }
 
-    let out_path = Path::new(output);
-    let is_hwp = out_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-        == Some("hwp");
-    if structural && is_hwp {
-        // 구조 편집 hwp는 삽입 불변식을 세우려 합성 경로를 강제한다.
-        crate::commands::convert::write_hwp_structural(&doc, out_path)
-            .map_err(|e| e.to_string())?;
-    } else {
-        crate::commands::convert::write_by_ext(&doc, out_path, true, false)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(vec![text_content(&format!(
-        "편집 완료: {input} → {output}\n{}",
-        summary.join("\n")
-    ))])
+    let plan = crate::commands::edit::EditPlan::from_typed(
+        operations,
+        true,
+        arg_bool(args, "allow_partial", false)?,
+    );
+    let report = crate::commands::edit::execute(Path::new(input), Path::new(output), &plan)
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&json!({
+            "input": input,
+            "output": report.output,
+            "applied": report.applied,
+            "warnings": report.warnings,
+        }))
+        .unwrap_or_default(),
+    )])
 }
 
 fn tool_convert(args: &Value) -> Result<Vec<Value>, String> {
     let input = arg_str(args, "input")?;
     let output = arg_str(args, "output")?;
-    let embed_bin = args
-        .get("embed_bin")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let doc = load_document(Path::new(input)).map_err(|e| e.to_string())?;
-    crate::commands::convert::write_by_ext(&doc, Path::new(output), false, embed_bin)
-        .map_err(|e| e.to_string())?;
-    Ok(vec![text_content(&format!(
-        "변환 완료: {input} → {output}"
-    ))])
+    let embed_bin = arg_bool(args, "embed_bin", false)?;
+    let strict = arg_bool(args, "strict", true)?;
+    let report = crate::commands::convert::execute(
+        Path::new(input),
+        Path::new(output),
+        None,
+        strict,
+        false,
+        embed_bin,
+        &crate::commands::convert::MdOpts::default(),
+        Vec::new(),
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&json!({
+            "input": input,
+            "output": output,
+            "strict": strict,
+            "warnings": report.warnings,
+        }))
+        .unwrap_or_default(),
+    )])
 }
 
 fn tool_new(args: &Value) -> Result<Vec<Value>, String> {
     let output = arg_str(args, "output")?;
-    let doc = if let Some(md) = arg_str_opt(args, "markdown") {
-        hwp_convert::from_markdown(md)
-    } else if let Some(j) = arg_str_opt(args, "json") {
-        hwp_convert::from_json(j)?
-    } else {
-        hwp_convert::from_markdown("")
+    let input = match (arg_str_opt(args, "markdown")?, arg_str_opt(args, "json")?) {
+        (Some(_), Some(_)) => return Err("markdown과 json은 동시에 지정할 수 없습니다".into()),
+        (Some(markdown), None) => crate::commands::new::NewInput::Markdown {
+            text: markdown,
+            base_dir: None,
+        },
+        (None, Some(document_json)) => crate::commands::new::NewInput::Json(document_json),
+        (None, None) => crate::commands::new::NewInput::Empty,
     };
-    crate::commands::convert::write_by_ext(&doc, Path::new(output), false, false)
-        .map_err(|e| e.to_string())?;
-    Ok(vec![text_content(&format!("생성 완료: {output}"))])
+    let metadata = arg_array(args, "set_meta")?
+        .iter()
+        .map(|item| {
+            Ok(format!(
+                "{}={}",
+                required_item_str(item, "set_meta", "key")?,
+                required_item_str(item, "set_meta", "value")?
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let report = crate::commands::new::execute(Path::new(output), input, &metadata, None)
+        .map_err(|error| format!("{error:#}"))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&json!({
+            "output": report.output,
+            "warnings": report.warnings,
+        }))
+        .unwrap_or_default(),
+    )])
+}
+
+fn tool_compose(args: &Value) -> Result<Vec<Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
+    const ALLOWED: &[&str] = &[
+        "spec",
+        "spec_path",
+        "format",
+        "base_dir",
+        "output",
+        "dry_run",
+        "allow_visual_fallback",
+    ];
+    if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
+        return Err(format!("알 수 없는 hwp_compose 인자: {unknown}"));
+    }
+
+    let output = arg_str(args, "output")?;
+    let explicit_format = arg_str_opt(args, "format")?
+        .map(parse_spec_format)
+        .transpose()?;
+    let (input, format, base_dir, source_path) =
+        match (args.get("spec"), arg_str_opt(args, "spec_path")?) {
+            (Some(_), Some(_)) => return Err("spec과 spec_path는 동시에 지정할 수 없습니다".into()),
+            (None, None) => return Err("spec 또는 spec_path 중 하나가 필요합니다".into()),
+            (Some(spec), None) => {
+                let input = match spec {
+                    Value::String(text) => text.clone(),
+                    Value::Object(_) => serde_json::to_string(spec).map_err(|e| e.to_string())?,
+                    _ => {
+                        return Err(
+                            "spec은 DocumentSpec 객체 또는 JSON/YAML 문자열이어야 합니다".into(),
+                        );
+                    }
+                };
+                let format =
+                    explicit_format.unwrap_or(hwp_cli::document_spec::SpecInputFormat::Json);
+                let base_dir = arg_str_opt(args, "base_dir")?
+                    .map_or_else(|| PathBuf::from("."), PathBuf::from);
+                (input, format, base_dir, None)
+            }
+            (None, Some(spec_path)) => {
+                if args.get("base_dir").is_some() {
+                    return Err("spec_path 사용 시 base_dir는 지정할 수 없습니다".into());
+                }
+                let path = Path::new(spec_path);
+                let input = crate::commands::compose::read_bounded(path)
+                    .map_err(|error| format!("{error:#}"))?;
+                let format = explicit_format
+                    .map(Ok)
+                    .unwrap_or_else(|| hwp_cli::document_spec::infer_input_format(path))
+                    .map_err(|error| error.to_string())?;
+                let base_dir = path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+                (input, format, base_dir, Some(path.to_path_buf()))
+            }
+        };
+    let report = crate::commands::compose::execute_text_with_source(
+        &input,
+        format,
+        &base_dir,
+        Path::new(output),
+        arg_bool(args, "dry_run", false)?,
+        arg_bool(args, "allow_visual_fallback", false)?,
+        source_path.as_deref(),
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&report).unwrap_or_default(),
+    )])
+}
+
+fn tool_template(args: &Value) -> Result<Vec<Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
+    const ALLOWED: &[&str] = &[
+        "template",
+        "template_path",
+        "template_format",
+        "data",
+        "data_path",
+        "data_format",
+        "base_dir",
+        "output",
+        "dry_run",
+    ];
+    if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
+        return Err(format!("알 수 없는 hwp_template 인자: {unknown}"));
+    }
+    let output = arg_str(args, "output")?;
+    let explicit_template_format = arg_str_opt(args, "template_format")?
+        .map(parse_spec_format)
+        .transpose()?;
+    let explicit_data_format = arg_str_opt(args, "data_format")?
+        .map(parse_spec_format)
+        .transpose()?;
+
+    let mut source_paths = Vec::new();
+    let (template_input, template_format, base_dir) =
+        match (args.get("template"), arg_str_opt(args, "template_path")?) {
+            (Some(_), Some(_)) => {
+                return Err("template과 template_path는 동시에 지정할 수 없습니다".into());
+            }
+            (None, None) => return Err("template 또는 template_path 중 하나가 필요합니다".into()),
+            (Some(template), None) => {
+                let input = inline_contract_input(template, "template")?;
+                let format = explicit_template_format
+                    .unwrap_or(hwp_cli::document_spec::SpecInputFormat::Json);
+                let base = arg_str_opt(args, "base_dir")?
+                    .map_or_else(|| PathBuf::from("."), PathBuf::from);
+                (input, format, base)
+            }
+            (None, Some(path)) => {
+                if args.get("base_dir").is_some() {
+                    return Err("template_path 사용 시 base_dir는 지정할 수 없습니다".into());
+                }
+                let path = PathBuf::from(path);
+                let input = crate::commands::template::read_bounded(
+                    &path,
+                    hwp_cli::template_spec::MAX_TEMPLATE_BYTES,
+                    "TemplateSpec",
+                )
+                .map_err(|error| format!("{error:#}"))?;
+                let format = explicit_template_format
+                    .map(Ok)
+                    .unwrap_or_else(|| hwp_cli::template_spec::infer_input_format(&path))
+                    .map_err(|error| error.to_string())?;
+                let base = path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+                source_paths.push(path);
+                (input, format, base)
+            }
+        };
+    let (data_input, data_format) = match (args.get("data"), arg_str_opt(args, "data_path")?) {
+        (Some(_), Some(_)) => return Err("data와 data_path는 동시에 지정할 수 없습니다".into()),
+        (None, None) => return Err("data 또는 data_path 중 하나가 필요합니다".into()),
+        (Some(data), None) => (
+            inline_contract_input(data, "data")?,
+            explicit_data_format.unwrap_or(hwp_cli::document_spec::SpecInputFormat::Json),
+        ),
+        (None, Some(path)) => {
+            let path = PathBuf::from(path);
+            let input = crate::commands::template::read_bounded(
+                &path,
+                hwp_cli::template_spec::MAX_DATA_BYTES,
+                "TemplateData",
+            )
+            .map_err(|error| format!("{error:#}"))?;
+            let format = explicit_data_format
+                .map(Ok)
+                .unwrap_or_else(|| hwp_cli::template_spec::infer_input_format(&path))
+                .map_err(|error| error.to_string())?;
+            source_paths.push(path);
+            (input, format)
+        }
+    };
+
+    let report = crate::commands::template::execute_text(
+        &template_input,
+        template_format,
+        &data_input,
+        data_format,
+        &base_dir,
+        Path::new(output),
+        arg_bool(args, "dry_run", false)?,
+        &source_paths,
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    Ok(vec![text_content(
+        &crate::commands::template::serialize_report(&report)
+            .map_err(|error| format!("{error:#}"))?,
+    )])
+}
+
+fn inline_contract_input(value: &Value, label: &str) -> Result<String, String> {
+    match value {
+        Value::String(text) => Ok(text.clone()),
+        Value::Object(_) => serde_json::to_string(value).map_err(|error| error.to_string()),
+        _ => Err(format!("{label}은 객체 또는 JSON/YAML 문자열이어야 합니다")),
+    }
+}
+
+fn parse_spec_format(value: &str) -> Result<hwp_cli::document_spec::SpecInputFormat, String> {
+    match value {
+        "json" => Ok(hwp_cli::document_spec::SpecInputFormat::Json),
+        "yaml" => Ok(hwp_cli::document_spec::SpecInputFormat::Yaml),
+        other => Err(format!("알 수 없는 format: {other} (json|yaml)")),
+    }
 }
 
 fn tool_diff(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let input = arg_str(args, "input")?;
     let reference = arg_str(args, "ref")?;
-    let page = arg_u64(args, "page", 1) as usize;
-    let dpi = arg_f64(args, "dpi", 120.0) as f32;
+    let page = usize::try_from(arg_u64(args, "page", 1)?)
+        .map_err(|_| "page가 플랫폼 범위를 넘습니다".to_string())?;
+    let dpi = crate::commands::render::validated_dpi(arg_f64(args, "dpi", 120.0)?)
+        .map_err(|error| error.to_string())?;
     let doc = load_document(Path::new(input)).map_err(|e| e.to_string())?;
-    let out = hwp_render::render_document(
+    let out = hwp_render::render_document_pages(
         &doc,
         &hwp_render::RenderOptions {
             dpi,
-            font_dirs: font_dirs_for(args, ctx),
+            font_dirs: font_dirs_for(args, ctx)?,
         },
+        Some(&[page]),
     )
     .map_err(|e| e.to_string())?;
-    if page == 0 || page > out.pages.len() {
-        return Err(format!("페이지 범위 오류: 문서 {}쪽", out.pages.len()));
-    }
     let refpx = hwp_render::load_png(Path::new(reference)).map_err(|e| e.to_string())?;
-    let (rep, _) = hwp_render::compare(&out.pages[page - 1], &refpx, 16)?;
+    let (rep, _) = hwp_render::compare(&out.pages[0], &refpx, 16)?;
     let v = json!({
         "ink_ratio": rep.ink_ratio,
         "dx": rep.dx,
@@ -625,7 +988,9 @@ fn tool_defs() -> Vec<Value> {
             "description": "본문을 추출한다. format=json이면 전체 IR(구조)을, markdown/plain이면 텍스트를 반환.",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"},
-                "format": {"type": "string", "enum": ["plain", "markdown", "json"], "description": "기본 plain"}
+                "format": {"type": "string", "enum": ["plain", "markdown", "json"], "description": "기본 plain"},
+                "offset": {"type": "integer", "minimum": 0, "description": "UTF-8 byte offset, 기본 0"},
+                "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576, "description": "반환 byte 상한, 기본 262144"}
             }, "required": ["path"]}
         }),
         json!({
@@ -648,13 +1013,13 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"},
                 "page": {"type": "integer", "description": "1-기반, 기본 1"},
-                "dpi": {"type": "number", "description": "기본 120"},
+                "dpi": {"type": "number", "minimum": hwp_render::MIN_DPI, "maximum": hwp_render::MAX_DPI, "description": "기본 120"},
                 "font_dir": {"type": "string", "description": "추가 폰트 디렉터리(선택)"}
             }, "required": ["path"]}
         }),
         json!({
             "name": "hwp_edit",
-            "description": "기존 문서를 편집해 출력 경로에 쓴다(이미지·서식 보존). 출력 확장자(.hwp/.hwpx/.json/.md)로 포맷 결정.",
+            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패.",
             "inputSchema": {"type": "object", "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
@@ -681,6 +1046,13 @@ fn tool_defs() -> Vec<Value> {
                     "anchor": {"type": "string"}, "path": {"type": "string"},
                     "width_mm": {"type": "number"}, "height_mm": {"type": "number"}},
                     "required": ["anchor", "path"]}, "description": "앵커 텍스트 뒤에 이미지(png/jpg/bmp/gif) 삽입(width_mm/height_mm 생략 시 원본 크기)"},
+                "seal": {"type": "array", "items": {"type": "object", "properties": {
+                    "anchor": {"type": "string"}, "path": {"type": "string"},
+                    "size_mm": {"type": "number"}},
+                    "required": ["anchor", "path"]}, "description": "앵커 문구 위에 도장 이미지 부유 배치"},
+                "set_meta": {"type": "array", "items": {"type": "object", "properties": {
+                    "key": {"type": "string"}, "value": {"type": "string"}},
+                    "required": ["key", "value"]}, "description": "title/author/subject/keywords 메타데이터"},
                 "set_format": {"type": "array", "items": {"type": "object", "properties": {
                     "pattern": {"type": "string"}, "bold": {"type": "boolean"},
                     "italic": {"type": "boolean"}, "underline": {"type": "boolean"},
@@ -702,11 +1074,22 @@ fn tool_defs() -> Vec<Value> {
                     "table": {"type": "integer"}},
                     "required": ["table"]}, "description": "N번째 표 끝에 빈 행 추가(0-기반, 병합 표는 거부)"},
                 "add_col": {"type": "array", "items": {"type": "object", "properties": {
-                    "table": {"type": "integer"}},
-                    "required": ["table"]}, "description": "N번째 표 끝에 열 추가(0-기반, 전체 폭 유지, 병합 표도 지원)"},
+                    "table": {"type": "integer"}, "at": {"type": "integer", "minimum": 0, "maximum": 65535}},
+                    "required": ["table"]}, "description": "N번째 표의 at 위치(생략 시 끝)에 열 추가(0-기반, 전체 폭 유지, 병합 표도 지원)"},
                 "delete_row": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"}, "row": {"type": "integer"}},
-                    "required": ["table", "row"]}, "description": "N번째 표의 R행 삭제(0-기반, 병합 행은 거부)"}
+                    "required": ["table", "row"]}, "description": "N번째 표의 R행 삭제(0-기반, 병합 행은 거부)"},
+                "delete_col": {"type": "array", "items": {"type": "object", "properties": {
+                    "table": {"type": "integer"}, "col": {"type": "integer"}},
+                    "required": ["table", "col"]}},
+                "merge_cells": {"type": "array", "items": {"type": "object", "properties": {
+                    "table": {"type": "integer"}, "r1": {"type": "integer"},
+                    "c1": {"type": "integer"}, "r2": {"type": "integer"}, "c2": {"type": "integer"}},
+                    "required": ["table", "r1", "c1", "r2", "c2"]}},
+                "split_cell": {"type": "array", "items": {"type": "object", "properties": {
+                    "table": {"type": "integer"}, "row": {"type": "integer"}, "col": {"type": "integer"}},
+                    "required": ["table", "row", "col"]}},
+                "allow_partial": {"type": "boolean", "description": "true면 일치한 요청만 게시; 기본 false"}
             }, "required": ["input", "output"]}
         }),
         json!({
@@ -714,24 +1097,89 @@ fn tool_defs() -> Vec<Value> {
             "description": "포맷 변환. 출력 확장자(.hwp/.hwpx/.json/.md/.html/.pdf/.odt)로 결정. pdf는 텍스트 선택가능 벡터(이미지 포함). embed_bin이면 JSON에 이미지 base64 임베드.",
             "inputSchema": {"type": "object", "properties": {
                 "input": {"type": "string"}, "output": {"type": "string"},
-                "embed_bin": {"type": "boolean"}
+                "embed_bin": {"type": "boolean"},
+                "strict": {"type": "boolean", "description": "HWP/HWPX DROP 경고를 실패 처리; MCP 기본 true"}
             }, "required": ["input", "output"]}
         }),
         json!({
             "name": "hwp_new",
-            "description": "새 문서 생성. markdown 또는 json(IR) 본문에서. 출력 확장자로 포맷 결정.",
+            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 .hwp/.hwpx 새 문서를 생성.",
             "inputSchema": {"type": "object", "properties": {
                 "output": {"type": "string"},
                 "markdown": {"type": "string", "description": "markdown 본문(선택)"},
-                "json": {"type": "string", "description": "IR JSON 본문(선택)"}
+                "json": {"type": "string", "description": "IR JSON 본문(선택)"},
+                "set_meta": {"type": "array", "items": {"type": "object", "properties": {
+                    "key": {"type": "string"}, "value": {"type": "string"}},
+                    "required": ["key", "value"]}}
             }, "required": ["output"]}
+        }),
+        json!({
+            "name": "hwp_compose",
+            "description": "DocumentSpec v1/v2 객체/JSON/YAML을 검증하고 CLI와 같은 deterministic·strict·atomic·재읽기 검증 경로로 .hwp/.hwpx 문서를 합성.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "spec": {
+                        "oneOf": [{"type": "object"}, {"type": "string"}],
+                        "description": "DocumentSpec v1/v2 객체 또는 JSON/YAML 문자열"
+                    },
+                    "spec_path": {"type": "string", "description": "DocumentSpec v1/v2 파일 경로; spec과 상호 배타적"},
+                    "format": {"type": "string", "enum": ["json", "yaml"], "description": "문자열 spec 또는 확장자 없는 입력의 포맷"},
+                    "base_dir": {"type": "string", "description": "inline spec의 상대 asset 기준 디렉터리"},
+                    "output": {"type": "string", "description": "출력 .hwp/.hwpx 경로"},
+                    "dry_run": {"type": "boolean", "description": "검증·컴파일 보고서만 반환하고 파일을 쓰지 않음"},
+                    "allow_visual_fallback": {"type": "boolean", "deprecated": true, "description": "[deprecated] v1 compatibility only; DocumentSpec v2가 true를 받으면 policy_conflict로 거부"}
+                },
+                "required": ["output"],
+                "oneOf": [
+                    {"required": ["spec"], "not": {"required": ["spec_path"]}},
+                    {"required": ["spec_path"], "not": {"required": ["spec"]}}
+                ]
+            }
+        }),
+        json!({
+            "name": "hwp_template",
+            "description": "TemplateSpec/Data v1의 typed AST를 CLI와 같은 bounded·deterministic·strict 경로로 확장하고 native HWP/HWPX를 생성한다. reference_hwpx는 package-surgical 보존 모드다.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "template": {
+                        "oneOf": [{"type": "object"}, {"type": "string"}],
+                        "description": "TemplateSpec v1 객체 또는 JSON/YAML 문자열"
+                    },
+                    "template_path": {"type": "string"},
+                    "template_format": {"type": "string", "enum": ["json", "yaml"]},
+                    "data": {
+                        "oneOf": [{"type": "object"}, {"type": "string"}],
+                        "description": "TemplateData v1 객체 또는 JSON/YAML 문자열"
+                    },
+                    "data_path": {"type": "string"},
+                    "data_format": {"type": "string", "enum": ["json", "yaml"]},
+                    "base_dir": {"type": "string", "description": "inline template의 상대 reference/asset 기준 디렉터리"},
+                    "output": {"type": "string", "description": "출력 .hwp/.hwpx 경로"},
+                    "dry_run": {"type": "boolean", "description": "실제 확장·writer·검증 후 게시만 생략"}
+                },
+                "required": ["output"],
+                "allOf": [
+                    {"oneOf": [
+                        {"required": ["template"], "not": {"required": ["template_path"]}},
+                        {"required": ["template_path"], "not": {"required": ["template"]}}
+                    ]},
+                    {"oneOf": [
+                        {"required": ["data"], "not": {"required": ["data_path"]}},
+                        {"required": ["data_path"], "not": {"required": ["data"]}}
+                    ]}
+                ]
+            }
         }),
         json!({
             "name": "hwp_diff",
             "description": "렌더 결과를 기준 PNG와 비교해 오차(잉크 적용률·위치 오프셋·픽셀 차이율)를 측정.",
             "inputSchema": {"type": "object", "properties": {
                 "input": {"type": "string"}, "ref": {"type": "string", "description": "기준 PNG 경로"},
-                "page": {"type": "integer"}, "dpi": {"type": "number"},
+                "page": {"type": "integer"}, "dpi": {"type": "number", "minimum": hwp_render::MIN_DPI, "maximum": hwp_render::MAX_DPI},
                 "font_dir": {"type": "string"}
             }, "required": ["input", "ref"]}
         }),
@@ -748,7 +1196,8 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {
                 "input": {"type": "string"}, "output": {"type": "string"},
                 "values": {"type": "object", "additionalProperties": {"type": "string"},
-                    "description": "{자리표시자이름: 값} 객체"}
+                    "description": "{자리표시자이름: 값} 객체"},
+                "allow_partial": {"type": "boolean", "description": "미발견 키가 있어도 일치한 값만 게시; 기본 false"}
             }, "required": ["input", "output", "values"]}
         }),
         json!({
@@ -757,6 +1206,20 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"}
             }, "required": ["path"]}
+        }),
+        json!({
+            "name": "hwp_certify",
+            "description": "versioned policy로 package/반복 import/native render/선택적 LibreOffice+H2Orestart 독립 import를 인증하고 새 artifact 디렉터리를 원자적으로 게시한다. passed만 성공이다.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "input": {"type": "string"},
+                    "policy": {"type": "string", "description": "hwp-certification-policy-v1 JSON/YAML 경로"},
+                    "report": {"type": "string", "description": "존재하지 않는 artifact 디렉터리 경로"}
+                },
+                "required": ["input", "policy", "report"]
+            }
         }),
     ]
 }
@@ -830,14 +1293,192 @@ mod tests {
             "hwp_edit",
             "hwp_convert",
             "hwp_new",
+            "hwp_compose",
+            "hwp_template",
             "hwp_diff",
             "hwp_slots",
             "hwp_fill",
             "hwp_validate",
+            "hwp_certify",
             "hwp_list_bookmarks",
         ] {
             assert!(names.contains(&expected), "{expected} 누락");
         }
+    }
+
+    #[test]
+    fn tools_list_exposes_read_bounds_and_add_col_position() {
+        let tools = tool_defs();
+        let read = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_read")
+            .unwrap();
+        assert_eq!(
+            read["inputSchema"]["properties"]["max_bytes"]["maximum"],
+            MAX_READ_BYTES
+        );
+        let edit = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_edit")
+            .unwrap();
+        assert_eq!(
+            edit["inputSchema"]["properties"]["add_col"]["items"]["properties"]["at"]["type"],
+            "integer"
+        );
+        for name in ["hwp_render", "hwp_diff"] {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            let dpi = &tool["inputSchema"]["properties"]["dpi"];
+            assert_eq!(dpi["minimum"], hwp_render::MIN_DPI);
+            assert_eq!(dpi["maximum"], hwp_render::MAX_DPI);
+        }
+    }
+
+    #[test]
+    fn compose_dry_run_accepts_inline_spec_without_writing() {
+        let output = std::env::temp_dir().join(format!(
+            "hwp-compose-mcp-dry-run-{}-{}.hwpx",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let result = tool_compose(&json!({
+            "spec": {
+                "version": "1.0",
+                "sections": [{
+                    "blocks": [{
+                        "type": "paragraph",
+                        "runs": [{"type": "text", "text": "본문"}]
+                    }]
+                }]
+            },
+            "output": output,
+            "dry_run": true,
+            "allow_visual_fallback": true
+        }))
+        .expect("compose dry-run");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["dry_run"], true);
+        assert_eq!(report["native"], true);
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn compose_v2_rejects_deprecated_global_fallback_policy() {
+        let error = tool_compose(&json!({
+            "spec": {
+                "version": "2.0",
+                "document": {
+                    "version": "1.0",
+                    "sections": [{"blocks": [{
+                        "type": "paragraph",
+                        "runs": [{"type": "text", "text": "본문"}]
+                    }]}]
+                },
+                "visuals": []
+            },
+            "output": "out.hwpx",
+            "dry_run": true,
+            "allow_visual_fallback": true
+        }))
+        .unwrap_err();
+        assert!(error.contains("\"code\": \"policy_conflict\""), "{error}");
+        assert!(error.contains("$.policy"), "{error}");
+    }
+
+    #[test]
+    fn compose_schema_marks_global_fallback_policy_deprecated() {
+        let compose = tool_defs()
+            .into_iter()
+            .find(|tool| tool["name"] == "hwp_compose")
+            .unwrap();
+        let property = &compose["inputSchema"]["properties"]["allow_visual_fallback"];
+        assert_eq!(property["type"], "boolean");
+        assert_eq!(property["deprecated"], true);
+    }
+
+    #[test]
+    fn compose_rejects_unknown_argument() {
+        let error = tool_compose(&json!({
+            "spec": {"version": "1.0", "sections": []},
+            "output": "out.hwpx",
+            "unknown": true
+        }))
+        .unwrap_err();
+        assert!(error.contains("unknown"));
+    }
+
+    #[test]
+    fn template_dry_run_has_cli_report_contract_and_rejects_unknown_argument() {
+        let output = std::env::temp_dir().join(format!(
+            "hwp-template-mcp-dry-run-{}-{}.hwpx",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_file(&output);
+        let result = tool_template(&json!({
+            "template": {
+                "version": "1.0",
+                "variables": {"title": {"type": "string", "required": true}},
+                "source": {"mode": "compose", "document": {
+                    "version": "1.0",
+                    "sections": [{"blocks": [{
+                        "type": "paragraph",
+                        "runs": [{"type": "text", "text": {
+                            "node": "value", "pointer": "/values/title", "as": "text"
+                        }}]
+                    }]}]
+                }}
+            },
+            "data": {"version": "1.0", "values": {"title": "MCP"}},
+            "output": output,
+            "dry_run": true
+        }))
+        .expect("template dry-run");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["schema_version"], "1.0");
+        assert_eq!(report["data_schema_version"], "1.0");
+        assert_eq!(report["mode"], "compose");
+        assert_eq!(report["template_validation"], "passed");
+        assert_eq!(report["data_validation"], "passed");
+        assert_eq!(report["semantic_validation"], "not_run");
+        assert_eq!(report["package_validation"], "not_run");
+        assert!(!output.exists());
+
+        let error = tool_template(&json!({
+            "template": {"version": "1.0", "variables": {}, "source": {"mode": "compose", "document": {}}},
+            "data": {"version": "1.0", "values": {}},
+            "output": "out.hwpx",
+            "unknown": true
+        }))
+        .unwrap_err();
+        assert!(error.contains("unknown"));
+    }
+
+    #[test]
+    fn mcp_render_and_diff_reject_non_finite_or_out_of_range_dpi_before_loading() {
+        for dpi in [0.0, -1.0, 601.0, 1.0e300] {
+            let args = json!({"path": "missing.hwpx", "input": "missing.hwpx", "ref": "missing.png", "dpi": dpi});
+            let render = tool_render(&args, &ctx()).unwrap_err();
+            let diff = tool_diff(&args, &ctx()).unwrap_err();
+            assert!(render.contains("DPI는 유한한"), "{render}");
+            assert!(diff.contains("DPI는 유한한"), "{diff}");
+        }
+        for args in [
+            json!({"path": "missing.hwpx", "input": "missing.hwpx", "ref": "missing.png", "dpi": "600"}),
+            json!({"path": "missing.hwpx", "input": "missing.hwpx", "ref": "missing.png", "page": -1}),
+            json!({"path": "missing.hwpx", "input": "missing.hwpx", "ref": "missing.png", "page": "1"}),
+        ] {
+            assert!(tool_render(&args, &ctx()).is_err());
+            assert!(tool_diff(&args, &ctx()).is_err());
+        }
+    }
+
+    #[test]
+    fn protocol_line_reader_rejects_oversized_request_without_unbounded_allocation() {
+        let mut reader = std::io::Cursor::new(vec![b'a'; 17]);
+        let mut line = String::new();
+        let error = read_line_bounded(&mut reader, &mut line, 16).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(line.len() <= 17);
     }
 
     #[test]
@@ -914,5 +1555,232 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"hwp_read","arguments":{}}}"#,
         );
         assert_eq!(v["result"]["isError"], true);
+    }
+
+    fn temp_file(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("hwp-cli-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory.join(name)
+    }
+
+    fn create_hwpx(path: &Path, markdown: &str) {
+        crate::commands::new::execute(
+            path,
+            crate::commands::new::NewInput::Markdown {
+                text: markdown,
+                base_dir: None,
+            },
+            &[],
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mcp_mutations_share_cli_atomic_and_noop_contracts() {
+        let source = temp_file("mutation-source.hwpx");
+        let edit_destination = temp_file("mutation-edit.hwpx");
+        let fill_destination = temp_file("mutation-fill.hwpx");
+        let convert_destination = temp_file("mutation-convert.unsupported");
+        create_hwpx(&source, "{{수신}} 본문");
+
+        std::fs::write(&edit_destination, b"EDIT ORIGINAL").unwrap();
+        let edit = tool_edit(&json!({
+            "input": source,
+            "output": edit_destination,
+            "replace": [{"from": "없는본문", "to": "값"}]
+        }));
+        assert!(edit.is_err(), "0건 편집은 MCP도 실패");
+        assert_eq!(std::fs::read(&edit_destination).unwrap(), b"EDIT ORIGINAL");
+
+        std::fs::write(&fill_destination, b"FILL ORIGINAL").unwrap();
+        let fill = tool_fill(&json!({
+            "input": source,
+            "output": fill_destination,
+            "values": {"없는키": "값"}
+        }));
+        assert!(fill.is_err(), "0건 fill은 MCP도 실패");
+        assert_eq!(std::fs::read(&fill_destination).unwrap(), b"FILL ORIGINAL");
+
+        std::fs::write(&convert_destination, b"CONVERT ORIGINAL").unwrap();
+        let convert = tool_convert(&json!({
+            "input": source,
+            "output": convert_destination
+        }));
+        assert!(convert.is_err(), "미지원 확장자 변환은 실패");
+        assert_eq!(
+            std::fs::read(&convert_destination).unwrap(),
+            b"CONVERT ORIGINAL"
+        );
+
+        for path in [
+            &source,
+            &edit_destination,
+            &fill_destination,
+            &convert_destination,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_new_fails_closed_on_drop_and_preserves_destination() {
+        let destination = temp_file("new-drop.hwpx");
+        std::fs::write(&destination, b"ORIGINAL").unwrap();
+
+        let mut doc = hwp_convert::from_markdown("본문");
+        let paragraph = &mut doc.sections[0].paragraphs[0];
+        let control_index = paragraph.controls.len() as u32;
+        paragraph
+            .controls
+            .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"zzzz",
+                data: Vec::new(),
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+            }));
+        let insert_at = paragraph.chars.len().saturating_sub(1);
+        paragraph.chars.insert(
+            insert_at,
+            hwp_model::HwpChar::ExtCtrl {
+                code: hwp_model::ctrl_char::OBJECT,
+                ctrl_id: *b"zzzz",
+                payload: vec![0; 12],
+                ctrl_index: Some(control_index),
+            },
+        );
+        let document_json = hwp_convert::to_json(&doc, true, false).unwrap();
+        let result = tool_new(&json!({
+            "output": destination,
+            "json": document_json,
+        }));
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("보존 불가") && error.contains("zzzz")),
+            "DROP은 hard failure여야: {result:?}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
+        let _ = std::fs::remove_file(destination);
+    }
+
+    #[test]
+    fn mcp_partial_edit_returns_machine_readable_warnings() {
+        let source = temp_file("partial-source.hwpx");
+        let destination = temp_file("partial-destination.hwpx");
+        create_hwpx(&source, "있는본문");
+        let content = tool_edit(&json!({
+            "input": source,
+            "output": destination,
+            "replace": [
+                {"from": "있는본문", "to": "바뀐본문"},
+                {"from": "없는본문", "to": "값"}
+            ],
+            "allow_partial": true
+        }))
+        .expect("allow_partial MCP edit");
+        let report: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["applied"], 1);
+        assert!(
+            report["warnings"]
+                .as_array()
+                .is_some_and(|warnings| !warnings.is_empty())
+        );
+        for path in [&source, &destination] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_read_is_utf8_bounded_and_pageable() {
+        let source = temp_file("bounded-read.hwpx");
+        create_hwpx(&source, "가나다라마바사");
+        let first = tool_read(&json!({
+            "path": source,
+            "format": "plain",
+            "max_bytes": 7
+        }))
+        .unwrap();
+        assert!(first[0]["text"].as_str().unwrap().len() <= 7);
+        let metadata: Value = serde_json::from_str(first[1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["truncated"], true);
+        let next = metadata["next_offset"].as_u64().unwrap();
+        let second = tool_read(&json!({
+            "path": source,
+            "format": "plain",
+            "offset": next,
+            "max_bytes": 7
+        }))
+        .unwrap();
+        assert!(!second[0]["text"].as_str().unwrap().is_empty());
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn mcp_structured_replace_preserves_cli_delimiters_as_data() {
+        let source = temp_file("delimiter-source.hwpx");
+        let destination = temp_file("delimiter-destination.hwpx");
+        create_hwpx(&source, "A=>B");
+
+        tool_edit(&json!({
+            "input": source,
+            "output": destination,
+            "replace": [{"from": "A=>B", "to": "X=Y=>Z"}]
+        }))
+        .expect("구조화 치환");
+
+        let edited = load_document(&destination).unwrap();
+        assert!(edited.plain_text().contains("X=Y=>Z"));
+        assert!(!edited.plain_text().contains("A=>B"));
+        for path in [&source, &destination] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_structured_metadata_and_paragraphs_keep_delimiters() {
+        let source = temp_file("typed-structural-source.hwpx");
+        let destination = temp_file("typed-structural-destination.hwpx");
+        create_hwpx(&source, "Anchor=>Here");
+
+        tool_edit(&json!({
+            "input": source,
+            "output": destination,
+            "set_meta": [{"key": "title", "value": "A=B=>C"}],
+            "insert_para": [{
+                "anchor": "Anchor=>Here",
+                "text": "New=>Text=1"
+            }]
+        }))
+        .expect("구조화 metadata/문단 편집");
+
+        let edited = load_document(&destination).unwrap();
+        assert_eq!(edited.metadata.title.as_deref(), Some("A=B=>C"));
+        assert!(edited.plain_text().contains("New=>Text=1"));
+        for path in [&source, &destination] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_render_rasterizes_only_selected_page_and_reports_total_pages() {
+        let source = temp_file("selected-render.hwpx");
+        let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n\n셋째 쪽\n");
+        doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+        doc.sections[0].paragraphs[2].header.break_type |= 0x04;
+        hwpx::write_document(&doc, &source).unwrap();
+
+        let content = tool_render(&json!({"path": source, "page": 2, "dpi": 36}), &ctx()).unwrap();
+        assert!(
+            content[0]["text"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("페이지 2/3 렌더"))
+        );
+        assert_eq!(content[1]["type"], "image");
+        let _ = std::fs::remove_file(source);
     }
 }

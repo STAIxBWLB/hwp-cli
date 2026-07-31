@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "values": {
+    "form_title": "AI 실습실 사용 신청서",
+    "applicant": "홍길동",
+    "department": "인공지능학과",
+    "purpose": "생성형 AI 프로젝트 실습"
+  }
+}

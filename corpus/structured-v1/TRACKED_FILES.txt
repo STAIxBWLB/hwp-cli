@@ -1,0 +1,12 @@
+corpus/structured-v1/README.md
+corpus/structured-v1/TRACKED_FILES.txt
+corpus/structured-v1/cases/academic-education/spec.json
+corpus/structured-v1/cases/approval-memo/spec.json
+corpus/structured-v1/cases/business-plan/spec.json
+corpus/structured-v1/cases/meeting-minutes/spec.json
+corpus/structured-v1/cases/official-letter/spec.json
+corpus/structured-v1/cases/print-form/data.json
+corpus/structured-v1/cases/print-form/template.yaml
+corpus/structured-v1/cases/report/spec.json
+corpus/structured-v1/manifest.json
+corpus/structured-v1/native-policy.json

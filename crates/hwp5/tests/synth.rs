@@ -12,6 +12,58 @@ fn tmp(name: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// 신규 HWP 합성은 경로와 실행 시각에 무관하게 바이트가 같고, 모든 CFB directory
+/// entry의 creation/modification FILETIME이 canonical CFB epoch여야 한다.
+#[test]
+fn 신규_패키지는_시간과_경로에_무관하게_결정적() {
+    let doc = hwp_convert::from_markdown("결정적 HWP");
+    let root = tmp(&format!("deterministic-{}", std::process::id()));
+    let first_dir = root.join("first");
+    let second_dir = root.join("second");
+    std::fs::create_dir_all(&first_dir).unwrap();
+    std::fs::create_dir_all(&second_dir).unwrap();
+    let first = first_dir.join("a.hwp");
+    let second = second_dir.join("b.hwp");
+
+    hwp5::write_document(&doc, &first, &hwp5::WriteOptions::default()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    hwp5::write_document(&doc, &second, &hwp5::WriteOptions::default()).unwrap();
+
+    assert_eq!(
+        std::fs::read(&first).unwrap(),
+        std::fs::read(&second).unwrap(),
+        "동일 문서는 경로와 wall clock에 무관하게 byte-identical해야 함"
+    );
+
+    const SECONDS_FROM_CFB_TO_UNIX_EPOCH: u64 = 11_644_473_600;
+    let cfb_epoch = std::time::UNIX_EPOCH
+        .checked_sub(std::time::Duration::from_secs(
+            SECONDS_FROM_CFB_TO_UNIX_EPOCH,
+        ))
+        .unwrap();
+    for path in [&first, &second] {
+        let file = std::fs::File::open(path).unwrap();
+        let cfb = cfb::CompoundFile::open(file).unwrap();
+        for entry in cfb.walk() {
+            assert_eq!(
+                entry.created(),
+                cfb_epoch,
+                "{} creation FILETIME",
+                entry.path().display()
+            );
+            assert_eq!(
+                entry.modified(),
+                cfb_epoch,
+                "{} modification FILETIME",
+                entry.path().display()
+            );
+        }
+    }
+
+    std::fs::remove_file(first).unwrap();
+    std::fs::remove_file(second).unwrap();
+}
+
 /// markdown→hwp 합성 문서가 한글 무결성 검사 통과 조건을 모두 만족해야 한다.
 #[test]
 fn 합성_문서_한글_규격_충족() {
@@ -249,13 +301,20 @@ fn md_이미지_코드_hwp5_왕복() {
         .write_all(&png)
         .unwrap();
 
-    let doc = hwp_convert::from_markdown_with(
+    let mut doc = hwp_convert::from_markdown_with(
         "본문 `let x = 1;` 코드와 이미지.\n\n![alt](f.png)\n",
         &hwp_convert::MarkdownImportOptions {
             base_dir: Some(&dir),
             preset: None,
         },
     );
+    for paragraph in &mut doc.sections[0].paragraphs {
+        for control in &mut paragraph.controls {
+            if let hwp_model::Control::Picture(picture) = control {
+                picture.description = Some("제목😀\n\n대체 설명".to_string());
+            }
+        }
+    }
     let out = tmp("md_imgcode.hwp");
     let warnings = hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
     assert!(
@@ -272,6 +331,15 @@ fn md_이미지_코드_hwp5_왕복() {
     });
     assert!(has_pic, "이미지 Picture 왕복");
     assert!(!reread.bin_streams.is_empty(), "bin_streams 왕복");
+    let description = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Picture(picture) => picture.description.as_deref(),
+            _ => None,
+        });
+    assert_eq!(description, Some("제목😀\n\n대체 설명"));
 
     // 인라인 코드: 함초롬돋움(face_id=1) 글자모양 + 그걸 참조하는 run.
     let code_ids: std::collections::HashSet<u16> = reread
@@ -707,6 +775,7 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
         arrow_start: 0,
         arrow_end: 0,
         anchored: true,
+        description: None,
     };
     let gso = GenericControl {
         ctrl_id: *b"rect", // hwpx reader가 만드는 형태

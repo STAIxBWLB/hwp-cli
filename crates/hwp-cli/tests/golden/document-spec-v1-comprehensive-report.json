@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "output": "report.hwpx",
+  "dry_run": true,
+  "deterministic": true,
+  "native": true,
+  "visual_fallback_allowed": false,
+  "visual_fallback_used": [],
+  "sections": 1,
+  "paragraphs": 13,
+  "tables": 1,
+  "images": 0,
+  "equations": 1,
+  "fields": 2,
+  "warnings": []
+}

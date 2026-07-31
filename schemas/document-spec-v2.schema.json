@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/document-spec-v2.schema.json",
+  "title": "hwp-cli DocumentSpec v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "document"],
+  "properties": {
+    "version": { "const": "2.0" },
+    "document": { "$ref": "document-spec-v1.schema.json" },
+    "visuals": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/visual" }
+    }
+  },
+  "$defs": {
+    "visual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "location", "alt", "width_mm", "height_mm", "content"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+        },
+        "location": { "$ref": "#/$defs/location" },
+        "policy": { "$ref": "#/$defs/policy", "default": {} },
+        "title": {
+          "type": "string",
+          "maxLength": 32768,
+          "pattern": "^[^\\r\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\uFFFE\\uFFFF]*$"
+        },
+        "alt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "allOf": [
+            { "pattern": "\\S" },
+            { "pattern": "^[^\\r\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\uFFFE\\uFFFF]*$" }
+          ]
+        },
+        "width_mm": { "$ref": "#/$defs/visualDimension" },
+        "height_mm": { "$ref": "#/$defs/visualDimension" },
+        "placement": { "const": "inline", "default": "inline" },
+        "content": {
+          "oneOf": [
+            { "$ref": "#/$defs/image" },
+            { "$ref": "#/$defs/svg" },
+            { "$ref": "#/$defs/textBox" }
+          ]
+        }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["section", "paragraph"],
+      "properties": {
+        "section": { "type": "integer", "minimum": 0 },
+        "paragraph": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hwp": { "$ref": "#/$defs/policyValue", "default": "required_native" },
+        "hwpx": { "$ref": "#/$defs/policyValue", "default": "required_native" }
+      }
+    },
+    "policyValue": {
+      "enum": ["required_native", "prefer_native", "force_visual_fallback"]
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": { "const": "image" },
+        "path": { "$ref": "#/$defs/assetPath" },
+        "crop": { "$ref": "#/$defs/crop" },
+        "rotation": { "enum": ["0", "90", "180", "270"], "default": "0" }
+      }
+    },
+    "svg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": { "const": "svg" },
+        "path": { "$ref": "#/$defs/assetPath" }
+      }
+    },
+    "textBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "text_box" },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "allOf": [
+            { "pattern": "\\S" },
+            { "pattern": "^[^\\r\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\uFFFE\\uFFFF]*$" }
+          ]
+        },
+        "fill": { "$ref": "#/$defs/color", "default": "#F2F4F7" },
+        "border": { "$ref": "#/$defs/color", "default": "#344054" }
+      }
+    },
+    "crop": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Each field is schema-bounded to 0..1. The runtime semantic gate additionally requires x + width <= 1 and y + height <= 1 and reports invalid_crop when either sum exceeds the image.",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
+    "visualDimension": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 500
+    },
+    "assetPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Relative path containing only normal path components, at most 4096 Unicode scalars and 4096 UTF-8 bytes. Absolute paths, dot components, and over-byte-limit paths are rejected by the runtime containment gate."
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    }
+  }
+}

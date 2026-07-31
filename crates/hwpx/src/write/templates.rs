@@ -155,7 +155,7 @@ mod tests {
         let created = hwp_model::iso8601_utc_to_filetime("2025-09-17T04:32:50Z").unwrap();
         let modified = hwp_model::iso8601_utc_to_filetime("2025-09-17T04:33:13Z").unwrap();
         let meta = hwp_model::Metadata {
-            title: Some("제목".into()),
+            title: Some("제목 A=B=>C & <x>".into()),
             author: Some("지은이".into()),
             subject: Some("주제".into()),
             keywords: Some("키워드".into()),
@@ -166,6 +166,7 @@ mod tests {
         };
         let xml = content_hpf(1, &[], &meta);
         // 정품 형식(요소 텍스트) 방출 확인.
+        assert!(xml.contains("<opf:title>제목 A=B=&gt;C &amp; &lt;x&gt;</opf:title>"));
         assert!(xml.contains(r##"<opf:meta name="creator" content="text">지은이</opf:meta>"##));
         assert!(xml.contains(r##"<opf:meta name="subject" content="text">주제</opf:meta>"##));
         assert!(xml.contains(r##"<opf:meta name="keyword" content="text">키워드</opf:meta>"##));
@@ -187,7 +188,7 @@ mod tests {
         assert!(!xml.contains(r##"name="keywords""##));
 
         let parsed = parse_content_meta(&xml);
-        assert_eq!(parsed.title.as_deref(), Some("제목"));
+        assert_eq!(parsed.title.as_deref(), Some("제목 A=B=>C & <x>"));
         assert_eq!(parsed.author.as_deref(), Some("지은이"));
         assert_eq!(parsed.subject.as_deref(), Some("주제"));
         assert_eq!(parsed.keywords.as_deref(), Some("키워드"));

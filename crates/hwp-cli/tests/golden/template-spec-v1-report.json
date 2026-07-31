@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "data_schema_version": "1.0",
+  "output": "report.hwpx",
+  "dry_run": true,
+  "deterministic": true,
+  "mode": "compose",
+  "template_sha256": "3a3ff3f052f61bf6f629cc55a8bba2fa20a73d8dc9fc17e2993dd6bfed03ee6b",
+  "data_sha256": "cdb45e6e640c41b242aa05954afbdb41d63c3e2c21a875d696500e270c98b483",
+  "provided_variables": ["items", "title"],
+  "defaulted_variables": ["show_summary"],
+  "expansion": {
+    "input_nodes": 53,
+    "expanded_nodes": 43,
+    "expanded_bytes": 457,
+    "max_control_depth": 1,
+    "each_iterations": 2,
+    "conditions_evaluated": 1,
+    "regions": [
+      {
+        "id": "summary",
+        "kind": "conditional",
+        "template_pointer": "/source/document/sections/0/blocks/1",
+        "input_items": 1,
+        "generated_items": 1,
+        "instances": [{ "path": "/", "input_items": 1, "generated_items": 1 }]
+      },
+      {
+        "id": "item_rows",
+        "kind": "repeated",
+        "template_pointer": "/source/document/sections/0/blocks/2",
+        "input_items": 2,
+        "generated_items": 2,
+        "instances": [{ "path": "/", "input_items": 2, "generated_items": 2 }]
+      }
+    ]
+  },
+  "changed_regions": [],
+  "generated_regions": [
+    {
+      "id": "summary",
+      "kind": "conditional",
+      "template_pointer": "/source/document/sections/0/blocks/1",
+      "input_items": 1,
+      "generated_items": 1,
+      "instances": [{ "path": "/", "input_items": 1, "generated_items": 1 }]
+    },
+    {
+      "id": "item_rows",
+      "kind": "repeated",
+      "template_pointer": "/source/document/sections/0/blocks/2",
+      "input_items": 2,
+      "generated_items": 2,
+      "instances": [{ "path": "/", "input_items": 2, "generated_items": 2 }]
+    }
+  ],
+  "unsupported": [],
+  "fallback": [],
+  "dropped": [],
+  "template_validation": "passed",
+  "data_validation": "passed",
+  "semantic_validation": "not_run",
+  "package_validation": "not_run",
+  "compose": {
+    "schema_version": "1.0",
+    "output": "report.hwpx",
+    "dry_run": true,
+    "deterministic": true,
+    "native": true,
+    "visual_fallback_allowed": false,
+    "visual_fallback_used": [],
+    "sections": 1,
+    "paragraphs": 5,
+    "tables": 0,
+    "images": 0,
+    "equations": 0,
+    "fields": 0,
+    "warnings": []
+  }
+}

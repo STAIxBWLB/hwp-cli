@@ -15,12 +15,322 @@
 //!   겹침만 아래로 밀어낸다.
 //! - lineseg가 아예 없는 문단은 본문 폭 기준 폴백 배치.
 
+use std::collections::HashSet;
+
 use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Section, Table};
 
 use crate::display::{DisplayList, Item, PageList, PathCmd};
+use crate::error::RenderError;
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
+use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 use crate::shape::{InlineItem, shape_range_page};
+
+/// 인증 렌더가 레이아웃 생성 전에 적용하는 작업/메모리 예산.
+pub const CERTIFICATION_MAX_PAGES: usize = 4_096;
+pub const CERTIFICATION_MAX_DISPLAY_ITEMS: usize = 1_000_000;
+
+#[derive(Debug, Clone, Copy)]
+pub struct LayoutBudget {
+    pub max_pages: usize,
+    pub max_display_items: usize,
+    pub max_paragraphs: usize,
+    pub max_cells: usize,
+    pub max_objects: usize,
+    pub max_glyphs: usize,
+    pub max_nesting_depth: usize,
+    pub max_line_segments: usize,
+    pub max_raw_records: usize,
+    pub max_raw_bytes: u64,
+    pub max_shape_points: usize,
+    pub max_gradient_stops: usize,
+    pub max_unique_image_bytes: u64,
+    pub max_referenced_image_bytes: u64,
+    pub max_estimated_work: u64,
+}
+
+impl LayoutBudget {
+    pub const fn certification() -> Self {
+        Self {
+            max_pages: CERTIFICATION_MAX_PAGES,
+            max_display_items: CERTIFICATION_MAX_DISPLAY_ITEMS,
+            max_paragraphs: 20_000,
+            max_cells: 100_000,
+            max_objects: 20_000,
+            max_glyphs: 5_000_000,
+            max_nesting_depth: 64,
+            max_line_segments: 1_000_000,
+            max_raw_records: 200_000,
+            max_raw_bytes: 64 * 1024 * 1024,
+            max_shape_points: 1_000_000,
+            max_gradient_stops: 100_000,
+            max_unique_image_bytes: 128 * 1024 * 1024,
+            max_referenced_image_bytes: 256 * 1024 * 1024,
+            max_estimated_work: 10_000_000,
+        }
+    }
+}
+
+#[derive(Default)]
+struct LayoutUsage {
+    pages: usize,
+    display_items: usize,
+    paragraphs: usize,
+    cells: usize,
+    objects: usize,
+    glyphs: usize,
+    line_segments: usize,
+    raw_records: usize,
+    raw_bytes: u64,
+    shape_points: usize,
+    gradient_stops: usize,
+    unique_image_bytes: u64,
+    referenced_image_bytes: u64,
+    estimated_work: u64,
+    unique_images: HashSet<(usize, usize)>,
+}
+
+impl LayoutUsage {
+    fn charge_usize(
+        value: &mut usize,
+        amount: usize,
+        limit: usize,
+        label: &str,
+    ) -> Result<(), RenderError> {
+        *value = value
+            .checked_add(amount)
+            .ok_or_else(|| budget_error(label))?;
+        if *value > limit {
+            return Err(budget_error(label));
+        }
+        Ok(())
+    }
+
+    fn charge_u64(
+        value: &mut u64,
+        amount: u64,
+        limit: u64,
+        label: &str,
+    ) -> Result<(), RenderError> {
+        *value = value
+            .checked_add(amount)
+            .ok_or_else(|| budget_error(label))?;
+        if *value > limit {
+            return Err(budget_error(label));
+        }
+        Ok(())
+    }
+
+    fn visit_paragraph(
+        &mut self,
+        doc: &Document,
+        paragraph: &Paragraph,
+        budget: &LayoutBudget,
+        depth: usize,
+    ) -> Result<(), RenderError> {
+        if depth > budget.max_nesting_depth {
+            return Err(budget_error("nesting_depth"));
+        }
+        Self::charge_usize(&mut self.paragraphs, 1, budget.max_paragraphs, "paragraphs")?;
+        let glyphs = usize::try_from(paragraph.wchar_len()).map_err(|_| budget_error("glyphs"))?;
+        Self::charge_usize(&mut self.glyphs, glyphs, budget.max_glyphs, "glyphs")?;
+        Self::charge_u64(
+            &mut self.estimated_work,
+            u64::try_from(glyphs).map_err(|_| budget_error("estimated_work"))?,
+            budget.max_estimated_work,
+            "estimated_work",
+        )?;
+        if paragraph.header.break_type & 0x04 != 0 {
+            Self::charge_usize(&mut self.pages, 1, budget.max_pages, "pages")?;
+        }
+        Self::charge_usize(
+            &mut self.line_segments,
+            paragraph.line_segs.len(),
+            budget.max_line_segments,
+            "line_segments",
+        )?;
+        Self::charge_u64(
+            &mut self.estimated_work,
+            u64::try_from(paragraph.line_segs.len()).map_err(|_| budget_error("estimated_work"))?,
+            budget.max_estimated_work,
+            "estimated_work",
+        )?;
+        let mut previous_v_pos = None;
+        for segment in &paragraph.line_segs {
+            if previous_v_pos.is_some_and(|previous| segment.v_pos < previous) {
+                Self::charge_usize(&mut self.pages, 1, budget.max_pages, "pages")?;
+            }
+            previous_v_pos = Some(segment.v_pos);
+        }
+        for control in &paragraph.controls {
+            Self::charge_usize(&mut self.objects, 1, budget.max_objects, "objects")?;
+            Self::charge_u64(
+                &mut self.estimated_work,
+                8,
+                budget.max_estimated_work,
+                "estimated_work",
+            )?;
+            match control {
+                Control::Picture(picture) => {
+                    if let Some(bytes) = doc.resolve_bin(&picture.bin_ref) {
+                        let bytes_len = u64::try_from(bytes.len())
+                            .map_err(|_| budget_error("referenced_image_bytes"))?;
+                        Self::charge_u64(
+                            &mut self.referenced_image_bytes,
+                            bytes_len,
+                            budget.max_referenced_image_bytes,
+                            "referenced_image_bytes",
+                        )?;
+                        let identity = (bytes.as_ptr() as usize, bytes.len());
+                        if self.unique_images.insert(identity) {
+                            Self::charge_u64(
+                                &mut self.unique_image_bytes,
+                                bytes_len,
+                                budget.max_unique_image_bytes,
+                                "unique_image_bytes",
+                            )?;
+                        }
+                    }
+                }
+                Control::Table(table) => {
+                    Self::charge_usize(
+                        &mut self.cells,
+                        table.cells.len(),
+                        budget.max_cells,
+                        "cells",
+                    )?;
+                    for cell in &table.cells {
+                        for nested in &cell.paragraphs {
+                            self.visit_paragraph(doc, nested, budget, depth + 1)?;
+                        }
+                    }
+                }
+                Control::Generic(generic) => {
+                    self.visit_raw_records(&generic.raw_children, budget)?;
+                    // Every structured shape can allocate a path even when it has no explicit
+                    // point list (rect/ellipse synthesize their geometry). Count the shapes,
+                    // not just their points, before any path construction.
+                    Self::charge_usize(
+                        &mut self.objects,
+                        generic.gso_shapes.len(),
+                        budget.max_objects,
+                        "objects",
+                    )?;
+                    Self::charge_u64(
+                        &mut self.estimated_work,
+                        u64::try_from(generic.gso_shapes.len())
+                            .map_err(|_| budget_error("estimated_work"))?
+                            .saturating_mul(3),
+                        budget.max_estimated_work,
+                        "estimated_work",
+                    )?;
+                    for shape in &generic.gso_shapes {
+                        Self::charge_usize(
+                            &mut self.shape_points,
+                            shape.points.len(),
+                            budget.max_shape_points,
+                            "shape_points",
+                        )?;
+                        if let Some(gradient) = &shape.fill_gradient {
+                            Self::charge_usize(
+                                &mut self.gradient_stops,
+                                gradient.stops.len(),
+                                budget.max_gradient_stops,
+                                "gradient_stops",
+                            )?;
+                        }
+                    }
+                    for list in &generic.paragraph_lists {
+                        for nested in &list.paragraphs {
+                            self.visit_paragraph(doc, nested, budget, depth + 1)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_raw_records(
+        &mut self,
+        records: &[hwp_model::OpaqueRecord],
+        budget: &LayoutBudget,
+    ) -> Result<(), RenderError> {
+        let mut stack: Vec<(&hwp_model::OpaqueRecord, usize)> =
+            records.iter().map(|record| (record, 1)).collect();
+        while let Some((record, depth)) = stack.pop() {
+            if depth > budget.max_nesting_depth {
+                return Err(budget_error("raw_nesting_depth"));
+            }
+            Self::charge_usize(
+                &mut self.raw_records,
+                1,
+                budget.max_raw_records,
+                "raw_records",
+            )?;
+            Self::charge_u64(
+                &mut self.raw_bytes,
+                u64::try_from(record.data.len()).map_err(|_| budget_error("raw_bytes"))?,
+                budget.max_raw_bytes,
+                "raw_bytes",
+            )?;
+            Self::charge_u64(
+                &mut self.estimated_work,
+                1 + u64::try_from(record.data.len() / 8)
+                    .map_err(|_| budget_error("estimated_work"))?,
+                budget.max_estimated_work,
+                "estimated_work",
+            )?;
+            stack.extend(record.children.iter().map(|child| (child, depth + 1)));
+        }
+        Ok(())
+    }
+
+    fn finish_estimate(&mut self, budget: &LayoutBudget) -> Result<(), RenderError> {
+        let item_estimate = self
+            .paragraphs
+            .checked_mul(4)
+            .and_then(|value| value.checked_add(self.cells.saturating_mul(8)))
+            .and_then(|value| value.checked_add(self.objects.saturating_mul(8)))
+            .and_then(|value| value.checked_add(self.glyphs))
+            .ok_or_else(|| budget_error("display_items"))?;
+        Self::charge_usize(
+            &mut self.display_items,
+            item_estimate,
+            budget.max_display_items,
+            "display_items",
+        )?;
+        Self::charge_u64(
+            &mut self.estimated_work,
+            u64::try_from(item_estimate).map_err(|_| budget_error("estimated_work"))?,
+            budget.max_estimated_work,
+            "estimated_work",
+        )
+    }
+}
+
+fn budget_error(label: &str) -> RenderError {
+    RenderError::LayoutBudgetExceeded {
+        resource: label.to_string(),
+    }
+}
+
+fn preflight_layout_budget(doc: &Document, budget: &LayoutBudget) -> Result<(), RenderError> {
+    let mut usage = LayoutUsage {
+        pages: doc.sections.len(),
+        ..LayoutUsage::default()
+    };
+    if usage.pages > budget.max_pages {
+        return Err(budget_error("pages"));
+    }
+    for section in &doc.sections {
+        for paragraph in &section.paragraphs {
+            usage.visit_paragraph(doc, paragraph, budget, 0)?;
+        }
+    }
+    usage.finish_estimate(budget)
+}
 
 /// 기본 탭 간격 (40pt = 4000 HWPUNIT).
 const TAB_INTERVAL_PT: f32 = 40.0;
@@ -198,8 +508,15 @@ fn build_page_border_edges(
 
 /// 계산된 쪽 테두리 변들을 페이지 아이템 맨 앞에 삽입한다(텍스트/개체 뒤 = 뒤에 그림).
 /// 변 기하는 구역당 1회 계산하고, Item::Line은 페이지마다 새로 만든다(Item는 Clone 불가).
-fn prepend_page_borders(page: &mut PageList, edges: &[PageBorderEdge]) {
+fn prepend_page_borders(
+    page: &mut PageList,
+    edges: &[PageBorderEdge],
+    warnings: &mut RenderIssueAccumulator,
+) {
     if edges.is_empty() {
+        return;
+    }
+    if !warnings.charge_display_items(edges.len()) {
         return;
     }
     let mut items: Vec<Item> = edges
@@ -235,7 +552,7 @@ impl PageNumberState {
     /// Page-level controls in a paragraph apply to the page containing that
     /// paragraph. `pgnp` remains active until another placement replaces it;
     /// `pghd` is reset after the current page is finalized.
-    fn apply_controls(&mut self, para: &Paragraph, warnings: &mut Vec<String>) {
+    fn apply_controls(&mut self, para: &Paragraph, warnings: &mut RenderIssueAccumulator) {
         for control in &para.controls {
             let Control::Generic(control) = control else {
                 continue;
@@ -243,11 +560,11 @@ impl PageNumberState {
             match &control.ctrl_id {
                 b"pgnp" => match crate::page_number::parse_pgnp(&control.data) {
                     Some(placement) => self.placement = Some(placement),
-                    None => warn_once(warnings, "pgnp 페이로드가 12바이트 미만 - 생략"),
+                    None => warnings.push_once(RenderIssueCode::PageControlPayloadOmitted, b"pgnp"),
                 },
                 b"pghd" => {
                     if control.data.len() < 4 {
-                        warn_once(warnings, "pghd 페이로드가 4바이트 미만 - 생략");
+                        warnings.push_once(RenderIssueCode::PageControlPayloadOmitted, b"pghd");
                     } else {
                         self.hidden |= crate::page_number::pghd_hides_page_number(&control.data);
                     }
@@ -255,7 +572,7 @@ impl PageNumberState {
                 b"nwno" => match crate::page_number::parse_nwno_page(&control.data) {
                     Some(number) => self.logical = number,
                     None if control.data.len() < 6 => {
-                        warn_once(warnings, "nwno 페이로드가 6바이트 미만 - 생략");
+                        warnings.push_once(RenderIssueCode::PageControlPayloadOmitted, b"nwno");
                     }
                     None => {} // PAGE 외 자동번호 재시작은 해당 번호 렌더러가 담당.
                 },
@@ -274,7 +591,7 @@ impl PageNumberState {
         store: &mut FontStore,
         page: &mut PageList,
         furniture: &Furniture<'_>,
-        warnings: &mut Vec<String>,
+        warnings: &mut RenderIssueAccumulator,
     ) {
         furniture.render(doc, store, page, self.visible_number(), warnings);
         if self.visible_number().is_some()
@@ -292,12 +609,6 @@ impl PageNumberState {
         }
         self.logical = self.logical.saturating_add(1);
         self.hidden = false;
-    }
-}
-
-fn warn_once(warnings: &mut Vec<String>, message: &str) {
-    if !warnings.iter().any(|w| w == message) {
-        warnings.push(message.to_string());
     }
 }
 
@@ -339,21 +650,21 @@ fn render_positioned_page_number(
     furniture: &Furniture<'_>,
     logical: u32,
     placement: crate::page_number::PageNumberPlacement,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) {
     if placement.position == 0 {
         return;
     }
     if placement.position > 10 {
-        warn_once(
-            warnings,
-            &format!("쪽번호 위치 코드 {} 미지원 - 생략", placement.position),
+        warnings.push_once(
+            RenderIssueCode::PageNumberPositionOmitted,
+            [placement.position],
         );
         return;
     }
     let text = crate::page_number::format_placement(logical, placement, warnings);
     let Some(run) = crate::shape::shape_plain(store, doc, &text, 10.0, 0, false) else {
-        warn_once(warnings, "쪽번호 셰이핑 실패 - 표시 생략");
+        warnings.push_once(RenderIssueCode::PageNumberShapingOmitted, b"positioned");
         return;
     };
     let top = matches!(placement.position, 1..=3 | 7 | 9);
@@ -372,13 +683,50 @@ fn render_positioned_page_number(
         let margin = furniture.page_def.margin_bottom.to_pt() as f32;
         page.height_pt - (margin * 0.5 - run.size_pt * 0.35).max(run.size_pt * 0.2)
     };
-    push_run(page, x, y, run);
+    push_run(page, x, y, run, warnings);
+}
+
+pub fn layout_document_bounded(
+    doc: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    budget: &LayoutBudget,
+) -> Result<DisplayList, RenderError> {
+    if let Err(error) = preflight_layout_budget(doc, budget) {
+        warnings.push(RenderIssueCode::LayoutBudgetExceeded, error.to_string());
+        return Err(error);
+    }
+    warnings.set_display_item_limit(budget.max_display_items);
+    warnings.set_page_limit(budget.max_pages);
+    let list = layout_document(doc, store, warnings);
+    if warnings.display_item_budget_exceeded() || warnings.page_budget_exceeded() {
+        return Err(budget_error(if warnings.page_budget_exceeded() {
+            "pages"
+        } else {
+            "display_items"
+        }));
+    }
+    let item_count = list.pages.iter().try_fold(0usize, |count, page| {
+        count
+            .checked_add(page.items.len())
+            .ok_or_else(|| budget_error("display_items"))
+    })?;
+    if list.pages.len() > budget.max_pages || item_count > budget.max_display_items {
+        let error = budget_error(if list.pages.len() > budget.max_pages {
+            "pages"
+        } else {
+            "display_items"
+        });
+        warnings.push(RenderIssueCode::LayoutBudgetExceeded, error.to_string());
+        return Err(error);
+    }
+    Ok(list)
 }
 
 pub fn layout_document(
     doc: &Document,
     store: &mut FontStore,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> DisplayList {
     let mut pages = Vec::new();
     let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
@@ -390,7 +738,7 @@ pub fn layout_document(
             .section_def()
             .and_then(|d| d.page)
             .unwrap_or_else(|| {
-                warnings.push("PAGE_DEF 없음 — A4 기본값 사용".to_string());
+                warnings.push(RenderIssueCode::PageDefinitionFallback, b"a4");
                 default_page()
             });
         // 가로(landscape, PAGE_DEF attr bit0): 용지를 90° 돌려 폭↔높이를 맞바꾼다.
@@ -525,14 +873,9 @@ pub fn layout_document(
                 );
                 page_notes.clear();
                 page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                pages.push(std::mem::replace(
-                    &mut page,
-                    PageList {
-                        width_pt: w,
-                        height_pt: h,
-                        items: Vec::new(),
-                    },
-                ));
+                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                    return DisplayList { pages };
+                }
                 content_bottom = body_top;
                 prev_v_pos = -1;
                 paras_on_page = 0;
@@ -553,14 +896,9 @@ pub fn layout_document(
                 );
                 page_notes.clear();
                 page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                pages.push(std::mem::replace(
-                    &mut page,
-                    PageList {
-                        width_pt: w,
-                        height_pt: h,
-                        items: Vec::new(),
-                    },
-                ));
+                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                    return DisplayList { pages };
+                }
                 content_bottom = body_top;
                 prev_v_pos = -1;
                 paras_on_page = 0;
@@ -639,7 +977,14 @@ pub fn layout_document(
                         (left, first_x - left)
                     };
                     if let Some(m) = &marker {
-                        render_list_marker(&mut page, store, doc, m, left, baseline_y, max_size);
+                        render_list_marker(
+                            &mut page,
+                            store,
+                            doc,
+                            m,
+                            (left, baseline_y, max_size),
+                            warnings,
+                        );
                     }
                     let last_y = place_wrapped(
                         &mut page,
@@ -650,6 +995,7 @@ pub fn layout_document(
                         max_size * 1.6,
                         &tabs,
                         first_delta,
+                        warnings,
                     );
                     content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
                 }
@@ -677,6 +1023,7 @@ pub fn layout_document(
                         content_bottom,
                         true,
                         true,
+                        warnings,
                     );
                 }
                 continue;
@@ -700,6 +1047,7 @@ pub fn layout_document(
                             content_bottom,
                             bg_first_slice,
                             false,
+                            warnings,
                         );
                         bg_first_slice = false;
                     }
@@ -721,14 +1069,9 @@ pub fn layout_document(
                         );
                         page_notes.clear();
                         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                        pages.push(std::mem::replace(
-                            &mut page,
-                            PageList {
-                                width_pt: w,
-                                height_pt: h,
-                                items: Vec::new(),
-                            },
-                        ));
+                        if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                            return DisplayList { pages };
+                        }
                         content_bottom = body_top;
                         paras_on_page = 0;
                     }
@@ -803,7 +1146,14 @@ pub fn layout_document(
                     para_top = Some(baseline_y - baseline_gap_pt);
                     if let Some(m) = &marker {
                         let size = items_max_size(&items).unwrap_or(line_height_pt.max(8.0));
-                        render_list_marker(&mut page, store, doc, m, x, baseline_y, size);
+                        render_list_marker(
+                            &mut page,
+                            store,
+                            doc,
+                            m,
+                            (x, baseline_y, size),
+                            warnings,
+                        );
                     }
                 }
                 let last_y = place_wrapped(
@@ -815,6 +1165,7 @@ pub fn layout_document(
                     line_advance,
                     &tabs,
                     0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    warnings,
                 );
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
             }
@@ -843,13 +1194,15 @@ pub fn layout_document(
                     content_bottom,
                     bg_first_slice,
                     true,
+                    warnings,
                 );
             }
         }
         if skipped_controls > 0 {
-            warnings.push(format!(
-                "렌더 미지원 컨트롤 {skipped_controls}개 생략 (글상자/도형 등 — 후속 마일스톤)"
-            ));
+            warnings.push(
+                RenderIssueCode::UnsupportedControlOmitted,
+                skipped_controls.to_le_bytes(),
+            );
         }
         render_page_notes(
             doc,
@@ -863,17 +1216,44 @@ pub fn layout_document(
         );
         page_notes.clear();
         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-        pages.push(page);
+        if !push_page_checked(&mut pages, &mut page, None, warnings) {
+            return DisplayList { pages };
+        }
 
         // 쪽 테두리를 이 구역의 모든 페이지 맨 앞(뒤에 그림)에 소급 삽입한다.
         if !page_border_edges.is_empty() {
             for p in &mut pages[section_first_page..] {
-                prepend_page_borders(p, &page_border_edges);
+                prepend_page_borders(p, &page_border_edges, warnings);
             }
         }
     }
 
     DisplayList { pages }
+}
+
+fn push_page_checked(
+    pages: &mut Vec<PageList>,
+    page: &mut PageList,
+    next_dimensions: Option<(f32, f32)>,
+    warnings: &mut RenderIssueAccumulator,
+) -> bool {
+    if !warnings.charge_page() {
+        return false;
+    }
+    let next = next_dimensions.map_or(
+        PageList {
+            width_pt: 0.0,
+            height_pt: 0.0,
+            items: Vec::new(),
+        },
+        |(width_pt, height_pt)| PageList {
+            width_pt,
+            height_pt,
+            items: Vec::new(),
+        },
+    );
+    pages.push(std::mem::replace(page, next));
+    true
 }
 
 /// 기본 셀 안쪽 여백 (HWPUNIT — 한글 기본값).
@@ -895,7 +1275,7 @@ impl Furniture<'_> {
         store: &mut FontStore,
         page: &mut PageList,
         page_number: Option<u32>,
-        warnings: &mut Vec<String>,
+        warnings: &mut RenderIssueAccumulator,
     ) {
         if let Some(h) = self.header {
             let top = self.page_def.margin_top.to_pt() as f32;
@@ -947,7 +1327,7 @@ fn render_page_notes(
     body_left: f32,
     body_width: f32,
     body_bottom: f32,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) {
     if notes.is_empty() {
         return;
@@ -975,6 +1355,9 @@ fn render_page_notes(
     // 2) 블록 하단이 body_bottom에 닿도록 위로 올린다(본문과 겹치면 그대로 둠).
     let top = (body_bottom - y).max(0.0);
     let sep_gap = 5.0;
+    if !warnings.charge_display_items(1) {
+        return;
+    }
     page.items.push(Item::Line {
         x1: body_left,
         y1: top - sep_gap,
@@ -999,18 +1382,14 @@ fn render_one_note(
     x: f32,
     width: f32,
     y: f32,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let marker_size = 8.0;
     let indent = 16.0_f32.min(width * 0.25);
     let label = format!("{})", note.number);
     let baseline = y + marker_size;
     if let Some(run) = crate::shape::shape_plain(store, doc, &label, marker_size, 0, false) {
-        page.items.push(Item::Glyphs {
-            x,
-            y: baseline,
-            run,
-        });
+        push_run(page, x, baseline, run, warnings);
     }
     // 내용 문단들(자체 char_shape 크기 사용). 여러 문단은 세로로 누적.
     let mut bottom = y;
@@ -1037,14 +1416,14 @@ fn render_list_marker(
     store: &mut FontStore,
     doc: &Document,
     marker: &str,
-    text_left: f32,
-    baseline: f32,
-    size: f32,
+    placement: (f32, f32, f32),
+    warnings: &mut RenderIssueAccumulator,
 ) {
+    let (text_left, baseline, size) = placement;
     if let Some(run) = crate::shape::shape_plain(store, doc, marker, size, 0, false) {
         let w = run.width_pt;
         let x = (text_left - w - size * 0.3).max(0.0);
-        push_run(page, x, baseline, run);
+        push_run(page, x, baseline, run, warnings);
     }
 }
 
@@ -1123,7 +1502,7 @@ fn layout_para_objects(
     anchor_top: f32,
     content_bottom: f32,
     avail_width: f32,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let mut bottom = content_bottom;
     let mut object_y = anchor_top;
@@ -1138,27 +1517,34 @@ fn layout_para_objects(
             Control::Picture(pic) => {
                 let (w, h) = (pic.width.to_pt() as f32, pic.height.to_pt() as f32);
                 if w <= 0.0 || h <= 0.0 {
-                    warnings.push("이미지 크기 정보 없음 — 생략".to_string());
+                    warnings.push(RenderIssueCode::ImageSizeMissingOmitted, b"picture");
                     continue;
                 }
                 match doc.resolve_bin(&pic.bin_ref) {
                     Some(bytes) => {
+                        if !warnings.charge_display_items(1) {
+                            return bottom;
+                        }
                         page.items.push(Item::Image {
                             x,
                             y: object_y,
                             w,
                             h,
-                            data: std::sync::Arc::new(bytes.to_vec()),
+                            data: warnings.cached_binary(bytes),
                         });
                         bottom = bottom.max(object_y + h);
                         object_y += h;
                     }
-                    None => warnings.push(format!("이미지 데이터를 찾지 못함: {:?}", pic.bin_ref)),
+                    None => warnings.push(
+                        RenderIssueCode::ImageDataMissingOmitted,
+                        format!("{:?}", pic.bin_ref),
+                    ),
                 }
             }
             // 글상자(text box): 텍스트 있는 gso 개체의 내부 문단을 박스 영역에 배치.
             Control::Generic(g) if g.ctrl_id == *b"gso " && !g.paragraph_lists.is_empty() => {
                 let Some(b) = crate::gso::parse_gso_box(&g.data) else {
+                    warnings.push(RenderIssueCode::TextBoxGeometryInvalidOmitted, b"gso");
                     continue;
                 };
                 let bw = (b.width as f32 / 100.0).max(8.0);
@@ -1258,7 +1644,7 @@ fn layout_para_objects(
                         s2
                     })
                     .collect();
-                crate::shape_draw::draw_ir_shapes(&adjusted, page);
+                crate::shape_draw::draw_ir_shapes(&adjusted, page, warnings);
                 // 글상자 텍스트: 첫 도형 bbox 안에 배치(v1 단일 단 — hwp5 arm의 다단은 미지원).
                 if !g.paragraph_lists.is_empty() {
                     let s0 = &adjusted[0];
@@ -1294,7 +1680,7 @@ fn layout_para_objects(
                 let ebox = crate::equation::typeset(store, doc, &eq.script, size);
                 // 상단 정렬: 수식 상단(baseline-ascent)을 상자 상단(by)에 맞춘다.
                 let baseline_y = by + ebox.ascent;
-                crate::equation::render_into(page, ebox, bx + 2.0, baseline_y);
+                crate::equation::render_into(page, ebox, bx + 2.0, baseline_y, warnings);
                 if inline {
                     object_y += h;
                     bottom = bottom.max(by + h);
@@ -1333,7 +1719,7 @@ fn layout_table(
     x: f32,
     y: f32,
     avail_width: f32,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
@@ -1378,7 +1764,7 @@ fn layout_table(
                 height_pt: page.height_pt,
                 items: Vec::new(),
             };
-            let mut scratch_warn = Vec::new();
+            let mut scratch_warn = RenderIssueAccumulator::new();
             layout_box_paragraphs(
                 doc,
                 store,
@@ -1419,7 +1805,7 @@ fn layout_table(
     for (ci, cell) in table.cells.iter().enumerate() {
         let (c, r) = (cell.col as usize, cell.row as usize);
         if c >= cols || r >= rows {
-            warnings.push(format!("셀 주소가 표 범위를 벗어남: ({r},{c})"));
+            warnings.push(RenderIssueCode::InvalidTableCellOmitted, format!("{r}:{c}"));
             continue;
         }
         let cx = col_x[c];
@@ -1438,6 +1824,9 @@ fn layout_table(
 
         // 1) 배경
         if let Some(bg) = border_fill.and_then(|bf| bf.visible_bg()) {
+            if !warnings.charge_display_items(1) {
+                return 0.0;
+            }
             page.items.push(Item::Rect {
                 x: cx,
                 y: cy,
@@ -1480,6 +1869,9 @@ fn layout_table(
             ];
             for (side, (x1, y1, x2, y2)) in bf.sides.iter().zip(edges) {
                 if side.is_visible() {
+                    if !warnings.charge_display_items(1) {
+                        return 0.0;
+                    }
                     page.items.push(Item::Line {
                         x1,
                         y1,
@@ -1497,6 +1889,9 @@ fn layout_table(
             if (slash || backslash) && bf.diagonal.is_visible() {
                 let dw = bf.diagonal.width_mm() * 72.0 / 25.4;
                 if backslash {
+                    if !warnings.charge_display_items(1) {
+                        return 0.0;
+                    }
                     page.items.push(Item::Line {
                         x1: cx,
                         y1: cy,
@@ -1507,6 +1902,9 @@ fn layout_table(
                     });
                 }
                 if slash {
+                    if !warnings.charge_display_items(1) {
+                        return 0.0;
+                    }
                     page.items.push(Item::Line {
                         x1: cx,
                         y1: cy + ch,
@@ -1541,7 +1939,7 @@ fn layout_box_paragraphs(
     origin_x: f32,
     origin_y: f32,
     width: f32,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
     list_state: Option<&mut crate::list::ListState>,
     page_number: Option<u32>,
 ) -> f32 {
@@ -1575,7 +1973,7 @@ fn layout_box_para_iter<'a>(
     origin_x: f32,
     origin_y: f32,
     width: f32,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
     mut list_state: Option<&mut crate::list::ListState>,
     page_number: Option<u32>,
 ) -> f32 {
@@ -1615,7 +2013,7 @@ fn layout_box_para_iter<'a>(
                 let baseline_y = content_bottom + geom.spacing_top + max_size * 1.2;
                 para_top = Some(content_bottom + geom.spacing_top);
                 if let Some(m) = &marker {
-                    render_list_marker(page, store, doc, m, left, baseline_y, max_size);
+                    render_list_marker(page, store, doc, m, (left, baseline_y, max_size), warnings);
                 }
                 let natural = items_width(&items);
                 let align = doc
@@ -1643,6 +2041,7 @@ fn layout_box_para_iter<'a>(
                     max_size * 1.6,
                     &tabs,
                     first_delta,
+                    warnings,
                 );
                 content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
             }
@@ -1697,9 +2096,12 @@ fn layout_box_para_iter<'a>(
                             store,
                             doc,
                             m,
-                            origin_x + seg.col_start as f32 / 100.0 + shift,
-                            baseline_y,
-                            size,
+                            (
+                                origin_x + seg.col_start as f32 / 100.0 + shift,
+                                baseline_y,
+                                size,
+                            ),
+                            warnings,
                         );
                     }
                 }
@@ -1720,6 +2122,7 @@ fn layout_box_para_iter<'a>(
                     line_advance,
                     &tabs,
                     0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    warnings,
                 );
                 content_bottom = last_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0);
                 // 우리 줄바꿈이 캐시와 어긋나 이 줄이 캐시 자리 아래로 넘쳤다면(단일 seg
@@ -1952,6 +2355,7 @@ fn draw_para_bg_slice(
     bottom: f32,
     draw_top: bool,
     draw_bottom: bool,
+    warnings: &mut RenderIssueAccumulator,
 ) {
     if bottom <= top || width <= 0.0 {
         return;
@@ -1969,6 +2373,9 @@ fn draw_para_bg_slice(
     // 배경(텍스트보다 뒤에 오도록 삽입).
     if let Some(fill) = bf.visible_bg() {
         let ins = insert_idx.min(page.items.len());
+        if !warnings.charge_display_items(1) {
+            return;
+        }
         page.items.insert(
             ins,
             Item::Rect {
@@ -1997,6 +2404,9 @@ fn draw_para_bg_slice(
     ];
     for (side, (x1, y1, x2, y2), enabled) in edges {
         if enabled && side.is_visible() {
+            if !warnings.charge_display_items(1) {
+                return;
+            }
             page.items.push(Item::Line {
                 x1,
                 y1,
@@ -2052,7 +2462,13 @@ fn items_max_size(items: &[InlineItem]) -> Option<f32> {
 
 /// 글리프 런과 그 장식(밑줄/취소선)을 함께 배치한다.
 /// 장식 상수(0.10em/0.25em/0.05em)는 U5 실측 전 초기값.
-pub(crate) fn push_run(page: &mut PageList, x: f32, y: f32, run: crate::shape::ShapedRun) {
+pub(crate) fn push_run(
+    page: &mut PageList,
+    x: f32,
+    y: f32,
+    run: crate::shape::ShapedRun,
+    warnings: &mut RenderIssueAccumulator,
+) {
     let w = run.width_pt;
     let em = run.size_pt;
     let underline = run.underline.then(|| {
@@ -2064,8 +2480,14 @@ pub(crate) fn push_run(page: &mut PageList, x: f32, y: f32, run: crate::shape::S
         (y + em * 0.10, color)
     });
     let strike = run.strike.then_some((y - em * 0.25, run.color));
+    if !warnings.charge_display_items(1) {
+        return;
+    }
     page.items.push(Item::Glyphs { x, y, run });
     for (ly, color) in underline.into_iter().chain(strike) {
+        if !warnings.charge_display_items(1) {
+            return;
+        }
         page.items.push(Item::Line {
             x1: x,
             y1: ly,
@@ -2089,6 +2511,7 @@ fn place_wrapped(
     line_advance: f32,
     tabs: &[f32],
     first_indent: f32,
+    warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let limit = x0 + max_width;
     // 첫 줄만 들여쓰기/내어쓰기(first_indent). 이후 줄·줄바꿈은 x0(문단 좌여백)로 복귀.
@@ -2114,7 +2537,7 @@ fn place_wrapped(
             InlineItem::Run(run) => {
                 if max_width.is_infinite() || x + run.width_pt <= limit {
                     let w = run.width_pt;
-                    push_run(page, x, y, run);
+                    push_run(page, x, y, run, warnings);
                     x += w;
                     continue;
                 }
@@ -2128,7 +2551,7 @@ fn place_wrapped(
                     if over && line_has_content {
                         if i > start {
                             let piece = run.slice(start, i);
-                            push_run(page, piece_x, y, piece);
+                            push_run(page, piece_x, y, piece, warnings);
                         }
                         y += line_advance;
                         piece_x = x0;
@@ -2140,7 +2563,7 @@ fn place_wrapped(
                 if start < run.glyphs.len() {
                     let piece = run.slice(start, run.glyphs.len());
                     let w = piece.width_pt;
-                    push_run(page, piece_x, y, piece);
+                    push_run(page, piece_x, y, piece, warnings);
                     x = piece_x + w;
                 } else {
                     x = piece_x;
@@ -2472,5 +2895,193 @@ mod table_width_tests {
         assert!((col_w[0] - 50.0).abs() < 0.5, "{col_w:?}");
         assert!((col_w[1] - 75.0).abs() < 0.5, "{col_w:?}");
         assert!((col_w[2] - 25.0).abs() < 0.5, "{col_w:?}");
+    }
+}
+
+#[cfg(test)]
+mod certification_budget_tests {
+    use super::*;
+    use hwp_model::{
+        BinRef, BinStream, GenericControl, GradientSpec, HwpChar, LineSeg, OpaqueRecord, Picture,
+        ShapeGeom, ShapeKind,
+    };
+
+    fn assert_budget_failure(document: &Document, budget: LayoutBudget) {
+        let mut store = FontStore::new_isolated();
+        let mut issues = RenderIssueAccumulator::new();
+        let error = match layout_document_bounded(document, &mut store, &mut issues, &budget) {
+            Ok(_) => panic!("budget must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, RenderError::LayoutBudgetExceeded { .. }));
+        assert!(issues.finish().issues.iter().any(|issue| {
+            issue.code == RenderIssueCode::LayoutBudgetExceeded
+                && issue.severity == crate::issues::RenderIssueSeverity::Fatal
+        }));
+    }
+
+    fn generic(shapes: Vec<ShapeGeom>, raw_children: Vec<OpaqueRecord>) -> Control {
+        Control::Generic(GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children,
+            gso_shapes: shapes,
+            equation: None,
+            column_def: None,
+        })
+    }
+
+    fn rect() -> ShapeGeom {
+        ShapeGeom {
+            kind: ShapeKind::Rect,
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+            points: Vec::new(),
+            fill: 0,
+            fill_gradient: None,
+            border_color: 0,
+            border_width: 1,
+            round_ratio: 0,
+            border_style: 0,
+            arrow_start: 0,
+            arrow_end: 0,
+            anchored: false,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn 백만_미만_대량_item도_사전_예산에서_중단() {
+        let mut document = hwp_convert::from_markdown("x");
+        document.sections[0].paragraphs[0].chars =
+            (0..100_000).map(|_| HwpChar::Text('a')).collect();
+        let mut budget = LayoutBudget::certification();
+        budget.max_display_items = 50_000;
+        budget.max_estimated_work = 300_000;
+        assert_budget_failure(&document, budget);
+    }
+
+    #[test]
+    fn 십만_page_reset은_페이지_할당_전에_중단() {
+        let mut document = hwp_convert::from_markdown("x");
+        document.sections[0].paragraphs[0].line_segs = (0..100_000)
+            .map(|index| LineSeg {
+                text_start: 0,
+                v_pos: if index % 2 == 0 { 1 } else { 0 },
+                line_height: 1_000,
+                text_height: 1_000,
+                baseline_gap: 850,
+                line_spacing: 600,
+                col_start: 0,
+                seg_width: 42_000,
+                flags: 0,
+            })
+            .collect();
+        assert_budget_failure(&document, LayoutBudget::certification());
+    }
+
+    #[test]
+    fn 같은_대형_bindata_반복_참조는_reference_quota로_중단() {
+        let mut document = hwp_convert::from_markdown("x");
+        document.bin_streams.push(BinStream {
+            name: "shared-image".to_string(),
+            data: vec![0; 1024 * 1024],
+        });
+        let picture = Control::Picture(Picture {
+            common_data: Vec::new(),
+            width: HwpUnit(100),
+            height: HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            bin_ref: BinRef::ItemRef("shared-image".to_string()),
+            extras: Vec::new(),
+        });
+        document.sections[0].paragraphs[0].controls = vec![picture; 300];
+        assert_budget_failure(&document, LayoutBudget::certification());
+    }
+
+    #[test]
+    fn 점이_없는_도형_십만개도_path_할당_전에_중단() {
+        let mut document = hwp_convert::from_markdown("x");
+        document.sections[0].paragraphs[0].controls =
+            vec![generic(vec![rect(); 100_000], Vec::new())];
+        assert_budget_failure(&document, LayoutBudget::certification());
+    }
+
+    #[test]
+    fn 깊은_raw_record는_재귀_렌더_전에_중단() {
+        let mut record = OpaqueRecord {
+            tag: 0x56,
+            data: Vec::new(),
+            children: Vec::new(),
+        };
+        for _ in 0..65 {
+            record = OpaqueRecord {
+                tag: 0x56,
+                data: Vec::new(),
+                children: vec![record],
+            };
+        }
+        let mut document = hwp_convert::from_markdown("x");
+        document.sections[0].paragraphs[0].controls = vec![generic(Vec::new(), vec![record])];
+        assert_budget_failure(&document, LayoutBudget::certification());
+    }
+
+    #[test]
+    fn shape_points와_gradient_stops는_각각_할당량으로_제한() {
+        let mut points_document = hwp_convert::from_markdown("x");
+        let mut point_shape = rect();
+        point_shape.kind = ShapeKind::Polygon;
+        point_shape.points = vec![(0, 0); 101];
+        points_document.sections[0].paragraphs[0].controls =
+            vec![generic(vec![point_shape], Vec::new())];
+        let mut point_budget = LayoutBudget::certification();
+        point_budget.max_shape_points = 100;
+        assert_budget_failure(&points_document, point_budget);
+
+        let mut stops_document = hwp_convert::from_markdown("x");
+        let mut gradient_shape = rect();
+        gradient_shape.fill_gradient = Some(GradientSpec {
+            radial: false,
+            angle_deg: 0.0,
+            stops: vec![(0.5, 0); 101],
+        });
+        stops_document.sections[0].paragraphs[0].controls =
+            vec![generic(vec![gradient_shape], Vec::new())];
+        let mut stop_budget = LayoutBudget::certification();
+        stop_budget.max_gradient_stops = 100;
+        assert_budget_failure(&stops_document, stop_budget);
+    }
+
+    #[test]
+    fn 자동_넘침_이만_문단은_page_push_전에_중단() {
+        let mut document = hwp_convert::from_markdown("");
+        document.bin_streams.push(BinStream {
+            name: "one-byte-image".to_string(),
+            data: vec![0],
+        });
+        let picture = Control::Picture(Picture {
+            common_data: Vec::new(),
+            width: HwpUnit(100),
+            height: HwpUnit(100_000),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            bin_ref: BinRef::ItemRef("one-byte-image".to_string()),
+            extras: Vec::new(),
+        });
+        let mut paragraph = document.sections[0].paragraphs[0].clone();
+        paragraph.controls = vec![picture];
+        document.sections[0].paragraphs = vec![paragraph; 20_000];
+        assert_budget_failure(&document, LayoutBudget::certification());
     }
 }

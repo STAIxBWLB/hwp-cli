@@ -1,6 +1,7 @@
 //! `hwp` CLI 통합 테스트 — validate 종료코드 계약 (소비자가 exit code로 판정).
 
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn hwp() -> Command {
@@ -62,15 +63,15 @@ fn validate_corrupt_exit_nonzero_json() {
 #[test]
 fn slots_json_shape() {
     // 합성 템플릿을 만들고 slots --json 구조 확인 (placeholders 배열).
-    let tmp = std::env::temp_dir().join("hwp_cli_slots.hwpx");
+    let document = tmp("hwp_cli_slots.hwpx");
     // hwp new로 {{name}}을 본문에 담은 hwpx 생성.
-    let md = std::env::temp_dir().join("hwp_cli_slots.md");
+    let md = tmp("hwp_cli_slots.md");
     std::fs::write(&md, "{{기관명}} 본문 {{제목}}\n").unwrap();
     let mk = hwp()
         .args(["new", "--from"])
         .arg(&md)
         .arg("-o")
-        .arg(&tmp)
+        .arg(&document)
         .output()
         .expect("hwp new");
     assert!(
@@ -81,7 +82,7 @@ fn slots_json_shape() {
 
     let out = hwp()
         .args(["slots", "--json"])
-        .arg(&tmp)
+        .arg(&document)
         .output()
         .expect("hwp slots");
     assert!(out.status.success());
@@ -92,7 +93,7 @@ fn slots_json_shape() {
         "자리표시자 이름"
     );
 
-    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&document);
     let _ = std::fs::remove_file(&md);
 }
 
@@ -101,6 +102,433 @@ fn tmp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("hwp-cli-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
+}
+
+fn replace_zip_entry(path: &Path, target: &str, replacement: &[u8]) {
+    let rewritten = path.with_extension("rewrite.hwpx");
+    let input = std::fs::File::open(path).unwrap();
+    let mut archive = zip::ZipArchive::new(input).unwrap();
+    let output = std::fs::File::create(&rewritten).unwrap();
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().to_string();
+        let method = if name == "mimetype" {
+            zip::CompressionMethod::Stored
+        } else {
+            entry.compression()
+        };
+        writer
+            .start_file(
+                &name,
+                zip::write::SimpleFileOptions::default().compression_method(method),
+            )
+            .unwrap();
+        if name == target {
+            writer.write_all(replacement).unwrap();
+        } else {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+    }
+    writer.finish().unwrap();
+    std::fs::rename(rewritten, path).unwrap();
+}
+
+#[test]
+fn new_rejects_unsupported_output_extension() {
+    let unsupported = tmp("hwp_cli_new_unsupported.txt");
+    let out = hwp()
+        .arg("new")
+        .arg("-o")
+        .arg(&unsupported)
+        .output()
+        .expect("hwp new");
+    assert!(!out.status.success(), "지원하지 않는 확장자는 실패해야");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("지원하지 않는 출력 확장자")
+            && stderr.contains(".hwp")
+            && stderr.contains(".hwpx"),
+        "지원 확장자를 안내해야: {stderr}"
+    );
+    assert!(
+        !unsupported.exists(),
+        "실패한 명령은 출력 파일을 만들면 안 됨"
+    );
+}
+
+#[test]
+fn new_rejects_output_without_extension() {
+    let no_extension = tmp("hwp_cli_new_no_extension");
+    let out = hwp()
+        .arg("new")
+        .arg("-o")
+        .arg(&no_extension)
+        .output()
+        .expect("hwp new");
+    assert!(!out.status.success(), "확장자가 없는 출력은 실패해야");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("출력 파일에 확장자가 없습니다")
+            && stderr.contains(".hwp")
+            && stderr.contains(".hwpx"),
+        "지원 확장자를 안내해야: {stderr}"
+    );
+    assert!(
+        !no_extension.exists(),
+        "실패한 명령은 출력 파일을 만들면 안 됨"
+    );
+}
+
+#[test]
+fn new_failure_preserves_existing_destination() {
+    let invalid = tmp("hwp_cli_new_invalid.json");
+    let destination = tmp("hwp_cli_new_existing.hwpx");
+    std::fs::write(&invalid, b"{not valid json").unwrap();
+    std::fs::write(&destination, b"EXISTING DESTINATION").unwrap();
+
+    let result = hwp()
+        .args(["new", "--from"])
+        .arg(&invalid)
+        .arg("-o")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"EXISTING DESTINATION"
+    );
+
+    for path in [&invalid, &destination] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn assert_no_edit_staging_debris(path: &std::path::Path) {
+    let parent = path.parent().unwrap();
+    let file_name = path.file_name().unwrap().to_string_lossy();
+    let prefix = format!(".{file_name}.hwp-output-");
+    let leftovers: Vec<_> = std::fs::read_dir(parent)
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(&prefix).then_some(name)
+        })
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "edit 임시 작업공간 잔재: {leftovers:?}"
+    );
+}
+
+#[test]
+fn edit_verify_rejects_json_and_markdown_before_write() {
+    let md = tmp("hwp_cli_verify_text_source.md");
+    let src = tmp("hwp_cli_verify_text_source.hwpx");
+    std::fs::write(&md, "초안 본문\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    for extension in ["json", "md", "markdown"] {
+        let fresh = tmp(&format!("hwp_cli_verify_fresh.{extension}"));
+        let _ = std::fs::remove_file(&fresh);
+        let rejected = hwp()
+            .arg("edit")
+            .arg(&src)
+            .arg("-o")
+            .arg(&fresh)
+            .args(["--replace", "초안=>최종", "--verify"])
+            .output()
+            .unwrap();
+        assert!(
+            !rejected.status.success(),
+            "{extension} --verify는 거부해야"
+        );
+        let stderr = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            stderr.contains("--verify는 HWP/HWPX 출력에서만 지원")
+                && stderr.contains("JSON/Markdown"),
+            "명확한 지원 범위 안내가 필요: {stderr}"
+        );
+        assert!(!fresh.exists(), "거부된 새 출력이 생기면 안 됨");
+        assert_no_edit_staging_debris(&fresh);
+
+        let existing = tmp(&format!("hwp_cli_verify_existing.{extension}"));
+        std::fs::write(&existing, b"EXISTING DESTINATION").unwrap();
+        let rejected = hwp()
+            .arg("edit")
+            .arg(&src)
+            .arg("-o")
+            .arg(&existing)
+            .args(["--replace", "초안=>최종", "--verify"])
+            .output()
+            .unwrap();
+        assert!(
+            !rejected.status.success(),
+            "기존 {extension}도 --verify를 거부해야"
+        );
+        assert_eq!(
+            std::fs::read(&existing).unwrap(),
+            b"EXISTING DESTINATION",
+            "기존 목적지는 바이트 그대로 보존"
+        );
+        assert_no_edit_staging_debris(&existing);
+        std::fs::remove_file(existing).unwrap();
+    }
+
+    for path in [&md, &src] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn edit_hwpx_verify_publishes_only_verified_stage() {
+    let md = tmp("hwp_cli_atomic_verify_source.md");
+    let src = tmp("hwp_cli_atomic_verify_source.hwpx");
+    let destination = tmp("hwp_cli_atomic_verify_destination.hwpx");
+    std::fs::write(&md, "초안 본문\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(&destination, b"EXISTING DESTINATION").unwrap();
+
+    let edited = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&destination)
+        .args(["--replace", "초안=>최종", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "검증 후 게시 성공: {}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&edited.stderr).contains("검증: 재읽기 OK"),
+        "게시 전 재읽기 검증 실행"
+    );
+    let cat = hwp().arg("cat").arg(&destination).output().unwrap();
+    let text = String::from_utf8_lossy(&cat.stdout);
+    assert!(
+        cat.status.success() && text.contains("최종"),
+        "편집 결과: {text}"
+    );
+    assert_no_edit_staging_debris(&destination);
+
+    for path in [&md, &src, &destination] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn edit_hwpx_in_place_is_safe() {
+    let md = tmp("hwp_cli_atomic_in_place.md");
+    let document = tmp("hwp_cli_atomic_in_place.hwpx");
+    std::fs::write(&md, "초안 제자리 편집\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&document)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let edited = hwp()
+        .arg("edit")
+        .arg(&document)
+        .arg("-o")
+        .arg(&document)
+        .args(["--replace", "초안=>최종", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "제자리 편집 성공: {}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let cat = hwp().arg("cat").arg(&document).output().unwrap();
+    let text = String::from_utf8_lossy(&cat.stdout);
+    assert!(
+        cat.status.success() && text.contains("최종") && !text.contains("초안"),
+        "제자리 편집 결과: {text}"
+    );
+    assert_no_edit_staging_debris(&document);
+
+    for path in [&md, &document] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn edit_zero_match_preserves_destination_and_allow_partial_is_explicit() {
+    let md = tmp("hwp_cli_zero_match.md");
+    let src = tmp("hwp_cli_zero_match_source.hwpx");
+    let destination = tmp("hwp_cli_zero_match_destination.hwpx");
+    std::fs::write(&md, "존재하는 본문\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(&destination, b"EXISTING DESTINATION").unwrap();
+
+    let rejected = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&destination)
+        .args(["--replace", "존재하는=>변경한", "--replace", "없는=>실패"])
+        .output()
+        .unwrap();
+    assert!(
+        !rejected.status.success(),
+        "부분 일치는 기본적으로 실패해야"
+    );
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"EXISTING DESTINATION"
+    );
+
+    let allowed = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&destination)
+        .args([
+            "--replace",
+            "존재하는=>변경한",
+            "--replace",
+            "없는=>실패",
+            "--allow-partial",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        allowed.status.success(),
+        "명시적 부분 적용: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    let cat = hwp().arg("cat").arg(&destination).output().unwrap();
+    assert!(String::from_utf8_lossy(&cat.stdout).contains("변경한 본문"));
+
+    for path in [&md, &src, &destination] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn edit_preview_only_match_is_not_an_applied_request() {
+    let md = tmp("hwp_cli_preview_only.md");
+    let source = tmp("hwp_cli_preview_only_source.hwpx");
+    let destination = tmp("hwp_cli_preview_only_destination.hwpx");
+    std::fs::write(&md, "본문에는 대상이 없습니다\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    replace_zip_entry(&source, "Preview/PrvText.txt", "미리보기전용".as_bytes());
+    std::fs::write(&destination, b"EXISTING DESTINATION").unwrap();
+
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&destination)
+        .args(["--replace", "미리보기전용=>바뀐미리보기"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success(), "미리보기만 일치하면 실패해야");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("적용되지 않은 편집 요청"),
+        "본문 미일치 진단: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"EXISTING DESTINATION"
+    );
+    assert_no_edit_staging_debris(&destination);
+
+    for path in [&md, &source, &destination] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn edit_cancelling_replacements_preserve_destination() {
+    let md = tmp("hwp_cli_cancel.md");
+    let source = tmp("hwp_cli_cancel_source.hwpx");
+    let destination = tmp("hwp_cli_cancel_destination.hwpx");
+    std::fs::write(&md, "갑 본문\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(&destination, b"EXISTING DESTINATION").unwrap();
+
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&destination)
+        .args(["--replace", "갑=>을", "--replace", "을=>갑"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success(), "최종 의미가 상쇄되면 실패해야");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("최종 결과가 원문과 같아"),
+        "상쇄 진단: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"EXISTING DESTINATION"
+    );
+
+    for path in [&md, &source, &destination] {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// 실패 진단용: 파일의 cat 출력(본문+stderr)과 info(스트림 크기)를 덤프한다
@@ -313,6 +741,7 @@ fn strict_fails_on_dropped_controls() {
     assert!(fwd.success(), "hwp→hwpx는 무드롭으로 성공");
 
     let dst = tmp("hwp_cli_strict.hwp");
+    std::fs::write(&dst, b"EXISTING DESTINATION").unwrap();
     let strict = hwp()
         .arg("convert")
         .arg(&mid)
@@ -328,6 +757,11 @@ fn strict_fails_on_dropped_controls() {
     assert!(
         String::from_utf8_lossy(&strict.stderr).contains("strict"),
         "strict 사유 출력"
+    );
+    assert_eq!(
+        std::fs::read(&dst).unwrap(),
+        b"EXISTING DESTINATION",
+        "strict 실패는 기존 목적지를 바꾸면 안 됨"
     );
     let _ = std::fs::remove_file(&mid);
     let _ = std::fs::remove_file(&dst);
@@ -371,6 +805,136 @@ fn fill_replaces_slots() {
     );
     for f in [&md, &tpl, &out] {
         let _ = std::fs::remove_file(f);
+    }
+}
+
+#[test]
+fn fill_zero_or_partial_match_preserves_destination_by_default() {
+    let md = tmp("hwp_cli_fill_strict.md");
+    let template = tmp("hwp_cli_fill_strict_template.hwpx");
+    let destination = tmp("hwp_cli_fill_strict_destination.hwpx");
+    std::fs::write(&md, "{{수신}} 귀하\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&template)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    for sets in [
+        vec!["없는키=값"],
+        vec!["수신=홍길동", "없는키=값"],
+        vec!["수신={{수신}}"],
+    ] {
+        std::fs::write(&destination, b"EXISTING DESTINATION").unwrap();
+        let mut command = hwp();
+        command
+            .arg("fill")
+            .arg(&template)
+            .arg("-o")
+            .arg(&destination);
+        for set in sets {
+            command.args(["--set", set]);
+        }
+        let result = command.output().unwrap();
+        assert!(
+            !result.status.success(),
+            "0건/부분/미해결 치환은 기본 실패: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"EXISTING DESTINATION",
+            "검증 실패는 기존 목적지를 보존"
+        );
+    }
+
+    let partial = hwp()
+        .arg("fill")
+        .arg(&template)
+        .arg("-o")
+        .arg(&destination)
+        .args([
+            "--set",
+            "수신=홍길동",
+            "--set",
+            "없는키=값",
+            "--allow-partial",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        partial.status.success(),
+        "명시적 부분 치환: {}",
+        String::from_utf8_lossy(&partial.stderr)
+    );
+    let report = String::from_utf8_lossy(&partial.stdout);
+    assert!(
+        report.contains("\"warnings\"") && report.contains("없는키"),
+        "기계 판독 경고: {report}"
+    );
+
+    for path in [&md, &template, &destination] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fill_rejects_alias_and_special_destination_without_touching_source() {
+    use std::os::unix::fs::symlink;
+
+    let md = tmp("hwp_cli_fill_alias.md");
+    let template = tmp("hwp_cli_fill_alias_template.hwpx");
+    let alias = tmp("hwp_cli_fill_alias_link.hwpx");
+    let special = tmp("hwp_cli_fill_special.hwpx");
+    std::fs::write(&md, "{{수신}} 귀하\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&template)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let before = std::fs::read(&template).unwrap();
+    let _ = std::fs::remove_file(&alias);
+    symlink(&template, &alias).unwrap();
+    let aliased = hwp()
+        .arg("fill")
+        .arg(&template)
+        .arg("-o")
+        .arg(&alias)
+        .args(["--set", "수신=홍길동"])
+        .output()
+        .unwrap();
+    assert!(!aliased.status.success(), "심볼릭 링크 목적지는 거부");
+    assert_eq!(std::fs::read(&template).unwrap(), before);
+
+    let _ = std::fs::remove_dir_all(&special);
+    std::fs::create_dir(&special).unwrap();
+    let directory = hwp()
+        .arg("fill")
+        .arg(&template)
+        .arg("-o")
+        .arg(&special)
+        .args(["--set", "수신=홍길동"])
+        .output()
+        .unwrap();
+    assert!(!directory.status.success(), "디렉터리 목적지는 거부");
+    assert_eq!(std::fs::read(&template).unwrap(), before);
+
+    let _ = std::fs::remove_file(&alias);
+    let _ = std::fs::remove_dir(&special);
+    for path in [&md, &template] {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -486,6 +1050,54 @@ fn edit_merge_and_column_ops() {
     );
     for f in [&md, &form, &out] {
         let _ = std::fs::remove_file(f);
+    }
+}
+
+#[test]
+fn edit_verify_checks_format_alignment_fields_bookmarks_and_links() {
+    let md = tmp("hwp_cli_verify_semantics.md");
+    let source = tmp("hwp_cli_verify_semantics_source.hwpx");
+    let output = tmp("hwp_cli_verify_semantics_output.hwpx");
+    std::fs::write(&md, "제목\n\n참조:\n").unwrap();
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let edited = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .args([
+            "--set-format",
+            "제목:bold=on,size=16,color=#112233",
+            "--set-align",
+            "제목=center",
+            "--create-field",
+            "참조:=>수신=홍길동",
+            "--create-bookmark",
+            "참조:=>참조점",
+            "--create-hyperlink",
+            "참조:=>사이트=>https://example.com/path?a=1",
+            "--verify",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "operation-specific verify: {}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    assert!(String::from_utf8_lossy(&edited.stderr).contains("검증: 재읽기 OK"));
+
+    for path in [&md, &source, &output] {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -1037,7 +1649,7 @@ fn edit_seal_floating_image_roundtrip() {
         .arg(&src)
         .arg("-o")
         .arg(&out_hwpx)
-        .args(["--seal", &seal_arg])
+        .args(["--seal", &seal_arg, "--verify"])
         .output()
         .expect("hwp edit --seal");
     assert!(
@@ -1100,6 +1712,70 @@ fn edit_seal_floating_image_roundtrip() {
     );
 
     for f in [&md, &src, &png, &out_hwpx, &out_hwp] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+#[test]
+fn edit_replace_and_seal_applies_both_edits() {
+    let md = tmp("hwp_cli_replace_seal.md");
+    std::fs::write(&md, "초안 결재 (인) 란\n").unwrap();
+    let src = tmp("hwp_cli_replace_seal_src.hwpx");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success(),
+        "hwp new"
+    );
+    let png = tmp("hwp_cli_replace_seal.png");
+    write_min_png(&png, 100, 50);
+    let out_hwpx = tmp("hwp_cli_replace_seal_out.hwpx");
+    let seal_arg = format!("(인)=>{}", png.display());
+
+    let edited = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out_hwpx)
+        .args(["--replace", "초안=>최종", "--seal", &seal_arg])
+        .output()
+        .expect("hwp edit --replace --seal");
+    assert!(
+        edited.status.success(),
+        "replace+seal 성공 (stderr: {})",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&edited.stderr).contains("치환(패키지 보존)"),
+        "seal 요청이 있으면 replace-only 고속 경로를 사용하면 안 됨"
+    );
+
+    let text = hwp().arg("cat").arg(&out_hwpx).output().expect("cat");
+    assert!(text.status.success(), "결과 본문 재읽기");
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        stdout.contains("최종") && !stdout.contains("초안"),
+        "텍스트 치환 적용: {stdout}"
+    );
+
+    let json = hwp()
+        .arg("cat")
+        .args(["--format", "json"])
+        .arg(&out_hwpx)
+        .output()
+        .expect("cat json");
+    assert!(json.status.success(), "결과 IR 재읽기");
+    assert!(
+        String::from_utf8_lossy(&json.stdout).contains("Picture"),
+        "도장 Picture가 결과에 있어야"
+    );
+
+    for f in [&md, &src, &png, &out_hwpx] {
         let _ = std::fs::remove_file(f);
     }
 }

@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/document-spec-v1.schema.json",
+  "title": "hwp-cli DocumentSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sections"],
+  "properties": {
+    "version": { "const": "1.0" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "page": { "$ref": "#/$defs/page" },
+    "styles": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "minLength": 1, "maxLength": 128 },
+      "additionalProperties": { "$ref": "#/$defs/style" }
+    },
+    "lists": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "minLength": 1, "maxLength": 128 },
+      "additionalProperties": { "$ref": "#/$defs/list" }
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/section" }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "maxLength": 4096 },
+        "author": { "type": "string", "maxLength": 4096 },
+        "subject": { "type": "string", "maxLength": 4096 },
+        "keywords": { "type": "string", "maxLength": 4096 },
+        "description": { "type": "string", "maxLength": 32768 }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width_mm": { "$ref": "#/$defs/pageDimension" },
+        "height_mm": { "$ref": "#/$defs/pageDimension" },
+        "orientation": { "enum": ["portrait", "landscape"] },
+        "margin_left_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "margin_right_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "margin_top_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "margin_bottom_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "margin_header_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "margin_footer_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "gutter_mm": { "$ref": "#/$defs/nonNegativeDimension" }
+      }
+    },
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "based_on": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "font_family": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "font_size_pt": { "$ref": "#/$defs/positivePointValue" },
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "underline": { "type": "boolean" },
+        "strike": { "type": "boolean" },
+        "color": { "$ref": "#/$defs/color" },
+        "background": { "$ref": "#/$defs/color" },
+        "align": { "$ref": "#/$defs/alignment" },
+        "margin_left_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "margin_right_mm": { "$ref": "#/$defs/nonNegativeDimension" },
+        "spacing_before_pt": { "$ref": "#/$defs/nonNegativeDimension" },
+        "spacing_after_pt": { "$ref": "#/$defs/nonNegativeDimension" },
+        "line_height_percent": { "type": "integer", "minimum": 50, "maximum": 1000 },
+        "keep_with_next": { "type": "boolean" }
+      }
+    },
+    "alignment": {
+      "enum": ["justify", "left", "right", "center", "distribute"]
+    },
+    "list": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "levels"],
+      "properties": {
+        "kind": { "enum": ["ordered", "bullet"] },
+        "levels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["marker"],
+            "properties": {
+              "marker": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "start": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+              "style": { "type": "string", "minLength": 1, "maxLength": 128 }
+            }
+          }
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocks"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "page": { "$ref": "#/$defs/page" },
+        "header": { "$ref": "#/$defs/headerFooter" },
+        "footer": { "$ref": "#/$defs/headerFooter" },
+        "page_number": { "$ref": "#/$defs/pageNumber" },
+        "blocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/block" }
+        }
+      }
+    },
+    "headerFooter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "$ref": "#/$defs/blocks" },
+        "first": { "$ref": "#/$defs/blocks" },
+        "odd": { "$ref": "#/$defs/blocks" },
+        "even": { "$ref": "#/$defs/blocks" }
+      }
+    },
+    "pageNumber": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position"],
+      "properties": {
+        "position": {
+          "enum": [
+            "top_left", "top_center", "top_right",
+            "bottom_left", "bottom_center", "bottom_right",
+            "inside", "outside"
+          ]
+        },
+        "format": { "enum": ["decimal", "roman_upper", "roman_lower"] },
+        "start": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "prefix": { "type": "string", "maxLength": 32 },
+        "suffix": { "type": "string", "maxLength": 32 }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/block" }
+    },
+    "block": {
+      "oneOf": [
+        { "$ref": "#/$defs/paragraph" },
+        { "$ref": "#/$defs/table" },
+        { "$ref": "#/$defs/blockImage" },
+        { "$ref": "#/$defs/blockEquation" },
+        { "$ref": "#/$defs/blockField" },
+        { "$ref": "#/$defs/break" }
+      ]
+    },
+    "paragraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "runs"],
+      "properties": {
+        "type": { "const": "paragraph" },
+        "style": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "list": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "level": { "type": "integer", "minimum": 0, "maximum": 6 }
+          }
+        },
+        "keep_with_next": { "type": "boolean" },
+        "runs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/run" }
+        }
+      }
+    },
+    "run": {
+      "oneOf": [
+        { "$ref": "#/$defs/textRun" },
+        { "$ref": "#/$defs/fieldRun" },
+        { "$ref": "#/$defs/equationRun" },
+        { "$ref": "#/$defs/imageRun" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": { "type": { "const": "line_break" } }
+        }
+      ]
+    },
+    "textRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "text" },
+        "text": { "type": "string", "maxLength": 2000000 },
+        "style": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "font_family": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "font_size_pt": { "$ref": "#/$defs/positivePointValue" },
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "underline": { "type": "boolean" },
+        "strike": { "type": "boolean" },
+        "color": { "$ref": "#/$defs/color" },
+        "background": { "$ref": "#/$defs/color" }
+      }
+    },
+    "fieldRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name"],
+      "properties": {
+        "type": { "const": "field" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "value": { "type": "string", "maxLength": 4096 },
+        "style": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "equationRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "script"],
+      "properties": {
+        "type": { "const": "equation" },
+        "script": { "type": "string", "minLength": 1, "maxLength": 100000 },
+        "width_mm": { "$ref": "#/$defs/positiveDimension" },
+        "height_mm": { "$ref": "#/$defs/positiveDimension" }
+      }
+    },
+    "imageRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path", "width_mm"],
+      "properties": {
+        "type": { "const": "image" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "width_mm": { "$ref": "#/$defs/positiveDimension" },
+        "height_mm": { "$ref": "#/$defs/positiveDimension" },
+        "alt": { "type": "string", "maxLength": 4096 }
+      }
+    },
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "columns", "rows"],
+      "properties": {
+        "type": { "const": "table" },
+        "width_mm": { "$ref": "#/$defs/positiveDimension" },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 65535,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["width_mm"],
+            "properties": { "width_mm": { "$ref": "#/$defs/positiveDimension" } }
+          }
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 65535,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cells"],
+            "properties": {
+              "cells": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "col_span": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "row_span": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "blocks": { "$ref": "#/$defs/blocks" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "blockImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path", "width_mm"],
+      "properties": {
+        "type": { "const": "image" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "width_mm": { "$ref": "#/$defs/positiveDimension" },
+        "height_mm": { "$ref": "#/$defs/positiveDimension" },
+        "alt": { "type": "string", "maxLength": 4096 },
+        "placement": { "enum": ["inline", "floating"] }
+      }
+    },
+    "blockEquation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "script"],
+      "properties": {
+        "type": { "const": "equation" },
+        "script": { "type": "string", "minLength": 1, "maxLength": 100000 },
+        "width_mm": { "$ref": "#/$defs/positiveDimension" },
+        "height_mm": { "$ref": "#/$defs/positiveDimension" }
+      }
+    },
+    "blockField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name"],
+      "properties": {
+        "type": { "const": "field" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "value": { "type": "string", "maxLength": 4096 },
+        "style": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "break": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "kind"],
+      "properties": {
+        "type": { "const": "break" },
+        "kind": { "enum": ["page", "column", "section"] }
+      }
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    },
+    "positiveDimension": {
+      "type": "number",
+      "minimum": 0.01,
+      "maximum": 2000
+    },
+    "pageDimension": {
+      "type": "number",
+      "minimum": 25,
+      "maximum": 2000
+    },
+    "positivePointValue": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "nonNegativeDimension": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000
+    }
+  }
+}

@@ -24,6 +24,26 @@ pub fn decompress(data: &[u8], stream_name: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Raw deflate decode with an allocation bound. The decoder is stopped after
+/// `limit + 1` bytes so callers can reject compressed streams before semantic parsing.
+pub fn decompress_bounded(data: &[u8], stream_name: &str, limit: u64) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    DeflateDecoder::new(data)
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut out)
+        .map_err(|source| Hwp5Error::Decompress {
+            stream: stream_name.to_string(),
+            source,
+        })?;
+    if out.len() as u64 > limit {
+        return Err(Hwp5Error::ResourceLimitExceeded {
+            resource: format!("{stream_name} decompressed stream"),
+            limit,
+        });
+    }
+    Ok(out)
+}
+
 /// raw deflate 압축 (writer 경로용).
 pub fn compress(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -49,5 +69,15 @@ mod tests {
     #[test]
     fn 잘못된_데이터는_err() {
         assert!(decompress(&[0xFF, 0xFF, 0xFF, 0xFF], "test").is_err());
+    }
+
+    #[test]
+    fn bounded_압축_해제는_limit_plus_one에서_중단() {
+        let packed = compress(&vec![0; 1024]);
+        assert!(decompress_bounded(&packed, "test", 1023).is_err());
+        assert_eq!(
+            decompress_bounded(&packed, "test", 1024).unwrap().len(),
+            1024
+        );
     }
 }

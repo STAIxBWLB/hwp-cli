@@ -588,6 +588,13 @@ fn default_page() -> PageDef {
 /// `<hp:secPr>` 여는 태그(상수 속성). 원문 pass-through·상수 템플릿 두 경로가 공유한다.
 const SEC_PR_OPEN: &str = r##"<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0">"##;
 
+const DEFAULT_SEC_PR_HEAD_CHILDREN: [&str; 4] = [
+    r##"<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>"##,
+    r##"<hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/>"##,
+    r##"<hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/>"##,
+    r##"<hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/>"##,
+];
+
 /// `<hp:pagePr>`+`<hp:margin>`을 페이지 정의로부터 방출한다(상수 템플릿과 바이트 동일 형식).
 fn write_page_pr(out: &mut String, p: &PageDef) {
     let landscape = if p.attr & 1 != 0 {
@@ -613,25 +620,11 @@ fn write_page_pr(out: &mut String, p: &PageDef) {
 /// `<hp:secPr>`의 머리(grid/startNum/visibility/lineNumberShape/pagePr)를 방출한다.
 /// 상수 템플릿 경로와 hwp5 raw 해석 경로가 공유한다(출력 바이트 동일 형식).
 fn write_sec_pr_head(out: &mut String, p: &PageDef) {
-    let landscape = if p.attr & 1 != 0 {
-        "NARROWLY"
-    } else {
-        "WIDELY"
-    };
     out.push_str(SEC_PR_OPEN);
-    let _ = write!(
-        out,
-        r##"<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/><hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/><hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/><hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/><hp:pagePr landscape="{landscape}" width="{}" height="{}" gutterType="LEFT_ONLY"><hp:margin header="{}" footer="{}" gutter="{}" left="{}" right="{}" top="{}" bottom="{}"/></hp:pagePr>"##,
-        p.width.0,
-        p.height.0,
-        p.margin_header.0,
-        p.margin_footer.0,
-        p.gutter.0,
-        p.margin_left.0,
-        p.margin_right.0,
-        p.margin_top.0,
-        p.margin_bottom.0,
-    );
+    for child in DEFAULT_SEC_PR_HEAD_CHILDREN {
+        out.push_str(child);
+    }
+    write_page_pr(out, p);
 }
 
 /// 상수 각주 모양(hello_world 표본 실측) — hwp5 raw가 없을 때의 안전값.
@@ -646,6 +639,25 @@ const CONST_PAGE_BORDER_FILL: [&str; 3] = [
     r##"<hp:pageBorderFill type="EVEN" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>"##,
     r##"<hp:pageBorderFill type="ODD" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>"##,
 ];
+
+/// writer의 fallback secPr를 reader가 다시 읽을 때 생기는 exact-known raw 자식인지
+/// 판별한다. 사용자 원문/확장 자식은 하나라도 다르면 false라 opaque 검증에서 유지된다.
+pub fn is_generated_default_secpr_children(children: &[String]) -> bool {
+    if children.len() != 10 {
+        return false;
+    }
+    children[..4]
+        .iter()
+        .map(String::as_str)
+        .eq(DEFAULT_SEC_PR_HEAD_CHILDREN)
+        && children[4] == hwp_model::SECPR_PAGEPR_SLOT
+        && children[5] == CONST_FOOT_NOTE_PR
+        && children[6] == CONST_END_NOTE_PR
+        && children[7..]
+            .iter()
+            .map(String::as_str)
+            .eq(CONST_PAGE_BORDER_FILL)
+}
 
 /// `<hp:secPr>`를 방출한다.
 ///
@@ -1008,50 +1020,74 @@ fn write_foot_end_note(
 /// ⚠ 3의 수식 전용 상수(version·baseLine·baseUnit·font)는 **정답지 미확보 상태의 표준
 /// 추정값**이다. 실기에서 수식이 깨져 보이면 정품 저장본 속성으로 교체할 것
 /// (12-feature-gaps.md GE-14).
-fn write_equation(out: &mut String, g: &GenericControl, eq: &Equation, ids: &mut IdSeq) {
-    let id = ids.next();
-    match &eq.raw_attrs {
-        Some(raw) => {
-            let _ = write!(out, r##"<hp:equation id="{id}" {raw}>"##);
-        }
+fn generated_equation_attrs(g: &GenericControl, eq: &Equation) -> String {
+    // 인라인(글자처럼 취급)은 본문 흐름을 따르고, 부유는 겹침 허용 — gso_pos_xml과
+    // 같은 실측 규칙(부유에 flowWithText=1을 주면 한글이 개체를 배치하지 못한다).
+    let wrap = if eq.inline {
+        "SQUARE"
+    } else {
+        "IN_FRONT_OF_TEXT"
+    };
+    let z = parse_gso_header(&g.data).map_or(0, |header| header.5.max(0));
+    format!(
+        r##"zOrder="{z}" numberingType="EQUATION" textWrap="{wrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" version="Equation Version 60" baseLine="85" textColor="#000000" baseUnit="1000" lineMode="CHAR" font="HYhwpEQ""##
+    )
+}
+
+fn generated_equation_props(g: &GenericControl, eq: &Equation) -> Vec<String> {
+    // hwp5 출신이면 gso 공통 헤더에서 배치를 복원하고(그림·표와 동일 경로), 없으면
+    // IR의 inline/오프셋으로 합성한다.
+    let pos_xml = match parse_gso_header(&g.data) {
+        Some((attr, voff, hoff, _, _, _)) => gso_pos_xml(attr, voff, hoff),
         None => {
-            // 인라인(글자처럼 취급)은 본문 흐름을 따르고, 부유는 겹침 허용 — gso_pos_xml과
-            // 같은 실측 규칙(부유에 flowWithText=1을 주면 한글이 개체를 배치하지 못한다).
-            let wrap = if eq.inline {
-                "SQUARE"
-            } else {
-                "IN_FRONT_OF_TEXT"
-            };
-            let z = parse_gso_header(&g.data).map_or(0, |h| h.5.max(0));
-            let _ = write!(
-                out,
-                r##"<hp:equation id="{id}" zOrder="{z}" numberingType="EQUATION" textWrap="{wrap}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" version="Equation Version 60" baseLine="85" textColor="#000000" baseUnit="1000" lineMode="CHAR" font="HYhwpEQ">"##
-            );
+            let (treat, flow, overlap) = if eq.inline { (1, 1, 0) } else { (0, 0, 1) };
+            format!(
+                r##"<hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="{flow}" allowOverlap="{overlap}" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/>"##,
+                eq.y, eq.x,
+            )
         }
-    }
-    if eq.raw_props.is_empty() {
-        // hwp5 출신이면 gso 공통 헤더에서 배치를 복원하고(그림·표와 동일 경로), 없으면
-        // IR의 inline/오프셋으로 합성한다.
-        let pos_xml = match parse_gso_header(&g.data) {
-            Some((attr, voff, hoff, _, _, _)) => gso_pos_xml(attr, voff, hoff),
-            None => {
-                let (treat, flow, overlap) = if eq.inline { (1, 1, 0) } else { (0, 0, 1) };
-                format!(
-                    r##"<hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="{flow}" allowOverlap="{overlap}" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/>"##,
-                    eq.y, eq.x,
-                )
-            }
-        };
-        let _ = write!(
-            out,
-            r##"<hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/>{pos_xml}<hp:outMargin left="0" right="0" top="0" bottom="0"/>"##,
+    };
+    vec![
+        format!(
+            r##"<hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/>"##,
             eq.width.max(0),
             eq.height.max(0),
-        );
-    } else {
-        for p in &eq.raw_props {
-            out.push_str(p);
+        ),
+        pos_xml,
+        r##"<hp:outMargin left="0" right="0" top="0" bottom="0"/>"##.to_string(),
+    ]
+}
+
+/// HWPX reader가 합성 수식에 materialize한 정확한 writer 기본 속성/자식인지 확인한다.
+///
+/// 사용자 원문의 custom raw attribute/property는 한 글자라도 다르면 false이므로 semantic
+/// 검증에서 계속 보존·비교된다.
+pub fn is_materialized_generated_equation(g: &GenericControl, eq: &Equation) -> bool {
+    eq.raw_attrs.as_deref() == Some(generated_equation_attrs(g, eq).as_str())
+        && eq.raw_props == generated_equation_props(g, eq)
+}
+
+fn write_equation(out: &mut String, g: &GenericControl, eq: &Equation, ids: &mut IdSeq) {
+    let id = ids.next();
+    let generated_attrs;
+    let raw_attrs = match &eq.raw_attrs {
+        Some(raw) => raw,
+        None => {
+            generated_attrs = generated_equation_attrs(g, eq);
+            &generated_attrs
         }
+    };
+    let _ = write!(out, r##"<hp:equation id="{id}" {raw_attrs}>"##);
+
+    let generated_props;
+    let raw_props = if eq.raw_props.is_empty() {
+        generated_props = generated_equation_props(g, eq);
+        &generated_props
+    } else {
+        &eq.raw_props
+    };
+    for property in raw_props {
+        out.push_str(property);
     }
     let _ = write!(
         out,
@@ -1072,6 +1108,25 @@ fn parse_gso_header(data: &[u8]) -> Option<(u32, i32, i32, i32, i32, i32)> {
     let rd = |o: usize| i32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
     let zorder = if data.len() >= 24 { rd(20) } else { 0 };
     Some((rd(0) as u32, rd(4), rd(8), rd(12), rd(16), zorder))
+}
+
+/// Semantic HWP5 object description from the common GSO header. `data`
+/// excludes the reversed four-byte control id, therefore the BSTR starts at
+/// byte 40. Malformed data remains available through the raw IR and is simply
+/// not promoted to `hp:shapeComment` during cross-format conversion.
+fn parse_gso_description(data: &[u8]) -> Option<String> {
+    let len = usize::from(u16::from_le_bytes([*data.get(40)?, *data.get(41)?]));
+    if len == 0 {
+        return None;
+    }
+    let bytes = data.get(42..42usize.checked_add(len.checked_mul(2)?)?)?;
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&units)
+        .ok()
+        .filter(|value| !value.is_empty())
 }
 
 /// COLORREF(0x00BBGGRR) → "#RRGGBB" (reader `parse_color`의 역).
@@ -1362,9 +1417,17 @@ fn write_shape_element(
     }
     let _ = write!(
         out,
-        r##"<hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/>{pos_xml}<hp:outMargin left="0" right="0" top="0" bottom="0"/></hp:{el}>"##,
+        r##"<hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/>{pos_xml}<hp:outMargin left="0" right="0" top="0" bottom="0"/>"##,
         sz.0, sz.1,
     );
+    if let Some(description) = s.description.as_deref().filter(|value| !value.is_empty()) {
+        let _ = write!(
+            out,
+            "<hp:shapeComment>{}</hp:shapeComment>",
+            esc(description)
+        );
+    }
+    let _ = write!(out, "</hp:{el}>");
 }
 
 /// hwp5-출신 gso를 방출한다. 텍스트가 있으면 글상자(`<hp:rect>`+drawText, 테두리/채움은
@@ -1405,6 +1468,7 @@ fn write_gso(
             arrow_start: 0,
             arrow_end: 0,
             anchored: attr & 1 != 0,
+            description: parse_gso_description(&g.data),
         };
         let pos = gso_pos_xml(attr, voff, hoff);
         write_shape_element(
@@ -1427,12 +1491,21 @@ fn write_gso(
         // ★그룹 도형(도넛=회색+흰 구멍 등, 한 gso 다중 도형)은 gso z-order를 공유하면
         // z 충돌 → 한글이 하나만 그리고 나머지를 스킵(도넛 미렌더 원인, 실기 확정).
         // 전체 z를 Z_SCALE 배로 늘리고 도형 인덱스를 더해 고유화(상대 순서 보존).
+        let common_description = parse_gso_description(&g.data);
         for (i, s) in shapes.iter().enumerate() {
+            let mut described_shape;
+            let shape = if i == 0 && s.description.is_none() && common_description.is_some() {
+                described_shape = s.clone();
+                described_shape.description.clone_from(&common_description);
+                &described_shape
+            } else {
+                s
+            };
             let pos = gso_pos_xml(attr, voff + s.y, hoff + s.x);
             write_shape_element(
                 out,
                 doc,
-                s,
+                shape,
                 ids,
                 bins,
                 (s.w.max(1), s.h.max(1)),
@@ -1651,10 +1724,16 @@ fn write_picture(
     // SQUARE+allowOverlap=0(구 동작)은 한글이 본문을 밀어내 겹치지 못한다(D1 결함).
     // 위치는 문단 기준(vertRelTo/horzRelTo=PARA)이며 pic의 세로/가로 오프셋과
     // z-순서를 반영한다(insert_seal이 앵커 위로 계산한 값을 그대로 방출).
+    let description = pic
+        .description
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("<hp:shapeComment>{}</hp:shapeComment>", esc(value)))
+        .unwrap_or_default();
     if pic.treat_as_char {
         let _ = write!(
             out,
-            r##"<hp:pic id="{id}" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="0" right="{w}" top="0" bottom="{h}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/></hp:pic>"##,
+            r##"<hp:pic id="{id}" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="0" right="{w}" top="0" bottom="{h}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{description}</hp:pic>"##,
             w / 2,
             h / 2,
         );
@@ -1662,7 +1741,7 @@ fn write_picture(
         let (voff, hoff, zorder) = (pic.vert_offset, pic.horz_offset, pic.z_order);
         let _ = write!(
             out,
-            r##"<hp:pic id="{id}" zOrder="{zorder}" numberingType="PICTURE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="0" right="{w}" top="0" bottom="{h}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{voff}" horzOffset="{hoff}"/><hp:outMargin left="0" right="0" top="0" bottom="0"/></hp:pic>"##,
+            r##"<hp:pic id="{id}" zOrder="{zorder}" numberingType="PICTURE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="0" vertical="0"/><hp:rotationInfo angle="0" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="0" right="{w}" top="0" bottom="{h}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{voff}" horzOffset="{hoff}"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{description}</hp:pic>"##,
             w / 2,
             h / 2,
         );

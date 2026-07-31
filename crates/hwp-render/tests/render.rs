@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use hwp_render::{RenderOptions, render_document};
+use hwp_render::{RenderOptions, render_document, render_document_pages};
 
 fn fixture(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,6 +34,24 @@ fn dark_pixels(pixmap: &tiny_skia::Pixmap) -> usize {
         .iter()
         .filter(|p| p.red() < 128 && p.green() < 128 && p.blue() < 128)
         .count()
+}
+
+#[test]
+fn selected_page_render_reports_total_without_rasterizing_other_pages() {
+    let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n\n셋째 쪽\n");
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+    doc.sections[0].paragraphs[2].header.break_type |= 0x04;
+    let out = render_document_pages(
+        &doc,
+        &RenderOptions {
+            dpi: 36.0,
+            font_dirs: Vec::new(),
+        },
+        Some(&[2]),
+    )
+    .unwrap();
+    assert_eq!(out.total_pages, 3);
+    assert_eq!(out.pages.len(), 1);
 }
 
 #[test]
@@ -149,11 +167,12 @@ fn 표_렌더() {
     // 표·머리말·꼬리말은 더 이상 미지원으로 집계되지 않는다 (글상자 1개만 남음)
     let skipped: Vec<_> = out
         .report
+        .issues
         .iter()
-        .filter(|w| w.contains("미지원 컨트롤"))
+        .filter(|issue| issue.code == hwp_render::RenderIssueCode::UnsupportedControlOmitted)
         .collect();
     assert!(
-        skipped.iter().all(|w| w.contains("1개")),
+        skipped.iter().all(|issue| issue.count == 1),
         "표/머리말이 미지원으로 집계됨: {skipped:?}"
     );
 }
@@ -173,7 +192,7 @@ fn 멀티페이지_lineseg_페이지_상대_v_pos() {
     let content_h = page.height.0 - page.margin_top.0 - page.margin_bottom.0;
 
     let mut store = hwp_render::FontStore::new();
-    let mut warns = Vec::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
     hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
 
     let vs: Vec<i32> = doc.sections[0]
@@ -206,7 +225,7 @@ fn 멀티페이지_lineseg_페이지_상대_v_pos() {
 fn 문단_간격이_v_pos에_반영() {
     let mut doc = hwp_convert::from_markdown("# 제목\n\n본문 문단.\n");
     let mut store = hwp_render::FontStore::new();
-    let mut warns = Vec::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
     hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
 
     let paras = &doc.sections[0].paragraphs;
@@ -332,7 +351,7 @@ fn 글상자_연결_다단_배치() {
     };
     let doc = hwp5::read_document(&path).unwrap().document;
     let mut store = hwp_render::FontStore::new();
-    let mut warns = Vec::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
     assert!(
         list.pages.len() >= 5,
@@ -380,7 +399,7 @@ fn 도형_렌더_경로_생성() {
     };
     let doc = hwp5::read_document(&path).unwrap().document;
     let mut store = hwp_render::FontStore::new();
-    let mut warns = Vec::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
 
     let paths = list
@@ -403,10 +422,15 @@ fn 도형_렌더_경로_생성() {
     assert!(has_curve, "타원/호 유래 곡선 경로가 없음 (파이/원 미렌더)");
 
     // 도형이 더 이상 "미지원 컨트롤"로 집계되지 않아야 한다.
-    let skipped = warns.iter().filter(|w| w.contains("미지원 컨트롤")).count();
+    let warn_report = warns.finish();
+    let skipped = warn_report
+        .issues
+        .iter()
+        .filter(|issue| issue.code == hwp_render::RenderIssueCode::UnsupportedControlOmitted)
+        .count();
     assert_eq!(
         skipped, 0,
-        "아직 미지원으로 집계되는 도형이 있음: {warns:?}"
+        "아직 미지원으로 집계되는 도형이 있음: {warn_report:?}"
     );
 }
 
@@ -471,7 +495,7 @@ fn 내어쓰기_첫줄이_왼쪽() {
     doc.header.para_shapes[psid].indent = -8000; // /200 = -40pt (내어쓰기)
 
     let mut store = hwp_render::FontStore::new();
-    let mut warns = Vec::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
 
     // (y=베이스라인, x) 글리프 목록.
@@ -528,7 +552,7 @@ fn 페이지_걸친_문단배경_조각() {
     doc.header.para_shapes[psid].border_fill_id = bf_id;
 
     let mut store = hwp_render::FontStore::new();
-    let mut warns = Vec::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
     hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
 
@@ -604,7 +628,7 @@ fn 쪽_테두리_렌더() {
 
     fn layout(doc: &Document) -> hwp_render::display::DisplayList {
         let mut store = hwp_render::FontStore::new();
-        let mut warns = Vec::new();
+        let mut warns = hwp_render::RenderIssueAccumulator::new();
         hwp_render::layout::layout_document(doc, &mut store, &mut warns)
     }
 
@@ -707,7 +731,7 @@ fn 목록_마커_내어쓰기_배치() {
     use hwp_render::display::Item;
     let doc = hwp_convert::from_markdown("- 항목입니다\n");
     let mut store = hwp_render::FontStore::new();
-    let mut warns = Vec::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
     let glyphs: Vec<(f32, &str)> = list.pages[0]
         .items
@@ -798,9 +822,14 @@ fn 쪽번호_시작_재시작_숨김() {
     ));
 
     let mut store = hwp_render::FontStore::new();
-    let mut warnings = Vec::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
-    if warnings.iter().any(|w| w.contains("쪽번호 셰이핑 실패")) {
+    let warnings = warnings.finish();
+    if warnings
+        .issues
+        .iter()
+        .any(|issue| issue.code == hwp_render::RenderIssueCode::PageNumberShapingOmitted)
+    {
         eprintln!("스킵: 사용 가능한 폰트 없음 - 쪽번호 글리프 미생성");
         return;
     }
@@ -813,7 +842,10 @@ fn 쪽번호_시작_재시작_숨김() {
             .any(|t| t.starts_with("- "))
     );
     assert!(
-        warnings.iter().all(|w| !w.contains("렌더 미지원 컨트롤")),
+        warnings
+            .issues
+            .iter()
+            .all(|issue| { issue.code != hwp_render::RenderIssueCode::UnsupportedControlOmitted }),
         "쪽번호 제어가 미지원으로 집계됨: {warnings:?}"
     );
 }
@@ -853,9 +885,16 @@ fn 머리말_atno는_페이지마다_현재_쪽번호로_치환() {
     doc.sections[0].paragraphs[0].controls.push(header);
 
     let mut store = hwp_render::FontStore::new();
-    let mut warnings = Vec::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
-    if warnings.iter().any(|w| w.contains("셰이핑 실패")) {
+    let warnings = warnings.finish();
+    if warnings.issues.iter().any(|issue| {
+        matches!(
+            issue.code,
+            hwp_render::RenderIssueCode::ShapingFailed
+                | hwp_render::RenderIssueCode::PageNumberShapingOmitted
+        )
+    }) {
         eprintln!("스킵: 사용 가능한 폰트 없음 - atno 글리프 미생성");
         return;
     }
@@ -864,7 +903,10 @@ fn 머리말_atno는_페이지마다_현재_쪽번호로_치환() {
     assert!(!page_texts(&list.pages[1]).contains(&"6"));
     assert!(page_texts(&list.pages[2]).contains(&"7"));
     assert!(
-        warnings.iter().all(|w| !w.contains("렌더 미지원 컨트롤")),
+        warnings
+            .issues
+            .iter()
+            .all(|issue| { issue.code != hwp_render::RenderIssueCode::UnsupportedControlOmitted }),
         "atno/head가 미지원으로 집계됨: {warnings:?}"
     );
 }

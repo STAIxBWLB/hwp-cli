@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "AI 실습실 장비 도입 기안",
+    "author": "hwp-cli structured corpus",
+    "subject": "결재 기안문"
+  },
+  "styles": {
+    "body": { "font_family": "Noto Sans KR", "font_size_pt": 10.5, "line_height_percent": 155 },
+    "title": { "based_on": "body", "font_size_pt": 16, "bold": true, "align": "center", "spacing_after_pt": 10 },
+    "label": { "based_on": "body", "bold": true, "align": "center" }
+  },
+  "sections": [
+    {
+      "blocks": [
+        { "type": "paragraph", "style": "title", "runs": [{ "type": "text", "text": "AI 실습실 장비 도입 기안" }] },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [{ "width_mm": 25 }, { "width_mm": 48 }, { "width_mm": 48 }, { "width_mm": 49 }],
+          "rows": [
+            {
+              "cells": [
+                { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "결재" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "담당" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "처장" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "label", "runs": [{ "type": "text", "text": "부총장" }] }] }
+              ]
+            },
+            {
+              "cells": [
+                { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "서명" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "김담당" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "" }] }] },
+                { "blocks": [{ "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "" }] }] }
+              ]
+            }
+          ]
+        },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "1. 기안 목적" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "AI 실습 교과목의 안정적 운영을 위한 GPU 워크스테이션 도입" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "2. 추진 내용" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "가. 수량: 10대" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "나. 예산: 금 일억원(₩100,000,000)" }] },
+        { "type": "paragraph", "style": "body", "runs": [{ "type": "text", "text": "3. 요청 사항: 구매 절차 추진 승인" }] }
+      ]
+    }
+  ]
+}

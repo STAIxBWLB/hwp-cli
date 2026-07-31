@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "DocumentSpec v1 기본 예제",
+    "author": "hwp-cli"
+  },
+  "styles": {
+    "title": {
+      "font_family": "함초롬돋움",
+      "font_size_pt": 18,
+      "bold": true,
+      "align": "center"
+    }
+  },
+  "sections": [
+    {
+      "blocks": [
+        {
+          "type": "paragraph",
+          "style": "title",
+          "runs": [
+            {
+              "type": "text",
+              "text": "구조 문서"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "runs": [
+            {
+              "type": "text",
+              "text": "JSON/YAML 명세에서 HWP/HWPX를 직접 생성합니다."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

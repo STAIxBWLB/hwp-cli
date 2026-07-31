@@ -1,0 +1,472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/certification-report-v1.schema.json",
+  "title": "hwp-certification-report-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract", "overall", "scope", "input", "policy_sha256", "checks", "render", "oracle", "artifacts", "limitations"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "contract": { "const": "hwp-certification-report-v1" },
+    "overall": { "enum": ["passed", "failed", "partial"] },
+    "scope": { "enum": ["native_only", "native_plus_independent_import"] },
+    "input": {
+      "type": "object", "additionalProperties": false, "required": ["format", "bytes", "sha256"],
+      "properties": {
+        "format": { "enum": ["hwp5", "hwpx", "unknown"] },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 134217728 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "policy_sha256": { "$ref": "#/$defs/sha256" },
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["package", "repeat_import_consistency", "rules"],
+      "properties": {
+        "package": { "$ref": "#/$defs/check" },
+        "repeat_import_consistency": { "$ref": "#/$defs/check" },
+        "rules": {
+          "type": "array", "maxItems": 32,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "status", "observed_count", "reason_codes"],
+            "properties": {
+              "id": { "enum": ["defined_styles", "used_styles", "numbering.definitions", "numbering.used", "tables", "links", "metadata", "macros", "external_references", "accessibility", "unresolved_fields", "fonts"] },
+              "status": { "$ref": "#/$defs/checkStatus" },
+              "observed_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+              "reason_codes": { "$ref": "#/$defs/reasons" }
+            },
+            "oneOf": [
+              { "properties": { "status": { "const": "passed" }, "reason_codes": { "maxItems": 0 } } },
+              { "properties": { "status": { "const": "failed" }, "reason_codes": { "minItems": 1 } } }
+            ]
+          },
+          "oneOf": [
+            { "maxItems": 0 },
+            {
+              "minItems": 12, "maxItems": 12,
+              "prefixItems": [
+                { "properties": { "id": { "const": "defined_styles" } } },
+                { "properties": { "id": { "const": "used_styles" } } },
+                { "properties": { "id": { "const": "numbering.definitions" } } },
+                { "properties": { "id": { "const": "numbering.used" } } },
+                { "properties": { "id": { "const": "tables" } } },
+                { "properties": { "id": { "const": "links" } } },
+                { "properties": { "id": { "const": "metadata" } } },
+                { "properties": { "id": { "const": "macros" } } },
+                { "properties": { "id": { "const": "external_references" } } },
+                { "properties": { "id": { "const": "accessibility" } } },
+                { "properties": { "id": { "const": "unresolved_fields" } } },
+                { "properties": { "id": { "const": "fonts" } } }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "render": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profile", "dpi", "total_pages", "selected_pages", "status", "reason_codes", "fonts", "pages", "issues", "info", "issue_count", "info_count", "issue_log_complete", "issue_sha256"],
+      "properties": {
+        "profile": { "const": "hwp-cli-native-certification-render-v1" },
+        "dpi": { "type": "number", "minimum": 36, "maximum": 600 },
+        "total_pages": { "type": "integer", "minimum": 0, "maximum": 4096 },
+        "selected_pages": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 4096 }
+        },
+        "status": { "$ref": "#/$defs/checkStatus" },
+        "reason_codes": { "$ref": "#/$defs/reasons" },
+        "fonts": {
+          "type": "array", "maxItems": 512,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["requested_name_sha256", "resolved_family_sha256", "font_file_sha256", "face_index", "outcome"],
+            "properties": {
+              "requested_name_sha256": { "$ref": "#/$defs/sha256" },
+              "resolved_family_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+              "font_file_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+              "face_index": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+              "outcome": { "enum": ["matched", "substituted", "missing", "coverage_substituted"] }
+            }
+          }
+        },
+        "pages": {
+          "type": "array", "maxItems": 256, "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["page", "width_pt", "height_pt", "item_count", "visual_blank", "outside_page_bounds", "possible_collision", "png_sha256", "png_bytes"],
+            "properties": {
+              "page": { "type": "integer", "minimum": 1, "maximum": 4096 },
+              "width_pt": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+              "height_pt": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 },
+              "item_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+              "visual_blank": { "type": "boolean" },
+              "outside_page_bounds": { "$ref": "#/$defs/detection" },
+              "possible_collision": { "$ref": "#/$defs/detection" },
+              "png_sha256": { "$ref": "#/$defs/sha256" },
+              "png_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 }
+            }
+          }
+        },
+        "issues": { "type": "array", "maxItems": 24, "uniqueItems": true, "items": { "$ref": "#/$defs/renderIssueNonInfo" } },
+        "info": { "type": "array", "maxItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/renderIssueInfo" } },
+        "issue_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "info_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "issue_log_complete": { "type": "boolean" },
+        "issue_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "oneOf": [
+        { "properties": { "status": { "const": "passed" }, "reason_codes": { "maxItems": 0 } } },
+        { "properties": { "status": { "enum": ["failed", "skipped"] }, "reason_codes": { "minItems": 1 } } }
+      ]
+    },
+    "oracle": { "$ref": "#/$defs/oracleBase" },
+    "artifacts": {
+      "type": "array", "maxItems": 257, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "limitations": {
+      "type": "array", "minItems": 5, "maxItems": 5,
+      "prefixItems": [
+        { "const": "native_not_detected_is_algorithm_scoped" },
+        { "const": "hancom_rendering_parity_not_claimed" },
+        { "const": "oracle_artifact_determinism_not_claimed" },
+        { "const": "oracle_page_count_not_host_verified" },
+        { "const": "selected_pages_only_when_policy_selects_pages" }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        {
+          "properties": {
+            "overall": { "const": "passed" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleDisabledPassed" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localFailed" },
+        {
+          "properties": {
+            "overall": { "const": "failed" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleDisabledFailed" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localFailed" },
+        {
+          "properties": {
+            "overall": { "const": "failed" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleNotRun" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        {
+          "properties": {
+            "overall": { "const": "passed" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleOptionalUnavailable" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        {
+          "properties": {
+            "overall": { "const": "partial" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleRequiredUnavailable" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        {
+          "properties": {
+            "overall": { "const": "partial" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleOptionalFailed" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        {
+          "properties": {
+            "overall": { "const": "failed" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleRequiredFailed" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        {
+          "properties": {
+            "overall": { "const": "passed" },
+            "scope": { "const": "native_plus_independent_import" },
+            "oracle": { "$ref": "#/$defs/oraclePassed" }
+          }
+        }
+      ]
+    }
+  ],
+  "allOf": [
+    {
+      "if": { "properties": { "scope": { "const": "native_plus_independent_import" } } },
+      "then": { "properties": { "artifacts": { "contains": { "properties": { "path": { "const": "oracle/import.pdf" } }, "required": ["path"] }, "minContains": 1, "maxContains": 1 } } },
+      "else": { "properties": { "artifacts": { "not": { "contains": { "properties": { "path": { "const": "oracle/import.pdf" } }, "required": ["path"] } } } } }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "checkStatus": { "enum": ["passed", "failed", "skipped"] },
+    "reasons": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/reasonCode" } },
+    "reasonCode": { "enum": ["package_validation_failed", "package_or_import_warnings", "document_parse_failed", "repeat_import_mismatch", "repeat_import_failed", "not_run", "parse_budget_exceeded", "render_policy_failed", "layout_budget_exceeded", "image_decode_budget_exceeded", "pagination_drift_detected", "font_manifest_or_resolution_failed", "render_page_scope_invalid", "render_execution_failed", "disallowed_value", "required_value_missing", "style_reference_out_of_range", "below_minimum", "above_maximum", "disallowed_definition_index", "required_definition_index_missing", "disallowed_scheme", "disallowed_field_present", "required_field_missing", "forbidden_field_present", "forbidden_present", "required_missing", "inspection_incomplete", "picture_description_missing", "shape_description_missing", "unresolved_field_binding", "requested_font_name_invalid", "disallowed_requested_font", "required_requested_font_missing", "font_or_glyph_missing", "font_substitution_forbidden", "font_resolution_report_incomplete", "resolved_font_outside_manifest", "font_resolution_not_run"] },
+    "check": {
+      "type": "object", "additionalProperties": false, "required": ["status", "reason_codes", "issue_count", "issue_sha256"],
+      "properties": {
+        "status": { "$ref": "#/$defs/checkStatus" },
+        "reason_codes": { "$ref": "#/$defs/reasons" },
+        "issue_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "issue_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "oneOf": [
+        { "properties": { "status": { "const": "passed" }, "reason_codes": { "maxItems": 0 }, "issue_count": { "const": 0 } } },
+        { "properties": { "status": { "enum": ["failed", "skipped"] }, "reason_codes": { "minItems": 1 }, "issue_count": { "minimum": 1 } } }
+      ]
+    },
+    "detection": {
+      "type": "object", "additionalProperties": false, "required": ["result", "count", "algorithm", "complete"],
+      "properties": {
+        "result": { "enum": ["not_detected", "detected", "incomplete"] },
+        "count": { "type": "integer", "minimum": 0, "maximum": 10000000 },
+        "algorithm": { "enum": ["display_item_finite_bbox_vs_page_rect_v1", "cross_baseline_glyph_bbox_overlap_ge_0_25_v1"] },
+        "complete": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "properties": { "result": { "const": "not_detected" }, "count": { "const": 0 }, "complete": { "const": true } } },
+        { "properties": { "result": { "const": "detected" }, "count": { "minimum": 1 }, "complete": { "const": true } } },
+        { "properties": { "result": { "const": "incomplete" }, "complete": { "const": false } } }
+      ]
+    },
+    "renderIssue": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "severity", "stage", "count", "sample_sha256", "samples_complete"],
+      "properties": {
+        "code": { "enum": ["parse_budget_exceeded", "render_execution_failed", "pagination_drift_detected", "font_matched", "font_substituted", "font_missing", "font_manifest_load_failed", "font_resolution_budget_exceeded", "shaping_failed", "page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "page_number_shaping_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "image_decode_placeholder", "image_decode_budget_exceeded", "invalid_table_cell_omitted", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted", "font_subset_fallback", "layout_budget_exceeded"] },
+        "severity": { "enum": ["info", "warning", "incomplete", "fatal"] },
+        "stage": { "enum": ["input_parse", "font_resolution", "layout", "shaping", "rasterization", "pdf_export"] },
+        "count": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "sample_sha256": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/sha256" } },
+        "samples_complete": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "properties": { "code": { "const": "parse_budget_exceeded" }, "severity": { "const": "fatal" }, "stage": { "const": "input_parse" } } },
+        { "properties": { "code": { "enum": ["render_execution_failed", "pagination_drift_detected", "layout_budget_exceeded"] }, "severity": { "const": "fatal" }, "stage": { "const": "layout" } } },
+        { "properties": { "code": { "const": "font_matched" }, "severity": { "const": "info" }, "stage": { "const": "font_resolution" } } },
+        { "properties": { "code": { "const": "font_substituted" }, "severity": { "const": "warning" }, "stage": { "const": "font_resolution" } } },
+        { "properties": { "code": { "const": "font_missing" }, "severity": { "const": "incomplete" }, "stage": { "const": "font_resolution" } } },
+        { "properties": { "code": { "const": "font_manifest_load_failed" }, "severity": { "const": "fatal" }, "stage": { "const": "font_resolution" } } },
+        { "properties": { "code": { "const": "font_resolution_budget_exceeded" }, "severity": { "const": "fatal" }, "stage": { "const": "font_resolution" } } },
+        { "properties": { "code": { "enum": ["shaping_failed", "page_number_shaping_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "shaping" } } },
+        { "properties": { "code": { "enum": ["page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "invalid_table_cell_omitted", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "layout" } } },
+        { "properties": { "code": { "const": "image_decode_placeholder" }, "severity": { "const": "incomplete" }, "stage": { "const": "rasterization" } } },
+        { "properties": { "code": { "const": "image_decode_budget_exceeded" }, "severity": { "const": "fatal" }, "stage": { "const": "rasterization" } } },
+        { "properties": { "code": { "const": "font_subset_fallback" }, "severity": { "const": "warning" }, "stage": { "const": "pdf_export" } } }
+      ],
+      "allOf": [
+        { "if": { "properties": { "samples_complete": { "const": false } } }, "then": { "properties": { "sample_sha256": { "minItems": 4 } } } }
+      ]
+    },
+    "renderIssueNonInfo": { "allOf": [{ "$ref": "#/$defs/renderIssue" }, { "properties": { "severity": { "enum": ["warning", "incomplete", "fatal"] } } }] },
+    "renderIssueInfo": { "allOf": [{ "$ref": "#/$defs/renderIssue" }, { "properties": { "code": { "const": "font_matched" }, "severity": { "const": "info" } } }] },
+    "log": {
+      "type": "object", "additionalProperties": false, "required": ["bytes_observed", "bytes_hashed", "truncated", "sha256"],
+      "properties": {
+        "bytes_observed": { "type": "integer", "minimum": 0 },
+        "bytes_hashed": { "type": "integer", "minimum": 0, "maximum": 65536 },
+        "truncated": { "type": "boolean" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["path", "bytes", "sha256", "deterministic"],
+      "properties": {
+        "path": { "oneOf": [{ "type": "string", "pattern": "^pages/page-[0-9]{6}\\.png$" }, { "const": "oracle/import.pdf" }] },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "deterministic": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "properties": { "path": { "pattern": "^pages/" }, "deterministic": { "const": true } } },
+        { "properties": { "path": { "const": "oracle/import.pdf" }, "deterministic": { "const": false } } }
+      ]
+    },
+    "oracleBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "status", "reason_code", "expected", "observed", "stdout", "stderr", "artifact_determinism"],
+      "properties": {
+        "mode": { "enum": ["disabled", "optional", "required"] },
+        "status": { "enum": ["disabled", "not_run", "passed", "failed", "oracle_unavailable"] },
+        "reason_code": { "oneOf": [{ "$ref": "#/$defs/oracleReason" }, { "type": "null" }] },
+        "expected": { "oneOf": [{ "$ref": "certification-oracle-result-v1.schema.json#/$defs/attestation" }, { "type": "null" }] },
+        "observed": { "oneOf": [{ "$ref": "#/$defs/observedAttestation" }, { "type": "null" }] },
+        "stdout": { "oneOf": [{ "$ref": "#/$defs/log" }, { "type": "null" }] },
+        "stderr": { "oneOf": [{ "$ref": "#/$defs/log" }, { "type": "null" }] },
+        "artifact_determinism": { "enum": ["not_applicable", "not_claimed"] }
+      }
+    },
+    "oracleReason": { "enum": ["local_certification_failed", "policy_configuration_missing", "trusted_runner_not_configured", "oracle_process_group_unavailable_on_platform", "trusted_image_digest_mismatch", "runtime_unavailable_or_mismatched", "runtime_snapshot_not_executable", "runtime_version_probe_failed", "runtime_version_mismatch", "host_daemon_unattested", "trusted_image_attestation_invalid", "image_attestation_probe_failed", "image_attestation_mismatch", "extension_unavailable_or_mismatched", "oracle_workspace_unavailable", "oracle_input_snapshot_unavailable", "oracle_extension_snapshot_unavailable", "oracle_output_workspace_unavailable", "oracle_mount_source_invalid", "container_identity_unavailable", "container_cleanup_unverified", "runner_execution_failed", "oracle_timeout", "oracle_output_allowlist_violation", "runner_contract_missing", "runner_contract_invalid", "oracle_output_contract_mismatch", "runner_attestation_mismatch", "conversion_failed", "oracle_artifact_missing", "oracle_artifact_contract_invalid", "oracle_pdf_invalid", "oracle_artifact_copy_failed", "oracle_artifact_mismatch"] },
+    "observedAttestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runtime_kind", "runtime_version", "runtime_sha256", "libreoffice_version", "libreoffice_executable_sha256", "extension_version", "extension_sha256", "image_digest", "docker_client_version_sha256", "docker_server_version_sha256", "image_id", "image_reference_sha256"],
+      "properties": {
+        "runtime_kind": { "const": "docker" },
+        "runtime_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "runtime_sha256": { "$ref": "#/$defs/sha256" },
+        "libreoffice_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "libreoffice_executable_sha256": { "$ref": "#/$defs/sha256" },
+        "extension_version": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "extension_sha256": { "$ref": "#/$defs/sha256" },
+        "image_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "docker_client_version_sha256": { "$ref": "#/$defs/sha256" },
+        "docker_server_version_sha256": { "$ref": "#/$defs/sha256" },
+        "image_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "image_reference_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "localPassed": {
+      "properties": {
+        "checks": {
+          "properties": {
+            "package": { "properties": { "status": { "const": "passed" } } },
+            "repeat_import_consistency": { "properties": { "status": { "const": "passed" } } },
+            "rules": { "minItems": 12, "maxItems": 12, "items": { "properties": { "status": { "const": "passed" } } } }
+          }
+        },
+        "render": { "properties": { "status": { "const": "passed" } } }
+      }
+    },
+    "localFailed": { "not": { "$ref": "#/$defs/localPassed" } },
+    "oracleDisabledPassed": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleBase" },
+        { "properties": {
+          "mode": { "const": "disabled" }, "status": { "const": "disabled" },
+          "reason_code": { "type": "null" }, "expected": { "type": "null" },
+          "observed": { "type": "null" }, "stdout": { "type": "null" },
+          "stderr": { "type": "null" }, "artifact_determinism": { "const": "not_applicable" }
+        } }
+      ]
+    },
+    "oracleDisabledFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleBase" },
+        { "properties": {
+          "mode": { "const": "disabled" }, "status": { "const": "disabled" },
+          "reason_code": { "type": "null" }, "expected": { "type": "null" },
+          "observed": { "type": "null" }, "stdout": { "type": "null" },
+          "stderr": { "type": "null" }, "artifact_determinism": { "const": "not_claimed" }
+        } }
+      ]
+    },
+    "oracleNotRun": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleBase" },
+        { "properties": {
+          "mode": { "enum": ["optional", "required"] }, "status": { "const": "not_run" },
+          "reason_code": { "const": "local_certification_failed" },
+          "expected": { "$ref": "certification-oracle-result-v1.schema.json#/$defs/attestation" },
+          "observed": { "type": "null" }, "stdout": { "type": "null" },
+          "stderr": { "type": "null" }, "artifact_determinism": { "const": "not_claimed" }
+        } }
+      ]
+    },
+    "oracleOptionalUnavailable": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleUnavailable" },
+        { "properties": { "mode": { "const": "optional" } } }
+      ]
+    },
+    "oracleRequiredUnavailable": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleUnavailable" },
+        { "properties": { "mode": { "const": "required" } } }
+      ]
+    },
+    "oracleUnavailable": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleBase" },
+        { "properties": {
+          "status": { "const": "oracle_unavailable" },
+          "reason_code": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "expected": { "$ref": "certification-oracle-result-v1.schema.json#/$defs/attestation" },
+          "observed": { "type": "null" }, "stdout": { "type": "null" },
+          "stderr": { "type": "null" }, "artifact_determinism": { "const": "not_claimed" }
+        } }
+      ]
+    },
+    "oracleOptionalFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleFailed" },
+        { "properties": { "mode": { "const": "optional" } } }
+      ]
+    },
+    "oracleRequiredFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleFailed" },
+        { "properties": { "mode": { "const": "required" } } }
+      ]
+    },
+    "oracleFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleBase" },
+        { "properties": {
+          "status": { "const": "failed" },
+          "reason_code": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "expected": { "$ref": "certification-oracle-result-v1.schema.json#/$defs/attestation" },
+          "artifact_determinism": { "const": "not_claimed" }
+        } }
+      ]
+    },
+    "oraclePassed": {
+      "allOf": [
+        { "$ref": "#/$defs/oracleBase" },
+        { "properties": {
+          "mode": { "enum": ["optional", "required"] }, "status": { "const": "passed" },
+          "reason_code": { "type": "null" },
+          "expected": { "$ref": "certification-oracle-result-v1.schema.json#/$defs/attestation" },
+          "observed": { "$ref": "#/$defs/observedAttestation" },
+          "stdout": { "$ref": "#/$defs/log" }, "stderr": { "$ref": "#/$defs/log" },
+          "artifact_determinism": { "const": "not_claimed" }
+        } }
+      ]
+    }
+  }
+}

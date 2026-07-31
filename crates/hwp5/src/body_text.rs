@@ -336,9 +336,31 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
         z_order,
         vert_offset,
         horz_offset,
+        description: parse_gso_description(common),
         bin_ref: hwp_model::BinRef::Id(hwp_model::BinDataId(bin_id)),
         extras: children.iter().map(to_opaque).collect(),
     })
+}
+
+/// HWP5 common object property (table 69) description BSTR.
+///
+/// `common` excludes the four-byte reversed control id, so the UTF-16 length
+/// is at byte 40 and the payload starts at byte 42. Older/short or malformed
+/// records remain losslessly available in `common_data`; they simply do not
+/// expose a semantic description.
+fn parse_gso_description(common: &[u8]) -> Option<String> {
+    let len = usize::from(u16::from_le_bytes([*common.get(40)?, *common.get(41)?]));
+    if len == 0 {
+        return None;
+    }
+    let bytes = common.get(42..42usize.checked_add(len.checked_mul(2)?)?)?;
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&units)
+        .ok()
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_section_def(
@@ -724,5 +746,25 @@ mod tests {
         assert_eq!(p.width.0, 10000);
         assert_eq!(p.height.0, 8000);
         assert_eq!(p.bin_ref, hwp_model::BinRef::Id(hwp_model::BinDataId(3)));
+    }
+
+    #[test]
+    fn gso_설명_utf16_코드유닛_파싱() {
+        let expected = "제목😀\n\n설명";
+        let encoded = expected.encode_utf16().collect::<Vec<_>>();
+        let mut common = vec![0u8; 40];
+        common.extend_from_slice(&(encoded.len() as u16).to_le_bytes());
+        for unit in encoded {
+            common.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        assert_eq!(parse_gso_description(&common).as_deref(), Some(expected));
+        assert_eq!(
+            u16::from_le_bytes(common[40..42].try_into().unwrap()),
+            8,
+            "astral 문자는 UTF-16 코드 유닛 2개로 계산"
+        );
+        assert_eq!(parse_gso_description(&common[..common.len() - 1]), None);
+        assert_eq!(parse_gso_description(&common[..40]), None);
     }
 }

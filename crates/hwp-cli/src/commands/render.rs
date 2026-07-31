@@ -15,32 +15,35 @@ pub fn run(
     format: Option<RenderFormat>,
     font_dirs: Vec<PathBuf>,
 ) -> anyhow::Result<()> {
+    let dpi = validated_dpi(dpi)?;
     let format = format.unwrap_or_else(|| infer_format(output));
     let doc = load_document(input)?;
     // --font-dir 미지정 시 번들 함초롬 글꼴(HWP_FONT_DIR/fonts)을 기본 로드.
     let opts = hwp_render::RenderOptions {
-        dpi: dpi as f32,
+        dpi,
         font_dirs: crate::commands::convert::resolve_font_dirs(font_dirs),
     };
 
     match format {
         RenderFormat::Png => {
-            let result = hwp_render::render_document(&doc, &opts)?;
+            let total = hwp_render::count_pages(&doc, &opts);
+            let selected = parse_pages(pages_spec, total)?;
+            let result = hwp_render::render_document_pages(&doc, &opts, Some(&selected))?;
             report(&result.report);
-            let selected = parse_pages(pages_spec, result.pages.len())?;
             let multi = selected.len() > 1;
-            for &page_no in &selected {
-                let pixmap = &result.pages[page_no - 1];
+            let mut outputs = Vec::with_capacity(selected.len());
+            let mut dimensions = Vec::with_capacity(selected.len());
+            for (&page_no, pixmap) in selected.iter().zip(&result.pages) {
                 let path = page_path(output, page_no, multi);
-                pixmap
-                    .save_png(&path)
-                    .map_err(|e| anyhow::anyhow!("PNG 저장 실패 ({}): {e}", path.display()))?;
-                eprintln!(
-                    "저장: {} ({}×{}px)",
-                    path.display(),
-                    pixmap.width(),
-                    pixmap.height()
-                );
+                let png = pixmap.encode_png().map_err(|error| {
+                    anyhow::anyhow!("PNG 인코딩 실패 ({}): {error}", path.display())
+                })?;
+                dimensions.push((path.clone(), pixmap.width(), pixmap.height()));
+                outputs.push((path, png));
+            }
+            publish_render_set(&outputs, input)?;
+            for (path, width, height) in dimensions {
+                eprintln!("저장: {} ({}×{}px)", path.display(), width, height);
             }
         }
         RenderFormat::Svg => {
@@ -48,9 +51,18 @@ pub fn run(
             report(&result.report);
             let selected = parse_pages(pages_spec, result.pages.len())?;
             let multi = selected.len() > 1;
+            let outputs = selected
+                .iter()
+                .map(|&page_no| {
+                    (
+                        page_path(output, page_no, multi),
+                        result.pages[page_no - 1].as_bytes().to_vec(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            publish_render_set(&outputs, input)?;
             for &page_no in &selected {
                 let path = page_path(output, page_no, multi);
-                std::fs::write(&path, &result.pages[page_no - 1])?;
                 eprintln!("저장: {}", path.display());
             }
         }
@@ -60,7 +72,7 @@ pub fn run(
             let selected = parse_pages(pages_spec, total)?;
             let result = hwp_render::render_document_pdf(&doc, &opts, Some(&selected))?;
             report(&result.report);
-            std::fs::write(output, &result.data)?;
+            write_render_bytes(output, input, &result.data)?;
             eprintln!(
                 "저장: {} ({}쪽, {} bytes)",
                 output.display(),
@@ -72,9 +84,46 @@ pub fn run(
     Ok(())
 }
 
-fn report(lines: &[String]) {
-    for line in lines {
-        eprintln!("렌더: {line}");
+pub(crate) fn validated_dpi(dpi: f64) -> anyhow::Result<f32> {
+    let min = f64::from(hwp_render::MIN_DPI);
+    let max = f64::from(hwp_render::MAX_DPI);
+    if !dpi.is_finite() || !(min..=max).contains(&dpi) {
+        anyhow::bail!("DPI는 유한한 {min}..={max} 범위여야 합니다: {dpi}");
+    }
+    hwp_render::validate_dpi(dpi as f32).map_err(Into::into)
+}
+
+fn publish_render_set(outputs: &[(PathBuf, Vec<u8>)], input: &Path) -> anyhow::Result<()> {
+    if let Some(warning) = crate::commands::output::write_validated_files(outputs, Some(input))? {
+        eprintln!("경고: {warning}");
+    }
+    Ok(())
+}
+
+fn write_render_bytes(destination: &Path, input: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    crate::commands::output::write_validated(
+        destination,
+        Some(input),
+        |staged| {
+            std::fs::write(staged, bytes)?;
+            Ok(())
+        },
+        |staged, _| {
+            let written = std::fs::read(staged)?;
+            if written != bytes {
+                anyhow::bail!("렌더 출력 검증 중 바이트 불일치: {}", staged.display());
+            }
+            Ok(())
+        },
+    )
+}
+
+fn report(report: &hwp_render::RenderIssueReport) {
+    for issue in report.info.iter().chain(&report.issues) {
+        eprintln!("렌더: {issue}");
+    }
+    if !report.complete {
+        eprintln!("렌더: issue accumulator incomplete");
     }
 }
 

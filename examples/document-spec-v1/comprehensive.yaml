@@ -1,0 +1,118 @@
+version: "1.0"
+metadata:
+  title: DocumentSpec v1 종합 예제
+  author: hwp-cli
+  subject: 네이티브 구조 문서 합성
+page:
+  width_mm: 210
+  height_mm: 297
+  orientation: portrait
+  margin_left_mm: 20
+  margin_right_mm: 20
+  margin_top_mm: 18
+  margin_bottom_mm: 18
+styles:
+  body:
+    font_family: 함초롬바탕
+    font_size_pt: 10
+    align: justify
+    line_height_percent: 160
+  heading:
+    based_on: body
+    font_family: 함초롬돋움
+    font_size_pt: 15
+    bold: true
+    color: "#112233"
+    spacing_before_pt: 8
+    spacing_after_pt: 4
+lists:
+  outline:
+    kind: ordered
+    levels:
+      - marker: "{n}."
+        start: 1
+        style: body
+sections:
+  - id: main
+    header:
+      default:
+        - type: paragraph
+          runs:
+            - type: text
+              text: 기본 머리말
+              style: body
+    footer:
+      default:
+        - type: paragraph
+          runs:
+            - type: text
+              text: 자동 생성 문서
+    page_number:
+      position: bottom_center
+      format: decimal
+      start: 1
+      prefix: "-"
+      suffix: "-"
+    blocks:
+      - type: paragraph
+        style: heading
+        runs:
+          - type: text
+            text: Ⅰ. 구조화 문서
+      - type: paragraph
+        style: body
+        list:
+          name: outline
+          level: 0
+        runs:
+          - type: text
+            text: "본문 "
+          - type: field
+            name: 담당자
+            value: 홍길동
+          - type: line_break
+          - type: equation
+            script: "a^2 + b^2 = c^2"
+            width_mm: 35
+            height_mm: 8
+      - type: table
+        width_mm: 150
+        columns:
+          - width_mm: 30
+          - width_mm: 60
+          - width_mm: 60
+        rows:
+          - cells:
+              - row_span: 2
+                blocks:
+                  - type: paragraph
+                    runs:
+                      - type: text
+                        text: 병합
+              - col_span: 2
+                blocks:
+                  - type: paragraph
+                    runs:
+                      - type: text
+                        text: 상단
+          - cells:
+              - blocks:
+                  - type: paragraph
+                    runs:
+                      - type: text
+                        text: 왼쪽
+              - blocks:
+                  - type: paragraph
+                    runs:
+                      - type: text
+                        text: 오른쪽
+      - type: field
+        name: 검토
+        value: 완료
+        style: body
+      - type: break
+        kind: page
+      - type: paragraph
+        runs:
+          - type: text
+            text: 두 번째 페이지

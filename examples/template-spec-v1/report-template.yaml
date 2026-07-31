@@ -1,0 +1,65 @@
+version: "1.0"
+variables:
+  title:
+    type: string
+    required: true
+    min_length: 1
+    max_length: 120
+  show_summary:
+    type: bool
+    default: true
+  items:
+    type: list
+    required: true
+    max_items: 20
+    fields:
+      name:
+        type: string
+        required: true
+      count:
+        type: number
+        default: 1
+source:
+  mode: compose
+  document:
+    version: "1.0"
+    metadata:
+      title:
+        node: value
+        pointer: /values/title
+        as: text
+    sections:
+      - blocks:
+          - type: paragraph
+            runs:
+              - type: text
+                text:
+                  node: value
+                  pointer: /values/title
+                  as: text
+          - node: if
+            condition: /values/show_summary
+            region: summary
+            then:
+              - type: paragraph
+                runs:
+                  - type: text
+                    text: "요약"
+          - node: each
+            items: /values/items
+            region: item_rows
+            body:
+              - type: paragraph
+                runs:
+                  - type: text
+                    text:
+                      node: value
+                      pointer: /item/name
+                      as: text
+                  - type: text
+                    text: ": "
+                  - type: text
+                    text:
+                      node: value
+                      pointer: /item/count
+                      as: text

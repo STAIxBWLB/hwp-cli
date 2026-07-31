@@ -31,7 +31,7 @@ pub use from_markdown::{
     MarkdownImportOptions, OfficialPreset, default_header, from_markdown, from_markdown_with,
 };
 pub use html::{to_html, to_html_fragment};
-pub use image::{ImageSize, image_kind, insert_image, insert_seal};
+pub use image::{ImageSize, image_kind, image_pixel_size, insert_image, insert_seal};
 pub use markdown::{
     MarkdownOptions, MarkdownSegment, to_markdown, to_markdown_with, to_markdown_with_segments,
 };

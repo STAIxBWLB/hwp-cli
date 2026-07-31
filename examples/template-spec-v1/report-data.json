@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "values": {
+    "title": "2026 운영 보고",
+    "items": [
+      { "name": "교육", "count": 3 },
+      { "name": "연구" }
+    ]
+  }
+}

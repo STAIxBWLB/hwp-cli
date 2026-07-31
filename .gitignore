@@ -2,8 +2,12 @@
 **/*.rs.bk
 .DS_Store
 
-# 대형 corpus는 커밋하지 않음 (HWP_CORPUS_DIR 외부 디렉터리 사용)
-/corpus
+# 외부/대형 corpus는 커밋하지 않되, 자체 작성한 bounded structured-v1만 추적한다.
+/corpus/*
+!/corpus/structured-v1/
+!/corpus/structured-v1/**
+# 폰트 바이트는 커밋하지 않는다 (scripts/fetch-corpus-fonts.sh가 hash 검증 후 받아둔다).
+/corpus/structured-v1/fonts/
 /fonts/
 
 # 골든 기준 이미지는 커밋하지 않음 (레시피 fixtures/golden/README.md만 커밋)

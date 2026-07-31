@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "document": {
+    "fonts": {
+      "manifest": [],
+      "forbid_substitution": false
+    },
+    "macros": "deny",
+    "external_references": "deny"
+  },
+  "render": {
+    "dpi": 96,
+    "pages": [1],
+    "page_count": {
+      "min": 1,
+      "max": 4096
+    },
+    "allowed_blank_pages": [1],
+    "fail_on_outside_page_bounds": true,
+    "fail_on_potential_collision": false,
+    "fail_on_unresolved_fields": true
+  },
+  "oracle": {
+    "mode": "disabled"
+  }
+}

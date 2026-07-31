@@ -10,6 +10,7 @@ use std::sync::Arc;
 use hwp_model::{BinDataId, BinRef, Document, GenericControl, OpaqueRecord, ShapeGeom, ShapeKind};
 
 use crate::display::{Fill, Gradient, Item, PageList, PathCmd, Stroke, path_bbox};
+use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 
 // hwp5 레코드 raw 태그 (HWPTAG_BEGIN = 0x10).
 const SHAPE_COMPONENT: u16 = 0x4C; // 76
@@ -42,8 +43,17 @@ pub fn has_shape(recs: &[OpaqueRecord]) -> bool {
 }
 
 /// hwpx 구조화 도형(ShapeGeom)을 Item::Path로 그린다. 좌표는 페이지 절대(HWPUNIT).
-pub fn draw_ir_shapes(shapes: &[ShapeGeom], page: &mut PageList) {
+pub fn draw_ir_shapes(
+    shapes: &[ShapeGeom],
+    page: &mut PageList,
+    warnings: &mut RenderIssueAccumulator,
+) {
     for s in shapes {
+        // A line can produce two arrowhead paths plus its own path. Reserve the
+        // worst case before constructing any command buffers.
+        if !warnings.charge_display_items(3) {
+            return;
+        }
         let commands = ir_shape_path(s);
         if commands.len() < 2 {
             continue;
@@ -250,7 +260,7 @@ pub fn draw_gso_shapes(
     origin: (f64, f64),
     doc: &Document,
     page: &mut PageList,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) {
     walk(&g.raw_children, origin, doc, page, warnings, 0);
 }
@@ -260,10 +270,11 @@ fn walk(
     origin: (f64, f64),
     doc: &Document,
     page: &mut PageList,
-    warns: &mut Vec<String>,
+    warns: &mut RenderIssueAccumulator,
     depth: u32,
 ) {
     if depth > MAX_DEPTH {
+        warns.push_once(RenderIssueCode::ShapeDepthLimitOmitted, depth.to_le_bytes());
         return;
     }
     for r in recs {
@@ -280,19 +291,36 @@ fn draw_component(
     origin: (f64, f64),
     doc: &Document,
     page: &mut PageList,
-    warns: &mut Vec<String>,
+    warns: &mut RenderIssueAccumulator,
     depth: u32,
 ) {
-    let Some(style) = parse_style(&sc.data, doc) else {
+    let Some(style) = parse_style(&sc.data, doc, warns) else {
+        warns.push(
+            RenderIssueCode::ShapeStyleInvalidOmitted,
+            sc.tag.to_le_bytes(),
+        );
         return;
     };
     for child in &sc.children {
         match child.tag {
             SC_LINE | SC_RECTANGLE | SC_ELLIPSE | SC_ARC | SC_POLYGON | SC_CURVE => {
+                // One image fill plus one path is the maximum for a component.
+                // Charge before parsing/building the geometry buffer.
+                if !warns.charge_display_items(2) {
+                    return;
+                }
                 let Some(commands) = geometry(child.tag, &child.data, &style, origin) else {
+                    warns.push(
+                        RenderIssueCode::ShapeGeometryInvalidOmitted,
+                        child.tag.to_le_bytes(),
+                    );
                     continue;
                 };
                 if commands.len() < 2 {
+                    warns.push(
+                        RenderIssueCode::ShapeGeometryInvalidOmitted,
+                        child.tag.to_le_bytes(),
+                    );
                     continue;
                 }
                 // 이미지 채움: 도형 경계 상자에 이미지를 깐다(테두리는 path가 그림).
@@ -391,7 +419,7 @@ fn rd_mat(d: &[u8], o: usize) -> Mat {
 /// SHAPE_COMPONENT 데이터에서 렌더 행렬·테두리·채움을 읽는다.
 /// 레이아웃(실측): [CHID×2 또는 ×1] + 개체요소속성 + (translation 48 + (scale 48+rotation 48)×cnt)
 /// + 테두리선(13) + 채우기(Table 28).
-fn parse_style(d: &[u8], doc: &Document) -> Option<Style> {
+fn parse_style(d: &[u8], doc: &Document, issues: &mut RenderIssueAccumulator) -> Option<Style> {
     if d.len() < 8 {
         return None;
     }
@@ -424,7 +452,7 @@ fn parse_style(d: &[u8], doc: &Document) -> Option<Style> {
             } else if ft & 0x4 != 0 {
                 fill = parse_gradient(d, fo + 4).map(Fill::Gradient);
             } else if ft & 0x2 != 0 {
-                image = parse_image_fill(d, fo + 4, doc);
+                image = parse_image_fill(d, fo + 4, doc, issues);
             }
         }
     }
@@ -474,7 +502,12 @@ fn parse_gradient(d: &[u8], fo: usize) -> Option<Gradient> {
 }
 
 /// 이미지 채움: BinData ID 참조를 풀어 원본 바이트를 얻는다.
-fn parse_image_fill(d: &[u8], fo: usize, doc: &Document) -> Option<Arc<Vec<u8>>> {
+fn parse_image_fill(
+    d: &[u8],
+    fo: usize,
+    doc: &Document,
+    issues: &mut RenderIssueAccumulator,
+) -> Option<Arc<Vec<u8>>> {
     // BYTE 이미지유형 + 그림정보(가변) ... 끝부분에 DWORD BinItem ID. 보수적으로 마지막
     // 4바이트 정렬 위치에서 유효한 bin id를 찾는다.
     for end in (fo + 1..=d.len().min(fo + 64)).rev() {
@@ -483,7 +516,7 @@ fn parse_image_fill(d: &[u8], fo: usize, doc: &Document) -> Option<Arc<Vec<u8>>>
             && id != 0
             && let Some(bytes) = doc.resolve_bin(&BinRef::Id(BinDataId(id)))
         {
-            return Some(Arc::new(bytes.to_vec()));
+            return Some(issues.cached_binary(bytes));
         }
     }
     None
@@ -800,8 +833,10 @@ mod tests {
             arrow_start: 0,
             arrow_end: 0,
             anchored: false,
+            description: None,
         };
-        draw_ir_shapes(&[rect], &mut page);
+        let mut issues = RenderIssueAccumulator::new();
+        draw_ir_shapes(&[rect], &mut page, &mut issues);
         assert_eq!(page.items.len(), 1);
         let Item::Path {
             commands,
@@ -840,8 +875,9 @@ mod tests {
             arrow_start: 0,
             arrow_end: 0,
             anchored: false,
+            description: None,
         };
-        draw_ir_shapes(&[invisible], &mut p2);
+        draw_ir_shapes(&[invisible], &mut p2, &mut issues);
         assert!(p2.items.is_empty(), "보이지 않는 도형은 생략");
     }
 
@@ -874,8 +910,10 @@ mod tests {
             arrow_start: 0,
             arrow_end: 0,
             anchored: false,
+            description: None,
         };
-        draw_ir_shapes(&[shape], &mut page);
+        let mut issues = RenderIssueAccumulator::new();
+        draw_ir_shapes(&[shape], &mut page, &mut issues);
         assert_eq!(page.items.len(), 1);
         let Item::Path { fill, .. } = &page.items[0] else {
             panic!("Path가 아님");
@@ -926,6 +964,7 @@ mod tests {
             arrow_start: 0,
             arrow_end: 0,
             anchored: false,
+            description: None,
         };
         // 직각: Move + Line×3 + Close = 5개, CubicTo 없음.
         let sharp = ir_shape_path(&base);
@@ -1022,8 +1061,10 @@ mod tests {
             arrow_start: 0,
             arrow_end: 1, // 끝 화살촉
             anchored: false,
+            description: None,
         };
-        draw_ir_shapes(&[line], &mut page);
+        let mut issues = RenderIssueAccumulator::new();
+        draw_ir_shapes(&[line], &mut page, &mut issues);
         // 선 path 1개 + 화살촉 path 1개 = 2.
         assert_eq!(page.items.len(), 2);
         // 화살촉(채움 있음, 선 없음)이 먼저 push된다.

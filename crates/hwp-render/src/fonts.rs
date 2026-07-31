@@ -9,6 +9,11 @@ use std::sync::Arc;
 
 use fontdb::{Database, Family, Query, Source};
 use hwp_model::Document;
+use sha2::{Digest as _, Sha256};
+
+use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
+
+pub const MAX_FONT_RESOLUTIONS: usize = 512;
 
 /// 한국어 문서용 폴백 글꼴 (분류 불가 시, 우선순위순).
 const FALLBACKS: &[&str] = &[
@@ -79,31 +84,74 @@ pub struct LoadedFont {
     pub family: String,
 }
 
+/// 렌더 중 실제로 관측한 글꼴 해석 결과.
+///
+/// 기존의 사람이 읽는 `report` 문자열과 별개인 안정된 기계 판독 표면이다. 인증기는
+/// 이 값만 사용하며 보고 문자열을 파싱하지 않는다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontResolution {
+    pub requested: String,
+    pub resolved: Option<String>,
+    pub resolved_sha256: Option<String>,
+    pub resolved_face_index: Option<u32>,
+    pub outcome: FontResolutionOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontResolutionOutcome {
+    Matched,
+    Substituted,
+    Missing,
+    /// 주 글꼴에 특정 글리프가 없어 문자 단위 폴백을 사용한 경우.
+    CoverageSubstituted,
+}
+
 pub struct FontStore {
     db: Database,
     /// fontdb ID → 로드된 폰트
     loaded: HashMap<fontdb::ID, Arc<LoadedFont>>,
     /// (요청 이름) → 해석 결과 캐시
     resolved: HashMap<String, Option<Arc<LoadedFont>>>,
-    /// 해석 리포트 (요청 → 결과)
-    pub report: Vec<String>,
+    /// 문서 문자열을 보관하지 않는 source-bounded 해석 진단.
+    pub issues: RenderIssueAccumulator,
+    /// 기계 판독 가능한 해석 결과. 같은 요청은 캐시되므로 한 번만 기록된다.
+    pub resolutions: Vec<FontResolution>,
+    pub resolutions_complete: bool,
 }
 
 impl FontStore {
     pub fn new() -> Self {
         let mut db = Database::new();
         db.load_system_fonts();
+        Self::from_database(db)
+    }
+
+    /// 시스템 글꼴을 전혀 읽지 않는 격리 resolver. 인증 경로는 명시적으로 지정한
+    /// 디렉터리만 `load_dir`로 추가해 환경별 ambient fallback을 차단한다.
+    pub fn new_isolated() -> Self {
+        Self::from_database(Database::new())
+    }
+
+    fn from_database(db: Database) -> Self {
         Self {
             db,
             loaded: HashMap::new(),
             resolved: HashMap::new(),
-            report: Vec::new(),
+            issues: RenderIssueAccumulator::new(),
+            resolutions: Vec::new(),
+            resolutions_complete: true,
         }
     }
 
     /// 추가 폰트 디렉터리 로드 (`--font-dir`).
     pub fn load_dir(&mut self, dir: &std::path::Path) {
         self.db.load_fonts_dir(dir);
+    }
+
+    /// 한 파일을 호출 순서대로 적재한다. 인증기는 검증된 manifest 정렬 순서를 그대로
+    /// 사용해 디렉터리 열거 순서가 face 선택에 영향을 주지 않게 한다.
+    pub fn load_file(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        self.db.load_font_file(path)
     }
 
     /// 문서의 (언어 슬롯, 글꼴 ID)를 실제 폰트로 해석한다.
@@ -116,8 +164,9 @@ impl FontStore {
         let face = doc.header.fonts.get(lang_slot)?.get(face_id as usize);
         let requested = face.map(|f| f.name.clone()).unwrap_or_default();
         let alt = face.and_then(|f| f.alt_name.clone());
+        let cache_key = format!("{requested}\0{}", alt.as_deref().unwrap_or(""));
 
-        if let Some(cached) = self.resolved.get(&requested) {
+        if let Some(cached) = self.resolved.get(&cache_key) {
             return cached.clone();
         }
 
@@ -140,10 +189,27 @@ impl FontStore {
         for name in &candidates {
             if let Some(font) = self.try_family(name) {
                 if *name != requested {
-                    self.report
-                        .push(format!("글꼴 대체: {requested:?} → {name:?}"));
+                    self.issues.push(
+                        RenderIssueCode::FontSubstituted,
+                        format!("{}\0{}", requested, name),
+                    );
+                    self.record_resolution(FontResolution {
+                        requested: requested.clone(),
+                        resolved: Some(font.family.clone()),
+                        resolved_sha256: Some(sha256_hex(&font.data)),
+                        resolved_face_index: Some(font.index),
+                        outcome: FontResolutionOutcome::Substituted,
+                    });
                 } else {
-                    self.report.push(format!("글꼴 일치: {requested:?}"));
+                    self.issues
+                        .push(RenderIssueCode::FontMatched, requested.as_bytes());
+                    self.record_resolution(FontResolution {
+                        requested: requested.clone(),
+                        resolved: Some(font.family.clone()),
+                        resolved_sha256: Some(sha256_hex(&font.data)),
+                        resolved_face_index: Some(font.index),
+                        outcome: FontResolutionOutcome::Matched,
+                    });
                 }
                 result = Some(font);
                 break;
@@ -157,17 +223,31 @@ impl FontStore {
             })
             && let Some(font) = self.load_by_id(id)
         {
-            self.report.push(format!(
-                "글꼴 대체(최후): {requested:?} → 시스템 기본 {:?}",
-                font.family
-            ));
+            self.issues.push(
+                RenderIssueCode::FontSubstituted,
+                format!("{}\0{}", requested, font.family),
+            );
+            self.record_resolution(FontResolution {
+                requested: requested.clone(),
+                resolved: Some(font.family.clone()),
+                resolved_sha256: Some(sha256_hex(&font.data)),
+                resolved_face_index: Some(font.index),
+                outcome: FontResolutionOutcome::Substituted,
+            });
             result = Some(font);
         }
         if result.is_none() {
-            self.report
-                .push(format!("글꼴 해석 실패: {requested:?} (폴백 전부 없음)"));
+            self.issues
+                .push(RenderIssueCode::FontMissing, requested.as_bytes());
+            self.record_resolution(FontResolution {
+                requested: requested.clone(),
+                resolved: None,
+                resolved_sha256: None,
+                resolved_face_index: None,
+                outcome: FontResolutionOutcome::Missing,
+            });
         }
-        self.resolved.insert(requested, result.clone());
+        self.resolved.insert(cache_key, result.clone());
         result
     }
 
@@ -196,9 +276,25 @@ impl FontStore {
             if let Some(font) = self.try_family(name)
                 && font_has_char(&font, c)
             {
+                self.record_resolution(FontResolution {
+                    requested: "coverage_fallback".to_string(),
+                    resolved: Some(font.family.clone()),
+                    resolved_sha256: Some(sha256_hex(&font.data)),
+                    resolved_face_index: Some(font.index),
+                    outcome: FontResolutionOutcome::CoverageSubstituted,
+                });
                 result = Some(font);
                 break;
             }
+        }
+        if result.is_none() {
+            self.record_resolution(FontResolution {
+                requested: "coverage_fallback".to_string(),
+                resolved: None,
+                resolved_sha256: None,
+                resolved_face_index: None,
+                outcome: FontResolutionOutcome::Missing,
+            });
         }
         self.resolved.insert(key, result.clone());
         result
@@ -210,6 +306,25 @@ impl FontStore {
             ..Query::default()
         })?;
         self.load_by_id(id)
+    }
+
+    fn record_resolution(&mut self, resolution: FontResolution) {
+        if self
+            .resolutions
+            .iter()
+            .any(|existing| existing == &resolution)
+        {
+            return;
+        }
+        if self.resolutions.len() >= MAX_FONT_RESOLUTIONS {
+            self.issues.push_once(
+                RenderIssueCode::FontResolutionBudgetExceeded,
+                b"font_resolution_budget_exceeded",
+            );
+            self.resolutions_complete = false;
+            return;
+        }
+        self.resolutions.push(resolution);
     }
 
     fn load_by_id(&mut self, id: fontdb::ID) -> Option<Arc<LoadedFont>> {
@@ -238,6 +353,13 @@ impl FontStore {
     }
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 impl Default for FontStore {
     fn default() -> Self {
         Self::new()
@@ -250,4 +372,32 @@ fn font_has_char(font: &LoadedFont, c: char) -> bool {
         .ok()
         .and_then(|f| f.glyph_index(c))
         .is_some_and(|g| g.0 != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn more_than_512_distinct_font_requests_are_bounded_and_fatal() {
+        let mut store = FontStore::new_isolated();
+        for index in 0..=MAX_FONT_RESOLUTIONS {
+            store.record_resolution(FontResolution {
+                requested: format!("font-{index}"),
+                resolved: None,
+                resolved_sha256: None,
+                resolved_face_index: None,
+                outcome: FontResolutionOutcome::Missing,
+            });
+        }
+        assert_eq!(store.resolutions.len(), MAX_FONT_RESOLUTIONS);
+        assert!(!store.resolutions_complete);
+        let report = store.issues.finish();
+        assert_eq!(report.issue_count, 1);
+        assert_eq!(
+            report.issues[0].code,
+            RenderIssueCode::FontResolutionBudgetExceeded
+        );
+        assert!(report.has_required_failure());
+    }
 }

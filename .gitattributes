@@ -1,0 +1,5 @@
+# Hash-pinned corpus text must not be rewritten by core.autocrlf on Windows.
+corpus/structured-v1/** text eol=lf
+schemas/*.json text eol=lf
+docs/**/*.md text eol=lf
+*.rs text eol=lf

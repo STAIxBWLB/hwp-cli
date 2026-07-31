@@ -4,6 +4,6 @@ pub mod compress;
 pub mod reader;
 pub mod writer;
 
-pub use compress::{compress, decompress};
+pub use compress::{compress, decompress, decompress_bounded};
 pub use reader::ByteReader;
 pub use writer::ByteWriter;

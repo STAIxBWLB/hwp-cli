@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/document-report-v2.schema.json",
+  "title": "hwp-cli DocumentSpec v2 compose report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "base_schema_version",
+    "dry_run",
+    "deterministic",
+    "target_format",
+    "sections",
+    "paragraphs",
+    "tables",
+    "images",
+    "equations",
+    "fields",
+    "visuals",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "base_schema_version": { "const": "1.0" },
+    "dry_run": { "type": "boolean" },
+    "deterministic": { "const": true },
+    "target_format": { "$ref": "#/$defs/target" },
+    "sections": { "$ref": "#/$defs/count" },
+    "paragraphs": { "$ref": "#/$defs/count" },
+    "tables": { "$ref": "#/$defs/count" },
+    "images": { "$ref": "#/$defs/count" },
+    "equations": { "$ref": "#/$defs/count" },
+    "fields": { "$ref": "#/$defs/count" },
+    "visuals": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/visualReport" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "target": { "enum": ["hwp", "hwpx"] },
+    "count": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "visualReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "requested_policy",
+        "resolved_representation",
+        "target_format",
+        "capability_reason",
+        "semantic_sha256",
+        "dimensions"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" },
+        "kind": { "enum": ["image", "svg", "text_box"] },
+        "requested_policy": {
+          "enum": ["required_native", "prefer_native", "force_visual_fallback"]
+        },
+        "resolved_representation": { "enum": ["native", "visual_fallback"] },
+        "target_format": { "$ref": "#/$defs/target" },
+        "capability_reason": {
+          "enum": [
+            "exact_raster_embedding_available",
+            "native_hwpx_rectangle_text_box_available",
+            "crop_or_rotation_requires_raster_fallback; deterministic_raster_fallback_available",
+            "forced_by_policy; deterministic_raster_fallback_available",
+            "svg_requires_deterministic_png_fallback; sanitized_svg_to_png_fallback_available",
+            "forced_by_policy; sanitized_svg_to_png_fallback_available"
+          ]
+        },
+        "semantic_sha256": { "$ref": "#/$defs/sha256" },
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "sanitized_svg_sha256": { "$ref": "#/$defs/sha256" },
+        "media_sha256": { "$ref": "#/$defs/sha256" },
+        "media_type": { "enum": ["image/png", "image/jpeg", "image/gif", "image/bmp"] },
+        "dimensions": { "$ref": "#/$defs/dimensions" }
+      },
+      "oneOf": [
+        {
+          "required": ["source_sha256", "media_sha256", "media_type"],
+          "properties": {
+            "kind": { "const": "image" },
+            "requested_policy": { "enum": ["required_native", "prefer_native"] },
+            "resolved_representation": { "const": "native" },
+            "capability_reason": { "const": "exact_raster_embedding_available" }
+          },
+          "not": { "required": ["sanitized_svg_sha256"] }
+        },
+        {
+          "required": ["source_sha256", "media_sha256", "media_type"],
+          "properties": {
+            "kind": { "const": "image" },
+            "requested_policy": { "const": "prefer_native" },
+            "resolved_representation": { "const": "visual_fallback" },
+            "capability_reason": {
+              "const": "crop_or_rotation_requires_raster_fallback; deterministic_raster_fallback_available"
+            },
+            "media_type": { "const": "image/png" }
+          },
+          "not": { "required": ["sanitized_svg_sha256"] }
+        },
+        {
+          "required": ["source_sha256", "media_sha256", "media_type"],
+          "properties": {
+            "kind": { "const": "image" },
+            "requested_policy": { "const": "force_visual_fallback" },
+            "resolved_representation": { "const": "visual_fallback" },
+            "capability_reason": {
+              "const": "forced_by_policy; deterministic_raster_fallback_available"
+            },
+            "media_type": { "const": "image/png" }
+          },
+          "not": { "required": ["sanitized_svg_sha256"] }
+        },
+        {
+          "required": [
+            "source_sha256",
+            "sanitized_svg_sha256",
+            "media_sha256",
+            "media_type"
+          ],
+          "properties": {
+            "kind": { "const": "svg" },
+            "requested_policy": { "const": "prefer_native" },
+            "resolved_representation": { "const": "visual_fallback" },
+            "capability_reason": {
+              "const": "svg_requires_deterministic_png_fallback; sanitized_svg_to_png_fallback_available"
+            },
+            "media_type": { "const": "image/png" }
+          }
+        },
+        {
+          "required": [
+            "source_sha256",
+            "sanitized_svg_sha256",
+            "media_sha256",
+            "media_type"
+          ],
+          "properties": {
+            "kind": { "const": "svg" },
+            "requested_policy": { "const": "force_visual_fallback" },
+            "resolved_representation": { "const": "visual_fallback" },
+            "capability_reason": {
+              "const": "forced_by_policy; sanitized_svg_to_png_fallback_available"
+            },
+            "media_type": { "const": "image/png" }
+          }
+        },
+        {
+          "properties": {
+            "kind": { "const": "text_box" },
+            "requested_policy": { "enum": ["required_native", "prefer_native"] },
+            "target_format": { "const": "hwpx" },
+            "resolved_representation": { "const": "native" },
+            "capability_reason": { "const": "native_hwpx_rectangle_text_box_available" }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["source_sha256"] },
+              { "required": ["sanitized_svg_sha256"] },
+              { "required": ["media_sha256"] },
+              { "required": ["media_type"] }
+            ]
+          }
+        }
+      ]
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width_mm", "height_mm", "width_px", "height_px"],
+      "properties": {
+        "width_mm": { "type": "number", "minimum": 0.1, "maximum": 500 },
+        "height_mm": { "type": "number", "minimum": 0.1, "maximum": 500 },
+        "width_px": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "height_px": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      }
+    }
+  }
+}

@@ -18,6 +18,10 @@ pub mod read;
 pub mod write;
 
 pub use error::HwpxError;
-pub use package::HwpxPackage;
-pub use read::{ReadResult, parse_content_meta, read_document};
-pub use write::write_document;
+pub use package::{
+    HwpxPackage, NATIVE_PACKAGE_LIMITS, NATIVE_PACKAGE_LIMITS_PROFILE,
+    NATIVE_PACKAGE_LIMITS_PROFILE_NAME, NATIVE_PACKAGE_LIMITS_RATIONALE, PackageLimits,
+    PackageLimitsProfile,
+};
+pub use read::{ReadResult, parse_content_meta, read_document, read_structure};
+pub use write::{DEFAULT_SETTINGS_XML, DEFAULT_VERSION_XML, write_document};

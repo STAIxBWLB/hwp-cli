@@ -1,0 +1,33 @@
+{
+  "version": "2.0",
+  "document": {
+    "version": "1.0",
+    "sections": [
+      {
+        "blocks": [
+          {
+            "type": "paragraph",
+            "runs": [
+              { "type": "text", "text": "DocumentSpec v2 visual anchor" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "visuals": [
+    {
+      "id": "blue_square",
+      "location": { "section": 0, "paragraph": 0 },
+      "policy": {
+        "hwp": "force_visual_fallback",
+        "hwpx": "force_visual_fallback"
+      },
+      "title": "Blue square",
+      "alt": "A blue square inside a transparent margin.",
+      "width_mm": 30,
+      "height_mm": 30,
+      "content": { "type": "svg", "path": "visual.svg" }
+    }
+  ]
+}

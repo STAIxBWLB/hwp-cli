@@ -1,0 +1,240 @@
+{
+  "schema_version": "1.0",
+  "contract": "hwp-structured-corpus-v1",
+  "profile": "structured-smoke-native-v1",
+  "policy": {
+    "path": "native-policy.json",
+    "sha256": "2da9ef212ac3c5e10c85229d62e307e0c29a8e06a848e47feb039db1fd09fdb8"
+  },
+  "fonts": [
+    {
+      "path": "fonts/NotoSansKR[wght].ttf",
+      "sha256": "194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252",
+      "license_path": "fonts/OFL.txt",
+      "license_sha256": "1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9",
+      "metadata_path": "fonts/METADATA.pb",
+      "metadata_sha256": "9b8b27c0dd1adbb0057d1fbe9534207ab3606114ace6755453d14668912471a1",
+      "license": "OFL-1.1",
+      "source_repository": "https://github.com/google/fonts",
+      "source_revision": "2796410152d4f9524b68ed46e69c1b60f8e0f7c3",
+      "source_url": "https://raw.githubusercontent.com/google/fonts/2796410152d4f9524b68ed46e69c1b60f8e0f7c3/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf"
+    }
+  ],
+  "cases": [
+    {
+      "id": "official-letter",
+      "category": "korean-official-letter",
+      "generator": {
+        "kind": "document_spec",
+        "source": {
+          "path": "cases/official-letter/spec.json",
+          "sha256": "ca1977e0296162c3ec5f45fdda160f842f00bf029239307ed540b03b815b43c5"
+        },
+        "format": "json"
+      },
+      "formats": ["hwpx", "hwp"],
+      "expected": {
+        "semantic": {
+          "required_text": ["AI 교육혁신 협의회 개최 안내", "AI혁신처-2026-0801", "붙임  회의자료 1부"],
+          "min_sections": 1,
+          "min_paragraphs": 8,
+          "min_tables": 1,
+          "min_text_chars": 120
+        },
+        "certification": {
+          "selected_pages": [1],
+          "page_count_min": 1,
+          "page_count_max": 1,
+          "require_nonblank": true,
+          "require_complete_diagnostics": true,
+          "max_render_issue_count": 0
+        }
+      }
+    },
+    {
+      "id": "approval-memo",
+      "category": "approval-draft-memo",
+      "generator": {
+        "kind": "document_spec",
+        "source": {
+          "path": "cases/approval-memo/spec.json",
+          "sha256": "9b7c967ae7a86dc289a91d1a2eaed3a885f040909e2627de3fc5a1d6c5c17acb"
+        },
+        "format": "json"
+      },
+      "formats": ["hwpx", "hwp"],
+      "expected": {
+        "semantic": {
+          "required_text": ["AI 실습실 장비 도입 기안", "GPU 워크스테이션 도입", "구매 절차 추진 승인"],
+          "min_sections": 1,
+          "min_paragraphs": 8,
+          "min_tables": 1,
+          "min_text_chars": 100
+        },
+        "certification": {
+          "selected_pages": [1],
+          "page_count_min": 1,
+          "page_count_max": 1,
+          "require_nonblank": true,
+          "require_complete_diagnostics": true,
+          "max_render_issue_count": 0
+        }
+      }
+    },
+    {
+      "id": "report",
+      "category": "report",
+      "generator": {
+        "kind": "document_spec",
+        "source": {
+          "path": "cases/report/spec.json",
+          "sha256": "443322e3c9758ff1c8003618b9f4554c12b9283eee5219223b9ff21b026b21c8"
+        },
+        "format": "json"
+      },
+      "formats": ["hwpx", "hwp"],
+      "expected": {
+        "semantic": {
+          "required_text": ["2026년 상반기 AI 교육혁신 추진실적 보고", "Ⅱ. 주요 실적", "Ⅲ. 향후 계획"],
+          "min_sections": 1,
+          "min_paragraphs": 8,
+          "min_tables": 1,
+          "min_text_chars": 120
+        },
+        "certification": {
+          "selected_pages": [1],
+          "page_count_min": 1,
+          "page_count_max": 1,
+          "require_nonblank": true,
+          "require_complete_diagnostics": true,
+          "max_render_issue_count": 0
+        }
+      }
+    },
+    {
+      "id": "business-plan",
+      "category": "business-plan",
+      "generator": {
+        "kind": "document_spec",
+        "source": {
+          "path": "cases/business-plan/spec.json",
+          "sha256": "447584e6cfbfaa16806932362e1fe54b980d4fb9f953b171c32f74c51c5302fc"
+        },
+        "format": "json"
+      },
+      "formats": ["hwpx", "hwp"],
+      "expected": {
+        "semantic": {
+          "required_text": ["지역산업 AI 전환 인재양성 사업계획", "기업연계 프로젝트 30건", "4. 성과관리"],
+          "min_sections": 1,
+          "min_paragraphs": 8,
+          "min_tables": 1,
+          "min_text_chars": 120
+        },
+        "certification": {
+          "selected_pages": [1],
+          "page_count_min": 1,
+          "page_count_max": 1,
+          "require_nonblank": true,
+          "require_complete_diagnostics": true,
+          "max_render_issue_count": 0
+        }
+      }
+    },
+    {
+      "id": "meeting-minutes",
+      "category": "meeting-minutes",
+      "generator": {
+        "kind": "document_spec",
+        "source": {
+          "path": "cases/meeting-minutes/spec.json",
+          "sha256": "e6578d29a2ce8a97117cdbea6f6525c5b335f122db9e40dce5b066c62c408f88"
+        },
+        "format": "json"
+      },
+      "formats": ["hwpx", "hwp"],
+      "expected": {
+        "semantic": {
+          "required_text": ["AI 교육과정위원회 회의록", "안건 1. 생성형 AI 교과목 신설", "폐회: 11:30"],
+          "min_sections": 1,
+          "min_paragraphs": 8,
+          "min_tables": 1,
+          "min_text_chars": 120
+        },
+        "certification": {
+          "selected_pages": [1],
+          "page_count_min": 1,
+          "page_count_max": 1,
+          "require_nonblank": true,
+          "require_complete_diagnostics": true,
+          "max_render_issue_count": 0
+        }
+      }
+    },
+    {
+      "id": "academic-education",
+      "category": "academic-education",
+      "generator": {
+        "kind": "document_spec",
+        "source": {
+          "path": "cases/academic-education/spec.json",
+          "sha256": "b55b1885570fcfa788416540247edaf799001e984f8317814430ac6230a7454e"
+        },
+        "format": "json"
+      },
+      "formats": ["hwpx", "hwp"],
+      "expected": {
+        "semantic": {
+          "required_text": ["생성형 AI 활용 수업계획서", "학습성과 2.", "평가방법: 프로젝트 50%"],
+          "min_sections": 1,
+          "min_paragraphs": 10,
+          "min_tables": 2,
+          "min_text_chars": 140
+        },
+        "certification": {
+          "selected_pages": [1],
+          "page_count_min": 1,
+          "page_count_max": 1,
+          "require_nonblank": true,
+          "require_complete_diagnostics": true,
+          "max_render_issue_count": 0
+        }
+      }
+    },
+    {
+      "id": "print-form",
+      "category": "print-form",
+      "generator": {
+        "kind": "template_spec_data",
+        "template": {
+          "path": "cases/print-form/template.yaml",
+          "sha256": "adaacd4548ffc2cda00d20d4ddec1d8756c6653103afba4c3b640fa60386dfb7"
+        },
+        "template_format": "yaml",
+        "data": {
+          "path": "cases/print-form/data.json",
+          "sha256": "01823db8a54d48d9d72eb4816fdca77de6bba534fec394f9e1c9c5e06617131c"
+        },
+        "data_format": "json"
+      },
+      "formats": ["hwpx", "hwp"],
+      "expected": {
+        "semantic": {
+          "required_text": ["AI 실습실 사용 신청서", "생성형 AI 프로젝트 실습", "AI혁신처장 귀하"],
+          "min_sections": 1,
+          "min_paragraphs": 8,
+          "min_tables": 1,
+          "min_text_chars": 90
+        },
+        "certification": {
+          "selected_pages": [1],
+          "page_count_min": 1,
+          "page_count_max": 1,
+          "require_nonblank": true,
+          "require_complete_diagnostics": true,
+          "max_render_issue_count": 0
+        }
+      }
+    }
+  ]
+}

@@ -28,6 +28,7 @@ use subsetter::{GlyphRemapper, subset};
 use crate::display::{DisplayList, Fill, Gradient, Item, PathCmd, Stroke, path_bbox};
 use crate::error::RenderError;
 use crate::fonts::LoadedFont;
+use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 use crate::shape::ShapedRun;
 
 /// 합성 기울임 탄젠트 (png.rs/svg.rs와 동일, ≈12°).
@@ -36,7 +37,10 @@ const ITALIC_SKEW: f32 = 0.2126;
 const BOLD_STROKE: f32 = 0.045;
 
 /// 문서 전체를 단일 멀티페이지 PDF 바이트로 렌더링한다.
-pub fn render_pdf(list: &DisplayList, warnings: &mut Vec<String>) -> Result<Vec<u8>, RenderError> {
+pub fn render_pdf(
+    list: &DisplayList,
+    warnings: &mut RenderIssueAccumulator,
+) -> Result<Vec<u8>, RenderError> {
     // ── 1. 폰트 수집: 고유 폰트별 사용 글리프 + 원문(ToUnicode) 누적 ──
     let mut fonts: Vec<FontInfo> = Vec::new();
     let mut font_index: HashMap<(usize, u32), usize> = HashMap::new();
@@ -85,7 +89,7 @@ pub fn render_pdf(list: &DisplayList, warnings: &mut Vec<String>) -> Result<Vec<
                 // 서브셋 실패: 전체 폰트 임베드 + 원본 글리프 ID 사용 (조용한 누락 금지).
                 f.subset_ok = false;
                 f.subset_bytes = f.data.as_ref().clone();
-                warnings.push(format!("폰트 서브셋 실패 → 전체 임베드: {e:?}"));
+                warnings.push(RenderIssueCode::FontSubsetFallback, format!("{e:?}"));
             }
         }
         // 서브셋 폰트는 관례상 6글자 태그 접두사("ABCDEF+이름")를 BaseFont에 붙인다.
@@ -179,7 +183,7 @@ pub fn render_pdf(list: &DisplayList, warnings: &mut Vec<String>) -> Result<Vec<
                         content.set_fill_rgb(1.0, 0.0, 1.0);
                         content.rect(*x, h - (*y + *ih), *iw, *ih);
                         content.fill_nonzero();
-                        warnings.push("이미지 디코드 실패 — placeholder 표시".to_string());
+                        warnings.push(RenderIssueCode::ImageDecodePlaceholder, b"pdf");
                     }
                 },
                 Item::Glyphs { x, y, run } => {

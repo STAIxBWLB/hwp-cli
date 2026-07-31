@@ -7,6 +7,8 @@
 
 use hwp_model::NumFmt;
 
+use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PageNumberPlacement {
     pub position: u8,
@@ -88,12 +90,6 @@ fn char_text(value: u16) -> String {
         .unwrap_or_default()
 }
 
-fn warn_once(warnings: &mut Vec<String>, message: String) {
-    if !warnings.iter().any(|w| w == &message) {
-        warnings.push(message);
-    }
-}
-
 /// Render the number-shape codes already represented by `hwp-model`.
 ///
 /// Other official HWP shapes are kept visible as decimal rather than being
@@ -104,7 +100,7 @@ pub(crate) fn format_page_number(
     user_char: u16,
     prefix_char: u16,
     suffix_char: u16,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> String {
     let fmt = match format {
         0 => Some(NumFmt::Digit),
@@ -122,10 +118,7 @@ pub(crate) fn format_page_number(
     } else if user_char != 0 {
         char_text(user_char)
     } else {
-        warn_once(
-            warnings,
-            format!("쪽번호 서식 코드 {format} 미지원 - 십진수로 대체"),
-        );
+        warnings.push_once(RenderIssueCode::PageNumberFormatFallback, [format]);
         number.to_string()
     };
     format!(
@@ -139,7 +132,7 @@ pub(crate) fn format_page_number(
 pub(crate) fn format_placement(
     number: u32,
     placement: PageNumberPlacement,
-    warnings: &mut Vec<String>,
+    warnings: &mut RenderIssueAccumulator,
 ) -> String {
     let inner = format_page_number(
         number,
@@ -163,16 +156,18 @@ mod tests {
 
     #[test]
     fn pgnp_파싱과_장식() {
+        let mut issues = RenderIssueAccumulator::new();
         let mut data = vec![0u8; 12];
         data[..4].copy_from_slice(&(5u32 << 8).to_le_bytes());
         data[10..12].copy_from_slice(&('-' as u16).to_le_bytes());
         let placement = parse_pgnp(&data).expect("valid pgnp");
         assert_eq!(placement.position, 5);
-        assert_eq!(format_placement(3, placement, &mut Vec::new()), "- 3 -");
+        assert_eq!(format_placement(3, placement, &mut issues), "- 3 -");
     }
 
     #[test]
     fn atno_페이지_종류와_서식() {
+        let mut issues = RenderIssueAccumulator::new();
         let props = (2u32 << 4) | (1 << 12);
         let mut data = vec![0u8; 12];
         data[..4].copy_from_slice(&props.to_le_bytes());
@@ -188,7 +183,7 @@ mod tests {
                 auto.user_char,
                 auto.prefix_char,
                 auto.suffix_char,
-                &mut Vec::new(),
+                &mut issues,
             ),
             "(IV)"
         );
@@ -207,9 +202,9 @@ mod tests {
 
     #[test]
     fn 미지원_서식은_보이게_폴백하고_한번만_경고() {
-        let mut warnings = Vec::new();
+        let mut warnings = RenderIssueAccumulator::new();
         assert_eq!(format_page_number(12, 77, 0, 0, 0, &mut warnings), "12");
         assert_eq!(format_page_number(13, 77, 0, 0, 0, &mut warnings), "13");
-        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings.finish().issue_count, 1);
     }
 }

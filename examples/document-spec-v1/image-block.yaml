@@ -1,0 +1,11 @@
+version: "1.0"
+sections:
+  - blocks:
+      - type: image
+        path: assets/logo.png
+        width_mm: 32
+        placement: inline
+      - type: paragraph
+        runs:
+          - type: text
+            text: 이미지는 명세 파일을 기준으로 상대 경로를 해석합니다.

@@ -22,7 +22,23 @@ pub struct ReadResult {
 
 /// HWPX 파일을 IR로 읽는다.
 pub fn read_document(path: &Path) -> Result<ReadResult> {
+    read_document_impl(path, true)
+}
+
+/// HWPX의 구조와 XML을 읽되 `BinData/*` 본문은 압축 해제하지 않는다.
+///
+/// 모든 비디렉터리 엔트리를 EOF까지 `sink`로 스트리밍해 CRC/압축 스트림을 검증하되,
+/// 실제 이미지는 IR에 적재하지 않아 큰 정상 문서도 첨부 크기에 비례한 메모리를 쓰지
+/// 않는다.
+pub fn read_structure(path: &Path) -> Result<ReadResult> {
+    read_document_impl(path, false)
+}
+
+fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult> {
     let mut pkg = HwpxPackage::open(path)?;
+    // 파서가 직접 사용하지 않는 Preview/BinData/확장 파트도 손상 여부를 놓치지
+    // 않는다. 실제 바이트는 보관하지 않으며, 이후 필요한 파트만 다시 읽는다.
+    pkg.verify_integrity()?;
     let mut warnings = Vec::new();
 
     let header_xml = pkg.read_entry_string("Contents/header.xml")?;
@@ -44,13 +60,15 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
 
     // 첨부 바이너리 (이미지 등) — BinRef::ItemRef는 항목 이름 휴리스틱으로 해석
     let mut bin_streams = Vec::new();
-    for entry in pkg.entries()? {
-        if entry.name.starts_with("BinData/") {
-            let data = pkg.read_entry(&entry.name)?;
-            bin_streams.push(hwp_model::BinStream {
-                name: entry.name,
-                data,
-            });
+    if load_binary_data {
+        for entry in pkg.entries()? {
+            if entry.name.starts_with("BinData/") {
+                let data = pkg.read_entry(&entry.name)?;
+                bin_streams.push(hwp_model::BinStream {
+                    name: entry.name,
+                    data,
+                });
+            }
         }
     }
 
@@ -111,18 +129,18 @@ pub fn parse_content_meta(xml: &str) -> hwp_model::Metadata {
     use quick_xml::events::Event;
     let mut meta = hwp_model::Metadata::default();
     let mut reader = quick_xml::Reader::from_str(xml);
-    let mut capture: Option<&'static str> = None;
+    let mut capture: Option<(&'static str, String)> = None;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => match e.local_name().as_ref() {
                 // 구형: dc:title/dc:creator/dc:subject 요소 텍스트.
-                b"title" => capture = Some("title"),
-                b"creator" => capture = Some("author"),
-                b"subject" => capture = Some("subject"),
+                b"title" => capture = Some(("title", String::new())),
+                b"creator" => capture = Some(("author", String::new())),
+                b"subject" => capture = Some(("subject", String::new())),
                 b"meta" => {
                     keywords_from_meta(&e, &mut meta);
                     // 값을 요소 텍스트로 담는 meta는 다음 Text 이벤트에서 채운다.
-                    capture = meta_capture(&e);
+                    capture = meta_capture(&e).map(|field| (field, String::new()));
                 }
                 _ => capture = None,
             },
@@ -133,33 +151,66 @@ pub fn parse_content_meta(xml: &str) -> hwp_model::Metadata {
                 }
             }
             Ok(Event::Text(t)) => {
-                if let Some(field) = capture.take() {
-                    let s = t.xml10_content().unwrap_or_default().trim().to_string();
-                    if !s.is_empty() {
-                        match field {
-                            "title" => meta.title = Some(s),
-                            "author" => meta.author = Some(s),
-                            "subject" => meta.subject = Some(s),
-                            "keywords" => meta.keywords = Some(s),
-                            "description" => meta.description = Some(s),
-                            "last_saved_by" => meta.last_saved_by = Some(s),
-                            "create_time" => {
-                                meta.create_time = hwp_model::iso8601_utc_to_filetime(&s)
-                            }
-                            "modify_time" => {
-                                meta.modify_time = hwp_model::iso8601_utc_to_filetime(&s)
-                            }
-                            _ => {}
-                        }
-                    }
+                if let Some((_, value)) = &mut capture {
+                    value.push_str(&t.xml10_content().unwrap_or_default());
                 }
             }
-            Ok(Event::End(_)) => capture = None,
+            // quick-xml 0.40은 `&gt;` 같은 참조를 Text에 합치지 않고 별도
+            // GeneralRef 이벤트로 방출한다. 첫 Text에서 캡처를 끝내면
+            // `A=&gt;B`가 `A=`로 잘리므로 닫는 태그까지 모두 모아 해석한다.
+            Ok(Event::GeneralRef(r)) => {
+                if let Some((_, value)) = &mut capture
+                    && let Some(c) = resolve_entity(&r)
+                {
+                    value.push(c);
+                }
+            }
+            Ok(Event::CData(t)) => {
+                if let Some((_, value)) = &mut capture {
+                    value.push_str(&t.xml10_content().unwrap_or_default());
+                }
+            }
+            Ok(Event::End(_)) => {
+                if let Some((field, value)) = capture.take() {
+                    set_metadata_field(&mut meta, field, value.trim());
+                }
+            }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
     meta
+}
+
+fn resolve_entity(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {
+    r.resolve_char_ref()
+        .ok()
+        .flatten()
+        .or_else(|| match &r[..] {
+            b"amp" => Some('&'),
+            b"lt" => Some('<'),
+            b"gt" => Some('>'),
+            b"quot" => Some('"'),
+            b"apos" => Some('\''),
+            _ => None,
+        })
+}
+
+fn set_metadata_field(meta: &mut hwp_model::Metadata, field: &str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    match field {
+        "title" => meta.title = Some(value.to_string()),
+        "author" => meta.author = Some(value.to_string()),
+        "subject" => meta.subject = Some(value.to_string()),
+        "keywords" => meta.keywords = Some(value.to_string()),
+        "description" => meta.description = Some(value.to_string()),
+        "last_saved_by" => meta.last_saved_by = Some(value.to_string()),
+        "create_time" => meta.create_time = hwp_model::iso8601_utc_to_filetime(value),
+        "modify_time" => meta.modify_time = hwp_model::iso8601_utc_to_filetime(value),
+        _ => {}
+    }
 }
 
 /// `<opf:meta name="...">`의 name 속성 → 캡처 대상 필드 태그(요소 텍스트를 값으로 담는 것).
