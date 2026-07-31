@@ -695,9 +695,12 @@ fn process_package(
 
     validate_staged_package(staged_guard.path(), limits)?;
     apply_destination_permissions(staged_guard.path(), &destination)?;
-    File::open(staged_guard.path())?.sync_all()?;
+    File::open(staged_guard.path())
+        .and_then(|file| file.sync_all())
+        .map_err(|error| labeled_io("staged sync", error))?;
     recheck_destination(output, &destination)?;
-    atomic_publish(staged_guard.path(), output)?;
+    atomic_publish(staged_guard.path(), output)
+        .map_err(|error| labeled_io("atomic_publish", error))?;
     staged_guard.disarm();
     sync_parent_directory(output);
     Ok(())
@@ -1204,7 +1207,7 @@ impl SiblingTemp {
                     return Ok((Self { path, armed: true }, file));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(labeled_io("staged create", error).into()),
             }
         }
         Err(std::io::Error::new(
@@ -1232,6 +1235,11 @@ impl Drop for SiblingTemp {
             let _ = fs::remove_file(&self.path);
         }
     }
+}
+
+/// io 오류에 연산 이름을 남긴다 — 상위(MCP 등)에서 체인이 평탄화돼도 어느 단계인지 보인다.
+fn labeled_io(operation: &str, error: std::io::Error) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{operation}: {error}"))
 }
 
 fn open_private_new(path: &Path) -> std::io::Result<File> {
