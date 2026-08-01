@@ -135,8 +135,17 @@ impl Builder<'_> {
     }
 
     /// Paragraph properties (style, numbering, alignment, spacing, indent).
+    ///
+    /// CT_PPr is a *sequence*: children must be emitted in schema order
+    /// (pStyle → numPr → spacing → ind → jc) and `w:spacing` may appear at most once.
+    /// Word refuses to open the file otherwise, so each part is built separately and
+    /// assembled in order at the end.
     fn ppr(&self, para: &Paragraph) -> String {
-        let mut ppr = String::from("<w:pPr>");
+        let mut style = String::new();
+        let mut numpr = String::new();
+        let mut spacing = String::new();
+        let mut ind_attrs = String::new();
+        let mut jc_xml = String::new();
         // "개요 N" style → HeadingN.
         if let Some(level) = self
             .doc
@@ -147,7 +156,7 @@ impl Builder<'_> {
             .and_then(|n| n.trim().parse::<u8>().ok())
             .filter(|n| (1..=6).contains(n))
         {
-            ppr.push_str(&format!("<w:pStyle w:val=\"Heading{level}\"/>"));
+            style = format!("<w:pStyle w:val=\"Heading{level}\"/>");
         }
         if let Some(ps) = self.doc.header.para_shapes.get(para.para_shape.0 as usize) {
             // Numbered/bullet list.
@@ -159,10 +168,11 @@ impl Builder<'_> {
                 } else {
                     u32::from(ps.numbering_id) + 1
                 };
-                ppr.push_str(&format!(
-                    "<w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{num_id}\"/></w:numPr>",
-                    level.saturating_sub(1)
-                ));
+                // w:ilvl is 0..=8 in OOXML; HWP levels beyond that are clamped.
+                let ilvl = u32::from(level.saturating_sub(1)).min(MAX_ILVL);
+                numpr = format!(
+                    "<w:numPr><w:ilvl w:val=\"{ilvl}\"/><w:numId w:val=\"{num_id}\"/></w:numPr>"
+                );
             }
             // Alignment.
             let jc = match ps.alignment() {
@@ -172,55 +182,62 @@ impl Builder<'_> {
                 4 | 5 => "distribute",
                 _ => "both",
             };
-            ppr.push_str(&format!("<w:jc w:val=\"{jc}\"/>"));
+            jc_xml = format!("<w:jc w:val=\"{jc}\"/>");
             // Line spacing — PERCENT uses lineRule=auto (240=single); length kinds use exact/atLeast.
-            match ps.line_spacing_type {
-                1 => ppr.push_str(&format!(
-                    "<w:spacing w:line=\"{}\" w:lineRule=\"exact\"/>",
-                    ps.line_spacing / 10
-                )),
-                3 => ppr.push_str(&format!(
-                    "<w:spacing w:line=\"{}\" w:lineRule=\"atLeast\"/>",
-                    ps.line_spacing / 10
-                )),
-                _ if ps.line_spacing > 0 && ps.line_spacing != 160 => ppr.push_str(&format!(
-                    "<w:spacing w:line=\"{}\" w:lineRule=\"auto\"/>",
-                    ps.line_spacing * 240 / 100
-                )),
-                _ => {}
-            }
-            // Paragraph spacing/indent — the IR uses hwp5 2× units, so twips is value/10.
-            let mut ind = String::new();
-            if ps.margin_left != 0 {
-                ind.push_str(&format!(" w:left=\"{}\"", ps.margin_left / 10));
-            }
-            if ps.margin_right != 0 {
-                ind.push_str(&format!(" w:right=\"{}\"", ps.margin_right / 10));
-            }
-            if ps.indent > 0 {
-                ind.push_str(&format!(" w:firstLine=\"{}\"", ps.indent / 10));
-            } else if ps.indent < 0 {
-                ind.push_str(&format!(" w:hanging=\"{}\"", -ps.indent / 10));
-            }
-            if !ind.is_empty() {
-                ppr.push_str(&format!("<w:ind{ind}/>"));
-            }
+            // Merged with before/after into a single w:spacing (CT_PPr allows only one).
+            let mut spacing_attrs = String::new();
             if ps.spacing_top != 0 || ps.spacing_bottom != 0 {
-                ppr.push_str(&format!(
-                    "<w:spacing w:before=\"{}\" w:after=\"{}\"/>",
+                spacing_attrs.push_str(&format!(
+                    " w:before=\"{}\" w:after=\"{}\"",
                     (ps.spacing_top / 10).max(0),
                     (ps.spacing_bottom / 10).max(0)
                 ));
             }
+            match ps.line_spacing_type {
+                1 => spacing_attrs.push_str(&format!(
+                    " w:line=\"{}\" w:lineRule=\"exact\"",
+                    ps.line_spacing / 10
+                )),
+                3 => spacing_attrs.push_str(&format!(
+                    " w:line=\"{}\" w:lineRule=\"atLeast\"",
+                    ps.line_spacing / 10
+                )),
+                _ if ps.line_spacing > 0 && ps.line_spacing != 160 => {
+                    spacing_attrs.push_str(&format!(
+                        " w:line=\"{}\" w:lineRule=\"auto\"",
+                        ps.line_spacing * 240 / 100
+                    ))
+                }
+                _ => {}
+            }
+            if !spacing_attrs.is_empty() {
+                spacing = format!("<w:spacing{spacing_attrs}/>");
+            }
+            // Indent — the IR uses hwp5 2× units, so twips is value/10.
+            if ps.margin_left != 0 {
+                ind_attrs.push_str(&format!(" w:left=\"{}\"", ps.margin_left / 10));
+            }
+            if ps.margin_right != 0 {
+                ind_attrs.push_str(&format!(" w:right=\"{}\"", ps.margin_right / 10));
+            }
+            if ps.indent > 0 {
+                ind_attrs.push_str(&format!(" w:firstLine=\"{}\"", ps.indent / 10));
+            } else if ps.indent < 0 {
+                ind_attrs.push_str(&format!(" w:hanging=\"{}\"", -ps.indent / 10));
+            }
         }
-        ppr.push_str("</w:pPr>");
-        ppr
+        let ind = if ind_attrs.is_empty() {
+            String::new()
+        } else {
+            format!("<w:ind{ind_attrs}/>")
+        };
+        format!("<w:pPr>{style}{numpr}{spacing}{ind}{jc_xml}</w:pPr>")
     }
 
     /// Inline content of a paragraph. Blocks such as tables are split off into `blocks`.
     fn inline(&mut self, para: &Paragraph, out: &mut String, blocks: &mut String) {
         let mut wchar_pos = 0u32;
-        let mut current: Option<usize> = None; // active char shape id
+        let mut run = RunState::default();
         let mut link_open: Option<String> = None; // active hyperlink rel id
         let mut text_buf = String::new(); // consecutive Text — flushed as <w:t>
         macro_rules! flush_text {
@@ -233,36 +250,54 @@ impl Builder<'_> {
                 }
             };
         }
-        for ch in &para.chars {
-            if let HwpChar::Text(_) = ch {
+        // Every piece of run content (text, br, tab) must live inside a w:r — bare text or
+        // elements directly under w:p make the document unreadable to Word.
+        macro_rules! ensure_run {
+            () => {
                 let want = shape_id_at(self.doc, para, wchar_pos);
-                if want != current {
+                if !run.open || run.shape != want {
                     flush_text!();
-                    close_run(out, &mut current);
-                    open_run(out, self.doc, want, &mut current);
+                    close_run(out, &mut run);
+                    open_run(out, self.doc, want, &mut run);
                 }
-            }
+            };
+        }
+        for ch in &para.chars {
             match ch {
-                HwpChar::Text(c) => push_escaped(&mut text_buf, *c),
-                HwpChar::CharCtrl(code) => {
-                    flush_text!();
-                    match *code {
-                        ctrl_char::LINE_BREAK => out.push_str("<w:br/>"),
-                        ctrl_char::HYPHEN => out.push('-'),
-                        ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => out.push(' '),
-                        _ => {}
-                    }
+                HwpChar::Text(c) => {
+                    ensure_run!();
+                    push_escaped(&mut text_buf, *c);
                 }
+                HwpChar::CharCtrl(code) => match *code {
+                    ctrl_char::LINE_BREAK => {
+                        ensure_run!();
+                        flush_text!();
+                        out.push_str("<w:br/>");
+                    }
+                    ctrl_char::HYPHEN => {
+                        ensure_run!();
+                        text_buf.push('-');
+                    }
+                    ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => {
+                        ensure_run!();
+                        text_buf.push(' ');
+                    }
+                    _ => flush_text!(),
+                },
                 HwpChar::InlineCtrl { code, .. } => {
-                    flush_text!();
                     if *code == ctrl_char::FIELD_END {
+                        flush_text!();
                         if let Some(rel) = link_open.take() {
-                            close_run(out, &mut current);
+                            close_run(out, &mut run);
                             out.push_str("</w:hyperlink>");
                             let _ = rel;
                         }
                     } else if *code == ctrl_char::TAB {
+                        ensure_run!();
+                        flush_text!();
                         out.push_str("<w:tab/>");
+                    } else {
+                        flush_text!();
                     }
                 }
                 HwpChar::ExtCtrl {
@@ -275,7 +310,7 @@ impl Builder<'_> {
                         if *code == ctrl_char::FIELD_START
                             && let Some(url) = crate::field::hyperlink_url(control)
                         {
-                            close_run(out, &mut current);
+                            close_run(out, &mut run);
                             let rel_id = format!("rIdLink{}", self.link_rels.len() + 1);
                             self.link_rels.push(LinkRel {
                                 id: rel_id.clone(),
@@ -285,9 +320,8 @@ impl Builder<'_> {
                                 "<w:hyperlink r:id=\"{rel_id}\" w:history=\"1\">"
                             ));
                             link_open = Some(rel_id);
-                            current = None; // open a fresh run for the link
                         } else {
-                            close_run(out, &mut current);
+                            close_run(out, &mut run);
                             self.control(control, *code, out, blocks);
                         }
                     }
@@ -296,7 +330,7 @@ impl Builder<'_> {
             wchar_pos += ch.wchar_width();
         }
         flush_text!();
-        close_run(out, &mut current);
+        close_run(out, &mut run);
         if link_open.is_some() {
             out.push_str("</w:hyperlink>");
         }
@@ -442,8 +476,9 @@ impl Builder<'_> {
                     } else {
                         String::new()
                     };
+                    let w = col_twips * i32::from(origin_col_span.max(1));
                     blocks.push_str(&format!(
-                        "<w:tc><w:tcPr><w:tcW w:w=\"{col_twips}\" w:type=\"dxa\"/>{span}<w:vMerge/></w:tcPr><w:p/></w:tc>"
+                        "<w:tc><w:tcPr><w:tcW w:w=\"{w}\" w:type=\"dxa\"/>{span}<w:vMerge/></w:tcPr><w:p/></w:tc>"
                     ));
                     continue;
                 }
@@ -465,12 +500,19 @@ impl Builder<'_> {
                         if let Some(slot) =
                             covered.get_mut(r + dr).and_then(|row| row.get_mut(c + dc))
                         {
-                            // Slots to the right in the same row are horizontally covered; rows below are vertically covered.
-                            *slot = Some((dr > 0, cell.col_span));
+                            // Only the first column of a covered row emits a vMerge cell (carrying
+                            // the origin's gridSpan); the columns it spans are horizontally covered
+                            // and emit nothing. Marking all of them vertical would emit col_span
+                            // cells each spanning col_span grid columns.
+                            *slot = Some((dr > 0 && dc == 0, cell.col_span));
                         }
                     }
                 }
-                let mut tcpr = format!("<w:tcW w:w=\"{col_twips}\" w:type=\"dxa\"/>");
+                // A spanning cell's width is the sum of the grid columns it covers.
+                let mut tcpr = format!(
+                    "<w:tcW w:w=\"{}\" w:type=\"dxa\"/>",
+                    col_twips * i32::from(cell.col_span.max(1))
+                );
                 if cell.col_span > 1 {
                     tcpr.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.col_span));
                 }
@@ -478,7 +520,9 @@ impl Builder<'_> {
                     tcpr.push_str("<w:vMerge w:val=\"restart\"/>");
                 }
                 blocks.push_str(&format!("<w:tc><w:tcPr>{tcpr}</w:tcPr>"));
-                let mut wrote_p = false;
+                // A w:tc must contain at least one block and must *end* with a w:p — a cell whose
+                // last child is a nested table makes the document unreadable.
+                let mut ends_with_p = false;
                 for p in &cell.paragraphs {
                     let mut inl = String::new();
                     let mut blk = String::new();
@@ -488,14 +532,14 @@ impl Builder<'_> {
                         blocks.push_str(&self.ppr(p));
                         blocks.push_str(&inl);
                         blocks.push_str("</w:p>");
-                        wrote_p = true;
+                        ends_with_p = true;
                     }
-                    blocks.push_str(&blk);
                     if !blk.is_empty() {
-                        wrote_p = true;
+                        blocks.push_str(&blk);
+                        ends_with_p = false;
                     }
                 }
-                if !wrote_p {
+                if !ends_with_p {
                     blocks.push_str("<w:p/>");
                 }
                 blocks.push_str("</w:tc>");
@@ -580,6 +624,9 @@ impl Builder<'_> {
 /// numId base for numbering definitions — bullet definitions are appended after the numbering definitions.
 const BULLET_NUM_BASE: u32 = 128;
 
+/// OOXML numbering levels are `w:ilvl` 0..=8.
+const MAX_ILVL: u32 = 8;
+
 fn shape_id_at(doc: &Document, para: &Paragraph, pos: u32) -> Option<usize> {
     let id = para
         .char_shape_runs
@@ -590,25 +637,39 @@ fn shape_id_at(doc: &Document, para: &Paragraph, pos: u32) -> Option<usize> {
     (doc.header.char_shapes.get(id.0 as usize).is_some()).then_some(id.0 as usize)
 }
 
-/// Opens a run — writes the rPr of the current shape. `current` tracks the active shape id.
-fn open_run(out: &mut String, doc: &Document, want: Option<usize>, current: &mut Option<usize>) {
+/// Tracks whether a `w:r` is open and which char shape it carries. `open` is separate from
+/// `shape` because a run can legitimately be open with no resolvable shape.
+#[derive(Default)]
+struct RunState {
+    open: bool,
+    shape: Option<usize>,
+}
+
+/// Opens a run — writes the rPr of the requested shape.
+fn open_run(out: &mut String, doc: &Document, want: Option<usize>, run: &mut RunState) {
     let rpr = want
         .and_then(|id| doc.header.char_shapes.get(id))
         .map(|s| run_props(doc, s))
         .unwrap_or_default();
     out.push_str("<w:r>");
     out.push_str(&rpr);
-    *current = want;
+    run.open = true;
+    run.shape = want;
 }
 
-fn close_run(out: &mut String, current: &mut Option<usize>) {
-    if current.is_some() {
+fn close_run(out: &mut String, run: &mut RunState) {
+    if run.open {
         out.push_str("</w:r>");
-        *current = None;
+        run.open = false;
+        run.shape = None;
     }
 }
 
 /// CharShape → w:rPr.
+///
+/// CT_RPr is a *sequence*: rFonts → b → bCs → i → iCs → strike → color → spacing → sz → szCs →
+/// u → shd → vertAlign. Emitting these out of order makes Word reject the document, so the
+/// order below is deliberate — do not regroup by feature.
 fn run_props(doc: &Document, s: &CharShape) -> String {
     let mut r = String::from("<w:rPr>");
     if let Some(face) = doc.header.fonts[0].get(s.face_ids[0] as usize) {
@@ -623,21 +684,15 @@ fn run_props(doc: &Document, s: &CharShape) -> String {
     if s.is_italic() {
         r.push_str("<w:i/><w:iCs/>");
     }
-    if s.has_underline() {
-        r.push_str("<w:u w:val=\"single\"/>");
-    }
     if s.has_strike() {
         r.push_str("<w:strike/>");
     }
-    if s.is_superscript() {
-        r.push_str("<w:vertAlign w:val=\"superscript\"/>");
+    if s.text_color != 0 {
+        r.push_str(&format!(
+            "<w:color w:val=\"{}\"/>",
+            colorref_hex(s.text_color)
+        ));
     }
-    if s.is_subscript() {
-        r.push_str("<w:vertAlign w:val=\"subscript\"/>");
-    }
-    // Size: base_size (1/100pt) × rel_sizes (%) → half-points (10pt → 20).
-    let hp = (i64::from(s.base_size) * i64::from(s.rel_sizes[0]) / 5000).max(2);
-    r.push_str(&format!("<w:sz w:val=\"{hp}\"/><w:szCs w:val=\"{hp}\"/>"));
     // Letter spacing % → twips of pt at the current size.
     if s.spacings[0] != 0 {
         let twips =
@@ -646,17 +701,22 @@ fn run_props(doc: &Document, s: &CharShape) -> String {
             r.push_str(&format!("<w:spacing w:val=\"{twips}\"/>"));
         }
     }
-    if s.text_color != 0 {
-        r.push_str(&format!(
-            "<w:color w:val=\"{}\"/>",
-            colorref_hex(s.text_color)
-        ));
+    // Size: base_size (1/100pt) × rel_sizes (%) → half-points (10pt → 20).
+    let hp = (i64::from(s.base_size) * i64::from(s.rel_sizes[0]) / 5000).max(2);
+    r.push_str(&format!("<w:sz w:val=\"{hp}\"/><w:szCs w:val=\"{hp}\"/>"));
+    if s.has_underline() {
+        r.push_str("<w:u w:val=\"single\"/>");
     }
     if s.has_shade() {
         r.push_str(&format!(
             "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
             colorref_hex(s.shade_color)
         ));
+    }
+    if s.is_superscript() {
+        r.push_str("<w:vertAlign w:val=\"superscript\"/>");
+    } else if s.is_subscript() {
+        r.push_str("<w:vertAlign w:val=\"subscript\"/>");
     }
     r.push_str("</w:rPr>");
     r
@@ -672,12 +732,19 @@ fn colorref_hex(v: u32) -> String {
     )
 }
 
+/// XML 1.0 forbids the C0 controls except tab/LF/CR — HWP text can carry them and a single one
+/// makes the whole part unparseable, so they are dropped.
+fn xml_safe(c: char) -> bool {
+    !c.is_control() || matches!(c, '\t' | '\n' | '\r')
+}
+
 fn push_escaped(out: &mut String, c: char) {
     match c {
         '&' => out.push_str("&amp;"),
         '<' => out.push_str("&lt;"),
         '>' => out.push_str("&gt;"),
-        _ => out.push(c),
+        _ if xml_safe(c) => out.push(c),
+        _ => {}
     }
 }
 
@@ -689,7 +756,8 @@ fn escape(s: &str) -> String {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
-            _ => out.push(c),
+            _ if xml_safe(c) => out.push(c),
+            _ => {}
         }
     }
     out
@@ -788,9 +856,20 @@ fn numbering_xml(doc: &Document) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
          <w:numbering {NS_DECL}>"
     );
+    // Every abstractNum must define all 9 levels (w:ilvl 0..=8): the document may reference any
+    // level, and Word rejects a numPr pointing at an undefined ilvl. HWP carries 10 levels, so the
+    // list is both truncated and padded to exactly 9.
     for (i, levels) in doc.header.numbering_levels.iter().enumerate() {
         out.push_str(&format!("<w:abstractNum w:abstractNumId=\"{i}\">"));
-        for (ilvl, level) in levels.iter().enumerate() {
+        for ilvl in 0..=MAX_ILVL as usize {
+            let Some(level) = levels.get(ilvl).or_else(|| levels.last()) else {
+                out.push_str(&format!(
+                    "<w:lvl w:ilvl=\"{ilvl}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/>\
+                     <w:lvlText w:val=\"%{}.\"/><w:lvlJc w:val=\"left\"/></w:lvl>",
+                    ilvl + 1
+                ));
+                continue;
+            };
             let (fmt, text) = num_fmt(level);
             out.push_str(&format!(
                 "<w:lvl w:ilvl=\"{ilvl}\"><w:start w:val=\"{}\"/><w:numFmt w:val=\"{fmt}\"/>\
@@ -802,12 +881,18 @@ fn numbering_xml(doc: &Document) -> String {
     }
     for (i, ch) in doc.header.bullet_chars.iter().enumerate() {
         let id = BULLET_NUM_BASE as usize + i;
-        out.push_str(&format!(
-            "<w:abstractNum w:abstractNumId=\"{id}\"><w:lvl w:ilvl=\"0\">\
-             <w:start w:val=\"1\"/><w:numFmt w:val=\"bullet\"/>\
-             <w:lvlText w:val=\"{ch}\"/><w:lvlJc w:val=\"left\"/>\
-             <w:rPr><w:rFonts w:ascii=\"Symbol\" w:hAnsi=\"Symbol\" w:hint=\"default\"/></w:rPr></w:lvl></w:abstractNum>"
-        ));
+        // The bullet glyph comes straight from the document — the font hint stays on the
+        // document's own font rather than Symbol, which does not contain HWP's bullet glyphs.
+        let text = escape(&ch.to_string());
+        out.push_str(&format!("<w:abstractNum w:abstractNumId=\"{id}\">"));
+        for ilvl in 0..=MAX_ILVL {
+            out.push_str(&format!(
+                "<w:lvl w:ilvl=\"{ilvl}\">\
+                 <w:start w:val=\"1\"/><w:numFmt w:val=\"bullet\"/>\
+                 <w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/></w:lvl>"
+            ));
+        }
+        out.push_str("</w:abstractNum>");
     }
     for (i, _) in doc.header.numbering_levels.iter().enumerate() {
         out.push_str(&format!(
@@ -926,6 +1011,221 @@ mod tests {
         Some(s)
     }
 
+    /// CT_PPr / CT_RPr child order (subset we emit). Word rejects the document when children
+    /// appear out of this order or when a maxOccurs=1 child repeats.
+    const PPR_ORDER: &[&str] = &["pStyle", "numPr", "spacing", "ind", "jc", "sectPr"];
+    const RPR_ORDER: &[&str] = &[
+        "rStyle",
+        "rFonts",
+        "b",
+        "bCs",
+        "i",
+        "iCs",
+        "strike",
+        "color",
+        "spacing",
+        "sz",
+        "szCs",
+        "u",
+        "shd",
+        "vertAlign",
+    ];
+
+    /// Structural validation of the emitted package: property ordering/cardinality, run content
+    /// containment, table grid coverage, and numbering references. This is the gate that catches
+    /// "Word cannot open this file" — substring assertions cannot.
+    fn validate_docx(bytes: &[u8]) {
+        use quick_xml::events::Event;
+        let document = unzip(bytes, "word/document.xml").unwrap();
+        let numbering = unzip(bytes, "word/numbering.xml");
+
+        // numId → highest defined ilvl, from numbering.xml.
+        let mut defined: std::collections::HashMap<u32, u32> = Default::default();
+        if let Some(num) = &numbering {
+            let mut abstract_lvls: std::collections::HashMap<u32, u32> = Default::default();
+            let mut cur_abstract = None;
+            let mut reader = quick_xml::Reader::from_str(num);
+            let mut num_id = None;
+            loop {
+                match reader.read_event().unwrap() {
+                    Event::Eof => break,
+                    Event::Start(e) | Event::Empty(e) => {
+                        let name = local_name(&e);
+                        let val = attr(&e, "w:val");
+                        match name.as_str() {
+                            "abstractNum" => {
+                                cur_abstract =
+                                    attr(&e, "w:abstractNumId").and_then(|v| v.parse::<u32>().ok());
+                            }
+                            "lvl" => {
+                                if let (Some(a), Some(l)) = (
+                                    cur_abstract,
+                                    attr(&e, "w:ilvl").and_then(|v| v.parse::<u32>().ok()),
+                                ) {
+                                    assert!(l <= 8, "w:ilvl {l} > 8 is invalid");
+                                    let slot = abstract_lvls.entry(a).or_default();
+                                    *slot = (*slot).max(l);
+                                }
+                            }
+                            "num" => {
+                                num_id = attr(&e, "w:numId").and_then(|v| v.parse::<u32>().ok());
+                            }
+                            "abstractNumId" => {
+                                if let (Some(n), Some(a)) =
+                                    (num_id, val.and_then(|v| v.parse::<u32>().ok()))
+                                {
+                                    defined.insert(
+                                        n,
+                                        *abstract_lvls.get(&a).unwrap_or_else(|| {
+                                            panic!("numId {n} → undefined abstractNum {a}")
+                                        }),
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut reader = quick_xml::Reader::from_str(&document);
+        let mut stack: Vec<String> = Vec::new();
+        let mut seen: Vec<String> = Vec::new(); // children of the current pPr/rPr
+        let mut grid_cols: Vec<usize> = Vec::new(); // w:gridCol count per open table (nesting)
+        let mut row_span = 0usize; // grid columns consumed by the current row
+        let mut cell_span = 1usize;
+        let mut ilvl = 0u32;
+        let mut tc_last = String::new(); // last direct child of the current w:tc
+        loop {
+            match reader.read_event().unwrap() {
+                Event::Eof => break,
+                Event::Text(t) => {
+                    let raw = String::from_utf8_lossy(&t).to_string();
+                    if !raw.trim().is_empty() {
+                        assert_eq!(
+                            stack.last().map(String::as_str),
+                            Some("t"),
+                            "text outside w:t: {raw:?} in {stack:?}"
+                        );
+                    }
+                }
+                ev @ (Event::Start(_) | Event::Empty(_)) => {
+                    let empty = matches!(ev, Event::Empty(_));
+                    let e = match &ev {
+                        Event::Start(e) | Event::Empty(e) => e.clone(),
+                        _ => unreachable!(),
+                    };
+                    let name = local_name(&e);
+                    let parent = stack.last().cloned().unwrap_or_default();
+                    // Run content must live inside w:r.
+                    if matches!(name.as_str(), "t" | "br" | "tab" | "drawing") {
+                        assert_eq!(parent, "r", "<w:{name}> outside a run (parent {parent})");
+                    }
+                    if parent == "pPr" || parent == "rPr" {
+                        let order = if parent == "pPr" {
+                            PPR_ORDER
+                        } else {
+                            RPR_ORDER
+                        };
+                        let pos = order
+                            .iter()
+                            .position(|x| *x == name)
+                            .unwrap_or_else(|| panic!("unknown w:{parent} child w:{name}"));
+                        assert!(
+                            !seen.contains(&name),
+                            "duplicate w:{name} in w:{parent} ({seen:?})"
+                        );
+                        if let Some(prev) = seen.last() {
+                            let prev_pos = order.iter().position(|x| x == prev).unwrap();
+                            assert!(
+                                prev_pos < pos,
+                                "w:{parent} out of schema order: w:{prev} before w:{name}"
+                            );
+                        }
+                        seen.push(name.clone());
+                    }
+                    if parent == "tc" && matches!(name.as_str(), "p" | "tbl") {
+                        tc_last = name.clone();
+                    }
+                    match name.as_str() {
+                        "pPr" | "rPr" => seen.clear(),
+                        "tbl" => grid_cols.push(0),
+                        "gridCol" => *grid_cols.last_mut().unwrap() += 1,
+                        "tr" => row_span = 0,
+                        "tc" => {
+                            cell_span = 1;
+                            tc_last.clear();
+                        }
+                        "gridSpan" => {
+                            cell_span = attr(&e, "w:val").unwrap().parse().unwrap();
+                        }
+                        "ilvl" => ilvl = attr(&e, "w:val").unwrap().parse().unwrap(),
+                        "numId" => {
+                            let id: u32 = attr(&e, "w:val").unwrap().parse().unwrap();
+                            let max = defined
+                                .get(&id)
+                                .unwrap_or_else(|| panic!("numId {id} not in numbering.xml"));
+                            assert!(ilvl <= *max, "numId {id} has no ilvl {ilvl} (max {max})");
+                        }
+                        _ => {}
+                    }
+                    if !empty {
+                        stack.push(name);
+                    } else if name == "tc" {
+                        row_span += cell_span;
+                    }
+                }
+                Event::End(e) => {
+                    let name = local_name_end(&e);
+                    if name == "tc" {
+                        row_span += cell_span;
+                        assert_eq!(
+                            tc_last, "p",
+                            "w:tc must end with a w:p (ends with w:{tc_last})"
+                        );
+                    }
+                    if name == "tr" {
+                        let cols = *grid_cols.last().unwrap();
+                        assert_eq!(
+                            row_span, cols,
+                            "row covers {row_span} grid columns, table has {cols}"
+                        );
+                    }
+                    if name == "tbl" {
+                        grid_cols.pop();
+                    }
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn local_name(e: &quick_xml::events::BytesStart) -> String {
+        String::from_utf8_lossy(e.name().as_ref())
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    fn local_name_end(e: &quick_xml::events::BytesEnd) -> String {
+        String::from_utf8_lossy(e.name().as_ref())
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    fn attr(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
+        e.attributes().flatten().find_map(|a| {
+            (a.key.as_ref() == key.as_bytes())
+                .then(|| String::from_utf8_lossy(&a.value).to_string())
+        })
+    }
+
     fn all_parts_well_formed(bytes: &[u8]) -> bool {
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         for i in 0..zip.len() {
@@ -956,6 +1256,7 @@ mod tests {
         );
         let bytes = to_docx(&doc).unwrap();
         assert!(all_parts_well_formed(&bytes), "모든 XML well-formed");
+        validate_docx(&bytes);
         let document = unzip(&bytes, "word/document.xml").unwrap();
         assert!(
             document.contains("<w:pStyle w:val=\"Heading1\"/>"),
@@ -1033,6 +1334,7 @@ mod tests {
             });
         }
         let bytes = to_docx(&doc).unwrap();
+        validate_docx(&bytes);
         let document = unzip(&bytes, "word/document.xml").unwrap();
         assert!(
             document.contains("<w:gridSpan w:val=\"2\"/>"),
@@ -1058,6 +1360,7 @@ mod tests {
             "본문[^1] [링크](https://example.com)\n\n1. 첫째\n2. 둘째\n\n[^1]: 각주 내용\n",
         );
         let bytes = to_docx(&doc).unwrap();
+        validate_docx(&bytes);
         let document = unzip(&bytes, "word/document.xml").unwrap();
         assert!(
             document.contains("<w:footnoteReference w:id=\"2\"/>"),
@@ -1084,6 +1387,7 @@ mod tests {
         // Regression: the bullet numId must match the definition in numbering.xml (128-based).
         let doc_b = crate::from_markdown::from_markdown("- 항목 하나\n");
         let bytes_b = to_docx(&doc_b).unwrap();
+        validate_docx(&bytes_b);
         let doc_b_xml = unzip(&bytes_b, "word/document.xml").unwrap();
         assert!(
             doc_b_xml.contains("<w:numId w:val=\"128\"/>"),
@@ -1122,6 +1426,7 @@ mod tests {
             });
         }
         let bytes_e = to_docx(&doc_e).unwrap();
+        validate_docx(&bytes_e);
         let doc_e_xml = unzip(&bytes_e, "word/document.xml").unwrap();
         assert!(
             doc_e_xml.contains("<w:r><w:t xml:space=\"preserve\">x^2</w:t></w:r>"),
@@ -1142,6 +1447,7 @@ mod tests {
         std::fs::write(&p, &png).unwrap();
         crate::image::insert_image(&mut doc, "여기", &p, crate::image::ImageSize::Natural).unwrap();
         let bytes = to_docx(&doc).unwrap();
+        validate_docx(&bytes);
         let document = unzip(&bytes, "word/document.xml").unwrap();
         assert!(document.contains("<w:drawing>"), "드로잉: {document}");
         assert!(
