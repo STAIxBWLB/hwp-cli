@@ -1138,9 +1138,339 @@ pub(crate) fn utf16_len(s: &str) -> u32 {
     s.encode_utf16().count() as u32
 }
 
+/// Inserts a uniform table after the first body paragraph containing the `anchor` text (GK-3).
+/// `rows` is a row×column text grid — cell defaults match from_markdown's GFM tables
+/// (equal body-width columns, row height 1700, vertical center, solid borders). Returns the number inserted (0 or 1).
+pub fn add_table(doc: &mut Document, anchor: &str, rows: &[Vec<String>]) -> Result<usize, String> {
+    use crate::from_markdown::{BODY_WIDTH, CELL_VALIGN_CENTER, TABLE_BORDER_FILL};
+    use hwp_model::{BorderFillId, Cell, HwpUnit, Table};
+
+    if anchor.is_empty() {
+        return Err("앵커 텍스트가 없습니다".into());
+    }
+    if rows.is_empty() || rows.iter().all(Vec::is_empty) {
+        return Err("표 행 데이터가 없습니다".into());
+    }
+    let n_rows = rows.len() as u16;
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1) as u16;
+    let col_w = BODY_WIDTH / i32::from(cols);
+    let mut cells = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        for c in 0..cols {
+            let text = row.get(c as usize).cloned().unwrap_or_default();
+            cells.push(Cell {
+                list_attr: CELL_VALIGN_CENTER,
+                col: c,
+                row: r as u16,
+                col_span: 1,
+                row_span: 1,
+                width: HwpUnit(col_w),
+                height: HwpUnit(1700),
+                margins: [510, 510, 141, 141],
+                border_fill: BorderFillId(TABLE_BORDER_FILL),
+                header_tail: Vec::new(),
+                paragraphs: vec![Paragraph {
+                    chars: text.chars().map(HwpChar::Text).collect(),
+                    char_shape_runs: vec![(0, CharShapeId(0))],
+                    ..Paragraph::default()
+                }],
+            });
+        }
+    }
+    let table = Table {
+        common_data: Vec::new(),
+        placement: None,
+        attr: 0,
+        rows: n_rows,
+        cols,
+        cell_spacing: 0,
+        inner_margins: [510, 510, 141, 141],
+        row_cell_counts: vec![cols; n_rows as usize],
+        border_fill: BorderFillId(TABLE_BORDER_FILL),
+        table_tail: Vec::new(),
+        cells,
+        extras: Vec::new(),
+    };
+    validate_table_invariants(&table)?;
+
+    let mut payload = vec![0u8; 12];
+    payload[..4].copy_from_slice(b" lbt"); // reversed ctrl_id
+    let anchor_para = Paragraph {
+        chars: vec![
+            HwpChar::ExtCtrl {
+                code: 11,
+                ctrl_id: *b"tbl ",
+                payload,
+                ctrl_index: Some(0),
+            },
+            HwpChar::CharCtrl(13),
+        ],
+        char_shape_runs: vec![(0, CharShapeId(0))],
+        controls: vec![Control::Table(table)],
+        ..Paragraph::default()
+    };
+    for section in &mut doc.sections {
+        if let Some(i) = section
+            .paragraphs
+            .iter()
+            .position(|p| find_match(&p.chars, anchor, 0).is_some())
+        {
+            section.paragraphs.insert(i + 1, anchor_para);
+            return Ok(1);
+        }
+    }
+    Err(format!("앵커를 찾을 수 없습니다: {anchor}"))
+}
+
+/// Kind of object deletion (GK-8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectKind {
+    /// Picture in the paragraph containing the anchor text
+    Image,
+    /// Table in the paragraph containing the anchor text
+    Table,
+    /// The n-th table (0-based, in recursive order of appearance)
+    TableNth(usize),
+    /// Field named selector
+    Field,
+    /// Bookmark named selector
+    Bookmark,
+}
+
+/// Deletes objects — removes the control together with its anchor chars (through FIELD_END for
+/// fields) and adjusts WCHAR positions (GK-8). Recurses through body, table cells, and text
+/// boxes. Returns the number deleted.
+pub fn delete_object(doc: &mut Document, kind: ObjectKind, selector: &str) -> usize {
+    let mut count = 0;
+    let mut table_seen = 0usize;
+    for section in &mut doc.sections {
+        for para in &mut section.paragraphs {
+            count += delete_object_in_para(para, kind, selector, &mut table_seen);
+        }
+    }
+    count
+}
+
+fn delete_object_in_para(
+    para: &mut Paragraph,
+    kind: ObjectKind,
+    selector: &str,
+    table_seen: &mut usize,
+) -> usize {
+    // Collects the indexes of the controls to delete.
+    let targets: Vec<usize> = para
+        .controls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let hit = match (kind, c) {
+                (ObjectKind::Image, Control::Picture(_)) => {
+                    find_match(&para.chars, selector, 0).is_some()
+                }
+                (ObjectKind::Table, Control::Table(_)) => {
+                    find_match(&para.chars, selector, 0).is_some()
+                }
+                (ObjectKind::TableNth(nth), Control::Table(_)) => {
+                    let seen = *table_seen;
+                    *table_seen += 1;
+                    seen == nth
+                }
+                (ObjectKind::TableNth(_), _) => false,
+                (ObjectKind::Field, Control::Generic(g))
+                    if crate::field::is_field_ctrl_id(&g.ctrl_id) =>
+                {
+                    crate::field::field_meta(c).0.as_deref() == Some(selector)
+                }
+                (ObjectKind::Bookmark, Control::Generic(g)) if g.ctrl_id == *b"bokm" => {
+                    crate::bookmark::bookmark_name(c).as_deref() == Some(selector)
+                }
+                _ => false,
+            };
+            hit.then_some(i)
+        })
+        .collect();
+    // Recursion: table cells and Generic paragraph lists.
+    let mut n = 0;
+    for control in &mut para.controls {
+        match control {
+            Control::Table(t) => {
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        n += delete_object_in_para(p, kind, selector, table_seen);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        n += delete_object_in_para(p, kind, selector, table_seen);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if targets.is_empty() {
+        return n;
+    }
+    n += remove_controls(para, &targets);
+    n
+}
+
+/// Removes the controls at the `targets` indexes and their anchor chars (ExtCtrl + FIELD_END of
+/// a field start), and adjusts char_shape_runs positions. Returns the number removed.
+fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
+    // 1) Remove anchor chars — the ExtCtrl pointing at a target control + the field's FIELD_END.
+    let mut removed: Vec<(u32, u32)> = Vec::new();
+    let mut orig_pos = 0u32;
+    let mut kept = Vec::with_capacity(para.chars.len());
+    // Whether we are looking for the FIELD_END (code 4) matching a deleted FIELD_START (code 3).
+    // Text/CharCtrl in between pass through untouched.
+    let mut pending_field_end = false;
+    for ch in std::mem::take(&mut para.chars) {
+        let width = ch.wchar_width();
+        let drop = match &ch {
+            HwpChar::ExtCtrl {
+                code, ctrl_index, ..
+            } => {
+                let hit = ctrl_index.is_some_and(|i| targets.contains(&(i as usize)));
+                // Only a field start (FIELD_START=3) opens FIELD_END tracking — pictures, tables, and bookmarks have none.
+                pending_field_end = hit && *code == 3;
+                hit
+            }
+            HwpChar::InlineCtrl { code, .. } => {
+                let hit = pending_field_end && *code == hwp_model::ctrl_char::FIELD_END;
+                if hit {
+                    pending_field_end = false;
+                }
+                hit
+            }
+            _ => false,
+        };
+        if drop {
+            removed.push((orig_pos, width));
+        } else {
+            kept.push(ch);
+        }
+        orig_pos += width;
+    }
+    para.chars = kept;
+    // 2) Remove the controls (in reverse order to preserve indexes).
+    let mut sorted = targets.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let n = sorted.len();
+    for i in sorted {
+        para.controls.remove(i);
+    }
+    // 3) Adjust char_shape_runs positions.
+    for (pos, _) in &mut para.char_shape_runs {
+        let shift: u32 = removed
+            .iter()
+            .filter(|(start, width)| start + width <= *pos)
+            .map(|(_, width)| width)
+            .sum();
+        *pos -= shift;
+    }
+    para.char_shape_runs.dedup();
+    // 4) Reconnect ExtCtrl ↔ controls in order of appearance.
+    crate::field::relink_ctrl_index(para);
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_table_앵커_뒤_삽입() {
+        let mut doc = crate::from_markdown::from_markdown("머리\n\n끝\n");
+        let rows = vec![
+            vec!["가".to_string(), "나".to_string()],
+            vec!["1".to_string(), "2".to_string()],
+        ];
+        assert_eq!(add_table(&mut doc, "머리", &rows).unwrap(), 1);
+        let para = &doc.sections[0].paragraphs[1]; // right after the anchor
+        let Control::Table(t) = &para.controls[0] else {
+            panic!("표 컨트롤")
+        };
+        assert_eq!((t.rows, t.cols), (2, 2));
+        assert_eq!(t.row_cell_counts, vec![2, 2]);
+        let text: String = t.cells[2].paragraphs[0]
+            .chars
+            .iter()
+            .filter_map(|c| match c {
+                HwpChar::Text(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "1");
+        // Missing anchor → error.
+        assert!(add_table(&mut doc, "없는앵커", &rows).is_err());
+    }
+
+    #[test]
+    fn delete_object_표와_그림() {
+        let mut doc = crate::from_markdown::from_markdown("본문\n\n| 가 |\n|---|\n| 1 |\n");
+        let png = {
+            let mut p = b"\x89PNG\r\n\x1a\n".to_vec();
+            p.extend([0, 0, 0, 13]);
+            p.extend(b"IHDR");
+            p.extend(8u32.to_be_bytes());
+            p.extend(8u32.to_be_bytes());
+            p.extend([0u8; 8]);
+            p
+        };
+        let tmp = std::env::temp_dir().join(format!(
+            "delete_object_test_{}_{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&tmp, &png).unwrap();
+        crate::image::insert_image(&mut doc, "본문", &tmp, crate::image::ImageSize::Natural)
+            .unwrap();
+        assert_eq!(delete_object(&mut doc, ObjectKind::Image, "본문"), 1);
+        let has_pic = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .any(|c| matches!(c, Control::Picture(_)));
+        assert!(!has_pic, "그림 삭제됨");
+        let _ = std::fs::remove_file(&tmp);
+        // Deleting the nth table — removing the 0-th (the GFM table) makes the table disappear.
+        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(0), ""), 1);
+        let has_table = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .any(|c| matches!(c, Control::Table(_)));
+        assert!(!has_table, "표 삭제됨");
+        // A missing index deletes 0.
+        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(3), ""), 0);
+    }
+
+    #[test]
+    fn delete_object_필드와_책갈피() {
+        let mut doc = crate::from_markdown::from_markdown("여기 앵커입니다.\n");
+        assert!(crate::field::create_field(&mut doc, "앵커", "이름", "값"));
+        assert!(crate::bookmark::create_bookmark(
+            &mut doc,
+            "앵커",
+            "책갈피1"
+        ));
+        assert_eq!(delete_object(&mut doc, ObjectKind::Field, "이름"), 1);
+        assert_eq!(delete_object(&mut doc, ObjectKind::Bookmark, "책갈피1"), 1);
+        // No leftover fields/bookmarks may remain.
+        assert!(crate::field::list_fields(&doc).is_empty());
+        assert!(crate::bookmark::list_bookmarks(&doc).is_empty());
+        // No leftover FIELD_END chars either.
+        let stray = doc.sections[0].paragraphs.iter().any(|p| {
+            p.chars.iter().any(|c| matches!(c, HwpChar::InlineCtrl { code, .. } if *code == hwp_model::ctrl_char::FIELD_END))
+        });
+        assert!(!stray, "FIELD_END 잔여");
+    }
     use crate::from_markdown;
     use hwp_model::LineSeg;
 

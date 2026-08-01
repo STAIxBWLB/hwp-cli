@@ -43,8 +43,9 @@ fn main() -> anyhow::Result<()> {
             with_segments,
         ),
         Cmd::Convert {
-            input,
+            inputs,
             output,
+            out_dir,
             to,
             strict,
             preserve_layout,
@@ -53,9 +54,10 @@ fn main() -> anyhow::Result<()> {
             with_header_footer,
             with_hidden,
             font_dir,
-        } => commands::convert::run(
-            &input,
-            &output,
+        } => commands::convert::run_multi(
+            &inputs,
+            output.as_deref(),
+            out_dir.as_deref(),
             to,
             strict,
             preserve_layout,
@@ -67,6 +69,11 @@ fn main() -> anyhow::Result<()> {
             },
             font_dir,
         ),
+        Cmd::Grep {
+            pattern,
+            file,
+            ignore_case,
+        } => commands::grep::run(&pattern, &file, ignore_case),
         Cmd::Render {
             input,
             output,

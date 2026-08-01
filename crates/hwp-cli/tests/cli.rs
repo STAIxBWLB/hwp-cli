@@ -1868,3 +1868,200 @@ fn edit_replace_and_seal_applies_both_edits() {
         let _ = std::fs::remove_file(f);
     }
 }
+
+// ── S-tier 배치: 편집 프리미티브·배치·파이프·grep·csv/txt (GK-3/4/6/8, GM-1/2/5, GJ-5/6) ──
+
+fn make_doc(name: &str, md: &str) -> PathBuf {
+    let md_path = tmp(name);
+    std::fs::write(&md_path, md).unwrap();
+    let hwpx = tmp(&format!("{name}.hwpx"));
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md_path)
+            .arg("-o")
+            .arg(&hwpx)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let _ = std::fs::remove_file(&md_path);
+    hwpx
+}
+
+#[test]
+fn edit_add_table_and_delete_table() {
+    let src = make_doc("s_tier_table", "머리말\n\n끝말\n");
+    let out = tmp("s_tier_table_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--add-table", "머리말=>[[\"가\",\"나\"],[\"1\",\"2\"]]"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "add-table: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let cat = hwp().arg("cat").arg(&out).output().unwrap();
+    let text = String::from_utf8_lossy(&cat.stdout);
+    assert!(text.contains('가') && text.contains('1'), "표 삽입: {text}");
+
+    let out2 = tmp("s_tier_table_out2.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&out)
+        .arg("-o")
+        .arg(&out2)
+        .args(["--delete-table", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "delete-table: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let cat = hwp().arg("cat").arg(&out2).output().unwrap();
+    let text = String::from_utf8_lossy(&cat.stdout);
+    assert!(
+        !text.contains('가') && text.contains("끝말"),
+        "표 삭제: {text}"
+    );
+    for f in [&src, &out, &out2] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+#[test]
+fn edit_set_para_and_set_page() {
+    let src = make_doc("s_tier_para", "본문 문단입니다.\n");
+    let out = tmp("s_tier_para_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args([
+            "--set-para",
+            "본문=>line-spacing:130",
+            "--set-para",
+            "본문=>indent:5mm",
+            "--set-page",
+            "margin-left:25mm",
+            "--set-page",
+            "orientation:landscape",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "set-para/page: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let v = hwp().arg("validate").arg(&out).output().unwrap();
+    assert!(
+        v.status.success(),
+        "validate: {}",
+        String::from_utf8_lossy(&v.stderr)
+    );
+    for f in [&src, &out] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+#[test]
+fn convert_multi_input_out_dir_and_txt_csv() {
+    let a = make_doc("s_tier_a", "문서 A\n\n| 가 |\n|---|\n| 1 |\n");
+    let b = make_doc("s_tier_b", "문서 B\n");
+    let dir = tmp("s_tier_batch_out");
+    let r = hwp()
+        .arg("convert")
+        .arg(&a)
+        .arg(&b)
+        .args(["--to", "md", "--out-dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "batch: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let ma = std::fs::read_to_string(dir.join("s_tier_a.md")).unwrap();
+    let mb = std::fs::read_to_string(dir.join("s_tier_b.md")).unwrap();
+    assert!(ma.contains("문서 A") && mb.contains("문서 B"));
+
+    let txt = tmp("s_tier_a.txt");
+    let r = hwp()
+        .arg("convert")
+        .arg(&a)
+        .arg("-o")
+        .arg(&txt)
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "txt: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert!(std::fs::read_to_string(&txt).unwrap().contains("문서 A"));
+
+    let r = hwp()
+        .args(["cat", "--format", "csv"])
+        .arg(&a)
+        .output()
+        .unwrap();
+    let csv = String::from_utf8_lossy(&r.stdout);
+    assert!(csv.contains("가") && csv.contains('1'), "csv: {csv}");
+    for f in [&a, &b, &txt] {
+        let _ = std::fs::remove_file(f);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn convert_stdin_stdout_pipe() {
+    let src = make_doc("s_tier_pipe", "파이프 본문입니다.\n");
+    let bytes = std::fs::read(&src).unwrap();
+    let mut child = hwp()
+        .arg("convert")
+        .arg("-")
+        .args(["-o", "-", "--to", "txt"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&bytes).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "pipe: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("파이프 본문입니다"), "stdout: {text}");
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn grep_match_and_no_match_exit_codes() {
+    let src = make_doc("s_tier_grep", "사과 바나나\n\n| 귤 |\n|---|\n| 오렌지 |\n");
+    let r = hwp().arg("grep").arg("바나나").arg(&src).output().unwrap();
+    assert!(
+        r.status.success(),
+        "일치: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert!(String::from_utf8_lossy(&r.stdout).contains("사과 바나나"));
+    // 표 셀도 검색된다.
+    let r = hwp().arg("grep").arg("오렌지").arg(&src).output().unwrap();
+    assert!(r.status.success());
+    assert!(String::from_utf8_lossy(&r.stdout).contains("오렌지"));
+    // 일치 없음 → 종료 코드 1.
+    let r = hwp().arg("grep").arg("포도").arg(&src).output().unwrap();
+    assert_eq!(r.status.code(), Some(1), "미일치는 grep 관례 1");
+    let _ = std::fs::remove_file(&src);
+}

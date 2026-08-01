@@ -109,6 +109,7 @@ pub fn run(
         TextFormat::Markdown => print!("{}", hwp_convert::to_markdown_with(&doc, &md_opts())?),
         TextFormat::Html => print!("{}", hwp_convert::to_html(&doc)),
         TextFormat::Json => println!("{}", hwp_convert::to_json(&doc, true, false)?),
+        TextFormat::Csv => print!("{}", hwp_convert::to_csv(&doc)),
     }
     Ok(())
 }

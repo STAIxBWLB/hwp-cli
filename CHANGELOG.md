@@ -39,6 +39,13 @@ Release body.
   `.cs{n}`/`.ps{n}` CSS 규칙으로 싣고(fragment는 선두 `<style>`로 자기완결), `from_html`이
   복원한다. 마크는 태그가 정본, 기본 팔레트와 같으면 재사용(dedup), 미등록 글꼴은 추가
   글꼴로 복원한다.
+- 편집 프리미티브 확장. `edit --add-table "앵커=>행JSON"`(표 삽입), `--set-para`(줄간격·
+  들여쓰기·여백·문단 간격), `--set-page`(용지 치수·여백·방향), `--delete-image/--delete-table/
+  --delete-field/--delete-bookmark`(개체 삭제 — 앵커 문자·FIELD_END까지 수술).
+- CLI 워크플로. convert가 다중 입력 + `--out-dir`(배치), 입력 `-`(stdin)·출력 `-`(텍스트
+  포맷 stdout)를 받는다. `hwp grep <패턴> <파일>`(문단 재귀 검색, 미일치 종료 코드 1).
+- 추출 포맷. `cat --format csv`·`convert --to csv`(표→CSV, RFC 4180)와
+  `convert --to txt`/`.txt` 추론.
 
 ### English
 
@@ -67,6 +74,15 @@ Release body.
   char and para shapes as `.cs{n}`/`.ps{n}` CSS rules (fragments stay self-contained with a
   leading `<style>`) and `from_html` restores them. Tags stay authoritative for marks,
   default-palette shapes are reused (dedup), and unknown fonts are appended on restore.
+- Edit primitives: `edit --add-table "anchor=>rows-json"` (table insertion), `--set-para`
+  (line spacing, indent, margins, paragraph spacing), `--set-page` (paper size, margins,
+  orientation), and `--delete-image/--delete-table/--delete-field/--delete-bookmark`
+  (object deletion with anchor-char and FIELD_END surgery).
+- CLI workflow: convert accepts multiple inputs with `--out-dir` (batch) and `-` for
+  stdin input / stdout output of text formats. New `hwp grep <pattern> <file>` (recursive
+  paragraph search, exit code 1 on no match).
+- Extraction formats: `cat --format csv` / `convert --to csv` (tables to CSV, RFC 4180)
+  and `convert --to txt` with `.txt` inference.
 
 ---
 

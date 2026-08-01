@@ -36,3 +36,14 @@ pub fn detect(path: &Path) -> anyhow::Result<FileFormat> {
         )
     }
 }
+
+/// 바이트 시그니처로 포맷을 판별해 표준 확장자를 돌려준다 (stdin 스테이징용, GM-2).
+pub fn detect_bytes(bytes: &[u8]) -> anyhow::Result<&'static str> {
+    if bytes.len() >= 8 && bytes[..8] == CFB_MAGIC {
+        Ok("hwp")
+    } else if bytes.len() >= 2 && bytes[..2] == ZIP_MAGIC {
+        Ok("hwpx")
+    } else {
+        anyhow::bail!("HWP(CFB)도 HWPX(ZIP)도 아닙니다 (시그니처 불일치)")
+    }
+}

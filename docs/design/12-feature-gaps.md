@@ -443,8 +443,8 @@ IR→텍스트 포맷 출력에서 잃는 것들. `hwp-convert/src/{markdown,htm
 | GJ-2 | **HWPML(.hml) 입출력 부재** — 한컴 공식 스펙(HWPML rev1.2 Part II)·KS 표준 존재, kordoc 구현 선례 | grep 무일치. hwpml은 네임스페이스 URI로만 등장 | 미구현 | M |
 | GJ-3 | **HWP 3.x 레거시 침묵 거부** — `V3.00` 시그니처 감지 없이 generic "시그니처 불일치" 에러. 공식 스펙(3.0 rev1.2 Part I) 존재, rhwp·kordoc·LibreOffice hwpfilter 선례 | `hwp-cli/src/format.rs:22-38`(CFB/ZIP만) | 침묵 거부 | 감지=S / 파싱=M~L |
 | GJ-4 | **RTF 입출력 부재** | grep 무일치 | 미구현 | M |
-| GJ-5 | **표→CSV 추출 부재** — 표를 데이터로 뽑는 경로 없음(수요의 정량 근거는 미검증 — [08] caveat) | grep 무일치 | 미구현 | S |
-| GJ-6 | **`.txt` 확장자 추론 실패** — `convert -o out.txt`가 에러, 평문은 `cat`→stdout뿐 | `hwp-cli/src/commands/convert.rs:195-213`(txt arm 없음) | 미지원 | S |
+| GJ-5 | **표→CSV 추출 부재** — 표를 데이터로 뽑는 경로 없음(수요의 정량 근거는 미검증 — [08] caveat) | grep 무일치 | ✅ **해소(2026-08-01)** — `cat --format csv` + `convert --to csv` (`hwp-convert::csv`, RFC 4180) | S |
+| GJ-6 | **`.txt` 확장자 추론 실패** — `convert -o out.txt`가 에러, 평문은 `cat`→stdout뿐 | `hwp-cli/src/commands/convert.rs:195-213`(txt arm 없음) | ✅ **해소(2026-08-01)** — ConvertFormat::Txt + `.txt` 추론, stdout(`-`)로도 출력 | S |
 | GJ-7 | **HTML/ODT/PDF 역방향 입력 부재** — 입력은 hwp5/hwpx/json/markdown만(출력 전용 4포맷) | `hwp-cli/src/commands/cat.rs:18-44` | **HTML 부분 해소(2026-08-01)** — 계약 XHTML 부분집합 입력(`from_html`, md 혼합 경로 포함, docs/design/18). ODT/PDF 입력은 미구현 | 부분 | S(HTML) / L(ODT·PDF) |
 | GJ-8 | **HWPX 배포용 문서** — 어느 구현체도 미지원(H2Orestart #42 오픈). HWP5용 공식 배포 스펙이 HWPX 변형을 커버하는지 미확인 | [08](08-external-research.md) 미해결 질문 | 미구현 | L |
 
@@ -457,12 +457,12 @@ IR→텍스트 포맷 출력에서 잃는 것들. `hwp-convert/src/{markdown,htm
 |---|---|---|---|
 | GK-1 | **셀 병합/분할** — `merge_cells`(부분 겹침 거부)·`split_cell`(A5~A7 규격 빈 셀) + CLI `--merge-cells`/`--split-cell` | `edit.rs`(재귀 로케이터, set-cell과 인덱스 일치) — 정품 병합 표 **1,816개 전수 실측 5규칙**(피병합 셀 미저장·행우선·면적 타일링·row_cell_counts·영역 크기)이 사양. 조작 후 불변식 게이트 | ✅ **해소·실기 확정(2026-07-19)** — K1(hwpx)·K2(hwp5) 병합 표시·손상 없음 확인 |
 | GK-2 | **열 추가/삭제** — `add_col`(전체 폭 유지 균등 재분배, #9 정책 계승)·`delete_table_column`; 병합 셀 표도 지원(span 걸침 확대/축소), 삽입 위치 지정 + CLI `--add-col "표\|표:위치"`/`--delete-col` | `edit.rs` — 정품 병합 표 9종 회귀(불변식 위반 0) + tbl9 전체 폭 보존 테스트(#9) | ✅ **해소·실기 확정(2026-07-19)** — K3 열 구조 정확 확인 |
-| GK-3 | **표 신규 삽입 없음** — from_markdown은 표를 만들지만 앵커 기반 삽입 프리미티브 없음 | — | S |
-| GK-4 | **문단모양 편집이 정렬 한정** — 줄간격·들여쓰기·좌우 여백·문단 간격 변경 없음 | `format.rs:211-245`(attr1 정렬 비트만) | S |
+| GK-3 | **표 신규 삽입 없음** — from_markdown은 표를 만들지만 앵커 기반 삽입 프리미티브 없음 | — | ✅ **해소(2026-08-01)** — `edit --add-table "앵커=>행JSON"` (`edit::add_table`, 불변식 게이트) | S |
+| GK-4 | **문단모양 편집이 정렬 한정** — 줄간격·들여쓰기·좌우 여백·문단 간격 변경 없음 | `format.rs:211-245`(attr1 정렬 비트만) | ✅ **해소(2026-08-01)** — `edit --set-para "찾기=>키:값"` (line-spacing/indent/left/right/top/bottom, `format::set_para_props`) | S |
 | GK-5 | **머리말/꼬리말 편집 없음** — 추출 포함/제외만 가능 | `text.rs:62-66` | M |
-| GK-6 | **페이지 설정 변경 없음** — 여백·용지·방향(PageDef는 new 시 상수 주입만) | `from_markdown.rs:562-573` | S |
+| GK-6 | **페이지 설정 변경 없음** — 여백·용지·방향(PageDef는 new 시 상수 주입만) | `from_markdown.rs:562-573` | ✅ **해소(2026-08-01)** — `edit --set-page "키:값"` (치수 mm·orientation, `format::set_page_def`) | S |
 | GK-7 | **명명 스타일 적용/생성 없음** — 직접 모양 조작만, "제목1" 스타일 링크 편집 없음 | `format.rs` 전체 | M |
-| GK-8 | **개체 삭제 없음** — 이미지/필드/표/책갈피 삭제 불가(삽입·문단/행 삭제만 — 비대칭) | `edit.rs`·`field.rs`·`image.rs` | S |
+| GK-8 | **개체 삭제 없음** — 이미지/필드/표/책갈피 삭제 불가(삽입·문단/행 삭제만 — 비대칭) | `edit.rs`·`field.rs`·`image.rs` | ✅ **해소(2026-08-01)** — `edit --delete-image/--delete-table(n|앵커)/--delete-field/--delete-bookmark` (`edit::delete_object` — 컨트롤+앵커 문자+FIELD_END 수술) | S |
 | GK-9 | **add-row/delete-row 표 인덱싱이 set-cell과 불일치**(톱레벨 전용 vs 재귀 깊이 우선) — 잠복 버그 | `structure.rs` 구 nth_table | ✅ **해소(2026-07-18)** — 재귀 로케이터로 단일화, add-row도 병합 거부·깨끗한 템플릿 행 자동 선택 | S |
 
 ## 12. GL — 텍스트 추출 옵션 (2026-07-08 재수색 추가)
@@ -480,12 +480,12 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 
 | ID | 현상 | 수요·선례 근거 | 난이도 |
 |---|---|---|---|
-| GM-1 | **배치/glob/디렉토리 처리 없음** — 전 명령이 단일 파일 인자 | MS BATCHHWPCONV·H2Orestart headless가 배치 수요 실증 | S |
-| GM-2 | **stdin 입력·stdout 파이프 미흡** — convert/edit은 출력 파일 필수, `-` 미지원(cat만 stdout) | 유닉스 CLI 관례 | S |
+| GM-1 | **배치/glob/디렉토리 처리 없음** — 전 명령이 단일 파일 인자 | MS BATCHHWPCONV·H2Orestart headless가 배치 수요 실증 | ✅ **해소(2026-08-01)** — convert 다중 입력 + `--out-dir` (파일명 `<스템>.<확장자>`) | S |
+| GM-2 | **stdin 입력·stdout 파이프 미흡** — convert/edit은 출력 파일 필수, `-` 미지원(cat만 stdout) | 유닉스 CLI 관례 | ✅ **해소(2026-08-01)** — convert 입력 `-`(stdin 스테이징)·출력 `-`(텍스트 포맷 stdout) | S |
 | GM-3 | **문서 병합 없음** — 여러 hwp를 하나로 | pyhwpx 쿡북 정식 챕터(33개→99쪽 병합), 현행 해법은 Windows COM 전용·불안정 | M |
 | GM-4 | **문서 분할/페이지 추출 없음** — render `--pages`는 이미지용 | pyhwpx 쿡북(100쪽→1쪽씩 분할 저장) | M |
-| GM-5 | **텍스트 검색(grep) 명령 없음** — edit `--replace`만 존재 | — | S |
-| GM-6 | **메타데이터 일괄 편집/덤프 없음** — `--set-meta`는 new/edit 국소 | — | S |
+| GM-5 | **텍스트 검색(grep) 명령 없음** — edit `--replace`만 존재 | — | ✅ **해소(2026-08-01)** — `hwp grep <패턴> <파일>` (문단 재귀 검색, 미일치 종료 코드 1, `--ignore-case`) | S |
+| GM-6 | **메타데이터 일괄 편집/덤프 없음** — `--set-meta`는 new/edit 국소 | — | ✅ **이미 충족(2026-08-01 정정)** — 덤프는 `hwp info`(metadata JSON), 편집은 `edit --set-meta`(title/author/subject/keywords 반복)로 커버됨 | S |
 | GM-7 | **도장/서명 자동 날인** — `edit --seal "앵커=>이미지@크기mm"` 구현(부유·글 앞 Picture, 앵커 텍스트 유지, 기본 20mm) | `hwp-convert/src/image.rs insert_seal` | ✅ **실기 확정(2026-07-16, D1·D2 통과)** — 실기 3회 반복으로 확정: hwpx=`IN_FRONT_OF_TEXT`+`allowOverlap=1`+오프셋, hwp5=attr `0x04aa4310`(글앞·PARA·본문제한 해제, §4.3.9.1 비트 표 대조) |
 | GM-8 | **문서 내용 비교 없음** — `diff`는 렌더 픽셀 비교 전용, 텍스트/구조 비교 없음 | kordoc compare_documents 선례 | M |
 
@@ -498,7 +498,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 | | **난이도 S**(자료구조만) | **난이도 M**(정답지 필요) | **난이도 L**(실기 반복) |
 |---|---|---|---|
 | **가치 高**(빈출) | GC-4·GC-5(탭·구역속성), GC-8·GC-9(내어쓰기·문단배경) — ✅해소(2026-07-15): ~~GE-α1~α5·α7, GH-1·GH-2, GL-1, GA-5, GE-β4~~ / ✅해소(2026-07-18, md): ~~GH-3·GH-4·GH-5·GH-6, GH-8~~ | GG-3·GG-4(양쪽정렬·자간), GF-2(찾아보기·겹침), **GA-2★**(배포용 읽기 — 공식 스펙 공개), **GJ-1**(DOCX 출력 — 수요 최상·무주공산), **GK-1**(셀 병합), **GK-2**(열 삭제 — 추가는 07-19 해소) — ✅GC-2·GC-3은 07-19 해소(J1 실기 대기) | GG-1·GG-2(글상자 드롭·오버플로) |
-| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), **GG-5·GG-6·GG-8~GG-11·GG-16·GG-17·GG-20**(렌더 국소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), **GJ-5·GJ-6**(csv·txt) — ✅GI 계열 전체·GE-7은 07-19 해소, **GK-3·GK-4·GK-6·GK-8**(표 삽입·문단모양·페이지설정·삭제), **GM-1·GM-2·GM-5~GM-7**(배치·파이프·검색·메타·날인) | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-3·GM-4·GM-8**(병합·분할·비교) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 포함 시) |
+| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), **GG-5·GG-6·GG-8~GG-11·GG-16·GG-17·GG-20**(렌더 국소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-3·GM-4·GM-8**(병합·분할·비교) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 포함 시) |
 | **가치 低**(드묾) | GA-3·GA-4(거부 메시지), **GI-5**(embed-bin), **GL-2·GL-3**(추출 세분) | **GJ-4**(rtf) | GA-1(암호화), GB-8·GB-9·GB-11(변경추적 등), **GJ-7**(역방향 입력), **GJ-8**(HWPX 배포용) |
 
 **읽는 법:** 좌상단(S·高)이 **가성비 최상** — GE-α(글자효과 왕복)에 더해 **GH-1·GH-2**(md/html

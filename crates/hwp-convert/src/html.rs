@@ -147,16 +147,17 @@ fn style_rules(doc: &Document, ctx: &Ctx) -> String {
         };
         let line_height = match p.line_spacing_type {
             0 => trim_num(p.line_spacing as f32 / 100.0),
-            1 | 3 => format!("{}pt", trim_num(p.line_spacing as f32 / 100.0)),
+            // length kinds (fixed/at-least) are stored doubled in the IR — pt = value/200.
+            1 | 3 => format!("{}pt", trim_num(p.line_spacing as f32 / 200.0)),
             _ => "normal".to_string(), // 2 margin-only approximated
         };
         let rules = format!(
             "text-align:{align};line-height:{line_height};margin-left:{}mm;margin-right:{}mm;margin-top:{}mm;margin-bottom:{}mm;text-indent:{}mm;",
-            trim_num(hwp_mm(p.margin_left)),
-            trim_num(hwp_mm(p.margin_right)),
-            trim_num(hwp_mm(p.spacing_top)),
-            trim_num(hwp_mm(p.spacing_bottom)),
-            trim_num(hwp_mm(p.indent)),
+            trim_num(para_mm(p.margin_left)),
+            trim_num(para_mm(p.margin_right)),
+            trim_num(para_mm(p.spacing_top)),
+            trim_num(para_mm(p.spacing_bottom)),
+            trim_num(para_mm(p.indent)),
         );
         css.push_str(&format!(".ps{id}{{{rules}}}\n"));
     }
@@ -191,9 +192,9 @@ fn colorref_hex(v: u32) -> String {
     )
 }
 
-/// HWPUNIT → mm.
-fn hwp_mm(v: i32) -> f32 {
-    v as f32 * 25.4 / 7200.0
+/// ParaShape margin unit (doubled HWPUNIT, the hwp5 PARA_SHAPE unit) → mm.
+fn para_mm(v: i32) -> f32 {
+    v as f32 * 25.4 / 14400.0
 }
 
 /// Numeric string — rounds to three decimal places and strips trailing zeros.

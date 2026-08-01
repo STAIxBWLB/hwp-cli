@@ -81,13 +81,28 @@ pub enum Cmd {
         with_segments: bool,
     },
 
+    /// Search paragraph text (grep semantics; non-zero exit when no match)
+    Grep {
+        /// Pattern to find (substring match)
+        pattern: String,
+        /// Target HWP/HWPX file
+        file: PathBuf,
+        /// Case-insensitive match
+        #[arg(long = "ignore-case")]
+        ignore_case: bool,
+    },
+
     /// Convert between formats
     Convert {
-        /// Input HWP/HWPX file
-        input: PathBuf,
-        /// Output file path
+        /// Input HWP/HWPX files ("-" reads stdin; multiple inputs require --out-dir)
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+        /// Output file path ("-" writes stdout for text formats: md/json/html/txt/csv; required with a single input)
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
+        /// Output directory for multiple inputs (file names are "<stem>.<ext>", requires --to)
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
         /// Output format (inferred from the extension when omitted)
         #[arg(long, value_enum)]
         to: Option<ConvertFormat>,
@@ -413,6 +428,27 @@ pub struct EditArgs {
     /// Split a cell, "table:row:col": break a merged cell back into 1x1 cells (repeatable, 0-based)
     #[arg(long = "split-cell")]
     pub split_cell: Vec<String>,
+    /// Insert a table, "anchor=>json": insert a uniform table after the anchor paragraph; json is an array of row arrays (repeatable)
+    #[arg(long = "add-table")]
+    pub add_table: Vec<String>,
+    /// Paragraph shape properties, "find=>key:value" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm); repeatable)
+    #[arg(long = "set-para")]
+    pub set_para: Vec<String>,
+    /// Page setup, "key:value" (keys: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait|landscape); repeatable)
+    #[arg(long = "set-page")]
+    pub set_page: Vec<String>,
+    /// Delete an image, "anchor": delete the picture in the anchor paragraph (repeatable)
+    #[arg(long = "delete-image")]
+    pub delete_image: Vec<String>,
+    /// Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable)
+    #[arg(long = "delete-table")]
+    pub delete_table: Vec<String>,
+    /// Delete a field by name, "name" (repeatable; list names with hwp fields)
+    #[arg(long = "delete-field")]
+    pub delete_field: Vec<String>,
+    /// Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks)
+    #[arg(long = "delete-bookmark")]
+    pub delete_bookmark: Vec<String>,
     /// Verify by re-reading after writing
     #[arg(long)]
     pub verify: bool,
@@ -427,9 +463,10 @@ pub enum TextFormat {
     Markdown,
     Json,
     Html,
+    Csv,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum ConvertFormat {
     Hwp,
     Hwpx,
@@ -438,6 +475,8 @@ pub enum ConvertFormat {
     Html,
     Pdf,
     Odt,
+    Txt,
+    Csv,
 }
 
 /// Official-document preset (`hwp new --preset`).

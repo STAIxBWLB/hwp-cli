@@ -273,9 +273,252 @@ fn find_or_insert_para(pshapes: &mut Vec<ParaShape>, ps: ParaShape) -> ParaShape
     ParaShapeId((pshapes.len() - 1) as u16)
 }
 
+/// Paragraph property change items (GK-4). None items keep their existing values.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParaProps {
+    /// Line spacing — (kind, value). Kind 0=ratio%, 1=fixed(pt×100), 3=minimum.
+    pub line_spacing: Option<(u8, i32)>,
+    /// Indent/outdent (HWPUNIT).
+    pub indent: Option<i32>,
+    pub margin_left: Option<i32>,
+    pub margin_right: Option<i32>,
+    pub spacing_top: Option<i32>,
+    pub spacing_bottom: Option<i32>,
+}
+
+impl ParaProps {
+    pub fn is_empty(&self) -> bool {
+        self.line_spacing.is_none()
+            && self.indent.is_none()
+            && self.margin_left.is_none()
+            && self.margin_right.is_none()
+            && self.spacing_top.is_none()
+            && self.spacing_bottom.is_none()
+    }
+}
+
+/// Changes the para shape properties of paragraphs containing `pattern` (GK-4 — recurses
+/// through body, table cells, and text boxes). Points them at a new ParaShape with the changed
+/// properties (or an existing identical one). Returns the number of paragraphs changed.
+///
+/// **Units**: the dimension fields of `props` (indent/margins/spacings) are taken as
+/// HWPUNIT(1/7200") and stored converted to IR units (hwp5 PARA_SHAPE = 2× HWPUNIT). Line
+/// spacing is stored as-is for ratio (0), and doubled for length kinds (1/3) (symmetric with
+/// hwpx read's ×2 and write's ÷2 — based on genuine measurements).
+pub fn set_para_props(doc: &mut Document, pattern: &str, props: &ParaProps) -> usize {
+    if pattern.is_empty() || props.is_empty() {
+        return 0;
+    }
+    // HWPUNIT → IR (hwp5 PARA_SHAPE) unit conversion.
+    let props = ParaProps {
+        line_spacing: props.line_spacing.map(|(kind, v)| {
+            if kind == 0 {
+                (kind, v) // ratio (%) needs no conversion
+            } else {
+                (kind, v.saturating_mul(2))
+            }
+        }),
+        indent: props.indent.map(|v| v.saturating_mul(2)),
+        margin_left: props.margin_left.map(|v| v.saturating_mul(2)),
+        margin_right: props.margin_right.map(|v| v.saturating_mul(2)),
+        spacing_top: props.spacing_top.map(|v| v.saturating_mul(2)),
+        spacing_bottom: props.spacing_bottom.map(|v| v.saturating_mul(2)),
+    };
+    let props = &props;
+    let Document {
+        header, sections, ..
+    } = doc;
+    let pshapes = &mut header.para_shapes;
+    let mut n = 0;
+    for section in sections.iter_mut() {
+        for para in &mut section.paragraphs {
+            n += props_para(para, pattern, props, pshapes);
+        }
+    }
+    n
+}
+
+fn props_para(
+    para: &mut Paragraph,
+    pattern: &str,
+    props: &ParaProps,
+    pshapes: &mut Vec<ParaShape>,
+) -> usize {
+    let mut n = 0;
+    if find_match(&para.chars, pattern, 0).is_some() {
+        let mut ps = pshapes
+            .get(para.para_shape.0 as usize)
+            .cloned()
+            .unwrap_or_default();
+        if let Some((kind, value)) = props.line_spacing {
+            ps.line_spacing_type = kind;
+            ps.line_spacing = value;
+            ps.line_spacing_old = value;
+        }
+        if let Some(v) = props.indent {
+            ps.indent = v;
+        }
+        if let Some(v) = props.margin_left {
+            ps.margin_left = v;
+        }
+        if let Some(v) = props.margin_right {
+            ps.margin_right = v;
+        }
+        if let Some(v) = props.spacing_top {
+            ps.spacing_top = v;
+        }
+        if let Some(v) = props.spacing_bottom {
+            ps.spacing_bottom = v;
+        }
+        para.para_shape = find_or_insert_para(pshapes, ps);
+        para.line_segs.clear();
+        n += 1;
+    }
+    for ctrl in &mut para.controls {
+        match ctrl {
+            Control::Table(t) => {
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        n += props_para(p, pattern, props, pshapes);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        n += props_para(p, pattern, props, pshapes);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    n
+}
+
+/// Page setup change items (GK-6). None items keep their existing values. Dimensions are HWPUNIT.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageProps {
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub margin_left: Option<i32>,
+    pub margin_right: Option<i32>,
+    pub margin_top: Option<i32>,
+    pub margin_bottom: Option<i32>,
+    /// true=landscape, false=portrait.
+    pub landscape: Option<bool>,
+}
+
+/// Changes the page setup of every section definition (GK-6 — applied uniformly to multi-section
+/// documents too). Returns the number of sections changed.
+pub fn set_page_def(doc: &mut Document, props: &PageProps) -> usize {
+    let mut n = 0;
+    for section in &mut doc.sections {
+        for para in &mut section.paragraphs {
+            for ctrl in &mut para.controls {
+                let Control::SectionDef(secd) = ctrl else {
+                    continue;
+                };
+                let Some(page) = secd.page.as_mut() else {
+                    continue;
+                };
+                if let Some(v) = props.width {
+                    page.width.0 = v;
+                }
+                if let Some(v) = props.height {
+                    page.height.0 = v;
+                }
+                if let Some(v) = props.margin_left {
+                    page.margin_left.0 = v;
+                }
+                if let Some(v) = props.margin_right {
+                    page.margin_right.0 = v;
+                }
+                if let Some(v) = props.margin_top {
+                    page.margin_top.0 = v;
+                }
+                if let Some(v) = props.margin_bottom {
+                    page.margin_bottom.0 = v;
+                }
+                if let Some(landscape) = props.landscape {
+                    // attr bit0 = page orientation (landscape).
+                    if landscape {
+                        page.attr |= 1;
+                    } else {
+                        page.attr &= !1;
+                    }
+                }
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_para_props_줄간격과_여백() {
+        let mut doc = crate::from_markdown::from_markdown("본문 문단입니다.\n\n다른 문단\n");
+        let props = ParaProps {
+            line_spacing: Some((0, 130)),
+            indent: Some(-1000),
+            margin_left: Some(2000),
+            spacing_top: Some(300),
+            ..ParaProps::default()
+        };
+        assert_eq!(set_para_props(&mut doc, "본문", &props), 1);
+        let para = &doc.sections[0].paragraphs[0];
+        let ps = &doc.header.para_shapes[para.para_shape.0 as usize];
+        // Ratio line spacing stays as-is; dimension fields are converted to IR (2×) units.
+        assert_eq!(ps.line_spacing, 130);
+        assert_eq!(ps.line_spacing_type, 0);
+        assert_eq!(ps.indent, -2000);
+        assert_eq!(ps.margin_left, 4000);
+        assert_eq!(ps.spacing_top, 600);
+        // The other paragraph keeps the default palette (ps2).
+        let other = &doc.sections[0].paragraphs[1];
+        assert_eq!(other.para_shape.0, 2);
+    }
+
+    #[test]
+    fn set_para_props_고정줄간격은_2배환산() {
+        let mut doc = crate::from_markdown::from_markdown("본문 문단입니다.\n");
+        let props = ParaProps {
+            line_spacing: Some((1, 1300)), // 13pt fixed (HWPUNIT)
+            ..ParaProps::default()
+        };
+        assert_eq!(set_para_props(&mut doc, "본문", &props), 1);
+        let para = &doc.sections[0].paragraphs[0];
+        let ps = &doc.header.para_shapes[para.para_shape.0 as usize];
+        assert_eq!(ps.line_spacing_type, 1);
+        assert_eq!(ps.line_spacing, 2600, "고정 줄간격은 2배 단위 저장");
+    }
+
+    #[test]
+    fn set_page_def_여백과_방향() {
+        let mut doc = crate::from_markdown::from_markdown("본문\n");
+        let props = PageProps {
+            margin_left: Some(5668),
+            landscape: Some(true),
+            ..PageProps::default()
+        };
+        assert_eq!(set_page_def(&mut doc, &props), 1);
+        let secd = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::SectionDef(s) => Some(s),
+                _ => None,
+            })
+            .expect("구역 정의");
+        let page = secd.page.as_ref().unwrap();
+        assert_eq!(page.margin_left.0, 5668);
+        assert_eq!(page.attr & 1, 1, "가로 방향");
+    }
     use crate::from_markdown;
 
     fn dummy_lineseg() -> hwp_model::LineSeg {
