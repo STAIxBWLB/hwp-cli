@@ -698,8 +698,10 @@ name = "hwp-convert"
 version = "0.5.0"
 dependencies = [
  "hwp-model",
+ "image",
  "pulldown-cmark",
  "quick-xml",
+ "resvg",
  "serde_json",
  "zip",
 ]

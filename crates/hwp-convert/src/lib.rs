@@ -14,6 +14,7 @@ pub mod markdown;
 pub mod merge;
 pub mod odt;
 pub mod structure;
+pub mod svg;
 
 use hwp_model::Document;
 

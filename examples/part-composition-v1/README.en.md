@@ -13,6 +13,7 @@ written as HTML fragments (contract:
   anchor.
 - `part-overview.md` — a markdown part (prose).
 - `part-table.md` — an md + HTML table part (with merged cells).
+- `part-diagram.md` + `diagram.svg` — an SVG diagram part (rasterized embed).
 
 ## Compose
 
@@ -24,7 +25,8 @@ hwp new --from template.md -o template.hwpx
 hwp fill template.hwpx -o result.hwpx \
   --set 작성일=2026-08-01 \
   --set 개요=@part-overview.md \
-  --set 실적표=@part-table.md
+  --set 실적표=@part-table.md \
+  --set 구성도=@part-diagram.md
 
 # 3) Validate
 hwp validate result.hwpx
@@ -36,5 +38,6 @@ hwp validate result.hwpx
   be spliced as a block and is only handled as plain field substitution.
 - Template and parts must share the hwp-cli default palette family (outputs of `hwp new`
   or `compose`). Parts inherit the template's typography.
-- Relative image paths inside a part resolve against the part file's directory. For SVG,
-  v1 uses the DocumentSpec v2 svg visual path (`hwp compose`).
+- Relative image paths inside a part resolve against the part file's directory. SVG is
+  embedded via validation + deterministic PNG rasterization (SVG with scripts or external
+  references is rejected).
