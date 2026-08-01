@@ -1869,7 +1869,7 @@ fn edit_replace_and_seal_applies_both_edits() {
     }
 }
 
-// ── S-tier 배치: 편집 프리미티브·배치·파이프·grep·csv/txt (GK-3/4/6/8, GM-1/2/5, GJ-5/6) ──
+// ── S-tier batch: edit primitives, batch, pipes, grep, csv/txt (GK-3/4/6/8, GM-1/2/5, GJ-5/6) ──
 
 fn make_doc(name: &str, md: &str) -> PathBuf {
     let md_path = tmp(name);
@@ -2056,11 +2056,11 @@ fn grep_match_and_no_match_exit_codes() {
         String::from_utf8_lossy(&r.stderr)
     );
     assert!(String::from_utf8_lossy(&r.stdout).contains("사과 바나나"));
-    // 표 셀도 검색된다.
+    // Table cells are searched too.
     let r = hwp().arg("grep").arg("오렌지").arg(&src).output().unwrap();
     assert!(r.status.success());
     assert!(String::from_utf8_lossy(&r.stdout).contains("오렌지"));
-    // 일치 없음 → 종료 코드 1.
+    // No match → exit code 1.
     let r = hwp().arg("grep").arg("포도").arg(&src).output().unwrap();
     assert_eq!(r.status.code(), Some(1), "미일치는 grep 관례 1");
     let _ = std::fs::remove_file(&src);
@@ -2068,7 +2068,7 @@ fn grep_match_and_no_match_exit_codes() {
 
 #[test]
 fn convert_docx_structure_and_textutil() {
-    // hwp→docx — OPC 파트와 본문이 살아 있어야 한다 (GJ-1).
+    // hwp→docx — the OPC parts and body must survive (GJ-1).
     let src = fixture("samples/report-tables.hwpx");
     if !src.exists() {
         eprintln!("스킵: 샘플 없음");
@@ -2087,7 +2087,7 @@ fn convert_docx_structure_and_textutil() {
         "docx 변환: {}",
         String::from_utf8_lossy(&r.stderr)
     );
-    // OPC 구조 검사.
+    // OPC structure check.
     let bytes = std::fs::read(&out).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
     for part in [
@@ -2109,7 +2109,7 @@ fn convert_docx_structure_and_textutil() {
         document.contains("gridSpan") || document.contains("vMerge"),
         "병합 셀 span 방출"
     );
-    // textutil(macOS)로 텍스트 왕복 스모크 — CI(ubuntu)에선 스킵.
+    // Text round-trip smoke via textutil (macOS) — skipped on CI (ubuntu).
     if Path::new("/usr/bin/textutil").exists() {
         let t = Command::new("/usr/bin/textutil")
             .args(["-convert", "txt", "-stdout"])

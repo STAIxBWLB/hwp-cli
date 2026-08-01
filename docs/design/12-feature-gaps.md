@@ -644,5 +644,6 @@ were **all resolved on 2026-07-15** (§0.5). The next entry points are **GC-8 an
 indent and paragraph background, S) and **GE-β5 and GM-7** (settings pass-through and sealing, S).
 The high-value, high-difficulty frontal approach is **GC-2 and GC-3** (page borders and footnote
 shape, frequent in official documents) plus **GA-2** (reading distribution documents, re-rated M now
-that the specification is public). The former largest demand, **GJ-1** DOCX output, was resolved on 2026-08-01 (export only; input remains L-tier) — next large items are GA-2 and the GM-3/4/8 family
-(DOCX output, open territory in OSS).
+that the specification is public). The former largest demand, **GJ-1** DOCX output, was resolved
+on 2026-08-01 (export only; input remains L-tier) — next large items are GA-2 and the GM-3/4/8
+family.

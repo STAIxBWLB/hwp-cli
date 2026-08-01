@@ -14,7 +14,7 @@ use std::io::Write as _;
 
 use hwp_model::{CharShape, Control, Document, HwpChar, NumFmt, Paragraph, ctrl_char};
 
-/// DOCX의 모든 문서를 ZIP(OPC)로 직렬화한다.
+/// Serializes the entire document to DOCX as a ZIP (OPC) package.
 pub fn to_docx(doc: &Document) -> std::io::Result<Vec<u8>> {
     let mut b = Builder {
         doc,
@@ -26,12 +26,22 @@ pub fn to_docx(doc: &Document) -> std::io::Result<Vec<u8>> {
         foot_n: 0,
         end_n: 0,
     };
-    for section in &doc.sections {
+    for (i, section) in doc.sections.iter().enumerate() {
+        if i > 0 {
+            // Section boundary — closes the previous section's sectPr in a paragraph pPr.
+            b.body.push_str("<w:p><w:pPr>");
+            b.body
+                .push_str(&sect_pr_xml(section_page(&doc.sections[i - 1])));
+            b.body.push_str("</w:pPr></w:p>");
+        }
         for para in &section.paragraphs {
             b.paragraph(para);
         }
     }
-    b.body.push_str(&sect_pr(doc));
+    // The body-end sectPr holds the last section's settings.
+    if let Some(last) = doc.sections.last() {
+        b.body.push_str(&sect_pr_xml(section_page(last)));
+    }
 
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let deflated = zip::write::SimpleFileOptions::default()
@@ -85,7 +95,7 @@ struct ImageItem {
     cy_emu: i64,
 }
 
-/// 외부 하이퍼링크 rel 하나 (id, URL).
+/// One external hyperlink rel (id, URL).
 struct LinkRel {
     id: String,
     url: String,
@@ -96,7 +106,7 @@ struct Builder<'d> {
     body: String,
     images: Vec<ImageItem>,
     link_rels: Vec<LinkRel>,
-    /// (id, 본문 XML) — footnotes.xml/endnotes.xml에 들어갈 노트.
+    /// (id, body XML) — notes that go into footnotes.xml/endnotes.xml.
     footnotes: Vec<(u32, String)>,
     endnotes: Vec<(u32, String)>,
     foot_n: u32,
@@ -124,10 +134,10 @@ impl Builder<'_> {
         self.body.push_str(&blocks);
     }
 
-    /// 문단 속성 (스타일·번호·정렬·간격·들여쓰기).
+    /// Paragraph properties (style, numbering, alignment, spacing, indent).
     fn ppr(&self, para: &Paragraph) -> String {
         let mut ppr = String::from("<w:pPr>");
-        // "개요 N" 스타일 → HeadingN.
+        // "개요 N" style → HeadingN.
         if let Some(level) = self
             .doc
             .header
@@ -140,17 +150,21 @@ impl Builder<'_> {
             ppr.push_str(&format!("<w:pStyle w:val=\"Heading{level}\"/>"));
         }
         if let Some(ps) = self.doc.header.para_shapes.get(para.para_shape.0 as usize) {
-            // 번호/글머리 목록.
+            // Numbered/bullet list.
             let (ht, level) = (ps.head_type(), ps.head_level());
             if ht == 2 || ht == 3 {
-                let num_id =
-                    u32::from(ps.numbering_id) + 1 + if ht == 3 { BULLET_NUM_BASE } else { 0 };
+                // Numbering definitions use numId = index+1; bullets point at BULLET_NUM_BASE+index.
+                let num_id = if ht == 3 {
+                    BULLET_NUM_BASE + u32::from(ps.numbering_id)
+                } else {
+                    u32::from(ps.numbering_id) + 1
+                };
                 ppr.push_str(&format!(
                     "<w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{num_id}\"/></w:numPr>",
                     level.saturating_sub(1)
                 ));
             }
-            // 정렬.
+            // Alignment.
             let jc = match ps.alignment() {
                 1 => "left",
                 2 => "right",
@@ -159,7 +173,7 @@ impl Builder<'_> {
                 _ => "both",
             };
             ppr.push_str(&format!("<w:jc w:val=\"{jc}\"/>"));
-            // 줄간격 — PERCENT는 lineRule=auto(240=단일), 길이 종류는 exact/atLeast.
+            // Line spacing — PERCENT uses lineRule=auto (240=single); length kinds use exact/atLeast.
             match ps.line_spacing_type {
                 1 => ppr.push_str(&format!(
                     "<w:spacing w:line=\"{}\" w:lineRule=\"exact\"/>",
@@ -175,7 +189,7 @@ impl Builder<'_> {
                 )),
                 _ => {}
             }
-            // 문단 간격·들여쓰기 — IR은 hwp5 2배 단위라 twips는 값/10.
+            // Paragraph spacing/indent — the IR uses hwp5 2× units, so twips is value/10.
             let mut ind = String::new();
             if ps.margin_left != 0 {
                 ind.push_str(&format!(" w:left=\"{}\"", ps.margin_left / 10));
@@ -203,12 +217,12 @@ impl Builder<'_> {
         ppr
     }
 
-    /// 문단의 인라인 내용. 표 등 블록은 `blocks`로 분리한다.
+    /// Inline content of a paragraph. Blocks such as tables are split off into `blocks`.
     fn inline(&mut self, para: &Paragraph, out: &mut String, blocks: &mut String) {
         let mut wchar_pos = 0u32;
-        let mut current: Option<usize> = None; // 활성 char shape id
-        let mut link_open: Option<String> = None; // 활성 hyperlink rel id
-        let mut text_buf = String::new(); // 연속 Text — <w:t>로 flush
+        let mut current: Option<usize> = None; // active char shape id
+        let mut link_open: Option<String> = None; // active hyperlink rel id
+        let mut text_buf = String::new(); // consecutive Text — flushed as <w:t>
         macro_rules! flush_text {
             () => {
                 if !text_buf.is_empty() {
@@ -271,7 +285,7 @@ impl Builder<'_> {
                                 "<w:hyperlink r:id=\"{rel_id}\" w:history=\"1\">"
                             ));
                             link_open = Some(rel_id);
-                            current = None; // 링크 run을 새로 연다
+                            current = None; // open a fresh run for the link
                         } else {
                             close_run(out, &mut current);
                             self.control(control, *code, out, blocks);
@@ -322,7 +336,7 @@ impl Builder<'_> {
             }
             Control::Table(table) => self.table(table, blocks),
             Control::Generic(g) => {
-                // 각주/미주 → footnotes.xml/endnotes.xml + 참조 run.
+                // Footnote/endnote → footnotes.xml/endnotes.xml + reference run.
                 if code == ctrl_char::FOOTNOTE_ENDNOTE && matches!(&g.ctrl_id, b"fn  " | b"en  ") {
                     let mut note_body = String::new();
                     for list in &g.paragraph_lists {
@@ -341,7 +355,7 @@ impl Builder<'_> {
                     let endnote = g.ctrl_id == *b"en  ";
                     let id = if endnote {
                         self.end_n += 1;
-                        self.end_n + 1 // 0/1은 separator 예약
+                        self.end_n + 1 // 0/1 are reserved for separators
                     } else {
                         self.foot_n += 1;
                         self.foot_n + 1
@@ -359,11 +373,13 @@ impl Builder<'_> {
                     }
                     return;
                 }
-                // 수식 → 스크립트 원문 그대로 (v1 폴리백).
+                // Equation → the script source as a run (v1 fallback).
                 if let Some(eq) = &g.equation {
+                    out.push_str("<w:r><w:t xml:space=\"preserve\">");
                     for c in eq.script.chars() {
                         push_escaped(out, c);
                     }
+                    out.push_str("</w:t></w:r>");
                     return;
                 }
                 if code == ctrl_char::HEADER_FOOTER || code == ctrl_char::HIDDEN_COMMENT {
@@ -378,7 +394,7 @@ impl Builder<'_> {
         }
     }
 
-    /// 글상자 등의 난이 문단 — 블록 컨텍스트에서 문단을 그린다.
+    /// Paragraphs inside text boxes etc. — draws a paragraph in a block context.
     fn paragraph_in_block(&mut self, para: &Paragraph, out: &mut String, blocks: &mut String) {
         let mut inl = String::new();
         self.inline(para, &mut inl, blocks);
@@ -391,11 +407,13 @@ impl Builder<'_> {
         }
     }
 
-    /// 표 — gridSpan(colspan)·vMerge(rowspan). 셀 안 중첩 표 보존.
+    /// Table — gridSpan (colspan) and vMerge (rowspan). Nested tables inside cells are preserved.
     fn table(&mut self, table: &hwp_model::Table, blocks: &mut String) {
         let rows = table.rows.max(1) as usize;
         let cols = table.cols.max(1) as usize;
-        let mut covered = vec![vec![false; cols]; rows];
+        // Covered-slot tracking: slots covered horizontally (colspan) emit no cell; only slots
+        // covered vertically (rowspan) emit a vMerge cell. Value = (vertically covered?, origin's col_span).
+        let mut covered: Vec<Vec<Option<(bool, u16)>>> = vec![vec![None; cols]; rows];
         let col_twips = crate::from_markdown::BODY_WIDTH / cols as i32 / 5;
         blocks.push_str(
             "<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/>\
@@ -414,9 +432,18 @@ impl Builder<'_> {
         for r in 0..rows {
             blocks.push_str("<w:tr>");
             for c in 0..cols {
-                if covered[r][c] {
+                if let Some((from_above, origin_col_span)) = covered[r][c] {
+                    if !from_above {
+                        continue; // slots covered horizontally (colspan) emit no cell.
+                    }
+                    // Vertically covered (rowspan) — carries the origin's gridSpan as-is.
+                    let span = if origin_col_span > 1 {
+                        format!("<w:gridSpan w:val=\"{origin_col_span}\"/>")
+                    } else {
+                        String::new()
+                    };
                     blocks.push_str(&format!(
-                        "<w:tc><w:tcPr><w:tcW w:w=\"{col_twips}\" w:type=\"dxa\"/><w:vMerge/></w:tcPr><w:p/></w:tc>"
+                        "<w:tc><w:tcPr><w:tcW w:w=\"{col_twips}\" w:type=\"dxa\"/>{span}<w:vMerge/></w:tcPr><w:p/></w:tc>"
                     ));
                     continue;
                 }
@@ -432,10 +459,14 @@ impl Builder<'_> {
                 };
                 for dr in 0..cell.row_span.max(1) as usize {
                     for dc in 0..cell.col_span.max(1) as usize {
+                        if dr == 0 && dc == 0 {
+                            continue; // the origin itself
+                        }
                         if let Some(slot) =
                             covered.get_mut(r + dr).and_then(|row| row.get_mut(c + dc))
                         {
-                            *slot = true;
+                            // Slots to the right in the same row are horizontally covered; rows below are vertically covered.
+                            *slot = Some((dr > 0, cell.col_span));
                         }
                     }
                 }
@@ -474,7 +505,7 @@ impl Builder<'_> {
         blocks.push_str("</w:tbl>");
     }
 
-    /// document.xml.rels — 스타일/번호/노트/그림/하이퍼링크 관계.
+    /// document.xml.rels — style/numbering/note/image/hyperlink relationships.
     fn doc_rels_xml(&self) -> String {
         let mut rels = String::from(
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
@@ -517,7 +548,7 @@ impl Builder<'_> {
         rels
     }
 
-    /// footnotes.xml/endnotes.xml — id 0/1은 separator 예약.
+    /// footnotes.xml/endnotes.xml — ids 0/1 are reserved for separators.
     fn notes_xml(&self, endnote: bool) -> String {
         let (root, item, reference) = if endnote {
             ("endnotes", "endnote", "endnoteRef")
@@ -546,7 +577,7 @@ impl Builder<'_> {
     }
 }
 
-/// 번호 정의의 numId 베이스 — bullet 정의는 번호 정의 뒤에 붙는다.
+/// numId base for numbering definitions — bullet definitions are appended after the numbering definitions.
 const BULLET_NUM_BASE: u32 = 128;
 
 fn shape_id_at(doc: &Document, para: &Paragraph, pos: u32) -> Option<usize> {
@@ -559,7 +590,7 @@ fn shape_id_at(doc: &Document, para: &Paragraph, pos: u32) -> Option<usize> {
     (doc.header.char_shapes.get(id.0 as usize).is_some()).then_some(id.0 as usize)
 }
 
-/// run을 연다 — 현재 모양의 rPr을 쓴다. `current`는 활성 shape id 추적.
+/// Opens a run — writes the rPr of the current shape. `current` tracks the active shape id.
 fn open_run(out: &mut String, doc: &Document, want: Option<usize>, current: &mut Option<usize>) {
     let rpr = want
         .and_then(|id| doc.header.char_shapes.get(id))
@@ -604,10 +635,10 @@ fn run_props(doc: &Document, s: &CharShape) -> String {
     if s.is_subscript() {
         r.push_str("<w:vertAlign w:val=\"subscript\"/>");
     }
-    // 크기: base_size(1/100pt) × rel_sizes(%) → half-points.
-    let hp = (i64::from(s.base_size) * i64::from(s.rel_sizes[0]) / 50).max(2);
+    // Size: base_size (1/100pt) × rel_sizes (%) → half-points (10pt → 20).
+    let hp = (i64::from(s.base_size) * i64::from(s.rel_sizes[0]) / 5000).max(2);
     r.push_str(&format!("<w:sz w:val=\"{hp}\"/><w:szCs w:val=\"{hp}\"/>"));
-    // 자간 % → 현재 크기 기준 pt의 twips.
+    // Letter spacing % → twips of pt at the current size.
     if s.spacings[0] != 0 {
         let twips =
             i64::from(s.spacings[0]) * i64::from(s.base_size) * i64::from(s.rel_sizes[0]) / 50000;
@@ -631,7 +662,7 @@ fn run_props(doc: &Document, s: &CharShape) -> String {
     r
 }
 
-/// COLORREF(0x00BBGGRR) → RRGGBB (docx는 # 없는 6자리).
+/// COLORREF(0x00BBGGRR) → RRGGBB (docx uses 6 digits without #).
 fn colorref_hex(v: u32) -> String {
     format!(
         "{:02X}{:02X}{:02X}",
@@ -677,21 +708,24 @@ fn document_xml(body: &str) -> String {
     )
 }
 
-/// 마지막 구역 정의의 페이지 설정 → sectPr (twips).
-fn sect_pr(doc: &Document) -> String {
-    let page = doc
-        .sections
+/// Finds the section's PageDef (based on the first SectionDef).
+fn section_page(section: &hwp_model::Section) -> Option<&hwp_model::PageDef> {
+    section
+        .paragraphs
         .iter()
-        .flat_map(|s| &s.paragraphs)
         .flat_map(|p| &p.controls)
         .find_map(|c| match c {
             Control::SectionDef(sd) => sd.page.as_ref(),
             _ => None,
-        });
+        })
+}
+
+/// PageDef → sectPr (twips).
+fn sect_pr_xml(page: Option<&hwp_model::PageDef>) -> String {
     let Some(page) = page else {
         return "<w:sectPr/>".into();
     };
-    // PageDef는 HWPUNIT(2배 아님) — twips는 ×0.2.
+    // PageDef is HWPUNIT (not 2×) — twips is ×0.2.
     let tw = |v: i32| (i64::from(v) / 5).max(0);
     let orient = if page.attr & 1 != 0 {
         " w:orient=\"landscape\""
@@ -748,7 +782,7 @@ fn styles_xml(doc: &Document) -> String {
     out
 }
 
-/// numbering.xml — 번호 정의(0-기반 인덱스) + bullet 정의(BULLET_NUM_BASE~).
+/// numbering.xml — numbering definitions (0-based index) + bullet definitions (BULLET_NUM_BASE~).
 fn numbering_xml(doc: &Document) -> String {
     let mut out = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
@@ -808,7 +842,7 @@ fn num_fmt(level: &hwp_model::NumLevel) -> (&'static str, String) {
     } else {
         level.template.clone()
     };
-    // `^N` 자리표시를 OOXML `%N`으로 — 템플릿의 ^1..^7을 순서대로 치환.
+    // `^N` placeholders to OOXML `%N` — replaces ^1..^7 of the template in order.
     for n in 1..=7u8 {
         text = text.replace(&format!("^{n}"), &format!("%{n}"));
     }
@@ -916,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn 문서_구조와_본문() {
+    fn document_structure_and_body() {
         let doc = crate::from_markdown::from_markdown(
             "# 제목\n\n본문 **굵게** 문단입니다.\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n",
         );
@@ -930,6 +964,12 @@ mod tests {
         assert!(document.contains("<w:b/>"), "굵게: {document}");
         assert!(document.contains("본문"), "본문: {document}");
         assert!(document.contains("<w:tbl>"), "표: {document}");
+        // Regression: 10pt body text must be half-points 20 (100× bug).
+        assert!(
+            document.contains("<w:sz w:val=\"20\"/>"),
+            "본문 크기: {document}"
+        );
+        assert!(!document.contains("w:val=\"2000\""), "크기 100배 방지");
         assert!(
             unzip(&bytes, "word/styles.xml")
                 .unwrap()
@@ -941,11 +981,11 @@ mod tests {
     }
 
     #[test]
-    fn 병합셀_span과_vmerge() {
+    fn merged_cell_span_and_vmerge() {
         let mut doc = crate::from_markdown::from_markdown("표\n");
         {
             let para = &mut doc.sections[0].paragraphs[0];
-            // 직접 병합 셀 구성 — GFM은 병합을 못 만든다.
+            // Manually constructed merged cells — GFM cannot create merges.
             use hwp_model::{BorderFillId, Cell, HwpUnit, Table};
             let cell = |row, col, cs, rs, text: &str| Cell {
                 list_attr: 0,
@@ -1003,10 +1043,17 @@ mod tests {
             "rowspan: {document}"
         );
         assert!(document.contains("<w:vMerge/>"), "덮인 칸: {document}");
+        // Regression: slots covered horizontally (colspan) emit no cell — the first row has only 2 origin cells.
+        let row1 = document.split("</w:tr>").next().unwrap();
+        assert_eq!(
+            row1.matches("<w:tc>").count(),
+            2,
+            "가로 덮임 미방출: {row1}"
+        );
     }
 
     #[test]
-    fn 각주와_하이퍼링크와_목록() {
+    fn footnote_hyperlink_and_list() {
         let doc = crate::from_markdown::from_markdown(
             "본문[^1] [링크](https://example.com)\n\n1. 첫째\n2. 둘째\n\n[^1]: 각주 내용\n",
         );
@@ -1034,10 +1081,56 @@ mod tests {
                 .unwrap()
                 .contains("decimal")
         );
+        // Regression: the bullet numId must match the definition in numbering.xml (128-based).
+        let doc_b = crate::from_markdown::from_markdown("- 항목 하나\n");
+        let bytes_b = to_docx(&doc_b).unwrap();
+        let doc_b_xml = unzip(&bytes_b, "word/document.xml").unwrap();
+        assert!(
+            doc_b_xml.contains("<w:numId w:val=\"128\"/>"),
+            "불릿 numId: {doc_b_xml}"
+        );
+        assert!(
+            unzip(&bytes_b, "word/numbering.xml")
+                .unwrap()
+                .contains("<w:num w:numId=\"128\">"),
+            "불릿 정의 존재"
+        );
+        // Regression: the equation script goes inside a run.
+        let mut doc_e = crate::from_markdown::from_markdown("수식: 여기\n");
+        {
+            use hwp_model::{Equation, GenericControl};
+            let para = &mut doc_e.sections[0].paragraphs[0];
+            let idx = para.controls.len() as u32;
+            para.controls.push(Control::Generic(GenericControl {
+                ctrl_id: *b"eqed",
+                data: vec![],
+                paragraph_lists: vec![],
+                extras: vec![],
+                raw_children: vec![],
+                gso_shapes: vec![],
+                equation: Some(Equation {
+                    script: "x^2".to_string(),
+                    ..Equation::default()
+                }),
+                column_def: None,
+            }));
+            para.chars.push(HwpChar::ExtCtrl {
+                code: ctrl_char::OBJECT,
+                ctrl_id: *b"eqed",
+                payload: vec![],
+                ctrl_index: Some(idx),
+            });
+        }
+        let bytes_e = to_docx(&doc_e).unwrap();
+        let doc_e_xml = unzip(&bytes_e, "word/document.xml").unwrap();
+        assert!(
+            doc_e_xml.contains("<w:r><w:t xml:space=\"preserve\">x^2</w:t></w:r>"),
+            "수식 run: {doc_e_xml}"
+        );
     }
 
     #[test]
-    fn 이미지_임베드와_extent() {
+    fn image_embed_and_extent() {
         let mut doc = crate::from_markdown::from_markdown("그림: 여기\n");
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         png.extend([0, 0, 0, 13]);
