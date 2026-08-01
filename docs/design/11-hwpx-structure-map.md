@@ -1,3 +1,5 @@
+[한국어](11-hwpx-structure-map.md) · [English](11-hwpx-structure-map.en.md)
+
 # HWPX 구조 지도 (요소 전수 카탈로그 + read/write 대칭성 감사)
 
 이 문서는 HWPX(OWPML) 패키지가 담는 **모든 파트·네임스페이스·XML 요소를 표로 조회**하고,
