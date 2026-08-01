@@ -204,8 +204,12 @@ hwp mcp --font-dir ./fonts
 
 ## 명령 레퍼런스
 
-전체 자동 생성 레퍼런스는 [docs/manual/cli-reference.md](docs/manual/cli-reference.md)에 있다. clap
-정의에서 생성되며 코드와의 동기화를 CI 테스트가 강제한다. 아래는 요약이다.
+전체 자동 생성 레퍼런스는 [docs/manual/cli-reference.md](docs/manual/cli-reference.md)(영문:
+[cli-reference.en.md](docs/manual/cli-reference.en.md))에 있다. clap 정의에서 두 언어 모두 생성되며
+코드와의 동기화를 CI 테스트가 강제한다. 아래는 요약이다.
+
+도움말 표시 언어는 로케일을 따르고(한국어 로케일이면 한국어, 그 외 영문), `--lang en|ko`나
+`HWP_LANG`으로 바꿀 수 있다.
 
 | 명령 | 설명 |
 |---|---|

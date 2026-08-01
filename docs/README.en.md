@@ -13,9 +13,9 @@ Notes on the HWP 5.0 format specification material used when working on the pars
 | [release-readiness.md](release-readiness.md) | Pre-release gate checklist |
 | [hancom-verification-checklist.md](hancom-verification-checklist.md) | Checklist for verifying files in Hancom Office |
 
-User-facing documents come as a Korean original (`NAME.md`) plus an English pair (`NAME.en.md`). The
-exception is `manual/cli-reference.md`, whose text is the CLI's own Korean help output, so no
-hand-translated pair is kept.
+User-facing documents come as a Korean original (`NAME.md`) plus an English pair (`NAME.en.md`).
+Both `manual/cli-reference*.md` files are generated from the clap definitions in either language
+(do not edit them by hand).
 
 ## The specification is not bundled with this repository
 

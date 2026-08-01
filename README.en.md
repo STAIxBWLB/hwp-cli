@@ -221,9 +221,12 @@ hwp mcp --font-dir ./fonts
 
 ## Command reference
 
-The full generated reference is [docs/manual/cli-reference.md](docs/manual/cli-reference.md). It is
-generated from the clap definitions and a CI test enforces that it stays in sync with the code; its
-text is the CLI's own help output, which is Korean. A summary:
+The full generated reference is [docs/manual/cli-reference.en.md](docs/manual/cli-reference.en.md)
+(Korean: [cli-reference.md](docs/manual/cli-reference.md)). Both languages are generated from the
+clap definitions and a CI test enforces that they stay in sync with the code.
+
+Help is shown in English by default and in Korean under a Korean locale; override it with
+`--lang en|ko` or `HWP_LANG`. A summary:
 
 | Command | Description |
 |---|---|

@@ -7,12 +7,18 @@
 mod commands;
 mod format;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use hwp_cli::cli::{Cli, Cmd};
+use hwp_cli::i18n;
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    // 도움말 언어는 clap이 help/오류를 출력하기 전에 정해야 한다.
+    let command = i18n::localize(Cli::command(), i18n::Lang::detect());
+    let cli = match Cli::from_arg_matches(&command.get_matches()) {
+        Ok(cli) => cli,
+        Err(error) => error.exit(),
+    };
     match cli.cmd {
         Cmd::Info { file, json } => commands::info::run(&file, json),
         Cmd::Dump {

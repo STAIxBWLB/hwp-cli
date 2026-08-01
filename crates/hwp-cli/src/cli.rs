@@ -2,7 +2,12 @@
 //!
 //! 이 모듈은 lib 타깃으로 노출된다(`hwp_cli::cli`). bin(`main.rs`)이 파싱·디스패치에
 //! 쓰고, `tests/cli_reference.rs`가 `clap::CommandFactory`로 명령 트리를 introspect해
-//! `docs/manual/cli-reference.md`를 자동 생성한다(코드-문서 동기화 게이트).
+//! `docs/manual/cli-reference.md`(한국어)와 `cli-reference.en.md`(영문)를 자동 생성한다
+//! (코드-문서 동기화 게이트).
+//!
+//! **도움말 텍스트는 영문이 정본이다.** 한국어는 [`crate::i18n`]의 오버레이 표가 정본이며,
+//! 런타임에 로케일이나 `--lang`에 따라 덮어쓴다. 여기 doc comment를 고치면 i18n 표도 같이
+//! 고쳐야 한다(테스트가 누락을 잡는다).
 
 use std::path::PathBuf;
 
@@ -23,10 +28,20 @@ fn parse_dpi(value: &str) -> Result<f64, String> {
 }
 
 #[derive(Parser)]
-#[command(name = "hwp", version, about = "HWP/HWPX 문서 처리 도구")]
+#[command(name = "hwp", version, about = "HWP/HWPX document toolkit")]
 pub struct Cli {
+    /// Help language (default: from locale, otherwise English). Also settable with HWP_LANG
+    #[arg(long, value_enum, global = true)]
+    pub lang: Option<LangArg>,
     #[command(subcommand)]
     pub cmd: Cmd,
+}
+
+/// `--lang` 값. 감지 로직은 [`crate::i18n::Lang`]에 있다.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum LangArg {
+    En,
+    Ko,
 }
 
 #[derive(Subcommand)]
@@ -34,116 +49,126 @@ pub struct Cli {
 // CLI 명령 enum은 시작 시 한 번만 파싱되므로 크기차는 무의미 — 박싱 대신 허용.
 #[allow(clippy::large_enum_variant)]
 pub enum Cmd {
-    /// 파일 정보 표시: 포맷/버전/속성/스트림 목록
+    /// Show file information: format, version, properties and stream list
     Info {
+        /// Target HWP/HWPX file
         file: PathBuf,
-        /// JSON으로 출력
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// 텍스트 추출
+    /// Extract text
     Cat {
+        /// Target HWP/HWPX file
         file: PathBuf,
+        /// Output format
         #[arg(long, value_enum, default_value = "plain")]
         format: TextFormat,
-        /// 본문 파싱 없이 PrvText 미리보기만 출력
+        /// Print only the PrvText preview, without parsing the body
         #[arg(long)]
         preview: bool,
-        /// 머리말/꼬리말 텍스트도 추출에 포함 (기본: 제외)
+        /// Also extract header and footer text (default: excluded)
         #[arg(long = "with-header-footer")]
         with_header_footer: bool,
-        /// 숨은 설명 텍스트도 추출에 포함 (기본: 제외)
+        /// Also extract hidden comment text (default: excluded)
         #[arg(long = "with-hidden")]
         with_hidden: bool,
-        /// (markdown 전용) markdown과 함께 각 출력 문자 범위의 원본 좌표(섹션/문단)를
-        /// 한 줄 JSON 봉투로 출력 — {"markdown": ..., "segments": [...]}
+        /// (markdown only) Emit the markdown together with the source coordinates
+        /// (section/paragraph) of each output character range, as a one-line JSON
+        /// envelope: {"markdown": ..., "segments": [...]}
         #[arg(long = "with-segments")]
         with_segments: bool,
     },
 
-    /// 포맷 변환
+    /// Convert between formats
     Convert {
+        /// Input HWP/HWPX file
         input: PathBuf,
+        /// Output file path
         #[arg(short, long)]
         output: PathBuf,
-        /// 출력 포맷 (생략 시 확장자에서 추론)
+        /// Output format (inferred from the extension when omitted)
         #[arg(long, value_enum)]
         to: Option<ConvertFormat>,
-        /// 변환 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리
+        /// Fail when data that cannot be preserved (opaque) is found during conversion
         #[arg(long)]
         strict: bool,
-        /// 줄 배치 캐시 보존 (무수정 왕복 전용 — 한글은 내용과 어긋난
-        /// 줄 배치를 변조로 판정하므로 기본은 제거)
+        /// Preserve the line layout cache (unmodified round-trips only; Hancom treats
+        /// a layout inconsistent with the content as tampering, so it is dropped by default)
         #[arg(long)]
         preserve_layout: bool,
-        /// JSON 출력 시 첨부 바이너리(이미지)를 base64로 임베드 (자급식 JSON)
+        /// Embed attached binaries (images) as base64 in JSON output (self-contained JSON)
         #[arg(long)]
         embed_bin: bool,
-        /// (md) 이미지 추출 디렉터리 — 기본 "<출력스템>.media". 상대경로는 출력
-        /// 파일 기준으로 해석하고 링크는 입력한 경로 그대로 쓴다 (예: figs)
+        /// (md) Image extraction directory, default "<output stem>.media". A relative
+        /// path resolves against the output file and links use the path as given (e.g. figs)
         #[arg(long)]
         media_dir: Option<PathBuf>,
-        /// (md) 머리말/꼬리말 텍스트도 포함 (기본: 제외)
+        /// (md) Also include header and footer text (default: excluded)
         #[arg(long = "with-header-footer")]
         with_header_footer: bool,
-        /// (md) 숨은 설명 텍스트도 포함 (기본: 제외)
+        /// (md) Also include hidden comment text (default: excluded)
         #[arg(long = "with-hidden")]
         with_hidden: bool,
-        /// (pdf) 추가 폰트 디렉터리 (반복 가능, 기본: HWP_FONT_DIR 또는 fonts/)
+        /// (pdf) Additional font directory (repeatable; defaults to HWP_FONT_DIR or fonts/)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
     },
 
-    /// 페이지 렌더링
+    /// Render pages
     Render {
+        /// Input HWP/HWPX file
         input: PathBuf,
+        /// Output file path
         #[arg(short, long)]
         output: PathBuf,
-        /// 페이지 범위: "1", "1-3", "all"
+        /// Page range: "1", "1-3", "all"
         #[arg(long, default_value = "all")]
         pages: String,
-        /// 해상도 DPI (유한한 36..=600)
+        /// Resolution in DPI (finite, 36..=600)
         #[arg(long, default_value_t = 96.0, value_parser = parse_dpi)]
         dpi: f64,
-        /// 출력 포맷 (생략 시 확장자에서 추론)
+        /// Output format (inferred from the extension when omitted)
         #[arg(long, value_enum)]
         format: Option<RenderFormat>,
-        /// 추가 폰트 디렉터리 (반복 가능)
+        /// Additional font directory (repeatable)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
     },
 
-    /// 새 문서 생성
+    /// Create a new document
     New {
+        /// Output HWP/HWPX path
         #[arg(short, long)]
         output: PathBuf,
-        /// 입력 markdown/JSON 파일 (생략 시 빈 문서)
+        /// Input markdown or JSON file (empty document when omitted)
         #[arg(long)]
         from: Option<PathBuf>,
-        /// 메타데이터 설정 "키=값" (키: title|author|subject|keywords, 반복 가능)
+        /// Set metadata "key=value" (keys: title|author|subject|keywords; repeatable)
         #[arg(long = "set-meta")]
         set_meta: Vec<String>,
-        /// 공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt),
-        /// report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함
+        /// Official-document preset (markdown input only): gian for an approval draft
+        /// (Malgun Gothic 11.5pt), report for a report (HCR Batang 15pt). Includes margins,
+        /// four-level numbering and page numbers
         #[arg(long, value_enum)]
         preset: Option<PresetArg>,
     },
 
-    /// DocumentSpec v1/v2(JSON/YAML)에서 구조 문서를 deterministic 합성
+    /// Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)
     Compose {
-        /// DocumentSpec v1/v2 입력 파일(.json, .yaml, .yml)
+        /// DocumentSpec v1/v2 input file (.json, .yaml, .yml)
         spec: PathBuf,
-        /// 출력 HWP/HWPX
+        /// Output HWP/HWPX
         #[arg(short, long)]
         output: PathBuf,
-        /// 입력 포맷 (생략 시 spec 확장자에서 추론)
+        /// Input format (inferred from the spec extension when omitted)
         #[arg(long, value_enum)]
         format: Option<SpecFormatArg>,
-        /// 검증·컴파일 보고서만 생성하고 파일은 쓰지 않음
+        /// Produce the validation and compilation report without writing the file
         #[arg(long)]
         dry_run: bool,
-        /// 실행 보고서를 JSON으로 출력
+        /// Print the run report as JSON
         #[arg(long)]
         report: bool,
         /// [deprecated] v1 compatibility only; v2 rejects this policy override
@@ -151,162 +176,170 @@ pub enum Cmd {
         allow_visual_fallback: bool,
     },
 
-    /// TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
+    /// Generate typed native HWP/HWPX from TemplateSpec/Data v1
     Template {
-        /// TemplateSpec v1 입력 파일(.json, .yaml, .yml)
+        /// TemplateSpec v1 input file (.json, .yaml, .yml)
         template: PathBuf,
-        /// TemplateData v1 입력 파일(.json, .yaml, .yml)
+        /// TemplateData v1 input file (.json, .yaml, .yml)
         #[arg(long)]
         data: PathBuf,
-        /// 출력 HWP/HWPX
+        /// Output HWP/HWPX
         #[arg(short, long)]
         output: PathBuf,
-        /// TemplateSpec 입력 포맷 (생략 시 확장자에서 추론)
+        /// TemplateSpec input format (inferred from the extension when omitted)
         #[arg(long, value_enum)]
         template_format: Option<SpecFormatArg>,
-        /// TemplateData 입력 포맷 (생략 시 확장자에서 추론)
+        /// TemplateData input format (inferred from the extension when omitted)
         #[arg(long, value_enum)]
         data_format: Option<SpecFormatArg>,
-        /// 실제 확장·writer·검증 경로를 실행하되 결과 파일은 게시하지 않음
+        /// Run the real expansion, writer and validation paths without publishing the result
         #[arg(long)]
         dry_run: bool,
-        /// preservation/expansion 보고서를 JSON으로 출력
+        /// Print the preservation and expansion report as JSON
         #[arg(long)]
         report: bool,
     },
 
-    /// 렌더 결과를 한글 기준 PNG와 비교해 오차 측정 (위치 오프셋·픽셀 차이율)
+    /// Compare a render against a Hancom reference PNG (offset and pixel difference)
     Diff {
+        /// Input HWP/HWPX file
         input: PathBuf,
-        /// 한글에서 같은 페이지를 같은 DPI로 내보낸 기준 PNG
+        /// Reference PNG exported from Hancom for the same page at the same DPI
         #[arg(long)]
         r#ref: PathBuf,
-        /// 비교할 페이지 (1-기반)
+        /// Page to compare (1-based)
         #[arg(long, default_value_t = 1)]
         page: usize,
-        /// 해상도 DPI (유한한 36..=600)
+        /// Resolution in DPI (finite, 36..=600)
         #[arg(long, default_value_t = 96.0, value_parser = parse_dpi)]
         dpi: f64,
-        /// 차이 이미지 출력 경로 (생략 시 <ref>.diff.png)
+        /// Difference image output path (defaults to <ref>.diff.png)
         #[arg(short, long)]
         out: Option<PathBuf>,
-        /// 추가 폰트 디렉터리 (반복 가능)
+        /// Additional font directory (repeatable)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
-        /// 채널 차이 허용 오차 (이하면 동일 취급)
+        /// Per-channel tolerance; differences at or below this count as equal
         #[arg(long, default_value_t = 16)]
         tolerance: u8,
     },
 
-    /// 기존 문서 편집 (텍스트 치환·표 셀 설정) — 이미지·서식 보존
+    /// Edit an existing document (text replacement, table cells); images and formatting preserved
     Edit(EditArgs),
 
-    /// 필드/누름틀 목록 표시 (이름·종류·값)
+    /// List fields (name, kind, value)
     Fields {
+        /// Target HWP/HWPX file
         file: PathBuf,
-        /// JSON으로 출력
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// 책갈피 목록 표시 (이름)
+    /// List bookmarks (name)
     Bookmarks {
+        /// Target HWP/HWPX file
         file: PathBuf,
-        /// JSON으로 출력
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// `{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록 표시
+    /// List `{{name}}` text placeholders (template slots)
     Slots {
+        /// Target HWP/HWPX file
         file: PathBuf,
-        /// JSON으로 출력
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// 충실도 보존 템플릿 채우기 (hwpx의 `{{name}}` 치환, 패키지 보존)
+    /// Fidelity-preserving template fill (replace `{{name}}` in hwpx, package preserved)
     Fill {
+        /// Input HWPX template
         input: PathBuf,
+        /// Output file path
         #[arg(short, long)]
         output: PathBuf,
-        /// 자리표시자 채우기 "이름=값" (반복 가능; `{{이름}}` 치환)
+        /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`)
         #[arg(long)]
         set: Vec<String>,
-        /// 이름→값 JSON 객체 파일 (일괄 채우기)
+        /// JSON object file mapping name to value (bulk fill)
         #[arg(long)]
         data: Option<PathBuf>,
-        /// 치환 요약을 JSON으로 출력 ({output, replaced, counts})
+        /// Print the replacement summary as JSON ({output, replaced, counts})
         #[arg(long)]
         json: bool,
-        /// 일부 요청이 자리를 찾지 못해도 일치한 값만 게시 (기본: 하나라도 미치환이면 실패)
+        /// Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced)
         #[arg(long = "allow-partial")]
         allow_partial: bool,
     },
 
-    /// 구조 검증 (mimetype/필수 엔트리/XML 파싱) — 유효하면 종료코드 0
+    /// Structural validation (mimetype, required entries, XML parsing); exit code 0 when valid
     Validate {
+        /// Target HWP/HWPX file
         file: PathBuf,
-        /// JSON으로 출력
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// versioned policy로 package/semantic/native render/independent import 인증
+    /// Certify package, semantics, native render and independent import under a versioned policy
     Certify {
-        /// 인증할 HWP/HWPX 입력
+        /// HWP/HWPX input to certify
         input: PathBuf,
         /// hwp-certification-policy-v1 JSON/YAML
         #[arg(long)]
         policy: PathBuf,
-        /// 새로 만들 원자적 artifact 디렉터리(기존 경로 거부)
+        /// Atomic artifact directory to create (an existing path is refused)
         #[arg(long)]
         report: PathBuf,
     },
 
-    /// 버전 고정 구조 문서 코퍼스를 2회 생성·재개방·native 인증
+    /// Generate the frozen structured corpus twice, reopen it and certify natively
     Corpus {
         /// hwp-structured-corpus-v1 manifest JSON
         #[arg(long)]
         manifest: PathBuf,
-        /// 새로 만들 원자적 실행 보고서 디렉터리(기존 경로 거부)
+        /// Atomic run report directory to create (an existing path is refused)
         #[arg(long)]
         report: PathBuf,
     },
 
-    /// MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페이스
+    /// MCP (Model Context Protocol) stdio server: a tool interface for AI agents
     Mcp {
-        /// 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능)
+        /// Default font directory for the render and diff tools (repeatable)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
     },
 
-    /// 자체 업데이트 — GitHub 릴리스에서 최신 `hwp`를 받아 실행 중인 바이너리를 교체
+    /// Self-update: fetch the latest `hwp` from GitHub releases and replace the running binary
     Update {
-        /// 교체 없이 현재/최신 버전만 확인
+        /// Report the current and latest versions without replacing
         #[arg(long)]
         check: bool,
-        /// 특정 릴리스로 고정 (예: "v0.2.0" — 이전 버전으로 되돌릴 때)
+        /// Pin a specific release (for example "v0.2.0", to roll back)
         #[arg(long)]
         tag: Option<String>,
-        /// 같은 버전이어도 다시 받아 교체 (손상된 설치 복구용)
+        /// Re-download and replace even at the same version (to repair a broken install)
         #[arg(long)]
         force: bool,
-        /// JSON으로 출력
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
 
-    /// [개발자용] 레코드/패키지 구조 덤프
+    /// [developer] Dump record and package structure
     Dump {
+        /// Target HWP/HWPX file
         file: PathBuf,
-        /// 대상 스트림/엔트리 (예: "DocInfo", "BodyText/Section0", "Contents/header.xml")
+        /// Target stream or entry (for example "DocInfo", "BodyText/Section0", "Contents/header.xml")
         #[arg(long)]
         stream: Option<String>,
-        /// 레코드 페이로드를 hex로 출력
+        /// Print record payloads as hex
         #[arg(long)]
         raw: bool,
-        /// JSON으로 출력
+        /// Print as JSON
         #[arg(long)]
         json: bool,
     },
@@ -315,73 +348,75 @@ pub enum Cmd {
 /// `hwp edit` 입력. 편집 실행 전에 `EditPlan`의 타입화된 작업 목록으로 정규화한다.
 #[derive(Args)]
 pub struct EditArgs {
+    /// Input HWP/HWPX file
     pub input: PathBuf,
+    /// Output file path
     #[arg(short, long)]
     pub output: PathBuf,
-    /// 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환)
+    /// Replace text, "find=>replace" (repeatable; replaces every match)
     #[arg(long)]
     pub replace: Vec<String>,
-    /// 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스)
+    /// Set a table cell, "table:row:col=value" (repeatable; 0-based indices)
     #[arg(long = "set-cell")]
     pub set_cell: Vec<String>,
-    /// 필드/누름틀 채우기 "이름=값" (반복 가능 — hwp fields로 이름 확인)
+    /// Fill a field, "name=value" (repeatable; list names with hwp fields)
     #[arg(long = "set-field")]
     pub set_field: Vec<String>,
-    /// 메타데이터 설정 "키=값" (키: title|author|subject|keywords, 반복 가능)
+    /// Set metadata, "key=value" (keys: title|author|subject|keywords; repeatable)
     #[arg(long = "set-meta")]
     pub set_meta: Vec<String>,
-    /// 누름틀 생성 "앵커=>이름" 또는 "앵커=>이름=값" — 앵커 텍스트 뒤에 %clk 필드 삽입 (반복 가능)
+    /// Create a field, "anchor=>name" or "anchor=>name=value": insert a %clk field after the anchor text (repeatable)
     #[arg(long = "create-field")]
     pub create_field: Vec<String>,
-    /// 책갈피 생성 "앵커=>이름" — 앵커 텍스트 뒤에 bokm 지점 표식 삽입 (반복 가능)
+    /// Create a bookmark, "anchor=>name": insert a bokm marker after the anchor text (repeatable)
     #[arg(long = "create-bookmark")]
     pub create_bookmark: Vec<String>,
-    /// 하이퍼링크 생성 "앵커=>URL" 또는 "앵커=>표시=>URL" — 앵커 뒤에 %hlk 삽입 (반복 가능)
+    /// Create a hyperlink, "anchor=>URL" or "anchor=>text=>URL": insert %hlk after the anchor (repeatable)
     #[arg(long = "create-hyperlink")]
     pub create_hyperlink: Vec<String>,
-    /// 이미지 삽입 "앵커=>경로" 또는 "앵커=>경로@너비x높이"(mm) — 앵커 뒤에 그림 삽입 (반복 가능)
+    /// Insert an image, "anchor=>path" or "anchor=>path@WxH" (mm): insert a picture after the anchor (repeatable)
     #[arg(long = "insert-image")]
     pub insert_image: Vec<String>,
-    /// 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치 (반복 가능)
+    /// Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text (repeatable)
     #[arg(long = "seal")]
     pub seal: Vec<String>,
-    /// 글자 서식 "찾기:속성=값,…" (예: "제목:bold=on,size=16,color=#FF0000")
+    /// Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000")
     #[arg(long = "set-format")]
     pub set_format: Vec<String>,
-    /// 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute)
+    /// Paragraph alignment, "find=alignment" (left/right/center/justify/distribute)
     #[arg(long = "set-align")]
     pub set_align: Vec<String>,
-    /// 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단 (반복 가능)
+    /// Insert a paragraph, "anchor=>text": after the paragraph containing the anchor (repeatable)
     #[arg(long = "insert-para")]
     pub insert_para: Vec<String>,
-    /// 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단 (반복 가능)
+    /// Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor (repeatable)
     #[arg(long = "insert-para-before")]
     pub insert_para_before: Vec<String>,
-    /// 문단 삭제 "텍스트" — 텍스트가 있는 문단 삭제 (반복 가능)
+    /// Delete a paragraph, "text": delete the paragraph containing the text (repeatable)
     #[arg(long = "delete-para")]
     pub delete_para: Vec<String>,
-    /// 표 행 추가 "표" — N번째 표 끝에 빈 행 (반복 가능, 0-기반; 병합 셀이 있는 표는 거부)
+    /// Add a table row, "table": an empty row at the end of table N (repeatable, 0-based; refused for tables with merged cells)
     #[arg(long = "add-row")]
     pub add_row: Vec<String>,
-    /// 표 열 추가 "표"(끝에) 또는 "표:위치"(삽입) — 전체 폭 유지(기존 열 균등 축소). 병합 셀 표도 지원 (반복 가능, 0-기반)
+    /// Add a table column, "table" (at the end) or "table:position" (inserted): total width is preserved by shrinking existing columns evenly. Merged tables supported (repeatable, 0-based)
     #[arg(long = "add-col")]
     pub add_col: Vec<String>,
-    /// 표 행 삭제 "표:행" — N번째 표의 R행 (반복 가능, 0-기반; 병합 행은 거부)
+    /// Delete a table row, "table:row" (repeatable, 0-based; a merged row is refused)
     #[arg(long = "delete-row")]
     pub delete_row: Vec<String>,
-    /// 표 열 삭제 "표:열" — N번째 표의 열 삭제. 전체 폭 유지(남은 열에 재분배). 병합 셀은 축소 (반복 가능, 0-기반)
+    /// Delete a table column, "table:col": total width is preserved by redistributing to the remaining columns; merged cells shrink (repeatable, 0-based)
     #[arg(long = "delete-col")]
     pub delete_col: Vec<String>,
-    /// 셀 병합 "표:r1:c1:r2:c2" — 사각 영역을 좌상단 앵커로 병합 (반복 가능, 0-기반)
+    /// Merge cells, "table:r1:c1:r2:c2": merge a rectangular area into its top-left anchor (repeatable, 0-based)
     #[arg(long = "merge-cells")]
     pub merge_cells: Vec<String>,
-    /// 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반)
+    /// Split a cell, "table:row:col": break a merged cell back into 1x1 cells (repeatable, 0-based)
     #[arg(long = "split-cell")]
     pub split_cell: Vec<String>,
-    /// 쓰기 후 재읽기로 검증
+    /// Verify by re-reading after writing
     #[arg(long)]
     pub verify: bool,
-    /// 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패)
+    /// Publish the matched edits even if some requests found no target (default: fail if any is unapplied)
     #[arg(long = "allow-partial")]
     pub allow_partial: bool,
 }
@@ -405,12 +440,10 @@ pub enum ConvertFormat {
     Odt,
 }
 
-/// 공문서 프리셋 (`hwp new --preset`).
+/// Official-document preset (`hwp new --preset`).
 #[derive(Clone, Copy, ValueEnum)]
 pub enum PresetArg {
-    /// 기안문·공문: 맑은 고딕 11.5pt
     Gian,
-    /// 보고서·사업계획서: 함초롬바탕 15pt
     Report,
 }
 

@@ -13,8 +13,8 @@
 | [release-readiness.md](release-readiness.md) | 릴리스 전 게이트 체크리스트 |
 | [hancom-verification-checklist.md](hancom-verification-checklist.md) | 한글 실기 검증 체크리스트 |
 
-사용자용 문서는 한국어 정본(`NAME.md`)과 영문 페어(`NAME.en.md`)를 함께 둔다. 예외는
-`manual/cli-reference.md`로, 내용이 CLI 자체 도움말(한국어)이라 손번역 페어를 두지 않는다.
+사용자용 문서는 한국어 정본(`NAME.md`)과 영문 페어(`NAME.en.md`)를 함께 둔다.
+`manual/cli-reference*.md`는 clap 정의에서 두 언어 모두 자동 생성한다(수동 편집 금지).
 
 ## 스펙 문서는 저장소에 동봉하지 않는다
 

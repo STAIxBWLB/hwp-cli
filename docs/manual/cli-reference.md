@@ -1,5 +1,7 @@
 <!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->
 
+[한국어](cli-reference.md) · [English](cli-reference.en.md)
+
 # hwp CLI 명령 레퍼런스
 
 이 문서는 `hwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성하라 — CI 테스트가 코드와 문서의 동기화를 강제한다.
@@ -34,7 +36,7 @@
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<FILE>` |  |  |  |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
 ## `hwp cat`
@@ -45,8 +47,8 @@
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<FILE>` |  |  |  |
-| `--format` | `plain` \| `markdown` \| `json` \| `html` | `plain` |  |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
+| `--format` | `plain` \| `markdown` \| `json` \| `html` | `plain` | 출력 포맷 |
 | `--preview` |  |  | 본문 파싱 없이 PrvText 미리보기만 출력 |
 | `--with-header-footer` |  |  | 머리말/꼬리말 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-hidden` |  |  | 숨은 설명 텍스트도 추출에 포함 (기본: 제외) |
@@ -60,8 +62,8 @@
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<INPUT>` |  |  |  |
-| `-o, --output` | `<OUTPUT>` |  |  |
+| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
+| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
 | `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--strict` |  |  | 변환 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
 | `--preserve-layout` |  |  | 줄 배치 캐시 보존 (무수정 왕복 전용 — 한글은 내용과 어긋난 줄 배치를 변조로 판정하므로 기본은 제거) |
@@ -79,8 +81,8 @@
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<INPUT>` |  |  |  |
-| `-o, --output` | `<OUTPUT>` |  |  |
+| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
+| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
 | `--pages` | `<PAGES>` | `all` | 페이지 범위: "1", "1-3", "all" |
 | `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
 | `--format` | `png` \| `svg` \| `pdf` |  | 출력 포맷 (생략 시 확장자에서 추론) |
@@ -94,7 +96,7 @@
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `-o, --output` | `<OUTPUT>` |  |  |
+| `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX 경로 |
 | `--from` | `<FROM>` |  | 입력 markdown/JSON 파일 (생략 시 빈 문서) |
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
 | `--preset` | `gian` \| `report` |  | 공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt), report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함 |
@@ -112,7 +114,7 @@ DocumentSpec v1/v2(JSON/YAML)에서 구조 문서를 deterministic 합성
 | `--format` | `json` \| `yaml` |  | 입력 포맷 (생략 시 spec 확장자에서 추론) |
 | `--dry-run` |  |  | 검증·컴파일 보고서만 생성하고 파일은 쓰지 않음 |
 | `--report` |  |  | 실행 보고서를 JSON으로 출력 |
-| `--allow-visual-fallback` |  |  | [deprecated] v1 compatibility only; v2 rejects this policy override |
+| `--allow-visual-fallback` |  |  | [deprecated] v1 호환 전용 — v2는 이 정책 덮어쓰기를 거부한다 |
 
 ## `hwp template`
 
@@ -138,7 +140,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<INPUT>` |  |  |  |
+| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
 | `--ref` | `<REF>` |  | 한글에서 같은 페이지를 같은 DPI로 내보낸 기준 PNG |
 | `--page` | `<PAGE>` | `1` | 비교할 페이지 (1-기반) |
 | `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
@@ -154,8 +156,8 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<INPUT>` |  |  |  |
-| `-o, --output` | `<OUTPUT>` |  |  |
+| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
+| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
 | `--replace` | `<REPLACE>` |  | 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환) |
 | `--set-cell` | `<SET_CELL>` |  | 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스) |
 | `--set-field` | `<SET_FIELD>` |  | 필드/누름틀 채우기 "이름=값" (반복 가능 — hwp fields로 이름 확인) |
@@ -165,7 +167,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--create-hyperlink` | `<CREATE_HYPERLINK>` |  | 하이퍼링크 생성 "앵커=>URL" 또는 "앵커=>표시=>URL" — 앵커 뒤에 %hlk 삽입 (반복 가능) |
 | `--insert-image` | `<INSERT_IMAGE>` |  | 이미지 삽입 "앵커=>경로" 또는 "앵커=>경로@너비x높이"(mm) — 앵커 뒤에 그림 삽입 (반복 가능) |
 | `--seal` | `<SEAL>` |  | 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치 (반복 가능) |
-| `--set-format` | `<SET_FORMAT>` |  | 글자 서식 "찾기:속성=값,…" (예: "제목:bold=on,size=16,color=#FF0000") (반복 가능) |
+| `--set-format` | `<SET_FORMAT>` |  | 글자 서식 "찾기:속성=값,..." (예: "제목:bold=on,size=16,color=#FF0000") (반복 가능) |
 | `--set-align` | `<SET_ALIGN>` |  | 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute) (반복 가능) |
 | `--insert-para` | `<INSERT_PARA>` |  | 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단 (반복 가능) |
 | `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단 (반복 가능) |
@@ -187,7 +189,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<FILE>` |  |  |  |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
 ## `hwp bookmarks`
@@ -198,7 +200,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<FILE>` |  |  |  |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
 ## `hwp slots`
@@ -209,7 +211,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<FILE>` |  |  |  |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
 ## `hwp fill`
@@ -220,8 +222,8 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<INPUT>` |  |  |  |
-| `-o, --output` | `<OUTPUT>` |  |  |
+| `<INPUT>` |  |  | 입력 HWPX 템플릿 |
+| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
 | `--set` | `<SET>` |  | 자리표시자 채우기 "이름=값" (반복 가능; `{{이름}}` 치환) |
 | `--data` | `<DATA>` |  | 이름→값 JSON 객체 파일 (일괄 채우기) |
 | `--json` |  |  | 치환 요약을 JSON으로 출력 ({output, replaced, counts}) |
@@ -235,7 +237,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<FILE>` |  |  |  |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
 ## `hwp certify`
@@ -292,7 +294,7 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<FILE>` |  |  |  |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--stream` | `<STREAM>` |  | 대상 스트림/엔트리 (예: "DocInfo", "BodyText/Section0", "Contents/header.xml") |
 | `--raw` |  |  | 레코드 페이로드를 hex로 출력 |
 | `--json` |  |  | JSON으로 출력 |
