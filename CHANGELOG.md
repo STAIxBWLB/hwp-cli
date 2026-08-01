@@ -13,7 +13,7 @@ Release body.
 
 ---
 
-## [Unreleased]
+## [0.5.0]
 
 ### 한국어
 
@@ -27,6 +27,8 @@ Release body.
   통계·페이지 PNG 해시·render issue 해시·폰트 identity가 모두 일치할 때만 통과시킨다.
 - 공개 JSON Schema(`schemas/`)와 예제(`examples/`), 설계 문서 13~17.
 - MCP 도구 3종 추가(`hwp_compose`·`hwp_template`·`hwp_certify`), 총 15종.
+- CLI 도움말 다국어. 기본은 영문이고 로케일이 한국어면 한국어로 표시하며, `--lang <en|ko>`나
+  `HWP_LANG`으로 명시 지정할 수 있다. CLI 레퍼런스도 두 언어로 자동 생성한다.
 
 **수정**
 
@@ -44,6 +46,7 @@ Release body.
 - 코퍼스 폰트를 커밋하지 않고 fetch한다. `scripts/fetch-corpus-fonts.sh`가 manifest의 고정 URL에서
   받아 SHA-256으로 검증한다. `https` + 고정 host만 허용하고, 목적지는 코퍼스 내부 상대경로만 허용한다.
 - 사용자용 문서를 한국어 정본 + 영문 페어(`NAME.md` / `NAME.en.md`)로 정리했다.
+- 릴리스 노트를 `CHANGELOG.md` 기반 한/영 병기로 바꿨다. 해당 버전 절이 없으면 릴리스가 실패한다.
 
 ### English
 
@@ -60,6 +63,8 @@ Release body.
   hashes and font identities all agree.
 - Published JSON Schemas (`schemas/`), examples (`examples/`) and design documents 13 to 17.
 - Three new MCP tools (`hwp_compose`, `hwp_template`, `hwp_certify`), for 15 in total.
+- Localized CLI help: English by default, Korean under a Korean locale, and overridable with
+  `--lang <en|ko>` or `HWP_LANG`. The CLI reference is generated in both languages.
 
 **Fixed**
 
@@ -79,6 +84,8 @@ Release body.
   the manifest's pinned URL and verifies each against its SHA-256, accepting only `https` from the
   pinned host and only relative in-corpus destinations.
 - User-facing documentation is now a Korean original plus an English pair (`NAME.md` / `NAME.en.md`).
+- Release notes are now bilingual and driven by `CHANGELOG.md`; a release fails without a section for
+  that version.
 
 ---
 
