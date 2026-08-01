@@ -85,3 +85,52 @@ Maru 문서 작성기의 **부분(part) 단위 작성·조합**을 위한 HTML f
 ## 7. 버전
 
 - v1 (2026-08): 최초 계약. export 측 GH-3/GH-4/GH-5 해소와 from_html 도입으로 성립.
+- v2 (2026-08): 스타일 왕복(§8) — `.cs{n}`/`.ps{n}` 클래스로 글자·문단 모양을 실는다.
+
+## 8. 스타일 왕복 (v2)
+
+v1은 구조만 왕복한다. v2는 글자·문단 모양을 CSS 클래스로 실어 타이포그래피까지
+왕복한다 — Maru 부분 편집기가 `hwp → html → 편집 → hwp`에서 부분의 모양을 잃지
+않게 하기 위함이다.
+
+### 8.1 규칙 위치와 명명
+
+- 규칙: standalone은 `<head>`의 `<style>` 블록, fragment는 **선두 `<style>` 요소**
+  (fragment가 자기완결이어야 하므로).
+- 명명: `.cs{n}` = 소스 문서의 CharShape id n, `.ps{n}` = ParaShape id n. id는 생산자
+  문서 기준이며 소비자는 이름이 아니라 **속성값**으로 복원한다(같은 id 보장 없음).
+
+### 8.2 속성 ↔ 필드 매핑
+
+`.cs{n}` (글자 모양):
+
+| CSS | CharShape 필드 |
+|---|---|
+| `font-family` | 첫 번째 이름 = face_ids[0]의 글꼴 이름, 나머지는 폴리백(무시) |
+| `font-size` | `base_size/100` pt × `rel_sizes[0]` % |
+| `color` | `text_color` (COLORREF → #RRGGBB; 0이면 생략) |
+| `background-color` | `shade_color` (0xFFFFFFFF가 아닐 때만) |
+| `letter-spacing` | `spacings[0]` % (`Nem` = N% of em; 0이면 생략) |
+
+`.ps{n}` (문단 모양):
+
+| CSS | ParaShape 필드 |
+|---|---|
+| `text-align` | 정렬 (justify/left/right/center; 4·5 배분·나눔은 justify로 근사) |
+| `line-height` | 종류 0 비율=단위 없는 배수, 1 고정·3 최소=pt, 2 여백만=`normal`(근사) |
+| `margin-left`/`margin-right` | margin_left/right (mm) |
+| `text-indent` | indent (mm) |
+| `margin-top`/`margin-bottom` | spacing_top/bottom (mm) |
+
+### 8.3 우선 규칙과 한계
+
+- **마크는 태그가 정본** — 굵게·기울임·밑줄·취소선·첨자는 `strong/em/u/s/sup/sub`
+  태그로만 복원한다. 클래스는 태그가 못 싣는 나머지(글꼴·크기·색·음영·자간·정렬·
+  줄간격·여백)를 싣는다.
+- 마크업: 문단은 `<p class="psN">`/`<h{level} class="psN">`, run은
+  `<span class="csN">…</span>`이 마크 태그를 감싼다.
+- **팔레트 dedup**: 복원한 모양이 기본 팔레트(문단 0~4·글자 0~15)와 같으면 새 id를
+  만들지 않고 팔레트 id를 쓴다.
+- v2 한계: 표 셀 문단 모양·각주 스타일은 싣지 않는다. 인라인 `style` 속성은 무시
+  (`<style>` 블록만 읽는다). border_fill·그림자·양음각·외곽선·장평·오프셋 등 CSS로
+  표현할 수 없는 필드는 복원하지 않는다.

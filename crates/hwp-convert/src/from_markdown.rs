@@ -433,6 +433,9 @@ fn from_markdown_inner(md: &str, opts: &MarkdownImportOptions, inject: bool) -> 
     let mut header = default_header();
     header.char_shapes.extend(b.extra_char_shapes);
     header.para_shapes.extend(b.extra_para_shapes);
+    for slot in &mut header.fonts {
+        slot.extend(b.extra_fonts.iter().cloned());
+    }
     header.numbering_levels = b.numbering_levels;
     header.bullet_chars = b.bullet_chars;
     if let Some(preset) = opts.preset {
@@ -571,6 +574,8 @@ struct Builder {
     html_buf: String,
     extra_char_shapes: Vec<CharShape>,
     html_shape_cache: HashMap<(bool, bool, bool, bool, bool, bool), u16>,
+    // HTML 블록의 `<style>` 규칙이 복원한 추가 글꼴 (계약 v2 — 슬롯 전체에 연장).
+    extra_fonts: Vec<FaceName>,
     in_image_suppress: bool, // 이미지 임베드 성공 시 alt 텍스트를 억제
 }
 
@@ -880,6 +885,7 @@ impl Builder {
         self.numbering_levels.extend(blocks.numbering_levels);
         self.bullet_chars.extend(blocks.bullet_chars);
         self.extra_char_shapes.extend(blocks.extra_char_shapes);
+        self.extra_fonts.extend(blocks.extra_fonts);
         self.bin_streams.extend(blocks.bin_streams);
         self.warnings.extend(blocks.warnings);
         for mut para in blocks.paragraphs {

@@ -9,6 +9,8 @@
 //!   셀 내 블록(중첩 표·이미지)도 보존한다(GH-5)
 //! - 각주/미주 → 본문 `<sup>` 앵커 마커 + 문서 끝 정의 (표현 전용 — `from_html`은
 //!   평문으로만 읽는다. 의미 왕복은 범위 밖)
+//! - 글자·문단 모양 → `.cs{n}`/`.ps{n}` CSS 규칙 + `class` 속성 (계약 v2 §8 — 글꼴·
+//!   크기·색·음영·자간·정렬·줄간격·여백이 `from_html`과 왕복한다)
 //! - 줄나눔(10) → `<br/>`, 탭 → 공백
 //!
 //! 출력은 **well-formed XHTML**이다(빈 태그는 self-closing) — `from_html`(quick-xml)이
@@ -38,11 +40,16 @@ struct Ctx {
     foot_n: u32,
     end_n: u32,
     notes: Vec<Note>,
+    /// 사용된 글자/문단 모양 id 수집 — `<style>`의 cs/ps 규칙 방출용 (계약 v2 §8).
+    used_char_shapes: std::collections::BTreeSet<u16>,
+    used_para_shapes: std::collections::BTreeSet<u16>,
+    /// 셀·각주 본문은 클래스를 싣지 않는다(계약 v2 §8.3).
+    no_style_class: bool,
 }
 
 /// IR 전체를 standalone HTML 문서로 직렬화한다.
 pub fn to_html(doc: &Document) -> String {
-    let (body, footnotes) = render_body(doc);
+    let (body, footnotes, rules) = render_body(doc);
     // 문서 메타데이터 제목 우선, 없으면 첫 개요 단락으로 폴리백.
     let title_text = doc
         .metadata
@@ -52,11 +59,13 @@ pub fn to_html(doc: &Document) -> String {
         .or_else(|| first_heading(doc))
         .unwrap_or_default();
     let title = escape(&title_text);
-    let mut out = String::with_capacity(body.len() + footnotes.len() + CSS.len() + 256);
+    let mut out =
+        String::with_capacity(body.len() + footnotes.len() + CSS.len() + rules.len() + 256);
     out.push_str("<!DOCTYPE html>\n<html lang=\"ko\"><head><meta charset=\"utf-8\"/>\n<title>");
     out.push_str(&title);
     out.push_str("</title>\n<style>\n");
     out.push_str(CSS);
+    out.push_str(&rules);
     out.push_str("</style></head>\n<body>\n");
     out.push_str(&body);
     out.push_str(&footnotes);
@@ -64,17 +73,23 @@ pub fn to_html(doc: &Document) -> String {
     out
 }
 
-/// 본문 fragment만 (head/style 없이) 반환한다. 각주/미주 정의 섹션은 fragment에도
-/// 포함된다 — fragment가 자기완결적이어야 조합(Maru 부분 문서)에 쓸 수 있다.
+/// 본문 fragment만 (head 없이) 반환한다. 각주/미주 정의 섹션과 — 스타일 규칙이 있으면 —
+/// 선두 `<style>` 요소를 포함한다(계약 v2 §8.1: fragment의 자기완결).
 pub fn to_html_fragment(doc: &Document) -> String {
-    let (body, footnotes) = render_body(doc);
-    let mut out = body;
+    let (body, footnotes, rules) = render_body(doc);
+    let mut out = String::new();
+    if !rules.is_empty() {
+        out.push_str("<style>\n");
+        out.push_str(&rules);
+        out.push_str("</style>\n");
+    }
+    out.push_str(&body);
     out.push_str(&footnotes);
     out
 }
 
-/// 본문과 각주/미주 정의 섹션을 함께 렌더한다.
-fn render_body(doc: &Document) -> (String, String) {
+/// 본문·각주/미주 정의·스타일 규칙(cs/ps)을 함께 렌더한다.
+fn render_body(doc: &Document) -> (String, String, String) {
     let mut ctx = Ctx::default();
     let mut body = String::new();
     for section in &doc.sections {
@@ -82,7 +97,94 @@ fn render_body(doc: &Document) -> (String, String) {
             render_paragraph(doc, para, &mut ctx, &mut body);
         }
     }
-    (body, render_footnotes(&ctx))
+    let rules = style_rules(doc, &ctx);
+    (body, render_footnotes(&ctx), rules)
+}
+
+/// 사용된 모양 id를 `.cs{n}`/`.ps{n}` 규칙으로 방출한다 (계약 v2 §8.2).
+fn style_rules(doc: &Document, ctx: &Ctx) -> String {
+    let mut css = String::new();
+    for id in &ctx.used_char_shapes {
+        let Some(s) = doc.header.char_shapes.get(*id as usize) else {
+            continue;
+        };
+        let mut rules = String::new();
+        if let Some(face) = doc.header.fonts[0].get(s.face_ids[0] as usize) {
+            rules.push_str(&format!(
+                "font-family:\"{}\",serif;",
+                face.name.replace('"', "'")
+            ));
+        }
+        let pt = s.base_size as f32 / 100.0 * f32::from(s.rel_sizes[0]) / 100.0;
+        rules.push_str(&format!("font-size:{}pt;", trim_num(pt)));
+        if s.text_color != 0 {
+            rules.push_str(&format!("color:{};", colorref_hex(s.text_color)));
+        }
+        if s.has_shade() {
+            rules.push_str(&format!(
+                "background-color:{};",
+                colorref_hex(s.shade_color)
+            ));
+        }
+        if s.spacings[0] != 0 {
+            rules.push_str(&format!(
+                "letter-spacing:{}em;",
+                trim_num(f32::from(s.spacings[0]) / 100.0)
+            ));
+        }
+        css.push_str(&format!(".cs{id}{{{rules}}}\n"));
+    }
+    for id in &ctx.used_para_shapes {
+        let Some(p) = doc.header.para_shapes.get(*id as usize) else {
+            continue;
+        };
+        let align = match p.alignment() {
+            1 => "left",
+            2 => "right",
+            3 => "center",
+            _ => "justify", // 0 양쪽 + 4/5 배분·나눔 근사
+        };
+        let line_height = match p.line_spacing_type {
+            0 => trim_num(p.line_spacing as f32 / 100.0),
+            1 | 3 => format!("{}pt", trim_num(p.line_spacing as f32 / 100.0)),
+            _ => "normal".to_string(), // 2 여백만 근사
+        };
+        let rules = format!(
+            "text-align:{align};line-height:{line_height};margin-left:{}mm;margin-right:{}mm;margin-top:{}mm;margin-bottom:{}mm;text-indent:{}mm;",
+            trim_num(hwp_mm(p.margin_left)),
+            trim_num(hwp_mm(p.margin_right)),
+            trim_num(hwp_mm(p.spacing_top)),
+            trim_num(hwp_mm(p.spacing_bottom)),
+            trim_num(hwp_mm(p.indent)),
+        );
+        css.push_str(&format!(".ps{id}{{{rules}}}\n"));
+    }
+    css
+}
+
+/// COLORREF(0x00BBGGRR) → #RRGGBB.
+fn colorref_hex(v: u32) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        v & 0xFF,
+        (v >> 8) & 0xFF,
+        (v >> 16) & 0xFF
+    )
+}
+
+/// HWPUNIT → mm (소수 둘째 자리까지).
+fn hwp_mm(v: i32) -> f32 {
+    v as f32 * 25.4 / 7200.0
+}
+
+/// 수치 문자열 — 소수 셋째 자리에서 반올림하고 끝 0을 뗀다.
+fn trim_num(v: f32) -> String {
+    let rounded = (v * 1000.0).round() / 1000.0;
+    if rounded == rounded.trunc() {
+        format!("{}", rounded as i64)
+    } else {
+        format!("{rounded}")
+    }
 }
 
 /// 각주/미주 정의 섹션. 정의가 없으면 빈 문자열.
@@ -140,12 +242,14 @@ fn render_paragraph(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut S
     let body = render_inline(doc, para, ctx, &mut blocks);
     let body = body.trim_end();
     if !body.is_empty() {
+        ctx.used_para_shapes.insert(para.para_shape.0);
+        let class = format!(" class=\"ps{}\"", para.para_shape.0);
         if let Some(level) = heading {
-            out.push_str(&format!("<h{level}>"));
+            out.push_str(&format!("<h{level}{class}>"));
             out.push_str(body);
             out.push_str(&format!("</h{level}>\n"));
         } else {
-            out.push_str("<p>");
+            out.push_str(&format!("<p{class}>"));
             out.push_str(body);
             out.push_str("</p>\n");
         }
@@ -160,16 +264,28 @@ fn render_inline(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut Stri
     let mut body = String::new();
     let mut wchar_pos = 0u32;
     let mut style = Style::default();
+    // 활성 글자 모양 클래스 span (계약 v2 §8 — 셀·각주 본문은 no_style_class로 미발행).
+    let mut span_id: Option<u16> = None;
     // 하이퍼링크 필드 열림 상태. FIELD_START에서 `<a>`를 열고 FIELD_END에서 닫는다.
     let mut link_open = false;
 
     for ch in &para.chars {
         if let HwpChar::Text(_) = ch {
-            let want = shape_at(doc, para, wchar_pos)
-                .map(Style::from_shape)
-                .unwrap_or_default();
-            if want != style {
+            let (want, want_span) = match shape_at(doc, para, wchar_pos) {
+                Some((id, s)) => {
+                    if ctx.no_style_class {
+                        (Style::from_shape(s), None)
+                    } else {
+                        ctx.used_char_shapes.insert(id);
+                        (Style::from_shape(s), Some(id))
+                    }
+                }
+                None => (Style::default(), None),
+            };
+            if want != style || want_span != span_id {
                 close_marks(&mut body, &mut style);
+                close_class_span(&mut body, &mut span_id);
+                open_class_span(&mut body, want_span, &mut span_id);
                 open_marks(&mut body, want);
                 style = want;
             }
@@ -223,7 +339,23 @@ fn render_inline(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut Stri
         body.push_str("</a>");
     }
     close_marks(&mut body, &mut style);
+    close_class_span(&mut body, &mut span_id);
     body
+}
+
+/// 글자 모양 클래스 span (계약 v2 §8) — 마크 태그를 감싼다.
+fn open_class_span(body: &mut String, want: Option<u16>, cur: &mut Option<u16>) {
+    if let Some(id) = want {
+        body.push_str(&format!("<span class=\"cs{id}\">"));
+    }
+    *cur = want;
+}
+
+fn close_class_span(body: &mut String, cur: &mut Option<u16>) {
+    if cur.is_some() {
+        body.push_str("</span>");
+    }
+    *cur = None;
 }
 
 fn render_control(
@@ -339,7 +471,10 @@ fn render_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut String) 
 
 /// 셀 내용 — 문단 인라인과 블록 fragment를 등장 순서대로 `<br/>`로 잇는다.
 /// 이전에는 블록 버퍼(cell_out)를 만들고 버려 중첩 표·이미지가 유실됐다(GH-5).
+/// 셀 내용은 스타일 클래스를 싣지 않는다(계약 v2 §8.3).
 fn render_cell(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> String {
+    let saved = ctx.no_style_class;
+    ctx.no_style_class = true;
     let mut content = String::new();
     for p in &cell.paragraphs {
         let mut blocks = String::new();
@@ -355,11 +490,14 @@ fn render_cell(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> String {
             content.push_str(fragment);
         }
     }
+    ctx.no_style_class = saved;
     content
 }
 
-/// 각주/미주 본문 — 문단 인라인을 `<br/>`로 잇는다 (표현 전용).
+/// 각주/미주 본문 — 문단 인라인을 `<br/>`로 잇는다 (표현 전용, 클래스 미발행).
 fn note_text(doc: &Document, g: &hwp_model::GenericControl, ctx: &mut Ctx) -> String {
+    let saved = ctx.no_style_class;
+    ctx.no_style_class = true;
     let mut parts: Vec<String> = Vec::new();
     for list in &g.paragraph_lists {
         for p in &list.paragraphs {
@@ -373,6 +511,7 @@ fn note_text(doc: &Document, g: &hwp_model::GenericControl, ctx: &mut Ctx) -> St
             }
         }
     }
+    ctx.no_style_class = saved;
     parts.join("<br/>")
 }
 
@@ -427,14 +566,14 @@ fn close_marks(body: &mut String, s: &mut Style) {
     *s = Style::default();
 }
 
-fn shape_at<'d>(doc: &'d Document, para: &Paragraph, pos: u32) -> Option<&'d CharShape> {
+fn shape_at<'d>(doc: &'d Document, para: &Paragraph, pos: u32) -> Option<(u16, &'d CharShape)> {
     let id = para
         .char_shape_runs
         .iter()
         .rev()
         .find(|(start, _)| *start <= pos)
         .map(|(_, id)| *id)?;
-    doc.header.char_shapes.get(id.0 as usize)
+    doc.header.char_shapes.get(id.0 as usize).map(|s| (id.0, s))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -544,11 +683,17 @@ mod tests {
         let html = to_html(&doc);
         assert!(html.contains("<!DOCTYPE html>"));
         // 헤딩 char-shape이 굵게라 본문이 <strong>으로 감싸일 수 있음 — 구조만 확인.
-        assert!(html.contains("<h1>") && html.contains("제목"));
-        assert!(html.contains("<p>본문 문단입니다.</p>"));
+        assert!(html.contains("<h1 class=") && html.contains("제목"));
+        assert!(
+            html.contains("<p class=\"ps2\">") && html.contains("본문 문단입니다."),
+            "{html}"
+        );
         assert!(html.contains("<table>"));
         assert!(html.contains("<th>") && html.contains("가"));
         assert!(html.contains("<td>") && html.contains("1</td>"));
+        // 계약 v2: 사용된 모양의 cs/ps 규칙이 실린다.
+        assert!(html.contains(".ps2{"), "ps 규칙: {html}");
+        assert!(html.contains(".cs"), "cs 규칙: {html}");
     }
 
     #[test]
@@ -600,7 +745,8 @@ mod tests {
         let frag = to_html_fragment(&doc);
         assert!(!frag.contains("<!DOCTYPE"));
         assert!(!frag.contains("<head>"));
-        assert!(!frag.contains("<style>"));
+        // 계약 v2: fragment는 선두 <style>로 자기완결된다(계약 §8.1).
+        assert!(frag.starts_with("<style>"), "{frag}");
         assert!(frag.contains("제목"));
         // standalone에는 head/style이 있어야 한다 (대조).
         let full = to_html(&doc);

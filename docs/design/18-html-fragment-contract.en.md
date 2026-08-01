@@ -93,3 +93,54 @@ compose them.
 
 - v1 (2026-08): initial contract. Established by the export-side GH-3/GH-4/GH-5 resolution
   and the introduction of from_html.
+- v2 (2026-08): style round-trip (§8) — char/para shapes carried as `.cs{n}`/`.ps{n}`
+  classes.
+
+## 8. Style Round-Trip (v2)
+
+v1 round-trips structure only. v2 carries char and para shapes as CSS classes so that
+typography survives `hwp → html → edit → hwp` in Maru's part editor.
+
+### 8.1 Rule Placement and Naming
+
+- Rules: the `<style>` block in `<head>` for standalone documents, a **leading `<style>`
+  element** for fragments (fragments must be self-contained).
+- Naming: `.cs{n}` = CharShape id n of the source document, `.ps{n}` = ParaShape id n.
+  Ids are producer-local; consumers reconstruct **by property values**, never by name
+  (no id stability is guaranteed).
+
+### 8.2 Property ↔ Field Mapping
+
+`.cs{n}` (char shape):
+
+| CSS | CharShape field |
+|---|---|
+| `font-family` | first name = font of face_ids[0]; the rest is fallback (ignored) |
+| `font-size` | `base_size/100` pt × `rel_sizes[0]` % |
+| `color` | `text_color` (COLORREF → #RRGGBB; omitted when zero) |
+| `background-color` | `shade_color` (only when not 0xFFFFFFFF) |
+| `letter-spacing` | `spacings[0]` % (`Nem` = N% of em; omitted when zero) |
+
+`.ps{n}` (para shape):
+
+| CSS | ParaShape field |
+|---|---|
+| `text-align` | alignment (justify/left/right/center; 4/5 distribute approximated as justify) |
+| `line-height` | type 0 ratio = unitless multiplier, 1 fixed / 3 minimum = pt, 2 margin-only = `normal` (approximation) |
+| `margin-left`/`margin-right` | margin_left/right (mm) |
+| `text-indent` | indent (mm) |
+| `margin-top`/`margin-bottom` | spacing_top/bottom (mm) |
+
+### 8.3 Precedence and Limits
+
+- **Tags are authoritative for marks** — bold/italic/underline/strike/sup/sub are
+  restored from the `strong/em/u/s/sup/sub` tags only. Classes carry what tags cannot
+  (font, size, color, shade, letter-spacing, alignment, line spacing, margins).
+- Markup: paragraphs are `<p class="psN">`/`<h{level} class="psN">`; runs are
+  `<span class="csN">…</span>` wrapping the mark tags.
+- **Palette dedup**: when a reconstructed shape equals a default palette entry
+  (para 0-4, char 0-15), import reuses the palette id instead of allocating a new one.
+- v2 limits: cell paragraph shapes and footnote styles are not emitted. Inline `style`
+  attributes stay ignored (only `<style>` blocks are read). Fields with no CSS expression
+  (border_fill, shadow, emboss/engrave, outline, ratios, per-lang offsets) are not
+  restored.

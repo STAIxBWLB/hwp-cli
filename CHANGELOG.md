@@ -35,6 +35,10 @@ Release body.
 - MCP `hwp_fill`에 `parts` 인자 — 부분 이식을 MCP에서도 쓸 수 있다.
 - ODT 남보기 GH-3~5. 각주/미주 `<text:note>`, 병합 셀 number-columns/rows-spanned +
   covered-table-cell, 셀 내 중첩 표·그림 보존. md/html/odt 전 경로 해소.
+- HTML 스타일 왕복(계약 v2, docs/design/18 §8). html export가 글자·문단 모양을
+  `.cs{n}`/`.ps{n}` CSS 규칙으로 싣고(fragment는 선두 `<style>`로 자기완결), `from_html`이
+  복원한다. 마크는 태그가 정본, 기본 팔레트와 같으면 재사용(dedup), 미등록 글꼴은 추가
+  글꼴로 복원한다.
 
 ### English
 
@@ -59,6 +63,10 @@ Release body.
 - ODT export GH-3/4/5: footnotes/endnotes as `<text:note>`, merged cells as
   number-columns/rows-spanned with covered-table-cell, and nested tables/images preserved
   inside cells. All export paths (md/html/odt) are now covered.
+- HTML style round-trip (contract v2, docs/design/18 section 8): the html export carries
+  char and para shapes as `.cs{n}`/`.ps{n}` CSS rules (fragments stay self-contained with a
+  leading `<style>`) and `from_html` restores them. Tags stay authoritative for marks,
+  default-palette shapes are reused (dedup), and unknown fonts are appended on restore.
 
 ---
 

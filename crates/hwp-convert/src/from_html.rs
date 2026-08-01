@@ -45,6 +45,9 @@ pub(crate) struct HtmlBlocks {
     pub extra_char_shapes: Vec<CharShape>,
     /// 목록 문단모양(인덱스 BASE_PARA_SHAPES + 인덱스)·번호/글머리 정의.
     pub extra_para_shapes: Vec<ParaShape>,
+    /// default_header 글꼴(슬롯당 2개) 뒤에 붙는 추가 글꼴 — 모든 언어 슬롯에 같은
+    /// 순서로 연장한다(계약 v2: style 블록의 font-family 복원).
+    pub extra_fonts: Vec<hwp_model::FaceName>,
     pub numbering_levels: Vec<Vec<NumLevel>>,
     pub bullet_chars: Vec<char>,
     pub warnings: Vec<String>,
@@ -72,6 +75,9 @@ pub fn from_html_with(html: &str, opts: &HtmlImportOptions) -> Result<Document, 
     let mut header = from_markdown::default_header();
     header.char_shapes.extend(blocks.extra_char_shapes);
     header.para_shapes.extend(blocks.extra_para_shapes);
+    for slot in &mut header.fonts {
+        slot.extend(blocks.extra_fonts.iter().cloned());
+    }
     header.numbering_levels = blocks.numbering_levels;
     header.bullet_chars = blocks.bullet_chars;
 
@@ -94,9 +100,10 @@ pub fn from_html_with(html: &str, opts: &HtmlImportOptions) -> Result<Document, 
     })
 }
 
-/// HTML fragment를 블록 단위로 파싱한다 (from_markdown 혼합 경로의 진입점).
+/// fragment 파싱 산출물을 만든다 (from_markdown 혼합 경로의 진입점).
 pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<HtmlBlocks, String> {
-    let normal = from_markdown::default_header().char_shapes[shapes::NORMAL as usize].clone();
+    let default = from_markdown::default_header();
+    let default_fonts = default.fonts[0].len();
     let mut p = Parser {
         ctx_stack: vec![BlockCtx::default()],
         marks: Marks::default(),
@@ -105,7 +112,7 @@ pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<Htm
         link_end: None,
         list_stack: Vec::new(),
         shape_cache: HashMap::new(),
-        normal_template: normal,
+        normal_template: default.char_shapes[shapes::NORMAL as usize].clone(),
         extra_char_shapes: Vec::new(),
         extra_para_shapes: Vec::new(),
         numbering_levels: Vec::new(),
@@ -115,6 +122,17 @@ pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<Htm
         base_dir: opts.base_dir.map(Path::to_path_buf),
         warnings: Vec::new(),
         in_cell_depth: 0,
+        cs_rules: HashMap::new(),
+        ps_rules: HashMap::new(),
+        cs_cache: HashMap::new(),
+        ps_cache: HashMap::new(),
+        variant_cache: HashMap::new(),
+        span_shape: None,
+        para_class: None,
+        palette: default.char_shapes.clone(),
+        palette_para: default.para_shapes.clone(),
+        fonts: default.fonts[0].clone(),
+        default_fonts,
     };
     let mut reader = Reader::from_str(html);
     p.blocks(&mut reader, None)?;
@@ -124,6 +142,7 @@ pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<Htm
         bin_streams: p.bin_streams,
         extra_char_shapes: p.extra_char_shapes,
         extra_para_shapes: p.extra_para_shapes,
+        extra_fonts: p.fonts.split_off(p.default_fonts),
         numbering_levels: p.numbering_levels,
         bullet_chars: p.bullet_chars,
         warnings: p.warnings,
@@ -183,6 +202,23 @@ struct Parser {
     base_dir: Option<PathBuf>,
     warnings: Vec<String>,
     in_cell_depth: u32,
+    // 계약 v2 스타일 왕복 — <style> 규칙 저장·복원 캐시.
+    cs_rules: HashMap<u16, HashMap<String, String>>,
+    ps_rules: HashMap<u16, HashMap<String, String>>,
+    cs_cache: HashMap<u16, CharShapeId>,
+    ps_cache: HashMap<u16, u16>,
+    /// (클스 모양 id, 마크) 조합 변형 캐시.
+    variant_cache: HashMap<(u16, Marks), u16>,
+    /// 활성 `<span class="csN">`의 복원 모양.
+    span_shape: Option<CharShapeId>,
+    /// 현재 문단의 `class="psN"` 복원 모양.
+    para_class: Option<u16>,
+    /// 기본 팔레트 사본 (dedup·변형 기준).
+    palette: Vec<CharShape>,
+    palette_para: Vec<ParaShape>,
+    /// 언어 슬롯 0 글꼴 목록 (기본 2개 + 복원 추가분). 추가분은 HtmlBlocks로 방출.
+    fonts: Vec<hwp_model::FaceName>,
+    default_fonts: usize,
 }
 
 impl Parser {
@@ -198,6 +234,7 @@ impl Parser {
                     let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
                     match name.as_str() {
                         "p" | "figcaption" => {
+                            self.para_class = class_ps(&e).and_then(|n| self.ps_shape(n));
                             self.inline(r, &name)?;
                             self.flush_paragraph(false);
                         }
@@ -205,6 +242,7 @@ impl Parser {
                             let level = name[1..].parse::<u16>().map_err(|_| "제목 수준")?;
                             self.heading = Some(level);
                             self.ctx().style = level;
+                            self.para_class = class_ps(&e).and_then(|n| self.ps_shape(n));
                             self.inline(r, &name)?;
                             self.flush_paragraph(false);
                             self.heading = None;
@@ -245,11 +283,15 @@ impl Parser {
                                 return Err("<section>은 class=\"footnotes\"만 지원합니다".into());
                             }
                         }
-                        "html" | "body" => self.blocks(r, Some(&name))?,
-                        "head" => self.skip_subtree(r, "head")?,
+                        "html" | "body" | "head" => self.blocks(r, Some(&name))?,
+                        "title" => self.skip_subtree(r, "title")?,
+                        "style" => {
+                            let css = self.read_style_text(r)?;
+                            self.parse_style_rules(&css);
+                        }
                         "br" => self.push_line_break(),
                         "img" => self.embed_image(&e)?,
-                        "strong" | "em" | "u" | "s" | "sup" | "sub" | "a" => {
+                        "strong" | "em" | "u" | "s" | "sup" | "sub" | "a" | "span" => {
                             self.inline_tag(r, &e)?;
                         }
                         other => return Err(format!("지원하지 않는 태그: <{other}>")),
@@ -259,7 +301,7 @@ impl Parser {
                     match e.local_name().as_ref() {
                         b"br" => self.push_line_break(),
                         b"img" => self.embed_image(&e)?,
-                        b"hr" => {} // footnotes 섹션 밖의 hr은 내용 없음 — 무시
+                        b"hr" | b"meta" => {} // hr·head의 meta — 내용 없음
                         other => {
                             return Err(format!(
                                 "지원하지 않는 태그: <{}>",
@@ -307,7 +349,7 @@ impl Parser {
                 Ok(Event::Start(e)) => {
                     let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
                     match name.as_str() {
-                        "strong" | "em" | "u" | "s" | "sup" | "sub" | "a" => {
+                        "strong" | "em" | "u" | "s" | "sup" | "sub" | "a" | "span" => {
                             self.inline_tag(r, &e)?;
                         }
                         "img" => self.embed_image(&e)?,
@@ -385,6 +427,15 @@ impl Parser {
                 }
                 let result = self.inline(r, "sup");
                 self.marks = saved;
+                result
+            }
+            "span" => {
+                // 스타일 클래스 span (계약 v2 §8) — 마크가 아니라 복원 모양을 현재 run에 적용.
+                let shape = class_cs(e).and_then(|n| self.cs_shape(n));
+                let saved = self.span_shape;
+                self.span_shape = shape;
+                let result = self.inline(r, "span");
+                self.span_shape = saved;
                 result
             }
             tag @ ("strong" | "em" | "u" | "s" | "sub") => {
@@ -870,13 +921,44 @@ impl Parser {
         }
     }
 
-    /// 현재 마크/제목/링크 상태의 문자 모양 ID.
+    /// 현재 마크/제목/링크/스팬 클래스 상태의 문자 모양 ID.
     fn shape_id(&mut self) -> u16 {
         if self.in_link {
             return shapes::HYPERLINK;
         }
         if let Some(level) = self.heading {
             return shapes::HEADING_BASE + level - 1;
+        }
+        // `<span class="csN">`의 복원 모양 (계약 v2) — 마크가 얹히면 변형을 1회 할당.
+        if let Some(base) = self.span_shape {
+            let m = self.marks;
+            if m == Marks::default() {
+                return base.0;
+            }
+            if let Some(&id) = self.variant_cache.get(&(base.0, m)) {
+                return id;
+            }
+            let mut shape = self.shape_by_id(base.0).clone();
+            if m.bold {
+                shape.attr |= 1 << 1;
+            }
+            if m.italic {
+                shape.attr |= 1;
+            }
+            if m.underline {
+                shape.attr |= 1 << 2; // 밑줄 종류 1(글자 아래)
+            }
+            if m.sup {
+                shape.attr |= 1 << 15;
+            }
+            if m.sub {
+                shape.attr |= 1 << 16;
+            }
+            shape.strike |= m.strike;
+            let id = PALETTE_LEN + self.extra_char_shapes.len() as u16;
+            self.extra_char_shapes.push(shape);
+            self.variant_cache.insert((base.0, m), id);
+            return id;
         }
         let m = self.marks;
         if !m.underline && !m.sup && !m.sub {
@@ -918,6 +1000,7 @@ impl Parser {
 
     /// 문단을 닫는다(from_markdown::Builder::flush_paragraph_inner와 동일 불변식).
     fn flush_paragraph(&mut self, force: bool) {
+        let para_class = self.para_class.take();
         let list_shape = self
             .list_stack
             .last()
@@ -935,6 +1018,8 @@ impl Parser {
         }
         let para_shape = if let Some(id) = list_shape {
             id
+        } else if let Some(id) = para_class {
+            id // `class="psN"` 복원 모양 (계약 v2)
         } else if heading.is_some() {
             1 // 제목(들여쓰기 변형은 md 경로와 달리 v1 단일 모양)
         } else if in_cell {
@@ -954,6 +1039,203 @@ impl Parser {
         crate::field::relink_ctrl_index(&mut para);
         ctx.wchar_pos = 0;
         ctx.paragraphs.push(para);
+    }
+
+    /// `<style>`의 텍스트를 읽는다 (닫힘까지).
+    fn read_style_text(&mut self, r: &mut Reader<&[u8]>) -> Result<String, String> {
+        let mut css = String::new();
+        loop {
+            match r.read_event() {
+                Ok(Event::Text(t)) => {
+                    let s = t
+                        .xml10_content()
+                        .map_err(|e| format!("텍스트 디코딩 실패: {e}"))?;
+                    css.push_str(&s);
+                }
+                Ok(Event::End(e)) => {
+                    if e.local_name().as_ref() == b"style" {
+                        return Ok(css);
+                    }
+                }
+                Ok(Event::Eof) => return Err("닫히지 않은 태그: <style>".into()),
+                Err(e) => return Err(format!("XML 파싱 실패: {e}")),
+                _ => {}
+            }
+        }
+    }
+
+    /// `<style>` 블록에서 `.cs{n}`/`.ps{n}` 규칙만 추출한다 (나머지 규칙·선언은 무시).
+    fn parse_style_rules(&mut self, css: &str) {
+        for rule in css.split('}') {
+            let Some((selector, body)) = rule.split_once('{') else {
+                continue;
+            };
+            let selector = selector.trim();
+            let props: HashMap<String, String> = body
+                .split(';')
+                .filter_map(|kv| {
+                    let (k, v) = kv.split_once(':')?;
+                    Some((k.trim().to_string(), v.trim().to_string()))
+                })
+                .collect();
+            if props.is_empty() {
+                continue;
+            }
+            if let Some(n) = selector
+                .strip_prefix(".cs")
+                .and_then(|s| s.trim().parse::<u16>().ok())
+            {
+                self.cs_rules.insert(n, props);
+            } else if let Some(n) = selector
+                .strip_prefix(".ps")
+                .and_then(|s| s.trim().parse::<u16>().ok())
+            {
+                self.ps_rules.insert(n, props);
+            }
+        }
+    }
+
+    /// `.cs{n}` 규칙 → CharShape 복원 (팔레트 dedup 후 1회 할당).
+    fn cs_shape(&mut self, n: u16) -> Option<CharShapeId> {
+        if let Some(&id) = self.cs_cache.get(&n) {
+            return Some(id);
+        }
+        let props = self.cs_rules.get(&n)?.clone();
+        let mut shape = self.normal_template.clone();
+        if let Some(ff) = props.get("font-family")
+            && let Some(name) = ff
+                .split(',')
+                .next()
+                .map(|s| s.trim().trim_matches('"').trim_matches('\''))
+            && !name.is_empty()
+        {
+            let face = self.face_id_for(name);
+            shape.face_ids = [face; hwp_model::LANG_COUNT];
+        }
+        if let Some(pt) = props
+            .get("font-size")
+            .and_then(|v| v.strip_suffix("pt"))
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            shape.base_size = (pt * 100.0).round() as i32;
+            shape.rel_sizes = [100; hwp_model::LANG_COUNT];
+        }
+        if let Some(c) = props.get("color").and_then(|v| parse_hex_color(v)) {
+            shape.text_color = c;
+        }
+        if let Some(c) = props
+            .get("background-color")
+            .and_then(|v| parse_hex_color(v))
+        {
+            shape.shade_color = c;
+        }
+        if let Some(em) = props
+            .get("letter-spacing")
+            .and_then(|v| v.strip_suffix("em"))
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            shape.spacings = [(em * 100.0).round() as i8; hwp_model::LANG_COUNT];
+        }
+        // 팔레트 dedup — 같은 모양이면 팔레트 id를 쓴다.
+        if let Some(idx) = self.palette.iter().position(|p| *p == shape) {
+            let id = CharShapeId(idx as u16);
+            self.cs_cache.insert(n, id);
+            return Some(id);
+        }
+        let id = PALETTE_LEN + self.extra_char_shapes.len() as u16;
+        self.extra_char_shapes.push(shape);
+        let id = CharShapeId(id);
+        self.cs_cache.insert(n, id);
+        Some(id)
+    }
+
+    /// `.ps{n}` 규칙 → ParaShape 복원 (팔레트 dedup 후 1회 할당).
+    fn ps_shape(&mut self, n: u16) -> Option<u16> {
+        if let Some(&id) = self.ps_cache.get(&n) {
+            return Some(id);
+        }
+        let props = self.ps_rules.get(&n)?.clone();
+        let align_bits: u32 = match props.get("text-align").map(String::as_str) {
+            Some("left") => 1,
+            Some("right") => 2,
+            Some("center") => 3,
+            _ => 0,
+        };
+        let mut ps = ParaShape {
+            attr1: 0x180 | (align_bits << 2),
+            line_spacing_old: 160,
+            line_spacing: 160,
+            border_fill_id: 2,
+            ..ParaShape::default()
+        };
+        if let Some(lh) = props.get("line-height") {
+            if lh == "normal" {
+                ps.line_spacing_type = 2;
+                ps.line_spacing = 0;
+                ps.line_spacing_old = 0;
+            } else if let Some(pt) = lh.strip_suffix("pt").and_then(|v| v.parse::<f32>().ok()) {
+                ps.line_spacing_type = 1;
+                ps.line_spacing = (pt * 100.0).round() as i32;
+                ps.line_spacing_old = ps.line_spacing;
+            } else if let Ok(ratio) = lh.parse::<f32>() {
+                ps.line_spacing_type = 0;
+                ps.line_spacing = (ratio * 100.0).round() as i32;
+                ps.line_spacing_old = ps.line_spacing;
+            }
+        }
+        let mm = |key: &str| -> Option<i32> {
+            props
+                .get(key)
+                .and_then(|v| v.strip_suffix("mm"))
+                .and_then(|v| v.parse::<f32>().ok())
+                .map(|mm| (mm * 7200.0 / 25.4).round() as i32)
+        };
+        if let Some(v) = mm("margin-left") {
+            ps.margin_left = v;
+        }
+        if let Some(v) = mm("margin-right") {
+            ps.margin_right = v;
+        }
+        if let Some(v) = mm("margin-top") {
+            ps.spacing_top = v;
+        }
+        if let Some(v) = mm("margin-bottom") {
+            ps.spacing_bottom = v;
+        }
+        if let Some(v) = mm("text-indent") {
+            ps.indent = v;
+        }
+        // 팔레트 dedup.
+        if let Some(idx) = self.palette_para.iter().position(|p| *p == ps) {
+            self.ps_cache.insert(n, idx as u16);
+            return Some(idx as u16);
+        }
+        let id = BASE_PARA_SHAPES + self.extra_para_shapes.len() as u16;
+        self.extra_para_shapes.push(ps);
+        self.ps_cache.insert(n, id);
+        Some(id)
+    }
+
+    fn shape_by_id(&self, id: u16) -> &CharShape {
+        if (id as usize) < self.palette.len() {
+            &self.palette[id as usize]
+        } else {
+            &self.extra_char_shapes[(id - PALETTE_LEN) as usize]
+        }
+    }
+
+    /// 글꼴 이름 → face id (없으면 추가). 추가분은 슬롯 전체에 같은 순서로 붙는다.
+    fn face_id_for(&mut self, name: &str) -> u16 {
+        if let Some(idx) = self.fonts.iter().position(|f| f.name == name) {
+            return idx as u16;
+        }
+        let id = self.fonts.len() as u16;
+        self.fonts.push(hwp_model::FaceName {
+            name: name.to_string(),
+            attr: 0x01,
+            ..hwp_model::FaceName::default()
+        });
+        id
     }
 
     /// `end` 태그의 닫힘까지 통째로 건너뛴다(중첩 동일 태그 추적).
@@ -980,6 +1262,34 @@ impl Parser {
             }
         }
     }
+}
+
+/// class 속성에서 `cs{n}` 접두 클래스의 n을 찾는다 (계약 v2).
+fn class_cs(e: &BytesStart<'_>) -> Option<u16> {
+    class_num(e, "cs")
+}
+
+/// class 속성에서 `ps{n}` 접두 클래스의 n을 찾는다 (계약 v2).
+fn class_ps(e: &BytesStart<'_>) -> Option<u16> {
+    class_num(e, "ps")
+}
+
+fn class_num(e: &BytesStart<'_>, prefix: &str) -> Option<u16> {
+    attr(e, "class")?
+        .split_whitespace()
+        .find_map(|c| c.strip_prefix(prefix)?.parse::<u16>().ok())
+}
+
+/// `#RRGGBB` → COLORREF(0x00BBGGRR).
+fn parse_hex_color(s: &str) -> Option<u32> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u32::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u32::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u32::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(r | (g << 8) | (b << 16))
 }
 
 /// 속성 조회(로컬 이름 기준, 엔티티 해석 포함) — hwpx read/xml.rs와 동일 규칙.
@@ -1227,5 +1537,67 @@ mod tests {
         // fragment도 그대로 읽힌다.
         let frag = to_html_fragment(&doc);
         assert!(from_html(&frag).is_ok());
+    }
+
+    #[test]
+    fn 스타일_왕복_속성_보존() {
+        // 계약 v2: 글자(색·자간)·문단(정렬·줄간격) 모양이 html을 거쳐 보존된다.
+        let mut doc = from_markdown("본문 문단입니다.\n");
+        doc.header.char_shapes[0].text_color = 0x0000_00FF; // COLORREF 빨강
+        doc.header.char_shapes[0].spacings = [5; hwp_model::LANG_COUNT];
+        doc.header.para_shapes[2].attr1 = 0x180 | (3 << 2); // 가울데
+        doc.header.para_shapes[2].line_spacing = 130;
+        doc.header.para_shapes[2].line_spacing_old = 130;
+        let html = to_html(&doc);
+        assert!(html.contains("color:#FF0000"), "{html}");
+        assert!(html.contains("letter-spacing:0.05em"), "{html}");
+        assert!(html.contains("text-align:center"), "{html}");
+        assert!(html.contains("line-height:1.3"), "{html}");
+
+        let back = from_html(&html).unwrap();
+        let para = &back.sections[0].paragraphs[0];
+        let (_, cs_id) = para.char_shape_runs[0];
+        let shape = &back.header.char_shapes[cs_id.0 as usize];
+        assert_eq!(shape.text_color, 0x0000_00FF, "글자색 왕복");
+        assert_eq!(shape.spacings[0], 5, "자간 왕복");
+        let ps = &back.header.para_shapes[para.para_shape.0 as usize];
+        assert_eq!(ps.alignment(), 3, "정렬 왕복");
+        assert_eq!(ps.line_spacing, 130, "줄간격 왕복");
+        assert_eq!(ps.line_spacing_type, 0, "줄간격 종류 왕복");
+
+        // 재수출 안정성 — 같은 속성이 다시 실린다.
+        let html2 = to_html(&back);
+        assert!(html2.contains("color:#FF0000"), "재수출: {html2}");
+        assert!(html2.contains("text-align:center"), "재수출: {html2}");
+    }
+
+    #[test]
+    fn 스타일_왕복_팔레트_dedup() {
+        // 기본 모양만 쓰는 문서는 팔레트가 그대로 재사용돼 추가 모양이 생기지 않는다.
+        let doc = from_markdown("본문 문단입니다.\n");
+        let html = to_html(&doc);
+        let back = from_html(&html).unwrap();
+        assert_eq!(back.header.char_shapes.len(), 16, "팔레트 외 글자모양 없음");
+        assert_eq!(back.header.para_shapes.len(), 5, "팔레트 외 문단모양 없음");
+    }
+
+    #[test]
+    fn 스타일_왕복_글꼴_복원() {
+        // 팔레트에 없는 글꼴 이름은 추가 글꼴로 복원된다.
+        let mut doc = from_markdown("본문 문단입니다.\n");
+        doc.header.fonts[0].push(hwp_model::FaceName {
+            name: "마루고딕".into(),
+            attr: 0x01,
+            ..hwp_model::FaceName::default()
+        });
+        doc.header.char_shapes[0].face_ids = [2; hwp_model::LANG_COUNT];
+        let html = to_html(&doc);
+        assert!(html.contains("font-family:\"마루고딕\",serif"), "{html}");
+        let back = from_html(&html).unwrap();
+        let para = &back.sections[0].paragraphs[0];
+        let (_, cs_id) = para.char_shape_runs[0];
+        let shape = &back.header.char_shapes[cs_id.0 as usize];
+        let face = &back.header.fonts[0][shape.face_ids[0] as usize];
+        assert_eq!(face.name, "마루고딕", "글꼴 복원");
     }
 }
