@@ -809,6 +809,95 @@ fn fill_replaces_slots() {
 }
 
 #[test]
+fn fill_parts_splices_part_blocks() {
+    // 템플릿: 제목 + {{본문}} 앵커 문단. 부분: md 산문 + HTML 병합 표.
+    let tpl_md = tmp("hwp_cli_fillparts_tpl.md");
+    std::fs::write(&tpl_md, "# 보고서\n\n{{본문}}\n").unwrap();
+    let tpl = tmp("hwp_cli_fillparts_tpl.hwpx");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&tpl_md)
+            .arg("-o")
+            .arg(&tpl)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let part_md = tmp("hwp_cli_fillparts_part.md");
+    std::fs::write(
+        &part_md,
+        "부분 본문입니다.\n\n<table>\n<tr><td colspan=\"2\">가로병합</td></tr>\n\
+         <tr><td>a</td><td>b</td></tr>\n</table>\n",
+    )
+    .unwrap();
+    let out = tmp("hwp_cli_fillparts_out.hwpx");
+    let r = hwp()
+        .arg("fill")
+        .arg(&tpl)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set"])
+        .arg(format!("본문=@{}", part_md.display()))
+        .args(["--json"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "fill parts: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    // 텍스트와 표 구조(colspan)가 이식됐는지 확인.
+    let cat = hwp().arg("cat").arg(&out).output().unwrap();
+    let text = String::from_utf8_lossy(&cat.stdout);
+    assert!(text.contains("부분 본문입니다."), "부분 텍스트: {text}");
+    let html = hwp()
+        .args(["cat", "--format", "html"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let html = String::from_utf8_lossy(&html.stdout);
+    assert!(html.contains("colspan=\"2\""), "부분 표 span: {html}");
+    for f in [&tpl_md, &tpl, &part_md, &out] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+#[test]
+fn fill_parts_missing_anchor_fails() {
+    let tpl_md = tmp("hwp_cli_fillparts_miss_tpl.md");
+    std::fs::write(&tpl_md, "# 보고서\n\n다른 내용\n").unwrap();
+    let tpl = tmp("hwp_cli_fillparts_miss_tpl.hwpx");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&tpl_md)
+            .arg("-o")
+            .arg(&tpl)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let part_md = tmp("hwp_cli_fillparts_miss_part.md");
+    std::fs::write(&part_md, "부분\n").unwrap();
+    let out = tmp("hwp_cli_fillparts_miss_out.hwpx");
+    let r = hwp()
+        .arg("fill")
+        .arg(&tpl)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set"])
+        .arg(format!("본문=@{}", part_md.display()))
+        .output()
+        .unwrap();
+    assert!(!r.status.success(), "앵커 없음은 실패해야 한다");
+    assert!(!out.exists(), "실패 시 목적지를 만들지 않는다");
+    for f in [&tpl_md, &tpl, &part_md] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+#[test]
 fn fill_zero_or_partial_match_preserves_destination_by_default() {
     let md = tmp("hwp_cli_fill_strict.md");
     let template = tmp("hwp_cli_fill_strict_template.hwpx");

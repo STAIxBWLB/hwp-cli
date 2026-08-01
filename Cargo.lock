@@ -699,6 +699,7 @@ version = "0.5.0"
 dependencies = [
  "hwp-model",
  "pulldown-cmark",
+ "quick-xml",
  "serde_json",
  "zip",
 ]

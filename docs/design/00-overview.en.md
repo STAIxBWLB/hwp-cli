@@ -84,6 +84,7 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 | 10 | [hwp5-structure-map](10-hwp5-structure-map.en.md) | **Exhaustive HWP5 map**: CFB stream tree, record catalog (every tag plus implementation status), control characters and ctrl IDs |
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.en.md) | **Exhaustive HWPX map**: OPC tree, namespaces, element catalog, read/write symmetry audit |
 | 12 | [feature-gaps](12-feature-gaps.en.md) | Feature gap catalog plus a difficulty and dependency roadmap (inherits 07 §F; 10 §8 and 11 §5 are the underlying data) |
+| 18 | [html-fragment-contract](18-html-fragment-contract.en.md) | **HTML fragment contract** — XHTML subset for Maru part-based authoring/assembly, table/image/footnote round-trip rules |
 
 ---
 

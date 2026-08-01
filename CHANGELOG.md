@@ -13,6 +13,43 @@ Release body.
 
 ---
 
+## [Unreleased]
+
+### 한국어
+
+**추가**
+
+- HTML fragment 왕복(계약: docs/design/18). `from_html` 임포터를 새로 만들어 well-formed
+  XHTML 부분집합(표 colspan/rowspan·셀 내 블록·그림 data URI/상대 경로·인라인 마크·목록)을
+  IR로 읽는다. 계약 위반은 hard error다.
+- HTML 남보기 정합. `convert --to html`이 병합 셀을 colspan/rowspan으로 방출(GH-4)하고
+  셀 안 중첩 표·그림을 보존(GH-5)하며, 각주/미주를 `<sup>` 앵커 + 문서 끝 정의로 낸다(GH-3).
+  출력은 `from_html`이 다시 읽는 XHTML이다.
+- md+HTML 혼합 부분(part) 파일. markdown 본문에 HTML 표 블록을 섞어 쓰면 `new`/`convert`가
+  함께 읽는다. 인라인 `<u>`·`<sup>`·`<sub>`도 IR을 거쳐 왕복한다.
+- 템플릿+부분 채우기. `hwp fill --set 이름=@부분.md`(또는 `--data`의 `parts` 맵)가
+  `{{이름}}` 앵커 문단을 부분 파일의 블록으로 교체해 대규모 문서를 부분별로 조합한다
+  (템플릿·부분 모두 hwp-cli 생성 문서의 기본 팔레트 계열 한정).
+
+### English
+
+**Added**
+
+- HTML fragment round-trip (contract: docs/design/18). A new `from_html` importer parses a
+  well-formed XHTML subset (table colspan/rowspan, cell blocks, data-URI/relative-path images,
+  inline marks, lists) into the IR. Contract violations are hard errors.
+- HTML export alignment: `convert --to html` now emits merged cells as colspan/rowspan (GH-4),
+  preserves nested tables/images inside cells (GH-5), and renders footnotes/endnotes as `<sup>`
+  anchors with a trailing definitions section (GH-3). The output is XHTML that `from_html`
+  reads back.
+- Mixed md+HTML part files: HTML table blocks can be embedded in markdown body text and are
+  parsed by `new`/`convert`. Inline `<u>`, `<sup>` and `<sub>` round-trip through the IR.
+- Template + part fill: `hwp fill --set name=@part.md` (or a `parts` map in `--data`) replaces
+  the `{{name}}` anchor paragraph with the part file's blocks, composing large documents
+  part-by-part (limited to hwp-cli-generated documents in the default palette family).
+
+---
+
 ## [0.5.0]
 
 ### 한국어

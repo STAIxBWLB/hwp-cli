@@ -261,10 +261,10 @@ pub enum Cmd {
         /// Output file path
         #[arg(short, long)]
         output: PathBuf,
-        /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`)
+        /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@'
         #[arg(long)]
         set: Vec<String>,
-        /// JSON object file mapping name to value (bulk fill)
+        /// JSON object file mapping name to value (bulk fill; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows)
         #[arg(long)]
         data: Option<PathBuf>,
         /// Print the replacement summary as JSON ({output, replaced, counts})

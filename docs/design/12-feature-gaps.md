@@ -416,9 +416,9 @@ IR→텍스트 포맷 출력에서 잃는 것들. `hwp-convert/src/{markdown,htm
 |---|---|---|---|---|---|
 | GH-1 | **하이퍼링크 URL 드롭(md/html)** | `markdown.rs`·`html.rs`·`field.rs`(`hyperlink_url` 헬퍼 신설) | ✅ **해소(2026-07-15)** — md `[표시](URL)`, html `<a href>`, md 왕복 보존 테스트 | 내보내기 | S |
 | GH-2 | **이미지 드롭(md/html)** | `markdown.rs`(`MarkdownOptions.media_dir`)·`html.rs`·`image.rs`(`image_kind` 헬퍼) | ✅ **해소(2026-07-15)** — html=data URI 임베드, convert .md=`<스템>.media/` 사이드카 추출(cat stdout은 기존 유지) | 내보내기 | S |
-| GH-3 | **각주/미주가 마커 없이 본문 인라인 흡수(md/html/odt 공통)** — `[^n]`·`<text:note>` 미사용 | `markdown.rs`, `html.rs:204-223`, `odt.rs:181-199` | ✅ **md 해소(2026-07-18)** — 본문 `[^N]`/`[^eN]` 마커 + 문서 끝 정의(GFM 풋노트). html/odt는 기존 근사 유지 | 내보내기 | S |
-| GH-4 | **병합 셀 평탄화** — col_span/row_span을 어떤 출력도 반영 안 함(colspan/rowspan·columns-spanned 미방출) | `markdown.rs`, `html.rs:172-203`, `odt.rs:203-243` | ✅ **md 해소(2026-07-18)** — 병합 셀 있으면 HTML `<table>`(colspan/rowspan) 폴백 → 단, GFM 표 유지는 무병합 표만. html/odt는 기존 근사 유지 | 내보내기 | S |
-| GH-5 | **셀 내 블록(중첩표·이미지) 드롭** — 셀은 인라인 텍스트만 취하고 블록 버퍼 폐기 | `odt.rs:215`(blk 폐기), `markdown.rs`, `html.rs:181-189` | ✅ **md 해소(2026-07-18)** — 중첩 표·블록 수식 감지 시 HTML 표 폴백, 셀 fragment를 등장 순서대로 보존하고 이미지도 안전하게 참조. html/odt는 기존. ⚠대조 감사 노트: 코드 분기(`Control::Table => true`)는 확인됐으나 "셀 안 실제 중첩 표" 전용 단위 테스트는 부재(수식·이미지로 간접 검증만) | 내보내기 | M |
+| GH-3 | **각주/미주가 마커 없이 본문 인라인 흡수(md/html/odt 공통)** — `[^n]`·`<text:note>` 미사용 | `markdown.rs`, `html.rs`, `odt.rs:181-199` | ✅ **md 해소(2026-07-18)** — 본문 `[^N]`/`[^eN]` 마커 + 문서 끝 정의(GFM 풋노트). ✅ **html 해소(2026-08-01)** — `<sup id="fnref-N">` 앵커 + `<section class="footnotes">` 정의(표현 전용). odt는 기존 근사 유지 | 내보내기 | S |
+| GH-4 | **병합 셀 평탄화** — col_span/row_span을 어떤 출력도 반영 안 함(colspan/rowspan·columns-spanned 미방출) | `markdown.rs`, `html.rs`, `odt.rs:203-243` | ✅ **md 해소(2026-07-18)** — 병합 셀 있으면 HTML `<table>`(colspan/rowspan) 폴백 → 단, GFM 표 유지는 무병합 표만. ✅ **html 해소(2026-08-01)** — 점유 격자로 colspan/rowspan 방출, from_html이 역산(계약 18). odt는 기존 근사 유지 | 내보내기 | S |
+| GH-5 | **셀 내 블록(중첩표·이미지) 드롭** — 셀은 인라인 텍스트만 취하고 블록 버퍼 폐기 | `odt.rs:215`(blk 폐기), `markdown.rs`, `html.rs` | ✅ **md 해소(2026-07-18)** — 중첩 표·블록 수식 감지 시 HTML 표 폴백, 셀 fragment를 등장 순서대로 보존하고 이미지도 안전하게 참조. html/odt는 기존 대신 ✅ **html 해소(2026-08-01)** — 셀 블록 버퍼 폐기 제거, 중첩 표·그림 보존(중첩 표 단위 테스트 포함). odt는 기존. ⚠대조 감사 노트: 코드 분기(`Control::Table => true`)는 확인됐으나 "셀 안 실제 중첩 표" 전용 단위 테스트는 부재(수식·이미지로 간접 검증만) | 내보내기 | M |
 | GH-6 | **리스트 평문화(md)** — 헤딩만 인식, 글머리표/번호 문단을 `- `/`1. ` 구문으로 복원 안 함 | `markdown.rs` + `hwp-model/src/list.rs`(render에서 이동, SSOT) | ✅ **해소(2026-07-18)** — `- `/`N. ` 목록 + 부모 마커 폭 기준 들여쓰기, 정의별 번호 카운터와 구역별 재시작, 번호 형식 합성(숫자 외는 리터럴 마커) | 내보내기 | S |
 | GH-7 | **ODT 페이지 레이아웃 미재현** — 여백·다단·머리말 위치 생략(모듈 주석에 명시) | `odt.rs:3-5` | 근사(생략) | 내보내기 | M |
 | GH-8 | **수식·글자효과 드롭(md)** — eqed 스크립트 미방출, 밑줄/취소선/위·아래첨자 평문화 | `markdown.rs` | ✅ **해소(2026-07-18)** — 수식 인라인 `$..$`/블록 `$$..$$`(HWP 스크립트 원문), `<u>`·`~~`·`<sup>`·`<sub>` 스팬 | 내보내기 | S |
@@ -445,7 +445,7 @@ IR→텍스트 포맷 출력에서 잃는 것들. `hwp-convert/src/{markdown,htm
 | GJ-4 | **RTF 입출력 부재** | grep 무일치 | 미구현 | M |
 | GJ-5 | **표→CSV 추출 부재** — 표를 데이터로 뽑는 경로 없음(수요의 정량 근거는 미검증 — [08] caveat) | grep 무일치 | 미구현 | S |
 | GJ-6 | **`.txt` 확장자 추론 실패** — `convert -o out.txt`가 에러, 평문은 `cat`→stdout뿐 | `hwp-cli/src/commands/convert.rs:195-213`(txt arm 없음) | 미지원 | S |
-| GJ-7 | **HTML/ODT/PDF 역방향 입력 부재** — 입력은 hwp5/hwpx/json/markdown만(출력 전용 4포맷) | `hwp-cli/src/commands/cat.rs:18-44` | 미구현(단방향) | L |
+| GJ-7 | **HTML/ODT/PDF 역방향 입력 부재** — 입력은 hwp5/hwpx/json/markdown만(출력 전용 4포맷) | `hwp-cli/src/commands/cat.rs:18-44` | **HTML 부분 해소(2026-08-01)** — 계약 XHTML 부분집합 입력(`from_html`, md 혼합 경로 포함, docs/design/18). ODT/PDF 입력은 미구현 | 부분 | S(HTML) / L(ODT·PDF) |
 | GJ-8 | **HWPX 배포용 문서** — 어느 구현체도 미지원(H2Orestart #42 오픈). HWP5용 공식 배포 스펙이 HWPX 변형을 커버하는지 미확인 | [08](08-external-research.md) 미해결 질문 | 미구현 | L |
 
 ## 11. GK — 편집 프리미티브 부재 (2026-07-08 재수색 추가)

@@ -440,7 +440,7 @@ fn sort_cells_row_major(table: &mut hwp_model::Table) {
 }
 
 /// 표 불변식 재검증(조작 후 손상 방지 게이트). 위반이면 Err.
-fn validate_table_invariants(table: &hwp_model::Table) -> Result<(), String> {
+pub(crate) fn validate_table_invariants(table: &hwp_model::Table) -> Result<(), String> {
     build_grid(table)?; // 겹침·빈칸·범위
     let area: usize = table
         .cells

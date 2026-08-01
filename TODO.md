@@ -108,11 +108,20 @@
 
 ## 기능 백로그
 
-- [ ] **hwp/hwpx → HTML 변환 고도화** (2026-07-19 등재) — `convert --to html`은 이미 존재하나
+- [x] **hwp/hwpx → HTML 변환 고도화** (2026-07-19 등재, **2026-08-01 해소**) — `convert --to html`은 이미 존재하나
       (`hwp-convert/src/html.rs`) md 대비 충실도가 낮다. md에서 해소된 GH-3(각주 마커)·GH-4(병합 셀
       colspan/rowspan)·GH-5(셀 내 블록)의 **html 경로 잔존분**을 해소하고, 글자·문단 모양의 CSS
       매핑(글꼴·크기·색·정렬·줄간격), 다단·머리말/꼬리말 표현을 보강해 **"md와 동급 이상 + 스타일
       충실"**을 목표로 한다. 각주는 `<sup>`+앵커, 병합 표는 colspan/rowspan 방출이 1차 범위.
+      → **2026-08-01 해소**: html 경로 GH-3·GH-4·GH-5 잔존 해결. CSS 스타일 매핑·다단·머리말
+      표현은 **분리 보류**(아래 계약 작업이 구조 왕복을 우선 — 스타일 왕복은 계약 v1 범위 밖).
+- [x] **HTML fragment 왕복 + 부분(part) 조합** (**2026-08-01**, Maru 문서 작성기 연동 축) —
+      본문 산문은 markdown, 표·그림은 HTML fragment로 부분을 나눠 쓰고 조합하는 대규모
+      문서 워크플로. ① 계약 문서(docs/design/18) + html.rs XHTML 정합, ② `from_html`
+      임포터(계약 위반 hard error), ③ md+HTML 혼합 부분 파일(from_markdown HTML 블록),
+      ④ `hwp fill --set 이름=@부분.md` 템플릿+부분 채우기(기본 팔레트 계열 한정).
+      예제: `examples/part-composition-v1/`. 잔여: SVG 부분 이미지(v1은 spec-v2 경로 안내),
+      스타일 수준 왕복, odt 경로 GH-3~5.
 
 ---
 

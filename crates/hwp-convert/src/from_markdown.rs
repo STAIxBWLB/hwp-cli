@@ -23,8 +23,8 @@ use hwp_model::{
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// default_header가 만드는 기본 문단 모양 개수(인덱스 0~4). 목록용 문단 모양은
-/// 이 뒤(5~)에 붙는다.
-const BASE_PARA_SHAPES: u16 = 5;
+/// 이 뒤(5~)에 붙는다. from_html의 목록 문단모양도 같은 기준을 쓴다.
+pub(crate) const BASE_PARA_SHAPES: u16 = 5;
 
 /// markdown 들여오기 옵션.
 #[derive(Default)]
@@ -48,8 +48,8 @@ pub enum OfficialPreset {
     Report,
 }
 
-/// 문자 모양 ID 배치 (default_header와 일치해야 함).
-mod shapes {
+/// 문자 모양 ID 배치 (default_header와 일치해야 함). from_html도 같은 팔레트를 쓴다.
+pub(crate) mod shapes {
     pub const NORMAL: u16 = 0;
     pub const BOLD: u16 = 1;
     pub const ITALIC: u16 = 2;
@@ -71,16 +71,16 @@ mod shapes {
 const FONT_DOTUM: u16 = 1;
 
 /// 테두리/배경 ID 배치: 1·2 = 무테두리(기본/참조용), 3 = 실선 0.12mm.
-const TABLE_BORDER_FILL: u16 = 3;
+pub(crate) const TABLE_BORDER_FILL: u16 = 3;
 
 /// 셀 LIST_HEADER 속성의 세로 정렬 = 가운데(bits5-6=1 → 0x20). 정품 한글 표 셀은
 /// 거의 전수(work_report·color_fill·코퍼스 실측)가 이 비트를 세운다. 0(위)으로 두면
 /// hwp5 writer가 그대로 방출해 셀 내용이 상단에 붙는다(위 여백<아래 여백). hwpx writer는
 /// vertAlign="CENTER"를 상수로 방출하므로 hwpx 산출물에는 영향 없다.
-const CELL_VALIGN_CENTER: u32 = 0x20;
+pub(crate) const CELL_VALIGN_CENTER: u32 = 0x20;
 
-/// 본문 영역 폭 (A4 기본 여백 기준, HWPUNIT).
-const BODY_WIDTH: i32 = 42520;
+/// 본문 영역 폭 (A4 기본 여백 기준, HWPUNIT). from_html의 표 폭 계산도 같은 기준.
+pub(crate) const BODY_WIDTH: i32 = 42520;
 
 /// `hwp new`용 기본 문서 헤더 — 한글 빈 문서에 준하는 최소 구성.
 pub fn default_header() -> hwp_model::DocHeader {
@@ -381,6 +381,17 @@ pub fn from_markdown(md: &str) -> Document {
 /// 옵션을 받는 변형. `base_dir` 지정 시 상대 경로 이미지(`![](fig.png)`)를 임베드한다.
 /// 원격 URL·없는 파일·미지원 포맷은 경고(stderr) 후 alt 텍스트만 본문에 보존한다.
 pub fn from_markdown_with(md: &str, opts: &MarkdownImportOptions) -> Document {
+    from_markdown_inner(md, opts, true)
+}
+
+/// 부분(part) 조각용 변형 — 구역/단 정의(secd/cold) 주입을 건드리지 않는다.
+/// 조합 대상 문서 중간에 이식될 블록이므로, 구역 정의가 끼면 문서가 둘로 갈라진다.
+/// `hwp fill --set name=@part.md`(템플릿+부분 채우기)이 쓴다.
+pub fn from_markdown_blocks(md: &str, opts: &MarkdownImportOptions) -> Document {
+    from_markdown_inner(md, opts, false)
+}
+
+fn from_markdown_inner(md: &str, opts: &MarkdownImportOptions, inject: bool) -> Document {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     // 취소선(`~~`)·각주(`[^N]`)를 파싱한다. 작업목록(TASKLISTS)은 대응 IR 의미가 없어 제외.
@@ -401,6 +412,7 @@ pub fn from_markdown_with(md: &str, opts: &MarkdownImportOptions) -> Document {
     for event in &events {
         b.event(event.clone());
     }
+    b.flush_html(); // 버퍼에 남은 블록 HTML 마감
     b.flush_paragraph();
 
     // 이미지 실패 등 경고는 stderr로 남긴다(문서 생성 자체는 성공한다).
@@ -412,11 +424,14 @@ pub fn from_markdown_with(md: &str, opts: &MarkdownImportOptions) -> Document {
         // 빈 문서도 문단 하나로 닫는다. 문단끝 문자는 writer가 보장한다.
         b.paragraphs.push(Paragraph::default());
     }
-    // 첫 문단에 구역/단 정의 주입 — hwp5/한글 호환의 전제 조건
-    inject_section_controls(&mut b.paragraphs[0], opts.preset);
+    if inject {
+        // 첫 문단에 구역/단 정의 주입 — hwp5/한글 호환의 전제 조건
+        inject_section_controls(&mut b.paragraphs[0], opts.preset);
+    }
 
     // 목록에서 만든 문단 모양·번호/글머리 정의를 헤더에 합친다.
     let mut header = default_header();
+    header.char_shapes.extend(b.extra_char_shapes);
     header.para_shapes.extend(b.extra_para_shapes);
     header.numbering_levels = b.numbering_levels;
     header.bullet_chars = b.bullet_chars;
@@ -481,6 +496,7 @@ fn collect_note_bodies(events: &[Event]) -> HashMap<String, Vec<Paragraph>> {
         for ev in &events[start..j] {
             sub.event(ev.clone());
         }
+        sub.flush_html();
         sub.flush_paragraph();
         let mut body = sub.paragraphs;
         if body.is_empty() {
@@ -519,6 +535,9 @@ struct Builder {
     bold: bool,
     italic: bool,
     strike: bool,              // 취소선 구간(`~~`)
+    underline: bool,           // 밑줄 구간(인라인 HTML `<u>`)
+    sup: bool,                 // 위첨자 구간(인라인 HTML `<sup>`)
+    sub: bool,                 // 아래첨자 구간(인라인 HTML `<sub>`)
     in_code: bool,             // 인라인 코드 구간(`code` — 함초롬돋움+음영)
     in_link: bool,             // 하이퍼링크 표시 텍스트 구간(파랑+밑줄)
     link_end: Option<HwpChar>, // 링크 종료 시 방출할 FIELD_END 문자
@@ -547,6 +566,11 @@ struct Builder {
     base_dir: Option<PathBuf>,
     bin_streams: Vec<BinStream>,
     warnings: Vec<String>,
+    // HTML 블록(표·그림 — 계약 docs/design/18): 연속 Html 이벤트 버퍼 +
+    // 밑줄·첨자 등 팔레트 외 문자모양(팔레트 뒤에 1회 할당) + 할당 캐시.
+    html_buf: String,
+    extra_char_shapes: Vec<CharShape>,
+    html_shape_cache: HashMap<(bool, bool, bool, bool, bool, bool), u16>,
     in_image_suppress: bool, // 이미지 임베드 성공 시 alt 텍스트를 억제
 }
 
@@ -589,8 +613,55 @@ impl Builder {
         }
     }
 
+    /// 현재 상태의 문자 모양 ID. 밑줄·첨자가 끼면 팔레트 조합으로 부족하므로
+    /// 팔레트 뒤(extra_char_shapes)에 1회 할당한다(from_html과 같은 규칙).
+    fn shape_id(&mut self) -> u16 {
+        if !self.underline && !self.sup && !self.sub {
+            return self.current_shape();
+        }
+        if self.in_code {
+            return shapes::CODE;
+        }
+        if self.in_link {
+            return shapes::HYPERLINK;
+        }
+        if let Some(level) = self.heading {
+            return shapes::HEADING_BASE + level - 1;
+        }
+        let key = (
+            self.bold,
+            self.italic,
+            self.underline,
+            self.strike,
+            self.sup,
+            self.sub,
+        );
+        if let Some(&id) = self.html_shape_cache.get(&key) {
+            return id;
+        }
+        let id = crate::from_html::PALETTE_LEN + self.extra_char_shapes.len() as u16;
+        let normal = default_header().char_shapes[shapes::NORMAL as usize].clone();
+        let mut attr = u32::from(self.bold) << 1 | u32::from(self.italic);
+        if self.underline {
+            attr |= 1 << 2; // 밑줄 종류 1(글자 아래)
+        }
+        if self.sup {
+            attr |= 1 << 15;
+        }
+        if self.sub {
+            attr |= 1 << 16;
+        }
+        self.extra_char_shapes.push(CharShape {
+            attr,
+            strike: self.strike,
+            ..normal
+        });
+        self.html_shape_cache.insert(key, id);
+        id
+    }
+
     fn push_text(&mut self, text: &str) {
-        let shape = CharShapeId(self.current_shape());
+        let shape = CharShapeId(self.shape_id());
         if self.runs.last().map(|(_, s)| *s) != Some(shape) {
             self.runs.push((self.wchar_pos, shape));
         }
@@ -656,7 +727,7 @@ impl Builder {
         // 누락 시 한글이 '손상'으로 거부하고 pyhwp 파서도 크래시한다.
         let mut runs = std::mem::take(&mut self.runs);
         if runs.is_empty() {
-            runs.push((0, CharShapeId(self.current_shape())));
+            runs.push((0, CharShapeId(self.shape_id())));
         }
         // 목록 항목이 열려 있으면 머리(NUMBER/BULLET) 문단모양을 우선한다.
         // 그 외: 코드블록→4(회색 배경), 인용→3(들여쓰기+막대), 제목→1,
@@ -740,6 +811,81 @@ impl Builder {
     fn end_list(&mut self) {
         self.flush_paragraph();
         self.list_stack.pop();
+    }
+
+    /// 인라인 HTML 태그 — 계약 마크(`u`/`s`/`sup`/`sub`/`strong`/`em`) 토글과 `<br/>`.
+    /// 그 외 태그(임의 `<a>`·`<span>` 등)는 경고만 남기고 무시한다.
+    fn inline_html_tag(&mut self, h: &str) {
+        let tag = h.trim().trim_end_matches('/').to_ascii_lowercase();
+        let tag = tag.trim_end_matches('>');
+        match tag {
+            "<u" => self.underline = true,
+            "</u" => self.underline = false,
+            "<s" => self.strike = true,
+            "</s" => self.strike = false,
+            "<sup" => self.sup = true,
+            "</sup" => self.sup = false,
+            "<sub" => self.sub = true,
+            "</sub" => self.sub = false,
+            "<strong" => self.bold = true,
+            "</strong" => self.bold = false,
+            "<em" => self.italic = true,
+            "</em" => self.italic = false,
+            "<br" => {
+                self.chars.push(HwpChar::CharCtrl(10));
+                self.wchar_pos += 1;
+            }
+            _ => self
+                .warnings
+                .push(format!("인라인 HTML 태그 무시: {}", h.trim())),
+        }
+    }
+
+    /// 버퍼에 모인 블록 HTML을 파싱해 문단에 병합한다 (계약 docs/design/18).
+    /// 파싱 실패(계약 위반)는 문서 생성을 중단하지 않고 경고로 남긴다 — markdown
+    /// 변환 자체는 성공시키는 기존 정책(이미지 실패 경고와 동일).
+    fn flush_html(&mut self) {
+        let html = std::mem::take(&mut self.html_buf);
+        if html.trim().is_empty() {
+            return;
+        }
+        self.flush_paragraph();
+        let opts = crate::from_html::HtmlImportOptions {
+            base_dir: self.base_dir.as_deref(),
+            bin_seed: self.bin_streams.len(),
+        };
+        match crate::from_html::parse_fragment(&html, &opts) {
+            Ok(blocks) => self.merge_html_blocks(blocks),
+            Err(e) => self
+                .warnings
+                .push(format!("HTML 블록을 무시합니다(계약 위반): {e}")),
+        }
+    }
+
+    /// from_html 산출물을 현재 문서에 병합한다. 헤더 컬렉션(문단모양·번호/글머리 정의·
+    /// 추가 문자모양)의 인덱스가 각자 0부터 시작하므로 오프셋만큼 시프트해 붙인다.
+    fn merge_html_blocks(&mut self, blocks: crate::from_html::HtmlBlocks) {
+        let ps_off = self.extra_para_shapes.len() as u16;
+        let num_off = self.numbering_levels.len() as u16;
+        let bul_off = self.bullet_chars.len() as u16;
+        let cs_off = self.extra_char_shapes.len() as u16;
+        for mut ps in blocks.extra_para_shapes {
+            match (ps.attr1 >> 23) & 0x3 {
+                2 => ps.numbering_id += num_off, // 번호 정의 참조
+                3 => ps.numbering_id += bul_off, // 글머리 정의 참조
+                _ => {}
+            }
+            self.extra_para_shapes.push(ps);
+        }
+        self.numbering_levels.extend(blocks.numbering_levels);
+        self.bullet_chars.extend(blocks.bullet_chars);
+        self.extra_char_shapes.extend(blocks.extra_char_shapes);
+        self.bin_streams.extend(blocks.bin_streams);
+        self.warnings.extend(blocks.warnings);
+        for mut para in blocks.paragraphs {
+            remap_para_ids(&mut para, ps_off, cs_off);
+            self.paragraphs.push(para);
+        }
     }
 
     /// 목록 항목용 문단 모양을 만들어 인덱스를 돌려준다.
@@ -925,6 +1071,10 @@ impl Builder {
         if self.skip_note_def > 0 {
             return;
         }
+        // 블록 HTML 버퍼는 비(非)Html 이벤트에서 닫는다(연속 Html 이벤트 = 하나의 블록).
+        if !matches!(event, Event::Html(_)) {
+            self.flush_html();
+        }
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 self.flush_paragraph();
@@ -1095,6 +1245,10 @@ impl Builder {
                     self.paragraphs.push(table_paragraph(tb));
                 }
             }
+            // ── 블록 HTML(표·그림 — 계약 docs/design/18): 연속 이벤트를 버퍼에 모은다 ──
+            Event::Html(h) => self.html_buf.push_str(&h),
+            // ── 인라인 HTML(`<u>`·`<sup>`·`<sub>`·`<s>`·`<br/>`) → 마크 토글·줄바꿈 ──
+            Event::InlineHtml(h) => self.inline_html_tag(&h),
             _ => {}
         }
     }
@@ -1102,6 +1256,38 @@ impl Builder {
 
 /// 문단이 개조식 기호 `□ `/`○ `로 시작하면 그 기호를 준다. markdown은 줄 앞 공백을
 /// 지워 사다리가 평평해지므로, 이 문단만 여백으로 단을 복원한다(정확히 이 두 접두만).
+/// HTML 블록 병합 시프트 — 문단모양 id(≥BASE_PARA_SHAPES)와 추가 문자모양 id
+/// (≥PALETTE_LEN)를 재귀적으로 옮긴다(중첩 표 셀·Generic 문단 리스트 포함).
+fn remap_para_ids(para: &mut Paragraph, ps_off: u16, cs_off: u16) {
+    if para.para_shape.0 >= BASE_PARA_SHAPES {
+        para.para_shape.0 += ps_off;
+    }
+    for (_, id) in &mut para.char_shape_runs {
+        if id.0 >= crate::from_html::PALETTE_LEN {
+            id.0 += cs_off;
+        }
+    }
+    for control in &mut para.controls {
+        match control {
+            Control::Table(t) => {
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        remap_para_ids(p, ps_off, cs_off);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        remap_para_ids(p, ps_off, cs_off);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn leading_symbol(chars: &[HwpChar]) -> Option<char> {
     match (chars.first(), chars.get(1)) {
         (Some(HwpChar::Text(sym @ ('□' | '○'))), Some(HwpChar::Text(' '))) => Some(*sym),
@@ -1135,7 +1321,7 @@ fn heading_level(level: HeadingLevel) -> u16 {
 
 /// 첫 문단 앞에 secd/cold(프리셋 시 + pgnp) 확장 컨트롤을 삽입한다
 /// (컨트롤당 8 WCHAR 시프트 포함).
-fn inject_section_controls(para: &mut Paragraph, preset: Option<OfficialPreset>) {
+pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<OfficialPreset>) {
     use hwp_model::{Control, GenericControl, HwpUnit, PageDef, SectionDef};
     if para
         .controls
@@ -1833,6 +2019,80 @@ mod tests {
                 .chars
                 .iter()
                 .any(|ch| matches!(ch, HwpChar::ExtCtrl { ctrl_id, .. } if ctrl_id == b"pgnp"))
+        );
+    }
+
+    // ── md + HTML 혼합(계약 docs/design/18) ──
+
+    #[test]
+    fn html_표_블록_혼합() {
+        let doc = from_markdown(
+            "본문입니다.\n\n<table>\n<tr><td colspan=\"2\">가로병합</td></tr>\n\
+             <tr><td>a</td><td>b</td></tr>\n</table>\n",
+        );
+        let table = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("HTML 표 컨트롤");
+        assert_eq!((table.rows, table.cols), (2, 2));
+        assert_eq!(table.cells.len(), 3, "앵커 셀만: {}", table.cells.len());
+        assert_eq!(table.cells[0].col_span, 2);
+        assert_eq!(table.row_cell_counts, vec![1, 2]);
+    }
+
+    #[test]
+    fn 인라인_html_마크_왕복() {
+        // md에 섞인 <u>/<sup>/<sub>가 IR을 거쳐 md 재수출까지 보존(GH-8 대칭).
+        let doc = from_markdown("이건 <u>밑줄</u>이고 x<sup>2</sup>입니다\n");
+        let md = crate::markdown::to_markdown(&doc);
+        assert!(md.contains("<u>밑줄</u>"), "밑줄 왕복: {md}");
+        assert!(md.contains("<sup>2</sup>"), "위첨자 왕복: {md}");
+    }
+
+    #[test]
+    fn 계약_위반_html은_경고로_무시() {
+        // 미지원 태그 블록은 문서 생성을 깨지 않고 무시한다(기존 이미지 경고 정책과 동일).
+        let doc = from_markdown("본문\n\n<div><p>무시됨</p></div>\n");
+        let text: String = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.chars)
+            .filter_map(|c| match c {
+                HwpChar::Text(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert!(text.contains("본문"), "{text}");
+        assert!(!text.contains("무시됨"), "{text}");
+    }
+
+    #[test]
+    fn html_목록_병합_오프셋() {
+        // md 목록 뒤 HTML ol이 오면 번호 정의가 둘 다 살아 있어야 한다(오프셋 병합).
+        let doc = from_markdown("1. md 항목\n\n<ol><li>html 항목</li></ol>\n");
+        assert_eq!(
+            doc.header.numbering_levels.len(),
+            2,
+            "md+html 번호 정의: {}",
+            doc.header.numbering_levels.len()
+        );
+        let text: String = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.chars)
+            .filter_map(|c| match c {
+                HwpChar::Text(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("md 항목") && text.contains("html 항목"),
+            "{text}"
         );
     }
 }
