@@ -1,3 +1,5 @@
+[한국어](08-external-research.md) · [English](08-external-research.en.md)
+
 # 08. 외부 근거 — OWPML 표준·오픈소스·페이지네이션 동작 (deep-research)
 
 > 2026-07-04, 다중 소스 웹 리서치 + 적대적 검증(98 에이전트)으로 수집·검증. 우리가 실기로

@@ -1,3 +1,5 @@
+[한국어](06-convert-cli-methodology.md) · [English](06-convert-cli-methodology.en.md)
+
 # hwp-cli 변환 서브시스템 재구축 가이드
 
 이 문서는 `crates/hwp-convert`(IR 편집·변환 로직), `crates/hwp-cli`(사용자 인터페이스), 그리고 정답지(ground-truth)·진단 방법론을 **처음부터 다시 구현**할 수 있는 수준으로 기술한다. 파일 경로는 모두 `/Users/elevn/projects/hwp-cli/` 기준이다.
