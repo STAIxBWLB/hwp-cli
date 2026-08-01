@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "hwp-cli"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "hwp-convert"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "hwp-model",
  "pulldown-cmark",
@@ -705,14 +705,14 @@ dependencies = [
 
 [[package]]
 name = "hwp-model"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "hwp-render"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "fontdb",
@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "hwp5"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "cfb",
  "flate2",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "hwpx"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "hwp-convert",
  "hwp-model",
