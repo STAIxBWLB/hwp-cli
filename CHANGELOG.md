@@ -10,6 +10,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+---
+
+## [0.7.0]
+
 **Added**
 
 - DOCX export (GJ-1): `convert --to docx` writes OOXML from the IR (`hwp-convert::docx`) —
@@ -17,6 +21,25 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   super/subscript), para alignment/spacing/indents, tables with gridSpan/vMerge and nesting,
   embedded images, hyperlinks, numbering lists, footnotes/endnotes, and page setup from
   SectionDef. Equations fall back to script text. DOCX input stays open (L-tier).
+
+**Fixed**
+
+- DOCX export: Word rejected or misrendered documents produced by the first GJ-1 writer.
+  `w:pPr` and `w:rPr` children are now emitted in `CT_PPr`/`CT_RPr` schema order, and line
+  spacing is merged with before/after into the single `w:spacing` the schema allows (it was
+  emitted twice). Hyphens, non-breaking spaces, line breaks and tabs no longer escape their
+  run. Every `abstractNum` defines all nine levels so a `numPr` cannot reference an undefined
+  `w:ilvl` (HWP's 10th level is dropped — `w:ilvl` above 8 is invalid). A cell that is both
+  colspan and rowspan no longer emits one `vMerge` cell per covered column, which made covered
+  rows overflow the table grid; `w:tcW` accounts for the span, and a cell ending in a nested
+  table gets the trailing `w:p` the schema requires. C0 control characters are dropped instead
+  of producing an unparseable part.
+
+**Verification**
+
+- The DOCX unit tests now validate the emitted package structurally — property order and
+  cardinality, run containment, per-row grid coverage against the `w:gridCol` count, and
+  `numId`/`ilvl` resolution against `numbering.xml` — rather than asserting on substrings.
 
 ---
 
