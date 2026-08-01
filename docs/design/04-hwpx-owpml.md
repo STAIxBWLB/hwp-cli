@@ -1,3 +1,5 @@
+[한국어](04-hwpx-owpml.md) · [English](04-hwpx-owpml.en.md)
+
 ## HWPX/OWPML 읽기·쓰기 서브시스템 (crates/hwpx)
 
 hwp-cli의 HWPX 계층은 **OPC(ZIP) 컨테이너 ↔ OWPML XML ↔ IR(`hwp_model`)** 3단 변환기다. IR은 hwp5(바이너리 HWP)와 **완전히 동일한 의미**를 갖도록 설계되어, 텍스트 추출·위치 산수·렌더링 코드가 두 포맷에서 같은 경로를 탄다. 이 문서는 `crates/hwpx/src/read/section.rs`와 `crates/hwpx/src/write/section.rs`를 중심으로, 처음부터 재구현 가능한 수준으로 규약·바이트 레이아웃·불변식을 정리한다.
