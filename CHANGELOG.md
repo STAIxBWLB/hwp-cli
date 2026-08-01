@@ -13,7 +13,7 @@ Release body.
 
 ---
 
-## [Unreleased]
+## [0.6.0]
 
 ### 한국어
 
