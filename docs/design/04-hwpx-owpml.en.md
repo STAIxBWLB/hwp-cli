@@ -107,7 +107,7 @@ application marker with `name="creator"` has the local name `meta` and is ignore
 The section root as emitted on write:
 
 ```xml
-<hs:sec xmlns:hs=".../section" xmlns:hp=".../paragraph" xmlns:hc=".../core">…</hs:sec>
+<hs:sec xmlns:hs=".../section" xmlns:hp=".../paragraph" xmlns:hc=".../core">...</hs:sec>
 ```
 
 **Parser convention:** `read/xml.rs::attr` and every match use `local_name()` with the prefix
