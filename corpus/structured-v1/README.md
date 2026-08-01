@@ -1,3 +1,5 @@
+[한국어](README.md) · [English](README.en.md)
+
 # Structured document smoke corpus v1
 
 이 디렉터리는 외부 문서 표본이나 한컴 산출물을 포함하지 않는 자체 작성 코퍼스다. 한국어

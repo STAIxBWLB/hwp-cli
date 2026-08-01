@@ -1,3 +1,4 @@
+corpus/structured-v1/README.en.md
 corpus/structured-v1/README.md
 corpus/structured-v1/TRACKED_FILES.txt
 corpus/structured-v1/cases/academic-education/spec.json

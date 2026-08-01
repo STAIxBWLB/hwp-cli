@@ -1,3 +1,5 @@
+[한국어](README.md) · [English](README.en.md)
+
 # 테스트 픽스처
 
 > **이 디렉터리의 `hwp5/*.hwp`·`hwpx/*.hwpx` 문서는 저장소에 동봉하지 않는다**
