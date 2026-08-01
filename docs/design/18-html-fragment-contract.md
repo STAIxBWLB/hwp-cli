@@ -60,8 +60,10 @@ Maru 문서 작성기의 **부분(part) 단위 작성·조합**을 위한 HTML f
 - `src` 세 가지 형태:
   1. `data:<mime>;base64,…` — 자기완결 임베드 (export가 쓰는 형태)
   2. 상대 경로 — part 파일 기준 `base_dir`로 해석
-  3. `*.svg` — DocumentSpec v2의 svg visual 정책 경로로 넘긴다(hwpx 네이티브,
-     hwp5는 기존 폴리백 정책). v1에서 재사용이 불가하면 조용한 래스터화 대신 명시 에러.
+  3. `*.svg` — **검증(폐쇄 부분집합) + 결정론적 PNG 래스터화**로 임베드한다
+     (`hwp-convert::svg` — DocumentSpec v2의 svg visual과 같은 정책·같은 구현.
+     네이티브 표현은 어느 포맷에도 없다). 스크립트·외부 참조·텍스트 노드가 있는
+     SVG는 hard error.
 - `alt`는 무시하지 않고 IR Picture의 대체 텍스트로 보존한다(export는 `"image"` 고정 — 관례).
 
 ## 5. 각주/미주 (표현 전용)

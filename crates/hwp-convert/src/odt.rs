@@ -14,6 +14,7 @@ pub fn to_odt(doc: &Document) -> std::io::Result<Vec<u8>> {
         doc,
         body: String::new(),
         images: Vec::new(),
+        footnote_n: 0,
     };
     for section in &doc.sections {
         for para in &section.paragraphs {
@@ -66,6 +67,7 @@ struct Builder<'d> {
     doc: &'d Document,
     body: String,
     images: Vec<ImageItem>,
+    footnote_n: u32,
 }
 
 impl Builder<'_> {
@@ -179,6 +181,36 @@ impl Builder<'_> {
             }
             Control::Table(table) => self.table(table, blocks),
             Control::Generic(g) => {
+                // 각주/미주 → text:note (GH-3) — 본문 마커는 note-citation이 그린다.
+                if code == ctrl_char::FOOTNOTE_ENDNOTE && matches!(&g.ctrl_id, b"fn  " | b"en  ") {
+                    self.footnote_n += 1;
+                    let n = self.footnote_n;
+                    let class = if g.ctrl_id == *b"fn  " {
+                        "footnote"
+                    } else {
+                        "endnote"
+                    };
+                    let mut note_body = String::new();
+                    for list in &g.paragraph_lists {
+                        for p in &list.paragraphs {
+                            let mut inl = String::new();
+                            let mut blk = String::new();
+                            self.inline(p, &mut inl, &mut blk);
+                            let inl = inl.trim();
+                            if !inl.is_empty() {
+                                note_body.push_str(&format!(
+                                    "<text:p text:style-name=\"Body\">{inl}</text:p>"
+                                ));
+                            }
+                        }
+                    }
+                    out.push_str(&format!(
+                        "<text:note text:id=\"ftn{n}\" text:note-class=\"{class}\">\
+                         <text:note-citation>{n}</text:note-citation>\
+                         <text:note-body>{note_body}</text:note-body></text:note>"
+                    ));
+                    return;
+                }
                 if code == ctrl_char::HEADER_FOOTER || code == ctrl_char::HIDDEN_COMMENT {
                     return;
                 }
@@ -200,41 +232,73 @@ impl Builder<'_> {
         }
     }
 
+    /// 표 — 병합 셀이 덮는 칸은 `covered-table-cell`, origin 셀은 number-*-spanned(GH-4).
+    /// 셀 내용은 문단 인라인 + 블록(중첩 표·그림)을 보존한다(GH-5 — 이전엔 블록 버퍼 폐기).
     fn table(&mut self, table: &hwp_model::Table, blocks: &mut String) {
+        let rows = table.rows.max(1) as usize;
         let cols = table.cols.max(1) as usize;
-        let mut grid: Vec<Vec<String>> = Vec::new();
-        for cell in &table.cells {
-            let row = cell.row as usize;
-            while grid.len() <= row {
-                grid.push(vec![String::new(); cols]);
-            }
-            let mut text = String::new();
-            for p in &cell.paragraphs {
-                let mut inl = String::new();
-                let mut blk = String::new();
-                self.inline(p, &mut inl, &mut blk);
-                let inl = inl.trim();
-                if !inl.is_empty() {
-                    if !text.is_empty() {
-                        text.push(' ');
-                    }
-                    text.push_str(inl);
-                }
-            }
-            if let Some(slot) = grid[row].get_mut(cell.col as usize) {
-                *slot = text;
-            }
-        }
+        // 병합 셀이 덮는 칸 표시 격자.
+        let mut covered = vec![vec![false; cols]; rows];
         blocks.push_str("<table:table table:style-name=\"Tbl\">");
         blocks.push_str(&format!(
             "<table:table-column table:number-columns-repeated=\"{cols}\"/>"
         ));
-        for row in &grid {
+        for r in 0..rows {
             blocks.push_str("<table:table-row>");
-            for cellv in row {
+            for c in 0..cols {
+                if covered[r][c] {
+                    blocks.push_str("<table:covered-table-cell/>");
+                    continue;
+                }
+                let Some(cell) = table
+                    .cells
+                    .iter()
+                    .find(|cell| cell.row as usize == r && cell.col as usize == c)
+                else {
+                    blocks.push_str(
+                        "<table:table-cell office:value-type=\"string\">\
+                         <text:p text:style-name=\"Body\"/></table:table-cell>",
+                    );
+                    continue;
+                };
+                for dr in 0..cell.row_span.max(1) as usize {
+                    for dc in 0..cell.col_span.max(1) as usize {
+                        if let Some(slot) =
+                            covered.get_mut(r + dr).and_then(|row| row.get_mut(c + dc))
+                        {
+                            *slot = true;
+                        }
+                    }
+                }
+                let mut span_attrs = String::new();
+                if cell.col_span > 1 {
+                    span_attrs.push_str(&format!(
+                        " table:number-columns-spanned=\"{}\"",
+                        cell.col_span
+                    ));
+                }
+                if cell.row_span > 1 {
+                    span_attrs
+                        .push_str(&format!(" table:number-rows-spanned=\"{}\"", cell.row_span));
+                }
+                let mut content = String::new();
+                for p in &cell.paragraphs {
+                    let mut inl = String::new();
+                    let mut blk = String::new();
+                    self.inline(p, &mut inl, &mut blk);
+                    let inl = inl.trim();
+                    if !inl.is_empty() {
+                        content
+                            .push_str(&format!("<text:p text:style-name=\"Body\">{inl}</text:p>"));
+                    }
+                    content.push_str(&blk);
+                }
+                if content.is_empty() {
+                    content.push_str("<text:p text:style-name=\"Body\"/>");
+                }
                 blocks.push_str(&format!(
-                    "<table:table-cell office:value-type=\"string\">\
-                     <text:p text:style-name=\"Body\">{cellv}</text:p></table:table-cell>"
+                    "<table:table-cell office:value-type=\"string\"{span_attrs}>\
+                     {content}</table:table-cell>"
                 ));
             }
             blocks.push_str("</table:table-row>");
@@ -456,5 +520,135 @@ mod tests {
         let meta = unzip(&bytes, "meta.xml").unwrap();
         assert!(meta.contains("<dc:title>제목 X</dc:title>"));
         assert!(meta.contains("<dc:creator>이영준</dc:creator>"));
+    }
+
+    fn text_paragraph(text: &str) -> Paragraph {
+        Paragraph {
+            chars: text.chars().map(HwpChar::Text).collect(),
+            ..Paragraph::default()
+        }
+    }
+
+    fn cell(row: u16, col: u16, col_span: u16, row_span: u16, text: &str) -> hwp_model::Cell {
+        use hwp_model::{BorderFillId, HwpUnit};
+        hwp_model::Cell {
+            list_attr: 0,
+            col,
+            row,
+            col_span,
+            row_span,
+            width: HwpUnit(0),
+            height: HwpUnit(0),
+            margins: [0; 4],
+            border_fill: BorderFillId(0),
+            header_tail: vec![],
+            paragraphs: vec![text_paragraph(text)],
+        }
+    }
+
+    fn table_of(rows: u16, cols: u16, cells: Vec<hwp_model::Cell>) -> hwp_model::Table {
+        use hwp_model::BorderFillId;
+        hwp_model::Table {
+            common_data: vec![],
+            placement: None,
+            attr: 0,
+            rows,
+            cols,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![cols; rows as usize],
+            border_fill: BorderFillId(0),
+            table_tail: vec![],
+            cells,
+            extras: vec![],
+        }
+    }
+
+    fn insert_table(doc: &mut Document, table: hwp_model::Table) {
+        let paragraph = &mut doc.sections[0].paragraphs[0];
+        let index = paragraph.controls.len() as u32;
+        paragraph.controls.push(Control::Table(table));
+        paragraph.chars.push(HwpChar::ExtCtrl {
+            code: ctrl_char::OBJECT,
+            ctrl_id: *b"tbl ",
+            payload: vec![],
+            ctrl_index: Some(index),
+        });
+    }
+
+    #[test]
+    fn 병합셀_spanned와_covered() {
+        let mut doc = from_markdown::from_markdown("표\n");
+        insert_table(
+            &mut doc,
+            table_of(
+                2,
+                3,
+                vec![
+                    cell(0, 0, 2, 1, "가로병합"),
+                    cell(0, 2, 1, 2, "세로병합"),
+                    cell(1, 0, 1, 1, "a"),
+                    cell(1, 1, 1, 1, "b"),
+                ],
+            ),
+        );
+        let bytes = to_odt(&doc).unwrap();
+        let content = unzip(&bytes, "content.xml").unwrap();
+        assert!(
+            content.contains("table:number-columns-spanned=\"2\""),
+            "colspan: {content}"
+        );
+        assert!(
+            content.contains("table:number-rows-spanned=\"2\""),
+            "rowspan: {content}"
+        );
+        assert_eq!(
+            content.matches("<table:covered-table-cell/>").count(),
+            2,
+            "덮인 칸: {content}"
+        );
+    }
+
+    #[test]
+    fn 셀_내_중첩_표_보존() {
+        let mut doc = from_markdown::from_markdown("표\n");
+        let mut inner_holder = text_paragraph("셀텍스트");
+        let inner = table_of(1, 1, vec![cell(0, 0, 1, 1, "중첩")]);
+        inner_holder.controls.push(Control::Table(inner));
+        inner_holder.chars.push(HwpChar::ExtCtrl {
+            code: ctrl_char::OBJECT,
+            ctrl_id: *b"tbl ",
+            payload: vec![],
+            ctrl_index: Some(0),
+        });
+        let outer_cell = hwp_model::Cell {
+            paragraphs: vec![inner_holder],
+            ..cell(0, 0, 1, 1, "")
+        };
+        insert_table(&mut doc, table_of(1, 1, vec![outer_cell]));
+        let bytes = to_odt(&doc).unwrap();
+        let content = unzip(&bytes, "content.xml").unwrap();
+        assert_eq!(
+            content.matches("<table:table ").count(),
+            2,
+            "중첩 표: {content}"
+        );
+        assert!(content.contains("중첩") && content.contains("셀텍스트"));
+    }
+
+    #[test]
+    fn 각주가_text_note로_방출() {
+        let doc = from_markdown::from_markdown("본문 문단[^1]입니다.\n\n[^1]: 각주 내용\n");
+        let bytes = to_odt(&doc).unwrap();
+        let content = unzip(&bytes, "content.xml").unwrap();
+        assert!(
+            content.contains("<text:note text:id=\"ftn1\" text:note-class=\"footnote\">"),
+            "note: {content}"
+        );
+        assert!(
+            content.contains("<text:note-citation>1</text:note-citation>"),
+            "citation: {content}"
+        );
+        assert!(content.contains("각주 내용"), "note body: {content}");
     }
 }

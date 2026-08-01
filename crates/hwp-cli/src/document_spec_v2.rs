@@ -5,11 +5,9 @@
 //! recorded with stable capability reasons and distinct semantic/media hashes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use image::ImageEncoder as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -25,9 +23,6 @@ const MAX_VISUAL_DIMENSION_MM: f32 = 500.0;
 const MAX_RASTER_DIMENSION: u32 = 4_096;
 const MAX_RASTER_PIXELS: u64 = 16_777_216;
 const MAX_TOTAL_RASTER_PIXELS: u64 = 67_108_864;
-const MAX_SVG_BYTES: usize = 1024 * 1024;
-const MAX_SVG_ELEMENTS: usize = 10_000;
-const MAX_SVG_DEPTH: usize = 64;
 const MAX_SVG_RENDER_WORK: u64 = 200_000_000;
 const MAX_TOTAL_SVG_RENDER_WORK: u64 = 400_000_000;
 
@@ -414,12 +409,12 @@ impl<'a> AssetStore<'a> {
         issue_path: &str,
         output_pixels: u64,
     ) -> Result<SvgAsset, ComposeError> {
-        let bytes = self.read_asset(asset, issue_path, MAX_SVG_BYTES as u64)?;
+        let bytes = self.read_asset(asset, issue_path, hwp_convert::svg::MAX_SVG_BYTES as u64)?;
         let source_sha256 = sha256_hex(&bytes);
         let source = std::str::from_utf8(&bytes)
             .map_err(|_| compile_error(issue_path, "SVG must be UTF-8"))?;
         let sanitized = sanitize_svg_with_stats(source)?;
-        if sanitized.canonical.len() > MAX_SVG_BYTES {
+        if sanitized.canonical.len() > hwp_convert::svg::MAX_SVG_BYTES {
             return Err(compile_error(
                 issue_path,
                 "canonical SVG exceeds the byte budget",
@@ -745,9 +740,13 @@ fn compile_visual(
         }
     } else {
         let media = match &visual.content {
-            VisualContent::Svg { .. } => {
-                rasterize_svg_png(&svg.expect("SVG asset loaded").canonical, dimensions, &path)?
-            }
+            VisualContent::Svg { .. } => hwp_convert::svg::rasterize_svg_png(
+                &svg.expect("SVG asset loaded").canonical,
+                dimensions.width_px,
+                dimensions.height_px,
+                document_spec::MAX_ASSET_BYTES,
+            )
+            .map_err(|e| compile_error(&path, e))?,
             _ => fallback_png(visual, raster.as_deref(), dimensions, &path)?,
         };
         media_sha256 = Some(sha256_hex(&media));
@@ -840,408 +839,13 @@ fn semantic_sha256(
 /// Validates a bounded, closed SVG subset. External references, scripts,
 /// event handlers, CSS URLs, DTDs, processing instructions, and text nodes are
 /// rejected. The function never dereferences a network or filesystem resource.
+/// 구현의 단일 원천은 `hwp_convert::svg`다 (from_html과 공용).
 pub fn sanitize_svg(input: &str) -> Result<String, ComposeError> {
-    Ok(sanitize_svg_with_stats(input)?.canonical)
+    hwp_convert::svg::sanitize_svg(input).map_err(|e| compile_error("$.visuals", e))
 }
 
-struct SanitizedSvg {
-    canonical: String,
-    elements: usize,
-    geometry_tokens: usize,
-}
-
-fn sanitize_svg_with_stats(input: &str) -> Result<SanitizedSvg, ComposeError> {
-    if input.len() > MAX_SVG_BYTES {
-        return Err(compile_error("$.visuals", "SVG exceeds the 1 MiB limit"));
-    }
-    let mut reader = quick_xml::Reader::from_str(input);
-    reader.config_mut().trim_text(true);
-    let mut depth = 0usize;
-    let mut elements = 0usize;
-    let mut geometry_tokens = 0usize;
-    let mut root_seen = false;
-    let mut output = String::with_capacity(input.len());
-    loop {
-        match reader.read_event() {
-            Ok(quick_xml::events::Event::Start(element)) => {
-                if depth == 0 && root_seen {
-                    return Err(compile_error("$.visuals", "SVG must have exactly one root"));
-                }
-                depth += 1;
-                let (name, attributes) = validate_svg_element(
-                    &element,
-                    reader.decoder(),
-                    &mut root_seen,
-                    &mut elements,
-                    &mut geometry_tokens,
-                    depth,
-                )?;
-                write_canonical_svg_start(&mut output, &name, &attributes, false);
-            }
-            Ok(quick_xml::events::Event::Empty(element)) => {
-                if depth == 0 && root_seen {
-                    return Err(compile_error("$.visuals", "SVG must have exactly one root"));
-                }
-                let (name, attributes) = validate_svg_element(
-                    &element,
-                    reader.decoder(),
-                    &mut root_seen,
-                    &mut elements,
-                    &mut geometry_tokens,
-                    depth + 1,
-                )?;
-                write_canonical_svg_start(&mut output, &name, &attributes, true);
-            }
-            Ok(quick_xml::events::Event::End(element)) => {
-                let raw_name = element.name();
-                let name_bytes = element.local_name();
-                if raw_name.as_ref() != name_bytes.as_ref() {
-                    return Err(compile_error(
-                        "$.visuals",
-                        "prefixed SVG element names are forbidden",
-                    ));
-                }
-                let name = std::str::from_utf8(name_bytes.as_ref())
-                    .map_err(|_| compile_error("$.visuals", "SVG end name is not UTF-8"))?;
-                output.push_str("</");
-                output.push_str(name);
-                output.push('>');
-                depth = depth.saturating_sub(1);
-            }
-            Ok(quick_xml::events::Event::Text(text)) => {
-                if !text.iter().all(u8::is_ascii_whitespace) {
-                    return Err(compile_error(
-                        "$.visuals",
-                        "SVG text nodes require an unavailable deterministic font renderer",
-                    ));
-                }
-            }
-            Ok(quick_xml::events::Event::Eof) => break,
-            Ok(quick_xml::events::Event::Comment(_)) => {
-                return Err(compile_error(
-                    "$.visuals",
-                    "SVG comments are forbidden in canonical input",
-                ));
-            }
-            Ok(_) => {
-                return Err(compile_error(
-                    "$.visuals",
-                    "SVG DTD, declaration, CDATA, or processing instruction is forbidden",
-                ));
-            }
-            Err(error) => return Err(compile_error("$.visuals", format!("invalid SVG: {error}"))),
-        }
-    }
-    if !root_seen || depth != 0 {
-        return Err(compile_error("$.visuals", "SVG root or nesting is invalid"));
-    }
-    Ok(SanitizedSvg {
-        canonical: output,
-        elements,
-        geometry_tokens,
-    })
-}
-
-fn validate_svg_element(
-    element: &quick_xml::events::BytesStart<'_>,
-    decoder: quick_xml::encoding::Decoder,
-    root_seen: &mut bool,
-    elements: &mut usize,
-    geometry_tokens: &mut usize,
-    depth: usize,
-) -> Result<(String, BTreeMap<String, String>), ComposeError> {
-    *elements += 1;
-    if *elements > MAX_SVG_ELEMENTS || depth > MAX_SVG_DEPTH {
-        return Err(compile_error("$.visuals", "SVG complexity budget exceeded"));
-    }
-    let raw_name = element.name();
-    let name_bytes = element.local_name();
-    if raw_name.as_ref() != name_bytes.as_ref() {
-        return Err(compile_error(
-            "$.visuals",
-            "prefixed SVG element names are forbidden",
-        ));
-    }
-    let name = std::str::from_utf8(name_bytes.as_ref())
-        .map_err(|_| compile_error("$.visuals", "SVG element name is not UTF-8"))?;
-    const ELEMENTS: &[&str] = &[
-        "svg", "g", "rect", "ellipse", "circle", "line", "polyline", "polygon",
-    ];
-    if !ELEMENTS.contains(&name) {
-        return Err(compile_error(
-            "$.visuals",
-            format!("forbidden SVG element: {name}"),
-        ));
-    }
-    let is_root = !*root_seen;
-    if is_root {
-        if name != "svg" {
-            return Err(compile_error("$.visuals", "SVG root element must be svg"));
-        }
-        *root_seen = true;
-    } else if name == "svg" {
-        return Err(compile_error("$.visuals", "nested SVG roots are forbidden"));
-    }
-    let allowed_attributes: &[&str] = match name {
-        "svg" => &["xmlns", "width", "height", "viewBox"],
-        "g" => &[],
-        "rect" => &[
-            "x",
-            "y",
-            "width",
-            "height",
-            "fill",
-            "stroke",
-            "stroke-width",
-            "stroke-dasharray",
-        ],
-        "ellipse" => &[
-            "cx",
-            "cy",
-            "rx",
-            "ry",
-            "fill",
-            "stroke",
-            "stroke-width",
-            "stroke-dasharray",
-        ],
-        "circle" => &[
-            "cx",
-            "cy",
-            "r",
-            "fill",
-            "stroke",
-            "stroke-width",
-            "stroke-dasharray",
-        ],
-        "line" => &[
-            "x1",
-            "y1",
-            "x2",
-            "y2",
-            "stroke",
-            "stroke-width",
-            "stroke-dasharray",
-        ],
-        "polyline" | "polygon" => &[
-            "points",
-            "fill",
-            "stroke",
-            "stroke-width",
-            "stroke-dasharray",
-        ],
-        _ => unreachable!(),
-    };
-    let mut has_namespace = false;
-    let mut canonical_attributes = BTreeMap::new();
-    for attribute in element.attributes() {
-        let attribute = attribute.map_err(|error| {
-            compile_error("$.visuals", format!("invalid SVG attribute: {error}"))
-        })?;
-        let key = std::str::from_utf8(attribute.key.as_ref())
-            .map_err(|_| compile_error("$.visuals", "SVG attribute name is not UTF-8"))?;
-        if !allowed_attributes.contains(&key)
-            || key.starts_with("on")
-            || key.eq_ignore_ascii_case("href")
-            || key.eq_ignore_ascii_case("xlink:href")
-        {
-            return Err(compile_error(
-                "$.visuals",
-                format!("forbidden SVG attribute: {key}"),
-            ));
-        }
-        let value = attribute
-            .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
-            .map_err(|error| compile_error("$.visuals", format!("invalid SVG value: {error}")))?;
-        if key == "xmlns" {
-            if !is_root || value != "http://www.w3.org/2000/svg" {
-                return Err(compile_error(
-                    "$.visuals",
-                    "SVG root requires the exact SVG namespace",
-                ));
-            }
-            has_namespace = true;
-            if canonical_attributes
-                .insert(key.to_string(), value.to_string())
-                .is_some()
-            {
-                return Err(compile_error("$.visuals", "duplicate SVG attribute"));
-            }
-            continue;
-        }
-        let lower = value.to_ascii_lowercase();
-        if lower.contains("url(")
-            || lower.contains("http:")
-            || lower.contains("https:")
-            || lower.contains("file:")
-            || lower.contains("@import")
-        {
-            return Err(compile_error(
-                "$.visuals",
-                "external SVG reference is forbidden",
-            ));
-        }
-        let canonical = canonical_svg_attribute(key, &value)?;
-        if key == "points" {
-            *geometry_tokens = geometry_tokens.saturating_add(canonical.split(' ').count());
-        }
-        if canonical_attributes
-            .insert(key.to_string(), canonical)
-            .is_some()
-        {
-            return Err(compile_error("$.visuals", "duplicate SVG attribute"));
-        }
-    }
-    if is_root && !has_namespace {
-        return Err(compile_error(
-            "$.visuals",
-            "SVG root requires the exact SVG namespace",
-        ));
-    }
-    if is_root && !canonical_attributes.contains_key("viewBox") {
-        return Err(compile_error(
-            "$.visuals",
-            "canonical SVG root requires a bounded viewBox",
-        ));
-    }
-    validate_svg_geometry(name, &canonical_attributes)?;
-    Ok((name.to_string(), canonical_attributes))
-}
-
-fn canonical_svg_attribute(key: &str, value: &str) -> Result<String, ComposeError> {
-    match key {
-        "fill" | "stroke" => {
-            if value == "none" {
-                return Ok(value.to_string());
-            }
-            let color = value
-                .strip_prefix('#')
-                .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
-            color
-                .map(|hex| format!("#{}", hex.to_ascii_uppercase()))
-                .ok_or_else(|| compile_error("$.visuals", "SVG color must be none or #RRGGBB"))
-        }
-        "viewBox" => canonical_svg_numbers(value, 4, 4),
-        "points" => {
-            let canonical = canonical_svg_numbers(value, 4, 4_096)?;
-            if canonical.split(' ').count() % 2 != 0 {
-                return Err(compile_error(
-                    "$.visuals",
-                    "SVG points require coordinate pairs",
-                ));
-            }
-            Ok(canonical)
-        }
-        "stroke-dasharray" => canonical_svg_numbers(value, 1, 64),
-        _ => canonical_svg_numbers(value, 1, 1),
-    }
-}
-
-fn validate_svg_geometry(
-    element: &str,
-    attributes: &BTreeMap<String, String>,
-) -> Result<(), ComposeError> {
-    let number = |key: &str| {
-        attributes
-            .get(key)
-            .and_then(|value| value.parse::<f64>().ok())
-    };
-    if element == "svg" {
-        let values = attributes["viewBox"]
-            .split(' ')
-            .filter_map(|value| value.parse::<f64>().ok())
-            .collect::<Vec<_>>();
-        if values.len() != 4 || values[2] <= 0.0 || values[3] <= 0.0 {
-            return Err(compile_error(
-                "$.visuals",
-                "SVG viewBox width and height must be positive",
-            ));
-        }
-    }
-    for key in ["width", "height", "stroke-width"] {
-        if number(key).is_some_and(|value| value < 0.0) {
-            return Err(compile_error(
-                "$.visuals",
-                "SVG widths must be non-negative",
-            ));
-        }
-    }
-    for key in ["r", "rx", "ry"] {
-        if number(key).is_some_and(|value| value <= 0.0) {
-            return Err(compile_error("$.visuals", "SVG radii must be positive"));
-        }
-    }
-    if attributes.get("stroke-dasharray").is_some_and(|value| {
-        value
-            .split(' ')
-            .filter_map(|item| item.parse::<f64>().ok())
-            .any(|item| item < 0.0)
-    }) {
-        return Err(compile_error(
-            "$.visuals",
-            "SVG dash lengths must be non-negative",
-        ));
-    }
-    Ok(())
-}
-
-fn canonical_svg_numbers(
-    value: &str,
-    minimum: usize,
-    maximum: usize,
-) -> Result<String, ComposeError> {
-    if value.len() > 65_536 {
-        return Err(compile_error("$.visuals", "SVG numeric data is too long"));
-    }
-    let values = value
-        .split(|character: char| character.is_ascii_whitespace() || character == ',')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let number = part
-                .parse::<f64>()
-                .map_err(|_| compile_error("$.visuals", "SVG number is invalid"))?;
-            if !number.is_finite() || number.abs() > 1_000_000.0 {
-                return Err(compile_error(
-                    "$.visuals",
-                    "SVG number must be finite and within +/-1000000",
-                ));
-            }
-            let number = if number == 0.0 { 0.0 } else { number };
-            Ok(format!("{number}"))
-        })
-        .collect::<Result<Vec<_>, ComposeError>>()?;
-    if !(minimum..=maximum).contains(&values.len()) {
-        return Err(compile_error(
-            "$.visuals",
-            "SVG numeric list exceeds the closed-subset budget",
-        ));
-    }
-    Ok(values.join(" "))
-}
-
-fn write_canonical_svg_start(
-    output: &mut String,
-    name: &str,
-    attributes: &BTreeMap<String, String>,
-    empty: bool,
-) {
-    output.push('<');
-    output.push_str(name);
-    for (key, value) in attributes {
-        output.push(' ');
-        output.push_str(key);
-        output.push_str("=\"");
-        for character in value.chars() {
-            match character {
-                '&' => output.push_str("&amp;"),
-                '<' => output.push_str("&lt;"),
-                '"' => output.push_str("&quot;"),
-                _ => output.push(character),
-            }
-        }
-        output.push('"');
-    }
-    output.push_str(if empty { "/>" } else { ">" });
+fn sanitize_svg_with_stats(input: &str) -> Result<hwp_convert::svg::SanitizedSvg, ComposeError> {
+    hwp_convert::svg::sanitize_svg_with_stats(input).map_err(|e| compile_error("$.visuals", e))
 }
 
 fn fallback_png(
@@ -1274,65 +878,6 @@ fn fallback_png(
             "text box fallback is unavailable without deterministic font rendering",
         )),
     }
-}
-
-fn rasterize_svg_png(
-    canonical_svg: &str,
-    dimensions: VisualDimensions,
-    issue_path: &str,
-) -> Result<Vec<u8>, ComposeError> {
-    let options = resvg::usvg::Options::default();
-    if options.resources_dir.is_some() {
-        return Err(compile_error(
-            issue_path,
-            "SVG resource resolution must remain disabled",
-        ));
-    }
-    let tree = resvg::usvg::Tree::from_str(canonical_svg, &options)
-        .map_err(|_| compile_error(issue_path, "sanitized SVG could not be parsed"))?;
-    if tree.has_text_nodes() {
-        return Err(compile_error(
-            issue_path,
-            "SVG text requires an unavailable deterministic font pipeline",
-        ));
-    }
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(dimensions.width_px, dimensions.height_px)
-        .ok_or_else(|| compile_error(issue_path, "SVG pixel buffer allocation failed"))?;
-    let scale_x = dimensions.width_px as f32 / tree.size().width();
-    let scale_y = dimensions.height_px as f32 / tree.size().height();
-    if !scale_x.is_finite() || !scale_y.is_finite() || scale_x <= 0.0 || scale_y <= 0.0 {
-        return Err(compile_error(issue_path, "SVG viewport is invalid"));
-    }
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::from_scale(scale_x, scale_y),
-        &mut pixmap.as_mut(),
-    );
-    if !pixmap.pixels().iter().any(|pixel| pixel.alpha() != 0) {
-        return Err(compile_error(
-            issue_path,
-            "SVG render is empty or fully transparent",
-        ));
-    }
-    let mut rgba = Vec::with_capacity(pixmap.data().len());
-    for pixel in pixmap.pixels() {
-        if pixel.alpha() == 0 {
-            rgba.extend_from_slice(&[0, 0, 0, 0]);
-        } else {
-            let color = pixel.demultiply();
-            rgba.extend_from_slice(&[color.red(), color.green(), color.blue(), color.alpha()]);
-        }
-    }
-    let image = image::RgbaImage::from_raw(dimensions.width_px, dimensions.height_px, rgba)
-        .ok_or_else(|| compile_error(issue_path, "SVG RGBA buffer is invalid"))?;
-    let png = encode_png(image)?;
-    if png.len() as u64 > document_spec::MAX_ASSET_BYTES {
-        return Err(compile_error(
-            issue_path,
-            "SVG PNG output exceeds the asset byte budget",
-        ));
-    }
-    Ok(png)
 }
 
 fn transform_image(
@@ -1373,7 +918,7 @@ fn transform_image(
         dimensions.height_px,
         image::imageops::FilterType::Triangle,
     );
-    encode_png(image.to_rgba8())
+    hwp_convert::svg::encode_png(image.to_rgba8()).map_err(|e| compile_error("$.visuals", e))
 }
 
 fn attach_picture(
@@ -1521,23 +1066,6 @@ fn image_extension(bytes: &[u8]) -> Result<&'static str, ComposeError> {
     })
 }
 
-fn encode_png(image: image::RgbaImage) -> Result<Vec<u8>, ComposeError> {
-    let mut output = Cursor::new(Vec::new());
-    image::codecs::png::PngEncoder::new_with_quality(
-        &mut output,
-        image::codecs::png::CompressionType::Best,
-        image::codecs::png::FilterType::Adaptive,
-    )
-    .write_image(
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        image::ExtendedColorType::Rgba8,
-    )
-    .map_err(|error| compile_error("$.visuals", format!("PNG encode failed: {error}")))?;
-    Ok(output.into_inner())
-}
-
 fn parse_color(value: &str) -> Option<[u8; 3]> {
     let hex = value.strip_prefix('#')?;
     if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -1670,8 +1198,17 @@ mod tests {
             width_px: 96,
             height_px: 96,
         };
-        let first = rasterize_svg_png(&canonical, dimensions, "$.visuals[0]").unwrap();
-        let second = rasterize_svg_png(&canonical, dimensions, "$.visuals[0]").unwrap();
+        let raster = |svg: &str| {
+            hwp_convert::svg::rasterize_svg_png(
+                svg,
+                dimensions.width_px,
+                dimensions.height_px,
+                1 << 20,
+            )
+            .unwrap()
+        };
+        let first = raster(&canonical);
+        let second = raster(&canonical);
         assert_eq!(first, second);
         assert_eq!(sha256_hex(&first), sha256_hex(&second));
         let decoded = image::load_from_memory(&first).unwrap().to_rgba8();
@@ -1681,7 +1218,15 @@ mod tests {
             r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="none"/></svg>"#,
         )
         .unwrap();
-        assert!(rasterize_svg_png(&empty, dimensions, "$.visuals[0]").is_err());
+        assert!(
+            hwp_convert::svg::rasterize_svg_png(
+                &empty,
+                dimensions.width_px,
+                dimensions.height_px,
+                1 << 20
+            )
+            .is_err()
+        );
     }
 
     #[test]

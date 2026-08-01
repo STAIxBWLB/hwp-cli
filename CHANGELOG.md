@@ -30,6 +30,11 @@ Release body.
 - 템플릿+부분 채우기. `hwp fill --set 이름=@부분.md`(또는 `--data`의 `parts` 맵)가
   `{{이름}}` 앵커 문단을 부분 파일의 블록으로 교체해 대규모 문서를 부분별로 조합한다
   (템플릿·부분 모두 hwp-cli 생성 문서의 기본 팔레트 계열 한정).
+- 부분 안 SVG 이미지. `<img src="*.svg">`를 폐쇄 부분집합 검증 + 결정론적 PNG 래스터화로
+  임베드한다. 검증·래스터화 구현을 `hwp-convert::svg`로 뽑아 DocumentSpec v2와 공용화했다.
+- MCP `hwp_fill`에 `parts` 인자 — 부분 이식을 MCP에서도 쓸 수 있다.
+- ODT 남보기 GH-3~5. 각주/미주 `<text:note>`, 병합 셀 number-columns/rows-spanned +
+  covered-table-cell, 셀 내 중첩 표·그림 보존. md/html/odt 전 경로 해소.
 
 ### English
 
@@ -47,6 +52,13 @@ Release body.
 - Template + part fill: `hwp fill --set name=@part.md` (or a `parts` map in `--data`) replaces
   the `{{name}}` anchor paragraph with the part file's blocks, composing large documents
   part-by-part (limited to hwp-cli-generated documents in the default palette family).
+- SVG images in parts: `<img src="*.svg">` is embedded via closed-subset validation and
+  deterministic PNG rasterization. The validation/rasterization implementation was extracted
+  into `hwp-convert::svg` and is now shared with DocumentSpec v2.
+- A `parts` argument on the MCP `hwp_fill` tool, exposing part grafting over MCP.
+- ODT export GH-3/4/5: footnotes/endnotes as `<text:note>`, merged cells as
+  number-columns/rows-spanned with covered-table-cell, and nested tables/images preserved
+  inside cells. All export paths (md/html/odt) are now covered.
 
 ---
 

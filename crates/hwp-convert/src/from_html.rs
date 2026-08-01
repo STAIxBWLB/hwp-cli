@@ -660,23 +660,29 @@ impl Parser {
         self.ctx().paragraphs.push(para);
     }
 
-    /// `<img>` — data URI·상대 경로를 임베드한다. SVG는 v1 미지원(명시 에러).
+    /// `<img>` — data URI·상대 경로를 임베드한다. SVG는 검증+결정론적 PNG 래스터화
+    /// (hwp-convert::svg — DocumentSpec v2와 같은 정책: 네이티브 표현 부재).
     fn embed_image(&mut self, e: &BytesStart<'_>) -> Result<(), String> {
         let src = attr(e, "src").ok_or("<img>에 src가 없습니다")?;
-        let data = if let Some(rest) = src.strip_prefix("data:") {
+        let (data, ext, w, h) = if let Some(rest) = src.strip_prefix("data:") {
             let comma = rest.find(',').ok_or("data URI 형식이 아닙니다(',' 없음)")?;
             let (meta, payload) = rest.split_at(comma);
             if !meta.ends_with(";base64") {
                 return Err(format!("data URI는 base64만 지원합니다: {meta}"));
             }
-            crate::base64::decode(&payload[1..]).map_err(|e| format!("base64 디코딩: {e}"))?
-        } else {
-            if src.to_ascii_lowercase().ends_with(".svg") {
-                return Err(format!(
-                    "SVG 이미지는 from_html v1에서 지원하지 않습니다 \
-                     (DocumentSpec v2의 svg visual 경로 사용): {src}"
-                ));
+            let data =
+                crate::base64::decode(&payload[1..]).map_err(|e| format!("base64 디코딩: {e}"))?;
+            if data.is_empty() {
+                return Err("빈 이미지 데이터입니다".into());
             }
+            let (ext, _) = crate::image::image_kind(&data);
+            if ext == "bin" {
+                return Err("지원하지 않는 이미지 형식입니다".into());
+            }
+            let (w, h) =
+                crate::image::display_size(&data, &crate::image::ImageSize::Natural, BODY_WIDTH);
+            (data, ext, w, h)
+        } else {
             if src.starts_with("http://") || src.starts_with("https://") {
                 return Err(format!("원격 이미지 URL은 지원하지 않습니다: {src}"));
             }
@@ -694,18 +700,63 @@ impl Parser {
                     }
                 }
             };
-            std::fs::read(&resolved)
-                .map_err(|e| format!("이미지 읽기 실패 {}: {e}", resolved.display()))?
+            if resolved
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+            {
+                let text = std::fs::read_to_string(&resolved)
+                    .map_err(|e| format!("SVG 읽기 실패 {}: {e}", resolved.display()))?;
+                let canonical = crate::svg::sanitize_svg(&text)
+                    .map_err(|e| format!("SVG 검증 거부 ({}): {e}", resolved.display()))?;
+                let (sw, sh) = crate::svg::size_px(&canonical)?;
+                if !(sw.is_finite() && sh.is_finite() && sw > 0.0 && sh > 0.0) {
+                    return Err(format!(
+                        "SVG 크기가 유효하지 않습니다: {}",
+                        resolved.display()
+                    ));
+                }
+                // 96dpi → HWPUNIT 75/px. 본문 폭을 넘으면 비율 유지 축소.
+                let mut w_px = sw.round().max(1.0) as u32;
+                let mut h_px = sh.round().max(1.0) as u32;
+                let mut w = (sw * 75.0).max(1.0) as i32;
+                let mut h = (sh * 75.0).max(1.0) as i32;
+                if w > BODY_WIDTH {
+                    let ratio = BODY_WIDTH as f32 / w as f32;
+                    w = BODY_WIDTH;
+                    h = ((h as f32) * ratio).max(1.0) as i32;
+                    w_px = ((w_px as f32) * ratio).max(1.0) as u32;
+                    h_px = ((h_px as f32) * ratio).max(1.0) as u32;
+                }
+                let png = crate::svg::rasterize_svg_png(
+                    &canonical,
+                    w_px,
+                    h_px,
+                    crate::svg::MAX_SVG_BYTES as u64,
+                )
+                .map_err(|e| format!("SVG 래스터화 실패 ({}): {e}", resolved.display()))?;
+                self.warnings.push(format!(
+                    "SVG 이미지를 결정론적 PNG로 래스터화했습니다: {src}"
+                ));
+                (png, "png", w, h)
+            } else {
+                let data = std::fs::read(&resolved)
+                    .map_err(|e| format!("이미지 읽기 실패 {}: {e}", resolved.display()))?;
+                if data.is_empty() {
+                    return Err("빈 이미지 데이터입니다".into());
+                }
+                let (ext, _) = crate::image::image_kind(&data);
+                if ext == "bin" {
+                    return Err("지원하지 않는 이미지 형식입니다".into());
+                }
+                let (w, h) = crate::image::display_size(
+                    &data,
+                    &crate::image::ImageSize::Natural,
+                    BODY_WIDTH,
+                );
+                (data, ext, w, h)
+            }
         };
-        if data.is_empty() {
-            return Err("빈 이미지 데이터입니다".into());
-        }
-        let (ext, _) = crate::image::image_kind(&data);
-        if ext == "bin" {
-            return Err("지원하지 않는 이미지 형식입니다".into());
-        }
-        let (w, h) =
-            crate::image::display_size(&data, &crate::image::ImageSize::Natural, BODY_WIDTH);
         let name = format!(
             "html_image{}.{ext}",
             self.bin_seed + self.bin_streams.len() + 1
@@ -1068,9 +1119,61 @@ mod tests {
     }
 
     #[test]
-    fn svg는_명시_에러() {
-        let err = from_html("<p><img src=\"fig.svg\"/></p>").unwrap_err();
-        assert!(err.contains("SVG"), "svg 안내: {err}");
+    fn svg_이미지는_png로_래스터화() {
+        let dir = std::env::temp_dir().join(format!(
+            "from_html_svg_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("fig.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\">\
+             <rect x=\"10\" y=\"10\" width=\"80\" height=\"60\" fill=\"#FF0000\"/></svg>",
+        )
+        .unwrap();
+        let doc = from_html_with(
+            "<p>그림<img src=\"fig.svg\"/></p>",
+            &HtmlImportOptions {
+                base_dir: Some(&dir),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.bin_streams.len(), 1);
+        assert_eq!(&doc.bin_streams[0].data[..4], b"\x89PNG");
+        assert!(doc.bin_streams[0].name.ends_with(".png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 위험_svg는_에러() {
+        let dir = std::env::temp_dir().join(format!(
+            "from_html_svg_bad_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("evil.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\">\
+             <script>alert(1)</script></svg>",
+        )
+        .unwrap();
+        let err = from_html_with(
+            "<p><img src=\"evil.svg\"/></p>",
+            &HtmlImportOptions {
+                base_dir: Some(&dir),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("SVG 검증 거부"), "에러: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

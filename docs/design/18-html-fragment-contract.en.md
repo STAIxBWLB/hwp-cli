@@ -65,9 +65,10 @@ compose them.
 - Three `src` forms:
   1. `data:<mime>;base64,…` — self-contained embed (what export emits)
   2. Relative path — resolved against the part file's `base_dir`
-  3. `*.svg` — routed through the DocumentSpec v2 svg visual policy (hwpx native, hwp5
-     follows the existing fallback policy). If reuse is impossible in v1, raise an explicit
-     error rather than silently rasterizing.
+  3. `*.svg` — embedded via **validation (closed subset) + deterministic PNG rasterization**
+     (`hwp-convert::svg` — same policy and same implementation as the DocumentSpec v2 svg
+     visual; no format has a native representation). SVG with scripts, external
+     references, or text nodes is a hard error.
 - `alt` is preserved as the IR Picture's alt text (export fixes it to `"image"` — a
   convention, not a rule).
 

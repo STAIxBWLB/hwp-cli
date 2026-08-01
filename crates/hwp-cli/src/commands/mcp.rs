@@ -411,13 +411,36 @@ fn tool_fill(args: &Value) -> Result<Vec<Value>, String> {
             (k.clone(), s)
         })
         .collect();
-    let report = crate::commands::fill::execute_values(
-        Path::new(input),
-        Path::new(output),
-        &values,
-        arg_bool(args, "allow_partial", false)?,
-    )
-    .map_err(|error| format!("{error:#}"))?;
+    // parts(선택): {앵커이름: 부분 파일 경로} — 부분(md+HTML) 블록을 앵커 문단에 이식.
+    let parts_obj = args.get("parts").and_then(Value::as_object);
+    let report = if let Some(parts) = parts_obj {
+        if parts.is_empty() && values.is_empty() {
+            return Err("values와 parts가 모두 비어 있습니다".into());
+        }
+        let mut set: Vec<String> = values.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        for (k, v) in parts {
+            let path = v
+                .as_str()
+                .ok_or("parts 값은 부분 파일 경로 문자열이어야 합니다")?;
+            set.push(format!("{k}=@{path}"));
+        }
+        crate::commands::fill::execute(
+            Path::new(input),
+            Path::new(output),
+            &set,
+            None,
+            arg_bool(args, "allow_partial", false)?,
+        )
+        .map_err(|error| format!("{error:#}"))?
+    } else {
+        crate::commands::fill::execute_values(
+            Path::new(input),
+            Path::new(output),
+            &values,
+            arg_bool(args, "allow_partial", false)?,
+        )
+        .map_err(|error| format!("{error:#}"))?
+    };
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&crate::commands::fill::report_json(&report))
             .unwrap_or_default(),
@@ -1192,11 +1215,13 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_fill",
-            "description": "hwpx 템플릿의 `{{name}}`를 값으로 치환(패키지·미리보기 보존). hwpx 입력 전용.",
+            "description": "템플릿의 `{{name}}`를 채운다. values는 평문 치환(hwpx 패키지 보존), parts는 부분(md+HTML, 계약 docs/design/18) 파일을 앵커 문단에 블록 이식(.hwp/.hwpx).",
             "inputSchema": {"type": "object", "properties": {
                 "input": {"type": "string"}, "output": {"type": "string"},
                 "values": {"type": "object", "additionalProperties": {"type": "string"},
                     "description": "{자리표시자이름: 값} 객체"},
+                "parts": {"type": "object", "additionalProperties": {"type": "string"},
+                    "description": "{앵커이름: 부분 파일 경로(md+HTML)} 객체 — 앵커 문단을 부분 블록으로 교체"},
                 "allow_partial": {"type": "boolean", "description": "미발견 키가 있어도 일치한 값만 게시; 기본 false"}
             }, "required": ["input", "output", "values"]}
         }),
@@ -1625,6 +1650,36 @@ mod tests {
             &fill_destination,
             &convert_destination,
         ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_fill_parts_splices_part_blocks() {
+        let template = temp_file("fill-parts-template.hwpx");
+        create_hwpx(&template, "# 보고서\n\n{{본문}}");
+        let part = temp_file("fill-parts-part.md");
+        std::fs::write(
+            &part,
+            "부분 본문입니다.\n\n<table>\n<tr><td colspan=\"2\">가로병합</td></tr>\n\
+             <tr><td>a</td><td>b</td></tr>\n</table>\n",
+        )
+        .unwrap();
+        let out = temp_file("fill-parts-out.hwpx");
+        let result = tool_fill(&json!({
+            "input": template,
+            "output": out,
+            "values": {},
+            "parts": {"본문": part.display().to_string()}
+        }));
+        let content = result.expect("parts fill 성공");
+        let text = content[0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("\"parts\""), "리포트 모드: {text}");
+        let doc = crate::commands::cat::load_document(&out).unwrap();
+        let plain = doc.plain_text();
+        assert!(plain.contains("부분 본문입니다."), "{plain}");
+        assert!(plain.contains("가로병합"), "{plain}");
+        for path in [&template, &part, &out] {
             let _ = std::fs::remove_file(path);
         }
     }
