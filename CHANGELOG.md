@@ -22,7 +22,7 @@ Release body.
 - HTML fragment 왕복(계약: docs/design/18). `from_html` 임포터를 새로 만들어 well-formed
   XHTML 부분집합(표 colspan/rowspan·셀 내 블록·그림 data URI/상대 경로·인라인 마크·목록)을
   IR로 읽는다. 계약 위반은 hard error다.
-- HTML 남보기 정합. `convert --to html`이 병합 셀을 colspan/rowspan으로 방출(GH-4)하고
+- HTML 내보내기 정합. `convert --to html`이 병합 셀을 colspan/rowspan으로 방출(GH-4)하고
   셀 안 중첩 표·그림을 보존(GH-5)하며, 각주/미주를 `<sup>` 앵커 + 문서 끝 정의로 낸다(GH-3).
   출력은 `from_html`이 다시 읽는 XHTML이다.
 - md+HTML 혼합 부분(part) 파일. markdown 본문에 HTML 표 블록을 섞어 쓰면 `new`/`convert`가
@@ -33,7 +33,7 @@ Release body.
 - 부분 안 SVG 이미지. `<img src="*.svg">`를 폐쇄 부분집합 검증 + 결정론적 PNG 래스터화로
   임베드한다. 검증·래스터화 구현을 `hwp-convert::svg`로 뽑아 DocumentSpec v2와 공용화했다.
 - MCP `hwp_fill`에 `parts` 인자 — 부분 이식을 MCP에서도 쓸 수 있다.
-- ODT 남보기 GH-3~5. 각주/미주 `<text:note>`, 병합 셀 number-columns/rows-spanned +
+- ODT 내보내기 GH-3~5. 각주/미주 `<text:note>`, 병합 셀 number-columns/rows-spanned +
   covered-table-cell, 셀 내 중첩 표·그림 보존. md/html/odt 전 경로 해소.
 - HTML 스타일 왕복(계약 v2, docs/design/18 §8). html export가 글자·문단 모양을
   `.cs{n}`/`.ps{n}` CSS 규칙으로 싣고(fragment는 선두 `<style>`로 자기완결), `from_html`이
