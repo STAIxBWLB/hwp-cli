@@ -49,8 +49,8 @@ HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # 진단 코퍼스 
   main 직접 push 금지.
 - 정본 저장소는 `STAIxBWLB/hwp-cli`(= origin)다. 브랜치를 origin에 push하고 **origin의
   main을 대상으로 PR**을 연다. (과거의 포크→upstream 구도는 폐지됨.)
-- PR로 제출하고, **CI green(ubuntu+macOS 필수)을 확인한 뒤 squash 머지**한다(머지 커밋 제목의
-  `(#N)` 관례 유지). Windows 잡은 참고용(비차단 — 잡은 빨갛게 보여도 워크플로는 통과).
+- PR로 제출하고, **CI green(ubuntu+macOS+windows 모두 필수)을 확인한 뒤 squash 머지**한다
+  (머지 커밋 제목의 `(#N)` 관례 유지).
 - PR 전 로컬 게이트는 `scripts/check.sh` — CI와 동일 3커맨드(fmt → clippy --all-targets
   -D warnings → test). 이걸 통과 못 하면 PR하지 않는다(머지 후 CI 실패의 원천 차단).
 

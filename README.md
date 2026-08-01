@@ -71,8 +71,8 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
    대조한다. 기능 커버리지 감사에서 신규 갭 17건을 등재했고, 콘텐츠 소실급 4건이 수정 1순위다.
 3. **HTML 변환 고도화** markdown에서 이미 해소한 각주 마커·병합 셀 colspan/rowspan·셀 내 블록을
    HTML 경로에도 반영하고, 글자·문단 모양의 CSS 매핑을 보강한다.
-4. **Windows** 컴파일·게시 경로의 플랫폼 결함을 정리 중이다. CI에서 ubuntu·macOS는 필수 게이트,
-   Windows는 참고용(비차단)이다.
+4. **Windows** v0.5.0부터 컴파일·게시 경로가 안정화됐다. CI에서 ubuntu·macOS·Windows 모두
+   필수 게이트다.
 5. **배포용(DRM) 문서** 스펙 확보를 전제로 착수 후보다.
 
 ## 설치
@@ -401,7 +401,7 @@ scripts/check.sh     # 로컬 CI 미러: fmt + clippy + test + 구조 코퍼스 
 
 CI(`.github/workflows/ci.yml`)는 `fonts-noto-cjk` 설치(ubuntu) 후 `cargo fmt --all --check` →
 `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace` →
-`scripts/check-structured-corpus.sh`를 **ubuntu + macOS**(필수)와 **windows**(참고용, 비차단)에서
+`scripts/check-structured-corpus.sh`를 **ubuntu + macOS + windows**(모두 필수)에서
 실행한다. 로컬 미러 `scripts/check.sh`는 같은 게이트를 실행한다.
 
 테스트는 hwp5 바이트 동일 왕복(identity/roundtrip/synth), hwpx 의미 동등 왕복, IR JSON·markdown 왕복,
