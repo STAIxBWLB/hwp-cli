@@ -1390,7 +1390,7 @@ pub(crate) fn parse_align(name: &str) -> anyhow::Result<u8> {
     })
 }
 
-/// mm 문자열 → HWPUNIT (1mm = 7200/25.4).
+/// mm string → HWPUNIT (1mm = 7200/25.4).
 fn parse_mm(value: &str) -> anyhow::Result<i32> {
     let mm: f32 = value
         .trim()
@@ -1400,8 +1400,8 @@ fn parse_mm(value: &str) -> anyhow::Result<i32> {
     Ok((mm * 7200.0 / 25.4).round() as i32)
 }
 
-/// `--set-para`의 "키:값"을 ParaProps로 파싱한다.
-/// 키: line-spacing(비율% 또는 Npt 고정), indent, left, right, top, bottom (mm).
+/// Parses `--set-para`'s "key:value" into ParaProps.
+/// Keys: line-spacing (ratio % or fixed Npt), indent, left, right, top, bottom (mm).
 fn parse_para_props(kv: &str) -> anyhow::Result<hwp_convert::ParaProps> {
     let (key, value) = kv
         .split_once(':')
@@ -1431,7 +1431,7 @@ fn parse_para_props(kv: &str) -> anyhow::Result<hwp_convert::ParaProps> {
     Ok(props)
 }
 
-/// `--set-page`의 한 "키:값"을 PageProps에 반영한다.
+/// Applies one `--set-page` "key:value" to PageProps.
 fn apply_page_prop(
     props: &mut hwp_convert::PageProps,
     key: &str,

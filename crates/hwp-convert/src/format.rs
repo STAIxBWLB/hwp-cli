@@ -273,12 +273,12 @@ fn find_or_insert_para(pshapes: &mut Vec<ParaShape>, ps: ParaShape) -> ParaShape
     ParaShapeId((pshapes.len() - 1) as u16)
 }
 
-/// 문단 속성 변경 항목 (GK-4). None인 항목은 기존 값 유지.
+/// Paragraph property change items (GK-4). None items keep their existing values.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParaProps {
-    /// 줄간격 — (종류, 값). 종류 0=비율%, 1=고정(pt×100), 3=최소.
+    /// Line spacing — (kind, value). Kind 0=ratio%, 1=fixed(pt×100), 3=minimum.
     pub line_spacing: Option<(u8, i32)>,
-    /// 들여쓰기/내어쓰기 (HWPUNIT).
+    /// Indent/outdent (HWPUNIT).
     pub indent: Option<i32>,
     pub margin_left: Option<i32>,
     pub margin_right: Option<i32>,
@@ -297,12 +297,34 @@ impl ParaProps {
     }
 }
 
-/// `pattern`을 가진 문단의 문단 모양 속성을 바꾼다 (GK-4 — 본문·표 셀·글상자 재귀).
-/// 모양을 바꾼 ParaShape를 새로(또는 기존 동일 항목으로) 가리키게 한다. 반환=바꾼 문단 수.
+/// Changes the para shape properties of paragraphs containing `pattern` (GK-4 — recurses
+/// through body, table cells, and text boxes). Points them at a new ParaShape with the changed
+/// properties (or an existing identical one). Returns the number of paragraphs changed.
+///
+/// **Units**: the dimension fields of `props` (indent/margins/spacings) are taken as
+/// HWPUNIT(1/7200") and stored converted to IR units (hwp5 PARA_SHAPE = 2× HWPUNIT). Line
+/// spacing is stored as-is for ratio (0), and doubled for length kinds (1/3) (symmetric with
+/// hwpx read's ×2 and write's ÷2 — based on genuine measurements).
 pub fn set_para_props(doc: &mut Document, pattern: &str, props: &ParaProps) -> usize {
     if pattern.is_empty() || props.is_empty() {
         return 0;
     }
+    // HWPUNIT → IR (hwp5 PARA_SHAPE) unit conversion.
+    let props = ParaProps {
+        line_spacing: props.line_spacing.map(|(kind, v)| {
+            if kind == 0 {
+                (kind, v) // ratio (%) needs no conversion
+            } else {
+                (kind, v.saturating_mul(2))
+            }
+        }),
+        indent: props.indent.map(|v| v.saturating_mul(2)),
+        margin_left: props.margin_left.map(|v| v.saturating_mul(2)),
+        margin_right: props.margin_right.map(|v| v.saturating_mul(2)),
+        spacing_top: props.spacing_top.map(|v| v.saturating_mul(2)),
+        spacing_bottom: props.spacing_bottom.map(|v| v.saturating_mul(2)),
+    };
+    let props = &props;
     let Document {
         header, sections, ..
     } = doc;
@@ -374,7 +396,7 @@ fn props_para(
     n
 }
 
-/// 페이지 설정 변경 항목 (GK-6). None인 항목은 기존 값 유지. 치수는 HWPUNIT.
+/// Page setup change items (GK-6). None items keep their existing values. Dimensions are HWPUNIT.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageProps {
     pub width: Option<i32>,
@@ -383,12 +405,14 @@ pub struct PageProps {
     pub margin_right: Option<i32>,
     pub margin_top: Option<i32>,
     pub margin_bottom: Option<i32>,
-    /// true=가로(landscape), false=세로(portrait).
+    /// true=landscape, false=portrait.
     pub landscape: Option<bool>,
 }
 
-/// 첫 구역 정의의 페이지 설정을 바꾼다 (GK-6). 반환=바꾼 구역 수(0 또는 1).
+/// Changes the page setup of every section definition (GK-6 — applied uniformly to multi-section
+/// documents too). Returns the number of sections changed.
 pub fn set_page_def(doc: &mut Document, props: &PageProps) -> usize {
+    let mut n = 0;
     for section in &mut doc.sections {
         for para in &mut section.paragraphs {
             for ctrl in &mut para.controls {
@@ -417,18 +441,18 @@ pub fn set_page_def(doc: &mut Document, props: &PageProps) -> usize {
                     page.margin_bottom.0 = v;
                 }
                 if let Some(landscape) = props.landscape {
-                    // attr bit0 = 용지 방향(가로).
+                    // attr bit0 = page orientation (landscape).
                     if landscape {
                         page.attr |= 1;
                     } else {
                         page.attr &= !1;
                     }
                 }
-                return 1;
+                n += 1;
             }
         }
     }
-    0
+    n
 }
 
 #[cfg(test)]
@@ -448,14 +472,29 @@ mod tests {
         assert_eq!(set_para_props(&mut doc, "본문", &props), 1);
         let para = &doc.sections[0].paragraphs[0];
         let ps = &doc.header.para_shapes[para.para_shape.0 as usize];
+        // Ratio line spacing stays as-is; dimension fields are converted to IR (2×) units.
         assert_eq!(ps.line_spacing, 130);
         assert_eq!(ps.line_spacing_type, 0);
-        assert_eq!(ps.indent, -1000);
-        assert_eq!(ps.margin_left, 2000);
-        assert_eq!(ps.spacing_top, 300);
-        // 다른 문단은 기본 팔레트(ps2) 그대로.
+        assert_eq!(ps.indent, -2000);
+        assert_eq!(ps.margin_left, 4000);
+        assert_eq!(ps.spacing_top, 600);
+        // The other paragraph keeps the default palette (ps2).
         let other = &doc.sections[0].paragraphs[1];
         assert_eq!(other.para_shape.0, 2);
+    }
+
+    #[test]
+    fn set_para_props_고정줄간격은_2배환산() {
+        let mut doc = crate::from_markdown::from_markdown("본문 문단입니다.\n");
+        let props = ParaProps {
+            line_spacing: Some((1, 1300)), // 13pt fixed (HWPUNIT)
+            ..ParaProps::default()
+        };
+        assert_eq!(set_para_props(&mut doc, "본문", &props), 1);
+        let para = &doc.sections[0].paragraphs[0];
+        let ps = &doc.header.para_shapes[para.para_shape.0 as usize];
+        assert_eq!(ps.line_spacing_type, 1);
+        assert_eq!(ps.line_spacing, 2600, "고정 줄간격은 2배 단위 저장");
     }
 
     #[test]

@@ -1,11 +1,12 @@
-//! IR → CSV (표 추출, GJ-5).
+//! IR → CSV (table extraction, GJ-5).
 //!
-//! 문서의 모든 표를 등장 순서대로 CSV로 낸다. 행은 그리드 순서(row, col),
-//! 병합 셀은 origin 값만 쓰고 덮인 칸은 비운다. 표와 표 사이는 빈 줄 하나.
+//! Emits every table in the document as CSV in order of appearance. Rows follow grid order
+//! (row, col); merged cells write only the origin value and leave covered slots empty. Tables
+//! are separated by one blank line.
 
 use hwp_model::{Control, Document, HwpChar, Paragraph, Table};
 
-/// 문서의 모든 표를 CSV로 직렬화한다. 표가 없으면 빈 문자열.
+/// Serializes every table in the document to CSV. Empty string if there are no tables.
 pub fn to_csv(doc: &Document) -> String {
     let mut out = String::new();
     let mut first = true;
@@ -25,7 +26,7 @@ fn write_para_tables(para: &Paragraph, out: &mut String, first: &mut bool) {
                     out.push('\n');
                 }
                 *first = false;
-                write_table(table, out);
+                write_table(table, out, first);
             }
             Control::Generic(g) => {
                 for list in &g.paragraph_lists {
@@ -39,7 +40,7 @@ fn write_para_tables(para: &Paragraph, out: &mut String, first: &mut bool) {
     }
 }
 
-fn write_table(table: &Table, out: &mut String) {
+fn write_table(table: &Table, out: &mut String, first: &mut bool) {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
     for r in 0..rows {
@@ -51,6 +52,12 @@ fn write_table(table: &Table, out: &mut String) {
         }
         out.push_str(&line.join(","));
         out.push('\n');
+    }
+    // Nested tables inside cells are also emitted in order of appearance (module promise: every table in the document).
+    for cell in &table.cells {
+        for p in &cell.paragraphs {
+            write_para_tables(p, out, first);
+        }
     }
 }
 
@@ -67,7 +74,7 @@ fn cell_text(cell: &hwp_model::Cell) -> String {
     text.trim().to_string()
 }
 
-/// RFC 4180 — `,` `"` 개행이 있으면 따옴표로 싸고 따옴표는 두 겹으로.
+/// RFC 4180 — if the value contains `,` `"` or a newline, wrap it in quotes and double the quotes.
 fn escape_csv(s: &str) -> String {
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -91,5 +98,17 @@ mod tests {
             "이스케이프: {csv}"
         );
         assert!(csv.contains("1,2"), "행: {csv}");
+    }
+
+    #[test]
+    fn 중첩_표도_추출() {
+        // 바깥 표 셀 안의 중첩 표도 빠짐없이 낸다 (리뷰 회귀).
+        let mut doc = crate::from_markdown::from_markdown(
+            "본문\n\n<table><tr><td>바깥<table><tr><td>중첩</td></tr></table></td></tr></table>\n",
+        );
+        let csv = to_csv(&doc);
+        assert!(csv.contains("바깥"), "바깥: {csv}");
+        assert!(csv.contains("중첩"), "중첩: {csv}");
+        let _ = &mut doc;
     }
 }

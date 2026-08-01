@@ -1,7 +1,8 @@
-//! `hwp grep` — 문단 텍스트 검색 (GM-5).
+//! `hwp grep` — paragraph text search (GM-5).
 //!
-//! 본문·표 셀·글상자 문단을 재귀 순회하며 패턴을 가진 문단의 텍스트를 한 줄씩
-//! 출력한다. grep 관례로 일치가 없으면 비정상 종료(종료 코드 1)다.
+//! Recursively walks body, table-cell, and text-box paragraphs and prints the text of each
+//! paragraph containing the pattern, one per line. Following grep convention, no matches means
+//! an abnormal exit (exit code 1).
 
 use std::path::Path;
 
@@ -28,7 +29,7 @@ pub fn run(pattern: &str, file: &Path, ignore_case: bool) -> anyhow::Result<()> 
     }
     print!("{out}");
     if found == 0 {
-        // grep(1) 관례: 일치 없음은 종료 코드 1 (오류 메시지는 내지 않는다).
+        // grep(1) convention: no match is exit code 1 (no error message is printed).
         std::process::exit(1);
     }
     Ok(())
@@ -73,7 +74,7 @@ fn search_para(
     }
 }
 
-/// 문단의 표시 텍스트(문자 + 탭은 공백, 줄바꿈은 공백).
+/// Display text of a paragraph (chars; tabs and line breaks become spaces).
 fn para_text(para: &Paragraph) -> String {
     let mut text = String::new();
     for ch in &para.chars {

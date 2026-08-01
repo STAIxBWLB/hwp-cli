@@ -52,11 +52,11 @@ pub fn run(
     Ok(())
 }
 
-/// 다중 입력·stdin/stdout 진입점 (GM-1/GM-2).
+/// Multi-input / stdin/stdout entry point (GM-1/GM-2).
 ///
-/// - 입력 `-`: stdin 바이트를 시그니처로 판별해 임시 파일로 스테이징한다.
-/// - 출력 `-`: 텍스트 포맷(md/json/html/txt/csv)만 stdout으로 낸다 (`--to` 필수).
-/// - `--out-dir`: 여러 입력을 `<스템>.<대상확장자>`로 일괄 변환한다 (`--to` 필수).
+/// - Input `-`: detects stdin bytes by signature and stages them to a temp file.
+/// - Output `-`: emits only text formats (md/json/html/txt/csv) to stdout (`--to` required).
+/// - `--out-dir`: batch-converts multiple inputs to `<stem>.<target extension>` (`--to` required).
 #[allow(clippy::too_many_arguments)]
 pub fn run_multi(
     inputs: &[PathBuf],
@@ -69,7 +69,7 @@ pub fn run_multi(
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
 ) -> anyhow::Result<()> {
-    // 입력 스테이징 (`-` → stdin).
+    // Input staging (`-` → stdin).
     let mut staged: Option<PathBuf> = None;
     let inputs: Vec<PathBuf> = if inputs.len() == 1 && inputs[0].as_os_str() == "-" {
         let mut buf = Vec::new();
@@ -78,8 +78,26 @@ pub fn run_multi(
             anyhow::bail!("stdin이 비어 있습니다");
         }
         let ext = crate::format::detect_bytes(&buf)?;
-        let path = std::env::temp_dir().join(format!("hwp-stdin-{}.{}", std::process::id(), ext));
-        std::fs::write(&path, &buf)?;
+        // Unpredictable name for exclusive creation (create_new) — prevents symlink
+        // overwrite and concurrent-run collisions. On unix, make it owner-readable only (0600).
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path =
+            std::env::temp_dir().join(format!("hwp-stdin-{}-{nanos}.{ext}", std::process::id()));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&path).with_context(|| {
+            format!("stdin 스테이징 파일을 만들 수 없습니다: {}", path.display())
+        })?;
+        std::io::Write::write_all(&mut file, &buf)?;
+        drop(file);
         staged = Some(path.clone());
         vec![path]
     } else {
@@ -142,6 +160,24 @@ fn run_multi_inner(
             let Some(target) = to else {
                 anyhow::bail!("여러 입력(--out-dir)에는 --to가 필요합니다");
             };
+            // Pre-check: reject collisions where identical stems from different directories would overwrite one output.
+            let mut seen = std::collections::BTreeMap::new();
+            for input in inputs {
+                let stem = input
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .with_context(|| {
+                        format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
+                    })?;
+                if let Some(prev) = seen.insert(stem.to_string(), input.clone()) {
+                    anyhow::bail!(
+                        "배치 출력 이름이 충돌합니다: {} 와 {} → {stem}.{}",
+                        prev.display(),
+                        input.display(),
+                        target_extension(target)
+                    );
+                }
+            }
             std::fs::create_dir_all(dir)?;
             for input in inputs {
                 let stem = input
@@ -169,7 +205,7 @@ fn run_multi_inner(
     }
 }
 
-/// stdout 텍스트 출력 (GM-2) — 텍스트 포맷만 허용.
+/// stdout text output (GM-2) — text formats only.
 fn print_text_output(
     doc: &hwp_model::Document,
     target: ConvertFormat,
@@ -199,7 +235,7 @@ fn print_text_output(
     Ok(())
 }
 
-/// 포맷의 표준 확장자 (--out-dir 출력 이름용).
+/// Standard extension of a format (for --out-dir output names).
 fn target_extension(target: ConvertFormat) -> &'static str {
     match target {
         ConvertFormat::Hwp => "hwp",

@@ -1201,7 +1201,8 @@ impl Parser {
                 ps.line_spacing_old = 0;
             } else if let Some(pt) = lh.strip_suffix("pt").and_then(|v| v.parse::<f32>().ok()) {
                 ps.line_spacing_type = 1;
-                ps.line_spacing = (pt * 100.0).round() as i32;
+                // fixed line spacing is stored doubled in the IR (like the margin fields)
+                ps.line_spacing = (pt * 200.0).round() as i32;
                 ps.line_spacing_old = ps.line_spacing;
             } else if let Ok(ratio) = lh.parse::<f32>() {
                 ps.line_spacing_type = 0;
@@ -1214,7 +1215,7 @@ impl Parser {
                 .get(key)
                 .and_then(|v| v.strip_suffix("mm"))
                 .and_then(|v| v.parse::<f32>().ok())
-                .map(|mm| (mm * 7200.0 / 25.4).round() as i32)
+                .map(|mm| (mm * 14400.0 / 25.4).round() as i32)
         };
         if let Some(v) = mm("margin-left") {
             ps.margin_left = v;
@@ -1579,6 +1580,8 @@ mod tests {
         assert!(html.contains("letter-spacing:0.05em"), "{html}");
         assert!(html.contains("text-align:center"), "{html}");
         assert!(html.contains("line-height:1.3"), "{html}");
+        // spacing_bottom 600(IR, 2배 단위) = 300 HWPUNIT = 1.058mm — 물리 단위 정합.
+        assert!(html.contains("margin-bottom:1.058mm"), "{html}");
 
         let back = from_html(&html).unwrap();
         let para = &back.sections[0].paragraphs[0];
