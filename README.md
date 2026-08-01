@@ -88,7 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 기본 위치는 `~/.local/bin`이다(PATH에 없으면 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.4.1
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.5.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 

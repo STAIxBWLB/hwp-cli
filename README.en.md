@@ -100,7 +100,7 @@ The default location is `~/.local/bin` (if it is not on PATH, the script says so
 location or version with arguments or environment variables:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.4.1
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.5.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
