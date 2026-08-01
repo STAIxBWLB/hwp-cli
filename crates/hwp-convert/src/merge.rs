@@ -1,14 +1,15 @@
-//! 부분(part) 문서 병합 — 템플릿+부분 채우기(`hwp fill --set name=@part.md`)의 IR 이식 계층.
+//! Part document merge — the IR grafting layer of template+part filling (`hwp fill --set name=@part.md`).
 //!
-//! Maru 부분(part) 작성 워크플로: 본문 산문은 markdown, 표·그림은 HTML fragment
-//! (계약 docs/design/18)로 부분을 작성하고, 템플릿 문서의 `{{name}}` 앵커 문단을 부분의
-//! 블록으로 교체해 대규모 문서(사업보고서 등)를 조합한다.
+//! Maru part authoring workflow: prose is written in markdown, tables/images as HTML fragments
+//! (contract docs/design/18), and the `{{name}}` anchor paragraphs of a template document are
+//! replaced with the part's blocks to compose large documents (project reports, etc.).
 //!
-//! **팔레트 호환 제약(v1)**: 템플릿과 부분 모두 hwp-cli 생성 문서(default_header 계열 —
-//! 프리셋 포함)여야 한다. 부분의 팔레트 id(문자모양 0~15·문단모양 0~4·스타일·테두리)는
-//! 템플릿의 같은 번호를 그대로 가리키므로, 부분은 템플릿의 타이포그래피를 상속한다.
-//! 팔레트 초과분(추가 문자/문단 모양·번호/글머리 정의·bin)만 오프셋 시프트로 이식한다.
-//! 한글 등 외부 도구가 만든 임의 문서와의 일반 병합(GM-3)은 범위 밖이다.
+//! **Palette compatibility constraint (v1)**: both the template and the part must be hwp-cli
+//! generated documents (default_header family — presets included). The part's palette ids
+//! (char shapes 0~15, para shapes 0~4, styles, borders) point at the same template slots as-is,
+//! so the part inherits the template's typography. Only off-palette extras (additional char/para
+//! shapes, numbering/bullet definitions, bins) are grafted with offset shifts. General merging
+//! with arbitrary documents made by external tools like Hancom (GM-3) is out of scope.
 
 use std::collections::HashMap;
 
@@ -17,15 +18,16 @@ use hwp_model::{BinStream, Control, DocHeader, Document, Paragraph};
 use crate::from_html::PALETTE_LEN;
 use crate::from_markdown::{self, BASE_PARA_SHAPES};
 
-/// 두 헤더가 hwp-cli 기본 팔레트 계열로 호환되는지 — 부분의 팔레트 id를 템플릿에
-/// 그대로 쓸 수 있는 조건. hwpx 저장/읽기 왕복이 부수 필드(shadow_gap·attr1·lang_id·
-/// tab_defs·글꼴 attr/default_name)를 정규화하므로 **값 동등이 아니라 구조 시그니처**
-/// (스타일/글꼴 이름 + 컬렉션 크기)만 본다. 프리셋(크기·글꼴 변형)도 같은 계열로 인정.
+/// Whether two headers are compatible as hwp-cli default-palette family members — the condition
+/// for using the part's palette ids in the template as-is. The hwpx save/read round-trip
+/// normalizes incidental fields (shadow_gap, attr1, lang_id, tab_defs, font attr/default_name),
+/// so this checks the **structural signature** (style/font names + collection sizes), not value
+/// equality. Presets (size/font variants) are also accepted as the same family.
 pub fn palette_compatible(a: &DocHeader, b: &DocHeader) -> bool {
     default_family(a) && default_family(b)
 }
 
-/// default_header 계열 구조 시그니처 — 팔레트 id의 의미가 default_header와 정렬되는 조건.
+/// default_header family structural signature — the condition for palette ids to mean the same as in default_header.
 fn default_family(h: &DocHeader) -> bool {
     let d = from_markdown::default_header();
     h.char_shapes.len() >= d.char_shapes.len()
@@ -43,12 +45,13 @@ fn default_family(h: &DocHeader) -> bool {
         })
 }
 
-/// part 문서의 본문 문단들을 target에 이식 가능한 형태로 리맵해 반환한다.
-/// target의 헤더 컬렉션(추가 문자/문단 모양·번호/글머리 정의·bin 스트림)을 part의
-/// 초과분으로 연장하고, part 문단의 참조 id를 그 오프셋으로 시프트한다.
+/// Remaps the part document's body paragraphs into a form graftable into target and returns them.
+/// Extends target's header collections (additional char/para shapes, numbering/bullet
+/// definitions, bin streams) with the part's extras, and shifts the part paragraphs' reference
+/// ids by those offsets.
 ///
-/// part 문단에 구역 정의(SectionDef)가 있으면 에러 — 부분은 반드시
-/// `from_markdown_blocks`(구역 주입 없음)로 만든다.
+/// Returns an error if a part paragraph has a section definition (SectionDef) — parts must be
+/// made with `from_markdown_blocks` (no section injection).
 pub fn part_paragraphs(target: &mut Document, part: &Document) -> Result<Vec<Paragraph>, String> {
     if !palette_compatible(&target.header, &part.header) {
         return Err(
@@ -76,7 +79,7 @@ pub fn part_paragraphs(target: &mut Document, part: &Document) -> Result<Vec<Par
     let num_off = target.header.numbering_levels.len() as u16;
     let bul_off = target.header.bullet_chars.len() as u16;
 
-    // bin 스트림 — 이름 충돌 시 새 이름을 만들고 Picture 참조를 갈아끼운다.
+    // Bin streams — on a name collision, mint a new name and rewire the Picture references.
     let mut rename: HashMap<String, String> = HashMap::new();
     for bin in &part.bin_streams {
         let mut name = bin.name.clone();
@@ -98,12 +101,12 @@ pub fn part_paragraphs(target: &mut Document, part: &Document) -> Result<Vec<Par
         });
     }
 
-    // part의 팔레트 초과분을 target에 연장 (번호/글머리 참조는 오프셋 적용 후).
+    // Extend target with the part's off-palette extras (numbering/bullet references after applying offsets).
     for ps in &part.header.para_shapes[BASE_PARA_SHAPES as usize..] {
         let mut ps = ps.clone();
         match (ps.attr1 >> 23) & 0x3 {
-            2 => ps.numbering_id += num_off, // 번호 정의 참조
-            3 => ps.numbering_id += bul_off, // 글머리 정의 참조
+            2 => ps.numbering_id += num_off, // numbering definition reference
+            3 => ps.numbering_id += bul_off, // bullet definition reference
             _ => {}
         }
         target.header.para_shapes.push(ps);
@@ -133,7 +136,7 @@ pub fn part_paragraphs(target: &mut Document, part: &Document) -> Result<Vec<Par
     Ok(out)
 }
 
-/// 문단 하나의 id 참조를 시프트한다 (중첩 표 셀·Generic 문단 리스트·그림 bin 참조 포함).
+/// Shifts one paragraph's id references (including nested table cells, Generic paragraph lists, and picture bin references).
 fn remap_paragraph(
     para: &mut Paragraph,
     ps_off: u16,
@@ -202,13 +205,13 @@ mod tests {
 
     #[test]
     fn 목록_번호정의_오프셋() {
-        // 템플릿에 이미 번호 목록이 있으면 부분의 번호 정의는 뒤에 붙는다.
+        // If the template already has a numbered list, the part's numbering definition is appended after it.
         let mut target = from_markdown("1. 템플릿 항목\n\n{{본문}}\n");
         let before = target.header.numbering_levels.len();
         let part = from_markdown_blocks("1. 부분 항목\n", &MarkdownImportOptions::default());
         let blocks = part_paragraphs(&mut target, &part).unwrap();
         assert_eq!(target.header.numbering_levels.len(), before + 1);
-        // 부분 항목 문단의 문단모양이 시프트된 인덱스를 가리켜야 한다.
+        // The part item paragraph's para shape must point at the shifted index.
         let item = blocks
             .iter()
             .find(|p| para_text(p).contains("부분 항목"))
@@ -221,14 +224,14 @@ mod tests {
     #[test]
     fn 구역정의_포함_part는_에러() {
         let mut target = from_markdown("{{본문}}\n");
-        let part = from_markdown("부분\n"); // from_markdown은 구역 주입
+        let part = from_markdown("부분\n"); // from_markdown injects the section
         assert!(part_paragraphs(&mut target, &part).is_err());
     }
 
     #[test]
     fn 팔레트_불일치는_에러() {
         let mut target = from_markdown("{{본문}}\n");
-        target.header.styles.clear(); // 임의 문서 흉내 — 스타일 시그니처 불일치
+        target.header.styles.clear(); // mimics an arbitrary document — style signature mismatch
         let part = from_markdown_blocks("부분\n", &MarkdownImportOptions::default());
         assert!(part_paragraphs(&mut target, &part).is_err());
     }

@@ -120,9 +120,12 @@
       문서 워크플로. ① 계약 문서(docs/design/18) + html.rs XHTML 정합, ② `from_html`
       임포터(계약 위반 hard error), ③ md+HTML 혼합 부분 파일(from_markdown HTML 블록),
       ④ `hwp fill --set 이름=@부분.md` 템플릿+부분 채우기(기본 팔레트 계열 한정).
-      예제: `examples/part-composition-v1/`. 잔여: 스타일 수준(CSS) 왕복.
+      예제: `examples/part-composition-v1/`. 잔여: 없음(스타일 왕복도 해소).
       **후속(2026-08-01)**: SVG 부분 이미지(검증+결정론적 PNG 래스터화, spec-v2와
       `hwp-convert::svg` 공용화), MCP `hwp_fill`의 `parts` 인자, odt 경로 GH-3~5 해소.
+      **스타일 왕복(2026-08-01, 계약 v2 §8)**: export가 `.cs{n}`/`.ps{n}` 규칙으로
+      글꼴·크기·색·음영·자간·정렬·줄간격·여백·들여쓰기를 싣고 import가 복원한다
+      (마크는 태그가 정본, 팔레트 dedup, 글꼴 추가 복원).
       **P1 실기 확정(2026-08-01)**: 부분 조합 산출물(`P1_부분조합.hwpx`)을 한글에서 열어
       md 부분(문단·굵게·목록), HTML 표 병합 셀(colspan 2종·rowspan 1종) 정상 표시,
       손상/변조 경고 없음을 확인했다.
