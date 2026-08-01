@@ -1,53 +1,14 @@
-[한국어](CHANGELOG.md) · [English](CHANGELOG.md#english)
+# Changelog
 
-# 변경 이력 / Changelog
-
-릴리스 노트는 한국어와 영문을 병기한다. 이 파일이 정본이며, GitHub Release 본문은
-`scripts/release_notes.sh <version>`이 여기서 해당 버전 절을 그대로 뽑아 쓴다.
-
-버전은 워크스페이스 `Cargo.toml`의 `[workspace.package] version`이 단일 기준이다.
-
-Release notes are written in Korean and English together. This file is the source of truth, and
+Release notes are written in English only. This file is the source of truth, and
 `scripts/release_notes.sh <version>` extracts the section for a version verbatim as the GitHub
 Release body.
+
+The workspace `Cargo.toml` `[workspace.package] version` is the single source for version numbers.
 
 ---
 
 ## [0.6.0]
-
-### 한국어
-
-**추가**
-
-- HTML fragment 왕복(계약: docs/design/18). `from_html` 임포터를 새로 만들어 well-formed
-  XHTML 부분집합(표 colspan/rowspan·셀 내 블록·그림 data URI/상대 경로·인라인 마크·목록)을
-  IR로 읽는다. 계약 위반은 hard error다.
-- HTML 내보내기 정합. `convert --to html`이 병합 셀을 colspan/rowspan으로 방출(GH-4)하고
-  셀 안 중첩 표·그림을 보존(GH-5)하며, 각주/미주를 `<sup>` 앵커 + 문서 끝 정의로 낸다(GH-3).
-  출력은 `from_html`이 다시 읽는 XHTML이다.
-- md+HTML 혼합 부분(part) 파일. markdown 본문에 HTML 표 블록을 섞어 쓰면 `new`/`convert`가
-  함께 읽는다. 인라인 `<u>`·`<sup>`·`<sub>`도 IR을 거쳐 왕복한다.
-- 템플릿+부분 채우기. `hwp fill --set 이름=@부분.md`(또는 `--data`의 `parts` 맵)가
-  `{{이름}}` 앵커 문단을 부분 파일의 블록으로 교체해 대규모 문서를 부분별로 조합한다
-  (템플릿·부분 모두 hwp-cli 생성 문서의 기본 팔레트 계열 한정).
-- 부분 안 SVG 이미지. `<img src="*.svg">`를 폐쇄 부분집합 검증 + 결정론적 PNG 래스터화로
-  임베드한다. 검증·래스터화 구현을 `hwp-convert::svg`로 뽑아 DocumentSpec v2와 공용화했다.
-- MCP `hwp_fill`에 `parts` 인자 — 부분 이식을 MCP에서도 쓸 수 있다.
-- ODT 내보내기 GH-3~5. 각주/미주 `<text:note>`, 병합 셀 number-columns/rows-spanned +
-  covered-table-cell, 셀 내 중첩 표·그림 보존. md/html/odt 전 경로 해소.
-- HTML 스타일 왕복(계약 v2, docs/design/18 §8). html export가 글자·문단 모양을
-  `.cs{n}`/`.ps{n}` CSS 규칙으로 싣고(fragment는 선두 `<style>`로 자기완결), `from_html`이
-  복원한다. 마크는 태그가 정본, 기본 팔레트와 같으면 재사용(dedup), 미등록 글꼴은 추가
-  글꼴로 복원한다.
-- 편집 프리미티브 확장. `edit --add-table "앵커=>행JSON"`(표 삽입), `--set-para`(줄간격·
-  들여쓰기·여백·문단 간격), `--set-page`(용지 치수·여백·방향), `--delete-image/--delete-table/
-  --delete-field/--delete-bookmark`(개체 삭제 — 앵커 문자·FIELD_END까지 수술).
-- CLI 워크플로. convert가 다중 입력 + `--out-dir`(배치), 입력 `-`(stdin)·출력 `-`(텍스트
-  포맷 stdout)를 받는다. `hwp grep <패턴> <파일>`(문단 재귀 검색, 미일치 종료 코드 1).
-- 추출 포맷. `cat --format csv`·`convert --to csv`(표→CSV, RFC 4180)와
-  `convert --to txt`/`.txt` 추론.
-
-### English
 
 **Added**
 
@@ -87,41 +48,6 @@ Release body.
 ---
 
 ## [0.5.0]
-
-### 한국어
-
-**추가**
-
-- 구조 문서 저작 경로. DocumentSpec v1/v2와 TemplateSpec/Data v1 명세에서 HWP/HWPX를 결정론적으로
-  합성하는 `compose`·`template` 명령을 추가했다. 문자열 보간이나 표현식 실행 없이 typed AST만 허용한다.
-- 네이티브 전용 인증 `certify`. 폰트 identity 고정, 폰트 대체·macro·external reference 금지,
-  전체 페이지 렌더, bounds/collision/unresolved-field 실패를 강제하고 리포트를 원자적으로 게시한다.
-- 구조 코퍼스 게이트 `corpus`. 자체 작성 한국어 7종 문서를 HWPX/HWP로 2회씩 생성해 문서 바이트·의미
-  통계·페이지 PNG 해시·render issue 해시·폰트 identity가 모두 일치할 때만 통과시킨다.
-- 공개 JSON Schema(`schemas/`)와 예제(`examples/`), 설계 문서 13~17.
-- MCP 도구 3종 추가(`hwp_compose`·`hwp_template`·`hwp_certify`), 총 15종.
-- CLI 도움말 다국어. 기본은 영문이고 로케일이 한국어면 한국어로 표시하며, `--lang <en|ko>`나
-  `HWP_LANG`으로 명시 지정할 수 있다. CLI 레퍼런스도 두 언어로 자동 생성한다.
-
-**수정**
-
-- Windows 빌드 복구. nightly 전용 `windows_by_handle` API를 쓰던 파일 신원·링크 수 조회를 핸들 기반
-  (`GetFileInformationByHandle`)으로 바꿨다. 신원을 못 읽으면 어떤 값과도 같지 않게 해 TOCTOU 재검사가
-  fail-closed로 동작한다.
-- Windows에서 상속 DACL 계산 시 임퍼소네이션 토큰을 명시적으로 넘긴다. 토큰을 NULL로 두면
-  `ERROR_NO_TOKEN`이 나 모든 게시가 실패했다.
-- Windows의 `FlushFileBuffers`가 쓰기 권한을 요구하므로, staged 파일을 쓰기로 열어 fsync한다.
-  읽기 전용 핸들이면 hwpx 외과 치환 게시 전체가 `ERROR_ACCESS_DENIED`로 실패했다.
-- 해시가 고정된 `examples/` 입력에 `eol=lf`를 지정해 Windows 체크아웃에서 골든 리포트가 어긋나지 않게 했다.
-
-**변경**
-
-- 코퍼스 폰트를 커밋하지 않고 fetch한다. `scripts/fetch-corpus-fonts.sh`가 manifest의 고정 URL에서
-  받아 SHA-256으로 검증한다. `https` + 고정 host만 허용하고, 목적지는 코퍼스 내부 상대경로만 허용한다.
-- 사용자용 문서를 한국어 정본 + 영문 페어(`NAME.md` / `NAME.en.md`)로 정리했다.
-- 릴리스 노트를 `CHANGELOG.md` 기반 한/영 병기로 바꿨다. 해당 버전 절이 없으면 릴리스가 실패한다.
-
-### English
 
 **Added**
 
@@ -164,15 +90,6 @@ Release body.
 
 ## [0.4.1]
 
-### 한국어
-
-- HWP·HWPX 출력 모두에 쪽 번호를 렌더한다 (#30).
-- 한국 공문서 프리셋(기안문·보고서)을 markdown 가져오기에 추가했다 (#28).
-- 개조식 문단의 □·○ 간격과 목록 마커(-··) 가시성을 고쳤다 (#27).
-- 실기 검증 산출물 디렉터리 이름을 `hwp-verification`으로 정리했다 (#29).
-
-### English
-
 - Page numbers are rendered in both HWP and HWPX output (#30).
 - Added Korean official-document presets (gian, report) to the markdown import path (#28).
 - Fixed □/○ paragraph spacing and list marker (-, ·) visibility in gaejosik documents (#27).
@@ -182,26 +99,11 @@ Release body.
 
 ## [0.4.0]
 
-### 한국어
-
-- `hwp update` 자체 업데이트와 Homebrew 없는 한 줄 설치 스크립트를 추가했다 (#25).
-
-### English
-
 - Added `hwp update` self-updating and a one-line installation script that does not need Homebrew (#25).
 
 ---
 
 ## [0.3.0]
-
-### 한국어
-
-- Homebrew 설치를 지원한다. 저장소 자체가 tap이며 릴리스 시 formula를 자동 갱신한다 (#24).
-- hwpx 수식 방출과 `hp:script` 엔티티 해석을 추가했다 (#23).
-- `convert`에 `--font-dir`를 추가해 PDF 변환의 외부 폰트를 CLI로 제어한다 (#22).
-- CLI 레퍼런스를 clap 정의에서 자동 생성하고 드리프트 게이트를 추가했다 (#20).
-
-### English
 
 - Homebrew installation is supported: the repository is its own tap and the formula is updated
   automatically on release (#24).

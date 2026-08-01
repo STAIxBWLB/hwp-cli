@@ -1,209 +1,247 @@
-[한국어](hancom-verification-checklist.md) · [English](hancom-verification-checklist.en.md)
+[한국어](hancom-verification-checklist.ko.md) · [English](hancom-verification-checklist.md)
 
-# 한글 실기 검증 체크리스트 (⑬~㉓ 쓰기 경로)
+# Hancom verification checklist (the write paths of rounds 13 to 23)
 
-`tools/gen_verification_set.sh`가 `~/Documents/hwp-verification/`에 생성하는 파일들을
-한컴오피스 **한글**에서 직접 열어 수용 여부를 확인하기 위한 표. 우리 리더/렌더로는
-이미 자체 검증(재읽기 무경고 + 렌더 육안)을 통과한 파일들이며, **남은 미검증 항목은
-"한글이 이 합성/변환 바이트를 손상·변조 없이 수용하는가"** 뿐이다.
+A table for opening the files that `tools/gen_verification_set.sh` generates under
+`~/Documents/hwp-verification/` **directly in Hancom Office** and judging whether they are accepted.
+These files already pass our own verification (re-reading without warnings plus a visual render check)
+with our reader and renderer, so **the only thing left unverified is whether Hancom accepts these
+synthesized or converted bytes without corruption or alteration**.
 
-> **㉕ 재검증**: 1차 실기에서 A2·A4(gso 역합성 왕복)가 손상, B 하이퍼링크가 미적용이었다.
-> A2·A4는 글상자를 **안전 저하**(텍스트를 본문으로 보존, 도형 래퍼 생략)로 바꿔 손상을
-> 없앴고, 하이퍼링크는 표시 텍스트에 **파랑+밑줄 글자모양**을 입혔다. 이 두 가지가 이제
-> 정상인지 재확인 대상.
+> **Round 25 re-verification**: in the first Hancom test, A2 and A4 (gso re-synthesis round-trip) were
+> corrupt and the B hyperlinks did not take effect. A2 and A4 were changed to **safe degradation** for
+> text boxes (preserving the text in the body, omitting the shape wrapper), removing the corruption,
+> and hyperlinks were given a **blue underlined character shape** on the display text. Those two are
+> what this round re-checks.
 
-## 공통 판정 (모든 파일)
-- **정상**: 파일이 경고 없이 열림. (실패 신호: "파일이 손상되었습니다", "보안 수준을
-  낮춰 열겠습니까?", "문서가 변조되었습니다" 팝업)
-- **정상**: 본문 텍스트·표·글상자·도형이 보이고 레이아웃이 원본과 유사.
-- 열자마자 빈 화면이거나 검은 막대만 보이면 실패(과거 실기 결함 패턴).
+## Common verdict (every file)
 
-## A. 실무 문서 전체 파이프라인 (실제 복잡 내용에 전 기능)
+- **Pass**: the file opens with no warning. (Failure signals: the popups "파일이 손상되었습니다",
+  "보안 수준을 낮춰 열겠습니까?" and "문서가 변조되었습니다".)
+- **Pass**: body text, tables, text boxes and shapes are visible and the layout resembles the original.
+- A blank screen or only black bars on open is a failure (the historical defect pattern).
 
-| 파일 | 무엇을 테스트 | 정상이면 | 실패(원인 후보) |
+## A. The full pipeline on real documents (every feature on genuinely complex content)
+
+| File | What it tests | Pass looks like | Failure (likely cause) |
 |---|---|---|---|
-| `A1_work_report_변환.hwpx` | hwp→우리 hwpx (표·글상자·하이퍼링크·머리꼬리·이미지) | 원본과 동일하게 표·글상자("나눔글꼴…")·하단 로고 표시 | 글상자/도형 누락, 표 깨짐 |
-| `A2_work_report_왕복.hwp` | hwp→hwpx→우리 hwp (㉕ gso 안전 저하) | **손상 없이 열림.** 글상자 텍스트("나눔글꼴…")+하이퍼링크가 본문으로 보존(글상자 박스 자체는 생략) | 손상 팝업 |
-| `A3_annual_report_변환.hwpx` | hwp→우리 hwpx (도형 142·글상자) | 표지/내지 글상자 본문·장식 도형 표시 | 도형 대량 누락 |
-| `A4_annual_report_왕복.hwp` | hwp→hwpx→우리 hwp (㉕ gso 안전 저하) | **손상 없이 열림.** 표지 글상자 텍스트("Annual Report 2012"…)가 본문으로 보존(도형·박스는 생략) | 손상 팝업 |
-| `A5_품의_변환.hwpx` | hwp→우리 hwpx (%fmu 수식·표·쪽번호) | 표 계산식 값·쪽번호 정상 | 필드/쪽번호 누락 |
-| `A6_품의_왕복.hwp` | 품의 왕복 hwp | 표 계산식(F5 재계산 시 합계) 유지 | 손상=필드/표 합성 결함 |
+| `A1_work_report_변환.hwpx` | hwp → our hwpx (tables, text boxes, hyperlinks, headers/footers, images) | Tables, the text box ("나눔글꼴...") and the bottom logo appear as in the original | Missing text boxes or shapes, broken tables |
+| `A2_work_report_왕복.hwp` | hwp → hwpx → our hwp (round 25 gso safe degradation) | **Opens with no corruption.** The text box text ("나눔글꼴...") and the hyperlink survive in the body (the box itself is omitted) | A corruption popup |
+| `A3_annual_report_변환.hwpx` | hwp → our hwpx (142 shapes and text boxes) | The cover and inner text boxes plus decorative shapes appear | Shapes missing in bulk |
+| `A4_annual_report_왕복.hwp` | hwp → hwpx → our hwp (round 25 gso safe degradation) | **Opens with no corruption.** The cover text box text ("Annual Report 2012" and so on) survives in the body (shapes and boxes omitted) | A corruption popup |
+| `A5_품의_변환.hwpx` | hwp → our hwpx (%fmu formulas, tables, page numbers) | Table formula values and page numbers are correct | Missing fields or page numbers |
+| `A6_품의_왕복.hwp` | The approval document round-tripped to hwp | Table formulas survive (the sum recalculates on F5) | Corruption means a field or table synthesis defect |
 
-## B. 기능별 최소 파일 (실패 시 원인 격리)
+## B. Minimal per-feature files (isolating a cause on failure)
 
-| 파일 | 무엇을 테스트 | 정상 확인법 |
+| File | What it tests | How to check |
 |---|---|---|
-| `B1_책갈피.hwp` | hwp5 bokm 책갈피 생성(⑬) | [입력]→[책갈피](Ctrl+K,B) 목록에 **검증책갈피** |
-| `B2_책갈피.hwpx` | hwpx `<hp:bookmark>` 쓰기(⑭) | 위와 동일 |
-| `B3_하이퍼링크.hwp` | hwp5 %hlk 생성(⑮) | **한컴** 텍스트 파란 밑줄, Ctrl+클릭 시 hancom.com |
-| `B4_하이퍼링크.hwpx` | hwpx fieldBegin HYPERLINK(⑮) | 위와 동일 |
-| `B5_복합.hwp` | 책갈피+하이퍼링크 동시 | 책갈피 목록 + 링크 둘 다 |
+| `B1_책갈피.hwp` | hwp5 bokm bookmark creation (round 13) | [입력] → [책갈피] (Ctrl+K, B) lists **검증책갈피** |
+| `B2_책갈피.hwpx` | hwpx `<hp:bookmark>` writing (round 14) | The same |
+| `B3_하이퍼링크.hwp` | hwp5 %hlk creation (round 15) | In **Hancom**, the text is blue and underlined, and Ctrl+click goes to hancom.com |
+| `B4_하이퍼링크.hwpx` | hwpx fieldBegin HYPERLINK (round 15) | The same |
+| `B5_복합.hwp` | A bookmark and a hyperlink together | Both the bookmark list and the working link |
 
-## C. 글자효과·요약정보 (2026-07-15 구현분 — GE-α·GE-β4, [12](design/12-feature-gaps.md) §0.5)
+## C. Character effects and summary information (implemented 2026-07-15: GE-α, GE-β4, [12](design/12-feature-gaps.md) §0.5)
 
-hwpx write가 새로 방출하기 시작한 글자효과와 요약정보의 실기 수용 확인. 공통 판정(손상 팝업
-없이 열림)에 더해 아래 효과별 확인.
+Checking that the character effects and summary information the hwpx writer newly emits are accepted
+in Hancom. In addition to the common verdict (opening with no corruption popup), check each effect
+below.
 
-> **2차 재검(2026-07-15) — ✅ 통과 확정:** 1차 실기에서 C6 번호 미표시·C8 날짜 누락·C9 주제
-> 누락이 확인되어 정품 대조로 수정했고(문단 heading 링크 방출, 요약정보 PID 0x14 한국어 날짜
-> 문자열, content.hpf 메타를 정품 형식으로), 재검에서 **C6·C8·C9 모두 정상 표시 확인**.
-> C 시리즈 전체(글자효과·요약정보)가 실기 통과로 확정됐다.
+> **Re-verification (2026-07-15), ✅ confirmed passing:** the first test found C6 numbering not
+> displayed, C8 dates missing and C9 subject missing; these were fixed by comparison against genuine
+> files (emitting the paragraph heading link, the PID 0x14 Korean date string in the summary
+> information, and content.hpf metadata in the genuine format), and re-testing **confirmed C6, C8 and
+> C9 all display correctly**. The whole C series (character effects and summary information) is
+> confirmed in Hancom.
 
-| 파일 | 무엇을 테스트 | 정상 확인법 |
+| File | What it tests | How to check |
 |---|---|---|
-| `C1_그림자.hwpx` | charPr shadow(IR bit11+색·오프셋) 방출 | 문단 텍스트에 회색(#808080) 그림자. 글자 모양(Alt+L)에서 그림자 켜짐 |
-| `C2_외곽선.hwpx` | charPr outline(bit8, SOLID) | 글자가 외곽선체로 표시 |
-| `C3_양각음각.hwpx` | emboss(bit13)/engrave(bit14) | 첫 문단 양각, 둘째 문단 음각 |
-| `C4_첨자.hwpx` | supscript(bit15)/subscript(bit16) **부분 구간** | "x2"의 2만 위첨자, "H2O"의 2만 아래첨자(글자 크기 축소+상하 이동) |
-| `C5_밑줄모양.hwpx` | underline shape 3종 | 세 문단 밑줄이 각각 점선/이중선/원형점선(라벨 "물결" 문단은 실제로는 원형점선 — reader가 WAVE 미지원이라 대체) |
-| `C6_번호형식.hwpx` | 사용자 번호 형식 + **문단↔번호 연결**(GE-α8 — 2차에서 수정) | 각 조항 문단 앞에 **"제5조." "제6조." "제7조."** 번호가 실제로 표시 |
-| `C7_글자효과통합.hwpx` | 위 7효과 통합(문단별 라벨) | 각 라벨 문단에 해당 효과 표시 |
-| `C8_요약정보.hwp` | hwp5 요약정보 8필드+날짜 문자열(GE-β4 — 2차에서 PID 0x14 정품 정합) | 파일-문서 정보: 제목 "실기 검증 요약정보 문서", 지은이 "홍길동", 주제·설명·최종저장자, **날짜 "2026년 7월 15일 수요일 오후 6:00:00"**(작성일시 KST) 표시 |
-| `C9_요약정보.hwpx` | hwpx content.hpf 메타 8필드(2차에서 정품 형식 정합 — 주제·키워드·날짜 포함) | 위와 동일 — **주제와 날짜까지 전부** 표시돼야 함 |
+| `C1_그림자.hwpx` | Emitting charPr shadow (IR bit11 plus color and offset) | Paragraph text has a grey (#808080) shadow, and the character shape dialog (Alt+L) shows shadow enabled |
+| `C2_외곽선.hwpx` | charPr outline (bit8, SOLID) | Characters appear outlined |
+| `C3_양각음각.hwpx` | emboss (bit13) and engrave (bit14) | The first paragraph embossed, the second engraved |
+| `C4_첨자.hwpx` | supscript (bit15) and subscript (bit16) over **a partial range** | Only the 2 in "x2" is superscript and only the 2 in "H2O" is subscript (smaller with a vertical shift) |
+| `C5_밑줄모양.hwpx` | Three underline shapes | The three paragraphs are underlined dotted, double and circle-dotted (the paragraph labeled "물결" is actually circle-dotted, substituted because the reader does not support WAVE) |
+| `C6_번호형식.hwpx` | A user number format plus **the paragraph-to-numbering link** (GE-α8, fixed in the second round) | The numbers **"제5조." "제6조." "제7조."** actually appear before each article paragraph |
+| `C7_글자효과통합.hwpx` | All seven effects above combined (labeled per paragraph) | Each labeled paragraph shows its effect |
+| `C8_요약정보.hwp` | Eight hwp5 summary information fields plus the date string (GE-β4, aligned with genuine PID 0x14 in the second round) | File > Document information shows the title "실기 검증 요약정보 문서", author "홍길동", subject, description, last saved by, and **the date "2026년 7월 15일 수요일 오후 6:00:00"** (the creation time in KST) |
+| `C9_요약정보.hwpx` | Eight hwpx content.hpf metadata fields (aligned with the genuine format in the second round, including subject, keywords and date) | The same, and **the subject and date must appear too** |
 
-## D. 도장 날인·사용자 탭 (2026-07-15 3차 구현분 — GM-7·GC-4, [12](design/12-feature-gaps.md) §0.5)
+## D. Seal stamping and user tabs (implemented in the third round on 2026-07-15: GM-7, GC-4, [12](design/12-feature-gaps.md) §0.5)
 
-공통 판정(손상 팝업 없이 열림)에 더해 아래 확인. **도장의 부유 배치는 이번 배치의 유일한
-호환 민감 지점**(07§F 영역)이므로 D1·D2가 핵심이다.
+In addition to the common verdict, check the following. **The floating placement of a seal is the only
+compatibility-sensitive point in this batch** (the 07 §F area), so D1 and D2 are the crux.
 
-> **3차 실기(2026-07-16) 결과:** ✅ **D1 통과(도장 겹침 확인 — hwpx 도장 실기 확정)** /
-> ❌ D2 "(인)" 우측 밀림 → 원인 확정·수정: 어울림 비트가 SQUARE(본문 밀어냄)였음 —
-> 스펙 §4.3.9.1 비트 표 + 정품 annual attr 교차 확인으로 글 앞(5)+본문영역 제한 해제
-> (attr 0x040a6310→0x04aa4310). **D2 재검 필요** / ❌ D3 여전히 먹통 → **E 시리즈
-> 이분탐색 결과 필요**(아래).
+> **Third-round Hancom test (2026-07-16):** ✅ **D1 passed** (the overlap is confirmed, so the hwpx
+> seal is confirmed in Hancom). ❌ D2 pushed "(인)" to the right; the cause was confirmed and fixed:
+> the text-wrap bits were SQUARE (pushing the body aside). Cross-checking the specification's §4.3.9.1
+> bit table against the genuine annual attr gave in-front-of-text (5) plus lifting the body area
+> restriction (attr 0x040a6310 → 0x04aa4310). **D2 needs re-testing.** ❌ D3 still hangs, so the
+> **E-series bisection results are needed** (below).
 
-## E. 탭 먹통 이분탐색 + 도장 정답지 요청 (2026-07-16)
+## E. The tab hang bisection plus a request for seal ground truth (2026-07-16)
 
-⚠ **각 파일을 열기 전에 다른 작업 문서를 모두 저장할 것** (먹통 위험). 파일당 열림/먹통만
-기록하면 된다 — 내용 확인 불필요.
+⚠ **Save every other open document before opening each file** (there is a hang risk). Only record
+whether each file opens or hangs; checking the content is unnecessary.
 
-**E 라운드 결과(2026-07-16):** E1 열림 / E2 먹통 / E3 먹통. 해석 — 실문서 왕복(items+참조
-모두 보유)은 정상이므로 writer 전반은 무죄. 합성 계열(D3 베이스)에서 정의만(E2)·참조만(E3)
-둘 다 먹통 → "항목/참조 단독 유죄"보다 **베이스 자체 또는 '4번째 tabPr 추가'라는 공통
-인자**가 유력. 대조군(F/G)으로 최종 격리:
+**E round results (2026-07-16):** E1 opens, E2 hangs, E3 hangs. Interpretation: a real-document
+round-trip (holding both items and references) is fine, so the writer in general is innocent. On the
+synthesized side (the D3 base), both definitions-only (E2) and references-only (E3) hang, so rather
+than "items or references alone are guilty", **the base itself or the common factor of "adding a
+fourth tabPr"** is the likely culprit. The F and G control groups isolate it:
 
-| 파일 | 무엇을 격리 | 해석 |
+| File | What it isolates | Interpretation |
 |---|---|---|
-| `F1_베이스만.hwpx` | D3 베이스 그대로, 탭 수술 전무(기본 3개 tabPr·참조 0) | **먹통이면: 베이스 유죄 확정(탭 무관!)** — C 파일과의 diff로 특정. 열리면: 탭 쪽 유죄 |
-| `F2_빈4번탭.hwpx` | 베이스 + 4번째 **빈** tabPr(항목·참조 없음) | 먹통이면: "4번째 tabPr 존재" 자체가 원인 |
-| `G1_정품autoTab.hwpx` | F2 + 정품 autoTab 패턴(id1 autoTabLeft=1) | F2 먹통·G1 열림이면: autoTab 플래그 규칙이 원인 |
+| `F1_베이스만.hwpx` | The D3 base as-is with no tab surgery (the default three tabPr, zero references) | **A hang confirms the base is guilty (tabs are irrelevant)**, to be pinned down by diffing against a C file. Opening means the tab side is guilty |
+| `F2_빈4번탭.hwpx` | The base plus an **empty** fourth tabPr (no items, no references) | A hang means the mere existence of a fourth tabPr is the cause |
+| `G1_정품autoTab.hwpx` | F2 plus the genuine autoTab pattern (id1 autoTabLeft=1) | F2 hanging while G1 opens means the autoTab flag rule is the cause |
 
-**F/G 라운드 결과(2026-07-18): F1·F2·G1 전부 먹통 → 베이스 유죄 확정, 탭은 완전 무죄.**
+**F/G round results (2026-07-18): F1, F2 and G1 all hang, confirming the base is guilty and tabs are
+entirely innocent.**
 
-**★원인 확정·수정 완료(2026-07-18, Phase 2 감사 C15 + 07 A11):** 본문 탭 문자가
-`<hp:t>` 안에 **raw 0x09 바이트**로 방출된 것이 먹통 원인. D3 계열 베이스에만 탭 문자가
-있어 C 파일은 정상이었고, tabPr 정의는 처음부터 무죄였다. 수정: 탭=InlineCtrl(9)→`<hp:tab/>`
-불변식 확립(유입 차단·write 방어선·read 정규화 3중). 재생성 D3에서 raw 0x09=0개,
-`<hp:tab/>`=2개 바이트 확인. **E2/E3/F1/F2/G1(오염 베이스 진단 산출물)은 오발 방지를 위해
-폴더에서 제거함** — E1(정상)만 존치.
+**★ Cause confirmed and fixed (2026-07-18, Phase 2 audit C15 plus 07 A11):** the hang was caused by
+the body tab character being emitted as a **raw 0x09 byte** inside `<hp:t>`. Only the D3-family base
+contained a tab character, which is why the C files were fine, and the tabPr definitions were innocent
+from the start. The fix established the invariant that a tab is `InlineCtrl(9)` → `<hp:tab/>` (blocked
+at the entry, defended on write, normalized on read). The regenerated D3 measures zero raw 0x09 bytes
+and two `<hp:tab/>`. **E2, E3, F1, F2 and G1 (diagnostic outputs from the polluted base) were removed
+from the folder to prevent false readings**; only E1 (healthy) remains.
 
-**→ 최종 재실기 대상: `D3_사용자탭.hwpx` 하나.** 정상 확인 사항: 먹통 없이 열림 +
-"이름/직책/서명"이 탭 위치(왼쪽 30mm·가운데 80mm, 대시 채움)로 정렬.
+**→ The single remaining re-test target is `D3_사용자탭.hwpx`.** Pass: it opens without hanging and
+"이름/직책/서명" aligns to the tab positions (left 30mm, center 80mm, with a dash leader).
 
-**4차 수정(2026-07-18):** 열림은 확인됐으나 탭이 폭 0으로 무시(밀착)됨 → 정답지 대조로
-원인 확정: 한글은 `<hp:t>` **안** mixed content 탭(width/leader/type 속성)만 인식(07 **A12**).
-in-t 중첩 방출로 교정.
+**Fourth-round fix (2026-07-18):** it opened, but the tabs were ignored at zero width (the text ran
+together). Comparison against ground truth confirmed the cause: Hancom recognizes only a mixed-content
+tab **inside** `<hp:t>` (with width, leader and type attributes) (07 **A12**). Corrected by emitting
+it nested inside t.
 
-**✅ 최종 실기 통과(2026-07-18):** 탭 정렬 정상 확인 — **D 시리즈 전체(D1·D2·D3) 실기 확정.**
-도장 날인(hwpx·hwp5)과 사용자 탭 왕복이 실기로 종결됐다.
+**✅ Final Hancom pass (2026-07-18):** tab alignment confirmed, so **the whole D series (D1, D2, D3) is
+confirmed in Hancom.** Seal stamping (hwpx and hwp5) and the user tab round-trip are settled by
+testing.
 
-**도장 정답지 생성 요청(D1/D2용 — 2분):** 한글에서 새 문서에 `결재란: (인)` 입력 → 아무
-이미지나 삽입 → 개체 속성에서 **본문과의 배치=글 앞으로** → "(인)" 위에 겹치게 드래그 →
-`도장정답지.hwpx`와 `도장정답지.hwp` 두 형식으로 저장해 `~/Documents/hwp-verification/`에
-넣어주세요. 한글이 실제로 쓰는 배치 좌표계·속성을 그대로 복제하는 것이 남은 유일한 정공법입니다.
+**A request for seal ground truth (for D1 and D2, two minutes):** in Hancom, type `결재란: (인)` in a
+new document, insert any image, set the object's **text placement to in front of text**, drag it to
+overlap "(인)", and save it as both `도장정답지.hwpx` and `도장정답지.hwp` into
+`~/Documents/hwp-verification/`. Replicating the placement coordinate system and properties Hancom
+actually uses is the only remaining frontal approach.
 
-| 파일 | 무엇을 테스트 | 정상 확인법 |
+| File | What it tests | How to check |
 |---|---|---|
-| `D1_도장.hwpx` | `edit --seal` 부유(글 앞) 도장 배치 | "결재란: (인)" 문구 **위에 빨간 원(18mm)이 겹쳐** 표시되고, "(인)" 텍스트도 그대로 보임. 도장을 클릭하면 개체(그림)로 선택됨 |
-| `D2_도장.hwp` | 같은 기능의 hwp5 합성 경로 | 위와 동일. **손상 팝업 없이 열리는지가 특히 중요**(hwp5 부유 그림 합성) |
-| `D3_사용자탭.hwpx` | 사용자 탭 정의 왕복(GC-4) | 본문 탭 문자가 **왼쪽 30mm·가운데 80mm 위치**로 정렬되고, 탭 채움(점선)이 표시. (모양-문단 모양-탭 설정에서 두 탭 정의 존재 확인) |
+| `D1_도장.hwpx` | `edit --seal` floating (in front of text) seal placement | A red circle (18mm) **overlaps** the text "결재란: (인)" while the "(인)" text remains visible. Clicking the seal selects it as an object (a picture) |
+| `D2_도장.hwp` | The same feature through the hwp5 synthesis path | The same. **Opening with no corruption popup matters especially here** (hwp5 floating picture synthesis) |
+| `D3_사용자탭.hwpx` | The user tab definition round-trip (GC-4) | Body tab characters align to **left 30mm and center 80mm** with a dotted leader displayed. (Check that both tab definitions exist in Shape > Paragraph shape > Tab settings) |
 
-## H. markdown 들여오기 왕복 (2026-07-19 — GI-1·GI-2, [12](design/12-feature-gaps.md) §0.5)
+## H. The markdown import round-trip (2026-07-19: GI-1, GI-2, [12](design/12-feature-gaps.md) §0.5)
 
-md에서 합성한 각주·번호목록의 실기 수용 확인. **이번 배치의 호환 민감 지점은 합성 각주**
-(각주 LIST_HEADER를 정답지 없이 템플릿 대용, BULLET 레코드 §4.2.9 합성 — 정품 미대조).
+Checking that footnotes and numbered lists synthesized from markdown are accepted in Hancom. **The
+compatibility-sensitive point in this batch is the synthesized footnote** (the footnote LIST_HEADER
+uses a template substitute with no ground truth, and the BULLET record is synthesized per §4.2.9, not
+compared against genuine files).
 
-| 파일 | 무엇을 테스트 | 정상 확인법 |
+| File | What it tests | How to check |
 |---|---|---|
-| `H1_md왕복.hwpx` | md→hwpx: 각주+취소선+순서목록+중첩 글머리 | 본문에 각주 참조 번호(작은 첨자)가 붙고 **쪽 하단에 각주 내용** 표시. ~~취소선~~ 표시. 목록이 번호("1. 2. 3.")·글머리(중첩 들여쓰기)로 표시 |
-| `H2_md왕복.hwp` | 같은 내용의 hwp5 합성 경로 | 위와 동일 — **손상 팝업 없이 열리는지가 특히 중요**(합성 각주·NUMBERING/BULLET 레코드). 취소선은 hwp5 경로에선 서식 미기록(텍스트만) — 설계상 |
+| `H1_md왕복.hwpx` | md → hwpx: footnotes, strikethrough, ordered lists, nested bullets | A footnote reference number (a small superscript) appears in the body with **the footnote content at the bottom of the page**. Strikethrough displays. Lists display as numbers ("1. 2. 3.") and bullets (nested indentation) |
+| `H2_md왕복.hwp` | The same content through the hwp5 synthesis path | The same. **Opening with no corruption popup matters especially here** (synthesized footnotes and NUMBERING/BULLET records). Strikethrough is not recorded as formatting on the hwp5 path (text only), by design |
 
-**1차 실기(2026-07-19):** ✅ **H1 완전 정상 — hwpx 합성 각주·목록 실기 확정.** ❌ H2는 열림·
-각주·번호목록 정상이나 **글머리 마커(*)만 미표시**.
+**First Hancom test (2026-07-19):** ✅ **H1 fully correct, confirming synthesized hwpx footnotes and
+lists in Hancom.** ❌ H2 opened with correct footnotes and numbered lists but **only the bullet marker
+(*) was missing**.
 
-**2차 수정(2026-07-19):** 정품(제주한라대 사업계획서.hwp) BULLET 5개 전수 바이트 대조로 원인
-확정 — 실전 레이아웃은 25B(문자@12)인데 스펙 표 42 오기(20B·문자@8)대로 합성해 한글이 정위치
-에서 널을 읽음(07 **B7** 등재). writer·리더 모두 교정(리더는 정품 파일 글머리 문자 오독까지 해소).
+**Second fix (2026-07-19):** comparing all five BULLET records of a genuine file (제주한라대
+사업계획서.hwp) byte by byte confirmed the cause: the real layout is 25B (character at offset 12) but
+we synthesized per the typo in specification table 42 (20B, character at 8), so Hancom read a null at
+the right position (registered as 07 **B7**). Both the writer and the reader were corrected (the
+reader also stopped misreading bullet characters of genuine files).
 
-**2차 재실기: ✅ 마커 표시 확인(BULLET 실기 확정).** ❌ 취소선("지운 글")은 원래 설계 제외였던
-것 → **3차 수정(2026-07-19)**: hwp5 합성에 취소선 attr bit18(§4.2.7 표35) **쓰기 전용** 기록.
-리더는 계속 불신(코퍼스 실측: bit18이 변경추적 삭제표시 템플릿으로 오염 — 한 파일 92%가 가짜
-취소선이라 읽기 채택 불가). 최악의 경우도 미표시일 뿐 손상 없음.
-**3차 재실기: ✅ 취소선 표시 확인 — H 시리즈 전체(H1·H2) 실기 확정(2026-07-19).**
-bit18 단독으로 한글이 취소선을 렌더함이 입증됨(07 **B8**). md 들여오기 왕복(각주·취소선·
-번호/글머리 목록)이 hwp5·hwpx 양 경로에서 실기 종결됐다.
+**Second re-test: ✅ the marker displays, confirming BULLET in Hancom.** ❌ Strikethrough ("지운 글")
+had been excluded by design, so a **third fix (2026-07-19)** recorded strikethrough attr bit18
+(§4.2.7 table 35) on the hwp5 synthesis path as **write-only**. The reader continues to distrust it
+(corpus measurement: bit18 is polluted by the change-tracking deletion template, making 92% of one
+file falsely struck through, so it cannot be adopted on read). The worst case is that it is not
+displayed, never corruption.
+**Third re-test: ✅ strikethrough displays, confirming the whole H series (H1, H2) in Hancom
+(2026-07-19).** bit18 alone was proven to make Hancom render strikethrough (07 **B8**). The markdown
+import round-trip (footnotes, strikethrough, numbered and bulleted lists) is settled by testing on
+both the hwp5 and hwpx paths.
 
-| `I1_md이미지코드.hwpx` | md 이미지 임베드 + 인라인 코드 서식(GI-3·GI-4) | (선택적 — 검증된 경로 재사용이라 위험 낮음) 그림이 표시되고 코드가 돋움체+연회색 배경으로 보이면 확정 |
-
-## J. 쪽 테두리 교차변환 (2026-07-19 — GC-2, [12](design/12-feature-gaps.md) §0.5)
-
-| 파일 | 무엇을 테스트 | 정상 확인법 |
+| File | What it tests | How to check |
 |---|---|---|
-| `J1_쪽테두리.hwpx` | 실테두리 쓰는 정품 hwp를 우리가 hwpx로 교차변환(⚠ **차단성 실기** — hwp5 raw→`pageBorderFill` 실속성 XML 방출은 새 방출 형태) | 손상 없이 열리고, **페이지 가장자리 5mm 안쪽에 검정 실선 사각 테두리**가 모든 쪽에 표시 |
+| `I1_md이미지코드.hwpx` | markdown image embedding plus inline code formatting (GI-3, GI-4) | (Optional; low risk because it reuses verified paths.) Confirmed when the picture displays and the code appears in Dotum with a light grey background |
 
-**실기 결과(2026-07-19, 34쪽 전수 육안 판정 — 표본 판정을 정정):**
-- ✅ **I1 통과**(이미지+회색 배경 고정폭 코드) — GI-3·GI-4 실기 확정.
-- ✅ **J1 쪽 테두리 통과** — 34쪽 전부 테두리 정상·손상 없음. GC-2 쪽 테두리 실기 확정.
-- ❌ **J1에서 별개 신규 결함 발견(4·6쪽)**: 페이지에 걸치는 **긴 표가 분할되지 않고 하단
-  테두리를 뚫고 넘침**(쪽번호와 겹침·행 잘림). 나머지 32쪽 정상. → 신규 갭 **GE-8**로 등재.
+## J. Page border cross-conversion (2026-07-19: GC-2, [12](design/12-feature-gaps.md) §0.5)
 
-**GE-8 수정 이력(2026-07-19):** 1차 linesegarray 가설 → 실기 기각. 2차 **정답지 직대조로
-진범 확정**(사용자가 한글에서 같은 문서를 hwpx 저장한 `표분할정답지.hwpx`): ① treatAsChar
-고정 1 방출(원본 페이지 걸침 표는 0=부유 — 글자처럼 표는 분할 불가) ② sz height 행합산
-재계산(원본 값 2배 과다). → TABLE 개체 공통 속성 IR 승계·방출로 교정, **정답지 33/33 표
-완전 일치**(문제 표 2개: treatAsChar=0, sz 47339×54801/47622×17021).
-
-**→ ✅ J1 최종 실기 통과(2026-07-19): 표 분할 정상 확인 — GE-8 종결.**
-J 시리즈 전체(쪽 테두리 + 페이지 걸침 표) 실기 확정. GC-2·GC-3·GE-8 완결.
-
-## K. 셀 병합·열 조작 (2026-07-19 — GK-1·GK-2, [12](design/12-feature-gaps.md) §11)
-
-편집 프리미티브가 **생성**한 병합 표의 실기 수용 확인(차단성 — 병합 표 생성은 새 조합.
-구조는 정품 1,816개 실측 규칙과 일치 확인됨). ⚠ 손상/변조 팝업 여부가 1차 판정.
-
-| 파일 | 무엇을 테스트 | 정상 확인법 |
+| File | What it tests | How to check |
 |---|---|---|
-| `K1_셀병합.hwpx` | 2×2 표 상단 2셀 병합(hwpx) | 손상 없이 열리고 첫 행이 **하나로 합쳐진 셀**로 표시, 병합 셀에 두 셀의 내용이 이어져 있음 |
-| `K2_셀병합.hwp` | 같은 병합(hwp5 합성 — LIST_HEADER 정합이 관문) | 위와 동일. **손상 팝업 없음이 특히 중요** |
-| `K3_열조작.hwpx` | 3열 표에 열 추가 후 다른 열 삭제 | 손상 없이 열리고 3열 표가 정상 표시(셀 어긋남 없음) |
+| `J1_쪽테두리.hwpx` | Cross-converting a genuine hwp with real borders into our hwpx (⚠ **a blocking test**: emitting real `pageBorderFill` properties as XML from hwp5 raw is a new emission shape) | It opens with no corruption and **a solid black rectangular border 5mm inside the page edge** appears on every page |
 
-**✅ 1차 실기 통과(2026-07-19, 캡처 3장 전수 판정):** K1·K2 병합 셀 정상 표시(내용 이어붙임
-포함, hwp5 손상 없음), K3 열 구조 정확.
+**Hancom results (2026-07-19, judged visually across all 34 pages, correcting an earlier sampled
+verdict):**
 
-**미세 결함 수정(2026-07-19):** K2에서 셀 텍스트 위 여백<아래 여백(상단 붙음) 발견 →
-정품 대조로 원인 확정: 셀 LIST_HEADER 세로 정렬 bits5-6 — 정품 기본 **CENTER(0x20)** 인데
-md→hwp 합성만 TOP(0) 방출(hwpx는 상수 CENTER라 무관). 셀 합성 공통 경로 수정, 기존 실기
-케이스 중 K2만 출력 변화(개선).
+- ✅ **I1 passed** (images plus fixed-width code on a grey background), confirming GI-3 and GI-4.
+- ✅ **J1 page borders passed**: all 34 pages have correct borders with no corruption, confirming the
+  GC-2 page borders in Hancom.
+- ❌ **A separate new defect found in J1 (pages 4 and 6)**: **a long table spanning pages does not
+  split and runs through the bottom border** (overlapping the page number, clipping rows). The other 32
+  pages are fine. Registered as the new gap **GE-8**.
 
-**✅ 2차 재실기 통과(2026-07-19): 세로 가운데 정렬 확인 — K 시리즈 완전 종결, GK-1·GK-2
-실기 확정(셀 세로 정렬 CENTER 기본값 규칙 포함).**
+**The GE-8 fix history (2026-07-19):** the first linesegarray hypothesis was rejected in Hancom. The
+second attempt **confirmed the real culprits by direct comparison with ground truth**
+(`표분할정답지.hwpx`, the same document saved as hwpx by the user in Hancom): 1. emitting treatAsChar
+fixed to 1 (the original page-spanning table uses 0, that is floating; a table treated as a character
+cannot split) and 2. recomputing sz height by summing rows (twice the original value). Corrected by
+inheriting and emitting the TABLE object common properties in the IR, giving **an exact match on 33/33
+tables against the ground truth** (the two problem tables: treatAsChar=0, sz 47339×54801 and
+47622×17021).
 
-## L. 수식 방출 (2026-07-27 — GE-14·GE-15, [12](design/12-feature-gaps.md) §5.1)
+**→ ✅ J1 finally passed in Hancom (2026-07-19): table splitting confirmed, closing GE-8.**
+The whole J series (page borders plus page-spanning tables) is confirmed, completing GC-2, GC-3 and
+GE-8.
 
-hwpx writer가 새로 방출하기 시작한 `<hp:equation>`의 실기 수용 확인. **정답지(수식 든 정품
-hwpx)를 확보하지 못해 수식 전용 속성(`version`·`baseLine`·`baseUnit`·`font`)이 표준
-추정값**이라, 이 케이스만은 "열리는가"보다 **"수식이 실제로 조판돼 보이는가"** 가 핵심 판정이다.
+## K. Cell merging and column manipulation (2026-07-19: GK-1, GK-2, [12](design/12-feature-gaps.md) §11)
 
-| 파일 | 무엇을 테스트 | 정상 확인법 |
+Checking that merged tables **created** by the editing primitives are accepted in Hancom (a blocking
+test, since creating a merged table is a new combination; the structure was verified to match the
+rules measured across 1,816 genuine tables). ⚠ The first verdict is whether a corruption or alteration
+popup appears.
+
+| File | What it tests | How to check |
 |---|---|---|
-| `L1_수식.hwpx` | 인라인 수식 3종(분수+근호 / 합기호 / XML 특수문자) | "수식 자리:" 문단 끝에 수식 3개가 **글자처럼 나란히** 보인다. ① `a/b + √(x²+y²)` 꼴 분수·근호 ② Σ 상하한이 붙은 합 ③ `x < y & y > z`의 **부등호와 앰퍼샌드가 살아 있음**(빠지면 esc↔엔티티 왕복 결함). 수식을 더블클릭하면 수식 편집기가 원래 스크립트로 열려야 한다 |
+| `K1_셀병합.hwpx` | Merging the top two cells of a 2×2 table (hwpx) | It opens with no corruption and the first row displays as **a single merged cell**, with the contents of both cells joined |
+| `K2_셀병합.hwp` | The same merge (hwp5 synthesis, where LIST_HEADER consistency is the gate) | The same. **No corruption popup matters especially here** |
+| `K3_열조작.hwpx` | Adding a column to a three-column table then deleting another | It opens with no corruption and the three-column table displays correctly (no cell misalignment) |
 
-실패 시 회수할 것: 수식이 **빈 상자/물음표로 보이는지**, 아예 **자리만 있고 안 보이는지**,
-수식 편집기가 열리는지. 셋 중 무엇이냐에 따라 잘못된 속성이 갈린다(`font`/`baseUnit` vs
-`version` vs 자식 요소 순서). 정품 저장본 1개만 확보되면 그 속성으로 즉시 교체한다.
+**✅ First Hancom pass (2026-07-19, judged across three captures):** K1 and K2 display merged cells
+correctly (including the joined content, with no hwp5 corruption), and K3's column structure is exact.
 
-## 결과 회수
-각 파일에 O/X와 (실패 시) 팝업 메시지·증상을 알려주시면, 실패 항목만 정품 대조 패턴
-(가나다·다문단 실측)으로 수정합니다. 통과 항목은 미검증 → 실기 통과로 확정합니다.
-C 시리즈가 통과하면 [12](design/12-feature-gaps.md) §0.5의 2026-07-15 해소 항목들이
-실기 확정됩니다.
+**A minor fix (2026-07-19):** K2 showed less space above the cell text than below (stuck to the top).
+Comparison against genuine files confirmed the cause: the vertical alignment bits 5-6 of the cell
+LIST_HEADER default to **CENTER (0x20)** in genuine files, but only the markdown → hwp synthesis
+emitted TOP (0) (hwpx uses the CENTER constant and was unaffected). The shared cell synthesis path was
+fixed, and among the existing test cases only K2's output changed (for the better).
+
+**✅ Second re-test passed (2026-07-19): vertical centering confirmed, closing the K series entirely
+and confirming GK-1 and GK-2 in Hancom (including the CENTER default rule for cell vertical
+alignment).**
+
+## L. Equation emission (2026-07-27: GE-14, GE-15, [12](design/12-feature-gaps.md) §5.1)
+
+Checking that the `<hp:equation>` the hwpx writer newly emits is accepted in Hancom. **Because no
+ground truth (a genuine hwpx containing an equation) could be obtained, the equation-specific
+attributes (`version`, `baseLine`, `baseUnit`, `font`) are standard estimates**, so for this case the
+decisive question is not "does it open" but **"is the equation actually typeset and visible"**.
+
+| File | What it tests | How to check |
+|---|---|---|
+| `L1_수식.hwpx` | Three inline equations (a fraction plus a radical, a summation, XML special characters) | Three equations appear **side by side like characters** at the end of the "수식 자리:" paragraph: 1. a fraction and radical in the form `a/b + √(x²+y²)`, 2. a summation with limits above and below Σ, and 3. `x < y & y > z` with **the inequality signs and ampersand intact** (their absence indicates an esc-to-entity round-trip defect). Double-clicking an equation should open the equation editor with the original script |
+
+What to report on failure: whether the equation appears as **an empty box or question mark**, whether
+**only a placeholder is there with nothing visible**, and whether the equation editor opens. Which of
+the three it is points at a different wrong attribute (`font`/`baseUnit` versus `version` versus child
+element order). Obtaining a single genuine saved file would let us replace the attributes immediately.
+
+## Reporting results
+
+Tell us pass or fail per file and, on failure, the popup message and symptom; we then fix only the
+failing items using genuine comparison patterns (measured on 가나다 and 다문단). Passing items move
+from unverified to confirmed in Hancom. When the C series passes, the items resolved on 2026-07-15 in
+[12](design/12-feature-gaps.md) §0.5 become confirmed in Hancom.

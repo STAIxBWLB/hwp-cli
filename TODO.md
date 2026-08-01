@@ -1,142 +1,169 @@
-[한국어](TODO.md) · [English](TODO.en.md)
+[한국어](TODO.ko.md) · [English](TODO.md)
 
-# TODO — 스펙 재문서화 & hwp-cli 전면 재검토
+# TODO: specification re-documentation and a full review of hwp-cli
 
-> **배경:** 실기 검증(C/D 시리즈)에서 발견된 오류들의 분포가 스펙 커버리지 공백과 일치했다 —
-> hwp5 쪽은 `docs/spec.txt`(PDF 단순 텍스트 추출본)의 **표 손상**으로 비트 필드 의미가 코드에
-> 잘못 반영됐고(예: 개체 공통 속성 어울림 비트), hwpx 쪽은 **OWPML 스펙 자체가 부재**해 정품
-> 실측에만 의존했다(예: tabItem hp:switch 구조). 신뢰 가능한 Markdown 스펙 사본을 만들고,
-> 그것을 기준으로 구현 전체를 재검토한다.
-
----
-
-## Phase 1 — 스펙 PDF → Markdown 재구성 (담당: 사용자 / 검수 지원: Claude)
-
-### 1.1 대상 문서
-- [x] **한글문서파일형식 5.0 rev1.3** — ✅ 2026-07-18 사용자 재구성 완료
-      (`docs/spec/한글문서파일형식_5.0_revision1.3.md`, 2,405줄·파이프 표 1,454행, §1~§4.4 전 장.
-      시금석 검수 통과: 표 70 개체 공통속성 비트=D1/D2 실기 확정값 일치, 표 36/37 탭 정의=구현 일치.
-      잔여 소결함은 §1.4 검수 노트 참조)
-- [ ] OWPML/KS X 6101 상세 스펙 — **확보 필요** (store.hancom.com 공식 배포처)
-- [ ] 수식 스펙 rev1.2 — 확보 필요
-- [ ] 차트 스펙 rev1.2 — 확보 필요
-- [ ] 배포용 문서 스펙 rev1.2 — 확보 필요 (GA-2 착수 전제)
-
-### 1.2 작성 규칙 (Claude 접근성 최적화)
-- 위치: `docs/spec/` — **gitignore 대상**(한컴 파생물 커밋 금지 정책, docs/README.md). UTF-8.
-- 파일 분할: 스펙 장 단위, 예측 가능한 이름 — `docs/spec/4.2-docinfo.md`, `4.3-bodytext.md`,
-  `4.3.9-objects.md`, `4.3.10-controls.md` 등.
-- **표는 반드시 Markdown 파이프 표**: `| 비트 | 이름 | 값 | 의미 |`. 값 열거는 셀 안에
-  `0=paper, 1=page, 2=para` 형식. 산문으로 풀지 않는다.
-- 제목에 § 번호와 원본 쪽 번호 병기: `## §4.3.9.1 개체 공통 속성 (표 70, p.37)`.
-- 수치는 `0x1D` hex 일관 표기. 바이트 레이아웃은 표 또는 고정폭 코드블록. 이미지 금지.
-
-### 1.3 우선순위 (오류 밀집 영역 순)
-- [ ] ① §4.3.9 개체(그리기 개체 공통 속성·그림·OLE 등 — D 시리즈 오류 영역)
-- [ ] ② §4.3.10 컨트롤(구역·단·탭·번호·필드 — 탭 먹통·번호 형식 영역)
-- [ ] ③ §4.2 DocInfo 레코드 전체(CHAR_SHAPE·PARA_SHAPE·BORDER_FILL·TAB_DEF·NUMBERING·BULLET·STYLE)
-- [ ] ④ §4.1 자료형·레코드 헤더 / §3 스토리지·스트림
-- [ ] ⑤ 나머지(§4.4 문서 이력, 부속 스펙들)
-
-### 1.4 완료 기준
-- [ ] Claude가 PDF 페이지 시각 판독으로 재구성 표를 원본과 **전수 대조 검수**(장 단위 교차 확인)
-      — 1차 표본 검수(2026-07-18) 통과: 표 70·36·37을 구현/실기 확정값과 대조, 전부 일치.
-      **발견된 소결함(전수 검수·감사 시 유의)**:
-      (a) 일부 표 행 셀 경계 밀림 — 표 67 "한글| 97 수식"·"OLE| MAKE…", 표 69 "UINT32 4|…" 파이프 누락
-      (b) OCR 잔재 오타 — "HPWUNIT", "개채", "coloum"
-      (c) 의심 값 — 표 70 HorzRelTo "0 : page, 1 : page"(0은 paper의 오기 가능성, PDF 원본 대조 필요)
-      (d) 교차 참조 번호 의심 — 표 71 "캡션(표 67 참조)"(표 72가 맞을 가능성)
-
-      **Phase 2 감사(2026-07-18)에서 추가 확정된 스펙 md 결함 — 사용자 수정 권장 목록**:
-      - :154 `HWPUINT`→`HWPUNIT` (표 1 자료형 — (b)의 HPWUNIT과 별개 인스턴스)
-      - :621 표 21 셀 병합 — 값 0/1 행 분리 필요: `0=원래 종류 모름`, `1=트루타입(TTF)`, `2=HFT`
-      - :600/603/606 표 19 교차참조 — 표 15/16/17 → **표 20/21/22**로 정정
-      - :865/:882 표 38/39 — 문단 머리 정보 길이 `8` → **12**(필드 합 4+2+2+4, 코드·코퍼스 실측 일치)
-      - :945/946 표 43 교차참조 — 속성2 "(표 40)"→**표 45**, 속성3 "(표 41)"→**표 46**
-      - :1690/:1705-1706 표 106/107 교차참조 — "표 80"→개체 요소 표(§4.3.9.2.1), "표 27"→**표 32**(그림 정보)
-      - :표 42 글머리표 — **20B·문자@8 표기가 오기**: 정품 실측 25B, [8..12]=번호 글자모양
-        id(0xFFFFFFFF), 문자@12 (2026-07-19 H2 실기+정품 5레코드 대조로 확정, 07 B7)
-      - §4.3.10.1.2 각주/미주 모양 — **구분선 길이가 HWPUNIT16(2B)로 표기됐으나 실측 4B(HWPUNIT)**,
-        총 28B (정품 476레코드 전수 + hwpx noteLine@length 양방향 대조, GC-3 조사)
-      - §4.3.10.1.3 표135 쪽 테두리 — **"전체 길이 12" 선언이 오기**(필드 합=14, 정품 714레코드
-        전수 14B) — 07/08의 "레이아웃 반증(미확정)" 이력의 근본 원인이었음(GC-2 조사로 종결)
-      - ★스펙 PDF **원본 자체의 오기**가 재현된 3건(md는 원본에 충실 — [원본 오기] 편집 노트만 권장):
-        표 144 nwno 필드합 6B vs 총길이 8 표기 / 표 145 pghd 자료형 UINT(4B) vs 길이 2 표기 /
-        표 138 "속성 bit0-15(표 138 참조)" 자기참조(표 139가 정답). 셋 다 우리 코드는 정품 실측을 따라 올바름.
+> **Background:** the distribution of the errors found during Hancom verification (the C and D series)
+> matched the gaps in our specification coverage. On the hwp5 side, **damaged tables** in
+> `docs/spec.txt` (a plain text extraction of the PDF) led to bit fields being interpreted incorrectly
+> in the code (for example the object common-property text-wrap bits); on the hwpx side **the OWPML
+> specification was simply absent**, so we relied only on measurements of genuine files (for example
+> the tabItem hp:switch structure). The plan is to produce a trustworthy Markdown copy of the
+> specification and review the whole implementation against it.
 
 ---
 
-## Phase 2 — 재구성 스펙 기반 hwp-cli 전면 재검토 (담당: Claude — 감사 실행은 Opus 4.8 위임, 판정은 Fable 5)
+## Phase 1: reconstruct the specification PDF as Markdown (owner: user; review support: Claude)
 
-### 2.1 스펙 ↔ 구현 전수 대조 감사
-- [x] **기능 커버리지 전수 감사(2026-07-19)** — §3·§4.2·§4.3·§4.4 전 구역을 4구역 병렬 감사
-      (코드 ↔ 스펙 ↔ 갭 카탈로그 3중 대조, 신규 후보 전건 코드 재검증). 결과: 신규 갭 17건 등재
-      (12번 문서 §0.4 등재 이력 — GB-13~15·GD-4·GE-9~13·GE-α9·GE-β7~β8·GF-4~5·GG-21~24), 기존 항목
-      보강 6건, 10/11번 문서 정정 3건(셀 34B·테두리 13B ★·(c) 테이블 누락), 판정 유보 3건(12번
-      §14.3 — 정품 실측 선행). 콘텐츠 소실급 4건(GF-4 필드 22종·GF-5 숨은설명·GE-β7/β8 스토리지)
-      이 수정 1순위.
-- [ ] 파서(`hwp5/doc_info.rs`·`body_text.rs`) — 레코드 레이아웃·비트 해석을 새 스펙 표와 절별 대조
-      (기능 커버리지 감사와 별개의 **비트 단위 값 검증** — 잔여)
-- [ ] writer(`hwp5/write.rs` 합성 상수·비트, `hwpx/write/*`) — 하드코딩 상수의 스펙 정합 확인
-- [ ] IR(`hwp-model`) 필드 의미·단위 — 스펙 정의와 대조
-- [ ] **D2류 잠복 결함**(비트 오독·표 손상 기인) 전수 발굴 — 절별 감사 에이전트 팬아웃
+### 1.1 Target documents
 
-### 2.2 설계 문서 정확도 감사
-- [ ] 문서 10(hwp5 구조도) 표 A~D의 페이로드 요약·상태 라벨을 새 스펙과 대조·정정
-- [ ] 문서 11(hwpx 구조도) — OWPML 스펙 확보 시 요소·속성 카탈로그 보강
-- [ ] 문서 07(호환 규칙) — 스펙으로 설명되는 규칙과 실기 전용 규칙 분리 표기
+- [x] **한글문서파일형식 5.0 rev1.3** reconstructed by the user on 2026-07-18
+      (`docs/spec/한글문서파일형식_5.0_revision1.3.md`, 2,405 lines with 1,454 pipe-table rows,
+      covering §1 to §4.4). Touchstone review passed: table 70 object common-property bits match the
+      values confirmed in Hancom, and tables 36/37 tab definitions match the implementation. Remaining
+      minor defects are in the §1.4 review notes.
+- [ ] OWPML / KS X 6101 detailed specification: **needs to be obtained** (official store.hancom.com)
+- [ ] Equation specification rev1.2: needs to be obtained
+- [ ] Chart specification rev1.2: needs to be obtained
+- [ ] Distribution-document specification rev1.2: needs to be obtained (prerequisite for starting GA-2)
 
-### 2.3 갭 카탈로그(문서 12) 재평가
-- [ ] 스펙 확보로 난이도 변동 항목 재산정(예: GB류 페이로드 해석 — 표가 있으면 M→S 가능)
-- [ ] 배포용 문서(GA-2)는 스펙 확보 즉시 착수 후보로 승격
+### 1.2 Authoring rules (optimized for agent access)
 
-### 2.4 결함 수정 및 검증
-- [ ] 감사 발견 결함의 우선순위 수정 배치(Opus 4.8 워크플로)
-- [ ] 실기 검증 세트(A~G) 확장 — 수정 영역별 격리 파일 추가
-- [ ] 최종: 감사 보고서(발견·정정 목록) + 전체 테스트 그린 + 실기 재검
+- Location: `docs/spec/`, which is **gitignored** (no Hancom derivatives may be committed; see
+  docs/README.md). UTF-8.
+- Split by specification chapter with predictable names: `docs/spec/4.2-docinfo.md`,
+  `4.3-bodytext.md`, `4.3.9-objects.md`, `4.3.10-controls.md` and so on.
+- **Tables must be Markdown pipe tables**: `| bit | name | value | meaning |`. Enumerate values inside
+  the cell as `0=paper, 1=page, 2=para`. Do not turn them into prose.
+- Put both the § number and the original page number in the heading:
+  `## §4.3.9.1 개체 공통 속성 (표 70, p.37)`.
+- Numbers use consistent hex notation (`0x1D`). Byte layouts go in a table or a fixed-width code
+  block. No images.
+
+### 1.3 Priority (densest error areas first)
+
+- [ ] 1. §4.3.9 objects (drawing-object common properties, pictures, OLE; the D-series error area)
+- [ ] 2. §4.3.10 controls (sections, columns, tabs, numbering, fields; the dead-tab and number-format area)
+- [ ] 3. All of §4.2 DocInfo records (CHAR_SHAPE, PARA_SHAPE, BORDER_FILL, TAB_DEF, NUMBERING, BULLET, STYLE)
+- [ ] 4. §4.1 data types and record headers, §3 storages and streams
+- [ ] 5. The rest (§4.4 document history, the companion specifications)
+
+### 1.4 Completion criteria
+
+- [ ] Claude reads the PDF pages visually and cross-checks **every** reconstructed table against the
+      original, chapter by chapter. The first sampled review (2026-07-18) passed: tables 70, 36 and 37
+      were compared against the implementation and against values confirmed in Hancom, and all matched.
+
+      **Minor defects found (watch for these during the full review):**
+      (a) Cell boundaries shifted on some table rows: table 67 "한글| 97 수식" and "OLE| MAKE...",
+      table 69 "UINT32 4|..." missing a pipe.
+      (b) OCR typos: "HPWUNIT", "개채", "coloum".
+      (c) Suspect value: table 70 HorzRelTo "0 : page, 1 : page" (0 is probably a typo for paper;
+      needs comparison against the original PDF).
+      (d) Suspect cross-reference: table 71 "캡션(표 67 참조)" (table 72 is more likely).
+
+      **Further specification-Markdown defects confirmed during the Phase 2 audit (2026-07-18),
+      recommended for the user to fix:**
+      - :154 `HWPUINT` → `HWPUNIT` (table 1 data types; a separate instance from the HPWUNIT in (b))
+      - :621 table 21 cell merge: values 0/1 need separate rows, `0=original kind unknown`,
+        `1=TrueType (TTF)`, `2=HFT`
+      - :600/603/606 table 19 cross-references: tables 15/16/17 → **20/21/22**
+      - :865/:882 tables 38/39: paragraph head information length `8` → **12** (field sum 4+2+2+4,
+        matching both the code and corpus measurements)
+      - :945/946 table 43 cross-references: property 2 "(표 40)" → **table 45**, property 3
+        "(표 41)" → **table 46**
+      - :1690/:1705-1706 tables 106/107 cross-references: "표 80" → the object element table
+        (§4.3.9.2.1), "표 27" → **table 32** (picture information)
+      - table 42 bullets: the **20B and character@8 notation is wrong**. Genuine files measure 25B,
+        with [8..12] = numbering character shape id (0xFFFFFFFF) and the character at 12 (confirmed
+        2026-07-19 by Hancom testing plus five genuine records, 07 B7)
+      - §4.3.10.1.2 foot/endnote shape: the **separator length is documented as HWPUNIT16 (2B) but
+        measures 4B (HWPUNIT)**, for 28B total (all 476 genuine records plus a two-way comparison with
+        hwpx noteLine@length; investigation GC-3)
+      - §4.3.10.1.3 table 135 page border: the **"total length 12" declaration is wrong** (fields sum
+        to 14, and all 714 genuine records are 14B). This was the root cause of the "layout
+        counter-evidence (unconfirmed)" history in 07/08, closed by investigation GC-2.
+      - Three cases where the **specification PDF itself is wrong** and the Markdown faithfully
+        reproduces it (only an editorial "[original typo]" note is recommended): table 144 nwno fields
+        sum to 6B versus a declared total of 8; table 145 pghd data type UINT (4B) versus a declared
+        length of 2; table 138 "속성 bit0-15(표 138 참조)" self-reference (table 139 is correct). In all
+        three our code follows the genuine-file measurements and is correct.
 
 ---
 
-## 현재 진행 중 (2026-07-19)
+## Phase 2: full review of hwp-cli against the reconstructed specification
 
-- [x] **GK-1·GK-2 구현 완료·#9 통합(2026-07-19)** — 정품 병합 표 1,816개 전수 실측(5규칙
-      만장일치) 기반 프리미티브 4종(merge/split/add-col/delete-col)+CLI+불변식 게이트.
-      #9의 열 추가(전체 폭 유지)·재귀 로케이터·replace 고속 경로 계승, 병합 표 지원으로 통합.
-      scripts/check.sh 전부 통과·세트 30/0. **K1~K3 실기 확정**(병합·세로정렬·열조작 정상 확인).
+### 2.1 Exhaustive specification-to-implementation audit
+
+- [x] **Full feature-coverage audit (2026-07-19)**: §3, §4.2, §4.3 and §4.4 audited in four parallel
+      areas (a three-way comparison of code, specification and gap catalog, with every new candidate
+      re-verified against the code). Result: 17 new gaps registered (see the §0.4 registration history
+      in document 12: GB-13~15, GD-4, GE-9~13, GE-α9, GE-β7~β8, GF-4~5, GG-21~24), 6 existing entries
+      strengthened, 3 corrections to documents 10/11 (cell 34B, border 13B, a missing (c) table), and
+      3 verdicts deferred (document 12 §14.3, pending genuine-file measurement). The four
+      content-loss items (GF-4 22 field kinds, GF-5 hidden comments, GE-β7/β8 storages) are the first
+      to fix.
+- [ ] Parser (`hwp5/doc_info.rs`, `body_text.rs`): compare record layouts and bit interpretation
+      against the new specification tables, section by section (**bit-level value verification**,
+      separate from the coverage audit; outstanding)
+- [ ] Writer (`hwp5/write.rs` synthesis constants and bits, `hwpx/write/*`): check hardcoded constants
+      against the specification
+- [ ] IR (`hwp-model`): compare field meanings and units against the specification
+- [ ] Hunt down all **D2-class latent defects** (caused by misread bits and damaged tables) with a
+      per-section audit fan-out
+
+### 2.2 Design-document accuracy audit
+
+- [ ] Document 10 (hwp5 structure map): compare and correct the payload summaries and status labels in
+      tables A to D against the new specification
+- [ ] Document 11 (hwpx structure map): extend the element and attribute catalog once the OWPML
+      specification is available
+- [ ] Document 07 (compatibility rules): separate rules explained by the specification from rules known
+      only from Hancom testing
+
+### 2.3 Re-evaluate the gap catalog (document 12)
+
+- [ ] Re-estimate items whose difficulty changes now that the specification is available (for example
+      GB-class payload interpretation may drop from M to S if a table exists)
+- [ ] Promote distribution documents (GA-2) to a start candidate as soon as the specification is available
+
+### 2.4 Fix and verify
+
+- [ ] Schedule fixes for audit findings by priority
+- [ ] Extend the Hancom verification set (A to G) with isolation files per fixed area
+- [ ] Finally: an audit report (findings and corrections), a fully green test run, and re-verification
+      in Hancom
 
 ---
 
-## 기능 백로그
+## In progress (2026-07-19)
 
-- [x] **hwp/hwpx → HTML 변환 고도화** (2026-07-19 등재, **2026-08-01 해소**) — `convert --to html`은 이미 존재하나
-      (`hwp-convert/src/html.rs`) md 대비 충실도가 낮다. md에서 해소된 GH-3(각주 마커)·GH-4(병합 셀
-      colspan/rowspan)·GH-5(셀 내 블록)의 **html 경로 잔존분**을 해소하고, 글자·문단 모양의 CSS
-      매핑(글꼴·크기·색·정렬·줄간격), 다단·머리말/꼬리말 표현을 보강해 **"md와 동급 이상 + 스타일
-      충실"**을 목표로 한다. 각주는 `<sup>`+앵커, 병합 표는 colspan/rowspan 방출이 1차 범위.
-      → **2026-08-01 해소**: html 경로 GH-3·GH-4·GH-5 잔존 해결. CSS 스타일 매핑·다단·머리말
-      표현은 **분리 보류**(아래 계약 작업이 구조 왕복을 우선 — 스타일 왕복은 계약 v1 범위 밖).
-- [x] **HTML fragment 왕복 + 부분(part) 조합** (**2026-08-01 해소·실기 확정**, Maru 문서 작성기 연동 축) —
-      본문 산문은 markdown, 표·그림은 HTML fragment로 부분을 나눠 쓰고 조합하는 대규모
-      문서 워크플로. ① 계약 문서(docs/design/18) + html.rs XHTML 정합, ② `from_html`
-      임포터(계약 위반 hard error), ③ md+HTML 혼합 부분 파일(from_markdown HTML 블록),
-      ④ `hwp fill --set 이름=@부분.md` 템플릿+부분 채우기(기본 팔레트 계열 한정).
-      예제: `examples/part-composition-v1/`. 잔여: 없음(스타일 왕복도 해소).
-      **후속(2026-08-01)**: SVG 부분 이미지(검증+결정론적 PNG 래스터화, spec-v2와
-      `hwp-convert::svg` 공용화), MCP `hwp_fill`의 `parts` 인자, odt 경로 GH-3~5 해소.
-      **스타일 왕복(2026-08-01, 계약 v2 §8)**: export가 `.cs{n}`/`.ps{n}` 규칙으로
-      글꼴·크기·색·음영·자간·정렬·줄간격·여백·들여쓰기를 싣고 import가 복원한다
-      (마크는 태그가 정본, 팔레트 dedup, 글꼴 추가 복원).
-      **P1 실기 확정(2026-08-01)**: 부분 조합 산출물(`P1_부분조합.hwpx`)을 한글에서 열어
-      md 부분(문단·굵게·목록), HTML 표 병합 셀(colspan 2종·rowspan 1종) 정상 표시,
-      손상/변조 경고 없음을 확인했다.
-      **P2 실기 확정(2026-08-01)**: SVG 부분 산출물(`P2_SVG다이어그램부분.hwpx`)을 한글에서
-      열어 래스터화된 SVG 구성도·병합 표·부분 블록 정상 표시, 손상/변조 경고 없음을 확인했다.
+- [x] **GK-1 and GK-2 implemented and merged with #9 (2026-07-19)**: four primitives
+      (merge/split/add-col/delete-col) plus CLI and invariant gates, based on an exhaustive measurement
+      of 1,816 merged tables in genuine files (five rules, unanimous). Inherits #9's column insertion
+      (total width preserved), recursive locator and replace fast path, unified with merged-table
+      support. All of scripts/check.sh passes; verification set 30/0. **K1 to K3 confirmed in Hancom**
+      (merging, vertical alignment and column manipulation all correct).
 
 ---
 
-## 진행 중 작업과의 관계
+## Feature backlog
 
-- **D3 탭 먹통**: F/G 이분탐색 결과(2026-07-18) F1·F2·G1 전부 먹통 → **베이스 유죄 확정(탭 무죄)**.
-  C1(열림)↔F1(먹통) 파일 diff로 원인 특정 — Phase 2 감사 워크플로의 D3 레인에서 진행 중.
-- **Phase 2 착수(2026-07-18)**: 스펙 장별 감사 6 + D3 diff 1 → 발견별 적대 검증(xhigh) 워크플로 가동.
-- 저비용 배치(GC-4/5/8/9·GE-β5·GM-7)와 D 시리즈 수정분은 **실기 확정 후 커밋** 예정.
+- [ ] **Upgrade hwp/hwpx → HTML conversion** (registered 2026-07-19). `convert --to html` already
+      exists (`hwp-convert/src/html.rs`) but has lower fidelity than markdown. Resolve what remains on
+      the HTML path of GH-3 (footnote markers), GH-4 (merged-cell colspan/rowspan) and GH-5 (in-cell
+      blocks), which are already solved for markdown, and improve CSS mapping of character and
+      paragraph shapes (font, size, color, alignment, line spacing) plus columns and headers/footers.
+      The goal is "at least on par with markdown, plus faithful styling". Footnotes as `<sup>` with an
+      anchor and merged tables emitting colspan/rowspan are the first scope.
+
+---
+
+## Relationship to work in progress
+
+- **D3 dead tabs**: the F/G bisection (2026-07-18) found F1, F2 and G1 all dead, which **convicts the
+  base file** (tabs are innocent). The cause is being isolated by diffing C1 (opens) against F1 (dead),
+  in the D3 lane of the Phase 2 audit workflow.
+- **Phase 2 started (2026-07-18)**: six per-chapter specification audits plus one D3 diff, feeding an
+  adversarial verification (xhigh) workflow per finding.
+- The low-cost batch (GC-4/5/8/9, GE-β5, GM-7) and the D-series fixes are **to be committed after
+  confirmation in Hancom**.

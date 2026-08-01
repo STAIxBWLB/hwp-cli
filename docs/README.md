@@ -1,35 +1,40 @@
-[한국어](README.md) · [English](README.en.md)
+[한국어](README.ko.md) · [English](README.md)
 
 # docs
 
-파서·렌더러 작업에 참고하는 HWP 5.0 포맷 스펙 자료에 대한 안내.
+Notes on the HWP 5.0 format specification material used when working on the parser and renderer.
 
-## 문서 구성
+## Layout
 
-| 경로 | 내용 |
+| Path | Contents |
 |---|---|
-| [design/](design/) | 설계 지식 정본. 시작점은 [00-overview](design/00-overview.md) |
-| [manual/cli-reference.md](manual/cli-reference.md) | clap 정의에서 자동 생성되는 CLI 레퍼런스(수동 편집 금지) |
-| [release-readiness.md](release-readiness.md) | 릴리스 전 게이트 체크리스트 |
-| [hancom-verification-checklist.md](hancom-verification-checklist.md) | 한글 실기 검증 체크리스트 |
+| [design/](design/) | The design knowledge of record. Start at [00-overview](design/00-overview.md) |
+| [manual/cli-reference.md](manual/cli-reference.md) | CLI reference generated from the clap definitions (do not edit by hand) |
+| [release-readiness.md](release-readiness.md) | Pre-release gate checklist |
+| [hancom-verification-checklist.md](hancom-verification-checklist.md) | Checklist for verifying files in Hancom Office |
 
-사용자용 문서는 한국어 정본(`NAME.md`)과 영문 페어(`NAME.en.md`)를 함께 둔다.
-`manual/cli-reference*.md`는 clap 정의에서 두 언어 모두 자동 생성한다(수동 편집 금지).
+User-facing documents are bilingual: English is canonical (`NAME.md`) and Korean is its pair
+(`NAME.ko.md`).
+Both `manual/cli-reference*.md` files are generated from the clap definitions in either language
+(do not edit them by hand).
 
-## 스펙 문서는 저장소에 동봉하지 않는다
+## The specification is not bundled with this repository
 
-HWP 5.0 파일 형식 명세("한글 문서 파일 형식 5.0 / HWP Document File Formats 5.0")의 저작권은
-(주)한글과컴퓨터에 있다. 한컴 공개 문서 라이선스는 자유로운 열람·복사·배포를 허용하되 배포는
-**수정되지 않은 원본 또는 그 복사본**으로 제한한다. 따라서 텍스트 추출본·페이지 캡처 같은 파생물은
-재배포 허용 범위 밖이며, 이 저장소는 스펙 문서를 **동봉하지 않고** 공식 배포처 링크만 제공한다.
+The HWP 5.0 file format specification ("한글 문서 파일 형식 5.0 / HWP Document File Formats 5.0") is
+copyrighted by Hancom Inc. Its open-document license permits free viewing, copying and distribution
+but restricts distribution to the **unmodified original or copies thereof**. Derivatives such as
+extracted text or page captures therefore fall outside what may be redistributed, so this repository
+does **not** bundle the specification and links only to the official distribution point.
 
-- **공식 다운로드**: <https://store.hancom.com/etc/hwpDownload.do>
-  (HWP·PDF 양식, `한글문서파일형식_5.0_revision1.3`)
-- 코드 주석은 스펙을 섹션 번호로 인용한다(예: `한글문서파일형식 5.0 §4.x`). 공정 이용 범위다.
+- **Official download**: <https://store.hancom.com/etc/hwpDownload.do>
+  (HWP and PDF, `한글문서파일형식_5.0_revision1.3`)
+- Code comments cite the specification by section number (for example
+  `한글문서파일형식 5.0 §4.x`), which is fair use.
 
-> 로컬에서 스펙 원본(`hwp5_spec.pdf`, `한글문서파일형식_5.0_revision1.3.hwp` 등)을 `docs/`에 두고
-> 작업할 수 있으나, 이 파일들은 루트 `.gitignore`로 추적되지 않는다.
+> You may keep the original specification files (`hwp5_spec.pdf`,
+> `한글문서파일형식_5.0_revision1.3.hwp` and so on) under `docs/` locally; the root `.gitignore`
+> keeps them untracked.
 
-## 고지
+## Acknowledgment
 
-본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
+This product was developed with reference to Hancom's HWP document file (.hwp) open specification.
