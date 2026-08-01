@@ -1,7 +1,28 @@
 # CLAUDE.md
 
 HWP 5.0(바이너리)·HWPX(OWPML)를 외부 HWP 라이브러리 없이 **직접 구현**하는 Rust 워크스페이스.
-문서·주석·커밋 메시지·경고 문구는 한국어를 기본으로 한다.
+코드 주석·경고 문구는 한국어를 기본으로 한다. 커밋 메시지는 한/영 무관.
+
+## 문서 정책 — 한/영 페어
+
+- 사용자용 문서는 **한국어 정본 + 영문 페어**로 둔다: `NAME.md`(한국어)와 `NAME.en.md`(영문).
+- 두 파일 모두 **첫 줄에 언어 링크**를 둔다: `[한국어](NAME.md) · [English](NAME.en.md)`
+  (README는 `[한국어](README.md) · [English](README.en.md)`).
+- 한쪽만 고치지 않는다. 내용이 바뀌면 **같은 커밋에서 양쪽을 갱신**한다.
+- 릴리스 노트는 한/영 병기한다. 정본은 `CHANGELOG.md`(섹션별 한국어 다음 영문)이고, 릴리스 본문은
+  이 파일에서 뽑는다(`scripts/release_notes.sh`).
+- `docs/manual/cli-reference.md`(한국어)와 `cli-reference.en.md`(영문)는 clap 정의에서 자동
+  생성된다. 손으로 고치지 말고 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로
+  재생성한다.
+- 내부 작업 문서(`CLAUDE.md`, `TODO.md`의 감사 로그 등)는 페어 대상이 아니다.
+
+## CLI 도움말 다국어
+
+- **영문이 정본**이다. `crates/hwp-cli/src/cli.rs`의 doc comment(= clap help)를 영문으로 쓴다.
+- 한국어는 `crates/hwp-cli/src/i18n.rs`의 `KO` 오버레이 표가 정본이다. 런타임에 덮어쓴다.
+- 표시 언어 우선순위: `--lang <en|ko>` → `HWP_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → 영문.
+- 명령·플래그를 추가하면 `KO` 표에도 넣어야 한다. 누락·죽은 항목은 `tests/cli_reference.rs`가
+  잡는다(조용히 영문으로 남는 것을 막는 게이트).
 
 ## 빌드 · 테스트
 

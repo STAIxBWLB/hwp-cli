@@ -45,8 +45,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          # 릴리스 본문은 CHANGELOG.md의 해당 버전 절(한/영 병기)을 그대로 쓴다.
+          # 절이 없으면 스크립트가 실패하므로, 릴리스 전에 CHANGELOG 갱신을 강제한다.
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            bash scripts/release_notes.sh "$GITHUB_REF_NAME" > /tmp/release-notes.md
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+              --notes-file /tmp/release-notes.md --verify-tag
+          fi
 
   # 플랫폼별 `hwp` 바이너리 빌드 → 아카이브(tar.gz/zip) + sha256 을 릴리스에 업로드.
   upload-assets:

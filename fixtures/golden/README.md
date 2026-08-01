@@ -1,3 +1,5 @@
+[한국어](README.md) · [English](README.en.md)
+
 # 골든(기준) 렌더 이미지 — 한글 대조용
 
 `hwp diff`/`golden` 테스트가 우리 렌더를 **한글이 내보낸 기준 이미지**와 비교해

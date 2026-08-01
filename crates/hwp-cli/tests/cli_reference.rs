@@ -1,21 +1,30 @@
-//! CLI 명령 레퍼런스 자동 생성 + 드리프트 게이트.
+//! CLI 명령 레퍼런스 자동 생성 + 드리프트 게이트 (한국어·영문 양쪽).
 //!
 //! `clap::CommandFactory`로 `Cli`의 명령 트리를 introspect해 `docs/manual/cli-reference.md`
-//! 를 결정적으로 생성한다. 커밋본과 재생성본이 어긋나면 실패한다 — CLI 정의(플래그·help
-//! 텍스트)를 바꾸면 문서도 함께 갱신하도록 강제하는 장치.
+//! (한국어)와 `cli-reference.en.md`(영문)를 결정적으로 생성한다. 커밋본과 재생성본이
+//! 어긋나면 실패한다 — CLI 정의(플래그·help 텍스트)를 바꾸면 문서도 함께 갱신하도록
+//! 강제하는 장치.
 //!
 //! 재생성(bless): `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`.
 
 use clap::builder::StyledStr;
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use hwp_cli::cli::Cli;
+use hwp_cli::i18n::{self, Lang};
 
 /// 커밋된 문서 경로 (crate 기준 상대).
-fn doc_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/cli-reference.md")
+fn doc_path(lang: Lang) -> std::path::PathBuf {
+    let name = match lang {
+        Lang::Ko => "cli-reference.md",
+        Lang::En => "cli-reference.en.md",
+    };
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/manual")
+        .join(name)
 }
 
-const HEADER_COMMENT: &str = "<!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->";
+const HEADER_COMMENT_KO: &str = "<!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->";
+const HEADER_COMMENT_EN: &str = "<!-- Generated document. Do not edit by hand. Regenerate with: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->";
 
 /// StyledStr → 순수 텍스트(ANSI 없음), 앞뒤 공백 제거.
 fn plain(s: &StyledStr) -> String {
@@ -98,7 +107,7 @@ fn usage_line(sub: &Command, name: &str) -> String {
 }
 
 /// 한 서브커맨드의 인자/플래그 표 행들. 선언 순서 유지.
-fn arg_rows(sub: &Command) -> Vec<String> {
+fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
     let mut rows = Vec::new();
     for arg in sub.get_arguments() {
         if skip_arg(arg) {
@@ -151,11 +160,15 @@ fn arg_rows(sub: &Command) -> Vec<String> {
         // help가 이미 "반복 가능"을 담고 있으면(doc comment 관례) 중복을 피한다 —
         // Append인데 표기가 없는 플래그에만 표준 마커를 덧붙여 일관성을 맞춘다.
         let mut help = arg.get_help().map(plain).unwrap_or_default();
-        if matches!(arg.get_action(), ArgAction::Append) && !help.contains("반복 가능") {
+        let marker = match lang {
+            Lang::Ko => "반복 가능",
+            Lang::En => "repeatable",
+        };
+        if matches!(arg.get_action(), ArgAction::Append) && !help.contains(marker) {
             if help.is_empty() {
-                help = "(반복 가능)".to_string();
+                help = format!("({marker})");
             } else {
-                help.push_str(" (반복 가능)");
+                help.push_str(&format!(" ({marker})"));
             }
         }
         let help_col = cell(&help);
@@ -168,8 +181,8 @@ fn arg_rows(sub: &Command) -> Vec<String> {
 }
 
 /// clap 정의에서 마크다운 레퍼런스 전문을 생성한다.
-fn generate() -> String {
-    let root = Cli::command();
+fn generate(lang: Lang) -> String {
+    let root = i18n::localize(Cli::command(), lang);
     // 노출 대상 서브커맨드(숨김 제외), 선언 순서 유지.
     let subs: Vec<&Command> = root
         .get_subcommands()
@@ -177,16 +190,35 @@ fn generate() -> String {
         .collect();
 
     let mut out = String::new();
-    out.push_str(HEADER_COMMENT);
-    out.push_str("\n\n# hwp CLI 명령 레퍼런스\n\n");
-    out.push_str(
-        "이 문서는 `hwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 \
-         바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성하라 — \
-         CI 테스트가 코드와 문서의 동기화를 강제한다.\n\n",
-    );
-
-    // 명령 색인.
-    out.push_str("## 명령 색인\n\n");
+    match lang {
+        Lang::Ko => {
+            out.push_str(HEADER_COMMENT_KO);
+            out.push_str(
+                "\n\n[한국어](cli-reference.md) · [English](cli-reference.en.md)\n\n\
+                 # hwp CLI 명령 레퍼런스\n\n",
+            );
+            out.push_str(
+                "이 문서는 `hwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 \
+                 바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성하라 — \
+                 CI 테스트가 코드와 문서의 동기화를 강제한다.\n\n",
+            );
+            out.push_str("## 명령 색인\n\n");
+        }
+        Lang::En => {
+            out.push_str(HEADER_COMMENT_EN);
+            out.push_str(
+                "\n\n[한국어](cli-reference.md) · [English](cli-reference.en.md)\n\n\
+                 # hwp CLI command reference\n\n",
+            );
+            out.push_str(
+                "This document is generated from the clap definitions of the `hwp` CLI. Do not edit \
+                 it by hand: when a command or flag changes, regenerate it with \
+                 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`. A CI test enforces \
+                 that it stays in sync with the code.\n\n",
+            );
+            out.push_str("## Command index\n\n");
+        }
+    }
     for sub in &subs {
         let name = sub.get_name();
         out.push_str(&format!("- [`hwp {name}`](#{})\n", anchor(name)));
@@ -210,14 +242,27 @@ fn generate() -> String {
         }
 
         // 사용법.
-        out.push_str(&format!("**사용법:** `{}`\n\n", usage_line(sub, name)));
+        let usage_label = match lang {
+            Lang::Ko => "사용법",
+            Lang::En => "Usage",
+        };
+        out.push_str(&format!(
+            "**{usage_label}:** `{}`\n\n",
+            usage_line(sub, name)
+        ));
 
         // 인자/플래그 표.
-        let rows = arg_rows(sub);
+        let rows = arg_rows(sub, lang);
         if rows.is_empty() {
-            out.push_str("_인자·플래그 없음_\n\n");
+            out.push_str(match lang {
+                Lang::Ko => "_인자·플래그 없음_\n\n",
+                Lang::En => "_No arguments or flags_\n\n",
+            });
         } else {
-            out.push_str("| 인자/플래그 | 값 | 기본값 | 설명 |\n");
+            out.push_str(match lang {
+                Lang::Ko => "| 인자/플래그 | 값 | 기본값 | 설명 |\n",
+                Lang::En => "| Argument/flag | Value | Default | Description |\n",
+            });
             out.push_str("|---|---|---|---|\n");
             for r in rows {
                 out.push_str(&r);
@@ -235,25 +280,24 @@ fn generate() -> String {
     out
 }
 
-#[test]
-fn cli_reference_up_to_date() {
-    let generated = generate();
-    let path = doc_path();
+fn check_language(lang: Lang) {
+    let generated = generate(lang);
+    let path = doc_path(lang);
 
     // bless 모드: 파일을 새로 쓰고 통과.
     if std::env::var_os("HWP_UPDATE_DOCS").is_some() {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("docs/manual 디렉터리 생성");
         }
-        std::fs::write(&path, &generated).expect("cli-reference.md 쓰기");
-        eprintln!("cli-reference.md 재생성 완료: {}", path.display());
+        std::fs::write(&path, &generated).expect("cli-reference 쓰기");
+        eprintln!("cli-reference 재생성 완료: {}", path.display());
         return;
     }
 
     // 검증 모드: 커밋본과 비교(Windows CI 대비 CRLF 정규화).
     let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "cli-reference.md를 읽을 수 없음({e}) — \
+            "cli-reference를 읽을 수 없음({e}) — \
              `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 최초 생성하라: {}",
             path.display()
         )
@@ -265,5 +309,77 @@ fn cli_reference_up_to_date() {
         "\nCLI 정의가 문서와 어긋남 — \
          `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성한 뒤 \
          diff를 확인해 커밋하라."
+    );
+}
+
+#[test]
+fn cli_reference_up_to_date() {
+    check_language(Lang::Ko);
+    check_language(Lang::En);
+}
+
+/// 한국어 오버레이 누락 게이트.
+///
+/// 표에 항목이 없으면 그 도움말만 조용히 영문으로 남는다. 새 명령·플래그를 추가하고
+/// i18n 표를 잊는 드리프트를 여기서 막는다.
+#[test]
+fn korean_overlay_covers_every_command_and_argument() {
+    fn ids(command: &Command, path: &str, missing: &mut Vec<String>) {
+        let has = |arg: &str| {
+            hwp_cli::i18n::KO
+                .iter()
+                .any(|(cmd, id, _)| *cmd == path && *id == arg)
+        };
+        if !has("") {
+            missing.push(format!("about: {path:?}"));
+        }
+        for arg in command.get_arguments() {
+            let id = arg.get_id().as_str();
+            if matches!(id, "help" | "version") {
+                continue;
+            }
+            if !has(id) {
+                missing.push(format!("{path:?} / {id}"));
+            }
+        }
+        for sub in command.get_subcommands() {
+            ids(sub, sub.get_name(), missing);
+        }
+    }
+
+    let mut missing = Vec::new();
+    ids(&Cli::command(), "", &mut missing);
+    assert!(
+        missing.is_empty(),
+        "i18n 한국어 표에 없는 항목 — crates/hwp-cli/src/i18n.rs 의 KO 에 추가하라:\n{}",
+        missing.join("\n")
+    );
+}
+
+/// 표에 죽은 항목(더 이상 존재하지 않는 명령·인자)이 남지 않게 한다.
+#[test]
+fn korean_overlay_has_no_stale_entries() {
+    fn exists(command: &Command, path: &str, arg: &str) -> bool {
+        let target = if path.is_empty() {
+            Some(command)
+        } else {
+            command.get_subcommands().find(|c| c.get_name() == path)
+        };
+        match target {
+            Some(cmd) => arg.is_empty() || cmd.get_arguments().any(|a| a.get_id().as_str() == arg),
+            None => false,
+        }
+    }
+
+    let root = Cli::command();
+    let stale: Vec<_> = hwp_cli::i18n::KO
+        .iter()
+        .filter(|(cmd, id, _)| !exists(&root, cmd, id))
+        .map(|(cmd, id, _)| format!("{cmd:?} / {id}"))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "i18n 표의 죽은 항목:\n{}",
+        stale.join("\n")
     );
 }

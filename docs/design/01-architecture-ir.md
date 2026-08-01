@@ -1,3 +1,5 @@
+[한국어](01-architecture-ir.md) · [English](01-architecture-ir.en.md)
+
 # hwp-cli 워크스페이스 아키텍처 & 중간표현(IR) 완전 재구축 문서
 
 대상 저장소: `/Users/elevn/projects/hwp-cli` (Cargo 워크스페이스, `resolver = "3"`, `edition = "2024"`, `rust-version = "1.93"`). 이 문서 하나로 워크스페이스 골격, 크레이트 경계, IR 타입 계층, 3계층 설계 근거, 무손실 보존 메커니즘, 데이터 흐름을 처음부터 다시 구현할 수 있게 하는 것이 목표다.

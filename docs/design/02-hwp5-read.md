@@ -1,3 +1,5 @@
+[한국어](02-hwp5-read.md) · [English](02-hwp5-read.en.md)
+
 # HWP 5.0 바이너리 리더(reader) 재구축 명세
 
 `crates/hwp5/src/`의 읽기 경로를 처음부터 다시 구현할 수 있는 수준으로 기술한다. 대상 파일: `read.rs`, `container.rs`, `file_header.rs`, `codec/{reader,writer,compress}.rs`, `record/{header,scan,tree,tag}.rs`, `doc_info.rs`, `body_text.rs`, `summary.rs`, 그리고 소비단 기하 파서 `crates/hwp-render/src/shape_draw.rs`, 문자 분류표 `crates/hwp-model/src/paragraph.rs`.

@@ -1,3 +1,5 @@
+[한국어](05-rendering.md) · [English](05-rendering.en.md)
+
 # hwp-render 렌더링 엔진 재구축 사양서
 
 크레이트 루트: `/Users/elevn/projects/hwp-cli/crates/hwp-render`. 대상 파일: `src/lib.rs`, `layout.rs`, `lineseg.rs`, `shape.rs`, `shape_draw.rs`, `gso.rs`, `tab.rs`, `fonts.rs`, `display.rs`, `png.rs`, `svg.rs`, `pdf.rs`. 입력은 `hwp_model::Document` IR, 출력은 PNG(tiny-skia 픽스맵)·SVG 문자열·단일 멀티페이지 PDF.

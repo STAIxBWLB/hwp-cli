@@ -1,3 +1,5 @@
+[한국어](03-hwp5-write.md) · [English](03-hwp5-write.en.md)
+
 # HWP5 바이너리 Writer 및 한글 호환 합성 — 재구축 명세
 
 이 문서는 `hwp-cli`에서 IR(`hwp_model::Document`)을 한컴오피스 한글이 손상/변조 판정 없이 열 수 있는 HWP 5.0 바이너리로 직렬화하는 서브시스템 전체를 처음부터 재구현할 수 있도록 기술한다. 핵심 구현은 `/Users/elevn/projects/hwp-cli/crates/hwp5/src/write.rs`(2049줄) 이며, 불변식은 `tests/roundtrip.rs`·`tests/identity.rs`·`tests/synth.rs`가 고정한다. 여기 나오는 모든 상수·바이트 오프셋·길이는 **정품 한글 저장 파일(hello_world 5.1.0.1, 가나다 5.1.1.0, work_report 5.0.2.4, halla 5.1.1.0, annual_report)과 실기(한글 프로그램) 게이트로 확정한 실측 정답지**이며, 스펙 문서만으로는 유도할 수 없다(pyhwp 등 관대한 파서는 통과시켜도 한글 본체는 거부하는 값들이다).
