@@ -224,8 +224,8 @@ Fidelity-preserving template fill (replace `{{name}}` in hwpx, package preserved
 |---|---|---|---|
 | `<INPUT>` |  |  | Input HWPX template |
 | `-o, --output` | `<OUTPUT>` |  | Output file path |
-| `--set` | `<SET>` |  | Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`) |
-| `--data` | `<DATA>` |  | JSON object file mapping name to value (bulk fill) |
+| `--set` | `<SET>` |  | Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@' |
+| `--data` | `<DATA>` |  | JSON object file mapping name to value (bulk fill; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows) |
 | `--json` |  |  | Print the replacement summary as JSON ({output, replaced, counts}) |
 | `--allow-partial` |  |  | Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced) |
 

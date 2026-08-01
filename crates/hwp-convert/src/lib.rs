@@ -5,11 +5,13 @@ pub mod bookmark;
 pub mod edit;
 pub mod field;
 pub mod format;
+pub mod from_html;
 pub mod from_markdown;
 pub mod gso;
 pub mod html;
 pub mod image;
 pub mod markdown;
+pub mod merge;
 pub mod odt;
 pub mod structure;
 
@@ -27,8 +29,10 @@ pub use field::{
     scan_placeholders, set_field,
 };
 pub use format::{CharFormat, set_char_format, set_para_align};
+pub use from_html::{HtmlImportOptions, from_html, from_html_with};
 pub use from_markdown::{
-    MarkdownImportOptions, OfficialPreset, default_header, from_markdown, from_markdown_with,
+    MarkdownImportOptions, OfficialPreset, default_header, from_markdown, from_markdown_blocks,
+    from_markdown_with,
 };
 pub use html::{to_html, to_html_fragment};
 pub use image::{ImageSize, image_kind, image_pixel_size, insert_image, insert_seal};

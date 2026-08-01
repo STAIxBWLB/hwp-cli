@@ -1,16 +1,21 @@
-//! IR → 독립 실행형 HTML.
+//! IR → 독립 실행형 HTML (HTML fragment 계약의 생산자).
 //!
 //! `markdown.rs`의 매핑을 1:1로 미러링하되 HTML 시맨틱 태그를 쓴다:
 //! - "개요 N" 스타일 문단 → `<h1>`..`<h6>`
 //! - 문자 모양 → `<strong>`/`<em>`/`<u>`/`<s>` (markdown은 굵게·기울임만, HTML은 밑줄·취소선도 보존)
 //! - 하이퍼링크(%hlk 필드) → `<a href="URL">표시텍스트</a>` (URL은 속성 이스케이프)
-//! - 이미지(Picture) → `<img src="data:<mime>;base64,…">` (자기완결 임베드)
-//! - 표 → `<table>`/`<tr>`/`<th>`/`<td>`
-//! - 줄나눔(10) → `<br>`, 탭 → 공백
+//! - 이미지(Picture) → `<img src="data:<mime>;base64,…"/>` (자기완결 임베드)
+//! - 표 → `<table>`/`<tr>`/`<th>`/`<td>` — 병합 셀은 colspan/rowspan으로 방출(GH-4)하고
+//!   셀 내 블록(중첩 표·이미지)도 보존한다(GH-5)
+//! - 각주/미주 → 본문 `<sup>` 앵커 마커 + 문서 끝 정의 (표현 전용 — `from_html`은
+//!   평문으로만 읽는다. 의미 왕복은 범위 밖)
+//! - 줄나눔(10) → `<br/>`, 탭 → 공백
 //!
+//! 출력은 **well-formed XHTML**이다(빈 태그는 self-closing) — `from_html`(quick-xml)이
+//! 그대로 다시 읽을 수 있는 fragment 계약의 생산자 쪽이다(계약: docs/design/18).
 //! 임베드된 CJK 폰트 CSS가 포함된 standalone 문서를 생성한다.
 
-use hwp_model::{CharShape, Control, Document, HwpChar, Paragraph, ctrl_char};
+use hwp_model::{Cell, CharShape, Control, Document, HwpChar, Paragraph, Table, ctrl_char};
 
 const CSS: &str = "\
 body { font-family: \"함초롬바탕\",\"HCR Batang\",\"Noto Serif CJK KR\",serif;\
@@ -18,17 +23,27 @@ body { font-family: \"함초롬바탕\",\"HCR Batang\",\"Noto Serif CJK KR\",ser
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; }\n\
 th, td { border: 1px solid #999; padding: 0.35rem 0.6rem; }\n\
 th { background: #f2f2f2; }\n\
-h1,h2,h3,h4,h5,h6 { font-family: \"함초롬돋움\",\"HCR Dotum\",\"Noto Sans CJK KR\",sans-serif; }\n";
+h1,h2,h3,h4,h5,h6 { font-family: \"함초롬돋움\",\"HCR Dotum\",\"Noto Sans CJK KR\",sans-serif; }\n\
+section.footnotes { font-size: 0.9em; color: #444; }\n";
+
+/// 각주/미주 정의 하나 (본문 마커 라벨 + 정의 HTML).
+struct Note {
+    label: String,
+    html: String,
+}
+
+/// 렌더 상태 — 각주/미주 카운터와 수집된 정의.
+#[derive(Default)]
+struct Ctx {
+    foot_n: u32,
+    end_n: u32,
+    notes: Vec<Note>,
+}
 
 /// IR 전체를 standalone HTML 문서로 직렬화한다.
 pub fn to_html(doc: &Document) -> String {
-    let mut body = String::new();
-    for section in &doc.sections {
-        for para in &section.paragraphs {
-            render_paragraph(doc, para, &mut body);
-        }
-    }
-    // 문서 메타데이터 제목 우선, 없으면 첫 개요 단락으로 폴백.
+    let (body, footnotes) = render_body(doc);
+    // 문서 메타데이터 제목 우선, 없으면 첫 개요 단락으로 폴리백.
     let title_text = doc
         .metadata
         .title
@@ -37,26 +52,53 @@ pub fn to_html(doc: &Document) -> String {
         .or_else(|| first_heading(doc))
         .unwrap_or_default();
     let title = escape(&title_text);
-    let mut out = String::with_capacity(body.len() + CSS.len() + 256);
-    out.push_str("<!DOCTYPE html>\n<html lang=\"ko\"><head><meta charset=\"utf-8\">\n<title>");
+    let mut out = String::with_capacity(body.len() + footnotes.len() + CSS.len() + 256);
+    out.push_str("<!DOCTYPE html>\n<html lang=\"ko\"><head><meta charset=\"utf-8\"/>\n<title>");
     out.push_str(&title);
     out.push_str("</title>\n<style>\n");
     out.push_str(CSS);
     out.push_str("</style></head>\n<body>\n");
     out.push_str(&body);
+    out.push_str(&footnotes);
     out.push_str("</body></html>\n");
     out
 }
 
-/// 본문 fragment만 (head/style 없이) 반환한다.
+/// 본문 fragment만 (head/style 없이) 반환한다. 각주/미주 정의 섹션은 fragment에도
+/// 포함된다 — fragment가 자기완결적이어야 조합(Maru 부분 문서)에 쓸 수 있다.
 pub fn to_html_fragment(doc: &Document) -> String {
+    let (body, footnotes) = render_body(doc);
+    let mut out = body;
+    out.push_str(&footnotes);
+    out
+}
+
+/// 본문과 각주/미주 정의 섹션을 함께 렌더한다.
+fn render_body(doc: &Document) -> (String, String) {
+    let mut ctx = Ctx::default();
     let mut body = String::new();
     for section in &doc.sections {
         for para in &section.paragraphs {
-            render_paragraph(doc, para, &mut body);
+            render_paragraph(doc, para, &mut ctx, &mut body);
         }
     }
-    body
+    (body, render_footnotes(&ctx))
+}
+
+/// 각주/미주 정의 섹션. 정의가 없으면 빈 문자열.
+fn render_footnotes(ctx: &Ctx) -> String {
+    if ctx.notes.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<section class=\"footnotes\">\n<hr/>\n<ol>\n");
+    for note in &ctx.notes {
+        out.push_str(&format!(
+            "<li id=\"fn-{}\">{} <a href=\"#fnref-{}\">↩</a></li>\n",
+            note.label, note.html, note.label
+        ));
+    }
+    out.push_str("</ol>\n</section>\n");
+    out
 }
 
 fn first_heading(doc: &Document) -> Option<String> {
@@ -71,7 +113,8 @@ fn first_heading(doc: &Document) -> Option<String> {
                 .is_some();
             if is_heading {
                 let mut sink = String::new();
-                let text = render_inline(doc, para, &mut sink);
+                // 제목 추출 전용 임시 Ctx — 각주 수집은 본 렌더(render_body)에 맡긴다.
+                let text = render_inline(doc, para, &mut Ctx::default(), &mut sink);
                 let text = strip_tags(&text);
                 if !text.trim().is_empty() {
                     return Some(text.trim().to_string());
@@ -82,7 +125,7 @@ fn first_heading(doc: &Document) -> Option<String> {
     None
 }
 
-fn render_paragraph(doc: &Document, para: &Paragraph, out: &mut String) {
+fn render_paragraph(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut String) {
     let heading = doc
         .header
         .styles
@@ -94,7 +137,7 @@ fn render_paragraph(doc: &Document, para: &Paragraph, out: &mut String) {
     // 블록(표 등)은 별도 버퍼에 모아 문단 텍스트 뒤에 append — 출력 순서 문단→블록 보존
     // (odt.rs 와 동일). 이전엔 render_inline 이 블록을 out 에 바로 써 표가 <p> 앞에 나왔다.
     let mut blocks = String::new();
-    let body = render_inline(doc, para, &mut blocks);
+    let body = render_inline(doc, para, ctx, &mut blocks);
     let body = body.trim_end();
     if !body.is_empty() {
         if let Some(level) = heading {
@@ -113,7 +156,7 @@ fn render_paragraph(doc: &Document, para: &Paragraph, out: &mut String) {
 
 /// 문단의 인라인 내용을 HTML 문자열로 반환한다.
 /// 표 등 블록 컨트롤은 `out`에 직접 쓴다 (문단과 분리).
-fn render_inline(doc: &Document, para: &Paragraph, out: &mut String) -> String {
+fn render_inline(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut String) -> String {
     let mut body = String::new();
     let mut wchar_pos = 0u32;
     let mut style = Style::default();
@@ -136,7 +179,7 @@ fn render_inline(doc: &Document, para: &Paragraph, out: &mut String) -> String {
             HwpChar::CharCtrl(code) => match *code {
                 ctrl_char::LINE_BREAK => {
                     close_marks(&mut body, &mut style);
-                    body.push_str("<br>\n");
+                    body.push_str("<br/>\n");
                 }
                 ctrl_char::HYPHEN => body.push('-'),
                 ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => body.push(' '),
@@ -168,7 +211,7 @@ fn render_inline(doc: &Document, para: &Paragraph, out: &mut String) -> String {
                         body.push_str("\">");
                         link_open = true;
                     } else {
-                        render_control(doc, control, *code, &mut body, out);
+                        render_control(doc, control, *code, ctx, &mut body, out);
                     }
                 }
             }
@@ -187,6 +230,7 @@ fn render_control(
     doc: &Document,
     control: &Control,
     code: u16,
+    ctx: &mut Ctx,
     body: &mut String,
     out: &mut String,
 ) {
@@ -200,50 +244,38 @@ fn render_control(
                 body.push_str(mime);
                 body.push_str(";base64,");
                 body.push_str(&crate::base64::encode(data));
-                body.push_str("\">");
+                body.push_str("\"/>");
             }
-            None => body.push_str("<img alt=\"image\">"),
+            None => body.push_str("<img alt=\"image\"/>"),
         },
-        Control::Table(table) => {
-            let cols = table.cols.max(1) as usize;
-            let mut grid: Vec<Vec<String>> = Vec::new();
-            for cell in &table.cells {
-                let row = cell.row as usize;
-                while grid.len() <= row {
-                    grid.push(vec![String::new(); cols]);
-                }
-                let mut text = String::new();
-                for p in &cell.paragraphs {
-                    let mut cell_out = String::new();
-                    let inline = render_inline(doc, p, &mut cell_out);
-                    if !text.is_empty() && !inline.is_empty() {
-                        text.push(' ');
-                    }
-                    text.push_str(inline.trim());
-                }
-                if let Some(slot) = grid[row].get_mut(cell.col as usize) {
-                    *slot = text;
-                }
-            }
-            out.push_str("<table>\n");
-            for (i, row) in grid.iter().enumerate() {
-                let tag = if i == 0 { "th" } else { "td" };
-                out.push_str("<tr>");
-                for cellv in row {
-                    out.push_str(&format!("<{tag}>{cellv}</{tag}>"));
-                }
-                out.push_str("</tr>\n");
-            }
-            out.push_str("</table>\n");
-        }
+        Control::Table(table) => render_table(doc, table, ctx, out),
         Control::Generic(g) => {
+            // 각주/미주 → 본문 `<sup>` 앵커 마커 + 문서 끝 정의 (본문 인라인 흡수 대체, GH-3).
+            if code == ctrl_char::FOOTNOTE_ENDNOTE && matches!(&g.ctrl_id, b"fn  " | b"en  ") {
+                let label = if g.ctrl_id == *b"fn  " {
+                    ctx.foot_n += 1;
+                    ctx.foot_n.to_string()
+                } else {
+                    ctx.end_n += 1;
+                    format!("e{}", ctx.end_n)
+                };
+                let html = note_text(doc, g, ctx);
+                ctx.notes.push(Note {
+                    label: label.clone(),
+                    html,
+                });
+                body.push_str(&format!(
+                    "<sup id=\"fnref-{label}\"><a href=\"#fn-{label}\">{label}</a></sup>"
+                ));
+                return;
+            }
             if code == ctrl_char::HEADER_FOOTER || code == ctrl_char::HIDDEN_COMMENT {
                 return;
             }
             for list in &g.paragraph_lists {
                 for p in &list.paragraphs {
                     let mut sub_out = String::new();
-                    let inline = render_inline(doc, p, &mut sub_out);
+                    let inline = render_inline(doc, p, ctx, &mut sub_out);
                     let inline = inline.trim();
                     if !inline.is_empty() {
                         if !body.is_empty() && !body.ends_with([' ', '>']) {
@@ -256,6 +288,92 @@ fn render_control(
             }
         }
     }
+}
+
+/// 표 — 병합 셀이 덮는 칸을 건드리지 않고 origin 셀에 colspan/rowspan을 방출한다(GH-4).
+/// 셀 내용은 문단 인라인 + 블록(중첩 표·이미지)을 등장 순서대로 보존한다(GH-5).
+/// 첫 행은 `<th>` 관례(표현 전용 — from_html은 th/td를 구별하지 않는다).
+fn render_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut String) {
+    let rows = table.rows.max(1) as usize;
+    let cols = table.cols.max(1) as usize;
+    // 병합 셀이 덮는 칸 표시 격자.
+    let mut covered = vec![vec![false; cols]; rows];
+    out.push_str("<table>\n");
+    for r in 0..rows {
+        out.push_str("<tr>");
+        for c in 0..cols {
+            if covered[r][c] {
+                continue; // 앞선 병합 셀이 덮은 칸
+            }
+            let Some(cell) = table
+                .cells
+                .iter()
+                .find(|cell| cell.row as usize == r && cell.col as usize == c)
+            else {
+                out.push_str("<td></td>");
+                continue;
+            };
+            for dr in 0..cell.row_span.max(1) as usize {
+                for dc in 0..cell.col_span.max(1) as usize {
+                    if let Some(slot) = covered.get_mut(r + dr).and_then(|row| row.get_mut(c + dc))
+                    {
+                        *slot = true;
+                    }
+                }
+            }
+            let mut attrs = String::new();
+            if cell.col_span > 1 {
+                attrs.push_str(&format!(" colspan=\"{}\"", cell.col_span));
+            }
+            if cell.row_span > 1 {
+                attrs.push_str(&format!(" rowspan=\"{}\"", cell.row_span));
+            }
+            let tag = if r == 0 { "th" } else { "td" };
+            let content = render_cell(doc, cell, ctx);
+            out.push_str(&format!("<{tag}{attrs}>{content}</{tag}>"));
+        }
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</table>\n");
+}
+
+/// 셀 내용 — 문단 인라인과 블록 fragment를 등장 순서대로 `<br/>`로 잇는다.
+/// 이전에는 블록 버퍼(cell_out)를 만들고 버려 중첩 표·이미지가 유실됐다(GH-5).
+fn render_cell(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> String {
+    let mut content = String::new();
+    for p in &cell.paragraphs {
+        let mut blocks = String::new();
+        let inline = render_inline(doc, p, ctx, &mut blocks);
+        for fragment in [inline, blocks] {
+            let fragment = fragment.trim();
+            if fragment.is_empty() {
+                continue;
+            }
+            if !content.is_empty() {
+                content.push_str("<br/>");
+            }
+            content.push_str(fragment);
+        }
+    }
+    content
+}
+
+/// 각주/미주 본문 — 문단 인라인을 `<br/>`로 잇는다 (표현 전용).
+fn note_text(doc: &Document, g: &hwp_model::GenericControl, ctx: &mut Ctx) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for list in &g.paragraph_lists {
+        for p in &list.paragraphs {
+            let mut blocks = String::new();
+            let inline = render_inline(doc, p, ctx, &mut blocks);
+            for fragment in [inline, blocks] {
+                let fragment = fragment.trim();
+                if !fragment.is_empty() {
+                    parts.push(fragment.to_string());
+                }
+            }
+        }
+    }
+    parts.join("<br/>")
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -361,6 +479,63 @@ fn strip_tags(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::from_markdown::from_markdown;
+    use hwp_model::{BorderFillId, HwpUnit};
+
+    /// 표 컨트롤 앵커 문자 (markdown.rs 테스트와 같은 패턴).
+    fn control_anchor(index: u32) -> HwpChar {
+        HwpChar::ExtCtrl {
+            code: ctrl_char::OBJECT,
+            ctrl_id: *b"tbl ",
+            payload: vec![],
+            ctrl_index: Some(index),
+        }
+    }
+
+    fn insert_table(paragraph: &mut Paragraph, table: Table) {
+        let index = paragraph.controls.len() as u32;
+        paragraph.controls.push(Control::Table(table));
+        paragraph.chars.push(control_anchor(index));
+    }
+
+    fn text_paragraph(text: &str) -> Paragraph {
+        Paragraph {
+            chars: text.chars().map(HwpChar::Text).collect(),
+            ..Paragraph::default()
+        }
+    }
+
+    fn cell(row: u16, col: u16, col_span: u16, row_span: u16, text: &str) -> Cell {
+        Cell {
+            list_attr: 0,
+            col,
+            row,
+            col_span,
+            row_span,
+            width: HwpUnit(0),
+            height: HwpUnit(0),
+            margins: [0; 4],
+            border_fill: BorderFillId(0),
+            header_tail: vec![],
+            paragraphs: vec![text_paragraph(text)],
+        }
+    }
+
+    fn table(rows: u16, cols: u16, cells: Vec<Cell>) -> Table {
+        Table {
+            common_data: vec![],
+            placement: None,
+            attr: 0,
+            rows,
+            cols,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![cols; rows as usize],
+            border_fill: BorderFillId(0),
+            table_tail: vec![],
+            cells,
+            extras: vec![],
+        }
+    }
 
     #[test]
     fn 제목_본문_표_렌더() {
@@ -385,7 +560,7 @@ mod tests {
 
     #[test]
     fn 하이퍼링크_앵커_렌더() {
-        let doc = from_markdown("자세히는 [여기](https://example.com/a?b=1&c=2)를 보라\n");
+        let doc = from_markdown("자세히는 [여기](https://example.com/a?b=1&c=2)를 볼라\n");
         let html = to_html(&doc);
         // href는 속성 이스케이프(&amp;), 표시 텍스트는 <a>…</a>로 감싼다.
         assert!(
@@ -413,7 +588,7 @@ mod tests {
             .unwrap();
         let html = to_html(&doc);
         let expect = format!(
-            "<img alt=\"image\" src=\"data:image/png;base64,{}\">",
+            "<img alt=\"image\" src=\"data:image/png;base64,{}\"/>",
             crate::base64::encode(&png)
         );
         assert!(html.contains(&expect), "data URI 임베드: {html}");
@@ -430,5 +605,86 @@ mod tests {
         // standalone에는 head/style이 있어야 한다 (대조).
         let full = to_html(&doc);
         assert!(full.contains("<head>") && full.contains("<style>"));
+    }
+
+    #[test]
+    fn 병합셀_colspan_rowspan_방출() {
+        // 2×2 표에서 (0,0)이 2열 병합, (1,0)이 2행 병합…이 아니라 단순하게:
+        // (0,0) colspan=2, (0,2) 별도 — 대신 2×3 표로 구성.
+        let mut doc = from_markdown("표\n");
+        let t = table(
+            2,
+            3,
+            vec![
+                cell(0, 0, 2, 1, "가로병합"),
+                cell(0, 2, 1, 2, "세로병합"),
+                cell(1, 0, 1, 1, "a"),
+                cell(1, 1, 1, 1, "b"),
+            ],
+        );
+        insert_table(&mut doc.sections[0].paragraphs[0], t);
+        let html = to_html(&doc);
+        assert!(
+            html.contains("<th colspan=\"2\">가로병합</th>"),
+            "colspan: {html}"
+        );
+        assert!(
+            html.contains("<th rowspan=\"2\">세로병합</th>"),
+            "rowspan: {html}"
+        );
+        // 병합이 덮은 칸은 빈 셀로 채우지 않는다 — 두 행의 셀 수가 달라야 한다.
+        let row2 = html.split("</tr>").nth(1).unwrap();
+        assert_eq!(row2.matches("<td").count(), 2, "덮인 칸 미방출: {html}");
+    }
+
+    #[test]
+    fn 셀_내_중첩_표_보존() {
+        let mut doc = from_markdown("표\n");
+        // 바깥 셀에 중첩 표를 넣는다.
+        let mut inner_holder = text_paragraph("셀텍스트");
+        let inner = table(1, 1, vec![cell(0, 0, 1, 1, "중첩")]);
+        insert_table(&mut inner_holder, inner);
+        let outer_cell = Cell {
+            paragraphs: vec![inner_holder],
+            ..cell(0, 0, 1, 1, "")
+        };
+        let outer = table(1, 1, vec![outer_cell]);
+        insert_table(&mut doc.sections[0].paragraphs[0], outer);
+        let html = to_html(&doc);
+        // 중첩 표가 <table> 두 겹으로 존재해야 한다 (이전엔 블록 버퍼 폐기로 유실).
+        assert_eq!(html.matches("<table>").count(), 2, "중첩 표 보존: {html}");
+        assert!(html.contains("중첩"), "중첩 셀 텍스트: {html}");
+        assert!(html.contains("셀텍스트"), "바깥 셀 텍스트: {html}");
+    }
+
+    #[test]
+    fn 각주_미주_마커와_정의() {
+        let doc = from_markdown("본문 문단[^1]입니다.\n\n[^1]: 각주 내용\n");
+        let html = to_html(&doc);
+        assert!(
+            html.contains("<sup id=\"fnref-1\"><a href=\"#fn-1\">1</a></sup>"),
+            "본문 마커: {html}"
+        );
+        assert!(
+            html.contains("<section class=\"footnotes\">"),
+            "정의 섹션: {html}"
+        );
+        assert!(
+            html.contains("<li id=\"fn-1\">각주 내용"),
+            "정의 항목: {html}"
+        );
+        // fragment에도 정의가 포함된다(자기완결).
+        let frag = to_html_fragment(&doc);
+        assert!(frag.contains("<section class=\"footnotes\">"));
+    }
+
+    #[test]
+    fn xhtml_빈태그_self_closing() {
+        // md 하드브레이크(행말 공백 2칸) → LINE_BREAK → <br/>.
+        let doc = from_markdown("첫 줄  \n둘째 줄\n");
+        let html = to_html(&doc);
+        // 줄바꿈이 <br/>로 방출되고 <br> 꼴이 없어야 한다.
+        assert!(!html.contains("<br>"), "self-closing br: {html}");
+        assert!(html.contains("<br/>"), "br 방출: {html}");
     }
 }

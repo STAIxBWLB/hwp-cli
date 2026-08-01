@@ -627,7 +627,7 @@ fn make_field_chars(ctrl_id: [u8; 4], value: &str) -> Vec<HwpChar> {
 }
 
 /// 문단의 ExtCtrl ↔ controls 등장순서 연결(ctrl_index)을 다시 매긴다.
-pub(crate) fn relink_ctrl_index(para: &mut Paragraph) {
+pub fn relink_ctrl_index(para: &mut Paragraph) {
     let mut next = 0u32;
     for ch in &mut para.chars {
         if let HwpChar::ExtCtrl { ctrl_index, .. } = ch {
