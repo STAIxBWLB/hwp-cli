@@ -2065,3 +2065,64 @@ fn grep_match_and_no_match_exit_codes() {
     assert_eq!(r.status.code(), Some(1), "미일치는 grep 관례 1");
     let _ = std::fs::remove_file(&src);
 }
+
+#[test]
+fn convert_docx_structure_and_textutil() {
+    // hwp→docx — OPC 파트와 본문이 살아 있어야 한다 (GJ-1).
+    let src = fixture("samples/report-tables.hwpx");
+    if !src.exists() {
+        eprintln!("스킵: 샘플 없음");
+        return;
+    }
+    let out = tmp("s_tier_docx.docx");
+    let r = hwp()
+        .arg("convert")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "docx 변환: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    // OPC 구조 검사.
+    let bytes = std::fs::read(&out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    for part in [
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "word/document.xml",
+        "word/styles.xml",
+        "word/_rels/document.xml.rels",
+    ] {
+        assert!(zip.by_name(part).is_ok(), "파트 없음: {part}");
+    }
+    let mut document = String::new();
+    zip.by_name("word/document.xml")
+        .unwrap()
+        .read_to_string(&mut document)
+        .unwrap();
+    assert!(document.contains("<w:tbl>"), "표 방출");
+    assert!(
+        document.contains("gridSpan") || document.contains("vMerge"),
+        "병합 셀 span 방출"
+    );
+    // textutil(macOS)로 텍스트 왕복 스모크 — CI(ubuntu)에선 스킵.
+    if Path::new("/usr/bin/textutil").exists() {
+        let t = Command::new("/usr/bin/textutil")
+            .args(["-convert", "txt", "-stdout"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(t.status.success(), "textutil이 docx를 열지 못함");
+        let text = String::from_utf8_lossy(&t.stdout);
+        assert!(
+            text.contains("전문가"),
+            "textutil 텍스트: {}",
+            &text[..text.len().min(200)]
+        );
+    }
+    let _ = std::fs::remove_file(&out);
+}

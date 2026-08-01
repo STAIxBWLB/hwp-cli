@@ -247,6 +247,7 @@ fn target_extension(target: ConvertFormat) -> &'static str {
         ConvertFormat::Odt => "odt",
         ConvertFormat::Txt => "txt",
         ConvertFormat::Csv => "csv",
+        ConvertFormat::Docx => "docx",
     }
 }
 
@@ -311,6 +312,10 @@ pub fn execute(
             }
             ConvertFormat::Csv => {
                 std::fs::write(staged, hwp_convert::to_csv(&doc))?;
+                Ok(Vec::new())
+            }
+            ConvertFormat::Docx => {
+                std::fs::write(staged, hwp_convert::to_docx(&doc)?)?;
                 Ok(Vec::new())
             }
             ConvertFormat::Odt => {
@@ -455,6 +460,7 @@ fn infer_format(output: &Path) -> anyhow::Result<ConvertFormat> {
         Some("json") => Ok(ConvertFormat::Json),
         Some("txt") => Ok(ConvertFormat::Txt),
         Some("csv") => Ok(ConvertFormat::Csv),
+        Some("docx") => Ok(ConvertFormat::Docx),
         Some("hwpx") => Ok(ConvertFormat::Hwpx),
         Some("hwp") => Ok(ConvertFormat::Hwp),
         other => {

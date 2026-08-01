@@ -78,7 +78,7 @@ Convert between formats
 | `<INPUTS>` |  |  | Input HWP/HWPX files ("-" reads stdin; multiple inputs require --out-dir) (repeatable) |
 | `-o, --output` | `<OUTPUT>` |  | Output file path ("-" writes stdout for text formats: md/json/html/txt/csv; required with a single input) |
 | `--out-dir` | `<OUT_DIR>` |  | Output directory for multiple inputs (file names are "<stem>.<ext>", requires --to) |
-| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` |  | Output format (inferred from the extension when omitted) |
+| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` \| `docx` |  | Output format (inferred from the extension when omitted) |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found during conversion |
 | `--preserve-layout` |  |  | Preserve the line layout cache (unmodified round-trips only; Hancom treats a layout inconsistent with the content as tampering, so it is dropped by default) |
 | `--embed-bin` |  |  | Embed attached binaries (images) as base64 in JSON output (self-contained JSON) |

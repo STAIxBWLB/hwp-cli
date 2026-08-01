@@ -78,7 +78,7 @@
 | `<INPUTS>` |  |  | 입력 HWP/HWPX 파일들 ("-"는 stdin; 여러 입력은 --out-dir 필요) (반복 가능) |
 | `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 ("-"는 텍스트 포맷(md/json/html/txt/csv)에 한해 stdout; 단일 입력에서 필수) |
 | `--out-dir` | `<OUT_DIR>` |  | 여러 입력의 출력 디렉터리 (파일명은 "<스템>.<확장자>", --to 필요) |
-| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` |  | 출력 포맷 (생략 시 확장자에서 추론) |
+| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` \| `docx` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--strict` |  |  | 변환 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
 | `--preserve-layout` |  |  | 줄 배치 캐시 보존 (무수정 왕복 전용 — 한글은 내용과 어긋난 줄 배치를 변조로 판정하므로 기본은 제거) |
 | `--embed-bin` |  |  | JSON 출력 시 첨부 바이너리(이미지)를 base64로 임베드 (자급식 JSON) |
