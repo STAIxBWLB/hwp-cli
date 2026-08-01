@@ -1,3 +1,5 @@
+[한국어](09-diagnostic-corpus.md) · [English](09-diagnostic-corpus.en.md)
+
 # 09. 진단 코퍼스 & 검증 하네스
 
 > 현재 무엇이 되고 안 되는지 **정밀 진단**하기 위한 기능 격리 테스트 코퍼스와 자체 검증
