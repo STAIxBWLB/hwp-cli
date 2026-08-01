@@ -82,8 +82,8 @@ unimplemented features is [docs/design/12-feature-gaps.md](docs/design/12-featur
 3. **HTML conversion upgrade** Carry the footnote markers, merged-cell colspan/rowspan and in-cell
    blocks already solved on the markdown path over to HTML, and improve CSS mapping of character and
    paragraph shapes.
-4. **Windows** Platform defects in the compile and publish paths are being worked through. In CI,
-   ubuntu and macOS are required gates and Windows is informational (non-blocking).
+4. **Windows** The compile and publish paths are stable as of v0.5.0; ubuntu, macOS, and Windows are
+   all required CI gates.
 5. **Distribution (DRM) documents** A candidate to start once the specification is available.
 
 ## Installation
@@ -433,8 +433,8 @@ scripts/check.sh     # local CI mirror: fmt + clippy + test + structured corpus 
 
 CI (`.github/workflows/ci.yml`) installs `fonts-noto-cjk` on ubuntu and then runs
 `cargo fmt --all --check` → `cargo clippy --workspace --all-targets -- -D warnings` →
-`cargo test --workspace` → `scripts/check-structured-corpus.sh` on **ubuntu + macOS** (required) and
-**windows** (informational, non-blocking). The local mirror `scripts/check.sh` runs the same gates.
+`cargo test --workspace` → `scripts/check-structured-corpus.sh` on **ubuntu + macOS + windows**
+(all required). The local mirror `scripts/check.sh` runs the same gates.
 
 Tests cover byte-identical hwp5 round-trips (identity/roundtrip/synth), semantically equivalent hwpx
 round-trips, IR JSON and markdown round-trips, editing and field correction, render layout, tables and

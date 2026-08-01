@@ -24,17 +24,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 필수: ubuntu(CI 기준선) + macOS(소유자 주 사용 플랫폼). 둘 다 local source
-          # build + corpus 게이트를 돈다.
+          # 셋 다 필수 게이트: ubuntu(CI 기준선) + macOS(소유자 주 사용 플랫폼) +
+          # windows(v0.5.0부터 MSVC 빌드·테스트 안정화, 릴리스 바이너리도 여기서 나온다).
           - { os: ubuntu-latest }
           - { os: macos-latest }
-          # 참고용: Windows는 실패 허용(비차단) — 잡은 빨간색으로 보이되 워크플로는 통과.
-          # hwpx/hwp-cli가 nightly 전용 windows_by_handle API를 써 Windows에서 컴파일되지
-          # 않는다. release.yml의 Windows 바이너리 빌드도 같은 이유로 막히므로 릴리스 전에
-          # 반드시 고쳐야 한다(별도 이슈).
-          - { os: windows-latest, experimental: true }
+          - { os: windows-latest }
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
       # 렌더 스모크 테스트는 시스템 CJK 글리프를 쓴다. 이 스텝이 빠지면 잉크 없는
