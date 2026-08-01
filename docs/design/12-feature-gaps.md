@@ -1,3 +1,5 @@
+[한국어](12-feature-gaps.md) · [English](12-feature-gaps.en.md)
+
 # 기능 격차 카탈로그 (Feature Gaps) + 난이도·의존성 로드맵
 
 이 문서는 hwp-cli가 **아직 못 하는 것**을 한 곳에 모은 단일 카탈로그다. 포맷 지도(10·11)가
