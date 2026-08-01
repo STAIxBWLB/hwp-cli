@@ -869,11 +869,12 @@ impl Builder {
 
     /// from_html 산출물을 현재 문서에 병합한다. 헤더 컬렉션(문단모양·번호/글머리 정의·
     /// 추가 문자모양)의 인덱스가 각자 0부터 시작하므로 오프셋만큼 시프트해 붙인다.
-    fn merge_html_blocks(&mut self, blocks: crate::from_html::HtmlBlocks) {
+    fn merge_html_blocks(&mut self, mut blocks: crate::from_html::HtmlBlocks) {
         let ps_off = self.extra_para_shapes.len() as u16;
         let num_off = self.numbering_levels.len() as u16;
         let bul_off = self.bullet_chars.len() as u16;
         let cs_off = self.extra_char_shapes.len() as u16;
+        let font_off = self.extra_fonts.len() as u16;
         for mut ps in blocks.extra_para_shapes {
             match (ps.attr1 >> 23) & 0x3 {
                 2 => ps.numbering_id += num_off, // 번호 정의 참조
@@ -884,6 +885,19 @@ impl Builder {
         }
         self.numbering_levels.extend(blocks.numbering_levels);
         self.bullet_chars.extend(blocks.bullet_chars);
+        // face id 리베이스 — fragment마다 추가 글꼴이 같은 id(기본 글꼴 수~)부터
+        // 시작하므로, 이미 병합된 추가 글꼴 수만큼 옮겨야 두 번째 블록의 모양이
+        // 첫 번째 블록의 글꼴을 가리키는 충돌을 막는다 (계약 v2).
+        if font_off > 0 {
+            let default_fonts = default_header().fonts[0].len() as u16;
+            for shape in &mut blocks.extra_char_shapes {
+                for face in &mut shape.face_ids {
+                    if *face >= default_fonts {
+                        *face += font_off;
+                    }
+                }
+            }
+        }
         self.extra_char_shapes.extend(blocks.extra_char_shapes);
         self.extra_fonts.extend(blocks.extra_fonts);
         self.bin_streams.extend(blocks.bin_streams);
@@ -1077,8 +1091,14 @@ impl Builder {
         if self.skip_note_def > 0 {
             return;
         }
-        // 블록 HTML 버퍼는 비(非)Html 이벤트에서 닫는다(연속 Html 이벤트 = 하나의 블록).
-        if !matches!(event, Event::Html(_)) {
+        // 블록 HTML 버퍼는 비(非)Html 이벤트에서 닫는다. pulldown은 각 HTML 블록을
+        // Start/End(HtmlBlock)으로 감싸는데, `<style>`+`<table>`처럼 연속 블록을 하나의
+        // fragment로 모아야 <style> 규칙이 뒤 블록에 적용된다(계약 v2).
+        let is_html_seq = matches!(
+            event,
+            Event::Html(_) | Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock)
+        );
+        if !is_html_seq {
             self.flush_html();
         }
         match event {
@@ -2099,6 +2119,57 @@ mod tests {
         assert!(
             text.contains("md 항목") && text.contains("html 항목"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn html_두_블록_글꼴_face_리베이스() {
+        // 서로 다른 추가 글꼴을 쓰는 두 HTML 블록을 병합하면 두 번째 블록의
+        // face id가 리베이스돼야 한다 — 아니면 둘 다 첫 글꼴을 가리킨다 (리뷰 회귀).
+        let md = "본문\n\n\
+            <style>.cs0{font-family:\"글꼴가\",serif;font-size:10pt;}</style>\n\
+            <table><tr><td><span class=\"cs0\">첫째</span></td></tr></table>\n\n\
+            <style>.cs0{font-family:\"글꼴ㄴ\",serif;font-size:10pt;}</style>\n\
+            <table><tr><td><span class=\"cs0\">둘째</span></td></tr></table>\n";
+        let doc = from_markdown(md);
+        let fonts: Vec<&str> = doc.header.fonts[0]
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(
+            fonts.contains(&"글꼴가") && fonts.contains(&"글꼴ㄴ"),
+            "두 글꼴 모두 등록: {fonts:?}"
+        );
+        // 각 셀 문단의 모양이 올바른 글꼴을 가리키는지 확인.
+        let mut seen = std::collections::BTreeMap::new();
+        for para in &doc.sections[0].paragraphs {
+            for control in &para.controls {
+                let Control::Table(t) = control else {
+                    continue;
+                };
+                for cell in &t.cells {
+                    let text: String = cell.paragraphs[0]
+                        .chars
+                        .iter()
+                        .filter_map(|c| match c {
+                            HwpChar::Text(c) => Some(*c),
+                            _ => None,
+                        })
+                        .collect();
+                    let (_, cs_id) = cell.paragraphs[0].char_shape_runs[0];
+                    seen.insert(text, cs_id.0);
+                }
+            }
+        }
+        let first = &doc.header.char_shapes[seen["첫째"] as usize];
+        let second = &doc.header.char_shapes[seen["둘째"] as usize];
+        assert_eq!(
+            doc.header.fonts[0][first.face_ids[0] as usize].name,
+            "글꼴가"
+        );
+        assert_eq!(
+            doc.header.fonts[0][second.face_ids[0] as usize].name, "글꼴ㄴ",
+            "두 번째 블록 face 리베이스"
         );
     }
 }

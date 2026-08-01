@@ -207,7 +207,7 @@ struct Parser {
     ps_rules: HashMap<u16, HashMap<String, String>>,
     cs_cache: HashMap<u16, CharShapeId>,
     ps_cache: HashMap<u16, u16>,
-    /// (클스 모양 id, 마크) 조합 변형 캐시.
+    /// (클래스 모양 id, 마크) 조합 변형 캐시.
     variant_cache: HashMap<(u16, Marks), u16>,
     /// 활성 `<span class="csN">`의 복원 모양.
     span_shape: Option<CharShapeId>,
@@ -287,6 +287,12 @@ impl Parser {
                         "title" => self.skip_subtree(r, "title")?,
                         "style" => {
                             let css = self.read_style_text(r)?;
+                            // 새 <style> 블록은 앞선 규칙 집합을 대체한다 — 클래스 id는
+                            // 블록 범위라, 이어지는 블록의 같은 id는 새 규칙으로 복원한다.
+                            self.cs_rules.clear();
+                            self.ps_rules.clear();
+                            self.cs_cache.clear();
+                            self.ps_cache.clear();
                             self.parse_style_rules(&css);
                         }
                         "br" => self.push_line_break(),
@@ -431,9 +437,12 @@ impl Parser {
             }
             "span" => {
                 // 스타일 클래스 span (계약 v2 §8) — 마크가 아니라 복원 모양을 현재 run에 적용.
-                let shape = class_cs(e).and_then(|n| self.cs_shape(n));
+                // cs 클래스가 없는 <span>(편집기가 추가한 래퍼 등)은 투명하게 통과시켜
+                // 바깥 모양을 유지한다.
                 let saved = self.span_shape;
-                self.span_shape = shape;
+                if let Some(shape) = class_cs(e).and_then(|n| self.cs_shape(n)) {
+                    self.span_shape = Some(shape);
+                }
                 let result = self.inline(r, "span");
                 self.span_shape = saved;
                 result
@@ -1052,6 +1061,16 @@ impl Parser {
                         .map_err(|e| format!("텍스트 디코딩 실패: {e}"))?;
                     css.push_str(&s);
                 }
+                // quick-xml 0.40은 참조를 별도 이벤트로 방출한다 — 이스케이프된 글꼴
+                // 이름의 `&lt;` 등을 원래 문자로 되돌린다. 미지 참조는 원형 보존.
+                Ok(Event::GeneralRef(g)) => match resolve_entity(&g) {
+                    Some(c) => css.push(c),
+                    None => {
+                        css.push('&');
+                        css.push_str(&String::from_utf8_lossy(&g));
+                        css.push(';');
+                    }
+                },
                 Ok(Event::End(e)) => {
                     if e.local_name().as_ref() == b"style" {
                         return Ok(css);
@@ -1406,7 +1425,7 @@ mod tests {
         assert!(html.contains("<u>밑줄</u>"), "밑줄: {html}");
         // 링크 표시 텍스트는 하이퍼링크 문자모양(파랑+밑줄)이라 <u>가 붙는다.
         assert!(
-            html.contains("<a href=\"https://x.io\">") && html.contains("링크</u></a>"),
+            html.contains("<a href=\"https://x.io\">") && html.contains("링크</u>"),
             "링크: {html}"
         );
     }
@@ -1599,5 +1618,48 @@ mod tests {
         let shape = &back.header.char_shapes[cs_id.0 as usize];
         let face = &back.header.fonts[0][shape.face_ids[0] as usize];
         assert_eq!(face.name, "마루고딕", "글꼴 복원");
+    }
+
+    #[test]
+    fn 링크_경계_span_교차_없음() {
+        // 링크가 있는 문단의 클래스 span은 <a> 경계에서 함께 닫힌다 — 교차 마크업
+        // (`<a><span>…</a></span>`)이면 from_html이 거부한다 (리뷰 회귀).
+        let doc = from_markdown("앞 [링크](https://x.io) 뒤\n");
+        let html = to_html(&doc);
+        let back = from_html(&html).unwrap();
+        let all_text: String = back.sections[0].paragraphs.iter().map(para_text).collect();
+        assert!(all_text.contains("링크"), "{all_text}");
+        // 링크 필드도 복원됐는지 확인.
+        let has_link = back.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .any(|c| crate::field::hyperlink_url(c).is_some());
+        assert!(has_link, "하이퍼링크 필드 복원");
+    }
+
+    #[test]
+    fn 위험_글꼴_이름은_이스케이프() {
+        // `</style>` 조기 종료·마크업 주입 방지 — 글꼴 이름의 < & 는 엔티티로 나간다.
+        let mut doc = from_markdown("본문\n");
+        doc.header.fonts[0].push(hwp_model::FaceName {
+            name: "x</style><script>".into(),
+            attr: 0x01,
+            ..hwp_model::FaceName::default()
+        });
+        doc.header.char_shapes[0].face_ids = [2; hwp_model::LANG_COUNT];
+        let html = to_html(&doc);
+        assert!(
+            !html.contains("x</style><script>"),
+            "조기 종료 시퀀스 노출: {html}"
+        );
+        assert!(html.contains("&lt;/style&gt;"), "이스케이프: {html}");
+        // quick-xml이 엔티티를 되돌려 원래 이름으로 복원된다.
+        let back = from_html(&html).unwrap();
+        let name = back.header.fonts[0]
+            .iter()
+            .find(|f| f.name.contains("script"))
+            .map(|f| f.name.clone());
+        assert_eq!(name.as_deref(), Some("x</style><script>"), "왕복: {name:?}");
     }
 }

@@ -85,9 +85,12 @@ compose them.
 
 ## 6. Unsupported · Errors
 
-- Unlisted tags such as `script`, `style`, `iframe`, `form` → import error.
+- Unlisted tags such as `script`, `iframe`, `form` → import error. `<style>` is the
+  exception — import accepts it and reads only the v2 style round-trip rules
+  (`.cs{n}`/`.ps{n}`, §8), ignoring everything else.
 - Malformed XML (mismatched closing tags, unquoted attributes) → surfaced parser error.
-- CSS class based char/para shape restoration → out of scope for v1 (ignored).
+- CSS class based char/para shape restoration is limited to the v2 rules (§8) — all other
+  classes and inline `style` attributes stay ignored.
 
 ## 7. Version
 
@@ -105,6 +108,8 @@ typography survives `hwp → html → edit → hwp` in Maru's part editor.
 
 - Rules: the `<style>` block in `<head>` for standalone documents, a **leading `<style>`
   element** for fragments (fragments must be self-contained).
+- Import accepts `<style>` but reads only the `.cs{n}`/`.ps{n}` rules and ignores
+  everything else (§6).
 - Naming: `.cs{n}` = CharShape id n of the source document, `.ps{n}` = ParaShape id n.
   Ids are producer-local; consumers reconstruct **by property values**, never by name
   (no id stability is guaranteed).

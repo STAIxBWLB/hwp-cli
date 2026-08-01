@@ -112,7 +112,7 @@ fn style_rules(doc: &Document, ctx: &Ctx) -> String {
         if let Some(face) = doc.header.fonts[0].get(s.face_ids[0] as usize) {
             rules.push_str(&format!(
                 "font-family:\"{}\",serif;",
-                face.name.replace('"', "'")
+                css_text_escape(&face.name)
             ));
         }
         let pt = s.base_size as f32 / 100.0 * f32::from(s.rel_sizes[0]) / 100.0;
@@ -162,6 +162,24 @@ fn style_rules(doc: &Document, ctx: &Ctx) -> String {
     css
 }
 
+/// `<style>` 안에 들어갈 텍스트(글꼴 이름 등)를 이스케이프한다.
+/// 계약은 XHTML이라 `<style>` 내용도 XML 텍스트다 — `&` `<` `>`를 엔티티로 바꾸면
+/// 소비자(quick-xml)가 자동으로 되돌린다. 따옴표는 작은따옴표로 치환한다
+/// (`</style>` 조기 종료·마크업 주입 방지).
+fn css_text_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push('\''),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// COLORREF(0x00BBGGRR) → #RRGGBB.
 fn colorref_hex(v: u32) -> String {
     format!(
@@ -172,7 +190,7 @@ fn colorref_hex(v: u32) -> String {
     )
 }
 
-/// HWPUNIT → mm (소수 둘째 자리까지).
+/// HWPUNIT → mm.
 fn hwp_mm(v: i32) -> f32 {
     v as f32 * 25.4 / 7200.0
 }
@@ -304,7 +322,10 @@ fn render_inline(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut Stri
             HwpChar::InlineCtrl { code, .. } => {
                 if *code == ctrl_char::FIELD_END {
                     if link_open {
+                        // 클래스 span도 함께 닫는다 — `<a>`와 span이 교차하는
+                        // 교차 마크업(XHTML 위반)을 막는다 (계약 v2).
                         close_marks(&mut body, &mut style);
+                        close_class_span(&mut body, &mut span_id);
                         body.push_str("</a>");
                         link_open = false;
                     }
@@ -322,6 +343,7 @@ fn render_inline(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut Stri
                         && let Some(url) = crate::field::hyperlink_url(control)
                     {
                         close_marks(&mut body, &mut style);
+                        close_class_span(&mut body, &mut span_id);
                         body.push_str("<a href=\"");
                         body.push_str(&escape(&url));
                         body.push_str("\">");
@@ -336,6 +358,7 @@ fn render_inline(doc: &Document, para: &Paragraph, ctx: &mut Ctx, out: &mut Stri
     }
     if link_open {
         close_marks(&mut body, &mut style);
+        close_class_span(&mut body, &mut span_id);
         body.push_str("</a>");
     }
     close_marks(&mut body, &mut style);

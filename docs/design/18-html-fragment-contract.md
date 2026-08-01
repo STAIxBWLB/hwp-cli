@@ -78,9 +78,11 @@ Maru 문서 작성기의 **부분(part) 단위 작성·조합**을 위한 HTML f
 
 ## 6. 비지원 · 에러
 
-- `script`, `style`, `iframe`, `form` 등 미열거 태그 → import 에러.
+- `script`, `iframe`, `form` 등 미열거 태그 → import 에러. 단 `<style>`은 예외적으로
+  허용한다 — v2 스타일 왕복(§8)의 `.cs{n}`/`.ps{n}` 규칙만 읽고 나머지는 무시한다.
 - 닫힘 불일치·속성 미인용 등 malformed XML → 파서 에러 그대로.
-- CSS 클래스 기반 글자/문단 모양 복원 → v1 범위 밖(무시).
+- CSS 클래스 기반 글자/문단 모양 복원은 v2(§8) 규칙에 한한다 — 그 밖의 클래스와
+  인라인 `style` 속성은 무시.
 
 ## 7. 버전
 
@@ -97,6 +99,7 @@ v1은 구조만 왕복한다. v2는 글자·문단 모양을 CSS 클래스로 �
 
 - 규칙: standalone은 `<head>`의 `<style>` 블록, fragment는 **선두 `<style>` 요소**
   (fragment가 자기완결이어야 하므로).
+- import는 `<style>`을 허용하되 `.cs{n}`/`.ps{n}` 규칙만 읽고 나머지는 무시한다(§6).
 - 명명: `.cs{n}` = 소스 문서의 CharShape id n, `.ps{n}` = ParaShape id n. id는 생산자
   문서 기준이며 소비자는 이름이 아니라 **속성값**으로 복원한다(같은 id 보장 없음).
 
