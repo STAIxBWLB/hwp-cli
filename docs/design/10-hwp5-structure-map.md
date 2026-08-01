@@ -1,3 +1,5 @@
+[한국어](10-hwp5-structure-map.md) · [English](10-hwp5-structure-map.en.md)
+
 # HWP 5.0 포맷 전수 지도 (Structure Map)
 
 HWP 5.0 파일이 담는 **모든 스트림·레코드 태그·컨트롤 문자·확장 컨트롤 ID**를 한 곳에서
