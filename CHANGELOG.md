@@ -8,6 +8,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ---
 
+## [Unreleased]
+
+**Added**
+
+- DOCX export (GJ-1): `convert --to docx` writes OOXML from the IR (`hwp-convert::docx`) —
+  paragraphs with Heading styles, run properties (font, size, color, shade, letter-spacing,
+  super/subscript), para alignment/spacing/indents, tables with gridSpan/vMerge and nesting,
+  embedded images, hyperlinks, numbering lists, footnotes/endnotes, and page setup from
+  SectionDef. Equations fall back to script text. DOCX input stays open (L-tier).
+
+---
+
 ## [0.6.0]
 
 **Added**

@@ -3,6 +3,7 @@
 pub mod base64;
 pub mod bookmark;
 pub mod csv;
+pub mod docx;
 pub mod edit;
 pub mod field;
 pub mod format;
@@ -23,6 +24,7 @@ pub use bookmark::{
     BookmarkInfo, bookmark_name, create_bookmark, list_bookmarks, make_bokm_ctrl_data,
 };
 pub use csv::to_csv;
+pub use docx::to_docx;
 pub use edit::{
     ObjectKind, add_col, add_rows, add_table, add_table_column, apply_meta, delete_object,
     delete_table_column, delete_table_row, merge_cells, replace_text, set_cell, split_cell,

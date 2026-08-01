@@ -477,6 +477,7 @@ pub enum ConvertFormat {
     Odt,
     Txt,
     Csv,
+    Docx,
 }
 
 /// Official-document preset (`hwp new --preset`).
