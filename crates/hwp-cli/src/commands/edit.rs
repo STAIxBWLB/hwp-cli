@@ -36,6 +36,13 @@ enum EditOperation {
     DeleteCol(Vec<String>),
     MergeCells(Vec<String>),
     SplitCell(Vec<String>),
+    AddTable(Vec<String>),
+    SetPara(Vec<String>),
+    SetPage(Vec<String>),
+    DeleteImage(Vec<String>),
+    DeleteTable(Vec<String>),
+    DeleteField(Vec<String>),
+    DeleteBookmark(Vec<String>),
 }
 
 /// MCP처럼 이미 구조화된 호출자가 CLI mini-language를 거치지 않고 전달하는 편집.
@@ -161,7 +168,12 @@ impl EditOperation {
             | Self::DeleteRow(_)
             | Self::DeleteCol(_)
             | Self::MergeCells(_)
-            | Self::SplitCell(_) => true,
+            | Self::SplitCell(_)
+            | Self::AddTable(_)
+            | Self::DeleteImage(_)
+            | Self::DeleteTable(_)
+            | Self::DeleteField(_)
+            | Self::DeleteBookmark(_) => true,
             Self::Replace(_)
             | Self::SetCell(_)
             | Self::CreateField(_)
@@ -170,7 +182,9 @@ impl EditOperation {
             | Self::SetField(_)
             | Self::SetMeta(_)
             | Self::SetFormat(_)
-            | Self::SetAlign(_) => false,
+            | Self::SetAlign(_)
+            | Self::SetPara(_)
+            | Self::SetPage(_) => false,
         }
     }
 }
@@ -247,6 +261,13 @@ impl EditPlan {
             delete_col,
             merge_cells,
             split_cell,
+            add_table,
+            set_para,
+            set_page,
+            delete_image,
+            delete_table,
+            delete_field,
+            delete_bookmark,
             verify,
             allow_partial,
         } = args;
@@ -279,6 +300,13 @@ impl EditPlan {
         add!(DeleteCol, delete_col);
         add!(MergeCells, merge_cells);
         add!(SplitCell, split_cell);
+        add!(AddTable, add_table);
+        add!(SetPara, set_para);
+        add!(SetPage, set_page);
+        add!(DeleteImage, delete_image);
+        add!(DeleteTable, delete_table);
+        add!(DeleteField, delete_field);
+        add!(DeleteBookmark, delete_bookmark);
 
         (
             input,
@@ -736,6 +764,136 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     hwp_convert::split_cell(&mut doc, ti, r, c).map_err(|e| anyhow::anyhow!(e))?;
                     eprintln!("셀 분할: 표{ti} ({r},{c})");
                     edits += 1;
+                }
+            }
+            EditOperation::AddTable(specs) => {
+                for spec in specs {
+                    let (anchor, json) = spec.split_once("=>").with_context(|| {
+                        format!("--add-table 형식은 \"앵커=>행JSON\" 입니다: {spec:?}")
+                    })?;
+                    let rows: Vec<Vec<String>> = serde_json::from_str(json).with_context(|| {
+                        format!("--add-table 행 데이터는 문자열 배열의 배열이어야 합니다: {json:?}")
+                    })?;
+                    hwp_convert::add_table(&mut doc, anchor, &rows)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    eprintln!(
+                        "표 삽입: {anchor:?} 뒤 ({}x{})",
+                        rows.len(),
+                        rows.first().map_or(0, Vec::len)
+                    );
+                    edits += 1;
+                }
+            }
+            EditOperation::SetPara(specs) => {
+                for spec in specs {
+                    let before = doc.clone();
+                    let (pattern, kv) = spec.split_once("=>").with_context(|| {
+                        format!("--set-para 형식은 \"찾기=>키:값\" 입니다: {spec:?}")
+                    })?;
+                    let props = parse_para_props(kv)?;
+                    let n = hwp_convert::set_para_props(&mut doc, pattern, &props);
+                    if n == 0 {
+                        eprintln!("경고: 문단모양 대상 {pattern:?}를 찾지 못했습니다");
+                        unapplied.push(format!("--set-para {spec:?}"));
+                    } else {
+                        eprintln!("문단 모양: {pattern:?} {kv} ({n}건)");
+                        record_effect(
+                            &before,
+                            &doc,
+                            format!("--set-para {spec:?}"),
+                            &mut edits,
+                            &mut unapplied,
+                        );
+                    }
+                }
+            }
+            EditOperation::SetPage(specs) => {
+                let before = doc.clone();
+                let mut props = hwp_convert::PageProps::default();
+                for spec in specs {
+                    let (key, value) = spec
+                        .split_once(':')
+                        .with_context(|| format!("--set-page 형식은 \"키:값\" 입니다: {spec:?}"))?;
+                    apply_page_prop(&mut props, key.trim(), value.trim())?;
+                }
+                let n = hwp_convert::set_page_def(&mut doc, &props);
+                if n == 0 {
+                    eprintln!("경고: 구역 정의를 찾지 못했습니다");
+                    unapplied.push("--set-page".to_string());
+                } else {
+                    eprintln!("페이지 설정: {}건", specs.len());
+                    record_effect(
+                        &before,
+                        &doc,
+                        "--set-page".to_string(),
+                        &mut edits,
+                        &mut unapplied,
+                    );
+                }
+            }
+            EditOperation::DeleteImage(specs) => {
+                for anchor in specs {
+                    let n = hwp_convert::delete_object(
+                        &mut doc,
+                        hwp_convert::ObjectKind::Image,
+                        anchor,
+                    );
+                    if n == 0 {
+                        eprintln!("경고: 그림을 찾지 못했습니다 (앵커 {anchor:?})");
+                        unapplied.push(format!("--delete-image {anchor:?}"));
+                    } else {
+                        eprintln!("그림 삭제: {anchor:?} ({n}건)");
+                        edits += n;
+                    }
+                }
+            }
+            EditOperation::DeleteTable(specs) => {
+                for spec in specs {
+                    let n = if let Ok(nth) = spec.trim().parse::<usize>() {
+                        hwp_convert::delete_object(
+                            &mut doc,
+                            hwp_convert::ObjectKind::TableNth(nth),
+                            "",
+                        )
+                    } else {
+                        hwp_convert::delete_object(&mut doc, hwp_convert::ObjectKind::Table, spec)
+                    };
+                    if n == 0 {
+                        eprintln!("경고: 표를 찾지 못했습니다 ({spec:?})");
+                        unapplied.push(format!("--delete-table {spec:?}"));
+                    } else {
+                        eprintln!("표 삭제: {spec:?} ({n}건)");
+                        edits += n;
+                    }
+                }
+            }
+            EditOperation::DeleteField(specs) => {
+                for name in specs {
+                    let n =
+                        hwp_convert::delete_object(&mut doc, hwp_convert::ObjectKind::Field, name);
+                    if n == 0 {
+                        eprintln!("경고: 필드를 찾지 못했습니다 ({name:?})");
+                        unapplied.push(format!("--delete-field {name:?}"));
+                    } else {
+                        eprintln!("필드 삭제: {name:?} ({n}건)");
+                        edits += n;
+                    }
+                }
+            }
+            EditOperation::DeleteBookmark(specs) => {
+                for name in specs {
+                    let n = hwp_convert::delete_object(
+                        &mut doc,
+                        hwp_convert::ObjectKind::Bookmark,
+                        name,
+                    );
+                    if n == 0 {
+                        eprintln!("경고: 책갈피를 찾지 못했습니다 ({name:?})");
+                        unapplied.push(format!("--delete-bookmark {name:?}"));
+                    } else {
+                        eprintln!("책갈피 삭제: {name:?} ({n}건)");
+                        edits += n;
+                    }
                 }
             }
         }
@@ -1230,6 +1388,74 @@ pub(crate) fn parse_align(name: &str) -> anyhow::Result<u8> {
         "divide" | "나눔" => 5,
         other => anyhow::bail!("알 수 없는 정렬: {other:?} (left/right/center/justify/distribute)"),
     })
+}
+
+/// mm 문자열 → HWPUNIT (1mm = 7200/25.4).
+fn parse_mm(value: &str) -> anyhow::Result<i32> {
+    let mm: f32 = value
+        .trim()
+        .trim_end_matches("mm")
+        .parse()
+        .with_context(|| format!("mm 값이 숫자가 아닙니다: {value:?}"))?;
+    Ok((mm * 7200.0 / 25.4).round() as i32)
+}
+
+/// `--set-para`의 "키:값"을 ParaProps로 파싱한다.
+/// 키: line-spacing(비율% 또는 Npt 고정), indent, left, right, top, bottom (mm).
+fn parse_para_props(kv: &str) -> anyhow::Result<hwp_convert::ParaProps> {
+    let (key, value) = kv
+        .split_once(':')
+        .with_context(|| format!("--set-para 형식은 \"키:값\" 입니다: {kv:?}"))?;
+    let mut props = hwp_convert::ParaProps::default();
+    let key = key.trim();
+    let value = value.trim();
+    match key {
+        "line-spacing" => {
+            if let Some(pt) = value.strip_suffix("pt") {
+                let pt: f32 = pt.parse().context("줄간격 pt 값")?;
+                props.line_spacing = Some((1, (pt * 100.0).round() as i32));
+            } else {
+                let pct: i32 = value.parse().context("줄간격 비율(%) 값")?;
+                props.line_spacing = Some((0, pct));
+            }
+        }
+        "indent" => props.indent = Some(parse_mm(value)?),
+        "left" => props.margin_left = Some(parse_mm(value)?),
+        "right" => props.margin_right = Some(parse_mm(value)?),
+        "top" => props.spacing_top = Some(parse_mm(value)?),
+        "bottom" => props.spacing_bottom = Some(parse_mm(value)?),
+        other => anyhow::bail!(
+            "알 수 없는 문단모양 키: {other:?} (line-spacing/indent/left/right/top/bottom)"
+        ),
+    }
+    Ok(props)
+}
+
+/// `--set-page`의 한 "키:값"을 PageProps에 반영한다.
+fn apply_page_prop(
+    props: &mut hwp_convert::PageProps,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    match key {
+        "width" => props.width = Some(parse_mm(value)?),
+        "height" => props.height = Some(parse_mm(value)?),
+        "margin-left" => props.margin_left = Some(parse_mm(value)?),
+        "margin-right" => props.margin_right = Some(parse_mm(value)?),
+        "margin-top" => props.margin_top = Some(parse_mm(value)?),
+        "margin-bottom" => props.margin_bottom = Some(parse_mm(value)?),
+        "orientation" => {
+            props.landscape = Some(match value.to_ascii_lowercase().as_str() {
+                "landscape" | "가로" => true,
+                "portrait" | "세로" => false,
+                other => anyhow::bail!("알 수 없는 용지 방향: {other:?} (portrait/landscape)"),
+            })
+        }
+        other => anyhow::bail!(
+            "알 수 없는 페이지 키: {other:?} (width/height/margin-left/margin-right/margin-top/margin-bottom/orientation)"
+        ),
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

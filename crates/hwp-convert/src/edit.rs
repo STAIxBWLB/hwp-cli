@@ -1138,9 +1138,331 @@ pub(crate) fn utf16_len(s: &str) -> u32 {
     s.encode_utf16().count() as u32
 }
 
+/// `anchor` 텍스트를 가진 첫 본문 문단 뒤에 균일 표를 삽입한다 (GK-3).
+/// `rows`는 행×열 텍스트 격자 — 셀 기본값은 from_markdown의 GFM 표와 같다
+/// (본문 폭 균등, 행 높이 1700, 세로 가울데, 실선 테두리). 반환=삽입 개수(0 또는 1).
+pub fn add_table(doc: &mut Document, anchor: &str, rows: &[Vec<String>]) -> Result<usize, String> {
+    use crate::from_markdown::{BODY_WIDTH, CELL_VALIGN_CENTER, TABLE_BORDER_FILL};
+    use hwp_model::{BorderFillId, Cell, HwpUnit, Table};
+
+    if anchor.is_empty() {
+        return Err("앵커 텍스트가 없습니다".into());
+    }
+    if rows.is_empty() || rows.iter().all(Vec::is_empty) {
+        return Err("표 행 데이터가 없습니다".into());
+    }
+    let n_rows = rows.len() as u16;
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1) as u16;
+    let col_w = BODY_WIDTH / i32::from(cols);
+    let mut cells = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        for c in 0..cols {
+            let text = row.get(c as usize).cloned().unwrap_or_default();
+            cells.push(Cell {
+                list_attr: CELL_VALIGN_CENTER,
+                col: c,
+                row: r as u16,
+                col_span: 1,
+                row_span: 1,
+                width: HwpUnit(col_w),
+                height: HwpUnit(1700),
+                margins: [510, 510, 141, 141],
+                border_fill: BorderFillId(TABLE_BORDER_FILL),
+                header_tail: Vec::new(),
+                paragraphs: vec![Paragraph {
+                    chars: text.chars().map(HwpChar::Text).collect(),
+                    char_shape_runs: vec![(0, CharShapeId(0))],
+                    ..Paragraph::default()
+                }],
+            });
+        }
+    }
+    let table = Table {
+        common_data: Vec::new(),
+        placement: None,
+        attr: 0,
+        rows: n_rows,
+        cols,
+        cell_spacing: 0,
+        inner_margins: [510, 510, 141, 141],
+        row_cell_counts: vec![cols; n_rows as usize],
+        border_fill: BorderFillId(TABLE_BORDER_FILL),
+        table_tail: Vec::new(),
+        cells,
+        extras: Vec::new(),
+    };
+    validate_table_invariants(&table)?;
+
+    let mut payload = vec![0u8; 12];
+    payload[..4].copy_from_slice(b" lbt"); // 역순 ctrl_id
+    let anchor_para = Paragraph {
+        chars: vec![
+            HwpChar::ExtCtrl {
+                code: 11,
+                ctrl_id: *b"tbl ",
+                payload,
+                ctrl_index: Some(0),
+            },
+            HwpChar::CharCtrl(13),
+        ],
+        char_shape_runs: vec![(0, CharShapeId(0))],
+        controls: vec![Control::Table(table)],
+        ..Paragraph::default()
+    };
+    for section in &mut doc.sections {
+        if let Some(i) = section
+            .paragraphs
+            .iter()
+            .position(|p| find_match(&p.chars, anchor, 0).is_some())
+        {
+            section.paragraphs.insert(i + 1, anchor_para);
+            return Ok(1);
+        }
+    }
+    Err(format!("앵커를 찾을 수 없습니다: {anchor}"))
+}
+
+/// 개체 삭제 종류 (GK-8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectKind {
+    /// anchor 텍스트가 있는 문단의 그림(Picture)
+    Image,
+    /// anchor 텍스트가 있는 문단의 표
+    Table,
+    /// n번째 표(0-기반, 재귀 등장 순서)
+    TableNth(usize),
+    /// 이름이 selector인 필드
+    Field,
+    /// 이름이 selector인 책갈피
+    Bookmark,
+}
+
+/// 개체 삭제 — 컨트롤과 앵커 문자(필드는 FIELD_END까지)를 함께 제거하고 WCHAR 위치를
+/// 보정한다 (GK-8). 본문·표 셀·글상자 재귀. 반환=삭제 개수.
+pub fn delete_object(doc: &mut Document, kind: ObjectKind, selector: &str) -> usize {
+    let mut count = 0;
+    let mut table_seen = 0usize;
+    for section in &mut doc.sections {
+        for para in &mut section.paragraphs {
+            count += delete_object_in_para(para, kind, selector, &mut table_seen);
+        }
+    }
+    count
+}
+
+fn delete_object_in_para(
+    para: &mut Paragraph,
+    kind: ObjectKind,
+    selector: &str,
+    table_seen: &mut usize,
+) -> usize {
+    // 삭제 대상 컨트롤 인덱스를 모은다.
+    let targets: Vec<usize> = para
+        .controls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let hit = match (kind, c) {
+                (ObjectKind::Image, Control::Picture(_)) => {
+                    find_match(&para.chars, selector, 0).is_some()
+                }
+                (ObjectKind::Table, Control::Table(_)) => {
+                    find_match(&para.chars, selector, 0).is_some()
+                }
+                (ObjectKind::TableNth(nth), Control::Table(_)) => {
+                    let seen = *table_seen;
+                    *table_seen += 1;
+                    seen == nth
+                }
+                (ObjectKind::TableNth(_), _) => false,
+                (ObjectKind::Field, Control::Generic(g))
+                    if crate::field::is_field_ctrl_id(&g.ctrl_id) =>
+                {
+                    crate::field::field_meta(c).0.as_deref() == Some(selector)
+                }
+                (ObjectKind::Bookmark, Control::Generic(g)) if g.ctrl_id == *b"bokm" => {
+                    crate::bookmark::bookmark_name(c).as_deref() == Some(selector)
+                }
+                _ => false,
+            };
+            hit.then_some(i)
+        })
+        .collect();
+    // 재귀: 표 셀·Generic 문단 리스트.
+    let mut n = 0;
+    for control in &mut para.controls {
+        match control {
+            Control::Table(t) => {
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        n += delete_object_in_para(p, kind, selector, table_seen);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        n += delete_object_in_para(p, kind, selector, table_seen);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if targets.is_empty() {
+        return n;
+    }
+    n += remove_controls(para, &targets);
+    n
+}
+
+/// `targets` 인덱스의 컨트롤과 그 앵커 문자(ExtCtrl + 필드 시작의 FIELD_END)를 제거하고
+/// char_shape_runs 위치를 보정한다. 반환=제거 개수.
+fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
+    // 1) 앵커 문자 제거 — 삭제 대상 컨트롤을 가리키는 ExtCtrl + 필드의 FIELD_END.
+    let mut removed: Vec<(u32, u32)> = Vec::new();
+    let mut orig_pos = 0u32;
+    let mut kept = Vec::with_capacity(para.chars.len());
+    // 삭제한 FIELD_START(code 3)에 대응하는 FIELD_END(code 4)를 찾는 중인지.
+    // 중간의 Text/CharCtrl은 건드리지 않고 지나간다.
+    let mut pending_field_end = false;
+    for ch in std::mem::take(&mut para.chars) {
+        let width = ch.wchar_width();
+        let drop = match &ch {
+            HwpChar::ExtCtrl {
+                code, ctrl_index, ..
+            } => {
+                let hit = ctrl_index.is_some_and(|i| targets.contains(&(i as usize)));
+                // 필드 시작(FIELD_START=3)만 FIELD_END 추적을 연다 — 그림·표·책갈피는 없음.
+                pending_field_end = hit && *code == 3;
+                hit
+            }
+            HwpChar::InlineCtrl { code, .. } => {
+                let hit = pending_field_end && *code == hwp_model::ctrl_char::FIELD_END;
+                if hit {
+                    pending_field_end = false;
+                }
+                hit
+            }
+            _ => false,
+        };
+        if drop {
+            removed.push((orig_pos, width));
+        } else {
+            kept.push(ch);
+        }
+        orig_pos += width;
+    }
+    para.chars = kept;
+    // 2) 컨트롤 제거 (역순으로 지워 인덱스 보존).
+    let mut sorted = targets.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let n = sorted.len();
+    for i in sorted {
+        para.controls.remove(i);
+    }
+    // 3) char_shape_runs 위치 보정.
+    for (pos, _) in &mut para.char_shape_runs {
+        let shift: u32 = removed
+            .iter()
+            .filter(|(start, width)| start + width <= *pos)
+            .map(|(_, width)| width)
+            .sum();
+        *pos -= shift;
+    }
+    para.char_shape_runs.dedup();
+    // 4) ExtCtrl ↔ controls 등장순서 재연결.
+    crate::field::relink_ctrl_index(para);
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_table_앵커_뒤_삽입() {
+        let mut doc = crate::from_markdown::from_markdown("머리\n\n끝\n");
+        let rows = vec![
+            vec!["가".to_string(), "나".to_string()],
+            vec!["1".to_string(), "2".to_string()],
+        ];
+        assert_eq!(add_table(&mut doc, "머리", &rows).unwrap(), 1);
+        let para = &doc.sections[0].paragraphs[1]; // 머리 바로 뒤
+        let Control::Table(t) = &para.controls[0] else {
+            panic!("표 컨트롤")
+        };
+        assert_eq!((t.rows, t.cols), (2, 2));
+        assert_eq!(t.row_cell_counts, vec![2, 2]);
+        let text: String = t.cells[2].paragraphs[0]
+            .chars
+            .iter()
+            .filter_map(|c| match c {
+                HwpChar::Text(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "1");
+        // 앵커 없음 → 에러.
+        assert!(add_table(&mut doc, "없는앵커", &rows).is_err());
+    }
+
+    #[test]
+    fn delete_object_표와_그림() {
+        let mut doc = crate::from_markdown::from_markdown("본문\n\n| 가 |\n|---|\n| 1 |\n");
+        let png = {
+            let mut p = b"\x89PNG\r\n\x1a\n".to_vec();
+            p.extend([0, 0, 0, 13]);
+            p.extend(b"IHDR");
+            p.extend(8u32.to_be_bytes());
+            p.extend(8u32.to_be_bytes());
+            p.extend([0u8; 8]);
+            p
+        };
+        let tmp = std::env::temp_dir().join("delete_object_test.png");
+        std::fs::write(&tmp, &png).unwrap();
+        crate::image::insert_image(&mut doc, "본문", &tmp, crate::image::ImageSize::Natural)
+            .unwrap();
+        assert_eq!(delete_object(&mut doc, ObjectKind::Image, "본문"), 1);
+        let has_pic = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .any(|c| matches!(c, Control::Picture(_)));
+        assert!(!has_pic, "그림 삭제됨");
+        let _ = std::fs::remove_file(&tmp);
+        // nth 표 삭제 — 0번째(GFM 표)를 지우면 표가 사라진다.
+        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(0), ""), 1);
+        let has_table = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .any(|c| matches!(c, Control::Table(_)));
+        assert!(!has_table, "표 삭제됨");
+        // 없는 인덱스는 0건.
+        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(3), ""), 0);
+    }
+
+    #[test]
+    fn delete_object_필드와_책갈피() {
+        let mut doc = crate::from_markdown::from_markdown("여기 앵커입니다.\n");
+        assert!(crate::field::create_field(&mut doc, "앵커", "이름", "값"));
+        assert!(crate::bookmark::create_bookmark(
+            &mut doc,
+            "앵커",
+            "책갈피1"
+        ));
+        assert_eq!(delete_object(&mut doc, ObjectKind::Field, "이름"), 1);
+        assert_eq!(delete_object(&mut doc, ObjectKind::Bookmark, "책갈피1"), 1);
+        // 잔여 필드/책갈피가 없어야 한다.
+        assert!(crate::field::list_fields(&doc).is_empty());
+        assert!(crate::bookmark::list_bookmarks(&doc).is_empty());
+        // FIELD_END 잔여 문자도 없어야 한다.
+        let stray = doc.sections[0].paragraphs.iter().any(|p| {
+            p.chars.iter().any(|c| matches!(c, HwpChar::InlineCtrl { code, .. } if *code == hwp_model::ctrl_char::FIELD_END))
+        });
+        assert!(!stray, "FIELD_END 잔여");
+    }
     use crate::from_markdown;
     use hwp_model::LineSeg;
 

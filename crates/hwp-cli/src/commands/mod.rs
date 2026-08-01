@@ -9,6 +9,7 @@ pub mod dump;
 pub mod edit;
 pub mod fields;
 pub mod fill;
+pub mod grep;
 pub mod info;
 pub mod mcp;
 pub mod new;

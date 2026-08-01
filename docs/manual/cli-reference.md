@@ -10,6 +10,7 @@
 
 - [`hwp info`](#hwp-info)
 - [`hwp cat`](#hwp-cat)
+- [`hwp grep`](#hwp-grep)
 - [`hwp convert`](#hwp-convert)
 - [`hwp render`](#hwp-render)
 - [`hwp new`](#hwp-new)
@@ -48,23 +49,36 @@
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--format` | `plain` \| `markdown` \| `json` \| `html` | `plain` | 출력 포맷 |
+| `--format` | `plain` \| `markdown` \| `json` \| `html` \| `csv` | `plain` | 출력 포맷 |
 | `--preview` |  |  | 본문 파싱 없이 PrvText 미리보기만 출력 |
 | `--with-header-footer` |  |  | 머리말/꼬리말 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-hidden` |  |  | 숨은 설명 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-segments` |  |  | (markdown 전용) markdown과 함께 각 출력 문자 범위의 원본 좌표(섹션/문단)를 한 줄 JSON 봉투로 출력 — {"markdown": ..., "segments": [...]} |
 
+## `hwp grep`
+
+문단 텍스트 검색 (grep 의미 — 일치 없으면 종료 코드 1)
+
+**사용법:** `hwp grep [OPTIONS] <PATTERN> <FILE>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<PATTERN>` |  |  | 검색 패턴 (부분 문자열 일치) |
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
+| `--ignore-case` |  |  | 대소문자 무시 일치 |
+
 ## `hwp convert`
 
 포맷 변환
 
-**사용법:** `hwp convert [OPTIONS] --output <OUTPUT> <INPUT>`
+**사용법:** `hwp convert [OPTIONS] <INPUTS>...`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
-| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
-| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` |  | 출력 포맷 (생략 시 확장자에서 추론) |
+| `<INPUTS>` |  |  | 입력 HWP/HWPX 파일들 ("-"는 stdin; 여러 입력은 --out-dir 필요) (반복 가능) |
+| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 ("-"는 텍스트 포맷(md/json/html/txt/csv)에 한해 stdout; 단일 입력에서 필수) |
+| `--out-dir` | `<OUT_DIR>` |  | 여러 입력의 출력 디렉터리 (파일명은 "<스템>.<확장자>", --to 필요) |
+| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--strict` |  |  | 변환 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
 | `--preserve-layout` |  |  | 줄 배치 캐시 보존 (무수정 왕복 전용 — 한글은 내용과 어긋난 줄 배치를 변조로 판정하므로 기본은 제거) |
 | `--embed-bin` |  |  | JSON 출력 시 첨부 바이너리(이미지)를 base64로 임베드 (자급식 JSON) |
@@ -178,6 +192,13 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--delete-col` | `<DELETE_COL>` |  | 표 열 삭제 "표:열" — N번째 표의 열 삭제. 전체 폭 유지(남은 열에 재분배). 병합 셀은 축소 (반복 가능, 0-기반) |
 | `--merge-cells` | `<MERGE_CELLS>` |  | 셀 병합 "표:r1:c1:r2:c2" — 사각 영역을 좌상단 앵커로 병합 (반복 가능, 0-기반) |
 | `--split-cell` | `<SPLIT_CELL>` |  | 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반) |
+| `--add-table` | `<ADD_TABLE>` |  | 표 삽입 "앵커=>행JSON" — 앵커 문단 뒤에 균일 표 삽입. 행JSON은 문자열 배열의 배열 (반복 가능) |
+| `--set-para` | `<SET_PARA>` |  | 문단 모양 "찾기=>키:값" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm) (반복 가능) |
+| `--set-page` | `<SET_PAGE>` |  | 페이지 설정 "키:값" — 키: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape) (반복 가능) |
+| `--delete-image` | `<DELETE_IMAGE>` |  | 그림 삭제 "앵커" — 앵커 문단의 그림 삭제 (반복 가능) |
+| `--delete-table` | `<DELETE_TABLE>` |  | 표 삭제 "n"(0-기반 인덱스) 또는 "앵커"(앵커 문단의 표) (반복 가능) |
+| `--delete-field` | `<DELETE_FIELD>` |  | 필드 삭제 "이름" (반복 가능; 이름은 hwp fields로 확인) |
+| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | 책갈피 삭제 "이름" (반복 가능; 이름은 hwp bookmarks로 확인) |
 | `--verify` |  |  | 쓰기 후 재읽기로 검증 |
 | `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
 

@@ -273,9 +273,213 @@ fn find_or_insert_para(pshapes: &mut Vec<ParaShape>, ps: ParaShape) -> ParaShape
     ParaShapeId((pshapes.len() - 1) as u16)
 }
 
+/// 문단 속성 변경 항목 (GK-4). None인 항목은 기존 값 유지.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParaProps {
+    /// 줄간격 — (종류, 값). 종류 0=비율%, 1=고정(pt×100), 3=최소.
+    pub line_spacing: Option<(u8, i32)>,
+    /// 들여쓰기/내어쓰기 (HWPUNIT).
+    pub indent: Option<i32>,
+    pub margin_left: Option<i32>,
+    pub margin_right: Option<i32>,
+    pub spacing_top: Option<i32>,
+    pub spacing_bottom: Option<i32>,
+}
+
+impl ParaProps {
+    pub fn is_empty(&self) -> bool {
+        self.line_spacing.is_none()
+            && self.indent.is_none()
+            && self.margin_left.is_none()
+            && self.margin_right.is_none()
+            && self.spacing_top.is_none()
+            && self.spacing_bottom.is_none()
+    }
+}
+
+/// `pattern`을 가진 문단의 문단 모양 속성을 바꾼다 (GK-4 — 본문·표 셀·글상자 재귀).
+/// 모양을 바꾼 ParaShape를 새로(또는 기존 동일 항목으로) 가리키게 한다. 반환=바꾼 문단 수.
+pub fn set_para_props(doc: &mut Document, pattern: &str, props: &ParaProps) -> usize {
+    if pattern.is_empty() || props.is_empty() {
+        return 0;
+    }
+    let Document {
+        header, sections, ..
+    } = doc;
+    let pshapes = &mut header.para_shapes;
+    let mut n = 0;
+    for section in sections.iter_mut() {
+        for para in &mut section.paragraphs {
+            n += props_para(para, pattern, props, pshapes);
+        }
+    }
+    n
+}
+
+fn props_para(
+    para: &mut Paragraph,
+    pattern: &str,
+    props: &ParaProps,
+    pshapes: &mut Vec<ParaShape>,
+) -> usize {
+    let mut n = 0;
+    if find_match(&para.chars, pattern, 0).is_some() {
+        let mut ps = pshapes
+            .get(para.para_shape.0 as usize)
+            .cloned()
+            .unwrap_or_default();
+        if let Some((kind, value)) = props.line_spacing {
+            ps.line_spacing_type = kind;
+            ps.line_spacing = value;
+            ps.line_spacing_old = value;
+        }
+        if let Some(v) = props.indent {
+            ps.indent = v;
+        }
+        if let Some(v) = props.margin_left {
+            ps.margin_left = v;
+        }
+        if let Some(v) = props.margin_right {
+            ps.margin_right = v;
+        }
+        if let Some(v) = props.spacing_top {
+            ps.spacing_top = v;
+        }
+        if let Some(v) = props.spacing_bottom {
+            ps.spacing_bottom = v;
+        }
+        para.para_shape = find_or_insert_para(pshapes, ps);
+        para.line_segs.clear();
+        n += 1;
+    }
+    for ctrl in &mut para.controls {
+        match ctrl {
+            Control::Table(t) => {
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        n += props_para(p, pattern, props, pshapes);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        n += props_para(p, pattern, props, pshapes);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    n
+}
+
+/// 페이지 설정 변경 항목 (GK-6). None인 항목은 기존 값 유지. 치수는 HWPUNIT.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageProps {
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub margin_left: Option<i32>,
+    pub margin_right: Option<i32>,
+    pub margin_top: Option<i32>,
+    pub margin_bottom: Option<i32>,
+    /// true=가로(landscape), false=세로(portrait).
+    pub landscape: Option<bool>,
+}
+
+/// 첫 구역 정의의 페이지 설정을 바꾼다 (GK-6). 반환=바꾼 구역 수(0 또는 1).
+pub fn set_page_def(doc: &mut Document, props: &PageProps) -> usize {
+    for section in &mut doc.sections {
+        for para in &mut section.paragraphs {
+            for ctrl in &mut para.controls {
+                let Control::SectionDef(secd) = ctrl else {
+                    continue;
+                };
+                let Some(page) = secd.page.as_mut() else {
+                    continue;
+                };
+                if let Some(v) = props.width {
+                    page.width.0 = v;
+                }
+                if let Some(v) = props.height {
+                    page.height.0 = v;
+                }
+                if let Some(v) = props.margin_left {
+                    page.margin_left.0 = v;
+                }
+                if let Some(v) = props.margin_right {
+                    page.margin_right.0 = v;
+                }
+                if let Some(v) = props.margin_top {
+                    page.margin_top.0 = v;
+                }
+                if let Some(v) = props.margin_bottom {
+                    page.margin_bottom.0 = v;
+                }
+                if let Some(landscape) = props.landscape {
+                    // attr bit0 = 용지 방향(가로).
+                    if landscape {
+                        page.attr |= 1;
+                    } else {
+                        page.attr &= !1;
+                    }
+                }
+                return 1;
+            }
+        }
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_para_props_줄간격과_여백() {
+        let mut doc = crate::from_markdown::from_markdown("본문 문단입니다.\n\n다른 문단\n");
+        let props = ParaProps {
+            line_spacing: Some((0, 130)),
+            indent: Some(-1000),
+            margin_left: Some(2000),
+            spacing_top: Some(300),
+            ..ParaProps::default()
+        };
+        assert_eq!(set_para_props(&mut doc, "본문", &props), 1);
+        let para = &doc.sections[0].paragraphs[0];
+        let ps = &doc.header.para_shapes[para.para_shape.0 as usize];
+        assert_eq!(ps.line_spacing, 130);
+        assert_eq!(ps.line_spacing_type, 0);
+        assert_eq!(ps.indent, -1000);
+        assert_eq!(ps.margin_left, 2000);
+        assert_eq!(ps.spacing_top, 300);
+        // 다른 문단은 기본 팔레트(ps2) 그대로.
+        let other = &doc.sections[0].paragraphs[1];
+        assert_eq!(other.para_shape.0, 2);
+    }
+
+    #[test]
+    fn set_page_def_여백과_방향() {
+        let mut doc = crate::from_markdown::from_markdown("본문\n");
+        let props = PageProps {
+            margin_left: Some(5668),
+            landscape: Some(true),
+            ..PageProps::default()
+        };
+        assert_eq!(set_page_def(&mut doc, &props), 1);
+        let secd = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::SectionDef(s) => Some(s),
+                _ => None,
+            })
+            .expect("구역 정의");
+        let page = secd.page.as_ref().unwrap();
+        assert_eq!(page.margin_left.0, 5668);
+        assert_eq!(page.attr & 1, 1, "가로 방향");
+    }
     use crate::from_markdown;
 
     fn dummy_lineseg() -> hwp_model::LineSeg {

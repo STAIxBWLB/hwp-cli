@@ -2,6 +2,7 @@
 
 pub mod base64;
 pub mod bookmark;
+pub mod csv;
 pub mod edit;
 pub mod field;
 pub mod format;
@@ -21,15 +22,19 @@ use hwp_model::Document;
 pub use bookmark::{
     BookmarkInfo, bookmark_name, create_bookmark, list_bookmarks, make_bokm_ctrl_data,
 };
+pub use csv::to_csv;
 pub use edit::{
-    add_col, add_rows, add_table_column, apply_meta, delete_table_column, delete_table_row,
-    merge_cells, replace_text, set_cell, split_cell, table_dims,
+    ObjectKind, add_col, add_rows, add_table, add_table_column, apply_meta, delete_object,
+    delete_table_column, delete_table_row, merge_cells, replace_text, set_cell, split_cell,
+    table_dims,
 };
 pub use field::{
     FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, list_fields,
     scan_placeholders, set_field,
 };
-pub use format::{CharFormat, set_char_format, set_para_align};
+pub use format::{
+    CharFormat, PageProps, ParaProps, set_char_format, set_page_def, set_para_align, set_para_props,
+};
 pub use from_html::{HtmlImportOptions, from_html, from_html_with};
 pub use from_markdown::{
     MarkdownImportOptions, OfficialPreset, default_header, from_markdown, from_markdown_blocks,

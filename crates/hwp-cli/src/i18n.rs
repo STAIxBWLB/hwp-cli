@@ -134,10 +134,32 @@ pub const KO: &[(&str, &str, &str)] = &[
         "with_segments",
         "(markdown 전용) markdown과 함께 각 출력 문자 범위의 원본 좌표(섹션/문단)를 한 줄 JSON 봉투로 출력 — {\"markdown\": ..., \"segments\": [...]}",
     ),
+    // grep
+    (
+        "grep",
+        "",
+        "문단 텍스트 검색 (grep 의미 — 일치 없으면 종료 코드 1)",
+    ),
+    ("grep", "pattern", "검색 패턴 (부분 문자열 일치)"),
+    ("grep", "file", "대상 HWP/HWPX 파일"),
+    ("grep", "ignore_case", "대소문자 무시 일치"),
     // convert
     ("convert", "", "포맷 변환"),
-    ("convert", "input", "입력 HWP/HWPX 파일"),
-    ("convert", "output", "출력 파일 경로"),
+    (
+        "convert",
+        "inputs",
+        "입력 HWP/HWPX 파일들 (\"-\"는 stdin; 여러 입력은 --out-dir 필요)",
+    ),
+    (
+        "convert",
+        "output",
+        "출력 파일 경로 (\"-\"는 텍스트 포맷(md/json/html/txt/csv)에 한해 stdout; 단일 입력에서 필수)",
+    ),
+    (
+        "convert",
+        "out_dir",
+        "여러 입력의 출력 디렉터리 (파일명은 \"<스템>.<확장자>\", --to 필요)",
+    ),
     ("convert", "to", "출력 포맷 (생략 시 확장자에서 추론)"),
     (
         "convert",
@@ -393,6 +415,41 @@ pub const KO: &[(&str, &str, &str)] = &[
         "edit",
         "split_cell",
         "셀 분할 \"표:행:열\" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반)",
+    ),
+    (
+        "edit",
+        "add_table",
+        "표 삽입 \"앵커=>행JSON\" — 앵커 문단 뒤에 균일 표 삽입. 행JSON은 문자열 배열의 배열 (반복 가능)",
+    ),
+    (
+        "edit",
+        "set_para",
+        "문단 모양 \"찾기=>키:값\" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm) (반복 가능)",
+    ),
+    (
+        "edit",
+        "set_page",
+        "페이지 설정 \"키:값\" — 키: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait|landscape) (반복 가능)",
+    ),
+    (
+        "edit",
+        "delete_image",
+        "그림 삭제 \"앵커\" — 앵커 문단의 그림 삭제 (반복 가능)",
+    ),
+    (
+        "edit",
+        "delete_table",
+        "표 삭제 \"n\"(0-기반 인덱스) 또는 \"앵커\"(앵커 문단의 표) (반복 가능)",
+    ),
+    (
+        "edit",
+        "delete_field",
+        "필드 삭제 \"이름\" (반복 가능; 이름은 hwp fields로 확인)",
+    ),
+    (
+        "edit",
+        "delete_bookmark",
+        "책갈피 삭제 \"이름\" (반복 가능; 이름은 hwp bookmarks로 확인)",
     ),
     ("edit", "verify", "쓰기 후 재읽기로 검증"),
     (

@@ -52,6 +52,168 @@ pub fn run(
     Ok(())
 }
 
+/// 다중 입력·stdin/stdout 진입점 (GM-1/GM-2).
+///
+/// - 입력 `-`: stdin 바이트를 시그니처로 판별해 임시 파일로 스테이징한다.
+/// - 출력 `-`: 텍스트 포맷(md/json/html/txt/csv)만 stdout으로 낸다 (`--to` 필수).
+/// - `--out-dir`: 여러 입력을 `<스템>.<대상확장자>`로 일괄 변환한다 (`--to` 필수).
+#[allow(clippy::too_many_arguments)]
+pub fn run_multi(
+    inputs: &[PathBuf],
+    output: Option<&Path>,
+    out_dir: Option<&Path>,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    // 입력 스테이징 (`-` → stdin).
+    let mut staged: Option<PathBuf> = None;
+    let inputs: Vec<PathBuf> = if inputs.len() == 1 && inputs[0].as_os_str() == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
+        if buf.is_empty() {
+            anyhow::bail!("stdin이 비어 있습니다");
+        }
+        let ext = crate::format::detect_bytes(&buf)?;
+        let path = std::env::temp_dir().join(format!("hwp-stdin-{}.{}", std::process::id(), ext));
+        std::fs::write(&path, &buf)?;
+        staged = Some(path.clone());
+        vec![path]
+    } else {
+        inputs.to_vec()
+    };
+    let result = run_multi_inner(
+        &inputs,
+        output,
+        out_dir,
+        to,
+        strict,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+    );
+    if let Some(path) = staged {
+        let _ = std::fs::remove_file(path);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_multi_inner(
+    inputs: &[PathBuf],
+    output: Option<&Path>,
+    out_dir: Option<&Path>,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    match (output, out_dir) {
+        (Some(out), None) => {
+            if inputs.len() != 1 {
+                anyhow::bail!("여러 입력에는 --out-dir이 필요합니다 (-o는 단일 입력 전용)");
+            }
+            if out.as_os_str() == "-" {
+                let Some(target) = to else {
+                    anyhow::bail!("출력이 `-`(stdout)이면 --to가 필요합니다");
+                };
+                let doc = load_document(&inputs[0])?;
+                print_text_output(&doc, target, embed_bin, md_opts)?;
+                return Ok(());
+            }
+            run(
+                &inputs[0],
+                out,
+                to,
+                strict,
+                preserve_layout,
+                embed_bin,
+                md_opts,
+                font_dirs,
+            )
+        }
+        (None, Some(dir)) => {
+            let Some(target) = to else {
+                anyhow::bail!("여러 입력(--out-dir)에는 --to가 필요합니다");
+            };
+            std::fs::create_dir_all(dir)?;
+            for input in inputs {
+                let stem = input
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .with_context(|| {
+                        format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
+                    })?;
+                let out = dir.join(format!("{stem}.{}", target_extension(target)));
+                run(
+                    input,
+                    &out,
+                    Some(target),
+                    strict,
+                    preserve_layout,
+                    embed_bin,
+                    md_opts,
+                    font_dirs.clone(),
+                )?;
+            }
+            Ok(())
+        }
+        (None, None) => anyhow::bail!("출력을 지정하세요: -o <파일> 또는 --out-dir <디렉터리>"),
+        (Some(_), Some(_)) => anyhow::bail!("-o와 --out-dir은 함께 쓸 수 없습니다"),
+    }
+}
+
+/// stdout 텍스트 출력 (GM-2) — 텍스트 포맷만 허용.
+fn print_text_output(
+    doc: &hwp_model::Document,
+    target: ConvertFormat,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+) -> anyhow::Result<()> {
+    let text = match target {
+        ConvertFormat::Md => hwp_convert::to_markdown_with(
+            doc,
+            &hwp_convert::MarkdownOptions {
+                text: hwp_model::TextOptions {
+                    include_header_footer: md_opts.with_header_footer,
+                    include_hidden: md_opts.with_hidden,
+                },
+                ..Default::default()
+            },
+        )?,
+        ConvertFormat::Json => hwp_convert::to_json(doc, true, embed_bin)?,
+        ConvertFormat::Html => hwp_convert::to_html(doc),
+        ConvertFormat::Txt => doc.plain_text(),
+        ConvertFormat::Csv => hwp_convert::to_csv(doc),
+        other => anyhow::bail!(
+            "`-`(stdout) 출력은 텍스트 포맷(md/json/html/txt/csv)만 지원합니다: {other:?}"
+        ),
+    };
+    print!("{text}");
+    Ok(())
+}
+
+/// 포맷의 표준 확장자 (--out-dir 출력 이름용).
+fn target_extension(target: ConvertFormat) -> &'static str {
+    match target {
+        ConvertFormat::Hwp => "hwp",
+        ConvertFormat::Hwpx => "hwpx",
+        ConvertFormat::Md => "md",
+        ConvertFormat::Json => "json",
+        ConvertFormat::Html => "html",
+        ConvertFormat::Pdf => "pdf",
+        ConvertFormat::Odt => "odt",
+        ConvertFormat::Txt => "txt",
+        ConvertFormat::Csv => "csv",
+    }
+}
+
 /// `hwp convert`와 MCP가 함께 쓰는 변환 서비스.
 ///
 /// 출력은 검증이 끝날 때까지 destination에 게시하지 않으며, Markdown 이미지 sidecar도
@@ -105,6 +267,14 @@ pub fn execute(
             ConvertFormat::Md => unreachable!("Markdown은 sidecar 트랜잭션 경로에서 처리"),
             ConvertFormat::Html => {
                 std::fs::write(staged, hwp_convert::to_html(&doc))?;
+                Ok(Vec::new())
+            }
+            ConvertFormat::Txt => {
+                std::fs::write(staged, doc.plain_text())?;
+                Ok(Vec::new())
+            }
+            ConvertFormat::Csv => {
+                std::fs::write(staged, hwp_convert::to_csv(&doc))?;
                 Ok(Vec::new())
             }
             ConvertFormat::Odt => {
@@ -247,6 +417,8 @@ fn infer_format(output: &Path) -> anyhow::Result<ConvertFormat> {
         Some("odt") => Ok(ConvertFormat::Odt),
         Some("pdf") => Ok(ConvertFormat::Pdf),
         Some("json") => Ok(ConvertFormat::Json),
+        Some("txt") => Ok(ConvertFormat::Txt),
+        Some("csv") => Ok(ConvertFormat::Csv),
         Some("hwpx") => Ok(ConvertFormat::Hwpx),
         Some("hwp") => Ok(ConvertFormat::Hwp),
         other => {

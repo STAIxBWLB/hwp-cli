@@ -10,6 +10,7 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 
 - [`hwp info`](#hwp-info)
 - [`hwp cat`](#hwp-cat)
+- [`hwp grep`](#hwp-grep)
 - [`hwp convert`](#hwp-convert)
 - [`hwp render`](#hwp-render)
 - [`hwp new`](#hwp-new)
@@ -48,23 +49,36 @@ Extract text
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
-| `--format` | `plain` \| `markdown` \| `json` \| `html` | `plain` | Output format |
+| `--format` | `plain` \| `markdown` \| `json` \| `html` \| `csv` | `plain` | Output format |
 | `--preview` |  |  | Print only the PrvText preview, without parsing the body |
 | `--with-header-footer` |  |  | Also extract header and footer text (default: excluded) |
 | `--with-hidden` |  |  | Also extract hidden comment text (default: excluded) |
 | `--with-segments` |  |  | (markdown only) Emit the markdown together with the source coordinates (section/paragraph) of each output character range, as a one-line JSON envelope: {"markdown": ..., "segments": [...]} |
 
+## `hwp grep`
+
+Search paragraph text (grep semantics; non-zero exit when no match)
+
+**Usage:** `hwp grep [OPTIONS] <PATTERN> <FILE>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<PATTERN>` |  |  | Pattern to find (substring match) |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--ignore-case` |  |  | Case-insensitive match |
+
 ## `hwp convert`
 
 Convert between formats
 
-**Usage:** `hwp convert [OPTIONS] --output <OUTPUT> <INPUT>`
+**Usage:** `hwp convert [OPTIONS] <INPUTS>...`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUT>` |  |  | Input HWP/HWPX file |
-| `-o, --output` | `<OUTPUT>` |  | Output file path |
-| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` |  | Output format (inferred from the extension when omitted) |
+| `<INPUTS>` |  |  | Input HWP/HWPX files ("-" reads stdin; multiple inputs require --out-dir) (repeatable) |
+| `-o, --output` | `<OUTPUT>` |  | Output file path ("-" writes stdout for text formats: md/json/html/txt/csv; required with a single input) |
+| `--out-dir` | `<OUT_DIR>` |  | Output directory for multiple inputs (file names are "<stem>.<ext>", requires --to) |
+| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` |  | Output format (inferred from the extension when omitted) |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found during conversion |
 | `--preserve-layout` |  |  | Preserve the line layout cache (unmodified round-trips only; Hancom treats a layout inconsistent with the content as tampering, so it is dropped by default) |
 | `--embed-bin` |  |  | Embed attached binaries (images) as base64 in JSON output (self-contained JSON) |
@@ -178,6 +192,13 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--delete-col` | `<DELETE_COL>` |  | Delete a table column, "table:col": total width is preserved by redistributing to the remaining columns; merged cells shrink (repeatable, 0-based) |
 | `--merge-cells` | `<MERGE_CELLS>` |  | Merge cells, "table:r1:c1:r2:c2": merge a rectangular area into its top-left anchor (repeatable, 0-based) |
 | `--split-cell` | `<SPLIT_CELL>` |  | Split a cell, "table:row:col": break a merged cell back into 1x1 cells (repeatable, 0-based) |
+| `--add-table` | `<ADD_TABLE>` |  | Insert a table, "anchor=>json": insert a uniform table after the anchor paragraph; json is an array of row arrays (repeatable) |
+| `--set-para` | `<SET_PARA>` |  | Paragraph shape properties, "find=>key:value" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm); repeatable) |
+| `--set-page` | `<SET_PAGE>` |  | Page setup, "key:value" (keys: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape); repeatable) |
+| `--delete-image` | `<DELETE_IMAGE>` |  | Delete an image, "anchor": delete the picture in the anchor paragraph (repeatable) |
+| `--delete-table` | `<DELETE_TABLE>` |  | Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable) |
+| `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with hwp fields) |
+| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks) |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
 
