@@ -115,13 +115,16 @@
       충실"**을 목표로 한다. 각주는 `<sup>`+앵커, 병합 표는 colspan/rowspan 방출이 1차 범위.
       → **2026-08-01 해소**: html 경로 GH-3·GH-4·GH-5 잔존 해결. CSS 스타일 매핑·다단·머리말
       표현은 **분리 보류**(아래 계약 작업이 구조 왕복을 우선 — 스타일 왕복은 계약 v1 범위 밖).
-- [x] **HTML fragment 왕복 + 부분(part) 조합** (**2026-08-01**, Maru 문서 작성기 연동 축) —
+- [x] **HTML fragment 왕복 + 부분(part) 조합** (**2026-08-01 해소·실기 확정**, Maru 문서 작성기 연동 축) —
       본문 산문은 markdown, 표·그림은 HTML fragment로 부분을 나눠 쓰고 조합하는 대규모
       문서 워크플로. ① 계약 문서(docs/design/18) + html.rs XHTML 정합, ② `from_html`
       임포터(계약 위반 hard error), ③ md+HTML 혼합 부분 파일(from_markdown HTML 블록),
       ④ `hwp fill --set 이름=@부분.md` 템플릿+부분 채우기(기본 팔레트 계열 한정).
       예제: `examples/part-composition-v1/`. 잔여: SVG 부분 이미지(v1은 spec-v2 경로 안내),
       스타일 수준 왕복, odt 경로 GH-3~5.
+      **P1 실기 확정(2026-08-01)**: 부분 조합 산출물(`P1_부분조합.hwpx`)을 한글에서 열어
+      md 부분(문단·굵게·목록), HTML 표 병합 셀(colspan 2종·rowspan 1종) 정상 표시,
+      손상/변조 경고 없음을 확인했다.
 
 ---
 
