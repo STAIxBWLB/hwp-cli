@@ -1,33 +1,35 @@
-//! SVG 검증·래스터화 — DocumentSpec v2 svg visual과 from_html `<img src="*.svg">`의 공용 경로.
+//! SVG validation and rasterization — the shared path for DocumentSpec v2 svg visuals and
+//! from_html `<img src="*.svg">`.
 //!
-//! 정책: SVG는 어느 출력 포맷에도 네이티브 표현이 없다 — 항상 **폐쇄 부분집합 검증
-//! (sanitize) + 결정론적 PNG 래스터화(resvg)**를 거친다. 외부 참조·스크립트·이벤트
-//! 핸들러·CSS URL·DTD·PI·텍스트 노드(결정론적 폰트 렌더러 부재)는 전부 거부다.
-//! 이 모듈은 `hwp-cli/document_spec_v2.rs`에서 남려온 구현의 단일 원천이다.
+//! Policy: SVG has no native representation in any output format — it always goes through
+//! **closed-subset validation (sanitize) + deterministic PNG rasterization (resvg)**. External
+//! references, scripts, event handlers, CSS URLs, DTD, PIs, and text nodes (no deterministic
+//! font renderer available) are all rejected. This module is the single source of the
+//! implementation carried over from `hwp-cli/document_spec_v2.rs`.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use image::ImageEncoder as _;
 
-/// SVG 입력 바이트 상한 (정규화 전후 공통).
+/// SVG input byte limit (common to pre- and post-normalization).
 pub const MAX_SVG_BYTES: usize = 1024 * 1024;
 const MAX_SVG_ELEMENTS: usize = 10_000;
 const MAX_SVG_DEPTH: usize = 64;
 
-/// 정규화(canonical)된 SVG와 복잡도 통계 — 작업량 예산 계산에 쓴다.
+/// Canonicalized SVG and complexity statistics — used for workload budget calculation.
 pub struct SanitizedSvg {
     pub canonical: String,
     pub elements: usize,
     pub geometry_tokens: usize,
 }
 
-/// 폐쇄 부분집합으로 검증·정규화한 SVG 문자열을 돌려준다.
+/// Returns the SVG string validated and canonicalized to the closed subset.
 pub fn sanitize_svg(input: &str) -> Result<String, String> {
     Ok(sanitize_svg_with_stats(input)?.canonical)
 }
 
-/// 검증 + 복잡도 통계 수집 변형 (렌더 작업량 예산은 호출부가 계산한다).
+/// Variant that also collects complexity statistics (the caller computes the render workload budget).
 pub fn sanitize_svg_with_stats(input: &str) -> Result<SanitizedSvg, String> {
     if input.len() > MAX_SVG_BYTES {
         return Err("SVG exceeds the 1 MiB limit".into());
@@ -369,14 +371,14 @@ fn write_canonical_svg_start(
     output.push_str(if empty { "/>" } else { ">" });
 }
 
-/// 정규화된 SVG의 고유 크기(px, 96dpi 기준)를 돌려준다.
+/// Returns the intrinsic size (px, at 96dpi) of a canonicalized SVG.
 pub fn size_px(canonical_svg: &str) -> Result<(f32, f32), String> {
     let tree = parse_tree(canonical_svg)?;
     Ok((tree.size().width(), tree.size().height()))
 }
 
-/// 정규화된 SVG를 명시 픽셀 크기의 PNG로 래스터화한다 (결정론적 — 같은 입력이면
-/// 같은 바이트). `max_bytes`는 산출 PNG의 상한이다.
+/// Rasterizes a canonicalized SVG to a PNG of the explicit pixel size (deterministic — same
+/// input, same bytes). `max_bytes` is the limit for the output PNG.
 pub fn rasterize_svg_png(
     canonical_svg: &str,
     width_px: u32,
@@ -429,7 +431,7 @@ fn parse_tree(canonical_svg: &str) -> Result<resvg::usvg::Tree, String> {
         .map_err(|_| "sanitized SVG could not be parsed".to_string())
 }
 
-/// PNG 인코더 (결정론적 — Best 압축 + Adaptive 필터). 이미지 폴리백 경로와 공용.
+/// PNG encoder (deterministic — Best compression + Adaptive filter). Shared with the image fallback path.
 pub fn encode_png(image: image::RgbaImage) -> Result<Vec<u8>, String> {
     let mut output = Cursor::new(Vec::new());
     image::codecs::png::PngEncoder::new_with_quality(
@@ -461,7 +463,7 @@ mod tests {
         assert_eq!((w, h), (100.0, 100.0));
         let png = rasterize_svg_png(&canonical, 100, 100, 1_000_000).unwrap();
         assert_eq!(&png[..4], b"\x89PNG");
-        // 결정론: 같은 입력이면 같은 바이트.
+        // Determinism: same input, same bytes.
         let again = rasterize_svg_png(&canonical, 100, 100, 1_000_000).unwrap();
         assert_eq!(png, again);
     }
@@ -472,8 +474,8 @@ mod tests {
             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><script>alert(1)</script></svg>",
             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\" fill=\"url(http://evil)\"/></svg>",
             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><text x=\"0\" y=\"1\">t</text></svg>",
-            "<svg viewBox=\"0 0 1 1\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\"/></svg>", // xmlns 없음
-            "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\"/></svg>", // viewBox 없음
+            "<svg viewBox=\"0 0 1 1\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\"/></svg>", // no xmlns
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"1\"/></svg>", // no viewBox
         ] {
             assert!(sanitize_svg(hostile).is_err(), "accepted: {hostile}");
         }
