@@ -1,384 +1,522 @@
-[한국어](01-architecture-ir.md) · [English](01-architecture-ir.en.md)
+[한국어](01-architecture-ir.ko.md) · [English](01-architecture-ir.md)
 
-# hwp-cli 워크스페이스 아키텍처 & 중간표현(IR) 완전 재구축 문서
+# The hwp-cli workspace architecture and IR, documented for a full rebuild
 
-대상 저장소: `/Users/elevn/projects/hwp-cli` (Cargo 워크스페이스, `resolver = "3"`, `edition = "2024"`, `rust-version = "1.93"`). 이 문서 하나로 워크스페이스 골격, 크레이트 경계, IR 타입 계층, 3계층 설계 근거, 무손실 보존 메커니즘, 데이터 흐름을 처음부터 다시 구현할 수 있게 하는 것이 목표다.
+A Cargo workspace (`resolver = "3"`, `edition = "2024"`, `rust-version = "1.93"`). This single
+document aims to make the workspace skeleton, crate boundaries, IR type hierarchy, the rationale for
+the three-layer design, the lossless preservation mechanisms and the data flow reimplementable from
+scratch.
 
 ---
 
-## 1. 크레이트 의존 그래프와 책임
+## 1. The crate dependency graph and responsibilities
 
-루트 `Cargo.toml`은 `members = ["crates/*"]`로 6개 내부 크레이트를 묶고, 모든 외부 의존성 버전을 `[workspace.dependencies]`에 고정한다. 각 크레이트는 `version.workspace = true` 등으로 상속만 받는다.
+The root `Cargo.toml` binds six internal crates with `members = ["crates/*"]` and pins every external
+dependency version in `[workspace.dependencies]`. Each crate only inherits, with
+`version.workspace = true` and similar.
 
-### 1.1 의존 방향 (비순환 DAG)
+### 1.1 Dependency direction (an acyclic DAG)
 
 ```
-                    hwp-model  (기반 IR — serde만 의존)
+                    hwp-model  (base IR; depends only on serde)
                    /    |    |    \        \
                   /     |    |     \        \
              hwp5   hwpx   hwp-convert   hwp-render
                \      | \       |            /
                 \     |  \______ | __________/
                  \    |         \|/
-                  \   +----------+ (hwpx → hwp-convert 재사용)
+                  \   +----------+ (hwpx reuses hwp-convert)
                    \  |          |
-                    hwp-cli  (bin: `hwp`, 위 5개 전부 의존)
+                    hwp-cli  (bin: `hwp`, depends on all five)
 ```
 
-핵심 불변식: **`hwp-model`은 다른 내부 크레이트에 절대 의존하지 않는다.** 모든 크레이트가 여기에 의존하므로 이 API 안정성이 곧 프로젝트 안정성이다(`lib.rs` 주석 명시). 순환은 없다 — 유일하게 비자명한 간선은 `hwpx → hwp-convert`인데, hwpx writer가 필드 이름/명령 인코딩(CTRL_DATA)·OWPML 타입 매핑을 hwp-convert에서 재사용하기 때문이며, `hwp-convert`는 `hwp-model`에만 의존하므로 순환이 생기지 않는다.
+The core invariant: **`hwp-model` never depends on another internal crate.** Every crate depends on
+it, so the stability of its API is the stability of the project (stated in its `lib.rs` comment).
+There is no cycle. The only non-obvious edge is `hwpx → hwp-convert`, because the hwpx writer reuses
+field name and command encoding (CTRL_DATA) and the OWPML type mapping from hwp-convert; since
+`hwp-convert` depends only on `hwp-model`, no cycle forms.
 
-### 1.2 크레이트별 책임/의존성 표
+### 1.2 Responsibilities and dependencies per crate
 
-| 크레이트 | 산출물 | 책임 (한 문장) | 내부 의존 | 주요 외부 의존 |
+| Crate | Artifact | Responsibility (one sentence) | Internal deps | Main external deps |
 |---|---|---|---|---|
-| **hwp-model** | lib | HWP/HWPX 공유 **의미 IR(L1)** 타입 정의 + 텍스트 추출·단위 변환 | 없음 | `serde` (그것만) |
-| **hwp5** | lib | HWP 5.0 바이너리(CFB+레코드) ↔ IR **reader/writer** | hwp-model | `cfb`, `flate2`, `thiserror` |
-| **hwpx** | lib | HWPX(OWPML/ZIP+XML) ↔ IR **reader/writer** + `patch`(충실도 보존 치환) | hwp-model, hwp-convert | `zip`, `quick-xml`, `thiserror` |
-| **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT 변환 + 편집 프리미티브(edit/field/bookmark/gso/image/structure) | hwp-model | `serde_json`, `pulldown-cmark`, `zip` |
-| **hwp-render** | lib | IR → PNG/SVG/PDF 페이지 렌더러 + 픽셀 diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2` |
-| **hwp-cli** | bin `hwp` | 서브커맨드 디스패치(info/cat/convert/render/new/edit/fields/…/mcp/dump) | 위 5개 전부 | `anyhow`, `clap`, `serde_json` |
+| **hwp-model** | lib | Defines the shared **semantic IR (L1)** types for HWP and HWPX plus text extraction and unit conversion | none | `serde` (only) |
+| **hwp5** | lib | HWP 5.0 binary (CFB + records) ↔ IR **reader/writer** | hwp-model | `cfb`, `flate2`, `thiserror` |
+| **hwpx** | lib | HWPX (OWPML, ZIP + XML) ↔ IR **reader/writer** plus `patch` (fidelity-preserving replacement) | hwp-model, hwp-convert | `zip`, `quick-xml`, `thiserror` |
+| **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT conversion plus editing primitives (edit, field, bookmark, gso, image, structure) | hwp-model | `serde_json`, `pulldown-cmark`, `zip` |
+| **hwp-render** | lib | IR → PNG/SVG/PDF page renderer plus pixel diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2` |
+| **hwp-cli** | bin `hwp` | Subcommand dispatch (info, cat, convert, render, new, edit, fields, ..., mcp, dump) | all five above | `anyhow`, `clap`, `serde_json` |
 
-의존성 최소화가 설계 규범이다: `hwp-model`은 serde 하나만, 나머지 크레이트도 포맷/기능에 딱 필요한 크레이트만 끌어온다. `hwp5`↔`hwpx`는 서로 의존하지 않는다(양쪽 다 IR을 경유). 이 대칭성이 "N개 포맷 × M개 출력"을 N+M 어댑터로 처리하는 허브-스포크 구조의 핵심이다.
+Minimizing dependencies is a design norm: `hwp-model` pulls in only serde, and the other crates only
+what their format or feature strictly needs. `hwp5` and `hwpx` never depend on each other (both go
+through the IR). That symmetry is the heart of the hub-and-spoke structure that turns "N formats × M
+outputs" into N+M adapters.
 
-### 1.3 hwp5 크레이트 내부 모듈 계층
+### 1.3 Internal module layers of the hwp5 crate
 
-`hwp5`는 아래에서 위로 계층화되며, **"스캔과 해석의 분리"**가 규범이다(`record/mod.rs`).
+`hwp5` is layered from the bottom up, with **"separating scanning from interpretation"** as the norm
+(`record/mod.rs`).
 
-- `container` — MS CFB 래핑, 스트림 열거/읽기 (`Hwp5Container::open`, `read_record_stream`, `body_sections`).
-- `file_header` — 256바이트 고정 `FileHeader`(시그니처/버전/압축 플래그) 파싱·직렬화.
-- `codec` — 바이트 커서(`ByteReader`/`ByteWriter`)와 raw deflate 압축(`compress`/`decompress`).
-- `record` — **의미를 전혀 해석하지 않는** 레이어. `header`(4바이트 헤더 코덱), `tag`(태그 상수/이름 조회, 항상 원시 u16 보존), `scan`(평면 스트림 스캔, `ScanMode::Tolerant`), `tree`(레벨 기반 forest 복원 `RecordNode::build_forest`).
-- `doc_info` / `body_text` — 위 `RecordNode` 트리를 의미 파싱해 IR(`DocHeader`/`Section`)로 승격.
-- `read` / `write` — 최상위 `read_document(path) -> ReadResult`, `write_document(doc, path, opts)`.
+- `container`: MS CFB wrapping, stream enumeration and reading (`Hwp5Container::open`,
+  `read_record_stream`, `body_sections`).
+- `file_header`: parsing and serializing the fixed 256-byte `FileHeader` (signature, version,
+  compression flags).
+- `codec`: byte cursors (`ByteReader`/`ByteWriter`) and raw deflate (`compress`/`decompress`).
+- `record`: the layer that **interprets no meaning at all**. `header` (the 4-byte header codec),
+  `tag` (tag constants and name lookup, always preserving the raw u16), `scan` (flat stream scanning,
+  `ScanMode::Tolerant`), `tree` (level-based forest reconstruction, `RecordNode::build_forest`).
+- `doc_info` / `body_text`: semantically parse that `RecordNode` tree and promote it to the IR
+  (`DocHeader`/`Section`).
+- `read` / `write`: the top level, `read_document(path) -> ReadResult` and
+  `write_document(doc, path, opts)`.
 
-### 1.4 hwpx 크레이트 내부 모듈
+### 1.4 Internal modules of the hwpx crate
 
-- `package` — ZIP 컨테이너(`HwpxPackage`), `mimetype`=`application/hwp+zip`이 첫 엔트리·무압축.
-- `read/{mod,header,section,xml}` — OWPML XML을 quick-xml로 파싱해 IR로. **IR 의미를 hwp5와 일치**시킨다: `hp:secPr`/`hp:ctrl(colPr)`/`hp:tbl`을 hwp5처럼 확장 컨트롤 문자(8 WCHAR)+`Control`로 표현.
-- `write/{mod,header,section,templates}` — IR → OWPML. `mimetype` stored + 나머지 deflate.
-- `patch` — 패키지를 재직렬화하지 않고 XML 텍스트만 외과적으로 치환(템플릿 슬롯 `{{name}}` 채우기, 최대 충실도).
+- `package`: the ZIP container (`HwpxPackage`), where `mimetype` = `application/hwp+zip` must be the
+  first entry and uncompressed.
+- `read/{mod,header,section,xml}`: parses OWPML XML with quick-xml into the IR. **The IR semantics
+  are aligned with hwp5**: `hp:secPr`, `hp:ctrl(colPr)` and `hp:tbl` are represented like hwp5, as an
+  extended control character (8 WCHAR) plus a `Control`.
+- `write/{mod,header,section,templates}`: IR → OWPML. `mimetype` is stored, everything else deflated.
+- `patch`: surgically replaces only XML text without re-serializing the package (filling template
+  slots `{{name}}` at maximum fidelity).
 
 ---
 
-## 2. IR 타입 계층 전체 (L1, `hwp-model`)
+## 2. The full IR type hierarchy (L1, `hwp-model`)
 
-모듈 구성: `document`, `header`, `paragraph`, `control`, `text`, `units`, `ids`, `opaque`. 모든 IR 타입은 `Serialize + Deserialize`(JSON 왕복 가능). 재직렬화 안정성을 위해 옵션/렌더 전용 필드는 `#[serde(default, skip_serializing_if = ...)]`을 광범위하게 사용한다.
+Modules: `document`, `header`, `paragraph`, `control`, `text`, `units`, `ids`, `opaque`. Every IR type
+is `Serialize + Deserialize` (JSON round-trippable). For re-serialization stability, optional and
+render-only fields use `#[serde(default, skip_serializing_if = ...)]` extensively.
 
-### 2.1 최상위: `Document`
+### 2.1 The top level: `Document`
 
 ```rust
 pub struct Document {
-    pub meta: DocMeta,          // 출처(포맷/버전)
-    pub metadata: Metadata,     // 제목/지은이/주제/키워드
-    pub header: DocHeader,      // ID 참조 테이블 일체 (DocInfo/header.xml)
-    pub sections: Vec<Section>, // 본문 구역들
-    pub bin_streams: Vec<BinStream>, // 첨부 바이너리(이미지 등)
+    pub meta: DocMeta,          // origin (format and version)
+    pub metadata: Metadata,     // title, author, subject, keywords
+    pub header: DocHeader,      // all id reference tables (DocInfo / header.xml)
+    pub sections: Vec<Section>, // body sections
+    pub bin_streams: Vec<BinStream>, // attached binaries (images and so on)
 }
 ```
 
-- `DocMeta { source_format: String("hwp5"|"hwpx"), source_version: String }` — writer가 재합성 여부를 결정하는 게이트로 사용(§5).
-- `Metadata { title/author/subject/keywords: Option<String> }` — hwp5 `\x05HwpSummaryInformation` / hwpx `Contents/content.hpf`(OPF dc:*)에 대응. 전부 Option+default라 JSON 왕복 호환 유지. `is_empty()` 헬퍼.
-- `BinStream { name: String, #[serde(skip)] data: Vec<u8> }` — 바이트는 기본 JSON 직렬화에서 제외(L2 비대 방지). 키는 원본 컨테이너 항목 이름(hwp5 `"BIN0001.png"`, hwpx `"BinData/image1.png"`).
-- `Document::resolve_bin(&BinRef) -> Option<&[u8]>` — `BinRef::Id(n)`(1-기반)는 `header.bin_data[n-1]`의 `storage_id`+`extension`으로 `BIN{id:04X}.{ext}` 이름을 합성해 매칭; `BinRef::ItemRef(s)`는 이름/접미/스템 휴리스틱 매칭.
+- `DocMeta { source_format: String("hwp5"|"hwpx"), source_version: String }` is used by the writer as
+  the gate that decides whether to re-synthesize (§5).
+- `Metadata { title/author/subject/keywords: Option<String> }` corresponds to hwp5
+  `\x05HwpSummaryInformation` and hwpx `Contents/content.hpf` (OPF dc:*). All are Option with a
+  default, keeping JSON round-trip compatibility. There is an `is_empty()` helper.
+- `BinStream { name: String, #[serde(skip)] data: Vec<u8> }`: the bytes are excluded from default JSON
+  serialization (to keep L2 from bloating). The key is the original container entry name (hwp5
+  `"BIN0001.png"`, hwpx `"BinData/image1.png"`).
+- `Document::resolve_bin(&BinRef) -> Option<&[u8]>`: `BinRef::Id(n)` (1-based) synthesizes the name
+  `BIN{id:04X}.{ext}` from the `storage_id` and `extension` of `header.bin_data[n-1]` and matches it;
+  `BinRef::ItemRef(s)` matches heuristically by name, suffix or stem.
 
 ### 2.2 `Section`
 
 ```rust
 pub struct Section {
     pub paragraphs: Vec<Paragraph>,
-    pub extras: Vec<OpaqueRecord>, // 문단 아닌 최상위 레코드(정상 파일에선 빈)
+    pub extras: Vec<OpaqueRecord>, // non-paragraph top-level records (empty in healthy files)
 }
 ```
 
-- `Section::section_def() -> Option<&SectionDef>` — 보통 첫 문단의 첫 컨트롤에서 구역 정의를 찾는다. 구역 속성(용지/여백)은 별도 필드가 아니라 문단 안 확장 컨트롤(`secd`)로 표현된다 — hwp5/hwpx 공통 표현.
+- `Section::section_def() -> Option<&SectionDef>` usually finds the section definition in the first
+  control of the first paragraph. Section properties (paper, margins) are not a separate field but
+  are expressed as an extended control (`secd`) inside a paragraph, a representation shared by hwp5
+  and hwpx.
 
-### 2.3 문단·문자 모델 (`paragraph`)
+### 2.3 The paragraph and character model (`paragraph`)
 
-HWP 본문은 **UTF-16 코드 유닛(WCHAR)** 열이며 0~31은 컨트롤 문자다. 위치 계산의 단일 진실 공급원은 `char_kind(code)` 분류표다.
+An HWP body is a sequence of **UTF-16 code units (WCHAR)** in which 0 to 31 are control characters.
+The single source of truth for position arithmetic is the `char_kind(code)` classification.
 
-**컨트롤 문자 분류표 (§4.2.4 스펙, 32개 코드 전수 커버 — 테스트로 강제):**
+**Control character classification (covering all 32 codes, enforced by tests):**
 
-| 종류 `CharKind` | WCHAR 폭 | 코드 | 의미 |
+| `CharKind` | WCHAR width | Codes | Meaning |
 |---|---|---|---|
-| `Char` | 1 | 0, 10, 13, 24–31, ≥32 | 문자형(그 자체로 의미). 줄바꿈 10, 문단끝 13, 하이픈 24, 묶음빈칸 30, 고정폭빈칸 31 |
-| `Inline` | 8 | 4–9, 19, 20 | `[코드, 정보 6 WCHAR, 코드]` 인라인 컨트롤. 탭 9, 필드끝 4 |
-| `Extended` | 8 | 1–3, 11, 12, 14–18, 21–23 | 별도 CTRL_HEADER 레코드를 가리키는 확장 컨트롤. 개체/표 11, 머리·꼬리말 16, 각주 17, 책갈피 22 |
+| `Char` | 1 | 0, 10, 13, 24-31, ≥32 | character-like (meaningful in itself): line break 10, paragraph end 13, hyphen 24, grouped space 30, fixed-width space 31 |
+| `Inline` | 8 | 4-9, 19, 20 | `[code, six WCHAR of information, code]` inline controls: tab 9, field end 4 |
+| `Extended` | 8 | 1-3, 11, 12, 14-18, 21-23 | extended controls pointing at a separate CTRL_HEADER record: object/table 11, header/footer 16, footnote 17, bookmark 22 |
 
-`ctrl_char` 모듈에 잘 알려진 코드 상수(`LINE_BREAK=10`, `PARA_BREAK=13`, `OBJECT=11`, `HEADER_FOOTER=16`, `FOOTNOTE_ENDNOTE=17` …)가 있다.
+The `ctrl_char` module holds constants for the well-known codes (`LINE_BREAK=10`, `PARA_BREAK=13`,
+`OBJECT=11`, `HEADER_FOOTER=16`, `FOOTNOTE_ENDNOTE=17` and so on).
 
 ```rust
 pub enum HwpChar {
-    Text(char),                                   // 일반 문자(서로게이트 쌍=char 하나)
-    CharCtrl(u16),                                // 1 WCHAR 문자형 컨트롤
-    InlineCtrl { code: u16, payload: Vec<u8> },   // 8 WCHAR, payload=정보 6 WCHAR(12바이트)
-    ExtCtrl {                                      // 8 WCHAR 확장 컨트롤
+    Text(char),                                   // an ordinary character (a surrogate pair is one char)
+    CharCtrl(u16),                                // a 1-WCHAR character-like control
+    InlineCtrl { code: u16, payload: Vec<u8> },   // 8 WCHAR; payload is the six WCHAR (12 bytes) of information
+    ExtCtrl {                                      // an 8-WCHAR extended control
         code: u16,
-        ctrl_id: [u8; 4],       // 정방향 id(예 b"secd"); 스트림엔 역순 저장
-        payload: Vec<u8>,       // 정보 6 WCHAR 원본 12바이트(선두 4=역순 ctrl_id)
-        ctrl_index: Option<u32>,// Paragraph::controls의 인덱스(매칭 실패 시 None)
+        ctrl_id: [u8; 4],       // the forward id (for example b"secd"); stored reversed in the stream
+        payload: Vec<u8>,       // the original 12 bytes of information (the first 4 are the reversed ctrl_id)
+        ctrl_index: Option<u32>,// index into Paragraph::controls (None when matching fails)
     },
 }
 ```
 
-- `HwpChar::wchar_width()` — `Text`는 `len_utf16()`, 컨트롤은 1 또는 8. **위치 계산의 기준.** 확장/인라인 컨트롤을 잘못 세면 이후 모든 오프셋이 어긋난다.
+- `HwpChar::wchar_width()` returns `len_utf16()` for `Text` and 1 or 8 for controls. **It is the basis
+  of position arithmetic.** Miscounting an extended or inline control throws off every later offset.
 
 ```rust
 pub struct Paragraph {
     pub para_shape: ParaShapeId,
     pub style: StyleId,
     pub chars: Vec<HwpChar>,
-    pub char_shape_runs: Vec<(u32, CharShapeId)>, // (WCHAR 시작위치, 문자모양) = PARA_CHAR_SHAPE
-    pub line_segs: Vec<LineSeg>,                   // PARA_LINE_SEG (비면 렌더러 폴백)
-    pub controls: Vec<Control>,                    // 확장 컨트롤이 가리키는 실체들
+    pub char_shape_runs: Vec<(u32, CharShapeId)>, // (WCHAR start position, character shape) = PARA_CHAR_SHAPE
+    pub line_segs: Vec<LineSeg>,                   // PARA_LINE_SEG (the renderer falls back when empty)
+    pub controls: Vec<Control>,                    // the entities the extended controls point at
     pub header: ParaHeaderInfo,
     pub extras: Vec<OpaqueRecord>,
 }
 ```
 
-`Paragraph::wchar_len()` = Σ`wchar_width` (PARA_HEADER nchars 대조용).
+`Paragraph::wchar_len()` is Σ`wchar_width` (used to check against the PARA_HEADER nchars).
 
-**`LineSeg` (PARA_LINE_SEG 한 줄, 36바이트) — 한글이 저장한 줄 배치. 렌더러가 그대로 신뢰하는 1급 입력:**
+**`LineSeg` (one line of PARA_LINE_SEG, 36 bytes), the line layout Hancom saved. The renderer trusts
+it as a first-class input:**
 
-| 필드 | 타입 | 의미 |
+| Field | Type | Meaning |
 |---|---|---|
-| `text_start` | u32 | 줄 시작 텍스트 위치(문단 내 WCHAR 오프셋) |
-| `v_pos` | i32 | 줄 세로 위치 |
-| `line_height` | i32 | 줄 높이 |
-| `text_height` | i32 | 텍스트 부분 높이 |
-| `baseline_gap` | i32 | 줄 세로위치→베이스라인 거리 |
-| `line_spacing` | i32 | 줄간격 |
-| `col_start` | i32 | 컬럼 내 시작 위치 |
-| `seg_width` | i32 | 세그먼트 폭 |
-| `flags` | u32 | 페이지/컬럼 첫 줄, 빈 세그먼트 등 |
+| `text_start` | u32 | the line's starting text position (a WCHAR offset within the paragraph) |
+| `v_pos` | i32 | the line's vertical position |
+| `line_height` | i32 | line height |
+| `text_height` | i32 | the height of the text portion |
+| `baseline_gap` | i32 | the distance from the line's vertical position to the baseline |
+| `line_spacing` | i32 | line spacing |
+| `col_start` | i32 | the starting position within the column |
+| `seg_width` | i32 | segment width |
+| `flags` | u32 | first line of a page or column, empty segment and so on |
 
-**`ParaHeaderInfo`** = `{ chars_flags: u8, ctrl_mask: u32, break_type: u8, instance_id: u32, tail: Vec<u8> }` — nchars 최상위 비트/단 나누기 종류/버전별 꼬리(변경추적 병합 등) 왕복 보존.
+**`ParaHeaderInfo`** = `{ chars_flags: u8, ctrl_mask: u32, break_type: u8, instance_id: u32,
+tail: Vec<u8> }`, round-trip preserving the top bit of nchars, the break kind and the per-version tail
+(merged change tracking and so on).
 
-### 2.4 컨트롤 모델 (`control`)
+### 2.4 The control model (`control`)
 
 ```rust
 pub enum Control {
-    SectionDef(SectionDef), // "secd" 구역 정의
-    Table(Table),           // "tbl " 표
-    Picture(Picture),       // "gso "(그림)/hp:pic 이미지
-    Generic(GenericControl),// 그 외 — 원본 보존 + 문단 리스트 수집
+    SectionDef(SectionDef), // "secd" section definition
+    Table(Table),           // "tbl " table
+    Picture(Picture),       // "gso " (picture) / hp:pic image
+    Generic(GenericControl),// everything else: original preserved plus collected paragraph lists
 }
 ```
 
-M1 시점에 표(`tbl `)와 구역정의(`secd`)만 의미 파싱하고 나머지는 `Generic`으로 보존한다. `Control::ctrl_id() -> [u8;4]`가 정방향 4바이트 id를 돌려준다.
+As of M1, only tables (`tbl `) and section definitions (`secd`) are semantically parsed; everything
+else is preserved as `Generic`. `Control::ctrl_id() -> [u8;4]` returns the forward 4-byte id.
 
-**`SectionDef`** = `{ data: Vec<u8>(CTRL_HEADER 페이로드, 미해석), page: Option<PageDef>, extras: Vec<OpaqueRecord> }`.
+**`SectionDef`** = `{ data: Vec<u8> (the CTRL_HEADER payload, unparsed), page: Option<PageDef>,
+extras: Vec<OpaqueRecord> }`.
 
-**`PageDef` (PAGE_DEF, 40바이트) — 용지 정의:**
+**`PageDef` (PAGE_DEF, 40 bytes), the paper definition:**
 
-| 필드 | 의미 |
+| Field | Meaning |
 |---|---|
-| `width, height` | 용지 크기(HwpUnit) |
-| `margin_{left,right,top,bottom,header,footer}` | 여백 6종 |
-| `gutter` | 제본 여백 |
-| `attr: u32` | bit0 방향(가로), bit1~2 제책 방법 |
+| `width, height` | paper size (HwpUnit) |
+| `margin_{left,right,top,bottom,header,footer}` | six margins |
+| `gutter` | binding margin |
+| `attr: u32` | bit0 orientation (landscape), bits 1-2 binding method |
 
 **`Table`:**
 
-| 필드 | 타입 | 의미 |
+| Field | Type | Meaning |
 |---|---|---|
-| `common_data` | Vec<u8> | CTRL_HEADER 개체 공통 속성 원본(hwp5 출신은 채워짐) |
-| `placement` | Option<GsoPlacement> | hwpx 출신 배치 정보(hwp5 출신은 None) |
-| `attr` | u32 | 표 속성 |
-| `rows, cols` | u16 | 행·열 수 |
-| `cell_spacing` | u16 | 셀 간격 |
-| `inner_margins` | [u16;4] | 안쪽 여백 왼/오/위/아래 |
-| `row_cell_counts` | Vec<u16> | 행별 셀 개수(실측: 스펙의 "Row Size"는 셀 수) |
-| `border_fill` | BorderFillId | 표 테두리/배경 |
-| `table_tail` | Vec<u8> | TABLE 레코드 나머지 |
-| `cells` | Vec<Cell> | 셀 목록(LIST_HEADER 등장순=행 우선) |
-| `extras` | Vec<OpaqueRecord> | 미해석 자식 |
+| `common_data` | Vec<u8> | the original CTRL_HEADER object common properties (populated for hwp5-origin) |
+| `placement` | Option<GsoPlacement> | placement information for hwpx-origin (None for hwp5-origin) |
+| `attr` | u32 | table attributes |
+| `rows, cols` | u16 | row and column counts |
+| `cell_spacing` | u16 | cell spacing |
+| `inner_margins` | [u16;4] | inner margins, left/right/top/bottom |
+| `row_cell_counts` | Vec<u16> | cell count per row (measured: the specification's "Row Size" is a cell count) |
+| `border_fill` | BorderFillId | table border and background |
+| `table_tail` | Vec<u8> | the rest of the TABLE record |
+| `cells` | Vec<Cell> | cell list (LIST_HEADER appearance order, that is row-major) |
+| `extras` | Vec<OpaqueRecord> | unparsed children |
 
-**`Cell`** = `{ list_attr: u32, col/row/col_span/row_span: u16, width/height: HwpUnit, margins: [u16;4], border_fill: BorderFillId, header_tail: Vec<u8>, paragraphs: Vec<Paragraph> }`. 셀 안에 다시 `Paragraph`가 재귀로 들어간다.
+**`Cell`** = `{ list_attr: u32, col/row/col_span/row_span: u16, width/height: HwpUnit,
+margins: [u16;4], border_fill: BorderFillId, header_tail: Vec<u8>, paragraphs: Vec<Paragraph> }`. A
+cell recursively contains `Paragraph` again.
 
-**`Picture`** = `{ common_data: Vec<u8>, width/height: HwpUnit, treat_as_char: bool(글자처럼/floating), z_order: u32, vert_offset/horz_offset: i32, bin_ref: BinRef, extras: Vec<OpaqueRecord> }`.
+**`Picture`** = `{ common_data: Vec<u8>, width/height: HwpUnit, treat_as_char: bool (as a character
+versus floating), z_order: u32, vert_offset/horz_offset: i32, bin_ref: BinRef,
+extras: Vec<OpaqueRecord> }`.
 
-**`BinRef`** = `Id(BinDataId)`(hwp5, 1-기반) | `ItemRef(String)`(hwpx manifest `binaryItemIDRef`).
+**`BinRef`** = `Id(BinDataId)` (hwp5, 1-based) or `ItemRef(String)` (the hwpx manifest
+`binaryItemIDRef`).
 
-**`GsoPlacement`** — hwpx `<hp:pos>/<hp:sz>/<hp:outMargin>/zOrder`에서 읽어 hwp5 CTRL_HEADER 40바이트 공통 속성으로 합성하기 위한 배치 정보. 필드: `treat_as_char, affect_line_spacing, flow_with_text, hold_anchor: bool`, `vert_rel_to/horz_rel_to/vert_align/horz_align: u8`, `vert_offset/horz_offset/z_order/width/height: i32`, `out_margins: [u16;4]`. 핵심 메서드 `synth_attr() -> u32`가 비트를 합성한다:
+**`GsoPlacement`** holds placement information read from hwpx `<hp:pos>`, `<hp:sz>`, `<hp:outMargin>`
+and zOrder in order to synthesize the hwp5 CTRL_HEADER 40-byte common properties. Fields:
+`treat_as_char, affect_line_spacing, flow_with_text, hold_anchor: bool`,
+`vert_rel_to/horz_rel_to/vert_align/horz_align: u8`,
+`vert_offset/horz_offset/z_order/width/height: i32`, `out_margins: [u16;4]`. The key method
+`synth_attr() -> u32` composes the bits:
 
 ```
 0x082a_0000
  | treat_as_char        // bit0
  | affect_line_spacing<<2
- | (vert_rel_to&3)<<3    // bits3-4
- | (vert_align&7)<<5     // bits5-7
- | (horz_rel_to&3)<<8    // bits8-9
- | (horz_align&7)<<10    // bits10-12
+ | (vert_rel_to&3)<<3    // bits 3-4
+ | (vert_align&7)<<5     // bits 5-7
+ | (horz_rel_to&3)<<8    // bits 8-9
+ | (horz_align&7)<<10    // bits 10-12
  | flow_with_text<<13    // bit13
 ```
 
-상위 16비트 `0x082a`는 관측 상수(widthRelTo/heightRelTo=ABSOLUTE 등). 이 정보를 잃으면 writer가 인라인 표를 떠 있는(floating) 개체로 덮어써 본문 흐름에서 빠지므로 회귀 테스트로 정품값(`0x082a2311` 등)을 강제한다.
+The upper 16 bits `0x082a` are an observed constant (widthRelTo and heightRelTo = ABSOLUTE and so on).
+Losing this information makes the writer overwrite an inline table as a floating object, dropping it
+out of the text flow, so a regression test pins the genuine value (`0x082a2311` and similar).
 
-**`GenericControl` (미해석 컨트롤의 무손실 컨테이너):**
+**`GenericControl` (the lossless container for uninterpreted controls):**
 
-| 필드 | 의미 |
+| Field | Meaning |
 |---|---|
-| `ctrl_id: [u8;4]` | 정방향 id(b"gso ", b"head" 등) |
-| `data: Vec<u8>` | CTRL_HEADER 페이로드 |
-| `paragraph_lists: Vec<ParagraphList>` | LIST_HEADER 단위 문단 리스트 — **텍스트 추출 전용** 재귀 수집 |
-| `extras: Vec<OpaqueRecord>` | 미해석 자식 |
-| `raw_children: Vec<OpaqueRecord>` | hwp5 원본 CTRL_HEADER 서브트리(중첩 포함) — **무손실 재직렬화용**. 존재하면 emit 시 이 트리를 그대로 방출, paragraph_lists/extras는 추출 전용(gso 등 중첩 평탄화 방지) |
-| `gso_shapes: Vec<ShapeGeom>` | hwpx 그리기 개체 기하/스타일 — **렌더 전용**(hwpx reader가 채움) |
-| `equation: Option<Equation>` | 수식 — **렌더 전용** |
+| `ctrl_id: [u8;4]` | the forward id (b"gso ", b"head" and so on) |
+| `data: Vec<u8>` | the CTRL_HEADER payload |
+| `paragraph_lists: Vec<ParagraphList>` | paragraph lists per LIST_HEADER, collected recursively **for text extraction only** |
+| `extras: Vec<OpaqueRecord>` | unparsed children |
+| `raw_children: Vec<OpaqueRecord>` | the original hwp5 CTRL_HEADER subtree (nesting included), **for lossless re-serialization**. When present, emission uses this tree; paragraph_lists and extras are extraction-only (preventing gso and similar nesting from being flattened) |
+| `gso_shapes: Vec<ShapeGeom>` | hwpx drawing object geometry and style, **render-only** (populated by the hwpx reader) |
+| `equation: Option<Equation>` | equations, **render-only** |
 
 `ParagraphList` = `{ header_data: Vec<u8>, paragraphs: Vec<Paragraph> }`.
 
-**렌더 전용 그리기 개체 타입:**
+**Render-only drawing object types:**
 
 - `ShapeKind` = `Rect | Ellipse | Line | Polygon | Curve | Arc`.
-- `ShapeGeom { kind, x/y/w/h: i32(경계상자 HWPUNIT), points: Vec<(i32,i32)>, fill: u32(COLORREF), fill_gradient: Option<GradientSpec>, border_color: u32, border_width: i32, round_ratio: u8, border_style: u8(0실선~5긴파선), arrow_start/arrow_end: u8, anchored: bool }`.
-- `GradientSpec { radial: bool, angle_deg: f32, stops: Vec<(f32 위치0..1, u32 COLORREF)> }`.
-- `Equation { script: String, width/height: i32, inline: bool, x/y: i32 }` — 렌더러가 상자+스크립트 텍스트로 근사.
+- `ShapeGeom { kind, x/y/w/h: i32 (bounding box in HWPUNIT), points: Vec<(i32,i32)>,
+  fill: u32 (COLORREF), fill_gradient: Option<GradientSpec>, border_color: u32, border_width: i32,
+  round_ratio: u8, border_style: u8 (0 solid to 5 long dash), arrow_start/arrow_end: u8,
+  anchored: bool }`.
+- `GradientSpec { radial: bool, angle_deg: f32, stops: Vec<(f32 position 0..1, u32 COLORREF)> }`.
+- `Equation { script: String, width/height: i32, inline: bool, x/y: i32 }`, which the renderer
+  approximates as a box plus the script text.
 
-### 2.5 헤더(참조 테이블) 모델 (`header`)
+### 2.5 The header (reference table) model (`header`)
 
-`LANG_COUNT = 7` (한글/영문/한자/일어/외국어/기호/사용자).
+`LANG_COUNT = 7` (Korean, English, Chinese, Japanese, other, symbol, user).
 
 ```rust
 pub struct DocHeader {
     pub properties: DocumentProperties,
-    pub fonts: [Vec<FaceName>; LANG_COUNT], // 언어 슬롯별 글꼴
+    pub fonts: [Vec<FaceName>; LANG_COUNT], // fonts per language slot
     pub bin_data: Vec<BinDataItem>,
-    pub border_fills: Vec<BorderFill>,      // 참조는 1-기반 관례
+    pub border_fills: Vec<BorderFill>,      // references are 1-based by convention
     pub char_shapes: Vec<CharShape>,
     pub tab_defs: Vec<RawEntry>,
     pub numberings: Vec<RawEntry>,
     pub bullets: Vec<RawEntry>,
-    pub bullet_chars: Vec<char>,            // 렌더 전용, bullets와 병렬
-    pub numbering_levels: Vec<Vec<NumLevel>>,// 렌더 전용, numberings와 병렬
+    pub bullet_chars: Vec<char>,            // render-only, parallel to bullets
+    pub numbering_levels: Vec<Vec<NumLevel>>,// render-only, parallel to numberings
     pub para_shapes: Vec<ParaShape>,
     pub styles: Vec<Style>,
-    pub id_mappings_counts: Vec<u32>,       // ID_MAPPINGS 원본 카운트 배열(버전별 길이 보존)
-    pub id_extras: Vec<OpaqueRecord>,       // ID_MAPPINGS 미해석 자식
-    pub extras: Vec<OpaqueRecord>,          // DocInfo 최상위 미해석(DOC_DATA, 호환설정)
+    pub id_mappings_counts: Vec<u32>,       // the original ID_MAPPINGS count array (per-version length preserved)
+    pub id_extras: Vec<OpaqueRecord>,       // unparsed ID_MAPPINGS children
+    pub extras: Vec<OpaqueRecord>,          // unparsed DocInfo roots (DOC_DATA, compatibility settings)
 }
 ```
 
-- **`DocumentProperties`** (DOCUMENT_PROPERTIES, 26바이트) = `{ section_count: u16, start_numbers: [u16;6](쪽/각주/미주/그림/표/수식), caret: (u32,u32,u32) }`.
-- **`FaceName`** = `{ attr: u8, name: String, alt_kind: Option<u8>, alt_name: Option<String>, panose: Option<[u8;10]>(attr bit6), default_name: Option<String>(attr bit5), type_info: Option<String>(OWPML 왕복), tail: Vec<u8> }`.
-- **`CharShape`** — 문자 모양. 언어 슬롯별 배열(`face_ids: [u16;7]`, `ratios/rel_sizes: [u8;7]`, `spacings/offsets: [i8;7]`), `base_size: i32`(10pt=1000), `attr: u32`(효과 비트), `strike: bool`(의미 플래그), 색상 4종(`text_color/underline_color/shade_color/shadow_color: u32` COLORREF 0x00BBGGRR), `shadow_gap: (i8,i8)`, `border_fill_id: u16`, `tail: Vec<u8>`. 접근자: `is_bold`(bit1), `is_italic`(bit0), `underline_kind`(bit2~3), `has_outline`(8~10), `has_shadow`(11~12), `is_emboss`(13)/`is_engrave`(14), `is_superscript`(15)/`is_subscript`(16), `char_offset(lang)`. **취소선 주의:** raw 비트18~20은 DIFFSPEC(스펙 이견)이라 신뢰하지 않고 별도 `strike` 플래그로만 판단 — HWP5 reader는 항상 false, HWPX reader만 visible `<hp:strikeout>`일 때 true. `attr`는 보존(바이트 왕복 무영향).
-- **`ParaShape`** — 문단 모양. `attr1: u32`, `indent`, `margin_left/right`, `spacing_top/bottom`, `line_spacing_old`, `tab_def_id/numbering_id/border_fill_id: u16`, `border_offsets: [i16;4]`, `line_spacing_type: u8`(0비율/1고정/2여백/3최소), `line_spacing: i32`, `tail`. 접근자: `alignment()`(attr1 bit2~4: 0양쪽~5나눔), `head_type()`(bit23~24: 0없음/1개요/2번호/3불릿), `head_level()`(bit25~27: 1~7).
-- **`NumLevel`** = `{ start: u32, fmt: NumFmt, template: String("^N"=N수준 번호자리) }`. `NumFmt` = `Digit | HangulSyllable | HangulJamo | CircledDigit | LatinUpper | LatinLower | RomanUpper | RomanLower`.
-- **`Style`** = `{ name, english_name: String, attr/next_style: u8, lang_id: i16, para_shape: ParaShapeId, char_shape: CharShapeId, tail }`.
-- **`BinDataItem`** = `{ attr: u16, link_abs/link_rel: Option<String>, storage_id: Option<u16>, extension: Option<String>, tail }`. `kind()` = attr&0xF (0링크/1임베딩/2스토리지).
-- **`BorderLine`** = `{ line_type: u8(0없음/1실선/…), width: u8(굵기표 인덱스), color: u32 }`. `width_mm()`가 16단계 mm 테이블(0.1~5.0) 조회, `is_visible()`.
-- **`BorderFill`** = `{ attr: u16, sides: [BorderLine;4](왼/오/위/아래), diagonal: BorderLine, fill_type: u32, bg_color: Option<u32>, tail }`. `visible_bg()`가 0xFFFFFFFF(없음) 제외.
-- **`RawEntry`** = `{ data: Vec<u8>, children: Vec<OpaqueRecord> }` — 의미 파싱 전 ID 테이블 항목의 원시 보존형(tab_defs/numberings/bullets).
+- **`DocumentProperties`** (DOCUMENT_PROPERTIES, 26 bytes) = `{ section_count: u16,
+  start_numbers: [u16;6] (page, footnote, endnote, picture, table, equation), caret: (u32,u32,u32) }`.
+- **`FaceName`** = `{ attr: u8, name: String, alt_kind: Option<u8>, alt_name: Option<String>,
+  panose: Option<[u8;10]> (attr bit6), default_name: Option<String> (attr bit5),
+  type_info: Option<String> (for the OWPML round-trip), tail: Vec<u8> }`.
+- **`CharShape`**: the character shape, with per-language-slot arrays (`face_ids: [u16;7]`,
+  `ratios`/`rel_sizes: [u8;7]`, `spacings`/`offsets: [i8;7]`), `base_size: i32` (10pt = 1000),
+  `attr: u32` (effect bits), `strike: bool` (a semantic flag), four colors
+  (`text_color`/`underline_color`/`shade_color`/`shadow_color: u32`, COLORREF 0x00BBGGRR),
+  `shadow_gap: (i8,i8)`, `border_fill_id: u16` and `tail: Vec<u8>`. Accessors: `is_bold` (bit1),
+  `is_italic` (bit0), `underline_kind` (bits 2-3), `has_outline` (8-10), `has_shadow` (11-12),
+  `is_emboss` (13), `is_engrave` (14), `is_superscript` (15), `is_subscript` (16),
+  `char_offset(lang)`. **A caution on strikethrough:** raw bits 18 to 20 are DIFFSPEC (the
+  specification disagrees with reality), so they are not trusted and only the separate `strike` flag
+  decides. The HWP5 reader always sets false, and only the HWPX reader sets true for a visible
+  `<hp:strikeout>`. `attr` is preserved (with no effect on the byte round-trip).
+- **`ParaShape`**: the paragraph shape, with `attr1: u32`, `indent`, `margin_left`/`right`,
+  `spacing_top`/`bottom`, `line_spacing_old`, `tab_def_id`/`numbering_id`/`border_fill_id: u16`,
+  `border_offsets: [i16;4]`, `line_spacing_type: u8` (0 percent, 1 fixed, 2 margin, 3 minimum),
+  `line_spacing: i32` and `tail`. Accessors: `alignment()` (attr1 bits 2-4: 0 justify to 5 divide),
+  `head_type()` (bits 23-24: 0 none, 1 outline, 2 number, 3 bullet), `head_level()` (bits 25-27: 1-7).
+- **`NumLevel`** = `{ start: u32, fmt: NumFmt, template: String ("^N" is the level-N number slot) }`.
+  `NumFmt` = `Digit | HangulSyllable | HangulJamo | CircledDigit | LatinUpper | LatinLower |
+  RomanUpper | RomanLower`.
+- **`Style`** = `{ name, english_name: String, attr/next_style: u8, lang_id: i16,
+  para_shape: ParaShapeId, char_shape: CharShapeId, tail }`.
+- **`BinDataItem`** = `{ attr: u16, link_abs/link_rel: Option<String>, storage_id: Option<u16>,
+  extension: Option<String>, tail }`. `kind()` is attr & 0xF (0 link, 1 embedding, 2 storage).
+- **`BorderLine`** = `{ line_type: u8 (0 none, 1 solid, ...), width: u8 (an index into the thickness
+  table), color: u32 }`. `width_mm()` looks up the 16-step mm table (0.1 to 5.0) and `is_visible()`.
+- **`BorderFill`** = `{ attr: u16, sides: [BorderLine;4] (left, right, top, bottom),
+  diagonal: BorderLine, fill_type: u32, bg_color: Option<u32>, tail }`. `visible_bg()` excludes
+  0xFFFFFFFF (none).
+- **`RawEntry`** = `{ data: Vec<u8>, children: Vec<OpaqueRecord> }`, the raw preserved form of an id
+  table entry before semantic parsing (tab_defs, numberings, bullets).
 
-### 2.6 ID newtype (`ids`) — 타입 안전 인덱스
+### 2.6 Id newtypes (`ids`): type-safe indices
 
-`id_type!` 매크로로 생성되는 `#[serde(transparent)]` newtype: `CharShapeId(u16)`, `ParaShapeId(u16)`, `StyleId(u16)`, `BorderFillId(u16)`(**1-기반 관례**), `FaceNameId(u16)`, `BinDataId(u16)`. 종류가 다른 ID를 섞는 실수를 컴파일 타임에 방지한다.
+`#[serde(transparent)]` newtypes generated by the `id_type!` macro: `CharShapeId(u16)`,
+`ParaShapeId(u16)`, `StyleId(u16)`, `BorderFillId(u16)` (**1-based by convention**),
+`FaceNameId(u16)`, `BinDataId(u16)`. They prevent mixing up id kinds at compile time.
 
-### 2.7 단위 (`units`)
+### 2.7 Units (`units`)
 
-`HwpUnit(pub i32)` = 1/7200 인치(`#[serde(transparent)]`). `PER_PT=100`, `PER_INCH=7200`. **1pt=정확히 100 HWPUNIT**이라 pt 변환 무손실. 변환: `to_pt()`, `to_mm()`, `to_px(dpi)`. 레이아웃 계산은 이 정수 단위로 수행한다.
+`HwpUnit(pub i32)` is 1/7200 inch (`#[serde(transparent)]`), with `PER_PT=100` and `PER_INCH=7200`.
+**1pt is exactly 100 HWPUNIT**, so pt conversion is lossless. Conversions: `to_pt()`, `to_mm()`,
+`to_px(dpi)`. Layout arithmetic is done in these integer units.
 
-### 2.8 텍스트 추출 (`text`)
+### 2.8 Text extraction (`text`)
 
-`TextOptions { include_header_footer: bool, include_hidden: bool }`. `Document::plain_text[_with]`가 섹션→문단 순회. 컨트롤 포함 정책은 **확장 컨트롤의 문자 코드 기준**(ctrl_id보다 안정): 표/개체(11)·각주(17) 포함, 머리·꼬리말(16)·숨은설명(15) 제외 기본. 표는 셀 사이 탭·행 사이 개행(hwp5txt 유사), `Generic`은 paragraph_lists를 순회.
+`TextOptions { include_header_footer: bool, include_hidden: bool }`.
+`Document::plain_text[_with]` walks sections then paragraphs. The inclusion policy is based on
+**the character code of the extended control** (more stable than the ctrl_id): tables and objects (11)
+and footnotes (17) are included, while headers and footers (16) and hidden comments (15) are excluded
+by default. Tables use tabs between cells and newlines between rows (similar to hwp5txt), and
+`Generic` walks its paragraph_lists.
 
 ---
 
-## 3. 왜 IR이 3계층인가 (L0 / L1 / L2)
+## 3. Why the IR has three layers (L0 / L1 / L2)
 
-`hwp-model/lib.rs`가 명시하는 설계:
+As stated in `hwp-model/lib.rs`:
 
-- **L0 (포맷별 무손실 표현)** — 각 포맷의 바이트에 가장 가까운 표현. hwp5의 `RecordNode { tag: u16, data: Vec<u8>, children }` forest(레벨 기반 트리), hwpx의 XML 텍스트/`HwpxPackage` 엔트리. **의미를 해석하지 않는다** — `record` 모듈은 `(tag, level, data)`만 다루고 태그는 항상 원시 u16으로 보존(enum 강제 변환 없음 → 새 태그가 와도 안 깨짐).
-- **L1 (의미 IR)** — 이 `hwp-model` 크레이트. 포맷 중립 의미 모델. `Document/Section/Paragraph/Control/DocHeader/...`.
-- **L2 (파생 표현)** — markdown/JSON/HTML/ODT(`hwp-convert`), PNG/SVG/PDF(`hwp-render`). 손실을 허용하는 출력.
+- **L0 (per-format lossless representation)**: the representation closest to each format's bytes. For
+  hwp5 that is a forest of `RecordNode { tag: u16, data: Vec<u8>, children }` (a level-based tree);
+  for hwpx it is XML text and `HwpxPackage` entries. **It interprets no meaning**: the `record` module
+  handles only `(tag, level, data)` and always preserves the tag as a raw u16 (no coercion into an
+  enum, so a new tag cannot break it).
+- **L1 (the semantic IR)**: this `hwp-model` crate, a format-neutral semantic model of
+  `Document`, `Section`, `Paragraph`, `Control`, `DocHeader` and so on.
+- **L2 (derived representations)**: markdown/JSON/HTML/ODT (`hwp-convert`) and PNG/SVG/PDF
+  (`hwp-render`), outputs where loss is acceptable.
 
-**3계층인 이유:**
+**Why three layers:**
 
-1. **HWP 5.0과 HWPX(OWPML)는 의미론적으로 거의 동형**이다. 따라서 L1은 "두 포맷의 최소공통분모"가 아니라 **HWP 의미 모델 그 자체**를 충실히 옮긴다 — hwpx reader조차 `secPr/colPr/tbl`을 hwp5식 확장 컨트롤(8 WCHAR)로 정규화해, 위치 산수와 텍스트 추출이 **양 포맷 공용 코드**를 타게 만든다. 이것이 "공통 조상 추상화" 대신 "한 포맷의 모델을 정본으로 채택"한 결정의 핵심이다.
-2. **L0을 L1과 분리**하지 않으면 무손실 왕복이 불가능하다. 파싱(스캔)이 실패하거나 미지원 레코드를 만나도 L0 형태(`OpaqueRecord`/`RawEntry`/`raw_children`/`tail`)로 운반하다가 같은 포맷 재저장 시 바이트 그대로 방출한다. "스캔과 해석의 분리"가 이걸 가능케 한다.
-3. **L1을 L2와 분리**하면 N포맷×M출력이 N+M 어댑터로 준다(허브-스포크). 모든 변환·편집·렌더는 L1만 소비하므로, 새 입력 포맷은 reader 하나, 새 출력은 converter/renderer 하나만 추가하면 된다.
+1. **HWP 5.0 and HWPX (OWPML) are almost isomorphic semantically.** L1 is therefore not a "lowest
+   common denominator" but a faithful transfer of **the HWP semantic model itself**: even the hwpx
+   reader normalizes `secPr`, `colPr` and `tbl` into hwp5-style extended controls (8 WCHAR), so
+   position arithmetic and text extraction run through **code shared by both formats**. That is the
+   heart of the decision to adopt one format's model as canonical instead of abstracting a common
+   ancestor.
+2. **Without separating L0 from L1, a lossless round-trip is impossible.** Even when parsing (or
+   scanning) fails or hits an unsupported record, the data is carried in L0 form (`OpaqueRecord`,
+   `RawEntry`, `raw_children`, `tail`) and emitted byte for byte when saving back to the same format.
+   "Separating scanning from interpretation" is what makes this possible.
+3. **Separating L1 from L2** reduces N formats × M outputs to N+M adapters (hub and spoke). Every
+   conversion, edit and render consumes only L1, so a new input format needs one reader and a new
+   output needs one converter or renderer.
 
 ---
 
-## 4. `OpaqueRecord`와 무손실 왕복 설계
+## 4. `OpaqueRecord` and the lossless round-trip design
 
-### 4.1 핵심 타입
+### 4.1 The core type
 
 ```rust
 pub struct OpaqueRecord {
     pub tag: u16,
-    pub data: Vec<u8>,          // hex 문자열로 직렬화(스냅샷 가독성)
-    pub children: Vec<OpaqueRecord>, // 서브트리 통째 보존
+    pub data: Vec<u8>,          // serialized as a hex string (readable snapshots)
+    pub children: Vec<OpaqueRecord>, // the whole subtree preserved
 }
 ```
 
-무손실 전략: **모르는 레코드는 버리지 않고 원시 형태(서브트리 통째)로 운반한다.** 같은 포맷 재저장 시 그대로 방출하고, 교차 포맷 변환 시에는 드롭하되 경고(`DROP:`)로 집계한다(§5.3의 `--strict`가 이걸로 실패 판정).
+The lossless strategy: **an unknown record is never discarded but carried in raw form, subtree and
+all.** Saving to the same format emits it as-is; a cross-format conversion drops it but counts a
+warning (`DROP:`), which `--strict` (§5.3) turns into a failure.
 
-### 4.2 hex_bytes serde 모듈
+### 4.2 The hex_bytes serde module
 
-`OpaqueRecord::data`를 비롯한 모든 raw 바이트 필드(`Picture::common_data`, `SectionDef::data`, `*::tail`, `HwpChar::*::payload` 등)는 `#[serde(with = "hex_bytes")]`로 **hex 문자열** 직렬화한다. 목적은 JSON/insta 스냅샷 가독성. deserialize는 길이 짝수 검증 후 2자씩 `u8::from_str_radix(_,16)`. 이 덕에 L2 JSON(§5.4)도 바이너리를 잃지 않고 왕복한다.
+`OpaqueRecord::data` and every other raw byte field (`Picture::common_data`, `SectionDef::data`,
+`*::tail`, `HwpChar::*::payload` and so on) serialize as a **hex string** via
+`#[serde(with = "hex_bytes")]`, for readable JSON and insta snapshots. Deserialization validates an
+even length and then parses two characters at a time with `u8::from_str_radix(_,16)`. Thanks to this,
+the L2 JSON (§5.4) round-trips binaries without loss.
 
-### 4.3 "알려진 prefix + tail" 규칙
+### 4.3 The "known prefix plus tail" rule
 
-무손실의 두 번째 축은 부분 파싱이다. 각 레코드 타입은 **의미를 아는 앞부분(prefix)만 구조화하고, 버전별로 붙는 뒷부분은 `tail: Vec<u8>`로 통째 보존**한다(`CharShape`/`ParaShape`/`Style`/`FaceName`/`BorderFill`/`BinDataItem`/`ParaHeaderInfo` 전부). writer는 파서와 **거울 대칭**으로 "prefix 재방출 + tail 그대로 append"한다. 그래서 hwp5에서 읽은 단순 컨트롤 문서는 압축 해제 스트림 기준 **바이트 동일 왕복**이 성립한다.
+The second axis of losslessness is partial parsing. Each record type **structures only the leading
+part whose meaning is known, and preserves the version-specific remainder wholesale in
+`tail: Vec<u8>`** (`CharShape`, `ParaShape`, `Style`, `FaceName`, `BorderFill`, `BinDataItem` and
+`ParaHeaderInfo` all do this). The writer mirrors the parser exactly: "re-emit the prefix, then append
+the tail". That is why a simple control document read from hwp5 round-trips **byte-identically** at
+the decompressed stream level.
 
-계층별 무손실 장치를 정리하면:
+The lossless mechanisms per layer:
 
-| 위치 | 장치 | 보존 대상 |
+| Location | Mechanism | What is preserved |
 |---|---|---|
-| 레코드 헤더 | `RecordHeader{tag,level,size}` 코덱 | 태그 원시 u16, 확장 크기(0xFFF 표식) |
-| 트리 구조 | `RecordNode::build_forest` | level==깊이 → 트리→깊이 재계산으로 왕복 |
-| 미지원 레코드 | `OpaqueRecord` | tag+data(hex)+children 서브트리 |
-| 알려진 레코드 꼬리 | `*.tail` | 버전별 추가 필드 |
-| 확장 컨트롤 문자 | `HwpChar::ExtCtrl.payload` | 정보 6 WCHAR 12바이트(역순 ctrl_id 포함) |
-| hwp5 중첩 개체 | `GenericControl::raw_children` | CTRL_HEADER 서브트리 전체(평탄화 방지) |
-| ID_MAPPINGS 카운트 | `id_mappings_counts` | 버전별 배열 길이(쓰기 시 유도값과 대조) |
-| hwpx 글꼴 | `FaceName::type_info` | OWPML typeInfo 요소 원문 |
+| record header | the `RecordHeader{tag,level,size}` codec | the raw u16 tag and the extended size (the 0xFFF marker) |
+| tree structure | `RecordNode::build_forest` | level == depth, so the tree round-trips by recomputing depth |
+| unsupported records | `OpaqueRecord` | tag, data (hex) and the children subtree |
+| the tail of known records | `*.tail` | version-specific extra fields |
+| extended control characters | `HwpChar::ExtCtrl.payload` | the 12 bytes of six WCHAR of information (including the reversed ctrl_id) |
+| nested hwp5 objects | `GenericControl::raw_children` | the entire CTRL_HEADER subtree (preventing flattening) |
+| ID_MAPPINGS counts | `id_mappings_counts` | the per-version array length (checked against the derived value on write) |
+| hwpx fonts | `FaceName::type_info` | the OWPML typeInfo element verbatim |
 
-`RecordNode::build_forest`는 손상 관용: level이 부모 없이 튀면 가장 가까운 조상에 붙이고 경고 누적(`ScanMode::Tolerant`). ID_MAPPINGS 카운트는 테이블 길이에서 유도(수동 동기화 금지)하되 원본 버전별 추가 카운트가 있으면 꼬리만 보존.
+`RecordNode::build_forest` is corruption-tolerant: when a level jumps without a parent it attaches to
+the nearest ancestor and accumulates a warning (`ScanMode::Tolerant`). The ID_MAPPINGS counts are
+derived from the table lengths (never synchronized by hand), preserving only the tail when the
+original has extra per-version counts.
 
-### 4.4 렌더 전용 vs 왕복 필드의 분리
+### 4.4 Separating render-only fields from round-trip fields
 
-무손실을 깨지 않기 위해, 렌더링에만 쓰는 파생 필드(`bullet_chars`, `numbering_levels`, `gso_shapes`, `equation`, `strike`, `NumLevel::template`)는 전부 `#[serde(default, skip_serializing_if=...)]`로 선언해 **바이너리에 쓰지 않고** JSON에서도 비어 있으면 생략한다. 예: `CharShape::strike`는 의미 플래그일 뿐 `attr` 원본 비트는 그대로 보존되어 바이트 왕복에 영향이 없다.
+So as not to break losslessness, every derived field used only for rendering (`bullet_chars`,
+`numbering_levels`, `gso_shapes`, `equation`, `strike`, `NumLevel::template`) is declared
+`#[serde(default, skip_serializing_if=...)]`, so it is **never written into the binary** and is
+omitted from JSON when empty. For example `CharShape::strike` is only a semantic flag; the original
+`attr` bits are preserved and the byte round-trip is unaffected.
 
 ---
 
-## 5. 데이터 흐름
+## 5. Data flow
 
-### 5.1 포맷 감지 (허브 입구)
+### 5.1 Format detection (the hub entrance)
 
-`hwp-cli/format.rs`가 **확장자가 아니라 매직 바이트**로 판별: CFB `D0CF11E0A1B11AE1`→`Hwp5`, ZIP `PK`(504B)→`Hwpx`. `commands::cat::load_document(path)`가 디스패치의 정본:
+`hwp-cli/format.rs` decides by **magic bytes, not extension**: CFB `D0CF11E0A1B11AE1` → `Hwp5`,
+ZIP `PK` (504B) → `Hwpx`. `commands::cat::load_document(path)` is the canonical dispatch:
 
-- 확장자 `.json` → `hwp_convert::from_json` (L2 JSON을 IR로 역직렬화)
+- the extension `.json` → `hwp_convert::from_json` (deserializing L2 JSON into the IR)
 - CFB → `hwp5::read_document`
 - ZIP → `hwpx::read_document`
 
-세 경로 모두 `Document`(L1)를 돌려주고 경고를 stderr로 흘린다. 이후 모든 명령은 L1만 소비한다.
+All three return a `Document` (L1) and stream warnings to stderr. Every command afterwards consumes
+only L1.
 
 ### 5.2 read → IR (L0 → L1)
 
 **hwp5 (`read::read_document`):**
-1. `Hwp5Container::open` → CFB 열고 `check_body_readable`.
-2. `/DocInfo` 스트림 읽어(raw deflate 해제) `scan_stream(_, Tolerant)` → `RecordNode` forest(L0) → `parse_doc_info` → `DocHeader`.
-3. `body_sections()`의 각 `/BodyText/SectionN` → 같은 스캔 → `parse_section` → `Section`.
-4. `/BinData/*` 스트림 → (압축 플래그면 해제 시도-폴백) → `Vec<BinStream>`.
-5. `\x05HwpSummaryInformation` → `parse_summary` → `Metadata`(최선 노력).
-6. `Document{ meta:{source_format:"hwp5", source_version:버전}, metadata, header, sections, bin_streams }`.
+
+1. `Hwp5Container::open` opens the CFB and runs `check_body_readable`.
+2. The `/DocInfo` stream is read (raw deflate decompressed), then `scan_stream(_, Tolerant)` produces
+   a `RecordNode` forest (L0), then `parse_doc_info` produces the `DocHeader`.
+3. Each `/BodyText/SectionN` from `body_sections()` goes through the same scan and then
+   `parse_section` into a `Section`.
+4. `/BinData/*` streams (decompressed with a try-and-fall-back when the compression flag is set)
+   become `Vec<BinStream>`.
+5. `\x05HwpSummaryInformation` goes through `parse_summary` into `Metadata` (best effort).
+6. The result is `Document{ meta:{source_format:"hwp5", source_version: version}, metadata, header,
+   sections, bin_streams }`.
 
 **hwpx (`read::read_document`):**
+
 1. `HwpxPackage::open`.
 2. `Contents/header.xml` → `header::parse_header` → `DocHeader`.
-3. `section_entries()`(`Contents/sectionN.xml`) → `section::parse_section` → `Section`. `properties.section_count` 갱신.
+3. `section_entries()` (`Contents/sectionN.xml`) → `section::parse_section` → `Section`, updating
+   `properties.section_count`.
 4. `BinData/*` → `BinStream`.
-5. `version.xml`의 major.minor.micro.buildNumber → source_version. `Contents/content.hpf`(OPF) → `Metadata`.
+5. major.minor.micro.buildNumber from `version.xml` becomes source_version, and
+   `Contents/content.hpf` (OPF) becomes `Metadata`.
 
-두 reader의 산출 IR은 **의미가 정렬**되어 있어(hwpx도 secd/colPr/tbl을 확장 컨트롤로 표현) 이후 로직이 포맷을 구분하지 않는다.
+The IR the two readers produce is **semantically aligned** (hwpx also represents secd, colPr and tbl
+as extended controls), so no later logic distinguishes the format.
 
-### 5.3 IR → write (L1 → L0/파일)
+### 5.3 IR → write (L1 → L0 / file)
 
-`commands::convert::run`이 출력 확장자(또는 `--to`)로 분기(`write_by_ext`도 공용):
+`commands::convert::run` branches on the output extension (or `--to`; `write_by_ext` is shared):
 
-| 대상 | 경로 |
+| Target | Path |
 |---|---|
 | `.hwp` | `write_hwp[_edited/_structural]` → `hwp5::write_document` |
 | `.hwpx` | `hwpx::write::write_document_with(preserve_linesegs)` |
@@ -386,61 +524,102 @@ pub struct OpaqueRecord {
 | `.html` | `hwp_convert::to_html` |
 | `.odt` | `hwp_convert::to_odt` |
 | `.json` | `hwp_convert::to_json(pretty, embed_bin)` |
-| `.pdf` | render 경로 위임 → `hwp_render::render_document_pdf` |
+| `.pdf` | delegated to the render path → `hwp_render::render_document_pdf` |
 
-**writer의 재합성 게이트(핵심 불변식)** — `hwp5::write_document`는 `doc.meta.source_format`으로 처리를 나눈다:
-- **hwp5 출신·무수정** → "알려진 prefix + tail" 거울 대칭으로 바이트 동일 방출.
-- **hwpx/md 출신 또는 편집됨(`edited`)** → 문단 불변식을 다시 세운다: 문단끝 `0x0d` 문자·nchars bit31(마지막 문단)·빈 문단 PARA_TEXT 생략·줄 배치 방출. `synthesize_pictures`(hwpx/md 이미지를 hwp5 SHAPE_COMPONENT 레코드로 합성), `degrade_hwpx_gso`(gso_shapes를 hwp5 gso 레코드로 역합성)를 태워야 `strip_unwritable_pictures`에 드롭되지 않는다.
+**The writer's re-synthesis gate (a core invariant):** `hwp5::write_document` splits handling by
+`doc.meta.source_format`:
 
-**줄 배치(lineseg) 처리 — 한글 "변조" 경고 회피:** 한글은 줄 배치 캐시가 내용과 어긋나면 보안 경고를 띄운다. 그래서 기본은 줄 배치를 **제거**하고 한글이 열 때 재계산하게 한다(`preserve_linesegs=false` 기본). `write_hwp_impl`의 분기:
-- hwp5 무수정/`--preserve-layout` → 원본 줄 배치 그대로.
-- hwpx 출신/편집된 hwp5(줄 배치 있음) → `clear_linesegs`(표 셀·머리말 등 중첩 포함 재귀 제거) 후 한글 재계산.
-- markdown 등 줄 배치 없는 출처 → `hwp_render::lineseg::synthesize_linesegs`로 폰트 셰이핑 계산 후 IR에 채움(함초롬 폰트 필요).
-- 편집된 hwp5 무수정(`write_hwp_edited`) → **외과적**: 편집된 문단만 줄 배치를 비워(count=0) 그 문단만 재계산, 미편집 문단은 원본 보존(전부 비우면 표 셀 빈 문단이 부풀어 빈 칸 발생 — 실측).
+- **hwp5-origin and unmodified** emits byte-identically through the mirrored "known prefix plus tail".
+- **hwpx or markdown origin, or edited (`edited`)** re-establishes the paragraph invariants: the
+  paragraph end `0x0d` character, nchars bit31 (the last paragraph), omitting PARA_TEXT for empty
+  paragraphs, and emitting line layout. `synthesize_pictures` (synthesizing hwpx and markdown images
+  into hwp5 SHAPE_COMPONENT records) and `degrade_hwpx_gso` (re-synthesizing gso_shapes into hwp5 gso
+  records) must run, or `strip_unwritable_pictures` drops them.
 
-hwp 저장 시 1쪽을 48dpi로 렌더해 PrvImage로 동봉한다. `--strict`는 `DROP:` 경고가 있으면 비정상 종료(구조 보존 대상 hwp/hwpx에만 의미).
+**Line layout (lineseg) handling, avoiding Hancom's "tampering" warning:** Hancom raises a security
+warning when the line layout cache disagrees with the content, so by default the line layout is
+**removed** and Hancom recomputes it on open (`preserve_linesegs=false` by default). The branches in
+`write_hwp_impl`:
 
-### 5.4 IR ↔ JSON (L1 ↔ L2, 무손실 왕복)
+- unmodified hwp5 or `--preserve-layout`: the original line layout as-is.
+- hwpx-origin or edited hwp5 (which has line layout): `clear_linesegs` (recursively including nested
+  table cells and headers) so Hancom recomputes.
+- sources with no line layout, such as markdown: `hwp_render::lineseg::synthesize_linesegs` computes
+  it by font shaping and fills the IR (the HCR fonts are required).
+- edited but otherwise unmodified hwp5 (`write_hwp_edited`) is **surgical**: only the edited
+  paragraphs have their line layout emptied (count=0) so only they are recomputed, while unedited
+  paragraphs keep the original (clearing everything inflates empty paragraphs in table cells and
+  produces blank space, as measured).
 
-`hwp_convert::to_json(doc, pretty, embed_bin)`: `embed_bin=false`면 그냥 serde(이미지 바이트 제외 — `BinStream::data`가 `#[serde(skip)]`). `embed_bin=true`면 `bin_streams[].data_b64`에 base64로 실어 **자급식 JSON**. `from_json`이 `data_b64`를 분리·디코드해 이미지까지 복원. 테스트가 "이미지 외 IR 전체 동일"과 "embed면 완전 동일"을 강제한다.
+When saving hwp, page 1 is rendered at 48dpi and included as PrvImage. `--strict` exits abnormally
+when there is a `DROP:` warning (meaningful only for structure-preserving hwp and hwpx targets).
 
-### 5.5 IR → render (L1 → 픽셀/벡터)
+### 5.4 IR ↔ JSON (L1 ↔ L2, a lossless round-trip)
 
-`hwp-render/lib.rs` 파이프라인: **IR → Layout(`layout::layout_document`, LineSegLayouter) → `display::DisplayList` → 백엔드(png tiny-skia / svg / pdf)**. 세 백엔드가 같은 DisplayList를 소비한다.
+`hwp_convert::to_json(doc, pretty, embed_bin)`: with `embed_bin=false` it is plain serde (image bytes
+excluded, because `BinStream::data` is `#[serde(skip)]`). With `embed_bin=true` the bytes go into
+`bin_streams[].data_b64` as base64, producing **self-contained JSON**. `from_json` separates and
+decodes `data_b64` to restore the images too. Tests enforce "identical IR apart from images" and
+"completely identical when embedded".
 
-- `build_display_list(doc, opts)`: `FontStore` 생성 → `opts.font_dirs` 로드 → `layout_document(doc, &mut store, &mut warnings)` → 폰트 해석 리포트 병합.
+### 5.5 IR → render (L1 → pixels/vectors)
+
+The `hwp-render/lib.rs` pipeline: **IR → layout (`layout::layout_document`, LineSegLayouter) →
+`display::DisplayList` → a backend (png tiny-skia / svg / pdf)**. All three backends consume the same
+DisplayList.
+
+- `build_display_list(doc, opts)`: create the `FontStore`, load `opts.font_dirs`, run
+  `layout_document(doc, &mut store, &mut warnings)`, then merge the font resolution report.
 - `render_document` → `png::render_png(list, dpi)` → `RenderOutput{ pages: Vec<Pixmap>, report }`.
 - `render_document_svg` → `svg::render_svg` → `SvgOutput{ pages: Vec<String>, report }`.
-- `render_document_pdf(doc, opts, pages)` → 페이지 선택(1-기반) → `pdf::render_pdf`(폰트 임베드+검색 가능 텍스트) → `PdfOutput{ data, report }`.
-- `RenderOptions{ dpi: f32(기본 96), font_dirs }`. 폰트 미지정 시 `resolve_font_dirs`가 `HWP_FONT_DIR`(없으면 `fonts/`)로 함초롬 글꼴 로드 — 안 하면 시스템 폰트로 대체돼 충실도 급락.
-- `layout`이 `line_segs`가 있으면 한글이 저장한 줄 배치를 1급 입력으로 신뢰하고, 비어 있으면 폴백 경로로 셰이핑. `diff::compare`가 한글 기준 PNG와 픽셀/오프셋 오차를 측정(`hwp diff`).
+- `render_document_pdf(doc, opts, pages)` selects pages (1-based) then `pdf::render_pdf` (embedding
+  fonts and searchable text) → `PdfOutput{ data, report }`.
+- `RenderOptions{ dpi: f32 (96 by default), font_dirs }`. With no fonts specified,
+  `resolve_font_dirs` loads the HCR fonts from `HWP_FONT_DIR` (or `fonts/`); without them the system
+  fonts substitute and fidelity drops sharply.
+- `layout` trusts the line layout Hancom saved as a first-class input when `line_segs` is present and
+  shapes through the fallback path when it is empty. `diff::compare` measures pixel and offset error
+  against a Hancom reference PNG (`hwp diff`).
 
-### 5.6 전체 파이프라인 요약
+### 5.6 The whole pipeline in brief
 
 ```
-파일(hwp5/hwpx/json)
-   │  detect(매직바이트) → load_document
+file (hwp5/hwpx/json)
+   │  detect (magic bytes) → load_document
    ▼
 [L0] RecordNode forest / OWPML XML / JSON
-   │  parse_doc_info·parse_section / parse_header·parse_section / from_json
+   │  parse_doc_info, parse_section / parse_header, parse_section / from_json
    ▼
 [L1] Document ──────────────┬───────────────┬──────────────┐
    │ hwp5::write_document   │ hwpx::write   │ hwp_convert   │ hwp_render
-   ▼ (재합성 게이트)         ▼               ▼ to_md/html/    ▼ layout→DisplayList
+   ▼ (the re-synthesis gate) ▼               ▼ to_md/html/    ▼ layout → DisplayList
  .hwp                     .hwpx            odt/json         → png/svg/pdf
 ```
 
-편집 흐름(`hwp edit`)은 L1을 로드 → `hwp_convert`의 편집 프리미티브(`replace_text`, `set_cell`, `set_field`, `create_bookmark/hyperlink`, `insert_image`, `insert_paragraph`, `add/delete_table_row`, `set_char_format`, `set_para_align`, `apply_meta`)로 L1을 변형 → `write_hwp_edited`(외과적)/`write_hwp_structural`(합성 강제)로 저장. hwpx 템플릿 채우기(`hwp fill`)는 L1을 우회해 `hwpx::patch`로 XML 텍스트만 치환(최대 충실도).
+The editing flow (`hwp edit`) loads L1, transforms it with hwp-convert's editing primitives
+(`replace_text`, `set_cell`, `set_field`, `create_bookmark`/`hyperlink`, `insert_image`,
+`insert_paragraph`, `add`/`delete_table_row`, `set_char_format`, `set_para_align`, `apply_meta`) and
+saves with `write_hwp_edited` (surgical) or `write_hwp_structural` (synthesis forced). Filling an hwpx
+template (`hwp fill`) bypasses L1 entirely and replaces only XML text through `hwpx::patch` (maximum
+fidelity).
 
 ---
 
-## 6. 재구축 시 반드시 지킬 불변식 요약
+## 6. Invariants to keep when rebuilding
 
-1. **`hwp-model`은 serde 외 어떤 내부 크레이트에도 의존하지 않는다** — DAG 비순환의 뿌리.
-2. **`char_kind`가 WCHAR 폭 분류의 단일 진실 공급원** — 확장/인라인=8, 나머지=1. 이걸 어기면 모든 위치 오프셋이 깨진다.
-3. **레코드 태그는 원시 u16으로 보존**(enum 강제 변환 금지), 트리는 level==깊이로 왕복.
-4. **"알려진 prefix + tail" 대칭** — reader/writer가 거울. 모르는 건 `OpaqueRecord`/`RawEntry`/`raw_children`으로 통째 보존.
-5. **렌더 전용 필드는 `skip_serializing_if`로 바이너리/JSON 왕복에서 격리** — 무손실 불변 유지.
-6. **줄 배치는 편집·교차포맷 시 제거하고 한글이 재계산** — 정합 안 하면 "변조" 경고. hwp5 무수정만 원본 보존.
-7. **writer 재합성 게이트는 `source_format`으로** — hwp5 출신 무수정은 바이트 동일, 그 외/편집은 문단 불변식·개체 레코드 합성.
-8. **BorderFillId는 1-기반**, `BinRef::Id`도 1-기반(`bin_data[id-1]`), `HwpUnit`=1/7200인치·1pt=100단위(무손실).
+1. **`hwp-model` depends on nothing internal beyond serde**, the root of the acyclic DAG.
+2. **`char_kind` is the single source of truth for WCHAR width classification**: extended and inline
+   are 8, everything else 1. Break this and every position offset breaks.
+3. **Record tags are preserved as raw u16** (never coerced into an enum), and the tree round-trips
+   through level == depth.
+4. **The "known prefix plus tail" symmetry**: reader and writer mirror each other. Anything unknown is
+   preserved wholesale as `OpaqueRecord`, `RawEntry` or `raw_children`.
+5. **Render-only fields are isolated from the binary and JSON round-trips with
+   `skip_serializing_if`**, keeping the lossless invariant.
+6. **Line layout is removed when editing or converting across formats so Hancom recomputes it**;
+   inconsistency produces a "tampering" warning. Only unmodified hwp5 keeps the original.
+7. **The writer's re-synthesis gate is `source_format`**: unmodified hwp5-origin is byte-identical,
+   everything else and every edit re-establishes the paragraph invariants and synthesizes object
+   records.
+8. **BorderFillId is 1-based**, `BinRef::Id` is also 1-based (`bin_data[id-1]`), and `HwpUnit` is
+   1/7200 inch with 1pt = 100 units (lossless).

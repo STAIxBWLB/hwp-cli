@@ -2,7 +2,7 @@
 //!
 //! 이 모듈은 lib 타깃으로 노출된다(`hwp_cli::cli`). bin(`main.rs`)이 파싱·디스패치에
 //! 쓰고, `tests/cli_reference.rs`가 `clap::CommandFactory`로 명령 트리를 introspect해
-//! `docs/manual/cli-reference.md`(한국어)와 `cli-reference.en.md`(영문)를 자동 생성한다
+//! `docs/manual/cli-reference.md`(영문 정본)와 `cli-reference.ko.md`(한국어)를 자동 생성한다
 //! (코드-문서 동기화 게이트).
 //!
 //! **도움말 텍스트는 영문이 정본이다.** 한국어는 [`crate::i18n`]의 오버레이 표가 정본이며,

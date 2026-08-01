@@ -1,22 +1,22 @@
-//! CLI 명령 레퍼런스 자동 생성 + 드리프트 게이트 (한국어·영문 양쪽).
+//! Generates the CLI command reference and gates it against drift (both languages).
 //!
-//! `clap::CommandFactory`로 `Cli`의 명령 트리를 introspect해 `docs/manual/cli-reference.md`
-//! (한국어)와 `cli-reference.en.md`(영문)를 결정적으로 생성한다. 커밋본과 재생성본이
-//! 어긋나면 실패한다 — CLI 정의(플래그·help 텍스트)를 바꾸면 문서도 함께 갱신하도록
-//! 강제하는 장치.
+//! Introspects the `Cli` command tree via `clap::CommandFactory` and deterministically renders
+//! `docs/manual/cli-reference.md` (English, canonical) and `cli-reference.ko.md` (Korean). The
+//! test fails when the committed docs and the regenerated ones diverge, which forces a doc
+//! update whenever the CLI definition (flags, help text) changes.
 //!
-//! 재생성(bless): `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`.
+//! Bless: `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`.
 
 use clap::builder::StyledStr;
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use hwp_cli::cli::Cli;
 use hwp_cli::i18n::{self, Lang};
 
-/// 커밋된 문서 경로 (crate 기준 상대).
+/// Committed doc path (relative to the crate).
 fn doc_path(lang: Lang) -> std::path::PathBuf {
     let name = match lang {
-        Lang::Ko => "cli-reference.md",
-        Lang::En => "cli-reference.en.md",
+        Lang::Ko => "cli-reference.ko.md",
+        Lang::En => "cli-reference.md",
     };
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/manual")
@@ -194,7 +194,7 @@ fn generate(lang: Lang) -> String {
         Lang::Ko => {
             out.push_str(HEADER_COMMENT_KO);
             out.push_str(
-                "\n\n[한국어](cli-reference.md) · [English](cli-reference.en.md)\n\n\
+                "\n\n[한국어](cli-reference.ko.md) · [English](cli-reference.md)\n\n\
                  # hwp CLI 명령 레퍼런스\n\n",
             );
             out.push_str(
@@ -207,7 +207,7 @@ fn generate(lang: Lang) -> String {
         Lang::En => {
             out.push_str(HEADER_COMMENT_EN);
             out.push_str(
-                "\n\n[한국어](cli-reference.md) · [English](cli-reference.en.md)\n\n\
+                "\n\n[한국어](cli-reference.ko.md) · [English](cli-reference.md)\n\n\
                  # hwp CLI command reference\n\n",
             );
             out.push_str(

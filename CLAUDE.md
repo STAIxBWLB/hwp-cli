@@ -1,76 +1,96 @@
 # CLAUDE.md
 
-HWP 5.0(바이너리)·HWPX(OWPML)를 외부 HWP 라이브러리 없이 **직접 구현**하는 Rust 워크스페이스.
-코드 주석은 영어를 기본으로 한다(2026-08부터 — 기존 한국어 주석은 파일을 고칠 때 점진적으로
-영어로 옮긴다). CLI 출력·에러 문구 등 사용자 대면 문자열은 기존 한국어 톤을 유지한다.
-커밋 메시지는 한/영 무관.
+A Rust workspace that implements HWP 5.0 (binary) and HWPX (OWPML) **directly**, with no external
+HWP library. Code comments are English by default (since 2026-08 - existing Korean comments move to
+English as files are touched). User-facing strings (CLI output, error messages) keep their existing
+Korean tone.
 
-## 문서 정책 — 한/영 페어
+## Language policy
 
-- 사용자용 문서는 **한국어 정본 + 영문 페어**로 둔다: `NAME.md`(한국어)와 `NAME.en.md`(영문).
-- 두 파일 모두 **첫 줄에 언어 링크**를 둔다: `[한국어](NAME.md) · [English](NAME.en.md)`
-  (README는 `[한국어](README.md) · [English](README.en.md)`).
-- 한쪽만 고치지 않는다. 내용이 바뀌면 **같은 커밋에서 양쪽을 갱신**한다.
-- 릴리스 노트는 한/영 병기한다. 정본은 `CHANGELOG.md`(섹션별 한국어 다음 영문)이고, 릴리스 본문은
-  이 파일에서 뽑는다(`scripts/release_notes.sh`).
-- `docs/manual/cli-reference.md`(한국어)와 `cli-reference.en.md`(영문)는 clap 정의에서 자동
-  생성된다. 손으로 고치지 말고 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로
-  재생성한다.
-- 내부 작업 문서(`CLAUDE.md`, `TODO.md`의 감사 로그 등)는 페어 대상이 아니다.
+- **Everything an AI agent reads as development context is English only**: commit messages, PR
+  titles/bodies, release notes (`CHANGELOG.md`, GitHub Release bodies), issue text, code comments,
+  and internal working docs (`CLAUDE.md`, the audit log in `TODO.md`).
+- User-facing documentation stays bilingual, but **English is canonical**: `NAME.md` (English) and
+  `NAME.ko.md` (Korean).
+- Both files carry a **language link on the first line**:
+  `[한국어](NAME.ko.md) · [English](NAME.md)`.
+- Never edit one side alone. When content changes, **update both in the same commit**.
+- `docs/manual/cli-reference.md` (English) and `cli-reference.ko.md` (Korean) are generated from the
+  clap definitions. Do not hand-edit them; regenerate with
+  `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`.
 
-## CLI 도움말 다국어
+## CLI help localization
 
-- **영문이 정본**이다. `crates/hwp-cli/src/cli.rs`의 doc comment(= clap help)를 영문으로 쓴다.
-- 한국어는 `crates/hwp-cli/src/i18n.rs`의 `KO` 오버레이 표가 정본이다. 런타임에 덮어쓴다.
-- 표시 언어 우선순위: `--lang <en|ko>` → `HWP_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` → 영문.
-- 명령·플래그를 추가하면 `KO` 표에도 넣어야 한다. 누락·죽은 항목은 `tests/cli_reference.rs`가
-  잡는다(조용히 영문으로 남는 것을 막는 게이트).
+- **English is canonical.** Write the doc comments (= clap help) in `crates/hwp-cli/src/cli.rs` in
+  English.
+- Korean lives in the `KO` overlay table in `crates/hwp-cli/src/i18n.rs`, applied at runtime.
+- Display language precedence: `--lang <en|ko>` → `HWP_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` →
+  English.
+- Adding a command or flag means adding it to the `KO` table too. Missing or dead entries are caught
+  by `tests/cli_reference.rs` (the gate that stops entries from silently staying English).
 
-## 빌드 · 테스트
+## Build · test
 
 ```bash
-cargo build                    # 디버그 빌드 (bin: hwp)
-scripts/check.sh               # 로컬 CI 미러 = CI 3종 게이트 (fmt+clippy+test, PR 전 필수)
-HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # 진단 코퍼스 + 자체 검증 하네스
+cargo build                    # debug build (bin: hwp)
+scripts/check.sh               # local CI mirror = the 3 CI gates (fmt+clippy+test, required before PR)
+HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus + self-verification harness
 ```
 
-- CI 게이트(`.github/workflows/ci.yml`)와 로컬은 **반드시 같은 커맨드**를 쓴다:
-  `cargo fmt --all --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`.
-  부분 실행(clippy만, test만)은 `scripts/check.sh` 대신 직접 항을 골라 실행한다.
+- The CI gates (`.github/workflows/ci.yml`) and local runs **must use the same commands**:
+  `cargo fmt --all --check` → `cargo clippy --workspace --all-targets -- -D warnings` →
+  `cargo test --workspace`. For a partial run (clippy only, test only), pick the command directly
+  instead of `scripts/check.sh`.
 - Rust edition 2024, rust-version 1.93.
-- 폰트: 저장소에 동봉 폰트는 **없다**(`/fonts/`는 gitignore — 로컬에 HCR바탕·돋움을 받아두면
-  진단 코퍼스·골든 대조가 사용). CI 렌더 글리프는 시스템 폰트(ubuntu는 noto-cjk 설치, macOS 기본
-  CJK)에서 오므로, CI에서 도는 테스트는 폰트 의존 단언(글리프·페이지수)을 하면 안 된다.
-- `HWP_GOLDEN=1` — 한글 기준 PNG와의 골든 렌더 대조(옵트인). `HWP_CORPUS_DIR` — 대형 야생 corpus 소크 테스트.
+- Fonts: **none are bundled** (`/fonts/` is gitignored - the diagnostic corpus and golden comparison
+  use HCR Batang/Dotum if you download them locally). CI render glyphs come from system fonts
+  (noto-cjk installed on ubuntu, default CJK on macOS), so tests that run in CI must not assert on
+  font-dependent output (glyphs, page counts).
+- `HWP_GOLDEN=1` - opt-in golden render comparison against Hangul reference PNGs. `HWP_CORPUS_DIR` -
+  soak test over a large in-the-wild corpus.
 
-## 브랜치 · PR 정책
+## Branch · PR policy
 
-- 기능추가·수정·문서 등 **모든 작업은 별도 브랜치**에서 한다: `feat/<주제>`·`fix/<주제>`·`docs/<주제>`.
-  main 직접 push 금지.
-- 정본 저장소는 `STAIxBWLB/hwp-cli`(= origin)다. 브랜치를 origin에 push하고 **origin의
-  main을 대상으로 PR**을 연다. (과거의 포크→upstream 구도는 폐지됨.)
-- PR로 제출하고, **CI green(ubuntu+macOS+windows 모두 필수)을 확인한 뒤 squash 머지**한다
-  (머지 커밋 제목의 `(#N)` 관례 유지).
-- PR 전 로컬 게이트는 `scripts/check.sh` — CI와 동일 3커맨드(fmt → clippy --all-targets
-  -D warnings → test). 이걸 통과 못 하면 PR하지 않는다(머지 후 CI 실패의 원천 차단).
+- Features, fixes, docs - **all work happens on a branch**: `feat/<topic>`, `fix/<topic>`,
+  `docs/<topic>`. No direct pushes to main.
+- The canonical repository is `STAIxBWLB/hwp-cli` (= origin). Push branches to origin and **open PRs
+  against origin's main**. (The old fork → upstream setup is retired.)
+- Submit as a PR and **squash merge once CI is green (ubuntu + macOS + windows all required)**,
+  keeping the `(#N)` suffix convention in the merge commit title.
+- The pre-PR local gate is `scripts/check.sh` - the same three commands as CI (fmt → clippy
+  --all-targets -D warnings → test). Do not open a PR that does not pass it.
 
-## 데이터 정책 (중요)
+## Data policy (important)
 
-- `fixtures/hwp5/*.hwp`·`fixtures/hwpx/*.hwpx`는 gitignore(로컬 전용). 없으면 테스트가 skip될 뿐 실패하지 않는다. 출처는 `fixtures/README.md`.
-- `fixtures/samples/`는 **예외적으로 커밋한다** — 소유자 자작 문서를 대학명 가명 치환한 테스트 샘플만 둔다(익명화 레시피는 `fixtures/README.md`). 원본은 커밋 금지.
-- **정답지 코퍼스(`~/Documents/hwp_samples` 등 정품 한글 파일)는 절대 커밋 금지.**
-- **한컴 스펙 문서·파생물(추출 텍스트, 페이지 캡처) 커밋 금지** — `docs/README.md` 참조. 스펙은 섹션 번호로만 인용한다(예: `한글문서파일형식 5.0 §4.2.6`). 로컬 `docs/spec.txt`(gitignore)는 작업 참고용.
+- `fixtures/hwp5/*.hwp` and `fixtures/hwpx/*.hwpx` are gitignored (local only). Without them tests
+  skip rather than fail. Sources are listed in `fixtures/README.md`.
+- `fixtures/samples/` **is committed as an exception** - only owner-authored documents with
+  university names pseudonymized (anonymization recipe in `fixtures/README.md`). Never commit the
+  originals.
+- **Never commit the ground-truth corpus** (genuine Hangul files such as `~/Documents/hwp_samples`).
+- **Never commit the Hancom specification or derivatives** (extracted text, page captures) - see
+  `docs/README.md`. Cite the spec by section number only (e.g. `한글문서파일형식 5.0 §4.2.6`). The
+  local `docs/spec.txt` (gitignored) is for reference while working.
 
-## 설계 지식은 docs/design/ 에 있다
+## Design knowledge lives in docs/design/
 
-- 시작점: [docs/design/00-overview.md](docs/design/00-overview.md) (문서 색인·설계 원칙)
-- **필독**: [07-hangul-compat-rules.md](docs/design/07-hangul-compat-rules.md) — 실기로만 확정된 한글 호환 규칙 카탈로그. 이 규칙을 모르고 writer를 고치면 한글에서 파일이 깨진다.
-- 포맷 전수 지도: [10-hwp5-structure-map.md](docs/design/10-hwp5-structure-map.md)(레코드/컨트롤 카탈로그), [11-hwpx-structure-map.md](docs/design/11-hwpx-structure-map.md)(OWPML 요소 카탈로그)
-- 미구현 기능은 [12-feature-gaps.md](docs/design/12-feature-gaps.md)에서 먼저 확인.
+- Start here: [docs/design/00-overview.md](docs/design/00-overview.md) (document index, design
+  principles)
+- **Required reading**: [07-hangul-compat-rules.md](docs/design/07-hangul-compat-rules.md) - the
+  catalog of Hangul compatibility rules established only on real hardware. Touching the writer
+  without knowing these rules produces files Hangul cannot open.
+- Full format maps: [10-hwp5-structure-map.md](docs/design/10-hwp5-structure-map.md) (record/control
+  catalog), [11-hwpx-structure-map.md](docs/design/11-hwpx-structure-map.md) (OWPML element catalog)
+- Check [12-feature-gaps.md](docs/design/12-feature-gaps.md) first for unimplemented features.
 
-## 불변식 (어기면 안 됨)
+## Invariants (do not break)
 
-1. **hwp-model은 다른 내부 크레이트에 의존하지 않는다** (허브-스포크). `hwp5`↔`hwpx`도 서로 의존하지 않고 IR을 경유한다.
-2. **무손실 왕복 게이트**: hwp5→hwp5 identity 재직렬화는 바이트 동일이어야 한다(`crates/hwp5/tests/identity.rs`). 모르는 레코드는 버리지 말고 `OpaqueRecord`로 보존.
-3. **정답지 방법론 — 추측 금지**: 포맷 동작은 한글이 저장한 정품 파일 바이트와의 대조로만 확정한다. 최종 판정은 한글(한컴오피스) 실기에서 열리는지 여부다.
-4. 새 HWP 관련 외부 크레이트 추가 금지(인프라 크레이트 cfb/zip/quick-xml/tiny-skia 등만 허용).
+1. **hwp-model depends on no other internal crate** (hub and spoke). `hwp5` and `hwpx` do not depend
+   on each other either; they go through the IR.
+2. **Lossless round-trip gate**: hwp5 → hwp5 identity re-serialization must be byte-identical
+   (`crates/hwp5/tests/identity.rs`). Do not drop unknown records; preserve them as `OpaqueRecord`.
+3. **Ground-truth methodology - no guessing**: format behavior is established only by comparing
+   against the bytes of genuine files saved by Hangul. The final verdict is whether Hangul
+   (Hancom Office) opens the file.
+4. No new external HWP-related crates (only infrastructure crates such as cfb/zip/quick-xml/
+   tiny-skia).

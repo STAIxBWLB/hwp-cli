@@ -1,12 +1,12 @@
-<!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->
+<!-- Generated document. Do not edit by hand. Regenerate with: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->
 
-[한국어](cli-reference.md) · [English](cli-reference.en.md)
+[한국어](cli-reference.ko.md) · [English](cli-reference.md)
 
-# hwp CLI 명령 레퍼런스
+# hwp CLI command reference
 
-이 문서는 `hwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성하라 — CI 테스트가 코드와 문서의 동기화를 강제한다.
+This document is generated from the clap definitions of the `hwp` CLI. Do not edit it by hand: when a command or flag changes, regenerate it with `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`. A CI test enforces that it stays in sync with the code.
 
-## 명령 색인
+## Command index
 
 - [`hwp info`](#hwp-info)
 - [`hwp cat`](#hwp-cat)
@@ -31,291 +31,291 @@
 
 ## `hwp info`
 
-파일 정보 표시: 포맷/버전/속성/스트림 목록
+Show file information: format, version, properties and stream list
 
-**사용법:** `hwp info [OPTIONS] <FILE>`
+**Usage:** `hwp info [OPTIONS] <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--json` |  |  | JSON으로 출력 |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--json` |  |  | Print as JSON |
 
 ## `hwp cat`
 
-텍스트 추출
+Extract text
 
-**사용법:** `hwp cat [OPTIONS] <FILE>`
+**Usage:** `hwp cat [OPTIONS] <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--format` | `plain` \| `markdown` \| `json` \| `html` \| `csv` | `plain` | 출력 포맷 |
-| `--preview` |  |  | 본문 파싱 없이 PrvText 미리보기만 출력 |
-| `--with-header-footer` |  |  | 머리말/꼬리말 텍스트도 추출에 포함 (기본: 제외) |
-| `--with-hidden` |  |  | 숨은 설명 텍스트도 추출에 포함 (기본: 제외) |
-| `--with-segments` |  |  | (markdown 전용) markdown과 함께 각 출력 문자 범위의 원본 좌표(섹션/문단)를 한 줄 JSON 봉투로 출력 — {"markdown": ..., "segments": [...]} |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--format` | `plain` \| `markdown` \| `json` \| `html` \| `csv` | `plain` | Output format |
+| `--preview` |  |  | Print only the PrvText preview, without parsing the body |
+| `--with-header-footer` |  |  | Also extract header and footer text (default: excluded) |
+| `--with-hidden` |  |  | Also extract hidden comment text (default: excluded) |
+| `--with-segments` |  |  | (markdown only) Emit the markdown together with the source coordinates (section/paragraph) of each output character range, as a one-line JSON envelope: {"markdown": ..., "segments": [...]} |
 
 ## `hwp grep`
 
-문단 텍스트 검색 (grep 의미 — 일치 없으면 종료 코드 1)
+Search paragraph text (grep semantics; non-zero exit when no match)
 
-**사용법:** `hwp grep [OPTIONS] <PATTERN> <FILE>`
+**Usage:** `hwp grep [OPTIONS] <PATTERN> <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<PATTERN>` |  |  | 검색 패턴 (부분 문자열 일치) |
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--ignore-case` |  |  | 대소문자 무시 일치 |
+| `<PATTERN>` |  |  | Pattern to find (substring match) |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--ignore-case` |  |  | Case-insensitive match |
 
 ## `hwp convert`
 
-포맷 변환
+Convert between formats
 
-**사용법:** `hwp convert [OPTIONS] <INPUTS>...`
+**Usage:** `hwp convert [OPTIONS] <INPUTS>...`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUTS>` |  |  | 입력 HWP/HWPX 파일들 ("-"는 stdin; 여러 입력은 --out-dir 필요) (반복 가능) |
-| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 ("-"는 텍스트 포맷(md/json/html/txt/csv)에 한해 stdout; 단일 입력에서 필수) |
-| `--out-dir` | `<OUT_DIR>` |  | 여러 입력의 출력 디렉터리 (파일명은 "<스템>.<확장자>", --to 필요) |
-| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` |  | 출력 포맷 (생략 시 확장자에서 추론) |
-| `--strict` |  |  | 변환 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
-| `--preserve-layout` |  |  | 줄 배치 캐시 보존 (무수정 왕복 전용 — 한글은 내용과 어긋난 줄 배치를 변조로 판정하므로 기본은 제거) |
-| `--embed-bin` |  |  | JSON 출력 시 첨부 바이너리(이미지)를 base64로 임베드 (자급식 JSON) |
-| `--media-dir` | `<MEDIA_DIR>` |  | (md) 이미지 추출 디렉터리 — 기본 "<출력스템>.media". 상대경로는 출력 파일 기준으로 해석하고 링크는 입력한 경로 그대로 쓴다 (예: figs) |
-| `--with-header-footer` |  |  | (md) 머리말/꼬리말 텍스트도 포함 (기본: 제외) |
-| `--with-hidden` |  |  | (md) 숨은 설명 텍스트도 포함 (기본: 제외) |
-| `--font-dir` | `<FONT_DIR>` |  | (pdf) 추가 폰트 디렉터리 (반복 가능, 기본: HWP_FONT_DIR 또는 fonts/) |
+| `<INPUTS>` |  |  | Input HWP/HWPX files ("-" reads stdin; multiple inputs require --out-dir) (repeatable) |
+| `-o, --output` | `<OUTPUT>` |  | Output file path ("-" writes stdout for text formats: md/json/html/txt/csv; required with a single input) |
+| `--out-dir` | `<OUT_DIR>` |  | Output directory for multiple inputs (file names are "<stem>.<ext>", requires --to) |
+| `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` |  | Output format (inferred from the extension when omitted) |
+| `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found during conversion |
+| `--preserve-layout` |  |  | Preserve the line layout cache (unmodified round-trips only; Hancom treats a layout inconsistent with the content as tampering, so it is dropped by default) |
+| `--embed-bin` |  |  | Embed attached binaries (images) as base64 in JSON output (self-contained JSON) |
+| `--media-dir` | `<MEDIA_DIR>` |  | (md) Image extraction directory, default "<output stem>.media". A relative path resolves against the output file and links use the path as given (e.g. figs) |
+| `--with-header-footer` |  |  | (md) Also include header and footer text (default: excluded) |
+| `--with-hidden` |  |  | (md) Also include hidden comment text (default: excluded) |
+| `--font-dir` | `<FONT_DIR>` |  | (pdf) Additional font directory (repeatable; defaults to HWP_FONT_DIR or fonts/) |
 
 ## `hwp render`
 
-페이지 렌더링
+Render pages
 
-**사용법:** `hwp render [OPTIONS] --output <OUTPUT> <INPUT>`
+**Usage:** `hwp render [OPTIONS] --output <OUTPUT> <INPUT>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
-| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
-| `--pages` | `<PAGES>` | `all` | 페이지 범위: "1", "1-3", "all" |
-| `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
-| `--format` | `png` \| `svg` \| `pdf` |  | 출력 포맷 (생략 시 확장자에서 추론) |
-| `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
+| `<INPUT>` |  |  | Input HWP/HWPX file |
+| `-o, --output` | `<OUTPUT>` |  | Output file path |
+| `--pages` | `<PAGES>` | `all` | Page range: "1", "1-3", "all" |
+| `--dpi` | `<DPI>` | `96` | Resolution in DPI (finite, 36..=600) |
+| `--format` | `png` \| `svg` \| `pdf` |  | Output format (inferred from the extension when omitted) |
+| `--font-dir` | `<FONT_DIR>` |  | Additional font directory (repeatable) |
 
 ## `hwp new`
 
-새 문서 생성
+Create a new document
 
-**사용법:** `hwp new [OPTIONS] --output <OUTPUT>`
+**Usage:** `hwp new [OPTIONS] --output <OUTPUT>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX 경로 |
-| `--from` | `<FROM>` |  | 입력 markdown/JSON 파일 (생략 시 빈 문서) |
-| `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
-| `--preset` | `gian` \| `report` |  | 공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt), report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함 |
+| `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX path |
+| `--from` | `<FROM>` |  | Input markdown or JSON file (empty document when omitted) |
+| `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
+| `--preset` | `gian` \| `report` |  | Official-document preset (markdown input only): gian for an approval draft (Malgun Gothic 11.5pt), report for a report (HCR Batang 15pt). Includes margins, four-level numbering and page numbers |
 
 ## `hwp compose`
 
-DocumentSpec v1/v2(JSON/YAML)에서 구조 문서를 deterministic 합성
+Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)
 
-**사용법:** `hwp compose [OPTIONS] --output <OUTPUT> <SPEC>`
+**Usage:** `hwp compose [OPTIONS] --output <OUTPUT> <SPEC>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<SPEC>` |  |  | DocumentSpec v1/v2 입력 파일(.json, .yaml, .yml) |
-| `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX |
-| `--format` | `json` \| `yaml` |  | 입력 포맷 (생략 시 spec 확장자에서 추론) |
-| `--dry-run` |  |  | 검증·컴파일 보고서만 생성하고 파일은 쓰지 않음 |
-| `--report` |  |  | 실행 보고서를 JSON으로 출력 |
-| `--allow-visual-fallback` |  |  | [deprecated] v1 호환 전용 — v2는 이 정책 덮어쓰기를 거부한다 |
+| `<SPEC>` |  |  | DocumentSpec v1/v2 input file (.json, .yaml, .yml) |
+| `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX |
+| `--format` | `json` \| `yaml` |  | Input format (inferred from the spec extension when omitted) |
+| `--dry-run` |  |  | Produce the validation and compilation report without writing the file |
+| `--report` |  |  | Print the run report as JSON |
+| `--allow-visual-fallback` |  |  | [deprecated] v1 compatibility only; v2 rejects this policy override |
 
 ## `hwp template`
 
-TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
+Generate typed native HWP/HWPX from TemplateSpec/Data v1
 
-**사용법:** `hwp template [OPTIONS] --data <DATA> --output <OUTPUT> <TEMPLATE>`
+**Usage:** `hwp template [OPTIONS] --data <DATA> --output <OUTPUT> <TEMPLATE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<TEMPLATE>` |  |  | TemplateSpec v1 입력 파일(.json, .yaml, .yml) |
-| `--data` | `<DATA>` |  | TemplateData v1 입력 파일(.json, .yaml, .yml) |
-| `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX |
-| `--template-format` | `json` \| `yaml` |  | TemplateSpec 입력 포맷 (생략 시 확장자에서 추론) |
-| `--data-format` | `json` \| `yaml` |  | TemplateData 입력 포맷 (생략 시 확장자에서 추론) |
-| `--dry-run` |  |  | 실제 확장·writer·검증 경로를 실행하되 결과 파일은 게시하지 않음 |
-| `--report` |  |  | preservation/expansion 보고서를 JSON으로 출력 |
+| `<TEMPLATE>` |  |  | TemplateSpec v1 input file (.json, .yaml, .yml) |
+| `--data` | `<DATA>` |  | TemplateData v1 input file (.json, .yaml, .yml) |
+| `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX |
+| `--template-format` | `json` \| `yaml` |  | TemplateSpec input format (inferred from the extension when omitted) |
+| `--data-format` | `json` \| `yaml` |  | TemplateData input format (inferred from the extension when omitted) |
+| `--dry-run` |  |  | Run the real expansion, writer and validation paths without publishing the result |
+| `--report` |  |  | Print the preservation and expansion report as JSON |
 
 ## `hwp diff`
 
-렌더 결과를 한글 기준 PNG와 비교해 오차 측정 (위치 오프셋·픽셀 차이율)
+Compare a render against a Hancom reference PNG (offset and pixel difference)
 
-**사용법:** `hwp diff [OPTIONS] --ref <REF> <INPUT>`
+**Usage:** `hwp diff [OPTIONS] --ref <REF> <INPUT>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
-| `--ref` | `<REF>` |  | 한글에서 같은 페이지를 같은 DPI로 내보낸 기준 PNG |
-| `--page` | `<PAGE>` | `1` | 비교할 페이지 (1-기반) |
-| `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
-| `-o, --out` | `<OUT>` |  | 차이 이미지 출력 경로 (생략 시 <ref>.diff.png) |
-| `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
-| `--tolerance` | `<TOLERANCE>` | `16` | 채널 차이 허용 오차 (이하면 동일 취급) |
+| `<INPUT>` |  |  | Input HWP/HWPX file |
+| `--ref` | `<REF>` |  | Reference PNG exported from Hancom for the same page at the same DPI |
+| `--page` | `<PAGE>` | `1` | Page to compare (1-based) |
+| `--dpi` | `<DPI>` | `96` | Resolution in DPI (finite, 36..=600) |
+| `-o, --out` | `<OUT>` |  | Difference image output path (defaults to <ref>.diff.png) |
+| `--font-dir` | `<FONT_DIR>` |  | Additional font directory (repeatable) |
+| `--tolerance` | `<TOLERANCE>` | `16` | Per-channel tolerance; differences at or below this count as equal |
 
 ## `hwp edit`
 
-기존 문서 편집 (텍스트 치환·표 셀 설정) — 이미지·서식 보존
+Edit an existing document (text replacement, table cells); images and formatting preserved
 
-**사용법:** `hwp edit [OPTIONS] --output <OUTPUT> <INPUT>`
+**Usage:** `hwp edit [OPTIONS] --output <OUTPUT> <INPUT>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
-| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
-| `--replace` | `<REPLACE>` |  | 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환) |
-| `--set-cell` | `<SET_CELL>` |  | 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스) |
-| `--set-field` | `<SET_FIELD>` |  | 필드/누름틀 채우기 "이름=값" (반복 가능 — hwp fields로 이름 확인) |
-| `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
-| `--create-field` | `<CREATE_FIELD>` |  | 누름틀 생성 "앵커=>이름" 또는 "앵커=>이름=값" — 앵커 텍스트 뒤에 %clk 필드 삽입 (반복 가능) |
-| `--create-bookmark` | `<CREATE_BOOKMARK>` |  | 책갈피 생성 "앵커=>이름" — 앵커 텍스트 뒤에 bokm 지점 표식 삽입 (반복 가능) |
-| `--create-hyperlink` | `<CREATE_HYPERLINK>` |  | 하이퍼링크 생성 "앵커=>URL" 또는 "앵커=>표시=>URL" — 앵커 뒤에 %hlk 삽입 (반복 가능) |
-| `--insert-image` | `<INSERT_IMAGE>` |  | 이미지 삽입 "앵커=>경로" 또는 "앵커=>경로@너비x높이"(mm) — 앵커 뒤에 그림 삽입 (반복 가능) |
-| `--seal` | `<SEAL>` |  | 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치 (반복 가능) |
-| `--set-format` | `<SET_FORMAT>` |  | 글자 서식 "찾기:속성=값,..." (예: "제목:bold=on,size=16,color=#FF0000") (반복 가능) |
-| `--set-align` | `<SET_ALIGN>` |  | 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute) (반복 가능) |
-| `--insert-para` | `<INSERT_PARA>` |  | 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단 (반복 가능) |
-| `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단 (반복 가능) |
-| `--delete-para` | `<DELETE_PARA>` |  | 문단 삭제 "텍스트" — 텍스트가 있는 문단 삭제 (반복 가능) |
-| `--add-row` | `<ADD_ROW>` |  | 표 행 추가 "표" — N번째 표 끝에 빈 행 (반복 가능, 0-기반; 병합 셀이 있는 표는 거부) |
-| `--add-col` | `<ADD_COL>` |  | 표 열 추가 "표"(끝에) 또는 "표:위치"(삽입) — 전체 폭 유지(기존 열 균등 축소). 병합 셀 표도 지원 (반복 가능, 0-기반) |
-| `--delete-row` | `<DELETE_ROW>` |  | 표 행 삭제 "표:행" — N번째 표의 R행 (반복 가능, 0-기반; 병합 행은 거부) |
-| `--delete-col` | `<DELETE_COL>` |  | 표 열 삭제 "표:열" — N번째 표의 열 삭제. 전체 폭 유지(남은 열에 재분배). 병합 셀은 축소 (반복 가능, 0-기반) |
-| `--merge-cells` | `<MERGE_CELLS>` |  | 셀 병합 "표:r1:c1:r2:c2" — 사각 영역을 좌상단 앵커로 병합 (반복 가능, 0-기반) |
-| `--split-cell` | `<SPLIT_CELL>` |  | 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반) |
-| `--add-table` | `<ADD_TABLE>` |  | 표 삽입 "앵커=>행JSON" — 앵커 문단 뒤에 균일 표 삽입. 행JSON은 문자열 배열의 배열 (반복 가능) |
-| `--set-para` | `<SET_PARA>` |  | 문단 모양 "찾기=>키:값" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm) (반복 가능) |
-| `--set-page` | `<SET_PAGE>` |  | 페이지 설정 "키:값" — 키: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape) (반복 가능) |
-| `--delete-image` | `<DELETE_IMAGE>` |  | 그림 삭제 "앵커" — 앵커 문단의 그림 삭제 (반복 가능) |
-| `--delete-table` | `<DELETE_TABLE>` |  | 표 삭제 "n"(0-기반 인덱스) 또는 "앵커"(앵커 문단의 표) (반복 가능) |
-| `--delete-field` | `<DELETE_FIELD>` |  | 필드 삭제 "이름" (반복 가능; 이름은 hwp fields로 확인) |
-| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | 책갈피 삭제 "이름" (반복 가능; 이름은 hwp bookmarks로 확인) |
-| `--verify` |  |  | 쓰기 후 재읽기로 검증 |
-| `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
+| `<INPUT>` |  |  | Input HWP/HWPX file |
+| `-o, --output` | `<OUTPUT>` |  | Output file path |
+| `--replace` | `<REPLACE>` |  | Replace text, "find=>replace" (repeatable; replaces every match) |
+| `--set-cell` | `<SET_CELL>` |  | Set a table cell, "table:row:col=value" (repeatable; 0-based indices) |
+| `--set-field` | `<SET_FIELD>` |  | Fill a field, "name=value" (repeatable; list names with hwp fields) |
+| `--set-meta` | `<SET_META>` |  | Set metadata, "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
+| `--create-field` | `<CREATE_FIELD>` |  | Create a field, "anchor=>name" or "anchor=>name=value": insert a %clk field after the anchor text (repeatable) |
+| `--create-bookmark` | `<CREATE_BOOKMARK>` |  | Create a bookmark, "anchor=>name": insert a bokm marker after the anchor text (repeatable) |
+| `--create-hyperlink` | `<CREATE_HYPERLINK>` |  | Create a hyperlink, "anchor=>URL" or "anchor=>text=>URL": insert %hlk after the anchor (repeatable) |
+| `--insert-image` | `<INSERT_IMAGE>` |  | Insert an image, "anchor=>path" or "anchor=>path@WxH" (mm): insert a picture after the anchor (repeatable) |
+| `--seal` | `<SEAL>` |  | Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text (repeatable) |
+| `--set-format` | `<SET_FORMAT>` |  | Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000") (repeatable) |
+| `--set-align` | `<SET_ALIGN>` |  | Paragraph alignment, "find=alignment" (left/right/center/justify/distribute) (repeatable) |
+| `--insert-para` | `<INSERT_PARA>` |  | Insert a paragraph, "anchor=>text": after the paragraph containing the anchor (repeatable) |
+| `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor (repeatable) |
+| `--delete-para` | `<DELETE_PARA>` |  | Delete a paragraph, "text": delete the paragraph containing the text (repeatable) |
+| `--add-row` | `<ADD_ROW>` |  | Add a table row, "table": an empty row at the end of table N (repeatable, 0-based; refused for tables with merged cells) |
+| `--add-col` | `<ADD_COL>` |  | Add a table column, "table" (at the end) or "table:position" (inserted): total width is preserved by shrinking existing columns evenly. Merged tables supported (repeatable, 0-based) |
+| `--delete-row` | `<DELETE_ROW>` |  | Delete a table row, "table:row" (repeatable, 0-based; a merged row is refused) |
+| `--delete-col` | `<DELETE_COL>` |  | Delete a table column, "table:col": total width is preserved by redistributing to the remaining columns; merged cells shrink (repeatable, 0-based) |
+| `--merge-cells` | `<MERGE_CELLS>` |  | Merge cells, "table:r1:c1:r2:c2": merge a rectangular area into its top-left anchor (repeatable, 0-based) |
+| `--split-cell` | `<SPLIT_CELL>` |  | Split a cell, "table:row:col": break a merged cell back into 1x1 cells (repeatable, 0-based) |
+| `--add-table` | `<ADD_TABLE>` |  | Insert a table, "anchor=>json": insert a uniform table after the anchor paragraph; json is an array of row arrays (repeatable) |
+| `--set-para` | `<SET_PARA>` |  | Paragraph shape properties, "find=>key:value" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm); repeatable) |
+| `--set-page` | `<SET_PAGE>` |  | Page setup, "key:value" (keys: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape); repeatable) |
+| `--delete-image` | `<DELETE_IMAGE>` |  | Delete an image, "anchor": delete the picture in the anchor paragraph (repeatable) |
+| `--delete-table` | `<DELETE_TABLE>` |  | Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable) |
+| `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with hwp fields) |
+| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks) |
+| `--verify` |  |  | Verify by re-reading after writing |
+| `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
 
 ## `hwp fields`
 
-필드/누름틀 목록 표시 (이름·종류·값)
+List fields (name, kind, value)
 
-**사용법:** `hwp fields [OPTIONS] <FILE>`
+**Usage:** `hwp fields [OPTIONS] <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--json` |  |  | JSON으로 출력 |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--json` |  |  | Print as JSON |
 
 ## `hwp bookmarks`
 
-책갈피 목록 표시 (이름)
+List bookmarks (name)
 
-**사용법:** `hwp bookmarks [OPTIONS] <FILE>`
+**Usage:** `hwp bookmarks [OPTIONS] <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--json` |  |  | JSON으로 출력 |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--json` |  |  | Print as JSON |
 
 ## `hwp slots`
 
-`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록 표시
+List `{{name}}` text placeholders (template slots)
 
-**사용법:** `hwp slots [OPTIONS] <FILE>`
+**Usage:** `hwp slots [OPTIONS] <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--json` |  |  | JSON으로 출력 |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--json` |  |  | Print as JSON |
 
 ## `hwp fill`
 
-충실도 보존 템플릿 채우기 (hwpx의 `{{name}}` 치환, 패키지 보존)
+Fidelity-preserving template fill (replace `{{name}}` in hwpx, package preserved)
 
-**사용법:** `hwp fill [OPTIONS] --output <OUTPUT> <INPUT>`
+**Usage:** `hwp fill [OPTIONS] --output <OUTPUT> <INPUT>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUT>` |  |  | 입력 HWPX 템플릿 |
-| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
-| `--set` | `<SET>` |  | 자리표시자 채우기 "이름=값" (반복 가능; `{{이름}}` 치환). "이름=@부분.md"이면 `{{이름}}` 앵커 문단을 부분 파일(md+HTML 표 블록, 계약 docs/design/18)로 교체 — 대규모 문서의 부분별 조합. "@@"는 리터럴 '@' |
-| `--data` | `<DATA>` |  | 이름→값 JSON 객체 파일 (일괄 채우기; "parts": {"이름": "경로"} 부분 파일 교체, "tables": [...] 표 행 채우기) |
-| `--json` |  |  | 치환 요약을 JSON으로 출력 ({output, replaced, counts}) |
-| `--allow-partial` |  |  | 일부 요청이 자리를 찾지 못해도 일치한 값만 게시 (기본: 하나라도 미치환이면 실패) |
+| `<INPUT>` |  |  | Input HWPX template |
+| `-o, --output` | `<OUTPUT>` |  | Output file path |
+| `--set` | `<SET>` |  | Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@' |
+| `--data` | `<DATA>` |  | JSON object file mapping name to value (bulk fill; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows) |
+| `--json` |  |  | Print the replacement summary as JSON ({output, replaced, counts}) |
+| `--allow-partial` |  |  | Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced) |
 
 ## `hwp validate`
 
-구조 검증 (mimetype/필수 엔트리/XML 파싱) — 유효하면 종료코드 0
+Structural validation (mimetype, required entries, XML parsing); exit code 0 when valid
 
-**사용법:** `hwp validate [OPTIONS] <FILE>`
+**Usage:** `hwp validate [OPTIONS] <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--json` |  |  | JSON으로 출력 |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--json` |  |  | Print as JSON |
 
 ## `hwp certify`
 
-versioned policy로 package/semantic/native render/independent import 인증
+Certify package, semantics, native render and independent import under a versioned policy
 
-**사용법:** `hwp certify --policy <POLICY> --report <REPORT> <INPUT>`
+**Usage:** `hwp certify --policy <POLICY> --report <REPORT> <INPUT>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUT>` |  |  | 인증할 HWP/HWPX 입력 |
+| `<INPUT>` |  |  | HWP/HWPX input to certify |
 | `--policy` | `<POLICY>` |  | hwp-certification-policy-v1 JSON/YAML |
-| `--report` | `<REPORT>` |  | 새로 만들 원자적 artifact 디렉터리(기존 경로 거부) |
+| `--report` | `<REPORT>` |  | Atomic artifact directory to create (an existing path is refused) |
 
 ## `hwp corpus`
 
-버전 고정 구조 문서 코퍼스를 2회 생성·재개방·native 인증
+Generate the frozen structured corpus twice, reopen it and certify natively
 
-**사용법:** `hwp corpus --manifest <MANIFEST> --report <REPORT>`
+**Usage:** `hwp corpus --manifest <MANIFEST> --report <REPORT>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `--manifest` | `<MANIFEST>` |  | hwp-structured-corpus-v1 manifest JSON |
-| `--report` | `<REPORT>` |  | 새로 만들 원자적 실행 보고서 디렉터리(기존 경로 거부) |
+| `--report` | `<REPORT>` |  | Atomic run report directory to create (an existing path is refused) |
 
 ## `hwp mcp`
 
-MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페이스
+MCP (Model Context Protocol) stdio server: a tool interface for AI agents
 
-**사용법:** `hwp mcp [OPTIONS]`
+**Usage:** `hwp mcp [OPTIONS]`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
+| `--font-dir` | `<FONT_DIR>` |  | Default font directory for the render and diff tools (repeatable) |
 
 ## `hwp update`
 
-자체 업데이트 — GitHub 릴리스에서 최신 `hwp`를 받아 실행 중인 바이너리를 교체
+Self-update: fetch the latest `hwp` from GitHub releases and replace the running binary
 
-**사용법:** `hwp update [OPTIONS]`
+**Usage:** `hwp update [OPTIONS]`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `--check` |  |  | 교체 없이 현재/최신 버전만 확인 |
-| `--tag` | `<TAG>` |  | 특정 릴리스로 고정 (예: "v0.2.0" — 이전 버전으로 되돌릴 때) |
-| `--force` |  |  | 같은 버전이어도 다시 받아 교체 (손상된 설치 복구용) |
-| `--json` |  |  | JSON으로 출력 |
+| `--check` |  |  | Report the current and latest versions without replacing |
+| `--tag` | `<TAG>` |  | Pin a specific release (for example "v0.2.0", to roll back) |
+| `--force` |  |  | Re-download and replace even at the same version (to repair a broken install) |
+| `--json` |  |  | Print as JSON |
 
 ## `hwp dump`
 
-[개발자용] 레코드/패키지 구조 덤프
+[developer] Dump record and package structure
 
-**사용법:** `hwp dump [OPTIONS] <FILE>`
+**Usage:** `hwp dump [OPTIONS] <FILE>`
 
-| 인자/플래그 | 값 | 기본값 | 설명 |
+| Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
-| `--stream` | `<STREAM>` |  | 대상 스트림/엔트리 (예: "DocInfo", "BodyText/Section0", "Contents/header.xml") |
-| `--raw` |  |  | 레코드 페이로드를 hex로 출력 |
-| `--json` |  |  | JSON으로 출력 |
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--stream` | `<STREAM>` |  | Target stream or entry (for example "DocInfo", "BodyText/Section0", "Contents/header.xml") |
+| `--raw` |  |  | Print record payloads as hex |
+| `--json` |  |  | Print as JSON |

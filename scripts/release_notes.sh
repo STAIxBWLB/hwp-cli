@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# CHANGELOG.md에서 한 버전 절만 뽑아 릴리스 본문(한/영 병기)으로 출력한다.
-#   scripts/release_notes.sh 0.4.1      또는      scripts/release_notes.sh v0.4.1
+# Extract a single version section from CHANGELOG.md and print it as the release body.
+#   scripts/release_notes.sh 0.4.1      or      scripts/release_notes.sh v0.4.1
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,7 +10,7 @@ version="${version#v}"
 awk -v want="[$version]" '
     /^## / {
         if (found) exit
-        # "## [0.4.1]" 의 대괄호 토큰만 비교한다.
+        # Compare only the bracketed token of "## [0.4.1]".
         if ($2 == want) { found = 1; next }
     }
     found { print }
@@ -20,8 +20,8 @@ awk -v want="[$version]" '
           for (i = 1; i <= last; i++) print lines[i] }
 '
 
-# 절을 못 찾으면 빈 출력이 되므로 호출자가 실패로 다루도록 종료코드를 세운다.
+# A missing section yields empty output, so set a non-zero exit code for the caller.
 if ! grep -q "^## \[$version\]" CHANGELOG.md; then
-    echo "CHANGELOG.md에 [$version] 절이 없습니다" >&2
+    echo "CHANGELOG.md has no [$version] section" >&2
     exit 1
 fi

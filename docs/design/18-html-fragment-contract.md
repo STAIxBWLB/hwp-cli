@@ -1,139 +1,151 @@
-[한국어](18-html-fragment-contract.md) · [English](18-html-fragment-contract.en.md)
+[한국어](18-html-fragment-contract.ko.md) · [English](18-html-fragment-contract.md)
 
-# HTML fragment 계약 (v1)
+# HTML Fragment Contract (v1)
 
-Maru 문서 작성기의 **부분(part) 단위 작성·조합**을 위한 HTML fragment 교환 계약.
-본문 산문은 markdown으로, 표·그림 등 비산문 블록은 이 계약의 HTML fragment로 작성한다.
-대규모 문서(사업보고서·결과보고서 등)를 부분별로 나누어 작성하고 조합하는 워크플로의
-교환 포맷이다.
+An HTML fragment interchange contract for the Maru document composer's **part-based
+authoring and assembly**. Prose is written in markdown; non-prose blocks (tables, figures,
+etc.) are written as HTML fragments under this contract. It is the exchange format for
+workflows that write large documents (business plans, final reports) part-by-part and
+compose them.
 
-- **생산자**: `hwp-convert/src/html.rs` (`to_html`, `to_html_fragment`)
-- **소비자**: `hwp-convert/src/from_html.rs` (계약 파서), `from_markdown.rs`의 HTML 블록 경로
+- **Producer**: `hwp-convert/src/html.rs` (`to_html`, `to_html_fragment`)
+- **Consumers**: `hwp-convert/src/from_html.rs` (contract parser), the HTML block path in
+  `from_markdown.rs`
 
-## 1. 원칙
+## 1. Principles
 
-1. **기계 생성 전용** — 사람이 손으로 쓴 임의 HTML이 아니라, 계약을 아는 생산자가 만든
-   출력만 입력으로 받는다.
-2. **Well-formed XML (XHTML)** — 빈 태그는 self-closing(`<br/>`, `<img …/>`), 속성은
-   큰따옴표, 텍스트는 XML 이스케이프. quick-xml로 파싱 가능해야 한다.
-3. **구조 왕복, 스타일 비왕복** — `class`/`style` 속성은 표현 전용이며 import 시 무시한다.
-   왕복이 보장되는 것은 문서 구조(표 span·셀 블록·이미지·링크·인라인 마크)뿐이다.
-4. **계약 위반은 hard error** — 알 수 없는 태그, malformed XML, span 오버플로를 추측으로
-   복구하지 않는다(추측 금지 — 정답지 방법론과 같은 태도).
+1. **Machine-generated only** — input must come from a producer that knows this contract,
+   not arbitrary hand-written HTML.
+2. **Well-formed XML (XHTML)** — empty tags are self-closing (`<br/>`, `<img …/>`), attributes
+   are double-quoted, text is XML-escaped. Must be parseable with quick-xml.
+3. **Structural round-trip, not style round-trip** — `class`/`style` attributes are
+   presentational and ignored on import. What round-trips is document structure (table
+   spans, cell blocks, images, links, inline marks).
+4. **Contract violations are hard errors** — unknown tags, malformed XML, and span overflow
+   are never repaired by guessing (same "no guessing" stance as the oracle methodology).
 
-## 2. 지원 요소
+## 2. Supported Elements
 
-### 2.1 블록
+### 2.1 Blocks
 
-| 요소 | 의미 | 비고 |
+| Element | Meaning | Notes |
 |---|---|---|
-| `h1`..`h6` | "개요 N" 스타일 문단 | export·import |
-| `p` | 본문 문단 | export·import |
-| `ul`/`ol`/`li` | 목록 (`li` 중첩 = 수준) | import only (export는 미방출) |
-| `table` | 표 — §3 참조 | export·import |
-| `figure` + `figcaption` | 그림 + 캡션 문단 | import only (export는 bare `img`) |
-| `section.footnotes` | 각주/미주 정의 (§5) | 표현 전용 |
+| `h1`..`h6` | "개요 N" (outline N) style paragraph | export & import |
+| `p` | body paragraph | export & import |
+| `ul`/`ol`/`li` | lists (nested `li` = level) | import only (export does not emit yet) |
+| `table` | table — see §3 | export & import |
+| `figure` + `figcaption` | image + caption paragraph | import only (export emits bare `img`) |
+| `section.footnotes` | footnote/endnote definitions (§5) | presentational only |
 
-### 2.2 인라인
+### 2.2 Inline
 
-| 요소 | 의미 |
+| Element | Meaning |
 |---|---|
-| `strong`/`em`/`u`/`s` | 굵게/기울임/밑줄/취소선 |
-| `sup`/`sub` | 위첨자/아래첨자 (`sup`가 각주 마커 패턴과 충돌하지 않게 §5 규약) |
-| `a[href]` | 하이퍼링크 필드 |
-| `br/` | 줄나눔 (LINE_BREAK) |
-| `img` | 그림 — §4 참조 |
+| `strong`/`em`/`u`/`s` | bold / italic / underline / strikethrough |
+| `sup`/`sub` | superscript / subscript (see §5 for the footnote-marker carve-out) |
+| `a[href]` | hyperlink field |
+| `br/` | line break (LINE_BREAK) |
+| `img` | picture — see §4 |
 
-## 3. 표 계약
+## 3. Table Contract
 
-- 구조: `<table>` → `<tr>` → `<th>`/`<td>`. `thead`/`tbody`는 선택(있어도 되고 없어도 됨).
-- **첫 행은 `<th>` 관례** — 표현 전용이다. import는 `th`/`td`를 구별하지 않는다(IR에
-  헤더 행 개념이 없다).
-- **병합 셀**: origin 셀만 방출하고 `colspan`/`rowspan`을 단다. 병합이 덮는 칸은
-  요소를 방출하지 않는다. import는 점유 격자로 역산해 `Cell.col_span`/`row_span`을 복원한다.
-- **span 오버플로**(격자 밖으로 나가는 span, 덮인 칸과 겹치는 span)는 import 에러다.
-- **셀 내 블록**: 셀 안에는 인라인 내용 외에 중첩 `table`, `img`가 올 수 있다.
-  문단 경계는 `<br/>`로 표현한다.
+- Structure: `<table>` → `<tr>` → `<th>`/`<td>`. `thead`/`tbody` are optional.
+- **First row uses `<th>` by convention** — presentational only. Import does not
+  distinguish `th`/`td` (the IR has no header-row concept).
+- **Merged cells**: only the origin cell is emitted, carrying `colspan`/`rowspan`. Covered
+  slots are not emitted. Import reconstructs `Cell.col_span`/`row_span` via an occupancy
+  grid.
+- **Span overflow** (a span extending past the grid or overlapping a covered slot) is an
+  import error.
+- **Blocks inside cells**: cells may contain nested `table` and `img` in addition to
+  inline content. Paragraph boundaries are expressed with `<br/>`.
 
-## 4. 그림 계약
+## 4. Image Contract
 
-- `src` 세 가지 형태:
-  1. `data:<mime>;base64,…` — 자기완결 임베드 (export가 쓰는 형태)
-  2. 상대 경로 — part 파일 기준 `base_dir`로 해석
-  3. `*.svg` — **검증(폐쇄 부분집합) + 결정론적 PNG 래스터화**로 임베드한다
-     (`hwp-convert::svg` — DocumentSpec v2의 svg visual과 같은 정책·같은 구현.
-     네이티브 표현은 어느 포맷에도 없다). 스크립트·외부 참조·텍스트 노드가 있는
-     SVG는 hard error.
-- `alt`는 무시하지 않고 IR Picture의 대체 텍스트로 보존한다(export는 `"image"` 고정 — 관례).
+- Three `src` forms:
+  1. `data:<mime>;base64,…` — self-contained embed (what export emits)
+  2. Relative path — resolved against the part file's `base_dir`
+  3. `*.svg` — embedded via **validation (closed subset) + deterministic PNG rasterization**
+     (`hwp-convert::svg` — same policy and same implementation as the DocumentSpec v2 svg
+     visual; no format has a native representation). SVG with scripts, external
+     references, or text nodes is a hard error.
+- `alt` is preserved as the IR Picture's alt text (export fixes it to `"image"` — a
+  convention, not a rule).
 
-## 5. 각주/미주 (표현 전용)
+## 5. Footnotes/Endnotes (presentational only)
 
-- 본문 마커: `<sup id="fnref-{N}"><a href="#fn-{N}">{N}</a></sup>` (미주는 `e{N}`).
-- 정의: `<section class="footnotes">` 안 `<ol>`/`<li id="fn-{N}">`, 끝에
-  `<a href="#fnref-{N}">↩</a>` 역링크.
-- import는 이 구조를 **평문**으로만 읽는다(각주 의미 재생성은 v1 범위 밖 — `sup` 인라인
-  마크와의 모호성을 피하기 위함). `fnref` id를 가진 `sup`는 마커로 인식해 텍스트만 취하고,
-  `<section class="footnotes">` 정의 섹션은 통째로 걷어낸다(본문 마커와 정의가 이중으로
-  들어가는 것을 막기 위함).
+- Body marker: `<sup id="fnref-{N}"><a href="#fn-{N}">{N}</a></sup>` (endnotes use `e{N}`).
+- Definitions: `<ol>`/`<li id="fn-{N}">` inside `<section class="footnotes">`, each ending
+  with a back-link `<a href="#fnref-{N}">↩</a>`.
+- Import reads this structure as **plain text** only (recreating footnote semantics is out
+  of scope for v1 — to avoid ambiguity with the `sup` inline mark). A `sup` carrying a
+  `fnref` id is recognized as a marker and only its text is taken, and the
+  `<section class="footnotes">` definitions section is dropped entirely (so the markers and
+  the definitions are not duplicated into the body).
 
-## 6. 비지원 · 에러
+## 6. Unsupported · Errors
 
-- `script`, `iframe`, `form` 등 미열거 태그 → import 에러. 단 `<style>`은 예외적으로
-  허용한다 — v2 스타일 왕복(§8)의 `.cs{n}`/`.ps{n}` 규칙만 읽고 나머지는 무시한다.
-- 닫힘 불일치·속성 미인용 등 malformed XML → 파서 에러 그대로.
-- CSS 클래스 기반 글자/문단 모양 복원은 v2(§8) 규칙에 한한다 — 그 밖의 클래스와
-  인라인 `style` 속성은 무시.
+- Unlisted tags such as `script`, `iframe`, `form` → import error. `<style>` is the
+  exception — import accepts it and reads only the v2 style round-trip rules
+  (`.cs{n}`/`.ps{n}`, §8), ignoring everything else.
+- Malformed XML (mismatched closing tags, unquoted attributes) → surfaced parser error.
+- CSS class based char/para shape restoration is limited to the v2 rules (§8) — all other
+  classes and inline `style` attributes stay ignored.
 
-## 7. 버전
+## 7. Version
 
-- v1 (2026-08): 최초 계약. export 측 GH-3/GH-4/GH-5 해소와 from_html 도입으로 성립.
-- v2 (2026-08): 스타일 왕복(§8) — `.cs{n}`/`.ps{n}` 클래스로 글자·문단 모양을 실는다.
+- v1 (2026-08): initial contract. Established by the export-side GH-3/GH-4/GH-5 resolution
+  and the introduction of from_html.
+- v2 (2026-08): style round-trip (§8) — char/para shapes carried as `.cs{n}`/`.ps{n}`
+  classes.
 
-## 8. 스타일 왕복 (v2)
+## 8. Style Round-Trip (v2)
 
-v1은 구조만 왕복한다. v2는 글자·문단 모양을 CSS 클래스로 실어 타이포그래피까지
-왕복한다 — Maru 부분 편집기가 `hwp → html → 편집 → hwp`에서 부분의 모양을 잃지
-않게 하기 위함이다.
+v1 round-trips structure only. v2 carries char and para shapes as CSS classes so that
+typography survives `hwp → html → edit → hwp` in Maru's part editor.
 
-### 8.1 규칙 위치와 명명
+### 8.1 Rule Placement and Naming
 
-- 규칙: standalone은 `<head>`의 `<style>` 블록, fragment는 **선두 `<style>` 요소**
-  (fragment가 자기완결이어야 하므로).
-- import는 `<style>`을 허용하되 `.cs{n}`/`.ps{n}` 규칙만 읽고 나머지는 무시한다(§6).
-- 명명: `.cs{n}` = 소스 문서의 CharShape id n, `.ps{n}` = ParaShape id n. id는 생산자
-  문서 기준이며 소비자는 이름이 아니라 **속성값**으로 복원한다(같은 id 보장 없음).
+- Rules: the `<style>` block in `<head>` for standalone documents, a **leading `<style>`
+  element** for fragments (fragments must be self-contained).
+- Import accepts `<style>` but reads only the `.cs{n}`/`.ps{n}` rules and ignores
+  everything else (§6).
+- Naming: `.cs{n}` = CharShape id n of the source document, `.ps{n}` = ParaShape id n.
+  Ids are producer-local; consumers reconstruct **by property values**, never by name
+  (no id stability is guaranteed).
 
-### 8.2 속성 ↔ 필드 매핑
+### 8.2 Property ↔ Field Mapping
 
-`.cs{n}` (글자 모양):
+`.cs{n}` (char shape):
 
-| CSS | CharShape 필드 |
+| CSS | CharShape field |
 |---|---|
-| `font-family` | 첫 번째 이름 = face_ids[0]의 글꼴 이름, 나머지는 폴리백(무시) |
+| `font-family` | first name = font of face_ids[0]; the rest is fallback (ignored) |
 | `font-size` | `base_size/100` pt × `rel_sizes[0]` % |
-| `color` | `text_color` (COLORREF → #RRGGBB; 0이면 생략) |
-| `background-color` | `shade_color` (0xFFFFFFFF가 아닐 때만) |
-| `letter-spacing` | `spacings[0]` % (`Nem` = N% of em; 0이면 생략) |
+| `color` | `text_color` (COLORREF → #RRGGBB; omitted when zero) |
+| `background-color` | `shade_color` (only when not 0xFFFFFFFF) |
+| `letter-spacing` | `spacings[0]` % (`Nem` = N% of em; omitted when zero) |
 
-`.ps{n}` (문단 모양):
+`.ps{n}` (para shape):
 
-| CSS | ParaShape 필드 |
+| CSS | ParaShape field |
 |---|---|
-| `text-align` | 정렬 (justify/left/right/center; 4·5 배분·나눔은 justify로 근사) |
-| `line-height` | 종류 0 비율=단위 없는 배수, 1 고정·3 최소=pt, 2 여백만=`normal`(근사) |
+| `text-align` | alignment (justify/left/right/center; 4/5 distribute approximated as justify) |
+| `line-height` | type 0 ratio = unitless multiplier, 1 fixed / 3 minimum = pt, 2 margin-only = `normal` (approximation) |
 | `margin-left`/`margin-right` | margin_left/right (mm) |
 | `text-indent` | indent (mm) |
 | `margin-top`/`margin-bottom` | spacing_top/bottom (mm) |
 
-### 8.3 우선 규칙과 한계
+### 8.3 Precedence and Limits
 
-- **마크는 태그가 정본** — 굵게·기울임·밑줄·취소선·첨자는 `strong/em/u/s/sup/sub`
-  태그로만 복원한다. 클래스는 태그가 못 싣는 나머지(글꼴·크기·색·음영·자간·정렬·
-  줄간격·여백)를 싣는다.
-- 마크업: 문단은 `<p class="psN">`/`<h{level} class="psN">`, run은
-  `<span class="csN">…</span>`이 마크 태그를 감싼다.
-- **팔레트 dedup**: 복원한 모양이 기본 팔레트(문단 0~4·글자 0~15)와 같으면 새 id를
-  만들지 않고 팔레트 id를 쓴다.
-- v2 한계: 표 셀 문단 모양·각주 스타일은 싣지 않는다. 인라인 `style` 속성은 무시
-  (`<style>` 블록만 읽는다). border_fill·그림자·양음각·외곽선·장평·오프셋 등 CSS로
-  표현할 수 없는 필드는 복원하지 않는다.
+- **Tags are authoritative for marks** — bold/italic/underline/strike/sup/sub are
+  restored from the `strong/em/u/s/sup/sub` tags only. Classes carry what tags cannot
+  (font, size, color, shade, letter-spacing, alignment, line spacing, margins).
+- Markup: paragraphs are `<p class="psN">`/`<h{level} class="psN">`; runs are
+  `<span class="csN">…</span>` wrapping the mark tags.
+- **Palette dedup**: when a reconstructed shape equals a default palette entry
+  (para 0-4, char 0-15), import reuses the palette id instead of allocating a new one.
+- v2 limits: cell paragraph shapes and footnote styles are not emitted. Inline `style`
+  attributes stay ignored (only `<style>` blocks are read). Fields with no CSS expression
+  (border_fill, shadow, emboss/engrave, outline, ratios, per-lang offsets) are not
+  restored.
