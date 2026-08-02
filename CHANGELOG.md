@@ -12,6 +12,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ---
 
+## [0.7.1]
+
+**Fixed**
+
+- DOCX export: Word opened the result in Compatibility Mode and reported accessibility as
+  unavailable. The package carried no `word/settings.xml`, so Word fell back to the 2007 content
+  model; the part is now emitted with `compatibilityMode` 15 (Word 2013+). Found by the first
+  real-hardware check of the writer on Word 16.111.2 for macOS — the structural gates could not
+  see it. That same session confirmed the v0.7.0 output otherwise opens correctly: no repair
+  dialog, correct heading sizes, correct colspan/vMerge tables.
+
+---
+
 ## [0.7.0]
 
 **Added**
