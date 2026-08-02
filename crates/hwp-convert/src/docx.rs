@@ -59,6 +59,7 @@ pub fn to_docx(doc: &Document) -> std::io::Result<Vec<u8>> {
             document_xml(&b.body).into_bytes(),
         ),
         ("word/styles.xml".into(), styles_xml(doc).into_bytes()),
+        ("word/settings.xml".into(), SETTINGS_XML.into()),
         (
             "word/_rels/document.xml.rels".into(),
             b.doc_rels_xml().into_bytes(),
@@ -558,6 +559,9 @@ impl Builder<'_> {
         rels.push_str(
             "<Relationship Id=\"rIdStyles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>",
         );
+        rels.push_str(
+            "<Relationship Id=\"rIdSettings\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings\" Target=\"settings.xml\"/>",
+        );
         if self.uses_numbering(self.doc) {
             rels.push_str(
                 "<Relationship Id=\"rIdNumbering\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/>",
@@ -815,6 +819,17 @@ fn sect_pr_xml(page: Option<&hwp_model::PageDef>) -> String {
     )
 }
 
+/// settings.xml — without a part declaring `compatibilityMode`, Word assumes the 2007 content
+/// model and opens the document in Compatibility Mode (observed on Word 16.111.2 for macOS).
+/// 15 is the Word 2013+ mode.
+const SETTINGS_XML: &str = concat!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+    "<w:settings xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">",
+    "<w:compat><w:compatSetting w:name=\"compatibilityMode\" \
+     w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"15\"/></w:compat>",
+    "</w:settings>"
+);
+
 fn styles_xml(doc: &Document) -> String {
     let body_font = doc.header.fonts[0]
         .first()
@@ -947,6 +962,7 @@ fn content_types_xml(b: &Builder) -> String {
          <Default Extension=\"bmp\" ContentType=\"image/bmp\"/>\
          <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>\
          <Override PartName=\"/word/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml\"/>\
+         <Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>\
          <Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>",
     );
     if b.uses_numbering(b.doc) {
@@ -1275,6 +1291,13 @@ mod tests {
             unzip(&bytes, "word/styles.xml")
                 .unwrap()
                 .contains("Heading1")
+        );
+        // Regression: without this part Word opens the document in Compatibility Mode.
+        assert!(
+            unzip(&bytes, "word/settings.xml")
+                .unwrap()
+                .contains("w:name=\"compatibilityMode\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"15\""),
+            "settings.xml compatibilityMode"
         );
         assert!(unzip(&bytes, "[Content_Types].xml").is_some());
         assert!(unzip(&bytes, "_rels/.rels").is_some());
