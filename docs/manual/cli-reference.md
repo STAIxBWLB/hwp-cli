@@ -114,6 +114,7 @@ Create a new document
 | `--from` | `<FROM>` |  | Input markdown or JSON file (empty document when omitted) |
 | `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
 | `--preset` | `gian` \| `report` |  | Official-document preset (markdown input only): gian for an approval draft (Malgun Gothic 11.5pt), report for a report (HCR Batang 15pt). Includes margins, four-level numbering and page numbers |
+| `--strict` |  |  | Fail (non-zero exit) when markdown import drops content, e.g. an HTML block that violates the import contract. Default: warn and continue (exit 0) |
 
 ## `hwp compose`
 

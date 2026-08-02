@@ -111,7 +111,8 @@ fn main() -> anyhow::Result<()> {
             from,
             set_meta,
             preset,
-        } => commands::new::run(&output, from.as_deref(), &set_meta, preset),
+            strict,
+        } => commands::new::run(&output, from.as_deref(), &set_meta, preset, strict),
         Cmd::Compose {
             spec,
             output,

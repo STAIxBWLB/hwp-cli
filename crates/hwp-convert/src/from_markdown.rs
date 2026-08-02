@@ -387,17 +387,47 @@ pub fn from_markdown(md: &str) -> Document {
 /// Variant that takes options. If `base_dir` is set, embeds relative-path images (`![](fig.png)`).
 /// Remote URLs, missing files, and unsupported formats keep only the alt text in the body after a warning (stderr).
 pub fn from_markdown_with(md: &str, opts: &MarkdownImportOptions) -> Document {
-    from_markdown_inner(md, opts, true)
+    let (doc, warnings) = from_markdown_report(md, opts);
+    print_warnings(&warnings);
+    doc
 }
 
 /// Variant for part fragments — does not touch section/column definition (secd/cold) injection.
 /// The block is grafted into the middle of a composed document, so injecting a section definition
 /// would split the document in two. Used by `hwp fill --set name=@part.md` (template + part filling).
 pub fn from_markdown_blocks(md: &str, opts: &MarkdownImportOptions) -> Document {
+    let (doc, warnings) = from_markdown_blocks_report(md, opts);
+    print_warnings(&warnings);
+    doc
+}
+
+/// Warnings (image failures, etc.) go to stderr (document generation itself succeeds).
+fn print_warnings(warnings: &[String]) {
+    for w in warnings {
+        eprintln!("경고: {w}");
+    }
+}
+
+/// Like [`from_markdown_with`], but also returns the import warnings (image failures, HTML block
+/// contract violations, ...) instead of only printing them to stderr. Lets callers (`hwp new`,
+/// MCP `hwp_new`) surface them in their reports.
+pub fn from_markdown_report(md: &str, opts: &MarkdownImportOptions) -> (Document, Vec<String>) {
+    from_markdown_inner(md, opts, true)
+}
+
+/// [`from_markdown_blocks`] variant that also returns the import warnings.
+pub fn from_markdown_blocks_report(
+    md: &str,
+    opts: &MarkdownImportOptions,
+) -> (Document, Vec<String>) {
     from_markdown_inner(md, opts, false)
 }
 
-fn from_markdown_inner(md: &str, opts: &MarkdownImportOptions, inject: bool) -> Document {
+fn from_markdown_inner(
+    md: &str,
+    opts: &MarkdownImportOptions,
+    inject: bool,
+) -> (Document, Vec<String>) {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     // Parses strikethrough (`~~`) and footnotes (`[^N]`). Task lists (TASKLISTS) are excluded — no corresponding IR meaning.
@@ -421,11 +451,6 @@ fn from_markdown_inner(md: &str, opts: &MarkdownImportOptions, inject: bool) -> 
     b.flush_html(); // closes any block HTML left in the buffer
     b.flush_paragraph();
 
-    // Warnings (image failures, etc.) go to stderr (document generation itself succeeds).
-    for w in &b.warnings {
-        eprintln!("경고: {w}");
-    }
-
     if b.paragraphs.is_empty() {
         // Close even an empty document with one paragraph. The writer guarantees the paragraph-end char.
         b.paragraphs.push(Paragraph::default());
@@ -448,23 +473,26 @@ fn from_markdown_inner(md: &str, opts: &MarkdownImportOptions, inject: bool) -> 
         apply_official_preset(&mut header, preset);
     }
 
-    Document {
-        meta: DocMeta {
-            source_format: "markdown".to_string(),
-            source_version: String::new(),
+    (
+        Document {
+            meta: DocMeta {
+                source_format: "markdown".to_string(),
+                source_version: String::new(),
+            },
+            metadata: Default::default(),
+            header,
+            sections: vec![Section {
+                paragraphs: b.paragraphs,
+                extras: Vec::new(),
+            }],
+            bin_streams: b.bin_streams,
+            hwpx_settings_xml: None,
+            hwpx_version_xml: None,
+            hwp5_xml_template: Vec::new(),
+            hwp5_doc_history: Vec::new(),
         },
-        metadata: Default::default(),
-        header,
-        sections: vec![Section {
-            paragraphs: b.paragraphs,
-            extras: Vec::new(),
-        }],
-        bin_streams: b.bin_streams,
-        hwpx_settings_xml: None,
-        hwpx_version_xml: None,
-        hwp5_xml_template: Vec::new(),
-        hwp5_doc_history: Vec::new(),
-    }
+        b.warnings,
+    )
 }
 
 /// Whether a footnote/endnote label is an endnote (`eN`) — symmetric with the exporter's convention of writing endnotes as `[^eN]`.
@@ -839,10 +867,10 @@ impl Builder {
             "</sup" => self.sup = false,
             "<sub" => self.sub = true,
             "</sub" => self.sub = false,
-            "<strong" => self.bold = true,
-            "</strong" => self.bold = false,
-            "<em" => self.italic = true,
-            "</em" => self.italic = false,
+            "<strong" | "<b" => self.bold = true,
+            "</strong" | "</b" => self.bold = false,
+            "<em" | "<i" => self.italic = true,
+            "</em" | "</i" => self.italic = false,
             "<br" => {
                 self.chars.push(HwpChar::CharCtrl(10));
                 self.wchar_pos += 1;

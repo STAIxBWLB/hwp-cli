@@ -758,7 +758,7 @@ fn tool_new(args: &Value) -> Result<Vec<Value>, String> {
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let report = crate::commands::new::execute(Path::new(output), input, &metadata, None)
+    let report = crate::commands::new::execute(Path::new(output), input, &metadata, None, false)
         .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
@@ -1603,6 +1603,7 @@ mod tests {
             },
             &[],
             None,
+            false,
         )
         .unwrap();
     }

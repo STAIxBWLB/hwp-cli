@@ -534,10 +534,10 @@ impl Marks {
     fn open(self, html: bool) -> String {
         let mut s = String::new();
         if self.bold {
-            s.push_str(if html { "<b>" } else { "**" });
+            s.push_str(if html { "<strong>" } else { "**" });
         }
         if self.italic {
-            s.push_str(if html { "<i>" } else { "*" });
+            s.push_str(if html { "<em>" } else { "*" });
         }
         if self.strike {
             s.push_str(if html { "<s>" } else { "~~" });
@@ -569,10 +569,10 @@ impl Marks {
             s.push_str(if html { "</s>" } else { "~~" });
         }
         if self.italic {
-            s.push_str(if html { "</i>" } else { "*" });
+            s.push_str(if html { "</em>" } else { "*" });
         }
         if self.bold {
-            s.push_str(if html { "</b>" } else { "**" });
+            s.push_str(if html { "</strong>" } else { "**" });
         }
         s
     }
@@ -592,7 +592,7 @@ struct Span {
 /// 강조로 파싱되지 않아 마커가 문자 그대로 노출된다(`**(목적) **` → 리터럴 `**`).
 /// 그래서 굵게/기울임/취소선 스팬은 내용의 선두·후행 공백을 마커 **밖**으로 옮기고,
 /// 내용이 공백뿐이면 마커를 아예 내지 않는다(`** **` 방지).
-/// HTML 모드(`<b>` 등)나 밑줄/첨자처럼 HTML 태그로 방출하는 효과만의 스팬은 공백에
+/// HTML 모드(`<strong>` 등)나 밑줄/첨자처럼 HTML 태그로 방출하는 효과만의 스팬은 공백에
 /// 무관하므로 그대로 닫는다. `marks`가 비었으면(리셋 후) 아무것도 하지 않는다.
 fn close_span(body: &mut String, marks: Marks, span: Span, html: bool) {
     if marks == Marks::default() {
@@ -901,7 +901,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
             HwpChar::CharCtrl(code) => match *code {
                 ctrl_char::LINE_BREAK => {
                     close_marks(&mut body, &mut marks, span, ctx.html_mode);
-                    body.push_str(if ctx.html_mode { "<br>" } else { "  \n" });
+                    body.push_str(if ctx.html_mode { "<br/>" } else { "  \n" });
                 }
                 ctrl_char::HYPHEN => body.push('-'),
                 ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => body.push(' '),
@@ -1295,7 +1295,7 @@ fn render_cell_html(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> String {
                 continue;
             }
             if !content.is_empty() {
-                content.push_str("<br>");
+                content.push_str("<br/>");
             }
             content.push_str(text);
         }
@@ -1986,6 +1986,45 @@ mod tests {
         assert!(md.contains("<td>가</td><td>나</td>"), "나머지 행: {md}");
     }
 
+    /// GH-46: exporter의 HTML 표 출력이 importer 계약을 지켜야
+    /// `cat --format markdown` → `new --from` 왕복에서 표가 살아남는다.
+    #[test]
+    fn markdown_왕복_html_표_보존() {
+        // 병합 셀(HTML 표 경로) + 셀 내 복수 문단(<br/> 경로) + 볼드(<strong> 경로)를 모두 포함.
+        let bold_para = Paragraph {
+            chars: "굵은 글씨".chars().map(HwpChar::Text).collect(),
+            char_shape_runs: vec![(0, CharShapeId(0)), (2, CharShapeId(1))],
+            ..Paragraph::default()
+        };
+        let mut table = merged_table();
+        table.cells[0].paragraphs = vec![bold_para, text_para("둘째 줄")];
+        let mut doc = from_markdown("표\n");
+        doc.header.char_shapes = vec![bold_shape(), CharShape::default()];
+        insert_table(&mut doc.sections[0].paragraphs[0], table);
+
+        let md = to_markdown(&doc);
+        // 계약 불변식: bare <br>/<b>/<i>가 없어야 한다 (html.rs의 <br/> 불변식과 동일).
+        assert!(!md.contains("<br>"), "self-closing <br/>만 방출: {md}");
+        assert!(!md.contains("<b>"), "<strong>만 방출: {md}");
+        assert!(!md.contains("<i>"), "<em>만 방출: {md}");
+
+        let (back, warnings) = crate::from_markdown::from_markdown_report(
+            &md,
+            &crate::from_markdown::MarkdownImportOptions::default(),
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("계약 위반")),
+            "계약 위반 경고가 없어야 함: {warnings:?}"
+        );
+        let tables = back.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .filter(|c| matches!(c, Control::Table(_)))
+            .count();
+        assert_eq!(tables, 1, "왕복 후 표가 보존되어야 함: {md}");
+    }
+
     #[test]
     fn html_표_이미지_경로_속성_이스케이프() {
         let mut doc = from_markdown("사진: 여기");
@@ -2137,7 +2176,7 @@ mod tests {
         assert!(!md.contains("지운 ~~"), "닫는 마커 앞 공백 없어야: {md}");
     }
 
-    /// HTML 모드(`<b>`)는 태그가 공백에 무관하므로 후행 공백을 그대로 둔다.
+    /// HTML 모드(`<strong>`)는 태그가 공백에 무관하므로 후행 공백을 그대로 둔다.
     #[test]
     fn html_모드_볼드는_공백유지() {
         // 병합 셀 표 → HTML 폴백 → 셀 내용 html_mode. 셀에 "가 "(볼드) + "나"(보통).
@@ -2153,7 +2192,10 @@ mod tests {
             one_cell_table(cell_para, 2, 2),
         );
         let md = to_markdown(&doc);
-        assert!(md.contains("<b>가 </b>나"), "HTML 볼드 공백 유지: {md}");
+        assert!(
+            md.contains("<strong>가 </strong>나"),
+            "HTML 볼드 공백 유지: {md}"
+        );
     }
 
     // ── 세그먼트 맵 (기능 A) ──────────────────────────────────────────────

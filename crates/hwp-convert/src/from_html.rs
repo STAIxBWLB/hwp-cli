@@ -452,11 +452,11 @@ impl Parser {
                 self.span_shape = saved;
                 result
             }
-            tag @ ("strong" | "em" | "u" | "s" | "sub") => {
+            tag @ ("strong" | "em" | "b" | "i" | "u" | "s" | "sub") => {
                 let saved = self.marks;
                 match tag {
-                    "strong" => self.marks.bold = true,
-                    "em" => self.marks.italic = true,
+                    "strong" | "b" => self.marks.bold = true,
+                    "em" | "i" => self.marks.italic = true,
                     "u" => self.marks.underline = true,
                     "s" => self.marks.strike = true,
                     "sub" => self.marks.sub = true,

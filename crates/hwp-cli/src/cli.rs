@@ -168,6 +168,10 @@ pub enum Cmd {
         /// four-level numbering and page numbers
         #[arg(long, value_enum)]
         preset: Option<PresetArg>,
+        /// Fail (non-zero exit) when markdown import drops content, e.g. an HTML block that
+        /// violates the import contract. Default: warn and continue (exit 0)
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)

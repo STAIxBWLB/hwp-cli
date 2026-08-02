@@ -218,6 +218,11 @@ pub const KO: &[(&str, &str, &str)] = &[
         "preset",
         "공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt), report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함",
     ),
+    (
+        "new",
+        "strict",
+        "markdown import가 내용을 드롭하면(HTML 블록 계약 위반) 실패 처리. 기본: 경고 후 진행 (종료 코드 0)",
+    ),
     // compose
     (
         "compose",

@@ -40,7 +40,7 @@ pub use format::{
 pub use from_html::{HtmlImportOptions, from_html, from_html_with};
 pub use from_markdown::{
     MarkdownImportOptions, OfficialPreset, default_header, from_markdown, from_markdown_blocks,
-    from_markdown_with,
+    from_markdown_blocks_report, from_markdown_report, from_markdown_with,
 };
 pub use html::{to_html, to_html_fragment};
 pub use image::{ImageSize, image_kind, image_pixel_size, insert_image, insert_seal};

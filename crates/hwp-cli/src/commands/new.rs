@@ -24,6 +24,7 @@ pub fn run(
     from: Option<&Path>,
     set_meta: &[String],
     preset: Option<PresetArg>,
+    strict: bool,
 ) -> anyhow::Result<()> {
     let owned;
     let input = match from {
@@ -44,7 +45,7 @@ pub fn run(
         }
         None => NewInput::Empty,
     };
-    let report = execute(output, input, set_meta, preset)?;
+    let report = execute(output, input, set_meta, preset, strict)?;
     crate::commands::convert::print_warnings(&report.warnings);
     eprintln!("생성 완료: {}", output.display());
     Ok(())
@@ -55,6 +56,7 @@ pub fn execute(
     input: NewInput<'_>,
     set_meta: &[String],
     preset: Option<PresetArg>,
+    strict: bool,
 ) -> anyhow::Result<NewReport> {
     let ext = output
         .extension()
@@ -75,6 +77,7 @@ pub fn execute(
         PresetArg::Gian => hwp_convert::OfficialPreset::Gian,
         PresetArg::Report => hwp_convert::OfficialPreset::Report,
     });
+    let mut import_warnings = Vec::new();
     let mut doc = match input {
         NewInput::Json(text) => {
             if preset.is_some() {
@@ -82,10 +85,14 @@ pub fn execute(
             }
             hwp_convert::from_json(text).map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?
         }
-        NewInput::Markdown { text, base_dir } => hwp_convert::from_markdown_with(
-            text,
-            &hwp_convert::MarkdownImportOptions { base_dir, preset },
-        ),
+        NewInput::Markdown { text, base_dir } => {
+            let (doc, warnings) = hwp_convert::from_markdown_report(
+                text,
+                &hwp_convert::MarkdownImportOptions { base_dir, preset },
+            );
+            import_warnings = warnings;
+            doc
+        }
         NewInput::Empty => hwp_convert::from_markdown_with(
             "",
             &hwp_convert::MarkdownImportOptions {
@@ -95,12 +102,28 @@ pub fn execute(
         ),
     };
 
+    // --strict: markdown import가 내용을 드롭했으면(HTML 블록 계약 위반) 실패 처리한다.
+    if strict {
+        let drops: Vec<&str> = import_warnings
+            .iter()
+            .filter(|w| w.contains("계약 위반"))
+            .map(String::as_str)
+            .collect();
+        if !drops.is_empty() {
+            anyhow::bail!(
+                "--strict: HTML 블록 계약 위반 {}건 드롭\n{}",
+                drops.len(),
+                drops.join("\n")
+            );
+        }
+    }
+
     // 메타데이터 지정("키=값")을 덮어쓴다(JSON IR에 있던 값보다 우선).
     for spec in set_meta {
         hwp_convert::apply_meta(&mut doc, spec).map_err(|e| anyhow::anyhow!(e))?;
     }
 
-    let warnings = crate::commands::output::write_validated(
+    let mut warnings = crate::commands::output::write_validated(
         output,
         None,
         |staged| {
@@ -117,6 +140,8 @@ pub fn execute(
             Ok(())
         },
     )?;
+    // markdown import 경고(계약 위반 드롭 등)를 리포트에 실어 CLI/MCP에서 프로그램적으로 보이게 한다.
+    warnings.extend(import_warnings);
     Ok(NewReport {
         output: output.display().to_string(),
         warnings,
