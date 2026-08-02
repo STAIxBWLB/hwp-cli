@@ -18,6 +18,9 @@ package upload or release publication.
 - [ ] independent oracle remains partial until a real digest-pinned image is built and attested
 - [ ] `git status --short --untracked-files=all` reviewed; unrelated user changes excluded
 - [ ] no commit, push, tag, package upload or release performed by the readiness run
+- [ ] downstream `STAIxBWLB/skills` `skills/hwpx` reviewed for CLI-surface drift (that repo's
+      `upstream-hwp-cli` workflow files an issue within a day, but a release that changes the CLI
+      surface should not wait for the cron)
 
 The release must not claim that the seven smoke fixtures cover every real document form, provide
 Hancom pixel parity, or prove cross-platform-identical raster bytes.
