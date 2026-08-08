@@ -598,6 +598,11 @@ pub const KO: &[(&str, &str, &str)] = &[
         "install",
         "대신 알려진 에이전트 스킬 디렉터리에 설치",
     ),
+    (
+        "export",
+        "quick_profile",
+        "Amazon Quick 프로필 ID 또는 절대 프로필 디렉터리 (Amazon Quick 설치 전용)",
+    ),
     // dump
     ("dump", "", "[개발자용] 레코드/패키지 구조 덤프"),
     ("dump", "file", "대상 HWP/HWPX 파일"),

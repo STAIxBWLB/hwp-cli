@@ -10,6 +10,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Amazon Quick Desktop integration: `hwp skill export --install amazon-quick` installs the
+  publish-safe bundled skill into the active Quick profile, with explicit profile ID or absolute
+  path override, registry validation, and symlink-safe profile-relative writes.
+- Amazon Quick documentation now covers Desktop stdio setup and all 16 tools, agent/skill
+  publishing, troubleshooting, and the Quick Web limitation. The future authenticated Streamable
+  HTTP, tenant isolation, and artifact model remain design-only in `docs/design/20-remote-mcp.md`
+  and issue #52.
+
 **Fixed**
 
 - Release workflow: `update-formula` no longer pushes the Homebrew formula commit directly to

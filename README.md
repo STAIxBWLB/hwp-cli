@@ -34,7 +34,8 @@ and in CI.
   twice and requires the document bytes, semantics and render hashes to match.
 - **AI editing** A read → edit → rewrite loop over the JSON IR. Text replacement, table cell values
   and field filling are applied while images, formatting and unparsed records are preserved.
-- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 16 tools.
+- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 16 tools to
+  desktop clients, including Amazon Quick Desktop.
 
 ## Implementation status
 
@@ -245,6 +246,7 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `corpus --manifest <file> --report <dir>` | Frozen structured corpus gate. See [the corpus contract](docs/design/17-structured-corpus-v1.md) |
 | `diff <input> --ref <png>` | Compare a render against a Hancom reference PNG (ink, offset, pixel difference, MAE) |
 | `mcp` | Run the MCP stdio server |
+| `skill export` | Export or install the bundled agent skill, including Amazon Quick profile discovery |
 | `update` | Self-update (a brew installation delegates to `brew upgrade`) |
 | `dump <file>` | [developer] Dump record and package structure |
 
@@ -369,8 +371,19 @@ with no tokio and no SDK. The protocol version is negotiated at `initialize`: a 
 the latest supported version. stdout carries the protocol; logs go to stderr.
 
 Per-client setup (Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai skill upload,
-Amazon Quick Suite) and the bundled agent skill (`hwp skill export`):
+and Amazon Quick Desktop) and the bundled agent skill (`hwp skill export`):
 [docs/manual/ai-integrations.md](docs/manual/ai-integrations.md).
+
+Amazon Quick Desktop can launch this local stdio server and expose all 16 tools. Install the
+publish-safe skill into its active profile with:
+
+```sh
+hwp skill export --install amazon-quick
+```
+
+Amazon Quick Web cannot launch a local stdio process. Authenticated Streamable HTTP, tenant
+isolation and artifact transfer are specified for future work in
+[Remote MCP transport](docs/design/20-remote-mcp.md); no HTTP runtime is included today.
 
 ### Exposed tools (16)
 

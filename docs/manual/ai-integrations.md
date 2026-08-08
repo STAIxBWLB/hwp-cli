@@ -7,9 +7,9 @@
 - an **MCP stdio server** (`hwp mcp`, 16 tools) for clients that speak the Model Context
   Protocol, and
 - an **agent skill** (`skills/hwp/SKILL.md` in this repo) that teaches an agent the CLI and
-  MCP usage. It is embedded in the binary — `hwp skill export` materializes it.
+  MCP usage. It is embedded in the binary, and `hwp skill export` materializes it.
 
-Whichever surface you use, prefer `hwp mcp --root <dir>` so every file path the tools touch
+Whichever surface you use, prefer `hwp mcp --root {dir}` so every file path the tools touch
 stays under the given directories, and run `hwp validate` on any file the agent writes.
 
 ## Claude Code / Claude Desktop
@@ -56,7 +56,7 @@ hwp skill export --install codex         # writes ~/.codex/skills/hwp/SKILL.md
 ## Codex cloud
 
 Codex cloud environments build their container from a setup script. Install the binary there
-(no Rust toolchain needed — it fetches the pre-built release archive):
+(no Rust toolchain needed; it fetches the pre-built release archive):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
@@ -66,7 +66,7 @@ Then register the MCP server as in Codex CLI above.
 
 ## Kiro / Kimi
 
-Both accept a standard stdio MCP server registration — same shape as Claude Code:
+Both accept a standard stdio MCP server registration, with the same shape as Claude Code:
 
 ```json
 {
@@ -80,41 +80,162 @@ Both accept a standard stdio MCP server registration — same shape as Claude Co
 ```
 
 Put it in the client's MCP config (Kiro: `.kiro/settings/mcp.json`; Kimi: the MCP section of
-its config). The skill directory conventions differ per client — export it anywhere and point
-the client at it with `hwp skill export -o <dir>`.
+its config). The skill directory conventions differ per client, so export it anywhere and point
+the client at it with `hwp skill export -o {dir}`.
 
 ## claude.ai (web)
 
 The claude.ai code-execution sandbox has a registry-restricted network, so the binary cannot
-be downloaded at runtime. Every release therefore attaches `hwp-skill-claude-web.zip` —
-`SKILL.md` (zip root), `bootstrap.sh`, and the Linux x86_64 `bin/hwp` bundled together:
+be downloaded at runtime. Every release therefore attaches `hwp-skill-claude-web.zip`, which
+contains `SKILL.md` at the zip root, `bootstrap.sh`, and the Linux x86_64 `bin/hwp`:
 
 1. Download `hwp-skill-claude-web.zip` from the
    [latest release](https://github.com/STAIxBWLB/hwp-cli/releases).
 2. In claude.ai, open Settings → Capabilities → Skills and upload the zip.
-3. In a chat with code execution, run `bash bootstrap.sh` once per session: it installs the
+3. In a chat with code execution, run `bash bootstrap.sh` once per session. It installs the
    bundled binary into `~/.local/bin` and prints the MCP registration snippet. Claude then
    drives `hwp` as a CLI inside the sandbox.
 
-## Amazon Quick Suite
+## Amazon Quick Desktop
 
-Quick Suite has no local MCP surface today. Convert the document first, then upload the
-result:
+Amazon Quick Desktop can launch `hwp mcp` as a local stdio connector. The connector has been
+verified with all 16 HWP tools available. Quick UI labels may change between releases; the
+following names match the current Desktop flow.
+
+### 1. Verify one current binary
+
+Use an absolute executable path in the connector. This prevents a stale installation earlier in
+Quick's PATH from being selected.
 
 ```sh
+command -v hwp
+hwp --version
+# zsh/bash: show duplicate installations, if any
+type -a hwp
+```
+
+On Apple Silicon Homebrew commonly resolves to `/opt/homebrew/bin/hwp`. Treat that as an example,
+not a portable constant. If `~/.cargo/bin/hwp` is an older duplicate and Homebrew is the intended
+installation, remove the Cargo registration with `cargo uninstall hwp-cli`; then rerun the checks.
+
+### 2. Add the local MCP connector
+
+Open **Settings → Capabilities → Connectors → + Create → MCP server → Local** and enter:
+
+| Field | Value |
+|---|---|
+| Name | `hwp` |
+| Command | the absolute path from `command -v hwp` |
+| Arguments | `mcp --font-dir /System/Library/Fonts --root /path/to/workspace` |
+| Description | `Read, write, edit, render, validate, and convert HWP/HWPX documents.` |
+| Timeout | `30` seconds (the default is normally sufficient) |
+
+`/System/Library/Fonts` is a macOS CJK font source. Replace it on other systems or omit
+`--font-dir` when rendering is not needed. Repeat `--root /another/authorized/directory` for every
+location the tools may legitimately access. Do not omit all roots unless unrestricted filesystem
+access is intentional.
+
+Select **Test connection**, review Quick's command-execution confirmation, and approve **Add
+server**. The test should report **Connected** and **16 tools available**. Select **Add MCP**, approve
+the confirmation again, refresh connections, and verify that `Hwp` is enabled and shows **16 tools,
+Connected**.
+
+Equivalent import JSON:
+
+```json
+{
+  "mcpServers": {
+    "hwp": {
+      "command": "/absolute/path/to/hwp",
+      "args": [
+        "mcp",
+        "--font-dir",
+        "/System/Library/Fonts",
+        "--root",
+        "/path/to/workspace"
+      ]
+    }
+  }
+}
+```
+
+### 3. Install the publish-safe HWP skill
+
+```sh
+hwp skill export --install amazon-quick
+```
+
+The command reads `~/.quickwork/profiles.json`, prefers its valid `last_active` profile, and falls
+back to the only valid profile. It writes only `skills/hwp/SKILL.md` inside that profile. It does
+not create agents, connectors, or publish anything.
+
+For multiple or ambiguous profiles, provide a profile ID or an absolute profile directory:
+
+```sh
+hwp skill export --install amazon-quick --quick-profile enterprise-example
+hwp skill export --install amazon-quick --quick-profile /absolute/path/to/quick/profile
+```
+
+Restart or refresh Quick if it was already running when the skill was installed.
+
+### 4. Use the tools
+
+Examples for a normal Quick chat or an HWP-focused agent:
+
+- "Summarize this HWP file and list its tables."
+- "Convert this HWPX document to Markdown."
+- "Create an HWPX report from this Markdown and validate the result."
+- "Replace 'Draft' with 'Final', set table 1 row 2 column 3, and render page 1."
+- "List the template slots, fill name and date, then validate the output."
+
+After every write, the agent should call `hwp_validate`. Use `hwp_render` when the visual result
+matters.
+
+### 5. Configure one HWP-focused agent
+
+Keep a single agent for the role to avoid duplicate names and stale instructions. Enable the HWP
+MCP connector and instruct the agent to use the installed `hwp` skill, validate after every write,
+and respect the configured roots. OneDrive or SharePoint connectors are optional and are needed
+only when the source or destination is there.
+
+If publishing fails with `assetDescriptor contains prohibited HTML/script content`, reinstall the
+skill from a current `hwp` binary. Current skill exports use brace placeholders such as `{file}` and
+contain no angle-bracket markup that Quick can misclassify as HTML.
+
+### Desktop acceptance checklist
+
+- `hwp --version` reports the intended current binary.
+- Connector test reports **Connected** and **16 tools available**.
+- After refresh, the connector remains enabled and reports **16 tools, Connected**.
+- `hwp_new`, `hwp_read`, `hwp_validate`, and `hwp_render` succeed on a test HWPX document.
+- Exactly one HWP-focused agent exists, and it publishes without the prohibited HTML/script error.
+
+## Amazon Quick Web
+
+Quick Web runs in the cloud and cannot launch the local stdio process or access Desktop's local
+filesystem. Today, convert the document to a format Quick can read, then upload the result:
+
+```bash
 hwp convert input.hwp -o output.docx   # or: -o output.pdf
 ```
 
-A remote HTTP MCP endpoint (which Quick Suite could consume as an MCP-aware client) is
-tracked separately in [#52](https://github.com/STAIxBWLB/hwp-cli/issues/52).
+Download edited results and convert them back with `hwp convert` as needed. A Desktop/Outpost
+execution path can substitute when available. Do not expose a local `hwp mcp` process directly to
+the network.
+
+Native Web integration requires an authenticated Streamable HTTP MCP service, tenant-isolated
+storage, and content/artifact transfer instead of client-local path arguments. It is not implemented
+in this release. The implementation contract is documented in
+[Remote MCP transport](../design/20-remote-mcp.md) and tracked in
+[issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52).
 
 ## Upstream skill vs downstream `hwpx` skill
 
 This repo ships the **generic** skill at [`skills/hwp/SKILL.md`](../../skills/hwp/SKILL.md):
-binary quick reference, MCP usage, safety rules. It is English-only by design (agents consume
-it; one canonical language avoids bilingual double-maintenance).
+binary quick reference, MCP usage and safety rules. It is English-only by design (agents consume
+it, and one canonical language avoids bilingual double-maintenance).
 
 The Korean official-document (공문서) skill `skills/hwpx` in the separate `STAIxBWLB/skills`
-repository is **downstream**: it wraps this generic skill with workspace-specific templates
-(기안문/보고서 presets, document conventions). It is intentionally not merged here — this repo
+repository is **downstream**. It wraps this generic skill with workspace-specific templates
+(기안문/보고서 presets and document conventions). It is intentionally not merged here: this repo
 stays the format/toolkit layer, and downstream layers carry site-specific document policy.
