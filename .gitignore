@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
 .DS_Store
+/.playwright-mcp/
 
 # 외부/대형 corpus는 커밋하지 않되, 자체 작성한 bounded structured-v1만 추적한다.
 /corpus/*
