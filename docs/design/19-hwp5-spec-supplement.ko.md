@@ -26,13 +26,14 @@
 
 | # | 대상 | 스펙 문언 요지 | 실측 확정 | 검증 근거 | 상세 |
 |---|---|---|---|---|---|
-| E-1 | TABLE 레코드 "Row Size" 배열 | 행 높이 | **행별 셀 개수** | 정품 표 문서 전수 대조 | [10 §4.1](10-hwp5-structure-map.ko.md), `body_text.rs:443` |
-| E-2 | 그리기 개체 테두리 선 정보(표 86) | 총 11B, 선 굵기 INT16 | 총 **13B**, 굵기 **INT32** | 2026-07-19 스펙 전수 감사 | [10 §4.1](10-hwp5-structure-map.ko.md), `shape_draw.rs:393` |
+| E-1 | TABLE 레코드 "Row Size" 배열 | 행 높이 | **행별 셀 개수** | 정품 표 문서 전수 대조 | [10 §4.1](10-hwp5-structure-map.ko.md) |
+| E-2 | 그리기 개체 테두리 선 정보(표 86) | 총 11B, 선 굵기 INT16 | 총 **13B**, 굵기 **INT32** | 2026-07-19 스펙 전수 감사 | [10 §4.1](10-hwp5-structure-map.ko.md) |
 | E-3 | BULLET 레코드(표 42) | 20B, 글머리표 문자 @8 | **25B** — @8~12에 번호 글자모양 id 4B가 먼저 오고 문자는 **@12**. 표 42는 총길이가 자기모순인 이력이 있는 오기 | 정품 BULLET 5개 전수 바이트 대조 + 실기(마커 미표시 재현) | [07 B7](07-hangul-compat-rules.ko.md) |
 | E-4 | PAGE_BORDER_FILL(표 135) | 자기모순: 선언 12B ≠ 필드 합 14B | **14B** — 속성 u32 + 4방향 gap u16×4 + 테두리ID u16. BOTH/EVEN/ODD는 레코드 순서로 구분 | 정품 236파일·714레코드 전수 스윕(2026-07-19) | [08 기능별 근거](08-external-research.ko.md) |
 | E-5 | COLDEF 단 정의(표 138·139) | 14B | 실파일 **16B**(외부 실증. 자체 전수 실측은 미실시 — 구현 시 정답지로 확정할 것) | hwp.js 이슈 #58 | [08 생태계](08-external-research.ko.md) |
-| E-6 | CHAR_SHAPE attr 취소선 비트 18~20(§4.2.7 표 35) | 취소선 여부·모양 | 야생 파일에서 **읽기 신뢰 불가** — 변경추적 삭제표시 템플릿이 bit18을 오염시켜 가짜 취소선을 만든다(실측 한 파일의 92%). 쓰기는 bit18 단독으로 렌더됨(실기 확정) | 코퍼스 attr 전수 실측 + 실기 | [07 B8](07-hangul-compat-rules.ko.md), `doc_info.rs:249` |
+| E-6 | CHAR_SHAPE attr 취소선 비트 18~20(§4.2.7 표 35) | 취소선 여부·모양 | 야생 파일에서 **읽기 신뢰 불가** — 변경추적 삭제표시 템플릿이 bit18을 오염시켜 가짜 취소선을 만든다(실측 한 파일의 92%). 쓰기는 bit18 단독으로 렌더됨(실기 확정) | 코퍼스 attr 전수 실측 + 실기 | [07 B8](07-hangul-compat-rules.ko.md) |
 | E-7 | PARA_HEADER nchars bit31 | 줄 배치 캐시 정합 표식 | 실제 소비는 **'리스트(구역·표 셀·글상자)의 마지막 문단' 표식**(이중 의미). 잘못 켜면 이후 문단이 통째로 미표시 | 정품 다문단 표본 bit31 분포 실측 + 실기(revert 이력 포함) | [07 B3·B4](07-hangul-compat-rules.ko.md) |
+| E-8 | CTRL_HEADER/ExtCtrl ctrl_id | 4문자 코드(예: `secd`) | payload에 **바이트 역순 저장**(`dces` → `secd`) — 읽을 때 뒤집고, 쓸 때 역순으로 기록한다. 같은 역순이 FIELD_END payload의 역순 ctrl_id 3B(§3.4)로도 나타난다 | 정품 파일 바이트 대조 | [10 §4.1](10-hwp5-structure-map.ko.md) |
 
 ### 1.1 스펙이 정본인 혼동 지점 (정오 아님)
 
@@ -46,7 +47,7 @@
 
 ## 2. 버전-레이아웃 매트릭스
 
-한글은 FileHeader의 선언 버전(DWORD `0xMMnnPPrr`, [03 §2](03-hwp5-write.ko.md))과 레코드 레이아웃의 정합을 검사하고, 어긋나면 손상/변조로 거부한다. 이 검사는 양방향이다. 즉 신버전 선언에 구형 레이아웃을 쓰면 거부되고([07 A3](07-hangul-compat-rules.ko.md)), 구버전 선언에 신형 패딩을 쓰면 그것도 거부된다(ID_MAPPINGS를 무조건 18개로 패딩해 5.0.2.x 문서가 손상 판정된 실증 — [07 A10](07-hangul-compat-rules.ko.md)). 스펙은 이 변천을 한 곳에 정리하지 않으므로 아래 표가 그 정본이다.
+한글은 FileHeader의 선언 버전(DWORD `0xMMnnPPrr`, [03 §2](03-hwp5-write.ko.md))과 레코드 레이아웃의 정합을 검사하고, 어긋나면 손상/변조로 거부한다. 이 검사는 양방향이다. 즉 신버전 선언에 구형 레이아웃을 쓰면 거부되고([07 A3](07-hangul-compat-rules.ko.md)), 구버전 선언에 신형 패딩을 쓰면 그것도 거부된다(ID_MAPPINGS를 무조건 18개로 패딩해 5.0.2.x 문서가 손상 판정된 실증 — [07 A10](07-hangul-compat-rules.ko.md)). 스펙은 이 변천을 한 곳에 정리하지 않으므로 아래 표가 이를 한자리에 색인한다. 절차적 상세의 정본은 02(읽기)·03(쓰기)이다.
 
 | 경계(선언 버전 ≥) | 레코드 | 변화 | 근거 |
 |---|---|---|---|
@@ -60,7 +61,7 @@
 | 5.1.0.1 | CHAR_SHAPE | 합성 규격 **74B** (border_fill_id u16 + 취소선색 u32 tail 포함) | [03 §4](03-hwp5-write.ko.md) |
 | 5.1.x | DocInfo 루트 | **COMPATIBLE_DOCUMENT(0x1E) 서브트리 필수** — 자식 LAYOUT_COMPATIBILITY(0x1F, 20B=0) + TRACKCHANGE(0x20, 1032B, data[0]=0x38). 누락 시 거부. 구버전(5.0.2.x)은 면제 | [03 §5](03-hwp5-write.ko.md), [07 A4](07-hangul-compat-rules.ko.md) |
 
-읽기 쪽은 같은 경계를 tail 길이로 추론하고([02](02-hwp5-read.ko.md)), 쓰기 쪽은 선언 버전으로 분기한다([03 §4](03-hwp5-write.ko.md)의 version_target 유도). 두 방향이 같은 경계를 공유하므로 이 표가 단일 기준이다.
+읽기 쪽은 같은 경계를 tail 길이로 추론하고([02](02-hwp5-read.ko.md)), 쓰기 쪽은 선언 버전으로 분기한다([03 §4](03-hwp5-write.ko.md)의 version_target 유도). 두 방향이 같은 경계를 공유하며, 이 표는 그 경계를 한자리에 모아 둔 목록이다.
 
 ---
 
@@ -85,7 +86,7 @@
 | 5.1.x 선언이면 COMPATIBLE_DOCUMENT 서브트리 필수 | 손상 거부(보안 수준을 낮춰도) | A4 |
 | DOCUMENT_PROPERTIES 시작번호 6종(쪽·각주·미주·그림·표·수식)은 1 이상 | 비정상 판정 | A8 |
 | ID_MAPPINGS 카운트 배열과 실제 자식 레코드 수가 일치해야 한다 | 손상 판정 | A10, [03 §4](03-hwp5-write.ko.md) |
-| CHAR_SHAPE shade_color는 0 금지 — '없음'은 0xFFFFFFFF | 글자 칸마다 불투명 검정 음영("검은 바") | B1 |
+| CHAR_SHAPE shade_color는 0 금지 — '없음'은 0xFFFFFFFF (COLORREF의 '없음' 표식은 문맥마다 다르다) | 글자 칸마다 불투명 검정 음영("검은 바") | B1, [05 §7](05-rendering.ko.md) |
 | PARA_SHAPE의 tab_def_id·numbering_id는 실존 항목을 가리켜야 한다(dangling 금지) | 손상 판정 | A10 |
 | SECTION_DEF는 필수 자식(FOOTNOTE_SHAPE×2, PAGE_BORDER_FILL×3)을 갖는다 | 손상 판정 | A10, [03 §10](03-hwp5-write.ko.md) |
 
@@ -124,7 +125,5 @@
 | 표 높이 | Σ행 max(rowH) + **566** HWPUNIT(2.0mm). 스펙에 없는 경험 상수로, 두 정답지 교차 실측으로 확정 | C2, [05 §2.4](05-rendering.ko.md) |
 | run당 도형 렌더 한계 | 한 run에서 앞쪽 약 21개 도형만 렌더(정확 한계 미상). 구현은 run당 12개로 보수 분할 | D8, [04 §7.2](04-hwpx-owpml.ko.md) |
 | 탭 "재계산" 2종 구분 | 렌더 탭 스톱은 `floor(acc/40)×40 + 40`으로 계산한다. 이와 별개로 HWPX `hp:tab`의 width 속성은 한글이 열 때 재계산하므로 근사값이 허용된다(후자는 HWPX 규칙) | [05 §2.3](05-rendering.ko.md) / A12 |
-| shade_color 의미 | 0 = 불투명 검정 음영, 0xFFFFFFFF = 없음. COLORREF의 '없음' 표식은 문맥마다 다르다 | B1, [05 §7](05-rendering.ko.md) |
 | 다단 lineseg | col_start=0, seg_width=단 폭으로 저장된다. 단 인덱스는 저장돼 있지 않으므로 v_pos 리셋 경계에서 유도해야 한다 | [05 §1.8](05-rendering.ko.md) |
 | HWPUNIT 환산 | PARA_SHAPE 여백류만 /200, 그 외 모든 HWPUNIT는 /100 | [05 §7](05-rendering.ko.md) |
-| nchars bit31 | 문언은 '줄 배치 캐시 정합' 표식이지만 실제 소비는 '리스트 마지막 문단' 표식이다(E-7) | B3·B4 |
