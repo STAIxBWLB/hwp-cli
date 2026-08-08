@@ -576,6 +576,27 @@ pub const KO: &[(&str, &str, &str)] = &[
         "같은 버전이어도 다시 받아 교체 (손상된 설치 복구용)",
     ),
     ("update", "json", "JSON으로 출력"),
+    // skill (하위 서브커맨드 export는 베어 이름 "export"로 키잉한다)
+    (
+        "skill",
+        "",
+        "번들된 에이전트 스킬(AI 코딩 어시스턴트용 SKILL.md) 관리",
+    ),
+    (
+        "export",
+        "",
+        "임베드된 SKILL.md를 디렉터리에 기록 (기본 ./hwp; 파일은 <DIR>/SKILL.md에 생성)",
+    ),
+    (
+        "export",
+        "output",
+        "출력 디렉터리 (--install과 동시 사용 불가)",
+    ),
+    (
+        "export",
+        "install",
+        "대신 알려진 에이전트 스킬 디렉터리에 설치",
+    ),
     // dump
     ("dump", "", "[개발자용] 레코드/패키지 구조 덤프"),
     ("dump", "file", "대상 HWP/HWPX 파일"),

@@ -27,6 +27,8 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 - [`hwp corpus`](#hwp-corpus)
 - [`hwp mcp`](#hwp-mcp)
 - [`hwp update`](#hwp-update)
+- [`hwp skill`](#hwp-skill)
+- [`hwp skill export`](#hwp-skill-export)
 - [`hwp dump`](#hwp-dump)
 
 ## `hwp info`
@@ -308,6 +310,25 @@ Self-update: fetch the latest `hwp` from GitHub releases and replace the running
 | `--tag` | `<TAG>` |  | Pin a specific release (for example "v0.2.0", to roll back) |
 | `--force` |  |  | Re-download and replace even at the same version (to repair a broken install) |
 | `--json` |  |  | Print as JSON |
+
+## `hwp skill`
+
+Manage the bundled agent skill (SKILL.md for AI coding assistants)
+
+**Usage:** `hwp skill <COMMAND>`
+
+_No arguments or flags_
+
+## `hwp skill export`
+
+Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
+
+**Usage:** `hwp skill export [OPTIONS]`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `-o, --output` | `<OUTPUT>` |  | Output directory (mutually exclusive with --install) |
+| `--install` | `claude-code` \| `codex` |  | Install into a known agent skills directory instead |
 
 ## `hwp dump`
 

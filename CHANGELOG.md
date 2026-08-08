@@ -50,6 +50,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   hatch from the 16 MiB response cap; single-page base64 PNG stays the default). The new
   `hwp_grep` tool searches paragraph text and returns `{matches, count, truncated}` — zero
   matches is a normal result.
+- First-class agent skill (#51): the canonical `skills/hwp/SKILL.md` (command quick reference,
+  MCP server usage, safety rules) is committed and embedded in the binary;
+  `hwp skill export [-o DIR]` materializes it, and `--install claude-code|codex` writes it to
+  `~/.claude/skills/hwp/` or `~/.codex/skills/hwp/`. The file is English-only by design — it
+  is consumed by agents, and one canonical language avoids bilingual double-maintenance.
+- Release packaging + AI integration docs (#51): every tag now also publishes
+  `hwp-skill-claude-web.zip` (+ `.sha256`) — SKILL.md, a bootstrap script and the bundled
+  Linux x86_64 binary, because the claude.ai sandbox network is registry-restricted and cannot
+  download the binary at runtime — and `docs/manual/ai-integrations.md` (English canonical,
+  Korean pair) documents per-client setup: Claude Code/Desktop, Codex CLI/cloud, Kiro/Kimi,
+  claude.ai skill upload, and Amazon Quick Suite (convert to docx/pdf and upload; remote HTTP
+  MCP tracked in #52).
 
 **Fixed**
 

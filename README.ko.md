@@ -339,6 +339,9 @@ hwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
 `2025-06-18`·`2025-03-26`·`2024-11-05` 중 하나면 그대로 돌려주고, 아니면 최신 지원 버전으로
 응답한다. stdout은 프로토콜 전용이고 로그는 stderr로 나간다.
 
+클라이언트별 설정(Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai 스킬 업로드,
+Amazon Quick Suite)과 번들 에이전트 스킬(`hwp skill export`):
+[docs/manual/ai-integrations.ko.md](docs/manual/ai-integrations.ko.md).
 
 ### 노출 도구 (16종)
 

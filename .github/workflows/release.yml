@@ -81,6 +81,38 @@ jobs:
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # claude.ai 스킬 번들: SKILL.md + bootstrap.sh + Linux x86_64 바이너리를 한 zip으로.
+  # 다운로드 스크립트 대신 바이너리를 싣는 이유: claude.ai 샌드박스 네트워크는 레지스트리로
+  # 제한되어 런타임에 바이너리를 받을 수 없기 때문(번들링이 다운로드를 이긴다).
+  skill-bundle:
+    needs: upload-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hwp-skill-claude-web.zip 조립 + 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          # 방금 upload-assets 가 올린 리눅스 아카이브(이름 규칙: $bin-$tag-$target.tar.gz).
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "hwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" \
+            --dir "$work" --clobber
+          tar -xzf "$work/hwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" -C "$work"
+          bundle="$work/bundle"
+          mkdir -p "$bundle/bin"
+          cp skills/hwp/SKILL.md "$bundle/SKILL.md"
+          cp skills/hwp/claude-web/bootstrap.sh "$bundle/bootstrap.sh"
+          cp "$work/hwp" "$bundle/bin/hwp"
+          chmod +x "$bundle/bin/hwp" "$bundle/bootstrap.sh"
+          (cd "$bundle" && zip -r "$work/hwp-skill-claude-web.zip" SKILL.md bootstrap.sh bin/hwp)
+          (cd "$work" && sha256sum hwp-skill-claude-web.zip > hwp-skill-claude-web.zip.sha256)
+          gh release upload "$GITHUB_REF_NAME" \
+            "$work/hwp-skill-claude-web.zip" \
+            "$work/hwp-skill-claude-web.zip.sha256" \
+            --clobber
+
   # Homebrew formula(저장소 자체가 tap) 의 version/sha256 을 방금 올라온 자산 기준으로
   # 갱신해 main 에 커밋한다. 자산이 다 올라온 뒤라야 체크섬을 받을 수 있어 마지막 잡이다.
   # 실패해도 릴리스 자체는 유효하며, 로컬에서 scripts/update_formula.sh X.Y.Z 로 복구한다.

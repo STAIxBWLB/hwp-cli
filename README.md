@@ -368,6 +368,10 @@ with no tokio and no SDK. The protocol version is negotiated at `initialize`: a 
 `protocolVersion` of `2025-06-18`, `2025-03-26` or `2024-11-05` is echoed back, anything else gets
 the latest supported version. stdout carries the protocol; logs go to stderr.
 
+Per-client setup (Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai skill upload,
+Amazon Quick Suite) and the bundled agent skill (`hwp skill export`):
+[docs/manual/ai-integrations.md](docs/manual/ai-integrations.md).
+
 ### Exposed tools (16)
 
 | Tool | Required arguments | Purpose |

@@ -351,6 +351,12 @@ pub enum Cmd {
         json: bool,
     },
 
+    /// Manage the bundled agent skill (SKILL.md for AI coding assistants)
+    Skill {
+        #[command(subcommand)]
+        cmd: SkillCmd,
+    },
+
     /// [developer] Dump record and package structure
     Dump {
         /// Target HWP/HWPX file
@@ -464,6 +470,29 @@ pub struct EditArgs {
     pub allow_partial: bool,
 }
 
+/// `hwp skill` 서브커맨드.
+#[derive(Subcommand)]
+pub enum SkillCmd {
+    /// Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
+    Export {
+        /// Output directory (mutually exclusive with --install)
+        #[arg(short, long, conflicts_with = "install")]
+        output: Option<PathBuf>,
+        /// Install into a known agent skills directory instead
+        #[arg(long, value_enum)]
+        install: Option<InstallTarget>,
+    },
+}
+
+/// `--install` 대상 — 에이전트별 스킬 디렉터리.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum InstallTarget {
+    /// ~/.claude/skills/hwp/
+    ClaudeCode,
+    /// ~/.codex/skills/hwp/
+    Codex,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum TextFormat {
     Plain,
@@ -510,6 +539,16 @@ pub enum RenderFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_export_output_and_install_are_mutually_exclusive() {
+        assert!(
+            Cli::try_parse_from(["hwp", "skill", "export", "-o", "out", "--install", "codex"])
+                .is_err(),
+            "-o와 --install은 동시에 받지 않는다"
+        );
+        assert!(Cli::try_parse_from(["hwp", "skill", "export"]).is_ok());
+    }
 
     #[test]
     fn render_and_diff_reject_non_finite_or_out_of_range_dpi() {

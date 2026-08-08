@@ -170,5 +170,10 @@ fn main() -> anyhow::Result<()> {
             report,
         } => commands::certify::run(&input, &policy, &report),
         Cmd::Corpus { manifest, report } => commands::corpus::run(&manifest, &report),
+        Cmd::Skill { cmd } => match cmd {
+            hwp_cli::cli::SkillCmd::Export { output, install } => {
+                commands::skill::run(output, install)
+            }
+        },
     }
 }
