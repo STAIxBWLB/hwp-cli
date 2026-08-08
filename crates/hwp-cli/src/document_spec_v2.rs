@@ -323,7 +323,7 @@ impl TargetFormat {
 
 struct AssetStore<'a> {
     base_dir: &'a Path,
-    /// MCP 샌드박스 허용 루트(canonicalize됨). 비어 있으면 에셋 경로를 추가 검사하지 않는다.
+    /// MCP sandbox allowed roots (canonicalized). When empty, asset paths get no extra check.
     roots: &'a [PathBuf],
     by_path: BTreeMap<PathBuf, Rc<[u8]>>,
     unique_hashes: BTreeSet<[u8; 32]>,
@@ -361,21 +361,18 @@ impl<'a> AssetStore<'a> {
             }
             return Ok(Rc::clone(bytes));
         }
-        crate::asset_snapshot::check_under_roots(&self.base_dir.join(asset), self.roots).map_err(
-            |error| {
-                compile_error(
-                    issue_path,
-                    format!("asset_snapshot_{}: {error}", error.code.as_str()),
-                )
-            },
-        )?;
-        let snapshot = crate::asset_snapshot::read_contained(self.base_dir, asset, max_bytes)
-            .map_err(|error| {
-                compile_error(
-                    issue_path,
-                    format!("asset_snapshot_{}: {error}", error.code.as_str()),
-                )
-            })?;
+        let snapshot = crate::asset_snapshot::read_contained_with_roots(
+            self.base_dir,
+            asset,
+            max_bytes,
+            self.roots,
+        )
+        .map_err(|error| {
+            compile_error(
+                issue_path,
+                format!("asset_snapshot_{}: {error}", error.code.as_str()),
+            )
+        })?;
         if self.unique_hashes.insert(snapshot.sha256) {
             self.total_bytes = self.total_bytes.saturating_add(snapshot.data.len() as u64);
             if self.total_bytes > document_spec::MAX_TOTAL_ASSET_BYTES {
@@ -1353,7 +1350,7 @@ mod tests {
         }"#;
         let spec = parse_spec_v2(input, SpecInputFormat::Json).unwrap();
 
-        // base_dir 아래지만 허용 루트 밖인 에셋은 거부한다.
+        // An asset below base_dir but outside the allowed roots is rejected.
         let sandbox_only = vec![std::fs::canonicalize(&sandbox).unwrap()];
         let error = match compile_spec_v2(&spec, &root, &root.join("out.hwpx"), true, &sandbox_only)
         {
@@ -1369,7 +1366,7 @@ mod tests {
             error.issues()
         );
 
-        // 허용 루트 아래 에셋은 그대로 합성된다.
+        // An asset under the allowed roots composes as usual.
         let parent_root = vec![std::fs::canonicalize(&root).unwrap()];
         let compiled = compile_spec_v2(&spec, &root, &root.join("out.hwpx"), true, &parent_root)
             .expect("visual asset under roots");

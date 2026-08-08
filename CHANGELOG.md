@@ -26,7 +26,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `asset_snapshot_outside_roots`, and TemplateSpec `reference_hwpx` packages fail with
   `reference_outside_roots`, unless the resolved file sits under at least one root — so a spec
   cannot reach files outside the sandbox even when `base_dir` itself is attacker-influenced.
-  CLI and corpus callers pass no roots and behave exactly as before. (#53)
+  The binding is verified against the opened file handle rather than the request pathname,
+  closing the rename-swap race between the path check and the open. CLI and corpus callers
+  pass no roots and behave exactly as before. (#53)
 - MCP `hwp_edit` typed-operation parity: the seven edits that existed only as CLI string flags
   are now structured JSON arguments — `add_table` (`[{anchor, rows: [[...]]}]`), `set_para`
   (`[{pattern, line_spacing_pct | line_spacing_pt, indent_mm, left_mm, right_mm, top_mm,

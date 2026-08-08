@@ -1684,7 +1684,7 @@ struct EmbeddedAsset {
 struct Compiler<'a> {
     spec: &'a DocumentSpec,
     base_dir: &'a Path,
-    /// MCP 샌드박스 허용 루트(canonicalize됨). 비어 있으면 에셋 경로를 추가 검사하지 않는다.
+    /// MCP sandbox allowed roots (canonicalized). When empty, asset paths get no extra check.
     roots: &'a [PathBuf],
     document: hwp_model::Document,
     styles: BTreeMap<String, CompiledStyle>,
@@ -2412,17 +2412,16 @@ impl<'a> Compiler<'a> {
         if let Some(existing) = self.asset_paths.get(asset) {
             return Ok(existing.clone());
         }
-        crate::asset_snapshot::check_under_roots(&self.base_dir.join(asset), self.roots).map_err(
-            |error| ComposeError::Compile {
-                path: path.to_string(),
-                message: format!("asset_snapshot_{}: {error}", error.code.as_str()),
-            },
-        )?;
-        let snapshot = crate::asset_snapshot::read_contained(self.base_dir, asset, MAX_ASSET_BYTES)
-            .map_err(|error| ComposeError::Compile {
-                path: path.to_string(),
-                message: format!("asset_snapshot_{}: {error}", error.code.as_str()),
-            })?;
+        let snapshot = crate::asset_snapshot::read_contained_with_roots(
+            self.base_dir,
+            asset,
+            MAX_ASSET_BYTES,
+            self.roots,
+        )
+        .map_err(|error| ComposeError::Compile {
+            path: path.to_string(),
+            message: format!("asset_snapshot_{}: {error}", error.code.as_str()),
+        })?;
         let data = snapshot.data;
         let (extension, _) = hwp_convert::image_kind(&data);
         if extension == "bin" {
@@ -3275,7 +3274,7 @@ sections:
             placement: ImagePlacement::Inline,
         }];
 
-        // base_dir 아래지만 허용 루트 밖인 에셋은 거부한다.
+        // An asset below base_dir but outside the allowed roots is rejected.
         let sandbox_only = vec![std::fs::canonicalize(&sandbox).unwrap()];
         let error = match compile_spec(
             &spec,
@@ -3297,7 +3296,7 @@ sections:
             error.issues()
         );
 
-        // 허용 루트 아래 에셋은 그대로 합성된다.
+        // An asset under the allowed roots composes as usual.
         let parent_root = vec![std::fs::canonicalize(&root).unwrap()];
         compile_spec(
             &spec,
