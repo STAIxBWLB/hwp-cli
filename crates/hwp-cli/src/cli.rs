@@ -330,6 +330,9 @@ pub enum Cmd {
         /// Default font directory for the render and diff tools (repeatable)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
+        /// Restrict all file access to this directory (repeatable). Default: unrestricted
+        #[arg(long)]
+        root: Vec<PathBuf>,
     },
 
     /// Self-update: fetch the latest `hwp` from GitHub releases and replace the running binary
@@ -346,6 +349,12 @@ pub enum Cmd {
         /// Print as JSON
         #[arg(long)]
         json: bool,
+    },
+
+    /// Manage the bundled agent skill (SKILL.md for AI coding assistants)
+    Skill {
+        #[command(subcommand)]
+        cmd: SkillCmd,
     },
 
     /// [developer] Dump record and package structure
@@ -461,6 +470,29 @@ pub struct EditArgs {
     pub allow_partial: bool,
 }
 
+/// `hwp skill` subcommand.
+#[derive(Subcommand)]
+pub enum SkillCmd {
+    /// Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
+    Export {
+        /// Output directory (mutually exclusive with --install)
+        #[arg(short, long, conflicts_with = "install")]
+        output: Option<PathBuf>,
+        /// Install into a known agent skills directory instead
+        #[arg(long, value_enum)]
+        install: Option<InstallTarget>,
+    },
+}
+
+/// `--install` target — per-agent skill directory.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum InstallTarget {
+    /// ~/.claude/skills/hwp/
+    ClaudeCode,
+    /// ~/.codex/skills/hwp/
+    Codex,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum TextFormat {
     Plain,
@@ -507,6 +539,16 @@ pub enum RenderFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_export_output_and_install_are_mutually_exclusive() {
+        assert!(
+            Cli::try_parse_from(["hwp", "skill", "export", "-o", "out", "--install", "codex"])
+                .is_err(),
+            "-o와 --install은 동시에 받지 않는다"
+        );
+        assert!(Cli::try_parse_from(["hwp", "skill", "export"]).is_ok());
+    }
 
     #[test]
     fn render_and_diff_reject_non_finite_or_out_of_range_dpi() {

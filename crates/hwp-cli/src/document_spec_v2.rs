@@ -237,16 +237,17 @@ pub fn compile_spec_v2(
     base_dir: &Path,
     output: &Path,
     dry_run: bool,
+    roots: &[PathBuf],
 ) -> Result<CompiledSpecV2, ComposeError> {
     let target = TargetFormat::from_output(output)?;
     let CompiledSpec {
         mut document,
         report: base_report,
-    } = document_spec::compile_spec(&spec.document, base_dir, output, dry_run, false)?;
+    } = document_spec::compile_spec(&spec.document, base_dir, output, dry_run, false, roots)?;
     validate_v2(spec, base_dir, &document)?;
 
     let mut reports = Vec::with_capacity(spec.visuals.len());
-    let mut assets = AssetStore::new(base_dir);
+    let mut assets = AssetStore::new(base_dir, roots);
     for (index, visual) in spec.visuals.iter().enumerate() {
         let report = compile_visual(&mut document, visual, index, target, &mut assets)?;
         reports.push(report);
@@ -322,6 +323,8 @@ impl TargetFormat {
 
 struct AssetStore<'a> {
     base_dir: &'a Path,
+    /// MCP sandbox allowed roots (canonicalized). When empty, asset paths get no extra check.
+    roots: &'a [PathBuf],
     by_path: BTreeMap<PathBuf, Rc<[u8]>>,
     unique_hashes: BTreeSet<[u8; 32]>,
     total_bytes: u64,
@@ -335,9 +338,10 @@ struct SvgAsset {
 }
 
 impl<'a> AssetStore<'a> {
-    fn new(base_dir: &'a Path) -> Self {
+    fn new(base_dir: &'a Path, roots: &'a [PathBuf]) -> Self {
         Self {
             base_dir,
+            roots,
             by_path: BTreeMap::new(),
             unique_hashes: BTreeSet::new(),
             total_bytes: 0,
@@ -357,13 +361,18 @@ impl<'a> AssetStore<'a> {
             }
             return Ok(Rc::clone(bytes));
         }
-        let snapshot = crate::asset_snapshot::read_contained(self.base_dir, asset, max_bytes)
-            .map_err(|error| {
-                compile_error(
-                    issue_path,
-                    format!("asset_snapshot_{}: {error}", error.code.as_str()),
-                )
-            })?;
+        let snapshot = crate::asset_snapshot::read_contained_with_roots(
+            self.base_dir,
+            asset,
+            max_bytes,
+            self.roots,
+        )
+        .map_err(|error| {
+            compile_error(
+                issue_path,
+                format!("asset_snapshot_{}: {error}", error.code.as_str()),
+            )
+        })?;
         if self.unique_hashes.insert(snapshot.sha256) {
             self.total_bytes = self.total_bytes.saturating_add(snapshot.data.len() as u64);
             if self.total_bytes > document_spec::MAX_TOTAL_ASSET_BYTES {
@@ -1252,7 +1261,7 @@ mod tests {
 
         for extension in ["hwpx", "hwp"] {
             let output = root.join(format!("vector.{extension}"));
-            let compiled = compile_spec_v2(&spec, &root, &output, false).unwrap();
+            let compiled = compile_spec_v2(&spec, &root, &output, false, &[]).unwrap();
             let visual = &compiled.report.visuals[0];
             assert_eq!(
                 visual.resolved_representation,
@@ -1313,6 +1322,60 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_roots_bind_visual_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "hwp-v2-roots-{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let sandbox = root.join("sandbox");
+        std::fs::create_dir_all(&sandbox).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([10, 20, 30, 255]),
+        ))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+        std::fs::write(root.join("asset.png"), png.into_inner()).unwrap();
+        let input = r#"{
+          "version":"2.0",
+          "document":{"version":"1.0","sections":[{"blocks":[{"type":"paragraph","runs":[{"type":"text","text":"anchor"}]}]}]},
+          "visuals":[{"id":"image","location":{"section":0,"paragraph":0},"alt":"pixel","width_mm":20,"height_mm":20,"content":{"type":"image","path":"asset.png"}}]
+        }"#;
+        let spec = parse_spec_v2(input, SpecInputFormat::Json).unwrap();
+
+        // An asset below base_dir but outside the allowed roots is rejected.
+        let sandbox_only = vec![std::fs::canonicalize(&sandbox).unwrap()];
+        let error = match compile_spec_v2(&spec, &root, &root.join("out.hwpx"), true, &sandbox_only)
+        {
+            Ok(_) => panic!("visual asset outside roots must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .issues()
+                .iter()
+                .any(|issue| issue.message.contains("asset_snapshot_outside_roots")),
+            "{:?}",
+            error.issues()
+        );
+
+        // An asset under the allowed roots composes as usual.
+        let parent_root = vec![std::fs::canonicalize(&root).unwrap()];
+        let compiled = compile_spec_v2(&spec, &root, &root.join("out.hwpx"), true, &parent_root)
+            .expect("visual asset under roots");
+        assert_eq!(compiled.report.visuals[0].kind, "image");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn target_policy_is_distinct_and_fails_closed_by_default() {
         let default = VisualPolicyByTarget::default();
         assert_eq!(
@@ -1356,7 +1419,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let output = root.join("boxes.hwpx");
-        let compiled = compile_spec_v2(&spec, &root, &output, false).unwrap();
+        let compiled = compile_spec_v2(&spec, &root, &output, false, &[]).unwrap();
         let report = serde_json::to_string(&compiled.report).unwrap();
         assert!(!report.contains("SECRET TITLE"));
         assert!(!report.contains("SECRET ALT"));
@@ -1395,7 +1458,7 @@ mod tests {
           "visuals":[{"id":"box","location":{"section":0,"paragraph":0},"policy":{"hwpx":"required_native"},"title":"\r","alt":"safe alt","width_mm":40,"height_mm":20,"content":{"type":"text_box","text":"bad\rtext"}}]
         }"#;
         let spec = parse_spec_v2(input, SpecInputFormat::Json).unwrap();
-        let error = match compile_spec_v2(&spec, Path::new("."), Path::new("out.hwpx"), true) {
+        let error = match compile_spec_v2(&spec, Path::new("."), Path::new("out.hwpx"), true, &[]) {
             Ok(_) => panic!("CR must be rejected"),
             Err(error) => error,
         };
@@ -1423,7 +1486,7 @@ mod tests {
             }}"#
         );
         let spec = parse_spec_v2(&path_input, SpecInputFormat::Json).unwrap();
-        let error = match compile_spec_v2(&spec, Path::new("."), Path::new("out.hwpx"), true) {
+        let error = match compile_spec_v2(&spec, Path::new("."), Path::new("out.hwpx"), true, &[]) {
             Ok(_) => panic!("over-byte-limit path must fail"),
             Err(error) => error,
         };
@@ -1442,7 +1505,7 @@ mod tests {
           "visuals":[{"id":"crop","location":{"section":0,"paragraph":0},"alt":"crop","width_mm":20,"height_mm":20,"content":{"type":"image","path":"missing.png","crop":{"x":0.8,"y":0.0,"width":0.3,"height":1.0}}}]
         }"#;
         let spec = parse_spec_v2(crop_input, SpecInputFormat::Json).unwrap();
-        let error = match compile_spec_v2(&spec, Path::new("."), Path::new("out.hwpx"), true) {
+        let error = match compile_spec_v2(&spec, Path::new("."), Path::new("out.hwpx"), true, &[]) {
             Ok(_) => panic!("crop sum must fail at runtime"),
             Err(error) => error,
         };
@@ -1465,7 +1528,7 @@ mod tests {
             .join("examples/document-spec-v2");
         for extension in ["hwp", "hwpx"] {
             let output = PathBuf::from(format!("contract.{extension}"));
-            let compiled = compile_spec_v2(&spec, &base_dir, &output, true)
+            let compiled = compile_spec_v2(&spec, &base_dir, &output, true, &[])
                 .expect("v2 example compiles for both targets");
             assert_eq!(compiled.report.target_format, extension);
             assert_eq!(compiled.report.visuals.len(), 1);
@@ -1493,6 +1556,7 @@ mod tests {
             &base_dir,
             Path::new("native-text-box.hwpx"),
             true,
+            &[],
         )
         .expect("native text-box example compiles for HWPX");
         assert_eq!(

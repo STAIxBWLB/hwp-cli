@@ -30,7 +30,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
   리포트를 게시하고, `corpus`는 고정 코퍼스로 2회 생성 결과의 바이트·의미·렌더 해시 일치를 강제한다.
 - **AI 편집** IR을 JSON으로 내보내 고치고 되쓰는 read → edit → rewrite 왕복. 텍스트 치환, 표 셀 설정,
   누름틀/필드 채우기를 이미지·서식·미해석 레코드를 보존한 채 적용한다.
-- **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 15개 도구를 노출한다.
+- **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 16개 도구를 노출한다.
 
 ## 구현 상태
 
@@ -42,7 +42,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 | 구조 편집 (문단·표 행/열·셀 병합/분할·필드·이미지·도장) | 구현 완료 (병합 표 포함) |
 | DocumentSpec v1/v2, TemplateSpec v1 합성 | 구현 완료 |
 | 인증(certify) · 구조 코퍼스 게이트(corpus) | 구현 완료 |
-| MCP 서버 (15 도구) | 구현 완료 |
+| MCP 서버 (16 도구) | 구현 완료 |
 | HTML 변환 | 동작하나 markdown 대비 충실도 낮음 (로드맵) |
 | 수식 | 상자+스크립트 근사 렌더 |
 | 차트 · OLE | 미지원 |
@@ -335,18 +335,25 @@ hwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
 ## MCP 서버 (AI 에이전트 연동)
 
 `hwp mcp`는 tokio나 SDK 없이 `serde_json`만으로 동기 JSON-RPC 2.0(stdio, 줄 단위)을 구현한 MCP
-서버다(프로토콜 버전 `2024-11-05`). stdout은 프로토콜 전용이고 로그는 stderr로 나간다.
+서버다. 프로토콜 버전은 `initialize`에서 협상한다: 클라이언트의 `protocolVersion`이
+`2025-06-18`·`2025-03-26`·`2024-11-05` 중 하나면 그대로 돌려주고, 아니면 최신 지원 버전으로
+응답한다. stdout은 프로토콜 전용이고 로그는 stderr로 나간다.
 
-### 노출 도구 (15종)
+클라이언트별 설정(Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai 스킬 업로드,
+Amazon Quick Suite)과 번들 에이전트 스킬(`hwp skill export`):
+[docs/manual/ai-integrations.ko.md](docs/manual/ai-integrations.ko.md).
+
+### 노출 도구 (16종)
 
 | 도구 | 필수 인자 | 기능 |
 |---|---|---|
 | `hwp_info` | `path` | 포맷/버전/속성/스트림 진단 |
-| `hwp_read` | `path` | 본문 추출. `json`이면 전체 IR. UTF-8 byte 페이지네이션(기본 256 KiB, 최대 1 MiB) |
+| `hwp_read` | `path` | 본문 추출(`plain`/`markdown`/`json`/`html`/`csv`, 머리말·꼬리말/숨은 설명/세그먼트 옵션). UTF-8 byte 페이지네이션(기본 256 KiB, 최대 1 MiB) |
+| `hwp_grep` | `path`, `pattern` | 문단 텍스트 검색. `{matches, count, truncated}` 반환 — 0건이어도 정상 결과 |
 | `hwp_list_fields` | `path` | 필드/누름틀 목록 |
 | `hwp_list_bookmarks` | `path` | 책갈피(bokm) 목록 |
 | `hwp_slots` | `path` | `{{name}}` 자리표시자 목록 |
-| `hwp_render` | `path` | 지정 페이지만 PNG로 렌더(dpi 36..=600, 응답 최대 16 MiB) |
+| `hwp_render` | `path` | 페이지를 PNG로 렌더(base64, 응답 최대 16 MiB)하거나 `output_path`로 PNG/SVG/PDF 파일 작성(dpi 36..=600) |
 | `hwp_edit` | `input`, `output` | typed JSON 작업으로 strict atomic 편집 |
 | `hwp_convert` | `input`, `output` | 포맷 변환(MCP의 `strict` 기본값은 true) |
 | `hwp_new` | `output` | markdown/JSON IR과 metadata에서 새 문서 생성 |
@@ -364,11 +371,17 @@ hwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
   "mcpServers": {
     "hwp": {
       "command": "hwp",
-      "args": ["mcp", "--font-dir", "<repo>/fonts"]
+      "args": ["mcp", "--font-dir", "<repo>/fonts", "--root", "<repo>"]
     }
   }
 }
 ```
+
+`--root`(반복 가능)는 도구가 다루는 모든 파일 경로 — 입력·출력, 중첩 이미지/부분 경로, spec
+`base_dir`, 호출당 `font_dir` — 를 지정 디렉터리 아래로 제한한다. 이 루트는 compose/template spec
+내부 참조에도 적용되어, spec이 참조하는 이미지·비주얼 에셋과 `reference_hwpx` 패키지도 허용 루트
+아래여야 한다. `--root` 없이 실행하면 종전처럼
+제한 없이 동작하며, 기동 시 stderr에 한 줄 경고를 출력한다.
 
 ### read → edit → rewrite 왕복
 

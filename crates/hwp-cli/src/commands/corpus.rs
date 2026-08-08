@@ -965,6 +965,7 @@ fn generate_native_source(
                 false,
                 None,
                 Some(font_files),
+                &[],
             )?;
         }
         PreparedGenerator::TemplateSpecData {
@@ -983,6 +984,7 @@ fn generate_native_source(
                 false,
                 &[],
                 Some(font_files),
+                &[],
             )?;
         }
     }
@@ -2380,6 +2382,7 @@ mod tests {
             Path::new("projection-test.hwpx"),
             true,
             false,
+            &[],
         )
         .unwrap()
         .document

@@ -10,6 +10,61 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- MCP server: `--root <dir>` (repeatable) sandboxes every path-typed tool argument — reads,
+  writes, nested `insert_image`/`seal`/`parts` paths, compose/template `base_dir`, per-call
+  `font_dir`, and the certify report directory. Roots are canonicalized at startup (a missing or
+  unreadable root fails fast); write guards reject `..` components and close the
+  symlink-overwrite escape. With no `--root` the server is unrestricted as before and prints a
+  one-line stderr warning at startup. (#50)
+- MCP protocol negotiation: `initialize` echoes the client's `protocolVersion` when it is one of
+  `2025-06-18` / `2025-03-26` / `2024-11-05`, and otherwise replies with the latest supported
+  version. (#50)
+- Compose/template asset hardening: the MCP `--root` sandbox now also binds spec-internal asset
+  references. DocumentSpec v1/v2 image and visual assets fail with
+  `asset_snapshot_outside_roots`, and TemplateSpec `reference_hwpx` packages fail with
+  `reference_outside_roots`, unless the resolved file sits under at least one root — so a spec
+  cannot reach files outside the sandbox even when `base_dir` itself is attacker-influenced.
+  The binding is verified against the opened file handle rather than the request pathname,
+  closing the rename-swap race between the path check and the open. CLI and corpus callers
+  pass no roots and behave exactly as before. (#53)
+- MCP `hwp_edit` typed-operation parity: the seven edits that existed only as CLI string flags
+  are now structured JSON arguments — `add_table` (`[{anchor, rows: [[...]]}]`), `set_para`
+  (`[{pattern, line_spacing_pct | line_spacing_pt, indent_mm, left_mm, right_mm, top_mm,
+  bottom_mm}]`), `set_page` (a single object: `width_mm`/`height_mm`/`margin_*_mm`/
+  `orientation`), `delete_image` (`[{anchor}]`), `delete_table` (`[{index | anchor}]`, exactly
+  one of the two), and `delete_field`/`delete_bookmark` (`[{name}]`). They run through the same
+  strict, atomic, re-read-verified edit path as the CLI with identical applied/unapplied
+  semantics. (#50)
+- Edit `--verify` (and therefore MCP `hwp_edit`) now accepts `add_table` and image deletion:
+  the semantic canonicalizer gained the exact HWPX writer projections for freshly synthesized
+  tables (page-break/repeat-header attr and the inline default placement) and for bin streams
+  no control references anymore (the HWPX writer only embeds referenced streams), instead of
+  failing the re-read comparison. (#50)
+- MCP read/convert/render parity + new `hwp_grep` (16 tools total) (#50): `hwp_read` gains
+  `html`/`csv` formats, `with_header_footer`/`with_hidden`, and `with_segments` (markdown-only;
+  segments are filtered to the paginated window but keep absolute offsets). `hwp_convert` gains
+  explicit `to`, `font_dir`, `media_dir` and header/footer/hidden options — and PDF conversion
+  now actually receives the configured font directories instead of an empty list. `hwp_render`
+  gains `format` (png/svg/pdf), a `pages` range spec (mutually exclusive with the legacy `page`),
+  and `output_path` to write PNG/SVG/PDF files and return metadata instead of base64 (the escape
+  hatch from the 16 MiB response cap; single-page base64 PNG stays the default). The new
+  `hwp_grep` tool searches paragraph text and returns `{matches, count, truncated}` — zero
+  matches is a normal result.
+- First-class agent skill (#51): the canonical `skills/hwp/SKILL.md` (command quick reference,
+  MCP server usage, safety rules) is committed and embedded in the binary;
+  `hwp skill export [-o DIR]` materializes it, and `--install claude-code|codex` writes it to
+  `~/.claude/skills/hwp/` or `~/.codex/skills/hwp/`. The file is English-only by design — it
+  is consumed by agents, and one canonical language avoids bilingual double-maintenance.
+- Release packaging + AI integration docs (#51): every tag now also publishes
+  `hwp-skill-claude-web.zip` (+ `.sha256`) — SKILL.md, a bootstrap script and the bundled
+  Linux x86_64 binary, because the claude.ai sandbox network is registry-restricted and cannot
+  download the binary at runtime — and `docs/manual/ai-integrations.md` (English canonical,
+  Korean pair) documents per-client setup: Claude Code/Desktop, Codex CLI/cloud, Kiro/Kimi,
+  claude.ai skill upload, and Amazon Quick Suite (convert to docx/pdf and upload; remote HTTP
+  MCP tracked in #52).
+
 **Fixed**
 
 - Markdown export: footnotes referenced inside an HTML-fallback table emitted their definition

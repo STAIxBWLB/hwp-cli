@@ -501,6 +501,7 @@ pub fn expand_template(
     template: &TemplateSpec,
     data: &TemplateData,
     base_dir: &Path,
+    roots: &[PathBuf],
 ) -> Result<ExpandedTemplate, TemplateError> {
     let effective = validate_and_resolve(template, data)?;
     let mut expander = Expander::new(&effective);
@@ -511,7 +512,7 @@ pub fn expand_template(
             (TemplateMode::Compose, ExpandedOutput::Compose(document))
         }
         TemplateSource::ReferenceHwpx { path, bindings } => {
-            let path = resolve_reference_path(base_dir, path)?;
+            let path = resolve_reference_path(base_dir, path, roots)?;
             let (placeholders, fields) = reference_bindings(bindings, &effective, &mut expander)?;
             (
                 TemplateMode::ReferencePackagePreserving,
@@ -534,7 +535,7 @@ pub fn expand_template(
                     "reference regeneration requires strict_unsupported_objects=true",
                 ));
             }
-            let path = resolve_reference_path(base_dir, path)?;
+            let path = resolve_reference_path(base_dir, path, roots)?;
             let expanded = expander.expand_document(document)?;
             let document = deserialize_document(expanded)?;
             (
@@ -567,7 +568,11 @@ fn deserialize_document(value: Value) -> Result<DocumentSpec, TemplateError> {
     })
 }
 
-fn resolve_reference_path(base_dir: &Path, path: &Path) -> Result<PathBuf, TemplateError> {
+fn resolve_reference_path(
+    base_dir: &Path,
+    path: &Path,
+    roots: &[PathBuf],
+) -> Result<PathBuf, TemplateError> {
     use std::path::Component;
 
     if path.is_absolute()
@@ -615,6 +620,14 @@ fn resolve_reference_path(base_dir: &Path, path: &Path) -> Result<PathBuf, Templ
             "reference_escape",
             "/source/path",
             "reference package escapes the template base directory",
+        ));
+    }
+    // MCP sandbox defense-in-depth: when roots are set, reference packages must sit below them.
+    if !roots.is_empty() && !roots.iter().any(|root| canonical.starts_with(root)) {
+        return Err(TemplateError::single(
+            "reference_outside_roots",
+            "/source/path",
+            "reference package is outside the sandbox roots",
         ));
     }
     Ok(canonical)
@@ -2527,7 +2540,7 @@ mod tests {
     fn parse(template: &str, data: &str) -> Result<ExpandedTemplate, TemplateError> {
         let template = parse_template(template, SpecInputFormat::Json)?;
         let data = parse_data(data, SpecInputFormat::Json)?;
-        expand_template(&template, &data, Path::new("."))
+        expand_template(&template, &data, Path::new("."), &[])
     }
 
     #[test]
@@ -2760,7 +2773,7 @@ source:
         )
         .expect("yaml model");
         let data = parse_data(r#"{"version":"1.0","values":{}}"#, SpecInputFormat::Json).unwrap();
-        let error = expand_template(&template, &data, Path::new("."))
+        let error = expand_template(&template, &data, Path::new("."), &[])
             .expect_err("unused invalid declaration");
         assert!(
             error
@@ -2817,7 +2830,7 @@ source:
             SpecInputFormat::Json,
         )
         .unwrap();
-        let expanded = expand_template(&template, &data, &base).expect("reference plan");
+        let expanded = expand_template(&template, &data, &base, &[]).expect("reference plan");
         assert_eq!(expanded.plan.regions[0].id, "recipient");
 
         let escaped = parse_data(
@@ -2834,8 +2847,8 @@ source:
             SpecInputFormat::Json,
         )
         .unwrap();
-        let error =
-            expand_template(&two_targets, &escaped, &base).expect_err("replacement growth budget");
+        let error = expand_template(&two_targets, &escaped, &base, &[])
+            .expect_err("replacement growth budget");
         assert_eq!(error.issues()[0].code, "limit_exceeded");
         let _ = std::fs::remove_file(base.join("reference.hwpx"));
         let _ = std::fs::remove_dir(base);
@@ -2852,9 +2865,39 @@ source:
         )
         .unwrap();
         let data = parse_data(r#"{"version":"1.0","values":{}}"#, SpecInputFormat::Json).unwrap();
-        let error = expand_template(&template, &data, &base).expect_err("parent escape");
+        let error = expand_template(&template, &data, &base, &[]).expect_err("parent escape");
         assert_eq!(error.issues()[0].code, "invalid_reference");
         let _ = std::fs::remove_dir(base);
+    }
+
+    #[test]
+    fn sandbox_roots_bind_reference_packages() {
+        let base = std::env::temp_dir().join(format!("hwp-template-roots-{}", std::process::id()));
+        let sandbox = base.join("sandbox");
+        std::fs::create_dir_all(&sandbox).unwrap();
+        std::fs::write(base.join("reference.hwpx"), b"fixture").unwrap();
+        let template = parse_template(
+            r#"{"version":"1.0","variables":{"name":{"type":"string","required":true}},"source":{"mode":"reference_hwpx","path":"reference.hwpx","bindings":[{"region":"recipient","variable":"name","target":"field","name":"수신"}]}}"#,
+            SpecInputFormat::Json,
+        )
+        .unwrap();
+        let data = parse_data(
+            r#"{"version":"1.0","values":{"name":"홍길동"}}"#,
+            SpecInputFormat::Json,
+        )
+        .unwrap();
+
+        // A reference package below base_dir but outside the allowed roots is rejected.
+        let sandbox_only = vec![std::fs::canonicalize(&sandbox).unwrap()];
+        let error = expand_template(&template, &data, &base, &sandbox_only)
+            .expect_err("reference outside roots");
+        assert_eq!(error.issues()[0].code, "reference_outside_roots");
+
+        // A reference package under the allowed roots expands as usual.
+        let parent_root = vec![std::fs::canonicalize(&base).unwrap()];
+        expand_template(&template, &data, &base, &parent_root).expect("reference under roots");
+
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
@@ -2873,6 +2916,7 @@ source:
             &template,
             &data,
             Path::new("../../../examples/template-spec-v1"),
+            &[],
         )
         .expect("checked-in example expansion");
         assert_eq!(expanded.plan.each_iterations, 2);

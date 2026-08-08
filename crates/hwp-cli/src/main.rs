@@ -4,6 +4,9 @@
 //! 생성 테스트가 명령 트리를 introspect할 수 있게 하기 위함. 여기서는 파싱과
 //! 서브커맨드 디스패치만 담당한다.
 
+// Large json! literals like the hwp_edit tool schema in mcp.rs exceed the default recursion limit (128).
+#![recursion_limit = "256"]
+
 mod commands;
 mod format;
 
@@ -99,7 +102,7 @@ fn main() -> anyhow::Result<()> {
             font_dir,
             tolerance,
         ),
-        Cmd::Mcp { font_dir } => commands::mcp::run(font_dir),
+        Cmd::Mcp { font_dir, root } => commands::mcp::run(font_dir, root),
         Cmd::Update {
             check,
             tag,
@@ -167,5 +170,10 @@ fn main() -> anyhow::Result<()> {
             report,
         } => commands::certify::run(&input, &policy, &report),
         Cmd::Corpus { manifest, report } => commands::corpus::run(&manifest, &report),
+        Cmd::Skill { cmd } => match cmd {
+            hwp_cli::cli::SkillCmd::Export { output, install } => {
+                commands::skill::run(output, install)
+            }
+        },
     }
 }

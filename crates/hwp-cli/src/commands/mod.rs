@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod new;
 pub(crate) mod output;
 pub mod render;
+pub mod skill;
 pub mod slots;
 pub mod template;
 pub mod update;

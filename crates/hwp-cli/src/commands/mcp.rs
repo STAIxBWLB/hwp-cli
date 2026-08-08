@@ -13,19 +13,38 @@ use serde_json::{Value, json};
 
 use crate::commands::cat::load_document;
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+/// Supported MCP protocol versions (newest first). Used in initialize negotiation.
+const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
 const DEFAULT_READ_BYTES: usize = 256 * 1024;
 const MAX_READ_BYTES: usize = 1024 * 1024;
 
-/// 서버 컨텍스트 (렌더/diff 기본 폰트 디렉터리).
+/// Server context (default font directories for render/diff, `--root` file access sandbox).
 pub struct Ctx {
     pub font_dirs: Vec<PathBuf>,
+    /// Canonicalized allowed roots. Empty means unrestricted file access (previous behavior).
+    pub roots: Vec<PathBuf>,
 }
 
 /// stdio JSON-RPC 루프. EOF까지 한 줄씩 처리한다.
-pub fn run(font_dirs: Vec<PathBuf>) -> anyhow::Result<()> {
-    let ctx = Ctx { font_dirs };
+pub fn run(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> anyhow::Result<()> {
+    let mut canonical_roots = Vec::with_capacity(roots.len());
+    for root in &roots {
+        let canonical = std::fs::canonicalize(root).map_err(|error| {
+            anyhow::anyhow!(
+                "--root 경로를 확인할 수 없습니다: {} ({error})",
+                root.display()
+            )
+        })?;
+        canonical_roots.push(canonical);
+    }
+    if canonical_roots.is_empty() {
+        eprintln!("경고: --root 미지정 — MCP 서버의 파일 접근이 제한되지 않습니다");
+    }
+    let ctx = Ctx {
+        font_dirs,
+        roots: canonical_roots,
+    };
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();
@@ -82,14 +101,25 @@ pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
     let is_notification = id.is_none();
 
     match method {
-        "initialize" => Some(result_response(
-            id_or_null(id),
-            json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "hwp-cli", "version": env!("CARGO_PKG_VERSION")},
-            }),
-        )),
+        "initialize" => {
+            // Protocol negotiation: echo the client-requested version if supported, otherwise respond with the newest version.
+            let requested = req
+                .get("params")
+                .and_then(|params| params.get("protocolVersion"))
+                .and_then(Value::as_str);
+            let protocol_version = match requested {
+                Some(version) if SUPPORTED_PROTOCOL_VERSIONS.contains(&version) => version,
+                _ => SUPPORTED_PROTOCOL_VERSIONS[0],
+            };
+            Some(result_response(
+                id_or_null(id),
+                json!({
+                    "protocolVersion": protocol_version,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "hwp-cli", "version": env!("CARGO_PKG_VERSION")},
+                }),
+            ))
+        }
         "notifications/initialized" | "notifications/cancelled" => None,
         "ping" => Some(result_response(id_or_null(id), json!({}))),
         "tools/list" => Some(result_response(
@@ -136,21 +166,22 @@ fn error_response(id: Value, code: i64, message: &str) -> String {
 /// 도구를 실행해 `tools/call` result를 만든다. 실행 오류는 isError=true content로.
 fn call_tool(name: &str, args: &Value, ctx: &Ctx) -> Value {
     let result: Result<Vec<Value>, String> = match name {
-        "hwp_info" => tool_info(args),
-        "hwp_read" => tool_read(args),
-        "hwp_list_fields" => tool_list_fields(args),
-        "hwp_list_bookmarks" => tool_list_bookmarks(args),
+        "hwp_info" => tool_info(args, ctx),
+        "hwp_read" => tool_read(args, ctx),
+        "hwp_grep" => tool_grep(args, ctx),
+        "hwp_list_fields" => tool_list_fields(args, ctx),
+        "hwp_list_bookmarks" => tool_list_bookmarks(args, ctx),
         "hwp_render" => tool_render(args, ctx),
-        "hwp_edit" => tool_edit(args),
-        "hwp_convert" => tool_convert(args),
-        "hwp_new" => tool_new(args),
-        "hwp_compose" => tool_compose(args),
-        "hwp_template" => tool_template(args),
+        "hwp_edit" => tool_edit(args, ctx),
+        "hwp_convert" => tool_convert(args, ctx),
+        "hwp_new" => tool_new(args, ctx),
+        "hwp_compose" => tool_compose(args, ctx),
+        "hwp_template" => tool_template(args, ctx),
         "hwp_diff" => tool_diff(args, ctx),
-        "hwp_slots" => tool_slots(args),
-        "hwp_fill" => tool_fill(args),
-        "hwp_validate" => tool_validate(args),
-        "hwp_certify" => tool_certify(args),
+        "hwp_slots" => tool_slots(args, ctx),
+        "hwp_fill" => tool_fill(args, ctx),
+        "hwp_validate" => tool_validate(args, ctx),
+        "hwp_certify" => tool_certify(args, ctx),
         other => Err(format!("알 수 없는 도구: {other}")),
     };
     match result {
@@ -254,6 +285,12 @@ fn optional_item_u16(item: &Value, operation: &str, key: &str) -> Result<Option<
         .transpose()
 }
 
+fn optional_item_usize(item: &Value, operation: &str, key: &str) -> Result<Option<usize>, String> {
+    item.get(key)
+        .map(|_| required_item_usize(item, operation, key))
+        .transpose()
+}
+
 fn optional_item_str<'a>(
     item: &'a Value,
     operation: &str,
@@ -293,33 +330,132 @@ fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<
         .transpose()
 }
 
+// ---- Path sandbox (`--root`) ----
+
+/// Checks that a canonical path sits below one of the allowed roots.
+fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, String> {
+    if ctx.roots.iter().any(|root| canonical.starts_with(root)) {
+        Ok(canonical.to_path_buf())
+    } else {
+        Err(format!(
+            "허용된 --root 밖 경로라 거부합니다: {raw} ({}으로 확인됨)",
+            canonical.display()
+        ))
+    }
+}
+
+/// Read-path validation: the path must exist (canonicalize) and the canonical result
+/// must sit below a root. Empty roots pass without a check (previous behavior).
+fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
+    if ctx.roots.is_empty() {
+        return Ok(PathBuf::from(raw));
+    }
+    let canonical = std::fs::canonicalize(raw)
+        .map_err(|error| format!("경로를 확인할 수 없습니다: {raw} ({error})"))?;
+    under_any_root(ctx, &canonical, raw)
+}
+
+/// Write-path validation: rejects `..` components and a missing file name, then
+/// canonicalizes an existing file (blocking symlink-overwrite bypasses) or, for a new
+/// file, canonicalizes the parent and rejoins, before the root check.
+/// Empty roots pass without a check (previous behavior).
+fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
+    if ctx.roots.is_empty() {
+        return Ok(PathBuf::from(raw));
+    }
+    let path = Path::new(raw);
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!("'..'를 포함한 출력 경로는 거부합니다: {raw}"));
+    }
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("출력 경로에 파일 이름이 없습니다: {raw}"))?;
+    let resolved = if path.exists() {
+        std::fs::canonicalize(path)
+            .map_err(|error| format!("출력 경로를 확인할 수 없습니다: {raw} ({error})"))?
+    } else {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+            format!(
+                "출력 경로의 부모 디렉터리를 확인할 수 없습니다: {} ({error})",
+                parent.display()
+            )
+        })?;
+        canonical_parent.join(file_name)
+    };
+    under_any_root(ctx, &resolved, raw)
+}
+
 fn font_dirs_for(args: &Value, ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
     let mut dirs = ctx.font_dirs.clone();
     if let Some(d) = arg_str_opt(args, "font_dir")? {
-        dirs.push(PathBuf::from(d));
+        // Per-call font_dir is subject to the sandbox check (startup --font-dir is trusted).
+        dirs.push(checked_read_path(ctx, d)?);
     }
     Ok(dirs)
 }
 
 // ---- 도구 핸들러 ----
 
-fn tool_info(args: &Value) -> Result<Vec<Value>, String> {
-    let path = arg_str(args, "path")?;
-    let v = crate::commands::info::info_json(Path::new(path)).map_err(|e| e.to_string())?;
+fn tool_info(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let v = crate::commands::info::info_json(&path).map_err(|e| e.to_string())?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&v).unwrap_or_default(),
     )])
 }
 
-fn tool_read(args: &Value) -> Result<Vec<Value>, String> {
-    let path = arg_str(args, "path")?;
+fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let format = arg_str_opt(args, "format")?.unwrap_or("plain");
-    let doc = load_document(Path::new(path)).map_err(|e| e.to_string())?;
-    let text = match format {
-        "plain" => doc.plain_text(),
-        "markdown" | "md" => hwp_convert::to_markdown(&doc),
-        "json" => hwp_convert::to_json(&doc, true, false).map_err(|e| e.to_string())?,
-        other => return Err(format!("알 수 없는 format: {other} (plain|markdown|json)")),
+    let with_header_footer = arg_bool(args, "with_header_footer", false)?;
+    let with_hidden = arg_bool(args, "with_hidden", false)?;
+    let with_segments = arg_bool(args, "with_segments", false)?;
+    // Same contract as cat: with_segments is markdown-only, and the with_* flags apply
+    // only to plain/markdown (html/json/csv take no options — they are ignored if given).
+    if with_segments && !matches!(format, "markdown" | "md") {
+        return Err(format!(
+            "with_segments는 format=markdown 전용입니다 (요청: {format})"
+        ));
+    }
+    let doc = load_document(&path).map_err(|e| e.to_string())?;
+    let text_options = || hwp_model::TextOptions {
+        include_header_footer: with_header_footer,
+        include_hidden: with_hidden,
+    };
+    let md_options = || hwp_convert::MarkdownOptions {
+        text: text_options(),
+        ..Default::default()
+    };
+    // With with_segments, also collect the character-range segment map alongside the markdown.
+    let (text, segments) = match format {
+        "plain" => (doc.plain_text_with(&text_options()), None),
+        "markdown" | "md" if with_segments => {
+            let (markdown, segments) = hwp_convert::to_markdown_with_segments(&doc, &md_options())
+                .map_err(|e| e.to_string())?;
+            (markdown, Some(segments))
+        }
+        "markdown" | "md" => (
+            hwp_convert::to_markdown_with(&doc, &md_options()).map_err(|e| e.to_string())?,
+            None,
+        ),
+        "json" => (
+            hwp_convert::to_json(&doc, true, false).map_err(|e| e.to_string())?,
+            None,
+        ),
+        "html" => (hwp_convert::to_html(&doc), None),
+        "csv" => (hwp_convert::to_csv(&doc), None),
+        other => {
+            return Err(format!(
+                "알 수 없는 format: {other} (plain|markdown|json|html|csv)"
+            ));
+        }
     };
     let offset = usize::try_from(arg_u64(args, "offset", 0)?)
         .map_err(|_| "offset이 플랫폼 범위를 넘습니다".to_string())?;
@@ -346,15 +482,43 @@ fn tool_read(args: &Value) -> Result<Vec<Value>, String> {
         "truncated": truncated,
         "next_offset": truncated.then_some(end),
     });
+    let content = match segments {
+        // Same shape as cat's single-line JSON envelope. The markdown holds only the
+        // returned window, and segments are filtered to those intersecting the window
+        // while offsets stay absolute against the full markdown (unicode characters).
+        Some(segments) => {
+            let char_start = text[..offset].chars().count();
+            let char_end = text[..end].chars().count();
+            let segments: Vec<Value> = segments
+                .iter()
+                .filter(|s| s.start < char_end && s.end > char_start)
+                .map(|s| {
+                    json!({
+                        "kind": "para",
+                        "section": s.section,
+                        "para": s.para,
+                        "start": s.start,
+                        "end": s.end,
+                    })
+                })
+                .collect();
+            let envelope = json!({
+                "markdown": &text[offset..end],
+                "segments": segments,
+            });
+            serde_json::to_string(&envelope).map_err(|e| e.to_string())?
+        }
+        None => text[offset..end].to_string(),
+    };
     Ok(vec![
-        text_content(&text[offset..end]),
+        text_content(&content),
         text_content(&serde_json::to_string(&metadata).unwrap_or_default()),
     ])
 }
 
-fn tool_list_fields(args: &Value) -> Result<Vec<Value>, String> {
-    let path = arg_str(args, "path")?;
-    let doc = load_document(Path::new(path)).map_err(|e| e.to_string())?;
+fn tool_list_fields(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let doc = load_document(&path).map_err(|e| e.to_string())?;
     let fields: Vec<Value> = hwp_convert::list_fields(&doc)
         .iter()
         .map(|f| {
@@ -369,9 +533,9 @@ fn tool_list_fields(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_list_bookmarks(args: &Value) -> Result<Vec<Value>, String> {
-    let path = arg_str(args, "path")?;
-    let doc = load_document(Path::new(path)).map_err(|e| e.to_string())?;
+fn tool_list_bookmarks(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let doc = load_document(&path).map_err(|e| e.to_string())?;
     let bookmarks: Vec<Value> = hwp_convert::list_bookmarks(&doc)
         .iter()
         .map(|b| json!({ "name": b.name }))
@@ -381,9 +545,9 @@ fn tool_list_bookmarks(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_slots(args: &Value) -> Result<Vec<Value>, String> {
-    let path = arg_str(args, "path")?;
-    let doc = load_document(Path::new(path)).map_err(|e| e.to_string())?;
+fn tool_slots(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let doc = load_document(&path).map_err(|e| e.to_string())?;
     let items: Vec<Value> = hwp_convert::scan_placeholders(&doc)
         .iter()
         .map(|p| json!({ "name": p.name, "occurrences": p.occurrences }))
@@ -393,9 +557,9 @@ fn tool_slots(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_fill(args: &Value) -> Result<Vec<Value>, String> {
-    let input = arg_str(args, "input")?;
-    let output = arg_str(args, "output")?;
+fn tool_fill(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let input = checked_read_path(ctx, arg_str(args, "input")?)?;
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     let values_obj = args
         .get("values")
         .and_then(Value::as_object)
@@ -422,11 +586,12 @@ fn tool_fill(args: &Value) -> Result<Vec<Value>, String> {
             let path = v
                 .as_str()
                 .ok_or("parts 값은 부분 파일 경로 문자열이어야 합니다")?;
-            set.push(format!("{k}=@{path}"));
+            let path = checked_read_path(ctx, path)?;
+            set.push(format!("{k}=@{}", path.display()));
         }
         crate::commands::fill::execute(
-            Path::new(input),
-            Path::new(output),
+            &input,
+            &output,
             &set,
             None,
             arg_bool(args, "allow_partial", false)?,
@@ -434,8 +599,8 @@ fn tool_fill(args: &Value) -> Result<Vec<Value>, String> {
         .map_err(|error| format!("{error:#}"))?
     } else {
         crate::commands::fill::execute_values(
-            Path::new(input),
-            Path::new(output),
+            &input,
+            &output,
             &values,
             arg_bool(args, "allow_partial", false)?,
         )
@@ -447,15 +612,15 @@ fn tool_fill(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_validate(args: &Value) -> Result<Vec<Value>, String> {
-    let path = arg_str(args, "path")?;
-    let v = crate::commands::validate::validate_json(Path::new(path));
+fn tool_validate(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let v = crate::commands::validate::validate_json(&path);
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&v).unwrap_or_default(),
     )])
 }
 
-fn tool_certify(args: &Value) -> Result<Vec<Value>, String> {
+fn tool_certify(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
@@ -465,10 +630,10 @@ fn tool_certify(args: &Value) -> Result<Vec<Value>, String> {
     {
         return Err(format!("알 수 없는 hwp_certify 인자: {unknown}"));
     }
-    let input = Path::new(arg_str(args, "input")?);
-    let policy = Path::new(arg_str(args, "policy")?);
-    let report = Path::new(arg_str(args, "report")?);
-    let outcome = hwp_cli::certification::execute(input, policy, report)
+    let input = checked_read_path(ctx, arg_str(args, "input")?)?;
+    let policy = checked_read_path(ctx, arg_str(args, "policy")?)?;
+    let report = checked_write_path(ctx, arg_str(args, "report")?)?;
+    let outcome = hwp_cli::certification::execute(&input, &policy, &report)
         .map_err(|error| format!("{error:#}"))?;
     let summary = serde_json::to_string_pretty(&json!({
         "overall": outcome.overall,
@@ -482,49 +647,195 @@ fn tool_certify(args: &Value) -> Result<Vec<Value>, String> {
 }
 
 fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
-    let path = arg_str(args, "path")?;
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    if args.get("page").is_some() && args.get("pages").is_some() {
+        return Err("page와 pages는 함께 지정할 수 없습니다".into());
+    }
+    let format = match arg_str_opt(args, "format")?.unwrap_or("png") {
+        "png" => hwp_cli::cli::RenderFormat::Png,
+        "svg" => hwp_cli::cli::RenderFormat::Svg,
+        "pdf" => hwp_cli::cli::RenderFormat::Pdf,
+        other => return Err(format!("알 수 없는 format: {other} (png|svg|pdf)")),
+    };
     let page = usize::try_from(arg_u64(args, "page", 1)?)
         .map_err(|_| "page가 플랫폼 범위를 넘습니다".to_string())?;
     let dpi = crate::commands::render::validated_dpi(arg_f64(args, "dpi", 120.0)?)
         .map_err(|error| error.to_string())?;
-    let doc = load_document(Path::new(path)).map_err(|e| e.to_string())?;
-    let out = hwp_render::render_document_pages(
-        &doc,
-        &hwp_render::RenderOptions {
-            dpi,
-            font_dirs: font_dirs_for(args, ctx)?,
-        },
-        Some(&[page]),
-    )
-    .map_err(|e| e.to_string())?;
-    let pixmap = &out.pages[0];
-    let png = pixmap
-        .encode_png()
-        .ok()
-        .ok_or_else(|| "PNG 인코딩 실패".to_string())?;
-    const MAX_MCP_PNG_BYTES: usize = 16 * 1024 * 1024;
-    if png.len() > MAX_MCP_PNG_BYTES {
-        return Err(format!(
-            "MCP 렌더 PNG가 응답 상한 {MAX_MCP_PNG_BYTES} bytes를 초과합니다: {} bytes",
-            png.len()
-        ));
+    let output_path = arg_str_opt(args, "output_path")?;
+    let doc = load_document(&path).map_err(|e| e.to_string())?;
+    let opts = hwp_render::RenderOptions {
+        dpi,
+        font_dirs: font_dirs_for(args, ctx)?,
+    };
+    let pages_spec = arg_str_opt(args, "pages")?;
+
+    // base64 return path: png without output_path. Only a single-page selection is allowed.
+    if matches!(format, hwp_cli::cli::RenderFormat::Png) && output_path.is_none() {
+        let selected = match pages_spec {
+            // Legacy contract: page keeps the same selection semantics as render_document_pages.
+            None => vec![page],
+            Some(spec) => {
+                let total = hwp_render::count_pages(&doc, &opts);
+                crate::commands::render::parse_pages(spec, total)
+                    .map_err(|error| error.to_string())?
+            }
+        };
+        if selected.len() != 1 {
+            return Err(
+                "다중 페이지 렌더는 output_path가 필요합니다 (페이지별 파일로 저장)".into(),
+            );
+        }
+        let page = selected[0];
+        let out = hwp_render::render_document_pages(&doc, &opts, Some(&[page]))
+            .map_err(|e| e.to_string())?;
+        let pixmap = &out.pages[0];
+        let png = pixmap
+            .encode_png()
+            .ok()
+            .ok_or_else(|| "PNG 인코딩 실패".to_string())?;
+        const MAX_MCP_PNG_BYTES: usize = 16 * 1024 * 1024;
+        if png.len() > MAX_MCP_PNG_BYTES {
+            return Err(format!(
+                "MCP 렌더 PNG가 응답 상한 {MAX_MCP_PNG_BYTES} bytes를 초과합니다: {} bytes",
+                png.len()
+            ));
+        }
+        let summary = format!(
+            "페이지 {page}/{} 렌더 ({}×{}px, {dpi}dpi). issues={}, info={}, complete={}, sha256={}",
+            out.total_pages,
+            pixmap.width(),
+            pixmap.height(),
+            out.report.issue_count,
+            out.report.info_count,
+            out.report.complete,
+            out.report.sha256,
+        );
+        return Ok(vec![text_content(&summary), image_content(&png)]);
     }
-    let summary = format!(
-        "페이지 {page}/{} 렌더 ({}×{}px, {dpi}dpi). issues={}, info={}, complete={}, sha256={}",
-        out.total_pages,
-        pixmap.width(),
-        pixmap.height(),
-        out.report.issue_count,
-        out.report.info_count,
-        out.report.complete,
-        out.report.sha256,
-    );
-    Ok(vec![text_content(&summary), image_content(&png)])
+
+    // File-publish path: svg/pdf, multiple pages, or an explicit output_path. Goes through
+    // the same atomic publish transaction as the CLI render and returns JSON metadata.
+    let output = checked_write_path(
+        ctx,
+        output_path.ok_or(
+            "svg/pdf 또는 output_path 없는 다중 페이지 렌더는 output_path 인자가 필요합니다",
+        )?,
+    )?;
+    // Each path derived from the CLI's per-page filename rule is also sandbox-checked.
+    let checked_derived = |base: &Path, page_no: usize, multi: bool| -> Result<PathBuf, String> {
+        let derived = crate::commands::render::page_path(base, page_no, multi);
+        let raw = derived
+            .to_str()
+            .ok_or_else(|| format!("출력 경로가 UTF-8이 아닙니다: {}", derived.display()))?;
+        checked_write_path(ctx, raw)
+    };
+    let (files, selected): (Vec<PathBuf>, Vec<usize>) = match format {
+        hwp_cli::cli::RenderFormat::Png => {
+            let total = hwp_render::count_pages(&doc, &opts);
+            let selected = match pages_spec {
+                Some(spec) => crate::commands::render::parse_pages(spec, total)
+                    .map_err(|error| error.to_string())?,
+                None => crate::commands::render::parse_pages(&page.to_string(), total)
+                    .map_err(|error| error.to_string())?,
+            };
+            let result = hwp_render::render_document_pages(&doc, &opts, Some(&selected))
+                .map_err(|e| e.to_string())?;
+            let multi = selected.len() > 1;
+            let mut outputs = Vec::with_capacity(selected.len());
+            let mut files = Vec::with_capacity(selected.len());
+            for (&page_no, pixmap) in selected.iter().zip(&result.pages) {
+                let derived = checked_derived(&output, page_no, multi)?;
+                let png = pixmap
+                    .encode_png()
+                    .map_err(|error| format!("PNG 인코딩 실패 ({}): {error}", derived.display()))?;
+                files.push(derived.clone());
+                outputs.push((derived, png));
+            }
+            crate::commands::render::publish_render_set(&outputs, &path)
+                .map_err(|error| error.to_string())?;
+            (files, selected)
+        }
+        hwp_cli::cli::RenderFormat::Svg => {
+            let result = hwp_render::render_document_svg(&doc, &opts);
+            let selected = match pages_spec {
+                Some(spec) => crate::commands::render::parse_pages(spec, result.pages.len())
+                    .map_err(|error| error.to_string())?,
+                None => crate::commands::render::parse_pages(&page.to_string(), result.pages.len())
+                    .map_err(|error| error.to_string())?,
+            };
+            let multi = selected.len() > 1;
+            let mut outputs = Vec::with_capacity(selected.len());
+            let mut files = Vec::with_capacity(selected.len());
+            for &page_no in &selected {
+                let derived = checked_derived(&output, page_no, multi)?;
+                files.push(derived.clone());
+                outputs.push((derived, result.pages[page_no - 1].as_bytes().to_vec()));
+            }
+            crate::commands::render::publish_render_set(&outputs, &path)
+                .map_err(|error| error.to_string())?;
+            (files, selected)
+        }
+        hwp_cli::cli::RenderFormat::Pdf => {
+            let total = hwp_render::count_pages(&doc, &opts);
+            let selected = match pages_spec {
+                Some(spec) => crate::commands::render::parse_pages(spec, total)
+                    .map_err(|error| error.to_string())?,
+                None => crate::commands::render::parse_pages(&page.to_string(), total)
+                    .map_err(|error| error.to_string())?,
+            };
+            // Unlike PNG/SVG, PDF is a single multi-page file (no per-page split).
+            let result = hwp_render::render_document_pdf(&doc, &opts, Some(&selected))
+                .map_err(|e| e.to_string())?;
+            crate::commands::render::write_render_bytes(&output, &path, &result.data)
+                .map_err(|error| error.to_string())?;
+            (vec![output.clone()], selected)
+        }
+    };
+    let metadata = json!({
+        "files": files,
+        "pages": selected,
+        "dpi": dpi,
+    });
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&metadata).unwrap_or_default(),
+    )])
 }
 
-fn tool_edit(args: &Value) -> Result<Vec<Value>, String> {
-    let input = arg_str(args, "input")?;
-    let output = arg_str(args, "output")?;
+/// hwp_grep match return cap — excess matches are cut and marked truncated=true.
+/// count is always the full pre-truncation total.
+const MAX_GREP_MATCHES: usize = 200;
+
+fn grep_result(matches: Vec<String>) -> Value {
+    grep_result_capped(matches, MAX_GREP_MATCHES)
+}
+
+fn grep_result_capped(matches: Vec<String>, cap: usize) -> Value {
+    let count = matches.len();
+    let truncated = count > cap;
+    let matches: Vec<String> = matches.into_iter().take(cap).collect();
+    json!({
+        "matches": matches,
+        "count": count,
+        "truncated": truncated,
+    })
+}
+
+fn tool_grep(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let pattern = arg_str(args, "pattern")?;
+    let ignore_case = arg_bool(args, "ignore_case", false)?;
+    let doc = load_document(&path).map_err(|e| e.to_string())?;
+    // Zero matches are a normal result, not an error (unlike the CLI grep exit(1) contract).
+    let matches =
+        crate::commands::grep::search(&doc, pattern, ignore_case).map_err(|e| e.to_string())?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&grep_result(matches)).unwrap_or_default(),
+    )])
+}
+
+fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let input = checked_read_path(ctx, arg_str(args, "input")?)?;
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     use crate::commands::edit::TypedEditOperation as Op;
 
     let mut operations = Vec::new();
@@ -595,7 +906,7 @@ fn tool_edit(args: &Value) -> Result<Vec<Value>, String> {
         };
         operations.push(Op::InsertImage {
             anchor: required_item_str(item, "insert_image", "anchor")?.to_string(),
-            path: PathBuf::from(required_item_str(item, "insert_image", "path")?),
+            path: checked_read_path(ctx, required_item_str(item, "insert_image", "path")?)?,
             size_mm,
         });
     }
@@ -603,7 +914,7 @@ fn tool_edit(args: &Value) -> Result<Vec<Value>, String> {
         let size_mm = optional_item_f32(item, "seal", "size_mm")?;
         operations.push(Op::Seal {
             anchor: required_item_str(item, "seal", "anchor")?.to_string(),
-            path: PathBuf::from(required_item_str(item, "seal", "path")?),
+            path: checked_read_path(ctx, required_item_str(item, "seal", "path")?)?,
             size_mm,
         });
     }
@@ -691,13 +1002,133 @@ fn tool_edit(args: &Value) -> Result<Vec<Value>, String> {
             col: required_item_u16(item, "split_cell", "col")?,
         });
     }
+    for item in arg_array(args, "add_table")? {
+        // The JSON boundary validates only the shape (an array of string arrays) — content
+        // problems like empty row data are rejected by the library (add_table), whose error propagates as-is.
+        let rows_value = item
+            .get("rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "add_table 항목에 rows 필요".to_string())?;
+        let mut rows = Vec::with_capacity(rows_value.len());
+        for row in rows_value {
+            let cells = row
+                .as_array()
+                .ok_or_else(|| "add_table.rows는 문자열 배열의 배열이어야 합니다".to_string())?;
+            let mut parsed_row = Vec::with_capacity(cells.len());
+            for cell in cells {
+                parsed_row.push(
+                    cell.as_str()
+                        .ok_or_else(|| "add_table.rows의 셀은 문자열이어야 합니다".to_string())?
+                        .to_string(),
+                );
+            }
+            rows.push(parsed_row);
+        }
+        operations.push(Op::AddTable {
+            anchor: required_item_str(item, "add_table", "anchor")?.to_string(),
+            rows,
+        });
+    }
+    for item in arg_array(args, "set_para")? {
+        // The CLI line-spacing (% integer | Npt) split into two numeric arguments — mutually exclusive.
+        let line_spacing = match (
+            optional_item_f32(item, "set_para", "line_spacing_pct")?,
+            optional_item_f32(item, "set_para", "line_spacing_pt")?,
+        ) {
+            (Some(_), Some(_)) => {
+                return Err(
+                    "set_para는 line_spacing_pct와 line_spacing_pt를 함께 지정할 수 없습니다"
+                        .into(),
+                );
+            }
+            (Some(pct), None) => Some((0, pct as i32)),
+            (None, Some(pt)) => Some((1, (pt * 100.0).round() as i32)),
+            (None, None) => None,
+        };
+        let props = hwp_convert::ParaProps {
+            line_spacing,
+            indent: optional_item_f32(item, "set_para", "indent_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            margin_left: optional_item_f32(item, "set_para", "left_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            margin_right: optional_item_f32(item, "set_para", "right_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            spacing_top: optional_item_f32(item, "set_para", "top_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            spacing_bottom: optional_item_f32(item, "set_para", "bottom_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+        };
+        operations.push(Op::SetPara {
+            pattern: required_item_str(item, "set_para", "pattern")?.to_string(),
+            props,
+        });
+    }
+    // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
+    if let Some(item) = args.get("set_page") {
+        if !item.is_object() {
+            return Err("set_page는 단일 객체여야 합니다".into());
+        }
+        let props = hwp_convert::PageProps {
+            width: optional_item_f32(item, "set_page", "width_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            height: optional_item_f32(item, "set_page", "height_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            margin_left: optional_item_f32(item, "set_page", "margin_left_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            margin_right: optional_item_f32(item, "set_page", "margin_right_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            margin_top: optional_item_f32(item, "set_page", "margin_top_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            margin_bottom: optional_item_f32(item, "set_page", "margin_bottom_mm")?
+                .map(crate::commands::edit::mm_to_hwpunit),
+            landscape: optional_item_str(item, "set_page", "orientation")?
+                .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+                    "landscape" | "가로" => Ok(true),
+                    "portrait" | "세로" => Ok(false),
+                    other => Err(format!(
+                        "알 수 없는 용지 방향: {other:?} (portrait/landscape)"
+                    )),
+                })
+                .transpose()?,
+        };
+        operations.push(Op::SetPage { props });
+    }
+    for item in arg_array(args, "delete_image")? {
+        operations.push(Op::DeleteImage {
+            anchor: required_item_str(item, "delete_image", "anchor")?.to_string(),
+        });
+    }
+    for item in arg_array(args, "delete_table")? {
+        let index = optional_item_usize(item, "delete_table", "index")?;
+        let anchor = optional_item_str(item, "delete_table", "anchor")?.map(str::to_string);
+        match (&index, &anchor) {
+            (Some(_), Some(_)) => {
+                return Err("delete_table 항목은 index와 anchor 중 하나만 지정해야 합니다".into());
+            }
+            (None, None) => {
+                return Err("delete_table 항목에 index 또는 anchor가 필요합니다".into());
+            }
+            _ => {}
+        }
+        operations.push(Op::DeleteTable { index, anchor });
+    }
+    for item in arg_array(args, "delete_field")? {
+        operations.push(Op::DeleteField {
+            name: required_item_str(item, "delete_field", "name")?.to_string(),
+        });
+    }
+    for item in arg_array(args, "delete_bookmark")? {
+        operations.push(Op::DeleteBookmark {
+            name: required_item_str(item, "delete_bookmark", "name")?.to_string(),
+        });
+    }
 
     let plan = crate::commands::edit::EditPlan::from_typed(
         operations,
         true,
         arg_bool(args, "allow_partial", false)?,
     );
-    let report = crate::commands::edit::execute(Path::new(input), Path::new(output), &plan)
+    let report = crate::commands::edit::execute(&input, &output, &plan)
         .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
@@ -710,35 +1141,95 @@ fn tool_edit(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_convert(args: &Value) -> Result<Vec<Value>, String> {
-    let input = arg_str(args, "input")?;
-    let output = arg_str(args, "output")?;
-    let embed_bin = arg_bool(args, "embed_bin", false)?;
-    let strict = arg_bool(args, "strict", true)?;
+/// Maps hwp_convert arguments to convert::execute parameters (a test seam verified without rendering).
+#[derive(Debug)]
+struct ConvertRequest {
+    input: PathBuf,
+    output: PathBuf,
+    to: Option<hwp_cli::cli::ConvertFormat>,
+    strict: bool,
+    embed_bin: bool,
+    media_dir: Option<PathBuf>,
+    with_header_footer: bool,
+    with_hidden: bool,
+    font_dirs: Vec<PathBuf>,
+}
+
+fn parse_convert_format(value: &str) -> Result<hwp_cli::cli::ConvertFormat, String> {
+    use hwp_cli::cli::ConvertFormat as F;
+    match value {
+        "hwp" => Ok(F::Hwp),
+        "hwpx" => Ok(F::Hwpx),
+        "md" | "markdown" => Ok(F::Md),
+        "json" => Ok(F::Json),
+        "html" => Ok(F::Html),
+        "pdf" => Ok(F::Pdf),
+        "odt" => Ok(F::Odt),
+        "txt" => Ok(F::Txt),
+        "csv" => Ok(F::Csv),
+        "docx" => Ok(F::Docx),
+        other => Err(format!(
+            "알 수 없는 to: {other} (hwp|hwpx|md|json|html|pdf|odt|txt|csv|docx)"
+        )),
+    }
+}
+
+fn convert_request(args: &Value, ctx: &Ctx) -> Result<ConvertRequest, String> {
+    let input = checked_read_path(ctx, arg_str(args, "input")?)?;
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
+    // An explicit to wins over output-extension inference, like the CLI --to.
+    let to = arg_str_opt(args, "to")?
+        .map(parse_convert_format)
+        .transpose()?;
+    // media_dir is the markdown image-extraction directory — checked as a write path.
+    let media_dir = arg_str_opt(args, "media_dir")?
+        .map(|raw| checked_write_path(ctx, raw))
+        .transpose()?;
+    Ok(ConvertRequest {
+        input,
+        output,
+        to,
+        strict: arg_bool(args, "strict", true)?,
+        embed_bin: arg_bool(args, "embed_bin", false)?,
+        media_dir,
+        with_header_footer: arg_bool(args, "with_header_footer", false)?,
+        with_hidden: arg_bool(args, "with_hidden", false)?,
+        // Passes the merged startup --font-dir + per-call font_dir list through — previously
+        // the list was always empty, so fonts set at MCP server startup never applied to PDF conversion.
+        font_dirs: font_dirs_for(args, ctx)?,
+    })
+}
+
+fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let request = convert_request(args, ctx)?;
     let report = crate::commands::convert::execute(
-        Path::new(input),
-        Path::new(output),
-        None,
-        strict,
+        &request.input,
+        &request.output,
+        request.to,
+        request.strict,
         false,
-        embed_bin,
-        &crate::commands::convert::MdOpts::default(),
-        Vec::new(),
+        request.embed_bin,
+        &crate::commands::convert::MdOpts {
+            media_dir: request.media_dir.as_deref(),
+            with_header_footer: request.with_header_footer,
+            with_hidden: request.with_hidden,
+        },
+        request.font_dirs,
     )
     .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
-            "input": input,
-            "output": output,
-            "strict": strict,
+            "input": request.input,
+            "output": request.output,
+            "strict": request.strict,
             "warnings": report.warnings,
         }))
         .unwrap_or_default(),
     )])
 }
 
-fn tool_new(args: &Value) -> Result<Vec<Value>, String> {
-    let output = arg_str(args, "output")?;
+fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     let input = match (arg_str_opt(args, "markdown")?, arg_str_opt(args, "json")?) {
         (Some(_), Some(_)) => return Err("markdown과 json은 동시에 지정할 수 없습니다".into()),
         (Some(markdown), None) => crate::commands::new::NewInput::Markdown {
@@ -758,7 +1249,7 @@ fn tool_new(args: &Value) -> Result<Vec<Value>, String> {
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let report = crate::commands::new::execute(Path::new(output), input, &metadata, None, false)
+    let report = crate::commands::new::execute(&output, input, &metadata, None, false)
         .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
@@ -769,7 +1260,7 @@ fn tool_new(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_compose(args: &Value) -> Result<Vec<Value>, String> {
+fn tool_compose(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
@@ -786,7 +1277,7 @@ fn tool_compose(args: &Value) -> Result<Vec<Value>, String> {
         return Err(format!("알 수 없는 hwp_compose 인자: {unknown}"));
     }
 
-    let output = arg_str(args, "output")?;
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     let explicit_format = arg_str_opt(args, "format")?
         .map(parse_spec_format)
         .transpose()?;
@@ -806,36 +1297,39 @@ fn tool_compose(args: &Value) -> Result<Vec<Value>, String> {
                 };
                 let format =
                     explicit_format.unwrap_or(hwp_cli::document_spec::SpecInputFormat::Json);
-                let base_dir = arg_str_opt(args, "base_dir")?
-                    .map_or_else(|| PathBuf::from("."), PathBuf::from);
+                let base_dir = match arg_str_opt(args, "base_dir")? {
+                    Some(raw) => checked_read_path(ctx, raw)?,
+                    None => checked_read_path(ctx, ".")?,
+                };
                 (input, format, base_dir, None)
             }
             (None, Some(spec_path)) => {
                 if args.get("base_dir").is_some() {
                     return Err("spec_path 사용 시 base_dir는 지정할 수 없습니다".into());
                 }
-                let path = Path::new(spec_path);
-                let input = crate::commands::compose::read_bounded(path)
+                let path = checked_read_path(ctx, spec_path)?;
+                let input = crate::commands::compose::read_bounded(&path)
                     .map_err(|error| format!("{error:#}"))?;
                 let format = explicit_format
                     .map(Ok)
-                    .unwrap_or_else(|| hwp_cli::document_spec::infer_input_format(path))
+                    .unwrap_or_else(|| hwp_cli::document_spec::infer_input_format(&path))
                     .map_err(|error| error.to_string())?;
                 let base_dir = path
                     .parent()
                     .unwrap_or_else(|| Path::new("."))
                     .to_path_buf();
-                (input, format, base_dir, Some(path.to_path_buf()))
+                (input, format, base_dir, Some(path))
             }
         };
     let report = crate::commands::compose::execute_text_with_source(
         &input,
         format,
         &base_dir,
-        Path::new(output),
+        &output,
         arg_bool(args, "dry_run", false)?,
         arg_bool(args, "allow_visual_fallback", false)?,
         source_path.as_deref(),
+        &ctx.roots,
     )
     .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
@@ -843,7 +1337,7 @@ fn tool_compose(args: &Value) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_template(args: &Value) -> Result<Vec<Value>, String> {
+fn tool_template(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
@@ -861,7 +1355,7 @@ fn tool_template(args: &Value) -> Result<Vec<Value>, String> {
     if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
         return Err(format!("알 수 없는 hwp_template 인자: {unknown}"));
     }
-    let output = arg_str(args, "output")?;
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     let explicit_template_format = arg_str_opt(args, "template_format")?
         .map(parse_spec_format)
         .transpose()?;
@@ -880,15 +1374,17 @@ fn tool_template(args: &Value) -> Result<Vec<Value>, String> {
                 let input = inline_contract_input(template, "template")?;
                 let format = explicit_template_format
                     .unwrap_or(hwp_cli::document_spec::SpecInputFormat::Json);
-                let base = arg_str_opt(args, "base_dir")?
-                    .map_or_else(|| PathBuf::from("."), PathBuf::from);
+                let base = match arg_str_opt(args, "base_dir")? {
+                    Some(raw) => checked_read_path(ctx, raw)?,
+                    None => checked_read_path(ctx, ".")?,
+                };
                 (input, format, base)
             }
             (None, Some(path)) => {
                 if args.get("base_dir").is_some() {
                     return Err("template_path 사용 시 base_dir는 지정할 수 없습니다".into());
                 }
-                let path = PathBuf::from(path);
+                let path = checked_read_path(ctx, path)?;
                 let input = crate::commands::template::read_bounded(
                     &path,
                     hwp_cli::template_spec::MAX_TEMPLATE_BYTES,
@@ -915,7 +1411,7 @@ fn tool_template(args: &Value) -> Result<Vec<Value>, String> {
             explicit_data_format.unwrap_or(hwp_cli::document_spec::SpecInputFormat::Json),
         ),
         (None, Some(path)) => {
-            let path = PathBuf::from(path);
+            let path = checked_read_path(ctx, path)?;
             let input = crate::commands::template::read_bounded(
                 &path,
                 hwp_cli::template_spec::MAX_DATA_BYTES,
@@ -937,9 +1433,10 @@ fn tool_template(args: &Value) -> Result<Vec<Value>, String> {
         &data_input,
         data_format,
         &base_dir,
-        Path::new(output),
+        &output,
         arg_bool(args, "dry_run", false)?,
         &source_paths,
+        &ctx.roots,
     )
     .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
@@ -965,13 +1462,13 @@ fn parse_spec_format(value: &str) -> Result<hwp_cli::document_spec::SpecInputFor
 }
 
 fn tool_diff(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
-    let input = arg_str(args, "input")?;
-    let reference = arg_str(args, "ref")?;
+    let input = checked_read_path(ctx, arg_str(args, "input")?)?;
+    let reference = checked_read_path(ctx, arg_str(args, "ref")?)?;
     let page = usize::try_from(arg_u64(args, "page", 1)?)
         .map_err(|_| "page가 플랫폼 범위를 넘습니다".to_string())?;
     let dpi = crate::commands::render::validated_dpi(arg_f64(args, "dpi", 120.0)?)
         .map_err(|error| error.to_string())?;
-    let doc = load_document(Path::new(input)).map_err(|e| e.to_string())?;
+    let doc = load_document(&input).map_err(|e| e.to_string())?;
     let out = hwp_render::render_document_pages(
         &doc,
         &hwp_render::RenderOptions {
@@ -981,7 +1478,7 @@ fn tool_diff(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         Some(&[page]),
     )
     .map_err(|e| e.to_string())?;
-    let refpx = hwp_render::load_png(Path::new(reference)).map_err(|e| e.to_string())?;
+    let refpx = hwp_render::load_png(&reference).map_err(|e| e.to_string())?;
     let (rep, _) = hwp_render::compare(&out.pages[0], &refpx, 16)?;
     let v = json!({
         "ink_ratio": rep.ink_ratio,
@@ -1008,13 +1505,25 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_read",
-            "description": "본문을 추출한다. format=json이면 전체 IR(구조)을, markdown/plain이면 텍스트를 반환.",
+            "description": "본문을 추출한다. format=json이면 전체 IR(구조)을, markdown/plain이면 텍스트를, html/csv면 해당 직렬화를 반환. with_header_footer/with_hidden은 plain/markdown에만 적용(cat과 동일). with_segments는 markdown 전용으로 {markdown, segments} JSON 봉투를 반환(오프셋은 전체 기준 절대 문자 위치).",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"},
-                "format": {"type": "string", "enum": ["plain", "markdown", "json"], "description": "기본 plain"},
+                "format": {"type": "string", "enum": ["plain", "markdown", "json", "html", "csv"], "description": "기본 plain"},
+                "with_header_footer": {"type": "boolean", "description": "머리말/꼬리말 포함(plain/markdown, 기본 false)"},
+                "with_hidden": {"type": "boolean", "description": "숨은 설명 포함(plain/markdown, 기본 false)"},
+                "with_segments": {"type": "boolean", "description": "markdown 전용. 문단 원본 좌표 세그먼트 맵 포함"},
                 "offset": {"type": "integer", "minimum": 0, "description": "UTF-8 byte offset, 기본 0"},
                 "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576, "description": "반환 byte 상한, 기본 262144"}
             }, "required": ["path"]}
+        }),
+        json!({
+            "name": "hwp_grep",
+            "description": "문단 텍스트 검색(본문·표 셀·글상자 재귀). {matches, count, truncated} 반환 — matches는 최대 200건, count는 전체 매칭 수, 0건 매칭도 정상 결과.",
+            "inputSchema": {"type": "object", "properties": {
+                "path": {"type": "string"},
+                "pattern": {"type": "string", "description": "검색할 부분 문자열"},
+                "ignore_case": {"type": "boolean", "description": "대소문자 무시, 기본 false"}
+            }, "required": ["path", "pattern"]}
         }),
         json!({
             "name": "hwp_list_fields",
@@ -1032,10 +1541,13 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_render",
-            "description": "지정 페이지를 PNG 이미지로 렌더해 반환(에이전트가 문서를 직접 본다).",
+            "description": "페이지를 렌더한다. 기본은 단일 페이지 PNG를 base64 이미지로 반환(에이전트가 문서를 직접 본다). format=svg/pdf 또는 다중 페이지 선택(pages)은 output_path가 필요하고, 파일로 저장 뒤 {files, pages, dpi} JSON을 반환한다(16MiB 응답 상한 우회). 페이지별 파일명은 CLI와 같이 <stem>-<N>.<ext>(단일 페이지면 경로 그대로), pdf는 단일 멀티페이지 파일.",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"},
-                "page": {"type": "integer", "description": "1-기반, 기본 1"},
+                "page": {"type": "integer", "description": "1-기반, 기본 1. pages와 함께 지정 불가"},
+                "pages": {"type": "string", "description": "페이지 범위 spec: \"1\", \"1-3\", \"all\". page와 함께 지정 불가"},
+                "format": {"type": "string", "enum": ["png", "svg", "pdf"], "description": "기본 png"},
+                "output_path": {"type": "string", "description": "출력 파일 경로. svg/pdf·다중 페이지 필수. png 다중 페이지는 페이지별 <stem>-<N>.png"},
                 "dpi": {"type": "number", "minimum": hwp_render::MIN_DPI, "maximum": hwp_render::MAX_DPI, "description": "기본 120"},
                 "font_dir": {"type": "string", "description": "추가 폰트 디렉터리(선택)"}
             }, "required": ["path"]}
@@ -1112,14 +1624,52 @@ fn tool_defs() -> Vec<Value> {
                 "split_cell": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"}, "row": {"type": "integer"}, "col": {"type": "integer"}},
                     "required": ["table", "row", "col"]}},
+                "add_table": {"type": "array", "items": {"type": "object", "properties": {
+                    "anchor": {"type": "string"},
+                    "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}},
+                    "required": ["anchor", "rows"]},
+                    "description": "앵커 문단 뒤에 균일 표 삽입(rows는 행(문자열 배열)의 배열)"},
+                "set_para": {"type": "array", "items": {"type": "object", "properties": {
+                    "pattern": {"type": "string"},
+                    "line_spacing_pct": {"type": "number", "description": "줄간격 비율(%)"},
+                    "line_spacing_pt": {"type": "number", "description": "고정 줄간격(pt) — pct와 함께 지정 불가"},
+                    "indent_mm": {"type": "number"}, "left_mm": {"type": "number"},
+                    "right_mm": {"type": "number"}, "top_mm": {"type": "number"},
+                    "bottom_mm": {"type": "number"}},
+                    "required": ["pattern"]},
+                    "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)"},
+                "set_page": {"type": "object", "properties": {
+                    "width_mm": {"type": "number"}, "height_mm": {"type": "number"},
+                    "margin_left_mm": {"type": "number"}, "margin_right_mm": {"type": "number"},
+                    "margin_top_mm": {"type": "number"}, "margin_bottom_mm": {"type": "number"},
+                    "orientation": {"type": "string", "enum": ["portrait", "landscape", "가로", "세로"]}},
+                    "description": "페이지 설정(모든 구역 정의에 적용): 용지 크기·여백(mm)·방향"},
+                "delete_image": {"type": "array", "items": {"type": "object", "properties": {
+                    "anchor": {"type": "string"}}, "required": ["anchor"]},
+                    "description": "앵커 문단의 그림 삭제"},
+                "delete_table": {"type": "array", "items": {"type": "object", "properties": {
+                    "index": {"type": "integer", "description": "0-기반 표 인덱스"},
+                    "anchor": {"type": "string", "description": "앵커 텍스트가 든 문단의 표"}}},
+                    "description": "표 삭제 — index와 anchor 중 정확히 하나"},
+                "delete_field": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}}, "required": ["name"]},
+                    "description": "이름으로 필드 삭제(hwp_list_fields로 이름 확인)"},
+                "delete_bookmark": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}}, "required": ["name"]},
+                    "description": "이름으로 책갈피 삭제(hwp_list_bookmarks로 이름 확인)"},
                 "allow_partial": {"type": "boolean", "description": "true면 일치한 요청만 게시; 기본 false"}
             }, "required": ["input", "output"]}
         }),
         json!({
             "name": "hwp_convert",
-            "description": "포맷 변환. 출력 확장자(.hwp/.hwpx/.json/.md/.html/.pdf/.odt)로 결정. pdf는 텍스트 선택가능 벡터(이미지 포함). embed_bin이면 JSON에 이미지 base64 임베드.",
+            "description": "포맷 변환. 기본은 출력 확장자(.hwp/.hwpx/.json/.md/.html/.pdf/.odt/.txt/.csv/.docx)로 결정하고 to가 있으면 CLI --to처럼 확장자보다 우선한다. pdf는 텍스트 선택가능 벡터(이미지 포함). embed_bin이면 JSON에 이미지 base64 임베드. media_dir/with_header_footer/with_hidden은 markdown 출력 전용.",
             "inputSchema": {"type": "object", "properties": {
                 "input": {"type": "string"}, "output": {"type": "string"},
+                "to": {"type": "string", "enum": ["hwp", "hwpx", "md", "json", "html", "pdf", "odt", "txt", "csv", "docx"], "description": "대상 포맷(선택). 지정 시 출력 확장자 추론보다 우선"},
+                "media_dir": {"type": "string", "description": "markdown 이미지 추출 디렉터리(선택, 기본 \"<출력스템>.media\")"},
+                "with_header_footer": {"type": "boolean", "description": "markdown에 머리말/꼬리말 포함, 기본 false"},
+                "with_hidden": {"type": "boolean", "description": "markdown에 숨은 설명 포함, 기본 false"},
+                "font_dir": {"type": "string", "description": "추가 폰트 디렉터리(선택) — pdf 렌더에 적용"},
                 "embed_bin": {"type": "boolean"},
                 "strict": {"type": "boolean", "description": "HWP/HWPX DROP 경고를 실패 처리; MCP 기본 true"}
             }, "required": ["input", "output"]}
@@ -1259,6 +1809,15 @@ mod tests {
                 env!("CARGO_MANIFEST_DIR"),
                 "/../../fonts"
             ))],
+            roots: Vec::new(),
+        }
+    }
+
+    /// Sandbox context allowing only the given root (canonicalized by the caller).
+    fn ctx_with_roots(roots: Vec<PathBuf>) -> Ctx {
+        Ctx {
+            font_dirs: Vec::new(),
+            roots,
         }
     }
 
@@ -1285,8 +1844,36 @@ mod tests {
         let v = call(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#);
         assert_eq!(v["jsonrpc"], "2.0");
         assert_eq!(v["id"], 1);
-        assert_eq!(v["result"]["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(
+            v["result"]["protocolVersion"],
+            SUPPORTED_PROTOCOL_VERSIONS[0]
+        );
         assert!(v["result"]["serverInfo"]["name"].is_string());
+    }
+
+    #[test]
+    fn initialize_프로토콜_버전_협상() {
+        // A supported version is echoed as-is.
+        for version in SUPPORTED_PROTOCOL_VERSIONS {
+            let v = call(&format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{version}"}}}}"#
+            ));
+            assert_eq!(v["result"]["protocolVersion"], version);
+        }
+        // An unsupported version gets the newest version in response.
+        let v = call(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#,
+        );
+        assert_eq!(
+            v["result"]["protocolVersion"],
+            SUPPORTED_PROTOCOL_VERSIONS[0]
+        );
+        // A missing protocolVersion parameter also gets the newest version.
+        let v = call(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
+        assert_eq!(
+            v["result"]["protocolVersion"],
+            SUPPORTED_PROTOCOL_VERSIONS[0]
+        );
     }
 
     #[test]
@@ -1314,6 +1901,7 @@ mod tests {
         for expected in [
             "hwp_info",
             "hwp_read",
+            "hwp_grep",
             "hwp_render",
             "hwp_edit",
             "hwp_convert",
@@ -1368,20 +1956,23 @@ mod tests {
                 .unwrap_or("test")
                 .replace(':', "-")
         ));
-        let result = tool_compose(&json!({
-            "spec": {
-                "version": "1.0",
-                "sections": [{
-                    "blocks": [{
-                        "type": "paragraph",
-                        "runs": [{"type": "text", "text": "본문"}]
+        let result = tool_compose(
+            &json!({
+                "spec": {
+                    "version": "1.0",
+                    "sections": [{
+                        "blocks": [{
+                            "type": "paragraph",
+                            "runs": [{"type": "text", "text": "본문"}]
+                        }]
                     }]
-                }]
-            },
-            "output": output,
-            "dry_run": true,
-            "allow_visual_fallback": true
-        }))
+                },
+                "output": output,
+                "dry_run": true,
+                "allow_visual_fallback": true
+            }),
+            &ctx(),
+        )
         .expect("compose dry-run");
         let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(report["dry_run"], true);
@@ -1391,22 +1982,25 @@ mod tests {
 
     #[test]
     fn compose_v2_rejects_deprecated_global_fallback_policy() {
-        let error = tool_compose(&json!({
-            "spec": {
-                "version": "2.0",
-                "document": {
-                    "version": "1.0",
-                    "sections": [{"blocks": [{
-                        "type": "paragraph",
-                        "runs": [{"type": "text", "text": "본문"}]
-                    }]}]
+        let error = tool_compose(
+            &json!({
+                "spec": {
+                    "version": "2.0",
+                    "document": {
+                        "version": "1.0",
+                        "sections": [{"blocks": [{
+                            "type": "paragraph",
+                            "runs": [{"type": "text", "text": "본문"}]
+                        }]}]
+                    },
+                    "visuals": []
                 },
-                "visuals": []
-            },
-            "output": "out.hwpx",
-            "dry_run": true,
-            "allow_visual_fallback": true
-        }))
+                "output": "out.hwpx",
+                "dry_run": true,
+                "allow_visual_fallback": true
+            }),
+            &ctx(),
+        )
         .unwrap_err();
         assert!(error.contains("\"code\": \"policy_conflict\""), "{error}");
         assert!(error.contains("$.policy"), "{error}");
@@ -1425,13 +2019,65 @@ mod tests {
 
     #[test]
     fn compose_rejects_unknown_argument() {
-        let error = tool_compose(&json!({
-            "spec": {"version": "1.0", "sections": []},
-            "output": "out.hwpx",
-            "unknown": true
-        }))
+        let error = tool_compose(
+            &json!({
+                "spec": {"version": "1.0", "sections": []},
+                "output": "out.hwpx",
+                "unknown": true
+            }),
+            &ctx(),
+        )
         .unwrap_err();
         assert!(error.contains("unknown"));
+    }
+
+    #[test]
+    fn compose_binds_spec_image_assets_to_sandbox_roots() {
+        let directory = std::env::temp_dir().join(format!(
+            "hwp-mcp-compose-roots-{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("assets")).unwrap();
+        std::fs::write(
+            directory.join("assets/image.gif"),
+            b"GIF89a\x02\x00\x01\x00",
+        )
+        .unwrap();
+        let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&directory).unwrap()]);
+        let output = directory.join("out.hwpx");
+
+        // A spec referencing assets below the sandbox root composes as usual (verifies roots plumbing).
+        let result = tool_compose(
+            &json!({
+                "spec": {
+                    "version": "1.0",
+                    "sections": [{
+                        "blocks": [{
+                            "type": "image",
+                            "path": "assets/image.gif",
+                            "width_mm": 20,
+                            "height_mm": 10,
+                            "placement": "inline"
+                        }]
+                    }]
+                },
+                "base_dir": directory,
+                "output": output,
+                "dry_run": true
+            }),
+            &sandbox,
+        )
+        .expect("image under sandbox root composes");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["dry_run"], true);
+        assert_eq!(report["images"], 1);
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -1445,24 +2091,27 @@ mod tests {
                 .replace(':', "-")
         ));
         let _ = std::fs::remove_file(&output);
-        let result = tool_template(&json!({
-            "template": {
-                "version": "1.0",
-                "variables": {"title": {"type": "string", "required": true}},
-                "source": {"mode": "compose", "document": {
+        let result = tool_template(
+            &json!({
+                "template": {
                     "version": "1.0",
-                    "sections": [{"blocks": [{
-                        "type": "paragraph",
-                        "runs": [{"type": "text", "text": {
-                            "node": "value", "pointer": "/values/title", "as": "text"
-                        }}]
-                    }]}]
-                }}
-            },
-            "data": {"version": "1.0", "values": {"title": "MCP"}},
-            "output": output,
-            "dry_run": true
-        }))
+                    "variables": {"title": {"type": "string", "required": true}},
+                    "source": {"mode": "compose", "document": {
+                        "version": "1.0",
+                        "sections": [{"blocks": [{
+                            "type": "paragraph",
+                            "runs": [{"type": "text", "text": {
+                                "node": "value", "pointer": "/values/title", "as": "text"
+                            }}]
+                        }]}]
+                    }}
+                },
+                "data": {"version": "1.0", "values": {"title": "MCP"}},
+                "output": output,
+                "dry_run": true
+            }),
+            &ctx(),
+        )
         .expect("template dry-run");
         let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(report["schema_version"], "1.0");
@@ -1479,7 +2128,7 @@ mod tests {
             "data": {"version": "1.0", "values": {}},
             "output": "out.hwpx",
             "unknown": true
-        }))
+        }), &ctx())
         .unwrap_err();
         assert!(error.contains("unknown"));
     }
@@ -1617,28 +2266,37 @@ mod tests {
         create_hwpx(&source, "{{수신}} 본문");
 
         std::fs::write(&edit_destination, b"EDIT ORIGINAL").unwrap();
-        let edit = tool_edit(&json!({
-            "input": source,
-            "output": edit_destination,
-            "replace": [{"from": "없는본문", "to": "값"}]
-        }));
+        let edit = tool_edit(
+            &json!({
+                "input": source,
+                "output": edit_destination,
+                "replace": [{"from": "없는본문", "to": "값"}]
+            }),
+            &ctx(),
+        );
         assert!(edit.is_err(), "0건 편집은 MCP도 실패");
         assert_eq!(std::fs::read(&edit_destination).unwrap(), b"EDIT ORIGINAL");
 
         std::fs::write(&fill_destination, b"FILL ORIGINAL").unwrap();
-        let fill = tool_fill(&json!({
-            "input": source,
-            "output": fill_destination,
-            "values": {"없는키": "값"}
-        }));
+        let fill = tool_fill(
+            &json!({
+                "input": source,
+                "output": fill_destination,
+                "values": {"없는키": "값"}
+            }),
+            &ctx(),
+        );
         assert!(fill.is_err(), "0건 fill은 MCP도 실패");
         assert_eq!(std::fs::read(&fill_destination).unwrap(), b"FILL ORIGINAL");
 
         std::fs::write(&convert_destination, b"CONVERT ORIGINAL").unwrap();
-        let convert = tool_convert(&json!({
-            "input": source,
-            "output": convert_destination
-        }));
+        let convert = tool_convert(
+            &json!({
+                "input": source,
+                "output": convert_destination
+            }),
+            &ctx(),
+        );
         assert!(convert.is_err(), "미지원 확장자 변환은 실패");
         assert_eq!(
             std::fs::read(&convert_destination).unwrap(),
@@ -1667,12 +2325,15 @@ mod tests {
         )
         .unwrap();
         let out = temp_file("fill-parts-out.hwpx");
-        let result = tool_fill(&json!({
-            "input": template,
-            "output": out,
-            "values": {},
-            "parts": {"본문": part.display().to_string()}
-        }));
+        let result = tool_fill(
+            &json!({
+                "input": template,
+                "output": out,
+                "values": {},
+                "parts": {"본문": part.display().to_string()}
+            }),
+            &ctx(),
+        );
         let content = result.expect("parts fill 성공");
         let text = content[0]["text"].as_str().unwrap_or_default();
         assert!(text.contains("\"parts\""), "리포트 모드: {text}");
@@ -1716,10 +2377,13 @@ mod tests {
             },
         );
         let document_json = hwp_convert::to_json(&doc, true, false).unwrap();
-        let result = tool_new(&json!({
-            "output": destination,
-            "json": document_json,
-        }));
+        let result = tool_new(
+            &json!({
+                "output": destination,
+                "json": document_json,
+            }),
+            &ctx(),
+        );
         assert!(
             result
                 .as_ref()
@@ -1735,15 +2399,18 @@ mod tests {
         let source = temp_file("partial-source.hwpx");
         let destination = temp_file("partial-destination.hwpx");
         create_hwpx(&source, "있는본문");
-        let content = tool_edit(&json!({
-            "input": source,
-            "output": destination,
-            "replace": [
-                {"from": "있는본문", "to": "바뀐본문"},
-                {"from": "없는본문", "to": "값"}
-            ],
-            "allow_partial": true
-        }))
+        let content = tool_edit(
+            &json!({
+                "input": source,
+                "output": destination,
+                "replace": [
+                    {"from": "있는본문", "to": "바뀐본문"},
+                    {"from": "없는본문", "to": "값"}
+                ],
+                "allow_partial": true
+            }),
+            &ctx(),
+        )
         .expect("allow_partial MCP edit");
         let report: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(report["applied"], 1);
@@ -1761,22 +2428,28 @@ mod tests {
     fn mcp_read_is_utf8_bounded_and_pageable() {
         let source = temp_file("bounded-read.hwpx");
         create_hwpx(&source, "가나다라마바사");
-        let first = tool_read(&json!({
-            "path": source,
-            "format": "plain",
-            "max_bytes": 7
-        }))
+        let first = tool_read(
+            &json!({
+                "path": source,
+                "format": "plain",
+                "max_bytes": 7
+            }),
+            &ctx(),
+        )
         .unwrap();
         assert!(first[0]["text"].as_str().unwrap().len() <= 7);
         let metadata: Value = serde_json::from_str(first[1]["text"].as_str().unwrap()).unwrap();
         assert_eq!(metadata["truncated"], true);
         let next = metadata["next_offset"].as_u64().unwrap();
-        let second = tool_read(&json!({
-            "path": source,
-            "format": "plain",
-            "offset": next,
-            "max_bytes": 7
-        }))
+        let second = tool_read(
+            &json!({
+                "path": source,
+                "format": "plain",
+                "offset": next,
+                "max_bytes": 7
+            }),
+            &ctx(),
+        )
         .unwrap();
         assert!(!second[0]["text"].as_str().unwrap().is_empty());
         let _ = std::fs::remove_file(source);
@@ -1788,11 +2461,14 @@ mod tests {
         let destination = temp_file("delimiter-destination.hwpx");
         create_hwpx(&source, "A=>B");
 
-        tool_edit(&json!({
-            "input": source,
-            "output": destination,
-            "replace": [{"from": "A=>B", "to": "X=Y=>Z"}]
-        }))
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": destination,
+                "replace": [{"from": "A=>B", "to": "X=Y=>Z"}]
+            }),
+            &ctx(),
+        )
         .expect("구조화 치환");
 
         let edited = load_document(&destination).unwrap();
@@ -1809,15 +2485,18 @@ mod tests {
         let destination = temp_file("typed-structural-destination.hwpx");
         create_hwpx(&source, "Anchor=>Here");
 
-        tool_edit(&json!({
-            "input": source,
-            "output": destination,
-            "set_meta": [{"key": "title", "value": "A=B=>C"}],
-            "insert_para": [{
-                "anchor": "Anchor=>Here",
-                "text": "New=>Text=1"
-            }]
-        }))
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": destination,
+                "set_meta": [{"key": "title", "value": "A=B=>C"}],
+                "insert_para": [{
+                    "anchor": "Anchor=>Here",
+                    "text": "New=>Text=1"
+                }]
+            }),
+            &ctx(),
+        )
         .expect("구조화 metadata/문단 편집");
 
         let edited = load_document(&destination).unwrap();
@@ -1844,5 +2523,932 @@ mod tests {
         );
         assert_eq!(content[1]["type"], "image");
         let _ = std::fs::remove_file(source);
+    }
+
+    /// Creates (base, root, outside) directories for sandbox tests.
+    /// Windows-CI compatible: uses only the real temp dir, and root is canonicalized before entering ctx.
+    fn sandbox_dirs(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base =
+            std::env::temp_dir().join(format!("hwp-cli-mcp-sandbox-{tag}-{}", std::process::id()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        (base, root, outside)
+    }
+
+    #[test]
+    fn sandbox_루트없으면_검사없이_통과() {
+        let ctx = ctx_with_roots(Vec::new());
+        // Nonexistent paths and '..' pass through with the previous behavior.
+        let read = checked_read_path(&ctx, "no/such/file.hwpx").unwrap();
+        assert_eq!(read, PathBuf::from("no/such/file.hwpx"));
+        let write = checked_write_path(&ctx, "../out.hwpx").unwrap();
+        assert_eq!(write, PathBuf::from("../out.hwpx"));
+    }
+
+    #[test]
+    fn sandbox_루트밖_읽기_거부() {
+        let (base, root, outside) = sandbox_dirs("read");
+        let document = outside.join("doc.hwpx");
+        create_hwpx(&document, "본문");
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let error = tool_read(&json!({"path": document}), &ctx).unwrap_err();
+        assert!(error.contains("--root"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sandbox_루트밖_쓰기_거부() {
+        let (base, root, outside) = sandbox_dirs("write");
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "{{이름}}");
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let output = outside.join("out.hwpx");
+        let error = tool_fill(
+            &json!({
+                "input": source,
+                "output": output,
+                "values": {"이름": "값"}
+            }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(error.contains("--root"), "{error}");
+        assert!(!output.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sandbox_상위경로_쓰기_거부() {
+        let (base, root, _outside) = sandbox_dirs("dotdot");
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "{{이름}}");
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let error = tool_fill(
+            &json!({
+                "input": source,
+                "output": root.join("sub").join("..").join("escape.hwpx"),
+                "values": {"이름": "값"}
+            }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(error.contains(".."), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_심볼링크_덮어쓰기_우회_거부() {
+        let (base, root, outside) = sandbox_dirs("symlink");
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "{{이름}}");
+        let victim = outside.join("victim.hwpx");
+        std::fs::write(&victim, b"VICTIM").unwrap();
+        let link = root.join("link.hwpx");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let error = tool_fill(
+            &json!({
+                "input": source,
+                "output": link,
+                "values": {"이름": "값"}
+            }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(error.contains("--root"), "{error}");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"VICTIM");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sandbox_루트안_읽기쓰기_허용() {
+        let (base, root, _outside) = sandbox_dirs("inside");
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "{{이름}}");
+        let output = root.join("out.hwpx");
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        tool_fill(
+            &json!({
+                "input": source,
+                "output": output,
+                "values": {"이름": "값"}
+            }),
+            &ctx,
+        )
+        .expect("루트 안 fill");
+        let doc = load_document(&output).unwrap();
+        assert!(doc.plain_text().contains("값"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sandbox_호출당_font_dir도_검사() {
+        let (base, root, outside) = sandbox_dirs("fontdir");
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "본문");
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let error = tool_render(&json!({"path": source, "font_dir": outside}), &ctx).unwrap_err();
+        assert!(error.contains("--root"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sandbox_edit_중첩_이미지경로_거부() {
+        let (base, root, outside) = sandbox_dirs("edit-image");
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "앵커");
+        let image = outside.join("image.png");
+        std::fs::write(&image, b"PNG").unwrap();
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": root.join("out.hwpx"),
+                "insert_image": [{"anchor": "앵커", "path": image}]
+            }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(error.contains("--root"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Counts controls matched across body, table cells, and text boxes recursively (for typed-edit round-trip checks).
+    fn count_controls(
+        doc: &hwp_model::Document,
+        matches: fn(&hwp_model::Control) -> bool,
+    ) -> usize {
+        fn in_para(para: &hwp_model::Paragraph, matches: fn(&hwp_model::Control) -> bool) -> usize {
+            let mut n = 0;
+            for control in &para.controls {
+                if matches(control) {
+                    n += 1;
+                }
+                match control {
+                    hwp_model::Control::Table(table) => {
+                        for cell in &table.cells {
+                            for p in &cell.paragraphs {
+                                n += in_para(p, matches);
+                            }
+                        }
+                    }
+                    hwp_model::Control::Generic(g) => {
+                        for list in &g.paragraph_lists {
+                            for p in &list.paragraphs {
+                                n += in_para(p, matches);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            n
+        }
+        doc.sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .map(|para| in_para(para, matches))
+            .sum()
+    }
+
+    #[test]
+    fn tools_list_exposes_typed_edit_parity_args() {
+        let tools = tool_defs();
+        let edit = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_edit")
+            .unwrap();
+        let properties = &edit["inputSchema"]["properties"];
+        for key in [
+            "add_table",
+            "set_para",
+            "set_page",
+            "delete_image",
+            "delete_table",
+            "delete_field",
+            "delete_bookmark",
+        ] {
+            assert!(
+                properties.get(key).is_some(),
+                "hwp_edit 스키마에 {key} 누락"
+            );
+        }
+        // set_page is a single object; the rest are arrays.
+        assert_eq!(properties["set_page"]["type"], "object");
+        assert_eq!(properties["add_table"]["type"], "array");
+    }
+
+    #[test]
+    fn mcp_typed_add_table_then_delete_table_round_trip() {
+        let source = temp_file("typed-add-table-source.hwpx");
+        let mid = temp_file("typed-add-table-mid.hwpx");
+        let out = temp_file("typed-add-table-out.hwpx");
+        create_hwpx(&source, "머리말\n\n끝말");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mid,
+                "add_table": [{"anchor": "머리말", "rows": [["가", "나"], ["1", "2"]]}]
+            }),
+            &ctx(),
+        )
+        .expect("add_table 편집");
+        let doc = load_document(&mid).unwrap();
+        assert_eq!(
+            count_controls(&doc, |c| matches!(c, hwp_model::Control::Table(_))),
+            1,
+            "표가 하나 있어야 한다"
+        );
+        let plain = doc.plain_text();
+        assert!(
+            plain.contains('가') && plain.contains('1'),
+            "셀 텍스트: {plain}"
+        );
+
+        tool_edit(
+            &json!({
+                "input": mid,
+                "output": out,
+                "delete_table": [{"index": 0}]
+            }),
+            &ctx(),
+        )
+        .expect("delete_table 편집");
+        let doc = load_document(&out).unwrap();
+        assert_eq!(
+            count_controls(&doc, |c| matches!(c, hwp_model::Control::Table(_))),
+            0,
+            "표가 삭제되어야 한다"
+        );
+        let plain = doc.plain_text();
+        assert!(
+            !plain.contains('가') && plain.contains("끝말"),
+            "결과: {plain}"
+        );
+        for path in [&source, &mid, &out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_typed_set_para_and_set_page_round_trip() {
+        let source = temp_file("typed-set-para-source.hwpx");
+        let out = temp_file("typed-set-para-out.hwpx");
+        create_hwpx(&source, "본문 문단입니다.");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": out,
+                "set_para": [{"pattern": "본문", "line_spacing_pct": 130, "indent_mm": 5}],
+                "set_page": {"width_mm": 200, "orientation": "landscape"}
+            }),
+            &ctx(),
+        )
+        .expect("set_para/set_page 편집");
+
+        let doc = load_document(&out).unwrap();
+        let para = doc.sections[0]
+            .paragraphs
+            .iter()
+            .find(|p| p.plain_text().contains("본문"))
+            .expect("본문 문단");
+        let shape = &doc.header.para_shapes[para.para_shape.0 as usize];
+        assert_eq!(shape.line_spacing_type, 0, "비율 줄간격");
+        assert_eq!(shape.line_spacing, 130);
+        // The IR uses double-HWPUNIT units (hwp5 PARA_SHAPE).
+        assert_eq!(shape.indent, 2 * crate::commands::edit::mm_to_hwpunit(5.0));
+
+        let page = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                hwp_model::Control::SectionDef(secd) => secd.page.as_ref(),
+                _ => None,
+            })
+            .expect("구역 정의의 용지 정보");
+        assert_eq!(page.width.0, crate::commands::edit::mm_to_hwpunit(200.0));
+        assert_eq!(page.attr & 1, 1, "landscape 비트");
+        for path in [&source, &out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_typed_delete_image_round_trip() {
+        let source = temp_file("typed-delete-image-source.hwpx");
+        let mid = temp_file("typed-delete-image-mid.hwpx");
+        let out = temp_file("typed-delete-image-out.hwpx");
+        let png = temp_file("typed-delete-image.png");
+        create_hwpx(&source, "사진: 여기");
+        // Minimal PNG header (IHDR 96x96) — insert_image only parses the size.
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend([0, 0, 0, 13]);
+        bytes.extend(b"IHDR");
+        bytes.extend(96u32.to_be_bytes());
+        bytes.extend(96u32.to_be_bytes());
+        bytes.extend([0u8; 8]);
+        std::fs::write(&png, &bytes).unwrap();
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mid,
+                "insert_image": [{"anchor": "사진:", "path": png}]
+            }),
+            &ctx(),
+        )
+        .expect("insert_image 편집");
+        let doc = load_document(&mid).unwrap();
+        assert_eq!(
+            count_controls(&doc, |c| matches!(c, hwp_model::Control::Picture(_))),
+            1,
+            "그림이 하나 있어야 한다"
+        );
+
+        tool_edit(
+            &json!({
+                "input": mid,
+                "output": out,
+                "delete_image": [{"anchor": "사진:"}]
+            }),
+            &ctx(),
+        )
+        .expect("delete_image 편집");
+        let doc = load_document(&out).unwrap();
+        assert_eq!(
+            count_controls(&doc, |c| matches!(c, hwp_model::Control::Picture(_))),
+            0,
+            "그림이 삭제되어야 한다"
+        );
+        for path in [&source, &mid, &out, &png] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_typed_delete_field_and_bookmark_round_trip() {
+        let source = temp_file("typed-delete-field-source.hwpx");
+        let mid = temp_file("typed-delete-field-mid.hwpx");
+        let out = temp_file("typed-delete-field-out.hwpx");
+        create_hwpx(&source, "참조: 본문");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mid,
+                "create_field": [{"anchor": "참조:", "name": "수신", "value": "홍길동"}],
+                "create_bookmark": [{"anchor": "참조:", "name": "참조점"}]
+            }),
+            &ctx(),
+        )
+        .expect("create_field/create_bookmark 편집");
+        let doc = load_document(&mid).unwrap();
+        assert!(
+            hwp_convert::list_fields(&doc)
+                .iter()
+                .any(|f| f.name.as_deref() == Some("수신")),
+            "필드가 생성되어야 한다"
+        );
+        assert!(
+            hwp_convert::list_bookmarks(&doc)
+                .iter()
+                .any(|b| b.name == "참조점"),
+            "책갈피가 생성되어야 한다"
+        );
+
+        let content = tool_edit(
+            &json!({
+                "input": mid,
+                "output": out,
+                "delete_field": [{"name": "수신"}],
+                "delete_bookmark": [{"name": "참조점"}]
+            }),
+            &ctx(),
+        )
+        .expect("delete_field/delete_bookmark 편집");
+        let report: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["applied"], 2);
+        let doc = load_document(&out).unwrap();
+        assert!(
+            !hwp_convert::list_fields(&doc)
+                .iter()
+                .any(|f| f.name.as_deref() == Some("수신")),
+            "필드가 삭제되어야 한다"
+        );
+        assert!(
+            !hwp_convert::list_bookmarks(&doc)
+                .iter()
+                .any(|b| b.name == "참조점"),
+            "책갈피가 삭제되어야 한다"
+        );
+        for path in [&source, &mid, &out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_typed_edit_validation_errors() {
+        // Boundary-validation errors fire before any file is read (input/output are dummy paths).
+        let dummy = json!({"input": "in.hwpx", "output": "out.hwpx"});
+
+        let mut args = dummy.clone();
+        args["delete_table"] = json!([{"index": 0, "anchor": "표"}]);
+        let error = tool_edit(&args, &ctx()).unwrap_err();
+        assert!(error.contains("delete_table"), "{error}");
+
+        let mut args = dummy.clone();
+        args["delete_table"] = json!([{}]);
+        let error = tool_edit(&args, &ctx()).unwrap_err();
+        assert!(error.contains("delete_table"), "{error}");
+
+        let mut args = dummy.clone();
+        args["set_para"] =
+            json!([{"pattern": "본문", "line_spacing_pct": 130, "line_spacing_pt": 14}]);
+        let error = tool_edit(&args, &ctx()).unwrap_err();
+        assert!(error.contains("line_spacing"), "{error}");
+
+        let mut args = dummy.clone();
+        args["set_page"] = json!({"orientation": "sideways"});
+        let error = tool_edit(&args, &ctx()).unwrap_err();
+        assert!(error.contains("용지 방향"), "{error}");
+
+        let mut args = dummy.clone();
+        args["set_page"] = json!([{"width_mm": 200}]);
+        let error = tool_edit(&args, &ctx()).unwrap_err();
+        assert!(error.contains("객체"), "{error}");
+
+        let mut args = dummy.clone();
+        args["add_table"] = json!([{"anchor": "머리말", "rows": [["a"], [1]]}]);
+        let error = tool_edit(&args, &ctx()).unwrap_err();
+        assert!(error.contains("add_table"), "{error}");
+
+        let mut args = dummy.clone();
+        args["add_table"] = json!([{"anchor": "머리말", "rows": "x"}]);
+        let error = tool_edit(&args, &ctx()).unwrap_err();
+        assert!(error.contains("add_table"), "{error}");
+
+        // Empty rows have the right shape but no content — the library rejects them and that error propagates.
+        let source = temp_file("typed-add-table-empty-source.hwpx");
+        let out = temp_file("typed-add-table-empty-out.hwpx");
+        create_hwpx(&source, "머리말");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": out,
+                "add_table": [{"anchor": "머리말", "rows": []}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(error.contains("표 행 데이터"), "{error}");
+        assert!(!out.exists(), "실패한 편집은 출력을 게시하지 않는다");
+        let _ = std::fs::remove_file(&source);
+    }
+
+    // ---- read/convert/render parity + hwp_grep (WI-4) ----
+
+    #[test]
+    fn mcp_read_html_and_csv_formats() {
+        let source = temp_file("read-html-csv.hwpx");
+        create_hwpx(
+            &source,
+            "본문\n\n<table>\n<tr><td>가</td><td>나</td></tr>\n</table>\n",
+        );
+        let html = tool_read(&json!({"path": source, "format": "html"}), &ctx()).unwrap();
+        let html_text = html[0]["text"].as_str().unwrap();
+        assert!(html_text.contains('<'), "html 출력: {html_text}");
+        let csv = tool_read(&json!({"path": source, "format": "csv"}), &ctx()).unwrap();
+        let csv_text = csv[0]["text"].as_str().unwrap();
+        assert!(
+            csv_text.contains('가') && csv_text.contains('나'),
+            "csv 출력: {csv_text}"
+        );
+        let _ = std::fs::remove_file(source);
+    }
+
+    /// Builds an IR containing header/hidden-note controls (saved as .json, load_document
+    /// deserializes it verbatim, so it round-trips without writer loss).
+    fn create_ir_json_with_hidden_and_header(path: &Path) {
+        let mut doc = hwp_convert::from_markdown("본문\n\n숨은메모\n\n머리말텍스트");
+        let hidden_para = doc.sections[0].paragraphs.remove(1);
+        let header_para = doc.sections[0].paragraphs.remove(1);
+        let body = &mut doc.sections[0].paragraphs[0];
+        // from_markdown paragraphs already carry controls (section definitions, etc.),
+        // so indexes are captured at push time.
+        let hidden_index = body.controls.len() as u32;
+        body.controls
+            .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"hcnt",
+                data: Vec::new(),
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![hidden_para],
+                }],
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+            }));
+        let header_index = body.controls.len() as u32;
+        body.controls
+            .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"head",
+                data: Vec::new(),
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![header_para],
+                }],
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+            }));
+        body.chars.insert(
+            0,
+            hwp_model::HwpChar::ExtCtrl {
+                code: hwp_model::ctrl_char::HEADER_FOOTER,
+                ctrl_id: *b"head",
+                payload: vec![0; 12],
+                ctrl_index: Some(header_index),
+            },
+        );
+        body.chars.insert(
+            0,
+            hwp_model::HwpChar::ExtCtrl {
+                code: hwp_model::ctrl_char::HIDDEN_COMMENT,
+                ctrl_id: *b"hcnt",
+                payload: vec![0; 12],
+                ctrl_index: Some(hidden_index),
+            },
+        );
+        let document_json = hwp_convert::to_json(&doc, true, false).unwrap();
+        std::fs::write(path, document_json).unwrap();
+    }
+
+    #[test]
+    fn mcp_read_with_hidden_and_header_footer_flags() {
+        let source = temp_file("read-with-flags.json");
+        create_ir_json_with_hidden_and_header(&source);
+
+        let plain = tool_read(&json!({"path": source, "format": "plain"}), &ctx()).unwrap();
+        let text = plain[0]["text"].as_str().unwrap();
+        assert!(!text.contains("숨은메모"), "기본은 숨은 설명 제외: {text}");
+        assert!(!text.contains("머리말텍스트"), "기본은 머리말 제외: {text}");
+
+        let hidden = tool_read(
+            &json!({"path": source, "format": "plain", "with_hidden": true}),
+            &ctx(),
+        )
+        .unwrap();
+        let text = hidden[0]["text"].as_str().unwrap();
+        assert!(text.contains("숨은메모"), "with_hidden: {text}");
+        assert!(!text.contains("머리말텍스트"), "with_hidden만: {text}");
+
+        let header = tool_read(
+            &json!({"path": source, "format": "markdown", "with_header_footer": true}),
+            &ctx(),
+        )
+        .unwrap();
+        let text = header[0]["text"].as_str().unwrap();
+        assert!(text.contains("머리말텍스트"), "with_header_footer: {text}");
+        assert!(!text.contains("숨은메모"), "with_header_footer만: {text}");
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn mcp_read_with_segments_envelope_and_absolute_offsets() {
+        let source = temp_file("read-segments.hwpx");
+        create_hwpx(&source, "가나다\n\n마바사");
+
+        let full = tool_read(
+            &json!({"path": source, "format": "markdown", "with_segments": true}),
+            &ctx(),
+        )
+        .unwrap();
+        let envelope: Value =
+            serde_json::from_str(full[0]["text"].as_str().unwrap()).expect("JSON 봉투");
+        let markdown = envelope["markdown"].as_str().unwrap();
+        assert!(
+            markdown.contains("가나다") && markdown.contains("마바사"),
+            "{markdown}"
+        );
+        let full_segments = envelope["segments"].as_array().unwrap();
+        assert!(
+            full_segments.len() >= 2,
+            "문단별 세그먼트: {full_segments:?}"
+        );
+
+        // A 2-character window from the middle of the second paragraph ("바") — segment offsets must stay absolute against the full markdown.
+        let offset = markdown.find("바").unwrap();
+        let window = tool_read(
+            &json!({
+                "path": source,
+                "format": "markdown",
+                "with_segments": true,
+                "offset": offset,
+                "max_bytes": 6
+            }),
+            &ctx(),
+        )
+        .unwrap();
+        let windowed: Value = serde_json::from_str(window[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(windowed["markdown"].as_str().unwrap(), "바사");
+        let window_segments = windowed["segments"].as_array().unwrap();
+        assert!(!window_segments.is_empty(), "창과 교차하는 세그먼트");
+        assert!(
+            window_segments.len() < full_segments.len(),
+            "창 밖 세그먼트는 걸러야: {window_segments:?}"
+        );
+        // Proof of absolute offsets: window-relative remapping would put start near 0,
+        // but absolute values point at the character position in the full markdown.
+        let char_start = markdown[..offset].chars().count();
+        let char_end = char_start + 2;
+        for segment in window_segments {
+            let start = segment["start"].as_u64().unwrap() as usize;
+            let end = segment["end"].as_u64().unwrap() as usize;
+            assert!(
+                start < char_end && end > char_start,
+                "창 [{char_start}, {char_end})과 교차해야: {segment}"
+            );
+            assert!(
+                full_segments.contains(segment),
+                "오프셋이 전체 기준 절대값으로 동일해야: {segment}"
+            );
+        }
+        // Pagination metadata is kept as the second content item.
+        let metadata: Value = serde_json::from_str(window[1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["truncated"], true);
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn mcp_read_with_segments_requires_markdown() {
+        let source = temp_file("read-segments-reject.hwpx");
+        create_hwpx(&source, "본문");
+        for format in ["plain", "json", "html", "csv"] {
+            let error = tool_read(
+                &json!({"path": source, "format": format, "with_segments": true}),
+                &ctx(),
+            )
+            .unwrap_err();
+            assert!(error.contains("markdown"), "{format}: {error}");
+        }
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn mcp_convert_to_overrides_extension_and_accepts_markdown_options() {
+        let source = temp_file("convert-to-source.hwpx");
+        let output = temp_file("convert-to-output.txt");
+        create_hwpx(&source, "본문");
+        // to=json wins over the .txt extension (same precedence as the CLI --to).
+        tool_convert(
+            &json!({
+                "input": source,
+                "output": output,
+                "to": "json",
+                "media_dir": "convert-to-media",
+                "with_header_footer": true,
+                "with_hidden": true
+            }),
+            &ctx(),
+        )
+        .expect("to 명시 변환");
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).expect("JSON 출력");
+        assert!(written["sections"].is_array(), "IR JSON: {written}");
+        for path in [&source, &output] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_convert_request_merges_font_dirs_and_maps_args() {
+        // Seam verified without rendering: a pdf-target conversion receives the startup/per-call font directories.
+        let mut sandbox_ctx = ctx();
+        sandbox_ctx.font_dirs = vec![PathBuf::from("/launch-fonts")];
+        let request = convert_request(
+            &json!({
+                "input": "in.hwpx",
+                "output": "out.pdf",
+                "to": "pdf",
+                "font_dir": "/call-fonts",
+                "media_dir": "media",
+                "with_header_footer": true,
+                "with_hidden": true
+            }),
+            &sandbox_ctx,
+        )
+        .expect("convert_request");
+        assert!(matches!(request.to, Some(hwp_cli::cli::ConvertFormat::Pdf)));
+        assert_eq!(
+            request.font_dirs,
+            vec![PathBuf::from("/launch-fonts"), PathBuf::from("/call-fonts")],
+            "PDF 변환은 병합된 폰트 디렉터리를 받아야 한다"
+        );
+        assert_eq!(request.media_dir, Some(PathBuf::from("media")));
+        assert!(request.with_header_footer && request.with_hidden);
+
+        let error = convert_request(
+            &json!({"input": "in.hwpx", "output": "out.x", "to": "bogus"}),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(error.contains("to"), "{error}");
+    }
+
+    #[test]
+    fn mcp_convert_media_dir_is_sandbox_checked() {
+        let (base, root, outside) = sandbox_dirs("convert-media");
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "본문");
+        let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let error = convert_request(
+            &json!({
+                "input": source,
+                "output": root.join("out.md"),
+                "media_dir": outside.join("media")
+            }),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(error.contains("--root"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Synthetic 3-page document (same break_type trick as the existing mcp_render_rasterizes test).
+    fn create_three_page_hwpx(path: &Path) {
+        let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n\n셋째 쪽\n");
+        doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+        doc.sections[0].paragraphs[2].header.break_type |= 0x04;
+        hwpx::write_document(&doc, path).unwrap();
+    }
+
+    #[test]
+    fn mcp_render_rejects_conflicting_or_missing_page_args() {
+        let source = temp_file("render-args.hwpx");
+        // The document must have 3 pages for the "1-2" selection to be genuinely multi-page (parse_pages clamps to the page count).
+        create_three_page_hwpx(&source);
+        // page and pages are mutually exclusive.
+        let error =
+            tool_render(&json!({"path": source, "page": 1, "pages": "1-2"}), &ctx()).unwrap_err();
+        assert!(error.contains("pages"), "{error}");
+        // svg/pdf require output_path.
+        for format in ["svg", "pdf"] {
+            let error =
+                tool_render(&json!({"path": source, "format": format}), &ctx()).unwrap_err();
+            assert!(error.contains("output_path"), "{format}: {error}");
+        }
+        // Multi-page png requires output_path too.
+        let error =
+            tool_render(&json!({"path": source, "pages": "1-2", "dpi": 36}), &ctx()).unwrap_err();
+        assert!(error.contains("output_path"), "{error}");
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn mcp_render_multi_page_png_writes_numbered_files_and_metadata() {
+        let source = temp_file("render-multi-source.hwpx");
+        let output = temp_file("render-multi.png");
+        create_three_page_hwpx(&source);
+        let content = tool_render(
+            &json!({"path": source, "pages": "2-3", "dpi": 36, "output_path": output}),
+            &ctx(),
+        )
+        .expect("다중 페이지 png");
+        // Unlike the base64 path, this returns only JSON metadata without image content.
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        let metadata: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["pages"], json!([2, 3]));
+        assert_eq!(metadata["dpi"].as_f64(), Some(36.0));
+        let page2 = output.with_file_name("render-multi-2.png");
+        let page3 = output.with_file_name("render-multi-3.png");
+        let files: Vec<PathBuf> = metadata["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| PathBuf::from(f.as_str().unwrap()))
+            .collect();
+        assert_eq!(files, vec![page2.clone(), page3.clone()]);
+        for path in [&page2, &page3] {
+            let bytes = std::fs::read(path).expect("페이지 파일 존재");
+            assert!(
+                bytes.starts_with(b"\x89PNG"),
+                "PNG 매직: {}",
+                path.display()
+            );
+        }
+        assert!(!output.exists(), "다중 페이지는 번호 파일만 쓴다");
+        for path in [&source, &page2, &page3] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_render_svg_and_pdf_write_files_with_output_path() {
+        let source = temp_file("render-vector-source.hwpx");
+        create_three_page_hwpx(&source);
+
+        // A single-page svg is written to output_path as-is.
+        let svg = temp_file("render-single.svg");
+        let content = tool_render(
+            &json!({"path": source, "format": "svg", "dpi": 36, "output_path": svg}),
+            &ctx(),
+        )
+        .expect("svg 단일 페이지");
+        let metadata: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["pages"], json!([1]));
+        assert_eq!(metadata["files"], json!([svg.to_str().unwrap()]));
+        let bytes = std::fs::read(&svg).unwrap();
+        assert!(
+            bytes.windows(4).any(|w| w == b"<svg"),
+            "SVG 마크업: {}",
+            svg.display()
+        );
+
+        // pdf writes the selected pages as a single multi-page file.
+        let pdf = temp_file("render-all.pdf");
+        let content = tool_render(
+            &json!({"path": source, "format": "pdf", "pages": "all", "dpi": 36, "output_path": pdf}),
+            &ctx(),
+        )
+        .expect("pdf 전체 페이지");
+        let metadata: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["pages"], json!([1, 2, 3]));
+        assert_eq!(metadata["files"], json!([pdf.to_str().unwrap()]));
+        let bytes = std::fs::read(&pdf).unwrap();
+        assert!(bytes.starts_with(b"%PDF"), "PDF 매직: {}", pdf.display());
+        for path in [&source, &svg, &pdf] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_grep_match_zero_match_and_ignore_case() {
+        let source = temp_file("grep-source.hwpx");
+        create_hwpx(&source, "사과 바나나\n\n둘째 사과\n\nHello World");
+
+        let content =
+            tool_grep(&json!({"path": source, "pattern": "사과"}), &ctx()).expect("grep 매칭");
+        let result: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["count"], 2);
+        assert_eq!(result["truncated"], false);
+        assert_eq!(result["matches"].as_array().unwrap().len(), 2);
+
+        // Zero matches are a normal result, not an error (isError=false).
+        let zero = call_tool(
+            "hwp_grep",
+            &json!({"path": source, "pattern": "없는문구"}),
+            &ctx(),
+        );
+        assert_eq!(zero["isError"], false);
+        let result: Value =
+            serde_json::from_str(zero["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["count"], 0);
+        assert_eq!(result["matches"].as_array().unwrap().len(), 0);
+
+        // ignore_case ignores letter case.
+        let content = tool_grep(
+            &json!({"path": source, "pattern": "hello", "ignore_case": true}),
+            &ctx(),
+        )
+        .unwrap();
+        let result: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["count"], 1, "ignore_case 매칭: {result}");
+        let content = tool_grep(&json!({"path": source, "pattern": "hello"}), &ctx()).unwrap();
+        let result: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(result["count"], 0, "대소문자 구분: {result}");
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn mcp_grep_truncation_cap_logic() {
+        let matches: Vec<String> = (0..201).map(|i| format!("m{i}")).collect();
+        let capped = grep_result(matches);
+        assert_eq!(capped["count"], 201, "count는 절단 전 전체 개수");
+        assert_eq!(capped["truncated"], true);
+        assert_eq!(
+            capped["matches"].as_array().unwrap().len(),
+            MAX_GREP_MATCHES
+        );
+        assert_eq!(MAX_GREP_MATCHES, 200);
+
+        // Counts at or below the cap pass through unchanged.
+        let uncapped = grep_result_capped(vec!["a".into(), "b".into()], 2);
+        assert_eq!(uncapped["count"], 2);
+        assert_eq!(uncapped["truncated"], false);
+        let capped = grep_result_capped(vec!["a".into(), "b".into(), "c".into()], 2);
+        assert_eq!(capped["count"], 3);
+        assert_eq!(capped["truncated"], true);
+        assert_eq!(capped["matches"].as_array().unwrap().len(), 2);
     }
 }

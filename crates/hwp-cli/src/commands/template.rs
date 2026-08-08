@@ -55,6 +55,7 @@ pub fn run(
         output,
         dry_run,
         &sources,
+        &[],
     )?;
     if print_report || dry_run {
         println!("{}", serialize_report(&report)?);
@@ -79,6 +80,7 @@ pub fn execute_text(
     output: &Path,
     dry_run: bool,
     source_paths: &[PathBuf],
+    roots: &[PathBuf],
 ) -> anyhow::Result<TemplateReport> {
     execute_text_with_fonts(
         template_input,
@@ -90,6 +92,7 @@ pub fn execute_text(
         dry_run,
         source_paths,
         None,
+        roots,
     )
 }
 
@@ -104,12 +107,13 @@ pub(crate) fn execute_text_with_fonts(
     dry_run: bool,
     source_paths: &[PathBuf],
     font_files: Option<&[PathBuf]>,
+    roots: &[PathBuf],
 ) -> anyhow::Result<TemplateReport> {
     let template =
         template_spec::parse_template(template_input, template_format).map_err(template_error)?;
     let data = template_spec::parse_data(data_input, data_format).map_err(template_error)?;
-    let expanded =
-        template_spec::expand_template(&template, &data, base_dir).map_err(template_error)?;
+    let expanded = template_spec::expand_template(&template, &data, base_dir, roots)
+        .map_err(template_error)?;
     let mut immutable_inputs = source_paths
         .iter()
         .map(PathBuf::as_path)
@@ -133,9 +137,11 @@ pub(crate) fn execute_text_with_fonts(
         dry_run,
         input_hashes,
         font_files,
+        roots,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_expanded(
     expanded: ExpandedTemplate,
     template: &template_spec::TemplateSpec,
@@ -144,6 +150,7 @@ fn execute_expanded(
     dry_run: bool,
     input_hashes: InputHashes,
     font_files: Option<&[PathBuf]>,
+    roots: &[PathBuf],
 ) -> anyhow::Result<TemplateReport> {
     let mode = expanded.mode.clone();
     let plan = expanded.plan.clone();
@@ -153,7 +160,7 @@ fn execute_expanded(
     let (semantic_validation, package_validation) = match &expanded.output {
         ExpandedOutput::Compose(document) => {
             let report = crate::commands::compose::execute_spec_with_source_and_fonts(
-                document, base_dir, output, dry_run, false, None, font_files,
+                document, base_dir, output, dry_run, false, None, font_files, roots,
             )
             .map_err(|_| sanitized_downstream("compose_rejected", "/source/document"))?;
             let validation = if dry_run {
@@ -170,7 +177,7 @@ fn execute_expanded(
             fields,
         } => {
             require_hwpx_output(output)?;
-            recheck_reference(path, base_dir)?;
+            recheck_reference(path, base_dir, roots)?;
             let output_mode = if dry_run {
                 SnapshotOutputMode::ValidateOnly
             } else {
@@ -209,7 +216,7 @@ fn execute_expanded(
                     "reference regeneration requires the strict gate",
                 )));
             }
-            recheck_reference(path, base_dir)?;
+            recheck_reference(path, base_dir, roots)?;
             let output_mode = if dry_run {
                 SnapshotOutputMode::PlanOnly
             } else {
@@ -228,7 +235,7 @@ fn execute_expanded(
                         )
                     })?;
                     crate::commands::compose::execute_spec_with_source_and_fonts(
-                        document, base_dir, staged, dry_run, false, None, font_files,
+                        document, base_dir, staged, dry_run, false, None, font_files, roots,
                     )
                     .map_err(|_| sanitized_downstream("compose_rejected", "/source/document"))
                 },
@@ -376,13 +383,15 @@ fn strict_reference_gate(input: &Path, output: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn recheck_reference(path: &Path, base_dir: &Path) -> anyhow::Result<()> {
+fn recheck_reference(path: &Path, base_dir: &Path, roots: &[PathBuf]) -> anyhow::Result<()> {
     let base = std::fs::canonicalize(base_dir).context("template base directory recheck failed")?;
     let metadata = std::fs::symlink_metadata(path).context("reference recheck failed")?;
     let canonical = std::fs::canonicalize(path).context("reference canonical recheck failed")?;
+    let outside_roots = !roots.is_empty() && !roots.iter().any(|root| canonical.starts_with(root));
     if metadata.file_type().is_symlink()
         || !metadata.file_type().is_file()
         || !canonical.starts_with(base)
+        || outside_roots
     {
         return Err(sanitized_downstream("invalid_reference", "/source/path"));
     }

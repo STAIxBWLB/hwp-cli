@@ -37,9 +37,9 @@ fn cell(s: &str) -> String {
     joined.replace('|', "\\|")
 }
 
-/// GitHub 앵커: `hwp <name>` → `hwp-<name>` (이름은 단일 토큰이라 단순 치환으로 충분).
+/// GitHub anchor: `hwp skill export` → `hwp-skill-export` (spaces become hyphens).
 fn anchor(name: &str) -> String {
-    format!("hwp-{name}")
+    format!("hwp-{}", name.replace(' ', "-"))
 }
 
 /// 값을 갖지 않는 액션(불리언 플래그 등)인지.
@@ -88,21 +88,24 @@ fn possible_values(arg: &Arg) -> Vec<String> {
 /// `render_usage()`를 `hwp <name> …` 형태로 정규화한다.
 /// (서브커맨드를 부모에서 꺼내면 프로그램명이 없어 `Usage: <name> …`로 나올 수 있다 —
 /// 첫 `<name>` 토큰 뒤 본문만 취해 `hwp <name> <본문>`으로 재조립한다.)
-fn usage_line(sub: &Command, name: &str) -> String {
+fn usage_line(sub: &Command, path: &str) -> String {
     let raw = sub.clone().render_usage().to_string();
     let after_label = raw
         .trim()
         .strip_prefix("Usage:")
         .map(str::trim)
         .unwrap_or_else(|| raw.trim());
-    let body = match after_label.split_once(name) {
+    // Take the body after the bare name (last path token) and reassemble it with the
+    // full path — nested subcommands (`export`) normalize to `hwp skill export …` too.
+    let bare = path.rsplit(' ').next().unwrap_or(path);
+    let body = match after_label.split_once(bare) {
         Some((_, rest)) => rest.trim_start(),
         None => "",
     };
     if body.is_empty() {
-        format!("hwp {name}")
+        format!("hwp {path}")
     } else {
-        format!("hwp {name} {body}")
+        format!("hwp {path} {body}")
     }
 }
 
@@ -183,11 +186,18 @@ fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
 /// clap 정의에서 마크다운 레퍼런스 전문을 생성한다.
 fn generate(lang: Lang) -> String {
     let root = i18n::localize(Cli::command(), lang);
-    // 노출 대상 서브커맨드(숨김 제외), 선언 순서 유지.
-    let subs: Vec<&Command> = root
-        .get_subcommands()
-        .filter(|c| !c.is_hide_set())
-        .collect();
+    // Flatten exposed subcommands (excluding hidden ones) in declaration order — nested
+    // subcommands (`export` under `skill`) also appear exactly once, with the full path ("skill export").
+    let mut subs: Vec<(String, &Command)> = Vec::new();
+    fn flatten<'a>(cmd: &'a Command, path: String, subs: &mut Vec<(String, &'a Command)>) {
+        subs.push((path.clone(), cmd));
+        for sub in cmd.get_subcommands().filter(|c| !c.is_hide_set()) {
+            flatten(sub, format!("{path} {}", sub.get_name()), subs);
+        }
+    }
+    for sub in root.get_subcommands().filter(|c| !c.is_hide_set()) {
+        flatten(sub, sub.get_name().to_string(), &mut subs);
+    }
 
     let mut out = String::new();
     match lang {
@@ -219,15 +229,13 @@ fn generate(lang: Lang) -> String {
             out.push_str("## Command index\n\n");
         }
     }
-    for sub in &subs {
-        let name = sub.get_name();
+    for (name, _) in &subs {
         out.push_str(&format!("- [`hwp {name}`](#{})\n", anchor(name)));
     }
     out.push('\n');
 
     // 명령별 섹션.
-    for sub in &subs {
-        let name = sub.get_name();
+    for (name, sub) in &subs {
         out.push_str(&format!("## `hwp {name}`\n\n"));
 
         // about / long_about (long_about 우선).
@@ -360,10 +368,16 @@ fn korean_overlay_covers_every_command_and_argument() {
 #[test]
 fn korean_overlay_has_no_stale_entries() {
     fn exists(command: &Command, path: &str, arg: &str) -> bool {
+        // Nested subcommands are looked up by bare name regardless of depth (same keying as translate).
+        fn find<'a>(cmd: &'a Command, name: &str) -> Option<&'a Command> {
+            cmd.get_subcommands()
+                .find(|c| c.get_name() == name)
+                .or_else(|| cmd.get_subcommands().find_map(|c| find(c, name)))
+        }
         let target = if path.is_empty() {
             Some(command)
         } else {
-            command.get_subcommands().find(|c| c.get_name() == path)
+            find(command, path)
         };
         match target {
             Some(cmd) => arg.is_empty() || cmd.get_arguments().any(|a| a.get_id().as_str() == arg),

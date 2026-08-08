@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::io::Read as _;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
@@ -26,6 +26,7 @@ pub enum AssetSnapshotErrorCode {
     HardlinkForbidden,
     NotRegular,
     ContainmentViolation,
+    OutsideRoots,
     ChangedDuringOpen,
     LimitExceeded,
     ReadFailed,
@@ -41,6 +42,7 @@ impl AssetSnapshotErrorCode {
             Self::HardlinkForbidden => "hardlink_forbidden",
             Self::NotRegular => "not_regular",
             Self::ContainmentViolation => "containment_violation",
+            Self::OutsideRoots => "outside_roots",
             Self::ChangedDuringOpen => "changed_during_open",
             Self::LimitExceeded => "limit_exceeded",
             Self::ReadFailed => "read_failed",
@@ -65,6 +67,7 @@ impl fmt::Display for AssetSnapshotError {
             AssetSnapshotErrorCode::HardlinkForbidden => "multiply-linked assets are forbidden",
             AssetSnapshotErrorCode::NotRegular => "asset is not a regular file",
             AssetSnapshotErrorCode::ContainmentViolation => "asset is outside the spec directory",
+            AssetSnapshotErrorCode::OutsideRoots => "asset is outside the sandbox roots",
             AssetSnapshotErrorCode::ChangedDuringOpen => "asset changed while it was opened",
             AssetSnapshotErrorCode::LimitExceeded => "asset exceeds the byte limit",
             AssetSnapshotErrorCode::ReadFailed => "asset snapshot could not be read",
@@ -91,18 +94,42 @@ pub fn read_contained(
     relative_path: &Path,
     max_bytes: u64,
 ) -> Result<AssetSnapshot, AssetSnapshotError> {
-    read_contained_impl(base_dir, relative_path, max_bytes, || {}, || {})
+    read_contained_impl(base_dir, relative_path, max_bytes, &[], || {}, || {})
+}
+
+/// Same as [`read_contained`], plus a defense-in-depth binding to the MCP
+/// sandbox roots: the path of the opened asset is resolved from the file
+/// handle itself and must sit under at least one root. A no-op when `roots` is
+/// empty (CLI/corpus callers). Roots are expected to be canonical already.
+pub fn read_contained_with_roots(
+    base_dir: &Path,
+    relative_path: &Path,
+    max_bytes: u64,
+    roots: &[PathBuf],
+) -> Result<AssetSnapshot, AssetSnapshotError> {
+    read_contained_impl(base_dir, relative_path, max_bytes, roots, || {}, || {})
 }
 
 fn read_contained_impl(
     base_dir: &Path,
     relative_path: &Path,
     max_bytes: u64,
+    roots: &[PathBuf],
     after_parent_open: impl FnOnce(),
     after_open: impl FnOnce(),
 ) -> Result<AssetSnapshot, AssetSnapshotError> {
     validate_relative_path(relative_path)?;
     let file = secure_open_contained(base_dir, relative_path, after_parent_open)?;
+    // Judge the roots against the opened handle, not the request pathname:
+    // resolving the path from the descriptor keeps the check bound to the file
+    // that was actually opened even when a parent directory was renamed and
+    // replaced with a symlink between the walk and this point.
+    #[cfg(any(unix, windows))]
+    check_opened_under_roots(&file, roots)?;
+    // The fallback open path is pathname-based already, so its roots check
+    // stays a pathname canonicalize check as well.
+    #[cfg(not(any(unix, windows)))]
+    check_resolved_under_roots(&base_dir.join(relative_path), roots)?;
     let opened = file
         .metadata()
         .map_err(|_| error(AssetSnapshotErrorCode::ReadFailed))?;
@@ -355,6 +382,14 @@ fn validate_opened_containment(
     file: &std::fs::File,
     canonical_base: &Path,
 ) -> Result<(), AssetSnapshotError> {
+    if !windows_path_is_within(&opened_handle_path(file)?, canonical_base) {
+        return Err(error(AssetSnapshotErrorCode::ContainmentViolation));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn opened_handle_path(file: &std::fs::File) -> Result<PathBuf, AssetSnapshotError> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt as _;
     use std::os::windows::io::AsRawHandle as _;
@@ -372,11 +407,9 @@ fn validate_opened_containment(
     if length == 0 || length as usize >= buffer.len() {
         return Err(error(AssetSnapshotErrorCode::ReadFailed));
     }
-    let opened = std::path::PathBuf::from(OsString::from_wide(&buffer[..length as usize]));
-    if !windows_path_is_within(&opened, canonical_base) {
-        return Err(error(AssetSnapshotErrorCode::ContainmentViolation));
-    }
-    Ok(())
+    Ok(PathBuf::from(OsString::from_wide(
+        &buffer[..length as usize],
+    )))
 }
 
 #[cfg(windows)]
@@ -396,6 +429,85 @@ fn windows_path_is_within(candidate: &Path, base: &Path) -> bool {
         || candidate
             .strip_prefix(&base)
             .is_some_and(|suffix| suffix.starts_with(['\\', '/']))
+}
+
+/// Defense-in-depth binding to the MCP sandbox roots. A no-op when `roots` is
+/// empty (CLI/corpus callers); otherwise the path of the opened file — resolved
+/// from the handle itself, never from the request pathname — must sit under at
+/// least one root. Roots are expected to be canonical already.
+#[cfg(any(unix, windows))]
+fn check_opened_under_roots(
+    file: &std::fs::File,
+    roots: &[PathBuf],
+) -> Result<(), AssetSnapshotError> {
+    if roots.is_empty() {
+        return Ok(());
+    }
+    // Canonicalize the handle path as well so residual symlink components in
+    // it cannot decide the comparison; fail closed when it no longer resolves.
+    let canonical = std::fs::canonicalize(opened_handle_path(file)?)
+        .map_err(|_| error(AssetSnapshotErrorCode::Missing))?;
+    #[cfg(unix)]
+    let contained = roots.iter().any(|root| canonical.starts_with(root));
+    #[cfg(windows)]
+    let contained = roots
+        .iter()
+        .any(|root| windows_path_is_within(&canonical, root));
+    if contained {
+        Ok(())
+    } else {
+        Err(error(AssetSnapshotErrorCode::OutsideRoots))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn opened_handle_path(file: &std::fs::File) -> Result<PathBuf, AssetSnapshotError> {
+    use std::os::fd::AsRawFd as _;
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .map_err(|_| error(AssetSnapshotErrorCode::ReadFailed))
+}
+
+#[cfg(target_os = "macos")]
+fn opened_handle_path(file: &std::fs::File) -> Result<PathBuf, AssetSnapshotError> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let mut buffer = vec![0 as libc::c_char; libc::MAXPATHLEN as usize];
+    // Safety: the caller holds `file` open, so the descriptor is valid, and the
+    // buffer is MAXPATHLEN writable bytes as F_GETPATH requires; on success the
+    // kernel writes a NUL-terminated path into it.
+    let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) };
+    if result == -1 {
+        return Err(error(AssetSnapshotErrorCode::ReadFailed));
+    }
+    let path = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn opened_handle_path(_file: &std::fs::File) -> Result<PathBuf, AssetSnapshotError> {
+    // No portable handle-to-path mechanism on this target: fail closed (this
+    // is only reached with a non-empty roots list).
+    Err(error(AssetSnapshotErrorCode::ReadFailed))
+}
+
+/// Pathname-based fallback for targets without a handle-to-path mechanism —
+/// the open path there is pathname-based already, so the roots check is too.
+#[cfg(not(any(unix, windows)))]
+fn check_resolved_under_roots(
+    resolved: &Path,
+    roots: &[PathBuf],
+) -> Result<(), AssetSnapshotError> {
+    if roots.is_empty() {
+        return Ok(());
+    }
+    let canonical =
+        std::fs::canonicalize(resolved).map_err(|_| error(AssetSnapshotErrorCode::Missing))?;
+    if roots.iter().any(|root| canonical.starts_with(root)) {
+        Ok(())
+    } else {
+        Err(error(AssetSnapshotErrorCode::OutsideRoots))
+    }
 }
 
 fn error(code: AssetSnapshotErrorCode) -> AssetSnapshotError {
@@ -425,6 +537,77 @@ mod tests {
         cleanup_root(&root);
     }
 
+    #[test]
+    fn empty_roots_keep_reading_any_contained_asset() {
+        let root = test_root("roots-empty");
+        std::fs::write(root.join("asset.bin"), b"inside").unwrap();
+
+        let snapshot = read_contained_with_roots(&root, Path::new("asset.bin"), 64, &[]).unwrap();
+        assert_eq!(snapshot.data, b"inside");
+
+        cleanup_root(&root);
+    }
+
+    #[test]
+    fn roots_check_binds_opened_assets_to_sandbox_roots() {
+        let parent = test_root("roots-parent");
+        let sandbox = parent.join("sandbox");
+        std::fs::create_dir(&sandbox).unwrap();
+        std::fs::write(sandbox.join("asset.bin"), b"inside").unwrap();
+        std::fs::write(parent.join("outside.bin"), b"outside").unwrap();
+        let roots = vec![std::fs::canonicalize(&sandbox).unwrap()];
+
+        let snapshot =
+            read_contained_with_roots(&parent, Path::new("sandbox/asset.bin"), 64, &roots).unwrap();
+        assert_eq!(snapshot.data, b"inside");
+
+        let failure =
+            read_contained_with_roots(&parent, Path::new("outside.bin"), 64, &roots).unwrap_err();
+        assert_eq!(failure.code, AssetSnapshotErrorCode::OutsideRoots);
+        assert!(!failure.to_string().contains(&parent.display().to_string()));
+
+        cleanup_root(&parent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn roots_check_is_anchored_to_the_opened_handle() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("roots-swap");
+        let inside = root.join("assets");
+        let outside = test_root("roots-outside-canary");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::write(inside.join("image.bin"), b"contained-bytes").unwrap();
+        std::fs::write(outside.join("image.bin"), b"outside-canary").unwrap();
+        let roots = vec![std::fs::canonicalize(&root).unwrap()];
+
+        let snapshot = read_contained_impl(
+            &root,
+            Path::new("assets/image.bin"),
+            64,
+            &roots,
+            || {
+                std::fs::rename(&inside, root.join("opened-assets")).unwrap();
+                symlink(&outside, &inside).unwrap();
+            },
+            || {},
+        )
+        .unwrap();
+
+        // The opened file is the original inside asset, so the handle-anchored
+        // check passes and the read returns the original bytes — while a
+        // pathname-based check at the same instant would resolve
+        // `assets/image.bin` through the swapped symlink to the outside canary.
+        assert_eq!(snapshot.data, b"contained-bytes");
+        assert_eq!(
+            std::fs::read(inside.join("image.bin")).unwrap(),
+            b"outside-canary"
+        );
+        cleanup_root(&root);
+        cleanup_root(&outside);
+    }
+
     #[cfg(unix)]
     #[test]
     fn pathname_swap_after_open_cannot_change_snapshot_bytes() {
@@ -439,6 +622,7 @@ mod tests {
             &root,
             Path::new("asset.bin"),
             64,
+            &[],
             || {},
             || {
                 std::fs::rename(&asset, root.join("opened.bin")).unwrap();
@@ -468,6 +652,7 @@ mod tests {
             &root,
             Path::new("assets/image.bin"),
             64,
+            &[],
             || {
                 std::fs::rename(&inside, root.join("opened-assets")).unwrap();
                 symlink(&outside, &inside).unwrap();

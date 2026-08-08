@@ -1649,9 +1649,17 @@ pub fn compile_spec(
     output: &Path,
     dry_run: bool,
     allow_visual_fallback: bool,
+    roots: &[PathBuf],
 ) -> Result<CompiledSpec, ComposeError> {
     validate_spec(spec, base_dir)?;
-    let compiler = Compiler::new(spec, base_dir, output, dry_run, allow_visual_fallback)?;
+    let compiler = Compiler::new(
+        spec,
+        base_dir,
+        output,
+        dry_run,
+        allow_visual_fallback,
+        roots,
+    )?;
     compiler.compile()
 }
 
@@ -1676,6 +1684,8 @@ struct EmbeddedAsset {
 struct Compiler<'a> {
     spec: &'a DocumentSpec,
     base_dir: &'a Path,
+    /// MCP sandbox allowed roots (canonicalized). When empty, asset paths get no extra check.
+    roots: &'a [PathBuf],
     document: hwp_model::Document,
     styles: BTreeMap<String, CompiledStyle>,
     resolved_styles: BTreeMap<String, StyleSpec>,
@@ -1694,6 +1704,7 @@ impl<'a> Compiler<'a> {
         output: &Path,
         dry_run: bool,
         allow_visual_fallback: bool,
+        roots: &'a [PathBuf],
     ) -> Result<Self, ComposeError> {
         let mut document = hwp_convert::from_markdown("");
         document.sections.clear();
@@ -1709,6 +1720,7 @@ impl<'a> Compiler<'a> {
         let mut compiler = Self {
             spec,
             base_dir,
+            roots,
             document,
             styles: BTreeMap::new(),
             resolved_styles: BTreeMap::new(),
@@ -2400,11 +2412,16 @@ impl<'a> Compiler<'a> {
         if let Some(existing) = self.asset_paths.get(asset) {
             return Ok(existing.clone());
         }
-        let snapshot = crate::asset_snapshot::read_contained(self.base_dir, asset, MAX_ASSET_BYTES)
-            .map_err(|error| ComposeError::Compile {
-                path: path.to_string(),
-                message: format!("asset_snapshot_{}: {error}", error.code.as_str()),
-            })?;
+        let snapshot = crate::asset_snapshot::read_contained_with_roots(
+            self.base_dir,
+            asset,
+            MAX_ASSET_BYTES,
+            self.roots,
+        )
+        .map_err(|error| ComposeError::Compile {
+            path: path.to_string(),
+            message: format!("asset_snapshot_{}: {error}", error.code.as_str()),
+        })?;
         let data = snapshot.data;
         let (extension, _) = hwp_convert::image_kind(&data);
         if extension == "bin" {
@@ -3134,8 +3151,15 @@ sections:
             format: RunFormatSpec::default(),
         }];
 
-        let compiled = compile_spec(&spec, Path::new("."), Path::new("out.hwpx"), true, false)
-            .expect("compile");
+        let compiled = compile_spec(
+            &spec,
+            Path::new("."),
+            Path::new("out.hwpx"),
+            true,
+            false,
+            &[],
+        )
+        .expect("compile");
         let paragraph = &compiled.document.sections[0].paragraphs[1];
         assert!(paragraph.chars.iter().any(|character| matches!(
             character,
@@ -3216,8 +3240,8 @@ sections:
             placement: ImagePlacement::Inline,
         }];
 
-        let compiled =
-            compile_spec(&spec, &root, &root.join("out.hwpx"), true, false).expect("compile image");
+        let compiled = compile_spec(&spec, &root, &root.join("out.hwpx"), true, false, &[])
+            .expect("compile image");
         let picture = compiled.document.sections[0].paragraphs[1]
             .controls
             .iter()
@@ -3228,6 +3252,61 @@ sections:
             .expect("picture");
         assert_eq!(picture.width.0, mm_to_hwp(20.0));
         assert_eq!(picture.height.0, mm_to_hwp(10.0));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sandbox_roots_bind_image_assets() {
+        let root =
+            std::env::temp_dir().join(format!("hwp-document-spec-roots-{}", std::process::id()));
+        let sandbox = root.join("sandbox");
+        std::fs::create_dir_all(&sandbox).unwrap();
+        let asset = PathBuf::from("assets/image.gif");
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join(&asset), b"GIF89a\x02\x00\x01\x00").unwrap();
+        let mut spec = minimal_spec();
+        spec.sections[0].blocks = vec![BlockSpec::Image {
+            path: asset,
+            width_mm: 20.0,
+            height_mm: None,
+            alt: None,
+            placement: ImagePlacement::Inline,
+        }];
+
+        // An asset below base_dir but outside the allowed roots is rejected.
+        let sandbox_only = vec![std::fs::canonicalize(&sandbox).unwrap()];
+        let error = match compile_spec(
+            &spec,
+            &root,
+            &root.join("out.hwpx"),
+            true,
+            false,
+            &sandbox_only,
+        ) {
+            Ok(_) => panic!("asset outside roots must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .issues()
+                .iter()
+                .any(|issue| issue.message.contains("asset_snapshot_outside_roots")),
+            "{:?}",
+            error.issues()
+        );
+
+        // An asset under the allowed roots composes as usual.
+        let parent_root = vec![std::fs::canonicalize(&root).unwrap()];
+        compile_spec(
+            &spec,
+            &root,
+            &root.join("out.hwpx"),
+            true,
+            false,
+            &parent_root,
+        )
+        .expect("asset under roots");
 
         std::fs::remove_dir_all(root).unwrap();
     }

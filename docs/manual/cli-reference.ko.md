@@ -27,6 +27,8 @@
 - [`hwp corpus`](#hwp-corpus)
 - [`hwp mcp`](#hwp-mcp)
 - [`hwp update`](#hwp-update)
+- [`hwp skill`](#hwp-skill)
+- [`hwp skill export`](#hwp-skill-export)
 - [`hwp dump`](#hwp-dump)
 
 ## `hwp info`
@@ -294,6 +296,7 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
+| `--root` | `<ROOT>` |  | 모든 파일 접근을 이 디렉터리 아래로 제한 (반복 가능). 기본: 제한 없음 |
 
 ## `hwp update`
 
@@ -307,6 +310,25 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 | `--tag` | `<TAG>` |  | 특정 릴리스로 고정 (예: "v0.2.0" — 이전 버전으로 되돌릴 때) |
 | `--force` |  |  | 같은 버전이어도 다시 받아 교체 (손상된 설치 복구용) |
 | `--json` |  |  | JSON으로 출력 |
+
+## `hwp skill`
+
+번들된 에이전트 스킬(AI 코딩 어시스턴트용 SKILL.md) 관리
+
+**사용법:** `hwp skill <COMMAND>`
+
+_인자·플래그 없음_
+
+## `hwp skill export`
+
+임베드된 SKILL.md를 디렉터리에 기록 (기본 ./hwp; 파일은 <DIR>/SKILL.md에 생성)
+
+**사용법:** `hwp skill export [OPTIONS]`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `-o, --output` | `<OUTPUT>` |  | 출력 디렉터리 (--install과 동시 사용 불가) |
+| `--install` | `claude-code` \| `codex` |  | 대신 알려진 에이전트 스킬 디렉터리에 설치 |
 
 ## `hwp dump`
 

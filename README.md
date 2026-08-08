@@ -34,7 +34,7 @@ and in CI.
   twice and requires the document bytes, semantics and render hashes to match.
 - **AI editing** A read → edit → rewrite loop over the JSON IR. Text replacement, table cell values
   and field filling are applied while images, formatting and unparsed records are preserved.
-- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 15 tools.
+- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 16 tools.
 
 ## Implementation status
 
@@ -46,7 +46,7 @@ and in CI.
 | Structural editing (paragraphs, table rows/columns, cell merge/split, fields, images, seals) | Implemented, including merged tables |
 | DocumentSpec v1/v2 and TemplateSpec v1 composition | Implemented |
 | Certification (`certify`) and structured corpus gate (`corpus`) | Implemented |
-| MCP server (15 tools) | Implemented |
+| MCP server (16 tools) | Implemented |
 | HTML conversion | Works, but lower fidelity than markdown (roadmap) |
 | Equations | Approximated as a box plus the script |
 | Charts, OLE | Not supported |
@@ -364,18 +364,25 @@ Office on open), the preview image and settings.xml.
 ## MCP server (AI agent integration)
 
 `hwp mcp` implements synchronous JSON-RPC 2.0 over stdio (line-delimited) using only `serde_json`,
-with no tokio and no SDK (protocol version `2024-11-05`). stdout carries the protocol; logs go to stderr.
+with no tokio and no SDK. The protocol version is negotiated at `initialize`: a client
+`protocolVersion` of `2025-06-18`, `2025-03-26` or `2024-11-05` is echoed back, anything else gets
+the latest supported version. stdout carries the protocol; logs go to stderr.
 
-### Exposed tools (15)
+Per-client setup (Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai skill upload,
+Amazon Quick Suite) and the bundled agent skill (`hwp skill export`):
+[docs/manual/ai-integrations.md](docs/manual/ai-integrations.md).
+
+### Exposed tools (16)
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
 | `hwp_info` | `path` | Format, version, properties and stream diagnostics |
-| `hwp_read` | `path` | Extract body text; `json` returns the full IR. UTF-8 byte pagination (256 KiB default, 1 MiB max) |
+| `hwp_read` | `path` | Extract body text (`plain`/`markdown`/`json`/`html`/`csv`; header/footer, hidden and segment options). UTF-8 byte pagination (256 KiB default, 1 MiB max) |
+| `hwp_grep` | `path`, `pattern` | Paragraph text search; returns `{matches, count, truncated}` — zero matches is a normal result |
 | `hwp_list_fields` | `path` | List fields |
 | `hwp_list_bookmarks` | `path` | List bookmarks (bokm) |
 | `hwp_slots` | `path` | List `{{name}}` placeholders |
-| `hwp_render` | `path` | Render one page to PNG (dpi 36..=600, response up to 16 MiB) |
+| `hwp_render` | `path` | Render pages to PNG (base64, response up to 16 MiB) or write PNG/SVG/PDF files via `output_path` (dpi 36..=600) |
 | `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations |
 | `hwp_convert` | `input`, `output` | Format conversion (`strict` defaults to true over MCP) |
 | `hwp_new` | `output` | Create a document from markdown or JSON IR plus metadata |
@@ -393,11 +400,18 @@ with no tokio and no SDK (protocol version `2024-11-05`). stdout carries the pro
   "mcpServers": {
     "hwp": {
       "command": "hwp",
-      "args": ["mcp", "--font-dir", "<repo>/fonts"]
+      "args": ["mcp", "--font-dir", "<repo>/fonts", "--root", "<repo>"]
     }
   }
 }
 ```
+
+`--root` (repeatable) sandboxes every file path the tools touch — inputs, outputs, nested
+image/part paths, spec `base_dir`s and per-call `font_dir`s — under the given directories. The
+roots also bind compose/template spec internals: image/visual assets and `reference_hwpx` packages
+referenced by a spec must resolve under an allowed root. Without
+any `--root` the server keeps the old unrestricted behavior and prints a one-line warning to stderr
+at startup.
 
 ### The read → edit → rewrite loop
 

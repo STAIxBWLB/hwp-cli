@@ -270,6 +270,7 @@ fn mcp_stdio_session() {
         "hwp_diff",
         "hwp_edit",
         "hwp_fill",
+        "hwp_grep",
         "hwp_info",
         "hwp_list_bookmarks",
         "hwp_list_fields",
@@ -283,7 +284,7 @@ fn mcp_stdio_session() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    assert_eq!(names, expect, "도구 15종");
+    assert_eq!(names, expect, "도구 16종");
 
     send(
         serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{

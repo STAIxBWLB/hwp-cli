@@ -65,6 +65,7 @@ pub fn run(
         dry_run,
         allow_visual_fallback,
         Some(spec_path),
+        &[],
     )?;
 
     if print_report || dry_run {
@@ -83,6 +84,7 @@ pub fn run(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_text_with_source(
     input: &str,
     format: SpecInputFormat,
@@ -91,6 +93,7 @@ pub fn execute_text_with_source(
     dry_run: bool,
     allow_visual_fallback: bool,
     source_path: Option<&Path>,
+    roots: &[std::path::PathBuf],
 ) -> anyhow::Result<ComposeReportOutput> {
     execute_text_with_source_and_fonts(
         input,
@@ -101,11 +104,13 @@ pub fn execute_text_with_source(
         allow_visual_fallback,
         source_path,
         None,
+        roots,
     )
 }
 
 /// `execute_text_with_source`의 hermetic font variant. `font_files`가 있으면 HWP
 /// writer와 preview는 시스템 글꼴을 전혀 로드하지 않는다.
+/// When `roots` is non-empty, spec assets are restricted below those roots (MCP sandbox).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_text_with_source_and_fonts(
     input: &str,
@@ -116,6 +121,7 @@ pub(crate) fn execute_text_with_source_and_fonts(
     allow_visual_fallback: bool,
     source_path: Option<&Path>,
     font_files: Option<&[std::path::PathBuf]>,
+    roots: &[std::path::PathBuf],
 ) -> anyhow::Result<ComposeReportOutput> {
     if spec_version(input, format).as_deref() == Some("2.0") {
         if allow_visual_fallback {
@@ -128,8 +134,16 @@ pub(crate) fn execute_text_with_source_and_fonts(
             }));
         }
         let spec = document_spec_v2::parse_spec_v2(input, format).map_err(compose_error)?;
-        execute_spec_v2_with_source(&spec, base_dir, output, dry_run, source_path, font_files)
-            .map(ComposeReportOutput::V2)
+        execute_spec_v2_with_source(
+            &spec,
+            base_dir,
+            output,
+            dry_run,
+            source_path,
+            font_files,
+            roots,
+        )
+        .map(ComposeReportOutput::V2)
     } else {
         let spec = document_spec::parse_spec(input, format).map_err(compose_error)?;
         execute_spec_with_source_and_fonts(
@@ -140,6 +154,7 @@ pub(crate) fn execute_text_with_source_and_fonts(
             allow_visual_fallback,
             source_path,
             font_files,
+            roots,
         )
         .map(ComposeReportOutput::V1)
     }
@@ -160,9 +175,10 @@ fn execute_spec_v2_with_source(
     dry_run: bool,
     source_path: Option<&Path>,
     font_files: Option<&[std::path::PathBuf]>,
+    roots: &[std::path::PathBuf],
 ) -> anyhow::Result<ComposeReportV2> {
     let write_hwp = output_kind(output)?;
-    let compiled = document_spec_v2::compile_spec_v2(spec, base_dir, output, dry_run)
+    let compiled = document_spec_v2::compile_spec_v2(spec, base_dir, output, dry_run, roots)
         .map_err(compose_error)?;
     let mut report = compiled.report;
     if dry_run {
@@ -208,11 +224,18 @@ pub(crate) fn execute_spec_with_source_and_fonts(
     allow_visual_fallback: bool,
     source_path: Option<&Path>,
     font_files: Option<&[std::path::PathBuf]>,
+    roots: &[std::path::PathBuf],
 ) -> anyhow::Result<ComposeReport> {
     let write_hwp = output_kind(output)?;
-    let compiled =
-        document_spec::compile_spec(spec, base_dir, output, dry_run, allow_visual_fallback)
-            .map_err(compose_error)?;
+    let compiled = document_spec::compile_spec(
+        spec,
+        base_dir,
+        output,
+        dry_run,
+        allow_visual_fallback,
+        roots,
+    )
+    .map_err(compose_error)?;
     let mut report = compiled.report;
     if dry_run {
         return Ok(report);
@@ -328,6 +351,7 @@ mod tests {
             true,
             false,
             None,
+            &[],
         )
         .expect_err("invalid output extension");
         assert!(error.to_string().contains(".txt"));
@@ -351,6 +375,7 @@ mod tests {
             true,
             false,
             None,
+            &[],
         )
         .expect("dry-run");
         assert!(report.dry_run());
