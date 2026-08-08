@@ -52,7 +52,7 @@ fn resolve_target(
 ) -> anyhow::Result<ExportTarget> {
     match (output, install) {
         (Some(dir), None) if quick_profile.is_none() => Ok(ExportTarget::Plain(dir)),
-        (None, Some(target)) => install_target(target, &home_dir()?, quick_profile),
+        (None, Some(target)) => install_target(target, quick_profile),
         (None, None) if quick_profile.is_none() => Ok(ExportTarget::Plain(PathBuf::from("./hwp"))),
         (Some(_), Some(_)) => {
             anyhow::bail!("-o/--output 과 --install 은 동시에 쓸 수 없습니다")
@@ -61,8 +61,23 @@ fn resolve_target(
     }
 }
 
-/// Export target for an `--install` choice.
+/// Export target for an `--install` choice. An absolute Quick profile needs
+/// neither the registry nor `$HOME`, so it resolves before the home lookup.
 fn install_target(
+    target: InstallTarget,
+    quick_profile: Option<&Path>,
+) -> anyhow::Result<ExportTarget> {
+    if matches!(target, InstallTarget::AmazonQuick)
+        && let Some(profile) = quick_profile
+        && profile.is_absolute()
+    {
+        return Ok(ExportTarget::QuickProfile(canonical_profile_dir(profile)?));
+    }
+    install_target_under(target, &home_dir()?, quick_profile)
+}
+
+/// Path assembly below `home` (unit-tested without touching the real `$HOME`).
+fn install_target_under(
     target: InstallTarget,
     home: &Path,
     quick_profile: Option<&Path>,
@@ -94,16 +109,14 @@ struct QuickProfileEntry {
     data_path: String,
 }
 
-/// Resolves the Amazon Quick profile directory to install into.
+/// Resolves the Amazon Quick profile directory through the registry (absolute
+/// `--quick-profile` overrides are handled earlier, in `install_target`).
 ///
-/// An absolute `--quick-profile` bypasses the registry entirely. Registry
-/// entries are validated one at a time — the registry file is owned by Amazon
-/// Quick, so one corrupt row must not break installs into other profiles.
+/// Registry entries are validated one at a time — the registry file is owned
+/// by Amazon Quick, so one corrupt row must not break installs into other
+/// profiles.
 fn resolve_quick_profile(quick_root: &Path, profile: Option<&Path>) -> anyhow::Result<PathBuf> {
     if let Some(profile) = profile {
-        if profile.is_absolute() {
-            return canonical_profile_dir(profile);
-        }
         let id = quick_profile_id(profile)?;
         let registry = load_quick_profiles(quick_root)?;
         let mut matches = registry.entries.iter().filter(|entry| entry.id == id);
@@ -349,12 +362,19 @@ fn ensure_quick_directory(path: &Path) -> anyhow::Result<()> {
         }
     }
 
-    fs::create_dir(path).with_context(|| {
-        format!(
-            "Amazon Quick 스킬 디렉터리를 만들 수 없습니다: {}",
-            path.display()
-        )
-    })?;
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        // Concurrently created by another install; the re-check below still validates it.
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Amazon Quick 스킬 디렉터리를 만들 수 없습니다: {}",
+                    path.display()
+                )
+            });
+        }
+    }
     let metadata = fs::symlink_metadata(path).with_context(|| {
         format!(
             "Amazon Quick 스킬 디렉터리를 확인할 수 없습니다: {}",
@@ -442,15 +462,15 @@ mod tests {
     fn fixed_install_targets_resolve_under_given_home() {
         let home = Path::new("home");
         assert!(matches!(
-            install_target(InstallTarget::ClaudeCode, home, None).unwrap(),
+            install_target_under(InstallTarget::ClaudeCode, home, None).unwrap(),
             ExportTarget::Plain(dir) if dir == Path::new("home/.claude/skills/hwp")
         ));
         assert!(matches!(
-            install_target(InstallTarget::Codex, home, None).unwrap(),
+            install_target_under(InstallTarget::Codex, home, None).unwrap(),
             ExportTarget::Plain(dir) if dir == Path::new("home/.codex/skills/hwp")
         ));
         assert!(
-            install_target(
+            install_target_under(
                 InstallTarget::Codex,
                 home,
                 Some(Path::new("enterprise-test"))
@@ -495,10 +515,10 @@ mod tests {
             fs::canonicalize(&profile).unwrap(),
             "a trailing separator from shell completion must still match the ID"
         );
-        assert_eq!(
-            resolve_quick_profile(&quick_root, Some(&profile)).unwrap(),
-            fs::canonicalize(&profile).unwrap()
-        );
+        assert!(matches!(
+            install_target(InstallTarget::AmazonQuick, Some(&profile)).unwrap(),
+            ExportTarget::QuickProfile(dir) if dir == fs::canonicalize(&profile).unwrap()
+        ));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -682,22 +702,16 @@ mod tests {
     }
 
     #[test]
-    fn quick_absolute_profile_does_not_require_registry() {
+    fn quick_absolute_profile_does_not_require_registry_or_home() {
         let root = temp_dir("quick-absolute-no-registry");
         let profile = root.join("profile");
         fs::create_dir_all(&profile).unwrap();
-        let quick_root = root.join("missing-quick-root");
-        assert_eq!(
-            resolve_quick_profile(&quick_root, Some(&profile)).unwrap(),
-            fs::canonicalize(&profile).unwrap()
-        );
-
-        fs::create_dir_all(&quick_root).unwrap();
-        fs::write(quick_root.join("profiles.json"), b"not json").unwrap();
-        assert_eq!(
-            resolve_quick_profile(&quick_root, Some(&profile)).unwrap(),
-            fs::canonicalize(&profile).unwrap()
-        );
+        // install_target resolves an absolute profile before the $HOME lookup
+        // and never opens ~/.quickwork/profiles.json.
+        assert!(matches!(
+            install_target(InstallTarget::AmazonQuick, Some(&profile)).unwrap(),
+            ExportTarget::QuickProfile(dir) if dir == fs::canonicalize(&profile).unwrap()
+        ));
         let _ = fs::remove_dir_all(root);
     }
 
