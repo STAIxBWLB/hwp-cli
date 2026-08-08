@@ -328,7 +328,8 @@ Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `-o, --output` | `<OUTPUT>` |  | Output directory (mutually exclusive with --install) |
-| `--install` | `claude-code` \| `codex` |  | Install into a known agent skills directory instead |
+| `--install` | `claude-code` \| `codex` \| `amazon-quick` |  | Install into a known agent skills directory instead |
+| `--quick-profile` | `<QUICK_PROFILE>` |  | Amazon Quick profile ID or absolute profile directory (Amazon Quick installs only) |
 
 ## `hwp dump`
 

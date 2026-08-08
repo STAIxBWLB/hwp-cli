@@ -30,7 +30,8 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
   리포트를 게시하고, `corpus`는 고정 코퍼스로 2회 생성 결과의 바이트·의미·렌더 해시 일치를 강제한다.
 - **AI 편집** IR을 JSON으로 내보내 고치고 되쓰는 read → edit → rewrite 왕복. 텍스트 치환, 표 셀 설정,
   누름틀/필드 채우기를 이미지·서식·미해석 레코드를 보존한 채 적용한다.
-- **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 16개 도구를 노출한다.
+- **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 Amazon Quick Desktop을 포함한
+  데스크톱 클라이언트에 16개 도구를 노출한다.
 
 ## 구현 상태
 
@@ -228,6 +229,7 @@ hwp mcp --font-dir ./fonts
 | `corpus --manifest <file> --report <dir>` | 고정 구조 코퍼스 게이트. [코퍼스 계약](docs/design/17-structured-corpus-v1.ko.md) |
 | `diff <input> --ref <png>` | 렌더 결과를 한글 기준 PNG와 비교(잉크·오프셋·픽셀 오차·MAE) |
 | `mcp` | MCP stdio 서버 실행 |
+| `skill export` | Amazon Quick 프로필 자동 탐색을 포함한 번들 에이전트 스킬 내보내기/설치 |
 | `update` | 자체 업데이트(brew 설치본은 `brew upgrade`에 위임) |
 | `dump <file>` | [개발자용] 레코드/패키지 구조 덤프 |
 
@@ -340,8 +342,19 @@ hwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
 응답한다. stdout은 프로토콜 전용이고 로그는 stderr로 나간다.
 
 클라이언트별 설정(Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai 스킬 업로드,
-Amazon Quick Suite)과 번들 에이전트 스킬(`hwp skill export`):
+Amazon Quick Desktop)과 번들 에이전트 스킬(`hwp skill export`):
 [docs/manual/ai-integrations.ko.md](docs/manual/ai-integrations.ko.md).
+
+Amazon Quick Desktop은 로컬 stdio 서버를 실행해 16개 도구를 모두 노출할 수 있다. publish-safe
+스킬은 활성 프로필에 다음과 같이 설치한다.
+
+```sh
+hwp skill export --install amazon-quick
+```
+
+Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 인증된 Streamable HTTP, tenant 격리,
+artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)에
+정리했으며 현재 릴리스에는 HTTP runtime이 없다.
 
 ### 노출 도구 (16종)
 

@@ -481,16 +481,31 @@ pub enum SkillCmd {
         /// Install into a known agent skills directory instead
         #[arg(long, value_enum)]
         install: Option<InstallTarget>,
+        /// Amazon Quick profile ID or absolute profile directory (Amazon Quick installs only)
+        #[arg(long, requires = "install", conflicts_with = "output")]
+        quick_profile: Option<PathBuf>,
     },
 }
 
 /// `--install` target — per-agent skill directory.
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum InstallTarget {
     /// ~/.claude/skills/hwp/
     ClaudeCode,
     /// ~/.codex/skills/hwp/
     Codex,
+    /// Active Amazon Quick Desktop profile under ~/.quickwork/
+    AmazonQuick,
+}
+
+impl InstallTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+            Self::AmazonQuick => "amazon-quick",
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -541,13 +556,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skill_export_output_and_install_are_mutually_exclusive() {
+    fn skill_export_parses_amazon_quick_and_rejects_common_conflicts() {
         assert!(
             Cli::try_parse_from(["hwp", "skill", "export", "-o", "out", "--install", "codex"])
                 .is_err(),
-            "-o와 --install은 동시에 받지 않는다"
+            "-o and --install must be mutually exclusive"
         );
-        assert!(Cli::try_parse_from(["hwp", "skill", "export"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["hwp", "skill", "export", "--quick-profile", "profile"]).is_err(),
+            "--quick-profile must require --install"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "hwp",
+                "skill",
+                "export",
+                "-o",
+                "out",
+                "--install",
+                "amazon-quick",
+                "--quick-profile",
+                "profile",
+            ])
+            .is_err(),
+            "-o must conflict with an Amazon Quick install"
+        );
+
+        let parsed = Cli::try_parse_from([
+            "hwp",
+            "skill",
+            "export",
+            "--install",
+            "amazon-quick",
+            "--quick-profile",
+            "enterprise-test",
+        ])
+        .expect("Amazon Quick install target should parse");
+        let Cmd::Skill {
+            cmd:
+                SkillCmd::Export {
+                    install: Some(InstallTarget::AmazonQuick),
+                    quick_profile: Some(profile),
+                    ..
+                },
+        } = parsed.cmd
+        else {
+            panic!("unexpected parsed command")
+        };
+        assert_eq!(profile, PathBuf::from("enterprise-test"));
     }
 
     #[test]
