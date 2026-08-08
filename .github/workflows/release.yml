@@ -144,6 +144,9 @@ jobs:
           git checkout -b "$branch"
           git add Formula/hwp.rb
           git commit -m "chore(brew): formula v$ver"
+          # Give --force-with-lease its reference point on reruns: a fresh checkout only
+          # fetches main, so an existing remote branch would be rejected as "stale info".
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
           git push --force-with-lease origin "$branch"
           if ! gh pr view "$branch" >/dev/null 2>&1; then
             gh pr create --base main --head "$branch" \
