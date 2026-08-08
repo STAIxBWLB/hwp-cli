@@ -78,6 +78,7 @@
 | 10 | [hwp5-structure-map](10-hwp5-structure-map.md) | **HWP5 전수 지도** — CFB 스트림 트리, 레코드 카탈로그(태그 전수+구현 상태), 컨트롤 문자·ctrl ID |
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.md) | **HWPX 전수 지도** — OPC 트리, 네임스페이스, 요소 카탈로그, read/write 대칭성 감사 |
 | 12 | [feature-gaps](12-feature-gaps.md) | 기능 격차 카탈로그 + 난이도·의존성 로드맵 (07§F 승계, 10§8·11§5가 근거 데이터) |
+| 13 | [hwp5-spec-supplement](13-hwp5-spec-supplement.md) | **HWP 5.0 명세 보완 색인** — 정오표·버전-레이아웃 매트릭스·적합성 체크리스트·소비 의미론 (07·03·05·10·08이 근거 데이터) |
 
 ---
 
