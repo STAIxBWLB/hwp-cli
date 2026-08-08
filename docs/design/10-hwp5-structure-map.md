@@ -13,6 +13,7 @@ handles each. It is the catalog of "what exists and how we handle it".
 | [02-hwp5-read](02-hwp5-read.md) | **How to parse**: bit layouts, cursors, tree reconstruction algorithms | Linked from here as "details in [02] §n". This document is the *map*; 02 is the *implementation specification* |
 | [03-hwp5-write](03-hwp5-write.md) | **Synthesis and writing**: CFB V3, version gating, Hancom-compatible assembly | The write column of the stream tree (§1) summarizes 03 |
 | [12-feature-gaps](12-feature-gaps.md) | **Unimplemented and loss list**: what Opaque and raw-preserved records actually lose | The `Opaque` and `raw-preserved` rows of tables A and B here are 12's input |
+| [19-hwp5-spec-supplement](19-hwp5-spec-supplement.md) | **Spec supplement index**: errata, version matrix, conformance rules | The ★ entries here are the input to 19 §1 (errata) |
 
 The status classification here (§3 and §4) is the confirmed fact; document 12 evaluates how that fact
 shows up as a defect in Hancom. To change a status label, change it **here first**.
