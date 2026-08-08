@@ -8,6 +8,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ---
 
+## [Unreleased]
+
+**Fixed**
+
+- Release workflow: `update-formula` no longer pushes the Homebrew formula commit directly to
+  main — branch protection rejects the Actions token (first seen on the v0.8.0 tag). The job
+  now opens a `brew/formula-vX.Y.Z` PR and enables squash auto-merge; when the repository has
+  no auto-merge or required checks never run for a token-created PR, the PR stays open for a
+  human merge. `scripts/update_formula.sh X.Y.Z` remains the local recovery path.
+
+---
+
 ## [0.8.0]
 
 **Added**
