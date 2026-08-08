@@ -699,10 +699,12 @@ version = "0.7.1"
 dependencies = [
  "hwp-model",
  "image",
+ "libc",
  "pulldown-cmark",
  "quick-xml",
  "resvg",
  "serde_json",
+ "windows-sys",
  "zip",
 ]
 

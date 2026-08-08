@@ -1097,19 +1097,8 @@ impl Builder {
     /// Embeds an image reference in the current paragraph — a local file is inserted as
     /// BinStream and inline Picture (as-char, natural size) and alt is suppressed; on
     /// failure (remote/missing/unsupported) the alt text is kept after a warning.
+    /// A sandbox violation (outside `roots`, #56) is a hard import error instead.
     fn start_image(&mut self, dest_url: &str) {
-        // Sandbox check before any read (#56): with roots set, an outside-root reference is a
-        // hard import error, never an alt-text fallback. Remote URLs and base-less relative
-        // paths never touch the filesystem, so a resolution failure skips the check.
-        if !self.roots.is_empty()
-            && let Ok(resolved) = self.resolve_image_path(dest_url)
-            && let Err(e) = crate::image::check_resolved_under_roots(&resolved, &self.roots)
-        {
-            self.hard_error
-                .get_or_insert_with(|| format!("{e}: {dest_url}"));
-            self.in_image_suppress = false; // keep alt text as the fallback
-            return;
-        }
         match self.load_image(dest_url) {
             Ok((data, name, w, h)) => {
                 let idx = self.controls.len() as u32;
@@ -1136,7 +1125,12 @@ impl Builder {
                 self.bin_streams.push(BinStream { name, data });
                 self.in_image_suppress = true;
             }
-            Err(warn) => {
+            Err(crate::image::ImageOpenError::Hard(e)) => {
+                // Sandbox violation (#56) — a hard import error, never an alt-text fallback.
+                self.hard_error.get_or_insert(e);
+                self.in_image_suppress = false; // keep alt text as the fallback
+            }
+            Err(crate::image::ImageOpenError::Soft(warn)) => {
                 self.warnings.push(warn);
                 self.in_image_suppress = false; // keep alt text as the fallback
             }
@@ -1170,20 +1164,39 @@ impl Builder {
 
     /// Resolves and reads an image path. On success returns (bytes, bin name, display width, display height).
     /// Only local paths (absolute + relative to base_dir) are allowed — no network dependence on remote URLs.
-    fn load_image(&self, dest_url: &str) -> Result<(Vec<u8>, String, i32, i32), String> {
-        let resolved = self.resolve_image_path(dest_url)?;
-        let data = std::fs::read(&resolved)
-            .map_err(|e| format!("이미지 읽기 실패 {}: {e} (alt 보존)", resolved.display()))?;
+    /// With sandbox roots set, containment is verified against the opened file handle and the
+    /// bytes are read from that same handle; an outside-root reference is a `Hard` error (#56).
+    fn load_image(
+        &self,
+        dest_url: &str,
+    ) -> Result<(Vec<u8>, String, i32, i32), crate::image::ImageOpenError> {
+        use crate::image::ImageOpenError;
+        let resolved = self
+            .resolve_image_path(dest_url)
+            .map_err(ImageOpenError::Soft)?;
+        let soft =
+            |e: std::io::Error| format!("이미지 읽기 실패 {}: {e} (alt 보존)", resolved.display());
+        let mut file = crate::image::open_image_under_roots(&resolved, &self.roots, soft)?;
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut data).map_err(|e| {
+            ImageOpenError::Soft(format!(
+                "이미지 읽기 실패 {}: {e} (alt 보존)",
+                resolved.display()
+            ))
+        })?;
         if data.is_empty() {
-            return Err(format!("빈 이미지 파일(alt 보존): {}", resolved.display()));
+            return Err(ImageOpenError::Soft(format!(
+                "빈 이미지 파일(alt 보존): {}",
+                resolved.display()
+            )));
         }
         // Format detection by magic bytes — unknown (.bin) is treated as unsupported (alt preserved).
         let (ext, _) = crate::image::image_kind(&data);
         if ext == "bin" {
-            return Err(format!(
+            return Err(ImageOpenError::Soft(format!(
                 "지원하지 않는 이미지 형식(alt 보존): {}",
                 resolved.display()
-            ));
+            )));
         }
         let (w, h) =
             crate::image::display_size(&data, &crate::image::ImageSize::Natural, BODY_WIDTH);
@@ -1935,6 +1948,13 @@ mod tests {
         .expect_err("HTML 블록 이미지도 하드 에러");
         assert!(err.contains("샌드박스"), "{err}");
 
+        // Missing file with roots set: still the soft alt-text fallback, not a hard error.
+        let (doc, _) =
+            from_markdown_report("![없음alt](nope.png)\n", &rooted_opts(Some(&sub), &roots))
+                .expect("없는 파일은 소프트 실패(alt 보존)");
+        assert!(doc.bin_streams.is_empty(), "임베드 없음");
+        assert!(doc.plain_text().contains("없음alt"), "alt 보존");
+
         // Empty roots: previous CLI behavior — the absolute outside path still loads.
         let (doc, _) = from_markdown_report(
             &format!("![out]({outside_ref})\n"),
@@ -1946,6 +1966,56 @@ mod tests {
         )
         .expect("루트 미설정이면 기존 동작");
         assert_eq!(doc.bin_streams.len(), 1, "루트 미설정이면 절대 경로 로드");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #56 (handle-bound check): an in-root symlink whose target is outside the roots is a
+    /// hard error — the verdict comes from the opened handle, so the escape works even though
+    /// the request pathname sits inside the sandbox. An in-root symlink target still loads.
+    #[cfg(unix)]
+    #[test]
+    fn 이미지_샌드박스_심링크_탈출_차단() {
+        let base = std::env::temp_dir().join(format!(
+            "hwp-md-img-symlink-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("sandbox");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        write_png(&root, "real.png", 8, 8);
+        let secret = write_png(&outside, "secret.png", 8, 8);
+        std::os::unix::fs::symlink(&secret, root.join("escape.png")).unwrap();
+        std::os::unix::fs::symlink(root.join("real.png"), root.join("alias.png")).unwrap();
+        let roots = vec![std::fs::canonicalize(&root).unwrap()];
+
+        // The symlink itself is inside the root, but its target is not: hard error.
+        let err = from_markdown_report(
+            "![x](escape.png)\n",
+            &MarkdownImportOptions {
+                base_dir: Some(&root),
+                roots: &roots,
+                preset: None,
+            },
+        )
+        .expect_err("루트 밖을 가리키는 심링크는 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
+
+        // Control: a symlink chain staying inside the root loads as usual.
+        let (doc, _) = from_markdown_report(
+            "![x](alias.png)\n",
+            &MarkdownImportOptions {
+                base_dir: Some(&root),
+                roots: &roots,
+                preset: None,
+            },
+        )
+        .expect("루트 안 심링크는 임베드");
+        assert_eq!(doc.bin_streams.len(), 1, "루트 안 심링크는 임베드");
 
         let _ = std::fs::remove_dir_all(&base);
     }

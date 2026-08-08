@@ -129,23 +129,160 @@ pub(crate) fn display_size(data: &[u8], size: &ImageSize, max_w: i32) -> (i32, i
     }
 }
 
-/// Sandbox containment check for an image path resolved from a markdown/HTML reference (#56).
-/// No-op when `roots` is empty (CLI, or an MCP server without `--root`). Roots are expected
-/// canonical already (the MCP server canonicalizes them at startup). A path that fails to
-/// canonicalize (missing file, ...) passes here and is handled by the caller's ordinary
-/// unreadable-file path instead, so missing-file semantics stay unchanged.
-pub(crate) fn check_resolved_under_roots(resolved: &Path, roots: &[PathBuf]) -> Result<(), String> {
+/// Why an image reference could not be loaded (#56). `Soft` keeps the ordinary
+/// degrade-to-alt-text (markdown) / contract-error (HTML) behavior; `Hard` is a sandbox
+/// violation and must abort the import — it is never degraded to a warning.
+pub(crate) enum ImageOpenError {
+    /// Ordinary failure (resolution, missing file, permissions, dangling symlink, ...) —
+    /// the caller's usual soft warning, so missing-file semantics stay unchanged.
+    Soft(String),
+    /// Sandbox violation — a deliberately generic message (no resolved path, no reference
+    /// string): a sandbox error must not leak the filesystem layout.
+    Hard(String),
+}
+
+/// Generic sandbox-violation message for image references (#56).
+fn sandbox_error() -> String {
+    "이미지 경로가 샌드박스 루트(--root) 밖에 있어 거부합니다".to_string()
+}
+
+/// Opens an image file referenced from markdown/HTML, binding it to the sandbox roots (#56).
+/// The caller must read from the returned handle: with roots non-empty, containment is judged
+/// from the opened handle (never the request pathname), so a symlink swapped between check and
+/// read cannot smuggle outside bytes in — a symlink to an outside target opens the target, and
+/// the handle-derived path is the target's path, which fails closed. Roots are expected
+/// canonical already (the MCP server canonicalizes them at startup). Empty roots skip the
+/// check entirely (CLI behavior — zero change). Ordinary open failures are mapped through
+/// `soft` so each caller keeps its existing warning message.
+pub(crate) fn open_image_under_roots(
+    resolved: &Path,
+    roots: &[PathBuf],
+    soft: impl FnOnce(std::io::Error) -> String,
+) -> Result<std::fs::File, ImageOpenError> {
+    let file = std::fs::File::open(resolved).map_err(|e| ImageOpenError::Soft(soft(e)))?;
     if roots.is_empty() {
-        return Ok(());
+        return Ok(file);
     }
-    let Ok(canonical) = std::fs::canonicalize(resolved) else {
-        return Ok(());
+    // Judge the roots against the opened handle, not the request pathname (same policy as
+    // hwp-cli's asset_snapshot): resolving the path from the descriptor keeps the check bound
+    // to the file that was actually opened even when a path component was renamed or a symlink
+    // was swapped between the open and this point.
+    #[cfg(any(unix, windows))]
+    check_opened_under_roots(&file, roots)?;
+    // Pathname-based fallback for targets without a handle-to-path mechanism — the open there
+    // is pathname-based already, so the roots check is too.
+    #[cfg(not(any(unix, windows)))]
+    check_resolved_under_roots(resolved, roots)?;
+    Ok(file)
+}
+
+/// Containment from the opened handle: the handle-derived path (canonicalized to wash out
+/// residual symlink components) must sit under at least one root. With roots set there is no
+/// fail-open path — any resolution failure is a hard error (#56).
+#[cfg(any(unix, windows))]
+fn check_opened_under_roots(file: &std::fs::File, roots: &[PathBuf]) -> Result<(), ImageOpenError> {
+    let canonical = std::fs::canonicalize(
+        opened_handle_path(file).map_err(|_| ImageOpenError::Hard(sandbox_error()))?,
+    )
+    .map_err(|_| ImageOpenError::Hard(sandbox_error()))?;
+    #[cfg(unix)]
+    let contained = roots.iter().any(|root| canonical.starts_with(root));
+    #[cfg(windows)]
+    let contained = roots
+        .iter()
+        .any(|root| windows_path_is_within(&canonical, root));
+    if contained {
+        Ok(())
+    } else {
+        Err(ImageOpenError::Hard(sandbox_error()))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn opened_handle_path(file: &std::fs::File) -> Result<PathBuf, ImageOpenError> {
+    use std::os::fd::AsRawFd as _;
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .map_err(|_| ImageOpenError::Hard(sandbox_error()))
+}
+
+#[cfg(target_os = "macos")]
+fn opened_handle_path(file: &std::fs::File) -> Result<PathBuf, ImageOpenError> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let mut buffer = vec![0 as libc::c_char; libc::MAXPATHLEN as usize];
+    // Safety: the caller holds `file` open, so the descriptor is valid, and the
+    // buffer is MAXPATHLEN writable bytes as F_GETPATH requires; on success the
+    // kernel writes a NUL-terminated path into it.
+    let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) };
+    if result == -1 {
+        return Err(ImageOpenError::Hard(sandbox_error()));
+    }
+    let path = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn opened_handle_path(_file: &std::fs::File) -> Result<PathBuf, ImageOpenError> {
+    // No portable handle-to-path mechanism on this target: fail closed (this
+    // is only reached with a non-empty roots list).
+    Err(ImageOpenError::Hard(sandbox_error()))
+}
+
+#[cfg(windows)]
+fn opened_handle_path(file: &std::fs::File) -> Result<PathBuf, ImageOpenError> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
+
+    let mut buffer = vec![0_u16; 32_768];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            VOLUME_NAME_DOS,
+        )
     };
+    if length == 0 || length as usize >= buffer.len() {
+        return Err(ImageOpenError::Hard(sandbox_error()));
+    }
+    Ok(PathBuf::from(OsString::from_wide(
+        &buffer[..length as usize],
+    )))
+}
+
+/// Case-insensitive, prefix-normalized containment for Windows handle paths (`\\?\`-style).
+#[cfg(windows)]
+fn windows_path_is_within(candidate: &Path, base: &Path) -> bool {
+    fn normalized(path: &Path) -> String {
+        let value = path.as_os_str().to_string_lossy();
+        let value = value.strip_prefix(r"\\?\UNC\").map_or_else(
+            || value.strip_prefix(r"\\?\").unwrap_or(&value).to_string(),
+            |suffix| format!(r"\\{suffix}"),
+        );
+        value.trim_end_matches(['\\', '/']).to_lowercase()
+    }
+
+    let candidate = normalized(candidate);
+    let base = normalized(base);
+    candidate == base
+        || candidate
+            .strip_prefix(&base)
+            .is_some_and(|suffix| suffix.starts_with(['\\', '/']))
+}
+
+/// Pathname-based fallback for targets without a handle-to-path mechanism. The file is
+/// already open at this point, so a canonicalize failure fails closed (#56).
+#[cfg(not(any(unix, windows)))]
+fn check_resolved_under_roots(resolved: &Path, roots: &[PathBuf]) -> Result<(), ImageOpenError> {
+    let canonical =
+        std::fs::canonicalize(resolved).map_err(|_| ImageOpenError::Hard(sandbox_error()))?;
     if roots.iter().any(|root| canonical.starts_with(root)) {
         Ok(())
     } else {
-        // Deliberately generic: a sandbox error must not leak the resolved filesystem layout.
-        Err("이미지 경로가 샌드박스 루트(--root) 밖에 있어 거부합니다".to_string())
+        Err(ImageOpenError::Hard(sandbox_error()))
     }
 }
 

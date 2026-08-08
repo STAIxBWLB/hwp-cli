@@ -830,19 +830,29 @@ impl Parser<'_> {
                     }
                 }
             };
-            // Sandbox containment (#56): an outside-root reference is a hard error that fails
+            // Sandbox containment (#56): with roots set, the check is verified against the
+            // opened file handle and the bytes are read from that same handle, so a swapped
+            // symlink cannot smuggle outside bytes in. A violation is a hard error that fails
             // the import — recorded so parse_fragment can label it FragmentError::Sandbox.
-            if let Err(message) = crate::image::check_resolved_under_roots(&resolved, self.roots) {
-                let message = format!("{message}: {src}");
-                self.sandbox_error = Some(message.clone());
-                return Err(message);
-            }
+            // The message is deliberately generic (no resolved path, no src).
+            let soft_open =
+                |e: std::io::Error| format!("이미지 읽기 실패 {}: {e}", resolved.display());
+            let mut file =
+                match crate::image::open_image_under_roots(&resolved, self.roots, soft_open) {
+                    Ok(file) => file,
+                    Err(crate::image::ImageOpenError::Soft(message)) => return Err(message),
+                    Err(crate::image::ImageOpenError::Hard(message)) => {
+                        self.sandbox_error = Some(message.clone());
+                        return Err(message);
+                    }
+                };
             if resolved
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
             {
-                let text = std::fs::read_to_string(&resolved)
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut file, &mut text)
                     .map_err(|e| format!("SVG 읽기 실패 {}: {e}", resolved.display()))?;
                 let canonical = crate::svg::sanitize_svg(&text)
                     .map_err(|e| format!("SVG 검증 거부 ({}): {e}", resolved.display()))?;
@@ -877,7 +887,8 @@ impl Parser<'_> {
                 ));
                 (png, "png", w, h)
             } else {
-                let data = std::fs::read(&resolved)
+                let mut data = Vec::new();
+                std::io::Read::read_to_end(&mut file, &mut data)
                     .map_err(|e| format!("이미지 읽기 실패 {}: {e}", resolved.display()))?;
                 if data.is_empty() {
                     return Err("빈 이미지 데이터입니다".into());
@@ -1661,6 +1672,48 @@ mod tests {
         )
         .expect("루트 미설정이면 기존 동작");
         assert_eq!(doc.bin_streams.len(), 1, "루트 미설정이면 절대 경로 로드");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #56 (handle-bound check): an in-root `<img>` symlink whose target is outside the roots
+    /// is a hard error — the verdict comes from the opened handle, not the request pathname.
+    #[cfg(unix)]
+    #[test]
+    fn 이미지_샌드박스_심링크_탈출_차단() {
+        let base = std::env::temp_dir().join(format!(
+            "from_html_img_symlink_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("sandbox");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // Minimal PNG (magic + IHDR with 8x8).
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend(8u32.to_be_bytes());
+        png.extend(8u32.to_be_bytes());
+        png.extend([0u8; 8]);
+        let secret = outside.join("secret.png");
+        std::fs::write(&secret, &png).unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("escape.png")).unwrap();
+        let roots = vec![std::fs::canonicalize(&root).unwrap()];
+
+        let err = from_html_with(
+            "<p><img src=\"escape.png\"/></p>",
+            &HtmlImportOptions {
+                base_dir: Some(&root),
+                roots: &roots,
+                ..Default::default()
+            },
+        )
+        .expect_err("루트 밖을 가리키는 심링크는 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
 
         let _ = std::fs::remove_dir_all(&base);
     }
