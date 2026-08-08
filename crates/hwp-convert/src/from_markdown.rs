@@ -560,6 +560,47 @@ fn note_body_para() -> Paragraph {
     }
 }
 
+/// Builds a footnote/endnote anchor pair — FOOTNOTE_ENDNOTE ExtCtrl (code 17) + fn/en
+/// GenericControl carrying the body paragraph list. Shared by the md path (push_footnote) and
+/// the HTML fragment path (fnref marker reattachment, #47). `ctrl_index` is the caller's control
+/// slot; relink_ctrl_index at paragraph flush does the final reassignment.
+pub(crate) fn footnote_anchor(
+    label: &str,
+    body: Vec<Paragraph>,
+    ctrl_index: u32,
+) -> (HwpChar, Control) {
+    let ctrl_id = if is_endnote_label(label) {
+        *b"en  "
+    } else {
+        *b"fn  "
+    };
+    // Anchor: ExtCtrl (code 17). First 4B of the 12B payload = reversed ctrl_id (same convention as other anchors).
+    let mut payload = vec![0u8; 12];
+    let mut rev = ctrl_id;
+    rev.reverse();
+    payload[..4].copy_from_slice(&rev);
+    let ch = HwpChar::ExtCtrl {
+        code: ctrl_char::FOOTNOTE_ENDNOTE,
+        ctrl_id,
+        payload,
+        ctrl_index: Some(ctrl_index),
+    };
+    let control = Control::Generic(GenericControl {
+        ctrl_id,
+        data: Vec::new(),
+        paragraph_lists: vec![ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: body,
+        }],
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+    });
+    (ch, control)
+}
+
 #[derive(Default)]
 struct Builder {
     paragraphs: Vec<Paragraph>,
@@ -893,8 +934,11 @@ impl Builder {
         let opts = crate::from_html::HtmlImportOptions {
             base_dir: self.base_dir.as_deref(),
             bin_seed: self.bin_streams.len(),
+            // fnref markers inside the fragment reattach to the pre-collected GFM bodies (#47).
+            note_bodies: Some(&self.note_bodies),
         };
-        match crate::from_html::parse_fragment(&html, &opts) {
+        let parsed = crate::from_html::parse_fragment(&html, &opts);
+        match parsed {
             Ok(blocks) => self.merge_html_blocks(blocks),
             Err(e) => self
                 .warnings
@@ -995,42 +1039,16 @@ impl Builder {
     /// Plants a footnote/endnote reference in the current paragraph — FOOTNOTE_ENDNOTE ExtCtrl
     /// (anchor) + fn/en GenericControl (body paragraph list). The exporter reads this structure to emit `[^N]`.
     fn push_footnote(&mut self, label: &str) {
-        let ctrl_id = if is_endnote_label(label) {
-            *b"en  "
-        } else {
-            *b"fn  "
-        };
         let body = self
             .note_bodies
             .get(label)
             .cloned()
             .unwrap_or_else(|| vec![note_body_para()]);
-        // Anchor: ExtCtrl (code 17). First 4B of the 12B payload = reversed ctrl_id (same convention as other anchors).
-        let mut payload = vec![0u8; 12];
-        let mut rev = ctrl_id;
-        rev.reverse();
-        payload[..4].copy_from_slice(&rev);
         let idx = self.controls.len() as u32;
-        self.chars.push(HwpChar::ExtCtrl {
-            code: ctrl_char::FOOTNOTE_ENDNOTE,
-            ctrl_id,
-            payload,
-            ctrl_index: Some(idx), // relink_ctrl_index at flush does the final reassignment
-        });
+        let (ch, control) = footnote_anchor(label, body, idx);
+        self.chars.push(ch);
         self.wchar_pos += 8;
-        self.controls.push(Control::Generic(GenericControl {
-            ctrl_id,
-            data: Vec::new(),
-            paragraph_lists: vec![ParagraphList {
-                header_data: Vec::new(),
-                paragraphs: body,
-            }],
-            extras: Vec::new(),
-            raw_children: Vec::new(),
-            gso_shapes: Vec::new(),
-            equation: None,
-            column_def: None,
-        }));
+        self.controls.push(control);
     }
 
     /// Embeds an image reference in the current paragraph — a local file is inserted as

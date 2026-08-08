@@ -5,8 +5,10 @@
 //! violations (unlisted tags, malformed XML, span mismatch, empty tables) are hard errors — no
 //! guess-based recovery.
 //!
-//! Remaining presentation-only elements: `class`/`style` attributes (ignored), footnote markers
-//! (`sup` with a `fnref` id is taken as plain text only), and `<section class="footnotes">` (skipped entirely).
+//! Remaining presentation-only elements: `class`/`style` attributes (ignored) and
+//! `<section class="footnotes">` (skipped entirely). Footnote markers (`sup` with a `fnref` id)
+//! are reattached to GFM definition bodies on the md-mixed path (#47); standalone they are
+//! taken as plain text only.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +38,10 @@ pub struct HtmlImportOptions<'a> {
     /// Seed for embedded image bin names — prevents name collisions when combining multiple
     /// fragments into one document.
     pub(crate) bin_seed: usize,
+    /// Pre-collected GFM footnote/endnote definition bodies (label → paragraphs). On the
+    /// md-mixed path, fnref markers inside fragments are reattached to these as real
+    /// footnote anchors (#47). None (standalone HTML) keeps the plain-text marker behavior.
+    pub(crate) note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
 }
 
 /// Output of fragment parsing — used by both standalone document assembly (from_html) and
@@ -124,6 +130,7 @@ pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<Htm
         bin_streams: Vec::new(),
         bin_seed: opts.bin_seed,
         base_dir: opts.base_dir.map(Path::to_path_buf),
+        note_bodies: opts.note_bodies.cloned().unwrap_or_default(),
         warnings: Vec::new(),
         in_cell_depth: 0,
         cs_rules: HashMap::new(),
@@ -204,6 +211,8 @@ struct Parser {
     bin_streams: Vec<BinStream>,
     bin_seed: usize,
     base_dir: Option<PathBuf>,
+    /// GFM footnote definition bodies for fnref marker reattachment (empty on the standalone path).
+    note_bodies: HashMap<String, Vec<Paragraph>>,
     warnings: Vec<String>,
     in_cell_depth: u32,
     // contract v2 style round-trip — <style> rule storage and restoration caches.
@@ -429,11 +438,28 @@ impl Parser {
                 Ok(())
             }
             "sup" => {
-                // Footnote markers (`fnref` id) are presentation-only — taken as plain text
-                // without turning on the sup mark.
-                let marker = attr(e, "id").is_some_and(|id| id.starts_with("fnref-"));
+                // Footnote markers (`fnref` id): on the md-mixed path the pre-collected GFM
+                // definition body is reattached as a real footnote/endnote anchor (#47) — the
+                // marker subtree (digits + `#fn-N` back-link) is consumed. Without a body
+                // (standalone HTML) the marker stays plain text without the sup mark.
+                let marker_label =
+                    attr(e, "id").and_then(|id| id.strip_prefix("fnref-").map(str::to_string));
+                if let Some(body) = marker_label
+                    .as_deref()
+                    .and_then(|l| self.note_bodies.get(l).cloned())
+                {
+                    self.skip_subtree(r, "sup")?;
+                    let label = marker_label.expect("marker label present");
+                    let ctx = self.ctx();
+                    let idx = ctx.controls.len() as u32;
+                    let (ch, control) = from_markdown::footnote_anchor(&label, body, idx);
+                    ctx.chars.push(ch);
+                    ctx.wchar_pos += 8; // FOOTNOTE_ENDNOTE ExtCtrl = 8 WCHAR
+                    ctx.controls.push(control);
+                    return Ok(());
+                }
                 let saved = self.marks;
-                if !marker {
+                if marker_label.is_none() {
                     self.marks.sup = true;
                 }
                 let result = self.inline(r, "sup");

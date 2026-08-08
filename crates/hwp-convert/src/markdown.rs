@@ -164,25 +164,20 @@ fn emit_markdown(
     Ok((cleaned, segments))
 }
 
-/// 각주/미주 정의 한 건을 문서 끝 형식으로 방출한다(GFM 풋노트 또는 HTML 블록).
+/// 각주/미주 정의 한 건을 문서 끝에 GFM 풋노트 문법으로 방출한다.
+/// HTML 표 안에서 참조된 각주도 정의는 항상 `[^N]:`이다 — importer(from_markdown)가
+/// ENABLE_FOOTNOTES로 파싱해 fnref 마커에 재부착한다(#47).
 fn emit_note(note: &Note, out: &mut String) {
-    if note.html {
-        out.push_str(&format!(
-            "<div class=\"hwp-footnote\" id=\"fn-{}\"><sup>{}</sup> {} <a href=\"#fnref-{}\">&#8617;</a></div>\n",
-            note.label, note.label, note.text, note.label
-        ));
-    } else {
-        let mut lines = note.text.lines();
-        match lines.next() {
-            Some(first) => {
-                out.push_str(&format!("[^{}]: {first}\n", note.label));
-                // 후속 줄은 4칸 들여쓰기(GFM 풋노트 연속 줄 규칙).
-                for l in lines {
-                    out.push_str(&format!("    {l}\n"));
-                }
+    let mut lines = note.text.lines();
+    match lines.next() {
+        Some(first) => {
+            out.push_str(&format!("[^{}]: {first}\n", note.label));
+            // 후속 줄은 4칸 들여쓰기(GFM 풋노트 연속 줄 규칙).
+            for l in lines {
+                out.push_str(&format!("    {l}\n"));
             }
-            None => out.push_str(&format!("[^{}]:\n", note.label)),
         }
+        None => out.push_str(&format!("[^{}]:\n", note.label)),
     }
 }
 
@@ -194,7 +189,6 @@ struct PendingMedia {
 struct Note {
     label: String,
     text: String,
-    html: bool,
     /// 이 각주/미주를 참조한 최상위 문단 좌표 (섹션 인덱스, 문단 인덱스).
     src: (usize, usize),
 }
@@ -1052,16 +1046,19 @@ fn render_control(
                     ctx.end_n += 1;
                     format!("e{}", ctx.end_n)
                 };
+                // 정의 본문은 위치와 무관하게 markdown으로 렌더한다(정의는 항상 문서 끝
+                // 최상위에 `[^N]:`으로 방출되므로 HTML 인라인이면 안 된다 — #47).
+                let saved_html = ctx.html_mode;
+                ctx.html_mode = false;
                 let text = note_text(doc, g, ctx);
-                let html = ctx.html_mode;
+                ctx.html_mode = saved_html;
                 let src = (ctx.cur_section, ctx.cur_para);
                 ctx.notes.push(Note {
                     label: label.clone(),
                     text,
-                    html,
                     src,
                 });
-                if html {
+                if ctx.html_mode {
                     body.push_str(&format!(
                         "<sup id=\"fnref-{label}\"><a href=\"#fn-{label}\">{label}</a></sup>"
                     ));
@@ -1641,7 +1638,7 @@ mod tests {
     }
 
     #[test]
-    fn html_표_각주는_html_링크와_정의로_연결() {
+    fn html_표_각주는_html_마커와_gfm_정의로_연결() {
         let note = Control::Generic(GenericControl {
             ctrl_id: *b"fn  ",
             data: vec![],
@@ -1683,10 +1680,9 @@ mod tests {
             md.contains(r##"<sup id="fnref-1"><a href="#fn-1">1</a></sup>"##),
             "HTML 각주 참조: {md}"
         );
-        assert!(
-            md.contains(r#"id="fn-1"><sup>1</sup> 표 안 각주"#),
-            "HTML 각주 정의: {md}"
-        );
+        // 정의는 참조 위치와 무관하게 GFM 문법이다 — HTML 블록이면 importer가 못 받는다(#47).
+        assert!(md.contains("[^1]: 표 안 각주"), "GFM 각주 정의: {md}");
+        assert!(!md.contains("hwp-footnote"), "HTML 정의 블록 금지: {md}");
     }
 
     /// 수식이 인라인은 `$..$`, 블록은 `$$..$$`로 방출된다.
@@ -2023,6 +2019,118 @@ mod tests {
             .filter(|c| matches!(c, Control::Table(_)))
             .count();
         assert_eq!(tables, 1, "왕복 후 표가 보존되어야 함: {md}");
+    }
+
+    /// GH-47: HTML 표 안에서 참조된 각주/미주도 정의는 GFM(`[^N]:`)으로 방출되고,
+    /// importer가 fnref 마커를 실제 각주 앵커로 복원해 왕복이 성립한다.
+    #[test]
+    fn markdown_왕복_html_표_각주_보존() {
+        let note = |id: &[u8; 4], txt: &str| {
+            Control::Generic(GenericControl {
+                ctrl_id: *id,
+                data: vec![],
+                paragraph_lists: vec![ParagraphList {
+                    header_data: vec![],
+                    paragraphs: vec![text_para(txt)],
+                }],
+                extras: vec![],
+                raw_children: vec![],
+                gso_shapes: vec![],
+                equation: None,
+                column_def: None,
+            })
+        };
+        let anchor = |idx: u32, id: &[u8; 4]| HwpChar::ExtCtrl {
+            code: ctrl_char::FOOTNOTE_ENDNOTE,
+            ctrl_id: *id,
+            payload: vec![],
+            ctrl_index: Some(idx),
+        };
+        let cell_para = Paragraph {
+            chars: "셀 본문"
+                .chars()
+                .map(HwpChar::Text)
+                .chain([anchor(0, b"fn  "), anchor(1, b"en  ")])
+                .collect(),
+            controls: vec![note(b"fn  ", "표 안 각주"), note(b"en  ", "표 안 미주")],
+            ..Paragraph::default()
+        };
+        let mut table = merged_table();
+        table.cells[0].paragraphs = vec![cell_para];
+        let mut doc = from_markdown("표\n");
+        insert_table(&mut doc.sections[0].paragraphs[0], table);
+
+        let md = to_markdown(&doc);
+        assert!(md.contains("[^1]: 표 안 각주"), "GFM 각주 정의: {md}");
+        assert!(md.contains("[^e1]: 표 안 미주"), "GFM 미주 정의: {md}");
+        assert!(!md.contains("hwp-footnote"), "HTML 정의 블록 금지: {md}");
+
+        let (back, warnings) = crate::from_markdown::from_markdown_report(
+            &md,
+            &crate::from_markdown::MarkdownImportOptions::default(),
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("계약 위반")),
+            "계약 위반 경고가 없어야 함: {warnings:?}"
+        );
+        // 복원된 표 셀 안에서 fn/en 앵커와 본문을 찾는다.
+        let mut bodies: Vec<(String, String)> = Vec::new();
+        for p in &back.sections[0].paragraphs {
+            for c in &p.controls {
+                let Control::Table(t) = c else { continue };
+                for cell in &t.cells {
+                    for cp in &cell.paragraphs {
+                        for cc in &cp.controls {
+                            if let Control::Generic(g) = cc
+                                && matches!(&g.ctrl_id, b"fn  " | b"en  ")
+                            {
+                                let text: String = g.paragraph_lists[0].paragraphs[0]
+                                    .chars
+                                    .iter()
+                                    .filter_map(|ch| match ch {
+                                        HwpChar::Text(c) => Some(*c),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                bodies.push((
+                                    String::from_utf8_lossy(&g.ctrl_id).trim().to_string(),
+                                    text,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            bodies,
+            vec![
+                ("fn".to_string(), "표 안 각주".to_string()),
+                ("en".to_string(), "표 안 미주".to_string())
+            ],
+            "각주/미주 본문 복원: {md}"
+        );
+        // 마커의 백링크(<a href="#fn-N">)가 하이퍼링크로 새지 않아야 한다.
+        let cell_text: String = back.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .filter_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .flat_map(|t| t.cells.iter())
+            .flat_map(|c| c.paragraphs.iter())
+            .flat_map(|p| p.chars.iter())
+            .filter_map(|ch| match ch {
+                HwpChar::Text(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !cell_text.contains('1') && !cell_text.contains('2'),
+            "마커 숫자는 평문으로 남지 않음: {cell_text}"
+        );
     }
 
     #[test]
