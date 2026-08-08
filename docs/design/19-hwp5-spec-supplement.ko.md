@@ -33,7 +33,7 @@
 | E-5 | COLDEF 단 정의(표 138·139) | 14B | 실파일 **16B**(외부 실증. 자체 전수 실측은 미실시 — 구현 시 정답지로 확정할 것) | hwp.js 이슈 #58 | [08 생태계](08-external-research.ko.md) |
 | E-6 | CHAR_SHAPE attr 취소선 비트 18~20(§4.2.7 표 35) | 취소선 여부·모양 | 야생 파일에서 **읽기 신뢰 불가** — 변경추적 삭제표시 템플릿이 bit18을 오염시켜 가짜 취소선을 만든다(실측 한 파일의 92%). 쓰기는 bit18 단독으로 렌더됨(실기 확정) | 코퍼스 attr 전수 실측 + 실기 | [07 B8](07-hangul-compat-rules.ko.md) |
 | E-7 | PARA_HEADER nchars bit31 | 줄 배치 캐시 정합 표식 | 실제 소비는 **'리스트(구역·표 셀·글상자)의 마지막 문단' 표식**(이중 의미). 잘못 켜면 이후 문단이 통째로 미표시 | 정품 다문단 표본 bit31 분포 실측 + 실기(revert 이력 포함) | [07 B3·B4](07-hangul-compat-rules.ko.md) |
-| E-8 | CTRL_HEADER/ExtCtrl ctrl_id | 4문자 코드(예: `secd`) | payload에 **바이트 역순 저장**(`dces` → `secd`) — 읽을 때 뒤집고, 쓸 때 역순으로 기록한다. 같은 역순이 FIELD_END payload의 역순 ctrl_id 3B(§3.4)로도 나타난다 | 정품 파일 바이트 대조 | [10 §4.1](10-hwp5-structure-map.ko.md) |
+| E-8 | CTRL_HEADER/ExtCtrl ctrl_id | 4문자 코드(예: `secd`) | payload에 **바이트 역순 저장**(`dces` → `secd`) — 읽을 때 뒤집고, 쓸 때 역순으로 기록한다. 같은 역순이 FIELD_END payload의 역순 ctrl_id 3B(이 문서 §3.4)로도 나타난다 | 정품 파일 바이트 대조 | [10 §4.1](10-hwp5-structure-map.ko.md) |
 
 ### 1.1 스펙이 정본인 혼동 지점 (정오 아님)
 
