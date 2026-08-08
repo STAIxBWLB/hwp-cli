@@ -250,10 +250,12 @@ GenericControl은 이 평탄화된 `paragraph_lists`를 텍스트 추출에만 �
   2026-07-19 스펙 전수 감사에서 정정.
 - **그리기 개체 테두리 선 정보 13B**: 스펙 표 86은 선 굵기 INT16 포함 11B를 선언하나 실측은
   굵기 4B(INT32)로 총 13B(`shape_draw.rs:393,414-415` — 2026-07-19 감사에서 ★ 목록 보완).
-- **ctrl_id 역순 저장**: CTRL_HEADER/ExtCtrl payload 앞 4바이트는 역순(`dces`→`secd`),
-  읽을 때 뒤집는다(`body_text.rs:268`).
 - **CHAR_SHAPE 취소선 비트(18~20)**: DIFFSPEC 의미라 신뢰하지 않고 `strike:false` 고정
   (가짜 취소선 방지, `doc_info.rs:249`).
+
+**구현 주의(정오 아님):** ctrl_id는 `MAKE_4CHID`가 만든 UINT32이며 파일 전체의 little-endian
+규칙을 따른다. 따라서 논리 ID `secd`가 바이트열에서는 `dces`로 나타난다. 이를 4문자 바이트로
+표현하는 리더는 경계에서 뒤집지만(`body_text.rs:268`), UINT32로 유지하는 리더는 다시 뒤집으면 안 된다.
 
 ---
 
