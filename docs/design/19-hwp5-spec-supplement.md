@@ -38,13 +38,14 @@ results. The "measured reality" column is normative.
 
 | # | Subject | What the spec says | Measured reality | Verification | Detail |
 |---|---|---|---|---|---|
-| E-1 | TABLE record "Row Size" array | Row heights | **Per-row cell counts** | Exhaustive comparison against genuine table documents | [10 §4.1](10-hwp5-structure-map.md), `body_text.rs:443` |
-| E-2 | Drawing-object border line info (table 86) | 11B total, line width INT16 | **13B** total, width **INT32** | 2026-07-19 full spec audit | [10 §4.1](10-hwp5-structure-map.md), `shape_draw.rs:393` |
+| E-1 | TABLE record "Row Size" array | Row heights | **Per-row cell counts** | Exhaustive comparison against genuine table documents | [10 §4.1](10-hwp5-structure-map.md) |
+| E-2 | Drawing-object border line info (table 86) | 11B total, line width INT16 | **13B** total, width **INT32** | 2026-07-19 full spec audit | [10 §4.1](10-hwp5-structure-map.md) |
 | E-3 | BULLET record (table 42) | 20B, bullet character at offset 8 | **25B** — a 4B numbering char-shape id occupies offsets 8-12 and the bullet character sits at **offset 12**. Table 42 has a history of self-contradictory totals | Byte comparison of 5 genuine BULLET records, plus the missing-marker symptom reproduced on Hancom | [07 B7](07-hangul-compat-rules.md) |
 | E-4 | PAGE_BORDER_FILL (table 135) | Self-contradictory: declares 12B while its own field sum is 14B | **14B** — attr u32 + gap u16×4 + border-fill id u16. BOTH/EVEN/ODD variants are distinguished by record order | Full sweep of 236 genuine files / 714 records (2026-07-19) | [08 evidence per feature](08-external-research.md) |
 | E-5 | COLDEF column definition (tables 138-139) | 14B | **16B** in real files (external corroboration; our own exhaustive sweep has not been run — settle against ground truth when implementing) | hwp.js issue #58 | [08 ecosystem](08-external-research.md) |
-| E-6 | CHAR_SHAPE attr strikethrough bits 18-20 (§4.2.7 table 35) | Strikethrough presence and style | **Not trustworthy on read** in wild files — track-change deletion templates pollute bit18 (92% false strikethrough in one measured file). On write, bit18 alone renders a strikethrough (Hancom-confirmed) | Exhaustive corpus attr sweep, plus a Hancom test | [07 B8](07-hangul-compat-rules.md), `doc_info.rs:249` |
+| E-6 | CHAR_SHAPE attr strikethrough bits 18-20 (§4.2.7 table 35) | Strikethrough presence and style | **Not trustworthy on read** in wild files — track-change deletion templates pollute bit18 (92% false strikethrough in one measured file). On write, bit18 alone renders a strikethrough (Hancom-confirmed) | Exhaustive corpus attr sweep, plus a Hancom test | [07 B8](07-hangul-compat-rules.md) |
 | E-7 | PARA_HEADER nchars bit31 | Line-layout-cache validity marker | Actually consumed as the **"last paragraph of its list (section / table cell / text box)" marker** (a dual meaning). Set it wrongly and every later paragraph disappears | bit31 distribution measured on genuine multi-paragraph files, plus a Hancom test (including one revert) | [07 B3·B4](07-hangul-compat-rules.md) |
+| E-8 | CTRL_HEADER / ExtCtrl ctrl_id | A four-character code (e.g. `secd`) | Stored **byte-reversed** in the payload (`dces` → `secd`); flip on read, write reversed. The same reversal reappears in FIELD_END payloads as the reversed 3B ctrl_id (§3.4 of this document) | Genuine-file byte comparison | [10 §4.1](10-hwp5-structure-map.md) |
 
 ### 1.1 Points where the specification is canonical (not errata)
 
@@ -72,7 +73,8 @@ or tampered when they disagree. The check cuts both ways: a new-version declarat
 layouts is rejected ([07 A3](07-hangul-compat-rules.md)), and an old-version declaration with
 new-style padding is rejected too (unconditionally padding ID_MAPPINGS to 18 counts corrupted a
 5.0.2.x document — [07 A10](07-hangul-compat-rules.md)). The specification never gathers this
-history in one place, so the table below is its canonical form.
+history in one place; the table below indexes it, with the procedural detail remaining canonical
+in 02 (read) and 03 (write).
 
 | Boundary (declared ≥) | Record | Change | Evidence |
 |---|---|---|---|
@@ -88,7 +90,7 @@ history in one place, so the table below is its canonical form.
 
 The read side infers the same boundaries from tail lengths ([02](02-hwp5-read.md)); the write side
 branches on the declared version (the version_target derivation in [03 §4](03-hwp5-write.md)). Both
-directions share the boundaries above, so this table is the single reference.
+directions share the boundaries above; this table is the one place they are listed together.
 
 ---
 
@@ -118,7 +120,7 @@ lesson 1).
 | A 5.1.x declaration requires the COMPATIBLE_DOCUMENT subtree | Corrupt rejection (even with security lowered) | A4 |
 | The six DOCUMENT_PROPERTIES start numbers (page, footnote, endnote, picture, table, equation) are ≥ 1 | Abnormal-document verdict | A8 |
 | The ID_MAPPINGS count array must match the actual child record counts | Corruption verdict | A10, [03 §4](03-hwp5-write.md) |
-| CHAR_SHAPE shade_color must not be 0 — "none" is 0xFFFFFFFF | An opaque black highlight behind every glyph ("black bars") | B1 |
+| CHAR_SHAPE shade_color must not be 0 — "none" is 0xFFFFFFFF (what counts as the "none" marker for a COLORREF differs by context) | An opaque black highlight behind every glyph ("black bars") | B1, [05 §7](05-rendering.md) |
 | PARA_SHAPE tab_def_id and numbering_id must reference existing items (no dangling refs) | Corruption verdict | A10 |
 | SECTION_DEF carries its mandatory children (FOOTNOTE_SHAPE ×2, PAGE_BORDER_FILL ×3) | Corruption verdict | A10, [03 §10](03-hwp5-write.md) |
 
@@ -164,7 +166,5 @@ formula lives exactly once, in its canonical document.
 | Table height | Σ over rows of max(rowH) + **566** HWPUNIT (2.0mm). An empirical constant absent from the spec, fixed by cross-measuring two ground-truth documents | C2, [05 §2.4](05-rendering.md) |
 | Per-run shape render limit | Hangul renders only the first ~21 shapes of one run (exact limit unknown). The implementation splits runs conservatively at 12 shapes | D8, [04 §7.2](04-hwpx-owpml.md) |
 | Two distinct kinds of tab "recomputation" | Render-time tab stops follow `floor(acc/40)×40 + 40`. Separately, Hangul recomputes the HWPX `hp:tab` width attribute on load, so an approximate stored value is acceptable (the latter is an HWPX rule) | [05 §2.3](05-rendering.md) / A12 |
-| shade_color semantics | 0 = opaque black shading; 0xFFFFFFFF = none. What counts as the "none" marker for a COLORREF differs by context | B1, [05 §7](05-rendering.md) |
 | Multi-column linesegs | Stored as col_start=0 with seg_width = the column width. The column index is not stored and must be derived from v_pos reset boundaries | [05 §1.8](05-rendering.md) |
 | HWPUNIT conversion | Only PARA_SHAPE margins divide by 200; every other HWPUNIT divides by 100 | [05 §7](05-rendering.md) |
-| nchars bit31 | The wording says "line-layout cache validity" but the actual consumption is the "last paragraph of its list" marker (E-7) | B3·B4 |

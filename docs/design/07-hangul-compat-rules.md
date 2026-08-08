@@ -18,6 +18,10 @@ Each rule below is tabulated as `[symptom | cause | fix | ground truth and evide
 (commit)]`, with a lesson on **why it could only be caught by Hancom testing and ground truth rather
 than static analysis**.
 
+> **Index maintenance**: the rule IDs here (A1 … E6) are cited by the spec-supplement index
+> [19-hwp5-spec-supplement](19-hwp5-spec-supplement.md). When adding or renumbering a rule, update
+> the corresponding row there.
+
 ---
 
 ## Diagnostic methodology (the meta-asset learned before the rules)
