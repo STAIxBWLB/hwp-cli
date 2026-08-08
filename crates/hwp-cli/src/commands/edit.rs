@@ -141,20 +141,20 @@ pub(crate) enum TypedEditOperation {
     },
     SetPara {
         pattern: String,
-        /// HWPUNIT/pt×100 단위까지 변환된 문단모양(CLI `parse_para_props`와 같은 단위).
+        /// Paragraph shape converted up to HWPUNIT/pt×100 units (same units as the CLI `parse_para_props`).
         props: hwp_convert::ParaProps,
     },
     SetPage {
-        /// HWPUNIT 단위까지 변환된 페이지 설정(CLI `apply_page_prop`과 같은 단위).
+        /// Page setup converted up to HWPUNIT units (same units as the CLI `apply_page_prop`).
         props: hwp_convert::PageProps,
     },
     DeleteImage {
         anchor: String,
     },
     DeleteTable {
-        /// 0-기반 표 인덱스. anchor와 상호 배타적(정확히 하나만 Some) — MCP 경계에서 강제.
+        /// 0-based table index. Mutually exclusive with anchor (exactly one is Some) — enforced at the MCP boundary.
         index: Option<usize>,
-        /// 앵커 텍스트가 든 문단의 표. index와 상호 배타적.
+        /// The table of the paragraph containing the anchor text. Mutually exclusive with index.
         anchor: Option<String>,
     },
     DeleteField {
@@ -167,8 +167,8 @@ pub(crate) enum TypedEditOperation {
 
 impl TypedEditOperation {
     fn is_structural(&self) -> bool {
-        // 레거시 EditOperation::is_structural와 같은 분류를 유지한다(같은 작업은
-        // CLI/MCP 어느 경로든 같은 쓰기 경로를 타야 한다).
+        // Keeps the same classification as the legacy EditOperation::is_structural (the same
+        // operation must take the same write path whether it comes via CLI or MCP).
         matches!(
             self,
             Self::InsertImage { .. }
@@ -1348,7 +1348,7 @@ fn apply_typed_operation(
             }
         }
         TypedEditOperation::DeleteTable { index, anchor } => {
-            // index/anchor 상호 배타는 MCP 경계에서 강제한다 — 여기서는 방어적으로 확인만.
+            // index/anchor mutual exclusion is enforced at the MCP boundary — here we only check defensively.
             let (kind, selector) = match (index, anchor) {
                 (Some(nth), None) => (hwp_convert::ObjectKind::TableNth(*nth), ""),
                 (None, Some(anchor)) => (hwp_convert::ObjectKind::Table, anchor.as_str()),
@@ -1502,7 +1502,7 @@ pub(crate) fn parse_align(name: &str) -> anyhow::Result<u8> {
     })
 }
 
-/// mm → HWPUNIT (1mm = 7200/25.4). MCP처럼 수치가 이미 파싱된 호출자도 같은 변환을 쓴다.
+/// mm → HWPUNIT (1mm = 7200/25.4). Callers with already-parsed numbers, like the MCP, use the same conversion.
 pub(crate) fn mm_to_hwpunit(mm: f32) -> i32 {
     (mm * 7200.0 / 25.4).round() as i32
 }
@@ -1625,8 +1625,8 @@ fn canonical_document(
         out
     }
 
-    /// 문서의 모든 Picture가 resolve_bin으로 참조하는 스트림의 semantic id를 모은다
-    /// (본문·표 셀·글상자 재귀).
+    /// Collects the semantic ids of every stream referenced via resolve_bin by any Picture
+    /// in the document (body, table cells, and text boxes, recursively).
     fn collect_referenced_bin_ids(
         paragraphs: &[hwp_model::Paragraph],
         doc: &hwp_model::Document,
@@ -1728,10 +1728,11 @@ fn canonical_document(
                         && table.common_data.is_empty()
                         && table.placement.is_none()
                     {
-                        // HWPX writer는 합성 표(common_data·placement 비어 있음)를 셀 단위
-                        // 나눔+제목줄 반복(attr=6)과 인라인 기본 배치로 방출하고 reader가
-                        // 그대로 돌려준다. write_table의 fallback과 같은 값으로 투영하되
-                        // 폭/높이는 writer와 같은 그리드 추정(단일 span 셀 최댓값 합산)을 쓴다.
+                        // The HWPX writer emits a synthetic table (empty common_data/placement)
+                        // split per cell with header-row repeat (attr=6) and the inline default
+                        // placement, and the reader returns it verbatim. Project the same values
+                        // as write_table's fallback, with width/height from the writer's grid
+                        // estimation (sum of max single-span cells).
                         table.attr = 6;
                         let cols = table.cols.max(1) as usize;
                         let rows = table.rows.max(1) as usize;
@@ -1975,9 +1976,10 @@ fn canonical_document(
         for start in &mut canonical.header.properties.start_numbers {
             *start = (*start).max(1);
         }
-        // HWPX writer는 Picture가 참조하는 스트림만 패키지에 동봉한다(BinCollector).
-        // 미참조 스트림(삭제된 개체의 잔여 등)은 디스크에 존재하지 않으므로 양쪽에 같은
-        // 규칙으로 제외한다 — 참조된 스트림의 writer 손실은 그대로 검출된다.
+        // The HWPX writer bundles only streams referenced by a Picture (BinCollector).
+        // Unreferenced streams (leftovers of deleted objects, etc.) do not exist on disk,
+        // so both sides exclude them by the same rule — writer loss of referenced streams
+        // is still detected.
         let mut referenced_bins = Vec::new();
         for section in &canonical.sections {
             collect_referenced_bin_ids(&section.paragraphs, &canonical, &mut referenced_bins);
@@ -1994,7 +1996,7 @@ fn canonical_document(
                 .then_with(|| left.data.cmp(&right.data))
         });
         // HWPX writer는 같은 bytes를 한 package item으로 재사용한다. 이름/등장
-        // 순서는 의미가 아니므로 정렬·중복 제거 후 bytes를 비교한다.
+        // Name/appearance order is not meaningful, so bytes are compared after sorting and deduplication.
         canonical
             .bin_streams
             .dedup_by(|left, right| left.data == right.data);
@@ -2528,9 +2530,10 @@ mod tests {
                 data: vec![1, 2, 3],
             },
         ];
-        // canonicalizer는 HWPX writer(BinCollector)처럼 컨트롤이 참조하는 스트림만
-        // 남긴다 — 중복 제거를 검증하려면 두 스트림을 Picture가 참조해야 한다.
-        // writer가 같은 bytes를 한 항목으로 재사용하므로 둘 다 같은 항목을 가리킨다.
+        // The canonicalizer keeps only streams referenced by a control, like the HWPX
+        // writer (BinCollector) — to exercise deduplication, both streams must be referenced
+        // by a Picture. The writer reuses one entry for identical bytes, so both point at
+        // the same entry.
         for _ in 0..2 {
             duplicated.sections[0].paragraphs[0]
                 .controls
@@ -2558,9 +2561,9 @@ mod tests {
 
     #[test]
     fn hwpx_canonical_semantics_drop_unreferenced_binary_content() {
-        // HWPX writer는 미참조 스트림을 동봉하지 않으므로(삭제된 개체의 잔여 등)
-        // canonicalizer도 같은 규칙으로 제외한다 — 제외하지 않으면 재읽기 검증이
-        // 디스크에 존재할 수 없는 스트림을 기대해 항상 실패한다.
+        // The HWPX writer does not bundle unreferenced streams (leftovers of deleted
+        // objects, etc.), so the canonicalizer excludes them by the same rule — otherwise
+        // the reread verification would expect streams that cannot exist on disk and always fail.
         let mut doc = hwp_convert::from_markdown("본문");
         doc.bin_streams.push(hwp_model::BinStream {
             name: "orphan.png".to_string(),

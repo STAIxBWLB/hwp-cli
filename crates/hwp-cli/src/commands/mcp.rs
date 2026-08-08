@@ -13,16 +13,16 @@ use serde_json::{Value, json};
 
 use crate::commands::cat::load_document;
 
-/// 지원하는 MCP 프로토콜 버전(최신 순). initialize 협상에서 쓴다.
+/// Supported MCP protocol versions (newest first). Used in initialize negotiation.
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
 const DEFAULT_READ_BYTES: usize = 256 * 1024;
 const MAX_READ_BYTES: usize = 1024 * 1024;
 
-/// 서버 컨텍스트 (렌더/diff 기본 폰트 디렉터리, `--root` 파일 접근 샌드박스).
+/// Server context (default font directories for render/diff, `--root` file access sandbox).
 pub struct Ctx {
     pub font_dirs: Vec<PathBuf>,
-    /// canonicalize된 허용 루트. 비어 있으면 파일 접근 무제한(기존 동작).
+    /// Canonicalized allowed roots. Empty means unrestricted file access (previous behavior).
     pub roots: Vec<PathBuf>,
 }
 
@@ -102,7 +102,7 @@ pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
 
     match method {
         "initialize" => {
-            // 프로토콜 협상: 클라이언트 요청 버전을 지원하면 그대로, 아니면 최신 버전으로 응답.
+            // Protocol negotiation: echo the client-requested version if supported, otherwise respond with the newest version.
             let requested = req
                 .get("params")
                 .and_then(|params| params.get("protocolVersion"))
@@ -330,9 +330,9 @@ fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<
         .transpose()
 }
 
-// ---- 경로 샌드박스 (`--root`) ----
+// ---- Path sandbox (`--root`) ----
 
-/// canonical 경로가 허용 root 중 하나 아래인지 확인한다.
+/// Checks that a canonical path sits below one of the allowed roots.
 fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, String> {
     if ctx.roots.iter().any(|root| canonical.starts_with(root)) {
         Ok(canonical.to_path_buf())
@@ -344,8 +344,8 @@ fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, Str
     }
 }
 
-/// 읽기 경로 검증: 실존해야 하며(canonicalize), canonical 결과가 root 아래여야 한다.
-/// roots가 비어 있으면 검사 없이 통과(기존 동작).
+/// Read-path validation: the path must exist (canonicalize) and the canonical result
+/// must sit below a root. Empty roots pass without a check (previous behavior).
 fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
     if ctx.roots.is_empty() {
         return Ok(PathBuf::from(raw));
@@ -355,9 +355,10 @@ fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
     under_any_root(ctx, &canonical, raw)
 }
 
-/// 쓰기 경로 검증: `..` 구성요소와 파일 이름 누락을 거부하고, 기존 파일이면
-/// canonicalize(심볼링크 덮어쓰기 우회 차단), 새 파일이면 부모를 canonicalize해 붙인 뒤
-/// root 검사를 한다. roots가 비어 있으면 검사 없이 통과(기존 동작).
+/// Write-path validation: rejects `..` components and a missing file name, then
+/// canonicalizes an existing file (blocking symlink-overwrite bypasses) or, for a new
+/// file, canonicalizes the parent and rejoins, before the root check.
+/// Empty roots pass without a check (previous behavior).
 fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
     if ctx.roots.is_empty() {
         return Ok(PathBuf::from(raw));
@@ -394,7 +395,7 @@ fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
 fn font_dirs_for(args: &Value, ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
     let mut dirs = ctx.font_dirs.clone();
     if let Some(d) = arg_str_opt(args, "font_dir")? {
-        // 호출당 font_dir는 샌드박스 검사 대상(기동 시 --font-dir는 신뢰).
+        // Per-call font_dir is subject to the sandbox check (startup --font-dir is trusted).
         dirs.push(checked_read_path(ctx, d)?);
     }
     Ok(dirs)
@@ -416,8 +417,8 @@ fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let with_header_footer = arg_bool(args, "with_header_footer", false)?;
     let with_hidden = arg_bool(args, "with_hidden", false)?;
     let with_segments = arg_bool(args, "with_segments", false)?;
-    // cat과 같은 계약: with_segments는 markdown 전용이고, with_* 플래그는
-    // plain/markdown에만 적용된다 (html/json/csv는 옵션 미대상 — 받아도 무시).
+    // Same contract as cat: with_segments is markdown-only, and the with_* flags apply
+    // only to plain/markdown (html/json/csv take no options — they are ignored if given).
     if with_segments && !matches!(format, "markdown" | "md") {
         return Err(format!(
             "with_segments는 format=markdown 전용입니다 (요청: {format})"
@@ -432,7 +433,7 @@ fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         text: text_options(),
         ..Default::default()
     };
-    // with_segments면 markdown과 함께 문자 범위 세그먼트 맵을 받아 둔다.
+    // With with_segments, also collect the character-range segment map alongside the markdown.
     let (text, segments) = match format {
         "plain" => (doc.plain_text_with(&text_options()), None),
         "markdown" | "md" if with_segments => {
@@ -482,9 +483,9 @@ fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         "next_offset": truncated.then_some(end),
     });
     let content = match segments {
-        // cat의 한 줄 JSON 봉투와 같은 모양이다. markdown은 반환 창 구간만 담고,
-        // 세그먼트는 창과 교차하는 것만 남기되 오프셋은 전체 markdown 기준
-        // 절대값(유니코드 문자 단위)을 유지한다.
+        // Same shape as cat's single-line JSON envelope. The markdown holds only the
+        // returned window, and segments are filtered to those intersecting the window
+        // while offsets stay absolute against the full markdown (unicode characters).
         Some(segments) => {
             let char_start = text[..offset].chars().count();
             let char_end = text[..end].chars().count();
@@ -668,10 +669,10 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     };
     let pages_spec = arg_str_opt(args, "pages")?;
 
-    // base64 반환 경로: png이고 output_path가 없을 때. 단일 페이지 선택만 허용한다.
+    // base64 return path: png without output_path. Only a single-page selection is allowed.
     if matches!(format, hwp_cli::cli::RenderFormat::Png) && output_path.is_none() {
         let selected = match pages_spec {
-            // legacy 계약: page는 render_document_pages와 같은 선택 의미를 유지한다.
+            // Legacy contract: page keeps the same selection semantics as render_document_pages.
             None => vec![page],
             Some(spec) => {
                 let total = hwp_render::count_pages(&doc, &opts);
@@ -712,15 +713,15 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         return Ok(vec![text_content(&summary), image_content(&png)]);
     }
 
-    // 파일 게시 경로: svg/pdf 또는 다중 페이지 또는 output_path 지정. CLI render와
-    // 같은 원자적 게시 트랜잭션을 거치고 JSON 메타데이터를 반환한다.
+    // File-publish path: svg/pdf, multiple pages, or an explicit output_path. Goes through
+    // the same atomic publish transaction as the CLI render and returns JSON metadata.
     let output = checked_write_path(
         ctx,
         output_path.ok_or(
             "svg/pdf 또는 output_path 없는 다중 페이지 렌더는 output_path 인자가 필요합니다",
         )?,
     )?;
-    // CLI와 같은 페이지별 파일명 규칙으로 파생된 각 경로도 샌드박스 검사 대상이다.
+    // Each path derived from the CLI's per-page filename rule is also sandbox-checked.
     let checked_derived = |base: &Path, page_no: usize, multi: bool| -> Result<PathBuf, String> {
         let derived = crate::commands::render::page_path(base, page_no, multi);
         let raw = derived
@@ -782,7 +783,7 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
                 None => crate::commands::render::parse_pages(&page.to_string(), total)
                     .map_err(|error| error.to_string())?,
             };
-            // PNG/SVG와 달리 PDF는 단일 멀티페이지 파일이다 (페이지별 분리 없음).
+            // Unlike PNG/SVG, PDF is a single multi-page file (no per-page split).
             let result = hwp_render::render_document_pdf(&doc, &opts, Some(&selected))
                 .map_err(|e| e.to_string())?;
             crate::commands::render::write_render_bytes(&output, &path, &result.data)
@@ -800,8 +801,8 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-/// hwp_grep 매칭 반환 상한 — 초과분은 잘라내고 truncated=true로 표시한다.
-/// count는 항상 절단 전 전체 개수다.
+/// hwp_grep match return cap — excess matches are cut and marked truncated=true.
+/// count is always the full pre-truncation total.
 const MAX_GREP_MATCHES: usize = 200;
 
 fn grep_result(matches: Vec<String>) -> Value {
@@ -824,7 +825,7 @@ fn tool_grep(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let pattern = arg_str(args, "pattern")?;
     let ignore_case = arg_bool(args, "ignore_case", false)?;
     let doc = load_document(&path).map_err(|e| e.to_string())?;
-    // 0건 매칭도 오류가 아니라 정상 결과다 (CLI grep의 exit(1) 계약과 다름).
+    // Zero matches are a normal result, not an error (unlike the CLI grep exit(1) contract).
     let matches =
         crate::commands::grep::search(&doc, pattern, ignore_case).map_err(|e| e.to_string())?;
     Ok(vec![text_content(
@@ -1002,8 +1003,8 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         });
     }
     for item in arg_array(args, "add_table")? {
-        // JSON 경계에서는 형태(문자열 배열의 배열)만 검증한다 — 빈 행 데이터 같은
-        // 내용 검증은 라이브러리(add_table)가 거부하고 그 오류를 그대로 올린다.
+        // The JSON boundary validates only the shape (an array of string arrays) — content
+        // problems like empty row data are rejected by the library (add_table), whose error propagates as-is.
         let rows_value = item
             .get("rows")
             .and_then(Value::as_array)
@@ -1029,7 +1030,7 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         });
     }
     for item in arg_array(args, "set_para")? {
-        // CLI의 line-spacing (% 정수 | Npt)를 두 수치 인자로 나눈 것 — 상호 배타적.
+        // The CLI line-spacing (% integer | Npt) split into two numeric arguments — mutually exclusive.
         let line_spacing = match (
             optional_item_f32(item, "set_para", "line_spacing_pct")?,
             optional_item_f32(item, "set_para", "line_spacing_pt")?,
@@ -1062,7 +1063,7 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             props,
         });
     }
-    // CLI의 누적 --set-page 플래그와 같이, 단일 객체를 하나의 PageProps로 합쳐 적용한다.
+    // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
     if let Some(item) = args.get("set_page") {
         if !item.is_object() {
             return Err("set_page는 단일 객체여야 합니다".into());
@@ -1140,7 +1141,7 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-/// hwp_convert 인자 → convert::execute 파라미터 매핑 (렌더 없이 검증하는 테스트 심).
+/// Maps hwp_convert arguments to convert::execute parameters (a test seam verified without rendering).
 #[derive(Debug)]
 struct ConvertRequest {
     input: PathBuf,
@@ -1176,11 +1177,11 @@ fn parse_convert_format(value: &str) -> Result<hwp_cli::cli::ConvertFormat, Stri
 fn convert_request(args: &Value, ctx: &Ctx) -> Result<ConvertRequest, String> {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
-    // to를 주면 CLI --to와 같이 출력 확장자 추론보다 우선한다.
+    // An explicit to wins over output-extension inference, like the CLI --to.
     let to = arg_str_opt(args, "to")?
         .map(parse_convert_format)
         .transpose()?;
-    // media_dir는 markdown 이미지 추출 디렉터리 — 쓰기 경로로 검사한다.
+    // media_dir is the markdown image-extraction directory — checked as a write path.
     let media_dir = arg_str_opt(args, "media_dir")?
         .map(|raw| checked_write_path(ctx, raw))
         .transpose()?;
@@ -1193,8 +1194,8 @@ fn convert_request(args: &Value, ctx: &Ctx) -> Result<ConvertRequest, String> {
         media_dir,
         with_header_footer: arg_bool(args, "with_header_footer", false)?,
         with_hidden: arg_bool(args, "with_hidden", false)?,
-        // 기동 --font-dir + 호출당 font_dir 병합 목록을 그대로 넘긴다 — 이전에는
-        // 항상 빈 목록이라 MCP 서버 기동 시 지정한 폰트가 PDF 변환에 적용되지 않았다.
+        // Passes the merged startup --font-dir + per-call font_dir list through — previously
+        // the list was always empty, so fonts set at MCP server startup never applied to PDF conversion.
         font_dirs: font_dirs_for(args, ctx)?,
     })
 }
@@ -1812,7 +1813,7 @@ mod tests {
         }
     }
 
-    /// 주어진 root(호출 측에서 canonicalize)만 허용하는 샌드박스 컨텍스트.
+    /// Sandbox context allowing only the given root (canonicalized by the caller).
     fn ctx_with_roots(roots: Vec<PathBuf>) -> Ctx {
         Ctx {
             font_dirs: Vec::new(),
@@ -1852,14 +1853,14 @@ mod tests {
 
     #[test]
     fn initialize_프로토콜_버전_협상() {
-        // 지원하는 버전은 그대로 에코한다.
+        // A supported version is echoed as-is.
         for version in SUPPORTED_PROTOCOL_VERSIONS {
             let v = call(&format!(
                 r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"{version}"}}}}"#
             ));
             assert_eq!(v["result"]["protocolVersion"], version);
         }
-        // 미지원 버전이면 최신 버전으로 응답한다.
+        // An unsupported version gets the newest version in response.
         let v = call(
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#,
         );
@@ -1867,7 +1868,7 @@ mod tests {
             v["result"]["protocolVersion"],
             SUPPORTED_PROTOCOL_VERSIONS[0]
         );
-        // protocolVersion 파라미터가 없어도 최신 버전으로 응답한다.
+        // A missing protocolVersion parameter also gets the newest version.
         let v = call(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#);
         assert_eq!(
             v["result"]["protocolVersion"],
@@ -2050,7 +2051,7 @@ mod tests {
         let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&directory).unwrap()]);
         let output = directory.join("out.hwpx");
 
-        // 샌드박스 루트 아래 에셋을 참조하는 spec은 그대로 합성된다(roots 전달 검증).
+        // A spec referencing assets below the sandbox root composes as usual (verifies roots plumbing).
         let result = tool_compose(
             &json!({
                 "spec": {
@@ -2524,8 +2525,8 @@ mod tests {
         let _ = std::fs::remove_file(source);
     }
 
-    /// 샌드박스 테스트용 (base, root, outside) 디렉터리를 만든다.
-    /// Windows CI 호환: 실제 temp dir만 쓰고, root는 ctx에 넣기 전에 canonicalize한다.
+    /// Creates (base, root, outside) directories for sandbox tests.
+    /// Windows-CI compatible: uses only the real temp dir, and root is canonicalized before entering ctx.
     fn sandbox_dirs(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
         let base =
             std::env::temp_dir().join(format!("hwp-cli-mcp-sandbox-{tag}-{}", std::process::id()));
@@ -2539,7 +2540,7 @@ mod tests {
     #[test]
     fn sandbox_루트없으면_검사없이_통과() {
         let ctx = ctx_with_roots(Vec::new());
-        // 존재하지 않는 경로도, '..'도 기존 동작 그대로 통과한다.
+        // Nonexistent paths and '..' pass through with the previous behavior.
         let read = checked_read_path(&ctx, "no/such/file.hwpx").unwrap();
         assert_eq!(read, PathBuf::from("no/such/file.hwpx"));
         let write = checked_write_path(&ctx, "../out.hwpx").unwrap();
@@ -2675,7 +2676,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// 본문·표 셀·글상자 재귀로 매칭되는 컨트롤 수를 센다(typed edit 왕복 검증용).
+    /// Counts controls matched across body, table cells, and text boxes recursively (for typed-edit round-trip checks).
     fn count_controls(
         doc: &hwp_model::Document,
         matches: fn(&hwp_model::Control) -> bool,
@@ -2735,7 +2736,7 @@ mod tests {
                 "hwp_edit 스키마에 {key} 누락"
             );
         }
-        // set_page는 단일 객체, 나머지는 배열이다.
+        // set_page is a single object; the rest are arrays.
         assert_eq!(properties["set_page"]["type"], "object");
         assert_eq!(properties["add_table"]["type"], "array");
     }
@@ -2819,7 +2820,7 @@ mod tests {
         let shape = &doc.header.para_shapes[para.para_shape.0 as usize];
         assert_eq!(shape.line_spacing_type, 0, "비율 줄간격");
         assert_eq!(shape.line_spacing, 130);
-        // IR은 HWPUNIT의 2배 단위(hwp5 PARA_SHAPE)다.
+        // The IR uses double-HWPUNIT units (hwp5 PARA_SHAPE).
         assert_eq!(shape.indent, 2 * crate::commands::edit::mm_to_hwpunit(5.0));
 
         let page = doc.sections[0]
@@ -2845,7 +2846,7 @@ mod tests {
         let out = temp_file("typed-delete-image-out.hwpx");
         let png = temp_file("typed-delete-image.png");
         create_hwpx(&source, "사진: 여기");
-        // 최소 PNG 헤더(IHDR 96x96) — insert_image는 크기만 파싱한다.
+        // Minimal PNG header (IHDR 96x96) — insert_image only parses the size.
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.extend([0, 0, 0, 13]);
         bytes.extend(b"IHDR");
@@ -2953,7 +2954,7 @@ mod tests {
 
     #[test]
     fn mcp_typed_edit_validation_errors() {
-        // 경계 검증 오류는 파일을 읽기 전에 발생한다(input/output은 더미 경로).
+        // Boundary-validation errors fire before any file is read (input/output are dummy paths).
         let dummy = json!({"input": "in.hwpx", "output": "out.hwpx"});
 
         let mut args = dummy.clone();
@@ -2992,7 +2993,7 @@ mod tests {
         let error = tool_edit(&args, &ctx()).unwrap_err();
         assert!(error.contains("add_table"), "{error}");
 
-        // 빈 rows는 형태는 맞지만 내용이 없다 — 라이브러리가 거부하고 그 오류가 올라온다.
+        // Empty rows have the right shape but no content — the library rejects them and that error propagates.
         let source = temp_file("typed-add-table-empty-source.hwpx");
         let out = temp_file("typed-add-table-empty-out.hwpx");
         create_hwpx(&source, "머리말");
@@ -3031,15 +3032,15 @@ mod tests {
         let _ = std::fs::remove_file(source);
     }
 
-    /// 머리말/숨은 설명 컨트롤이 든 IR을 만든다 (.json으로 저장하면 load_document가
-    /// 그대로 역직렬화하므로 writer DROP 없이 왕복된다).
+    /// Builds an IR containing header/hidden-note controls (saved as .json, load_document
+    /// deserializes it verbatim, so it round-trips without writer loss).
     fn create_ir_json_with_hidden_and_header(path: &Path) {
         let mut doc = hwp_convert::from_markdown("본문\n\n숨은메모\n\n머리말텍스트");
         let hidden_para = doc.sections[0].paragraphs.remove(1);
         let header_para = doc.sections[0].paragraphs.remove(1);
         let body = &mut doc.sections[0].paragraphs[0];
-        // from_markdown 문단은 이미 컨트롤(구역 정의 등)을 갖고 있으므로 인덱스는
-        // push 시점에 잡는다.
+        // from_markdown paragraphs already carry controls (section definitions, etc.),
+        // so indexes are captured at push time.
         let hidden_index = body.controls.len() as u32;
         body.controls
             .push(hwp_model::Control::Generic(hwp_model::GenericControl {
@@ -3145,7 +3146,7 @@ mod tests {
             "문단별 세그먼트: {full_segments:?}"
         );
 
-        // 두 번째 문단 중간("바")부터 2문자 창 — 세그먼트 오프셋은 전체 기준 절대값이어야 한다.
+        // A 2-character window from the middle of the second paragraph ("바") — segment offsets must stay absolute against the full markdown.
         let offset = markdown.find("바").unwrap();
         let window = tool_read(
             &json!({
@@ -3166,8 +3167,8 @@ mod tests {
             window_segments.len() < full_segments.len(),
             "창 밖 세그먼트는 걸러야: {window_segments:?}"
         );
-        // 절대 오프셋 증명: 창 기준 재매핑이었다면 start가 0 부근이지만, 절대값은
-        // 전체 markdown에서의 문자 위치를 그대로 가리킨다.
+        // Proof of absolute offsets: window-relative remapping would put start near 0,
+        // but absolute values point at the character position in the full markdown.
         let char_start = markdown[..offset].chars().count();
         let char_end = char_start + 2;
         for segment in window_segments {
@@ -3182,7 +3183,7 @@ mod tests {
                 "오프셋이 전체 기준 절대값으로 동일해야: {segment}"
             );
         }
-        // 페이지네이션 메타데이터는 두 번째 content로 유지된다.
+        // Pagination metadata is kept as the second content item.
         let metadata: Value = serde_json::from_str(window[1]["text"].as_str().unwrap()).unwrap();
         assert_eq!(metadata["truncated"], true);
         let _ = std::fs::remove_file(source);
@@ -3208,7 +3209,7 @@ mod tests {
         let source = temp_file("convert-to-source.hwpx");
         let output = temp_file("convert-to-output.txt");
         create_hwpx(&source, "본문");
-        // to=json이 .txt 확장자보다 우선한다 (CLI --to와 같은 우선순위).
+        // to=json wins over the .txt extension (same precedence as the CLI --to).
         tool_convert(
             &json!({
                 "input": source,
@@ -3231,7 +3232,7 @@ mod tests {
 
     #[test]
     fn mcp_convert_request_merges_font_dirs_and_maps_args() {
-        // 렌더 없이 검증하는 심: pdf 대상 변환이 기동/호출당 폰트 디렉터리를 받는다.
+        // Seam verified without rendering: a pdf-target conversion receives the startup/per-call font directories.
         let mut sandbox_ctx = ctx();
         sandbox_ctx.font_dirs = vec![PathBuf::from("/launch-fonts")];
         let request = convert_request(
@@ -3283,7 +3284,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// 3쪽 합성 문서 (기존 mcp_render_rasterizes 테스트와 같은 break_type 트릭).
+    /// Synthetic 3-page document (same break_type trick as the existing mcp_render_rasterizes test).
     fn create_three_page_hwpx(path: &Path) {
         let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n\n셋째 쪽\n");
         doc.sections[0].paragraphs[1].header.break_type |= 0x04;
@@ -3294,19 +3295,19 @@ mod tests {
     #[test]
     fn mcp_render_rejects_conflicting_or_missing_page_args() {
         let source = temp_file("render-args.hwpx");
-        // 3쪽 문서여야 "1-2" 선택이 실제 다중 페이지가 된다 (parse_pages는 총쪽수로 자른다).
+        // The document must have 3 pages for the "1-2" selection to be genuinely multi-page (parse_pages clamps to the page count).
         create_three_page_hwpx(&source);
-        // page와 pages는 상호 배타적이다.
+        // page and pages are mutually exclusive.
         let error =
             tool_render(&json!({"path": source, "page": 1, "pages": "1-2"}), &ctx()).unwrap_err();
         assert!(error.contains("pages"), "{error}");
-        // svg/pdf는 output_path가 필수다.
+        // svg/pdf require output_path.
         for format in ["svg", "pdf"] {
             let error =
                 tool_render(&json!({"path": source, "format": format}), &ctx()).unwrap_err();
             assert!(error.contains("output_path"), "{format}: {error}");
         }
-        // 다중 페이지 png도 output_path가 필수다.
+        // Multi-page png requires output_path too.
         let error =
             tool_render(&json!({"path": source, "pages": "1-2", "dpi": 36}), &ctx()).unwrap_err();
         assert!(error.contains("output_path"), "{error}");
@@ -3323,7 +3324,7 @@ mod tests {
             &ctx(),
         )
         .expect("다중 페이지 png");
-        // base64 경로와 달리 이미지 콘텐츠 없이 JSON 메타데이터만 반환한다.
+        // Unlike the base64 path, this returns only JSON metadata without image content.
         assert_eq!(content.len(), 1);
         assert_eq!(content[0]["type"], "text");
         let metadata: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
@@ -3357,7 +3358,7 @@ mod tests {
         let source = temp_file("render-vector-source.hwpx");
         create_three_page_hwpx(&source);
 
-        // 단일 페이지 svg는 output_path 그대로 쓴다.
+        // A single-page svg is written to output_path as-is.
         let svg = temp_file("render-single.svg");
         let content = tool_render(
             &json!({"path": source, "format": "svg", "dpi": 36, "output_path": svg}),
@@ -3374,7 +3375,7 @@ mod tests {
             svg.display()
         );
 
-        // pdf는 선택 페이지를 단일 멀티페이지 파일로 쓴다.
+        // pdf writes the selected pages as a single multi-page file.
         let pdf = temp_file("render-all.pdf");
         let content = tool_render(
             &json!({"path": source, "format": "pdf", "pages": "all", "dpi": 36, "output_path": pdf}),
@@ -3403,7 +3404,7 @@ mod tests {
         assert_eq!(result["truncated"], false);
         assert_eq!(result["matches"].as_array().unwrap().len(), 2);
 
-        // 0건 매칭도 오류가 아니라 정상 결과다 (isError=false).
+        // Zero matches are a normal result, not an error (isError=false).
         let zero = call_tool(
             "hwp_grep",
             &json!({"path": source, "pattern": "없는문구"}),
@@ -3415,7 +3416,7 @@ mod tests {
         assert_eq!(result["count"], 0);
         assert_eq!(result["matches"].as_array().unwrap().len(), 0);
 
-        // ignore_case는 대소문자를 무시한다.
+        // ignore_case ignores letter case.
         let content = tool_grep(
             &json!({"path": source, "pattern": "hello", "ignore_case": true}),
             &ctx(),
@@ -3441,7 +3442,7 @@ mod tests {
         );
         assert_eq!(MAX_GREP_MATCHES, 200);
 
-        // 상한 이하는 그대로다.
+        // Counts at or below the cap pass through unchanged.
         let uncapped = grep_result_capped(vec!["a".into(), "b".into()], 2);
         assert_eq!(uncapped["count"], 2);
         assert_eq!(uncapped["truncated"], false);

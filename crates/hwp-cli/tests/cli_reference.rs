@@ -37,7 +37,7 @@ fn cell(s: &str) -> String {
     joined.replace('|', "\\|")
 }
 
-/// GitHub 앵커: `hwp skill export` → `hwp-skill-export` (공백은 하이픈으로).
+/// GitHub anchor: `hwp skill export` → `hwp-skill-export` (spaces become hyphens).
 fn anchor(name: &str) -> String {
     format!("hwp-{}", name.replace(' ', "-"))
 }
@@ -95,8 +95,8 @@ fn usage_line(sub: &Command, path: &str) -> String {
         .strip_prefix("Usage:")
         .map(str::trim)
         .unwrap_or_else(|| raw.trim());
-    // 베어이름(경로의 마지막 토큰) 뒤 본문만 취해 전체 경로로 재조립한다 —
-    // 중첩 서브커맨드(`export`)도 `hwp skill export …`로 정규화된다.
+    // Take the body after the bare name (last path token) and reassemble it with the
+    // full path — nested subcommands (`export`) normalize to `hwp skill export …` too.
     let bare = path.rsplit(' ').next().unwrap_or(path);
     let body = match after_label.split_once(bare) {
         Some((_, rest)) => rest.trim_start(),
@@ -186,8 +186,8 @@ fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
 /// clap 정의에서 마크다운 레퍼런스 전문을 생성한다.
 fn generate(lang: Lang) -> String {
     let root = i18n::localize(Cli::command(), lang);
-    // 노출 대상 서브커맨드(숨김 제외)를 선언 순서로 평탄화 — 중첩 서브커맨드
-    // (`skill` 아래 `export`)도 전체 경로("skill export")를 단 한 항목으로 포함한다.
+    // Flatten exposed subcommands (excluding hidden ones) in declaration order — nested
+    // subcommands (`export` under `skill`) also appear exactly once, with the full path ("skill export").
     let mut subs: Vec<(String, &Command)> = Vec::new();
     fn flatten<'a>(cmd: &'a Command, path: String, subs: &mut Vec<(String, &'a Command)>) {
         subs.push((path.clone(), cmd));
@@ -368,7 +368,7 @@ fn korean_overlay_covers_every_command_and_argument() {
 #[test]
 fn korean_overlay_has_no_stale_entries() {
     fn exists(command: &Command, path: &str, arg: &str) -> bool {
-        // 중첩 서브커맨드는 단계와 무관하게 베어 이름으로 찾는다(translate와 같은 키잉).
+        // Nested subcommands are looked up by bare name regardless of depth (same keying as translate).
         fn find<'a>(cmd: &'a Command, name: &str) -> Option<&'a Command> {
             cmd.get_subcommands()
                 .find(|c| c.get_name() == name)

@@ -26,9 +26,10 @@ pub fn run(pattern: &str, file: &Path, ignore_case: bool) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// 패턴이 든 문단 텍스트를 등장 순서로 모은다 (본문·표 셀·글상자 재귀).
+/// Collects paragraph texts containing the pattern in order of appearance
+/// (body, table cells, and text boxes, recursively).
 ///
-/// `run`의 순수 코어 — CLI는 exit 코드 계약을, MCP는 그대로 결과를 반환한다.
+/// Pure core of `run` — the CLI wraps it with the exit-code contract, the MCP returns the result as-is.
 pub fn search(doc: &Document, pattern: &str, ignore_case: bool) -> anyhow::Result<Vec<String>> {
     if pattern.is_empty() {
         anyhow::bail!("검색 패턴이 비어 있습니다");

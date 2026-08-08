@@ -470,7 +470,7 @@ pub struct EditArgs {
     pub allow_partial: bool,
 }
 
-/// `hwp skill` 서브커맨드.
+/// `hwp skill` subcommand.
 #[derive(Subcommand)]
 pub enum SkillCmd {
     /// Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
@@ -484,7 +484,7 @@ pub enum SkillCmd {
     },
 }
 
-/// `--install` 대상 — 에이전트별 스킬 디렉터리.
+/// `--install` target — per-agent skill directory.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum InstallTarget {
     /// ~/.claude/skills/hwp/

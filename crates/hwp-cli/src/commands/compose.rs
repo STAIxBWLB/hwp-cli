@@ -110,7 +110,7 @@ pub fn execute_text_with_source(
 
 /// `execute_text_with_source`의 hermetic font variant. `font_files`가 있으면 HWP
 /// writer와 preview는 시스템 글꼴을 전혀 로드하지 않는다.
-/// `roots`가 비어 있지 않으면 spec 에셋을 해당 루트 아래로 제한한다(MCP 샌드박스).
+/// When `roots` is non-empty, spec assets are restricted below those roots (MCP sandbox).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_text_with_source_and_fonts(
     input: &str,

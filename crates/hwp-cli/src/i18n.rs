@@ -76,8 +76,9 @@ pub fn localize(command: Command, lang: Lang) -> Command {
     }
 }
 
-/// `path`는 서브커맨드 이름(루트는 빈 문자열)이다. 중첩 서브커맨드(`skill` 아래 `export`
-/// 등)도 단계와 무관하게 베어 이름 자체가 키다(예: `("export", …)`).
+/// `path` is the subcommand name (the root is the empty string). Nested subcommands
+/// (`export` under `skill`, etc.) are also keyed by the bare name itself, regardless
+/// of depth (e.g. `("export", …)`).
 fn translate(command: Command, path: &str) -> Command {
     let command = match lookup(path, "") {
         Some(text) => command.about(text),
@@ -576,7 +577,7 @@ pub const KO: &[(&str, &str, &str)] = &[
         "같은 버전이어도 다시 받아 교체 (손상된 설치 복구용)",
     ),
     ("update", "json", "JSON으로 출력"),
-    // skill (하위 서브커맨드 export는 베어 이름 "export"로 키잉한다)
+    // skill (the nested export subcommand is keyed by the bare name "export")
     (
         "skill",
         "",

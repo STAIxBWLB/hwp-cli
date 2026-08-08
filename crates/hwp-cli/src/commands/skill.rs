@@ -1,12 +1,15 @@
-//! `hwp skill` — 번들된 에이전트 스킬 관리.
+//! `hwp skill` — manages the bundled agent skill.
 //!
-//! 저장소 정본 `skills/hwp/SKILL.md`를 `include_str!`로 바이너리에 임베드해 두고,
-//! `hwp skill export`가 그대로 파일로 풀어낸다(생성물이라 기존 파일은 조용히 덮어쓴다).
-//! `--install claude-code|codex`는 에이전트별 관례 디렉터리(`~/.claude/skills/hwp/`,
-//! `~/.codex/skills/hwp/`)를 골라 주는 지름길일 뿐 동작은 같다.
+//! The repository source of truth `skills/hwp/SKILL.md` is embedded into the
+//! binary with `include_str!`, and `hwp skill export` writes it out verbatim
+//! (a generated artifact, so an existing file is silently overwritten).
+//! `--install claude-code|codex` is only a shortcut that picks the per-agent
+//! conventional directory (`~/.claude/skills/hwp/`, `~/.codex/skills/hwp/`);
+//! the behavior is the same.
 //!
-//! 홈 디렉터리 해석과 대상 결정은 순수 함수로 분리해 단위 테스트한다 — 테스트가 실제
-//! `$HOME`을 만지지 않게 경로 계산만 검증하고, 파일 쓰기는 임시 디렉터리에서만 한다.
+//! Home-directory resolution and target selection are split into pure functions
+//! for unit testing — tests verify only the path computation without touching
+//! the real `$HOME`, and file writes happen only in temporary directories.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,7 +18,7 @@ use anyhow::Context as _;
 
 use hwp_cli::cli::InstallTarget;
 
-/// 임베드된 스킬 정본. 저장소의 `skills/hwp/SKILL.md`와 바이트 단위로 같다.
+/// Embedded skill source of truth. Byte-identical to `skills/hwp/SKILL.md` in the repository.
 pub const SKILL_MD: &str = include_str!("../../../../skills/hwp/SKILL.md");
 
 pub fn run(output: Option<PathBuf>, install: Option<InstallTarget>) -> anyhow::Result<()> {
@@ -25,8 +28,8 @@ pub fn run(output: Option<PathBuf>, install: Option<InstallTarget>) -> anyhow::R
     Ok(())
 }
 
-/// 출력 디렉터리를 정한다: `-o` 우선, `--install`이면 에이전트 스킬 디렉터리,
-/// 둘 다 없으면 `./hwp`. 둘 다 있으면 거부(clap이 `conflicts_with`로 먼저 막는다).
+/// Picks the output directory: `-o` wins, `--install` picks the agent skill directory,
+/// and with neither the default is `./hwp`. Both together are rejected (clap blocks them first via `conflicts_with`).
 fn resolve_target_dir(
     output: Option<PathBuf>,
     install: Option<InstallTarget>,
@@ -41,7 +44,7 @@ fn resolve_target_dir(
     }
 }
 
-/// `--install` 대상의 스킬 디렉터리(`home` 아래 상대 경로 조립만 — IO 없음).
+/// Skill directory for an `--install` target (only assembles the relative path below `home` — no IO).
 fn install_dir(target: InstallTarget, home: &Path) -> PathBuf {
     let agent = match target {
         InstallTarget::ClaudeCode => ".claude",
@@ -50,7 +53,7 @@ fn install_dir(target: InstallTarget, home: &Path) -> PathBuf {
     home.join(agent).join("skills").join("hwp")
 }
 
-/// 홈 디렉터리: 유닉스는 `$HOME`, Windows는 `$USERPROFILE` (새 크레이트 의존 없이).
+/// Home directory: `$HOME` on unix, `$USERPROFILE` on Windows (no new crate dependency).
 fn home_dir() -> anyhow::Result<PathBuf> {
     #[cfg(not(windows))]
     const VAR: &str = "HOME";
@@ -62,7 +65,7 @@ fn home_dir() -> anyhow::Result<PathBuf> {
         .with_context(|| format!("홈 디렉터리 환경변수 ${VAR} 가 설정되어 있지 않습니다"))
 }
 
-/// `dir/SKILL.md`에 임베드된 내용을 쓴다(디렉터리가 없으면 만든다).
+/// Writes the embedded content to `dir/SKILL.md` (creating the directory if needed).
 fn export(dir: &Path) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dir)
         .with_context(|| format!("스킬 디렉터리를 만들 수 없습니다: {}", dir.display()))?;

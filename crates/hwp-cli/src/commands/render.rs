@@ -147,8 +147,8 @@ fn infer_format(output: &Path) -> RenderFormat {
     }
 }
 
-/// 페이지별 출력 경로: 여러 페이지면 `<stem>-<N>.<ext>`, 단일 페이지면 경로 그대로.
-/// MCP render의 output_path 파일명도 이 규칙을 따른다.
+/// Per-page output path: `<stem>-<N>.<ext>` for multiple pages, the path as-is for a single page.
+/// MCP render output_path filenames follow the same rule.
 pub(crate) fn page_path(base: &Path, page: usize, multi: bool) -> PathBuf {
     if multi {
         numbered_path(base, page)

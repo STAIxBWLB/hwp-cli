@@ -81,9 +81,9 @@ jobs:
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # claude.ai 스킬 번들: SKILL.md + bootstrap.sh + Linux x86_64 바이너리를 한 zip으로.
-  # 다운로드 스크립트 대신 바이너리를 싣는 이유: claude.ai 샌드박스 네트워크는 레지스트리로
-  # 제한되어 런타임에 바이너리를 받을 수 없기 때문(번들링이 다운로드를 이긴다).
+  # claude.ai skill bundle: SKILL.md + bootstrap.sh + the Linux x86_64 binary in one zip.
+  # Why the binary ships instead of a download script: the claude.ai sandbox network is
+  # restricted to registries, so the binary cannot be fetched at runtime (bundling beats downloading).
   skill-bundle:
     needs: upload-assets
     runs-on: ubuntu-latest
@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           work=$(mktemp -d)
-          # 방금 upload-assets 가 올린 리눅스 아카이브(이름 규칙: $bin-$tag-$target.tar.gz).
+          # The Linux archive just published by upload-assets (naming: $bin-$tag-$target.tar.gz).
           gh release download "$GITHUB_REF_NAME" \
             --pattern "hwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" \
             --dir "$work" --clobber

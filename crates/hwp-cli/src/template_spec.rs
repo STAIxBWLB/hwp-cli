@@ -622,7 +622,7 @@ fn resolve_reference_path(
             "reference package escapes the template base directory",
         ));
     }
-    // MCP 샌드박스 방어심층: 허용 루트가 있으면 참조 패키지가 그 아래여야 한다.
+    // MCP sandbox defense-in-depth: when roots are set, reference packages must sit below them.
     if !roots.is_empty() && !roots.iter().any(|root| canonical.starts_with(root)) {
         return Err(TemplateError::single(
             "reference_outside_roots",
@@ -2887,13 +2887,13 @@ source:
         )
         .unwrap();
 
-        // base_dir 아래지만 허용 루트 밖인 참조 패키지는 거부한다.
+        // A reference package below base_dir but outside the allowed roots is rejected.
         let sandbox_only = vec![std::fs::canonicalize(&sandbox).unwrap()];
         let error = expand_template(&template, &data, &base, &sandbox_only)
             .expect_err("reference outside roots");
         assert_eq!(error.issues()[0].code, "reference_outside_roots");
 
-        // 허용 루트 아래 참조 패키지는 그대로 확장된다.
+        // A reference package under the allowed roots expands as usual.
         let parent_root = vec![std::fs::canonicalize(&base).unwrap()];
         expand_template(&template, &data, &base, &parent_root).expect("reference under roots");
 
