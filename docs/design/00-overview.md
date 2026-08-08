@@ -85,6 +85,7 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.md) | **Exhaustive HWPX map**: OPC tree, namespaces, element catalog, read/write symmetry audit |
 | 12 | [feature-gaps](12-feature-gaps.md) | Feature gap catalog plus a difficulty and dependency roadmap (inherits 07 §F; 10 §8 and 11 §5 are the underlying data) |
 | 18 | [html-fragment-contract](18-html-fragment-contract.md) | **HTML fragment contract** — XHTML subset for Maru part-based authoring/assembly, table/image/footnote round-trip rules |
+| 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.md) | **HWP 5.0 spec supplement index** — errata, version-layout matrix, conformance checklist, consumption semantics (07·03·05·10·08 are the underlying data) |
 
 ---
 

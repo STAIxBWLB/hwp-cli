@@ -81,6 +81,7 @@
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.ko.md) | **HWPX 전수 지도** — OPC 트리, 네임스페이스, 요소 카탈로그, read/write 대칭성 감사 |
 | 12 | [feature-gaps](12-feature-gaps.ko.md) | 기능 격차 카탈로그 + 난이도·의존성 로드맵 (07§F 승계, 10§8·11§5가 근거 데이터) |
 | 18 | [html-fragment-contract](18-html-fragment-contract.ko.md) | **HTML fragment 계약** — Maru 부분(part) 작성·조합용 XHTML 부분집합, 표/그림/각주 왕복 규약 |
+| 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.ko.md) | **HWP 5.0 명세 보완 색인** — 정오표·버전-레이아웃 매트릭스·적합성 체크리스트·소비 의미론 (07·03·05·10·08이 근거 데이터) |
 
 ---
 
