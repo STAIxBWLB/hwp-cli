@@ -22,6 +22,9 @@ skill from the binary. Amazon Quick Desktop profiles can be selected with
 
 Full flag reference: `hwp {command} --help` (generated docs: docs/manual/cli-reference.md).
 Output formats are inferred from the output extension unless `--to`/`--format` is given.
+In the usage lines below, single-brace tokens such as `{file}` and `{output}` are placeholders
+to replace with your own values. Only the doubled form `{{name}}` is literal HWPX template-slot
+syntax (used by `fill`, `slots` and the template tools).
 
 - `hwp info {file} [--json]` — format, version, properties, stream list.
 - `hwp cat {file} [--format plain|markdown|json|html|csv]` — extract text. Useful flags:

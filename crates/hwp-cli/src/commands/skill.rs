@@ -11,9 +11,8 @@
 //! Home-directory and profile selection are split into pure helpers for unit
 //! testing. Tests use temporary directories and never touch the real `$HOME`.
 
-use std::collections::HashSet;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context as _;
@@ -29,28 +28,32 @@ pub fn run(
     install: Option<InstallTarget>,
     quick_profile: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let quick_install = matches!(install, Some(InstallTarget::AmazonQuick));
-    let dir = resolve_target_dir(output, install, quick_profile.as_deref())?;
-    let written = if quick_install {
-        export_quick(&dir)?
-    } else {
-        export(&dir)?
+    let written = match resolve_target(output, install, quick_profile.as_deref())? {
+        ExportTarget::Plain(dir) => export(&dir)?,
+        ExportTarget::QuickProfile(profile) => export_quick(&profile)?,
     };
     println!("{}", written.display());
     Ok(())
 }
 
-/// Picks the output directory. Clap rejects the common conflicts first; this
+/// Where the skill gets written: a plain directory, or a resolved (canonical)
+/// Amazon Quick profile directory that takes the symlink-guarded write path.
+enum ExportTarget {
+    Plain(PathBuf),
+    QuickProfile(PathBuf),
+}
+
+/// Picks the export target. Clap rejects the common conflicts first; this
 /// function repeats target-specific validation for callers that bypass clap.
-fn resolve_target_dir(
+fn resolve_target(
     output: Option<PathBuf>,
     install: Option<InstallTarget>,
     quick_profile: Option<&Path>,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<ExportTarget> {
     match (output, install) {
-        (Some(dir), None) if quick_profile.is_none() => Ok(dir),
-        (None, Some(target)) => install_dir(target, &home_dir()?, quick_profile),
-        (None, None) if quick_profile.is_none() => Ok(PathBuf::from("./hwp")),
+        (Some(dir), None) if quick_profile.is_none() => Ok(ExportTarget::Plain(dir)),
+        (None, Some(target)) => install_target(target, &home_dir()?, quick_profile),
+        (None, None) if quick_profile.is_none() => Ok(ExportTarget::Plain(PathBuf::from("./hwp"))),
         (Some(_), Some(_)) => {
             anyhow::bail!("-o/--output 과 --install 은 동시에 쓸 수 없습니다")
         }
@@ -58,90 +61,101 @@ fn resolve_target_dir(
     }
 }
 
-/// Skill directory for an `--install` target.
-fn install_dir(
+/// Export target for an `--install` choice.
+fn install_target(
     target: InstallTarget,
     home: &Path,
     quick_profile: Option<&Path>,
-) -> anyhow::Result<PathBuf> {
-    match target {
-        InstallTarget::ClaudeCode => {
-            reject_quick_profile(quick_profile, target)?;
-            Ok(home.join(".claude/skills/hwp"))
-        }
-        InstallTarget::Codex => {
-            reject_quick_profile(quick_profile, target)?;
-            Ok(home.join(".codex/skills/hwp"))
-        }
+) -> anyhow::Result<ExportTarget> {
+    let agent = match target {
+        InstallTarget::ClaudeCode => ".claude",
+        InstallTarget::Codex => ".codex",
         InstallTarget::AmazonQuick => {
             let profile = resolve_quick_profile(&home.join(".quickwork"), quick_profile)?;
-            Ok(profile.join("skills/hwp"))
+            return Ok(ExportTarget::QuickProfile(profile));
         }
+    };
+    if quick_profile.is_some() {
+        anyhow::bail!("--quick-profile 은 --install amazon-quick 전용입니다");
     }
+    Ok(ExportTarget::Plain(home.join(agent).join("skills/hwp")))
 }
 
-fn reject_quick_profile(profile: Option<&Path>, target: InstallTarget) -> anyhow::Result<()> {
-    if profile.is_some() {
-        anyhow::bail!(
-            "--quick-profile 은 --install amazon-quick 전용입니다 (--install {} 에는 쓸 수 없습니다)",
-            target.as_str()
-        );
-    }
-    Ok(())
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct QuickProfiles {
     version: u32,
     entries: Vec<QuickProfileEntry>,
     last_active: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct QuickProfileEntry {
     id: String,
     data_path: String,
 }
 
+/// Resolves the Amazon Quick profile directory to install into.
+///
+/// An absolute `--quick-profile` bypasses the registry entirely. Registry
+/// entries are validated one at a time — the registry file is owned by Amazon
+/// Quick, so one corrupt row must not break installs into other profiles.
 fn resolve_quick_profile(quick_root: &Path, profile: Option<&Path>) -> anyhow::Result<PathBuf> {
-    if let Some(profile) = profile
-        && profile.is_absolute()
-    {
-        return canonical_profile_dir(profile);
+    if let Some(profile) = profile {
+        if profile.is_absolute() {
+            return canonical_profile_dir(profile);
+        }
+        let id = quick_profile_id(profile)?;
+        let registry = load_quick_profiles(quick_root)?;
+        let mut matches = registry.entries.iter().filter(|entry| entry.id == id);
+        let entry = matches.next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Amazon Quick 프로필을 찾을 수 없습니다: {id}. 등록된 프로필: {}",
+                profile_id_list(registry.entries.iter().map(|entry| entry.id.as_str()))
+            )
+        })?;
+        if matches.next().is_some() {
+            anyhow::bail!("Amazon Quick 프로필 ID가 중복됩니다: {id}");
+        }
+        return resolve_quick_entry(quick_root, entry);
     }
 
     let registry = load_quick_profiles(quick_root)?;
-    let entries = resolve_quick_entries(quick_root, &registry.entries)?;
-
-    if let Some(profile) = profile {
-        if profile.components().count() != 1 {
-            anyhow::bail!(
-                "상대 Quick 프로필 경로는 지원하지 않습니다: {} (프로필 ID 또는 절대 경로를 사용하세요)",
-                profile.display()
-            );
-        }
-        let id = profile.to_string_lossy();
-        return entries
-            .iter()
-            .find(|entry| entry.id == id)
-            .map(|entry| entry.path.clone())
-            .ok_or_else(|| anyhow::anyhow!(unknown_profile_message(&id, &entries)));
-    }
-
     if let Some(last_active) = registry.last_active.as_deref()
-        && let Some(entry) = entries.iter().find(|entry| entry.id == last_active)
+        && let Some(entry) = registry
+            .entries
+            .iter()
+            .find(|entry| entry.id == last_active)
+        && let Ok(path) = resolve_quick_entry(quick_root, entry)
     {
-        return Ok(entry.path.clone());
+        return Ok(path);
     }
 
-    if entries.len() == 1 {
-        return Ok(entries[0].path.clone());
+    let mut resolvable = Vec::new();
+    for entry in &registry.entries {
+        if let Ok(path) = resolve_quick_entry(quick_root, entry) {
+            resolvable.push((entry.id.as_str(), path));
+        }
     }
-
-    let available = available_profile_ids(&entries);
+    if resolvable.len() == 1 {
+        return Ok(resolvable.pop().expect("length checked").1);
+    }
     anyhow::bail!(
-        "활성 Amazon Quick 프로필을 결정할 수 없습니다. --quick-profile <ID_OR_ABSOLUTE_PATH>를 지정하세요. 사용 가능한 프로필: {available}"
+        "활성 Amazon Quick 프로필을 결정할 수 없습니다. --quick-profile <ID_OR_ABSOLUTE_PATH>를 지정하세요. 사용 가능한 프로필: {}",
+        profile_id_list(resolvable.iter().map(|(id, _)| *id))
     )
+}
+
+/// Extracts a profile ID from a relative `--quick-profile` value: exactly one
+/// normal component (a trailing separator is tolerated and stripped).
+fn quick_profile_id(profile: &Path) -> anyhow::Result<String> {
+    let mut components = profile.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(id)), None) => Ok(id.to_string_lossy().into_owned()),
+        _ => anyhow::bail!(
+            "상대 Quick 프로필 경로는 지원하지 않습니다: {} (프로필 ID 또는 절대 경로를 사용하세요)",
+            profile.display()
+        ),
+    }
 }
 
 fn load_quick_profiles(quick_root: &Path) -> anyhow::Result<QuickProfiles> {
@@ -154,7 +168,7 @@ fn load_quick_profiles(quick_root: &Path) -> anyhow::Result<QuickProfiles> {
     })?;
     let registry: QuickProfiles = serde_json::from_slice(&bytes).with_context(|| {
         format!(
-            "Amazon Quick 프로필 레지스트리가 올바른 JSON이 아닙니다: {}",
+            "Amazon Quick 프로필 레지스트리를 해석할 수 없습니다: {}",
             path.display()
         )
     })?;
@@ -167,51 +181,38 @@ fn load_quick_profiles(quick_root: &Path) -> anyhow::Result<QuickProfiles> {
     Ok(registry)
 }
 
-#[derive(Debug)]
-struct ResolvedQuickProfile {
-    id: String,
-    path: PathBuf,
-}
-
-fn resolve_quick_entries(
-    quick_root: &Path,
-    entries: &[QuickProfileEntry],
-) -> anyhow::Result<Vec<ResolvedQuickProfile>> {
+/// Validates and canonicalizes a single registry entry.
+fn resolve_quick_entry(quick_root: &Path, entry: &QuickProfileEntry) -> anyhow::Result<PathBuf> {
+    if entry.id.trim().is_empty() {
+        anyhow::bail!("Amazon Quick 프로필 ID가 비어 있습니다");
+    }
+    let relative = validate_data_path(&entry.data_path)?;
+    let candidate = quick_root.join(relative);
+    let canonical = fs::canonicalize(&candidate).with_context(|| {
+        format!(
+            "Amazon Quick 프로필 디렉터리가 없거나 확인할 수 없습니다: {}",
+            candidate.display()
+        )
+    })?;
+    if !canonical.is_dir() {
+        anyhow::bail!(
+            "Amazon Quick 프로필 경로가 디렉터리가 아닙니다: {}",
+            candidate.display()
+        );
+    }
     let canonical_root = fs::canonicalize(quick_root).with_context(|| {
         format!(
             "Amazon Quick 데이터 디렉터리를 확인할 수 없습니다: {}",
             quick_root.display()
         )
     })?;
-    let mut ids = HashSet::new();
-    let mut resolved = Vec::new();
-
-    for entry in entries {
-        if entry.id.trim().is_empty() {
-            anyhow::bail!("Amazon Quick 프로필 ID가 비어 있습니다");
-        }
-        if !ids.insert(entry.id.clone()) {
-            anyhow::bail!("Amazon Quick 프로필 ID가 중복됩니다: {}", entry.id);
-        }
-        let relative = validate_data_path(&entry.data_path)?;
-        let candidate = quick_root.join(relative);
-        let canonical = match fs::canonicalize(&candidate) {
-            Ok(path) if path.is_dir() => path,
-            _ => continue,
-        };
-        if !canonical.starts_with(&canonical_root) {
-            anyhow::bail!(
-                "Amazon Quick 프로필 경로가 데이터 디렉터리 밖을 가리킵니다: {}",
-                entry.data_path
-            );
-        }
-        resolved.push(ResolvedQuickProfile {
-            id: entry.id.clone(),
-            path: canonical,
-        });
+    if !canonical.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Amazon Quick 프로필 경로가 데이터 디렉터리 밖을 가리킵니다: {}",
+            entry.data_path
+        );
     }
-
-    Ok(resolved)
+    Ok(canonical)
 }
 
 fn validate_data_path(data_path: &str) -> anyhow::Result<PathBuf> {
@@ -243,20 +244,15 @@ fn canonical_profile_dir(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(canonical)
 }
 
-fn available_profile_ids(entries: &[ResolvedQuickProfile]) -> String {
-    if entries.is_empty() {
-        return "(없음)".to_owned();
-    }
-    let mut ids: Vec<_> = entries.iter().map(|entry| entry.id.as_str()).collect();
+fn profile_id_list<'a>(ids: impl Iterator<Item = &'a str>) -> String {
+    let mut ids: Vec<_> = ids.filter(|id| !id.trim().is_empty()).collect();
     ids.sort_unstable();
-    ids.join(", ")
-}
-
-fn unknown_profile_message(id: &str, entries: &[ResolvedQuickProfile]) -> String {
-    format!(
-        "Amazon Quick 프로필을 찾을 수 없습니다: {id}. 사용 가능한 프로필: {}",
-        available_profile_ids(entries)
-    )
+    ids.dedup();
+    if ids.is_empty() {
+        "(없음)".to_owned()
+    } else {
+        ids.join(", ")
+    }
 }
 
 /// Home directory: `$HOME` on unix, `$USERPROFILE` on Windows (no new crate dependency).
@@ -281,45 +277,13 @@ fn export(dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-/// Writes into the canonical Quick profile without following pre-existing
-/// symlinks below the profile root.
-fn export_quick(dir: &Path) -> anyhow::Result<PathBuf> {
-    let skills_dir = dir
-        .parent()
-        .filter(|path| path.file_name().is_some_and(|name| name == "skills"))
-        .with_context(|| {
-            format!(
-                "Amazon Quick 스킬 경로가 올바르지 않습니다: {}",
-                dir.display()
-            )
-        })?;
-    let profile_dir = skills_dir.parent().with_context(|| {
-        format!(
-            "Amazon Quick 프로필 경로가 올바르지 않습니다: {}",
-            dir.display()
-        )
-    })?;
-    if dir.file_name().is_none_or(|name| name != "hwp") {
-        anyhow::bail!(
-            "Amazon Quick 스킬 경로가 올바르지 않습니다: {}",
-            dir.display()
-        );
-    }
-    let canonical_profile = fs::canonicalize(profile_dir).with_context(|| {
-        format!(
-            "Amazon Quick 프로필 디렉터리를 확인할 수 없습니다: {}",
-            profile_dir.display()
-        )
-    })?;
-    if canonical_profile != profile_dir {
-        anyhow::bail!(
-            "Amazon Quick 프로필 경로는 canonical 경로여야 합니다: {}",
-            profile_dir.display()
-        );
-    }
-
-    ensure_quick_directory(skills_dir)?;
-    ensure_quick_directory(dir)?;
+/// Writes `skills/hwp/SKILL.md` under an already-resolved canonical Quick
+/// profile directory without following pre-existing symlinks below it.
+fn export_quick(profile_dir: &Path) -> anyhow::Result<PathBuf> {
+    let skills_dir = profile_dir.join("skills");
+    ensure_quick_directory(&skills_dir)?;
+    let dir = skills_dir.join("hwp");
+    ensure_quick_directory(&dir)?;
 
     let path = dir.join("SKILL.md");
     match fs::symlink_metadata(&path) {
@@ -335,7 +299,11 @@ fn export_quick(dir: &Path) -> anyhow::Result<PathBuf> {
                 path.display()
             )
         }
-        Ok(_) => {}
+        Ok(_) => {
+            fs::remove_file(&path).with_context(|| {
+                format!("기존 SKILL.md를 제거할 수 없습니다: {}", path.display())
+            })?;
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => {
             return Err(error).with_context(|| {
@@ -343,7 +311,14 @@ fn export_quick(dir: &Path) -> anyhow::Result<PathBuf> {
             });
         }
     }
-    fs::write(&path, SKILL_MD)
+    // create_new (O_EXCL) never follows a symlink, so a link swapped in after
+    // the check above cannot redirect the write.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("SKILL.md를 쓸 수 없습니다: {}", path.display()))?;
+    file.write_all(SKILL_MD.as_bytes())
         .with_context(|| format!("SKILL.md를 쓸 수 없습니다: {}", path.display()))?;
     Ok(path)
 }
@@ -464,18 +439,18 @@ mod tests {
     }
 
     #[test]
-    fn fixed_install_dirs_resolve_under_given_home() {
+    fn fixed_install_targets_resolve_under_given_home() {
         let home = Path::new("home");
-        assert_eq!(
-            install_dir(InstallTarget::ClaudeCode, home, None).unwrap(),
-            Path::new("home/.claude/skills/hwp")
-        );
-        assert_eq!(
-            install_dir(InstallTarget::Codex, home, None).unwrap(),
-            Path::new("home/.codex/skills/hwp")
-        );
+        assert!(matches!(
+            install_target(InstallTarget::ClaudeCode, home, None).unwrap(),
+            ExportTarget::Plain(dir) if dir == Path::new("home/.claude/skills/hwp")
+        ));
+        assert!(matches!(
+            install_target(InstallTarget::Codex, home, None).unwrap(),
+            ExportTarget::Plain(dir) if dir == Path::new("home/.codex/skills/hwp")
+        ));
         assert!(
-            install_dir(
+            install_target(
                 InstallTarget::Codex,
                 home,
                 Some(Path::new("enterprise-test"))
@@ -485,19 +460,19 @@ mod tests {
     }
 
     #[test]
-    fn target_dir_defaults_and_conflicts() {
-        assert_eq!(
-            resolve_target_dir(Some(PathBuf::from("x")), None, None).unwrap(),
-            PathBuf::from("x")
-        );
-        assert_eq!(
-            resolve_target_dir(None, None, None).unwrap(),
-            PathBuf::from("./hwp")
-        );
+    fn target_defaults_and_conflicts() {
+        assert!(matches!(
+            resolve_target(Some(PathBuf::from("x")), None, None).unwrap(),
+            ExportTarget::Plain(dir) if dir == Path::new("x")
+        ));
+        assert!(matches!(
+            resolve_target(None, None, None).unwrap(),
+            ExportTarget::Plain(dir) if dir == Path::new("./hwp")
+        ));
         assert!(
-            resolve_target_dir(Some(PathBuf::from("x")), Some(InstallTarget::Codex), None).is_err()
+            resolve_target(Some(PathBuf::from("x")), Some(InstallTarget::Codex), None).is_err()
         );
-        assert!(resolve_target_dir(None, None, Some(Path::new("profile"))).is_err());
+        assert!(resolve_target(None, None, Some(Path::new("profile"))).is_err());
     }
 
     #[test]
@@ -514,6 +489,11 @@ mod tests {
         assert_eq!(
             resolve_quick_profile(&quick_root, Some(Path::new("enterprise-one"))).unwrap(),
             fs::canonicalize(&profile).unwrap()
+        );
+        assert_eq!(
+            resolve_quick_profile(&quick_root, Some(Path::new("enterprise-one/"))).unwrap(),
+            fs::canonicalize(&profile).unwrap(),
+            "a trailing separator from shell completion must still match the ID"
         );
         assert_eq!(
             resolve_quick_profile(&quick_root, Some(&profile)).unwrap(),
@@ -577,16 +557,85 @@ mod tests {
     }
 
     #[test]
+    fn quick_bad_registry_entry_only_breaks_its_own_profile() {
+        let root = temp_dir("quick-bad-entry");
+        let quick_root = root.join(".quickwork");
+        let good = make_profile(&quick_root, "good");
+        write_registry(
+            &quick_root,
+            &[("bad", "/absolute"), ("good", "profiles/good")],
+            None,
+        );
+
+        assert_eq!(
+            resolve_quick_profile(&quick_root, Some(Path::new("good"))).unwrap(),
+            fs::canonicalize(&good).unwrap(),
+            "a corrupt sibling row must not break an explicitly requested valid profile"
+        );
+        assert!(resolve_quick_profile(&quick_root, Some(Path::new("bad"))).is_err());
+        assert_eq!(
+            resolve_quick_profile(&quick_root, None).unwrap(),
+            fs::canonicalize(&good).unwrap(),
+            "auto-selection skips corrupt rows and picks the sole valid profile"
+        );
+
+        write_registry(
+            &quick_root,
+            &[("dup", "profiles/good"), ("dup", "profiles/good")],
+            None,
+        );
+        assert!(
+            resolve_quick_profile(&quick_root, Some(Path::new("dup")))
+                .expect_err("duplicate id")
+                .to_string()
+                .contains("중복")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn quick_missing_profile_dir_reports_directory_error() {
+        let root = temp_dir("quick-missing-dir");
+        let quick_root = root.join(".quickwork");
+        fs::create_dir_all(&quick_root).unwrap();
+        write_registry(&quick_root, &[("work", "profiles/work")], None);
+        let error = resolve_quick_profile(&quick_root, Some(Path::new("work")))
+            .expect_err("missing profile directory")
+            .to_string();
+        assert!(
+            error.contains("디렉터리가 없거나"),
+            "a registered profile with a missing directory must not be reported as unknown: {error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn quick_profile_rejects_missing_malformed_unsupported_and_traversing_registry() {
         let missing_root = temp_dir("quick-missing");
         fs::create_dir_all(&missing_root).unwrap();
         assert!(resolve_quick_profile(&missing_root, None).is_err());
+        assert!(
+            resolve_quick_profile(&missing_root, Some(Path::new("a/b")))
+                .expect_err("relative path with missing registry")
+                .to_string()
+                .contains("상대 Quick 프로필"),
+            "the relative-path rejection must not be masked by a registry error"
+        );
         let _ = fs::remove_dir_all(missing_root);
 
         let malformed_root = temp_dir("quick-malformed");
         fs::create_dir_all(&malformed_root).unwrap();
         fs::write(malformed_root.join("profiles.json"), b"not json").unwrap();
         assert!(resolve_quick_profile(&malformed_root, None).is_err());
+        fs::write(
+            malformed_root.join("profiles.json"),
+            br#"{"version":"1","entries":[]}"#,
+        )
+        .unwrap();
+        let error = resolve_quick_profile(&malformed_root, None)
+            .expect_err("schema mismatch")
+            .to_string();
+        assert!(error.contains("해석할 수 없습니다"), "{error}");
         let _ = fs::remove_dir_all(malformed_root);
 
         let unsupported_root = temp_dir("quick-unsupported");
@@ -601,7 +650,35 @@ mod tests {
         fs::create_dir_all(&traversal_root).unwrap();
         write_registry(&traversal_root, &[("escape", "../outside")], None);
         assert!(resolve_quick_profile(&traversal_root, None).is_err());
+        assert!(
+            resolve_quick_profile(&traversal_root, Some(Path::new("escape")))
+                .expect_err("traversing data_path")
+                .to_string()
+                .contains("안전하지 않은")
+        );
         let _ = fs::remove_dir_all(traversal_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quick_registry_rejects_symlinked_entry_escaping_quick_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("quick-escape");
+        let quick_root = root.join(".quickwork");
+        let outside = root.join("outside");
+        fs::create_dir_all(quick_root.join("profiles")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, quick_root.join("profiles/link")).unwrap();
+        write_registry(&quick_root, &[("link", "profiles/link")], None);
+
+        assert!(
+            resolve_quick_profile(&quick_root, Some(Path::new("link")))
+                .expect_err("in-root symlink escaping the quick root")
+                .to_string()
+                .contains("밖을 가리킵니다")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -624,6 +701,23 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn quick_export_writes_and_overwrites_regular_file() {
+        let root = temp_dir("quick-export");
+        let profile = root.join("profile");
+        fs::create_dir_all(&profile).unwrap();
+        let profile = fs::canonicalize(&profile).unwrap();
+
+        let written = export_quick(&profile).expect("first export");
+        assert_eq!(written, profile.join("skills/hwp/SKILL.md"));
+        assert_eq!(fs::read(&written).unwrap(), SKILL_MD.as_bytes());
+
+        fs::write(&written, b"stale").unwrap();
+        export_quick(&profile).expect("overwrite");
+        assert_eq!(fs::read(&written).unwrap(), SKILL_MD.as_bytes());
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn quick_export_rejects_directory_and_file_symlinks() {
@@ -635,18 +729,17 @@ mod tests {
         fs::create_dir_all(&profile).unwrap();
         fs::create_dir_all(&outside).unwrap();
         let canonical_profile = fs::canonicalize(&profile).unwrap();
-        let install_dir = canonical_profile.join("skills/hwp");
 
         symlink(&outside, canonical_profile.join("skills")).unwrap();
-        assert!(export_quick(&install_dir).is_err());
+        assert!(export_quick(&canonical_profile).is_err());
         assert!(!outside.join("hwp/SKILL.md").exists());
 
         fs::remove_file(canonical_profile.join("skills")).unwrap();
-        fs::create_dir_all(&install_dir).unwrap();
+        fs::create_dir_all(canonical_profile.join("skills/hwp")).unwrap();
         let outside_file = outside.join("SKILL.md");
         fs::write(&outside_file, b"keep").unwrap();
-        symlink(&outside_file, install_dir.join("SKILL.md")).unwrap();
-        assert!(export_quick(&install_dir).is_err());
+        symlink(&outside_file, canonical_profile.join("skills/hwp/SKILL.md")).unwrap();
+        assert!(export_quick(&canonical_profile).is_err());
         assert_eq!(fs::read(&outside_file).unwrap(), b"keep");
         let _ = fs::remove_dir_all(root);
     }

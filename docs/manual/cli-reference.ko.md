@@ -329,7 +329,7 @@ _인자·플래그 없음_
 |---|---|---|---|
 | `-o, --output` | `<OUTPUT>` |  | 출력 디렉터리 (--install과 동시 사용 불가) |
 | `--install` | `claude-code` \| `codex` \| `amazon-quick` |  | 대신 알려진 에이전트 스킬 디렉터리에 설치 |
-| `--quick-profile` | `<QUICK_PROFILE>` |  | Amazon Quick 프로필 ID 또는 절대 프로필 디렉터리 (Amazon Quick 설치 전용) |
+| `--quick-profile` | `<ID_OR_ABSOLUTE_PATH>` |  | Amazon Quick 프로필 ID 또는 절대 프로필 디렉터리 (Amazon Quick 설치 전용) |
 
 ## `hwp dump`
 

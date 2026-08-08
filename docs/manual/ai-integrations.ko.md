@@ -210,8 +210,15 @@ HTML로 오인할 수 있는 angle-bracket markup을 포함하지 않는다.
 ## Amazon Quick Web
 
 Quick Web은 클라우드에서 실행되므로 로컬 stdio 프로세스를 시작하거나 Desktop 로컬 파일시스템에
-접근할 수 없다. 현재는 파일 업로드/다운로드 워크플로 또는 제공되는 경우 Desktop/Outpost 실행 경로를
-사용한다. 로컬 `hwp mcp` 프로세스를 네트워크에 직접 노출하면 안 된다.
+접근할 수 없다. 현재는 문서를 Quick이 읽을 수 있는 형식으로 변환한 뒤 결과물을 업로드한다:
+
+```bash
+hwp convert input.hwp -o output.docx   # 또는: -o output.pdf
+```
+
+편집된 결과물은 다운로드한 뒤 필요하면 `hwp convert`로 다시 변환한다. 제공되는 경우
+Desktop/Outpost 실행 경로를 대신 사용할 수 있다. 로컬 `hwp mcp` 프로세스를 네트워크에 직접
+노출하면 안 된다.
 
 Web 네이티브 연동에는 인증된 Streamable HTTP MCP 서비스, tenant별 격리 저장소, 클라이언트 로컬
 경로 인자 대신 content/artifact 전송이 필요하다. 이 릴리스에는 구현하지 않는다. 구현 계약은

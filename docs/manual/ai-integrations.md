@@ -213,8 +213,15 @@ contain no angle-bracket markup that Quick can misclassify as HTML.
 ## Amazon Quick Web
 
 Quick Web runs in the cloud and cannot launch the local stdio process or access Desktop's local
-filesystem. Today, use file upload/download workflows or a Desktop/Outpost execution path when
-available. Do not expose a local `hwp mcp` process directly to the network.
+filesystem. Today, convert the document to a format Quick can read, then upload the result:
+
+```bash
+hwp convert input.hwp -o output.docx   # or: -o output.pdf
+```
+
+Download edited results and convert them back with `hwp convert` as needed. A Desktop/Outpost
+execution path can substitute when available. Do not expose a local `hwp mcp` process directly to
+the network.
 
 Native Web integration requires an authenticated Streamable HTTP MCP service, tenant-isolated
 storage, and content/artifact transfer instead of client-local path arguments. It is not implemented

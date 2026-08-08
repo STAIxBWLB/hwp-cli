@@ -482,13 +482,18 @@ pub enum SkillCmd {
         #[arg(long, value_enum)]
         install: Option<InstallTarget>,
         /// Amazon Quick profile ID or absolute profile directory (Amazon Quick installs only)
-        #[arg(long, requires = "install", conflicts_with = "output")]
+        #[arg(
+            long,
+            requires = "install",
+            conflicts_with = "output",
+            value_name = "ID_OR_ABSOLUTE_PATH"
+        )]
         quick_profile: Option<PathBuf>,
     },
 }
 
 /// `--install` target — per-agent skill directory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum)]
 pub enum InstallTarget {
     /// ~/.claude/skills/hwp/
     ClaudeCode,
@@ -496,16 +501,6 @@ pub enum InstallTarget {
     Codex,
     /// Active Amazon Quick Desktop profile under ~/.quickwork/
     AmazonQuick,
-}
-
-impl InstallTarget {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ClaudeCode => "claude-code",
-            Self::Codex => "codex",
-            Self::AmazonQuick => "amazon-quick",
-        }
-    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -557,6 +552,10 @@ mod tests {
 
     #[test]
     fn skill_export_parses_amazon_quick_and_rejects_common_conflicts() {
+        assert!(
+            Cli::try_parse_from(["hwp", "skill", "export"]).is_ok(),
+            "the flagless default invocation must keep parsing"
+        );
         assert!(
             Cli::try_parse_from(["hwp", "skill", "export", "-o", "out", "--install", "codex"])
                 .is_err(),
