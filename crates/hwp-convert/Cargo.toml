@@ -14,3 +14,10 @@ quick-xml = { workspace = true }
 resvg = { workspace = true }
 image = { workspace = true }
 zip = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+] }

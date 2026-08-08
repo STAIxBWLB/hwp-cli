@@ -35,6 +35,10 @@ pub(crate) const PALETTE_LEN: u16 = 16;
 pub struct HtmlImportOptions<'a> {
     /// Base directory for relative-path images (`<img src="fig.png">`).
     pub base_dir: Option<&'a Path>,
+    /// Sandbox roots binding image references (MCP `--root`, #56). Same contract as
+    /// `MarkdownImportOptions::roots`: empty disables the check; with roots set, an image
+    /// resolving outside every root is a hard error that fails the import.
+    pub roots: &'a [PathBuf],
     /// Seed for embedded image bin names — prevents name collisions when combining multiple
     /// fragments into one document.
     pub(crate) bin_seed: usize,
@@ -42,6 +46,22 @@ pub struct HtmlImportOptions<'a> {
     /// md-mixed path, fnref markers inside fragments are reattached to these as real
     /// footnote anchors (#47). None (standalone HTML) keeps the plain-text marker behavior.
     pub(crate) note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
+}
+
+/// Fragment parse failure. `Sandbox` (image reference outside the MCP `--root` sandbox, #56)
+/// must stay a hard error even where a contract violation would degrade to a warning
+/// (the from_markdown md-mixed path).
+pub(crate) enum FragmentError {
+    Contract(String),
+    Sandbox(String),
+}
+
+impl FragmentError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Contract(message) | Self::Sandbox(message) => message,
+        }
+    }
 }
 
 /// Output of fragment parsing — used by both standalone document assembly (from_html) and
@@ -69,7 +89,7 @@ pub fn from_html(html: &str) -> Result<Document, String> {
 
 /// Variant that takes options. Accepts both standalone documents (`<html>`~`</html>`) and fragments.
 pub fn from_html_with(html: &str, opts: &HtmlImportOptions) -> Result<Document, String> {
-    let blocks = parse_fragment(html, opts)?;
+    let blocks = parse_fragment(html, opts).map_err(FragmentError::into_message)?;
     for w in &blocks.warnings {
         eprintln!("경고: {w}");
     }
@@ -111,7 +131,10 @@ pub fn from_html_with(html: &str, opts: &HtmlImportOptions) -> Result<Document, 
 }
 
 /// Produces the fragment parsing output (entry point of the from_markdown mixed path).
-pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<HtmlBlocks, String> {
+pub(crate) fn parse_fragment(
+    html: &str,
+    opts: &HtmlImportOptions,
+) -> Result<HtmlBlocks, FragmentError> {
     let default = from_markdown::default_header();
     let default_fonts = default.fonts[0].len();
     let mut p = Parser {
@@ -130,6 +153,8 @@ pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<Htm
         bin_streams: Vec::new(),
         bin_seed: opts.bin_seed,
         base_dir: opts.base_dir.map(Path::to_path_buf),
+        roots: opts.roots,
+        sandbox_error: None,
         note_bodies: opts.note_bodies,
         warnings: Vec::new(),
         in_cell_depth: 0,
@@ -146,7 +171,14 @@ pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<Htm
         default_fonts,
     };
     let mut reader = Reader::from_str(html);
-    p.blocks(&mut reader, None)?;
+    if let Err(e) = p.blocks(&mut reader, None) {
+        // A recorded sandbox error is the error being returned (embed_image sets it and aborts
+        // the parse immediately), so the variant switch cannot mislabel a contract violation.
+        return Err(match p.sandbox_error {
+            Some(message) => FragmentError::Sandbox(message),
+            None => FragmentError::Contract(e),
+        });
+    }
     let top = p.ctx_stack.pop().expect("최상위 컨텍스트 1개");
     Ok(HtmlBlocks {
         paragraphs: top.paragraphs,
@@ -211,6 +243,11 @@ struct Parser<'a> {
     bin_streams: Vec<BinStream>,
     bin_seed: usize,
     base_dir: Option<PathBuf>,
+    /// Sandbox roots for image containment (MCP `--root`, #56). Empty = no check.
+    roots: &'a [PathBuf],
+    /// Set when the parse aborts on a sandbox violation — parse_fragment re-labels the error
+    /// as FragmentError::Sandbox so the md-mixed path keeps it a hard error (#56).
+    sandbox_error: Option<String>,
     /// GFM footnote definition bodies for fnref marker reattachment (None on the standalone path).
     note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
     warnings: Vec<String>,
@@ -793,12 +830,29 @@ impl Parser<'_> {
                     }
                 }
             };
+            // Sandbox containment (#56): with roots set, the check is verified against the
+            // opened file handle and the bytes are read from that same handle, so a swapped
+            // symlink cannot smuggle outside bytes in. A violation is a hard error that fails
+            // the import — recorded so parse_fragment can label it FragmentError::Sandbox.
+            // The message is deliberately generic (no resolved path, no src).
+            let soft_open =
+                |e: std::io::Error| format!("이미지 읽기 실패 {}: {e}", resolved.display());
+            let mut file =
+                match crate::image::open_image_under_roots(&resolved, self.roots, soft_open) {
+                    Ok(file) => file,
+                    Err(crate::image::ImageOpenError::Soft(message)) => return Err(message),
+                    Err(crate::image::ImageOpenError::Hard(message)) => {
+                        self.sandbox_error = Some(message.clone());
+                        return Err(message);
+                    }
+                };
             if resolved
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
             {
-                let text = std::fs::read_to_string(&resolved)
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut file, &mut text)
                     .map_err(|e| format!("SVG 읽기 실패 {}: {e}", resolved.display()))?;
                 let canonical = crate::svg::sanitize_svg(&text)
                     .map_err(|e| format!("SVG 검증 거부 ({}): {e}", resolved.display()))?;
@@ -833,7 +887,8 @@ impl Parser<'_> {
                 ));
                 (png, "png", w, h)
             } else {
-                let data = std::fs::read(&resolved)
+                let mut data = Vec::new();
+                std::io::Read::read_to_end(&mut file, &mut data)
                     .map_err(|e| format!("이미지 읽기 실패 {}: {e}", resolved.display()))?;
                 if data.is_empty() {
                     return Err("빈 이미지 데이터입니다".into());
@@ -1537,6 +1592,130 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("SVG 검증 거부"), "에러: {err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #56: `<img>` references are bound to the sandbox roots — an outside-root reference
+    /// (absolute path or `../` escape) fails the import; inside-root references embed as
+    /// usual; empty roots keeps the previous behavior (an absolute outside path still loads).
+    #[test]
+    fn 이미지_샌드박스_루트_검사() {
+        let base = std::env::temp_dir().join(format!(
+            "from_html_img_roots_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("sandbox");
+        let sub = root.join("sub");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // Minimal PNG (magic + IHDR with 8x8).
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend(8u32.to_be_bytes());
+        png.extend(8u32.to_be_bytes());
+        png.extend([0u8; 8]);
+        std::fs::write(sub.join("in.png"), &png).unwrap();
+        let outside_png = outside.join("out.png");
+        std::fs::write(&outside_png, &png).unwrap();
+        // HTML attributes treat `\` literally, but forward slashes work everywhere (Windows CI).
+        let outside_ref = outside_png.display().to_string().replace('\\', "/");
+        // Roots are pre-canonicalized by the caller (mirrors the MCP startup).
+        let roots = vec![std::fs::canonicalize(&root).unwrap()];
+
+        // Inside the root: embeds as usual.
+        let doc = from_html_with(
+            "<p><img src=\"in.png\"/></p>",
+            &HtmlImportOptions {
+                base_dir: Some(&sub),
+                roots: &roots,
+                ..Default::default()
+            },
+        )
+        .expect("루트 안 이미지는 임베드");
+        assert_eq!(doc.bin_streams.len(), 1, "루트 안 이미지는 임베드");
+
+        // Absolute path outside the root: hard error.
+        let err = from_html_with(
+            &format!("<p><img src=\"{outside_ref}\"/></p>"),
+            &HtmlImportOptions {
+                base_dir: Some(&sub),
+                roots: &roots,
+                ..Default::default()
+            },
+        )
+        .expect_err("루트 밖 절대 경로는 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
+
+        // `../` relative escape outside the root: hard error.
+        let err = from_html_with(
+            "<p><img src=\"../../outside/out.png\"/></p>",
+            &HtmlImportOptions {
+                base_dir: Some(&sub),
+                roots: &roots,
+                ..Default::default()
+            },
+        )
+        .expect_err("'../' 탈출은 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
+
+        // Empty roots: previous behavior — the absolute outside path still loads.
+        let doc = from_html_with(
+            &format!("<p><img src=\"{outside_ref}\"/></p>"),
+            &HtmlImportOptions {
+                base_dir: Some(&sub),
+                ..Default::default()
+            },
+        )
+        .expect("루트 미설정이면 기존 동작");
+        assert_eq!(doc.bin_streams.len(), 1, "루트 미설정이면 절대 경로 로드");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #56 (handle-bound check): an in-root `<img>` symlink whose target is outside the roots
+    /// is a hard error — the verdict comes from the opened handle, not the request pathname.
+    #[cfg(unix)]
+    #[test]
+    fn 이미지_샌드박스_심링크_탈출_차단() {
+        let base = std::env::temp_dir().join(format!(
+            "from_html_img_symlink_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("sandbox");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // Minimal PNG (magic + IHDR with 8x8).
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend(8u32.to_be_bytes());
+        png.extend(8u32.to_be_bytes());
+        png.extend([0u8; 8]);
+        let secret = outside.join("secret.png");
+        std::fs::write(&secret, &png).unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("escape.png")).unwrap();
+        let roots = vec![std::fs::canonicalize(&root).unwrap()];
+
+        let err = from_html_with(
+            "<p><img src=\"escape.png\"/></p>",
+            &HtmlImportOptions {
+                base_dir: Some(&root),
+                roots: &roots,
+                ..Default::default()
+            },
+        )
+        .expect_err("루트 밖을 가리키는 심링크는 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

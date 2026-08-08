@@ -67,6 +67,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Markdown/HTML image references are now bound to the MCP `--root` sandbox (#56, the gap left
+  over from #53): `hwp_new` markdown input and `hwp_fill` part files fail closed when a
+  referenced image resolves outside every root — whether by absolute path or a `../` escape —
+  instead of following the reference and embedding the file. The check shares the
+  canonicalized startup roots with the tool-argument guards, runs before any read, and its
+  error does not leak the resolved path. CLI callers and root-less servers pass no roots and
+  keep the previous degrade-to-alt-text behavior exactly.
 - Markdown export: footnotes referenced inside an HTML-fallback table emitted their definition
   as a `<div class="hwp-footnote">` block, which the importer contract rejects — the footnote
   body was dropped in the `cat --format markdown` → `new --from` round-trip. Definitions are now

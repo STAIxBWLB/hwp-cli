@@ -1,6 +1,6 @@
 //! `hwp new` — 새 문서 생성 (markdown/빈 문서 → hwpx).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hwp_cli::cli::PresetArg;
 
@@ -8,6 +8,9 @@ pub enum NewInput<'a> {
     Markdown {
         text: &'a str,
         base_dir: Option<&'a Path>,
+        /// Sandbox roots binding image references inside the markdown (MCP `--root`, #56).
+        /// Empty = no check (CLI behavior).
+        roots: &'a [PathBuf],
     },
     Json(&'a str),
     Empty,
@@ -40,6 +43,7 @@ pub fn run(
                 NewInput::Markdown {
                     text: &owned,
                     base_dir: src.parent(),
+                    roots: &[],
                 }
             }
         }
@@ -85,11 +89,20 @@ pub fn execute(
             }
             hwp_convert::from_json(text).map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?
         }
-        NewInput::Markdown { text, base_dir } => {
+        NewInput::Markdown {
+            text,
+            base_dir,
+            roots,
+        } => {
             let (doc, warnings) = hwp_convert::from_markdown_report(
                 text,
-                &hwp_convert::MarkdownImportOptions { base_dir, preset },
-            );
+                &hwp_convert::MarkdownImportOptions {
+                    base_dir,
+                    roots,
+                    preset,
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("markdown 가져오기 실패: {e}"))?;
             import_warnings = warnings;
             doc
         }
@@ -97,6 +110,7 @@ pub fn execute(
             "",
             &hwp_convert::MarkdownImportOptions {
                 base_dir: None,
+                roots: &[],
                 preset,
             },
         ),
