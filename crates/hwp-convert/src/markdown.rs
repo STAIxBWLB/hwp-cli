@@ -164,15 +164,16 @@ fn emit_markdown(
     Ok((cleaned, segments))
 }
 
-/// 각주/미주 정의 한 건을 문서 끝에 GFM 풋노트 문법으로 방출한다.
-/// HTML 표 안에서 참조된 각주도 정의는 항상 `[^N]:`이다 — importer(from_markdown)가
-/// ENABLE_FOOTNOTES로 파싱해 fnref 마커에 재부착한다(#47).
+/// Emits one footnote/endnote definition at the document end in GFM footnote syntax.
+/// Definitions are always `[^N]:` even for notes referenced inside HTML tables — the
+/// importer (from_markdown) parses them via ENABLE_FOOTNOTES and reattaches them to
+/// fnref markers (#47).
 fn emit_note(note: &Note, out: &mut String) {
     let mut lines = note.text.lines();
     match lines.next() {
         Some(first) => {
             out.push_str(&format!("[^{}]: {first}\n", note.label));
-            // 후속 줄은 4칸 들여쓰기(GFM 풋노트 연속 줄 규칙).
+            // Continuation lines get 4-space indentation (GFM footnote continuation rule).
             for l in lines {
                 out.push_str(&format!("    {l}\n"));
             }
@@ -1046,8 +1047,9 @@ fn render_control(
                     ctx.end_n += 1;
                     format!("e{}", ctx.end_n)
                 };
-                // 정의 본문은 위치와 무관하게 markdown으로 렌더한다(정의는 항상 문서 끝
-                // 최상위에 `[^N]:`으로 방출되므로 HTML 인라인이면 안 된다 — #47).
+                // Render the definition body as markdown regardless of position (definitions
+                // are always emitted as top-level `[^N]:` at the document end, so they must
+                // not contain HTML inline markup — #47).
                 let saved_html = ctx.html_mode;
                 ctx.html_mode = false;
                 let text = note_text(doc, g, ctx);
@@ -1680,7 +1682,8 @@ mod tests {
             md.contains(r##"<sup id="fnref-1"><a href="#fn-1">1</a></sup>"##),
             "HTML 각주 참조: {md}"
         );
-        // 정의는 참조 위치와 무관하게 GFM 문법이다 — HTML 블록이면 importer가 못 받는다(#47).
+        // Definitions are GFM syntax regardless of reference position — an HTML block would
+        // be rejected by the importer contract (#47).
         assert!(md.contains("[^1]: 표 안 각주"), "GFM 각주 정의: {md}");
         assert!(!md.contains("hwp-footnote"), "HTML 정의 블록 금지: {md}");
     }
@@ -2021,8 +2024,9 @@ mod tests {
         assert_eq!(tables, 1, "왕복 후 표가 보존되어야 함: {md}");
     }
 
-    /// GH-47: HTML 표 안에서 참조된 각주/미주도 정의는 GFM(`[^N]:`)으로 방출되고,
-    /// importer가 fnref 마커를 실제 각주 앵커로 복원해 왕복이 성립한다.
+    /// GH-47: footnotes/endnotes referenced inside an HTML table still emit their
+    /// definitions as GFM (`[^N]:`), and the importer restores fnref markers to real
+    /// footnote anchors, closing the round-trip.
     #[test]
     fn markdown_왕복_html_표_각주_보존() {
         let note = |id: &[u8; 4], txt: &str| {
@@ -2073,7 +2077,7 @@ mod tests {
             !warnings.iter().any(|w| w.contains("계약 위반")),
             "계약 위반 경고가 없어야 함: {warnings:?}"
         );
-        // 복원된 표 셀 안에서 fn/en 앵커와 본문을 찾는다.
+        // Find the fn/en anchors and their bodies inside the restored table cell.
         let mut bodies: Vec<(String, String)> = Vec::new();
         for p in &back.sections[0].paragraphs {
             for c in &p.controls {
@@ -2110,7 +2114,7 @@ mod tests {
             ],
             "각주/미주 본문 복원: {md}"
         );
-        // 마커의 백링크(<a href="#fn-N">)가 하이퍼링크로 새지 않아야 한다.
+        // The marker's back-link (<a href="#fn-N">) must not leak as a hyperlink.
         let cell_text: String = back.sections[0]
             .paragraphs
             .iter()

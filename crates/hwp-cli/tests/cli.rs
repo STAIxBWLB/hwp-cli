@@ -1696,8 +1696,9 @@ fn table_rows_single_line_all_fixtures() {
     );
 }
 
-/// GH-47: HTML 표 안에서 참조된 각주 정의가 GFM(`[^N]:`)으로 방출되어
-/// `cat --format markdown` → `new --strict --from` 왕복이 경고 없이 성립하고 본문이 보존된다.
+/// GH-47: footnote definitions referenced inside HTML tables are emitted as GFM (`[^N]:`),
+/// so the `cat --format markdown` → `new --strict --from` round-trip succeeds without
+/// warnings and the note body is preserved.
 #[test]
 fn markdown_footnote_roundtrip_report_tables() {
     let src = fixture("samples/report-tables.hwpx");

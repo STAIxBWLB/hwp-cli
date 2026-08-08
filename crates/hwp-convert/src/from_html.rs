@@ -130,7 +130,7 @@ pub(crate) fn parse_fragment(html: &str, opts: &HtmlImportOptions) -> Result<Htm
         bin_streams: Vec::new(),
         bin_seed: opts.bin_seed,
         base_dir: opts.base_dir.map(Path::to_path_buf),
-        note_bodies: opts.note_bodies.cloned().unwrap_or_default(),
+        note_bodies: opts.note_bodies,
         warnings: Vec::new(),
         in_cell_depth: 0,
         cs_rules: HashMap::new(),
@@ -195,7 +195,7 @@ struct CellSpec {
     paragraphs: Vec<Paragraph>,
 }
 
-struct Parser {
+struct Parser<'a> {
     ctx_stack: Vec<BlockCtx>,
     marks: Marks,
     heading: Option<u16>,
@@ -211,8 +211,8 @@ struct Parser {
     bin_streams: Vec<BinStream>,
     bin_seed: usize,
     base_dir: Option<PathBuf>,
-    /// GFM footnote definition bodies for fnref marker reattachment (empty on the standalone path).
-    note_bodies: HashMap<String, Vec<Paragraph>>,
+    /// GFM footnote definition bodies for fnref marker reattachment (None on the standalone path).
+    note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
     warnings: Vec<String>,
     in_cell_depth: u32,
     // contract v2 style round-trip — <style> rule storage and restoration caches.
@@ -234,7 +234,7 @@ struct Parser {
     default_fonts: usize,
 }
 
-impl Parser {
+impl Parser<'_> {
     fn ctx(&mut self) -> &mut BlockCtx {
         self.ctx_stack.last_mut().expect("컨텍스트 스택 비어 있음")
     }
@@ -446,7 +446,7 @@ impl Parser {
                     attr(e, "id").and_then(|id| id.strip_prefix("fnref-").map(str::to_string));
                 if let Some(body) = marker_label
                     .as_deref()
-                    .and_then(|l| self.note_bodies.get(l).cloned())
+                    .and_then(|l| self.note_bodies.and_then(|m| m.get(l)).cloned())
                 {
                     self.skip_subtree(r, "sup")?;
                     let label = marker_label.expect("marker label present");
