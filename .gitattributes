@@ -5,4 +5,5 @@ examples/** text eol=lf
 crates/hwp-cli/tests/golden/** text eol=lf
 schemas/*.json text eol=lf
 docs/**/*.md text eol=lf
+skills/**/*.md text eol=lf
 *.rs text eol=lf
