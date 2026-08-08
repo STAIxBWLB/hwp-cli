@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::io::Read as _;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
@@ -26,6 +26,7 @@ pub enum AssetSnapshotErrorCode {
     HardlinkForbidden,
     NotRegular,
     ContainmentViolation,
+    OutsideRoots,
     ChangedDuringOpen,
     LimitExceeded,
     ReadFailed,
@@ -41,6 +42,7 @@ impl AssetSnapshotErrorCode {
             Self::HardlinkForbidden => "hardlink_forbidden",
             Self::NotRegular => "not_regular",
             Self::ContainmentViolation => "containment_violation",
+            Self::OutsideRoots => "outside_roots",
             Self::ChangedDuringOpen => "changed_during_open",
             Self::LimitExceeded => "limit_exceeded",
             Self::ReadFailed => "read_failed",
@@ -65,6 +67,7 @@ impl fmt::Display for AssetSnapshotError {
             AssetSnapshotErrorCode::HardlinkForbidden => "multiply-linked assets are forbidden",
             AssetSnapshotErrorCode::NotRegular => "asset is not a regular file",
             AssetSnapshotErrorCode::ContainmentViolation => "asset is outside the spec directory",
+            AssetSnapshotErrorCode::OutsideRoots => "asset is outside the sandbox roots",
             AssetSnapshotErrorCode::ChangedDuringOpen => "asset changed while it was opened",
             AssetSnapshotErrorCode::LimitExceeded => "asset exceeds the byte limit",
             AssetSnapshotErrorCode::ReadFailed => "asset snapshot could not be read",
@@ -92,6 +95,22 @@ pub fn read_contained(
     max_bytes: u64,
 ) -> Result<AssetSnapshot, AssetSnapshotError> {
     read_contained_impl(base_dir, relative_path, max_bytes, || {}, || {})
+}
+
+/// Defense-in-depth binding to the MCP sandbox roots. A no-op when `roots` is
+/// empty (CLI/corpus callers); otherwise the canonical resolved asset must sit
+/// under at least one root. Roots are expected to be canonical already.
+pub fn check_under_roots(resolved: &Path, roots: &[PathBuf]) -> Result<(), AssetSnapshotError> {
+    if roots.is_empty() {
+        return Ok(());
+    }
+    let canonical =
+        std::fs::canonicalize(resolved).map_err(|_| error(AssetSnapshotErrorCode::Missing))?;
+    if roots.iter().any(|root| canonical.starts_with(root)) {
+        Ok(())
+    } else {
+        Err(error(AssetSnapshotErrorCode::OutsideRoots))
+    }
 }
 
 fn read_contained_impl(
@@ -423,6 +442,26 @@ mod tests {
         assert_eq!(failure.code, AssetSnapshotErrorCode::LimitExceeded);
 
         cleanup_root(&root);
+    }
+
+    #[test]
+    fn roots_check_binds_resolved_assets_to_sandbox_roots() {
+        let parent = test_root("roots-parent");
+        let sandbox = parent.join("sandbox");
+        std::fs::create_dir(&sandbox).unwrap();
+        let inside = sandbox.join("asset.bin");
+        let outside = parent.join("outside.bin");
+        std::fs::write(&inside, b"inside").unwrap();
+        std::fs::write(&outside, b"outside").unwrap();
+
+        check_under_roots(&outside, &[]).unwrap();
+        let roots = vec![std::fs::canonicalize(&sandbox).unwrap()];
+        check_under_roots(&inside, &roots).unwrap();
+        let failure = check_under_roots(&outside, &roots).unwrap_err();
+        assert_eq!(failure.code, AssetSnapshotErrorCode::OutsideRoots);
+        assert!(!failure.to_string().contains(&parent.display().to_string()));
+
+        cleanup_root(&parent);
     }
 
     #[cfg(unix)]

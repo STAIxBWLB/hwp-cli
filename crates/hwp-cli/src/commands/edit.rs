@@ -135,10 +135,40 @@ pub(crate) enum TypedEditOperation {
         row: u16,
         col: u16,
     },
+    AddTable {
+        anchor: String,
+        rows: Vec<Vec<String>>,
+    },
+    SetPara {
+        pattern: String,
+        /// HWPUNIT/pt×100 단위까지 변환된 문단모양(CLI `parse_para_props`와 같은 단위).
+        props: hwp_convert::ParaProps,
+    },
+    SetPage {
+        /// HWPUNIT 단위까지 변환된 페이지 설정(CLI `apply_page_prop`과 같은 단위).
+        props: hwp_convert::PageProps,
+    },
+    DeleteImage {
+        anchor: String,
+    },
+    DeleteTable {
+        /// 0-기반 표 인덱스. anchor와 상호 배타적(정확히 하나만 Some) — MCP 경계에서 강제.
+        index: Option<usize>,
+        /// 앵커 텍스트가 든 문단의 표. index와 상호 배타적.
+        anchor: Option<String>,
+    },
+    DeleteField {
+        name: String,
+    },
+    DeleteBookmark {
+        name: String,
+    },
 }
 
 impl TypedEditOperation {
     fn is_structural(&self) -> bool {
+        // 레거시 EditOperation::is_structural와 같은 분류를 유지한다(같은 작업은
+        // CLI/MCP 어느 경로든 같은 쓰기 경로를 타야 한다).
         matches!(
             self,
             Self::InsertImage { .. }
@@ -151,6 +181,11 @@ impl TypedEditOperation {
                 | Self::DeleteCol { .. }
                 | Self::MergeCells { .. }
                 | Self::SplitCell { .. }
+                | Self::AddTable { .. }
+                | Self::DeleteImage { .. }
+                | Self::DeleteTable { .. }
+                | Self::DeleteField { .. }
+                | Self::DeleteBookmark { .. }
         )
     }
 }
@@ -1268,6 +1303,83 @@ fn apply_typed_operation(
             eprintln!("셀 분할: 표{table} ({row},{col})");
             *edits += 1;
         }
+        TypedEditOperation::AddTable { anchor, rows } => {
+            hwp_convert::add_table(doc, anchor, rows).map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!(
+                "표 삽입: {anchor:?} 뒤 ({}x{})",
+                rows.len(),
+                rows.first().map_or(0, Vec::len)
+            );
+            *edits += 1;
+        }
+        TypedEditOperation::SetPara { pattern, props } => {
+            let before = doc.clone();
+            let count = hwp_convert::set_para_props(doc, pattern, props);
+            if count == 0 {
+                unapplied.push(format!("set_para pattern={pattern:?}"));
+            } else {
+                eprintln!("문단 모양: {pattern:?} ({count}건)");
+                record_effect(
+                    &before,
+                    doc,
+                    format!("set_para pattern={pattern:?}"),
+                    edits,
+                    unapplied,
+                );
+            }
+        }
+        TypedEditOperation::SetPage { props } => {
+            let before = doc.clone();
+            let count = hwp_convert::set_page_def(doc, props);
+            if count == 0 {
+                unapplied.push("set_page".to_string());
+            } else {
+                eprintln!("페이지 설정: {count}구역");
+                record_effect(&before, doc, "set_page".to_string(), edits, unapplied);
+            }
+        }
+        TypedEditOperation::DeleteImage { anchor } => {
+            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Image, anchor);
+            if count == 0 {
+                unapplied.push(format!("delete_image anchor={anchor:?}"));
+            } else {
+                eprintln!("그림 삭제: {anchor:?} ({count}건)");
+                *edits += count;
+            }
+        }
+        TypedEditOperation::DeleteTable { index, anchor } => {
+            // index/anchor 상호 배타는 MCP 경계에서 강제한다 — 여기서는 방어적으로 확인만.
+            let (kind, selector) = match (index, anchor) {
+                (Some(nth), None) => (hwp_convert::ObjectKind::TableNth(*nth), ""),
+                (None, Some(anchor)) => (hwp_convert::ObjectKind::Table, anchor.as_str()),
+                _ => anyhow::bail!("delete_table은 index와 anchor 중 하나만 지정해야 합니다"),
+            };
+            let count = hwp_convert::delete_object(doc, kind, selector);
+            if count == 0 {
+                unapplied.push(format!("delete_table index={index:?} anchor={anchor:?}"));
+            } else {
+                eprintln!("표 삭제: index={index:?} anchor={anchor:?} ({count}건)");
+                *edits += count;
+            }
+        }
+        TypedEditOperation::DeleteField { name } => {
+            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Field, name);
+            if count == 0 {
+                unapplied.push(format!("delete_field name={name:?}"));
+            } else {
+                eprintln!("필드 삭제: {name:?} ({count}건)");
+                *edits += count;
+            }
+        }
+        TypedEditOperation::DeleteBookmark { name } => {
+            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Bookmark, name);
+            if count == 0 {
+                unapplied.push(format!("delete_bookmark name={name:?}"));
+            } else {
+                eprintln!("책갈피 삭제: {name:?} ({count}건)");
+                *edits += count;
+            }
+        }
     }
     Ok(())
 }
@@ -1390,6 +1502,11 @@ pub(crate) fn parse_align(name: &str) -> anyhow::Result<u8> {
     })
 }
 
+/// mm → HWPUNIT (1mm = 7200/25.4). MCP처럼 수치가 이미 파싱된 호출자도 같은 변환을 쓴다.
+pub(crate) fn mm_to_hwpunit(mm: f32) -> i32 {
+    (mm * 7200.0 / 25.4).round() as i32
+}
+
 /// mm string → HWPUNIT (1mm = 7200/25.4).
 fn parse_mm(value: &str) -> anyhow::Result<i32> {
     let mm: f32 = value
@@ -1397,7 +1514,7 @@ fn parse_mm(value: &str) -> anyhow::Result<i32> {
         .trim_end_matches("mm")
         .parse()
         .with_context(|| format!("mm 값이 숫자가 아닙니다: {value:?}"))?;
-    Ok((mm * 7200.0 / 25.4).round() as i32)
+    Ok(mm_to_hwpunit(mm))
 }
 
 /// Parses `--set-para`'s "key:value" into ParaProps.
@@ -1508,6 +1625,37 @@ fn canonical_document(
         out
     }
 
+    /// 문서의 모든 Picture가 resolve_bin으로 참조하는 스트림의 semantic id를 모은다
+    /// (본문·표 셀·글상자 재귀).
+    fn collect_referenced_bin_ids(
+        paragraphs: &[hwp_model::Paragraph],
+        doc: &hwp_model::Document,
+        out: &mut Vec<String>,
+    ) {
+        for paragraph in paragraphs {
+            for control in &paragraph.controls {
+                match control {
+                    hwp_model::Control::Picture(picture) => {
+                        if let Some(bytes) = doc.resolve_bin(&picture.bin_ref) {
+                            out.push(binary_semantic_id(bytes));
+                        }
+                    }
+                    hwp_model::Control::Table(table) => {
+                        for cell in &table.cells {
+                            collect_referenced_bin_ids(&cell.paragraphs, doc, out);
+                        }
+                    }
+                    hwp_model::Control::Generic(generic) => {
+                        for list in &generic.paragraph_lists {
+                            collect_referenced_bin_ids(&list.paragraphs, doc, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn is_default_column_def(column: &hwp_model::ColumnDef) -> bool {
         column.count == 1
             && column.kind == 0
@@ -1576,6 +1724,39 @@ fn canonical_document(
         for control in &mut paragraph.controls {
             match control {
                 hwp_model::Control::Table(table) => {
+                    if matches!(target, Some(SemanticTarget::Hwpx))
+                        && table.common_data.is_empty()
+                        && table.placement.is_none()
+                    {
+                        // HWPX writer는 합성 표(common_data·placement 비어 있음)를 셀 단위
+                        // 나눔+제목줄 반복(attr=6)과 인라인 기본 배치로 방출하고 reader가
+                        // 그대로 돌려준다. write_table의 fallback과 같은 값으로 투영하되
+                        // 폭/높이는 writer와 같은 그리드 추정(단일 span 셀 최댓값 합산)을 쓴다.
+                        table.attr = 6;
+                        let cols = table.cols.max(1) as usize;
+                        let rows = table.rows.max(1) as usize;
+                        let mut col_w = vec![0_i64; cols];
+                        let mut row_h = vec![0_i64; rows];
+                        for cell in &table.cells {
+                            let (col, row) = (cell.col as usize, cell.row as usize);
+                            if cell.col_span == 1 && col < cols {
+                                col_w[col] = col_w[col].max(i64::from(cell.width.0));
+                            }
+                            if cell.row_span == 1 && row < rows {
+                                row_h[row] = row_h[row].max(i64::from(cell.height.0));
+                            }
+                        }
+                        table.placement = Some(hwp_model::GsoPlacement {
+                            treat_as_char: true,
+                            flow_with_text: true,
+                            vert_rel_to: 2, // PARA
+                            horz_rel_to: 3, // PARA
+                            width: col_w.iter().sum::<i64>() as i32,
+                            height: row_h.iter().sum::<i64>() as i32,
+                            out_margins: [283; 4],
+                            ..Default::default()
+                        });
+                    }
                     for cell in &mut table.cells {
                         for paragraph in &mut cell.paragraphs {
                             canonicalize_paragraph(paragraph, target, source_doc);
@@ -1794,16 +1975,26 @@ fn canonical_document(
         for start in &mut canonical.header.properties.start_numbers {
             *start = (*start).max(1);
         }
+        // HWPX writer는 Picture가 참조하는 스트림만 패키지에 동봉한다(BinCollector).
+        // 미참조 스트림(삭제된 개체의 잔여 등)은 디스크에 존재하지 않으므로 양쪽에 같은
+        // 규칙으로 제외한다 — 참조된 스트림의 writer 손실은 그대로 검출된다.
+        let mut referenced_bins = Vec::new();
+        for section in &canonical.sections {
+            collect_referenced_bin_ids(&section.paragraphs, &canonical, &mut referenced_bins);
+        }
         for stream in &mut canonical.bin_streams {
             stream.name = binary_semantic_id(&stream.data);
         }
+        canonical
+            .bin_streams
+            .retain(|stream| referenced_bins.contains(&stream.name));
         canonical.bin_streams.sort_by(|left, right| {
             left.name
                 .cmp(&right.name)
                 .then_with(|| left.data.cmp(&right.data))
         });
         // HWPX writer는 같은 bytes를 한 package item으로 재사용한다. 이름/등장
-        // 순서는 의미가 아니지만 고유한 미참조 bytes는 남겨 writer 손실로 검출한다.
+        // 순서는 의미가 아니므로 정렬·중복 제거 후 bytes를 비교한다.
         canonical
             .bin_streams
             .dedup_by(|left, right| left.data == right.data);
@@ -2337,6 +2528,25 @@ mod tests {
                 data: vec![1, 2, 3],
             },
         ];
+        // canonicalizer는 HWPX writer(BinCollector)처럼 컨트롤이 참조하는 스트림만
+        // 남긴다 — 중복 제거를 검증하려면 두 스트림을 Picture가 참조해야 한다.
+        // writer가 같은 bytes를 한 항목으로 재사용하므로 둘 다 같은 항목을 가리킨다.
+        for _ in 0..2 {
+            duplicated.sections[0].paragraphs[0]
+                .controls
+                .push(hwp_model::Control::Picture(hwp_model::Picture {
+                    common_data: Vec::new(),
+                    width: hwp_model::HwpUnit(100),
+                    height: hwp_model::HwpUnit(100),
+                    treat_as_char: true,
+                    z_order: 0,
+                    vert_offset: 0,
+                    horz_offset: 0,
+                    description: None,
+                    bin_ref: hwp_model::BinRef::ItemRef("first.png".to_string()),
+                    extras: Vec::new(),
+                }));
+        }
         let mut single = duplicated.clone();
         single.bin_streams.pop();
 
@@ -2344,6 +2554,20 @@ mod tests {
         let single = semantic_signature_for(&single, Some(SemanticTarget::Hwpx));
         assert_eq!(duplicated, single);
         assert_eq!(duplicated.counts.bin_streams, 1);
+    }
+
+    #[test]
+    fn hwpx_canonical_semantics_drop_unreferenced_binary_content() {
+        // HWPX writer는 미참조 스트림을 동봉하지 않으므로(삭제된 개체의 잔여 등)
+        // canonicalizer도 같은 규칙으로 제외한다 — 제외하지 않으면 재읽기 검증이
+        // 디스크에 존재할 수 없는 스트림을 기대해 항상 실패한다.
+        let mut doc = hwp_convert::from_markdown("본문");
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: "orphan.png".to_string(),
+            data: vec![1, 2, 3],
+        });
+        let signature = semantic_signature_for(&doc, Some(SemanticTarget::Hwpx));
+        assert_eq!(signature.counts.bin_streams, 0);
     }
 
     #[test]
@@ -2392,6 +2616,7 @@ mod tests {
             std::path::Path::new("out.hwpx"),
             false,
             false,
+            &[],
         )
         .unwrap();
         let output = std::env::temp_dir().join(format!(
@@ -2489,6 +2714,7 @@ mod tests {
             std::path::Path::new("out.hwp"),
             false,
             false,
+            &[],
         )
         .unwrap()
         .document;
@@ -2565,6 +2791,7 @@ mod tests {
             std::path::Path::new("out.hwp"),
             false,
             false,
+            &[],
         )
         .unwrap()
         .document;

@@ -93,14 +93,21 @@ pub(crate) fn validated_dpi(dpi: f64) -> anyhow::Result<f32> {
     hwp_render::validate_dpi(dpi as f32).map_err(Into::into)
 }
 
-fn publish_render_set(outputs: &[(PathBuf, Vec<u8>)], input: &Path) -> anyhow::Result<()> {
+pub(crate) fn publish_render_set(
+    outputs: &[(PathBuf, Vec<u8>)],
+    input: &Path,
+) -> anyhow::Result<()> {
     if let Some(warning) = crate::commands::output::write_validated_files(outputs, Some(input))? {
         eprintln!("경고: {warning}");
     }
     Ok(())
 }
 
-fn write_render_bytes(destination: &Path, input: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn write_render_bytes(
+    destination: &Path,
+    input: &Path,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
     crate::commands::output::write_validated(
         destination,
         Some(input),
@@ -140,7 +147,9 @@ fn infer_format(output: &Path) -> RenderFormat {
     }
 }
 
-fn page_path(base: &Path, page: usize, multi: bool) -> PathBuf {
+/// 페이지별 출력 경로: 여러 페이지면 `<stem>-<N>.<ext>`, 단일 페이지면 경로 그대로.
+/// MCP render의 output_path 파일명도 이 규칙을 따른다.
+pub(crate) fn page_path(base: &Path, page: usize, multi: bool) -> PathBuf {
     if multi {
         numbered_path(base, page)
     } else {
@@ -149,7 +158,7 @@ fn page_path(base: &Path, page: usize, multi: bool) -> PathBuf {
 }
 
 /// "all" | "3" | "1-5" → 1-기반 페이지 번호 목록.
-fn parse_pages(spec: &str, total: usize) -> anyhow::Result<Vec<usize>> {
+pub(crate) fn parse_pages(spec: &str, total: usize) -> anyhow::Result<Vec<usize>> {
     if total == 0 {
         anyhow::bail!("렌더링된 페이지가 없습니다");
     }

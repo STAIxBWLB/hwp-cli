@@ -294,6 +294,7 @@ MCP (Model Context Protocol) stdio server: a tool interface for AI agents
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | Default font directory for the render and diff tools (repeatable) |
+| `--root` | `<ROOT>` |  | Restrict all file access to this directory (repeatable). Default: unrestricted |
 
 ## `hwp update`
 

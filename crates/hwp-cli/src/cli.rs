@@ -330,6 +330,9 @@ pub enum Cmd {
         /// Default font directory for the render and diff tools (repeatable)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
+        /// Restrict all file access to this directory (repeatable). Default: unrestricted
+        #[arg(long)]
+        root: Vec<PathBuf>,
     },
 
     /// Self-update: fetch the latest `hwp` from GitHub releases and replace the running binary

@@ -76,7 +76,8 @@ pub fn localize(command: Command, lang: Lang) -> Command {
     }
 }
 
-/// `path`는 서브커맨드 이름(루트는 빈 문자열)이다. 서브커맨드는 1단계뿐이라 재귀 깊이도 1이다.
+/// `path`는 서브커맨드 이름(루트는 빈 문자열)이다. 중첩 서브커맨드(`skill` 아래 `export`
+/// 등)도 단계와 무관하게 베어 이름 자체가 키다(예: `("export", …)`).
 fn translate(command: Command, path: &str) -> Command {
     let command = match lookup(path, "") {
         Some(text) => command.about(text),
@@ -551,6 +552,11 @@ pub const KO: &[(&str, &str, &str)] = &[
         "mcp",
         "font_dir",
         "렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능)",
+    ),
+    (
+        "mcp",
+        "root",
+        "모든 파일 접근을 이 디렉터리 아래로 제한 (반복 가능). 기본: 제한 없음",
     ),
     // update
     (

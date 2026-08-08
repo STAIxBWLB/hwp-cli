@@ -294,6 +294,7 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
+| `--root` | `<ROOT>` |  | 모든 파일 접근을 이 디렉터리 아래로 제한 (반복 가능). 기본: 제한 없음 |
 
 ## `hwp update`
 
