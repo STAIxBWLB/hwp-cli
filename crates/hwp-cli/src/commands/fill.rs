@@ -57,7 +57,7 @@ pub fn run(
         None => None,
     };
 
-    let report = execute(input, output, set, data_value.as_ref(), allow_partial)?;
+    let report = execute(input, output, set, data_value.as_ref(), allow_partial, &[])?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report_json(&report))?);
@@ -84,6 +84,7 @@ pub fn execute(
     set: &[String],
     data_value: Option<&serde_json::Value>,
     allow_partial: bool,
+    roots: &[PathBuf],
 ) -> anyhow::Result<FillReport> {
     // 데이터에 `tables`가 (객체 항목의) 비어있지 않은 배열이면 IR 기반 표 채우기로 분기.
     // 객체-배열만 인정해, "tables"라는 이름의 평범한 자리표시자(예: 문자열 배열 값)가
@@ -130,6 +131,7 @@ pub fn execute(
             &plain_set,
             &part_paths,
             allow_partial,
+            roots,
         );
     }
 
@@ -421,6 +423,7 @@ fn fill_parts_ir(
     set: &[String],
     part_paths: &BTreeMap<String, PathBuf>,
     allow_partial: bool,
+    roots: &[PathBuf],
 ) -> anyhow::Result<FillReport> {
     let mut doc = load_document(input)?;
     let original = doc.clone();
@@ -462,13 +465,22 @@ fn fill_parts_ir(
     for (name, path) in part_paths {
         let md = std::fs::read_to_string(path)
             .with_context(|| format!("부분 파일 읽기 실패: {}", path.display()))?;
-        let part_direct = hwp_convert::from_markdown_blocks(
+        // `roots` binds image references inside the part file (MCP `--root`, #56): an
+        // outside-root reference is a hard error here, not an alt-text warning. Empty roots
+        // (CLI) keep the previous behavior.
+        let (part_direct, part_warnings) = hwp_convert::from_markdown_blocks_report(
             &md,
             &hwp_convert::MarkdownImportOptions {
                 base_dir: path.parent(),
+                roots,
                 ..Default::default()
             },
-        );
+        )
+        .map_err(|e| anyhow::anyhow!("부분 markdown 가져오기 실패 ({}): {e}", path.display()))?;
+        // Keep the previous stderr visibility (from_markdown_blocks printed import warnings).
+        for w in &part_warnings {
+            eprintln!("경고: {w}");
+        }
         // hwpx 왕복으로 writer 정규형에 맞춘다 — 템플릿은 파일에서 읽은 정규형이라,
         // 비정규 부수 필드(음영·attr1·글꼴 속성 등)가 그대로 이식되면 쓰기→재읽기
         // 의미 불변식 검증(verify_document)이 깨진다.

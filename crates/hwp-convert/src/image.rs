@@ -4,7 +4,7 @@
 //! (hwpx→hwp와 동일한 검증된 경로), 여기서는 최소 Picture + BinStream + 앵커 ExtCtrl만
 //! 만든다. bin_ref=ItemRef(name)로 hwpx 출력·hwp5 합성·렌더가 모두 바이트를 해석한다.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hwp_model::{BinRef, BinStream, Control, Document, HwpChar, HwpUnit, Paragraph, Picture};
 
@@ -126,6 +126,26 @@ pub(crate) fn display_size(data: &[u8], size: &ImageSize, max_w: i32) -> (i32, i
                 (w as i32, h as i32)
             }
         }
+    }
+}
+
+/// Sandbox containment check for an image path resolved from a markdown/HTML reference (#56).
+/// No-op when `roots` is empty (CLI, or an MCP server without `--root`). Roots are expected
+/// canonical already (the MCP server canonicalizes them at startup). A path that fails to
+/// canonicalize (missing file, ...) passes here and is handled by the caller's ordinary
+/// unreadable-file path instead, so missing-file semantics stay unchanged.
+pub(crate) fn check_resolved_under_roots(resolved: &Path, roots: &[PathBuf]) -> Result<(), String> {
+    if roots.is_empty() {
+        return Ok(());
+    }
+    let Ok(canonical) = std::fs::canonicalize(resolved) else {
+        return Ok(());
+    };
+    if roots.iter().any(|root| canonical.starts_with(root)) {
+        Ok(())
+    } else {
+        // Deliberately generic: a sandbox error must not leak the resolved filesystem layout.
+        Err("이미지 경로가 샌드박스 루트(--root) 밖에 있어 거부합니다".to_string())
     }
 }
 

@@ -32,6 +32,11 @@ pub struct MarkdownImportOptions<'a> {
     /// Base directory for resolving relative-path images (`![](fig.png)`) (location of the md file).
     /// If `None`, relative-path images keep only the alt text after a warning (absolute paths are tried as-is).
     pub base_dir: Option<&'a Path>,
+    /// Sandbox roots binding image references (MCP `--root`, #56). Empty disables the check
+    /// (CLI behavior — zero change). Roots must be canonical (the MCP server canonicalizes
+    /// them at startup). With roots set, an image resolving outside every root is a hard
+    /// error: the report variants fail the import instead of degrading to an alt-text warning.
+    pub roots: &'a [PathBuf],
     /// Official-document preset — if set, adjusts page margins, fonts, numbering scheme, and
     /// page numbers to the regulation. `None` keeps the existing defaults (no change).
     pub preset: Option<OfficialPreset>,
@@ -387,8 +392,13 @@ pub fn from_markdown(md: &str) -> Document {
 /// Variant that takes options. If `base_dir` is set, embeds relative-path images (`![](fig.png)`).
 /// Remote URLs, missing files, and unsupported formats keep only the alt text in the body after a warning (stderr).
 pub fn from_markdown_with(md: &str, opts: &MarkdownImportOptions) -> Document {
-    let (doc, warnings) = from_markdown_report(md, opts);
+    let (doc, warnings, hard_error) = from_markdown_inner(md, opts, true);
     print_warnings(&warnings);
+    if let Some(e) = hard_error {
+        // Infallible entry point — the sandbox violation still surfaces on stderr, but the
+        // document build itself cannot fail here. Fail-closed callers use the report variants.
+        print_warnings(&[e]);
+    }
     doc
 }
 
@@ -396,8 +406,12 @@ pub fn from_markdown_with(md: &str, opts: &MarkdownImportOptions) -> Document {
 /// The block is grafted into the middle of a composed document, so injecting a section definition
 /// would split the document in two. Used by `hwp fill --set name=@part.md` (template + part filling).
 pub fn from_markdown_blocks(md: &str, opts: &MarkdownImportOptions) -> Document {
-    let (doc, warnings) = from_markdown_blocks_report(md, opts);
+    let (doc, warnings, hard_error) = from_markdown_inner(md, opts, false);
     print_warnings(&warnings);
+    if let Some(e) = hard_error {
+        // Same policy as from_markdown_with — see there.
+        print_warnings(&[e]);
+    }
     doc
 }
 
@@ -410,24 +424,41 @@ fn print_warnings(warnings: &[String]) {
 
 /// Like [`from_markdown_with`], but also returns the import warnings (image failures, HTML block
 /// contract violations, ...) instead of only printing them to stderr. Lets callers (`hwp new`,
-/// MCP `hwp_new`) surface them in their reports.
-pub fn from_markdown_report(md: &str, opts: &MarkdownImportOptions) -> (Document, Vec<String>) {
-    from_markdown_inner(md, opts, true)
+/// MCP `hwp_new`) surface them in their reports. A sandbox violation (image reference outside
+/// the `roots` option, #56) is a hard error and fails the import with `Err`.
+pub fn from_markdown_report(
+    md: &str,
+    opts: &MarkdownImportOptions,
+) -> Result<(Document, Vec<String>), String> {
+    let (doc, warnings, hard_error) = from_markdown_inner(md, opts, true);
+    match hard_error {
+        Some(e) => Err(e),
+        None => Ok((doc, warnings)),
+    }
 }
 
-/// [`from_markdown_blocks`] variant that also returns the import warnings.
+/// [`from_markdown_blocks`] variant that also returns the import warnings. A sandbox violation
+/// (image reference outside the `roots` option, #56) is a hard error (`Err`).
 pub fn from_markdown_blocks_report(
     md: &str,
     opts: &MarkdownImportOptions,
-) -> (Document, Vec<String>) {
-    from_markdown_inner(md, opts, false)
+) -> Result<(Document, Vec<String>), String> {
+    let (doc, warnings, hard_error) = from_markdown_inner(md, opts, false);
+    match hard_error {
+        Some(e) => Err(e),
+        None => Ok((doc, warnings)),
+    }
 }
 
+/// Returns the document and the import warnings, plus the first sandbox violation if any.
+/// The build never aborts mid-way: a rejected image is dropped like a soft failure and the
+/// violation is reported through the third tuple element, so the infallible entry points can
+/// still return a document (only reachable with a non-empty `roots` option).
 fn from_markdown_inner(
     md: &str,
     opts: &MarkdownImportOptions,
     inject: bool,
-) -> (Document, Vec<String>) {
+) -> (Document, Vec<String>, Option<String>) {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     // Parses strikethrough (`~~`) and footnotes (`[^N]`). Task lists (TASKLISTS) are excluded — no corresponding IR meaning.
@@ -443,6 +474,7 @@ fn from_markdown_inner(
     let mut b = Builder {
         note_bodies,
         base_dir: opts.base_dir.map(Path::to_path_buf),
+        roots: opts.roots.to_vec(),
         ..Builder::default()
     };
     for event in &events {
@@ -492,6 +524,7 @@ fn from_markdown_inner(
             hwp5_doc_history: Vec::new(),
         },
         b.warnings,
+        b.hard_error,
     )
 }
 
@@ -642,6 +675,11 @@ struct Builder {
     skip_note_def: u32,
     // images: relative-path base directory + embedded binaries + warnings + alt suppression state.
     base_dir: Option<PathBuf>,
+    /// Sandbox roots for image containment (MCP `--root`, #56). Empty = no check.
+    roots: Vec<PathBuf>,
+    /// First sandbox violation (image reference outside `roots`) — a hard import error that
+    /// fails the report variants, never degraded to an alt-text warning (#56).
+    hard_error: Option<String>,
     bin_streams: Vec<BinStream>,
     warnings: Vec<String>,
     // HTML blocks (tables/images — contract docs/design/18): buffer of consecutive Html events +
@@ -925,6 +963,7 @@ impl Builder {
     /// Parses the block HTML collected in the buffer and merges it into paragraphs (contract
     /// docs/design/18). A parse failure (contract violation) is left as a warning without aborting
     /// document generation — the existing policy of letting markdown conversion itself succeed (same as image failure warnings).
+    /// A sandbox violation (image reference outside `roots`, #56) is the exception: it stays a hard error.
     fn flush_html(&mut self) {
         let html = std::mem::take(&mut self.html_buf);
         if html.trim().is_empty() {
@@ -933,6 +972,7 @@ impl Builder {
         self.flush_paragraph();
         let opts = crate::from_html::HtmlImportOptions {
             base_dir: self.base_dir.as_deref(),
+            roots: &self.roots,
             bin_seed: self.bin_streams.len(),
             // fnref markers inside the fragment reattach to the pre-collected GFM bodies (#47).
             note_bodies: Some(&self.note_bodies),
@@ -940,7 +980,10 @@ impl Builder {
         let parsed = crate::from_html::parse_fragment(&html, &opts);
         match parsed {
             Ok(blocks) => self.merge_html_blocks(blocks),
-            Err(e) => self
+            Err(crate::from_html::FragmentError::Sandbox(e)) => {
+                self.hard_error.get_or_insert(e);
+            }
+            Err(crate::from_html::FragmentError::Contract(e)) => self
                 .warnings
                 .push(format!("HTML 블록을 무시합니다(계약 위반): {e}")),
         }
@@ -1055,6 +1098,18 @@ impl Builder {
     /// BinStream and inline Picture (as-char, natural size) and alt is suppressed; on
     /// failure (remote/missing/unsupported) the alt text is kept after a warning.
     fn start_image(&mut self, dest_url: &str) {
+        // Sandbox check before any read (#56): with roots set, an outside-root reference is a
+        // hard import error, never an alt-text fallback. Remote URLs and base-less relative
+        // paths never touch the filesystem, so a resolution failure skips the check.
+        if !self.roots.is_empty()
+            && let Ok(resolved) = self.resolve_image_path(dest_url)
+            && let Err(e) = crate::image::check_resolved_under_roots(&resolved, &self.roots)
+        {
+            self.hard_error
+                .get_or_insert_with(|| format!("{e}: {dest_url}"));
+            self.in_image_suppress = false; // keep alt text as the fallback
+            return;
+        }
         match self.load_image(dest_url) {
             Ok((data, name, w, h)) => {
                 let idx = self.controls.len() as u32;
@@ -1088,9 +1143,10 @@ impl Builder {
         }
     }
 
-    /// Resolves and reads an image path. On success returns (bytes, bin name, display width, display height).
-    /// Only local paths (absolute + relative to base_dir) are allowed — no network dependence on remote URLs.
-    fn load_image(&self, dest_url: &str) -> Result<(Vec<u8>, String, i32, i32), String> {
+    /// Resolves an image reference to a local path: the `file://` prefix is stripped, absolute
+    /// paths are taken as-is, and relative paths are joined onto `base_dir`. Remote URLs and
+    /// base-less relative paths are soft rejections (alt text kept after a warning).
+    fn resolve_image_path(&self, dest_url: &str) -> Result<PathBuf, String> {
         let lower = dest_url.to_ascii_lowercase();
         if lower.starts_with("http://") || lower.starts_with("https://") {
             return Err(format!(
@@ -1100,18 +1156,22 @@ impl Builder {
         // Strip the file: scheme prefix and treat it as a local path.
         let raw = dest_url.strip_prefix("file://").unwrap_or(dest_url);
         let path = Path::new(raw);
-        let resolved: PathBuf = if path.is_absolute() {
-            path.to_path_buf()
+        if path.is_absolute() {
+            Ok(path.to_path_buf())
         } else {
             match &self.base_dir {
-                Some(dir) => dir.join(path),
-                None => {
-                    return Err(format!(
-                        "상대 경로 이미지의 기준 디렉터리를 알 수 없습니다(alt 보존): {dest_url}"
-                    ));
-                }
+                Some(dir) => Ok(dir.join(path)),
+                None => Err(format!(
+                    "상대 경로 이미지의 기준 디렉터리를 알 수 없습니다(alt 보존): {dest_url}"
+                )),
             }
-        };
+        }
+    }
+
+    /// Resolves and reads an image path. On success returns (bytes, bin name, display width, display height).
+    /// Only local paths (absolute + relative to base_dir) are allowed — no network dependence on remote URLs.
+    fn load_image(&self, dest_url: &str) -> Result<(Vec<u8>, String, i32, i32), String> {
+        let resolved = self.resolve_image_path(dest_url)?;
         let data = std::fs::read(&resolved)
             .map_err(|e| format!("이미지 읽기 실패 {}: {e} (alt 보존)", resolved.display()))?;
         if data.is_empty() {
@@ -1733,6 +1793,7 @@ mod tests {
             &MarkdownImportOptions {
                 base_dir: Some(&dir),
                 preset: None,
+                ..Default::default()
             },
         );
         assert_eq!(doc.bin_streams.len(), 1, "BinStream 1개 임베드");
@@ -1764,6 +1825,7 @@ mod tests {
             &MarkdownImportOptions {
                 base_dir: Some(&dir),
                 preset: None,
+                ..Default::default()
             },
         );
         assert!(d1.bin_streams.is_empty(), "임베드 없음");
@@ -1790,6 +1852,7 @@ mod tests {
             &MarkdownImportOptions {
                 base_dir: Some(&dir),
                 preset: None,
+                ..Default::default()
             },
         );
         let media = dir.join("out_media");
@@ -1806,6 +1869,85 @@ mod tests {
         let extracted = std::fs::read(media.join("image1.png")).expect("추출 이미지");
         assert_eq!(extracted, orig, "추출 이미지 바이트 == 원본(무손실)");
         let _ = std::fs::remove_dir_all(&media);
+    }
+
+    /// #56: with sandbox roots set, an image reference resolving outside every root (absolute
+    /// path or `../` escape) is a hard import error; inside-root references embed as usual;
+    /// empty roots keeps the CLI behavior (an absolute outside path still loads).
+    #[test]
+    fn 이미지_샌드박스_루트_검사() {
+        let base = std::env::temp_dir().join(format!(
+            "hwp-md-img-roots-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let root = base.join("sandbox");
+        let sub = root.join("sub");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        write_png(&sub, "in.png", 8, 8);
+        let outside_png = write_png(&outside, "out.png", 8, 8);
+        // Markdown link destinations treat `\` as an escape — use forward slashes (Windows CI).
+        let outside_ref = outside_png.display().to_string().replace('\\', "/");
+        // Roots are pre-canonicalized by the caller (mirrors the MCP startup).
+        let roots = vec![std::fs::canonicalize(&root).unwrap()];
+        // A fn (not a closure) so the two reference lifetimes unify by name.
+        fn rooted_opts<'a>(
+            base_dir: Option<&'a std::path::Path>,
+            roots: &'a [PathBuf],
+        ) -> MarkdownImportOptions<'a> {
+            MarkdownImportOptions {
+                base_dir,
+                roots,
+                preset: None,
+            }
+        }
+
+        // Inside the root: embeds as usual.
+        let (doc, _) = from_markdown_report("![in](in.png)\n", &rooted_opts(Some(&sub), &roots))
+            .expect("루트 안 이미지는 임베드");
+        assert_eq!(doc.bin_streams.len(), 1, "루트 안 이미지는 임베드");
+
+        // Absolute path outside the root: hard error (not an alt-text warning).
+        let err = from_markdown_report(
+            &format!("![out]({outside_ref})\n"),
+            &rooted_opts(Some(&sub), &roots),
+        )
+        .expect_err("루트 밖 절대 경로는 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
+
+        // `../` relative escape outside the root: hard error.
+        let err = from_markdown_report(
+            "![esc](../../outside/out.png)\n",
+            &rooted_opts(Some(&sub), &roots),
+        )
+        .expect_err("'../' 탈출은 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
+
+        // Same through an HTML block inside markdown (the flush_html path).
+        let err = from_markdown_report(
+            &format!("<p><img src=\"{outside_ref}\"/></p>\n"),
+            &rooted_opts(Some(&sub), &roots),
+        )
+        .expect_err("HTML 블록 이미지도 하드 에러");
+        assert!(err.contains("샌드박스"), "{err}");
+
+        // Empty roots: previous CLI behavior — the absolute outside path still loads.
+        let (doc, _) = from_markdown_report(
+            &format!("![out]({outside_ref})\n"),
+            &MarkdownImportOptions {
+                base_dir: Some(&sub),
+                preset: None,
+                ..Default::default()
+            },
+        )
+        .expect("루트 미설정이면 기존 동작");
+        assert_eq!(doc.bin_streams.len(), 1, "루트 미설정이면 절대 경로 로드");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// GI-4: inline code `code` → HCR Dotum (face_id=1) + light-gray shading char-shape run.
@@ -2008,6 +2150,7 @@ mod tests {
         let opts = |p| MarkdownImportOptions {
             base_dir: None,
             preset: p,
+            ..Default::default()
         };
         let page_of = |doc: &Document| {
             doc.sections[0].paragraphs[0]

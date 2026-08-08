@@ -595,6 +595,7 @@ fn tool_fill(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             &set,
             None,
             arg_bool(args, "allow_partial", false)?,
+            &ctx.roots,
         )
         .map_err(|error| format!("{error:#}"))?
     } else {
@@ -1235,6 +1236,8 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         (Some(markdown), None) => crate::commands::new::NewInput::Markdown {
             text: markdown,
             base_dir: None,
+            // Bind image references inside the markdown to the sandbox roots (#56).
+            roots: &ctx.roots,
         },
         (None, Some(document_json)) => crate::commands::new::NewInput::Json(document_json),
         (None, None) => crate::commands::new::NewInput::Empty,
@@ -2249,6 +2252,7 @@ mod tests {
             crate::commands::new::NewInput::Markdown {
                 text: markdown,
                 base_dir: None,
+                roots: &[],
             },
             &[],
             None,
@@ -2344,6 +2348,72 @@ mod tests {
         for path in [&template, &part, &out] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// #56: image references inside `hwp_new` markdown input and `hwp_fill` part files are
+    /// bound to the `--root` sandbox — an outside-root reference fails the tool call.
+    #[test]
+    fn mcp_new_and_fill_bind_markdown_images_to_sandbox_roots() {
+        let uniq = format!(
+            "{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("test")
+                .replace(':', "-")
+        );
+        let root = std::env::temp_dir().join(format!("hwp-mcp-mdimg-root-{uniq}"));
+        let outside = std::env::temp_dir().join(format!("hwp-mcp-mdimg-outside-{uniq}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // Tiny PNG (magic + IHDR with 8x8) — the file only needs to exist for the sandbox check.
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend(8u32.to_be_bytes());
+        png.extend(8u32.to_be_bytes());
+        png.extend([0u8; 8]);
+        let outside_png = outside.join("out.png");
+        std::fs::write(&outside_png, &png).unwrap();
+        // Markdown link destinations treat `\` as an escape — forward slashes (Windows CI).
+        let outside_ref = outside_png.display().to_string().replace('\\', "/");
+        let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+
+        // hwp_new: markdown referencing an absolute image outside the roots fails closed.
+        let new_out = root.join("new.hwpx");
+        let err = tool_new(
+            &json!({
+                "markdown": format!("본문\n\n![x]({outside_ref})\n"),
+                "output": new_out,
+            }),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(err.contains("샌드박스"), "{err}");
+        assert!(!new_out.exists(), "실패 시 출력을 게시하지 않음");
+
+        // hwp_fill: a part file (itself inside the roots) referencing an outside image fails.
+        let template = root.join("template.hwpx");
+        create_hwpx(&template, "{{본문}}");
+        let part = root.join("part.md");
+        std::fs::write(&part, format!("부분\n\n![x]({outside_ref})\n")).unwrap();
+        let fill_out = root.join("fill.hwpx");
+        let err = tool_fill(
+            &json!({
+                "input": template,
+                "output": fill_out,
+                "values": {},
+                "parts": {"본문": part.display().to_string()}
+            }),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(err.contains("샌드박스"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

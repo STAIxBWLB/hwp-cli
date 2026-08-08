@@ -2010,7 +2010,8 @@ mod tests {
         let (back, warnings) = crate::from_markdown::from_markdown_report(
             &md,
             &crate::from_markdown::MarkdownImportOptions::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !warnings.iter().any(|w| w.contains("계약 위반")),
             "계약 위반 경고가 없어야 함: {warnings:?}"
@@ -2072,7 +2073,8 @@ mod tests {
         let (back, warnings) = crate::from_markdown::from_markdown_report(
             &md,
             &crate::from_markdown::MarkdownImportOptions::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !warnings.iter().any(|w| w.contains("계약 위반")),
             "계약 위반 경고가 없어야 함: {warnings:?}"
