@@ -306,6 +306,7 @@ fn md_이미지_코드_hwp5_왕복() {
         &hwp_convert::MarkdownImportOptions {
             base_dir: Some(&dir),
             preset: None,
+            ..Default::default()
         },
     );
     for paragraph in &mut doc.sections[0].paragraphs {

@@ -803,6 +803,7 @@ fn 쪽번호_시작_재시작_숨김() {
         &hwp_convert::MarkdownImportOptions {
             base_dir: None,
             preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
         },
     );
     doc.header.properties.start_numbers[0] = 3;
