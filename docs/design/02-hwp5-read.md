@@ -293,7 +293,7 @@ failure):
 | 56 | u32 | underline_color |
 | 60 | u32 | shade_color |
 | 64 | u32 | shadow_color |
-| 68 | tail | tail[0..2] = border_fill_id (5.0.2.1+) |
+| 68 | tail | tail[0..2] = border_fill_id (5.0.2.1+); tail[2..6] = strikethrough color (5.0.3.0+) |
 
 Note: the strikethrough bits (18 to 20) of the raw `attr` are DIFFSPEC and untrusted (`strike: false`
 is fixed, preventing false strikethrough).
@@ -313,7 +313,7 @@ is fixed, preventing false strikethrough).
 | 30 | u16 | numbering_id |
 | 32 | u16 | border_fill_id |
 | 34 | u16 ×4 | border_offsets (left, right, top, bottom) |
-| 42 | tail | tail = [attr2 u32, attr3 u32, line_spacing i32] |
+| 42 | tail | tail[0..4] = attr2 (5.0.1.7+); tail[4..8] = attr3 and tail[8..12] = line_spacing (5.0.2.5+) |
 
 Line spacing: when `tail.len()>=12`, `line_spacing = tail[8..12]` (5.0.2.5+); otherwise
 `line_spacing_old`. The kind is `attr1 & 0x3`.

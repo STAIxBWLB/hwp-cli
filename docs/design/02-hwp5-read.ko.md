@@ -230,7 +230,7 @@ for (hdr, data) in flat:
 | 56 | u32 | underline_color |
 | 60 | u32 | shade_color |
 | 64 | u32 | shadow_color |
-| 68 | tail | tail[0..2]=border_fill_id (5.0.2.1+) |
+| 68 | tail | tail[0..2]=border_fill_id(5.0.2.1+), tail[2..6]=취소선 색(5.0.3.0+) |
 
 주의: raw `attr`의 취소선 비트(18~20)는 DIFFSPEC 의미라 신뢰하지 않는다(`strike: false` 고정, 가짜 취소선 방지).
 
@@ -249,7 +249,7 @@ for (hdr, data) in flat:
 | 30 | u16 | numbering_id |
 | 32 | u16 | border_fill_id |
 | 34 | u16×4 | border_offsets (좌/우/상/하) |
-| 42 | tail | tail=[attr2 u32, attr3 u32, line_spacing i32] |
+| 42 | tail | tail[0..4]=attr2(5.0.1.7+), tail[4..8]=attr3·tail[8..12]=line_spacing(5.0.2.5+) |
 
 줄간격 값: `tail.len()>=12`이면 `line_spacing = tail[8..12]`(5.0.2.5+), 아니면 `line_spacing_old`. 종류는 `attr1 & 0x3`.
 

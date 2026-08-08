@@ -33,7 +33,6 @@
 | E-5 | COLDEF 단 정의(표 138·139) | 14B | 실파일 **16B**(외부 실증. 자체 전수 실측은 미실시 — 구현 시 정답지로 확정할 것) | hwp.js 이슈 #58 | [08 생태계](08-external-research.ko.md) |
 | E-6 | CHAR_SHAPE attr 취소선 비트 18~20(§4.2.7 표 35) | 취소선 여부·모양 | 야생 파일에서 **읽기 신뢰 불가** — 변경추적 삭제표시 템플릿이 bit18을 오염시켜 가짜 취소선을 만든다(실측 한 파일의 92%). 쓰기는 bit18 단독으로 렌더됨(실기 확정) | 코퍼스 attr 전수 실측 + 실기 | [07 B8](07-hangul-compat-rules.ko.md) |
 | E-7 | PARA_HEADER nchars bit31 | 줄 배치 캐시 정합 표식 | 실제 소비는 **'리스트(구역·표 셀·글상자)의 마지막 문단' 표식**(이중 의미). 잘못 켜면 이후 문단이 통째로 미표시 | 정품 다문단 표본 bit31 분포 실측 + 실기(revert 이력 포함) | [07 B3·B4](07-hangul-compat-rules.ko.md) |
-| E-8 | CTRL_HEADER/ExtCtrl ctrl_id | 4문자 코드(예: `secd`) | payload에 **바이트 역순 저장**(`dces` → `secd`) — 읽을 때 뒤집고, 쓸 때 역순으로 기록한다. 같은 역순이 FIELD_END payload의 역순 ctrl_id 3B(이 문서 §3.4)로도 나타난다 | 정품 파일 바이트 대조 | [10 §4.1](10-hwp5-structure-map.ko.md) |
 
 ### 1.1 스펙이 정본인 혼동 지점 (정오 아님)
 
@@ -42,6 +41,7 @@
 - 레코드의 DocInfo/BodyText 소속은 **스펙 표 13이 정본**이다. MEMO_SHAPE(+76)·FORBIDDEN_CHAR(+78)·TRACK_CHANGE(+80)·TRACK_CHANGE_AUTHOR(+81)는 태그 값이 본문 수치 대역이지만 의미상 DocInfo 레코드다([10 §3](10-hwp5-structure-map.ko.md) 경고 참조).
 - 제어 문자(0~31) 분류의 스펙 근거는 **§3.2.3 본문의 표 6**이다. 과거 코드 주석의 §4.2.4와 문서 구판의 §4.3.2 표기는 모두 오기였다(2026-07-18 정정, [10 §5](10-hwp5-structure-map.ko.md)).
 - 셀 LIST_HEADER의 의미 파싱 prefix는 **34B**다. 구판 문서의 "46B"는 표 69(개체 공통 속성 46B)와의 혼동이었다([10 §4.1](10-hwp5-structure-map.ko.md)).
+- CTRL_HEADER/ExtCtrl의 ctrl_id는 `MAKE_4CHID`가 만든 UINT32이며 파일 전체의 little-endian 규칙을 따른다. 따라서 논리 ID `secd`가 바이트열에서는 `dces`로 나타난다. ID를 4문자 바이트로 모델링한 코드는 경계에서 바이트를 뒤집지만, UINT32로 모델링한 코드는 다시 뒤집으면 안 된다. 이는 명세 정합 동작이지 정오가 아니다([02 §8.5](02-hwp5-read.ko.md), [10 §4.1](10-hwp5-structure-map.ko.md)).
 
 ---
 
@@ -52,13 +52,14 @@
 | 경계(선언 버전 ≥) | 레코드 | 변화 | 근거 |
 |---|---|---|---|
 | 5.0.1.0 | TABLE | tail에 영역 속성 크기 u16 추가 | [03 §4](03-hwp5-write.ko.md) |
+| 5.0.1.7 | PARA_SHAPE | tail[0..4]에 속성 2 u32 추가 | [02](02-hwp5-read.ko.md) |
 | 5.0.2.1 | CHAR_SHAPE | tail[0..2]에 border_fill_id u16 추가 | [02](02-hwp5-read.ko.md), [03 §4](03-hwp5-write.ko.md) |
 | 5.0.2.1 | ID_MAPPINGS | 카운트 15 → 16 (메모 모양 추가) | [03 §4](03-hwp5-write.ko.md) |
-| 5.0.2.5 | PARA_SHAPE | tail 12B째의 line_spacing i32(신형 줄간격) 유효 | [02](02-hwp5-read.ko.md) |
+| 5.0.2.5 | PARA_SHAPE | tail[4..8]에 속성 3 u32, tail[8..12]에 line_spacing i32 추가, 총 54B | [02](02-hwp5-read.ko.md) |
+| 5.0.3.0 | CHAR_SHAPE | tail[2..6]에 취소선 색 u32 추가, 총 74B | [02](02-hwp5-read.ko.md) |
 | 5.0.3.2 | PARA_HEADER | 22B → **24B** (변경추적 병합 문단 여부 u16, 표 58) | [03 §4](03-hwp5-write.ko.md), [07 A3](07-hangul-compat-rules.ko.md) |
 | 5.0.3.2 | ID_MAPPINGS | 카운트 16 → **18** (변경추적·변경추적 사용자) | [03 §4](03-hwp5-write.ko.md), [07 A10](07-hangul-compat-rules.ko.md) |
 | 5.1.0.1 | PARA_SHAPE | 54B → **58B** (후행 4B=0). 누락 시 무결성 위반 경고 | [03 §4](03-hwp5-write.ko.md), [07 A3](07-hangul-compat-rules.ko.md) |
-| 5.1.0.1 | CHAR_SHAPE | 합성 규격 **74B** (border_fill_id u16 + 취소선색 u32 tail 포함) | [03 §4](03-hwp5-write.ko.md) |
 | 5.1.x | DocInfo 루트 | **COMPATIBLE_DOCUMENT(0x1E) 서브트리 필수** — 자식 LAYOUT_COMPATIBILITY(0x1F, 20B=0) + TRACKCHANGE(0x20, 1032B, data[0]=0x38). 누락 시 거부. 구버전(5.0.2.x)은 면제 | [03 §5](03-hwp5-write.ko.md), [07 A4](07-hangul-compat-rules.ko.md) |
 
 읽기 쪽은 같은 경계를 tail 길이로 추론하고([02](02-hwp5-read.ko.md)), 쓰기 쪽은 선언 버전으로 분기한다([03 §4](03-hwp5-write.ko.md)의 version_target 유도). 두 방향이 같은 경계를 공유하며, 이 표는 그 경계를 한자리에 모아 둔 목록이다.
@@ -86,7 +87,7 @@
 | 5.1.x 선언이면 COMPATIBLE_DOCUMENT 서브트리 필수 | 손상 거부(보안 수준을 낮춰도) | A4 |
 | DOCUMENT_PROPERTIES 시작번호 6종(쪽·각주·미주·그림·표·수식)은 1 이상 | 비정상 판정 | A8 |
 | ID_MAPPINGS 카운트 배열과 실제 자식 레코드 수가 일치해야 한다 | 손상 판정 | A10, [03 §4](03-hwp5-write.ko.md) |
-| CHAR_SHAPE shade_color는 0 금지 — '없음'은 0xFFFFFFFF (COLORREF의 '없음' 표식은 문맥마다 다르다) | 글자 칸마다 불투명 검정 음영("검은 바") | B1, [05 §7](05-rendering.ko.md) |
+| 글자 음영을 의도하지 않을 때 CHAR_SHAPE shade_color는 0xFFFFFFFF여야 한다. 0은 유효한 불투명 검정이며 '없음'이 아니다(COLORREF의 '없음' 표식은 문맥마다 다르다) | 의도하지 않은 검정 음영이 글자 칸마다 생김("검은 바") | B1, [05 §7](05-rendering.ko.md) |
 | PARA_SHAPE의 tab_def_id·numbering_id는 실존 항목을 가리켜야 한다(dangling 금지) | 손상 판정 | A10 |
 | SECTION_DEF는 필수 자식(FOOTNOTE_SHAPE×2, PAGE_BORDER_FILL×3)을 갖는다 | 손상 판정 | A10, [03 §10](03-hwp5-write.ko.md) |
 
@@ -102,7 +103,7 @@
 | PARA_CHAR_SHAPE에서 연속 동일 id run을 병합한다 | 손상 판정 | [03 §6](03-hwp5-write.ko.md)(d) |
 | PARA_HEADER instance_id는 0 금지(문서 내 고유 비영 값) | 비정상 판정 | A8 |
 | 구역 첫 문단 break_type에 0x03(구역/단 나눔)을 켠다 | 구역 구조 어긋남 | [03 §6](03-hwp5-write.ko.md)(e) |
-| 5.1.x 본문 문단은 PARA_LINE_SEG를 보유해야 한다(합성 문서는 줄 배치를 생성). 단 내용을 수정한 왕복은 캐시를 제거해 재계산을 유도한다 — 부정확한 캐시는 "변조"를 재유발한다 | 0높이 렌더("빈 내용"·검은 바) 또는 변조 경고 | B2·B3 |
+| 줄 배치 캐시가 없는 출처에서 새로 합성한 5.1.x 본문은 PARA_LINE_SEG를 생성해야 한다. 내용을 수정한 왕복은 해당 캐시를 제거해 재계산을 유도한다 — 부정확한 캐시는 "변조"를 재유발한다 | 0높이 렌더("빈 내용"·검은 바) 또는 변조 경고 | B2·B3 |
 | 표의 빈 셀도 문단 1개를 갖는다(LIST_HEADER nparas ≥ 1) | 손상 판정 | A6, C3 |
 
 ### 3.4 필드·하이퍼링크 (계층 ③)
@@ -120,7 +121,7 @@
 | 주제 | 요지 | 산식·상세 정본 |
 |---|---|---|
 | 줄 배치(PARA_LINE_SEG) 합성 | 기본 줄간격은 글자크기의 160%. base·line_advance·baseline_gap(85%) 산식과 표준 flags 0x0006_0000 | [05 §2.3](05-rendering.ko.md), B2 |
-| 저장된 lineseg의 지위 | 있으면 1급 입력으로 신뢰하고 재계산하지 않는다. 없으면 합성한다 | [01](01-architecture-ir.ko.md), [05 §2](05-rendering.ko.md) |
+| 저장된 lineseg 정책 | 무수정 hwp5의 신뢰 가능한 캐시는 보존하고, hwp5 편집·HWPX 변환 뒤에는 제거해 한글이 재계산하게 하며, Markdown처럼 캐시가 처음부터 없는 출처만 합성한다 | [01](01-architecture-ir.ko.md), [05 §2](05-rendering.ko.md) |
 | v_pos는 페이지 상대 좌표 | 페이지마다 0으로 리셋해야 한다. 구역 단조 누적은 손상 판정 | B6, [05 §2.2](05-rendering.ko.md) |
 | 표 높이 | Σ행 max(rowH) + **566** HWPUNIT(2.0mm). 스펙에 없는 경험 상수로, 두 정답지 교차 실측으로 확정 | C2, [05 §2.4](05-rendering.ko.md) |
 | run당 도형 렌더 한계 | 한 run에서 앞쪽 약 21개 도형만 렌더(정확 한계 미상). 구현은 run당 12개로 보수 분할 | D8, [04 §7.2](04-hwpx-owpml.ko.md) |

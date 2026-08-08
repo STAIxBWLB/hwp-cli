@@ -269,10 +269,13 @@ only for text extraction; **lossless re-serialization uses the original nested s
 - **The drawing object border line information is 13B**: specification table 86 declares 11B with an
   INT16 line thickness, but measurement shows a 4B (INT32) thickness for 13B total
   (`shape_draw.rs:393,414-415`; added to the ★ list in the 2026-07-19 audit).
-- **ctrl_id is stored reversed**: the first four bytes of a CTRL_HEADER/ExtCtrl payload are reversed
-  (`dces` → `secd`) and flipped on read (`body_text.rs:268`).
 - **CHAR_SHAPE strikethrough bits (18 to 20)**: because their meaning is DIFFSPEC they are not
   trusted, and `strike:false` is fixed (preventing false strikethrough, `doc_info.rs:249`).
+
+**Implementation note (not errata):** a ctrl_id is the UINT32 produced by `MAKE_4CHID` and follows
+the file-wide little-endian rule. The logical id `secd` therefore appears as bytes `dces`. A reader
+that represents it as four text bytes reverses those bytes at the boundary (`body_text.rs:268`),
+whereas a reader that keeps it as a UINT32 must not reverse it a second time.
 
 ---
 
