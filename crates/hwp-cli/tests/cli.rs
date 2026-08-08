@@ -1696,6 +1696,57 @@ fn table_rows_single_line_all_fixtures() {
     );
 }
 
+/// GH-47: footnote definitions referenced inside HTML tables are emitted as GFM (`[^N]:`),
+/// so the `cat --format markdown` → `new --strict --from` round-trip succeeds without
+/// warnings and the note body is preserved.
+#[test]
+fn markdown_footnote_roundtrip_report_tables() {
+    let src = fixture("samples/report-tables.hwpx");
+    let cat = hwp()
+        .arg("cat")
+        .arg(&src)
+        .args(["--format", "markdown"])
+        .output()
+        .expect("hwp cat markdown");
+    assert!(cat.status.success(), "cat 성공");
+    let md = String::from_utf8_lossy(&cat.stdout);
+    assert!(
+        md.contains("[^2]: 각주 예시 2"),
+        "표 안 각주도 GFM 정의: {md}"
+    );
+    assert!(!md.contains("hwp-footnote"), "HTML 정의 블록 금지: {md}");
+
+    let md_path = tmp("gh47_roundtrip.md");
+    let out = tmp("gh47_roundtrip.hwpx");
+    std::fs::write(&md_path, cat.stdout).unwrap();
+    let new = hwp()
+        .args(["new", "--strict", "--from"])
+        .arg(&md_path)
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .expect("hwp new --strict");
+    assert!(
+        new.status.success(),
+        "--strict 왕복 성공(계약 위반 0): {}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+    let back = hwp()
+        .arg("cat")
+        .arg(&out)
+        .args(["--format", "markdown"])
+        .output()
+        .expect("hwp cat 재수출");
+    assert!(back.status.success(), "재수출 성공");
+    let back_md = String::from_utf8_lossy(&back.stdout);
+    assert!(
+        back_md.contains("[^2]: 각주 예시 2"),
+        "각주 본문이 왕복 보존: {back_md}"
+    );
+    let _ = std::fs::remove_file(&md_path);
+    let _ = std::fs::remove_file(&out);
+}
+
 /// 최소 유효 PNG(시그니처+IHDR)를 만든다 — image_pixel_size가 치수를 읽고
 /// writer가 바이트를 그대로 임베드한다(디코딩은 하지 않음).
 fn write_min_png(path: &std::path::Path, w: u32, h: u32) {

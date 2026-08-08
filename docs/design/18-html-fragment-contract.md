@@ -72,16 +72,22 @@ compose them.
 - `alt` is preserved as the IR Picture's alt text (export fixes it to `"image"` — a
   convention, not a rule).
 
-## 5. Footnotes/Endnotes (presentational only)
+## 5. Footnotes/Endnotes
 
 - Body marker: `<sup id="fnref-{N}"><a href="#fn-{N}">{N}</a></sup>` (endnotes use `e{N}`).
 - Definitions: `<ol>`/`<li id="fn-{N}">` inside `<section class="footnotes">`, each ending
   with a back-link `<a href="#fnref-{N}">↩</a>`.
-- Import reads this structure as **plain text** only (recreating footnote semantics is out
-  of scope for v1 — to avoid ambiguity with the `sup` inline mark). A `sup` carrying a
-  `fnref` id is recognized as a marker and only its text is taken, and the
+- **Standalone import** reads this structure as **plain text** only (recreating footnote
+  semantics is out of scope for v1 — to avoid ambiguity with the `sup` inline mark). A
+  `sup` carrying a `fnref` id is recognized as a marker and only its text is taken, and the
   `<section class="footnotes">` definitions section is dropped entirely (so the markers and
   the definitions are not duplicated into the body).
+- **md-mixed path** (#47): the markdown exporter always emits footnote definitions as GFM
+  syntax (`[^N]: body`) at the document end — even when the reference sits inside an HTML
+  fallback table. On import, `from_markdown` pre-collects those definition bodies and passes
+  them into the fragment parser; a `fnref` marker whose label has a collected body is
+  consumed (marker digits and `#fn-N` back-link included) and replaced with a real
+  footnote/endnote anchor carrying that body, so the round-trip preserves the note.
 
 ## 6. Unsupported · Errors
 

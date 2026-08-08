@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- Markdown export: footnotes referenced inside an HTML-fallback table emitted their definition
+  as a `<div class="hwp-footnote">` block, which the importer contract rejects — the footnote
+  body was dropped in the `cat --format markdown` → `new --from` round-trip. Definitions are now
+  always emitted as GFM footnote syntax (`[^N]: body`), and the importer reattaches `fnref`
+  markers inside HTML fragments to those definition bodies as real footnote/endnote anchors, so
+  the round-trip preserves the note (and no longer leaks a dangling `#fn-N` hyperlink). (#47)
+
 ---
 
 ## [0.7.1]
