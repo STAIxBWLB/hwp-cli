@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: hwp-skill-claude-web.zip 조립 + 업로드
+      - name: Assemble and upload hwp-skill-claude-web.zip
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
