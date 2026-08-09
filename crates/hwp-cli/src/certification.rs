@@ -4072,10 +4072,16 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn atomic_certification_preserves_verified_ordinary_parent_spelling() {
-        let parent = scratch("ordinary-parent");
-        fs::create_dir_all(&parent).unwrap();
+        let requested_parent = scratch("ordinary-parent");
+        fs::create_dir_all(&requested_parent).unwrap();
+        let canonical_parent = requested_parent.canonicalize().unwrap();
+        let parent = exact_ordinary_spelling(&canonical_parent).unwrap();
         let destination = parent.join("report");
 
+        // Hosted Windows runners may expose the temp directory through an 8.3
+        // alias (for example, RUNNER~1). Build the requested ordinary spelling
+        // from the canonical path so this test exercises the exact-equivalence
+        // branch rather than correctly falling back to verbatim spelling.
         let stage = AtomicCertificationDir::new(&destination).unwrap();
         assert_eq!(stage.parent, parent);
         assert!(stage.root.starts_with(&stage.parent));
