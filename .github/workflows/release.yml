@@ -149,9 +149,20 @@ jobs:
           git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
           git push --force-with-lease origin "$branch"
           if ! gh pr view "$branch" >/dev/null 2>&1; then
-            gh pr create --base main --head "$branch" \
+            # The org may forbid Actions from creating PRs ("GitHub Actions is not
+            # permitted to create or approve pull requests"). Degrade gracefully for
+            # that specific rejection — the branch is already pushed, so a human opens
+            # the PR with one click. Any other failure still fails the job.
+            if ! err=$(gh pr create --base main --head "$branch" \
               --title "chore(brew): formula v$ver" \
-              --body "Update the Homebrew formula version/sha256 from the $GITHUB_REF_NAME release assets. Opened by the release workflow because main is protected against direct bot pushes."
+              --body "Update the Homebrew formula version/sha256 from the $GITHUB_REF_NAME release assets. Opened by the release workflow because main is protected against direct bot pushes." 2>&1); then
+              echo "$err"
+              if grep -qi "not permitted to create or approve pull requests" <<<"$err"; then
+                echo "::warning::PR creation blocked (org policy). Open it manually: https://github.com/$GITHUB_REPOSITORY/compare/main...$branch"
+                exit 0
+              fi
+              exit 1
+            fi
           fi
           gh pr merge --auto --squash "$branch" \
             || echo "auto-merge unavailable — merge the formula PR manually"
