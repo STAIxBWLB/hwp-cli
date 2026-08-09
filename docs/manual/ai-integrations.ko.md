@@ -101,6 +101,10 @@ Amazon Quick Desktop은 `hwp mcp`를 로컬 stdio 커넥터로 실행할 수 있
 모두 노출되는 연결을 실기 확인했다. Quick 릴리스에 따라 UI 이름은 달라질 수 있으며 아래 명칭은
 현재 Desktop 흐름 기준이다.
 
+바이너리 검증, 에이전트 지침, 실제 생성·검증 smoke test, 증상별 복구까지 포함한 Windows 중심
+복사·실행 절차는 전용 [Amazon Quick Desktop 가이드](amazon-quick-desktop.ko.md)를 사용한다. 아래
+요약은 다른 AI 클라이언트와 비교하기 위한 짧은 레퍼런스로 유지한다.
+
 ### 1. 최신 바이너리 하나로 정리
 
 커넥터에는 실행 파일 절대 경로를 넣는다. Quick의 PATH 앞쪽에 남은 구버전을 실행하는 문제를
@@ -125,7 +129,7 @@ Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/hwp`가 나온다. 이
 |---|---|
 | Name | `hwp` |
 | Command | `command -v hwp`에서 확인한 절대 경로 |
-| Arguments | `mcp --font-dir /System/Library/Fonts --root /path/to/workspace` |
+| Arguments (macOS 예시) | `mcp --font-dir /System/Library/Fonts --root /path/to/workspace` |
 | Description | `Read, write, edit, render, validate, and convert HWP/HWPX documents.` |
 | Timeout | `30`초(일반적으로 기본값이면 충분) |
 
@@ -157,6 +161,39 @@ Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/hwp`가 나온다. 이
   }
 }
 ```
+
+#### Windows 샌드박스 호환 설정
+
+Windows에서는 사용자 프로필 아래 폴더 대신 Quick이 쓸 수 있는 `C:\TEMP` 교환 디렉터리로
+시작한다.
+
+```json
+{
+  "mcpServers": {
+    "hwp": {
+      "command": "C:\\absolute\\path\\to\\hwp.exe",
+      "args": [
+        "mcp",
+        "--font-dir",
+        "C:\\Windows\\Fonts",
+        "--root",
+        "C:\\TEMP"
+      ]
+    }
+  }
+}
+```
+
+각 인자는 JSON 배열의 별도 항목으로 유지하고 Windows 경로에 셸 따옴표를 덧붙이지 않는다.
+Quick의 **Local folders and access permissions**는 내장 파일 도구의 접근을 제어하지만, 로컬 MCP
+자식 프로세스는 사용자 프로필의 실제 경로를 canonicalize하지 못할 수 있다. 이 경우 `hwp`가
+`--root ... Access is denied (os error 5)`로 종료되고 MCP handshake가 닫히며, 재시도 뒤 Quick이
+커넥터를 자동으로 비활성화한다. `C:\TEMP`는 Quick의 Windows 샌드박스가 지원하는 특수 임시
+디렉터리다. HWP 작업 전 입력 파일을 이곳으로 옮기거나 복사하고, MCP 입력과 출력을 이 root
+아래에 유지한 다음 완성된 artifact를 승인된 목적 폴더로 복사한다.
+
+자동 비활성화된 커넥터의 설정을 바꾼 뒤에는 명시적으로 다시 활성화한다. 복구되면
+**Connected**, **16 tools available**가 표시되고 새로고침 뒤에도 활성 상태를 유지한다.
 
 ### 3. publish-safe HWP 스킬 설치
 
@@ -204,7 +241,8 @@ HTML로 오인할 수 있는 angle-bracket markup을 포함하지 않는다.
 - `hwp --version`이 의도한 최신 바이너리를 표시함
 - 커넥터 테스트가 **Connected**, **16 tools available**을 표시함
 - 새로고침 뒤에도 커넥터가 활성화되어 있고 **16 tools, Connected**를 표시함
-- 테스트 HWPX에서 `hwp_new`, `hwp_read`, `hwp_validate`, `hwp_render`가 성공함
+- 테스트 HWPX에서 `hwp_new`, `hwp_read`, `hwp_validate`, `hwp_render`가 성공함(Windows에서는
+  `C:\TEMP` 아래에서 테스트)
 - HWP 전용 에이전트가 하나만 존재하며 prohibited HTML/script 오류 없이 publish됨
 
 ## Amazon Quick Web

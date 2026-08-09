@@ -108,6 +108,22 @@ directory — to the given directories. Roots are canonicalized at startup; a mi
 unreadable root fails fast. Without any `--root` the server is unrestricted and prints a
 one-line warning to stderr at startup — prefer `--root` whenever the client allows it.
 
+Amazon Quick Desktop on Windows runs local MCP children inside its sandbox. Use the special
+writable exchange root `C:\TEMP` and `C:\Windows\Fonts`, with separate JSON arguments:
+`["mcp", "--font-dir", "C:\\Windows\\Fonts", "--root", "C:\\TEMP"]`. A folder added to
+Quick's local-folder permissions may still be unreadable to the MCP child. If a user-profile
+root fails with `Access is denied (os error 5)`, keep the root restriction, change it to
+`C:\TEMP`, and re-enable the connector after Quick auto-disables it. Keep all MCP inputs and
+outputs under that root and use Quick's file tools to copy artifacts into and out of it.
+
+When helping someone configure Quick, prefer JSON import and never put shell quote characters
+inside an argument. Verify three layers in order: the exact absolute binary returns a version;
+Quick reports 16 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
+succeeds on `C:\TEMP\quick-hwp-smoke.hwpx`. Do not claim that discovery alone proves file access.
+After a connector edit, refresh or start a new chat instead of reusing an old generated tool prefix.
+The copy-paste operator and AI runbook is:
+`https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
+
 Tools (16):
 
 | Tool | Required arguments | Purpose |

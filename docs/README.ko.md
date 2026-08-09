@@ -11,6 +11,7 @@
 | [design/](design/) | 설계 지식 정본. 시작점은 [00-overview](design/00-overview.ko.md) |
 | [manual/cli-reference.ko.md](manual/cli-reference.ko.md) | clap 정의에서 자동 생성되는 CLI 레퍼런스(수동 편집 금지) |
 | [manual/ai-integrations.ko.md](manual/ai-integrations.ko.md) | AI 클라이언트 설정: MCP 등록, 에이전트 스킬, claude.ai 번들 |
+| [manual/amazon-quick-desktop.ko.md](manual/amazon-quick-desktop.ko.md) | Amazon Quick Desktop 설정, end-to-end 검증, 에이전트 지침, 문제 해결 |
 | [release-readiness.ko.md](release-readiness.ko.md) | 릴리스 전 게이트 체크리스트 |
 | [hancom-verification-checklist.ko.md](hancom-verification-checklist.ko.md) | 한글 실기 검증 체크리스트 |
 
