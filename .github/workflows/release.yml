@@ -35,11 +35,11 @@ jobs:
           runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100")"
           failed=0
           for name in "${expected[@]}"; do
-            conclusion="$(jq -r --arg n "$name" \
-              '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1].conclusion // "absent"' \
+            state="$(jq -r --arg n "$name" \
+              '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
               <<<"$runs")"
-            echo "$name: $conclusion"
-            [ "$conclusion" = "success" ] || failed=1
+            echo "$name: $state"
+            [ "$state" = "completed/success" ] || failed=1
           done
           if [ "$failed" -ne 0 ]; then
             echo "::error::Tagged commit $GITHUB_SHA has no green CI. Let the CI workflow pass on main, then re-run this workflow."
