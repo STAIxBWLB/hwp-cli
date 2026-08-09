@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- Amazon Quick Desktop Windows guidance now uses a dedicated
+  `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` MCP root. Quick starts local MCP children at
+  Low mandatory integrity, so discovery can succeed under a normal Medium-integrity `C:\TEMP`
+  root while the first atomic document write still fails with `Access is denied (os error 5)`.
+
 ## [0.8.3]
 
 **Fixed**
@@ -36,10 +43,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Amazon Quick Desktop on Windows: keep canonical MCP paths in verbatim form for sandbox
   authorization, then use ordinary drive/UNC spelling for filesystem I/O only when every component
   has equivalent Win32 semantics. Paths with trailing dots/spaces, reserved device names, or other
-  verbatim-only semantics remain verbatim or fail closed. This lets Quick accept atomic output
-  staging under its `C:\TEMP` exchange root without weakening root containment. Also document
-  separate JSON arguments and recovery from the `Access is denied` handshake loop that causes Quick
-  to auto-disable the connector.
+  verbatim-only semantics remain verbatim or fail closed. This removes the verbatim-path failure
+  without weakening root containment. Also document separate JSON arguments and recovery from the
+  `Access is denied` handshake loop that causes Quick to auto-disable the connector.
 
 ## [0.8.1]
 

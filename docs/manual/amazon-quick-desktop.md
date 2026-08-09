@@ -10,6 +10,9 @@ recover the connector when Quick disables or loses it.
 Quick UI labels and internal file names can change between Desktop releases. Prefer the UI and the
 import JSON in this guide over editing Quick's internal configuration files.
 
+Validation baseline: Amazon Quick Desktop `0.1000.2660` and hwp-cli `0.8.3` on Windows,
+2026-08-09.
+
 ## What a working setup contains
 
 | Component | Purpose | Known-good Windows value |
@@ -17,7 +20,7 @@ import JSON in this guide over editing Quick's internal configuration files.
 | `hwp.exe` | Runs the MCP stdio server | One current binary at a stable absolute path |
 | HWP MCP connector | Exposes the 16 HWP tools | `hwp.exe mcp ...` |
 | HWP skill | Tells the Quick agent when and how to use the tools | `skills/hwp/SKILL.md` in the active Quick profile |
-| Exchange root | Shared file boundary between Quick and the MCP child | `C:\TEMP` |
+| Exchange root | Low-integrity file boundary shared with the MCP child | `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | Font directory | Supplies Windows fonts for rendering | `C:\Windows\Fonts` |
 
 The connector and the skill are separate. Installing the skill does not install the binary or
@@ -65,18 +68,33 @@ Windows verbatim path such as `\\?\C:\...`, confirm that `hwp --version` reports
 
 ## 2. Create the Windows exchange root
 
-Quick's built-in file tools and its local MCP child do not necessarily receive the same filesystem
-permissions. A user-profile folder added under **Local folders and access permissions** can still
-be rejected by the MCP child. Start with the verified sandbox exchange directory:
+Quick's built-in file tools and its local MCP child do not receive the same filesystem permissions.
+On the tested Windows build, Quick starts `hwp.exe` at Low mandatory integrity
+(`S-1-16-4096`). Ordinary folders such as `C:\TEMP` and `%LOCALAPPDATA%\Temp` are normally Medium
+integrity: the MCP connector can start and expose 16 tools there, but the first write can fail with
+`Access is denied (os error 5)` when `hwp_new` creates its private staging directory.
+
+Use a dedicated child of Windows' existing `LocalLow` directory. It inherits the Low-integrity
+label without administrator rights:
 
 ```powershell
-New-Item -ItemType Directory -Path C:\TEMP -Force
+$QuickHwpRoot = Join-Path $env:USERPROFILE 'AppData\LocalLow\hwp-quick-workspace'
+New-Item -ItemType Directory -Path $QuickHwpRoot -Force | Out-Null
+$QuickHwpRoot
+icacls.exe $QuickHwpRoot
 ```
 
-Use `C:\TEMP` as the connector's `--root`. Copy input `.hwp`, `.hwpx`, Markdown, JSON, images, and
-templates into that directory before calling an HWP tool. Keep every MCP input and output path
-under that root, then use Quick's file tools or Explorer to copy the final artifact to its intended
-destination.
+The `icacls` output must include an inherited entry equivalent to
+`Mandatory Label\Low Mandatory Level:(I)(OI)(CI)(NW)`. If it does not, create a new child directory
+under `LocalLow` with inheritance enabled. Do not lower the integrity level of `C:\TEMP`, grant
+broad write access, or run the MCP server without a root.
+
+Use the printed absolute path as the connector's `--root`. In JSON and MCP tool arguments, replace
+`YOUR_NAME` in the examples below with the Windows account folder name. Do not pass the literal
+`%USERPROFILE%` variable: Quick's argument list and the MCP tools do not perform shell expansion.
+Copy input `.hwp`, `.hwpx`, Markdown, JSON, images, and templates into the exchange root before
+calling an HWP tool. Keep every MCP input and output under it, then use Quick's file tools or
+Explorer to copy the validated artifact to its intended destination.
 
 `--root` is a security boundary as well as a compatibility setting. Do not remove it to work around
 a permission error.
@@ -119,15 +137,17 @@ argument boundaries exactly:
         "--font-dir",
         "C:\\Windows\\Fonts",
         "--root",
-        "C:\\TEMP"
+        "C:\\Users\\YOUR_NAME\\AppData\\LocalLow\\hwp-quick-workspace"
       ]
     }
   }
 }
 ```
 
-Replace only `command`. In JSON, doubled backslashes encode ordinary Windows backslashes; they do
-not change the real path.
+Replace `command`, and set `--root` to the absolute path printed by the exchange-root step
+above (a standard profile prints `C:\Users\<account>\...`; a redirected profile prints a
+different prefix, so always use the printed path). In JSON, doubled backslashes encode ordinary
+Windows backslashes; they do not change the real path.
 
 For manual entry, use:
 
@@ -135,7 +155,7 @@ For manual entry, use:
 |---|---|
 | Name | `hwp` |
 | Command | the exact absolute `hwp.exe` path verified above |
-| Arguments | `mcp --font-dir C:\Windows\Fonts --root C:\TEMP` |
+| Arguments | `mcp --font-dir C:\Windows\Fonts --root C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | Description | `Read, write, edit, render, validate, and convert HWP/HWPX documents.` |
 | Timeout | `30` seconds |
 
@@ -143,7 +163,7 @@ The Arguments field is not a shell. Do not type single or double quote character
 For example, this is wrong:
 
 ```text
-mcp --font-dir 'C:\Windows\Fonts' --root 'C:\TEMP'
+mcp --font-dir 'C:\Windows\Fonts' --root 'C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace'
 ```
 
 Quick can pass those quote characters literally, causing `hwp` to look for a directory whose name
@@ -160,11 +180,11 @@ Do not stop at “16 tools available.” Start a new Quick chat and paste this p
 
 ```text
 Use the HWP MCP tools, not a shell command.
-1. Call hwp_new to create C:\TEMP\quick-hwp-smoke.hwpx from this Markdown:
+1. Call hwp_new to create C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx from this Markdown:
    # Quick MCP smoke test
 
    Amazon Quick can create HWPX files through hwp MCP.
-2. Call hwp_validate on C:\TEMP\quick-hwp-smoke.hwpx.
+2. Call hwp_validate on C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx.
 3. Call hwp_read on the same file in plain format.
 4. Report the exact output path and the validation result. Do not claim success unless valid is true.
 ```
@@ -179,8 +199,9 @@ A working installation produces the file and returns validation equivalent to:
 }
 ```
 
-If visual output matters, follow with `hwp_render` for page 1 and write its output under
-`C:\TEMP`. This checks font access and rendering separately from document creation.
+If visual output matters, follow with `hwp_render` for page 1 and write its output under the same
+`hwp-quick-workspace` root. This checks font access and rendering separately from document
+creation.
 
 ## 6. Give a Quick agent durable instructions
 
@@ -189,8 +210,9 @@ instructions. Enable the HWP connector and installed HWP skill, then add instruc
 
 ```text
 Use the installed hwp skill and HWP MCP tools for every .hwp or .hwpx task.
-On Windows, use only paths under C:\TEMP unless the active connector explicitly exposes another root.
-Copy inputs into C:\TEMP before an HWP operation and return the final artifact path under C:\TEMP.
+On Windows Quick Desktop, use only the absolute LocalLow root configured in the MCP connector.
+The known-good root is C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace; replace YOUR_NAME before tool calls.
+Copy inputs into that root before an HWP operation and return the final artifact path under it.
 After hwp_new, hwp_edit, hwp_fill, hwp_convert, hwp_compose, or hwp_template, always call hwp_validate.
 When page appearance matters, also call hwp_render and inspect the requested pages.
 Never hard-code the generated MCP server prefix; select tools by their hwp_new/hwp_read/etc. names.
@@ -199,49 +221,55 @@ Do not claim success from connector discovery alone; require the requested opera
 ```
 
 OneDrive or SharePoint connectors are optional. Use them only to copy source or completed files into
-and out of `C:\TEMP`; they do not replace the local HWP MCP connector.
+and out of the configured exchange root; they do not replace the local HWP MCP connector.
 
 ## Daily workflow
 
-1. Copy every source file and referenced asset into `C:\TEMP`.
+1. Copy every source file and referenced asset into the configured exchange root (a child of
+   `%USERPROFILE%\AppData\LocalLow`).
 2. Give Quick the exact input and output paths. For example: “Read
-   `C:\TEMP\input.hwpx`, replace Draft with Final, and write `C:\TEMP\final.hwpx`.”
+   `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.hwpx`, replace Draft with Final,
+   and write `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\final.hwpx`.”
 3. Require `hwp_validate` after any write. Require `hwp_render` as well when layout matters.
 4. Confirm the returned path and validation result, then open or inspect the artifact.
-5. Copy the verified output from `C:\TEMP` to the approved destination. Clean up exchange files only
-   after confirming the destination copy.
+5. Copy the verified output from the exchange root to the approved destination. Clean up exchange
+   files only after confirming the destination copy.
 
 Useful prompts include:
 
-- “Summarize `C:\TEMP\input.hwp` and list its tables.”
-- “Convert `C:\TEMP\input.hwpx` to `C:\TEMP\input.md`.”
-- “Create `C:\TEMP\report.hwpx` from this Markdown, validate it, and render page 1.”
-- “Fill the slots in `C:\TEMP\template.hwpx`, write `C:\TEMP\filled.hwpx`, and validate it.”
+- “Summarize `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.hwp` and list its tables.”
+- “Convert `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.hwpx` to `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.md`.”
+- “Create `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\report.hwpx` from this Markdown, validate it, and render page 1.”
+- “Fill the slots in `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\template.hwpx`, write `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\filled.hwpx`, and validate it.”
 
 ## Troubleshooting by symptom
 
 | Symptom | Likely cause | Recovery |
 |---|---|---|
 | `hwp.exe` does not start or `--version` fails | Wrong binary, wrong architecture, blocked or incomplete extraction | Re-download, verify SHA-256, extract the Windows x86_64 archive, and test the exact absolute command path |
-| Test connection shows no tools or the server exits immediately | Missing/unreadable `--root`, quote characters in Arguments, typo, or stale command path | Ensure `C:\TEMP` exists; import the JSON above; remove shell quotes; verify `hwp.exe --version` |
-| **Connected, 16 tools** but `hwp_new` returns `Access is denied (os error 5)` | Transport works, but the MCP child cannot use the requested filesystem path, or an older binary passes `\\?\...` to Quick's sandbox | Put both input and output under `C:\TEMP`; keep `--root C:\TEMP`; upgrade `hwp`; restart and run the smoke test |
-| A path added to **Local folders and access permissions** still fails | That setting controls Quick's built-in file tools, not necessarily the local MCP child | Use the built-in tool to copy the file into `C:\TEMP`, then call HWP tools there |
-| `os error 2` | The path does not exist; Desktop may have moved to OneDrive | Check the real path, create the intended directory, or stage the file under `C:\TEMP` |
+| Test connection shows no tools or the server exits immediately | Missing/unreadable `--root`, literal `YOUR_NAME`, quote characters in Arguments, typo, or stale command path | Create the `LocalLow` child, substitute the absolute account path, import the JSON above, remove shell quotes, and verify `hwp.exe --version` |
+| **Connected, 16 tools** but `hwp_new` returns `Access is denied (os error 5)` | Discovery only needed read access; the requested destination is Medium integrity (commonly `C:\TEMP` or `%LOCALAPPDATA%\Temp`), or an older binary still passes `\\?\...` | Point `--root` and every tool path at the dedicated `LocalLow` child; verify its Low label with `icacls`; use hwp-cli v0.8.2 or later; restart and run the smoke test |
+| A path added to **Local folders and access permissions** still fails | That setting controls Quick's built-in read/search tools; it does not make a Medium-integrity folder writable by the Low-integrity MCP child | Use the built-in tool or Explorer to copy the file into the configured `LocalLow` exchange root, then call HWP tools there |
+| `os error 2` | The path does not exist, `YOUR_NAME` was not replaced, or Desktop moved the file to OneDrive | Check the real absolute path, create the intended directory, or stage the file under the configured exchange root |
 | Connector becomes disabled after repeated failures | Quick auto-disabled a connector whose startup/handshake repeatedly failed | Correct the command/root, save, explicitly enable the connector, refresh, and restart Quick if needed |
 | `Unknown tool` after editing or re-importing the connector | Quick generated a new internal connector/tool prefix while the conversation retained old tool names | Refresh connections and start a new chat; reload the HWP skill/tools instead of reusing the old generated name |
 | `assetDescriptor contains prohibited HTML/script content` while publishing an agent | An old exported skill contains angle-bracket placeholders that Quick classifies as markup | Reinstall the skill from a current `hwp` binary, refresh Quick, and publish again |
 | Creation works but rendering fails | Font directory is missing or inaccessible | First test without `--font-dir`; then add `C:\Windows\Fonts` and retry `hwp_render` |
-| Path is outside allowed roots | The MCP root policy is correctly rejecting it | Copy the asset into `C:\TEMP` or add a genuinely supported root; do not disable all roots |
+| Path is outside allowed roots | The MCP root policy is correctly rejecting it | Copy the asset into the configured `LocalLow` root or add a genuinely supported Low-integrity root; do not disable all roots |
 
-### Why the Windows path fix is necessary
+### Why both the path fix and `LocalLow` are necessary
 
-Rust's Windows canonicalization can return an equivalent verbatim path such as
-`\\?\C:\TEMP\quick-hwp-smoke.hwpx`. Quick can accept the ordinary `C:\TEMP` root during the MCP
-handshake yet reject the verbatim spelling later when `hwp` creates its private atomic staging
-directory. Current `hwp` normalizes verbatim drive and UNC paths back to ordinary Windows spelling
-before downstream file I/O while preserving fail-closed root containment checks.
+Two independent Windows constraints produced the same misleading error. First, Rust's Windows
+canonicalization can return an equivalent verbatim path such as `\\?\C:\...`. hwp-cli v0.8.2 and
+later normalize safe verbatim drive and UNC paths back to ordinary Windows spelling before
+downstream file I/O while preserving fail-closed root containment checks.
 
-This distinction explains the misleading state where connector discovery succeeds but the first
+Second, Quick starts the MCP child at Low mandatory integrity (`S-1-16-4096`). A normal Medium
+directory can be readable enough for startup and tool discovery but still reject the atomic staging
+directory used for a write. `AppData\LocalLow` carries an inheritable Low label, so its dedicated
+`hwp-quick-workspace` child supports both discovery and writes without broadening the MCP root.
+
+These two constraints explain the misleading state where connector discovery succeeds but the first
 write fails. Always verify the data plane with `hwp_new` plus `hwp_validate`.
 
 ## Optional local diagnostics
@@ -270,11 +298,11 @@ servers (0 failed), 16 total tools.” Log wording and location are not stable A
 
 - The connector command is one verified absolute `hwp.exe` path.
 - The connector uses separate JSON arguments and has no embedded shell quotes.
-- `C:\TEMP` exists and is the Windows MCP root.
+- `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` exists, inherits the Low label, and is the Windows MCP root.
 - The current HWP skill is installed in the active Quick profile.
 - Test connection reports **Connected** and **16 tools available**.
 - The connector stays enabled after refresh or restart.
-- `hwp_new`, `hwp_validate`, and `hwp_read` succeed on `C:\TEMP\quick-hwp-smoke.hwpx`.
+- `hwp_new`, `hwp_validate`, and `hwp_read` succeed on the absolute `LocalLow` smoke-test path.
 - `hwp_validate` returns `valid: true`; rendering is also tested when appearance matters.
 - The agent validates after every write and returns the final artifact path.
 

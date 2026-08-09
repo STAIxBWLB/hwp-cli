@@ -166,8 +166,18 @@ Equivalent import JSON:
 
 #### Windows sandbox-compatible setup
 
-On Windows, start with Quick's writable `C:\TEMP` exchange directory instead of a directory
-under the user profile:
+On Windows, create a dedicated child of the system-provided Low-integrity directory before
+registering the connector:
+
+```powershell
+$QuickHwpRoot = Join-Path $env:USERPROFILE 'AppData\LocalLow\hwp-quick-workspace'
+New-Item -ItemType Directory -Path $QuickHwpRoot -Force | Out-Null
+icacls.exe $QuickHwpRoot
+```
+
+The output must include an inherited Low mandatory label. Substitute the actual Windows account
+folder for `YOUR_NAME` in the connector JSON; the argument list does not expand environment
+variables:
 
 ```json
 {
@@ -179,7 +189,7 @@ under the user profile:
         "--font-dir",
         "C:\\Windows\\Fonts",
         "--root",
-        "C:\\TEMP"
+        "C:\\Users\\YOUR_NAME\\AppData\\LocalLow\\hwp-quick-workspace"
       ]
     }
   }
@@ -187,12 +197,13 @@ under the user profile:
 ```
 
 Keep each argument as a separate JSON array item; do not add shell quotes around Windows paths.
-Quick's **Local folders and access permissions** control its built-in file tools, but a local MCP
-child can still be unable to canonicalize a direct user-profile path. In that case `hwp` exits
-with `--root ... Access is denied (os error 5)`, the MCP handshake closes, and Quick eventually
-auto-disables the connector. `C:\TEMP` is a special temporary directory supported by Quick's
-Windows sandbox. Move or copy inputs into it before an HWP operation, keep MCP inputs and outputs
-under that root, and copy final artifacts to the intended approved folder afterward.
+Quick's **Local folders and access permissions** control its built-in read/search tools, not the
+write integrity of a local MCP child. Quick starts `hwp.exe` at Low mandatory integrity
+(`S-1-16-4096`), while `C:\TEMP` and `%LOCALAPPDATA%\Temp` are normally Medium. That mismatch allows
+connector discovery but rejects the first atomic output staging directory with
+`Access is denied (os error 5)`. A child of `AppData\LocalLow` inherits the required Low label
+without broad ACL changes. Move or copy inputs into that dedicated root, keep MCP inputs and
+outputs under it, and copy validated artifacts to the approved destination afterward.
 
 After changing an auto-disabled connector, explicitly enable it again. A successful recovery
 reports **Connected** and **16 tools available** and remains enabled after refresh.
@@ -246,7 +257,7 @@ contain no angle-bracket markup that Quick can misclassify as HTML.
 - Connector test reports **Connected** and **16 tools available**.
 - After refresh, the connector remains enabled and reports **16 tools, Connected**.
 - `hwp_new`, `hwp_read`, `hwp_validate`, and `hwp_render` succeed on a test HWPX document (under
-  `C:\TEMP` on Windows).
+  the configured LocalLow root, e.g. `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace`, on Windows).
 - Exactly one HWP-focused agent exists, and it publishes without the prohibited HTML/script error.
 
 ## Amazon Quick Web

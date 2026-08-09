@@ -164,8 +164,17 @@ Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/hwp`가 나온다. 이
 
 #### Windows 샌드박스 호환 설정
 
-Windows에서는 사용자 프로필 아래 폴더 대신 Quick이 쓸 수 있는 `C:\TEMP` 교환 디렉터리로
-시작한다.
+Windows에서는 커넥터를 등록하기 전에 시스템이 제공하는 Low 무결성 디렉터리 아래에 전용 자식을
+만든다.
+
+```powershell
+$QuickHwpRoot = Join-Path $env:USERPROFILE 'AppData\LocalLow\hwp-quick-workspace'
+New-Item -ItemType Directory -Path $QuickHwpRoot -Force | Out-Null
+icacls.exe $QuickHwpRoot
+```
+
+출력에 상속된 Low mandatory label이 있어야 한다. Arguments는 환경 변수를 확장하지 않으므로 아래
+커넥터 JSON의 `YOUR_NAME`을 실제 Windows 계정 폴더명으로 바꾼다.
 
 ```json
 {
@@ -177,7 +186,7 @@ Windows에서는 사용자 프로필 아래 폴더 대신 Quick이 쓸 수 있�
         "--font-dir",
         "C:\\Windows\\Fonts",
         "--root",
-        "C:\\TEMP"
+        "C:\\Users\\YOUR_NAME\\AppData\\LocalLow\\hwp-quick-workspace"
       ]
     }
   }
@@ -185,12 +194,13 @@ Windows에서는 사용자 프로필 아래 폴더 대신 Quick이 쓸 수 있�
 ```
 
 각 인자는 JSON 배열의 별도 항목으로 유지하고 Windows 경로에 셸 따옴표를 덧붙이지 않는다.
-Quick의 **Local folders and access permissions**는 내장 파일 도구의 접근을 제어하지만, 로컬 MCP
-자식 프로세스는 사용자 프로필의 실제 경로를 canonicalize하지 못할 수 있다. 이 경우 `hwp`가
-`--root ... Access is denied (os error 5)`로 종료되고 MCP handshake가 닫히며, 재시도 뒤 Quick이
-커넥터를 자동으로 비활성화한다. `C:\TEMP`는 Quick의 Windows 샌드박스가 지원하는 특수 임시
-디렉터리다. HWP 작업 전 입력 파일을 이곳으로 옮기거나 복사하고, MCP 입력과 출력을 이 root
-아래에 유지한 다음 완성된 artifact를 승인된 목적 폴더로 복사한다.
+Quick의 **Local folders and access permissions**는 내장 읽기·검색 도구를 제어하며 로컬 MCP 자식의
+쓰기 무결성은 바꾸지 않는다. Quick은 `hwp.exe`를 Low mandatory integrity(`S-1-16-4096`)로
+시작하지만 `C:\TEMP`와 `%LOCALAPPDATA%\Temp`는 보통 Medium이다. 이 불일치 때문에 커넥터 탐색은
+성공해도 첫 atomic output staging 디렉터리가 `Access is denied (os error 5)`로 거부된다.
+`AppData\LocalLow`의 자식은 광범위한 ACL 변경 없이 필요한 Low 레이블을 상속한다. HWP 작업 전에
+입력을 전용 root로 옮기거나 복사하고, MCP 입력과 출력을 그 아래에 유지한 다음 검증된 artifact를
+승인된 목적 폴더로 복사한다.
 
 자동 비활성화된 커넥터의 설정을 바꾼 뒤에는 명시적으로 다시 활성화한다. 복구되면
 **Connected**, **16 tools available**가 표시되고 새로고침 뒤에도 활성 상태를 유지한다.
@@ -242,7 +252,7 @@ HTML로 오인할 수 있는 angle-bracket markup을 포함하지 않는다.
 - 커넥터 테스트가 **Connected**, **16 tools available**을 표시함
 - 새로고침 뒤에도 커넥터가 활성화되어 있고 **16 tools, Connected**를 표시함
 - 테스트 HWPX에서 `hwp_new`, `hwp_read`, `hwp_validate`, `hwp_render`가 성공함(Windows에서는
-  `C:\TEMP` 아래에서 테스트)
+  설정된 LocalLow root 아래에서 테스트. 예: `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace`)
 - HWP 전용 에이전트가 하나만 존재하며 prohibited HTML/script 오류 없이 publish됨
 
 ## Amazon Quick Web

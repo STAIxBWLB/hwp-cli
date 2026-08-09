@@ -384,9 +384,12 @@ publish-safe skill into its active profile with:
 hwp skill export --install amazon-quick
 ```
 
-On Windows, use Quick's sandbox-writable `C:\TEMP` exchange directory as the MCP `--root`.
-A user-profile folder added to Quick's local-folder permissions may still be inaccessible to the
-local MCP child; use the dedicated runbook's import JSON and recovery steps.
+On Windows, create a dedicated exchange root under `%USERPROFILE%\AppData\LocalLow` (for example
+`hwp-quick-workspace`) and pass its absolute path as the MCP `--root` (Quick arguments do not
+expand environment variables). Quick starts the local MCP child at Low mandatory integrity, so
+`C:\TEMP` can pass tool discovery but reject the first write. Quick's local-folder permissions do
+not change that write integrity; use the dedicated runbook's creation, import JSON, and recovery
+steps.
 
 Amazon Quick Web cannot launch a local stdio process. Authenticated Streamable HTTP, tenant
 isolation and artifact transfer are specified for future work in
