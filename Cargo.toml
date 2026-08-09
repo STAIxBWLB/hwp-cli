@@ -3,20 +3,20 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.8.2"
+version = "0.8.3"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.93"
 
 [workspace.dependencies]
-# 내부 크레이트
+# Internal crates
 hwp-model = { path = "crates/hwp-model" }
 hwp5 = { path = "crates/hwp5" }
 hwpx = { path = "crates/hwpx" }
 hwp-convert = { path = "crates/hwp-convert" }
 hwp-render = { path = "crates/hwp-render" }
 
-# 공용 외부 의존성
+# Shared external dependencies
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -30,23 +30,23 @@ libc = "0.2"
 resvg = { version = "=0.47.0", default-features = false }
 regex = "1.11"
 zip = "8"
-# 자체 업데이트(hwp update)의 릴리스 아카이브 체크섬 대조 — zip이 이미 끌어오는 크레이트라
-# 의존성 그래프가 늘지 않는다.
+# Checksum verification for self-update (hwp update) release archives — already
+# pulled in via zip, so the dependency graph does not grow.
 sha2 = "0.11"
 getrandom = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 
-# 렌더링
+# Rendering
 tiny-skia = "0.12"
 rustybuzz = "0.20"
 fontdb = "0.23"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
 
-# PDF 백엔드
+# PDF backend
 pdf-writer = "0.15"
 subsetter = "0.2"
 
-# 테스트 전용
+# Test-only
 insta = { version = "1", features = ["json"] }
 proptest = "1"
 jsonschema = { version = "0.33", default-features = false }
