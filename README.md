@@ -465,10 +465,11 @@ cargo build --all-targets
 scripts/check.sh     # local CI mirror: fmt + clippy + test + structured corpus (required before a PR)
 ```
 
-CI (`.github/workflows/ci.yml`) installs `fonts-noto-cjk` on ubuntu and then runs
-`cargo fmt --all --check` → `cargo clippy --workspace --all-targets -- -D warnings` →
-`cargo test --workspace` → `scripts/check-structured-corpus.sh` on **ubuntu + macOS + windows**
-(all required). The local mirror `scripts/check.sh` runs the same gates.
+CI (`.github/workflows/ci.yml`) runs the platform-independent gates — `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and `scripts/check-structured-corpus.sh` —
+once in an ubuntu `lint` job, and runs `cargo test --workspace` on **ubuntu + macOS + windows**
+(all required). The ubuntu test job installs `fonts-nanum` (glyf TTFs; the CFF `fonts-noto-cjk`
+made debug-build rendering ~100x slower). The local mirror `scripts/check.sh` runs the same gates.
 
 Tests cover byte-identical hwp5 round-trips (identity/roundtrip/synth), semantically equivalent hwpx
 round-trips, IR JSON and markdown round-trips, editing and field correction, render layout, tables and

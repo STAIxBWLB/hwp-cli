@@ -431,10 +431,11 @@ cargo build --all-targets
 scripts/check.sh     # 로컬 CI 미러: fmt + clippy + test + 구조 코퍼스 (PR 전 필수)
 ```
 
-CI(`.github/workflows/ci.yml`)는 `fonts-noto-cjk` 설치(ubuntu) 후 `cargo fmt --all --check` →
-`cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace` →
-`scripts/check-structured-corpus.sh`를 **ubuntu + macOS + windows**(모두 필수)에서
-실행한다. 로컬 미러 `scripts/check.sh`는 같은 게이트를 실행한다.
+CI(`.github/workflows/ci.yml`)는 플랫폼 무관 게이트(`cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, `scripts/check-structured-corpus.sh`)를
+ubuntu `lint` 잡에서 한 번만 실행하고, `cargo test --workspace`는 **ubuntu + macOS + windows**
+(모두 필수)에서 실행한다. ubuntu 테스트 잡은 `fonts-nanum`(glyf TTF. CFF `fonts-noto-cjk`는 디버그
+빌드 렌더링을 ~100배 느리게 만들었다)를 설치한다. 로컬 미러 `scripts/check.sh`는 같은 게이트를 실행한다.
 
 테스트는 hwp5 바이트 동일 왕복(identity/roundtrip/synth), hwpx 의미 동등 왕복, IR JSON·markdown 왕복,
 편집·필드 보정, 렌더 레이아웃·표·diff 메트릭, 구조 코퍼스 결정성을 포함한다. 정품 fixture는 저장소에

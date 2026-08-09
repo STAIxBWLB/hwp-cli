@@ -41,10 +41,15 @@ HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus
   `cargo fmt --all --check` → `cargo clippy --workspace --all-targets -- -D warnings` →
   `cargo test --workspace`. For a partial run (clippy only, test only), pick the command directly
   instead of `scripts/check.sh`.
+  CI layout: fmt/clippy plus the structured-corpus gate run once in an ubuntu `lint` job; the
+  3-OS `test` matrix runs only `cargo test --workspace`. Tag releases do not re-run the matrix —
+  `release.yml` verifies the tagged commit's green CI via the check-runs API (job names there
+  must stay in sync with ci.yml).
 - Rust edition 2024, rust-version 1.93.
 - Fonts: **none are bundled** (`/fonts/` is gitignored - the diagnostic corpus and golden comparison
   use HCR Batang/Dotum if you download them locally). CI render glyphs come from system fonts
-  (noto-cjk installed on ubuntu, default CJK on macOS), so tests that run in CI must not assert on
+  (fonts-nanum on ubuntu - glyf TTFs; the CFF-based noto-cjk made debug-build rendering ~100x
+  slower - default CJK on macOS), so tests that run in CI must not assert on
   font-dependent output (glyphs, page counts).
 - `HWP_GOLDEN=1` - opt-in golden render comparison against Hangul reference PNGs. `HWP_CORPUS_DIR` -
   soak test over a large in-the-wild corpus.

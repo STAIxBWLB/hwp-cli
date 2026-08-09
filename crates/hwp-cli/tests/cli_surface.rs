@@ -1,13 +1,16 @@
-//! CLI 표면 커버리지 — CI에서 실행되는 서브커맨드 스모크 모음.
+//! CLI surface coverage — subcommand smokes that run in CI.
 //!
-//! 기존에는 `mcp`·`diff`·`render`·PDF 경로가 로컬 픽스처 게이트라 CI 커버리지가 0이었다.
-//! 이 스위트는 **커밋된 픽스처**(fixtures/samples/report-tables.hwpx)에 하드 의존해
-//! 스킵 없이 동작한다(신규 의존성 0 — hwp5·serde_json 기존 의존 재사용).
+//! Previously the `mcp`/`diff`/`render`/PDF paths were gated on local fixtures, so CI
+//! coverage was zero. This suite hard-depends on the **committed fixture**
+//! (fixtures/samples/report-tables.hwpx) and runs without skips (zero new dependencies —
+//! existing hwp5/serde_json deps are reused).
 //!
-//! 폰트 주의: 저장소에 동봉 폰트는 없다(`/fonts/`는 gitignore). 렌더 경로의 글리프는
-//! 시스템 폰트(ubuntu는 CI가 설치하는 noto-cjk, macOS는 기본 CJK)에서 온다. 그래서
-//! 이 스위트의 단언은 전부 **폰트 비의존**(페이지 크기=secPr 유래, 자기-diff, PDF 구조)
-//! 으로 설계돼 있다 — 글리프·페이지수 등 폰트 의존 단언을 여기 추가하지 말 것.
+//! Font note: no fonts are bundled in the repo (`/fonts/` is gitignored). Render-path
+//! glyphs come from system fonts (ubuntu CI installs fonts-nanum — glyf-outline TTFs;
+//! the CFF-based fonts-noto-cjk made debug-build rendering ~100x slower — macOS uses its
+//! default CJK fonts). Every assertion here is **font-independent** (page size derives
+//! from secPr, self-diff, PDF structure) — do not add font-dependent assertions (glyphs,
+//! page counts) here.
 
 use std::io::{BufRead, BufReader, Write as _};
 use std::path::PathBuf;
