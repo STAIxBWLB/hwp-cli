@@ -24,7 +24,7 @@ on:
       - "skills/hwp/SKILL.md"
       - "docs/manual/cli-reference.md"
       - "docs/manual/cli-reference.ko.md"
-  # release.yml 이 태그 릴리스 전에 이 test 잡을 재사용(테스트 통과 게이트)한다.
+  # release.yml reuses this test job as the pass gate before a tag release.
   workflow_call:
 
 env:
