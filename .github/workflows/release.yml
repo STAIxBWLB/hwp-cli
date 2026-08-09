@@ -144,9 +144,9 @@ jobs:
 
   # Homebrew formula (the repo itself is the tap): update version/sha256 from the freshly
   # uploaded assets. main is a protected branch, so the bot cannot push directly — open a PR
-  # and enable squash auto-merge instead. If the repo has no auto-merge or required checks
-  # never run for token-created PRs, the PR simply stays open for a human; the release itself
-  # is valid either way, and scripts/update_formula.sh X.Y.Z remains the local recovery path.
+  # and merge it: squash auto-merge when possible, an immediate squash merge as fallback
+  # (repos with no required checks refuse auto-merge on clean PRs). The release is valid
+  # either way, and scripts/update_formula.sh X.Y.Z remains the local recovery path.
   update-formula:
     needs: upload-assets
     runs-on: ubuntu-latest
@@ -192,5 +192,9 @@ jobs:
               exit 1
             fi
           fi
-          gh pr merge --auto --squash "$branch" \
-            || echo "auto-merge unavailable — merge the formula PR manually"
+          # Auto-merge first; repos with no required checks refuse auto-merge on a clean
+          # PR ("Pull request is in clean status"), so fall back to merging immediately.
+          if ! gh pr merge --auto --squash "$branch"; then
+            gh pr merge --squash "$branch" \
+              || echo "::warning::merge the formula PR manually: https://github.com/$GITHUB_REPOSITORY/compare/main...$branch"
+          fi
