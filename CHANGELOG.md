@@ -44,9 +44,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   authorization, then use ordinary drive/UNC spelling for filesystem I/O only when every component
   has equivalent Win32 semantics. Paths with trailing dots/spaces, reserved device names, or other
   verbatim-only semantics remain verbatim or fail closed. This removes the verbatim-path failure
-  without weakening root containment. Current Quick builds also require a separate Low-integrity
-  write root. Also document separate JSON arguments and recovery from the `Access is denied`
-  handshake loop that causes Quick to auto-disable the connector.
+  without weakening root containment. Also document separate JSON arguments and recovery from the
+  `Access is denied` handshake loop that causes Quick to auto-disable the connector.
 
 ## [0.8.1]
 

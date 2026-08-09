@@ -127,7 +127,8 @@ of it, and re-enable the connector if repeated startup failures caused Quick to 
 When helping someone configure Quick, prefer JSON import and never put shell quote characters
 inside an argument. Verify three layers in order: the exact absolute binary returns a version;
 Quick reports 16 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
-succeeds on the absolute `LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx` path. Do not claim
+succeeds on an absolute path under the configured LocalLow root (for example
+`C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`). Do not claim
 that discovery alone proves file access.
 After a connector edit, refresh or start a new chat instead of reusing an old generated tool prefix.
 The copy-paste operator and AI runbook is:

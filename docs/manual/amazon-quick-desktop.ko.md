@@ -19,7 +19,7 @@ Quick 릴리스에 따라 UI 이름과 내부 파일명이 바뀔 수 있다. Qu
 | `hwp.exe` | MCP stdio 서버 실행 | 안정된 절대 경로의 최신 바이너리 하나 |
 | HWP MCP 커넥터 | HWP 도구 16개 노출 | `hwp.exe mcp ...` |
 | HWP 스킬 | Quick 에이전트에게 도구 사용 시점과 방법 안내 | 활성 Quick 프로필의 `skills/hwp/SKILL.md` |
-| 교환 root | Low 무결성 MCP 자식과 파일을 주고받는 경계 | `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` |
+| 교환 root | Low 무결성 MCP 자식과 파일을 주고받는 경계 | `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | 폰트 디렉터리 | Windows 렌더링 폰트 공급 | `C:\Windows\Fonts` |
 
 커넥터와 스킬은 서로 별개다. 스킬 설치는 바이너리를 설치하거나 커넥터를 만들지 않는다. 커넥터에
@@ -136,8 +136,9 @@ Quick Desktop에서 **Settings → Capabilities → Connectors → + Create → 
 }
 ```
 
-`command`와 `YOUR_NAME`을 실제 값으로 바꾼다. JSON에서 이중 백슬래시는 일반 Windows 백슬래시를
-표현할 뿐, 실제 경로를 바꾸지 않는다.
+`command`를 실제 값으로 바꾸고, `--root`에는 위 교환 root 생성 단계가 출력한 절대 경로를 그대로 넣는다
+(표준 프로필은 `C:\Users\<계정>\...` 형태지만, 리디렉션된 프로필은 접두사가 다르므로 반드시 출력된
+경로를 사용한다). JSON에서 이중 백슬래시는 일반 Windows 백슬래시를 표현할 뿐, 실제 경로를 바꾸지 않는다.
 
 직접 입력할 때는 다음 값을 사용한다.
 
@@ -214,7 +215,7 @@ OneDrive나 SharePoint 커넥터는 선택 사항이다. 원본이나 완성 파
 
 ## 일상 작업 흐름
 
-1. 모든 원본 파일과 참조 asset을 `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace`로 복사한다.
+1. 모든 원본 파일과 참조 asset을 설정된 교환 root(`%USERPROFILE%\AppData\LocalLow` 아래)로 복사한다.
 2. Quick에 정확한 입력·출력 경로를 준다. 예:
    “`C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.hwpx`를 읽어 초안을 최종으로
    바꾸고 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\final.hwpx`에 저장하라.”

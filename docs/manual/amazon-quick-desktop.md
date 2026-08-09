@@ -20,7 +20,7 @@ Validation baseline: Amazon Quick Desktop `0.1000.2660` and hwp-cli `0.8.3` on W
 | `hwp.exe` | Runs the MCP stdio server | One current binary at a stable absolute path |
 | HWP MCP connector | Exposes the 16 HWP tools | `hwp.exe mcp ...` |
 | HWP skill | Tells the Quick agent when and how to use the tools | `skills/hwp/SKILL.md` in the active Quick profile |
-| Exchange root | Low-integrity file boundary shared with the MCP child | `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` |
+| Exchange root | Low-integrity file boundary shared with the MCP child | `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | Font directory | Supplies Windows fonts for rendering | `C:\Windows\Fonts` |
 
 The connector and the skill are separate. Installing the skill does not install the binary or
@@ -144,8 +144,10 @@ argument boundaries exactly:
 }
 ```
 
-Replace `command` and `YOUR_NAME`. In JSON, doubled backslashes encode ordinary Windows
-backslashes; they do not change the real path.
+Replace `command`, and set `--root` to the absolute path printed by the exchange-root step
+above (a standard profile prints `C:\Users\<account>\...`; a redirected profile prints a
+different prefix, so always use the printed path). In JSON, doubled backslashes encode ordinary
+Windows backslashes; they do not change the real path.
 
 For manual entry, use:
 
@@ -223,8 +225,8 @@ and out of the configured exchange root; they do not replace the local HWP MCP c
 
 ## Daily workflow
 
-1. Copy every source file and referenced asset into
-   `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace`.
+1. Copy every source file and referenced asset into the configured exchange root (a child of
+   `%USERPROFILE%\AppData\LocalLow`).
 2. Give Quick the exact input and output paths. For example: “Read
    `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.hwpx`, replace Draft with Final,
    and write `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\final.hwpx`.”

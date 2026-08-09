@@ -257,7 +257,7 @@ contain no angle-bracket markup that Quick can misclassify as HTML.
 - Connector test reports **Connected** and **16 tools available**.
 - After refresh, the connector remains enabled and reports **16 tools, Connected**.
 - `hwp_new`, `hwp_read`, `hwp_validate`, and `hwp_render` succeed on a test HWPX document (under
-  `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` on Windows).
+  the configured LocalLow root, e.g. `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace`, on Windows).
 - Exactly one HWP-focused agent exists, and it publishes without the prohibited HTML/script error.
 
 ## Amazon Quick Web

@@ -252,7 +252,7 @@ HTML로 오인할 수 있는 angle-bracket markup을 포함하지 않는다.
 - 커넥터 테스트가 **Connected**, **16 tools available**을 표시함
 - 새로고침 뒤에도 커넥터가 활성화되어 있고 **16 tools, Connected**를 표시함
 - 테스트 HWPX에서 `hwp_new`, `hwp_read`, `hwp_validate`, `hwp_render`가 성공함(Windows에서는
-  `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` 아래에서 테스트)
+  설정된 LocalLow root 아래에서 테스트. 예: `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace`)
 - HWP 전용 에이전트가 하나만 존재하며 prohibited HTML/script 오류 없이 publish됨
 
 ## Amazon Quick Web

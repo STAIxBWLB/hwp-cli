@@ -354,10 +354,11 @@ Amazon Quick Desktop은 로컬 stdio 서버를 실행해 16개 도구를 모두 
 hwp skill export --install amazon-quick
 ```
 
-Windows에서는 `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` 전용 디렉터리를 MCP
-`--root`로 사용한다. Quick은 로컬 MCP 자식을 Low mandatory integrity로 시작하므로 `C:\TEMP`에서
-도구 탐색은 통과해도 첫 쓰기가 거부될 수 있다. Quick의 로컬 폴더 권한은 이 쓰기 무결성을 바꾸지
-않으므로 전용 가이드의 생성·import JSON·복구 절차를 따른다.
+Windows에서는 `%USERPROFILE%\AppData\LocalLow` 아래에 전용 교환 root(예: `hwp-quick-workspace`)를
+만들고 그 절대 경로를 MCP `--root`로 전달한다(Quick 인자는 환경 변수를 확장하지 않는다). Quick은
+로컬 MCP 자식을 Low mandatory integrity로 시작하므로 `C:\TEMP`에서 도구 탐색은 통과해도 첫 쓰기가
+거부될 수 있다. Quick의 로컬 폴더 권한은 이 쓰기 무결성을 바꾸지 않으므로 전용 가이드의
+생성·import JSON·복구 절차를 따른다.
 
 Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 인증된 Streamable HTTP, tenant 격리,
 artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)에
