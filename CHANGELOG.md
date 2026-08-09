@@ -8,6 +8,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ---
 
+## [Unreleased]
+
+**Fixed**
+
+- Amazon Quick Desktop on Windows: normalize canonical MCP paths back to ordinary drive/UNC
+  spelling before filesystem I/O, so Quick's sandbox accepts atomic output staging under its
+  `C:\TEMP` exchange root. Also document separate JSON arguments and recovery from the
+  `Access is denied` handshake loop that causes Quick to auto-disable the connector.
+
 ## [0.8.1]
 
 **Added**

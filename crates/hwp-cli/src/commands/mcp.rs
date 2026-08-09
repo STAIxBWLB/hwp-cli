@@ -26,11 +26,66 @@ pub struct Ctx {
     pub roots: Vec<PathBuf>,
 }
 
+/// Resolve a path for sandbox containment checks and subsequent filesystem I/O.
+///
+/// Windows `std::fs::canonicalize` returns verbatim paths such as
+/// `\\?\C:\workspace`. Some desktop-client sandboxes authorize the ordinary
+/// drive/UNC spelling but reject that equivalent verbatim spelling. Strip only
+/// the two canonical prefixes that have an exact ordinary representation; the
+/// path remains absolute and fully resolved.
+fn canonicalize_mcp_path(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        Ok(strip_windows_verbatim_prefix(canonical))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(canonical)
+    }
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+
+    const SLASH: u16 = b'\\' as u16;
+    const VERBATIM: [u16; 4] = [SLASH, SLASH, b'?' as u16, SLASH];
+    const VERBATIM_UNC: [u16; 8] = [
+        SLASH,
+        SLASH,
+        b'?' as u16,
+        SLASH,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        SLASH,
+    ];
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.starts_with(&VERBATIM_UNC) {
+        let mut ordinary = Vec::with_capacity(wide.len() - VERBATIM_UNC.len() + 2);
+        ordinary.extend_from_slice(&[SLASH, SLASH]);
+        ordinary.extend_from_slice(&wide[VERBATIM_UNC.len()..]);
+        return PathBuf::from(OsString::from_wide(&ordinary));
+    }
+    if wide.starts_with(&VERBATIM)
+        && wide.get(5) == Some(&(b':' as u16))
+        && wide
+            .get(4)
+            .is_some_and(|letter| matches!(*letter, 65..=90 | 97..=122))
+    {
+        return PathBuf::from(OsString::from_wide(&wide[VERBATIM.len()..]));
+    }
+    path
+}
+
 /// stdio JSON-RPC 루프. EOF까지 한 줄씩 처리한다.
 pub fn run(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> anyhow::Result<()> {
     let mut canonical_roots = Vec::with_capacity(roots.len());
     for root in &roots {
-        let canonical = std::fs::canonicalize(root).map_err(|error| {
+        let canonical = canonicalize_mcp_path(root).map_err(|error| {
             anyhow::anyhow!(
                 "--root 경로를 확인할 수 없습니다: {} ({error})",
                 root.display()
@@ -334,7 +389,11 @@ fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<
 
 /// Checks that a canonical path sits below one of the allowed roots.
 fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, String> {
-    if ctx.roots.iter().any(|root| canonical.starts_with(root)) {
+    if ctx
+        .roots
+        .iter()
+        .any(|root| canonical_path_starts_with(canonical, root))
+    {
         Ok(canonical.to_path_buf())
     } else {
         Err(format!(
@@ -344,13 +403,26 @@ fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, Str
     }
 }
 
+fn canonical_path_starts_with(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = strip_windows_verbatim_prefix(path.to_path_buf());
+        let root = strip_windows_verbatim_prefix(root.to_path_buf());
+        path.starts_with(root)
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(root)
+    }
+}
+
 /// Read-path validation: the path must exist (canonicalize) and the canonical result
 /// must sit below a root. Empty roots pass without a check (previous behavior).
 fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
     if ctx.roots.is_empty() {
         return Ok(PathBuf::from(raw));
     }
-    let canonical = std::fs::canonicalize(raw)
+    let canonical = canonicalize_mcp_path(Path::new(raw))
         .map_err(|error| format!("경로를 확인할 수 없습니다: {raw} ({error})"))?;
     under_any_root(ctx, &canonical, raw)
 }
@@ -374,14 +446,14 @@ fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
         .file_name()
         .ok_or_else(|| format!("출력 경로에 파일 이름이 없습니다: {raw}"))?;
     let resolved = if path.exists() {
-        std::fs::canonicalize(path)
+        canonicalize_mcp_path(path)
             .map_err(|error| format!("출력 경로를 확인할 수 없습니다: {raw} ({error})"))?
     } else {
         let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+        let canonical_parent = canonicalize_mcp_path(parent).map_err(|error| {
             format!(
                 "출력 경로의 부모 디렉터리를 확인할 수 없습니다: {} ({error})",
                 parent.display()
@@ -1805,6 +1877,33 @@ fn tool_defs() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mcp_paths_use_sandbox_compatible_drive_spelling() {
+        assert_eq!(
+            strip_windows_verbatim_prefix(PathBuf::from(r"\\?\C:\Temp\document.hwpx")),
+            PathBuf::from(r"C:\Temp\document.hwpx")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mcp_paths_use_sandbox_compatible_unc_spelling() {
+        assert_eq!(
+            strip_windows_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\document.hwpx")),
+            PathBuf::from(r"\\server\share\document.hwpx")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mcp_root_check_accepts_equivalent_verbatim_spelling() {
+        assert!(canonical_path_starts_with(
+            Path::new(r"C:\Temp\workspace\document.hwpx"),
+            Path::new(r"\\?\C:\Temp\workspace")
+        ));
+    }
 
     fn ctx() -> Ctx {
         Ctx {

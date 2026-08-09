@@ -352,6 +352,10 @@ Amazon Quick Desktop은 로컬 stdio 서버를 실행해 16개 도구를 모두 
 hwp skill export --install amazon-quick
 ```
 
+Windows에서는 Quick 샌드박스가 쓸 수 있는 `C:\TEMP` 교환 디렉터리를 MCP `--root`로 사용한다.
+Quick의 로컬 폴더 권한에 추가한 사용자 프로필 폴더도 로컬 MCP 자식 프로세스에는 접근 불가할 수
+있다. 플랫폼별 JSON과 복구 절차는 연동 매뉴얼에 정리했다.
+
 Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 인증된 Streamable HTTP, tenant 격리,
 artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)에
 정리했으며 현재 릴리스에는 HTTP runtime이 없다.

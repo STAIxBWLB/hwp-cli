@@ -381,6 +381,10 @@ publish-safe skill into its active profile with:
 hwp skill export --install amazon-quick
 ```
 
+On Windows, use Quick's sandbox-writable `C:\TEMP` exchange directory as the MCP `--root`.
+A user-profile folder added to Quick's local-folder permissions may still be inaccessible to the
+local MCP child; the platform-specific JSON and recovery steps are in the integration manual.
+
 Amazon Quick Web cannot launch a local stdio process. Authenticated Streamable HTTP, tenant
 isolation and artifact transfer are specified for future work in
 [Remote MCP transport](docs/design/20-remote-mcp.md); no HTTP runtime is included today.

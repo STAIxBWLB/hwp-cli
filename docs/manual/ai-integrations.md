@@ -126,7 +126,7 @@ Open **Settings → Capabilities → Connectors → + Create → MCP server → 
 |---|---|
 | Name | `hwp` |
 | Command | the absolute path from `command -v hwp` |
-| Arguments | `mcp --font-dir /System/Library/Fonts --root /path/to/workspace` |
+| Arguments (macOS example) | `mcp --font-dir /System/Library/Fonts --root /path/to/workspace` |
 | Description | `Read, write, edit, render, validate, and convert HWP/HWPX documents.` |
 | Timeout | `30` seconds (the default is normally sufficient) |
 
@@ -158,6 +158,39 @@ Equivalent import JSON:
   }
 }
 ```
+
+#### Windows sandbox-compatible setup
+
+On Windows, start with Quick's writable `C:\TEMP` exchange directory instead of a directory
+under the user profile:
+
+```json
+{
+  "mcpServers": {
+    "hwp": {
+      "command": "C:\\absolute\\path\\to\\hwp.exe",
+      "args": [
+        "mcp",
+        "--font-dir",
+        "C:\\Windows\\Fonts",
+        "--root",
+        "C:\\TEMP"
+      ]
+    }
+  }
+}
+```
+
+Keep each argument as a separate JSON array item; do not add shell quotes around Windows paths.
+Quick's **Local folders and access permissions** control its built-in file tools, but a local MCP
+child can still be unable to canonicalize a direct user-profile path. In that case `hwp` exits
+with `--root ... Access is denied (os error 5)`, the MCP handshake closes, and Quick eventually
+auto-disables the connector. `C:\TEMP` is a special temporary directory supported by Quick's
+Windows sandbox. Move or copy inputs into it before an HWP operation, keep MCP inputs and outputs
+under that root, and copy final artifacts to the intended approved folder afterward.
+
+After changing an auto-disabled connector, explicitly enable it again. A successful recovery
+reports **Connected** and **16 tools available** and remains enabled after refresh.
 
 ### 3. Install the publish-safe HWP skill
 
@@ -207,7 +240,8 @@ contain no angle-bracket markup that Quick can misclassify as HTML.
 - `hwp --version` reports the intended current binary.
 - Connector test reports **Connected** and **16 tools available**.
 - After refresh, the connector remains enabled and reports **16 tools, Connected**.
-- `hwp_new`, `hwp_read`, `hwp_validate`, and `hwp_render` succeed on a test HWPX document.
+- `hwp_new`, `hwp_read`, `hwp_validate`, and `hwp_render` succeed on a test HWPX document (under
+  `C:\TEMP` on Windows).
 - Exactly one HWP-focused agent exists, and it publishes without the prohibited HTML/script error.
 
 ## Amazon Quick Web
