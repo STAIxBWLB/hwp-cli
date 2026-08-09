@@ -27,7 +27,8 @@ create-and-validate smoke test is required.
 ## 1. Install and verify one current `hwp.exe`
 
 Download the Windows x86_64 archive and its `.sha256` file from the
-[latest release](https://github.com/STAIxBWLB/hwp-cli/releases):
+[latest release](https://github.com/STAIxBWLB/hwp-cli/releases). Amazon Quick Windows path
+normalization requires hwp-cli v0.8.2 or later:
 
 - `hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`
 - `hwp-vX.Y.Z-x86_64-pc-windows-msvc.sha256`
@@ -36,7 +37,8 @@ Verify the archive before extracting it. Replace the example paths with the down
 
 ```powershell
 $Archive = "C:\path\to\hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip"
-$Expected = ((Get-Content -LiteralPath "$Archive.sha256") -split '\s+')[0].ToLowerInvariant()
+$Checksum = [IO.Path]::ChangeExtension($Archive, ".sha256")
+$Expected = ((Get-Content -LiteralPath $Checksum) -split '\s+')[0].ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Actual -ne $Expected) { throw "hwp archive checksum mismatch" }
 ```
@@ -59,8 +61,7 @@ $Hwp = "C:\absolute\path\to\hwp.exe"
 
 Use this same path in Quick. Do not rely on the PATH seen by a different terminal, because Quick
 can otherwise start an older duplicate installation. If the first file write still fails with a
-Windows verbatim path such as `\\?\C:\...`, upgrade to a release containing the Amazon Quick
-Windows canonical-path normalization fix.
+Windows verbatim path such as `\\?\C:\...`, confirm that `hwp --version` reports v0.8.2 or later.
 
 ## 2. Create the Windows exchange root
 

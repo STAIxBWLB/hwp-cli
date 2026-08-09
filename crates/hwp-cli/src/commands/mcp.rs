@@ -26,30 +26,146 @@ pub struct Ctx {
     pub roots: Vec<PathBuf>,
 }
 
-/// Resolve a path for sandbox containment checks and subsequent filesystem I/O.
+/// Canonicalize a path for sandbox authorization.
 ///
-/// Windows `std::fs::canonicalize` returns verbatim paths such as
-/// `\\?\C:\workspace`. Some desktop-client sandboxes authorize the ordinary
-/// drive/UNC spelling but reject that equivalent verbatim spelling. Strip only
-/// the two canonical prefixes that have an exact ordinary representation; the
-/// path remains absolute and fully resolved.
+/// Keep Windows canonical paths in their verbatim spelling here. Lower-level
+/// template and asset checks also use `std::fs::canonicalize`, so the roots in
+/// `Ctx` must retain the same security identity. A sandbox-compatible spelling
+/// is derived only after containment succeeds.
 fn canonicalize_mcp_path(path: &Path) -> std::io::Result<PathBuf> {
-    let canonical = std::fs::canonicalize(path)?;
+    std::fs::canonicalize(path)
+}
+
+/// Derive the spelling used for downstream read-only filesystem I/O from an
+/// already authorized canonical path.
+fn sandbox_compatible_mcp_path(canonical: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        Ok(strip_windows_verbatim_prefix(canonical))
+        strip_windows_verbatim_prefix(canonical.to_path_buf())
     }
     #[cfg(not(windows))]
     {
-        Ok(canonical)
+        canonical.to_path_buf()
+    }
+}
+
+/// Derive a spelling that remains ordinary even after the atomic writer adds
+/// its private sibling workspace and staged filename.
+fn sandbox_compatible_mcp_write_path(canonical: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+
+        // Compared with the destination, StagedOutput's longest current path adds:
+        // leading dot + marker + max u32 pid + max u64 sequence + separators +
+        // 32-char random token + `.tmp` + workspace separator, then either repeats
+        // the destination filename or uses `destination.backup`. Certification has
+        // a deeper fixed report tree, so reserve its larger relative expansion too.
+        const ATOMIC_STAGING_FIXED_OVERHEAD_UTF16: usize = 82;
+        const ATOMIC_STAGING_MIN_CHILD_NAME_UTF16: usize = 18;
+        let file_name_units = canonical
+            .file_name()
+            .map(|name| name.encode_wide().count())
+            .unwrap_or(0);
+        let output_staging_budget = ATOMIC_STAGING_FIXED_OVERHEAD_UTF16
+            .saturating_add(file_name_units.max(ATOMIC_STAGING_MIN_CHILD_NAME_UTF16));
+        strip_windows_verbatim_prefix_with_budget(
+            canonical.to_path_buf(),
+            output_staging_budget
+                .max(hwp_cli::certification::WINDOWS_CERTIFICATION_TREE_OVERHEAD_UTF16),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        canonical.to_path_buf()
     }
 }
 
 #[cfg(windows)]
+fn windows_ordinary_component_is_safe(component: &std::ffi::OsStr) -> bool {
+    let Some(text) = component.to_str() else {
+        return false;
+    };
+    if text.is_empty() || text.ends_with('.') || text.ends_with(' ') {
+        return false;
+    }
+    if text.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            )
+    }) {
+        return false;
+    }
+
+    let stem = text
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+    ) {
+        return false;
+    }
+    for prefix in ["COM", "LPT"] {
+        if stem.strip_prefix(prefix).is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        }) {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(windows)]
+fn windows_verbatim_components_are_ordinary_safe(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(_) => {}
+            Prefix::VerbatimUNC(server, share) => {
+                if !windows_ordinary_component_is_safe(server)
+                    || !windows_ordinary_component_is_safe(share)
+                {
+                    return false;
+                }
+            }
+            _ => return false,
+        },
+        _ => return false,
+    }
+    components.all(|component| match component {
+        Component::RootDir => true,
+        Component::Normal(component) => windows_ordinary_component_is_safe(component),
+        _ => false,
+    })
+}
+
+#[cfg(windows)]
 fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    strip_windows_verbatim_prefix_with_budget(path, 0)
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix_with_budget(
+    path: PathBuf,
+    additional_utf16_units: usize,
+) -> PathBuf {
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 
+    // Rust's Windows path layer switches ordinary absolute paths back to verbatim
+    // spelling at this legacy directory-path threshold. Leave room for the NUL
+    // terminator and for any downstream path expansion supplied by the caller.
+    const LEGACY_MAX_PATH_UTF16: usize = 248;
     const SLASH: u16 = b'\\' as u16;
     const VERBATIM: [u16; 4] = [SLASH, SLASH, b'?' as u16, SLASH];
     const VERBATIM_UNC: [u16; 8] = [
@@ -63,12 +179,25 @@ fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
         SLASH,
     ];
 
+    if !windows_verbatim_components_are_ordinary_safe(&path) {
+        return path;
+    }
+
+    let fits_ordinary_io = |ordinary_units: usize| {
+        ordinary_units
+            .checked_add(additional_utf16_units)
+            .and_then(|units| units.checked_add(1))
+            .is_some_and(|units_with_nul| units_with_nul < LEGACY_MAX_PATH_UTF16)
+    };
     let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     if wide.starts_with(&VERBATIM_UNC) {
         let mut ordinary = Vec::with_capacity(wide.len() - VERBATIM_UNC.len() + 2);
         ordinary.extend_from_slice(&[SLASH, SLASH]);
         ordinary.extend_from_slice(&wide[VERBATIM_UNC.len()..]);
-        return PathBuf::from(OsString::from_wide(&ordinary));
+        if fits_ordinary_io(ordinary.len()) {
+            return PathBuf::from(OsString::from_wide(&ordinary));
+        }
+        return path;
     }
     if wide.starts_with(&VERBATIM)
         && wide.get(5) == Some(&(b':' as u16))
@@ -76,7 +205,10 @@ fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
             .get(4)
             .is_some_and(|letter| matches!(*letter, 65..=90 | 97..=122))
     {
-        return PathBuf::from(OsString::from_wide(&wide[VERBATIM.len()..]));
+        let ordinary = &wide[VERBATIM.len()..];
+        if fits_ordinary_io(ordinary.len()) {
+            return PathBuf::from(OsString::from_wide(ordinary));
+        }
     }
     path
 }
@@ -406,6 +538,9 @@ fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, Str
 fn canonical_path_starts_with(path: &Path, root: &Path) -> bool {
     #[cfg(windows)]
     {
+        if path.starts_with(root) {
+            return true;
+        }
         let path = strip_windows_verbatim_prefix(path.to_path_buf());
         let root = strip_windows_verbatim_prefix(root.to_path_buf());
         path.starts_with(root)
@@ -424,7 +559,8 @@ fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
     }
     let canonical = canonicalize_mcp_path(Path::new(raw))
         .map_err(|error| format!("경로를 확인할 수 없습니다: {raw} ({error})"))?;
-    under_any_root(ctx, &canonical, raw)
+    let authorized = under_any_root(ctx, &canonical, raw)?;
+    Ok(sandbox_compatible_mcp_path(&authorized))
 }
 
 /// Write-path validation: rejects `..` components and a missing file name, then
@@ -461,7 +597,8 @@ fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
         })?;
         canonical_parent.join(file_name)
     };
-    under_any_root(ctx, &resolved, raw)
+    let authorized = under_any_root(ctx, &resolved, raw)?;
+    Ok(sandbox_compatible_mcp_write_path(&authorized))
 }
 
 fn font_dirs_for(args: &Value, ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
@@ -1898,11 +2035,103 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_mcp_root_check_accepts_equivalent_verbatim_spelling() {
+    fn windows_mcp_paths_retain_verbatim_spelling_when_semantics_can_change() {
+        for raw in [
+            r"\\?\C:\root.\document.hwpx",
+            r"\\?\C:\root \document.hwpx",
+            r"\\?\C:\NUL\document.hwpx",
+            r"\\?\C:\CON.txt\document.hwpx",
+            r"\\?\C:\COM1\document.hwpx",
+            r"\\?\C:\LPT9.log\document.hwpx",
+            r"\\?\UNC\server\share.\document.hwpx",
+        ] {
+            let path = PathBuf::from(raw);
+            assert_eq!(strip_windows_verbatim_prefix(path.clone()), path, "{raw}");
+        }
+
+        let long = PathBuf::from(format!(r"\\?\C:\{}", "a".repeat(260)));
+        assert_eq!(strip_windows_verbatim_prefix(long.clone()), long);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mcp_paths_reserve_ordinary_length_for_atomic_staging() {
+        let below_direct_limit = PathBuf::from(format!(r"\\?\C:\{}", "a".repeat(243)));
+        assert_ne!(
+            strip_windows_verbatim_prefix(below_direct_limit.clone()),
+            below_direct_limit
+        );
+        let at_direct_limit = PathBuf::from(format!(r"\\?\C:\{}", "a".repeat(244)));
+        assert_eq!(
+            strip_windows_verbatim_prefix(at_direct_limit.clone()),
+            at_direct_limit
+        );
+
+        let below_write_limit = PathBuf::from(format!(r"\\?\C:\{}\x", "a".repeat(140)));
+        assert_ne!(
+            sandbox_compatible_mcp_write_path(&below_write_limit),
+            below_write_limit
+        );
+        let at_write_limit = PathBuf::from(format!(r"\\?\C:\{}\x", "a".repeat(141)));
+        assert_eq!(
+            sandbox_compatible_mcp_write_path(&at_write_limit),
+            at_write_limit
+        );
+
+        let long_filename_output = PathBuf::from(format!(r"\\?\C:\{}\out.hwpx", "a".repeat(180)));
+        assert_ne!(
+            strip_windows_verbatim_prefix(long_filename_output.clone()),
+            long_filename_output
+        );
+        assert_eq!(
+            sandbox_compatible_mcp_write_path(&long_filename_output),
+            long_filename_output
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mcp_root_check_accepts_only_semantically_equivalent_spellings() {
         assert!(canonical_path_starts_with(
             Path::new(r"C:\Temp\workspace\document.hwpx"),
             Path::new(r"\\?\C:\Temp\workspace")
         ));
+        assert!(!canonical_path_starts_with(
+            Path::new(r"C:\root\document.hwpx"),
+            Path::new(r"\\?\C:\root.")
+        ));
+        assert!(canonical_path_starts_with(
+            Path::new(r"\\?\C:\root.\document.hwpx"),
+            Path::new(r"\\?\C:\root.")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_mcp_roots_keep_canonical_identity_for_downstream_checks() {
+        let base =
+            std::env::temp_dir().join(format!("hwp-cli-mcp-canonical-root-{}", std::process::id()));
+        let root = base.join("root");
+        let document = root.join("document.hwpx");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&document, b"test").unwrap();
+
+        let canonical_root = canonicalize_mcp_path(&root).unwrap();
+        let canonical_document = std::fs::canonicalize(&document).unwrap();
+        assert!(canonical_document.starts_with(&canonical_root));
+
+        let ctx = ctx_with_roots(vec![canonical_root.clone()]);
+        assert_eq!(
+            checked_read_path(&ctx, document.to_str().unwrap()).unwrap(),
+            strip_windows_verbatim_prefix(canonical_document)
+        );
+
+        let unsafe_output = canonical_root.join("report.hwpx.");
+        assert_eq!(
+            checked_write_path(&ctx, unsafe_output.to_str().unwrap()).unwrap(),
+            unsafe_output
+        );
+        let _ = std::fs::remove_dir_all(base);
     }
 
     fn ctx() -> Ctx {
@@ -2478,7 +2707,7 @@ mod tests {
         std::fs::write(&outside_png, &png).unwrap();
         // Markdown link destinations treat `\` as an escape — forward slashes (Windows CI).
         let outside_ref = outside_png.display().to_string().replace('\\', "/");
-        let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let sandbox = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
 
         // hwp_new: markdown referencing an absolute image outside the roots fails closed.
         let new_out = root.join("new.hwpx");
@@ -2721,7 +2950,7 @@ mod tests {
         let (base, root, outside) = sandbox_dirs("read");
         let document = outside.join("doc.hwpx");
         create_hwpx(&document, "본문");
-        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let ctx = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         let error = tool_read(&json!({"path": document}), &ctx).unwrap_err();
         assert!(error.contains("--root"), "{error}");
         let _ = std::fs::remove_dir_all(&base);
@@ -2732,7 +2961,7 @@ mod tests {
         let (base, root, outside) = sandbox_dirs("write");
         let source = root.join("source.hwpx");
         create_hwpx(&source, "{{이름}}");
-        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let ctx = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         let output = outside.join("out.hwpx");
         let error = tool_fill(
             &json!({
@@ -2753,7 +2982,7 @@ mod tests {
         let (base, root, _outside) = sandbox_dirs("dotdot");
         let source = root.join("source.hwpx");
         create_hwpx(&source, "{{이름}}");
-        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let ctx = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         let error = tool_fill(
             &json!({
                 "input": source,
@@ -2777,7 +3006,7 @@ mod tests {
         std::fs::write(&victim, b"VICTIM").unwrap();
         let link = root.join("link.hwpx");
         std::os::unix::fs::symlink(&victim, &link).unwrap();
-        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let ctx = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         let error = tool_fill(
             &json!({
                 "input": source,
@@ -2798,7 +3027,7 @@ mod tests {
         let source = root.join("source.hwpx");
         create_hwpx(&source, "{{이름}}");
         let output = root.join("out.hwpx");
-        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let ctx = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         tool_fill(
             &json!({
                 "input": source,
@@ -2818,7 +3047,7 @@ mod tests {
         let (base, root, outside) = sandbox_dirs("fontdir");
         let source = root.join("source.hwpx");
         create_hwpx(&source, "본문");
-        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let ctx = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         let error = tool_render(&json!({"path": source, "font_dir": outside}), &ctx).unwrap_err();
         assert!(error.contains("--root"), "{error}");
         let _ = std::fs::remove_dir_all(&base);
@@ -2831,7 +3060,7 @@ mod tests {
         create_hwpx(&source, "앵커");
         let image = outside.join("image.png");
         std::fs::write(&image, b"PNG").unwrap();
-        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let ctx = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         let error = tool_edit(
             &json!({
                 "input": source,
@@ -3439,7 +3668,7 @@ mod tests {
         let (base, root, outside) = sandbox_dirs("convert-media");
         let source = root.join("source.hwpx");
         create_hwpx(&source, "본문");
-        let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+        let sandbox = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
         let error = convert_request(
             &json!({
                 "input": source,

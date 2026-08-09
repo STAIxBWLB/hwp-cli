@@ -26,7 +26,7 @@ Quick 릴리스에 따라 UI 이름과 내부 파일명이 바뀔 수 있다. Qu
 ## 1. 최신 `hwp.exe` 하나 설치하고 확인
 
 [최신 릴리스](https://github.com/STAIxBWLB/hwp-cli/releases)에서 Windows x86_64 아카이브와
-`.sha256` 파일을 받는다.
+`.sha256` 파일을 받는다. Amazon Quick Windows 경로 정규화에는 hwp-cli v0.8.2 이상이 필요하다.
 
 - `hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`
 - `hwp-vX.Y.Z-x86_64-pc-windows-msvc.sha256`
@@ -35,7 +35,8 @@ Quick 릴리스에 따라 UI 이름과 내부 파일명이 바뀔 수 있다. Qu
 
 ```powershell
 $Archive = "C:\path\to\hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip"
-$Expected = ((Get-Content -LiteralPath "$Archive.sha256") -split '\s+')[0].ToLowerInvariant()
+$Checksum = [IO.Path]::ChangeExtension($Archive, ".sha256")
+$Expected = ((Get-Content -LiteralPath $Checksum) -split '\s+')[0].ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Actual -ne $Expected) { throw "hwp archive checksum mismatch" }
 ```
@@ -57,7 +58,7 @@ $Hwp = "C:\absolute\path\to\hwp.exe"
 
 Quick에도 이 경로를 그대로 입력한다. 다른 터미널의 PATH에 의존하면 Quick이 남아 있는 구버전을
 실행할 수 있다. 첫 파일 쓰기가 `\\?\C:\...` 같은 Windows verbatim 경로와 함께 계속 실패하면
-Amazon Quick Windows canonical-path 정규화 수정이 포함된 릴리스로 업그레이드한다.
+`hwp --version`이 v0.8.2 이상인지 확인한다.
 
 ## 2. Windows 교환 root 만들기
 

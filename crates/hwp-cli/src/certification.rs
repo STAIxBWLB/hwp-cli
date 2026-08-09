@@ -34,6 +34,9 @@ pub const MAX_PUBLISHED_TREE_ENTRIES: usize = MAX_MANIFEST_FILES + 1;
 /// reports still use the exact 257/258/259 limits above.
 pub const MAX_ARTIFACTS: usize = 260;
 pub const MAX_ARTIFACT_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+/// Maximum UTF-16 path expansion beyond the requested report destination for
+/// the private certification workspace and its deepest fixed artifact path.
+pub const WINDOWS_CERTIFICATION_TREE_OVERHEAD_UTF16: usize = 101;
 pub const ORACLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_ORACLE_RESULT_BYTES: u64 = 64 * 1024;
 const MAX_LOG_BYTES_RECORDED: u64 = 64 * 1024;
@@ -2691,6 +2694,79 @@ fn build_artifact_manifest(files: &[ArtifactReport], files_total: u64) -> Result
     anyhow::bail!("manifest self-size did not converge")
 }
 
+#[cfg(windows)]
+fn exact_ordinary_spelling(canonical: &Path) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+
+    const SLASH: u16 = b'\\' as u16;
+    const VERBATIM: [u16; 4] = [SLASH, SLASH, b'?' as u16, SLASH];
+    const VERBATIM_UNC: [u16; 8] = [
+        SLASH,
+        SLASH,
+        b'?' as u16,
+        SLASH,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        SLASH,
+    ];
+
+    let wide: Vec<u16> = canonical.as_os_str().encode_wide().collect();
+    if wide.starts_with(&VERBATIM_UNC) {
+        let mut ordinary = Vec::with_capacity(wide.len() - VERBATIM_UNC.len() + 2);
+        ordinary.extend_from_slice(&[SLASH, SLASH]);
+        ordinary.extend_from_slice(&wide[VERBATIM_UNC.len()..]);
+        return Some(PathBuf::from(OsString::from_wide(&ordinary)));
+    }
+    if wide.starts_with(&VERBATIM)
+        && wide.get(5) == Some(&(b':' as u16))
+        && wide
+            .get(4)
+            .is_some_and(|letter| matches!(*letter, 65..=90 | 97..=122))
+    {
+        return Some(PathBuf::from(OsString::from_wide(&wide[VERBATIM.len()..])));
+    }
+    None
+}
+
+#[cfg(windows)]
+fn can_preserve_ordinary_certification_parent(
+    requested_parent: &Path,
+    canonical_parent: &Path,
+    report_name: &std::ffi::OsStr,
+) -> bool {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    const LEGACY_MAX_PATH_UTF16: usize = 248;
+    if !requested_parent.is_absolute()
+        || exact_ordinary_spelling(canonical_parent).as_deref() != Some(requested_parent)
+    {
+        return false;
+    }
+    let same_identity = matches!(
+        (
+            windows_path_info(requested_parent),
+            windows_path_info(canonical_parent)
+        ),
+        (Some(requested), Some(canonical))
+            if requested.volume == canonical.volume && requested.index == canonical.index
+    );
+    if !same_identity {
+        return false;
+    }
+
+    requested_parent
+        .as_os_str()
+        .encode_wide()
+        .count()
+        .checked_add(1)
+        .and_then(|units| units.checked_add(report_name.encode_wide().count()))
+        .and_then(|units| units.checked_add(WINDOWS_CERTIFICATION_TREE_OVERHEAD_UTF16))
+        .and_then(|units| units.checked_add(1))
+        .is_some_and(|units_with_nul| units_with_nul < LEGACY_MAX_PATH_UTF16)
+}
+
 struct AtomicCertificationDir {
     root: PathBuf,
     destination: PathBuf,
@@ -2708,12 +2784,28 @@ impl AtomicCertificationDir {
             .filter(|name| !name.is_empty())
             .context("report directory needs a final component")?;
         let requested_parent = destination.parent().unwrap_or_else(|| Path::new("."));
-        let parent = requested_parent
+        let canonical_parent = requested_parent
             .canonicalize()
             .context("report parent directory is unavailable")?;
-        if !fs::metadata(&parent)?.is_dir() {
+        if !fs::metadata(&canonical_parent)?.is_dir() {
             anyhow::bail!("report parent is not a directory");
         }
+        #[cfg(windows)]
+        let parent = if can_preserve_ordinary_certification_parent(
+            requested_parent,
+            &canonical_parent,
+            name,
+        ) {
+            // MCP may already have selected an ordinary Win32 spelling that stays
+            // below the legacy path threshold. Preserve it only when it is exactly
+            // the canonical path without its verbatim prefix and handle identity
+            // proves the final directory did not change.
+            requested_parent.to_path_buf()
+        } else {
+            canonical_parent
+        };
+        #[cfg(not(windows))]
+        let parent = canonical_parent;
         let destination = parent.join(name);
         if fs::symlink_metadata(&destination).is_ok() {
             anyhow::bail!("certification report directory must not already exist");
@@ -3961,6 +4053,35 @@ mod tests {
         ));
         let _ = fs::remove_file(&path);
         path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_parent_ordinary_spelling_does_not_accept_ancestor_aliases() {
+        let canonical = Path::new(r"\\?\C:\target\child");
+        assert_eq!(
+            exact_ordinary_spelling(canonical).unwrap(),
+            PathBuf::from(r"C:\target\child")
+        );
+        assert_ne!(
+            exact_ordinary_spelling(canonical).unwrap(),
+            PathBuf::from(r"C:\base\junction\child")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_certification_preserves_verified_ordinary_parent_spelling() {
+        let parent = scratch("ordinary-parent");
+        fs::create_dir_all(&parent).unwrap();
+        let destination = parent.join("report");
+
+        let stage = AtomicCertificationDir::new(&destination).unwrap();
+        assert_eq!(stage.parent, parent);
+        assert!(stage.root.starts_with(&stage.parent));
+        assert_eq!(stage.destination, destination);
+        drop(stage);
+        fs::remove_dir_all(parent).unwrap();
     }
 
     /// 하드링크 별칭 판정. Windows에서는 링크 수를 핸들에서만 읽을 수 있어 구현이 갈리므로
