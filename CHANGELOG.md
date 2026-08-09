@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.8.4]
+
 **Fixed**
 
 - Amazon Quick Desktop Windows guidance now uses a dedicated
