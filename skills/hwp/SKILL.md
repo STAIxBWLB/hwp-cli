@@ -108,18 +108,27 @@ directory — to the given directories. Roots are canonicalized at startup; a mi
 unreadable root fails fast. Without any `--root` the server is unrestricted and prints a
 one-line warning to stderr at startup — prefer `--root` whenever the client allows it.
 
-Amazon Quick Desktop on Windows runs local MCP children inside its sandbox. Use the special
-writable exchange root `C:\TEMP` and `C:\Windows\Fonts`, with separate JSON arguments:
-`["mcp", "--font-dir", "C:\\Windows\\Fonts", "--root", "C:\\TEMP"]`. A folder added to
-Quick's local-folder permissions may still be unreadable to the MCP child. If a user-profile
-root fails with `Access is denied (os error 5)`, keep the root restriction, change it to
-`C:\TEMP`, and re-enable the connector after Quick auto-disables it. Keep all MCP inputs and
-outputs under that root and use Quick's file tools to copy artifacts into and out of it.
+Amazon Quick Desktop on Windows starts local MCP children at Low mandatory integrity
+(`S-1-16-4096`). Use a dedicated child of the Windows `LocalLow` directory and
+`C:\Windows\Fonts`, with separate JSON arguments:
+`["mcp", "--font-dir", "C:\\Windows\\Fonts", "--root",
+"C:\\Users\\YOUR_NAME\\AppData\\LocalLow\\hwp-quick-workspace"]`. Replace `YOUR_NAME`
+with the actual account folder before configuring Quick or calling a tool; neither the argument
+list nor MCP paths expand `%USERPROFILE%`. Create the root under `AppData\LocalLow` so it inherits
+the Low mandatory label. Do not use ordinary `C:\TEMP` or `%LOCALAPPDATA%\Temp` as a write root:
+discovery may work there while `hwp_new` fails to create its private staging directory with
+`Access is denied (os error 5)`.
+
+A folder added to Quick's local-folder permissions is available to its built-in read/search tools
+but does not become writable by the Low-integrity MCP child. Keep all MCP inputs and outputs under
+the configured `LocalLow` root, use Quick's file tools or Explorer to copy artifacts into and out
+of it, and re-enable the connector if repeated startup failures caused Quick to auto-disable it.
 
 When helping someone configure Quick, prefer JSON import and never put shell quote characters
 inside an argument. Verify three layers in order: the exact absolute binary returns a version;
 Quick reports 16 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
-succeeds on `C:\TEMP\quick-hwp-smoke.hwpx`. Do not claim that discovery alone proves file access.
+succeeds on the absolute `LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx` path. Do not claim
+that discovery alone proves file access.
 After a connector edit, refresh or start a new chat instead of reusing an old generated tool prefix.
 The copy-paste operator and AI runbook is:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
