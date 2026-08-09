@@ -53,3 +53,15 @@ jsonschema = { version = "0.33", default-features = false }
 
 [profile.release]
 lto = "thin"
+
+# Keep dev/test renders fast: these crates do the hot outline parsing and path filling, and
+# unoptimized builds of them are ~100x slower on CFF-outline fonts (the CFF Noto CJK faces
+# once made the ubuntu CI test step take 15 minutes). Release binaries are unaffected.
+[profile.dev.package.ttf-parser]
+opt-level = 2
+[profile.dev.package.rustybuzz]
+opt-level = 2
+[profile.dev.package.tiny-skia]
+opt-level = 2
+[profile.dev.package.tiny-skia-path]
+opt-level = 2

@@ -1,64 +1,91 @@
 name: Release
 
-# vX.Y.Z 태그를 푸시하면: (1) 테스트 통과 (2) 태그↔Cargo.toml 버전 일치 를 확인한
-# 뒤에만, 플랫폼별 `hwp` 바이너리를 빌드해 GitHub Release(아카이브 + sha256)로 게시한다.
-# 릴리스 절차: scripts/release.sh X.Y.Z  →  git push origin main && git push origin vX.Y.Z
+# Pushing a vX.Y.Z tag publishes platform `hwp` binaries to a GitHub Release (archive +
+# sha256) only after (1) the tagged commit already has a green CI run and (2) the tag
+# matches the Cargo.toml version.
+# Release flow: scripts/release.sh X.Y.Z  ->  git push origin main && git push origin vX.Y.Z
 on:
   push:
-    # glob 패턴(정규식 아님) — 멀티자리/프리릴리스 모두 매칭(v10.2.3, v0.2.0-rc1).
-    # 정확한 버전 검증은 아래 verify-version 잡이 담당한다.
+    # glob pattern (not regex) — matches multi-digit and prerelease tags (v10.2.3, v0.2.0-rc1).
+    # Exact version verification is the verify-version job's job.
     tags: ["v*.*.*"]
 
 permissions:
   contents: write
   pull-requests: write
+  checks: read # verify-ci reads the tagged commit's check runs
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # 테스트 통과 게이트 — ci.yml 의 fmt/clippy/test 잡을 그대로 재사용(단일 진실).
-  test:
-    uses: ./.github/workflows/ci.yml
+  # Pass gate: the tagged commit must already have a green CI run (ci.yml runs on every
+  # main push, and release.sh always tags main HEAD). Re-running the whole matrix here
+  # duplicated ~25 runner-minutes per release; reading the check-runs API gives the same
+  # guarantee. The job names below must stay in sync with ci.yml.
+  verify-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tagged commit has green CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected=("lint" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100")"
+          failed=0
+          for name in "${expected[@]}"; do
+            conclusion="$(jq -r --arg n "$name" \
+              '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1].conclusion // "absent"' \
+              <<<"$runs")"
+            echo "$name: $conclusion"
+            [ "$conclusion" = "success" ] || failed=1
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::Tagged commit $GITHUB_SHA has no green CI. Let the CI workflow pass on main, then re-run this workflow."
+            exit 1
+          fi
 
-  # 버전 관리 게이트 — 태그가 Cargo.toml [workspace.package] version 과 일치해야 릴리스.
+  # Version gate — the tag must match the Cargo.toml [workspace.package] version.
   verify-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 태그 ↔ Cargo.toml 버전 일치 확인
+      - name: Tag matches Cargo.toml version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           ver=$(awk '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[[:space:]]*=/{sub(/^version[[:space:]]*=[[:space:]]*"/,"");sub(/".*/,"");print;exit}' Cargo.toml)
           echo "tag=$tag  Cargo.toml=$ver"
           if [ "$tag" != "$ver" ]; then
-            echo "::error::태그 v$tag 가 Cargo.toml [workspace.package] version=$ver 와 불일치. scripts/release.sh 로 버전 bump 후 태깅하세요."
+            echo "::error::tag v$tag does not match Cargo.toml [workspace.package] version=$ver. Bump the version with scripts/release.sh before tagging."
             exit 1
           fi
 
-  # 릴리스 셸 생성(커밋/PR 기반 자동 노트) — 한 번만. 이미 있으면 건너뜀(재실행 안전).
+  # Create the release shell once (notes come from the CHANGELOG section). Skipped if it
+  # already exists (rerun-safe).
   create-release:
-    needs: [test, verify-version]
+    needs: [verify-ci, verify-version]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: GitHub Release 생성
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 릴리스 본문은 CHANGELOG.md의 해당 버전 절(한/영 병기)을 그대로 쓴다.
-          # 절이 없으면 스크립트가 실패하므로, 릴리스 전에 CHANGELOG 갱신을 강제한다.
+          # The release body is the version's CHANGELOG.md section (bilingual) verbatim.
+          # The script fails when the section is missing, which forces a CHANGELOG update
+          # before any release.
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             bash scripts/release_notes.sh "$GITHUB_REF_NAME" > /tmp/release-notes.md
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
               --notes-file /tmp/release-notes.md --verify-tag
           fi
 
-  # 플랫폼별 `hwp` 바이너리 빌드 → 아카이브(tar.gz/zip) + sha256 을 릴리스에 업로드.
+  # Build platform `hwp` binaries -> upload archives (tar.gz/zip) + sha256 to the release.
   upload-assets:
     needs: create-release
     strategy:
-      fail-fast: false # 한 타깃 실패가 다른 타깃을 취소하지 않게
+      fail-fast: false # one target's failure must not cancel the others
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -72,7 +99,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # 릴리스 바이너리는 stable 로 빌드(최신 최적화). MSRV 호환은 test 잡이 이미 보장.
+      # Release binaries build on stable (latest optimizations); MSRV compatibility is
+      # already guaranteed by CI, which builds and tests on the pinned MSRV toolchain.
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/upload-rust-binary-action@v1
         with:

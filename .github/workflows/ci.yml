@@ -5,7 +5,7 @@ name: CI
 # because they ARE build/test inputs: skills/hwp/SKILL.md (include_str! into the binary) and
 # docs/manual/cli-reference{,.ko}.md (compared byte-for-byte by tests/cli_reference.rs).
 # The same list must be kept identical under push and pull_request (GitHub Actions does not
-# support YAML anchors). workflow_call (release gate) is unaffected by path filters.
+# support YAML anchors).
 on:
   push:
     branches: [main]
@@ -24,19 +24,48 @@ on:
       - "skills/hwp/SKILL.md"
       - "docs/manual/cli-reference.md"
       - "docs/manual/cli-reference.ko.md"
-  # release.yml reuses this test job as the pass gate before a tag release.
-  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
 
-# 같은 브랜치에 새 push가 오면 이전 실행은 취소한다(낭비·지연 감소).
-# 단 main은 취소하지 않는다 — 연속 머지 시 커밋별 CI 신호(이등분 근거)를 보존.
+# A new push on the same branch cancels the previous run (less waste, less latency).
+# main is never cancelled — per-commit CI signal on consecutive merges is the bisect basis
+# (and the release gate reads it via the check-runs API).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# Gate layout: platform-independent checks run ONCE in `lint`; the 3-OS matrix in `test`
+# runs only cargo test. Same command set as scripts/check.sh (local mirror) plus the
+# structured-corpus gate — keep them in sync or "local green, CI red" drift comes back.
 jobs:
+  lint:
+    name: lint
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # MSRV pin (Cargo.toml rust-version): keeps rustfmt/clippy results deterministic
+      # (floating stable lets previously-passing code suddenly fail on version drift) and
+      # proves the declared minimum supported version actually builds.
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # The checks are independent: run all of them even after a failure so every result
+      # is reported in one run (fewer debug round-trips).
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # Fonts are not committed; the script fetches them from upstream and verifies
+      # manifest hashes.
+      - name: Structured document corpus (pinned OFL fonts, offline cargo)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/check-structured-corpus.sh
+
   test:
     name: test (${{ matrix.os }})
     timeout-minutes: 30
@@ -44,40 +73,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 셋 다 필수 게이트: ubuntu(CI 기준선) + macOS(소유자 주 사용 플랫폼) +
-          # windows(v0.5.0부터 MSVC 빌드·테스트 안정화, 릴리스 바이너리도 여기서 나온다).
+          # All three are required gates: ubuntu (CI baseline) + macOS (owner's main
+          # platform) + windows (MSVC build/tests, and the release binaries come from here).
           - { os: ubuntu-latest }
           - { os: macos-latest }
           - { os: windows-latest }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      # 렌더 스모크 테스트는 시스템 CJK 글리프를 쓴다. 이 스텝이 빠지면 잉크 없는
-      # 페이지가 나와 크기 단언이 깨진다(코퍼스 게이트의 고정 폰트와는 별개).
-      - name: 한국어 폰트 설치 (렌더링 테스트용)
+      # Render smoke tests need a system Korean font. fonts-nanum ships glyf-outline TTFs;
+      # the CFF-based fonts-noto-cjk made debug-build outline extraction ~100x slower
+      # (that alone was a 15-minute ubuntu test step).
+      - name: Install Korean fonts (for rendering tests)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
-      # MSRV(Cargo.toml rust-version)로 고정 — rustfmt/clippy 결과를 결정적으로
-      # 만들고(stable 부동 시 버전 드리프트로 통과하던 코드가 갑자기 실패), 선언한
-      # 최소 지원 버전에서 실제로 빌드되는지 보장한다.
+        run: sudo apt-get update && sudo apt-get install -y fonts-nanum
       - uses: dtolnay/rust-toolchain@1.93.0
-        with:
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # 세 검사는 서로 독립이므로 앞 단계가 실패해도 모두 실행해 한 번에 보고한다
-      # (fmt 실패가 clippy/test 실패를 가리지 않게 — 디버깅 왕복 감소).
-      # 아래 4개 게이트는 scripts/check.sh(로컬 미러)와 함께 유지한다.
-      # 한쪽만 바꾸면 "로컬 green, CI red" 드리프트가 재발한다.
-      - name: 포맷 검사
-        run: cargo fmt --all --check
-      - name: Clippy
-        if: ${{ !cancelled() }}
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: 테스트
-        if: ${{ !cancelled() }}
+      - name: Test
         run: cargo test --workspace
-      # 폰트는 커밋하지 않고 스크립트가 upstream에서 받아 manifest hash로 검증한다.
-      - name: 구조 문서 코퍼스 (명시 OFL 폰트, offline cargo)
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: bash scripts/check-structured-corpus.sh
