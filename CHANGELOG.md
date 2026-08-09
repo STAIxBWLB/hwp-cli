@@ -10,6 +10,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.8.3]
+
+**Fixed**
+
+- CI no longer re-runs platform-independent gates on every OS, nor the whole test matrix on
+  every tag: `ci.yml` runs fmt, clippy, and the structured-corpus gate once in an ubuntu `lint`
+  job and only `cargo test --workspace` in the 3-OS `test` matrix, and `release.yml` verifies the
+  tagged commit's already-green CI via the check-runs API instead of re-running it. The ubuntu
+  test step also drops from ~15 minutes to ~2: render tests now resolve glyf-outline Nanum TTFs
+  instead of CFF Noto CJK fonts, and the dev profile builds ttf-parser/rustybuzz/tiny-skia with
+  opt-level 2 (release binaries unaffected).
+
 ## [0.8.2]
 
 **Added**
