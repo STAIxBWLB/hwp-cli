@@ -1,9 +1,29 @@
 name: CI
 
+# Path filter: documentation-only and formula-only changes skip CI entirely — no Rust
+# input changes, so fmt/clippy/test outcomes cannot change. Three .md files are re-included
+# because they ARE build/test inputs: skills/hwp/SKILL.md (include_str! into the binary) and
+# docs/manual/cli-reference{,.ko}.md (compared byte-for-byte by tests/cli_reference.rs).
+# The same list must be kept identical under push and pull_request (GitHub Actions does not
+# support YAML anchors). workflow_call (release gate) is unaffected by path filters.
 on:
   push:
     branches: [main]
+    paths:
+      - "**"
+      - "!**.md"
+      - "!Formula/**"
+      - "skills/hwp/SKILL.md"
+      - "docs/manual/cli-reference.md"
+      - "docs/manual/cli-reference.ko.md"
   pull_request:
+    paths:
+      - "**"
+      - "!**.md"
+      - "!Formula/**"
+      - "skills/hwp/SKILL.md"
+      - "docs/manual/cli-reference.md"
+      - "docs/manual/cli-reference.ko.md"
   # release.yml 이 태그 릴리스 전에 이 test 잡을 재사용(테스트 통과 게이트)한다.
   workflow_call:
 
