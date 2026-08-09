@@ -101,6 +101,10 @@ Amazon Quick Desktop은 `hwp mcp`를 로컬 stdio 커넥터로 실행할 수 있
 모두 노출되는 연결을 실기 확인했다. Quick 릴리스에 따라 UI 이름은 달라질 수 있으며 아래 명칭은
 현재 Desktop 흐름 기준이다.
 
+바이너리 검증, 에이전트 지침, 실제 생성·검증 smoke test, 증상별 복구까지 포함한 Windows 중심
+복사·실행 절차는 전용 [Amazon Quick Desktop 가이드](amazon-quick-desktop.ko.md)를 사용한다. 아래
+요약은 다른 AI 클라이언트와 비교하기 위한 짧은 레퍼런스로 유지한다.
+
 ### 1. 최신 바이너리 하나로 정리
 
 커넥터에는 실행 파일 절대 경로를 넣는다. Quick의 PATH 앞쪽에 남은 구버전을 실행하는 문제를

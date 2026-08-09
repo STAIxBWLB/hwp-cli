@@ -102,6 +102,11 @@ Amazon Quick Desktop can launch `hwp mcp` as a local stdio connector. The connec
 verified with all 16 HWP tools available. Quick UI labels may change between releases; the
 following names match the current Desktop flow.
 
+For a Windows-first, copy-paste procedure that includes binary verification, agent instructions,
+an actual create/validate smoke test, and symptom-based recovery, use the dedicated
+[Amazon Quick Desktop runbook](amazon-quick-desktop.md). The shorter reference below is retained for
+cross-client comparison.
+
 ### 1. Verify one current binary
 
 Use an absolute executable path in the connector. This prevents a stale installation earlier in

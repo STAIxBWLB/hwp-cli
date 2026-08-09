@@ -344,6 +344,8 @@ hwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
 클라이언트별 설정(Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai 스킬 업로드,
 Amazon Quick Desktop)과 번들 에이전트 스킬(`hwp skill export`):
 [docs/manual/ai-integrations.ko.md](docs/manual/ai-integrations.ko.md).
+Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
+[Amazon Quick Desktop 가이드](docs/manual/amazon-quick-desktop.ko.md)에 정리했다.
 
 Amazon Quick Desktop은 로컬 stdio 서버를 실행해 16개 도구를 모두 노출할 수 있다. publish-safe
 스킬은 활성 프로필에 다음과 같이 설치한다.
@@ -354,7 +356,7 @@ hwp skill export --install amazon-quick
 
 Windows에서는 Quick 샌드박스가 쓸 수 있는 `C:\TEMP` 교환 디렉터리를 MCP `--root`로 사용한다.
 Quick의 로컬 폴더 권한에 추가한 사용자 프로필 폴더도 로컬 MCP 자식 프로세스에는 접근 불가할 수
-있다. 플랫폼별 JSON과 복구 절차는 연동 매뉴얼에 정리했다.
+있다. 전용 가이드의 import JSON과 복구 절차를 따른다.
 
 Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 인증된 Streamable HTTP, tenant 격리,
 artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)에

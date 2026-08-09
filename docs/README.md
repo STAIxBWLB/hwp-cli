@@ -11,6 +11,7 @@ Notes on the HWP 5.0 format specification material used when working on the pars
 | [design/](design/) | The design knowledge of record. Start at [00-overview](design/00-overview.md) |
 | [manual/cli-reference.md](manual/cli-reference.md) | CLI reference generated from the clap definitions (do not edit by hand) |
 | [manual/ai-integrations.md](manual/ai-integrations.md) | AI client setup: MCP registration, the agent skill, the claude.ai bundle |
+| [manual/amazon-quick-desktop.md](manual/amazon-quick-desktop.md) | Amazon Quick Desktop setup, end-to-end verification, agent instructions, and troubleshooting |
 | [release-readiness.md](release-readiness.md) | Pre-release gate checklist |
 | [hancom-verification-checklist.md](hancom-verification-checklist.md) | Checklist for verifying files in Hancom Office |
 

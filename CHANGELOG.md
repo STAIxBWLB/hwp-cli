@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- A bilingual, copy-paste Amazon Quick Desktop runbook now covers Windows binary verification,
+  connector import, skill and agent setup, an end-to-end create/validate smoke test, daily file
+  staging, and symptom-driven recovery for quoting, stale tool IDs, auto-disable, rendering, and
+  sandbox path failures.
+
 **Fixed**
 
 - Amazon Quick Desktop on Windows: normalize canonical MCP paths back to ordinary drive/UNC

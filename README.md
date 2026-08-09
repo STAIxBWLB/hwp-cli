@@ -373,6 +373,9 @@ the latest supported version. stdout carries the protocol; logs go to stderr.
 Per-client setup (Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai skill upload,
 and Amazon Quick Desktop) and the bundled agent skill (`hwp skill export`):
 [docs/manual/ai-integrations.md](docs/manual/ai-integrations.md).
+The copy-paste Windows setup, create/validate acceptance test, reusable agent instructions, and
+symptom-driven recovery are in the dedicated
+[Amazon Quick Desktop runbook](docs/manual/amazon-quick-desktop.md).
 
 Amazon Quick Desktop can launch this local stdio server and expose all 16 tools. Install the
 publish-safe skill into its active profile with:
@@ -383,7 +386,7 @@ hwp skill export --install amazon-quick
 
 On Windows, use Quick's sandbox-writable `C:\TEMP` exchange directory as the MCP `--root`.
 A user-profile folder added to Quick's local-folder permissions may still be inaccessible to the
-local MCP child; the platform-specific JSON and recovery steps are in the integration manual.
+local MCP child; use the dedicated runbook's import JSON and recovery steps.
 
 Amazon Quick Web cannot launch a local stdio process. Authenticated Streamable HTTP, tenant
 isolation and artifact transfer are specified for future work in
