@@ -315,6 +315,16 @@ pub const KO: &[(&str, &str, &str)] = &[
         "tolerance",
         "채널 차이 허용 오차 (이하면 동일 취급)",
     ),
+    (
+        "diff",
+        "format",
+        "리포트 출력 형식 (json = 기계 판독, parity 배치 러너용)",
+    ),
+    (
+        "diff",
+        "ours_png",
+        "문서 렌더 대신 이 래스터(우리 PDF의 pdftoppm 결과)를 --ref와 비교; 입력 경로는 리포트 기록용",
+    ),
     // edit
     (
         "edit",

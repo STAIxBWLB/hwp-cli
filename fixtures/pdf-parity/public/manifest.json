@@ -1,0 +1,15 @@
+{
+  "contract": "hwp-pdf-parity-manifest-v1",
+  "pins": {
+    "hancom_build": "TODO-owner",
+    "windows_version": "TODO-owner",
+    "pdf_settings": "파일 → PDF로 저장하기 (기본 설정)",
+    "poppler_version": "TODO-owner",
+    "dpi": 150,
+    "fonts": {
+      "HCR Batang": "TODO-owner-sha256",
+      "HCR Dotum": "TODO-owner-sha256"
+    }
+  },
+  "cases": []
+}

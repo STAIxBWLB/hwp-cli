@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.local/schemas/pdf-parity-scorecard-v1.schema.json",
+  "title": "hwp PDF parity per-case scorecard v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "case",
+    "source",
+    "oracle",
+    "dpi",
+    "scored",
+    "unscored_reasons",
+    "pages",
+    "fonts",
+    "font_coverage",
+    "substitution_free",
+    "text",
+    "raster"
+  ],
+  "properties": {
+    "contract": { "const": "hwp-pdf-parity-scorecard-v1" },
+    "case": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
+    "source": { "$ref": "#/$defs/artifact" },
+    "oracle": { "$ref": "#/$defs/artifact" },
+    "dpi": { "const": 150 },
+    "scored": { "type": "boolean" },
+    "unscored_reasons": {
+      "type": "array",
+      "items": { "enum": ["page_count_delta", "font_substitution"] },
+      "uniqueItems": true
+    },
+    "pages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ours", "oracle", "delta"],
+      "properties": {
+        "ours": { "type": "integer", "minimum": 0 },
+        "oracle": { "type": "integer", "minimum": 0 },
+        "delta": { "type": "integer" }
+      }
+    },
+    "fonts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ours", "oracle", "ours_all_embedded_subset_unicode"],
+      "properties": {
+        "ours": { "type": "array", "items": { "$ref": "#/$defs/font" } },
+        "oracle": { "type": "array", "items": { "$ref": "#/$defs/font" } },
+        "ours_all_embedded_subset_unicode": { "type": "boolean" }
+      }
+    },
+    "font_coverage": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["matched", "substituted", "missing", "subset_fallback", "substitution_free"],
+      "properties": {
+        "matched": { "type": "integer", "minimum": 0 },
+        "substituted": { "type": "integer", "minimum": 0 },
+        "missing": { "type": "integer", "minimum": 0 },
+        "subset_fallback": { "type": "integer", "minimum": 0 },
+        "substitution_free": { "type": "boolean" }
+      }
+    },
+    "substitution_free": { "type": "boolean" },
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pages_compared", "pages_equal", "first_diff_page"],
+      "properties": {
+        "pages_compared": { "type": "integer", "minimum": 0 },
+        "pages_equal": { "type": "integer", "minimum": 0 },
+        "first_diff_page": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "raster": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["page", "dx", "dy", "ink_ratio", "bad_pixel_pct", "mae"],
+        "properties": {
+          "page": { "type": "integer", "minimum": 1 },
+          "dx": { "type": "integer" },
+          "dy": { "type": "integer" },
+          "ink_ratio": { "type": "number", "minimum": 0 },
+          "bad_pixel_pct": { "type": "number", "minimum": 0, "maximum": 1 },
+          "mae": { "type": "number", "minimum": 0, "maximum": 255 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "font": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "embedded", "subset", "unicode"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 256 },
+        "type": { "type": "string", "maxLength": 64 },
+        "embedded": { "type": "boolean" },
+        "subset": { "type": "boolean" },
+        "unicode": { "type": "boolean" }
+      }
+    }
+  }
+}

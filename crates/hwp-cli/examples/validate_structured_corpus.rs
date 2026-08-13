@@ -25,8 +25,8 @@ fn read_json(path: &Path) -> anyhow::Result<serde_json::Value> {
 
 fn main() -> anyhow::Result<()> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 6 {
-        anyhow::bail!("expected exactly three schema/document path pairs")
+    if arguments.len() < 2 || arguments.len() % 2 != 0 {
+        anyhow::bail!("expected one or more schema/document path pairs")
     }
     for pair in arguments.chunks_exact(2) {
         let schema = read_json(Path::new(&pair[0]))?;
@@ -35,9 +35,12 @@ fn main() -> anyhow::Result<()> {
             .with_draft(jsonschema::Draft::Draft202012)
             .build(&schema)?;
         if !validator.is_valid(&document) {
-            anyhow::bail!("structured corpus JSON does not satisfy its closed schema")
+            anyhow::bail!(
+                "JSON does not satisfy its closed schema: {}",
+                Path::new(&pair[1]).display()
+            )
         }
     }
-    println!("structured corpus schemas: valid");
+    println!("JSON schemas: valid ({} pair(s))", arguments.len() / 2);
     Ok(())
 }

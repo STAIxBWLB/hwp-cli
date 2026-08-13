@@ -79,6 +79,12 @@ FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바�
 지표 4–5의 래스터화는 Hancom PDF와 자체 PDF 모두 같은 고정 Poppler(`pdftoppm -png -r 150`)를
 쓴다.
 
+**구현 상태 2026-08-13 (PR 4):** 배치 러너가 있다 — `scripts/pdf-parity.sh run`이 manifest의
+모든 케이스를 채점해 커밋 가능한 수치 점수판(`fixtures/pdf-parity/public/scoreboard/`,
+스키마 검증, 이름+SHA-256+수치뿐)을 만들고, `selftest`는 기준 없이 하네스를 검증하며,
+`hwp diff --format json` / `--ours-png`가 쪽별 래스터 지표 원천이다. 3~5건의 한글 기준
+내기와 첫 커밋 수치는 남은 소유자 액션.
+
 ## 4. 게이트
 
 ### 4.1 정본 한컴 오라클 게이트 — 향후 공개 코퍼스

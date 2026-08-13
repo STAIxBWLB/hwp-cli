@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.local/schemas/pdf-parity-manifest-v1.schema.json",
+  "title": "hwp PDF parity manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "pins", "cases"],
+  "properties": {
+    "contract": { "const": "hwp-pdf-parity-manifest-v1" },
+    "pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hancom_build",
+        "windows_version",
+        "pdf_settings",
+        "poppler_version",
+        "dpi",
+        "fonts"
+      ],
+      "properties": {
+        "hancom_build": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "windows_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "pdf_settings": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "poppler_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "dpi": { "const": 150 },
+        "fonts": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "source", "oracle"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
+          "source": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.(hwp|hwpx)$" },
+          "oracle": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.pdf$" }
+        }
+      }
+    }
+  }
+}

@@ -93,6 +93,8 @@ fn main() -> anyhow::Result<()> {
             out,
             font_dir,
             tolerance,
+            format,
+            ours_png,
         } => commands::diff::run(
             &input,
             &r#ref,
@@ -101,6 +103,8 @@ fn main() -> anyhow::Result<()> {
             out.as_deref(),
             font_dir,
             tolerance,
+            format,
+            ours_png.as_deref(),
         ),
         Cmd::Mcp { font_dir, root } => commands::mcp::run(font_dir, root),
         Cmd::Update {
