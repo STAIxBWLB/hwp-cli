@@ -2037,6 +2037,11 @@ fn canonical_document(
             attr |= u32::from(shape.is_superscript()) << 15;
             attr |= u32::from(shape.is_subscript()) << 16;
             attr |= u32::from(shape.strike) << 18;
+            // Preserve decoration bits overwritten by the new accessors: underline shape
+            // (4..=7), emphasis (21..=24), and strike shape (26..=29).
+            attr |= u32::from(shape.underline_shape_code()) << 4;
+            attr |= u32::from(shape.emphasis_kind()) << 21;
+            attr |= u32::from(shape.strike_shape_code()) << 26;
             attr |= ((shape.attr >> 25) & 1) << 25;
             attr |= ((shape.attr >> 30) & 1) << 30;
             shape.attr = attr;

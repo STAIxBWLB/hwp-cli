@@ -128,6 +128,45 @@ impl CharShape {
         self.underline_kind() == 1
     }
 
+    /// Returns whether the underline is above the text (`kind == 3`).
+    pub fn has_underline_above(&self) -> bool {
+        self.underline_kind() == 3
+    }
+
+    /// Returns the zero-based underline shape from bits 4..=7.
+    ///
+    /// Values follow hwplib's `BorderType2` ordering (HWP 5.0 revision 1.2,
+    /// table 35 family):
+    /// 0 Solid, 1 Dash, 2 Dot, 3 DashDot, 4 DashDotDot, 5 LongDash, 6 CircleDot,
+    /// 7 Double, 8 ThinThick, 9 ThickThin, 10 ThinThickThin, 11 Wave, 12 DoubleWave.
+    /// Values 13..=15 are 3D variants and degrade to solid rendering.
+    pub fn underline_shape_code(&self) -> u8 {
+        ((self.attr >> 4) & 0xF) as u8
+    }
+
+    /// Returns the emphasis kind from bits 21..=24.
+    ///
+    /// hwplib `EmphasisSort` and hwpxlib `SymMarkSort` use this ordering
+    /// (HWP 5.0 revision 1.2, table 35):
+    /// 0 NONE, 1 DOT_ABOVE, 2 RING_ABOVE, 3 TILDE, 4 CARON, 5 SIDE(･), 6 COLON,
+    /// 7 GRAVE_ACCENT, 8 ACUTE_ACCENT, 9 CIRCUMFLEX, 10 MACRON, 11 HOOK_ABOVE,
+    /// 12 DOT_BELOW.
+    /// The published table only lists values 1 through 6 and swaps 3 (caron)
+    /// and 4 (tilde) relative to hwplib. This implementation follows the
+    /// hwplib/hwpxlib order pending Hancom visual verification.
+    pub fn emphasis_kind(&self) -> u8 {
+        ((self.attr >> 21) & 0xF) as u8
+    }
+
+    /// Returns the zero-based strike shape from bits 26..=29.
+    ///
+    /// Values follow the same `BorderType2` ordering as
+    /// [`CharShape::underline_shape_code`]. The bit position is based on the
+    /// observed documents in compatibility rule B8 and awaits Hancom verification.
+    pub fn strike_shape_code(&self) -> u8 {
+        ((self.attr >> 26) & 0xF) as u8
+    }
+
     /// 취소선 여부 (명시적 `strike` 플래그 기반).
     ///
     /// HWP5 속성의 "취소선" 비트(18~20)는 **스펙 이견(DIFFSPEC) 영역**이라 신뢰할 수 없다 —

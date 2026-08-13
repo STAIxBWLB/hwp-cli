@@ -29,22 +29,32 @@ pub struct ShapedRun {
     pub color: u32,
     pub bold: bool,
     pub italic: bool,
-    /// 밑줄 (글자 아래)
-    pub underline: bool,
+    /// Underline kind from `CharShape::underline_kind`: 0 none, 1 below, 3 above.
+    pub underline_kind: u8,
+    /// Zero-based `BorderType2` underline shape.
+    pub underline_shape: u8,
     /// 취소선
     pub strike: bool,
+    /// Zero-based strike shape from `CharShape::strike_shape_code`.
+    pub strike_shape: u8,
+    /// Emphasis kind from `CharShape::emphasis_kind` (0 none, 1..=12).
+    pub emphasis: u8,
     /// 밑줄 색 (COLORREF, 0xFFFFFFFF = 글자색 따름)
     pub underline_color: u32,
     /// 글자 음영(배경 하이라이트) 색 (COLORREF, 0xFFFFFFFF = 없음)
     pub shade_color: u32,
     /// 그림자 색 (Some이면 그림자 그림)
     pub shadow: Option<u32>,
+    /// Shadow gap percentages. `(0, 0)` selects the backend-compatible fallback.
+    pub shadow_gap: (i8, i8),
     /// 외곽선(빈 글자 — 채움 없이 윤곽선만)
     pub outline: bool,
     /// 양각(3D 돋움)
     pub emboss: bool,
     /// 음각(3D 새김)
     pub engrave: bool,
+    /// One-based character border/background reference; 0 means unspecified.
+    pub border_fill_id: u16,
     pub glyphs: Vec<Glyph>,
     pub width_pt: f32,
     pub text: String,
@@ -53,6 +63,23 @@ pub struct ShapedRun {
 }
 
 impl ShapedRun {
+    /// Returns the shadow offset in points.
+    ///
+    /// Nonzero `shadow_gap` values are percentages of the font size following
+    /// OWPML offsetX/offsetY conventions. `(0, 0)` retains the legacy 0.06em
+    /// fallback pending Hancom verification.
+    pub fn shadow_offset(&self) -> (f32, f32) {
+        if self.shadow_gap == (0, 0) {
+            let d = self.size_pt * 0.06;
+            (d, d)
+        } else {
+            (
+                self.size_pt * f32::from(self.shadow_gap.0) / 100.0,
+                self.size_pt * f32::from(self.shadow_gap.1) / 100.0,
+            )
+        }
+    }
+
     /// Build a partial run for the glyph range `[start, end)` (line wrapping).
     ///
     /// Source text is reconstructed from shaping clusters so wrapped runs keep
@@ -83,14 +110,19 @@ impl ShapedRun {
             color: self.color,
             bold: self.bold,
             italic: self.italic,
-            underline: self.underline,
+            underline_kind: self.underline_kind,
+            underline_shape: self.underline_shape,
             strike: self.strike,
+            strike_shape: self.strike_shape,
+            emphasis: self.emphasis,
             underline_color: self.underline_color,
             shade_color: self.shade_color,
             shadow: self.shadow,
+            shadow_gap: self.shadow_gap,
             outline: self.outline,
             emboss: self.emboss,
             engrave: self.engrave,
+            border_fill_id: self.border_fill_id,
             glyphs,
             width_pt,
             text,
@@ -566,8 +598,11 @@ fn shape_with_font(
         color: cs.text_color,
         bold,
         italic: cs.is_italic(),
-        underline: cs.has_underline(),
+        underline_kind: cs.underline_kind(),
+        underline_shape: cs.underline_shape_code(),
         strike: cs.has_strike(),
+        strike_shape: cs.strike_shape_code(),
+        emphasis: cs.emphasis_kind(),
         underline_color: cs.underline_color,
         shade_color: if cs.has_shade() {
             cs.shade_color
@@ -575,9 +610,11 @@ fn shape_with_font(
             0xFFFF_FFFF
         },
         shadow: cs.has_shadow().then_some(cs.shadow_color),
+        shadow_gap: cs.shadow_gap,
         outline: cs.has_outline(),
         emboss: cs.is_emboss(),
         engrave: cs.is_engrave(),
+        border_fill_id: cs.border_fill_id,
         glyphs,
         width_pt: width,
         text: text.to_string(),
@@ -647,7 +684,7 @@ pub fn apply_link_style(items: &mut [InlineItem], links: &[(u32, u32)]) {
                 .iter()
                 .any(|&(a, b)| run.start_wchar >= a && run.start_wchar < b)
         {
-            run.underline = true;
+            run.underline_kind = 1;
             run.color = LINK_BLUE;
             run.underline_color = LINK_BLUE;
         }
@@ -753,14 +790,19 @@ mod link_tests {
             color: 0,
             bold: false,
             italic: false,
-            underline: false,
+            underline_kind: 0,
+            underline_shape: 0,
             strike: false,
+            strike_shape: 0,
+            emphasis: 0,
             underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
             shadow: None,
+            shadow_gap: (0, 0),
             outline: false,
             emboss: false,
             engrave: false,
+            border_fill_id: 0,
             width_pt: glyphs.iter().map(|glyph| glyph.x_advance).sum(),
             glyphs,
             text: text.to_string(),
@@ -828,14 +870,19 @@ mod link_tests {
             color: 0,
             bold: false,
             italic: false,
-            underline: false,
+            underline_kind: 0,
+            underline_shape: 0,
             strike: false,
+            strike_shape: 0,
+            emphasis: 0,
             underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
             shadow: None,
+            shadow_gap: (0, 0),
             outline: false,
             emboss: false,
             engrave: false,
+            border_fill_id: 0,
             glyphs: Vec::new(),
             width_pt: 0.0,
             text: String::new(),
@@ -849,7 +896,7 @@ mod link_tests {
         apply_link_style(&mut items, &[(9, 12)]);
         let und: Vec<bool> = items
             .iter()
-            .map(|i| matches!(i, InlineItem::Run(r) if r.underline))
+            .map(|i| matches!(i, InlineItem::Run(r) if r.underline_kind == 1))
             .collect();
         assert_eq!(und, vec![false, true, false]); // 9만 링크 범위
         if let InlineItem::Run(r) = &items[1] {
@@ -859,7 +906,24 @@ mod link_tests {
         // 빈 범위는 무동작.
         let mut items2 = vec![run_at(9)];
         apply_link_style(&mut items2, &[]);
-        assert!(matches!(&items2[0], InlineItem::Run(r) if !r.underline));
+        assert!(matches!(&items2[0], InlineItem::Run(r) if r.underline_kind == 0));
+    }
+
+    #[test]
+    fn shadow_offset_uses_serialized_gap() {
+        // An unspecified gap retains the legacy 0.06em fallback.
+        let run = synthetic_run("x", &[1]);
+        let (dx, dy) = run.shadow_offset();
+        assert!(
+            (dx - 0.6).abs() < 0.01 && (dy - 0.6).abs() < 0.01,
+            "default 0.06em"
+        );
+        // Serialized percentages scale with the font size (GG-11).
+        let mut run = synthetic_run("x", &[1]);
+        run.shadow_gap = (10, -5);
+        let (dx, dy) = run.shadow_offset();
+        assert!((dx - 1.0).abs() < 0.01, "x = 10% of 10pt");
+        assert!((dy + 0.5).abs() < 0.01, "y = -5% of 10pt");
     }
 
     #[test]

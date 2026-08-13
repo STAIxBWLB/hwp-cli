@@ -50,6 +50,72 @@ pub fn border_strokes(line: &BorderLine) -> Vec<(f32, Stroke)> {
     }
 }
 
+fn border_stroke_count(line_type: u8) -> usize {
+    match line_type {
+        0 => 0,
+        8..=10 => 2,
+        11 => 3,
+        _ => 1,
+    }
+}
+
+/// Returns `(vertical offset in points, stroke)` entries for a zero-based
+/// underline or strike decoration code.
+///
+/// Codes follow hwplib `BorderType2` ordering and are one less than the general
+/// border codes. WAVE and DOUBLE_WAVE are emitted by the caller as paths.
+/// Unknown codes, including 3D variants 13..=15, degrade to solid.
+pub fn decor_strokes(code: u8, width_pt: f32, color: u32) -> Vec<(f32, Stroke)> {
+    let w = width_pt.max(0.2);
+    let u = w.max(0.5); // Match the lower bound used by border_strokes.
+    let solid = |width: f32| Stroke::solid(color, width);
+    let dashed = |pattern: &[f32]| Stroke {
+        color,
+        width: w,
+        dash: pattern.iter().map(|v| v * u).collect(),
+    };
+    match code {
+        0 => vec![(0.0, solid(w))],                                // Solid
+        1 => vec![(0.0, dashed(&[3.0, 2.0]))],                     // Dash
+        2 => vec![(0.0, dashed(&[1.0, 2.0]))],                     // Dot
+        3 => vec![(0.0, dashed(&[3.0, 2.0, 1.0, 2.0]))],           // DashDot
+        4 => vec![(0.0, dashed(&[3.0, 2.0, 1.0, 2.0, 1.0, 2.0]))], // DashDotDot
+        5 => vec![(0.0, dashed(&[6.0, 3.0]))],                     // LongDash
+        // CircleDot approximates dots because backends do not expose round caps.
+        6 => vec![(0.0, dashed(&[1.0, 2.0]))],
+        // Double uses thicker splits than page borders so thin text decorations remain visible.
+        7 => vec![(-0.3 * w, solid(0.4 * w)), (0.3 * w, solid(0.4 * w))],
+        // ThinThick, ThickThin, and ThinThickThin match border types 9, 10, and 11.
+        8 => vec![(-0.4 * w, solid(0.2 * w)), (0.25 * w, solid(0.5 * w))],
+        9 => vec![(-0.25 * w, solid(0.5 * w)), (0.4 * w, solid(0.2 * w))],
+        10 => vec![
+            (-0.4 * w, solid(0.2 * w)),
+            (0.0, solid(0.3 * w)),
+            (0.4 * w, solid(0.2 * w)),
+        ],
+        // Wave and unknown codes degrade to solid here; wave paths are handled by the caller.
+        _ => vec![(0.0, solid(w))],
+    }
+}
+
+/// Returns the number of display paths emitted for a decoration code.
+pub fn decor_stroke_count(code: u8) -> usize {
+    match code {
+        7..=9 | 12 => 2,
+        10 => 3,
+        _ => 1,
+    }
+}
+
+/// Returns 0 for non-wave, 1 for Wave, and 2 for DoubleWave.
+pub fn decor_is_wave(code: u8) -> u8 {
+    match code {
+        11 => 1,
+        12 => 2,
+        _ => 0,
+    }
+}
+
 /// Emits one open path per stroke for a standalone border segment.
 ///
 /// Positive offsets use the segment's right-hand normal `(dy, -dx) / len`.
@@ -159,6 +225,29 @@ pub fn border_rectangle_items(
         }
     }
     items
+}
+
+/// Returns the number of paths that [`border_rectangle_items`] will emit.
+pub fn border_rectangle_item_count(
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    sides: &[BorderLine; 4],
+    enabled: [bool; 4],
+) -> usize {
+    if x2 - x1 < 1e-3 || y2 - y1 < 1e-3 {
+        return 0;
+    }
+    if enabled.iter().all(|value| *value) && sides.iter().all(|side| *side == sides[0]) {
+        return border_stroke_count(sides[0].line_type);
+    }
+    sides
+        .iter()
+        .zip(enabled)
+        .filter(|(_, enabled)| *enabled)
+        .map(|(side, _)| border_stroke_count(side.line_type))
+        .sum()
 }
 
 #[cfg(test)]
@@ -334,5 +423,83 @@ mod tests {
         assert!(x_at(&items[1]) > 10.0);
         assert!(x_at(&items[2]) > 110.0);
         assert!(x_at(&items[3]) < 110.0);
+    }
+
+    #[test]
+    fn rectangle_item_count_matches_emission() {
+        for line_type in 0..=13 {
+            let sides = [line(line_type); 4];
+            for enabled in [
+                [true; 4],
+                [true, false, true, false],
+                [false, true, false, true],
+            ] {
+                assert_eq!(
+                    border_rectangle_item_count(10.0, 20.0, 110.0, 80.0, &sides, enabled),
+                    border_rectangle_items(10.0, 20.0, 110.0, 80.0, &sides, enabled).len(),
+                    "line type {line_type}, enabled {enabled:?}"
+                );
+            }
+        }
+        let sides = [line(8), line(9), line(10), line(11)];
+        assert_eq!(
+            border_rectangle_item_count(10.0, 20.0, 110.0, 80.0, &sides, [true; 4]),
+            border_rectangle_items(10.0, 20.0, 110.0, 80.0, &sides, [true; 4]).len()
+        );
+    }
+
+    #[test]
+    fn decoration_strokes_use_zero_based_dash_patterns() {
+        let w = 1.0f32;
+        let u = w.max(0.5);
+        let dash = |code: u8| decor_strokes(code, w, 7)[0].1.dash.clone();
+        assert!(dash(0).is_empty(), "code 0 is solid");
+        assert_eq!(dash(1), vec![3.0 * u, 2.0 * u]); // Dash
+        assert_eq!(dash(2), vec![u, 2.0 * u]); // Dot
+        assert_eq!(dash(3), vec![3.0 * u, 2.0 * u, u, 2.0 * u]); // DashDot
+        assert_eq!(dash(4), vec![3.0 * u, 2.0 * u, u, 2.0 * u, u, 2.0 * u]); // DashDotDot
+        assert_eq!(dash(5), vec![6.0 * u, 3.0 * u]); // LongDash
+        assert_eq!(dash(6), vec![u, 2.0 * u]); // CircleDot ≈ Dot
+        // Preserve color and width.
+        let s = decor_strokes(0, w, 0x00FF_0000);
+        assert_eq!(s[0].1.color, 0x00FF_0000);
+        assert!((s[0].1.width - w).abs() < 0.01);
+        // Unknown codes, including 3D variants, degrade to solid.
+        assert!(dash(13).is_empty() && dash(99).is_empty());
+    }
+
+    #[test]
+    fn decoration_strokes_split_compound_lines() {
+        let w = 1.0f32;
+        // Double uses two 0.4w strokes at +/-0.3w.
+        let s = decor_strokes(7, w, 0);
+        assert_eq!(s.len(), 2);
+        assert!((s[0].0 + 0.3 * w).abs() < 0.01 && (s[1].0 - 0.3 * w).abs() < 0.01);
+        assert!((s[0].1.width - 0.4 * w).abs() < 0.01);
+        // Codes 8, 9, and 10 match border types 9, 10, and 11.
+        assert_eq!(decor_strokes(8, w, 0).len(), 2);
+        assert_eq!(decor_strokes(9, w, 0).len(), 2);
+        assert_eq!(decor_strokes(10, w, 0).len(), 3);
+    }
+
+    #[test]
+    fn identifies_wave_decorations() {
+        for code in 0..=10 {
+            assert_eq!(decor_is_wave(code), 0, "{code} is not a wave");
+        }
+        assert_eq!(decor_is_wave(11), 1);
+        assert_eq!(decor_is_wave(12), 2);
+        assert_eq!(decor_is_wave(99), 0);
+    }
+
+    #[test]
+    fn decoration_count_matches_emission() {
+        for code in 0..=15 {
+            let emitted = match decor_is_wave(code) {
+                0 => decor_strokes(code, 1.0, 0).len(),
+                waves => usize::from(waves),
+            };
+            assert_eq!(decor_stroke_count(code), emitted, "code {code}");
+        }
     }
 }

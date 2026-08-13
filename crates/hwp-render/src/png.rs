@@ -212,8 +212,8 @@ fn render_page(
                 }
                 // 그림자 — 본문 전에 오프셋 복사.
                 if let Some(sc) = run.shadow {
-                    let d = run.size_pt * 0.06;
-                    draw_glyph_run(&mut pixmap, &face, run, *x, *y, px_scale, sc, d, d);
+                    let (dx, dy) = run.shadow_offset();
+                    draw_glyph_run(&mut pixmap, &face, run, *x, *y, px_scale, sc, dx, dy);
                 }
                 // 양각/음각 — 흰 하이라이트 사본 오프셋(양각=좌상, 음각=우하).
                 if run.emboss || run.engrave {

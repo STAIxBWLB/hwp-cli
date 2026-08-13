@@ -31,6 +31,36 @@ pub(crate) fn line_type_name(code: u8) -> &'static str {
     }
 }
 
+/// Converts a zero-based decoration code from HWP5 attribute bits 4..=7 or
+/// 26..=29 to an OWPML line-shape name, including WAVE and DOUBLE_WAVE.
+fn decor_name(code: u8) -> &'static str {
+    match code {
+        11 => "WAVE",
+        12 => "DOUBLE_WAVE",
+        c => line_type_name(c.saturating_add(1)),
+    }
+}
+
+/// Converts an emphasis code from HWP5 attribute bits 21..=24 to an OWPML
+/// `symMark` name using hwpxlib's `SymMarkSort` ordering.
+fn sym_mark_name(code: u8) -> &'static str {
+    match code {
+        1 => "DOT_ABOVE",
+        2 => "RING_ABOVE",
+        3 => "TILDE",
+        4 => "CARON",
+        5 => "SIDE",
+        6 => "COLON",
+        7 => "GRAVE_ACCENT",
+        8 => "ACUTE_ACCENT",
+        9 => "CIRCUMFLEX",
+        10 => "MACRON",
+        11 => "HOOK_ABOVE",
+        12 => "DOT_BELOW",
+        _ => "NONE",
+    }
+}
+
 pub(crate) fn width_mm_attr(line: &BorderLine) -> String {
     // 0.12 같은 값은 그대로, 정수는 "0.1"이 아닌 표기 유지
     let mm = line.width_mm();
@@ -199,12 +229,13 @@ fn write_char_properties(out: &mut String, header: &DocHeader) {
         };
         let _ = write!(
             out,
-            r##"<hh:charPr id="{i}" height="{}" textColor="{}" shadeColor="{}" useFontSpace="{}" useKerning="{}" symMark="NONE" borderFillIDRef="{bf_ref}">"##,
+            r##"<hh:charPr id="{i}" height="{}" textColor="{}" shadeColor="{}" useFontSpace="{}" useKerning="{}" symMark="{}" borderFillIDRef="{bf_ref}">"##,
             cs.base_size,
             color_attr(cs.text_color),
             color_attr(cs.shade_color),
             (cs.attr >> 25) & 1,
             (cs.attr >> 30) & 1,
+            sym_mark_name(cs.emphasis_kind()),
         );
         let _ = write!(
             out,
@@ -242,11 +273,7 @@ fn write_char_properties(out: &mut String, header: &DocHeader) {
             3 => "TOP",
             _ => "NONE",
         };
-        // 밑줄 모양: 0(미지정)이면 기존 관례대로 SOLID, 아니면 보존된 종류 코드.
-        let ul_shape = match cs.underline_shape {
-            0 => "SOLID",
-            c => line_type_name(c),
-        };
+        let ul_shape = decor_name(cs.underline_shape_code());
         let _ = write!(
             out,
             r##"<hh:underline type="{ul_type}" shape="{ul_shape}" color="{}"/>"##,
@@ -256,10 +283,15 @@ fn write_char_properties(out: &mut String, header: &DocHeader) {
                 color_attr(cs.underline_color)
             }
         );
+        // Restore the strike shape from normalized attribute bits 26..=29.
+        let strike_shape = if cs.has_strike() {
+            decor_name(cs.strike_shape_code())
+        } else {
+            "NONE"
+        };
         let _ = write!(
             out,
-            r##"<hh:strikeout shape="{}" color="#000000"/>"##,
-            if cs.has_strike() { "SOLID" } else { "NONE" }
+            r##"<hh:strikeout shape="{strike_shape}" color="#000000"/>"##
         );
         // 외곽선: 유무만 보존(read가 종류를 버림) — 있으면 SOLID, 없으면 NONE.
         let _ = write!(

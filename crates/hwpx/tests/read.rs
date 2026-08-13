@@ -168,6 +168,66 @@ fn 취소선_3d_shape는_비취소선() {
     );
 }
 
+/// Reads `symMark` into attribute bits 21..=24 using hwpxlib ordering.
+#[test]
+fn reads_symmark_emphasis_bits() {
+    let xml = r##"<?xml version="1.0"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:charProperties itemCnt="3">
+      <hh:charPr id="0" height="1000" symMark="DOT_ABOVE"/>
+      <hh:charPr id="1" height="1000" symMark="RING_ABOVE"/>
+      <hh:charPr id="2" height="1000" symMark="NONE"/>
+    </hh:charProperties>
+  </hh:refList>
+</hh:head>"##;
+    let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
+    assert_eq!(header.char_shapes[0].emphasis_kind(), 1, "DOT_ABOVE");
+    assert_eq!(header.char_shapes[1].emphasis_kind(), 2, "RING_ABOVE");
+    assert_eq!(header.char_shapes[2].emphasis_kind(), 0, "NONE");
+}
+
+/// Normalizes underline and strike shapes into zero-based decoration codes.
+/// Core HWPX line types also retain their one-based legacy underline code.
+#[test]
+fn normalizes_underline_and_strike_shape_codes() {
+    let xml = r##"<?xml version="1.0"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:charProperties itemCnt="3">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="BOTTOM" shape="DASH" color="#000000"/>
+        <hh:strikeout shape="DASH_DOT" color="#000000"/>
+      </hh:charPr>
+      <hh:charPr id="1" height="1000">
+        <hh:underline type="BOTTOM" shape="WAVE" color="#000000"/>
+      </hh:charPr>
+      <hh:charPr id="2" height="1000">
+        <hh:underline type="NONE" shape="DASH" color="#000000"/>
+      </hh:charPr>
+    </hh:charProperties>
+  </hh:refList>
+</hh:head>"##;
+    let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
+    let cs0 = &header.char_shapes[0];
+    assert_eq!(
+        cs0.underline_shape_code(),
+        1,
+        "DASH maps to zero-based code 1"
+    );
+    assert_eq!(cs0.underline_shape, 2, "legacy one-based HWPX code");
+    assert!(cs0.has_strike());
+    assert_eq!(cs0.strike_shape_code(), 3, "DASH_DOT maps to code 3");
+    // WAVE is absent from the general border table and maps explicitly to 11.
+    assert_eq!(
+        header.char_shapes[1].underline_shape_code(),
+        11,
+        "WAVE → 11"
+    );
+    // An inactive underline does not set decoration bits.
+    assert_eq!(header.char_shapes[2].underline_shape_code(), 0);
+}
+
 #[test]
 fn 합성_섹션_표와_컨트롤문자() {
     let xml = r##"<?xml version="1.0"?>

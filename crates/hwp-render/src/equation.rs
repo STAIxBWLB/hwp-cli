@@ -495,7 +495,8 @@ pub fn render_into(
 ) {
     use crate::display::Item;
     for (run, dx, dy) in eq.runs {
-        crate::layout::push_run(page, ox + dx, baseline_y + dy, run, issues);
+        // Equation runs use a synthetic character shape with border_fill_id=0.
+        crate::layout::push_run(page, ox + dx, baseline_y + dy, run, &[], issues);
     }
     for (x1, y1, x2, y2, wdt) in eq.lines {
         if !issues.charge_display_items(1) {

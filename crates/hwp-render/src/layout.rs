@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Section, Table};
 
-use crate::display::{DisplayList, Item, PageList, PathCmd, Stroke};
+use crate::display::{DisplayList, Fill, Item, PageList, PathCmd, Stroke};
 use crate::error::RenderError;
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
@@ -694,7 +694,7 @@ fn render_positioned_page_number(
         let margin = furniture.page_def.margin_bottom.to_pt() as f32;
         page.height_pt - (margin * 0.5 - run.size_pt * 0.35).max(run.size_pt * 0.2)
     };
-    push_run(page, x, y, run, warnings);
+    push_run(page, x, y, run, &doc.header.border_fills, warnings);
 }
 
 pub fn layout_document_bounded(
@@ -1016,6 +1016,7 @@ pub fn layout_document(
                         max_size * 1.6,
                         &tabs,
                         first_delta,
+                        &doc.header.border_fills,
                         warnings,
                     );
                     content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
@@ -1225,6 +1226,7 @@ pub fn layout_document(
                     line_advance,
                     &tabs,
                     0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    &doc.header.border_fills,
                     warnings,
                 );
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
@@ -1588,7 +1590,7 @@ fn render_one_note(
     let label = format!("{})", note.number);
     let baseline = y + marker_size;
     if let Some(run) = crate::shape::shape_plain(store, doc, &label, marker_size, 0, false) {
-        push_run(page, x, baseline, run, warnings);
+        push_run(page, x, baseline, run, &doc.header.border_fills, warnings);
     }
     // 내용 문단들(자체 char_shape 크기 사용). 여러 문단은 세로로 누적.
     let mut bottom = y;
@@ -1622,7 +1624,7 @@ fn render_list_marker(
     if let Some(run) = crate::shape::shape_plain(store, doc, marker, size, 0, false) {
         let w = run.width_pt;
         let x = (text_left - w - size * 0.3).max(0.0);
-        push_run(page, x, baseline, run, warnings);
+        push_run(page, x, baseline, run, &doc.header.border_fills, warnings);
     }
 }
 
@@ -2521,6 +2523,7 @@ fn layout_box_para_iter<'a>(
                     max_size * 1.6,
                     &tabs,
                     first_delta,
+                    &doc.header.border_fills,
                     warnings,
                 );
                 content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
@@ -2602,6 +2605,7 @@ fn layout_box_para_iter<'a>(
                     line_advance,
                     &tabs,
                     0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    &doc.header.border_fills,
                     warnings,
                 );
                 content_bottom = last_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0);
@@ -2925,39 +2929,343 @@ fn items_max_size(items: &[InlineItem]) -> Option<f32> {
         .reduce(f32::max)
 }
 
-/// 글리프 런과 그 장식(밑줄/취소선)을 함께 배치한다.
-/// 장식 상수(0.10em/0.25em/0.05em)는 U5 실측 전 초기값.
+/// Places a glyph run together with underline, strike, emphasis, border, and background.
+/// Decoration metrics are initial values pending U5 measurements.
 pub(crate) fn push_run(
     page: &mut PageList,
     x: f32,
     y: f32,
     run: crate::shape::ShapedRun,
+    border_fills: &[BorderFill],
     warnings: &mut RenderIssueAccumulator,
 ) {
     let w = run.width_pt;
     let em = run.size_pt;
-    let underline = run.underline.then(|| {
-        let color = if run.underline_color == 0xFFFF_FFFF {
-            run.color
-        } else {
-            run.underline_color
-        };
-        (y + em * 0.10, color)
-    });
-    let strike = run.strike.then_some((y - em * 0.25, run.color));
-    if !warnings.charge_display_items(1) {
+
+    // GG-22 character border/background references are one-based. Emit the
+    // background before Glyphs, using the same ordering as paragraph backgrounds.
+    // The run box metrics are placeholders pending Hancom verification.
+    let bf = if run.border_fill_id > 0 {
+        border_fills.get(run.border_fill_id as usize - 1)
+    } else {
+        None
+    };
+    let box_top = y - em * 0.80;
+    let box_bottom = y + em * 0.25;
+    let bg_fill = bf.and_then(BorderFill::visible_bg);
+
+    let decor_w = em * 0.05; // Initial underline/strike width pending U5 measurements.
+    let ul_color = if run.underline_color == 0xFFFF_FFFF {
+        run.color
+    } else {
+        run.underline_color
+    };
+    // Kind 1 is below the text; kind 3 uses the provisional ascent boundary.
+    let underline_y = match run.underline_kind {
+        1 => Some(y + em * 0.10),
+        3 => Some(y - em * 0.80),
+        _ => None,
+    };
+    let emphasis_centers = emphasis_centers(&run, x);
+    let emphasis_count = emphasis_centers
+        .len()
+        .saturating_mul(emphasis_mark_count(run.emphasis));
+    let underline_count = underline_y
+        .map(|_| crate::border::decor_stroke_count(run.underline_shape))
+        .unwrap_or(0);
+    let strike_count =
+        usize::from(run.strike) * crate::border::decor_stroke_count(run.strike_shape);
+    let border_count = bf
+        .map(|fill| {
+            crate::border::border_rectangle_item_count(
+                x,
+                box_top,
+                x + w,
+                box_bottom,
+                &fill.sides,
+                [true; 4],
+            )
+        })
+        .unwrap_or(0);
+    let total_items = 1usize
+        .saturating_add(usize::from(bg_fill.is_some()))
+        .saturating_add(underline_count)
+        .saturating_add(strike_count)
+        .saturating_add(emphasis_count)
+        .saturating_add(border_count);
+    if !warnings.charge_display_items(total_items) {
         return;
     }
-    page.items.push(Item::Glyphs { x, y, run });
-    for (ly, color) in underline.into_iter().chain(strike) {
-        if !warnings.charge_display_items(1) {
-            return;
-        }
-        page.items.push(Item::Path {
-            commands: vec![PathCmd::MoveTo(x, ly), PathCmd::LineTo(x + w, ly)],
-            fill: None,
-            stroke: Some(Stroke::solid(color, em * 0.05)),
+
+    let mut decor = Vec::with_capacity(
+        underline_count
+            .saturating_add(strike_count)
+            .saturating_add(emphasis_count),
+    );
+    if let Some(ly) = underline_y {
+        decor.extend(decor_line_items(
+            x,
+            ly,
+            w,
+            run.underline_shape,
+            decor_w,
+            ul_color,
+        ));
+    }
+    if run.strike {
+        decor.extend(decor_line_items(
+            x,
+            y - em * 0.25,
+            w,
+            run.strike_shape,
+            decor_w,
+            run.color,
+        ));
+    }
+    decor.extend(emphasis_items(
+        run.emphasis,
+        emphasis_centers,
+        y,
+        em,
+        run.color,
+    ));
+    debug_assert_eq!(decor.len(), underline_count + strike_count + emphasis_count);
+
+    if let Some(fill) = bg_fill {
+        page.items.push(Item::Rect {
+            x,
+            y: box_top,
+            w,
+            h: box_bottom - box_top,
+            fill,
         });
+    }
+    page.items.push(Item::Glyphs { x, y, run });
+
+    // Draw the character border above glyphs, matching paragraph border ordering.
+    if let Some(bf) = bf {
+        let items = crate::border::border_rectangle_items(
+            x,
+            box_top,
+            x + w,
+            box_bottom,
+            &bf.sides,
+            [true; 4],
+        );
+        debug_assert_eq!(items.len(), border_count);
+        page.items.extend(items);
+    }
+    page.items.extend(decor);
+}
+
+/// Builds one underline or strike decoration from a zero-based decoration code.
+/// Wave codes 11 and 12 emit cubic Bezier paths.
+fn decor_line_items(x: f32, y: f32, w: f32, code: u8, width_pt: f32, color: u32) -> Vec<Item> {
+    match crate::border::decor_is_wave(code) {
+        0 => crate::border::decor_strokes(code, width_pt, color)
+            .into_iter()
+            .map(|(off, stroke)| Item::Path {
+                commands: vec![PathCmd::MoveTo(x, y + off), PathCmd::LineTo(x + w, y + off)],
+                fill: None,
+                stroke: Some(stroke),
+            })
+            .collect(),
+        waves => {
+            // Use the stroke width as amplitude and place a second DoubleWave
+            // path 2.5 widths lower. These are provisional visual metrics.
+            let amp = width_pt;
+            let half_len = (width_pt * 3.5).max(0.9); // About 0.175em at a 0.05em width.
+            (0..waves)
+                .map(|i| {
+                    let dy = f32::from(i) * width_pt * 2.5;
+                    Item::Path {
+                        commands: wave_commands(x, y + dy, x + w, half_len, amp),
+                        fill: None,
+                        stroke: Some(Stroke::solid(color, width_pt)),
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
+/// Builds a wave path from `(x, y)` to `(end, y)` in cubic half-wavelengths.
+/// Control height `amp / 0.75` makes the midpoint displacement equal `amp`.
+fn wave_commands(mut x: f32, y: f32, end: f32, half_len: f32, amp: f32) -> Vec<PathCmd> {
+    let k = amp / 0.75;
+    let mut cmds = vec![PathCmd::MoveTo(x, y)];
+    let mut up = true;
+    while x < end - 1e-3 {
+        let seg = half_len.min(end - x);
+        let cy = if up { y - k } else { y + k };
+        cmds.push(PathCmd::CubicTo(
+            x + seg * 0.5,
+            cy,
+            x + seg * 0.5,
+            cy,
+            x + seg,
+            y,
+        ));
+        x += seg;
+        up = !up;
+    }
+    cmds
+}
+
+/// Approximates a circle with four cubic Bezier segments.
+fn circle_commands(cx: f32, cy: f32, r: f32) -> Vec<PathCmd> {
+    const KAPPA: f32 = 0.5523; // Standard circle-to-Bezier approximation.
+    let k = r * KAPPA;
+    vec![
+        PathCmd::MoveTo(cx + r, cy),
+        PathCmd::CubicTo(cx + r, cy + k, cx + k, cy + r, cx, cy + r),
+        PathCmd::CubicTo(cx - k, cy + r, cx - r, cy + k, cx - r, cy),
+        PathCmd::CubicTo(cx - r, cy - k, cx - k, cy - r, cx, cy - r),
+        PathCmd::CubicTo(cx + k, cy - r, cx + r, cy - k, cx + r, cy),
+        PathCmd::Close,
+    ]
+}
+
+// GG-8 emphasis metrics are U5-style placeholders pending Hancom verification.
+const EMPHASIS_DOT_R: f32 = 0.05;
+const EMPHASIS_SMALL_R: f32 = 0.035;
+const EMPHASIS_ABOVE: f32 = 0.95;
+const EMPHASIS_BELOW: f32 = 0.30;
+const EMPHASIS_HALF: f32 = 0.08;
+const EMPHASIS_LIFT: f32 = 0.04;
+const EMPHASIS_STROKE: f32 = 0.025;
+
+/// Returns the centers of emphasis marks, excluding whitespace glyphs.
+/// Synthetic runs without glyphs distribute marks evenly across the run width.
+fn emphasis_centers(run: &crate::shape::ShapedRun, x: f32) -> Vec<f32> {
+    let mut centers = Vec::new();
+    if run.emphasis == 0 {
+        return centers;
+    }
+    if run.glyphs.is_empty() {
+        let n = run.text.chars().filter(|c| !c.is_whitespace()).count();
+        if n > 0 && run.width_pt > 0.0 {
+            let step = run.width_pt / n as f32;
+            centers.extend((0..n).map(|i| x + step * (i as f32 + 0.5)));
+        }
+    } else {
+        let sources = crate::shape::glyph_source_sequences(run);
+        let mut pen = x;
+        for (i, g) in run.glyphs.iter().enumerate() {
+            let cx = pen + g.x_offset + g.x_advance * 0.5;
+            pen += g.x_advance;
+            let blank = sources
+                .get(i)
+                .is_none_or(|s| s.chars().all(|c| c.is_whitespace()));
+            if !blank {
+                centers.push(cx);
+            }
+        }
+    }
+    centers
+}
+
+fn emphasis_mark_count(kind: u8) -> usize {
+    match kind {
+        6 => 2,
+        1..=12 => 1,
+        _ => 0,
+    }
+}
+
+fn emphasis_items(kind: u8, centers: Vec<f32>, y: f32, em: f32, color: u32) -> Vec<Item> {
+    let cy = if kind == 12 {
+        y + em * EMPHASIS_BELOW
+    } else {
+        y - em * EMPHASIS_ABOVE
+    };
+    let mut items = Vec::with_capacity(centers.len().saturating_mul(emphasis_mark_count(kind)));
+    for cx in centers {
+        items.extend(emphasis_mark(kind, cx, cy, em, color));
+    }
+    items
+}
+
+/// Builds one emphasis mark using hwplib `EmphasisSort` ordering.
+/// Accent forms 7 through 11 use short line or curve approximations.
+fn emphasis_mark(kind: u8, cx: f32, cy: f32, em: f32, color: u32) -> Vec<Item> {
+    let dot_r = em * EMPHASIS_DOT_R;
+    let small_r = em * EMPHASIS_SMALL_R;
+    let half = em * EMPHASIS_HALF;
+    let lift = em * EMPHASIS_LIFT;
+    let sw = em * EMPHASIS_STROKE;
+    let filled = |cmds: Vec<PathCmd>| Item::Path {
+        commands: cmds,
+        fill: Some(Fill::Solid(color)),
+        stroke: None,
+    };
+    let stroked = |cmds: Vec<PathCmd>| Item::Path {
+        commands: cmds,
+        fill: None,
+        stroke: Some(Stroke::solid(color, sw)),
+    };
+    match kind {
+        // 1 DOT_ABOVE: filled circle.
+        1 => vec![filled(circle_commands(cx, cy, dot_r))],
+        // 2 RING_ABOVE: outlined circle.
+        2 => vec![stroked(circle_commands(cx, cy, dot_r))],
+        // 3 TILDE: one short wave.
+        3 => vec![stroked(wave_commands(
+            cx - half * 1.2,
+            cy,
+            cx + half * 1.2,
+            half * 1.2,
+            lift,
+        ))],
+        // 4 CARON: two segments meeting below.
+        4 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half, cy - lift),
+            PathCmd::LineTo(cx, cy + lift),
+            PathCmd::LineTo(cx + half, cy - lift),
+        ])],
+        // 5 SIDE: smaller filled dot.
+        5 => vec![filled(circle_commands(cx, cy, small_r))],
+        // 6 COLON: two vertical dots.
+        6 => vec![
+            filled(circle_commands(cx, cy - small_r * 1.6, small_r)),
+            filled(circle_commands(cx, cy + small_r * 1.6, small_r)),
+        ],
+        // 7 GRAVE_ACCENT: short backslash segment.
+        7 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half * 0.7, cy - lift),
+            PathCmd::LineTo(cx + half * 0.7, cy + lift),
+        ])],
+        // 8 ACUTE_ACCENT: short slash segment.
+        8 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half * 0.7, cy + lift),
+            PathCmd::LineTo(cx + half * 0.7, cy - lift),
+        ])],
+        // 9 CIRCUMFLEX: two segments meeting above.
+        9 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half, cy + lift),
+            PathCmd::LineTo(cx, cy - lift),
+            PathCmd::LineTo(cx + half, cy + lift),
+        ])],
+        // 10 MACRON: short horizontal segment.
+        10 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half, cy),
+            PathCmd::LineTo(cx + half, cy),
+        ])],
+        // 11 HOOK_ABOVE: short curve approximation.
+        11 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half * 0.5, cy - lift),
+            PathCmd::CubicTo(
+                cx + half,
+                cy - lift,
+                cx + half * 0.8,
+                cy + lift,
+                cx,
+                cy + lift,
+            ),
+        ])],
+        // 12 DOT_BELOW: filled dot below the text.
+        12 => vec![filled(circle_commands(cx, cy, dot_r))],
+        _ => Vec::new(),
     }
 }
 
@@ -2973,6 +3281,7 @@ fn place_wrapped(
     line_advance: f32,
     tabs: &[f32],
     first_indent: f32,
+    border_fills: &[BorderFill],
     warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let limit = x0 + max_width;
@@ -2999,7 +3308,7 @@ fn place_wrapped(
             InlineItem::Run(run) => {
                 if max_width.is_infinite() || x + run.width_pt <= limit {
                     let w = run.width_pt;
-                    push_run(page, x, y, run, warnings);
+                    push_run(page, x, y, run, border_fills, warnings);
                     x += w;
                     continue;
                 }
@@ -3014,7 +3323,7 @@ fn place_wrapped(
                     if over && line_has_content {
                         if i > start {
                             let piece = run.slice_with_sources(start, i, &sources);
-                            push_run(page, piece_x, y, piece, warnings);
+                            push_run(page, piece_x, y, piece, border_fills, warnings);
                         }
                         y += line_advance;
                         piece_x = x0;
@@ -3026,7 +3335,7 @@ fn place_wrapped(
                 if start < run.glyphs.len() {
                     let piece = run.slice_with_sources(start, run.glyphs.len(), &sources);
                     let w = piece.width_pt;
-                    push_run(page, piece_x, y, piece, warnings);
+                    push_run(page, piece_x, y, piece, border_fills, warnings);
                     x = piece_x + w;
                 } else {
                     x = piece_x;
@@ -3162,14 +3471,19 @@ mod justify_tests {
             color: 0,
             bold: false,
             italic: false,
-            underline: false,
+            underline_kind: 0,
+            underline_shape: 0,
             strike: false,
+            strike_shape: 0,
+            emphasis: 0,
             underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
             shadow: None,
+            shadow_gap: (0, 0),
             outline: false,
             emboss: false,
             engrave: false,
+            border_fill_id: 0,
             glyphs,
             width_pt: advs.iter().sum(),
             text: text.to_string(),
@@ -3572,14 +3886,19 @@ mod tab_width_tests {
             color: 0,
             bold: false,
             italic: false,
-            underline: false,
+            underline_kind: 0,
+            underline_shape: 0,
             strike: false,
+            strike_shape: 0,
+            emphasis: 0,
             underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
             shadow: None,
+            shadow_gap: (0, 0),
             outline: false,
             emboss: false,
             engrave: false,
+            border_fill_id: 0,
             glyphs: Vec::new(),
             width_pt,
             text: String::new(),
@@ -3614,6 +3933,7 @@ mod tab_width_tests {
             16.0,
             &tabs,
             0.0,
+            &[],
             &mut warns,
         );
         let xs: Vec<f32> = page
@@ -3632,5 +3952,346 @@ mod tab_width_tests {
         // With no explicit stop, retain the existing 40 pt fallback interval.
         let natural_default = items_width(&make_items(), &[]);
         assert!((natural_default - (40.0 + 20.0)).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod decor_tests {
+    use std::sync::Arc;
+
+    use hwp_model::{BorderFill, BorderLine};
+
+    use super::{push_run, wave_commands};
+    use crate::display::{Fill, Item, PageList, PathCmd};
+    use crate::fonts::LoadedFont;
+    use crate::issues::RenderIssueAccumulator;
+    use crate::shape::{Glyph, ShapedRun};
+
+    /// Builds a synthetic 10pt run with `adv_count` glyphs of 10pt advance.
+    fn dummy_run(text: &str, adv_count: usize) -> ShapedRun {
+        let glyphs: Vec<Glyph> = (0..adv_count)
+            .map(|_| Glyph {
+                id: 0,
+                x_advance: 10.0,
+                x_offset: 0.0,
+                y_offset: 0.0,
+            })
+            .collect();
+        ShapedRun {
+            font: Arc::new(LoadedFont {
+                data: Arc::new(Vec::new()),
+                index: 0,
+                family: String::new(),
+            }),
+            size_pt: 10.0,
+            x_scale: 1.0,
+            color: 0,
+            bold: false,
+            italic: false,
+            underline_kind: 0,
+            underline_shape: 0,
+            strike: false,
+            strike_shape: 0,
+            emphasis: 0,
+            underline_color: 0xFFFF_FFFF,
+            shade_color: 0xFFFF_FFFF,
+            shadow: None,
+            shadow_gap: (0, 0),
+            outline: false,
+            emboss: false,
+            engrave: false,
+            border_fill_id: 0,
+            width_pt: glyphs.iter().map(|g| g.x_advance).sum(),
+            glyphs,
+            text: text.to_string(),
+            start_wchar: 0,
+        }
+    }
+
+    fn place(run: ShapedRun, border_fills: &[BorderFill]) -> PageList {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        push_run(&mut page, 100.0, 200.0, run, border_fills, &mut warns);
+        page
+    }
+
+    /// Summarizes path start y, dash presence, and stroke width.
+    fn path_summary(page: &PageList) -> Vec<(f32, bool, f32)> {
+        page.items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path {
+                    commands,
+                    stroke: Some(st),
+                    ..
+                } => match commands[0] {
+                    PathCmd::MoveTo(_, y) => Some((y, !st.dash.is_empty(), st.width)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn emits_underlines_below_and_above() {
+        // Kind 1: below at y + 0.10em = 201.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        let page = place(run, &[]);
+        let paths = path_summary(&page);
+        assert_eq!(paths.len(), 1);
+        assert!(
+            (paths[0].0 - 201.0).abs() < 0.01,
+            "lower underline y: {paths:?}"
+        );
+        assert!(!paths[0].1, "default is solid");
+        assert!((paths[0].2 - 0.5).abs() < 0.01, "width is 0.05em");
+
+        // Kind 3: above at the provisional ascent y - 0.80em = 192.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 3;
+        let page = place(run, &[]);
+        let paths = path_summary(&page);
+        assert_eq!(paths.len(), 1);
+        assert!(
+            (paths[0].0 - 192.0).abs() < 0.01,
+            "upper underline y: {paths:?}"
+        );
+
+        // An explicit underline color overrides the text color.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.color = 0x0000_00FF;
+        run.underline_color = 0x00FF_0000;
+        let page = place(run, &[]);
+        let color = page.items.iter().find_map(|it| match it {
+            Item::Path {
+                stroke: Some(st), ..
+            } => Some(st.color),
+            _ => None,
+        });
+        assert_eq!(color, Some(0x00FF_0000));
+    }
+
+    #[test]
+    fn emits_dashed_and_wave_underlines() {
+        // Shape 1 (Dash): pattern [3u, 2u], with u=0.5.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.underline_shape = 1;
+        let page = place(run, &[]);
+        let dash = page.items.iter().find_map(|it| match it {
+            Item::Path {
+                stroke: Some(st), ..
+            } => Some(st.dash.clone()),
+            _ => None,
+        });
+        assert_eq!(dash, Some(vec![1.5, 1.0]));
+
+        // Shape 11 (Wave): one cubic path.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.underline_shape = 11;
+        let page = place(run, &[]);
+        let wave_count = page
+            .items
+            .iter()
+            .filter(|it| {
+                matches!(it, Item::Path { commands, .. } if commands.iter().any(|c| matches!(c, PathCmd::CubicTo(..))))
+            })
+            .count();
+        assert_eq!(wave_count, 1, "one wave path");
+
+        // Shape 12 (DoubleWave): two paths separated by 2.5 widths (1.25pt).
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.underline_shape = 12;
+        let page = place(run, &[]);
+        let ys = path_summary(&page);
+        assert_eq!(ys.len(), 2);
+        assert!(
+            (ys[1].0 - ys[0].0 - 1.25).abs() < 0.01,
+            "double-wave spacing: {ys:?}"
+        );
+    }
+
+    #[test]
+    fn emits_strike_shape_at_expected_position() {
+        // Double (7): two strokes at +/-0.15pt around y - 0.25em.
+        let mut run = dummy_run("가", 1);
+        run.strike = true;
+        run.strike_shape = 7;
+        let page = place(run, &[]);
+        let ys = path_summary(&page);
+        assert_eq!(ys.len(), 2);
+        assert!((ys[0].0 - 197.35).abs() < 0.01, "first stroke: {ys:?}");
+        assert!((ys[1].0 - 197.65).abs() < 0.01, "second stroke: {ys:?}");
+    }
+
+    #[test]
+    fn emits_emphasis_marks_per_nonblank_glyph() {
+        // Three glyphs for "가 나" produce two marks because whitespace is skipped.
+        let mut run = dummy_run("가 나", 3);
+        run.emphasis = 1; // DOT_ABOVE
+        let page = place(run, &[]);
+        let dots: Vec<(f32, f32)> = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path {
+                    commands,
+                    fill: Some(Fill::Solid(_)),
+                    ..
+                } => match commands[0] {
+                    PathCmd::MoveTo(x, y) => Some((x, y)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dots.len(), 2, "one mark per nonblank glyph: {dots:?}");
+        // Radius is 0.05em and the center is 0.95em above the baseline.
+        assert!((dots[0].0 - 105.5).abs() < 0.01, "first mark: {dots:?}");
+        assert!(
+            (dots[1].0 - 125.5).abs() < 0.01,
+            "third-glyph mark: {dots:?}"
+        );
+        assert!(
+            (dots[0].1 - 190.5).abs() < 0.01,
+            "upper emphasis height: {dots:?}"
+        );
+
+        // DOT_BELOW (12): y + 0.30em = 203.
+        let mut run = dummy_run("가", 1);
+        run.emphasis = 12;
+        let page = place(run, &[]);
+        let below: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path {
+                    commands,
+                    fill: Some(Fill::Solid(_)),
+                    ..
+                } => match commands[0] {
+                    PathCmd::MoveTo(_, y) => Some(y),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(below.len(), 1);
+        assert!(
+            (below[0] - 203.0).abs() < 0.01,
+            "DOT_BELOW height: {below:?}"
+        );
+
+        // COLON (6): two dots per glyph.
+        let mut run = dummy_run("가나", 2);
+        run.emphasis = 6;
+        let page = place(run, &[]);
+        let filled = page
+            .items
+            .iter()
+            .filter(|it| matches!(it, Item::Path { fill: Some(_), .. }))
+            .count();
+        assert_eq!(filled, 4, "COLON has two dots per glyph");
+    }
+
+    #[test]
+    fn character_background_precedes_glyphs() {
+        let bf = BorderFill {
+            bg_color: Some(0x0000_00FF),
+            sides: [BorderLine {
+                line_type: 1,
+                width: 0,
+                color: 0,
+            }; 4],
+            ..BorderFill::default()
+        };
+        let mut run = dummy_run("가", 1);
+        run.border_fill_id = 1; // One-based reference.
+        let page = place(run, std::slice::from_ref(&bf));
+
+        // Order: background rectangle, glyphs, then border path.
+        assert!(
+            matches!(page.items[0], Item::Rect { fill, .. } if fill == 0x0000_00FF),
+            "first item is the background rectangle: {:?}",
+            std::mem::discriminant(&page.items[0])
+        );
+        assert!(
+            matches!(page.items[1], Item::Glyphs { .. }),
+            "second item contains glyphs"
+        );
+        // Four identical solid sides form one closed path after the glyphs.
+        let border = page.items.iter().skip(2).find_map(|it| match it {
+            Item::Path { commands, .. } => Some(commands),
+            _ => None,
+        });
+        let cmds = border.expect("border path");
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
+        // Provisional box metrics span y - 0.80em through y + 0.25em.
+        let (top, bottom) = match page.items[0] {
+            Item::Rect { y, h, .. } => (y, y + h),
+            _ => unreachable!(),
+        };
+        assert!((top - 192.0).abs() < 0.01 && (bottom - 202.5).abs() < 0.01);
+
+        // An out-of-range border fill reference does not emit a background.
+        let mut run = dummy_run("가", 1);
+        run.border_fill_id = 9;
+        let page = place(run, std::slice::from_ref(&bf));
+        assert!(
+            !page.items.iter().any(|it| matches!(it, Item::Rect { .. })),
+            "out-of-range reference has no background"
+        );
+    }
+
+    #[test]
+    fn builds_wave_path() {
+        // half_len=2 and amp=1 use k=1/0.75 and return to the baseline.
+        let cmds = wave_commands(0.0, 10.0, 8.0, 2.0, 1.0);
+        assert!(matches!(cmds[0], PathCmd::MoveTo(0.0, 10.0)));
+        assert_eq!(cmds.len(), 5, "four half-waves plus MoveTo");
+        let k = 1.0 / 0.75;
+        match cmds[1] {
+            PathCmd::CubicTo(c1x, c1y, c2x, c2y, ex, ey) => {
+                assert!((c1x - 1.0).abs() < 0.01 && (c1y - (10.0 - k)).abs() < 0.01);
+                assert!((c2x - 1.0).abs() < 0.01 && (c2y - (10.0 - k)).abs() < 0.01);
+                assert!((ex - 2.0).abs() < 0.01 && (ey - 10.0).abs() < 0.01);
+            }
+            _ => panic!("CubicTo"),
+        }
+        // The next half-wave bends downward.
+        match cmds[2] {
+            PathCmd::CubicTo(_, c1y, ..) => assert!((c1y - (10.0 + k)).abs() < 0.01),
+            _ => panic!("CubicTo"),
+        }
+    }
+
+    #[test]
+    fn reserves_all_run_items_before_emission() {
+        let mut run = dummy_run("가", 1);
+        run.emphasis = 6; // Glyphs plus two COLON paths require three items.
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warnings = RenderIssueAccumulator::new();
+        warnings.set_display_item_limit(2);
+
+        push_run(&mut page, 100.0, 200.0, run, &[], &mut warnings);
+
+        assert!(warnings.display_item_budget_exceeded());
+        assert!(
+            page.items.is_empty(),
+            "a rejected run must be emitted atomically"
+        );
     }
 }

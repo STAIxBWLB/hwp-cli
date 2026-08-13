@@ -97,7 +97,7 @@ fn render_page(page: &PageList) -> String {
                 }
                 // 그림자 — 본문 전에 오프셋 복사.
                 if let Some(sc) = run.shadow {
-                    let sd = run.size_pt * 0.06;
+                    let (sdx, sdy) = run.shadow_offset();
                     let shc = hex_color(sc);
                     let mut pen_x = *x;
                     for glyph in &run.glyphs {
@@ -107,7 +107,7 @@ fn render_page(page: &PageList) -> String {
                             .clone();
                         if let Some(d) = d {
                             let (a, dd) = (s * run.x_scale, -s);
-                            let (e, f) = (pen_x + glyph.x_offset + sd, y - glyph.y_offset + sd);
+                            let (e, f) = (pen_x + glyph.x_offset + sdx, y - glyph.y_offset + sdy);
                             let _ = writeln!(
                                 out,
                                 r#"<path transform="matrix({a:.4} 0 {skew_c:.4} {dd:.4} {e:.2} {f:.2})" d="{d}" fill="{shc}"/>"#

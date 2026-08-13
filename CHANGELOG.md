@@ -12,6 +12,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Character decoration fidelity, the sixth step of the PDF parity roadmap
+  ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Emphasis dots (CharShape attr bits
+  21 to 24) render per glyph in all 13 documented kinds and round-trip through hwpx
+  `symMark` (GG-8). Underline shapes — dash family, double/weighted offsets, and cubic wave
+  paths — plus the above-character underline kind apply via the new `decor_strokes` table in
+  `hwp-render/src/border.rs` (GG-9). Strikethrough shapes (bits 26 to 29) share the same table
+  and round-trip in hwpx (GG-10). Character shadows now use the real `CharShape.shadow_gap`
+  percentage offset in the png, svg and pdf backends (GG-11). Character-level borders and
+  backgrounds (`CharShape.border_fill_id`) render per run, background emitted before the
+  glyphs (GG-22). Decoration metrics are initial placeholders pending the Hancom verification
+  round.
+
 - Border line-type fidelity, the fifth step of the PDF parity roadmap
   ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Cell, paragraph, page and diagonal
   borders now honor `BorderLine.line_type` via the new `hwp-render/src/border.rs` helper: the
@@ -77,6 +89,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   remains pending, so this does not yet certify output parity.
 
 **Fixed**
+
+- Above-character underlines (CharShape underline kind 3) were dropped entirely because
+  `has_underline()` only recognized kind 1; the renderer now switches on the kind.
 
 - Tab advance disagreement between line breaking and placement: `items_width` and
   `compute_linesegs` used a floor-only 40 pt rule while `place_wrapped` honored explicit tab
