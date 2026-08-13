@@ -1008,7 +1008,7 @@ pub fn layout_document(
                     );
                     content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
                 }
-                content_bottom = layout_para_objects(
+                let (objects_bottom, objects_split) = layout_para_objects(
                     doc,
                     store,
                     &mut page,
@@ -1017,20 +1017,42 @@ pub fn layout_document(
                     para_top.unwrap_or(content_bottom),
                     content_bottom,
                     body_width,
+                    Some(&mut TableSplitCtx {
+                        pages: &mut pages,
+                        page_numbers: &mut page_numbers,
+                        furniture: &furniture,
+                        page_notes: &mut page_notes,
+                        body_top,
+                        body_bottom,
+                        body_left,
+                        body_width,
+                        page_dims: (w, h),
+                        prev_v_pos: &mut prev_v_pos,
+                        paras_on_page: &mut paras_on_page,
+                        col_band: &mut col_band,
+                        has_flow: &mut has_flow_in_current_band,
+                    }),
                     warnings,
                 );
+                content_bottom = objects_bottom;
                 // 폴백 문단은 페이지를 걸치지 않는다(단일 조각 — 상·하 테두리 모두).
+                // 단, 달린 표가 쪽을 나눴으면 마지막 쪽의 표 구간만 근사로 칠한다.
                 if let Some(top) = para_top {
+                    let (slice_insert, slice_top, slice_first) = if objects_split {
+                        (0, body_top, false)
+                    } else {
+                        (bg_slice_insert, top, true)
+                    };
                     draw_para_bg_slice(
                         doc,
                         &mut page,
                         para,
                         body_left + geom.left,
                         (body_width - geom.left - geom.right).max(1.0),
-                        bg_slice_insert,
-                        top,
+                        slice_insert,
+                        slice_top,
                         content_bottom,
-                        true,
+                        slice_first,
                         true,
                         warnings,
                     );
@@ -1091,6 +1113,10 @@ pub fn layout_document(
                             return DisplayList { pages };
                         }
                         paras_on_page = 0;
+                        // 페이지를 건너간 문단의 개체(표 등) 앵커는 첫 페이지의
+                        // para_top이 아니라 새 페이지의 흐름 위치로 재앵커한다
+                        // (stale para_top — 마지막 페이지에 첫 페이지 y로 그리던 버그).
+                        para_top = None;
                     } else {
                         // A column boundary advances within the current page.
                         col_band += 1;
@@ -1193,7 +1219,7 @@ pub fn layout_document(
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
             }
 
-            content_bottom = layout_para_objects(
+            let (objects_bottom, _objects_split) = layout_para_objects(
                 doc,
                 store,
                 &mut page,
@@ -1202,8 +1228,24 @@ pub fn layout_document(
                 para_top.unwrap_or(content_bottom),
                 content_bottom,
                 body_width,
+                Some(&mut TableSplitCtx {
+                    pages: &mut pages,
+                    page_numbers: &mut page_numbers,
+                    furniture: &furniture,
+                    page_notes: &mut page_notes,
+                    body_top,
+                    body_bottom,
+                    body_left,
+                    body_width,
+                    page_dims: (w, h),
+                    prev_v_pos: &mut prev_v_pos,
+                    paras_on_page: &mut paras_on_page,
+                    col_band: &mut col_band,
+                    has_flow: &mut has_flow_in_current_band,
+                }),
                 warnings,
             );
+            content_bottom = objects_bottom;
             // 마지막(또는 유일) 배경 조각: 하변 테두리 O, 상변은 첫 조각일 때만(=경계 안 걸침).
             if let Some(top) = bg_slice_top {
                 draw_para_bg_slice(
@@ -1277,6 +1319,63 @@ fn push_page_checked(
     );
     pages.push(std::mem::replace(page, next));
     true
+}
+
+/// 표의 쪽 경계 분할에 필요한 페이지 전이 상태. 본문 흐름(최상위 문단)에서만
+/// Some으로 전달된다. 셀·글상자 안의 중첩 표는 쪽을 걸치지 않으므로 None.
+///
+/// `page` 자체는 들지 않는다 — 호출부가 이미 `&mut PageList`를 쥐고 있어
+/// 중복 빌림을 피하기 위해 `break_page`의 인자로 받는다.
+struct TableSplitCtx<'a, 's: 'a> {
+    pages: &'a mut Vec<PageList>,
+    page_numbers: &'a mut PageNumberState,
+    furniture: &'a Furniture<'s>,
+    page_notes: &'a mut Vec<&'s Note<'s>>,
+    body_top: f32,
+    body_bottom: f32,
+    body_left: f32,
+    body_width: f32,
+    page_dims: (f32, f32),
+    prev_v_pos: &'a mut i32,
+    paras_on_page: &'a mut usize,
+    col_band: &'a mut usize,
+    has_flow: &'a mut bool,
+}
+
+impl TableSplitCtx<'_, '_> {
+    /// 표준 페이지 마감 시퀀스(본문 넘침 분할과 동일 순서)를 수행하고 새 페이지를
+    /// 연다. 마감 후 상태 리셋까지 마치면 — 다음 문단의 lineseg 경계 플래그가
+    /// 흡수돼(has_flow=false) 한글의 쪽 경계와 이중 분할되지 않는다.
+    /// 페이지 예산 초과로 못 열면 false.
+    fn break_page(
+        &mut self,
+        doc: &Document,
+        store: &mut FontStore,
+        page: &mut PageList,
+        warnings: &mut RenderIssueAccumulator,
+    ) -> bool {
+        render_page_notes(
+            doc,
+            store,
+            page,
+            self.page_notes,
+            self.body_left,
+            self.body_width,
+            self.body_bottom,
+            warnings,
+        );
+        self.page_notes.clear();
+        self.page_numbers
+            .finish(doc, store, page, self.furniture, warnings);
+        if !push_page_checked(self.pages, page, Some(self.page_dims), warnings) {
+            return false;
+        }
+        *self.prev_v_pos = -1;
+        *self.paras_on_page = 0;
+        *self.col_band = 0;
+        *self.has_flow = false;
+        true
+    }
 }
 
 /// 기본 셀 안쪽 여백 (HWPUNIT — 한글 기본값).
@@ -1525,17 +1624,37 @@ fn layout_para_objects(
     anchor_top: f32,
     content_bottom: f32,
     avail_width: f32,
+    mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
-) -> f32 {
+) -> (f32, bool) {
     let mut bottom = content_bottom;
     let mut object_y = anchor_top;
+    // 표가 쪽을 나눴는가 — 나눴으면 반환 커서는 마지막 페이지 좌표다.
+    let mut page_split = false;
 
     for control in &para.controls {
         match control {
             Control::Table(table) => {
-                let h = layout_table(doc, store, page, table, x, object_y, avail_width, warnings);
-                bottom = bottom.max(object_y + h);
-                object_y += h; // 한 문단에 개체가 여럿이면 세로로 이어 배치
+                let (end, table_split) = layout_table(
+                    doc,
+                    store,
+                    page,
+                    table,
+                    x,
+                    object_y,
+                    avail_width,
+                    split.as_deref_mut(),
+                    warnings,
+                );
+                if table_split {
+                    // 쪽이 나뉐 뒤의 커서는 새 페이지 좌표 — 이전 페이지의
+                    // bottom과 max하면 빈 쪽이 생긴다.
+                    bottom = end;
+                    page_split = true;
+                } else {
+                    bottom = bottom.max(end);
+                }
+                object_y = end; // 한 문단에 개체가 여럿이면 세로로 이어 배치
             }
             Control::Picture(pic) => {
                 let (w, h) = (pic.width.to_pt() as f32, pic.height.to_pt() as f32);
@@ -1546,7 +1665,7 @@ fn layout_para_objects(
                 match doc.resolve_bin(&pic.bin_ref) {
                     Some(bytes) => {
                         if !warnings.charge_display_items(1) {
-                            return bottom;
+                            return (bottom, page_split);
                         }
                         page.items.push(Item::Image {
                             x,
@@ -1712,10 +1831,9 @@ fn layout_para_objects(
             _ => {}
         }
     }
-    bottom
+    (bottom, page_split)
 }
 
-/// 표 하나를 (x, y)에 배치하고 높이를 반환한다.
 /// 셀 여백 (왼/오른/위/아래) pt — 셀 지정 → 표 기본 → 한글 기본.
 fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
     let m = if cell.margins.iter().any(|&v| v > 0) {
@@ -1742,8 +1860,9 @@ fn layout_table(
     x: f32,
     y: f32,
     avail_width: f32,
+    split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
-) -> f32 {
+) -> (f32, bool) {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
 
@@ -1819,26 +1938,201 @@ fn layout_table(
         }
     }
 
-    // 누적 오프셋
+    // 누적 오프셋 (row_prefix는 표 상단 기준 — 쪽 분할 조각의 베이스 계산용)
     let col_x: Vec<f32> = prefix_sums(&col_w, x);
-    let row_y: Vec<f32> = prefix_sums(&row_h, y);
+    let row_prefix: Vec<f32> = prefix_sums(&row_h, 0.0);
+    let total_h: f32 = row_h.iter().sum();
 
-    // 표 셀 안 목록 카운터 — 이 표 안에서 셀 순서로 진행(표마다 리셋).
+    // 그리드 밖 셀은 조각 방출 때 중복 집계되지 않게 여기서 한 번만 보고한다.
+    for cell in &table.cells {
+        if cell.col as usize >= cols || cell.row as usize >= rows {
+            warnings.push(
+                RenderIssueCode::InvalidTableCellOmitted,
+                format!("{}:{}", cell.row, cell.col),
+            );
+        }
+    }
+
+    // 제목 행 수: 선두부터 "그 행에서 시작하는 셀이 모두 제목 셀"인 연속 행.
+    // 표 전체가 제목 행이면 반복 대상으로 삼지 않는다.
+    let header_rows = if table.repeat_header() {
+        let mut n = 0usize;
+        while n < rows {
+            let r = n as u16;
+            let mut any = false;
+            let mut all_header = true;
+            for cell in &table.cells {
+                if cell.row == r {
+                    any = true;
+                    if !cell.is_header() {
+                        all_header = false;
+                        break;
+                    }
+                }
+            }
+            if !any || !all_header {
+                break;
+            }
+            n += 1;
+        }
+        if n >= rows { 0 } else { n }
+    } else {
+        0
+    };
+    let header_h: f32 = row_h[..header_rows].iter().sum();
+
+    // 쪽 분할 계획: (시작 행, 끝 행, 데이터 영역 상단 y, 제목 행 재그리기 여부).
+    let mut fragments: Vec<(usize, usize, f32, bool)> = vec![(0, rows, y, false)];
+    let mut split_happened = false;
+    if let Some(ctx) = split {
+        let body_top = ctx.body_top;
+        let body_bottom = ctx.body_bottom;
+        let page_h = body_bottom - body_top;
+        let treat_as_char = table.placement.as_ref().is_some_and(|p| p.treat_as_char);
+        let policy = table.page_break_policy();
+        if y + total_h > body_bottom {
+            if treat_as_char || (policy == hwp_model::TablePageBreak::None && total_h <= page_h) {
+                // 글자처럼 취급 표는 "한 글자"라 나눌 수 없고(GE-8), pageBreak=NONE은
+                // 통째로 다음 쪽으로 밀 뿐 나누지 않는다(04 §6.1 불변식).
+                if y > body_top && total_h <= page_h {
+                    if ctx.break_page(doc, store, page, warnings) {
+                        split_happened = true;
+                        fragments = vec![(0, rows, body_top, false)];
+                    }
+                } else if total_h > page_h {
+                    // 한 쪽에도 안 들어가는 글자처럼 취급 표 — 넘침(절단)을 보고.
+                    warnings.push(RenderIssueCode::TableRowTooTallClipped, b"treat-as-char");
+                }
+            } else {
+                // 행 경계 분할 (pageBreak=TABLE/CELL; 한 쪽을 넘는 NONE의 폴백).
+                // CELL의 셀 내부 분할은 미지원 — 행이 한 쪽을 넘을 때만
+                // TableRowTooTallClipped로 표면화된다.
+                let mut frags: Vec<(usize, usize, f32, bool)> = Vec::new();
+                let mut rs = 0usize;
+                let mut top = y;
+                let mut cur_y = y;
+                let mut can_break = true;
+                for (r, &rh) in row_h.iter().enumerate() {
+                    if can_break
+                        && cur_y + rh > body_bottom
+                        && (r > rs || cur_y > body_top + header_h + 0.5)
+                    {
+                        if r > rs {
+                            frags.push((rs, r, top, header_rows > 0 && rs > 0));
+                        }
+                        // r == rs(조각의 첫 행)인데 안 들어가는 경우는 슬라이버
+                        // 공간뿐 — 통째로 다음 쪽에서 시작한다.
+                        if ctx.break_page(doc, store, page, warnings) {
+                            split_happened = true;
+                            rs = r;
+                            top = body_top + if r == 0 { 0.0 } else { header_h };
+                            cur_y = top;
+                        } else {
+                            can_break = false; // 페이지 예산 소진 — 나머지는 현재 쪽에
+                        }
+                    }
+                    if rh > page_h - header_h {
+                        warnings.push(RenderIssueCode::TableRowTooTallClipped, format!("row {r}"));
+                    }
+                    cur_y += rh;
+                }
+                frags.push((rs, rows, top, header_rows > 0 && rs > 0));
+                fragments = frags;
+            }
+        }
+    }
+    if split_happened {
+        warnings.push(
+            RenderIssueCode::TableSplitAcrossPages,
+            format!("{rows} rows"),
+        );
+    }
+
+    // 조각 방출 — 표 셀 안 목록 카운터는 표마다 리셋, 셀 순서로 진행.
+    // 이어지는 쪽의 제목 행은 실제 카운터를 진행하지 않도록 복제 상태로 그린다.
     let mut cell_ls = crate::list::ListState::default();
-    for (ci, cell) in table.cells.iter().enumerate() {
-        let (c, r) = (cell.col as usize, cell.row as usize);
-        if c >= cols || r >= rows {
-            warnings.push(RenderIssueCode::InvalidTableCellOmitted, format!("{r}:{c}"));
+    let mut end_y = y;
+    for &(rs, re, data_top, with_header) in &fragments {
+        if re <= rs {
             continue;
         }
+        if with_header {
+            let mut header_ls = cell_ls.clone();
+            draw_table_rows(
+                doc,
+                store,
+                page,
+                table,
+                &col_x,
+                &col_w,
+                &row_h,
+                &row_prefix,
+                &content_h_by_cell,
+                0..header_rows,
+                data_top - header_h,
+                &mut header_ls,
+                warnings,
+            );
+        }
+        draw_table_rows(
+            doc,
+            store,
+            page,
+            table,
+            &col_x,
+            &col_w,
+            &row_h,
+            &row_prefix,
+            &content_h_by_cell,
+            rs..re,
+            data_top - row_prefix[rs],
+            &mut cell_ls,
+            warnings,
+        );
+        end_y = data_top + (row_prefix[re] - row_prefix[rs]);
+    }
+    (end_y, split_happened)
+}
+
+/// 표의 행 범위 하나(쪽 분할 조각)를 그린다. `base_y + row_prefix[r]`가 행 상단.
+/// 쪽 경계에 걸친 병합 셀은 이 조각 높이로 절단하고(다음 조각에서 다시 그리지 않는
+/// 근사) TableCellPageSpanClipped로 보고한다.
+#[allow(clippy::too_many_arguments)]
+fn draw_table_rows(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &mut PageList,
+    table: &Table,
+    col_x: &[f32],
+    col_w: &[f32],
+    row_h: &[f32],
+    row_prefix: &[f32],
+    content_h_by_cell: &[f32],
+    range: std::ops::Range<usize>,
+    base_y: f32,
+    cell_ls: &mut crate::list::ListState,
+    warnings: &mut RenderIssueAccumulator,
+) {
+    let cols = col_w.len();
+    let rows = row_h.len();
+    for (ci, cell) in table.cells.iter().enumerate() {
+        let (c, r) = (cell.col as usize, cell.row as usize);
+        if c >= cols || r >= rows || !range.contains(&r) {
+            continue; // 그리드 밖 셀은 layout_table에서 이미 보고됨
+        }
         let cx = col_x[c];
-        let cy = row_y[r];
+        let cy = base_y + row_prefix[r];
         let cw: f32 = col_w[c..(c + cell.col_span as usize).min(cols)]
             .iter()
             .sum();
-        let ch: f32 = row_h[r..(r + cell.row_span as usize).min(rows)]
-            .iter()
-            .sum();
+        let span_end = (r + (cell.row_span as usize).max(1)).min(rows);
+        if span_end > range.end {
+            warnings.push(
+                RenderIssueCode::TableCellPageSpanClipped,
+                format!("{r}:{c}"),
+            );
+        }
+        let ch: f32 = row_h[r..span_end.min(range.end)].iter().sum();
 
         let border_fill = doc
             .header
@@ -1848,7 +2142,7 @@ fn layout_table(
         // 1) 배경
         if let Some(bg) = border_fill.and_then(|bf| bf.visible_bg()) {
             if !warnings.charge_display_items(1) {
-                return 0.0;
+                return;
             }
             page.items.push(Item::Rect {
                 x: cx,
@@ -1864,7 +2158,7 @@ fn layout_table(
         let (ml, mr, mt, mb) = cell_margins(table, cell);
         let content_h = content_h_by_cell.get(ci).copied().unwrap_or(0.0);
         let avail = (ch - mt - mb - content_h).max(0.0);
-        let voff = match (cell.list_attr >> 5) & 0x3 {
+        let voff = match cell.vert_align() {
             1 => avail * 0.5,
             2 => avail,
             _ => 0.0,
@@ -1878,7 +2172,7 @@ fn layout_table(
             cy + mt + voff,
             (cw - ml - mr).max(4.0),
             warnings,
-            Some(&mut cell_ls), // 렌더 패스: 셀 목록 마커 그림
+            Some(cell_ls), // 렌더 패스: 셀 목록 마커 그림
             None,
         );
 
@@ -1893,7 +2187,7 @@ fn layout_table(
             for (side, (x1, y1, x2, y2)) in bf.sides.iter().zip(edges) {
                 if side.is_visible() {
                     if !warnings.charge_display_items(1) {
-                        return 0.0;
+                        return;
                     }
                     page.items.push(Item::Line {
                         x1,
@@ -1913,7 +2207,7 @@ fn layout_table(
                 let dw = bf.diagonal.width_mm() * 72.0 / 25.4;
                 if backslash {
                     if !warnings.charge_display_items(1) {
-                        return 0.0;
+                        return;
                     }
                     page.items.push(Item::Line {
                         x1: cx,
@@ -1926,7 +2220,7 @@ fn layout_table(
                 }
                 if slash {
                     if !warnings.charge_display_items(1) {
-                        return 0.0;
+                        return;
                     }
                     page.items.push(Item::Line {
                         x1: cx,
@@ -1940,7 +2234,6 @@ fn layout_table(
             }
         }
     }
-    row_h.iter().sum()
 }
 
 /// BORDER_FILL 속성 비트 → (대각선 `/`, 역대각선 `\`) 그릴지.
@@ -2159,7 +2452,7 @@ fn layout_box_para_iter<'a>(
 
         // 셀 안의 중첩 표/이미지 — 바닥을 늘렸으면 흐름 하한도 올려 후속 캐시 문단 겹침 방지.
         let before_objects = content_bottom;
-        content_bottom = layout_para_objects(
+        let (objects_bottom, _no_split) = layout_para_objects(
             doc,
             store,
             page,
@@ -2168,8 +2461,10 @@ fn layout_box_para_iter<'a>(
             para_top.unwrap_or(content_bottom),
             content_bottom,
             width,
+            None, // 상자(셀/글상자) 안의 중첩 개체는 쪽을 걸치지 않는다
             warnings,
         );
+        content_bottom = objects_bottom;
         if content_bottom > before_objects {
             flow_floor = flow_floor.max(content_bottom);
         }

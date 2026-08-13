@@ -219,6 +219,47 @@ pub struct Cell {
     pub paragraphs: Vec<Paragraph>,
 }
 
+/// 표의 쪽 나눔 정책 (`Table.attr` bits 0-1, hwpx `pageBreak`).
+/// 비트 위치는 genuine 파일 실측 근거 (docs/design/04-hwpx-owpml.md §6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablePageBreak {
+    /// 나누지 않음 — 남은 공간에 안 들어가면 통째로 다음 쪽으로 밀린다.
+    None,
+    /// 행 경계에서 나눔.
+    Table,
+    /// 셀 안에서도 나눔 (렌더러는 현재 Table과 동일하게 취급).
+    Cell,
+}
+
+impl Table {
+    /// 쪽 나눔 정책 (`attr` bits 0-1: NONE=0, TABLE=1, CELL=2).
+    pub fn page_break_policy(&self) -> TablePageBreak {
+        match self.attr & 0x3 {
+            1 => TablePageBreak::Table,
+            2 => TablePageBreak::Cell,
+            _ => TablePageBreak::None,
+        }
+    }
+
+    /// 제목 줄 자동 반복 (`attr` bit2, hwpx `repeatHeader`).
+    pub fn repeat_header(&self) -> bool {
+        self.attr & 0x4 != 0
+    }
+}
+
+impl Cell {
+    /// 제목 셀 여부 (`list_attr` bit18, hwpx `hp:tc@header`) — 표가 쪽에 걸칠 때
+    /// 이어지는 쪽에서 반복되는 행의 셀.
+    pub fn is_header(&self) -> bool {
+        self.list_attr & (1 << 18) != 0
+    }
+
+    /// 세로 정렬 (`list_attr` bits 5-6: TOP=0, CENTER=1, BOTTOM=2).
+    pub fn vert_align(&self) -> u8 {
+        ((self.list_attr >> 5) & 0x3) as u8
+    }
+}
+
 /// 의미 파싱하지 않는 컨트롤 (머리말/꼬리말/각주/글상자/필드 등).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenericControl {
@@ -375,7 +416,56 @@ pub struct ParagraphList {
 
 #[cfg(test)]
 mod tests {
-    use super::GsoPlacement;
+    use super::{Cell, GsoPlacement, Table, TablePageBreak};
+    use crate::units::HwpUnit;
+
+    /// 쪽 나눔·제목 줄 반복·제목 셀 비트 접근자 (04-hwpx-owpml.md §6 실측 비트).
+    #[test]
+    fn 표_쪽나눔_제목셀_비트_접근자() {
+        let table = |attr: u32| Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr,
+            rows: 0,
+            cols: 0,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: Vec::new(),
+            border_fill: Default::default(),
+            table_tail: Vec::new(),
+            cells: Vec::new(),
+            extras: Vec::new(),
+        };
+        assert_eq!(table(0).page_break_policy(), TablePageBreak::None);
+        assert_eq!(table(1).page_break_policy(), TablePageBreak::Table);
+        assert_eq!(table(2).page_break_policy(), TablePageBreak::Cell);
+        assert!(!table(0).repeat_header());
+        assert!(table(0b100).repeat_header());
+        assert!(table(0b101).repeat_header());
+
+        let cell = |list_attr: u32| Cell {
+            list_attr,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(0),
+            height: HwpUnit(0),
+            margins: [0; 4],
+            border_fill: Default::default(),
+            header_tail: Vec::new(),
+            paragraphs: Vec::new(),
+        };
+        assert!(!cell(0).is_header());
+        assert!(cell(1 << 18).is_header());
+        assert_eq!(cell(0).vert_align(), 0);
+        assert_eq!(cell(0x20).vert_align(), 1);
+        assert_eq!(cell(0x40).vert_align(), 2);
+        // 제목 셀 + 세로 정렬 비트는 서로 간섭하지 않는다.
+        let both = cell((1 << 18) | 0x20);
+        assert!(both.is_header());
+        assert_eq!(both.vert_align(), 1);
+    }
 
     /// 정품 한라대 .hwp 실측 표 공통 속성 attr를 비트 합성으로 재현하는지 확인한다.
     /// (글자처럼 취급 보존 — 인라인 표가 떠 있는 개체로 빠지던 버그의 회귀 방지.)

@@ -1025,3 +1025,298 @@ fn 머리말_atno는_페이지마다_현재_쪽번호로_치환() {
         "atno/head가 미지원으로 집계됨: {warnings:?}"
     );
 }
+
+// ---------- 표 쪽 분할 (PDF parity PR 2: 행 경계 분할 + 제목 줄 반복) ----------
+
+/// 표 분할 테스트용 문서: 빈 filler 문단 `filler`개 뒤의 앵커 문단에 1열 표를 단다.
+/// 데이터 셀 배경 = fill id 1, 제목 셀 배경 = fill id 2로 Rect를 식별한다.
+fn 표_분할_문서(
+    attr: u32,
+    rows: u16,
+    row_h_pt: i32,
+    header_rows: u16,
+    treat_as_char: bool,
+    filler: usize,
+) -> hwp_model::Document {
+    let mut doc = hwp_convert::from_markdown("앵커");
+    // from_markdown이 이미 채운 border_fills 뒤에 추가하므로 베이스를 더한다
+    // (BorderFillId는 1-기반).
+    let fill_base = doc.header.border_fills.len() as u16;
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x00C8_C8C8),
+        ..Default::default()
+    }); // fill_base + 1 — 데이터 셀
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x0055_5555),
+        ..Default::default()
+    }); // fill_base + 2 — 제목 셀
+    let cell = |row: u16, header: bool| hwp_model::Cell {
+        list_attr: if header { 1 << 18 } else { 0 },
+        col: 0,
+        row,
+        col_span: 1,
+        row_span: 1,
+        width: hwp_model::HwpUnit(5000),
+        height: hwp_model::HwpUnit(row_h_pt * 100),
+        margins: [0; 4],
+        border_fill: hwp_model::BorderFillId(if header { fill_base + 2 } else { fill_base + 1 }),
+        header_tail: Vec::new(),
+        paragraphs: Vec::new(),
+    };
+    let table = hwp_model::Table {
+        common_data: Vec::new(),
+        placement: treat_as_char.then_some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            ..Default::default()
+        }),
+        attr,
+        rows,
+        cols: 1,
+        cell_spacing: 0,
+        inner_margins: [0; 4],
+        row_cell_counts: vec![1; rows as usize],
+        border_fill: hwp_model::BorderFillId(fill_base + 1),
+        table_tail: Vec::new(),
+        cells: (0..rows).map(|r| cell(r, r < header_rows)).collect(),
+        extras: Vec::new(),
+    };
+    let anchor = &mut doc.sections[0].paragraphs[0];
+    anchor.chars.clear(); // 빈 문단 — 표는 본문 상단 + 16pt에 앵커된다
+    anchor.controls.push(hwp_model::Control::Table(table));
+    for _ in 0..filler {
+        let mut p = doc.sections[0].paragraphs[0].clone();
+        p.controls.clear();
+        doc.sections[0].paragraphs.insert(0, p);
+    }
+    doc
+}
+
+/// (본문 상단, 본문 하한) pt — layout.rs의 body_top/body_bottom 공식과 동일.
+fn 본문_기하(doc: &hwp_model::Document) -> (f32, f32) {
+    let p = doc.sections[0].section_def().unwrap().page.unwrap();
+    let h = p.height.0 as f32 / 100.0;
+    let top = (p.margin_top.0 + p.margin_header.0) as f32 / 100.0;
+    let bottom = h - (p.margin_bottom.0 + p.margin_footer.0) as f32 / 100.0;
+    (top, bottom)
+}
+
+/// 페이지의 채움 사각형 (y, h, fill) 목록.
+fn 채움_사각형(list: &hwp_render::display::DisplayList, page: usize) -> Vec<(f32, f32, u32)> {
+    list.pages[page]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            hwp_render::display::Item::Rect { y, h, fill, .. } => Some((*y, *h, *fill)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn 표_레이아웃(
+    doc: &hwp_model::Document,
+) -> (
+    hwp_render::display::DisplayList,
+    hwp_render::RenderIssueReport,
+) {
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(doc, &mut store, &mut warns);
+    (list, warns.finish())
+}
+
+/// pageBreak=TABLE 표는 본문 하한을 넘는 첫 행에서 쪽을 나누고, 어느 셀도
+/// 본문 영역 밖으로 잘리지 않아야 한다(기존: 미디어 박스 무소식 클립).
+#[test]
+fn 표_쪽분할_행경계_클립없음() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (_body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - _body_top;
+    let rows = (page_h / 100.0) as u16 + 3; // 2쪽 보장
+    let doc = 표_분할_문서(1, rows, 100, 0, false, 0);
+    let (list, report) = 표_레이아웃(&doc);
+    assert!(
+        list.pages.len() >= 2,
+        "행 경계에서 쪽이 나뉘어야 한다: pages={}",
+        list.pages.len()
+    );
+    let mut data_rects = 0;
+    for pi in 0..list.pages.len() {
+        for &(y, h, fill) in &채움_사각형(&list, pi) {
+            assert_eq!(fill, 0x00C8_C8C8);
+            data_rects += 1;
+            assert!(
+                y + h <= body_bottom + 0.6,
+                "셀이 본문 하한({body_bottom})을 넘으면 안 된다: y={y} h={h} (page {pi})"
+            );
+        }
+    }
+    assert_eq!(data_rects, rows as usize, "행 손실 없이 모두 그려야 한다");
+    assert!(
+        report
+            .info
+            .iter()
+            .any(|i| i.code == hwp_render::RenderIssueCode::TableSplitAcrossPages),
+        "분할이 info로 보고되어야 한다"
+    );
+}
+
+/// repeatHeader + 제목 셀(bit18)이면 이어지는 쪽 상단에 제목 행을 다시 그린다.
+#[test]
+fn 표_쪽분할_제목줄_반복() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let rows = (page_h / 100.0) as u16 + 3;
+    let doc = 표_분할_문서(1 | 4, rows, 100, 1, false, 0);
+    let (list, _report) = 표_레이아웃(&doc);
+    assert!(list.pages.len() >= 2);
+    let mut header_rects = 0;
+    let mut data_rects = 0;
+    for pi in 0..list.pages.len() {
+        let rects = 채움_사각형(&list, pi);
+        header_rects += rects.iter().filter(|r| r.2 == 0x0055_5555).count();
+        data_rects += rects.iter().filter(|r| r.2 == 0x00C8_C8C8).count();
+        if pi > 0 {
+            let top = rects
+                .iter()
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                .expect("이어지는 쪽에도 행이 있어야 한다");
+            assert_eq!(top.2, 0x0055_5555, "page {pi} 최상단은 제목 행이어야 한다");
+            assert!(
+                (top.0 - body_top).abs() < 0.6,
+                "제목 행은 본문 상단에: y={}",
+                top.0
+            );
+        }
+    }
+    assert_eq!(data_rects, rows as usize - 1, "데이터 행은 정확히 한 번씩");
+    assert_eq!(
+        header_rects,
+        list.pages.len(),
+        "제목 행은 첫 쪽 1회 + 이어지는 쪽마다 1회"
+    );
+}
+
+/// pageBreak=NONE이면 나누지 않고 통째로 다음 쪽으로 민다(04 §6.1 불변식).
+#[test]
+fn 표_page_break_none이면_통째로_다음쪽() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    // 남은 공간이 300pt 미만이 되도록 빈 문단(16pt)을 채운다.
+    let filler = ((page_h - 300.0) / 16.0).floor() as usize;
+    let doc = 표_분할_문서(0, 3, 100, 0, false, filler);
+    let (list, _report) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 2, "통째로 다음 쪽으로 밀려야 한다");
+    assert!(
+        채움_사각형(&list, 0).is_empty(),
+        "첫 쪽에는 표 조각이 없어야 한다"
+    );
+    let p2 = 채움_사각형(&list, 1);
+    assert_eq!(p2.len(), 3);
+    let min_y = p2.iter().map(|r| r.0).fold(f32::INFINITY, f32::min);
+    assert!(
+        (min_y - body_top).abs() < 0.6,
+        "표는 새 쪽 본문 상단에서 시작: y={min_y}"
+    );
+}
+
+/// 글자처럼 취급 표는 "한 글자"라 나누지 않는다(GE-8). 한 쪽을 넘으면
+/// 넘침을 TableRowTooTallClipped로 보고하고 조용한 클립은 없다.
+#[test]
+fn 표_글자처럼취급은_분할하지_않음() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let rows = (page_h / 100.0) as u16 + 3;
+    let doc = 표_분할_문서(1, rows, 100, 0, true, 0);
+    let (list, report) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 1, "한 글자 표는 쪽을 나누지 않는다");
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == hwp_render::RenderIssueCode::TableRowTooTallClipped),
+        "넘침이 보고되어야 한다"
+    );
+}
+
+/// row_span이 쪽 경계를 걸치는 병합 셀은 조각 높이로 절단하고 보고한다.
+#[test]
+fn 표_쪽분할_병합셀_절단_보고() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let rows = (page_h / 100.0) as u16 + 3;
+    let fit1 = ((page_h - 16.0) / 100.0).floor() as u16; // 첫 쪽에 들어가는 행 수
+    let mut doc = 표_분할_문서(1, rows, 100, 0, false, 0);
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|c| match c {
+            hwp_model::Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("표 컨트롤");
+    // 분할 지점(행 fit1)을 걸치는 3행 병합 셀.
+    let cell = table
+        .cells
+        .iter_mut()
+        .find(|c| c.row == fit1 - 1)
+        .expect("행 존재");
+    cell.row_span = 3;
+    let (list, report) = 표_레이아웃(&doc);
+    assert!(list.pages.len() >= 2);
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == hwp_render::RenderIssueCode::TableCellPageSpanClipped),
+        "병합 셀 절단이 보고되어야 한다"
+    );
+    for pi in 0..list.pages.len() {
+        for &(y, h, _) in &채움_사각형(&list, pi) {
+            assert!(
+                y + h <= body_bottom + 0.6,
+                "절단된 병합 셀도 본문 안에: y={y} h={h} (page {pi})"
+            );
+        }
+    }
+}
+
+/// 페이지를 건 넘는 문단에 달린 표는 첫 페이지의 stale para_top이 아니라
+/// 새 쪽의 흐름 위치(마지막 줄 아래)에 앵커되어야 한다.
+#[test]
+fn 페이지_걸친_문단의_표는_새쪽_흐름위치에_앵커() {
+    let mut doc = 표_분할_문서(1, 1, 50, 0, false, 0); // 1행 50pt 표
+    let (body_top, _bb) = 본문_기하(&doc);
+    let src = hwp_convert::from_markdown("가나다라");
+    let chars = src.sections[0].paragraphs[0].chars.clone();
+    let para = &mut doc.sections[0].paragraphs[0];
+    para.chars = chars;
+    // 둘째 줄에 페이지 첫 줄 플래그(bit0) — 캐시 lineseg 경계(PDF parity PR 1).
+    let seg = |text_start, flags| hwp_model::LineSeg {
+        text_start,
+        v_pos: 0,
+        line_height: 2000,
+        text_height: 2000,
+        baseline_gap: 1600,
+        line_spacing: 0,
+        col_start: 0,
+        seg_width: 50000,
+        flags,
+    };
+    para.line_segs = vec![seg(0, 0x0006_0000), seg(2, 0x0006_0001)];
+    let (list, _report) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 2, "둘째 줄에서 쪽이 나뉘어야 한다");
+    let p2 = 채움_사각형(&list, 1);
+    assert_eq!(p2.len(), 1);
+    // 줄 높이 20pt — 표는 둘째 줄 아래(body_top + 20)에 와야 한다.
+    // (stale para_top이면 첫 줄 상단 body_top에 겹쳐 그려진다.)
+    assert!(
+        (p2[0].0 - (body_top + 20.0)).abs() < 0.6,
+        "표는 새 쪽 흐름 위치에: y={} (기대 {})",
+        p2[0].0,
+        body_top + 20.0
+    );
+}

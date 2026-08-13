@@ -24,6 +24,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   published from a substituted-font render. The durable contract — oracle, five-metric set,
   thresholds, font gate, data policy and non-goals — is
   [docs/design/21-pdf-parity.md](docs/design/21-pdf-parity.md).
+- Table page splitting with header-row repeat, the second step of the PDF parity roadmap
+  ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). A table taller than the remaining
+  body space no longer clips silently at the media box: `pageBreak=NONE` pushes it wholesale to
+  the next page, `TABLE`/`CELL` split it at row boundaries (cell-internal splitting is
+  approximated as row-boundary splitting), and `repeatHeader` redraws the leading all-header-cell
+  rows at the top of every continuation page. Tables treated as characters never split ("one
+  character"). Splits and residual clips are reported as typed render issues
+  (`table_split_across_pages` info, `table_row_too_tall_clipped`,
+  `table_cell_page_span_clipped`).
+
+**Fixed**
+
+- Objects (tables, pictures) anchored to a page-spanning paragraph were placed on the final page
+  at the stale first-page y coordinate; the anchor is now re-bound to the new page's flow
+  position at every cached-lineseg page break.
 
 ## [0.8.4]
 

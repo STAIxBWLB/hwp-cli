@@ -114,11 +114,23 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
 3. **Measurement pass**: each cell is drawn into a scratch `PageList` with `layout_box_paragraphs` to
    measure its real content height, giving `row_h[r] = max(row_h[r], content_h + mt + mb)`. For
    `row_span>1`, any shortfall against the spanned sum is added to the last spanned row.
-4. Cumulative offsets `col_x = prefix_sums(col_w, x)` and `row_y = prefix_sums(row_h, y)`.
+4. Cumulative offsets `col_x = prefix_sums(col_w, x)` and `row_prefix = prefix_sums(row_h, 0)` (per
+   fragment a base y is added, so the same prefix serves every page fragment).
 5. Per cell: **a background Rect**, then **the content** (margins plus the vertical alignment `voff`
    from `(list_attr>>5)&0x3`: 0 top, 1 center at avail*0.5, 2 bottom at avail), then **four border
    Lines** (`width_mm()*72/25.4`), then **the diagonals** (`diagonal_dirs(attr)`: slash bits 2-4,
    backslash bits 5-7).
+6. **Page splitting** (body flow only, via `TableSplitCtx`; nested tables in cells/text boxes never
+   split): when the table would cross `body_bottom`, `Table::page_break_policy()` (`attr` bits 0-1)
+   decides. NONE pushes the whole table to the next page (the 04 §6.1 invariant), falling back to
+   row splitting only when the table is taller than a full page; TABLE/CELL split at row boundaries
+   (cell-internal splitting is unimplemented, so a row taller than a page overflows and is reported
+   as `TableRowTooTallClipped`); a `treat_as_char` table never splits ("one character", GE-8). Each
+   split runs the standard page-close sequence (notes → furniture → `push_page_checked` → flow-state
+   reset), so the next paragraph's Hancom boundary flag is absorbed instead of double-breaking. When
+   `repeat_header()` is set, the leading rows whose cells are all `Cell::is_header()` (`list_attr`
+   bit18) are redrawn at `body_top` of every continuation page. A merged cell spanning the split is
+   truncated to the fragment height and reported (`TableCellPageSpanClipped`).
 
 `cell_margins`: the cell's own, then the table's `inner_margins`, then the default
 `DEFAULT_CELL_MARGINS=[510,510,141,141]` HWPUNIT. The return value is /100 pt.
@@ -127,7 +139,10 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
 
 Walks `para.controls`, placing objects vertically from `object_y` (the anchor top):
 
-- **Table**: advances by the `layout_table` height.
+- **Table**: laid out by `layout_table` (may split across pages — §1.5 step 6). The anchor of a
+  page-spanning paragraph is re-anchored to the new page's flow position: `para_top` is cleared at
+  every cached-lineseg page break, so the object no longer lands at the stale first-page y on the
+  final page.
 - **Picture**: `doc.resolve_bin(bin_ref)` → `Item::Image`.
 - **Text box (gso with paragraph_lists)**: positioned by `gso::parse_gso_box`. With `treat_as_char()`
   it uses the flow position (inline); otherwise `(horz_offset, vert_offset)` is page-absolute

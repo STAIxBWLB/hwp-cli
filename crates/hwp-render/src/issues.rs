@@ -77,6 +77,9 @@ pub enum RenderIssueCode {
     ImageDecodePlaceholder,
     ImageDecodeBudgetExceeded,
     InvalidTableCellOmitted,
+    TableSplitAcrossPages,
+    TableRowTooTallClipped,
+    TableCellPageSpanClipped,
     TextBoxGeometryInvalidOmitted,
     ShapeDepthLimitOmitted,
     ShapeStyleInvalidOmitted,
@@ -108,6 +111,9 @@ impl RenderIssueCode {
             Self::ImageDecodePlaceholder => "image_decode_placeholder",
             Self::ImageDecodeBudgetExceeded => "image_decode_budget_exceeded",
             Self::InvalidTableCellOmitted => "invalid_table_cell_omitted",
+            Self::TableSplitAcrossPages => "table_split_across_pages",
+            Self::TableRowTooTallClipped => "table_row_too_tall_clipped",
+            Self::TableCellPageSpanClipped => "table_cell_page_span_clipped",
             Self::TextBoxGeometryInvalidOmitted => "text_box_geometry_invalid_omitted",
             Self::ShapeDepthLimitOmitted => "shape_depth_limit_omitted",
             Self::ShapeStyleInvalidOmitted => "shape_style_invalid_omitted",
@@ -119,7 +125,7 @@ impl RenderIssueCode {
 
     pub const fn severity(self) -> RenderIssueSeverity {
         match self {
-            Self::FontMatched => RenderIssueSeverity::Info,
+            Self::FontMatched | Self::TableSplitAcrossPages => RenderIssueSeverity::Info,
             Self::FontSubstituted | Self::FontSubsetFallback => RenderIssueSeverity::Warning,
             Self::ParseBudgetExceeded
             | Self::RenderExecutionFailed
