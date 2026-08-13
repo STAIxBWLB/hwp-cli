@@ -87,6 +87,14 @@ FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바�
 rollback 보호 방식으로 게시한다. 3~5건의 한글 기준 내기와 첫 커밋 수치는 남은 소유자
 액션.
 
+**구현 상태 2026-08-13 (PR 5):** 테두리 충실도 배치 반영(GG-5, GG-6, GG-17, GG-21, GG-24).
+셀·문단·쪽·대각선 테두리가 `hwp-render/src/border.rs`를 통해 `BorderLine.line_type`을
+반영한다 — 점선 계열은 `Stroke.dash`, 이중선 계열은 오프셋 병렬 선 — 하고 `Item::Line`은
+`Item::Path`로 대체·삭제됐다. HWPX 단 구분선(`hp:colLine`)은 왕복·렌더되며 hwp5 coldef
+구분선 파싱은 보류(바이트 오프셋 미확정). hwp5 raw 경로 도형에 점선 패턴·화살촉을 적용
+(종전 hwpx 전용). 탭 전진은 `items_width`·`place_wrapped`·`compute_linesegs`가
+`tab::next_tab`으로 통일됐다. 이중선 굵기 분할은 근사값으로 한컴 검증 라운드 확인 대상.
+
 ## 4. 게이트
 
 ### 4.1 정본 한컴 오라클 게이트 — 향후 공개 코퍼스

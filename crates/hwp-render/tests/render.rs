@@ -365,7 +365,7 @@ fn 빈_문서_렌더() {
     assert_eq!(dark_pixels(&out.pages[0]), 0, "빈 문서는 흰 페이지");
 }
 
-/// 수식 조판(equation.rs): 스크립트를 실제 math로 배치한다. 분수(over)는 분수선(Item::Line)을,
+/// 수식 조판(equation.rs): 스크립트를 실제 math로 배치한다. 분수(over)는 분수선(Item::Path)을,
 /// 첨자(^/_)·근호(sqrt)·기호는 글리프를 만든다. 폰트 유무와 무관하게 분수선은 그려져야 한다.
 #[test]
 fn 수식_조판_렌더() {
@@ -411,7 +411,7 @@ fn 수식_조판_렌더() {
         },
     )
     .unwrap();
-    // 분수 2개(over) → 분수선 Item::Line ≥ 2, 그리고 글리프 픽셀.
+    // 분수 2개(over) → 분수선 Item::Path ≥ 2, 그리고 글리프 픽셀.
     if std::env::var_os("HWP_EQ_PNG").is_some() {
         out.pages[0].save_png("/tmp/eq_test.png").ok();
     }
@@ -697,7 +697,7 @@ fn 페이지_걸친_문단배경_조각() {
 #[test]
 fn 쪽_테두리_렌더() {
     use hwp_model::{BorderFill, BorderLine, Control, Document};
-    use hwp_render::display::{Item, PageList};
+    use hwp_render::display::{Item, PageList, PathCmd};
 
     // PAGE_BORDER_FILL 14바이트 합성: attr u32 + gap u16×4(왼/오/위/아래) + 테두리ID u16.
     fn raw(attr: u32, gap: [u16; 4], id: u16) -> Vec<u8> {
@@ -727,14 +727,17 @@ fn 쪽_테두리_렌더() {
         page.items
             .iter()
             .filter_map(|it| match it {
-                Item::Line {
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    color,
-                    width,
-                } => Some((*x1, *y1, *x2, *y2, *color, *width)),
+                // 선분 Path(MoveTo+LineTo 2점, 스트로크)만 취한다.
+                Item::Path {
+                    commands,
+                    stroke: Some(stroke),
+                    ..
+                } => match commands.as_slice() {
+                    [PathCmd::MoveTo(x1, y1), PathCmd::LineTo(x2, y2)] => {
+                        Some((*x1, *y1, *x2, *y2, stroke.color, stroke.width))
+                    }
+                    _ => None,
+                },
                 _ => None,
             })
             .collect()
@@ -780,7 +783,7 @@ fn 쪽_테두리_렌더() {
         // 맨 앞 4개가 테두리(텍스트 뒤에 그림).
         for i in 0..4 {
             assert!(
-                matches!(page.items[i], Item::Line { .. }),
+                matches!(page.items[i], Item::Path { .. }),
                 "쪽 테두리는 페이지 맨 앞(뒤에 그림)에 삽입돼야 한다"
             );
         }
@@ -1558,14 +1561,18 @@ fn table_fragments_reserve_pending_footnote_space() {
         .items
         .iter()
         .find_map(|item| match item {
-            hwp_render::display::Item::Line {
-                x1,
-                y1,
-                x2,
-                y2,
-                width,
+            // 각주 구분선: 수평 선분 Path(MoveTo+LineTo), 길이>100, 굵기≤0.6.
+            hwp_render::display::Item::Path {
+                commands,
+                stroke: Some(stroke),
                 ..
-            } if x2 - x1 > 100.0 && (y2 - y1).abs() < 0.01 && *width <= 0.6 => Some(*y1),
+            } => match commands.as_slice() {
+                [
+                    hwp_render::display::PathCmd::MoveTo(x1, y1),
+                    hwp_render::display::PathCmd::LineTo(x2, y2),
+                ] if x2 - x1 > 100.0 && (y2 - y1).abs() < 0.01 && stroke.width <= 0.6 => Some(*y1),
+                _ => None,
+            },
             _ => None,
         })
         .expect("footnote separator");
@@ -1680,4 +1687,93 @@ fn 페이지_걸친_문단의_표는_새쪽_흐름위치에_앵커() {
         p2[0].0,
         body_top + 20.0
     );
+}
+
+/// 단 구분선(GG-17): 2단 colDef에 divider가 있으면 단 사이 간격 중앙에
+/// 본문 높이의 세로선 Path가 그려진다(구분선의 line_type=점선도 반영).
+#[test]
+fn 다단_구분선_렌더() {
+    use hwp_model::{BorderLine, ColumnDef, Control, GenericControl};
+    use hwp_render::display::{Item, PathCmd};
+
+    let mut doc = hwp_convert::from_markdown("본문 한 줄.\n");
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(GenericControl {
+            ctrl_id: *b"cold",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: Some(ColumnDef {
+                count: 2,
+                kind: 0,
+                direction: 0,
+                same_width: true,
+                gap: 1417, // HWPUNIT ≈ 14.17pt
+                widths: Vec::new(),
+                divider: Some(BorderLine {
+                    line_type: 3, // DOT
+                    width: 3,     // 0.2mm
+                    color: 0,
+                }),
+            }),
+        }));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    let page = &list.pages[0];
+
+    // 기대 위치: 본문 좌변 + 단폭 + 간격/2, 본문 상단~하단.
+    let p = doc.sections[0].section_def().unwrap().page.unwrap();
+    let body_left = p.margin_left.0 as f32 / 100.0;
+    let (body_top, body_bottom) = 본문_기하(&doc);
+    let body_width = (p.width.0 - p.margin_left.0 - p.margin_right.0) as f32 / 100.0;
+    let gap = 1417.0f32 / 100.0;
+    let expect_x = body_left + (body_width - gap) / 2.0 + gap / 2.0;
+
+    let divider = page
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::Path {
+                commands,
+                stroke: Some(s),
+                ..
+            } => match commands.as_slice() {
+                [PathCmd::MoveTo(x1, y1), PathCmd::LineTo(x2, y2)] if (x1 - x2).abs() < 0.01 => {
+                    Some((*x1, *y1, *y2, s))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .find(|(x, y1, y2, _)| {
+            (x - expect_x).abs() < 0.1
+                && (y1 - body_top).abs() < 0.1
+                && (y2 - body_bottom).abs() < 0.1
+        })
+        .expect("단 사이 구분선 세로선이 있어야 한다");
+    assert!(
+        !divider.3.dash.is_empty(),
+        "DOT 구분선은 dash가 적용돼야 한다"
+    );
+
+    // divider 없음(기본 문서) → 구분선 무출력.
+    let doc = hwp_convert::from_markdown("본문 한 줄.\n");
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    let has_vertical = list.pages[0].items.iter().any(|it| {
+        matches!(
+            it,
+            Item::Path { commands, .. }
+            if matches!(commands.as_slice(),
+                [PathCmd::MoveTo(x1, _), PathCmd::LineTo(x2, _)] if (x1 - x2).abs() < 0.01)
+        )
+    });
+    assert!(!has_vertical, "단일 단 문서에는 세로 구분선이 없어야 한다");
 }

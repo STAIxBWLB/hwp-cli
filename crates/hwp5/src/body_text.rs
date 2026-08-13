@@ -652,6 +652,9 @@ fn parse_coldef(data: &[u8]) -> Option<ColumnDef> {
         same_width: (attr >> 12) & 1 != 0,
         gap,
         widths: Vec::new(),
+        // TODO(GG-17): 구분선(type·굵기·색) 바이트 오프셋 미확정 — 스펙 표138/139는
+        // 총 14B인데 실파일은 16B(E-5)라 오프셋을 확정할 수 없다. 픽스처 전부
+        // 단일 단(구분선 바이트 전부 0)이라 정답지 부재. hwpx 쪽만 파싱한다.
         divider: None,
     })
 }

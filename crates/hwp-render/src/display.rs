@@ -28,15 +28,6 @@ pub enum Item {
         h: f32,
         fill: u32,
     },
-    /// 선분 (테두리 등) — COLORREF, 굵기 pt
-    Line {
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-        color: u32,
-        width: f32,
-    },
     /// 이미지 — 인코딩된 원본 바이트 (PNG/JPEG/BMP/GIF)
     Image {
         x: f32,
@@ -45,7 +36,7 @@ pub enum Item {
         h: f32,
         data: Arc<Vec<u8>>,
     },
-    /// 임의 경로 — 그리기 개체(선/사각형/타원/호/다각형). 좌표 pt, 페이지 공간.
+    /// 임의 경로 — 그리기 개체(선/사각형/타원/호/다각형)·테두리·선분(밑줄 등). 좌표 pt, 페이지 공간.
     Path {
         commands: Vec<PathCmd>,
         /// 채움 (단색/그러데이션). None=채움 없음. (이미지 채움은 별도 Item::Image로 emit.)

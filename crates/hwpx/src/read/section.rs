@@ -467,9 +467,14 @@ fn capture_element(
 /// `<hp:header id="2" applyPageType="BOTH">` → `00000000 02000000`.
 /// hwpx `<hp:colPr type layout colCount sameSz sameGap>` → ColumnDef.
 /// 매핑(OWPML↔hwplib/HWP5): type NEWSPAPER=0 일반/BALANCED=1 배분/PARALLEL=2 평행,
-/// layout LEFT=0/RIGHT=1/MIRROR=2 맞쪽. 단별 폭(colSz)·구분선(colLine) 자식은 v1 미수집
-/// (등폭·구분선 없음 기준; 필요 시 정답지로 보강).
-fn parse_col_pr(e: &BytesStart<'_>) -> ColumnDef {
+/// layout LEFT=0/RIGHT=1/MIRROR=2 맞쪽. 구분선(`hp:colLine`) 자식은 의미 파싱한다(GG-17).
+/// 단별 폭(colSz) 자식은 v1 미수집(등폭 기준; 필요 시 정답지로 보강).
+/// Start 이벤트면 colPr 닫힘까지 자식을 소비한다(호출부에서 collect_sub_lists 생략 전제).
+fn parse_col_pr(
+    reader: &mut XmlReader<'_>,
+    e: &BytesStart<'_>,
+    is_start: bool,
+) -> Result<ColumnDef> {
     let kind = match attr(e, "type").as_deref() {
         Some("BALANCED") => 1,
         Some("PARALLEL") => 2,
@@ -480,7 +485,7 @@ fn parse_col_pr(e: &BytesStart<'_>) -> ColumnDef {
         Some("MIRROR") => 2,
         _ => 0, // LEFT
     };
-    ColumnDef {
+    let mut def = ColumnDef {
         count: attr_u16(e, "colCount").unwrap_or(1),
         kind,
         direction,
@@ -488,7 +493,27 @@ fn parse_col_pr(e: &BytesStart<'_>) -> ColumnDef {
         gap: attr_i32(e, "sameGap").unwrap_or(0),
         widths: Vec::new(),
         divider: None,
+    };
+    if is_start {
+        // 자식: colSz(단별 폭, v1 미수집) / colLine(구분선 — 의미 파싱).
+        loop {
+            match next_event(reader)? {
+                Event::Start(c) | Event::Empty(c) if c.local_name().as_ref() == b"colLine" => {
+                    def.divider = Some(hwp_model::BorderLine {
+                        line_type: attr(&c, "type")
+                            .map_or(1, |t| crate::read::header::line_type_code(&t)),
+                        width: attr(&c, "width")
+                            .map_or(1, |w| crate::read::header::width_index(&w)),
+                        color: attr(&c, "color").map_or(0, |v| parse_color(&v)),
+                    });
+                }
+                Event::End(c) if c.local_name().as_ref() == b"colPr" => break,
+                Event::Eof => break,
+                _ => {}
+            }
+        }
     }
+    Ok(def)
 }
 
 fn head_foot_data(e: &BytesStart<'_>) -> Vec<u8> {
@@ -698,8 +723,9 @@ fn parse_ctrl(
                     }
                 };
                 // 다단(colPr): 속성을 ColumnDef로 캡처(렌더러 단 배치·구분선용).
+                // Start면 자식(colSz/colLine)까지 parse_col_pr가 소비한다.
                 let column_def = if name.as_slice() == b"colPr" {
-                    Some(parse_col_pr(e))
+                    Some(parse_col_pr(reader, e, matches!(event, Event::Start(_)))?)
                 } else {
                     None
                 };
@@ -713,7 +739,8 @@ fn parse_ctrl(
                     equation: None,
                     column_def,
                 };
-                if matches!(event, Event::Start(_)) {
+                // colPr의 자식(colSz/colLine)은 parse_col_pr가 이미 소비했다.
+                if matches!(event, Event::Start(_)) && name.as_slice() != b"colPr" {
                     collect_sub_lists(reader, &name, &mut generic, warnings)?;
                 }
                 push_ext_ctrl(para, wchar_pos, code, ctrl_id);

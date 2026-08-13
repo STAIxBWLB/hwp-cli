@@ -12,6 +12,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Border line-type fidelity, the fifth step of the PDF parity roadmap
+  ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Cell, paragraph, page and diagonal
+  borders now honor `BorderLine.line_type` via the new `hwp-render/src/border.rs` helper: the
+  dash family (DASH/DOT/DASH_DOT/DASH_DOT_DOT/LONG_DASH, CIRCLE approximated as DOT) renders
+  through `Stroke.dash`, and the double family (DOUBLE_SLIM/SLIM_THICK/THICK_SLIM/
+  SLIM_THICK_SLIM) renders as offset parallel strokes — the weight split is an approximation
+  pending Hancom verification. Every border emit site migrated from `Item::Line` to
+  `Item::Path`, and `Item::Line` was deleted from the display list and all three backends.
+  HWPX column divider lines (`hp:colLine`) now round-trip and render between column bands
+  (GG-17; the hwp5 coldef divider parse is deferred — byte offsets unconfirmed). hwp5 raw-path
+  shapes apply dash patterns and arrowheads, previously wired only to the hwpx path (GG-21).
+  Resolves GG-5, GG-6 and the line-type part of GG-24.
+
 - Hancom baseline parity scoreboard, the fourth step of the PDF parity roadmap
   ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). `scripts/pdf-parity.sh run` scores
   every manifest case against a local Hancom-exported oracle PDF with the five-metric set of
@@ -64,6 +77,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   remains pending, so this does not yet certify output parity.
 
 **Fixed**
+
+- Tab advance disagreement between line breaking and placement: `items_width` and
+  `compute_linesegs` used a floor-only 40 pt rule while `place_wrapped` honored explicit tab
+  stops, so width estimates diverged from actual placement whenever a paragraph defined tab
+  stops. All three now share `tab::next_tab` (explicit stops first, 40 pt default as the
+  fallback).
 
 - Objects (tables, pictures) anchored to a page-spanning paragraph were placed on the final page
   at the stale first-page y coordinate; the anchor is now re-bound to the new page's flow

@@ -501,13 +501,13 @@ pub fn render_into(
         if !issues.charge_display_items(1) {
             return;
         }
-        page.items.push(Item::Line {
-            x1: ox + x1,
-            y1: baseline_y + y1,
-            x2: ox + x2,
-            y2: baseline_y + y2,
-            color: 0x0000_0000,
-            width: wdt,
+        page.items.push(Item::Path {
+            commands: vec![
+                crate::display::PathCmd::MoveTo(ox + x1, baseline_y + y1),
+                crate::display::PathCmd::LineTo(ox + x2, baseline_y + y2),
+            ],
+            fill: None,
+            stroke: Some(crate::display::Stroke::solid(0x0000_0000, wdt)),
         });
     }
 }

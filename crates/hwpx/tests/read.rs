@@ -490,3 +490,51 @@ fn 테두리채움_대각선_방향_파싱() {
     assert_ne!(bfs[2].attr & 0x4, 0, "slash on");
     assert_ne!(bfs[2].attr & 0x20, 0, "backSlash on");
 }
+
+/// colPr의 `<hp:colLine>` 자식을 ColumnDef.divider로 파싱한다(GG-17).
+#[test]
+fn colpr_구분선_파싱() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run charPrIDRef="0">
+      <hp:ctrl><hp:colPr id="" type="BALANCED" layout="LEFT" colCount="2" sameSz="1" sameGap="1417"><hp:colLine type="DOT" width="0.4 mm" color="#FF0000"/></hp:colPr></hp:ctrl>
+      <hp:t>본문</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, warnings) = hwpx::read::section::parse_section(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let para = &section.paragraphs[0];
+    let Some(Control::Generic(g)) = para.controls.iter().find(|c| c.ctrl_id() == *b"cold") else {
+        panic!("cold 컨트롤이 있어야 한다");
+    };
+    let col = g.column_def.as_ref().expect("ColumnDef");
+    assert_eq!(col.count, 2);
+    assert_eq!(col.kind, 1); // BALANCED
+    assert_eq!(col.gap, 1417);
+    let d = col.divider.expect("구분선");
+    assert_eq!(d.line_type, 3, "DOT");
+    assert_eq!(d.width, 6, "0.4mm → 인덱스 6");
+    assert_eq!(d.color, 0x0000_00FF, "#FF0000 → BGR");
+
+    // 구분선 없는 colPr(빈 요소)는 divider=None (기본 문서 불변).
+    let xml_plain = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run charPrIDRef="0">
+      <hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl>
+      <hp:t>본문</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, _) = hwpx::read::section::parse_section(xml_plain).unwrap();
+    let Some(Control::Generic(g)) = section.paragraphs[0]
+        .controls
+        .iter()
+        .find(|c| c.ctrl_id() == *b"cold")
+    else {
+        panic!("cold 컨트롤이 있어야 한다");
+    };
+    assert!(g.column_def.as_ref().unwrap().divider.is_none());
+}

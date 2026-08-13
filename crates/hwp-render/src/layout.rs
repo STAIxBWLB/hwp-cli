@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Section, Table};
 
-use crate::display::{DisplayList, Item, PageList, PathCmd};
+use crate::display::{DisplayList, Item, PageList, PathCmd, Stroke};
 use crate::error::RenderError;
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
@@ -333,7 +333,7 @@ fn preflight_layout_budget(doc: &Document, budget: &LayoutBudget) -> Result<(), 
 }
 
 /// 기본 탭 간격 (40pt = 4000 HWPUNIT).
-const TAB_INTERVAL_PT: f32 = 40.0;
+pub(crate) const TAB_INTERVAL_PT: f32 = 40.0;
 
 /// 연결 글상자 후보가 없을 때의 단 사이 가로 간격 근사값(pt).
 const COL_GAP_PT: f32 = 14.0;
@@ -439,8 +439,7 @@ struct PageBorderEdge {
     y1: f32,
     x2: f32,
     y2: f32,
-    color: u32,
-    width: f32,
+    line: hwp_model::BorderLine,
 }
 
 /// 쪽 테두리 사각형의 4변 중 그릴 변(line_type≠0)만 계산한다.
@@ -498,8 +497,7 @@ fn build_page_border_edges(
                 y1: sy1,
                 x2: sx2,
                 y2: sy2,
-                color: side.color,
-                width: side.width_mm() * 72.0 / 25.4, // mm → pt
+                line: *side,
             });
         }
     }
@@ -507,7 +505,7 @@ fn build_page_border_edges(
 }
 
 /// 계산된 쪽 테두리 변들을 페이지 아이템 맨 앞에 삽입한다(텍스트/개체 뒤 = 뒤에 그림).
-/// 변 기하는 구역당 1회 계산하고, Item::Line은 페이지마다 새로 만든다(Item는 Clone 불가).
+/// 변 기하는 구역당 1회 계산하고, Item::Path는 페이지마다 새로 만든다(Item는 Clone 불가).
 fn prepend_page_borders(
     page: &mut PageList,
     edges: &[PageBorderEdge],
@@ -516,20 +514,47 @@ fn prepend_page_borders(
     if edges.is_empty() {
         return;
     }
-    if !warnings.charge_display_items(edges.len()) {
+    let mut items: Vec<Item> = Vec::new();
+    for e in edges {
+        items.extend(crate::border::border_line_items(
+            e.x1, e.y1, e.x2, e.y2, &e.line,
+        ));
+    }
+    if !warnings.charge_display_items(items.len()) {
         return;
     }
-    let mut items: Vec<Item> = edges
-        .iter()
-        .map(|e| Item::Line {
-            x1: e.x1,
-            y1: e.y1,
-            x2: e.x2,
-            y2: e.y2,
-            color: e.color,
-            width: e.width,
-        })
-        .collect();
+    items.append(&mut page.items);
+    page.items = items;
+}
+
+/// 단 사이 구분선(단 간격 중앙의 세로선)을 페이지 아이템 맨 앞에 삽입한다(본문 뒤에 그림).
+#[allow(clippy::too_many_arguments)]
+fn prepend_col_dividers(
+    page: &mut PageList,
+    divider: &hwp_model::BorderLine,
+    body_left: f32,
+    body_top: f32,
+    body_bottom: f32,
+    col_width: f32,
+    col_gap: f32,
+    col_count: usize,
+    warnings: &mut RenderIssueAccumulator,
+) {
+    let mut items: Vec<Item> = Vec::new();
+    for i in 0..col_count.saturating_sub(1) {
+        // 단 i 우변 + 단 간격 절반 = 구분선 x.
+        let x = body_left + (col_width + col_gap) * (i + 1) as f32 - col_gap * 0.5;
+        items.extend(crate::border::border_line_items(
+            x,
+            body_top,
+            x,
+            body_bottom,
+            divider,
+        ));
+    }
+    if !warnings.charge_display_items(items.len()) {
+        return;
+    }
     items.append(&mut page.items);
     page.items = items;
 }
@@ -970,7 +995,7 @@ pub fn layout_document(
                     let baseline_y = content_bottom + geom.spacing_top + max_size * 1.2;
                     para_top = Some(content_bottom + geom.spacing_top);
                     // 한 줄에 들어가는 가운데/오른쪽 정렬은 폴백에서도 보정한다.
-                    let natural = items_width(&items);
+                    let natural = items_width(&items, &tabs);
                     let align = doc
                         .header
                         .para_shapes
@@ -1152,7 +1177,7 @@ pub fn layout_document(
                     warnings,
                 );
                 crate::shape::apply_link_style(&mut items, &links);
-                let natural_width: f32 = items_width(&items);
+                let natural_width: f32 = items_width(&items, &tabs);
 
                 // 정렬 보정 (가운데/오른쪽 + 양쪽정렬은 마지막 줄 빼고 글자 사이로 잉여 분배).
                 let seg_width_pt = seg.seg_width as f32 / 100.0;
@@ -1297,6 +1322,28 @@ pub fn layout_document(
         if !page_border_edges.is_empty() {
             for p in &mut pages[section_first_page..] {
                 prepend_page_borders(p, &page_border_edges, warnings);
+            }
+        }
+
+        // 단 구분선(GG-17): 다단 구역의 모든 페이지에 단 사이 세로선을 소급 삽입한다.
+        // 단 영역의 실제 높이는 페이지 확정 후에야 알 수 있으므로 본문 영역 높이로 둔다
+        // (근사 — 정품 한글 대조 라운드에서 정밀화).
+        if col_count > 1
+            && let Some(divider) = col_def.and_then(|c| c.divider)
+            && divider.is_visible()
+        {
+            for p in &mut pages[section_first_page..] {
+                prepend_col_dividers(
+                    p,
+                    &divider,
+                    body_left,
+                    body_top,
+                    body_bottom,
+                    col_width,
+                    col_gap,
+                    col_count,
+                    warnings,
+                );
             }
         }
     }
@@ -1527,13 +1574,13 @@ fn render_page_notes(
     if !warnings.charge_display_items(1) {
         return;
     }
-    page.items.push(Item::Line {
-        x1: body_left,
-        y1: top - sep_gap,
-        x2: body_left + body_width * 0.34,
-        y2: top - sep_gap,
-        color: 0x0000_0000,
-        width: 0.5,
+    page.items.push(Item::Path {
+        commands: vec![
+            PathCmd::MoveTo(body_left, top - sep_gap),
+            PathCmd::LineTo(body_left + body_width * 0.34, top - sep_gap),
+        ],
+        fill: None,
+        stroke: Some(Stroke::solid(0x0000_0000, 0.5)),
     });
     // 3) 스크래치 아이템을 top만큼 내려 본 페이지에 합친다.
     for item in scratch.items.drain(..) {
@@ -1610,21 +1657,6 @@ fn translate_item(item: Item, dx: f32, dy: f32) -> Item {
             w,
             h,
             fill,
-        },
-        Item::Line {
-            x1,
-            y1,
-            x2,
-            y2,
-            color,
-            width,
-        } => Item::Line {
-            x1: x1 + dx,
-            y1: y1 + dy,
-            x2: x2 + dx,
-            y2: y2 + dy,
-            color,
-            width,
         },
         Item::Image { x, y, w, h, data } => Item::Image {
             x: x + dx,
@@ -2352,17 +2384,11 @@ fn draw_table_rows(
             ];
             for (side, (x1, y1, x2, y2)) in bf.sides.iter().zip(edges) {
                 if side.is_visible() {
-                    if !warnings.charge_display_items(1) {
+                    let items = crate::border::border_line_items(x1, y1, x2, y2, side);
+                    if !warnings.charge_display_items(items.len()) {
                         return;
                     }
-                    page.items.push(Item::Line {
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                        color: side.color,
-                        width: side.width_mm() * 72.0 / 25.4, // mm → pt
-                    });
+                    page.items.extend(items);
                 }
             }
 
@@ -2370,32 +2396,20 @@ fn draw_table_rows(
             //    diagonal 선은 스타일/색만 제공하므로 방향 비트가 없으면 그리지 않는다.
             let (slash, backslash) = diagonal_dirs(bf.attr);
             if (slash || backslash) && bf.diagonal.is_visible() {
-                let dw = bf.diagonal.width_mm() * 72.0 / 25.4;
+                // (\, /) 순서. 대각선에도 line_type(점선/이중선)을 적용한다(GG-24).
+                let mut dirs = Vec::with_capacity(2);
                 if backslash {
-                    if !warnings.charge_display_items(1) {
-                        return;
-                    }
-                    page.items.push(Item::Line {
-                        x1: cx,
-                        y1: cy,
-                        x2: cx + cw,
-                        y2: cy + ch,
-                        color: bf.diagonal.color,
-                        width: dw,
-                    });
+                    dirs.push((cx, cy, cx + cw, cy + ch));
                 }
                 if slash {
-                    if !warnings.charge_display_items(1) {
+                    dirs.push((cx, cy + ch, cx + cw, cy));
+                }
+                for (dx1, dy1, dx2, dy2) in dirs {
+                    let items = crate::border::border_line_items(dx1, dy1, dx2, dy2, &bf.diagonal);
+                    if !warnings.charge_display_items(items.len()) {
                         return;
                     }
-                    page.items.push(Item::Line {
-                        x1: cx,
-                        y1: cy + ch,
-                        x2: cx + cw,
-                        y2: cy,
-                        color: bf.diagonal.color,
-                        width: dw,
-                    });
+                    page.items.extend(items);
                 }
             }
         }
@@ -2501,7 +2515,7 @@ fn layout_box_para_iter<'a>(
                 if let Some(m) = &marker {
                     render_list_marker(page, store, doc, m, (left, baseline_y, max_size), warnings);
                 }
-                let natural = items_width(&items);
+                let natural = items_width(&items, &tabs);
                 let align = doc
                     .header
                     .para_shapes
@@ -2553,7 +2567,7 @@ fn layout_box_para_iter<'a>(
                     page_number,
                     warnings,
                 );
-                let natural_width = items_width(&items);
+                let natural_width = items_width(&items, &tabs);
 
                 let seg_width_pt = (seg.seg_width as f32 / 100.0).min(width);
                 let align = doc
@@ -2894,17 +2908,11 @@ fn draw_para_bg_slice(
     ];
     for (side, (x1, y1, x2, y2), enabled) in edges {
         if enabled && side.is_visible() {
-            if !warnings.charge_display_items(1) {
+            let items = crate::border::border_line_items(x1, y1, x2, y2, side);
+            if !warnings.charge_display_items(items.len()) {
                 return;
             }
-            page.items.push(Item::Line {
-                x1,
-                y1,
-                x2,
-                y2,
-                color: side.color,
-                width: side.width_mm() * 72.0 / 25.4,
-            });
+            page.items.extend(items);
         }
     }
 }
@@ -2926,14 +2934,12 @@ fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
     }
 }
 
-fn items_width(items: &[InlineItem]) -> f32 {
+fn items_width(items: &[InlineItem], tabs: &[f32]) -> f32 {
     let mut x = 0.0f32;
     for item in items {
         match item {
             InlineItem::Run(run) => x += run.width_pt,
-            InlineItem::Tab => {
-                x = (x / TAB_INTERVAL_PT).floor() * TAB_INTERVAL_PT + TAB_INTERVAL_PT
-            }
+            InlineItem::Tab => x = crate::tab::next_tab(tabs, x, TAB_INTERVAL_PT),
             InlineItem::LineBreak(_) => x = 0.0, // 새 줄 시작
         }
     }
@@ -2978,13 +2984,10 @@ pub(crate) fn push_run(
         if !warnings.charge_display_items(1) {
             return;
         }
-        page.items.push(Item::Line {
-            x1: x,
-            y1: ly,
-            x2: x + w,
-            y2: ly,
-            color,
-            width: em * 0.05,
+        page.items.push(Item::Path {
+            commands: vec![PathCmd::MoveTo(x, ly), PathCmd::LineTo(x + w, ly)],
+            fill: None,
+            stroke: Some(Stroke::solid(color, em * 0.05)),
         });
     }
 }
@@ -3574,5 +3577,92 @@ mod certification_budget_tests {
         paragraph.controls = vec![picture];
         document.sections[0].paragraphs = vec![paragraph; 20_000];
         assert_budget_failure(&document, LayoutBudget::certification());
+    }
+}
+
+#[cfg(test)]
+mod tab_width_tests {
+    use std::sync::Arc;
+
+    use super::{items_width, place_wrapped};
+    use crate::display::{Item, PageList};
+    use crate::fonts::LoadedFont;
+    use crate::issues::RenderIssueAccumulator;
+    use crate::shape::{InlineItem, ShapedRun};
+
+    /// 폰트 불요 더미 런 (폭만 의미 있음).
+    fn dummy_run(width_pt: f32) -> InlineItem {
+        InlineItem::Run(ShapedRun {
+            font: Arc::new(LoadedFont {
+                data: Arc::new(Vec::new()),
+                index: 0,
+                family: String::new(),
+            }),
+            size_pt: 10.0,
+            x_scale: 1.0,
+            color: 0,
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            underline_color: 0xFFFF_FFFF,
+            shade_color: 0xFFFF_FFFF,
+            shadow: None,
+            outline: false,
+            emboss: false,
+            engrave: false,
+            glyphs: Vec::new(),
+            width_pt,
+            text: String::new(),
+            start_wchar: 0,
+        })
+    }
+
+    /// 명시 탭 스톱이 있으면 items_width(너비 추정)와 place_wrapped(배치)가 같은
+    /// x로 진행해야 한다 — 종전 floor-only 추정은 명시 스톱을 무시해 정렬 보정이
+    /// 어긋났다(GG 탭 불일치).
+    #[test]
+    fn 명시_탭스톱_너비와_배치_일치() {
+        let tabs = [150.0f32];
+        let make_items = || vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
+
+        // 너비 추정: 10 + (탭 → 150) + 20 = 170. (기본 간격이면 10 → 40.)
+        let natural = items_width(&make_items(), &tabs);
+        assert!((natural - 170.0).abs() < 0.01, "natural={natural}");
+
+        // 배치: 탭 뒤 런의 x = 150 (명시 스톱) — 너비 추정과 동일 규칙.
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            make_items(),
+            0.0,
+            100.0,
+            f32::INFINITY,
+            16.0,
+            &tabs,
+            0.0,
+            &mut warns,
+        );
+        let xs: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Glyphs { x, .. } => Some(*x),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(xs.len(), 2);
+        assert!((xs[1] - 150.0).abs() < 0.01, "탭 뒤 x={}", xs[1]);
+        // 두 경로의 탭 직후 x가 정확히 일치.
+        assert!((xs[1] - (natural - 20.0)).abs() < 0.01);
+
+        // 명시 스톱 없음 → 기본 간격(40pt) 대체는 종전과 동일.
+        let natural_default = items_width(&make_items(), &[]);
+        assert!((natural_default - (40.0 + 20.0)).abs() < 0.01);
     }
 }

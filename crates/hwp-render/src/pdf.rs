@@ -135,21 +135,6 @@ pub(crate) fn render_pdf_with_metadata(
                     content.rect(*x, h - (*y + *rh), *rw, *rh);
                     content.fill_nonzero();
                 }
-                Item::Line {
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    color,
-                    width,
-                } => {
-                    let (r, g, b) = colorref_rgb(*color);
-                    content.set_stroke_rgb(r, g, b);
-                    content.set_line_width(width.max(0.2));
-                    content.move_to(*x1, h - *y1);
-                    content.line_to(*x2, h - *y2);
-                    content.stroke();
-                }
                 Item::Image {
                     x,
                     y,

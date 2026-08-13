@@ -13,7 +13,7 @@ const LANG_NAMES: [&str; LANG_COUNT] = [
     "HANGUL", "LATIN", "HANJA", "JAPANESE", "OTHER", "SYMBOL", "USER",
 ];
 
-fn line_type_name(code: u8) -> &'static str {
+pub(crate) fn line_type_name(code: u8) -> &'static str {
     match code {
         0 => "NONE",
         1 => "SOLID",
@@ -31,7 +31,7 @@ fn line_type_name(code: u8) -> &'static str {
     }
 }
 
-fn width_mm_attr(line: &BorderLine) -> String {
+pub(crate) fn width_mm_attr(line: &BorderLine) -> String {
     // 0.12 같은 값은 그대로, 정수는 "0.1"이 아닌 표기 유지
     let mm = line.width_mm();
     if (mm - mm.round()).abs() < f32::EPSILON {
