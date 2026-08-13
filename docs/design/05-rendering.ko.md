@@ -75,15 +75,16 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 1. **그리드 기하**: `col_span==1` 셀에서 열 폭, `row_span==1` 셀에서 행 높이 확정.
 2. `derive_col_widths`: 병합 셀에서 미지 열 유도(작은 병합부터) → 평균 폴백 → `table_true_width`(행별 셀폭 합의 최대)로 스케일. 표 실제폭 > 가용폭이면 가용폭에 맞춰 비율 유지 축소.
 3. **측정 패스**: 셀마다 스크래치 `PageList`에 `layout_box_paragraphs`로 그려 실측 내용 높이를 재고 `row_h[r] = max(row_h[r], content_h + mt + mb)`. `row_span>1`은 스팬 합 부족분을 마지막 스팬 행에 가산.
-4. 누적 오프셋 `col_x = prefix_sums(col_w, x)`, `row_y = prefix_sums(row_h, y)`.
+4. 누적 오프셋 `col_x = prefix_sums(col_w, x)`, `row_prefix = prefix_sums(row_h, 0)` (조각마다 베이스 y를 더하므로 같은 prefix를 모든 쪽 조각이 공유).
 5. 셀마다: **배경 Rect** → **내용**(여백 + 세로정렬 `voff`: `(list_attr>>5)&0x3` 0 위/1 가운데 avail*0.5/2 아래 avail) → **4변 테두리 Line**(`width_mm()*72/25.4`) → **대각선**(`diagonal_dirs(attr)`: slash bits2~4, backslash bits5~7).
+6. **쪽 분할**(본문 흐름에서만, `TableSplitCtx` 경유; 셀/글상자 안 중첩 표는 나누지 않음): 표가 `body_bottom`을 넘으면 `Table::page_break_policy()`(`attr` bits 0-1)로 결정. NONE이면 통째로 다음 쪽으로(04 §6.1 불변식), 한 쪽보다 클 때만 행 분할로 폴백. TABLE/CELL은 행 경계에서 나눔(셀 내부 분할은 미지원, 한 쪽보다 큰 행은 넘치며 `TableRowTooTallClipped` 보고). `treat_as_char` 표는 "한 글자"라 나누지 않음(GE-8). 분할마다 표준 쪽 마감 순서(노트 → 가구 → `push_page_checked` → 흐름 상태 리셋)를 거치므로 다음 문단의 한글 경계 플래그가 흡수돼 이중 분할되지 않는다. `repeat_header()`면 선두의 "모든 셀이 `Cell::is_header()`(`list_attr` bit18)"인 행들을 이어지는 쪽 `body_top`에 다시 그린다. `row_span`이 가로지르는 후보 경계는 제외하므로 병합 셀은 절단되지 않고 하나의 분할 불가 행 묶음으로 이동한다. 이 묶음이 한 쪽보다 크면 `TableRowTooTallClipped`로 보고한다.
 
 `cell_margins`: 셀 지정 → 표 `inner_margins` → 기본 `DEFAULT_CELL_MARGINS=[510,510,141,141]` HWPUNIT. 반환은 /100 pt.
 
 ### 1.6 블록 개체 (`layout_para_objects`)
 
 `para.controls`를 순회하며 `object_y`(앵커 상단)부터 세로로 이어 배치:
-- **Table**: `layout_table` 높이만큼 진행.
+- **Table**: `layout_table`로 배치(쪽 분할 가능 — §1.5 6번). 페이지를 건너간 문단의 앵커는 새 쪽 흐름 위치로 재앵커한다: 캐시 lineseg 쪽 경계마다 `para_top`을 지워, 마지막 쪽에 첫 쪽의 stale y로 그리던 버그를 고쳤다.
 - **Picture**: `doc.resolve_bin(bin_ref)` → `Item::Image`.
 - **글상자(gso, paragraph_lists 있음)**: `gso::parse_gso_box`로 위치. `treat_as_char()`면 흐름 위치(inline), 아니면 `(horz_offset, vert_offset)` 페이지 절대(floating). 프레임은 `shape_draw::draw_gso_shapes`가 텍스트 뒤에 먼저 그림. 내부 문단은 `split_columns`(v_pos 감소=단 나누기)로 단 분할, `continuation_columns`(같은 폭·높이·세로오프셋의 더 오른쪽 떠있는 gso)로 연결 글상자 위치를 찾아 흐른다.
 - **순수 도형(gso, paragraph_lists 없음, `has_shape`)**: `draw_gso_shapes`.

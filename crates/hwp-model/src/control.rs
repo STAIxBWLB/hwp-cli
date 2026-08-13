@@ -219,6 +219,48 @@ pub struct Cell {
     pub paragraphs: Vec<Paragraph>,
 }
 
+/// Table page-break policy (`Table.attr` bits 0-1, HWPX `pageBreak`).
+///
+/// The mapping is preserved by the HWP/HWPX readers and writers. Renderer
+/// behavior still requires comparison with a Hancom Office oracle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablePageBreak {
+    /// Keep the table together when it fits on one page.
+    None,
+    /// Split at table row boundaries.
+    Table,
+    /// Allow cell splitting (currently rendered at row boundaries).
+    Cell,
+}
+
+impl Table {
+    /// Returns the page-break policy (`attr` bits 0-1).
+    pub fn page_break_policy(&self) -> TablePageBreak {
+        match self.attr & 0x3 {
+            1 => TablePageBreak::Table,
+            2 => TablePageBreak::Cell,
+            _ => TablePageBreak::None,
+        }
+    }
+
+    /// Returns whether leading header rows repeat (`attr` bit 2).
+    pub fn repeat_header(&self) -> bool {
+        self.attr & 0x4 != 0
+    }
+}
+
+impl Cell {
+    /// Returns whether this is a header cell (`list_attr` bit 18).
+    pub fn is_header(&self) -> bool {
+        self.list_attr & (1 << 18) != 0
+    }
+
+    /// Returns vertical alignment (`list_attr` bits 5-6).
+    pub fn vert_align(&self) -> u8 {
+        ((self.list_attr >> 5) & 0x3) as u8
+    }
+}
+
 /// 의미 파싱하지 않는 컨트롤 (머리말/꼬리말/각주/글상자/필드 등).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenericControl {
@@ -375,7 +417,56 @@ pub struct ParagraphList {
 
 #[cfg(test)]
 mod tests {
-    use super::GsoPlacement;
+    use super::{Cell, GsoPlacement, Table, TablePageBreak};
+    use crate::units::HwpUnit;
+
+    /// Locks the model accessors to the serialized attribute mappings.
+    #[test]
+    fn 표_쪽나눔_제목셀_비트_접근자() {
+        let table = |attr: u32| Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr,
+            rows: 0,
+            cols: 0,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: Vec::new(),
+            border_fill: Default::default(),
+            table_tail: Vec::new(),
+            cells: Vec::new(),
+            extras: Vec::new(),
+        };
+        assert_eq!(table(0).page_break_policy(), TablePageBreak::None);
+        assert_eq!(table(1).page_break_policy(), TablePageBreak::Table);
+        assert_eq!(table(2).page_break_policy(), TablePageBreak::Cell);
+        assert!(!table(0).repeat_header());
+        assert!(table(0b100).repeat_header());
+        assert!(table(0b101).repeat_header());
+
+        let cell = |list_attr: u32| Cell {
+            list_attr,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(0),
+            height: HwpUnit(0),
+            margins: [0; 4],
+            border_fill: Default::default(),
+            header_tail: Vec::new(),
+            paragraphs: Vec::new(),
+        };
+        assert!(!cell(0).is_header());
+        assert!(cell(1 << 18).is_header());
+        assert_eq!(cell(0).vert_align(), 0);
+        assert_eq!(cell(0x20).vert_align(), 1);
+        assert_eq!(cell(0x40).vert_align(), 2);
+        // Header and vertical-alignment bits are independent.
+        let both = cell((1 << 18) | 0x20);
+        assert!(both.is_header());
+        assert_eq!(both.vert_align(), 1);
+    }
 
     /// 정품 한라대 .hwp 실측 표 공통 속성 attr를 비트 합성으로 재현하는지 확인한다.
     /// (글자처럼 취급 보존 — 인라인 표가 떠 있는 개체로 빠지던 버그의 회귀 방지.)

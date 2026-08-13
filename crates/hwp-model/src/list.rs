@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use crate::{Document, NumFmt, Paragraph};
 
 /// 구역 단위 목록 카운터(번호 정의별, 수준 1~7 사용).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ListState {
     counters: HashMap<u16, [u32; 8]>,
 }

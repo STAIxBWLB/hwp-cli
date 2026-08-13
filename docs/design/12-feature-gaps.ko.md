@@ -129,6 +129,17 @@
   `pgnp` 위치 1~10(안쪽/바깥쪽 홀짝 반전)·장식·지원 번호형식, 본문/머리말/꼬리말 PAGE `atno`
   동적 치환을 공용 DisplayList 단계에 구현. PNG·SVG·PDF가 같은 결과를 사용하며, GE-4
   (`pgnp formatType` HWPX 변환 DIGIT 고정)와 GG-16(머리말/꼬리말 종류 선택)은 잔존.
+- **2026-08-13 (PDF parity PR 2, [issue #79](https://github.com/STAIxBWLB/hwp-cli/issues/79))**:
+  PR #81에서 렌더러 쪽 표 쪽 분할 구현. `body_bottom`을 넘는 표가 `Table.attr` bits 0-1(pageBreak
+  NONE/TABLE/CELL)·bit2(repeatHeader)와 `Cell.list_attr` bit18(제목 셀)을 따른다 — NONE은
+  통째로 다음 쪽으로, TABLE/CELL은 행 경계에서 나누고 이어지는 쪽에 제목 행을 다시 그리며,
+  `treat_as_char` 표는 "한 글자"라 나누지 않는다(GE-8). `row_span`이 가로지르는 경계는
+  제외한다. 분할과 한 쪽보다 큰 분할 불가 행 묶음은 타입드 이슈로 보고한다
+  (`TableSplitAcrossPages` info, `TableRowTooTallClipped`). 페이지를 건너간 문단의
+  stale-`para_top` 앵커 버그도 수정.
+  신규 모델 접근자 `Table::page_break_policy/repeat_header`, `Cell::is_header/vert_align`.
+  셀 내부 분할(pageBreak=CELL)은 행 경계 분할로 근사. 이는 구현 상태이며 한컴 대등성
+  인증은 아님. 잔존: 한컴 검증 라운드(제목 줄 자동 반복 정답지)와 다단 인식 표 분할.
 
 ---
 

@@ -4261,6 +4261,40 @@ mod tests {
     }
 
     #[test]
+    fn table_pagination_issues_match_the_certification_schema() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/certification-report-v1.schema.json"
+        ))
+        .unwrap();
+        let issue_schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": {
+                "sha256": schema["$defs"]["sha256"].clone(),
+                "renderIssue": schema["$defs"]["renderIssue"].clone()
+            },
+            "$ref": "#/$defs/renderIssue"
+        });
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&issue_schema)
+            .unwrap();
+
+        let mut accumulator = hwp_render::RenderIssueAccumulator::new();
+        accumulator.push_once(hwp_render::RenderIssueCode::TableSplitAcrossPages, b"split");
+        accumulator.push_once(
+            hwp_render::RenderIssueCode::TableRowTooTallClipped,
+            b"oversized",
+        );
+        let mut report = empty_render_report(96.0);
+        apply_render_issue_report(&mut report, accumulator.finish());
+
+        for issue in report.issues.iter().chain(&report.info) {
+            let value = serde_json::to_value(issue).unwrap();
+            assert!(validator.is_valid(&value), "schema rejected {value}");
+        }
+    }
+
+    #[test]
     fn structured_image_budget_error_is_not_classified_as_layout() {
         let error = anyhow::Error::new(hwp_render::RenderError::ImageDecodeBudgetExceeded {
             resource: "dimensions".to_string(),

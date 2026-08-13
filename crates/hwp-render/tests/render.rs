@@ -1025,3 +1025,559 @@ fn 머리말_atno는_페이지마다_현재_쪽번호로_치환() {
         "atno/head가 미지원으로 집계됨: {warnings:?}"
     );
 }
+
+// ---------- Table pagination (PDF parity PR 2) ----------
+
+/// Builds a one-column table after `filler` empty paragraphs. Data and header
+/// cells use distinct fills so the tests can identify their rectangles.
+fn 표_분할_문서(
+    attr: u32,
+    rows: u16,
+    row_h_pt: i32,
+    header_rows: u16,
+    treat_as_char: bool,
+    filler: usize,
+) -> hwp_model::Document {
+    let mut doc = hwp_convert::from_markdown("앵커");
+    // Account for converter-provided fills; BorderFillId is one-based.
+    let fill_base = doc.header.border_fills.len() as u16;
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x00C8_C8C8),
+        ..Default::default()
+    }); // fill_base + 1 — 데이터 셀
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x0055_5555),
+        ..Default::default()
+    }); // fill_base + 2 — 제목 셀
+    let cell = |row: u16, header: bool| hwp_model::Cell {
+        list_attr: if header { 1 << 18 } else { 0 },
+        col: 0,
+        row,
+        col_span: 1,
+        row_span: 1,
+        width: hwp_model::HwpUnit(5000),
+        height: hwp_model::HwpUnit(row_h_pt * 100),
+        margins: [0; 4],
+        border_fill: hwp_model::BorderFillId(if header { fill_base + 2 } else { fill_base + 1 }),
+        header_tail: Vec::new(),
+        paragraphs: Vec::new(),
+    };
+    let table = hwp_model::Table {
+        common_data: Vec::new(),
+        placement: treat_as_char.then_some(hwp_model::GsoPlacement {
+            treat_as_char: true,
+            ..Default::default()
+        }),
+        attr,
+        rows,
+        cols: 1,
+        cell_spacing: 0,
+        inner_margins: [0; 4],
+        row_cell_counts: vec![1; rows as usize],
+        border_fill: hwp_model::BorderFillId(fill_base + 1),
+        table_tail: Vec::new(),
+        cells: (0..rows).map(|r| cell(r, r < header_rows)).collect(),
+        extras: Vec::new(),
+    };
+    let anchor = &mut doc.sections[0].paragraphs[0];
+    anchor.chars.clear(); // 빈 문단 — 표는 본문 상단 + 16pt에 앵커된다
+    anchor.controls.push(hwp_model::Control::Table(table));
+    for _ in 0..filler {
+        let mut p = doc.sections[0].paragraphs[0].clone();
+        p.controls.clear();
+        doc.sections[0].paragraphs.insert(0, p);
+    }
+    doc
+}
+
+/// Returns the body top and bottom in points, matching `layout.rs`.
+fn 본문_기하(doc: &hwp_model::Document) -> (f32, f32) {
+    let p = doc.sections[0].section_def().unwrap().page.unwrap();
+    let h = p.height.0 as f32 / 100.0;
+    let top = (p.margin_top.0 + p.margin_header.0) as f32 / 100.0;
+    let bottom = h - (p.margin_bottom.0 + p.margin_footer.0) as f32 / 100.0;
+    (top, bottom)
+}
+
+/// Returns page fill rectangles as `(y, h, fill)` tuples.
+fn 채움_사각형(list: &hwp_render::display::DisplayList, page: usize) -> Vec<(f32, f32, u32)> {
+    list.pages[page]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            hwp_render::display::Item::Rect { y, h, fill, .. } => Some((*y, *h, *fill)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn 표_레이아웃(
+    doc: &hwp_model::Document,
+) -> (
+    hwp_render::display::DisplayList,
+    hwp_render::RenderIssueReport,
+) {
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(doc, &mut store, &mut warns);
+    (list, warns.finish())
+}
+
+/// TABLE policy splits at row boundaries without silently clipping cells.
+#[test]
+fn 표_쪽분할_행경계_클립없음() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (_body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - _body_top;
+    let rows = (page_h / 100.0) as u16 + 3; // 2쪽 보장
+    let doc = 표_분할_문서(1, rows, 100, 0, false, 0);
+    let (list, report) = 표_레이아웃(&doc);
+    assert!(
+        list.pages.len() >= 2,
+        "행 경계에서 쪽이 나뉘어야 한다: pages={}",
+        list.pages.len()
+    );
+    let mut data_rects = 0;
+    for pi in 0..list.pages.len() {
+        let page_rects = 채움_사각형(&list, pi);
+        assert!(
+            !page_rects.is_empty(),
+            "every table page must receive its fragment: page {pi}"
+        );
+        for &(y, h, fill) in &page_rects {
+            assert_eq!(fill, 0x00C8_C8C8);
+            data_rects += 1;
+            assert!(
+                y + h <= body_bottom + 0.6,
+                "셀이 본문 하한({body_bottom})을 넘으면 안 된다: y={y} h={h} (page {pi})"
+            );
+        }
+    }
+    assert_eq!(data_rects, rows as usize, "행 손실 없이 모두 그려야 한다");
+    assert!(
+        report
+            .info
+            .iter()
+            .any(|i| i.code == hwp_render::RenderIssueCode::TableSplitAcrossPages),
+        "분할이 info로 보고되어야 한다"
+    );
+}
+
+/// A repeated numbered-list header must replay the original marker. Cloning
+/// the body list state after the first fragment would render 2., 3., ... on
+/// continuation pages.
+#[test]
+fn 표_반복제목_목록번호는_원본상태로_재생() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let rows = ((body_bottom - body_top) / 100.0) as u16 + 3;
+    let mut doc = 표_분할_문서(1 | 4, rows, 100, 1, false, 0);
+
+    let list_doc = hwp_convert::from_markdown("1. 반복 제목");
+    let numbered = list_doc.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| {
+            list_doc
+                .header
+                .para_shapes
+                .get(paragraph.para_shape.0 as usize)
+                .is_some_and(|shape| shape.head_type() == 2)
+        })
+        .expect("numbered paragraph")
+        .clone();
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("table");
+    table.cells[0].paragraphs = vec![numbered];
+
+    let (list, report) = 표_레이아웃(&doc);
+    if report.issues.iter().any(|issue| {
+        matches!(
+            issue.code,
+            hwp_render::RenderIssueCode::ShapingFailed
+                | hwp_render::RenderIssueCode::PageNumberShapingOmitted
+        )
+    }) {
+        eprintln!("skip: no usable font for list marker shaping");
+        return;
+    }
+    assert!(list.pages.len() >= 2);
+    let marker_signature = |page: &hwp_render::display::PageList| {
+        page.items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Glyphs { x, run, .. } => Some((
+                    *x,
+                    run.glyphs.iter().map(|glyph| glyph.id).collect::<Vec<_>>(),
+                )),
+                _ => None,
+            })
+            .min_by(|left, right| left.0.partial_cmp(&right.0).unwrap())
+            .expect("numbered header marker")
+            .1
+    };
+    let expected = marker_signature(&list.pages[0]);
+    assert!(!expected.is_empty());
+    for (page_index, page) in list.pages.iter().enumerate().skip(1) {
+        assert_eq!(
+            marker_signature(page),
+            expected,
+            "continuation header advanced the list state on page {page_index}"
+        );
+    }
+}
+
+/// Repeat-header tables redraw leading header cells on continuation pages.
+#[test]
+fn 표_쪽분할_제목줄_반복() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let rows = (page_h / 100.0) as u16 + 3;
+    let doc = 표_분할_문서(1 | 4, rows, 100, 1, false, 0);
+    let (list, _report) = 표_레이아웃(&doc);
+    assert!(list.pages.len() >= 2);
+    let mut header_rects = 0;
+    let mut data_rects = 0;
+    for pi in 0..list.pages.len() {
+        let rects = 채움_사각형(&list, pi);
+        let page_headers = rects.iter().filter(|r| r.2 == 0x0055_5555).count();
+        assert_eq!(
+            page_headers, 1,
+            "each table page must contain exactly one header row: page {pi}"
+        );
+        header_rects += page_headers;
+        data_rects += rects.iter().filter(|r| r.2 == 0x00C8_C8C8).count();
+        if pi > 0 {
+            let top = rects
+                .iter()
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                .expect("이어지는 쪽에도 행이 있어야 한다");
+            assert_eq!(top.2, 0x0055_5555, "page {pi} 최상단은 제목 행이어야 한다");
+            assert!(
+                (top.0 - body_top).abs() < 0.6,
+                "제목 행은 본문 상단에: y={}",
+                top.0
+            );
+        }
+    }
+    assert_eq!(data_rects, rows as usize - 1, "데이터 행은 정확히 한 번씩");
+    assert_eq!(
+        header_rects,
+        list.pages.len(),
+        "제목 행은 첫 쪽 1회 + 이어지는 쪽마다 1회"
+    );
+}
+
+#[test]
+fn repeated_header_block_is_never_split_or_duplicated() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let filler = ((page_h - 150.0) / 16.0).floor() as usize;
+    let rows = (page_h / 100.0) as u16 + 4;
+    let doc = 표_분할_문서(1 | 4, rows, 100, 2, false, filler);
+    let (list, _report) = 표_레이아웃(&doc);
+
+    let mut data_rects = 0usize;
+    for page in 0..list.pages.len() {
+        let rects = 채움_사각형(&list, page);
+        if rects.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            rects.iter().filter(|rect| rect.2 == 0x0055_5555).count(),
+            2,
+            "each table page must contain the complete two-row header: page {page}"
+        );
+        data_rects += rects.iter().filter(|rect| rect.2 == 0x00C8_C8C8).count();
+    }
+    assert_eq!(data_rects, rows as usize - 2);
+}
+
+#[test]
+fn row_spanning_header_repeats_as_one_block() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let rows = (page_h / 100.0) as u16 + 4;
+    let mut doc = 표_분할_문서(1 | 4, rows, 100, 1, false, 0);
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("table");
+    table.cells[0].row_span = 2;
+    table.cells.remove(1);
+    table.row_cell_counts[1] = 0;
+
+    let (list, _report) = 표_레이아웃(&doc);
+    assert!(list.pages.len() >= 2);
+    for page in 0..list.pages.len() {
+        let header_rects: Vec<_> = 채움_사각형(&list, page)
+            .into_iter()
+            .filter(|rect| rect.2 == 0x0055_5555)
+            .collect();
+        assert_eq!(header_rects.len(), 1, "page {page}");
+        assert!((header_rects[0].1 - 200.0).abs() < 0.6, "page {page}");
+    }
+}
+
+/// NONE moves a page-sized table wholesale to the next page.
+#[test]
+fn 표_page_break_none이면_통째로_다음쪽() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    // Leave less than 300 pt on the first page.
+    let filler = ((page_h - 300.0) / 16.0).floor() as usize;
+    let doc = 표_분할_문서(0, 3, 100, 0, false, filler);
+    let (list, _report) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 2, "통째로 다음 쪽으로 밀려야 한다");
+    assert!(
+        채움_사각형(&list, 0).is_empty(),
+        "첫 쪽에는 표 조각이 없어야 한다"
+    );
+    let p2 = 채움_사각형(&list, 1);
+    assert_eq!(p2.len(), 3);
+    let min_y = p2.iter().map(|r| r.0).fold(f32::INFINITY, f32::min);
+    assert!(
+        (min_y - body_top).abs() < 0.6,
+        "표는 새 쪽 본문 상단에서 시작: y={min_y}"
+    );
+}
+
+/// An inline table is indivisible (GE-8); oversized content is reported.
+#[test]
+fn 표_글자처럼취급은_분할하지_않음() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let rows = (page_h / 100.0) as u16 + 3;
+    let doc = 표_분할_문서(1, rows, 100, 0, true, 0);
+    let (list, report) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 1, "한 글자 표는 쪽을 나누지 않는다");
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == hwp_render::RenderIssueCode::TableRowTooTallClipped),
+        "넘침이 보고되어야 한다"
+    );
+}
+
+/// A row-spanning cell makes every crossed boundary illegal. The complete
+/// span must move to one page instead of being truncated at the natural split.
+#[test]
+fn 표_쪽분할_병합셀은_절단하지_않음() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let rows = (page_h / 100.0) as u16 + 3;
+    let fit1 = ((page_h - 16.0) / 100.0).floor() as u16; // 첫 쪽에 들어가는 행 수
+    let mut doc = 표_분할_문서(1, rows, 100, 0, false, 0);
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|c| match c {
+            hwp_model::Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("표 컨트롤");
+    // Span three rows across the natural split point.
+    let cell = table
+        .cells
+        .iter_mut()
+        .find(|c| c.row == fit1 - 1)
+        .expect("행 존재");
+    cell.row_span = 3;
+    let (list, _report) = 표_레이아웃(&doc);
+    assert!(list.pages.len() >= 2);
+    let span_rect = (0..list.pages.len())
+        .flat_map(|page| 채움_사각형(&list, page))
+        .find(|(_, h, _)| (*h - 300.0).abs() < 0.6)
+        .expect("the complete three-row span must be emitted once");
+    assert!((span_rect.1 - 300.0).abs() < 0.6);
+    for pi in 0..list.pages.len() {
+        for &(y, h, _) in &채움_사각형(&list, pi) {
+            assert!(
+                y + h <= body_bottom + 0.6,
+                "절단된 병합 셀도 본문 안에: y={y} h={h} (page {pi})"
+            );
+        }
+    }
+}
+
+#[test]
+fn table_fragments_reserve_pending_footnote_space() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let rows = ((body_bottom - body_top) / 100.0) as u16 + 3;
+    let mut doc = 표_분할_문서(1, rows, 100, 0, false, 0);
+
+    let note_paragraph = hwp_convert::from_markdown("footnote body")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    let anchor = &mut doc.sections[0].paragraphs[0];
+    let note_index = anchor.controls.len() as u32;
+    anchor.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: hwp_model::ctrl_char::FOOTNOTE_ENDNOTE,
+        ctrl_id: *b"fn  ",
+        payload: vec![0; 12],
+        ctrl_index: Some(note_index),
+    });
+    anchor
+        .controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"fn  ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![note_paragraph],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+        }));
+
+    let (list, _report) = 표_레이아웃(&doc);
+    let separator_y = list.pages[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hwp_render::display::Item::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                width,
+                ..
+            } if x2 - x1 > 100.0 && (y2 - y1).abs() < 0.01 && *width <= 0.6 => Some(*y1),
+            _ => None,
+        })
+        .expect("footnote separator");
+    let table_bottom = 채움_사각형(&list, 0)
+        .iter()
+        .map(|(y, h, _)| y + h)
+        .fold(0.0f32, f32::max);
+    assert!(
+        table_bottom <= separator_y + 0.6,
+        "table fragment overlaps footnote reservation: table={table_bottom}, note={separator_y}"
+    );
+}
+
+#[test]
+fn uncovered_declared_rows_do_not_create_blank_pages() {
+    let mut doc = 표_분할_문서(1, 1, 18, 0, false, 0);
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("table");
+    table.rows = u16::MAX;
+    table.cells.clear();
+    table.row_cell_counts.clear();
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 1);
+    assert!(채움_사각형(&list, 0).is_empty());
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| { issue.code == hwp_render::RenderIssueCode::InvalidTableCellOmitted })
+    );
+}
+
+/// A continuation fragment is real page flow. A following explicit page
+/// break must still open a new page instead of being suppressed by the table
+/// transition's reset state.
+#[test]
+fn 표_연속쪽_뒤_명시적_쪽나눔을_보존() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let rows = ((body_bottom - body_top) / 100.0) as u16 + 3;
+    let mut doc = 표_분할_문서(1, rows, 100, 0, false, 0);
+
+    // Force the anchor through the cached-lineseg path, where the outer
+    // fallback branch does not restore flow state after object layout.
+    let source = hwp_convert::from_markdown("앵커");
+    let anchor = &mut doc.sections[0].paragraphs[0];
+    anchor.chars = source.sections[0].paragraphs[0].chars.clone();
+    anchor.line_segs = vec![hwp_model::LineSeg {
+        text_start: 0,
+        v_pos: 0,
+        line_height: 2000,
+        text_height: 2000,
+        baseline_gap: 1600,
+        line_spacing: 0,
+        col_start: 0,
+        seg_width: 50000,
+        flags: 0x0006_0000,
+    }];
+    let mut following = hwp_convert::from_markdown("명시적 다음 쪽")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    following.header.break_type |= 0x04;
+    doc.sections[0].paragraphs.push(following);
+
+    let (list, _report) = 표_레이아웃(&doc);
+    assert!(
+        list.pages.len() >= 3,
+        "the explicit break after a two-page table must create a third page: {}",
+        list.pages.len()
+    );
+}
+
+/// A table attached to a page-spanning paragraph uses the new page's flow y.
+#[test]
+fn 페이지_걸친_문단의_표는_새쪽_흐름위치에_앵커() {
+    let mut doc = 표_분할_문서(1, 1, 50, 0, false, 0); // 1행 50pt 표
+    let (body_top, _bb) = 본문_기하(&doc);
+    let src = hwp_convert::from_markdown("가나다라");
+    let chars = src.sections[0].paragraphs[0].chars.clone();
+    let para = &mut doc.sections[0].paragraphs[0];
+    para.chars = chars;
+    // Mark the second line as the first line of a page.
+    let seg = |text_start, flags| hwp_model::LineSeg {
+        text_start,
+        v_pos: 0,
+        line_height: 2000,
+        text_height: 2000,
+        baseline_gap: 1600,
+        line_spacing: 0,
+        col_start: 0,
+        seg_width: 50000,
+        flags,
+    };
+    para.line_segs = vec![seg(0, 0x0006_0000), seg(2, 0x0006_0001)];
+    let (list, _report) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 2, "둘째 줄에서 쪽이 나뉘어야 한다");
+    let p2 = 채움_사각형(&list, 1);
+    assert_eq!(p2.len(), 1);
+    // A 20 pt line puts the table at body_top + 20, not at stale body_top.
+    assert!(
+        (p2[0].0 - (body_top + 20.0)).abs() < 0.6,
+        "표는 새 쪽 흐름 위치에: y={} (기대 {})",
+        p2[0].0,
+        body_top + 20.0
+    );
+}

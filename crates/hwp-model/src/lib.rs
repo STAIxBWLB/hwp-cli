@@ -27,6 +27,7 @@ pub mod units;
 pub use control::{
     BinRef, Cell, ColumnDef, Control, Equation, GenericControl, GradientSpec, GsoPlacement,
     PageDef, ParagraphList, Picture, SECPR_PAGEPR_SLOT, SectionDef, ShapeGeom, ShapeKind, Table,
+    TablePageBreak,
 };
 pub use document::{BinStream, DocMeta, Document, Metadata, Section};
 pub use header::{
