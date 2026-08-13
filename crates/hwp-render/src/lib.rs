@@ -32,7 +32,7 @@ pub use diff::{DiffReport, compare};
 pub use error::RenderError;
 pub use fonts::{FontResolution, FontResolutionOutcome, FontStore};
 pub use issues::{
-    RenderIssueAccumulator, RenderIssueCode, RenderIssueReport, RenderIssueSeverity,
+    FontCoverage, RenderIssueAccumulator, RenderIssueCode, RenderIssueReport, RenderIssueSeverity,
     RenderIssueStage, RenderIssueSummary,
 };
 
@@ -305,7 +305,28 @@ pub fn render_document_pdf(
     opts: &RenderOptions,
     pages: Option<&[usize]>,
 ) -> Result<PdfOutput, RenderError> {
-    let (mut list, mut report, _, _) = build_display_list(doc, opts);
+    let (list, report, _, _) = build_display_list(doc, opts);
+    finish_pdf(list, report, pages)
+}
+
+/// 인증 전용 격리 PDF 렌더. 시스템 글꼴을 탐색하지 않고 `font_files`만 사용한다.
+/// 구조화 코퍼스처럼 폰트를 hash로 고정하는 경로에서 PNG 격리 렌더와 같은
+/// 글꼴 집합으로 PDF를 만들 때 사용한다.
+pub fn render_document_pdf_isolated(
+    doc: &Document,
+    opts: &RenderOptions,
+    pages: Option<&[usize]>,
+    font_files: &[std::path::PathBuf],
+) -> Result<PdfOutput, RenderError> {
+    let (list, report, _, _) = build_display_list_with_font_scope(doc, opts, false, font_files);
+    finish_pdf(list, report, pages)
+}
+
+fn finish_pdf(
+    mut list: display::DisplayList,
+    mut report: RenderIssueAccumulator,
+    pages: Option<&[usize]>,
+) -> Result<PdfOutput, RenderError> {
     if let Some(sel) = pages {
         let mut taken: Vec<Option<display::PageList>> = list.pages.into_iter().map(Some).collect();
         let mut picked = Vec::with_capacity(sel.len());

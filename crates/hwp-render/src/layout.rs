@@ -787,7 +787,8 @@ pub fn layout_document(
 
         // 다단(multi-column): 섹션의 첫 cold 컨트롤 ColumnDef로 단 기하 설정(v1: 섹션당 1구성).
         // 한글 line_seg는 col_start=0(단 상대)·seg_width=단폭이므로 단 x는 밴드 인덱스로 계산한다.
-        // v_pos 리셋이 단 넘김과 페이지 넘김을 겸하며, colCount번째 밴드마다 페이지가 넘어간다.
+        // 경계 판정: flags bit0/bit1이 있으면 그것이 곧 페이지/단 넘김, 없으면
+        // v_pos 리셋마다 밴드를 올려 colCount번째 밴드에서 페이지를 넘긴다.
         let col_def = section
             .paragraphs
             .iter()
@@ -803,7 +804,7 @@ pub fn layout_document(
         } else {
             body_width
         };
-        let mut col_band = 0usize; // v_pos 리셋마다 증가하는 단 밴드 인덱스
+        let mut col_band = 0usize; // 단 넘김마다 증가, 페이지 넘김에서 0으로 리셋되는 단 밴드 인덱스
 
         // 머리말/꼬리말: 구역에서 처음 정의된 것을 모든 페이지에 반복
         let mut header_ctrl = None;
@@ -1031,8 +1032,19 @@ pub fn layout_document(
 
             let last_content = last_content_seg(para);
             for (i, seg) in para.line_segs.iter().enumerate() {
-                // v_pos 리셋: 다단이면 단 넘김(같은 페이지) vs 페이지 넘김을 밴드로 구분.
-                if seg.v_pos < prev_v_pos && !page.items.is_empty() {
+                // 페이지/단 경계 판정. Hancom이 저장한 lineseg는 flags bit0(페이지
+                // 첫 줄)/bit1(단 첫 줄)을 직접 박아준다(F3) — 이를 1급 근거로 쓴다.
+                // flags가 없는 합성 lineseg(lineseg.rs의 0x0006_0000)는 기존
+                // v_pos 리셋 휴리스틱으로 폴백한다.
+                let (is_boundary, page_break) = if seg.flags & 0x3 != 0 {
+                    (true, seg.flags & 0x1 != 0)
+                } else if seg.v_pos < prev_v_pos {
+                    let band = col_band + 1;
+                    (true, col_count == 1 || band.is_multiple_of(col_count))
+                } else {
+                    (false, false)
+                };
+                if is_boundary && !page.items.is_empty() {
                     // 경계를 걸치기 전, 이 페이지/단에 쌓인 배경 조각을 먼저 그린다(GC-9).
                     // 조각 하단 = 현 content_bottom, 걸친 경계쪽 테두리(하변)는 긋지 않는다.
                     if let Some(top) = bg_slice_top {
@@ -1051,12 +1063,9 @@ pub fn layout_document(
                         );
                         bg_first_slice = false;
                     }
-                    col_band += 1;
-                    if col_count > 1 && !col_band.is_multiple_of(col_count) {
-                        // 단 넘김: 커서만 페이지 상단으로, 페이지는 유지(다음 단으로 x 이동).
-                        content_bottom = body_top;
-                    } else {
-                        // 페이지 넘김(마지막 단 소진 또는 단일 단).
+                    if page_break {
+                        // 페이지 넘김: 새 페이지의 첫 단(band 0)부터 시작.
+                        col_band = 0;
                         render_page_notes(
                             doc,
                             store,
@@ -1072,9 +1081,12 @@ pub fn layout_document(
                         if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
                             return DisplayList { pages };
                         }
-                        content_bottom = body_top;
                         paras_on_page = 0;
+                    } else {
+                        // 단 넘김: 페이지는 유지하고 다음 단으로 x 이동.
+                        col_band += 1;
                     }
+                    content_bottom = body_top;
                     // 새 조각: 다음 줄 배치 때 상단을 잡고, 삽입 지점은 (넘겨진) 현재 page 기준.
                     bg_slice_top = None;
                     bg_slice_insert = page.items.len();

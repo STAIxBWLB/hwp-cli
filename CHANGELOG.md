@@ -10,6 +10,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- PDF parity groundwork for Hancom Office 2024 equivalence
+  ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). The renderer now reads
+  `LineSeg.flags` bit0/bit1 (page-first / column-first line) as the first-class page/column
+  break signal for Hancom-saved documents, keeping the `v_pos` reset heuristic only as the
+  fallback for synthesized linesegs. The structured corpus run additionally renders every case
+  to PDF under the pinned font and asserts page-count parity with the PNG backend, a full
+  GID round-trip through the emitted ToUnicode CMap, and two-run byte determinism; PDF
+  artifacts are pinnable in the corpus schemas. `hwp render` now prints a font-coverage line
+  (matched/substituted/missing/subset-fallback) and warns that no parity figure may be
+  published from a substituted-font render. The durable contract — oracle, five-metric set,
+  thresholds, font gate, data policy and non-goals — is
+  [docs/design/21-pdf-parity.md](docs/design/21-pdf-parity.md).
+
 ## [0.8.4]
 
 **Fixed**

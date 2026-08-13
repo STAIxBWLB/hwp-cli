@@ -23,7 +23,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512,
-            "pattern": "^(?:certification|documents)/[a-z0-9][a-z0-9/-]*\\.(?:json|png|hwp|hwpx)$|^summary\\.json$"
+            "pattern": "^(?:certification|documents)/[a-z0-9][a-z0-9/-]*\\.(?:json|png|hwp|hwpx|pdf)$|^summary\\.json$"
           },
           "bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
           "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }

@@ -23,6 +23,9 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 getrandom = { workspace = true }
+# 구조화 코퍼스 PDF 검증기가 FlateDecode 스트림을 인플레이트하는 데 사용.
+# hwp-render가 이미 끌어오는 의존성이라 의존성 그래프는 커지지 않는다.
+flate2 = { workspace = true }
 regex = { workspace = true }
 image = { workspace = true }
 quick-xml = { workspace = true }

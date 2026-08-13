@@ -673,6 +673,7 @@ version = "0.8.4"
 dependencies = [
  "anyhow",
  "clap",
+ "flate2",
  "getrandom 0.3.4",
  "hwp-convert",
  "hwp-model",

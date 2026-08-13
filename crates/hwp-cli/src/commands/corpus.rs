@@ -17,6 +17,8 @@ use hwp_cli::template_spec::{MAX_DATA_BYTES, MAX_TEMPLATE_BYTES};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+mod pdf_roundtrip;
+
 const MANIFEST_VERSION: &str = "1.0";
 const MANIFEST_CONTRACT: &str = "hwp-structured-corpus-v1";
 const SUMMARY_CONTRACT: &str = "hwp-structured-corpus-run-v1";
@@ -37,10 +39,10 @@ const FROZEN_MANIFEST_SCHEMA_SHA256: &str =
     "b8057de94b15deebceb58f014071d57d96fd9bb61603d9cbc2fd94a4398b3b3a";
 #[cfg(test)]
 const FROZEN_RUN_SCHEMA_SHA256: &str =
-    "416466f0c197ec31c64ed76035d3a7b34dbb694c08c459605c9eccfface22706";
+    "187efe046c1a9481bafa51494464ba0e3cee2b04c29dd0772b53f0c9816f7ba0";
 #[cfg(test)]
 const FROZEN_ARTIFACT_SCHEMA_SHA256: &str =
-    "3f9effe9df788304ae39bd3f1f460a40bf4b979016d5bc4c5599db386d577c23";
+    "8735bbe43e21a40bbcf4d20f61c0b886414ffcd5c4d0c690635e191334800ef7";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_CASES: usize = 32;
 const MAX_REQUIRED_TEXT: usize = 64;
@@ -241,8 +243,18 @@ struct FormatSummary {
     output_sha256: Option<String>,
     output_bytes: Option<u64>,
     two_run_render_identical: bool,
+    two_run_pdf_identical: bool,
+    pdf: Option<PdfSummary>,
     semantic: Option<SemanticSummary>,
     certification: Option<CertificationSummary>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct PdfSummary {
+    sha256: String,
+    bytes: u64,
+    page_count: usize,
+    tounicode_roundtrip_ok: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -407,6 +419,7 @@ pub fn run(manifest_path: &Path, report_path: &Path) -> Result<()> {
             case,
             base,
             &policy_path,
+            policy.render.dpi,
             &font_files,
             &isolated_source_base,
             stage.root(),
@@ -675,6 +688,7 @@ fn run_case(
     case: &CorpusCase,
     base: &Path,
     policy: &Path,
+    render_dpi: f32,
     font_files: &[PathBuf],
     isolated_source_base: &Path,
     stage: &Path,
@@ -702,6 +716,7 @@ fn run_case(
             &prepared,
             *format,
             policy,
+            render_dpi,
             font_files,
             isolated_source_base,
             stage,
@@ -746,16 +761,20 @@ fn failed_format(format: CorpusFormat, reason: &'static str) -> FormatSummary {
         output_sha256: None,
         output_bytes: None,
         two_run_render_identical: false,
+        two_run_pdf_identical: false,
+        pdf: None,
         semantic: None,
         certification: None,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_format(
     case: &CorpusCase,
     generator: &PreparedGenerator,
     format: CorpusFormat,
     policy: &Path,
+    render_dpi: f32,
     font_files: &[PathBuf],
     isolated_source_base: &Path,
     stage: &Path,
@@ -768,6 +787,8 @@ fn run_format(
         output_sha256: None,
         output_bytes: None,
         two_run_render_identical: false,
+        two_run_pdf_identical: false,
+        pdf: None,
         semantic: None,
         certification: None,
     };
@@ -864,10 +885,109 @@ fn run_format(
     } else {
         summary.reason_codes.push("two_run_render_mismatch");
     }
+    // PDF 백엔드 검증은 PNG 인증이 성공해 페이지 수 기준(total_pages)이 확정된 경우에만
+    // 실행한다. 인증 실패 시에는 앞서 기록된 사유 코드로 충분하다.
+    let expected_pdf_pages = summary
+        .certification
+        .as_ref()
+        .map(|certification| certification.total_pages);
+    if let Some(expected_pages) = expected_pdf_pages {
+        check_pdf_backend(
+            &mut summary,
+            &first,
+            &second,
+            format,
+            render_dpi,
+            font_files,
+            &case.expected.semantic.required_text,
+            expected_pages,
+            &documents_dir,
+            extension,
+        );
+    }
     if summary.reason_codes.is_empty() {
         summary.status = RunStatus::Passed;
     }
     summary
+}
+
+/// PDF 백엔드 검증 — PNG 백엔드와 페이지 수가 일치하고(세 백엔드 합의), 콘텐츠의
+/// 모든 GID가 우리가 방출한 ToUnicode CMap으로 원문 문자로 왕복하며, 같은 문서를
+/// 두 번 렌더링하면 바이트가 동일해야 한다(two_run_render_identical의 PDF 판).
+#[allow(clippy::too_many_arguments)]
+fn check_pdf_backend(
+    summary: &mut FormatSummary,
+    first: &Path,
+    second: &Path,
+    format: CorpusFormat,
+    render_dpi: f32,
+    font_files: &[PathBuf],
+    required_text: &[String],
+    expected_pages: usize,
+    documents_dir: &Path,
+    extension: &str,
+) {
+    let options = hwp_render::RenderOptions {
+        dpi: render_dpi,
+        font_dirs: Vec::new(),
+    };
+    let mut pdfs = Vec::with_capacity(2);
+    for (label, document_path) in [("run-a", first), ("run-b", second)] {
+        let Some(document) = read_generated_document(document_path, format) else {
+            summary.reason_codes.push("pdf_render_failed");
+            return;
+        };
+        let output =
+            match hwp_render::render_document_pdf_isolated(&document, &options, None, font_files) {
+                Ok(output) if output.report.issue_count == 0 => output,
+                _ => {
+                    summary.reason_codes.push("pdf_render_failed");
+                    return;
+                }
+            };
+        let path = documents_dir.join(format!("{label}-{extension}.pdf"));
+        if write_new(&path, &output.data).is_err() {
+            summary.reason_codes.push("workspace_failed");
+            return;
+        }
+        pdfs.push(output.data);
+    }
+    summary.two_run_pdf_identical = pdfs[0] == pdfs[1];
+    if !summary.two_run_pdf_identical {
+        summary.reason_codes.push("two_run_pdf_mismatch");
+    }
+    let (page_count, roundtrip_ok) = match pdf_roundtrip::inspect_pdf(&pdfs[0]) {
+        Ok(inspection) => {
+            if inspection.page_count != expected_pages {
+                summary.reason_codes.push("pdf_page_count_mismatch");
+            }
+            let roundtrip_ok = tounicode_roundtrip_matches(&inspection.decoded_text, required_text);
+            if !roundtrip_ok {
+                summary.reason_codes.push("pdf_tounicode_roundtrip_failed");
+            }
+            (inspection.page_count, roundtrip_ok)
+        }
+        Err(_) => {
+            summary.reason_codes.push("pdf_tounicode_roundtrip_failed");
+            (0, false)
+        }
+    };
+    summary.pdf = Some(PdfSummary {
+        sha256: sha256_hex(&pdfs[0]),
+        bytes: u64::try_from(pdfs[0].len()).unwrap_or(u64::MAX),
+        page_count,
+        tounicode_roundtrip_ok: roundtrip_ok,
+    });
+}
+
+/// 디코드 텍스트(공백 제거)가 모든 필수 문자열(공백 제거)을 포함하는지 확인한다.
+/// 글리프 런 분할·줄바꿈으로 공백 위치는 달라질 수 있으므로 공백을 제거하고 비교한다.
+fn tounicode_roundtrip_matches(decoded: &str, required_text: &[String]) -> bool {
+    let decoded: String = decoded.chars().filter(|ch| !ch.is_whitespace()).collect();
+    required_text.iter().all(|required| {
+        let needle: String = required.chars().filter(|ch| !ch.is_whitespace()).collect();
+        !needle.is_empty() && decoded.contains(&needle)
+    })
 }
 
 enum PreparedGenerator {
@@ -996,17 +1116,7 @@ fn read_semantic(
     format: CorpusFormat,
     expected: &SemanticAssertions,
 ) -> std::result::Result<SemanticSummary, ()> {
-    let document = match format {
-        CorpusFormat::Hwpx => hwpx::read_document(path)
-            .ok()
-            .filter(|read| read.warnings.is_empty())
-            .map(|read| read.document),
-        CorpusFormat::Hwp => hwp5::read_document(path)
-            .ok()
-            .filter(|read| read.warnings.is_empty())
-            .map(|read| read.document),
-    }
-    .ok_or(())?;
+    let document = read_generated_document(path, format).ok_or(())?;
     let text = document.plain_text();
     let stats = semantic_stats(&document);
     if expected
@@ -1029,6 +1139,20 @@ fn read_semantic(
         tables: stats.tables,
         required_text_count: expected.required_text.len(),
     })
+}
+
+/// 생성된 HWPX/HWP 문서를 경고 없이 읽는다 (read_semantic과 PDF 검증의 공통 진입).
+fn read_generated_document(path: &Path, format: CorpusFormat) -> Option<hwp_model::Document> {
+    match format {
+        CorpusFormat::Hwpx => hwpx::read_document(path)
+            .ok()
+            .filter(|read| read.warnings.is_empty())
+            .map(|read| read.document),
+        CorpusFormat::Hwp => hwp5::read_document(path)
+            .ok()
+            .filter(|read| read.warnings.is_empty())
+            .map(|read| read.document),
+    }
 }
 
 fn structural_semantic_sha256(document: &hwp_model::Document) -> std::result::Result<String, ()> {

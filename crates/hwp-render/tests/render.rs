@@ -218,6 +218,39 @@ fn 멀티페이지_lineseg_페이지_상대_v_pos() {
     );
 }
 
+/// Hancom이 저장한 lineseg는 flags bit0(페이지 첫 줄)/bit1(단 첫 줄)으로 경계를
+/// 명시한다(F3). flags가 v_pos 휴리스틱과 충돌하면 flags를 따라야 한다:
+/// v_pos가 단조 증가해 리셋 감지가 무력해도 bit0이 박힌 줄은 새 페이지를 시작한다.
+#[test]
+fn lineseg_flags가_v_pos_휴리스틱에_우선() {
+    let mut doc = hwp_convert::from_markdown("첫 문단\n\n둘째 문단\n\n셋째 문단\n");
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+
+    // 세 문단 모두 1줄. v_pos는 단조 증가시켜 리셋 휴리스틱을 무력화하고,
+    // 둘째 문단에만 bit0(페이지 첫 줄)을 박는다.
+    for (i, p) in doc.sections[0].paragraphs.iter_mut().enumerate() {
+        assert_eq!(p.line_segs.len(), 1, "문단당 1줄 가정");
+        p.line_segs[0].v_pos = (i as i32) * 2000;
+        p.line_segs[0].flags = if i == 1 { 0x0006_0001 } else { 0x0006_0000 };
+    }
+
+    let out = render_document(
+        &doc,
+        &RenderOptions {
+            dpi: 36.0,
+            font_dirs: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        out.pages.len(),
+        2,
+        "flags bit0(페이지 첫 줄)은 v_pos 증가와 무관하게 페이지를 넘겨야 한다"
+    );
+}
+
 /// 문단 위/아래 간격(spacing_top/bottom)이 합성 줄 배치 v_pos 에 반영되어야 한다.
 /// 빠지면 한글이 문단 사이 여백 없이 압축해 그린다(제목 위 여백 사라짐 등).
 /// from_markdown 은 제목에 spacing_top=600, spacing_bottom=300 을 준다.
