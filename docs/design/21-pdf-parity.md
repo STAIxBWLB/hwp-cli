@@ -99,6 +99,17 @@ hwpx-only. Tab advance is unified on `tab::next_tab` across `items_width`, `plac
 `compute_linesegs`. Double-line weight splits are approximations to confirm in the Hancom
 verification round.
 
+**Implementation status 2026-08-13 (PR 6):** the character-decoration batch landed (GG-8,
+GG-9, GG-10, GG-11, GG-22). Emphasis dots (attr bits 21 to 24, all 13 kinds) render per glyph
+and hwpx `symMark` round-trips; underline shapes and above-character underlines apply the
+0-based decor table (dash family, double/weighted offsets, cubic wave) via
+`border.rs::decor_strokes`; strikethrough shapes (bits 26 to 29) share that table and round-trip
+in hwpx; character shadows use the real `shadow_gap` percentage in all three backends; and
+character-level borders/backgrounds (`CharShape.border_fill_id`) render per run with the
+background emitted before the glyphs. Decoration metrics (y offsets, wave constants, emphasis
+mark sizes, char-box extents, the (0,0) shadow-gap fallback) are placeholders for the Hancom
+verification round.
+
 ## 4. Gates
 
 ### 4.1 Normative Hancom-oracle gate — future public corpus

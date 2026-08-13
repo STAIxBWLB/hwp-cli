@@ -34,6 +34,37 @@ pub(crate) fn line_type_code(s: &str) -> u8 {
     }
 }
 
+/// 밑줄/취소선 모양 → 0-기반 장식 코드 (hwp5 attr bits 4~7/26~29용,
+/// hwplib `BorderType2` 순서). hwpx 1-기반 코드에서 1을 뺀 값이며,
+/// `line_type_code`에 없는 WAVE/DOUBLE_WAVE는 방어적으로 11/12에 매핑한다.
+pub(crate) fn decor_code(s: &str) -> u8 {
+    match s {
+        "WAVE" => 11,
+        "DOUBLE_WAVE" => 12,
+        _ => line_type_code(s).saturating_sub(1),
+    }
+}
+
+/// OWPML symMark → 강조점 코드 (hwp5 attr bits 21~24, hwpxlib `SymMarkSort`
+/// 순서 = hwp-model `CharShape::emphasis_kind` 주석 표).
+pub(crate) fn sym_mark_code(s: &str) -> u8 {
+    match s {
+        "DOT_ABOVE" => 1,
+        "RING_ABOVE" => 2,
+        "TILDE" => 3,
+        "CARON" => 4,
+        "SIDE" => 5,
+        "COLON" => 6,
+        "GRAVE_ACCENT" => 7,
+        "ACUTE_ACCENT" => 8,
+        "CIRCUMFLEX" => 9,
+        "MACRON" => 10,
+        "HOOK_ABOVE" => 11,
+        "DOT_BELOW" => 12,
+        _ => 0,
+    }
+}
+
 /// "0.12 mm" → 굵기 인덱스 (가장 가까운 값).
 pub(crate) fn width_index(s: &str) -> u8 {
     const TABLE: [f32; 16] = [
@@ -177,6 +208,10 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         if attr(e, "useKerning").as_deref() == Some("1") {
                             attr_bits |= 1 << 30;
                         }
+                        // 강조점(symMark) → attr bits 21~24.
+                        if let Some(mark) = attr(e, "symMark") {
+                            attr_bits |= u32::from(sym_mark_code(&mark)) << 21;
+                        }
                         let cs = CharShape {
                             base_size: attr_i32(e, "height").unwrap_or(1000),
                             text_color: attr(e, "textColor").map_or(0, |c| parse_color(&c)),
@@ -248,6 +283,13 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             // 밑줄 모양(SOLID/DASH/DOT…)을 테두리선 종류 코드로 보존.
                             // 미지정(0)이면 write가 기본 SOLID로 방출한다.
                             cs.underline_shape = attr(e, "shape").map_or(0, |s| line_type_code(&s));
+                            // 렌더용 정규화: 0-기반 장식 코드를 attr bits 4~7에도 기록
+                            // (밑줄이 실제 있을 때만 — NONE의 shape은 무의미).
+                            if kind != 0
+                                && let Some(s) = attr(e, "shape")
+                            {
+                                cs.attr |= u32::from(decor_code(&s)) << 4;
+                            }
                         }
                     }
                     b"strikeout" => {
@@ -262,6 +304,10 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             if visible {
                                 cs.attr |= 1 << 18; // 바이트 왕복 보존
                                 cs.strike = true; // 의미 플래그 (has_strike 근거)
+                                // 취소선 모양 → 0-기반 장식 코드, attr bits 26~29 (B8 위치).
+                                if let Some(s) = shape.as_deref() {
+                                    cs.attr |= u32::from(decor_code(s)) << 26;
+                                }
                             }
                         }
                     }

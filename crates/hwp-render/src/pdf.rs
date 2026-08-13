@@ -199,7 +199,7 @@ pub(crate) fn render_pdf_with_metadata(
                         }
                         // 그림자 — 본문 전에 오프셋 복사.
                         if let Some(sc) = run.shadow {
-                            let d = run.size_pt * 0.06;
+                            let (dx, dy) = run.shadow_offset();
                             write_glyph_run(
                                 &mut content,
                                 &fonts,
@@ -209,8 +209,8 @@ pub(crate) fn render_pdf_with_metadata(
                                 h,
                                 run,
                                 sc,
-                                d,
-                                d,
+                                dx,
+                                dy,
                             );
                         }
                         // 양각/음각 — 흰 하이라이트 사본 오프셋(양각=좌상, 음각=우하).
@@ -1125,14 +1125,19 @@ mod tests {
             color: 0,
             bold: false,
             italic: false,
-            underline: false,
+            underline_kind: 0,
+            underline_shape: 0,
             strike: false,
+            strike_shape: 0,
+            emphasis: 0,
             underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
             shadow: None,
+            shadow_gap: (0, 0),
             outline: false,
             emboss: false,
             engrave: false,
+            border_fill_id: 0,
             width_pt: glyphs.iter().map(|glyph| glyph.x_advance).sum(),
             glyphs,
             text: text.to_string(),

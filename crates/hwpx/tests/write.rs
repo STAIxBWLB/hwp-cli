@@ -1785,6 +1785,46 @@ fn ge_a5_밑줄_모양_왕복() {
     assert!(out.contains(r#"shape="DASH""#), "방출 XML에 DASH: {out}");
 }
 
+/// GG-8 강조점 symMark: attr bits 21~24가 symMark 이름으로 방출되고 왕복한다
+/// (이전엔 symMark="NONE" 고정).
+#[test]
+fn gg8_symmark_왕복() {
+    let xml = r##"<hh:head><hh:charProperties itemCnt="2"><hh:charPr id="0" height="1000" symMark="DOT_ABOVE"/><hh:charPr id="1" height="1000" symMark="COLON"/></hh:charProperties></hh:head>"##;
+    let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
+    assert_eq!(h1.char_shapes[0].emphasis_kind(), 1);
+    assert_eq!(h1.char_shapes[1].emphasis_kind(), 6);
+    let out = hwpx::write::header::write_header(&h1, 1);
+    assert!(out.contains(r#"symMark="DOT_ABOVE""#), "방출 XML: {out}");
+    assert!(out.contains(r#"symMark="COLON""#), "방출 XML: {out}");
+    let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
+    assert_eq!(h2.char_shapes[0].emphasis_kind(), 1, "왕복 보존");
+    assert_eq!(h2.char_shapes[1].emphasis_kind(), 6, "왕복 보존");
+    // 강조점 없음은 NONE 유지.
+    let (_, cs_none) = 왕복_charpr("");
+    assert_eq!(cs_none.emphasis_kind(), 0);
+}
+
+/// GG-10 취소선 모양: SOLID가 아닌 모양(DASH_DOT)이 왕복한다(이전엔 SOLID 고정).
+#[test]
+fn gg10_취소선_모양_왕복() {
+    let (cs1, cs2) = 왕복_charpr(r##"<hh:strikeout shape="DASH_DOT" color="#000000"/>"##);
+    assert!(cs1.has_strike(), "원본 취소선 파싱");
+    assert_eq!(cs1.strike_shape_code(), 3, "DASH_DOT → 0-기반 3");
+    assert!(cs2.has_strike(), "재읽기 취소선 보존");
+    assert_eq!(cs2.strike_shape_code(), 3, "모양 코드 왕복 보존");
+    // 방출된 XML에 shape="DASH_DOT"이 실제로 들어간다.
+    let xml = r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"><hh:strikeout shape="DASH_DOT" color="#000000"/></hh:charPr></hh:charProperties></hh:head>"##;
+    let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
+    let out = hwpx::write::header::write_header(&h1, 1);
+    assert!(
+        out.contains(r#"<hh:strikeout shape="DASH_DOT""#),
+        "방출 XML: {out}"
+    );
+    // 취소선 없음은 여전히 NONE.
+    let (_, cs_plain) = 왕복_charpr("");
+    assert!(!cs_plain.has_strike());
+}
+
 /// GE-α7 문단번호 형식: 수준별 start/numFormat/템플릿이 왕복에서 보존된다(이전엔 상수 ^{{level}}.).
 #[test]
 fn ge_a7_번호_형식_왕복() {

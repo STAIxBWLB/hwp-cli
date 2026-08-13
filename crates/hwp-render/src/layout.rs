@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Section, Table};
 
-use crate::display::{DisplayList, Item, PageList, PathCmd, Stroke};
+use crate::display::{DisplayList, Fill, Item, PageList, PathCmd, Stroke};
 use crate::error::RenderError;
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
@@ -694,7 +694,7 @@ fn render_positioned_page_number(
         let margin = furniture.page_def.margin_bottom.to_pt() as f32;
         page.height_pt - (margin * 0.5 - run.size_pt * 0.35).max(run.size_pt * 0.2)
     };
-    push_run(page, x, y, run, warnings);
+    push_run(page, x, y, run, &doc.header.border_fills, warnings);
 }
 
 pub fn layout_document_bounded(
@@ -1016,6 +1016,7 @@ pub fn layout_document(
                         max_size * 1.6,
                         &tabs,
                         first_delta,
+                        &doc.header.border_fills,
                         warnings,
                     );
                     content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
@@ -1225,6 +1226,7 @@ pub fn layout_document(
                     line_advance,
                     &tabs,
                     0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    &doc.header.border_fills,
                     warnings,
                 );
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
@@ -1588,7 +1590,7 @@ fn render_one_note(
     let label = format!("{})", note.number);
     let baseline = y + marker_size;
     if let Some(run) = crate::shape::shape_plain(store, doc, &label, marker_size, 0, false) {
-        push_run(page, x, baseline, run, warnings);
+        push_run(page, x, baseline, run, &doc.header.border_fills, warnings);
     }
     // 내용 문단들(자체 char_shape 크기 사용). 여러 문단은 세로로 누적.
     let mut bottom = y;
@@ -1622,7 +1624,7 @@ fn render_list_marker(
     if let Some(run) = crate::shape::shape_plain(store, doc, marker, size, 0, false) {
         let w = run.width_pt;
         let x = (text_left - w - size * 0.3).max(0.0);
-        push_run(page, x, baseline, run, warnings);
+        push_run(page, x, baseline, run, &doc.header.border_fills, warnings);
     }
 }
 
@@ -2521,6 +2523,7 @@ fn layout_box_para_iter<'a>(
                     max_size * 1.6,
                     &tabs,
                     first_delta,
+                    &doc.header.border_fills,
                     warnings,
                 );
                 content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
@@ -2602,6 +2605,7 @@ fn layout_box_para_iter<'a>(
                     line_advance,
                     &tabs,
                     0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    &doc.header.border_fills,
                     warnings,
                 );
                 content_bottom = last_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0);
@@ -2925,39 +2929,309 @@ fn items_max_size(items: &[InlineItem]) -> Option<f32> {
         .reduce(f32::max)
 }
 
-/// 글리프 런과 그 장식(밑줄/취소선)을 함께 배치한다.
-/// 장식 상수(0.10em/0.25em/0.05em)는 U5 실측 전 초기값.
+/// 글리프 런과 그 장식(밑줄/취소선/강조점/글자 테두리·배경)을 함께 배치한다.
+/// 장식 상수(0.10em/0.25em/0.05em 등)는 U5 실측 전 초기값.
 pub(crate) fn push_run(
     page: &mut PageList,
     x: f32,
     y: f32,
     run: crate::shape::ShapedRun,
+    border_fills: &[BorderFill],
     warnings: &mut RenderIssueAccumulator,
 ) {
     let w = run.width_pt;
     let em = run.size_pt;
-    let underline = run.underline.then(|| {
-        let color = if run.underline_color == 0xFFFF_FFFF {
-            run.color
-        } else {
-            run.underline_color
-        };
-        (y + em * 0.10, color)
-    });
-    let strike = run.strike.then_some((y - em * 0.25, run.color));
+
+    // 글자 테두리/배경(GG-22): border_fill_id는 1-기반(0=없음). 배경 Rect는
+    // Glyphs보다 먼저 넣어 글자 뒤로 본다(문단 배경 draw_para_bg_slice와 같은 규칙).
+    // 런 상자 메트릭(윗변 y-0.80em ~ 아랫변 y+0.25em)은 placeholder — Hancom 확인 대상.
+    let bf = if run.border_fill_id > 0 {
+        border_fills.get(run.border_fill_id as usize - 1)
+    } else {
+        None
+    };
+    let box_top = y - em * 0.80;
+    let box_bottom = y + em * 0.25;
+    if let Some(bf) = bf
+        && let Some(fill) = bf.visible_bg()
+    {
+        if !warnings.charge_display_items(1) {
+            return;
+        }
+        page.items.push(Item::Rect {
+            x,
+            y: box_top,
+            w,
+            h: box_bottom - box_top,
+            fill,
+        });
+    }
+
+    // 장식 아이템은 run을 Glyphs로 이동하기 전에 미리 만든다.
+    let mut decor = Vec::new();
+    let decor_w = em * 0.05; // 밑줄/취소선 굵기 (U5 초기값)
+    let ul_color = if run.underline_color == 0xFFFF_FFFF {
+        run.color
+    } else {
+        run.underline_color
+    };
+    // kind 1 글자 아래(기존 y+0.10em), kind 3 글자 위 — y-0.80em은 ascent 근사
+    // (Hancom 확인 대상).
+    let underline_y = match run.underline_kind {
+        1 => Some(y + em * 0.10),
+        3 => Some(y - em * 0.80),
+        _ => None,
+    };
+    if let Some(ly) = underline_y {
+        decor.extend(decor_line_items(
+            x,
+            ly,
+            w,
+            run.underline_shape,
+            decor_w,
+            ul_color,
+        ));
+    }
+    if run.strike {
+        decor.extend(decor_line_items(
+            x,
+            y - em * 0.25,
+            w,
+            run.strike_shape,
+            decor_w,
+            run.color,
+        ));
+    }
+    if run.emphasis != 0 {
+        decor.extend(emphasis_items(&run, x, y));
+    }
+
     if !warnings.charge_display_items(1) {
         return;
     }
     page.items.push(Item::Glyphs { x, y, run });
-    for (ly, color) in underline.into_iter().chain(strike) {
-        if !warnings.charge_display_items(1) {
+
+    // 글자 테두리는 글자 위에 얹는다(문단 테두리와 같은 규칙).
+    if let Some(bf) = bf {
+        let items = crate::border::border_rectangle_items(
+            x,
+            box_top,
+            x + w,
+            box_bottom,
+            &bf.sides,
+            [true; 4],
+        );
+        if !warnings.charge_display_items(items.len()) {
             return;
         }
-        page.items.push(Item::Path {
-            commands: vec![PathCmd::MoveTo(x, ly), PathCmd::LineTo(x + w, ly)],
-            fill: None,
-            stroke: Some(Stroke::solid(color, em * 0.05)),
-        });
+        page.items.extend(items);
+    }
+    if !warnings.charge_display_items(decor.len()) {
+        return;
+    }
+    page.items.extend(decor);
+}
+
+/// 밑줄/취소선 한 줄의 장식 아이템 — 0-기반 장식 코드(border::decor_strokes)로
+/// 그린다. 물결 코드(11/12)는 3차 베지어 파형으로 방출한다.
+fn decor_line_items(x: f32, y: f32, w: f32, code: u8, width_pt: f32, color: u32) -> Vec<Item> {
+    match crate::border::decor_is_wave(code) {
+        0 => crate::border::decor_strokes(code, width_pt, color)
+            .into_iter()
+            .map(|(off, stroke)| Item::Path {
+                commands: vec![PathCmd::MoveTo(x, y + off), PathCmd::LineTo(x + w, y + off)],
+                fill: None,
+                stroke: Some(stroke),
+            })
+            .collect(),
+        waves => {
+            // 물결: 파장 ≈ 0.175em 상당은 방출부에서 half_len으로 넘어온다 —
+            // 여기서는 선 굵기를 진폭으로 쓰고, DoubleWave는 2.5×굵기 아래에
+            // 두 번째 파형을 둔다. 모두 초기값(Hancom 확인 대상).
+            let amp = width_pt;
+            let half_len = (width_pt * 3.5).max(0.9); // 파장의 절반 ≈ 0.175em(0.05em 굵기 기준)
+            (0..waves)
+                .map(|i| {
+                    let dy = f32::from(i) * width_pt * 2.5;
+                    Item::Path {
+                        commands: wave_commands(x, y + dy, x + w, half_len, amp),
+                        fill: None,
+                        stroke: Some(Stroke::solid(color, width_pt)),
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
+/// (x, y) ~ (end, y) 구간의 물결 경로 — 반파장(half_len) 단위 3차 베지어
+/// (중점 진폭이 amp와 일치하도록 제어점 k = amp/0.75).
+fn wave_commands(mut x: f32, y: f32, end: f32, half_len: f32, amp: f32) -> Vec<PathCmd> {
+    let k = amp / 0.75;
+    let mut cmds = vec![PathCmd::MoveTo(x, y)];
+    let mut up = true;
+    while x < end - 1e-3 {
+        let seg = half_len.min(end - x);
+        let cy = if up { y - k } else { y + k };
+        cmds.push(PathCmd::CubicTo(
+            x + seg * 0.5,
+            cy,
+            x + seg * 0.5,
+            cy,
+            x + seg,
+            y,
+        ));
+        x += seg;
+        up = !up;
+    }
+    cmds
+}
+
+/// 반지름 r의 원을 4개 3차 베지어로 근사 (중심 cx, cy).
+fn circle_commands(cx: f32, cy: f32, r: f32) -> Vec<PathCmd> {
+    const KAPPA: f32 = 0.5523; // 원→베지어 근사 계수
+    let k = r * KAPPA;
+    vec![
+        PathCmd::MoveTo(cx + r, cy),
+        PathCmd::CubicTo(cx + r, cy + k, cx + k, cy + r, cx, cy + r),
+        PathCmd::CubicTo(cx - k, cy + r, cx - r, cy + k, cx - r, cy),
+        PathCmd::CubicTo(cx - r, cy - k, cx - k, cy - r, cx, cy - r),
+        PathCmd::CubicTo(cx + k, cy - r, cx + r, cy - k, cx + r, cy),
+        PathCmd::Close,
+    ]
+}
+
+// 강조점(GG-8) 크기/위치 상수 — 전부 U5-style placeholder (Hancom 시각 확인 라운드에서 보정).
+const EMPHASIS_DOT_R: f32 = 0.05; // DOT_ABOVE/RING_ABOVE/DOT_BELOW 반지름 (em 비율)
+const EMPHASIS_SMALL_R: f32 = 0.035; // SIDE(･)/COLON 점 반지름
+const EMPHASIS_ABOVE: f32 = 0.95; // 위쪽 강조점 중심 — 베이스라인 위 (em)
+const EMPHASIS_BELOW: f32 = 0.30; // DOT_BELOW 중심 — 베이스라인 아래 (em)
+const EMPHASIS_HALF: f32 = 0.08; // 선분형 악센트 반폭 (em)
+const EMPHASIS_LIFT: f32 = 0.04; // 선분형 악센트 반높이 (em)
+const EMPHASIS_STROKE: f32 = 0.025; // 속빈 원/선분 선 굵기 (em)
+
+/// 강조점 아이템 — 글리프별 중심 위(12 DOT_BELOW는 아래)에 찍는다. 공백 글리프는
+/// 걸러낸다. 글리프가 없으면(합성 런) 런 폭에 균등 분배한다.
+fn emphasis_items(run: &crate::shape::ShapedRun, x: f32, y: f32) -> Vec<Item> {
+    let em = run.size_pt;
+    let kind = run.emphasis;
+    let cy = if kind == 12 {
+        y + em * EMPHASIS_BELOW
+    } else {
+        y - em * EMPHASIS_ABOVE
+    };
+
+    // 글리프별 중심 x (공백 제외).
+    let mut centers = Vec::new();
+    if run.glyphs.is_empty() {
+        // 균등 분배: 비공백 문자 수만큼 런 폭에 고르게.
+        let n = run.text.chars().filter(|c| !c.is_whitespace()).count();
+        if n > 0 && run.width_pt > 0.0 {
+            let step = run.width_pt / n as f32;
+            centers.extend((0..n).map(|i| x + step * (i as f32 + 0.5)));
+        }
+    } else {
+        let sources = crate::shape::glyph_source_sequences(run);
+        let mut pen = x;
+        for (i, g) in run.glyphs.iter().enumerate() {
+            let cx = pen + g.x_offset + g.x_advance * 0.5;
+            pen += g.x_advance;
+            let blank = sources
+                .get(i)
+                .is_none_or(|s| s.chars().all(|c| c.is_whitespace()));
+            if !blank {
+                centers.push(cx);
+            }
+        }
+    }
+
+    let mut items = Vec::new();
+    for cx in centers {
+        items.extend(emphasis_mark(kind, cx, cy, em, run.color));
+    }
+    items
+}
+
+/// 강조점 하나(kind별 모양 — hwplib EmphasisSort 순서, hwp-model
+/// `CharShape::emphasis_kind` 주석 표). 선분형 악센트(7~11)는 짧은 선분/곡선 근사.
+fn emphasis_mark(kind: u8, cx: f32, cy: f32, em: f32, color: u32) -> Vec<Item> {
+    let dot_r = em * EMPHASIS_DOT_R;
+    let small_r = em * EMPHASIS_SMALL_R;
+    let half = em * EMPHASIS_HALF;
+    let lift = em * EMPHASIS_LIFT;
+    let sw = em * EMPHASIS_STROKE;
+    let filled = |cmds: Vec<PathCmd>| Item::Path {
+        commands: cmds,
+        fill: Some(Fill::Solid(color)),
+        stroke: None,
+    };
+    let stroked = |cmds: Vec<PathCmd>| Item::Path {
+        commands: cmds,
+        fill: None,
+        stroke: Some(Stroke::solid(color, sw)),
+    };
+    match kind {
+        // 1 DOT_ABOVE: 검정 동그라미.
+        1 => vec![filled(circle_commands(cx, cy, dot_r))],
+        // 2 RING_ABOVE: 속빈 동그라미.
+        2 => vec![stroked(circle_commands(cx, cy, dot_r))],
+        // 3 TILDE: 짧은 물결 한 파장.
+        3 => vec![stroked(wave_commands(
+            cx - half * 1.2,
+            cy,
+            cx + half * 1.2,
+            half * 1.2,
+            lift,
+        ))],
+        // 4 CARON: ˇ — 아래로 모인 두 선분.
+        4 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half, cy - lift),
+            PathCmd::LineTo(cx, cy + lift),
+            PathCmd::LineTo(cx + half, cy - lift),
+        ])],
+        // 5 SIDE: ･ — 더 작은 채운 점.
+        5 => vec![filled(circle_commands(cx, cy, small_r))],
+        // 6 COLON: 위아래 두 점.
+        6 => vec![
+            filled(circle_commands(cx, cy - small_r * 1.6, small_r)),
+            filled(circle_commands(cx, cy + small_r * 1.6, small_r)),
+        ],
+        // 7 GRAVE_ACCENT: \ 방향 짧은 선분.
+        7 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half * 0.7, cy - lift),
+            PathCmd::LineTo(cx + half * 0.7, cy + lift),
+        ])],
+        // 8 ACUTE_ACCENT: / 방향 짧은 선분.
+        8 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half * 0.7, cy + lift),
+            PathCmd::LineTo(cx + half * 0.7, cy - lift),
+        ])],
+        // 9 CIRCUMFLEX: ^ — 위로 모인 두 선분.
+        9 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half, cy + lift),
+            PathCmd::LineTo(cx, cy - lift),
+            PathCmd::LineTo(cx + half, cy + lift),
+        ])],
+        // 10 MACRON: 짧은 가로선.
+        10 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half, cy),
+            PathCmd::LineTo(cx + half, cy),
+        ])],
+        // 11 HOOK_ABOVE: ̉ — 짧은 곡선 근사.
+        11 => vec![stroked(vec![
+            PathCmd::MoveTo(cx - half * 0.5, cy - lift),
+            PathCmd::CubicTo(
+                cx + half,
+                cy - lift,
+                cx + half * 0.8,
+                cy + lift,
+                cx,
+                cy + lift,
+            ),
+        ])],
+        // 12 DOT_BELOW: 아래 채운 점 (cy는 호출부에서 아래쪽으로 잡힘).
+        12 => vec![filled(circle_commands(cx, cy, dot_r))],
+        _ => Vec::new(),
     }
 }
 
@@ -2973,6 +3247,7 @@ fn place_wrapped(
     line_advance: f32,
     tabs: &[f32],
     first_indent: f32,
+    border_fills: &[BorderFill],
     warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let limit = x0 + max_width;
@@ -2999,7 +3274,7 @@ fn place_wrapped(
             InlineItem::Run(run) => {
                 if max_width.is_infinite() || x + run.width_pt <= limit {
                     let w = run.width_pt;
-                    push_run(page, x, y, run, warnings);
+                    push_run(page, x, y, run, border_fills, warnings);
                     x += w;
                     continue;
                 }
@@ -3014,7 +3289,7 @@ fn place_wrapped(
                     if over && line_has_content {
                         if i > start {
                             let piece = run.slice_with_sources(start, i, &sources);
-                            push_run(page, piece_x, y, piece, warnings);
+                            push_run(page, piece_x, y, piece, border_fills, warnings);
                         }
                         y += line_advance;
                         piece_x = x0;
@@ -3026,7 +3301,7 @@ fn place_wrapped(
                 if start < run.glyphs.len() {
                     let piece = run.slice_with_sources(start, run.glyphs.len(), &sources);
                     let w = piece.width_pt;
-                    push_run(page, piece_x, y, piece, warnings);
+                    push_run(page, piece_x, y, piece, border_fills, warnings);
                     x = piece_x + w;
                 } else {
                     x = piece_x;
@@ -3162,14 +3437,19 @@ mod justify_tests {
             color: 0,
             bold: false,
             italic: false,
-            underline: false,
+            underline_kind: 0,
+            underline_shape: 0,
             strike: false,
+            strike_shape: 0,
+            emphasis: 0,
             underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
             shadow: None,
+            shadow_gap: (0, 0),
             outline: false,
             emboss: false,
             engrave: false,
+            border_fill_id: 0,
             glyphs,
             width_pt: advs.iter().sum(),
             text: text.to_string(),
@@ -3572,14 +3852,19 @@ mod tab_width_tests {
             color: 0,
             bold: false,
             italic: false,
-            underline: false,
+            underline_kind: 0,
+            underline_shape: 0,
             strike: false,
+            strike_shape: 0,
+            emphasis: 0,
             underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
             shadow: None,
+            shadow_gap: (0, 0),
             outline: false,
             emboss: false,
             engrave: false,
+            border_fill_id: 0,
             glyphs: Vec::new(),
             width_pt,
             text: String::new(),
@@ -3614,6 +3899,7 @@ mod tab_width_tests {
             16.0,
             &tabs,
             0.0,
+            &[],
             &mut warns,
         );
         let xs: Vec<f32> = page
@@ -3632,5 +3918,314 @@ mod tab_width_tests {
         // With no explicit stop, retain the existing 40 pt fallback interval.
         let natural_default = items_width(&make_items(), &[]);
         assert!((natural_default - (40.0 + 20.0)).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod decor_tests {
+    use std::sync::Arc;
+
+    use hwp_model::{BorderFill, BorderLine};
+
+    use super::{push_run, wave_commands};
+    use crate::display::{Fill, Item, PageList, PathCmd};
+    use crate::fonts::LoadedFont;
+    use crate::issues::RenderIssueAccumulator;
+    use crate::shape::{Glyph, ShapedRun};
+
+    /// 장식 테스트용 합성 런 (em=10, 글리프 advance 10짜리 `adv_count`개).
+    fn dummy_run(text: &str, adv_count: usize) -> ShapedRun {
+        let glyphs: Vec<Glyph> = (0..adv_count)
+            .map(|_| Glyph {
+                id: 0,
+                x_advance: 10.0,
+                x_offset: 0.0,
+                y_offset: 0.0,
+            })
+            .collect();
+        ShapedRun {
+            font: Arc::new(LoadedFont {
+                data: Arc::new(Vec::new()),
+                index: 0,
+                family: String::new(),
+            }),
+            size_pt: 10.0,
+            x_scale: 1.0,
+            color: 0,
+            bold: false,
+            italic: false,
+            underline_kind: 0,
+            underline_shape: 0,
+            strike: false,
+            strike_shape: 0,
+            emphasis: 0,
+            underline_color: 0xFFFF_FFFF,
+            shade_color: 0xFFFF_FFFF,
+            shadow: None,
+            shadow_gap: (0, 0),
+            outline: false,
+            emboss: false,
+            engrave: false,
+            border_fill_id: 0,
+            width_pt: glyphs.iter().map(|g| g.x_advance).sum(),
+            glyphs,
+            text: text.to_string(),
+            start_wchar: 0,
+        }
+    }
+
+    fn place(run: ShapedRun, border_fills: &[BorderFill]) -> PageList {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        push_run(&mut page, 100.0, 200.0, run, border_fills, &mut warns);
+        page
+    }
+
+    /// Path 아이템들의 (시작 y, 대시 유무, 선 굵기) 요약.
+    fn path_summary(page: &PageList) -> Vec<(f32, bool, f32)> {
+        page.items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path {
+                    commands,
+                    stroke: Some(st),
+                    ..
+                } => match commands[0] {
+                    PathCmd::MoveTo(_, y) => Some((y, !st.dash.is_empty(), st.width)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn 밑줄_아래와_위_방출() {
+        // kind 1: 글자 아래 y+0.10em = 201.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        let page = place(run, &[]);
+        let paths = path_summary(&page);
+        assert_eq!(paths.len(), 1);
+        assert!((paths[0].0 - 201.0).abs() < 0.01, "아래 밑줄 y: {paths:?}");
+        assert!(!paths[0].1, "기본은 실선");
+        assert!((paths[0].2 - 0.5).abs() < 0.01, "굵기 0.05em");
+
+        // kind 3: 글자 위 y-0.80em = 192 (ascent 근사 — 주석 참조).
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 3;
+        let page = place(run, &[]);
+        let paths = path_summary(&page);
+        assert_eq!(paths.len(), 1);
+        assert!((paths[0].0 - 192.0).abs() < 0.01, "위 밑줄 y: {paths:?}");
+
+        // 밑줄 색: 지정되면 그 색, 0xFFFFFFFF면 글자색.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.color = 0x0000_00FF;
+        run.underline_color = 0x00FF_0000;
+        let page = place(run, &[]);
+        let color = page.items.iter().find_map(|it| match it {
+            Item::Path {
+                stroke: Some(st), ..
+            } => Some(st.color),
+            _ => None,
+        });
+        assert_eq!(color, Some(0x00FF_0000));
+    }
+
+    #[test]
+    fn 밑줄_모양_대시와_물결() {
+        // shape 1 (Dash): 대시 패턴 [3u, 2u], u = 0.5 (굵기 0.5의 하한).
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.underline_shape = 1;
+        let page = place(run, &[]);
+        let dash = page.items.iter().find_map(|it| match it {
+            Item::Path {
+                stroke: Some(st), ..
+            } => Some(st.dash.clone()),
+            _ => None,
+        });
+        assert_eq!(dash, Some(vec![1.5, 1.0]));
+
+        // shape 11 (Wave): 3차 베지어 파형 1개.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.underline_shape = 11;
+        let page = place(run, &[]);
+        let wave_count = page
+            .items
+            .iter()
+            .filter(|it| {
+                matches!(it, Item::Path { commands, .. } if commands.iter().any(|c| matches!(c, PathCmd::CubicTo(..))))
+            })
+            .count();
+        assert_eq!(wave_count, 1, "물결 파형 1개");
+
+        // shape 12 (DoubleWave): 파형 2개, 두 번째는 2.5×굵기(=1.25) 아래.
+        let mut run = dummy_run("가", 1);
+        run.underline_kind = 1;
+        run.underline_shape = 12;
+        let page = place(run, &[]);
+        let ys = path_summary(&page);
+        assert_eq!(ys.len(), 2);
+        assert!(
+            (ys[1].0 - ys[0].0 - 1.25).abs() < 0.01,
+            "이중 물결 간격: {ys:?}"
+        );
+    }
+
+    #[test]
+    fn 취소선_모양과_위치() {
+        // 이중선(7): y-0.25em=197.5 기준 ±0.3×0.5=±0.15 두 가닥.
+        let mut run = dummy_run("가", 1);
+        run.strike = true;
+        run.strike_shape = 7;
+        let page = place(run, &[]);
+        let ys = path_summary(&page);
+        assert_eq!(ys.len(), 2);
+        assert!((ys[0].0 - 197.35).abs() < 0.01, "첫 가닥: {ys:?}");
+        assert!((ys[1].0 - 197.65).abs() < 0.01, "둘째 가닥: {ys:?}");
+    }
+
+    #[test]
+    fn 강조점_개수와_위치() {
+        // "가 나" 3글리프 — 공백 글리프에는 찍지 않아 2개.
+        // (빈 폰트라 소스는 run.text 균등 분배 폴back 경로가 아닌 distribute 경로.)
+        let mut run = dummy_run("가 나", 3);
+        run.emphasis = 1; // DOT_ABOVE
+        let page = place(run, &[]);
+        let dots: Vec<(f32, f32)> = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path {
+                    commands,
+                    fill: Some(Fill::Solid(_)),
+                    ..
+                } => match commands[0] {
+                    PathCmd::MoveTo(x, y) => Some((x, y)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dots.len(), 2, "공백 제외 글자당 1개: {dots:?}");
+        // 반지름 0.05em=0.5 — MoveTo는 (cx+r, cy). cy = 200 - 0.95em = 190.5.
+        assert!((dots[0].0 - 105.5).abs() < 0.01, "첫 점 cx+r: {dots:?}");
+        assert!((dots[1].0 - 125.5).abs() < 0.01, "셋째 글자 cx+r: {dots:?}");
+        assert!(
+            (dots[0].1 - 190.5).abs() < 0.01,
+            "위쪽 강조점 높이: {dots:?}"
+        );
+
+        // DOT_BELOW(12): 아래 y+0.30em = 203.
+        let mut run = dummy_run("가", 1);
+        run.emphasis = 12;
+        let page = place(run, &[]);
+        let below: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path {
+                    commands,
+                    fill: Some(Fill::Solid(_)),
+                    ..
+                } => match commands[0] {
+                    PathCmd::MoveTo(_, y) => Some(y),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(below.len(), 1);
+        assert!((below[0] - 203.0).abs() < 0.01, "DOT_BELOW 높이: {below:?}");
+
+        // COLON(6): 글자당 2점.
+        let mut run = dummy_run("가나", 2);
+        run.emphasis = 6;
+        let page = place(run, &[]);
+        let filled = page
+            .items
+            .iter()
+            .filter(|it| matches!(it, Item::Path { fill: Some(_), .. }))
+            .count();
+        assert_eq!(filled, 4, "COLON은 글자당 위아래 2점");
+    }
+
+    #[test]
+    fn 글자_배경_rect가_glyphs보다_먼저() {
+        let bf = BorderFill {
+            bg_color: Some(0x0000_00FF),
+            sides: [BorderLine {
+                line_type: 1,
+                width: 0,
+                color: 0,
+            }; 4],
+            ..BorderFill::default()
+        };
+        let mut run = dummy_run("가", 1);
+        run.border_fill_id = 1; // 1-기반
+        let page = place(run, std::slice::from_ref(&bf));
+
+        // 순서: Rect(배경) → Glyphs → 테두리 Path.
+        assert!(
+            matches!(page.items[0], Item::Rect { fill, .. } if fill == 0x0000_00FF),
+            "첫 아이템은 배경 Rect: {:?}",
+            std::mem::discriminant(&page.items[0])
+        );
+        assert!(
+            matches!(page.items[1], Item::Glyphs { .. }),
+            "둘째 아이템은 Glyphs"
+        );
+        // 4변 동일 실선 → 닫힌 사각형 Path 1개가 Glyphs 뒤에 온다.
+        let border = page.items.iter().skip(2).find_map(|it| match it {
+            Item::Path { commands, .. } => Some(commands),
+            _ => None,
+        });
+        let cmds = border.expect("테두리 Path가 있어야");
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
+        // 상자 메트릭 placeholder: 윗변 y-0.80em=192, 아랫변 y+0.25em=202.5.
+        let (top, bottom) = match page.items[0] {
+            Item::Rect { y, h, .. } => (y, y + h),
+            _ => unreachable!(),
+        };
+        assert!((top - 192.0).abs() < 0.01 && (bottom - 202.5).abs() < 0.01);
+
+        // 배경 없는 border_fill(id 범위 밖 포함)은 Rect를 내지 않는다.
+        let mut run = dummy_run("가", 1);
+        run.border_fill_id = 9; // 범위 밖
+        let page = place(run, std::slice::from_ref(&bf));
+        assert!(
+            !page.items.iter().any(|it| matches!(it, Item::Rect { .. })),
+            "범위 밖 id는 배경 없음"
+        );
+    }
+
+    #[test]
+    fn 물결_경로_생성() {
+        // half_len=2, amp=1: 제어점 k=1/0.75, 끝점은 기준선 위.
+        let cmds = wave_commands(0.0, 10.0, 8.0, 2.0, 1.0);
+        assert!(matches!(cmds[0], PathCmd::MoveTo(0.0, 10.0)));
+        assert_eq!(cmds.len(), 5, "반파장 4개 + MoveTo");
+        let k = 1.0 / 0.75;
+        match cmds[1] {
+            PathCmd::CubicTo(c1x, c1y, c2x, c2y, ex, ey) => {
+                assert!((c1x - 1.0).abs() < 0.01 && (c1y - (10.0 - k)).abs() < 0.01);
+                assert!((c2x - 1.0).abs() < 0.01 && (c2y - (10.0 - k)).abs() < 0.01);
+                assert!((ex - 2.0).abs() < 0.01 && (ey - 10.0).abs() < 0.01);
+            }
+            _ => panic!("CubicTo"),
+        }
+        // 다음 반파장은 아래로.
+        match cmds[2] {
+            PathCmd::CubicTo(_, c1y, ..) => assert!((c1y - (10.0 + k)).abs() < 0.01),
+            _ => panic!("CubicTo"),
+        }
     }
 }

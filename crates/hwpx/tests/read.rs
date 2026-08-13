@@ -168,6 +168,62 @@ fn 취소선_3d_shape는_비취소선() {
     );
 }
 
+/// 강조점 symMark 읽기: attr bits 21~24 (hwpxlib SymMarkSort 순서).
+#[test]
+fn symmark_강조점_읽기() {
+    let xml = r##"<?xml version="1.0"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:charProperties itemCnt="3">
+      <hh:charPr id="0" height="1000" symMark="DOT_ABOVE"/>
+      <hh:charPr id="1" height="1000" symMark="RING_ABOVE"/>
+      <hh:charPr id="2" height="1000" symMark="NONE"/>
+    </hh:charProperties>
+  </hh:refList>
+</hh:head>"##;
+    let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
+    assert_eq!(header.char_shapes[0].emphasis_kind(), 1, "DOT_ABOVE");
+    assert_eq!(header.char_shapes[1].emphasis_kind(), 2, "RING_ABOVE");
+    assert_eq!(header.char_shapes[2].emphasis_kind(), 0, "NONE");
+}
+
+/// 밑줄/취소선 모양의 0-기반 장식 코드 정규화 (attr bits 4~7 / 26~29).
+/// raw hwpx 1-기반 코드는 underline_shape에 그대로 보존(왕복용)된다.
+#[test]
+fn 밑줄_취소선_모양_장식코드() {
+    let xml = r##"<?xml version="1.0"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:charProperties itemCnt="3">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="BOTTOM" shape="DASH" color="#000000"/>
+        <hh:strikeout shape="DASH_DOT" color="#000000"/>
+      </hh:charPr>
+      <hh:charPr id="1" height="1000">
+        <hh:underline type="BOTTOM" shape="WAVE" color="#000000"/>
+      </hh:charPr>
+      <hh:charPr id="2" height="1000">
+        <hh:underline type="NONE" shape="DASH" color="#000000"/>
+      </hh:charPr>
+    </hh:charProperties>
+  </hh:refList>
+</hh:head>"##;
+    let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
+    let cs0 = &header.char_shapes[0];
+    assert_eq!(cs0.underline_shape_code(), 1, "DASH → 0-기반 1");
+    assert_eq!(cs0.underline_shape, 2, "raw hwpx 1-기반 코드 보존");
+    assert!(cs0.has_strike());
+    assert_eq!(cs0.strike_shape_code(), 3, "DASH_DOT → 0-기반 3");
+    // WAVE는 line_type_code에 없어 방어 매핑 11.
+    assert_eq!(
+        header.char_shapes[1].underline_shape_code(),
+        11,
+        "WAVE → 11"
+    );
+    // 밑줄 없음(NONE)의 shape은 무의미 — 장식 비트를 켜지 않는다.
+    assert_eq!(header.char_shapes[2].underline_shape_code(), 0);
+}
+
 #[test]
 fn 합성_섹션_표와_컨트롤문자() {
     let xml = r##"<?xml version="1.0"?>

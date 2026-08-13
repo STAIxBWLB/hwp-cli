@@ -50,6 +50,57 @@ pub fn border_strokes(line: &BorderLine) -> Vec<(f32, Stroke)> {
     }
 }
 
+/// 0-기반 장식 코드(밑줄/취소선 모양) → `(수직 오프셋 pt, 스트로크)` 목록.
+///
+/// 코드는 hwplib `BorderType2` 순서(한글문서파일형식 5.0 rev1.2 표 35 계열 —
+/// hwp-model `CharShape::underline_shape_code` 주석 표)로, `border_strokes`의
+/// 1-기반 코드와 1만큼 어긋난다. 11/12(WAVE/DOUBLE_WAVE)는 대시로 표현할 수
+/// 없어 여기서 다루지 않는다 — [`decor_is_wave`]로 판별해 방출부에서 파형 경로를
+/// 그린다. 알 수 없는 코드(13~16 3D 변형 포함)는 실선으로 degrade한다.
+pub fn decor_strokes(code: u8, width_pt: f32, color: u32) -> Vec<(f32, Stroke)> {
+    let w = width_pt.max(0.2);
+    let u = w.max(0.5); // border_strokes와 같은 하한.
+    let solid = |width: f32| Stroke::solid(color, width);
+    let dashed = |pattern: &[f32]| Stroke {
+        color,
+        width: w,
+        dash: pattern.iter().map(|v| v * u).collect(),
+    };
+    match code {
+        0 => vec![(0.0, solid(w))],                                // Solid
+        1 => vec![(0.0, dashed(&[3.0, 2.0]))],                     // Dash
+        2 => vec![(0.0, dashed(&[1.0, 2.0]))],                     // Dot
+        3 => vec![(0.0, dashed(&[3.0, 2.0, 1.0, 2.0]))],           // DashDot
+        4 => vec![(0.0, dashed(&[3.0, 2.0, 1.0, 2.0, 1.0, 2.0]))], // DashDotDot
+        5 => vec![(0.0, dashed(&[6.0, 3.0]))],                     // LongDash
+        // CircleDot: 백엔드에 round cap이 없어 점선으로 근사.
+        6 => vec![(0.0, dashed(&[1.0, 2.0]))],
+        // Double: 0.4w @ ±0.3w. 쪽 테두리(DOUBLE_SLIM 0.3w @ ±0.35w)보다 굵은
+        // 분할을 쓴다 — 밑줄 굵기는 보통 0.05em 정도로 작아 0.3w로 쪼개면
+        // 선이 사라진다. 분할 비율은 시각 근사(Hancom 확인 대상).
+        7 => vec![(-0.3 * w, solid(0.4 * w)), (0.3 * w, solid(0.4 * w))],
+        // ThinThick / ThickThin / ThinThickThin: border_strokes 9/10/11과 같은 분할.
+        8 => vec![(-0.4 * w, solid(0.2 * w)), (0.25 * w, solid(0.5 * w))],
+        9 => vec![(-0.25 * w, solid(0.5 * w)), (0.4 * w, solid(0.2 * w))],
+        10 => vec![
+            (-0.4 * w, solid(0.2 * w)),
+            (0.0, solid(0.3 * w)),
+            (0.4 * w, solid(0.2 * w)),
+        ],
+        // 11/12 WAVE 계열과 알 수 없는 코드는 실선으로(degrade 정책은 reader와 동일).
+        _ => vec![(0.0, solid(w))],
+    }
+}
+
+/// 물결 장식 판별: 0 물결 아님, 1 Wave, 2 DoubleWave.
+pub fn decor_is_wave(code: u8) -> u8 {
+    match code {
+        11 => 1,
+        12 => 2,
+        _ => 0,
+    }
+}
+
 /// Emits one open path per stroke for a standalone border segment.
 ///
 /// Positive offsets use the segment's right-hand normal `(dy, -dx) / len`.
@@ -334,5 +385,49 @@ mod tests {
         assert!(x_at(&items[1]) > 10.0);
         assert!(x_at(&items[2]) > 110.0);
         assert!(x_at(&items[3]) < 110.0);
+    }
+
+    #[test]
+    fn decor_strokes_0기반_대시_패턴() {
+        let w = 1.0f32;
+        let u = w.max(0.5);
+        let dash = |code: u8| decor_strokes(code, w, 7)[0].1.dash.clone();
+        assert!(dash(0).is_empty(), "0 Solid는 실선");
+        assert_eq!(dash(1), vec![3.0 * u, 2.0 * u]); // Dash
+        assert_eq!(dash(2), vec![u, 2.0 * u]); // Dot
+        assert_eq!(dash(3), vec![3.0 * u, 2.0 * u, u, 2.0 * u]); // DashDot
+        assert_eq!(dash(4), vec![3.0 * u, 2.0 * u, u, 2.0 * u, u, 2.0 * u]); // DashDotDot
+        assert_eq!(dash(5), vec![6.0 * u, 3.0 * u]); // LongDash
+        assert_eq!(dash(6), vec![u, 2.0 * u]); // CircleDot ≈ Dot
+        // 색·굵기 전달.
+        let s = decor_strokes(0, w, 0x00FF_0000);
+        assert_eq!(s[0].1.color, 0x00FF_0000);
+        assert!((s[0].1.width - w).abs() < 0.01);
+        // 알 수 없는 코드(13~16 3D 등)는 실선 degrade.
+        assert!(dash(13).is_empty() && dash(99).is_empty());
+    }
+
+    #[test]
+    fn decor_strokes_복합선_분할() {
+        let w = 1.0f32;
+        // 7 Double: 0.4w @ ±0.3w (쪽 테두리 DOUBLE_SLIM보다 굵은 분할 — 주석 참조).
+        let s = decor_strokes(7, w, 0);
+        assert_eq!(s.len(), 2);
+        assert!((s[0].0 + 0.3 * w).abs() < 0.01 && (s[1].0 - 0.3 * w).abs() < 0.01);
+        assert!((s[0].1.width - 0.4 * w).abs() < 0.01);
+        // 8/9/10: border_strokes 9/10/11과 같은 분할.
+        assert_eq!(decor_strokes(8, w, 0).len(), 2);
+        assert_eq!(decor_strokes(9, w, 0).len(), 2);
+        assert_eq!(decor_strokes(10, w, 0).len(), 3);
+    }
+
+    #[test]
+    fn decor_is_wave_판별() {
+        for code in 0..=10 {
+            assert_eq!(decor_is_wave(code), 0, "{code}는 물결 아님");
+        }
+        assert_eq!(decor_is_wave(11), 1);
+        assert_eq!(decor_is_wave(12), 2);
+        assert_eq!(decor_is_wave(99), 0);
     }
 }

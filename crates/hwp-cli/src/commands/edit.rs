@@ -2037,6 +2037,11 @@ fn canonical_document(
             attr |= u32::from(shape.is_superscript()) << 15;
             attr |= u32::from(shape.is_subscript()) << 16;
             attr |= u32::from(shape.strike) << 18;
+            // 새 접근자로 덮는 장식 비트들(밑줄 모양 4~7, 강조점 21~24, 취소선 모양 26~29)을
+            // 보존 — 빠뜨리면 hwpx 편집 왕복에서 장식이 지워진다.
+            attr |= u32::from(shape.underline_shape_code()) << 4;
+            attr |= u32::from(shape.emphasis_kind()) << 21;
+            attr |= u32::from(shape.strike_shape_code()) << 26;
             attr |= ((shape.attr >> 25) & 1) << 25;
             attr |= ((shape.attr >> 30) & 1) << 30;
             shape.attr = attr;
