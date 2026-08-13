@@ -787,7 +787,8 @@ pub fn layout_document(
 
         // 다단(multi-column): 섹션의 첫 cold 컨트롤 ColumnDef로 단 기하 설정(v1: 섹션당 1구성).
         // 한글 line_seg는 col_start=0(단 상대)·seg_width=단폭이므로 단 x는 밴드 인덱스로 계산한다.
-        // v_pos 리셋이 단 넘김과 페이지 넘김을 겸하며, colCount번째 밴드마다 페이지가 넘어간다.
+        // Boundary detection prefers flags bit0/bit1. Without either flag,
+        // each v_pos reset advances a band and every colCount-th band starts a page.
         let col_def = section
             .paragraphs
             .iter()
@@ -803,7 +804,11 @@ pub fn layout_document(
         } else {
             body_width
         };
-        let mut col_band = 0usize; // v_pos 리셋마다 증가하는 단 밴드 인덱스
+        let mut col_band = 0usize;
+        // Flow state, not display items, proves that the current page/column has
+        // been consumed. Empty lines and paragraphs must preserve explicit
+        // blank pages and columns.
+        let mut has_flow_in_current_band = false;
 
         // 머리말/꼬리말: 구역에서 처음 정의된 것을 모든 페이지에 반복
         let mut header_ctrl = None;
@@ -879,6 +884,8 @@ pub fn layout_document(
                 content_bottom = body_top;
                 prev_v_pos = -1;
                 paras_on_page = 0;
+                col_band = 0;
+                has_flow_in_current_band = false;
             }
 
             // 쪽 나누기 (PARA_HEADER break_type bit2 / hp:p pageBreak)
@@ -902,6 +909,8 @@ pub fn layout_document(
                 content_bottom = body_top;
                 prev_v_pos = -1;
                 paras_on_page = 0;
+                col_band = 0;
+                has_flow_in_current_band = false;
             }
             page_numbers.apply_controls(para, warnings);
             paras_on_page += 1;
@@ -1026,15 +1035,27 @@ pub fn layout_document(
                         warnings,
                     );
                 }
+                has_flow_in_current_band = true;
                 continue;
             }
 
             let last_content = last_content_seg(para);
             for (i, seg) in para.line_segs.iter().enumerate() {
-                // v_pos 리셋: 다단이면 단 넘김(같은 페이지) vs 페이지 넘김을 밴드로 구분.
-                if seg.v_pos < prev_v_pos && !page.items.is_empty() {
-                    // 경계를 걸치기 전, 이 페이지/단에 쌓인 배경 조각을 먼저 그린다(GC-9).
-                    // 조각 하단 = 현 content_bottom, 걸친 경계쪽 테두리(하변)는 긋지 않는다.
+                // Hancom-saved linesegs use bit0 (first line of a page) and
+                // bit1 (first line of a column) as authoritative boundaries.
+                // Synthesized linesegs use 0x0006_0000 and therefore fall back
+                // to the v_pos-reset heuristic.
+                let (is_boundary, page_break) = if seg.flags & 0x3 != 0 {
+                    (true, seg.flags & 0x1 != 0)
+                } else if seg.v_pos < prev_v_pos {
+                    let band = col_band + 1;
+                    (true, col_count == 1 || band.is_multiple_of(col_count))
+                } else {
+                    (false, false)
+                };
+                if is_boundary && has_flow_in_current_band {
+                    // Finish the current page/column background slice before
+                    // crossing the boundary (GC-9), without drawing its lower edge.
                     if let Some(top) = bg_slice_top {
                         draw_para_bg_slice(
                             doc,
@@ -1051,12 +1072,9 @@ pub fn layout_document(
                         );
                         bg_first_slice = false;
                     }
-                    col_band += 1;
-                    if col_count > 1 && !col_band.is_multiple_of(col_count) {
-                        // 단 넘김: 커서만 페이지 상단으로, 페이지는 유지(다음 단으로 x 이동).
-                        content_bottom = body_top;
-                    } else {
-                        // 페이지 넘김(마지막 단 소진 또는 단일 단).
+                    if page_break {
+                        // A page starts in band zero.
+                        col_band = 0;
                         render_page_notes(
                             doc,
                             store,
@@ -1072,14 +1090,19 @@ pub fn layout_document(
                         if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
                             return DisplayList { pages };
                         }
-                        content_bottom = body_top;
                         paras_on_page = 0;
+                    } else {
+                        // A column boundary advances within the current page.
+                        col_band += 1;
                     }
-                    // 새 조각: 다음 줄 배치 때 상단을 잡고, 삽입 지점은 (넘겨진) 현재 page 기준.
+                    content_bottom = body_top;
+                    // The next line establishes the new slice top and insertion
+                    // point on the current page.
                     bg_slice_top = None;
                     bg_slice_insert = page.items.len();
                 }
                 prev_v_pos = seg.v_pos;
+                has_flow_in_current_band = true;
 
                 let line_start = seg.text_start;
                 let line_end = para

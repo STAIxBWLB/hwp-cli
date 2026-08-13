@@ -83,6 +83,7 @@
 | 18 | [html-fragment-contract](18-html-fragment-contract.ko.md) | **HTML fragment 계약** — Maru 부분(part) 작성·조합용 XHTML 부분집합, 표/그림/각주 왕복 규약 |
 | 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.ko.md) | **HWP 5.0 명세 보완 색인** — 정오표·버전-레이아웃 매트릭스·적합성 체크리스트·소비 의미론 (07·03·05·10·08이 근거 데이터) |
 | 20 | [remote-mcp](20-remote-mcp.ko.md) | **Remote MCP transport 설계** - Web client용 향후 Streamable HTTP, OAuth resource server, tenant 격리, artifact 전송, limit 및 security gate |
+| 21 | [pdf-parity](21-pdf-parity.ko.md) | **PDF 동등성 계약 (한컴오피스 2024)** — parity 하네스가 읽는 오라클, 다섯 지표 집합, 임계값, 글꼴 게이트, 데이터 정책, 비목표 (issue #79) |
 
 ---
 

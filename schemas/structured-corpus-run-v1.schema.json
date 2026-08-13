@@ -165,7 +165,11 @@
         "certification_failed",
         "certification_assertion_failed",
         "certification_execution_failed",
-        "two_run_render_mismatch"
+        "two_run_render_mismatch",
+        "pdf_render_failed",
+        "two_run_pdf_mismatch",
+        "pdf_page_count_mismatch",
+        "pdf_tounicode_roundtrip_failed"
       ]
     },
     "category": {
@@ -228,6 +232,8 @@
         "output_sha256",
         "output_bytes",
         "two_run_render_identical",
+        "two_run_pdf_identical",
+        "pdf",
         "semantic",
         "certification"
       ],
@@ -243,6 +249,8 @@
         "output_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
         "output_bytes": { "type": ["integer", "null"], "minimum": 0, "maximum": 134217728 },
         "two_run_render_identical": { "type": "boolean" },
+        "two_run_pdf_identical": { "type": "boolean" },
+        "pdf": { "oneOf": [{ "$ref": "#/$defs/pdf" }, { "type": "null" }] },
         "semantic": { "oneOf": [{ "$ref": "#/$defs/semantic" }, { "type": "null" }] },
         "certification": { "oneOf": [{ "$ref": "#/$defs/certification" }, { "type": "null" }] }
       },
@@ -256,6 +264,19 @@
               "output_sha256": { "$ref": "#/$defs/sha256" },
               "output_bytes": { "type": "integer", "minimum": 1 },
               "two_run_render_identical": { "const": true },
+              "two_run_pdf_identical": { "const": true },
+              "pdf": {
+                "allOf": [
+                  { "$ref": "#/$defs/pdf" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "page_count": { "const": 1 },
+                      "tounicode_roundtrip_ok": { "const": true }
+                    }
+                  }
+                ]
+              },
               "semantic": { "$ref": "#/$defs/semantic" },
               "certification": { "$ref": "#/$defs/certification" }
             }
@@ -263,6 +284,17 @@
           "else": { "properties": { "reason_codes": { "type": "array", "minItems": 1 } } }
         }
       ]
+    },
+    "pdf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes", "page_count", "tounicode_roundtrip_ok"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
+        "page_count": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "tounicode_roundtrip_ok": { "type": "boolean" }
+      }
     },
     "semantic": {
       "type": "object",

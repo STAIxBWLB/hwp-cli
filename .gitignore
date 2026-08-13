@@ -19,6 +19,30 @@
 /fixtures/hwp5/
 /fixtures/hwpx/
 
+# PDF parity corpus is local by default. Only the narrow public source/recipe/manifest/scoreboard
+# allowlist below may be committed; oracle exports and private corpus data stay ignored.
+/fixtures/pdf-parity/**
+!/fixtures/pdf-parity/public/
+!/fixtures/pdf-parity/public/source/
+!/fixtures/pdf-parity/public/source/**/
+!/fixtures/pdf-parity/public/source/**/*.hwp
+!/fixtures/pdf-parity/public/source/**/*.hwpx
+!/fixtures/pdf-parity/public/recipes/
+!/fixtures/pdf-parity/public/recipes/**/
+!/fixtures/pdf-parity/public/recipes/**/*.md
+!/fixtures/pdf-parity/public/recipes/**/*.json
+!/fixtures/pdf-parity/public/manifest.json
+!/fixtures/pdf-parity/public/scoreboard.json
+!/fixtures/pdf-parity/public/scoreboard.csv
+!/fixtures/pdf-parity/public/scoreboard/
+!/fixtures/pdf-parity/public/scoreboard/**/
+!/fixtures/pdf-parity/public/scoreboard/**/*.json
+!/fixtures/pdf-parity/public/scoreboard/**/*.csv
+
+# Never re-allow generated Hancom oracle exports or private-corpus paths.
+/fixtures/pdf-parity/public/oracle/**
+/fixtures/pdf-parity/private/**
+
 # HWP 5.0 스펙 문서는 한컴 저작물 — 저장소에 동봉하지 않음(공식 배포처 링크만, docs/README.md 참고).
 # 로컬 참고용으로 docs/에 두더라도 추적하지 않는다.
 /docs/*.pdf

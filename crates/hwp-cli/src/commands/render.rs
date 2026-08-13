@@ -129,6 +129,18 @@ fn report(report: &hwp_render::RenderIssueReport) {
     for issue in report.info.iter().chain(&report.issues) {
         eprintln!("렌더: {issue}");
     }
+    let coverage = report.font_coverage();
+    if coverage.matched > 0 || !coverage.substitution_free() {
+        eprintln!(
+            "렌더: 글꼴 커버리지 matched={} substituted={} missing={} subset_fallback={}",
+            coverage.matched, coverage.substituted, coverage.missing, coverage.subset_fallback
+        );
+    }
+    if !coverage.substitution_free() {
+        eprintln!(
+            "렌더: 글꼴 대체/실패 발생 — 이 출력으로 잰 parity 수치는 발행할 수 없습니다(F1 게이트)"
+        );
+    }
     if !report.complete {
         eprintln!("렌더: issue accumulator incomplete");
     }

@@ -187,6 +187,28 @@ pub struct RenderIssueReport {
     pub sha256: String,
 }
 
+/// Aggregated font-resolution outcomes for one render. Successful matches come
+/// from the info channel; all other outcomes come from the issue channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FontCoverage {
+    /// Requests resolved to the requested font.
+    pub matched: u64,
+    /// Requests resolved through substitution.
+    pub substituted: u64,
+    /// Requests with no resolvable font.
+    pub missing: u64,
+    /// Fonts embedded in full because subsetting failed.
+    pub subset_fallback: u64,
+}
+
+impl FontCoverage {
+    /// Gate parity publication on zero substitutions, misses, and subset
+    /// fallbacks because each changes metrics relevant to layout or glyphs.
+    pub const fn substitution_free(&self) -> bool {
+        self.substituted == 0 && self.missing == 0 && self.subset_fallback == 0
+    }
+}
+
 impl RenderIssueReport {
     pub fn has_required_failure(&self) -> bool {
         !self.complete
@@ -196,6 +218,21 @@ impl RenderIssueReport {
                     RenderIssueSeverity::Incomplete | RenderIssueSeverity::Fatal
                 )
             })
+    }
+
+    /// Aggregate font-resolution entries into parity coverage counters.
+    pub fn font_coverage(&self) -> FontCoverage {
+        let mut coverage = FontCoverage::default();
+        for summary in self.info.iter().chain(&self.issues) {
+            match summary.code {
+                RenderIssueCode::FontMatched => coverage.matched += summary.count,
+                RenderIssueCode::FontSubstituted => coverage.substituted += summary.count,
+                RenderIssueCode::FontMissing => coverage.missing += summary.count,
+                RenderIssueCode::FontSubsetFallback => coverage.subset_fallback += summary.count,
+                _ => {}
+            }
+        }
+        coverage
     }
 }
 
@@ -472,5 +509,29 @@ mod tests {
             canonical_issue_sha256(&[]),
             "7ae3724fbab92218a9d2bf86fca465264e88ca44311bb2d07e4f48083fadaceb"
         );
+    }
+
+    #[test]
+    fn font_coverage_aggregates_resolution_codes_and_gates_parity() {
+        let mut issues = RenderIssueAccumulator::new();
+        issues.push(RenderIssueCode::FontMatched, "font-a");
+        issues.push(RenderIssueCode::FontMatched, "font-a");
+        issues.push(RenderIssueCode::FontMatched, "font-b");
+        issues.push(RenderIssueCode::FontSubstituted, "font-c");
+        issues.push(RenderIssueCode::FontMissing, "font-d");
+        issues.push(RenderIssueCode::FontSubsetFallback, "font-e");
+        issues.push(RenderIssueCode::ShapingFailed, "not-a-font-code");
+        let coverage = issues.finish().font_coverage();
+        assert_eq!(coverage.matched, 3);
+        assert_eq!(coverage.substituted, 1);
+        assert_eq!(coverage.missing, 1);
+        assert_eq!(coverage.subset_fallback, 1);
+        assert!(!coverage.substitution_free());
+
+        let mut clean = RenderIssueAccumulator::new();
+        clean.push(RenderIssueCode::FontMatched, "font-a");
+        let coverage = clean.finish().font_coverage();
+        assert_eq!(coverage.matched, 1);
+        assert!(coverage.substitution_free());
     }
 }

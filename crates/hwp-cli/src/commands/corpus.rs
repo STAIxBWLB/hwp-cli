@@ -17,6 +17,8 @@ use hwp_cli::template_spec::{MAX_DATA_BYTES, MAX_TEMPLATE_BYTES};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+mod pdf_roundtrip;
+
 const MANIFEST_VERSION: &str = "1.0";
 const MANIFEST_CONTRACT: &str = "hwp-structured-corpus-v1";
 const SUMMARY_CONTRACT: &str = "hwp-structured-corpus-run-v1";
@@ -37,10 +39,10 @@ const FROZEN_MANIFEST_SCHEMA_SHA256: &str =
     "b8057de94b15deebceb58f014071d57d96fd9bb61603d9cbc2fd94a4398b3b3a";
 #[cfg(test)]
 const FROZEN_RUN_SCHEMA_SHA256: &str =
-    "416466f0c197ec31c64ed76035d3a7b34dbb694c08c459605c9eccfface22706";
+    "f6b4ada36bb9151fadb5233770a6a235c106a815c7eb8567237c871deb5f10b5";
 #[cfg(test)]
 const FROZEN_ARTIFACT_SCHEMA_SHA256: &str =
-    "3f9effe9df788304ae39bd3f1f460a40bf4b979016d5bc4c5599db386d577c23";
+    "8735bbe43e21a40bbcf4d20f61c0b886414ffcd5c4d0c690635e191334800ef7";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_CASES: usize = 32;
 const MAX_REQUIRED_TEXT: usize = 64;
@@ -241,8 +243,18 @@ struct FormatSummary {
     output_sha256: Option<String>,
     output_bytes: Option<u64>,
     two_run_render_identical: bool,
+    two_run_pdf_identical: bool,
+    pdf: Option<PdfSummary>,
     semantic: Option<SemanticSummary>,
     certification: Option<CertificationSummary>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct PdfSummary {
+    sha256: String,
+    bytes: u64,
+    page_count: usize,
+    tounicode_roundtrip_ok: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -407,6 +419,7 @@ pub fn run(manifest_path: &Path, report_path: &Path) -> Result<()> {
             case,
             base,
             &policy_path,
+            policy.render.dpi,
             &font_files,
             &isolated_source_base,
             stage.root(),
@@ -675,6 +688,7 @@ fn run_case(
     case: &CorpusCase,
     base: &Path,
     policy: &Path,
+    render_dpi: f32,
     font_files: &[PathBuf],
     isolated_source_base: &Path,
     stage: &Path,
@@ -702,6 +716,7 @@ fn run_case(
             &prepared,
             *format,
             policy,
+            render_dpi,
             font_files,
             isolated_source_base,
             stage,
@@ -746,16 +761,20 @@ fn failed_format(format: CorpusFormat, reason: &'static str) -> FormatSummary {
         output_sha256: None,
         output_bytes: None,
         two_run_render_identical: false,
+        two_run_pdf_identical: false,
+        pdf: None,
         semantic: None,
         certification: None,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_format(
     case: &CorpusCase,
     generator: &PreparedGenerator,
     format: CorpusFormat,
     policy: &Path,
+    render_dpi: f32,
     font_files: &[PathBuf],
     isolated_source_base: &Path,
     stage: &Path,
@@ -768,6 +787,8 @@ fn run_format(
         output_sha256: None,
         output_bytes: None,
         two_run_render_identical: false,
+        two_run_pdf_identical: false,
+        pdf: None,
         semantic: None,
         certification: None,
     };
@@ -864,10 +885,122 @@ fn run_format(
     } else {
         summary.reason_codes.push("two_run_render_mismatch");
     }
+    // Run the PDF backend check only after PNG certification establishes the
+    // expected page count. Earlier reason codes already diagnose certification
+    // failures.
+    let expected_pdf_pages = summary
+        .certification
+        .as_ref()
+        .map(|certification| certification.total_pages);
+    if let Some(expected_pages) = expected_pdf_pages {
+        check_pdf_backend(
+            &mut summary,
+            &first,
+            &second,
+            format,
+            render_dpi,
+            font_files,
+            expected_pages,
+            &documents_dir,
+            extension,
+        );
+    }
     if summary.reason_codes.is_empty() {
         summary.status = RunStatus::Passed;
     }
     summary
+}
+
+/// Validate PDF page-count agreement, the complete pre-serialization text
+/// trace through ToUnicode, and same-platform two-run byte determinism.
+#[allow(clippy::too_many_arguments)]
+fn check_pdf_backend(
+    summary: &mut FormatSummary,
+    first: &Path,
+    second: &Path,
+    format: CorpusFormat,
+    render_dpi: f32,
+    font_files: &[PathBuf],
+    expected_pages: usize,
+    documents_dir: &Path,
+    extension: &str,
+) {
+    let options = hwp_render::RenderOptions {
+        dpi: render_dpi,
+        font_dirs: Vec::new(),
+    };
+    let mut pdfs = Vec::with_capacity(2);
+    let mut expected_texts = Vec::with_capacity(2);
+    for (label, document_path) in [("run-a", first), ("run-b", second)] {
+        let Some(document) = read_generated_document(document_path, format) else {
+            summary.reason_codes.push("pdf_render_failed");
+            return;
+        };
+        let output = match hwp_render::render_document_pdf_isolated_with_text_trace(
+            &document, &options, None, font_files,
+        ) {
+            Ok(output) if output.report.issue_count == 0 => output,
+            _ => {
+                summary.reason_codes.push("pdf_render_failed");
+                return;
+            }
+        };
+        let path = documents_dir.join(format!("{label}-{extension}.pdf"));
+        if write_new(&path, &output.data).is_err() {
+            summary.reason_codes.push("workspace_failed");
+            return;
+        }
+        expected_texts.push(output.expected_text);
+        pdfs.push(output.data);
+    }
+    summary.two_run_pdf_identical = pdfs[0] == pdfs[1];
+    if !summary.two_run_pdf_identical {
+        summary.reason_codes.push("two_run_pdf_mismatch");
+    }
+    let inspection = match pdf_roundtrip::inspect_pdf(&pdfs[0]) {
+        Ok(inspection) => {
+            if inspection.page_count != expected_pages {
+                summary.reason_codes.push("pdf_page_count_mismatch");
+            }
+            let roundtrip_ok =
+                tounicode_trace_matches(&inspection.decoded_text, &expected_texts[0]);
+            if !roundtrip_ok {
+                summary.reason_codes.push("pdf_tounicode_roundtrip_failed");
+            }
+            Some((inspection.page_count, roundtrip_ok))
+        }
+        Err(_) => {
+            summary.reason_codes.push("pdf_tounicode_roundtrip_failed");
+            None
+        }
+    };
+    if let Some((page_count, roundtrip_ok)) = inspection {
+        summary.pdf = Some(PdfSummary {
+            sha256: sha256_hex(&pdfs[0]),
+            bytes: u64::try_from(pdfs[0].len()).unwrap_or(u64::MAX),
+            page_count,
+            tounicode_roundtrip_ok: roundtrip_ok,
+        });
+    }
+}
+
+/// Compare the complete emitted text trace while normalizing platform-neutral
+/// whitespace spellings. Whitespace cardinality is retained so a missing or
+/// incorrect space mapping cannot pass.
+fn tounicode_trace_matches(decoded: &str, expected: &str) -> bool {
+    normalize_text_trace(decoded) == normalize_text_trace(expected)
+}
+
+fn normalize_text_trace(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_whitespace() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 enum PreparedGenerator {
@@ -996,17 +1129,7 @@ fn read_semantic(
     format: CorpusFormat,
     expected: &SemanticAssertions,
 ) -> std::result::Result<SemanticSummary, ()> {
-    let document = match format {
-        CorpusFormat::Hwpx => hwpx::read_document(path)
-            .ok()
-            .filter(|read| read.warnings.is_empty())
-            .map(|read| read.document),
-        CorpusFormat::Hwp => hwp5::read_document(path)
-            .ok()
-            .filter(|read| read.warnings.is_empty())
-            .map(|read| read.document),
-    }
-    .ok_or(())?;
+    let document = read_generated_document(path, format).ok_or(())?;
     let text = document.plain_text();
     let stats = semantic_stats(&document);
     if expected
@@ -1029,6 +1152,21 @@ fn read_semantic(
         tables: stats.tables,
         required_text_count: expected.required_text.len(),
     })
+}
+
+/// Read a generated HWPX/HWP document without warnings. Semantic and PDF
+/// validation share this entry point.
+fn read_generated_document(path: &Path, format: CorpusFormat) -> Option<hwp_model::Document> {
+    match format {
+        CorpusFormat::Hwpx => hwpx::read_document(path)
+            .ok()
+            .filter(|read| read.warnings.is_empty())
+            .map(|read| read.document),
+        CorpusFormat::Hwp => hwp5::read_document(path)
+            .ok()
+            .filter(|read| read.warnings.is_empty())
+            .map(|read| read.document),
+    }
 }
 
 fn structural_semantic_sha256(document: &hwp_model::Document) -> std::result::Result<String, ()> {
@@ -2532,6 +2670,124 @@ mod tests {
                 assert!(!validator.is_valid(&malformed), "{name}: {malformed}");
             }
         }
+    }
+
+    #[test]
+    fn tounicode_trace_requires_every_character_and_whitespace_slot() {
+        assert!(tounicode_trace_matches("all text\r", "all text\n"));
+        assert!(!tounicode_trace_matches(
+            "required text X",
+            "required text Y"
+        ));
+        assert!(!tounicode_trace_matches("missing space", "missing  space"));
+    }
+
+    #[test]
+    fn failed_pdf_diagnostics_validate_while_passed_pdf_is_strict() {
+        let root = workspace_root();
+        let bytes = read_regular_bounded(
+            &root.join("schemas/structured-corpus-run-v1.schema.json"),
+            MAX_REPORT_BYTES,
+        )
+        .unwrap();
+        let corpus_schema: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let mut format_schema = corpus_schema.pointer("/$defs/format").unwrap().clone();
+        format_schema.as_object_mut().unwrap().insert(
+            "$schema".to_string(),
+            serde_json::json!("https://json-schema.org/draft/2020-12/schema"),
+        );
+        format_schema
+            .as_object_mut()
+            .unwrap()
+            .insert("$defs".to_string(), corpus_schema["$defs"].clone());
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&format_schema)
+            .unwrap();
+
+        let hash = "a".repeat(64);
+        let failed_with_diagnostics = serde_json::json!({
+            "format": "hwp",
+            "status": "failed",
+            "reason_codes": ["pdf_tounicode_roundtrip_failed"],
+            "two_run_byte_identical": true,
+            "output_sha256": hash,
+            "output_bytes": 1,
+            "two_run_render_identical": true,
+            "two_run_pdf_identical": true,
+            "pdf": {
+                "sha256": "b".repeat(64),
+                "bytes": 1,
+                "page_count": 2,
+                "tounicode_roundtrip_ok": false
+            },
+            "semantic": null,
+            "certification": null
+        });
+        assert!(validator.is_valid(&failed_with_diagnostics));
+
+        let mut failed_without_inspection = failed_with_diagnostics.clone();
+        failed_without_inspection["pdf"] = serde_json::Value::Null;
+        assert!(validator.is_valid(&failed_without_inspection));
+
+        let clear_detection = serde_json::json!({
+            "result": "not_detected",
+            "count": 0,
+            "complete": true
+        });
+        let mut passed = serde_json::json!({
+            "format": "hwp",
+            "status": "passed",
+            "reason_codes": [],
+            "two_run_byte_identical": true,
+            "output_sha256": "a".repeat(64),
+            "output_bytes": 1,
+            "two_run_render_identical": true,
+            "two_run_pdf_identical": true,
+            "pdf": {
+                "sha256": "b".repeat(64),
+                "bytes": 1,
+                "page_count": 1,
+                "tounicode_roundtrip_ok": true
+            },
+            "semantic": {
+                "plain_text_sha256": "c".repeat(64),
+                "structural_semantic_sha256": "d".repeat(64),
+                "text_chars": 80,
+                "sections": 1,
+                "paragraphs": 5,
+                "tables": 1,
+                "required_text_count": 3
+            },
+            "certification": {
+                "overall": "passed",
+                "total_pages": 1,
+                "selected_pages": [1],
+                "render_issue_count": 0,
+                "render_issue_sha256": "e".repeat(64),
+                "fonts": [{
+                    "font_file_sha256": FROZEN_FONT_SHA256,
+                    "outcome": "matched"
+                }],
+                "pages": [{
+                    "page": 1,
+                    "png_sha256": "f".repeat(64),
+                    "visual_blank": false,
+                    "outside_page_bounds": clear_detection,
+                    "possible_collision": {
+                        "result": "not_detected",
+                        "count": 0,
+                        "complete": true
+                    }
+                }]
+            }
+        });
+        assert!(validator.is_valid(&passed));
+        passed["pdf"]["page_count"] = serde_json::json!(2);
+        assert!(!validator.is_valid(&passed));
+        passed["pdf"]["page_count"] = serde_json::json!(1);
+        passed["pdf"]["tounicode_roundtrip_ok"] = serde_json::json!(false);
+        assert!(!validator.is_valid(&passed));
     }
 
     #[test]
