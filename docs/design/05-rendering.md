@@ -376,9 +376,12 @@ whole (no fallback splitting, with `shade_color=0xFFFFFFFF` to avoid the black-b
 
 List markers come from `ListState::marker_for_render` (`hwp-model/src/list.rs`): numbering
 (head_type 2) and bullet (3) paragraphs as before, plus outline (head_type 1) paragraphs, which get
-fixed per-level markers (`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`) from a dedicated counter
-family — the outline `numbering_id` is a raw, unnormalized reference (GG-12). Text converters
-(markdown and friends) keep calling `marker()`, which leaves outlines as heading structure only.
+the default fixed per-level markers (`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`) from a
+dedicated counter family. Empty paragraphs do not consume that counter, and each text box has its
+own counter scope. The outline `numbering_id` remains a raw, unnormalized reference: custom
+outline definitions, restart behavior, and the sequence beyond the known 14 Hangul markers are
+still GG-12 oracle work. Text converters (markdown and friends) keep calling `marker()`, which
+leaves outlines as heading structure only.
 
 ---
 

@@ -18,9 +18,6 @@ pub struct Glyph {
     pub x_advance: f32,
     pub x_offset: f32,
     pub y_offset: f32,
-    /// 원문 문자 (셰이핑 cluster 기준). 합자·재배열 시 위치 인덱스와 어긋나므로
-    /// PDF ToUnicode는 위치 추정 대신 이 값을 우선 쓴다.
-    pub ch: Option<char>,
 }
 
 /// 같은 (폰트, 크기, 스타일)로 셰이핑된 글리프 런.
@@ -56,11 +53,29 @@ pub struct ShapedRun {
 }
 
 impl ShapedRun {
-    /// 글리프 [start, end) 구간으로 부분 런을 만든다 (줄바꿈용).
-    /// CJK는 1글자=1글리프라 안전하다. 라틴 합자 분리는 허용 오차.
+    /// Build a partial run for the glyph range `[start, end)` (line wrapping).
+    ///
+    /// Source text is reconstructed from shaping clusters so wrapped runs keep
+    /// a complete PDF ToUnicode trace, including ligatures and combining text.
     pub fn slice(&self, start: usize, end: usize) -> ShapedRun {
+        let sources = glyph_source_sequences(self);
+        self.slice_with_sources(start, end, &sources)
+    }
+
+    pub(crate) fn slice_with_sources(
+        &self,
+        start: usize,
+        end: usize,
+        sources: &[String],
+    ) -> ShapedRun {
         let glyphs: Vec<Glyph> = self.glyphs[start..end].to_vec();
         let width_pt = glyphs.iter().map(|g| g.x_advance).sum();
+        let text = sources[start..end].concat();
+        let wchar_offset = sources[..start]
+            .iter()
+            .flat_map(|source| source.chars())
+            .map(|ch| ch.len_utf16() as u32)
+            .sum::<u32>();
         ShapedRun {
             font: self.font.clone(),
             size_pt: self.size_pt,
@@ -78,10 +93,79 @@ impl ShapedRun {
             engrave: self.engrave,
             glyphs,
             width_pt,
-            text: String::new(), // 부분 런의 원문 추적은 PDF 백엔드(M7)에서
-            start_wchar: self.start_wchar + start as u32, // CJK 1글자=1글리프 가정
+            text,
+            start_wchar: self.start_wchar + wchar_offset,
         }
     }
+}
+
+/// Return the source Unicode sequence represented by each emitted glyph.
+///
+/// Rustybuzz clusters are byte offsets into the input string. A ligature gets
+/// the complete multi-scalar cluster, while a cluster expanded to multiple
+/// glyphs distributes its source scalars once, in glyph order. This is also
+/// used by PDF ToUnicode generation and line justification.
+pub(crate) fn glyph_source_sequences(run: &ShapedRun) -> Vec<String> {
+    let Some(face) = rustybuzz::Face::from_slice(&run.font.data, run.font.index) else {
+        return distribute_source(&run.text, run.glyphs.len());
+    };
+    let mut buffer = rustybuzz::UnicodeBuffer::new();
+    buffer.push_str(&run.text);
+    let shaped = rustybuzz::shape(&face, &[], buffer);
+    if shaped.len() != run.glyphs.len() {
+        return distribute_source(&run.text, run.glyphs.len());
+    }
+    sources_from_clusters(&run.text, shaped.glyph_infos())
+}
+
+fn sources_from_clusters(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<String> {
+    if infos.is_empty() {
+        return Vec::new();
+    }
+    let mut starts: Vec<usize> = infos.iter().map(|info| info.cluster as usize).collect();
+    starts.sort_unstable();
+    starts.dedup();
+
+    let mut out = vec![String::new(); infos.len()];
+    let mut group_start = 0usize;
+    while group_start < infos.len() {
+        let cluster = infos[group_start].cluster;
+        let mut group_end = group_start + 1;
+        while group_end < infos.len() && infos[group_end].cluster == cluster {
+            group_end += 1;
+        }
+        let start = cluster as usize;
+        let end = starts
+            .iter()
+            .copied()
+            .find(|candidate| *candidate > start)
+            .unwrap_or(text.len());
+        let source = text.get(start..end).unwrap_or("");
+        let distributed = distribute_source(source, group_end - group_start);
+        out[group_start..group_end].clone_from_slice(&distributed);
+        group_start = group_end;
+    }
+    out
+}
+
+fn distribute_source(source: &str, glyph_count: usize) -> Vec<String> {
+    if glyph_count == 0 {
+        return Vec::new();
+    }
+    let chars: Vec<char> = source.chars().collect();
+    if chars.is_empty() {
+        return vec!["\u{fffd}".to_string(); glyph_count];
+    }
+    if chars.len() >= glyph_count {
+        let first_len = chars.len() - glyph_count + 1;
+        let mut out = Vec::with_capacity(glyph_count);
+        out.push(chars[..first_len].iter().collect());
+        out.extend(chars[first_len..].iter().map(char::to_string));
+        return out;
+    }
+    let mut out: Vec<String> = chars.into_iter().map(|ch| ch.to_string()).collect();
+    out.resize(glyph_count, "\u{fffd}".to_string());
+    out
 }
 
 /// 인라인 항목: 글리프 런 또는 고정 폭 진행(탭).
@@ -471,9 +555,6 @@ fn shape_with_font(
             x_advance: advance,
             x_offset: gpos.x_offset as f32 * scale * x_scale,
             y_offset: gpos.y_offset as f32 * scale + y_raise,
-            ch: text
-                .get(info.cluster as usize..)
-                .and_then(|s| s.chars().next()),
         });
         width += advance;
     }
@@ -650,6 +731,27 @@ mod link_tests {
     use crate::fonts::LoadedFont;
     use std::sync::Arc;
 
+    fn noto_run(text: &str) -> ShapedRun {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../corpus/structured-v1/fonts/NotoSansKR[wght].ttf"
+        ))
+        .expect("tracked Noto Sans KR corpus font");
+        let font = Arc::new(LoadedFont {
+            data: Arc::new(bytes),
+            index: 0,
+            family: "Noto Sans KR".to_string(),
+        });
+        let shape = CharShape {
+            base_size: 1_000,
+            ratios: [100; LANG_COUNT],
+            rel_sizes: [100; LANG_COUNT],
+            shade_color: 0xFFFF_FFFF,
+            ..CharShape::default()
+        };
+        shape_with_font(&font, &shape, 1, text, 0, false).expect("font shapes test text")
+    }
+
     fn field_start() -> HwpChar {
         HwpChar::ExtCtrl {
             code: 3,
@@ -746,5 +848,22 @@ mod link_tests {
             assert_eq!(run.text, text, "전체 텍스트 보존(세그먼트 누락 없음)");
             assert!(!run.glyphs.is_empty(), "글리프 생성됨");
         }
+    }
+
+    #[test]
+    fn shaping_clusters_preserve_ligatures_combining_text_and_slices() {
+        let ligature = noto_run("office");
+        let sources = glyph_source_sequences(&ligature);
+        assert_eq!(sources.concat(), "office");
+        let ffi_index = sources
+            .iter()
+            .position(|source| source == "ffi")
+            .expect("Noto Sans KR forms the ffi ligature");
+        assert_eq!(ligature.slice(ffi_index, ffi_index + 1).text, "ffi");
+
+        let combining = noto_run("x\u{301}");
+        let sources = glyph_source_sequences(&combining);
+        assert_eq!(sources.concat(), "x\u{301}");
+        assert!(sources.iter().all(|source| source != "\u{fffd}"));
     }
 }

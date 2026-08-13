@@ -226,7 +226,7 @@ y_offset  = gpos.y_offset  * scale + y_raise
 
 `hyperlink_ranges`: `%hlk` FIELD_START(ExtCtrl code3) ~ FIELD_END(InlineCtrl code4) 사이 WCHAR 범위. `apply_link_style`이 그 범위의 Run에 밑줄 + `LINK_BLUE=0x00CC0000`. `shape_plain`은 합성 텍스트(수식/마커)용 — 단일 Run 통짜 셰이핑(폴백 분할 안 함, `shade_color=0xFFFFFFFF`로 검은박스 트랩 회피).
 
-목록 마커는 `ListState::marker_for_render`(`hwp-model/src/list.rs`)에서 만든다: 번호(head_type 2)·불릿(3)은 기존과 동일하고, 개요(head_type 1) 문단은 전용 카운터 계열로 수준별 고정 마커(`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`)를 단다 — 개요 `numbering_id`는 비정규화 원시값(GG-12). 텍스트 변환(markdown 등)은 `marker()`를 써서 개요를 헤딩 구조로만 둔다.
+목록 마커는 `ListState::marker_for_render`(`hwp-model/src/list.rs`)에서 만든다: 번호(head_type 2)·불릿(3)은 기존과 동일하고, 개요(head_type 1) 문단은 전용 카운터 계열로 기본 수준별 고정 마커(`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`)를 단다. 빈 문단은 카운터를 소비하지 않고, 글상자마다 별도 카운터 범위를 쓴다. 개요 `numbering_id`는 아직 비정규화 원시값이므로 사용자 정의 개요, 재시작 규칙, 확인된 한글 14자 이후 순번은 GG-12 정답지 작업으로 남는다. 텍스트 변환(markdown 등)은 `marker()`를 써서 개요를 헤딩 구조로만 둔다.
 
 ---
 

@@ -351,7 +351,7 @@ fn finish_pdf(
     meta: &Metadata,
 ) -> Result<PdfOutput, RenderError> {
     select_pdf_pages(&mut list, pages);
-    let data = pdf::render_pdf(&list, &mut report, meta)?;
+    let data = pdf::render_pdf_with_metadata(&list, &mut report, meta)?;
     Ok(PdfOutput {
         data,
         report: report.finish(),
@@ -386,7 +386,7 @@ fn finish_pdf_with_text_trace(
 ) -> Result<PdfValidationOutput, RenderError> {
     select_pdf_pages(&mut list, pages);
     let expected_text = pdf::expected_text_trace(&list)?;
-    let data = pdf::render_pdf(&list, &mut report, meta)?;
+    let data = pdf::render_pdf_with_metadata(&list, &mut report, meta)?;
     Ok(PdfValidationOutput {
         data,
         report: report.finish(),

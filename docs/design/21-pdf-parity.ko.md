@@ -57,10 +57,11 @@ catalog/Info 기능 — 을 확정했다:
 (dc/pdf/xmp), `/OutputIntents`(GTS_PDFA1 + 임베디드 ICC), 그리고 `/Info`는 6키 한정 —
 Author는 문서에 있을 때만, Creator/Producer는 `hwp-cli <버전>`, CreationDate/ModDate는 문서
 FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바이트 동일 게이트 유지), `PDFVersion`
-쌍. 헤더 버전은 PDF 1.4. ICC 프로파일은 `crates/hwp-render/assets/sRGB-IEC61966-2.1.icc`
-(설명 `sRGB IEC61966-2.1`, 클래스 mntr/RGB, v2.1)로 macOS ColorSync 시스템 프로파일 출처,
-SHA-256 `2b3aa1645779a9e634744faf9b01e9102b0c9b88fd6deced7934df86b949af7e`를 테스트로 고정.
-sRGB 프로파일은 sRGB 라이선스상 로열티 프리 재배포 가능.
+쌍. 헤더 버전은 PDF 1.4. 임베디드 프로파일은 ICC Registry의 `sRGB2014` v2 프로파일이며
+`crates/hwp-render/assets/sRGB2014.icc.hex`로 커밋한다. 출처와 재배포 조건은 인접한
+`LICENSE-sRGB2014.txt`에 기록하고, 디코딩한 3,024바이트 프로파일의 SHA-256
+`384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a`를 테스트로 고정한다.
+이 필드들은 확인한 구조 계약을 구현한 상태이며, 한컴 값과의 정확한 동일성은 로컬 정답지 실행이 남아 있다.
 
 ## 3. 다섯 지표 집합 (우선순위 순)
 

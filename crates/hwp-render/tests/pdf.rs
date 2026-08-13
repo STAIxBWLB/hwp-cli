@@ -39,6 +39,14 @@ fn count(haystack: &[u8], needle: &[u8]) -> usize {
 }
 
 #[test]
+fn display_list_pdf_api_remains_compatible() {
+    let _: fn(
+        &hwp_render::display::DisplayList,
+        &mut hwp_render::RenderIssueAccumulator,
+    ) -> Result<Vec<u8>, hwp_render::RenderError> = hwp_render::pdf::render_pdf;
+}
+
+#[test]
 fn 유효한_pdf_구조() {
     let Some(doc) = load_or_skip("hwp5/hello_world.hwp") else {
         return;
@@ -127,7 +135,7 @@ fn 빈_문서_렌더() {
 
 #[test]
 fn 문서_수준_속성_한컴_패리티() {
-    // docs/design/21 §2 — 한컴 PDF의 문서 수준 6종.
+    // The six document-level fields captured in design 21 section 2.
     let Some(doc) = load_or_skip("hwp5/hello_world.hwp") else {
         return;
     };
@@ -151,7 +159,7 @@ fn 문서_수준_속성_한컴_패리티() {
 #[test]
 fn info_메타데이터_매핑() {
     let mut doc = hwp_convert::from_markdown("본문\n");
-    // 비어 있으면 Author·날짜 키가 없어야 한다.
+    // Missing source metadata must not synthesize author or date keys.
     let out = render_document_pdf(&doc, &RenderOptions::default(), None).unwrap();
     assert_eq!(
         count(&out.data, b"/Author"),
@@ -166,18 +174,18 @@ fn info_메타데이터_매핑() {
 
     doc.metadata.author = Some("홍길동".to_string());
     doc.metadata.create_time = Some(133_486_382_450_000_000); // 2024-01-02T03:04:05Z
-    doc.metadata.modify_time = Some(11_644_473_600 * 10_000_000); // 1970-01-01T00:00:00Z
+    doc.metadata.modify_time = hwp_model::iso8601_utc_to_filetime("1900-03-01T00:00:00Z");
     let out = render_document_pdf(&doc, &RenderOptions::default(), None).unwrap();
     let pdf = &out.data;
-    // 한글 저자명은 UTF-16BE hex 문자열 (FEFF D64D AE38 B3D9).
+    // A Korean author is emitted as a UTF-16BE hexadecimal string.
     assert_eq!(count(pdf, b"/Author <FEFFD64DAE38B3D9>"), 1, "/Author");
     assert_eq!(
         count(pdf, b"/CreationDate (D:20240102030405Z)"),
         1,
         "/CreationDate"
     );
-    assert_eq!(count(pdf, b"/ModDate (D:19700101000000Z)"), 1, "/ModDate");
-    // XMP에도 동일 값.
+    assert_eq!(count(pdf, b"/ModDate (D:19000301000000Z)"), 1, "/ModDate");
+    // XMP receives the same source value.
     assert!(
         count(
             pdf,
@@ -206,9 +214,21 @@ fn 두_번_렌더_바이트_동일() {
 fn srgb_icc_프로파일_고정() {
     use sha2::Digest;
     use std::fmt::Write as _;
-    let icc = include_bytes!("../assets/sRGB-IEC61966-2.1.icc");
-    assert_eq!(icc.len(), 3144);
-    let hex = sha2::Sha256::digest(icc)
+    let digits: Vec<u8> = include_str!("../assets/sRGB2014.icc.hex")
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    let icc: Vec<u8> = digits
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16).unwrap();
+            let low = (pair[1] as char).to_digit(16).unwrap();
+            ((high << 4) | low) as u8
+        })
+        .collect();
+    assert_eq!(icc.len(), 3024);
+    assert_eq!(&icc[36..40], b"acsp", "ICC header signature");
+    let hex = sha2::Sha256::digest(&icc)
         .iter()
         .fold(String::with_capacity(64), |mut out, b| {
             write!(out, "{b:02x}").unwrap();
@@ -216,6 +236,6 @@ fn srgb_icc_프로파일_고정() {
         });
     assert_eq!(
         hex,
-        "2b3aa1645779a9e634744faf9b01e9102b0c9b88fd6deced7934df86b949af7e"
+        "384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a"
     );
 }

@@ -26,14 +26,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   [docs/design/21-pdf-parity.md](docs/design/21-pdf-parity.md).
 - Outline numbering and PDF document metadata, the third step of the PDF parity roadmap
   ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Outline paragraphs (head_type 1) now
-  render their fixed per-level markers (`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`) — GG-12
-  resolved — and emitted PDFs carry the Hancom-matching document-level properties: PDF 1.4 header,
+  render the default fixed per-level markers (`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`),
+  including inside text boxes and without consuming counters for empty paragraphs. Custom outline
+  definitions and sequences beyond the known 14 Hangul markers remain GG-12 oracle work. Emitted
+  PDFs now carry the contracted document-level surface: PDF 1.4 header,
   `/Lang (ko-KR)`, `/PageLayout /SinglePage`, `/MarkInfo <</Marked false>>`, XMP `/Metadata`,
-  `/OutputIntents` with an embedded sRGB IEC61966-2.1 ICC profile, and an `/Info` dictionary
+  `/OutputIntents` with the official ICC Registry sRGB2014 profile, and an `/Info` dictionary
   limited to Author, Creator, Producer, CreationDate, ModDate and PDFVersion, sourced from
-  document metadata only (two-run byte determinism preserved). `Glyph` now carries its source
-  character from the shaping cluster, so ToUnicode mappings stay correct for ligatured or
-  reordered runs.
+  document metadata only (including pre-1970 FILETIME; two-run byte determinism preserved).
+  ToUnicode mappings now preserve complete shaping-cluster source sequences, wrapped-run text,
+  combining text and distinct Unicode aliases that share one source-font GID.
 - Table page splitting with header-row repeat, the second step of the PDF parity roadmap
   ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). A table taller than the remaining
   body space no longer clips silently at the media box: `pageBreak=NONE` pushes it wholesale to

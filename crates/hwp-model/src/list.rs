@@ -12,8 +12,9 @@ use crate::{Document, NumFmt, Paragraph};
 #[derive(Default, Clone)]
 pub struct ListState {
     counters: HashMap<u16, [u32; 8]>,
-    /// 개요(head_type 1) 전용 카운터. 개요의 numbering_id는 비정규화 원시값
-    /// (정품 표본은 0)이라 번호 정의별 카운터와 별도 계열로 둔다.
+    /// Counter family dedicated to outline paragraphs (`head_type == 1`). Outline
+    /// `numbering_id` values are unnormalized raw references (zero in genuine samples), so they do
+    /// not select entries from the normal numbering-definition counter map.
     outline_counters: [u32; 8],
 }
 
@@ -22,8 +23,8 @@ impl ListState {
     pub fn marker(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
         let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
         let ty = ps.head_type();
-        // 번호(2)·불릿(3)만 마커를 그린다. 개요(1)는 텍스트 변환 경로에서 구조 수준
-        // (헤딩)으로만 쓰므로 여기선 제외 — 개요 번호 렌더(GG-12)는 marker_for_render().
+        // Text conversion emits markers only for numbering (2) and bullets (3). Outline (1)
+        // remains heading structure here; renderer-only outline markers use marker_for_render().
         if ty != 2 && ty != 3 {
             return None;
         }
@@ -61,8 +62,8 @@ impl ListState {
         Some(format!("{}.", parts.join(".")))
     }
 
-    /// 렌더용 마커 — 개요(head_type 1)도 수준별 고정 형식으로 번호를 단다(GG-12).
-    /// 한글 기본 개요 형식: 1. / 가. / 1) / 가) / (1) / (가) / ① (수준 1~7).
+    /// Renderer marker including the default per-level outline (`head_type == 1`) formats.
+    /// The seven levels are `1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`.
     pub fn marker_for_render(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
         let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
         if ps.head_type() == 1 {
@@ -71,7 +72,7 @@ impl ListState {
         self.marker(doc, para)
     }
 
-    /// 개요 번호: 수준 카운터 증가 + 더 깊은 수준 리셋 후 수준별 고정 형식 적용.
+    /// Advance one outline level, reset deeper levels, and apply the level's default format.
     fn outline_marker(&mut self, level: u8) -> String {
         let level = level.clamp(1, 7) as usize;
         self.outline_counters[level] += 1;
@@ -289,7 +290,7 @@ mod tests {
             para_shape: ParaShapeId(id),
             ..Paragraph::default()
         };
-        // marker()(텍스트 변환용)는 개요를 내지 않는다.
+        // Text conversion keeps outlines as heading structure without markers.
         let mut st = ListState::default();
         assert_eq!(st.marker(&doc, &p(0)), None);
 
@@ -299,15 +300,15 @@ mod tests {
         assert_eq!(st.marker_for_render(&doc, &p(1)).as_deref(), Some("가."));
         assert_eq!(st.marker_for_render(&doc, &p(1)).as_deref(), Some("나."));
         assert_eq!(st.marker_for_render(&doc, &p(2)).as_deref(), Some("1)"));
-        // 상위 수준 재진입: 하위 리셋, 상위는 이어진다.
+        // Returning to a shallower level resets deeper counters and continues its own counter.
         assert_eq!(st.marker_for_render(&doc, &p(0)).as_deref(), Some("3."));
         assert_eq!(st.marker_for_render(&doc, &p(1)).as_deref(), Some("가."));
-        // 수준 5~7 고정 형식.
+        // Fixed formats for levels 5 through 7.
         assert_eq!(st.marker_for_render(&doc, &p(3)).as_deref(), Some("(1)"));
         assert_eq!(st.marker_for_render(&doc, &p(4)).as_deref(), Some("(가)"));
         assert_eq!(st.marker_for_render(&doc, &p(5)).as_deref(), Some("①"));
 
-        // 번호(2) 카운터와 독립이다.
+        // Outline and regular numbering counters are independent.
         let mk2 = || ParaShape {
             attr1: (2 << 23) | (1 << 25),
             numbering_id: 0,
