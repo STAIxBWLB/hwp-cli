@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # MSRV pin (Cargo.toml rust-version): keeps rustfmt/clippy results deterministic
       # (floating stable lets previously-passing code suddenly fail on version drift) and
       # proves the declared minimum supported version actually builds.
@@ -80,7 +80,7 @@ jobs:
           - { os: windows-latest }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Render smoke tests need a system Korean font. fonts-nanum ships glyf-outline TTFs;
       # the CFF-based fonts-noto-cjk made debug-build outline extraction ~100x slower
       # (that alone was a 15-minute ubuntu test step).

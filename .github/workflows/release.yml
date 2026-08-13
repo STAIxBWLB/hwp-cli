@@ -50,7 +50,7 @@ jobs:
   verify-version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Tag matches Cargo.toml version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -67,7 +67,7 @@ jobs:
     needs: [verify-ci, verify-version]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -98,7 +98,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Release binaries build on stable (latest optimizations); MSRV compatibility is
       # already guaranteed by CI, which builds and tests on the pinned MSRV toolchain.
       - uses: dtolnay/rust-toolchain@stable
@@ -117,7 +117,7 @@ jobs:
     needs: upload-assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Assemble and upload hwp-skill-claude-web.zip
         env:
           GH_TOKEN: ${{ github.token }}
@@ -152,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Check out main, not the tag — the formula change targets main.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       - name: Update formula and open a PR
