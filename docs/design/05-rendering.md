@@ -98,11 +98,16 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
 
 - Right: `shift = max(seg_width - natural, 0)`.
 - Center: `shift = max((seg_width - natural)/2, 0)`.
-- Justify, distribute and divide (except the last line): `justify_line` distributes the surplus
+- Justify (0, except the last line): `justify_line` distributes the surplus
   `slack = clamp(seg_width - natural, 0, natural)` across glyph advances. **When spaces exist it goes
   only to the space glyphs; otherwise it is spread evenly over the gaps before the last visible
-  glyph.** Trailing spaces get nothing (so the text reaches the right edge). Glyph-to-character is
-  assumed 1:1 for CJK.
+  glyph.** Trailing spaces get nothing (so the text reaches the right edge). Rustybuzz cluster
+  sources map glyphs back to Unicode sequences, including ligatures and combining text.
+- Distribute (4): the full surplus, without the ordinary-justify safety cap, is spread evenly over
+  every gap **including after the last glyph**, and the last line is stretched too. A one-glyph line
+  can therefore fill the segment through its trailing gap.
+- Divide (5): the full surplus is spread evenly over the gaps **excluding after the last glyph**, and
+  the last line is stretched too. (The 4/5 last-line semantics await Hancom confirmation.)
 
 ### 1.5 Table layout (`layout_table`)
 
@@ -265,18 +270,22 @@ Line metrics are derived from the `base_size` of the first character shape (1000
 
 ```
 base          = char_shapes[first_run].base_size (>0)
-ls_type       = para_shape.attr1 & 0x3   // 0 percent, 1 fixed, 3 minimum
-ls_val        = para_shape.line_spacing_old
-line_advance  = { fixed or minimum (ls_val>0): max(ls_val/2, base)   // length kinds are 2 × HWPUNIT
-                  percent (ls_val>0):          base * ls_val / 100
-                  unspecified:                 base * 160 / 100 }    // the genuine default of 160%
+ls_type       = para_shape.line_spacing_type()   // 0 percent, 1 fixed, 2 margin-only, 3 minimum
+ls_val        = para_shape.line_spacing (version-aware; falls back to line_spacing_old)
+line_advance  = { fixed:                  max(ls_val, 0) / 2        // exact; zero/overlap allowed
+                  margin-only:            base + max(ls_val, 0) / 2
+                  minimum:                max(max(ls_val, 0)/2, base) // natural height ~ base for now
+                  percent (ls_val>0):     base * ls_val / 100
+                  unspecified:            base * 160 / 100 }       // the genuine default of 160%
 line_spacing  = max(line_advance - base, 0)
 baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
 ```
 
 Shaping (`shape_range`) measures glyph x_advance in pt and breaks lines greedily against
-`limit_pt = seg_width/100`. Each line is emitted by the closure `place`:
+`limit_pt = seg_width/100`. Breaks on either side of NB_SPACE are suppressed. Line starts use the
+UTF-16 length of each shaping-cluster source, rather than the glyph index, so surrogate pairs,
+ligatures and combining text retain correct WCHAR offsets. Each line is emitted by `place`:
 
 ```
 if v_pos>0 && v_pos + base > content_h { v_pos = 0 }   // page reset (cells use content_h=MAX so it never fires)
@@ -335,7 +344,7 @@ size_pt   = sup||sub ? full_size*0.65 : full_size
 scale     = size_pt / upem
 y_raise   = full_size * cs.char_offset(lang)/100
             + (sup ? full_size*0.34 : 0) + (sub ? -full_size*0.16 : 0)
-spacing_pt= size_pt * cs.spacings[lang] / 100            // letter spacing
+spacing_pt= hwpunit_round(size_hu * cs.spacings[lang] / 100) / 100   // letter spacing, HWPUNIT half-up
 x_scale   = cs.ratios[lang] / 100                        // width scaling
 ```
 

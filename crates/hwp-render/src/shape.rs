@@ -3,6 +3,7 @@
 //! 파이프라인: 문자 모양 경계 → HWP 언어 분류 재분할 → 폰트 해석 →
 //! rustybuzz 셰이핑 → 자간/장평 후처리.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -148,6 +149,14 @@ pub(crate) fn glyph_source_sequences(run: &ShapedRun) -> Vec<String> {
         return distribute_source(&run.text, run.glyphs.len());
     }
     sources_from_clusters(&run.text, shaped.glyph_infos())
+}
+
+/// Returns true when a shaped source cluster contains HWP's grouped space.
+///
+/// Grouped spaces are represented as U+00A0 in `ShapedRun::text` so the layout
+/// and synthesized-line-segment paths can suppress both adjacent wrap points.
+pub(crate) fn source_has_no_break_space(source: &str) -> bool {
+    source.contains('\u{00a0}')
 }
 
 fn sources_from_clusters(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<String> {
@@ -367,6 +376,45 @@ fn shape_range_dynamic(
                         }
                     }
                 }
+                // HYPHEN (24) and NB_SPACE (30) carry real glyph advances (GG-20).
+                // Preserve NB_SPACE as U+00A0 in the run source so both wrapping paths
+                // can suppress the break points immediately before and after it.
+                HwpChar::CharCtrl(code)
+                    if matches!(*code, ctrl_char::HYPHEN | ctrl_char::NB_SPACE) =>
+                {
+                    let c = if *code == ctrl_char::HYPHEN {
+                        '-'
+                    } else {
+                        '\u{00a0}'
+                    };
+                    let shape_id = shape_id_at(para, pos);
+                    let lang = lang_slot_of(c);
+                    match pieces.last_mut() {
+                        Some(last) if last.shape_id == shape_id && last.lang == lang => {
+                            last.text.push(c);
+                        }
+                        _ => pieces.push(Piece {
+                            shape_id,
+                            lang,
+                            text: c.to_string(),
+                            start: pos,
+                        }),
+                    }
+                }
+                // FW_SPACE (31) gets a fixed 1em advance after relative-size and
+                // width-scaling adjustments, independent of the proportional space glyph.
+                HwpChar::CharCtrl(code) if *code == ctrl_char::FW_SPACE => {
+                    let shape = doc.header.char_shapes.get(shape_id_at(para, pos) as usize);
+                    if let Some(run) = fw_space_run(store, doc, shape, pos) {
+                        items.push((pieces.len(), InlineItem::Run(run)));
+                        pieces.push(Piece {
+                            shape_id: shape_id_at(para, pos + 1),
+                            lang: 0,
+                            text: String::new(),
+                            start: pos + 1,
+                        });
+                    }
+                }
                 // 강제 줄바꿈: 같은 문단 안에서 줄을 나눈다(코드블록·shift+enter).
                 HwpChar::CharCtrl(code) if *code == ctrl_char::LINE_BREAK => {
                     items.push((pieces.len(), InlineItem::LineBreak(pos + 1)));
@@ -533,6 +581,36 @@ fn shape_piece(
         .collect()
 }
 
+/// Shapes FW_SPACE as a space glyph, then overrides its advance with the
+/// effective 1em width (relative size and width scaling, excluding tracking).
+fn fw_space_run(
+    store: &mut FontStore,
+    doc: &Document,
+    shape: Option<&CharShape>,
+    pos: u32,
+) -> Option<ShapedRun> {
+    let mut run = shape_piece(store, doc, shape, 1, " ", pos)
+        .into_iter()
+        .next()?;
+    let em = run.size_pt * run.x_scale;
+    for g in &mut run.glyphs {
+        g.x_advance = em;
+    }
+    run.width_pt = em * run.glyphs.len() as f32;
+    Some(run)
+}
+
+/// Computes letter spacing in the HWPUNIT integer domain with half-up rounding
+/// (ties toward positive infinity, including negative values), then converts to points.
+/// Whether Hancom includes trailing tracking after the last glyph still needs measurement.
+fn letter_spacing_pt(base_hu: i32, rel: u8, script: bool, pct: i8) -> f32 {
+    let mut size_hu = i64::from(base_hu) * i64::from(rel) / 100;
+    if script {
+        size_hu = size_hu * 65 / 100;
+    }
+    ((size_hu * i64::from(pct) + 50).div_euclid(100)) as f32 / 100.0
+}
+
 /// 주어진 글꼴 하나로 텍스트를 셰이핑해 [`ShapedRun`]을 만든다(첨자·자간·장평·
 /// 음영/그림자/외곽선/양각/음각 효과 필드까지 채운다). `bold`는 호출부가 결정
 /// (요청이 굵음이거나, 굵은 페이스 없는 heavy 글꼴이라 faux-bold가 필요할 때 true).
@@ -570,12 +648,25 @@ fn shape_with_font(
         r
     };
 
-    // 자간: 글자 크기 기준 % (U4 — 반올림 방식은 실측 보정 예정)
-    let spacing_pt = size_pt * cs.spacings.get(lang).copied().unwrap_or(0) as f32 / 100.0;
+    // Compute letter spacing in the HWPUNIT integer domain before converting to
+    // points (GG-4), avoiding the previous floating-point rounding drift.
+    let spacing_pt = letter_spacing_pt(
+        base,
+        rel,
+        sup || sub,
+        cs.spacings.get(lang).copied().unwrap_or(0),
+    );
     let x_scale = cs.ratios.get(lang).copied().unwrap_or(100).max(1) as f32 / 100.0;
 
+    // Keep U+00A0 in the run source for wrap semantics while shaping it as an
+    // ordinary space so NB_SPACE retains the active font's regular space advance.
+    let shaping_text = if text.contains('\u{00a0}') {
+        Cow::Owned(text.replace('\u{00a0}', " "))
+    } else {
+        Cow::Borrowed(text)
+    };
     let mut buffer = rustybuzz::UnicodeBuffer::new();
-    buffer.push_str(text);
+    buffer.push_str(&shaping_text);
     let output = rustybuzz::shape(&face, &[], buffer);
 
     let mut glyphs = Vec::with_capacity(output.len());
@@ -938,6 +1029,101 @@ mod link_tests {
             assert_eq!(run.text, text, "전체 텍스트 보존(세그먼트 누락 없음)");
             assert!(!run.glyphs.is_empty(), "글리프 생성됨");
         }
+    }
+
+    /// Shapes one synthetic paragraph for inline-control advance assertions.
+    fn shape_chars(doc: &Document, store: &mut FontStore, chars: Vec<HwpChar>) -> Vec<InlineItem> {
+        let para = Paragraph {
+            chars,
+            ..Paragraph::default()
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        shape_range(store, doc, &para, (0, para.wchar_len()), &mut warns)
+    }
+
+    fn runs_width(items: &[InlineItem]) -> f32 {
+        items
+            .iter()
+            .map(|i| match i {
+                InlineItem::Run(r) => r.width_pt,
+                _ => 0.0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn inline_control_advances_gg20() {
+        let doc = hwp_convert::from_markdown("x");
+        let mut store = FontStore::new();
+        // Font-less environments cannot exercise the shaping assertions.
+        if shape_chars(&doc, &mut store, vec![HwpChar::Text('a')]).is_empty() {
+            return;
+        }
+        // NB_SPACE (30) retains the ordinary-space advance but remains identifiable
+        // in the shaped source so the wrapping paths can suppress adjacent breaks.
+        let nb = shape_chars(
+            &doc,
+            &mut store,
+            vec![
+                HwpChar::Text('a'),
+                HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                HwpChar::Text('b'),
+            ],
+        );
+        let sp = shape_chars(
+            &doc,
+            &mut store,
+            vec![HwpChar::Text('a'), HwpChar::Text(' '), HwpChar::Text('b')],
+        );
+        assert_eq!(nb.len(), 1, "NB_SPACE should remain in the surrounding run");
+        if let InlineItem::Run(r) = &nb[0] {
+            assert_eq!(r.text, "a\u{00a0}b");
+            assert!(source_has_no_break_space("\u{00a0}"));
+        }
+        assert!(
+            (runs_width(&nb) - runs_width(&sp)).abs() < 0.01,
+            "NB_SPACE must use the ordinary space advance"
+        );
+        // HYPHEN (24) uses the natural '-' glyph advance.
+        let hy = shape_chars(&doc, &mut store, vec![HwpChar::CharCtrl(ctrl_char::HYPHEN)]);
+        let dash = shape_chars(&doc, &mut store, vec![HwpChar::Text('-')]);
+        if let InlineItem::Run(r) = &hy[0] {
+            assert_eq!(r.text, "-");
+        }
+        assert!(
+            (runs_width(&hy) - runs_width(&dash)).abs() < 0.01,
+            "HYPHEN must use the '-' glyph advance"
+        );
+        // FW_SPACE (31) uses the effective 1em width, independent of the
+        // proportional space glyph.
+        let fw = shape_chars(
+            &doc,
+            &mut store,
+            vec![HwpChar::CharCtrl(ctrl_char::FW_SPACE)],
+        );
+        let cs = &doc.header.char_shapes[0];
+        let em = cs.base_size as f32 / 100.0 * f32::from(cs.rel_sizes[1]) / 100.0
+            * f32::from(cs.ratios[1])
+            / 100.0;
+        assert!(
+            (runs_width(&fw) - em).abs() < 0.01,
+            "FW_SPACE should be 1em ({em}); actual {}",
+            runs_width(&fw)
+        );
+    }
+
+    #[test]
+    fn letter_spacing_uses_hwpunit_half_up_rounding_gg4() {
+        // 10pt (1000 HWPUNIT), -7% -> -70 HWPUNIT -> -0.7pt.
+        assert!((letter_spacing_pt(1000, 100, false, -7) + 0.7).abs() < 1e-6);
+        // Half-up ties move toward positive infinity: 100.5 -> 101, -100.5 -> -100.
+        assert!((letter_spacing_pt(1005, 100, false, 10) - 1.01).abs() < 1e-6);
+        assert!((letter_spacing_pt(1005, 100, false, -10) + 1.0).abs() < 1e-6);
+        // Relative size and the 65% script reduction are applied before rounding.
+        assert!((letter_spacing_pt(1000, 50, false, 10) - 0.5).abs() < 1e-6);
+        assert!((letter_spacing_pt(1000, 100, true, 10) - 0.65).abs() < 1e-6);
+        // Malicious or damaged input must not overflow the integer-domain calculation.
+        assert!(letter_spacing_pt(i32::MAX, u8::MAX, false, i8::MAX).is_finite());
     }
 
     #[test]

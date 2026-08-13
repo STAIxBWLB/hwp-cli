@@ -13,7 +13,7 @@ use hwp_model::{Control, Document, LineSeg, Paragraph, Table};
 use crate::fonts::FontStore;
 use crate::issues::RenderIssueAccumulator;
 use crate::layout::TAB_INTERVAL_PT;
-use crate::shape::{InlineItem, shape_range};
+use crate::shape::{InlineItem, glyph_source_sequences, shape_range, source_has_no_break_space};
 
 /// 표 블록의 고정 세로 여유 (HWPUNIT). 정품 한글이 표 전체에 더하는 상수.
 ///
@@ -237,6 +237,29 @@ fn para_line_block(para: &Paragraph) -> i32 {
     }
 }
 
+fn line_advance_hu(base: i32, kind: u8, value: i32) -> i32 {
+    let base = i64::from(base.max(0));
+    let value = i64::from(value.max(0));
+    let advance = match kind {
+        // FIXED is exact and may intentionally overlap adjacent lines.
+        1 => value / 2,
+        // BETWEEN_LINES adds the serialized margin to the natural line height.
+        2 => base + value / 2,
+        // AT_LEAST cannot be smaller than the natural line height.
+        3 => (value / 2).max(base),
+        // PERCENT defaults to Hancom's observed 160% when unspecified.
+        _ if value > 0 => base * value / 100,
+        _ => base * 160 / 100,
+    };
+    advance.clamp(0, i64::from(i32::MAX)) as i32
+}
+
+fn source_wchar_len(source: &str) -> u32 {
+    source.chars().fold(0u32, |length, ch| {
+        length.saturating_add(ch.len_utf16() as u32)
+    })
+}
+
 /// 한 문단의 줄 배치를 계산한다. `v_pos`는 섹션/셀 내 세로 누적 커서.
 /// 빈 문단도 줄 배치 1개를 가진다(한글 본문 표시 전제).
 fn compute_linesegs(
@@ -258,22 +281,23 @@ fn compute_linesegs(
             1000,
             |cs| if cs.base_size > 0 { cs.base_size } else { 1000 },
         );
-    // 줄간격은 문단 모양에서 유도한다. 종류는 attr1 bits0-1(0 비율%, 1 고정, 3 최소),
-    // 값은 line_spacing_old(@24). 길이 종류(고정/최소)는 HWPUNIT의 2배 단위라 ÷2.
-    // 미지정이면 정품 기본 160%(가나다 실측). (예전엔 160% 고정이라 문단별
-    // 줄간격(130/170 등)을 무시해 페이지네이션이 어긋났다.)
+    // Derive synthesized line spacing from the version-aware ParaShape fields
+    // (GG-18, specification table 46). Length-based modes serialize at twice
+    // the HWPUNIT value. An unspecified percentage retains the observed 160% default.
     let (line_advance, line_spacing) = {
         let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
-        let ls_type = ps.map_or(0, |p| (p.attr1 & 0x3) as u8);
-        let ls_val = ps.map_or(0, |p| p.line_spacing_old);
-        let adv = match ls_type {
-            1 | 3 if ls_val > 0 => (ls_val / 2).max(base),
-            _ if ls_val > 0 => base * ls_val / 100,
-            _ => base * 160 / 100,
-        };
-        (adv, (adv - base).max(0))
+        let ls_type = ps.map_or(0, |p| p.line_spacing_type);
+        let ls_val = ps.map_or(0, |p| {
+            if p.line_spacing_type != 0 || p.line_spacing != 0 {
+                p.line_spacing
+            } else {
+                p.line_spacing_old
+            }
+        });
+        let advance = line_advance_hu(base, ls_type, ls_val);
+        (advance, advance.saturating_sub(base).max(0))
     };
-    let baseline_gap = base * 85 / 100;
+    let baseline_gap = (i64::from(base) * 85 / 100).clamp(0, i64::from(i32::MAX)) as i32;
     let seg_width = body_width.max(1);
     let limit_pt = seg_width as f32 / 100.0;
     let total = para.wchar_len();
@@ -290,15 +314,15 @@ fn compute_linesegs(
         flags: 0x0006_0000,
     };
 
-    // 한 줄을 배치하고 커서를 진행한다. 줄이 페이지 본문 높이를 넘으면 다음 페이지
-    // 상단(v_pos=0)부터 다시 쌓는다(정품 멀티페이지 = 페이지 상대 v_pos). 셀 내부는
-    // content_h=MAX로 호출돼 리셋이 일어나지 않는다.
+    // Place one line and advance the vertical cursor. Body flow restarts at the
+    // next page when the line exceeds the content height; cell-local layout passes
+    // an unbounded height and therefore never resets here.
     let place = |segs: &mut Vec<LineSeg>, v_pos: &mut i32, start: u32| {
-        if *v_pos > 0 && *v_pos + base > content_h {
+        if *v_pos > 0 && (*v_pos).saturating_add(base) > content_h {
             *v_pos = 0;
         }
         segs.push(make(start, *v_pos));
-        *v_pos += line_advance;
+        *v_pos = (*v_pos).saturating_add(line_advance);
     };
 
     // 폰트 셰이핑으로 글자 폭을 재고, 본문 폭 기준 그리디 줄바꿈.
@@ -310,33 +334,42 @@ fn compute_linesegs(
     let mut line_start = 0u32;
     let mut acc = 0.0f32;
     let mut content = false;
+    let mut previous_no_break = false;
     for item in &items {
         match item {
             InlineItem::Run(run) => {
-                for (gi, g) in run.glyphs.iter().enumerate() {
-                    if content && acc + g.x_advance > limit_pt {
+                let sources = glyph_source_sequences(run);
+                let mut wchar_offset = 0u32;
+                for (g, source) in run.glyphs.iter().zip(&sources) {
+                    let current_no_break = source_has_no_break_space(source);
+                    let break_allowed = !previous_no_break && !current_no_break;
+                    if content && acc + g.x_advance > limit_pt && break_allowed {
                         place(&mut segs, v_pos, line_start);
-                        line_start = run.start_wchar + gi as u32;
+                        line_start = run.start_wchar.saturating_add(wchar_offset);
                         acc = 0.0;
                     }
                     acc += g.x_advance;
                     content = true;
+                    previous_no_break = current_no_break;
+                    wchar_offset = wchar_offset.saturating_add(source_wchar_len(source));
                 }
             }
             InlineItem::Tab => {
                 acc = crate::tab::next_tab(&tabs, acc, TAB_INTERVAL_PT);
                 content = true;
+                previous_no_break = false;
             }
-            // 강제 줄바꿈(CharCtrl 10): 현재 줄을 확정하고 다음 줄을 줄바꿈 뒤 위치에서 시작.
+            // LINE_BREAK (CharCtrl 10) commits the current line and resumes after the control.
             InlineItem::LineBreak(next_start) => {
                 place(&mut segs, v_pos, line_start);
                 line_start = *next_start;
                 acc = 0.0;
                 content = false;
+                previous_no_break = false;
             }
         }
     }
-    // 마지막 줄(빈 문단이면 유일한 줄).
+    // Commit the final line, which is also the only line for an empty paragraph.
     place(&mut segs, v_pos, line_start);
 
     // 문단 좌여백/첫 줄 들여쓰기(내어쓰기 음수 허용)를 col_start(HWPUNIT)로 인코딩한다.
@@ -353,4 +386,27 @@ fn compute_linesegs(
         seg.col_start = ml_hu;
     }
     segs
+}
+
+#[cfg(test)]
+mod advance_tests {
+    use super::{line_advance_hu, source_wchar_len};
+
+    #[test]
+    fn line_spacing_modes_preserve_zero_and_saturate_damaged_values() {
+        assert_eq!(line_advance_hu(1000, 0, 160), 1600);
+        assert_eq!(line_advance_hu(1000, 1, 0), 0);
+        assert_eq!(line_advance_hu(1000, 1, 600), 300);
+        assert_eq!(line_advance_hu(1000, 2, 0), 1000);
+        assert_eq!(line_advance_hu(1000, 2, 600), 1300);
+        assert_eq!(line_advance_hu(1000, 3, 600), 1000);
+        assert_eq!(line_advance_hu(i32::MAX, 2, i32::MAX), i32::MAX);
+    }
+
+    #[test]
+    fn source_offsets_count_utf16_code_units() {
+        assert_eq!(source_wchar_len("a"), 1);
+        assert_eq!(source_wchar_len("\u{1f600}"), 2);
+        assert_eq!(source_wchar_len("x\u{301}"), 2);
+    }
 }

@@ -68,7 +68,9 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 `align = (para_shape.attr1 >> 2) & 0x7` (0 양쪽, 1 왼쪽, 2 오른쪽, 3 가운데, 4 배분, 5 나눔).
 - 오른쪽: `shift = max(seg_width - natural, 0)`.
 - 가운데: `shift = max((seg_width - natural)/2, 0)`.
-- 양쪽/배분/나눔(마지막 줄 제외): `justify_line`이 잉여폭 `slack = clamp(seg_width - natural, 0, natural)`을 글리프 advance에 분배. **공백이 있으면 공백 글리프에만, 없으면 마지막 보이는 글리프 전 gap에 균등**. 후행 공백엔 분배 안 함(텍스트가 오른쪽 끝에 닿게). 글리프↔글자는 CJK 1:1 가정.
+- 양쪽(0, 마지막 줄 제외): `justify_line`이 잉여폭 `slack = clamp(seg_width - natural, 0, natural)`을 글리프 advance에 분배. **공백이 있으면 공백 글리프에만, 없으면 마지막 보이는 글리프 전 gap에 균등**. 후행 공백엔 분배 안 함(텍스트가 오른쪽 끝에 닿게). Rustybuzz cluster source로 합자·결합문자를 포함한 글리프와 Unicode sequence를 매핑.
+- 배분(4): 양쪽 정렬용 안전 cap 없이 전체 잉여폭을 **마지막 글리프 뒤 gap까지 포함해** 균등 분배하고 마지막 줄에도 적용. 글리프 하나인 줄도 후행 gap으로 전체 폭 채움.
+- 나눔(5): 전체 잉여폭을 **마지막 gap을 제외한** gap에 균등 분배하고 마지막 줄에도 적용. (4/5의 마지막 줄 의미론은 한컴 확인 대상.)
 
 ### 1.5 표 배치 (`layout_table`)
 
@@ -145,17 +147,19 @@ v_pos      = 0   // 페이지 상대 누적
 줄 메트릭을 첫 글자모양 `base_size`(기본 1000)에서 유도:
 ```
 base          = char_shapes[first_run].base_size (>0)
-ls_type       = para_shape.attr1 & 0x3   // 0 비율%, 1 고정, 3 최소
-ls_val        = para_shape.line_spacing_old
-line_advance  = { 고정/최소(ls_val>0): max(ls_val/2, base)   // 길이종류는 2×HWPUNIT
-                  비율(ls_val>0):       base * ls_val / 100
-                  미지정:               base * 160 / 100 }    // 정품 기본 160%
+ls_type       = para_shape.line_spacing_type()   // 0 비율%, 1 고정, 2 여백만, 3 최소
+ls_val        = para_shape.line_spacing(버전 인식, 없으면 line_spacing_old 폴백)
+line_advance  = { 고정:               max(ls_val, 0) / 2       // 정확값, 0·겹침 허용
+                  여백만:             base + max(ls_val, 0) / 2
+                  최소:               max(max(ls_val, 0)/2, base) // 자연 높이는 당분간 base 근사
+                  비율(ls_val>0):     base * ls_val / 100
+                  미지정:             base * 160 / 100 }      // 정품 기본 160%
 line_spacing  = max(line_advance - base, 0)
 baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
 ```
 
-셰이핑(`shape_range`)으로 글리프 x_advance를 pt로 재고 `limit_pt = seg_width/100` 기준 그리디 줄바꿈. 각 줄 방출은 클로저 `place`:
+셰이핑(`shape_range`)으로 글리프 x_advance를 pt로 재고 `limit_pt = seg_width/100` 기준 그리디 줄바꿈. NB_SPACE 양옆은 줄바꿈 금지. 줄 시작점은 glyph index가 아니라 shaping-cluster source의 UTF-16 길이로 계산해 보조평면 문자·합자·결합문자의 WCHAR offset 보존. 각 줄 방출은 클로저 `place`:
 ```
 if v_pos>0 && v_pos + base > content_h { v_pos = 0 }   // 페이지 리셋(셀은 content_h=MAX라 무발동)
 segs.push(LineSeg{ text_start, v_pos, line_height:base, text_height:base,
@@ -195,7 +199,7 @@ size_pt   = sup||sub ? full_size*0.65 : full_size
 scale     = size_pt / upem
 y_raise   = full_size * cs.char_offset(lang)/100
             + (sup ? full_size*0.34 : 0) + (sub ? -full_size*0.16 : 0)
-spacing_pt= size_pt * cs.spacings[lang] / 100            // 자간
+spacing_pt= hwpunit_round(size_hu * cs.spacings[lang] / 100) / 100   // 자간, HWPUNIT half-up
 x_scale   = cs.ratios[lang] / 100                        // 장평
 ```
 rustybuzz `shape(&face, &[], buffer)` 후 글리프마다:

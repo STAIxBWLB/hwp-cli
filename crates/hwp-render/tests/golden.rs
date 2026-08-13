@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 
 use hwp_render::{RenderOptions, render_document};
 
-/// 기준 이미지를 만든 DPI (README 권장값과 일치해야 함).
+/// DPI used to produce reference images; this must match the README guidance.
 const GOLDEN_DPI: f32 = 150.0;
-/// 단계별로 조일 느슨한 상한(현재는 게이트만 — 충실도 개선하며 낮춘다).
-const MAX_BAD_PIXEL_PCT: f32 = 0.60;
+/// Temporary upper bound that each parity step is expected to tighten.
+/// PR 7 (GG-3/4/18/20 advance batch and re-baseline) tightens 0.60 to 0.30.
+/// No Hancom reference image is committed yet, so the first scoreboard must validate or adjust it.
+const MAX_BAD_PIXEL_PCT: f32 = 0.30;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
