@@ -1628,8 +1628,8 @@ fn render_list_marker(
     }
 }
 
-/// BorderFill 배경을 Display Item으로 변환한다 (GG-7).
-/// 그러데이션/무늬는 Rect 채움이 불가라 Item::Path로, 단색은 기존 Item::Rect로.
+/// Converts a `BorderFill` background into a display item (GG-7).
+/// Gradients and hatches require `Item::Path`; solid fills retain `Item::Rect`.
 fn bg_fill_item(bf: &BorderFill, x: f32, y: f32, w: f32, h: f32) -> Option<Item> {
     if let Some(g) = bf.visible_gradient() {
         return Some(Item::Path {
@@ -1656,7 +1656,7 @@ fn bg_fill_item(bf: &BorderFill, x: f32, y: f32, w: f32, h: f32) -> Option<Item>
     bf.visible_bg().map(|fill| Item::Rect { x, y, w, h, fill })
 }
 
-/// 축정렬 사각형 경로 (배경 채움용).
+/// Axis-aligned rectangle path for background fills.
 fn rect_path_cmds(x: f32, y: f32, w: f32, h: f32) -> Vec<PathCmd> {
     vec![
         PathCmd::MoveTo(x, y),
@@ -1786,7 +1786,7 @@ fn layout_para_objects(
                         if !warnings.charge_display_items(1) {
                             return (bottom, page_split);
                         }
-                        // 그림 효과(표 108-116)는 파싱·보고만 — 렌더는 후속.
+                        // Picture effects from tables 108-116 are reported but not yet rendered.
                         if pic.effect_flags != 0 {
                             warnings.push(
                                 RenderIssueCode::PictureEffectsUnsupported,
@@ -3943,8 +3943,7 @@ mod certification_budget_tests {
         assert_budget_failure(&document, LayoutBudget::certification());
     }
 
-    /// GG-15: 그림 효과 플래그(스펙 표 108-116)는 렌더하지 않고 타입화된
-    /// warning으로 보고한다(조용한 누락 금지).
+    /// GG-15: picture-effect flags produce a typed warning instead of a silent omission.
     #[test]
     fn 그림효과_플래그는_타입화된_보고() {
         let mut document = hwp_convert::from_markdown("x");
@@ -3983,7 +3982,7 @@ mod certification_budget_tests {
             .expect("효과 미지원 보고");
         assert_eq!(issue.severity, crate::issues::RenderIssueSeverity::Warning);
 
-        // 플래그 0이면 보고 없음.
+        // Zero flags produce no warning.
         let document2 = hwp_convert::from_markdown("x");
         let mut warns2 = RenderIssueAccumulator::new();
         let _ = layout_document(&document2, &mut store, &mut warns2);

@@ -1750,9 +1750,12 @@ fn write_picture(
         .filter(|value| !value.is_empty())
         .map(|value| format!("<hp:shapeComment>{}</hp:shapeComment>", esc(value)))
         .unwrap_or_default();
-    // GG-15: 파싱한 변환/보정 속성을 그대로 방출한다(상수 무효화 금지).
+    // GG-15: preserve parsed transform and adjustment properties instead of
+    // replacing them with the old constants.
     let (flip_h, flip_v) = (pic.flip & 1, (pic.flip >> 1) & 1);
     let angle = pic.rotation.unwrap_or(0.0).round() as i32;
+    let brightness = pic.brightness.clamp(-100, 100);
+    let contrast = pic.contrast.clamp(-100, 100);
     let [cl, ct, cr, cb] = pic
         .crop
         .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
@@ -1763,8 +1766,8 @@ fn write_picture(
             r##"<hp:pic id="{id}" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{description}</hp:pic>"##,
             w / 2,
             h / 2,
-            pic.brightness,
-            pic.contrast,
+            brightness,
+            contrast,
         );
     } else {
         let (voff, hoff, zorder) = (pic.vert_offset, pic.horz_offset, pic.z_order);
@@ -1773,8 +1776,8 @@ fn write_picture(
             r##"<hp:pic id="{id}" zOrder="{zorder}" numberingType="PICTURE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{voff}" horzOffset="{hoff}"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{description}</hp:pic>"##,
             w / 2,
             h / 2,
-            pic.brightness,
-            pic.contrast,
+            brightness,
+            contrast,
         );
     }
 }

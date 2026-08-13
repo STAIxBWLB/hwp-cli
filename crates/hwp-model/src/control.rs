@@ -57,29 +57,31 @@ pub struct Picture {
     /// header description BSTR; HWPX stores it as `hp:shapeComment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// 자르기 사각형 (좌, 상, 우, 하) — 원본 이미지 좌표(HWPUNIT, 96dpi 규약).
-    /// hwp5 그림 레코드 @44 / hwpx hp:imgClip.
+    /// Crop rectangle (left, top, right, bottom) in source-image HWPUNIT
+    /// coordinates under the 96 dpi convention. Stored at HWP5 picture byte
+    /// 44 and in HWPX `hp:imgClip`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crop: Option<[f32; 4]>,
-    /// 뒤집기 (0=없음, 1=가로, 2=세로, 3=양쪽) — hwpx hp:flip.
+    /// Flip mode from HWPX `hp:flip`: 0=none, 1=horizontal, 2=vertical, 3=both.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub flip: u8,
-    /// 회전 각도(도, y-아래 좌표계 시계 방향 양수). hwp5는 GSO 회전 행렬에서
-    /// 분해하고 hwpx는 hp:rotationInfo@angle에서 읽는다.
+    /// Clockwise-positive rotation in degrees in a y-down coordinate system.
+    /// HWP5 derives it from the GSO matrix; HWPX uses `hp:rotationInfo@angle`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotation: Option<f32>,
-    /// 밝기 (-100..100, 0=원본). hwp5 @68 / hwpx hc:img@bright.
+    /// Brightness (-100..100, 0=unchanged), from HWP5 byte 68 or HWPX `hc:img@bright`.
     #[serde(default, skip_serializing_if = "is_zero_i8")]
     pub brightness: i8,
-    /// 명암 (-100..100, 0=원본). hwp5 @69 / hwpx hc:img@contrast.
+    /// Contrast (-100..100, 0=unchanged), from HWP5 byte 69 or HWPX `hc:img@contrast`.
     #[serde(default, skip_serializing_if = "is_zero_i8")]
     pub contrast: i8,
-    /// 그림 효과 플래그 원본 (hwp5 그림 효과 정보 UINT32 @78). 0=효과 없음.
-    /// 효과(그림자/네온 등, 스펙 표 108-116)는 파싱·보고만 하고 렌더하지 않는다.
+    /// Raw HWP5 picture-effect flags (`UINT32` at byte 78). Zero means no
+    /// effect. Effects such as shadow and glow (tables 108-116) are parsed
+    /// and reported but are not rendered.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub effect_flags: u32,
-    /// 그림 효과 정보 스트림 원본(@78부터 레코드 끝) — 플래그+효과 페이로드.
-    /// 보고/후속 구현 대비 보존 전용.
+    /// Raw picture-effect stream from byte 78 through the record end,
+    /// including flags and payload. Preserved for reporting and future work.
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "hex_bytes")]
     pub effects_raw: Vec<u8>,
     /// 바이너리 데이터 참조
@@ -440,9 +442,10 @@ pub struct GradientSpec {
 }
 
 impl GradientSpec {
-    /// hwp5 채우기 정보(표 28)의 그러데이션 블록 파싱: 유형(i16) 기울임(i16)
-    /// 가로중심(i16) 세로중심(i16) 번짐(i16) 색수(i16), num>2면 INT32[num] 위치,
-    /// 이어서 COLORREF[num] 색. 성공 시 (명세, 소비 바이트)를 반환한다.
+    /// Parses an HWP5 table 28 gradient block: type, angle, horizontal center,
+    /// vertical center, spread, and color count as `i16`; positions as
+    /// `INT32[num]` when `num > 2`; then `COLORREF[num]`. Returns the parsed
+    /// specification and consumed byte count.
     pub fn parse_hwp5(d: &[u8], off: usize) -> Option<(Self, usize)> {
         let rd_u16 =
             |o: usize| -> Option<u16> { d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
@@ -481,8 +484,9 @@ impl GradientSpec {
         }
         cur += num * 4;
         stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // 그러데이션 유형: 기존 렌더러(shape_draw) 해석과 동일하게 1=원형으로 둔다.
-        // (스펙 표 30 텍스트는 2=원형으로 읽히나 기존 동작 변경은 한글 대조 후속.)
+        // Preserve the established shape renderer mapping where type 1 is radial.
+        // Table 30 can be read as type 2 being radial; changing this requires
+        // comparison against a genuine Hangul-authored file.
         Some((
             GradientSpec {
                 radial: gtype == 1,

@@ -24,6 +24,15 @@ fn tmp(name: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// A complete 1x1 transparent PNG, including valid CRCs and an IEND chunk.
+const VALID_PNG_1X1: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x00, 0x00, 0x00,
+    0x02, 0x00, 0x01, 0xe2, 0x21, 0xbc, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
+
 /// hwpx → IR → hwpx → IR 왕복: 의미 동등성.
 #[test]
 fn 왕복_의미_동등() {
@@ -260,16 +269,10 @@ fn 부유_그림_배치_hwpx_방출() {
     use std::io::Write as _;
     let dir = std::env::temp_dir().join("hwpx-ge9-float");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-    png.extend([0, 0, 0, 13]);
-    png.extend(b"IHDR");
-    png.extend(16u32.to_be_bytes());
-    png.extend(16u32.to_be_bytes());
-    png.extend([0u8; 8]);
     let fig = dir.join("g.png");
     std::fs::File::create(&fig)
         .unwrap()
-        .write_all(&png)
+        .write_all(VALID_PNG_1X1)
         .unwrap();
 
     let mut doc = hwp_convert::from_markdown_with(
@@ -2340,22 +2343,16 @@ fn 각주_미주_왕복() {
     assert!(text.contains("미주 내용"), "미주 본문 왕복: {text}");
 }
 
-/// GG-15: 그림 변환/보정 속성(flip/rotation/imgClip/bright/contrast)의 hwpx 왕복.
+/// GG-15: HWPX round-trips picture transforms and pixel adjustments.
 #[test]
 fn 그림_변환_보정_속성_hwpx_왕복() {
     use std::io::Write as _;
     let dir = std::env::temp_dir().join("hwpx-gg15-pic-fx");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-    png.extend([0, 0, 0, 13]);
-    png.extend(b"IHDR");
-    png.extend(16u32.to_be_bytes());
-    png.extend(16u32.to_be_bytes());
-    png.extend([0u8; 8]);
     let fig = dir.join("g.png");
     std::fs::File::create(&fig)
         .unwrap()
-        .write_all(&png)
+        .write_all(VALID_PNG_1X1)
         .unwrap();
 
     let mut doc = hwp_convert::from_markdown_with(
@@ -2419,9 +2416,32 @@ fn 그림_변환_보정_속성_hwpx_왕복() {
     assert_eq!(pic.crop, Some([100.0, 200.0, 3900.0, 2800.0]));
     assert_eq!(pic.brightness, 30);
     assert_eq!(pic.contrast, -20);
+
+    for para in &mut doc.sections[0].paragraphs {
+        for control in &mut para.controls {
+            if let hwp_model::Control::Picture(picture) = control {
+                picture.brightness = i8::MAX;
+                picture.contrast = i8::MIN;
+            }
+        }
+    }
+    let clamped_out = tmp("gg15_pic_fx_clamped.hwpx");
+    hwpx::write_document(&doc, &clamped_out).unwrap();
+    let clamped = hwpx::read_document(&clamped_out).unwrap().document;
+    let pic = clamped.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|para| &para.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .expect("picture");
+    assert_eq!(pic.brightness, 100);
+    assert_eq!(pic.contrast, -100);
 }
 
-/// GG-7: borderFill 그러데이션의 hwpx 왕복 (header.xml hc:gradation).
+/// GG-7: HWPX round-trips border-fill gradients through `header.xml`.
 #[test]
 fn 셀배경_그러데이션_hwpx_왕복() {
     let mut doc = hwp_convert::from_markdown("그러데이션.\n");

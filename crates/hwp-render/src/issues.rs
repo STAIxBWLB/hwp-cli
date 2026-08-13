@@ -76,8 +76,8 @@ pub enum RenderIssueCode {
     ImageDataMissingOmitted,
     ImageDecodePlaceholder,
     ImageDecodeBudgetExceeded,
-    /// 그림 효과(그림자/네온/반사 등, 스펙 표 108-116)는 파싱·보고만 하고
-    /// 렌더하지 않는다 — 효과 플래그가 있는 그림에 발행.
+    /// Picture effects such as shadow, glow, and reflection (tables 108-116)
+    /// are parsed and reported but not rendered.
     PictureEffectsUnsupported,
     InvalidTableCellOmitted,
     TableSplitAcrossPages,

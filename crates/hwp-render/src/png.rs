@@ -167,7 +167,7 @@ fn render_page(
             } => {
                 match images.decode(data, *crop, *brightness, *contrast, issues)? {
                     Some(src) => {
-                        // 소스 px → 대상 영역(device px) 매핑 + 중심 기준 뒤집기/회전.
+                        // Map source pixels into device pixels, then flip and rotate around center.
                         let m = crate::display::flip_rotate_matrix(
                             (x + iw / 2.0) * px_scale,
                             (y + ih / 2.0) * px_scale,
@@ -291,7 +291,7 @@ fn render_page(
                                 pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
                             }
                             Fill::Hatch { fg, bg, style } => {
-                                // 배경색(있으면) → 무늬 선분(bbox 클립 근사).
+                                // Paint an optional background, then hatch lines clipped by bounds.
                                 if *bg != 0xFFFF_FFFF {
                                     let (r, g, b) = colorref_rgb(*bg);
                                     paint.set_color_rgba8(r, g, b, 255);
@@ -388,9 +388,9 @@ fn gradient_shader(g: &Gradient, cmds: &[PathCmd], px_scale: f32) -> Option<Shad
     }
 }
 
-/// 인코딩된 이미지를 tiny-skia Pixmap으로 디코드한다 (premultiplied RGBA).
-/// 캐시 키는 바이트 digest + 포맷 + 보정/자르기 파라미터 — 같은 이미지라도
-/// 효과가 다륾면 별도 항목으로 디코드한다.
+/// Decodes an encoded image into a premultiplied-RGBA tiny-skia pixmap.
+/// The cache key includes the byte digest, format, adjustment, and crop
+/// parameters, so distinct effects on the same image decode independently.
 #[derive(Default)]
 struct ImageDecodeContext {
     identity_keys: HashMap<(usize, usize), (String, String)>,
@@ -411,6 +411,8 @@ impl ImageDecodeContext {
         contrast: i8,
         issues: &mut RenderIssueAccumulator,
     ) -> Result<Option<Arc<Pixmap>>, RenderError> {
+        let brightness = brightness.clamp(-100, 100);
+        let contrast = contrast.clamp(-100, 100);
         self.references = self.references.saturating_add(1);
         if self.references > MAX_IMAGE_REFERENCES {
             return image_budget_error(issues, "references");
@@ -495,7 +497,7 @@ impl ImageDecodeContext {
             }
         };
         let mut rgba = dynamic.into_rgba8().into_raw();
-        // 밝기/명암 보정 — premultiply 전 원본 RGB에 적용.
+        // Apply brightness and contrast to straight RGB before premultiplication.
         if brightness != 0 || contrast != 0 {
             for pixel in rgba.chunks_exact_mut(4) {
                 for ch in &mut pixel[..3] {
@@ -517,18 +519,11 @@ impl ImageDecodeContext {
         };
         self.unique_pixels = next_pixels;
         self.unique_decoded_bytes = next_bytes;
-        // 자르기: HWPUNIT(96dpi) 사각형을 픽셀 영역으로 환산해 부분 픽스맵을 만든다.
+        // Convert the HWPUNIT crop rectangle into a source-pixel sub-pixmap.
         let pixmap = match crop.and_then(|c| crate::display::crop_fractions(c, width, height)) {
             Some([fl, ft, fr, fb]) if fl > 0.0 || ft > 0.0 || fr < 1.0 || fb < 1.0 => {
-                let (cl, ct) = (
-                    (fl * width as f32).round() as u32,
-                    (ft * height as f32).round() as u32,
-                );
-                let (cr, cb) = (
-                    (fr * width as f32).round() as u32,
-                    (fb * height as f32).round() as u32,
-                );
-                let (cw, ch) = (cr.saturating_sub(cl).max(1), cb.saturating_sub(ct).max(1));
+                let (cl, ct, cr, cb) = crop_pixel_bounds([fl, ft, fr, fb], width, height);
+                let (cw, ch) = (cr - cl, cb - ct);
                 match Pixmap::new(cw, ch) {
                     Some(mut out) => {
                         let src_px = pixmap.pixels();
@@ -540,7 +535,7 @@ impl ImageDecodeContext {
                         }
                         out
                     }
-                    None => pixmap,
+                    None => return image_budget_error(issues, "crop_pixmap_allocation"),
                 }
             }
             _ => pixmap,
@@ -549,6 +544,25 @@ impl ImageDecodeContext {
         self.decoded.insert(key, Some(pixmap.clone()));
         Ok(Some(pixmap))
     }
+}
+
+/// Returns non-empty, end-exclusive source-pixel bounds for a valid crop.
+/// Starts use floor and ends use ceil so every crop that intersects a source
+/// pixel retains at least that pixel, including crops adjacent to the right
+/// and bottom edges.
+fn crop_pixel_bounds(
+    [left, top, right, bottom]: [f32; 4],
+    width: u32,
+    height: u32,
+) -> (u32, u32, u32, u32) {
+    debug_assert!(width > 0 && height > 0);
+    let left = (left * width as f32).floor() as u32;
+    let top = (top * height as f32).floor() as u32;
+    let left = left.min(width - 1);
+    let top = top.min(height - 1);
+    let right = ((right * width as f32).ceil() as u32).clamp(left + 1, width);
+    let bottom = ((bottom * height as f32).ceil() as u32).clamp(top + 1, height);
+    (left, top, right, bottom)
 }
 
 fn image_limits() -> Limits {
@@ -816,5 +830,22 @@ mod tests {
         assert_eq!(context.decoded.len(), 1);
         assert_eq!(context.unique_pixels, 1);
         assert_eq!(context.unique_decoded_bytes, 4);
+    }
+
+    #[test]
+    fn subpixel_crop_at_source_edges_stays_in_bounds() {
+        assert_eq!(
+            crop_pixel_bounds([0.999, 0.999, 1.0, 1.0], 4, 3),
+            (3, 2, 4, 3)
+        );
+
+        let bytes = Arc::new(encoded(ImageFormat::Png));
+        let mut context = ImageDecodeContext::default();
+        let mut issues = RenderIssueAccumulator::new();
+        let pixmap = context
+            .decode(&bytes, Some([74.0, 74.0, 75.0, 75.0]), 0, 0, &mut issues)
+            .unwrap()
+            .expect("valid PNG");
+        assert_eq!((pixmap.width(), pixmap.height()), (1, 1));
     }
 }

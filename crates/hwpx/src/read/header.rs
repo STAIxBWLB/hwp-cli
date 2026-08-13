@@ -155,7 +155,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
     let mut numbering_ids: HashMap<u16, u16> = HashMap::new();
     let mut bullet_ids: HashMap<u16, u16> = HashMap::new();
     let mut current_tab: Option<hwp_model::TabDef> = None;
-    // borderFill 안 hc:gradation 수집 상태 — (방사형, 각도, 색 목록).
+    // Active hc:gradation state inside borderFill: radial flag, angle, colors.
     let mut current_gradation: Option<(bool, f32, Vec<u32>)> = None;
     // 정품 tabItem은 hp:switch로 감싸 case(HwpUnitChar, unit=HWPUNIT, pos=X)와
     // default(unit 없음, pos=2X)를 함께 낸다. case만 취하고 default는 버리기 위해
@@ -643,11 +643,11 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             bf.fill_type |= 0x1;
                             bf.bg_color = Some(parse_color(&c));
                         }
-                        // hatchColor는 정품 hwpx도 단색 채움에 상수(#999999/#000000)로
-                        // 쓰므로 무늬로 해석하지 않는다(오탐 방지). 무늬는 hwp5만 보존.
+                        // Genuine HWPX also uses constant hatchColor values for solid fills,
+                        // so do not infer a hatch from this attribute. Only HWP5 preserves it.
                     }
-                    // hc:gradation — borderFill 안의 그러데이션 채움(GG-7).
-                    // 플랫 루프라 색 수집 상태를 둔다.
+                    // hc:gradation is a border-fill gradient (GG-7). The flat event loop
+                    // retains explicit state while collecting its colors.
                     b"gradation" if current_border.is_some() && !empty => {
                         let gtype = attr(e, "type").unwrap_or_default();
                         current_gradation = Some((

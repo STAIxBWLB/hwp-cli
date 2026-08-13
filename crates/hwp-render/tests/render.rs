@@ -595,7 +595,7 @@ fn 그러데이션_채움_백엔드() {
     );
 }
 
-/// GG-7: 무늬(해치) 채움이 세 백엔드에서 렌더되는지 — 합성 DisplayList로 검증.
+/// GG-7: a synthetic display list verifies hatch rendering in all three backends.
 #[test]
 fn 무늬_채움_백엔드() {
     use hwp_render::display::{DisplayList, Fill, Item, PageList, PathCmd};
@@ -614,16 +614,16 @@ fn 무늬_채움_백엔드() {
         items: vec![Item::Path {
             commands: rect(),
             fill: Some(Fill::Hatch {
-                fg: 0x0000_00FF, // 빨강 무늬
-                bg: 0x00FF_FFFF, // 흰 배경 (COLORREF BGR)
-                style: 1,        // 가로 줄무늬
+                fg: 0x0000_00FF, // Red hatch.
+                bg: 0x00FF_FFFF, // White background in COLORREF BGR order.
+                style: 1,        // Horizontal hatch.
             }),
             stroke: None,
         }],
     };
     let list = DisplayList { pages: vec![page] };
 
-    // SVG: <pattern> 정의 + url 참조.
+    // SVG defines a pattern and references it by URL.
     let svg = hwp_render::svg::render_svg(&list).remove(0);
     assert!(svg.contains("<pattern"), "SVG 패턴 정의 없음: {svg}");
     assert!(
@@ -631,10 +631,10 @@ fn 무늬_채움_백엔드() {
         "SVG fill url 참조 없음: {svg}"
     );
 
-    // PNG: 무늬 선(빨강)과 배경(흰)이 공존해야 한다.
+    // PNG contains both red hatch lines and a white background.
     let pngs = hwp_render::png::render_png(&list, 96.0).unwrap();
     let px = &pngs[0];
-    let col = 50; // 50px 열 (영역 안)
+    let col = 50; // A column inside the fill region.
     let mut min_r = 255u8;
     let mut max_r = 0u8;
     for y in 15..115 {
@@ -643,7 +643,7 @@ fn 무늬_채움_백엔드() {
         max_r = max_r.max(p.red());
     }
     assert!(max_r > 200, "배경(흰) 존재: max_r={max_r}");
-    // 빨강 무늬 선은 green/blue가 낮다.
+    // Red hatch lines have low green and blue channels.
     let dark_rows = (15..115)
         .filter(|&y| {
             let p = px.pixel(col, y).unwrap();
@@ -652,19 +652,19 @@ fn 무늬_채움_백엔드() {
         .count();
     assert!(dark_rows >= 2, "가로 무늬 선 존재: {dark_rows}행");
 
-    // PDF: 패닉 없이 생성 + 콘텐츠가 단순 사각형 채움보다 커야(선분 스트로크).
+    // PDF renders without panic and includes more than a simple rectangle fill.
     let mut issues = hwp_render::RenderIssueAccumulator::new();
     let pdf = hwp_render::pdf::render_pdf(&list, &mut issues).unwrap();
     assert!(pdf.len() > 500, "PDF 생성: {}B", pdf.len());
 }
 
-/// GG-15: 이미지 뒤집기/회전/자르기/밝기가 실제 픽셀에 반영되는지 검증.
+/// GG-15: verifies that flip, rotation, crop, and brightness alter rendered pixels.
 #[test]
 fn 이미지_변환_보정_백엔드() {
     use hwp_render::display::{DisplayList, Item, PageList};
     use std::sync::Arc;
 
-    // 4×2 PNG: 왼쪽 절반 빨강, 오른쪽 절반 파랑. 자연 크기 300×150 HWPUNIT.
+    // A 4x2 PNG has a red left half, blue right half, and 300x150 HWPUNIT natural size.
     let png_bytes = {
         let mut img = image::RgbaImage::new(4, 2);
         for y in 0..2 {
@@ -709,15 +709,15 @@ fn 이미지_변환_보정_백엔드() {
         brightness,
         contrast,
     };
-    // 96dpi: 1pt = 4/3 px — 박스는 대략 x 13..147, y 13..80.
+    // At 96 dpi, 1 pt = 4/3 px, placing the box near x=13..147 and y=13..80.
     let left_px = |px: &tiny_skia::Pixmap| px.pixel(20, 40).unwrap();
     let right_px = |px: &tiny_skia::Pixmap| px.pixel(140, 40).unwrap();
 
-    // 기준: 좌=빨강, 우=파랑.
+    // Baseline: red on the left and blue on the right.
     let px = render(base(None, 0, 0.0, 0, 0));
     assert!(left_px(&px).red() > 200 && right_px(&px).blue() > 200);
 
-    // 가로 뒤집기: 좌=파랑, 우=빨강.
+    // Horizontal flip: blue on the left and red on the right.
     let px = render(base(None, 1, 0.0, 0, 0));
     assert!(
         left_px(&px).blue() > 200 && right_px(&px).red() > 200,
@@ -726,7 +726,7 @@ fn 이미지_변환_보정_백엔드() {
         right_px(&px)
     );
 
-    // 90° 회전(시계): 왼쪽(빨강)이 위로 — 상단=빨강, 하단=파랑.
+    // Clockwise 90-degree rotation moves the red left half to the top.
     let px = render(base(None, 0, 90.0, 0, 0));
     let top = px.pixel(80, 16).unwrap();
     let bottom = px.pixel(80, 76).unwrap();
@@ -737,7 +737,7 @@ fn 이미지_변환_보정_백엔드() {
         bottom
     );
 
-    // 자르기(왼쪽 절반만): 전 영역이 빨강.
+    // Cropping to the left half fills the destination with red.
     let px = render(base(Some([0.0, 0.0, 150.0, 150.0]), 0, 0.0, 0, 0));
     assert!(
         right_px(&px).red() > 200,
@@ -745,12 +745,12 @@ fn 이미지_변환_보정_백엔드() {
         right_px(&px)
     );
 
-    // 밝기 +50: 빨강의 green 채널이 올라간다.
+    // Brightness +50 raises the green channel of red pixels.
     let px = render(base(None, 0, 0.0, 50, 0));
     let l = left_px(&px);
     assert!(l.red() > 200 && l.green() > 80, "밝기 보정: {l:?}");
 
-    // SVG: 회전은 matrix, 자르기는 clipPath로.
+    // SVG represents rotation with a matrix and crop with a clipPath.
     let list = DisplayList {
         pages: vec![PageList {
             width_pt: 120.0,
@@ -764,10 +764,10 @@ fn 이미지_변환_보정_백엔드() {
         "SVG 회전/뒤집기: {svg}"
     );
     assert!(svg.contains("<clipPath"), "SVG 자르기 클립: {svg}");
-    // 보정 0이면 원본 임베드 유지(재인코드 없음).
+    // Zero adjustment preserves direct embedding without re-encoding.
     assert!(svg.contains("data:image/png;base64,"), "SVG 임베드: {svg}");
 
-    // SVG 밝기: PNG 재인코드 경로.
+    // SVG brightness uses the PNG re-encoding path.
     let list = DisplayList {
         pages: vec![PageList {
             width_pt: 120.0,
@@ -781,7 +781,7 @@ fn 이미지_변환_보정_백엔드() {
         "SVG 재인코드: {svg}"
     );
 
-    // PDF: 회전+자르기+보정 조합도 패닉 없이 생성.
+    // PDF handles rotation, crop, and adjustment together without panic.
     let list = DisplayList {
         pages: vec![PageList {
             width_pt: 120.0,

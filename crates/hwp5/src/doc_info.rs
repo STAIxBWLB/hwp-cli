@@ -364,8 +364,9 @@ fn parse_border_fill(data: &[u8]) -> Result<hwp_model::BorderFill> {
         None
     };
     let tail = r.take_rest().to_vec();
-    // tail 선두부터 채우기 정보(표 28): bit0이면 무늬색(4)+무늬종류(4),
-    // bit2면 그 뒤에 그러데이션 블록. tail 원본은 무손실 왕복용으로 그대로 둔다.
+    // Parse table 28 fill data from the tail start. Bit 0 adds a 4-byte pattern
+    // color and 4-byte style; bit 2 then adds a gradient block. Preserve the
+    // original tail for lossless round trips.
     let mut off = 0usize;
     let hatch = if fill_type & 0x1 != 0 {
         let read = |o: usize| -> Option<u32> {
@@ -608,7 +609,7 @@ mod tab_def_tests {
 mod border_fill_tests {
     use super::parse_border_fill;
 
-    /// attr(2) + 4변×6 + 대각선 6 + fill_type(4)까지의 공통 prefix.
+    /// Common prefix through attributes, four sides, diagonal, and fill type.
     fn prefix(fill_type: u32) -> Vec<u8> {
         let mut d = Vec::new();
         d.extend_from_slice(&0u16.to_le_bytes());
@@ -620,7 +621,7 @@ mod border_fill_tests {
         d
     }
 
-    /// GG-7: fill_type bit0이면 tail 선두의 무늬색/무늬종류를 파싱한다.
+    /// GG-7: fill-type bit 0 parses the tail's pattern color and style.
     #[test]
     fn 무늬_채움_파싱() {
         let mut d = prefix(0x1);
@@ -633,7 +634,7 @@ mod border_fill_tests {
         assert!(bf.gradient.is_none());
         assert_eq!(bf.visible_hatch(), Some((0x0000_00FF, 3, 0x0000_FFFF)));
 
-        // 무늬 종류 -1(없음)이면 hatch=None — tail은 그대로 보존(무손실 왕복).
+        // Style -1 means no hatch; the tail still remains losslessly preserved.
         let mut d2 = prefix(0x1);
         d2.extend_from_slice(&0x00FF_FFFFu32.to_le_bytes());
         d2.extend_from_slice(&0u32.to_le_bytes());
@@ -643,11 +644,11 @@ mod border_fill_tests {
         assert_eq!(bf2.tail.len(), 8);
     }
 
-    /// GG-7: fill_type bit2면 그러데이션 블록을 파싱한다(모델 공유 파서).
+    /// GG-7: fill-type bit 2 parses a gradient with the shared model parser.
     #[test]
     fn 그러데이션_채움_파싱() {
         let mut d = prefix(0x4);
-        // 그러데이션: 유형(0=선형) 각도(90) cx cy spread num=2 + 색 2개.
+        // Linear gradient at 90 degrees with two colors.
         d.extend_from_slice(&0i16.to_le_bytes());
         d.extend_from_slice(&90i16.to_le_bytes());
         d.extend_from_slice(&[0u8; 6]); // cx cy spread

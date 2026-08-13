@@ -35,15 +35,18 @@ pub enum Item {
         w: f32,
         h: f32,
         data: Arc<Vec<u8>>,
-        /// 자르기 (좌,상,우,하) — 원본 이미지 HWPUNIT(96dpi: px×75) 좌표.
-        /// None=전체 표시. 자른 영역이 (x,y,w,h)에 늘려져 들어간다.
+        /// Crop rectangle (left, top, right, bottom) in source-image HWPUNIT
+        /// coordinates (96 dpi: pixels x 75). `None` displays the full image.
+        /// The cropped region is scaled to fill `(x, y, w, h)`.
         crop: Option<[f32; 4]>,
-        /// 뒤집기 (0=없음, 1=가로, 2=세로, 3=양쪽). 영역 중심 기준.
+        /// Flip mode around the region center: 0=none, 1=horizontal,
+        /// 2=vertical, 3=both.
         flip: u8,
-        /// 회전(도, 시계 방향). 영역 중심 기준.
+        /// Clockwise rotation in degrees around the region center.
         rotation_deg: f32,
-        /// 밝기/명암 보정 (-100..100, 0=원본). 둘 다 0이면 백엔드의
-        /// 무손실 빠른 경로(PDF DCTDecode, SVG 원본 임베드)를 유지한다.
+        /// Brightness/contrast adjustment (-100..100, 0=unchanged). When
+        /// both are zero, backends retain their lossless fast paths (PDF
+        /// DCTDecode and direct SVG embedding).
         brightness: i8,
         contrast: i8,
     },
@@ -94,7 +97,8 @@ pub enum Fill {
     /// 단색 COLORREF(0x00BBGGRR).
     Solid(u32),
     Gradient(Gradient),
-    /// 무늬(해치) 채움 — fg=무늬색, bg=배경색(0xFFFFFFFF=투명), style=표 29 (1-6).
+    /// Hatch fill: `fg` is the pattern color, `bg` is the background color
+    /// (`0xFFFFFFFF` means transparent), and `style` is table 29 (1-6).
     Hatch {
         fg: u32,
         bg: u32,
@@ -102,42 +106,53 @@ pub enum Fill {
     },
 }
 
-/// 해치 무늬 선 간격(pt). 한글 정확한 디더 패턴은 비공개 — 시각적 무게를 맞춘 근사.
+/// Hatch line spacing in points. Hangul's exact dither pattern is private;
+/// this value approximates its visual weight.
 pub const HATCH_SPACING: f32 = 3.0;
-/// 해치 무늬 선 굵기(pt).
+/// Hatch line width in points.
 pub const HATCH_LINE_WIDTH: f32 = 0.5;
+/// Prevents damaged or adversarial geometry from expanding into an unbounded
+/// number of display-list segments.
+const MAX_HATCH_SEGMENTS: usize = 16_384;
 
-/// 해치 무늬 선분열 — ((x,y),(x,y)) 쌍.
+/// Hatch line segments represented as endpoint pairs.
 type Segments = Vec<((f32, f32), (f32, f32))>;
 
-/// 해치 무늬 선분 열거 — bbox(page pt) 안으로 클립된 ((x,y),(x,y)) 쌍.
-/// style: 표 29 (1=가로, 2=세로, 3=\, 4=/, 5=십자, 6=대각십자).
+/// Enumerates hatch line segments clipped to a page-space bounding box.
+/// Table 29 styles: 1=horizontal, 2=vertical, 3=backslash, 4=slash,
+/// 5=cross, 6=diagonal cross.
 pub fn hatch_segments(style: u32, x0: f32, y0: f32, x1: f32, y1: f32) -> Segments {
     let mut out = Vec::new();
-    if x1 <= x0 || y1 <= y0 {
+    if ![x0, y0, x1, y1].iter().all(|v| v.is_finite()) || x1 <= x0 || y1 <= y0 {
         return out;
     }
     let s = HATCH_SPACING;
     let horiz = |out: &mut Segments| {
         let mut y = y0;
-        while y <= y1 {
+        let mut attempts = 0;
+        while y <= y1 && out.len() < MAX_HATCH_SEGMENTS && attempts < MAX_HATCH_SEGMENTS {
+            attempts += 1;
             out.push(((x0, y), (x1, y)));
             y += s;
         }
     };
     let vert = |out: &mut Segments| {
         let mut x = x0;
-        while x <= x1 {
+        let mut attempts = 0;
+        while x <= x1 && out.len() < MAX_HATCH_SEGMENTS && attempts < MAX_HATCH_SEGMENTS {
+            attempts += 1;
             out.push(((x, y0), (x, y1)));
             x += s;
         }
     };
-    // 대각선은 수직 간격이 s가 되도록 축 방향 step = s·√2.
+    // Make the axis step s * sqrt(2) so diagonal lines have vertical spacing s.
     let diag = s * std::f32::consts::SQRT_2;
     let backslash = |out: &mut Segments| {
         // y = x + c
         let mut c = (y0 - x1) - (y0 - x1).rem_euclid(diag);
-        while c <= y1 - x0 {
+        let mut attempts = 0;
+        while c <= y1 - x0 && out.len() < MAX_HATCH_SEGMENTS && attempts < MAX_HATCH_SEGMENTS {
+            attempts += 1;
             let lo = x0.max(y0 - c);
             let hi = x1.min(y1 - c);
             if lo < hi {
@@ -149,7 +164,9 @@ pub fn hatch_segments(style: u32, x0: f32, y0: f32, x1: f32, y1: f32) -> Segment
     let slash = |out: &mut Segments| {
         // y = -x + c
         let mut c = (y0 + x0) - (y0 + x0).rem_euclid(diag);
-        while c <= y1 + x1 {
+        let mut attempts = 0;
+        while c <= y1 + x1 && out.len() < MAX_HATCH_SEGMENTS && attempts < MAX_HATCH_SEGMENTS {
+            attempts += 1;
             let lo = x0.max(c - y1);
             let hi = x1.min(c - y0);
             if lo < hi {
@@ -176,7 +193,7 @@ pub fn hatch_segments(style: u32, x0: f32, y0: f32, x1: f32, y1: f32) -> Segment
     out
 }
 
-/// 그러데이션 채움. 좌표는 도형 경계 상자 기준으로 백엔드가 배치한다.
+/// Gradient fill positioned by each backend relative to the shape bounds.
 #[derive(Debug, Clone)]
 pub struct Gradient {
     /// true=방사형(radial), false=선형(linear).
@@ -224,7 +241,7 @@ fn lerp_u8(a: u8, b: u8, f: f32) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
-/// COLORREF(0x00BBGGRR) → (r, g, b). 0xFFFFFFFF은 흰색 취급(그러데이션 stop용).
+/// Converts COLORREF (`0x00BBGGRR`) to RGB. Gradients treat `0xFFFFFFFF` as white.
 fn colorref_rgb(c: u32) -> (u8, u8, u8) {
     (
         (c & 0xFF) as u8,
@@ -233,13 +250,13 @@ fn colorref_rgb(c: u32) -> (u8, u8, u8) {
     )
 }
 
-// ── 이미지 변환 공통 수학 (GG-15) ─────────────────────────────────────
+// Image-transform math shared by all backends (GG-15).
 //
-// 아핀 행렬은 PDF/SVG matrix() 순서 [a b c d e f]: x' = a·x + c·y + e,
-// y' = b·x + d·y + f (y-아래 좌표계). tiny-skia는 from_row(a, c, b, d, e, f)로
-// 변환해 쓴다.
+// Affine matrices use PDF/SVG order [a b c d e f]: x' = a*x + c*y + e,
+// y' = b*x + d*y + f in a y-down coordinate system. tiny-skia consumes the
+// same transform through from_row(a, c, b, d, e, f).
 
-/// 아핀 합성 m1·m2 (m2를 먼저 적용).
+/// Composes `m1 * m2`, applying `m2` first.
 pub fn mat_mul(m1: [f32; 6], m2: [f32; 6]) -> [f32; 6] {
     let [a1, b1, c1, d1, e1, f1] = m1;
     let [a2, b2, c2, d2, e2, f2] = m2;
@@ -253,8 +270,9 @@ pub fn mat_mul(m1: [f32; 6], m2: [f32; 6]) -> [f32; 6] {
     ]
 }
 
-/// 뒤집기+회전 행렬 — (cx, cy) 중심 기준. flip: 1=가로, 2=세로.
-/// rotation_deg는 y-아래 좌표계 시계 방향 양수(HWP 각도 규약).
+/// Builds a flip-and-rotation matrix around `(cx, cy)`.
+/// Flip bits are 1=horizontal and 2=vertical. Positive rotation is clockwise
+/// in the HWP y-down coordinate system.
 pub fn flip_rotate_matrix(cx: f32, cy: f32, flip: u8, rotation_deg: f32) -> [f32; 6] {
     let t = rotation_deg.to_radians();
     let (sn, cs) = t.sin_cos();
@@ -270,8 +288,9 @@ pub fn flip_rotate_matrix(cx: f32, cy: f32, flip: u8, rotation_deg: f32) -> [f32
     )
 }
 
-/// 자르기 사각형(HWPUNIT)을 원본 픽셀 크기 기준 비율 (l,t,r,b, 0..1)로 환산.
-/// HWPUNIT은 96dpi 규약(px×75). 벗어난 값은 클램프, 퇴화(빈 영역)면 None.
+/// Converts an HWPUNIT crop rectangle to source-image fractions in `0..=1`.
+/// HWPUNIT uses the 96 dpi convention (pixels x 75). Out-of-range values are
+/// clamped and empty rectangles return `None`.
 pub fn crop_fractions(crop: [f32; 4], px_w: u32, px_h: u32) -> Option<[f32; 4]> {
     let (nw, nh) = (px_w as f32 * 75.0, px_h as f32 * 75.0);
     if nw <= 0.0 || nh <= 0.0 {
@@ -284,9 +303,12 @@ pub fn crop_fractions(crop: [f32; 4], px_w: u32, px_h: u32) -> Option<[f32; 4]> 
     (r - l > 1e-4 && b - t > 1e-4).then_some([l, t, r, b])
 }
 
-/// 밝기/명암 픽셀 맵 (-100..100). 밝기는 가산, 명암은 128 중심 스케일.
-/// (한글 날부 곡선은 비공개 — 선형 근사, 한글 대조 후속.)
+/// Applies brightness and contrast in the documented -100..=100 range.
+/// Brightness is additive and contrast scales around 128. Hangul's exact
+/// transfer curve is private, so this is a linear approximation.
 pub fn apply_brightness_contrast(v: u8, brightness: i8, contrast: i8) -> u8 {
+    let brightness = brightness.clamp(-100, 100);
+    let contrast = contrast.clamp(-100, 100);
     let b = f32::from(brightness) / 100.0 * 255.0;
     let c = 1.0 + f32::from(contrast) / 100.0;
     ((f32::from(v) + b - 128.0) * c + 128.0)
@@ -325,7 +347,7 @@ pub fn path_bbox(cmds: &[PathCmd]) -> (f32, f32, f32, f32) {
 mod tests {
     use super::*;
 
-    /// 행렬 합성: 항등 × 임의 = 임의, 평행이동 합성 순서.
+    /// Matrix composition preserves identity and translation order.
     #[test]
     fn 아핀_합성() {
         let id = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -341,21 +363,21 @@ mod tests {
         assert_eq!(m[5], 22.0);
     }
 
-    /// 뒤집기/회전: 중심 기준. 가로 뒤집기는 좌우를, 90° 회전은 오른쪽을 아래로.
+    /// Flip and rotation operate around the requested center.
     #[test]
     fn 뒤집기_회전_행렬() {
-        // 가로 뒤집기: (0,0) 중심, (10, 4) → (-10, 4)
+        // Horizontal flip around (0, 0): (10, 4) becomes (-10, 4).
         let m = flip_rotate_matrix(0.0, 0.0, 1, 0.0);
         let (x, y) = (
             m[0] * 10.0 + m[2] * 4.0 + m[4],
             m[1] * 10.0 + m[3] * 4.0 + m[5],
         );
         assert!((x + 10.0).abs() < 1e-4 && (y - 4.0).abs() < 1e-4, "{x},{y}");
-        // 90° (시계): (10, 0) → (0, 10)
+        // A clockwise 90-degree rotation maps (10, 0) to (0, 10).
         let m = flip_rotate_matrix(0.0, 0.0, 0, 90.0);
         let (x, y) = (m[0] * 10.0 + m[4], m[1] * 10.0 + m[5]);
         assert!(x.abs() < 1e-4 && (y - 10.0).abs() < 1e-4, "{x},{y}");
-        // 중심 (5,5): 중심은 불변
+        // The center (5, 5) remains fixed.
         let m = flip_rotate_matrix(5.0, 5.0, 3, 45.0);
         let (x, y) = (
             m[0] * 5.0 + m[2] * 5.0 + m[4],
@@ -364,10 +386,10 @@ mod tests {
         assert!((x - 5.0).abs() < 1e-3 && (y - 5.0).abs() < 1e-3, "{x},{y}");
     }
 
-    /// 자르기 HWPUNIT→비율: 96dpi 규약(px×75). 퇴화 영역은 None.
+    /// Converts HWPUNIT crops to fractions and rejects empty regions.
     #[test]
     fn 자르기_비율_환산() {
-        // 4×2 px → 자연 300×150 HWPUNIT.
+        // A 4x2 image has natural dimensions of 300x150 HWPUNIT at 96 dpi.
         assert_eq!(
             crop_fractions([0.0, 0.0, 150.0, 150.0], 4, 2),
             Some([0.0, 0.0, 0.5, 1.0])
@@ -375,7 +397,7 @@ mod tests {
         assert_eq!(crop_fractions([100.0, 0.0, 100.0, 150.0], 4, 2), None);
     }
 
-    /// 밝기/명암 맵: 0이면 항등, 밝기+는 단조 증가, 명암-는 128로 수렴.
+    /// Zero adjustment is identity; brightness is monotonic; -100 contrast converges on 128.
     #[test]
     fn 밝기_명암_맵() {
         for v in [0u8, 64, 128, 200, 255] {
@@ -385,9 +407,13 @@ mod tests {
         assert!(apply_brightness_contrast(200, -50, 0) < 200);
         assert_eq!(apply_brightness_contrast(0, 0, -100), 128);
         assert_eq!(apply_brightness_contrast(255, 0, -100), 128);
+        assert_eq!(
+            apply_brightness_contrast(32, i8::MIN, i8::MAX),
+            apply_brightness_contrast(32, -100, 100)
+        );
     }
 
-    /// 해치 선분: 가로 무늬는 간격마다 1개, bbox 밖으로 나가지 않는다.
+    /// Hatch segments remain inside the bounding box at the configured spacing.
     #[test]
     fn 해치_선분_클립() {
         let segs = hatch_segments(1, 0.0, 0.0, 10.0, 7.0);
@@ -396,7 +422,7 @@ mod tests {
             segs.iter()
                 .all(|(a, b)| a.0 == 0.0 && b.0 == 10.0 && a.1 == b.1)
         );
-        // 대각선(4=/): 모든 점이 bbox 안.
+        // Every endpoint of the slash pattern stays inside the bounds.
         let segs = hatch_segments(4, 0.0, 0.0, 10.0, 10.0);
         assert!(!segs.is_empty());
         assert!(segs.iter().all(|(a, b)| {
@@ -404,12 +430,19 @@ mod tests {
                 .iter()
                 .all(|(x, y)| (0.0..=10.0).contains(x) && (0.0..=10.0).contains(y))
         }));
-        // 십자(5) = 가로+세로.
+        // Cross hatch is the union of horizontal and vertical hatch.
         assert_eq!(
             hatch_segments(5, 0.0, 0.0, 6.0, 6.0).len(),
             hatch_segments(1, 0.0, 0.0, 6.0, 6.0).len()
                 + hatch_segments(2, 0.0, 0.0, 6.0, 6.0).len()
         );
         assert!(hatch_segments(0, 0.0, 0.0, 10.0, 10.0).is_empty());
+        assert!(hatch_segments(1, 0.0, 0.0, f32::INFINITY, 10.0).is_empty());
+        assert!(hatch_segments(1, f32::NAN, 0.0, 10.0, 10.0).is_empty());
+        assert_eq!(
+            hatch_segments(1, 0.0, 0.0, 10.0, 1.0e30).len(),
+            MAX_HATCH_SEGMENTS
+        );
+        assert!(hatch_segments(6, 0.0, 0.0, 1.0e30, 1.0e30).len() <= MAX_HATCH_SEGMENTS);
     }
 }

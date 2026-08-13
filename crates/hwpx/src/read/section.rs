@@ -1010,9 +1010,9 @@ fn default_picture() -> hwp_model::Picture {
     }
 }
 
-/// `<hp:pic>` — 이미지 개체. 크기(hp:sz)/배치(hp:pos)/참조(hc:img)와
-/// 변환(hp:flip/hp:rotationInfo/hp:imgClip)·밝기/명암(hc:img)을 의미 파싱한다.
-/// hp:imgRect(표시 사각형)는 hp:sz와 중복이라 읽지 않는다.
+/// Parses an `<hp:pic>` image semantically: size, placement, binary reference,
+/// flip, rotation, crop, brightness, and contrast. `hp:imgRect` duplicates
+/// `hp:sz` and is therefore not read separately.
 fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
     let mut pic = default_picture();
     let mut depth = 1u32;
@@ -1037,8 +1037,8 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
                         if let Some(item) = attr(e, "binaryItemIDRef") {
                             pic.bin_ref = hwp_model::BinRef::ItemRef(item);
                         }
-                        pic.brightness = attr_i32(e, "bright").unwrap_or(0).clamp(-128, 127) as i8;
-                        pic.contrast = attr_i32(e, "contrast").unwrap_or(0).clamp(-128, 127) as i8;
+                        pic.brightness = attr_i32(e, "bright").unwrap_or(0).clamp(-100, 100) as i8;
+                        pic.contrast = attr_i32(e, "contrast").unwrap_or(0).clamp(-100, 100) as i8;
                     }
                     b"flip" => {
                         let h = attr(e, "horizontal").as_deref() == Some("1");
@@ -1049,7 +1049,7 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
                         let angle = attr_i32(e, "angle").unwrap_or(0);
                         pic.rotation = (angle != 0).then_some(angle as f32);
                     }
-                    // 자르기 (좌/상/우/하, 원본 이미지 HWPUNIT 좌표).
+                    // Crop in source-image HWPUNIT coordinates.
                     b"imgClip" => {
                         pic.crop = Some([
                             attr_i32(e, "left").unwrap_or(0) as f32,
@@ -1077,8 +1077,8 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
             _ => {}
         }
     }
-    // writer가 crop=None일 때 방출하는 상수 (0,0,w,h)는 자르기 없음으로 정규화한다
-    // (이전 reader가 imgClip을 무시하던 동작과 동일 — 의미 왕복 유지).
+    // Normalize the writer's no-crop constant (0, 0, w, h) to None, preserving
+    // the semantic behavior of readers that ignored imgClip.
     if pic.crop == Some([0.0, 0.0, pic.width.0 as f32, pic.height.0 as f32]) {
         pic.crop = None;
     }
@@ -1641,7 +1641,7 @@ mod page_ctrl_tests {
         );
     }
 
-    /// GG-15: hp:pic의 flip/rotationInfo/imgClip/hc:img@bright/contrast를 IR로 읽는다.
+    /// GG-15: reads all supported `hp:pic` transform and adjustment attributes into the IR.
     #[test]
     fn 그림_변환_보정_속성_읽기() {
         let xml = concat!(
@@ -1673,5 +1673,24 @@ mod page_ctrl_tests {
             pic.bin_ref,
             hwp_model::BinRef::ItemRef("image1".to_string())
         );
+    }
+
+    #[test]
+    fn picture_adjustments_are_clamped_to_the_model_range() {
+        let xml = concat!(
+            r##"<?xml version="1.0"?><hs:sec><hp:p paraPrIDRef="0" styleIDRef="0">"##,
+            r##"<hp:run charPrIDRef="0"><hp:pic id="1"><hp:sz width="1" height="1"/><hc:img binaryItemIDRef="image1" bright="130" contrast="-120"/></hp:pic></hp:run></hp:p></hs:sec>"##,
+        );
+        let (section, _) = parse_section(xml).unwrap();
+        let picture = section.paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Picture(picture) => Some(picture),
+                _ => None,
+            })
+            .expect("picture");
+        assert_eq!(picture.brightness, 100);
+        assert_eq!(picture.contrast, -100);
     }
 }

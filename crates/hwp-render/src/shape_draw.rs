@@ -522,9 +522,10 @@ fn parse_style(d: &[u8], doc: &Document, issues: &mut RenderIssueAccumulator) ->
     })
 }
 
-/// Table 28 그러데이션: type(i16) 각(i16) cx(i16) cy(i16) spread(i16) num(i16),
-/// num>2면 INT32[num] 위치, 이어서 COLORREF[num] 색. 파싱 정본은 모델의
-/// [`hwp_model::GradientSpec::parse_hwp5`](BorderFill 채우기와 공유).
+/// Table 28 gradient: type, angle, centers, spread, and count as `i16`;
+/// positions as `INT32[num]` when `num > 2`; then `COLORREF[num]`.
+/// [`hwp_model::GradientSpec::parse_hwp5`] is the canonical parser shared
+/// with `BorderFill`.
 fn parse_gradient(d: &[u8], fo: usize) -> Option<Gradient> {
     let (g, _) = hwp_model::GradientSpec::parse_hwp5(d, fo)?;
     Some(Gradient {
@@ -622,14 +623,15 @@ fn geometry(tag: u16, d: &[u8], s: &Style, origin: (f64, f64)) -> Option<Vec<Pat
             Some(cmds)
         }
         SC_ELLIPSE => {
-            // UINT32 attr(표 97) + center + ax1(끝점) + ax2(끝점).
+            // Table 97 UINT32 attributes followed by center and two axis endpoints.
             let attr = rd_u32(d, 0)?;
             let (cx, cy) = p(4)?;
             let (a1x, a1y) = p(12)?;
             let (a2x, a2y) = p(20)?;
             let (a1, a2) = ((a1x - cx, a1y - cy), (a2x - cx, a2y - cy));
-            // bit1: 호(ARC)로 변환된 타원(GG-23) — start/end(@28/@36)와
-            // 호 종류(bits 2-9: 0=호, 1=부채꼴, 2=활꼴 — 값 매핑 한글 대조 후속).
+            // Bit 1 marks an ellipse converted to an arc (GG-23). Bytes 28 and
+            // 36 hold the endpoints; bits 2-9 hold kind 0=open, 1=pie, 2=chord.
+            // The kind mapping still requires comparison with genuine Hangul output.
             if attr & 0x2 != 0 {
                 let (sx, sy) = p(28)?;
                 let (ex, ey) = p(36)?;
@@ -783,9 +785,10 @@ fn ellipse_path(
     ]
 }
 
-/// 타원→호 변환(GG-23): 중심 c, 두 축 벡터(a1, a2), 시작/끝 점으로 타원호를
-/// 큐빅 베지에로 근사한다. sweep은 arc_path와 같은 짧은 쪽 규약.
-/// kind는 표 97 bits 2-9 (0=열린 호, 1=부채꼴, 2=활꼴 — 값 매핑 한글 대조 후속).
+/// Approximates a GG-23 ellipse arc from its center, two axis vectors, and
+/// endpoints with cubic Beziers. It uses the same shorter-sweep convention as
+/// `arc_path`. Table 97 bits 2-9 encode 0=open, 1=pie, and 2=chord; the mapping
+/// still requires comparison with genuine Hangul output.
 fn ellipse_arc_path(
     c: (f64, f64),
     a1: (f64, f64),
@@ -796,7 +799,7 @@ fn ellipse_arc_path(
     to_pt: &impl Fn(f64, f64) -> (f32, f32),
 ) -> Vec<PathCmd> {
     let (cx, cy) = c;
-    // 타원 매개식 P(θ) = C + a1·cosθ + a2·sinθ — 기저 (a1, a2)에서 θ를 푼다.
+    // Solve theta in basis (a1, a2) for P(theta) = C + a1*cos(theta) + a2*sin(theta).
     let det = a1.0 * a2.1 - a1.1 * a2.0;
     if det.abs() < f64::EPSILON {
         return Vec::new();
@@ -809,14 +812,14 @@ fn ellipse_arc_path(
     };
     let t0 = theta(start);
     let mut sweep = theta(end) - t0;
-    // 짧은 쪽 [-π, π].
+    // Choose the shorter sweep in [-pi, pi].
     while sweep > std::f64::consts::PI {
         sweep -= std::f64::consts::TAU;
     }
     while sweep < -std::f64::consts::PI {
         sweep += std::f64::consts::TAU;
     }
-    // 시작=끝(퇴화)이면 온 타원으로 폐백.
+    // A degenerate equal-endpoint arc falls back to a complete ellipse.
     if sweep.abs() < 1e-6 {
         return ellipse_path(cx, cy, a1, a2, to_pt);
     }
@@ -834,7 +837,7 @@ fn ellipse_arc_path(
     let mut th = t0;
     for _ in 0..segs {
         let th1 = th + dphi;
-        // 접선 P'(θ) = -a1·sinθ + a2·cosθ; 제어점 = P ± α·P'.
+        // Tangent P'(theta) = -a1*sin(theta) + a2*cos(theta); controls are P +/- alpha*P'.
         let derv = |t: f64| {
             (
                 a2.0 * t.cos() - a1.0 * t.sin(),
@@ -858,13 +861,13 @@ fn ellipse_arc_path(
         th = th1;
     }
     match kind {
-        // 부채꼴: 중심을 지나 시작점으로 닫는다.
+        // Pie: close through the center.
         1 => {
             let c = to_pt(cx, cy);
             cmds.push(PathCmd::LineTo(c.0, c.1));
             cmds.push(PathCmd::Close);
         }
-        // 활꼴: 끝→시작 직선으로 닫는다.
+        // Chord: close directly from end to start.
         2 => cmds.push(PathCmd::Close),
         _ => {}
     }
@@ -1284,7 +1287,7 @@ mod tests {
         assert_eq!(hwp5_line_style(7), 0, "out-of-range values are solid");
     }
 
-    /// GG-23: 타원 attr bit1 + start/end 좌표로 호/부채꼴/활꼴 경로를 만든다.
+    /// GG-23: ellipse bit 1 and endpoint coordinates produce open, pie, and chord paths.
     #[test]
     fn 타원_호변환_경로() {
         let style = Style {
@@ -1306,20 +1309,20 @@ mod tests {
         let put = |d: &mut [u8], o: usize, v: i32| {
             d[o..o + 4].copy_from_slice(&v.to_le_bytes());
         };
-        // 중심 (5000,5000), 제1축 (1000,0), 제2축 (0,1000) — 반경 1000의 원.
+        // Center (5000, 5000) with orthogonal 1000-unit axes describes a circle.
         put(&mut d, 4, 5000);
         put(&mut d, 8, 5000);
         put(&mut d, 12, 6000);
         put(&mut d, 16, 5000);
         put(&mut d, 20, 5000);
         put(&mut d, 24, 6000);
-        // start = θ0 (C+a1), end = θ=90° (C+a2). pt 환산은 /100.
+        // Start is C+a1 and end is the 90-degree point C+a2; point conversion divides by 100.
         put(&mut d, 28, 6000);
         put(&mut d, 32, 5000);
         put(&mut d, 36, 5000);
         put(&mut d, 40, 6000);
 
-        // bit1만: 열린 호 — MoveTo(start) + 큐빅, Close 없음.
+        // Bit 1 alone creates an open arc with MoveTo and cubic segments but no Close.
         put(&mut d, 0, 0x2);
         let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
         let PathCmd::MoveTo(x, y) = cmds[0] else {
@@ -1330,7 +1333,7 @@ mod tests {
             "시작점 {x},{y}"
         );
         assert!(!matches!(cmds.last(), Some(PathCmd::Close)), "열린 호");
-        // 끝점은 (50, 60) 근처.
+        // The endpoint is near (50, 60).
         let Some(PathCmd::CubicTo(.., ex, ey)) = cmds.last() else {
             panic!("CubicTo 기대")
         };
@@ -1339,7 +1342,7 @@ mod tests {
             "끝점 {ex},{ey}"
         );
 
-        // 부채꼴(kind=1): 중심을 지나 Close.
+        // Pie kind 1 closes through the center.
         put(&mut d, 0, 0x2 | (1 << 2));
         let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
         assert!(matches!(cmds.last(), Some(PathCmd::Close)));
@@ -1349,7 +1352,7 @@ mod tests {
             "중심 경유: {cmds:?}"
         );
 
-        // 활꼴(kind=2): 중심 미경유, Close만.
+        // Chord kind 2 closes without visiting the center.
         put(&mut d, 0, 0x2 | (2 << 2));
         let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
         assert!(matches!(cmds.last(), Some(PathCmd::Close)));
@@ -1359,7 +1362,7 @@ mod tests {
             "중심 미경유: {cmds:?}"
         );
 
-        // bit1 꺼짐: 온 타원(기존 동작 — MoveTo + 4큐빅 + Close).
+        // Without bit 1, preserve the full ellipse path: MoveTo, four cubics, Close.
         put(&mut d, 0, 0);
         let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
         assert_eq!(cmds.len(), 6);

@@ -190,7 +190,7 @@ fn write_border_fills(out: &mut String, header: &DocHeader) {
         if let Some(g) = &bf.gradient
             && g.stops.len() >= 2
         {
-            // 그러데이션 채움(GG-7) — write/section.rs의 도형 채움과 같은 형식.
+            // GG-7 gradient fill in the same form emitted for shapes.
             let _ = write!(
                 out,
                 r##"<hc:fillBrush><hc:gradation type="{}" angle="{}" centerX="0" centerY="0" step="255" colorNum="{}" stepCenter="50" alpha="0">"##,
@@ -203,8 +203,9 @@ fn write_border_fills(out: &mut String, header: &DocHeader) {
             }
             out.push_str("</hc:gradation></hc:fillBrush>");
         } else if let Some(bg) = bf.visible_bg() {
-            // 무늬가 있으면 hatchColor에 무늬색을 싣는다(무늬 종류는 hwpx에 표현
-            // 수단이 없어 유실 — 한글 대조 후속). 없으면 정품 관측 상수 유지.
+            // Carry a hatch color when present. HWPX has no mapped field for the hatch
+            // style, so that value is lost pending comparison with genuine Hangul output.
+            // Otherwise retain the constant observed in genuine files.
             let hatch = bf
                 .hatch
                 .map(|(c, _)| color_attr(c))

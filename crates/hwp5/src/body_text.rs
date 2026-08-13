@@ -305,8 +305,9 @@ fn find_picture_record(children: &[RecordNode]) -> Option<&RecordNode> {
 ///
 /// 그림 개체 속성 레이아웃 (스펙 §표 91): 테두리 색(4)+굵기(4)+속성(4)
 /// + 꼭지점 4점(32) + 자르기(16) + 안쪽 여백(8) + 밝기(1)+명암(1)+효과(1)
-/// + **BinItem ID(2)** — 오프셋 71. 그 뒤 테두리 투명도(1) + instance ID(4)
-/// + 그림 효과 정보(가변, 표 107-108) — 플래그 UINT32 @78.
+/// + **BinItem ID (2 bytes)** at offset 71, followed by border alpha (1 byte)
+///   and instance ID (4 bytes)
+/// + variable picture-effect data from tables 107-108, with flags at byte 78.
 fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model::Picture> {
     // 개체 공통 속성(표 69): 속성(4) 세로offset(4) 가로offset(4) 폭(4) 높이(4) z-order(4)
     let mut r = ByteReader::new(common);
@@ -326,9 +327,9 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
     pr.read_bytes(71)?;
     let bin_id = pr.read_u16()?;
 
-    // 자르기 사각형 @44 (좌/상/우/하, 원본 이미지 HWPUNIT 좌표).
-    // 자연 크기 전체(=자르기 없음)와 동일하면 None으로 정규화한다 — 합성 레코드
-    // (writer가 0,0,자연크기로 채움)와 의미 없는 IR(crop=None)이 같은 값을 갖게.
+    // The crop rectangle at byte 44 uses source-image HWPUNIT coordinates.
+    // Normalize a full natural-size crop to None so synthesized records and
+    // the semantic no-crop representation compare equally.
     let rd_i32 = |o: usize| -> Option<i32> {
         pd.get(o..o + 4)
             .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -346,16 +347,16 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
         }
         _ => None,
     };
-    let brightness = pd.get(68).map(|&v| v as i8).unwrap_or(0);
-    let contrast = pd.get(69).map(|&v| v as i8).unwrap_or(0);
+    let brightness = pd.get(68).map(|&v| (v as i8).clamp(-100, 100)).unwrap_or(0);
+    let contrast = pd.get(69).map(|&v| (v as i8).clamp(-100, 100)).unwrap_or(0);
     let effect_flags = rd_i32(78).map(|v| v as u32).unwrap_or(0);
-    // 플래그가 없으면 스트림도 버린다(합성 writer의 13B 상수 블록 등).
+    // Discard the stream when flags are zero, including the writer's 13-byte constant block.
     let effects_raw = if effect_flags != 0 {
         pd.get(78..).unwrap_or(&[]).to_vec()
     } else {
         Vec::new()
     };
-    // 회전은 그림 레코드가 아니라 부모 SHAPE_COMPONENT의 행렬에 있다.
+    // Rotation lives in the parent SHAPE_COMPONENT matrix, not the picture record.
     let rotation = children
         .iter()
         .find(|c| c.tag == tag::SHAPE_COMPONENT)
@@ -375,7 +376,7 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
         horz_offset,
         description: parse_gso_description(common),
         crop,
-        flip: 0, // hwp5 그림 뒤집기 비트 미확인 — hwpx만 채운다(한글 대조 후속).
+        flip: 0, // The HWP5 flip bit is unverified; only HWPX populates it for now.
         rotation,
         brightness,
         contrast,
@@ -386,10 +387,11 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
     })
 }
 
-/// SHAPE_COMPONENT 데이터의 변환 행렬에서 회전 각(도)을 분해한다.
-/// 레이아웃(실측): [CHID×2 또는 ×1] + 개체요소속성 + (translation 48 +
-/// (scale 48+rotation 48)×cnt). shape_draw::parse_style과 같은 규약.
-/// 반환은 y-아래 좌표계 시계 방향 양수 — |각| < 0.01°면 None.
+/// Extracts rotation in degrees from a SHAPE_COMPONENT transform matrix.
+/// The measured layout is `[CHID x2 or x1] + object properties + translation
+/// (48 bytes) + (scale 48 + rotation 48) x count`, matching
+/// `shape_draw::parse_style`. The result is clockwise-positive in y-down
+/// coordinates; magnitudes below 0.01 degrees return `None`.
 fn gso_rotation_deg(d: &[u8]) -> Option<f32> {
     let rd_u16 =
         |o: usize| -> Option<u16> { d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
@@ -401,17 +403,17 @@ fn gso_rotation_deg(d: &[u8]) -> Option<f32> {
     if d.len() < 8 {
         return None;
     }
-    // top-level은 CHID가 두 번(8B), 묶음 멤버는 한 번(4B).
+    // Top-level records repeat CHID twice; grouped members contain it once.
     let base = if d[0..4] == d[4..8] { 8 } else { 4 };
     let cnt = rd_u16(base + 42)? as usize;
-    // 선형부 [a b; d e]: x'=a·x+b·y+c, y'=d·x+e·y+f.
+    // Linear part [a b; d e]: x'=a*x+b*y+c, y'=d*x+e*y+f.
     let mat = |o: usize| -> Option<(f64, f64, f64, f64)> {
         Some((rd_f64(o)?, rd_f64(o + 8)?, rd_f64(o + 24)?, rd_f64(o + 32)?))
     };
     let (ta, tb, td, te) = mat(base + 44)?;
     let pair = base + 44 + 48 + cnt.saturating_sub(1) * 96;
     let (a, dd) = if d.len() >= pair + 96 {
-        // m = t · (scale · rotation) — 선형부만 합성.
+        // Compose only the linear part of m = translation * (scale * rotation).
         let (sa, sb, sd, se) = mat(pair)?;
         let (ra, rb, rd, re) = mat(pair + 48)?;
         let (ma, _mb, md, _me) = (
@@ -858,15 +860,15 @@ mod tests {
         assert_eq!(parse_gso_description(&common[..40]), None);
     }
 
-    /// GG-15: 그림 레코드의 자르기(@44)/밝기(@68)/명암(@69)/효과 플래그(@78)와
-    /// SHAPE_COMPONENT 회전 행렬을 IR로 승계한다.
+    /// GG-15: promotes crop, brightness, contrast, effect flags, and the
+    /// SHAPE_COMPONENT rotation matrix into the IR.
     #[test]
     fn 그림_변환_보정_속성_파싱() {
         let mut common = Vec::new();
         common.extend_from_slice(&1u32.to_le_bytes()); // attr: 글자처럼
         common.extend_from_slice(&[0u8; 20]); // offsets/폭/높이/z-order
 
-        // 그림 레코드 91B: 자르기 + 밝기/명암 + bin_id + 효과 플래그.
+        // A 91-byte picture record containing crop, adjustments, bin ID, and effect flags.
         let mut pic_data = vec![0u8; 91];
         for (o, v) in [(44, 100i32), (48, 200), (52, 4100), (56, 3200)] {
             pic_data[o..o + 4].copy_from_slice(&v.to_le_bytes());
@@ -880,12 +882,12 @@ mod tests {
             data: pic_data,
             children: Vec::new(),
         };
-        // SHAPE_COMPONENT(196B): CHID×2 + 요소속성 + translation + scale + rotation(30°).
+        // A 196-byte SHAPE_COMPONENT with repeated CHID, properties, and a 30-degree rotation.
         let mut sc_data = vec![0u8; 196];
         sc_data[0..4].copy_from_slice(b"cip$");
         sc_data[4..8].copy_from_slice(b"cip$");
         sc_data[50..52].copy_from_slice(&1u16.to_le_bytes()); // cnt=1
-        // translation/scale은 단위 행렬(a=1, e=1).
+        // Translation and scale are identity matrices.
         for base in [52usize, 100] {
             sc_data[base..base + 8].copy_from_slice(&1.0f64.to_le_bytes());
             sc_data[base + 32..base + 40].copy_from_slice(&1.0f64.to_le_bytes());
@@ -915,7 +917,7 @@ mod tests {
         assert!((rot - 30.0).abs() < 0.01, "30° 분해, 실제 {rot}");
     }
 
-    /// 회전 행렬이 단위 행렬이면 rotation은 None.
+    /// An identity rotation matrix produces `None`.
     #[test]
     fn 회전없음이면_none() {
         let mut sc_data = vec![0u8; 196];

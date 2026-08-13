@@ -486,10 +486,11 @@ fn build_picture_extras(
     }]
 }
 
-/// 합성된 그림 extras에 IR의 자르기/밝기/명암/회전을 반영한다.
-/// (hwpx 출신 등 extras를 새로 만든 경우만 — hwp5 원본은 raw 왕복이라 미적용.)
-/// `is_materialized_generated_picture`도 같은 패치를 적용해 비교하므로
-/// 사후 검증과 항상 일치한다.
+/// Applies IR crop, brightness, contrast, and rotation to synthesized picture
+/// extras. This runs only for newly materialized extras, such as HWPX-origin
+/// pictures; original HWP5 extras remain on the lossless raw round-trip path.
+/// [`is_materialized_generated_picture`] applies the same patch so post-write
+/// verification compares the exact materialized representation.
 fn patch_picture_extras_fx(
     extras: &mut [OpaqueRecord],
     crop: Option<[f32; 4]>,
@@ -505,13 +506,14 @@ fn patch_picture_extras_fx(
     if sc.tag != tag::SHAPE_COMPONENT {
         return;
     }
-    // 회전: 템플릿의 rotation 행렬(196B 레이아웃 기준 @148)을 θ로 교체.
+    // Replace the synthesized 196-byte template's rotation matrix at byte 148.
     if let Some(deg) = rotation
         && sc.data.len() >= 196
     {
         let t = (deg as f64).to_radians();
         let (sn, cs) = (t.sin(), t.cos());
-        // [a b c; d e f] — y-아래 좌표계 시계 방향 양수(gso_rotation_deg의 역).
+        // [a b c; d e f], clockwise-positive in y-down coordinates. This is
+        // the inverse convention used by gso_rotation_deg.
         for (o, v) in [(148, cs), (156, -sn), (172, sn), (180, cs)] {
             sc.data[o..o + 8].copy_from_slice(&v.to_le_bytes());
         }
@@ -527,8 +529,8 @@ fn patch_picture_extras_fx(
             p.data[o..o + 4].copy_from_slice(&(v as i32).to_le_bytes());
         }
     }
-    p.data[68] = brightness as u8;
-    p.data[69] = contrast as u8;
+    p.data[68] = brightness.clamp(-100, 100) as u8;
+    p.data[69] = contrast.clamp(-100, 100) as u8;
 }
 
 /// Returns true only for the exact Picture scaffolding synthesized by this

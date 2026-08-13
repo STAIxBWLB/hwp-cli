@@ -164,22 +164,21 @@ pub(crate) fn render_pdf_with_metadata(
                         .then(|| alloc(&mut counter));
                         let name = format!("Im{}", images.len());
                         content.save_state();
-                        // 자르기: crop 영역이 박스를 채우도록 매핑을 키우고 박스로 클립.
+                        // Scale the cropped source region to fill the destination box.
                         let (mut sx0, mut sy0, mut ssw, mut ssh) = (0.0, 0.0, 1.0, 1.0);
+                        let mut crop_clip = None;
                         if let Some(f) = crop
                             .and_then(|c| crate::display::crop_fractions(c, pw as u32, ph as u32))
                         {
                             let [fl, ft, fr, fb] = f;
                             if fl > 0.0 || ft > 0.0 || fr < 1.0 || fb < 1.0 {
-                                content.rect(*x, h - (*y + *ih), *iw, *ih);
-                                content.clip_nonzero();
-                                content.end_path();
                                 (sx0, sy0, ssw, ssh) = (fl, ft, fr - fl, fb - ft);
+                                crop_clip = Some(pdf_source_crop_rect(f));
                             }
                         }
-                        // y-아래 page 공간에서 fit+뒤집기+회전을 합성한 뒤 PDF 축으로 변환:
-                        // M_pdf = C(page y-flip) · M_down · F(src v-flip). PDF 이미지
-                        // 소스는 unit square(v=1이 첫 행)다.
+                        // Compose fit, flip, and rotation in y-down page space, then convert to
+                        // PDF coordinates: M_pdf = C(page y-flip) * M_down * F(source v-flip).
+                        // PDF images use a unit square whose v=1 edge contains the first row.
                         let fit = [
                             *iw / ssw,
                             0.0,
@@ -197,8 +196,7 @@ pub(crate) fn render_pdf_with_metadata(
                         let m = crate::display::mat_mul(fr, fit);
                         let m = crate::display::mat_mul(m, [1.0, 0.0, 0.0, -1.0, 0.0, 1.0]);
                         let m = [m[0], -m[1], m[2], -m[3], m[4], h - m[5]];
-                        content.transform(m);
-                        content.x_object(Name(name.as_bytes()));
+                        emit_image_xobject(&mut content, m, crop_clip, &name);
                         content.restore_state();
                         images.push(ImagePlan {
                             id,
@@ -307,7 +305,7 @@ pub(crate) fn render_pdf_with_metadata(
                             content.stroke();
                         }
                     } else if let Some(Fill::Hatch { fg, bg, style }) = fill {
-                        // 무늬 채움: 경로 클립 + 배경 + 무늬 선분(/Pattern 대신 평탄 선).
+                        // Hatch fill: clip to the path, paint the background, then emit flat lines.
                         content.save_state();
                         pdf_emit_path(&mut content, commands, h);
                         content.clip_nonzero();
@@ -1109,8 +1107,33 @@ enum ImagePayload {
     },
 }
 
-/// 인코딩 이미지 바이트를 PDF 임베드용 페이로드로 디코드한다.
-/// 밝기/명암이 0이 아니면 DCTDecode 빠른 경로를 건너뛰고 디코드 후 픽셀 맵을 적용한다.
+/// Converts y-down crop fractions into the PDF image unit square, whose
+/// vertical axis points upward. The returned rectangle is `(x, y, w, h)`.
+fn pdf_source_crop_rect([left, top, right, bottom]: [f32; 4]) -> [f32; 4] {
+    [left, 1.0 - bottom, right - left, bottom - top]
+}
+
+/// Emits a transformed image reference with an optional source-space crop.
+/// Installing the transform before defining the clip makes the clip rotate
+/// and flip with the image rather than remaining axis-aligned in page space.
+fn emit_image_xobject(
+    content: &mut Content,
+    transform: [f32; 6],
+    crop: Option<[f32; 4]>,
+    name: &str,
+) {
+    content.transform(transform);
+    if let Some([x, y, width, height]) = crop {
+        content.rect(x, y, width, height);
+        content.clip_nonzero();
+        content.end_path();
+    }
+    content.x_object(Name(name.as_bytes()));
+}
+
+/// Decodes encoded image bytes into a PDF image payload.
+/// Nonzero brightness or contrast bypasses the DCTDecode fast path so the
+/// pixel adjustment can be applied.
 fn decode_image(data: &Arc<Vec<u8>>, brightness: i8, contrast: i8) -> Option<ImagePayload> {
     // JPEG 빠른 경로: 회색/RGB는 원본을 DCTDecode로 그대로. (CMYK·파싱 실패는 디코드 경로로)
     if brightness == 0
@@ -1315,5 +1338,46 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_ne!(entries[0], entries[1]);
         assert_eq!(fonts.len(), 2);
+    }
+
+    #[test]
+    fn source_crop_rect_flips_only_the_vertical_axis() {
+        let actual = pdf_source_crop_rect([0.1, 0.2, 0.8, 0.9]);
+        for (actual, expected) in actual.into_iter().zip([0.1, 0.1, 0.7, 0.7]) {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn image_crop_clip_is_emitted_after_the_transform() {
+        let mut content = Content::new();
+        emit_image_xobject(
+            &mut content,
+            [0.866, 0.5, -0.5, 0.866, 10.0, 20.0],
+            Some([0.1, 0.2, 0.7, 0.6]),
+            "Im0",
+        );
+        let stream = String::from_utf8(content.finish().to_vec()).unwrap();
+        let tokens = stream.split_whitespace().collect::<Vec<_>>();
+        let matrix = tokens
+            .iter()
+            .position(|token| *token == "cm")
+            .expect("matrix operator");
+        let clip_rect = tokens
+            .iter()
+            .position(|token| *token == "re")
+            .expect("crop rectangle");
+        let clip = tokens
+            .iter()
+            .position(|token| *token == "W")
+            .expect("clip operator");
+        let image = tokens
+            .iter()
+            .position(|token| *token == "Do")
+            .expect("image operator");
+        assert!(
+            matrix < clip_rect && clip_rect < clip && clip < image,
+            "{stream}"
+        );
     }
 }

@@ -57,8 +57,8 @@ fn render_page(page: &PageList) -> String {
                 brightness,
                 contrast,
             } => {
-                // 밝기/명암이 0이면 원본 바이트를 그대로 임베드(무손실 빠른 경로).
-                // 보정이 있으면 디코드 → 픽셀 맵 → PNG 재인코드.
+                // Preserve original bytes when adjustments are zero. Otherwise decode,
+                // adjust pixels, and re-encode as PNG.
                 let (mime, payload) = if *brightness == 0 && *contrast == 0 {
                     (sniff_mime(data), base64(data))
                 } else {
@@ -67,7 +67,7 @@ fn render_page(page: &PageList) -> String {
                         None => (sniff_mime(data), base64(data)),
                     }
                 };
-                // 뷰포트: 자르기가 있으면 crop 영역이 박스를 채우도록 확장하고 클립.
+                // Expand a cropped image to fill the destination box and clip its viewport.
                 let (mut vx, mut vy, mut vw, mut vh) = (*x, *y, *iw, *ih);
                 let mut clip_attr = String::new();
                 if let Some(c) = crop
@@ -320,8 +320,9 @@ fn svg_gradient_def(id: &str, g: &Gradient, cmds: &[PathCmd]) -> String {
     }
 }
 
-/// 해치 무늬 <pattern> 정의. userSpaceOnUse라 인접 셀끼리 무늬 위상이 맞는다.
-/// 대각선 패턴은 수직 간격이 HATCH_SPACING이 되도록 타일을 √2배 키운다(png/pdf와 정합).
+/// Defines a hatch `<pattern>` in user space so adjacent cells share phase.
+/// Diagonal tiles are scaled by sqrt(2) to preserve `HATCH_SPACING` vertically,
+/// matching the PNG and PDF backends.
 fn svg_hatch_def(id: &str, fg: u32, bg: u32, style: u32) -> String {
     let diagonal = matches!(style, 3 | 4 | 6);
     let tile = if diagonal {
@@ -388,7 +389,7 @@ fn sniff_mime(data: &[u8]) -> &'static str {
     }
 }
 
-/// 이미지 픽셀 크기 — 헤더만 읽는다(자르기 비율 환산용).
+/// Reads image dimensions from the header for crop-fraction conversion.
 fn image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
@@ -397,7 +398,7 @@ fn image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         .ok()
 }
 
-/// 밝기/명암 적용 이미지를 PNG data URL 페이로드(base64)로 재인코드한다.
+/// Applies brightness and contrast, then returns a base64 PNG data-URL payload.
 fn effect_png_data_url(data: &[u8], brightness: i8, contrast: i8) -> Option<String> {
     let dynamic = image::load_from_memory(data).ok()?;
     let mut rgba = dynamic.to_rgba8();
