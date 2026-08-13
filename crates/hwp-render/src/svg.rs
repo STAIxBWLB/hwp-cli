@@ -44,20 +44,6 @@ fn render_page(page: &PageList) -> String {
                     hex_color(*fill)
                 );
             }
-            Item::Line {
-                x1,
-                y1,
-                x2,
-                y2,
-                color,
-                width,
-            } => {
-                let _ = writeln!(
-                    out,
-                    r#"<line x1="{x1:.2}" y1="{y1:.2}" x2="{x2:.2}" y2="{y2:.2}" stroke="{}" stroke-width="{width:.2}"/>"#,
-                    hex_color(*color)
-                );
-            }
             Item::Image {
                 x,
                 y,

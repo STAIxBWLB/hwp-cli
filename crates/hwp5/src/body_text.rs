@@ -652,6 +652,10 @@ fn parse_coldef(data: &[u8]) -> Option<ColumnDef> {
         same_width: (attr >> 12) & 1 != 0,
         gap,
         widths: Vec::new(),
+        // TODO(GG-17): divider type/width/color offsets remain unknown. Tables
+        // 138/139 specify 14 bytes, but observed E-5 payloads use 16 bytes and
+        // all fixtures are single-column with zero divider bytes. Parse only
+        // the HWPX representation until a ground-truth HWP5 sample exists.
         divider: None,
     })
 }

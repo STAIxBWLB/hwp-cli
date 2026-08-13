@@ -153,35 +153,6 @@ fn render_page(
                     pixmap.fill_rect(rect, &paint, Transform::identity(), None);
                 }
             }
-            Item::Line {
-                x1,
-                y1,
-                x2,
-                y2,
-                color,
-                width,
-            } => {
-                let mut pb = PathBuilder::new();
-                pb.move_to(*x1, *y1);
-                pb.line_to(*x2, *y2);
-                if let Some(path) = pb.finish() {
-                    let mut paint = Paint::default();
-                    let (r, g, b) = colorref_rgb(*color);
-                    paint.set_color_rgba8(r, g, b, 255);
-                    paint.anti_alias = true;
-                    let stroke = Stroke {
-                        width: width.max(0.2),
-                        ..Stroke::default()
-                    };
-                    pixmap.stroke_path(
-                        &path,
-                        &paint,
-                        &stroke,
-                        Transform::from_scale(px_scale, px_scale),
-                        None,
-                    );
-                }
-            }
             Item::Image {
                 x,
                 y,

@@ -490,3 +490,51 @@ fn 테두리채움_대각선_방향_파싱() {
     assert_ne!(bfs[2].attr & 0x4, 0, "slash on");
     assert_ne!(bfs[2].attr & 0x20, 0, "backSlash on");
 }
+
+/// GG-17 parses a `<hp:colLine>` child into `ColumnDef.divider`.
+#[test]
+fn parses_colpr_divider() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run charPrIDRef="0">
+      <hp:ctrl><hp:colPr id="" type="BALANCED" layout="LEFT" colCount="2" sameSz="1" sameGap="1417"><hp:colLine type="DOT" width="0.4 mm" color="#FF0000"/></hp:colPr></hp:ctrl>
+      <hp:t>본문</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, warnings) = hwpx::read::section::parse_section(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let para = &section.paragraphs[0];
+    let Some(Control::Generic(g)) = para.controls.iter().find(|c| c.ctrl_id() == *b"cold") else {
+        panic!("expected a cold control");
+    };
+    let col = g.column_def.as_ref().expect("ColumnDef");
+    assert_eq!(col.count, 2);
+    assert_eq!(col.kind, 1); // BALANCED
+    assert_eq!(col.gap, 1417);
+    let d = col.divider.expect("divider");
+    assert_eq!(d.line_type, 3, "DOT");
+    assert_eq!(d.width, 6, "0.4 mm maps to width index 6");
+    assert_eq!(d.color, 0x0000_00FF, "#FF0000 converts to BGR");
+
+    // An empty colPr has no divider and preserves the default document behavior.
+    let xml_plain = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p>
+    <hp:run charPrIDRef="0">
+      <hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl>
+      <hp:t>본문</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, _) = hwpx::read::section::parse_section(xml_plain).unwrap();
+    let Some(Control::Generic(g)) = section.paragraphs[0]
+        .controls
+        .iter()
+        .find(|c| c.ctrl_id() == *b"cold")
+    else {
+        panic!("expected a cold control");
+    };
+    assert!(g.column_def.as_ref().unwrap().divider.is_none());
+}

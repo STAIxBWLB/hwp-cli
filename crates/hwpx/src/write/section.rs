@@ -880,10 +880,24 @@ fn write_col_ctrl(out: &mut String, col: Option<&hwp_model::ColumnDef>) {
         ),
         None => ("NEWSPAPER", "LEFT", 1, 1, 0),
     };
-    let _ = write!(
-        out,
-        r##"<hp:ctrl><hp:colPr id="" type="{ty}" layout="{layout}" colCount="{count}" sameSz="{same}" sameGap="{gap}"/></hp:ctrl>"##,
-    );
+    // GG-17 emits a divider as hp:colLine; otherwise preserve the empty colPr form.
+    match col.and_then(|c| c.divider.as_ref()) {
+        Some(d) => {
+            let _ = write!(
+                out,
+                r##"<hp:ctrl><hp:colPr id="" type="{ty}" layout="{layout}" colCount="{count}" sameSz="{same}" sameGap="{gap}"><hp:colLine type="{}" width="{}" color="{}"/></hp:colPr></hp:ctrl>"##,
+                crate::write::header::line_type_name(d.line_type),
+                crate::write::header::width_mm_attr(d),
+                note_line_color(d.color),
+            );
+        }
+        None => {
+            let _ = write!(
+                out,
+                r##"<hp:ctrl><hp:colPr id="" type="{ty}" layout="{layout}" colCount="{count}" sameSz="{same}" sameGap="{gap}"/></hp:ctrl>"##,
+            );
+        }
+    }
 }
 
 /// 머리말/꼬리말 적용쪽(applyPageType) 역매핑. `g.data` 선두 UINT32의 bits0-1이

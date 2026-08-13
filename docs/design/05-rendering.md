@@ -285,7 +285,8 @@ segs.push(LineSeg{ text_start, v_pos, line_height:base, text_height:base,
 v_pos += line_advance
 ```
 
-A tab is `acc = floor(acc/40)*40 + 40`. Even an empty paragraph has one line. `flags=0x0006_0000` is
+A tab advances to `tab::next_tab(tabs, acc, 40)` — the next explicit tab stop, or
+`floor(acc/40)*40 + 40` when none remains. Even an empty paragraph has one line. `flags=0x0006_0000` is
 the standard flag value of a genuine body line.
 
 ### 2.4 Table height (`table_height`, `fill_nested`, `para_line_block`)
@@ -604,7 +605,8 @@ SMask) with FlateDecode. `jpeg_info` parses (w, h, comps) from the SOF marker.
 
 1. **A single source of shaping advances**: lineseg line breaking (`compute_linesegs`), layout
    placement (`place_wrapped`) and all three backends must accumulate **the same** `glyph.x_advance`
-   for pixels to agree. A tab is always `floor(x/40)*40+40`.
+   for pixels to agree. Tab advance is `tab::next_tab` in every accumulator — the next explicit
+   tab stop, with the 40 pt default interval only as the fallback.
 2. **Respecting the cached v_pos versus the flow cursor**: a stored lineseg's
    `baseline = body_top + (v_pos+baseline_gap)/100` is trusted, but pushed down only by
    `max(stored, content_bottom+gap)` and never pulled up (preventing tall text boxes from drifting).

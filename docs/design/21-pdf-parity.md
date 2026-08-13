@@ -89,6 +89,16 @@ Poppler version, font files, and source/oracle digests match their pins; validat
 published as one rollback-protected set. The 3–5 Hancom baseline exports and the first committed
 numbers are the remaining owner action.
 
+**Implementation status 2026-08-13 (PR 5):** the border-fidelity batch landed (GG-5, GG-6,
+GG-17, GG-21, GG-24). Cell, paragraph, page and diagonal borders honor `BorderLine.line_type`
+via `hwp-render/src/border.rs` — the dash family through `Stroke.dash`, the double family as
+offset parallel strokes — and `Item::Line` was deleted in favor of `Item::Path`. HWPX column
+dividers (`hp:colLine`) round-trip and render; the hwp5 coldef divider parse is deferred
+(unconfirmed byte offsets). hwp5 raw-path shapes apply dash patterns and arrowheads, previously
+hwpx-only. Tab advance is unified on `tab::next_tab` across `items_width`, `place_wrapped` and
+`compute_linesegs`. Double-line weight splits are approximations to confirm in the Hancom
+verification round.
+
 ## 4. Gates
 
 ### 4.1 Normative Hancom-oracle gate — future public corpus

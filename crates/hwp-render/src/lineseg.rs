@@ -12,10 +12,8 @@ use hwp_model::{Control, Document, LineSeg, Paragraph, Table};
 
 use crate::fonts::FontStore;
 use crate::issues::RenderIssueAccumulator;
+use crate::layout::TAB_INTERVAL_PT;
 use crate::shape::{InlineItem, shape_range};
-
-/// 탭 간격 (pt) — layout.rs place_wrapped와 동일해야 한다.
-const TAB_INTERVAL_PT: f32 = 40.0;
 
 /// 표 블록의 고정 세로 여유 (HWPUNIT). 정품 한글이 표 전체에 더하는 상수.
 ///
@@ -306,6 +304,8 @@ fn compute_linesegs(
     // 폰트 셰이핑으로 글자 폭을 재고, 본문 폭 기준 그리디 줄바꿈.
     // place_wrapped(layout.rs)와 동일한 글리프 x_advance 누적 규칙.
     let items = shape_range(store, doc, para, (0, total), warnings);
+    // Match place_wrapped: prefer explicit tab stops, then use the default interval.
+    let tabs = crate::tab::tab_stops(doc, para);
     let mut segs = Vec::new();
     let mut line_start = 0u32;
     let mut acc = 0.0f32;
@@ -324,7 +324,7 @@ fn compute_linesegs(
                 }
             }
             InlineItem::Tab => {
-                acc = (acc / TAB_INTERVAL_PT).floor() * TAB_INTERVAL_PT + TAB_INTERVAL_PT;
+                acc = crate::tab::next_tab(&tabs, acc, TAB_INTERVAL_PT);
                 content = true;
             }
             // 강제 줄바꿈(CharCtrl 10): 현재 줄을 확정하고 다음 줄을 줄바꿈 뒤 위치에서 시작.

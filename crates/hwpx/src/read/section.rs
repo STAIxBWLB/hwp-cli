@@ -458,18 +458,18 @@ fn capture_element(
     Ok(String::from_utf8_lossy(&writer.into_inner()).into_owned())
 }
 
-/// `<hp:ctrl>` — colPr/머리말/꼬리말/각주 등 컨트롤 묶음.
+/// Parses the `<hp:colPr>` control and consumes its child subtree.
 ///
-/// 각 자식 컨트롤의 서브트리를 끝까지 소비하고, 문단 리스트(`hp:subList`)는
-/// 재귀 수집한다 — 머리말 안의 텍스트·이미지가 여기로 들어온다.
-/// hwpx `<hp:header/footer applyPageType id>` → hwp5 머리말/꼬리말 8B 페이로드.
-/// `적용쪽(u32)` + `id(u32)`. 적용쪽: BOTH=0, EVEN=1, ODD=2. 정품 실측:
-/// `<hp:header id="2" applyPageType="BOTH">` → `00000000 02000000`.
-/// hwpx `<hp:colPr type layout colCount sameSz sameGap>` → ColumnDef.
-/// 매핑(OWPML↔hwplib/HWP5): type NEWSPAPER=0 일반/BALANCED=1 배분/PARALLEL=2 평행,
-/// layout LEFT=0/RIGHT=1/MIRROR=2 맞쪽. 단별 폭(colSz)·구분선(colLine) 자식은 v1 미수집
-/// (등폭·구분선 없음 기준; 필요 시 정답지로 보강).
-fn parse_col_pr(e: &BytesStart<'_>) -> ColumnDef {
+/// OWPML column types map to NEWSPAPER=0, BALANCED=1, PARALLEL=2;
+/// layouts map to LEFT=0, RIGHT=1, MIRROR=2. GG-17 parses an optional
+/// `<hp:colLine>` child into `ColumnDef.divider`. Per-column `<hp:colSz>`
+/// widths are not collected yet. A start event consumes through the closing
+/// `colPr`, so callers must not traverse that subtree again.
+fn parse_col_pr(
+    reader: &mut XmlReader<'_>,
+    e: &BytesStart<'_>,
+    is_start: bool,
+) -> Result<ColumnDef> {
     let kind = match attr(e, "type").as_deref() {
         Some("BALANCED") => 1,
         Some("PARALLEL") => 2,
@@ -480,7 +480,7 @@ fn parse_col_pr(e: &BytesStart<'_>) -> ColumnDef {
         Some("MIRROR") => 2,
         _ => 0, // LEFT
     };
-    ColumnDef {
+    let mut def = ColumnDef {
         count: attr_u16(e, "colCount").unwrap_or(1),
         kind,
         direction,
@@ -488,7 +488,27 @@ fn parse_col_pr(e: &BytesStart<'_>) -> ColumnDef {
         gap: attr_i32(e, "sameGap").unwrap_or(0),
         widths: Vec::new(),
         divider: None,
+    };
+    if is_start {
+        // Parse colLine semantically; per-column colSz widths remain uncollected.
+        loop {
+            match next_event(reader)? {
+                Event::Start(c) | Event::Empty(c) if c.local_name().as_ref() == b"colLine" => {
+                    def.divider = Some(hwp_model::BorderLine {
+                        line_type: attr(&c, "type")
+                            .map_or(1, |t| crate::read::header::line_type_code(&t)),
+                        width: attr(&c, "width")
+                            .map_or(1, |w| crate::read::header::width_index(&w)),
+                        color: attr(&c, "color").map_or(0, |v| parse_color(&v)),
+                    });
+                }
+                Event::End(c) if c.local_name().as_ref() == b"colPr" => break,
+                Event::Eof => break,
+                _ => {}
+            }
+        }
     }
+    Ok(def)
 }
 
 fn head_foot_data(e: &BytesStart<'_>) -> Vec<u8> {
@@ -697,9 +717,10 @@ fn parse_ctrl(
                         (id, 21, Vec::new())
                     }
                 };
-                // 다단(colPr): 속성을 ColumnDef로 캡처(렌더러 단 배치·구분선용).
+                // Capture colPr for renderer column layout and divider support.
+                // A start event makes parse_col_pr consume colSz/colLine children.
                 let column_def = if name.as_slice() == b"colPr" {
-                    Some(parse_col_pr(e))
+                    Some(parse_col_pr(reader, e, matches!(event, Event::Start(_)))?)
                 } else {
                     None
                 };
@@ -713,7 +734,8 @@ fn parse_ctrl(
                     equation: None,
                     column_def,
                 };
-                if matches!(event, Event::Start(_)) {
+                // parse_col_pr has already consumed a colPr subtree.
+                if matches!(event, Event::Start(_)) && name.as_slice() != b"colPr" {
                     collect_sub_lists(reader, &name, &mut generic, warnings)?;
                 }
                 push_ext_ctrl(para, wchar_pos, code, ctrl_id);

@@ -7,6 +7,7 @@
 //! v1 범위: lineseg 기반 텍스트 렌더링 (굵게/기울임/크기/색/자간/장평,
 //! 가운데/오른쪽 정렬). 표·이미지·장식은 M5.
 
+mod border;
 pub mod diff;
 pub mod display;
 pub mod equation;
@@ -551,22 +552,6 @@ fn item_bounds(item: &display::Item) -> Option<(f32, f32, f32, f32)> {
         )),
         display::Item::Rect { x, y, w, h, .. } | display::Item::Image { x, y, w, h, .. } => {
             Some((*x, *y, *x + *w, *y + *h))
-        }
-        display::Item::Line {
-            x1,
-            y1,
-            x2,
-            y2,
-            width,
-            ..
-        } => {
-            let half = *width / 2.0;
-            Some((
-                x1.min(*x2) - half,
-                y1.min(*y2) - half,
-                x1.max(*x2) + half,
-                y1.max(*y2) + half,
-            ))
         }
         display::Item::Path {
             commands, stroke, ..

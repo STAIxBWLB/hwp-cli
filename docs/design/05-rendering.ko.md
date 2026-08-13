@@ -162,7 +162,7 @@ segs.push(LineSeg{ text_start, v_pos, line_height:base, text_height:base,
                    baseline_gap, line_spacing, col_start:0, seg_width, flags:0x0006_0000 })
 v_pos += line_advance
 ```
-탭은 `acc = floor(acc/40)*40 + 40`. 빈 문단도 줄 1개를 갖는다. `flags=0x0006_0000`는 정품 본문 줄의 표준 플래그값.
+탭은 `tab::next_tab(tabs, acc, 40)` — 다음 명시 탭 스톱, 없으면 `floor(acc/40)*40 + 40`으로 간다. 빈 문단도 줄 1개를 갖는다. `flags=0x0006_0000`는 정품 본문 줄의 표준 플래그값.
 
 ### 2.4 표 높이 (`table_height`, `fill_nested`, `para_line_block`)
 
@@ -368,7 +368,7 @@ t = scale(glyph_scale·x_scale, −glyph_scale)   // y-up 뒤집기 + 장평
 
 ## 7. 재구축 시 지켜야 할 핵심 불변식
 
-1. **셰이핑 advance 단일 출처**: lineseg 줄바꿈(`compute_linesegs`)·layout 배치(`place_wrapped`)·세 백엔드가 **동일한** `glyph.x_advance` 누적을 써야 픽셀이 일치한다. 탭은 어디서나 `floor(x/40)*40+40`.
+1. **셰이핑 advance 단일 출처**: lineseg 줄바꿈(`compute_linesegs`)·layout 배치(`place_wrapped`)·세 백엔드가 **동일한** `glyph.x_advance` 누적을 써야 픽셀이 일치한다. 탭은 어디서나 `tab::next_tab`(명시 탭 스톱 우선, 없으면 40pt 기본 간격 폴백).
 2. **캐시 v_pos 존중 vs 흐름 커서**: 저장된 lineseg는 `baseline = body_top + (v_pos+baseline_gap)/100`을 신뢰하되, `max(stored, content_bottom+gap)`으로만 아래로 민다(위로 끌어올리지 않음 — 키 큰 글상자 드리프트 방지). 셀 내부(`layout_box_para_iter`)는 흐름 하한을 흐름배치 콘텐츠에만 적용.
 3. **페이지 상대 v_pos**: 합성·렌더 모두 페이지마다 v_pos를 0으로 리셋. 섹션 단조 누적하면 한글이 “손상” 판정.
 4. **표 상수 566**: 표 총높이에 반드시 `TABLE_BLOCK_PADDING` 1회 가산.

@@ -16,7 +16,7 @@ use crate::error::{HwpxError, Result};
 use crate::read::xml::{attr, attr_i32, attr_u16, attr_u32, parse_color};
 
 /// OWPML 테두리선 종류 → hwp5 코드.
-fn line_type_code(s: &str) -> u8 {
+pub(crate) fn line_type_code(s: &str) -> u8 {
     match s {
         "NONE" => 0,
         "SOLID" => 1,
@@ -35,7 +35,7 @@ fn line_type_code(s: &str) -> u8 {
 }
 
 /// "0.12 mm" → 굵기 인덱스 (가장 가까운 값).
-fn width_index(s: &str) -> u8 {
+pub(crate) fn width_index(s: &str) -> u8 {
     const TABLE: [f32; 16] = [
         0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0,
     ];

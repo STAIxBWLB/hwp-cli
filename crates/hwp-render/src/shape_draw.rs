@@ -109,6 +109,20 @@ fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
     }
 }
 
+/// Maps HWP5 border line types to `dash_pattern` style codes.
+///
+/// Keep this mapping synchronized with `hwp-convert/src/gso.rs`.
+fn hwp5_line_style(lt: u8) -> u8 {
+    match lt {
+        2 => 1,
+        3 => 2,
+        4 => 3,
+        5 => 4,
+        6 => 5,
+        _ => 0,
+    }
+}
+
 /// 열린 경로(선)의 양 끝에 채운 삼각형 화살촉 경로를 만든다.
 /// commands의 첫 점(시작)·끝 점(끝)과 인접 점으로 방향을 구한다.
 fn arrowheads(commands: &[PathCmd], start: bool, end: bool, width: f32) -> Vec<Vec<PathCmd>> {
@@ -304,7 +318,8 @@ fn draw_component(
     for child in &sc.children {
         match child.tag {
             SC_LINE | SC_RECTANGLE | SC_ELLIPSE | SC_ARC | SC_POLYGON | SC_CURVE => {
-                // One image fill plus one path is the maximum for a component.
+                // One image fill plus one path is the maximum for a component
+                // (line arrowheads are charged separately at emission below).
                 // Charge before parsing/building the geometry buffer.
                 if !warns.charge_display_items(2) {
                     return;
@@ -337,6 +352,28 @@ fn draw_component(
                 // 채움·선이 모두 없고 이미지도 없으면 그리지 않는다(보이지 않는 프레임).
                 if style.fill.is_none() && style.stroke.is_none() {
                     continue;
+                }
+                // SC_LINE arrowheads are filled triangles aligned to their endpoints.
+                if child.tag == SC_LINE
+                    && let Some(st) = &style.stroke
+                    && (style.arrow_start || style.arrow_end)
+                {
+                    let heads = arrowheads(
+                        &commands,
+                        style.arrow_start,
+                        style.arrow_end,
+                        st.width.max(1.0),
+                    );
+                    if !warns.charge_display_items(heads.len()) {
+                        return;
+                    }
+                    for head in heads {
+                        page.items.push(Item::Path {
+                            commands: head,
+                            fill: Some(Fill::Solid(st.color)),
+                            stroke: None,
+                        });
+                    }
                 }
                 page.items.push(Item::Path {
                     commands,
@@ -387,6 +424,9 @@ struct Style {
     fill: Option<Fill>,
     /// 이미지 채움 — 도형 경계 상자에 깐다.
     image: Option<Arc<Vec<u8>>>,
+    /// Whether start/end arrowheads are present; shape and size are flattened.
+    arrow_start: bool,
+    arrow_end: bool,
 }
 
 fn rd_u16(d: &[u8], o: usize) -> Option<u16> {
@@ -439,11 +479,22 @@ fn parse_style(d: &[u8], doc: &Document, issues: &mut RenderIssueAccumulator) ->
     let mut stroke = None;
     let mut fill = None;
     let mut image = None;
+    let mut arrow_start = false;
+    let mut arrow_end = false;
     if let (Some(color), Some(width), Some(lattr)) =
         (rd_u32(d, bo), rd_i32(d, bo + 4), rd_u32(d, bo + 8))
     {
-        if lattr & 0x3F != 0 {
-            stroke = Some(Stroke::solid(color, (width as f32 / 100.0).max(0.1)));
+        let lt = (lattr & 0x3F) as u8;
+        if lt != 0 {
+            let w = (width as f32 / 100.0).max(0.1);
+            stroke = Some(Stroke {
+                color,
+                width: w,
+                dash: dash_pattern(hwp5_line_style(lt), w),
+            });
+            // Table 82: bits 10-15 encode the start arrow, 16-21 the end arrow.
+            arrow_start = (lattr >> 10) & 0x3F != 0;
+            arrow_end = (lattr >> 16) & 0x3F != 0;
         }
         let fo = bo + 13;
         if let Some(ft) = rd_u32(d, fo) {
@@ -461,6 +512,8 @@ fn parse_style(d: &[u8], doc: &Document, issues: &mut RenderIssueAccumulator) ->
         stroke,
         fill,
         image,
+        arrow_start,
+        arrow_end,
     })
 }
 
@@ -1078,5 +1131,76 @@ mod tests {
         };
         let s = stroke.as_ref().expect("선 stroke");
         assert!(!s.dash.is_empty(), "파선 dash 적용");
+    }
+
+    #[test]
+    fn hwp5_raw_line_applies_dash_and_arrowhead() {
+        // Compose one identity SHAPE_COMPONENT with one SC_LINE child.
+        // The 13-byte line info stores color, width, and attributes.
+        // Type 2 selects dash; end-arrow bits 16-21 select one arrowhead.
+        let mut d = vec![0u8; 204];
+        d[4] = 0xFF; // Prevent duplicate CHID detection so the base stays at 4.
+        d[46..48].copy_from_slice(&1u16.to_le_bytes()); // cnt=1
+        for o in [48usize, 96, 144] {
+            // Identity matrix (a=1, d=1).
+            d[o..o + 8].copy_from_slice(&1.0f64.to_le_bytes());
+            d[o + 24..o + 32].copy_from_slice(&1.0f64.to_le_bytes());
+        }
+        let bo = 192; // base + 92 + cnt*96
+        d[bo..bo + 4].copy_from_slice(&0x0000_0000u32.to_le_bytes()); // Black.
+        d[bo + 4..bo + 8].copy_from_slice(&100i32.to_le_bytes()); // width=1pt
+        d[bo + 8..bo + 12].copy_from_slice(&(2u32 | (1 << 16)).to_le_bytes());
+
+        let mut line = vec![0u8; 16];
+        line[8..12].copy_from_slice(&10000i32.to_le_bytes()); // End x=100 pt.
+
+        let sc = OpaqueRecord {
+            tag: SHAPE_COMPONENT,
+            data: d,
+            children: vec![OpaqueRecord {
+                tag: SC_LINE,
+                data: line,
+                children: Vec::new(),
+            }],
+        };
+        let g = GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: vec![sc],
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+        };
+        let doc = Document::default();
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut issues = RenderIssueAccumulator::new();
+        draw_gso_shapes(&g, (0.0, 0.0), &doc, &mut page, &mut issues);
+        // One arrowhead path plus one line path.
+        assert_eq!(page.items.len(), 2, "{:?}", page.items.len());
+        let Item::Path { fill, stroke, .. } = &page.items[0] else {
+            panic!("Path");
+        };
+        assert!(fill.is_some() && stroke.is_none(), "arrowhead is fill-only");
+        let Item::Path { stroke, .. } = &page.items[1] else {
+            panic!("Path");
+        };
+        let s = stroke.as_ref().expect("line stroke");
+        assert_eq!(s.dash.len(), 2, "raw type 2 has one dash-gap pair");
+    }
+
+    #[test]
+    fn hwp5_raw_line_type_mapping_matches_converter() {
+        // Keep this table synchronized with gso.rs.
+        assert_eq!(hwp5_line_style(1), 0, "solid");
+        assert_eq!(hwp5_line_style(2), 1);
+        assert_eq!(hwp5_line_style(3), 2);
+        assert_eq!(hwp5_line_style(6), 5);
+        assert_eq!(hwp5_line_style(7), 0, "out-of-range values are solid");
     }
 }
