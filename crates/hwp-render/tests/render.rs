@@ -1247,7 +1247,12 @@ fn 표_쪽분할_제목줄_반복() {
     let mut data_rects = 0;
     for pi in 0..list.pages.len() {
         let rects = 채움_사각형(&list, pi);
-        header_rects += rects.iter().filter(|r| r.2 == 0x0055_5555).count();
+        let page_headers = rects.iter().filter(|r| r.2 == 0x0055_5555).count();
+        assert_eq!(
+            page_headers, 1,
+            "each table page must contain exactly one header row: page {pi}"
+        );
+        header_rects += page_headers;
         data_rects += rects.iter().filter(|r| r.2 == 0x00C8_C8C8).count();
         if pi > 0 {
             let top = rects

@@ -172,8 +172,8 @@ is itself knowledge).
   the stale-`para_top` anchor bug for page-spanning paragraphs. New model accessors
   `Table::page_break_policy/repeat_header`, `Cell::is_header/vert_align`. Cell-internal splitting
   (pageBreak=CELL) is approximated as row-boundary splitting. This is implementation status, not a
-  Hancom parity certification. Outstanding: the Hancom verification round (제목 줄 자동 반복
-  ground truth) and multi-column-aware table splitting.
+  Hancom parity certification. Outstanding: the Hancom verification round (repeated-header ground
+  truth) and multi-column-aware table splitting.
 
 ---
 
