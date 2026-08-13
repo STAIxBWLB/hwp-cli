@@ -433,19 +433,21 @@ fn section_page_border_fill(section: &Section) -> Option<PageBorderFill> {
     parse_page_border_fill(raw)
 }
 
-/// 쪽 테두리 한 변(페이지 좌표, pt).
-struct PageBorderEdge {
+/// Page-border rectangle in page coordinates (pt).
+struct PageBorderRect {
     x1: f32,
     y1: f32,
     x2: f32,
     y2: f32,
-    line: hwp_model::BorderLine,
+    sides: [hwp_model::BorderLine; 4],
 }
 
-/// 쪽 테두리 사각형의 4변 중 그릴 변(line_type≠0)만 계산한다.
-/// 테두리ID 유효범위 밖(0 포함)이거나 참조 BorderFill이 전 변 무테두리면 빈 벡터.
+/// Resolves the page-border rectangle and its left, right, top, bottom styles.
+///
+/// Invalid IDs, including zero, and border fills with no visible sides produce
+/// `None` so documents without page borders retain their previous output.
 #[allow(clippy::too_many_arguments)]
-fn build_page_border_edges(
+fn build_page_border_rect(
     pbf: &PageBorderFill,
     border_fills: &[BorderFill],
     paper_w: f32,
@@ -454,15 +456,15 @@ fn build_page_border_edges(
     body_top: f32,
     body_right: f32,
     body_bottom: f32,
-) -> Vec<PageBorderEdge> {
-    // id는 1-기반. 0이거나 범위 밖이면 무출력(기본 문서 불변).
-    let Some(bf) = (pbf.border_fill_id as usize)
+) -> Option<PageBorderRect> {
+    // IDs are one-based. Zero and out-of-range values suppress output.
+    let bf = (pbf.border_fill_id as usize)
         .checked_sub(1)
-        .and_then(|i| border_fills.get(i))
-    else {
-        return Vec::new();
-    };
-    // gap HWPUNIT → pt (/100). 순서: 왼/오/위/아래.
+        .and_then(|i| border_fills.get(i))?;
+    if !bf.sides.iter().any(hwp_model::BorderLine::is_visible) {
+        return None;
+    }
+    // Convert gaps from HWPUNIT to pt. Order: left, right, top, bottom.
     let (gl, gr, gt, gb) = (
         pbf.gap[0] as f32 / 100.0,
         pbf.gap[1] as f32 / 100.0,
@@ -470,11 +472,10 @@ fn build_page_border_edges(
         pbf.gap[3] as f32 / 100.0,
     );
     let (x1, y1, x2, y2) = if pbf.paper_relative {
-        // 종이 기준: 용지 가장자리에서 gap만큼 안쪽 사각형(정품 실측 경로).
+        // Paper-relative borders are inset from the paper edges.
         (gl, gt, paper_w - gr, paper_h - gb)
     } else {
-        // 쪽(본문) 기준: 본문 영역 가장자리에서 gap만큼 바깥(여백 쪽). 정품 표본
-        // 부재 — 근사 구현(EVEN/ODD와 함께 후속 실측으로 정밀화).
+        // Body-relative placement remains an approximation pending Hancom samples.
         (
             body_left - gl,
             body_top - gt,
@@ -482,44 +483,29 @@ fn build_page_border_edges(
             body_bottom + gb,
         )
     };
-    // sides: [왼, 오른, 위, 아래]. 각 변을 해당 line_type≠0일 때만 긋는다.
-    let seg = [
-        (x1, y1, x1, y2), // 왼
-        (x2, y1, x2, y2), // 오른
-        (x1, y1, x2, y1), // 위
-        (x1, y2, x2, y2), // 아래
-    ];
-    let mut edges = Vec::new();
-    for (side, (sx1, sy1, sx2, sy2)) in bf.sides.iter().zip(seg) {
-        if side.is_visible() {
-            edges.push(PageBorderEdge {
-                x1: sx1,
-                y1: sy1,
-                x2: sx2,
-                y2: sy2,
-                line: *side,
-            });
-        }
-    }
-    edges
+    Some(PageBorderRect {
+        x1,
+        y1,
+        x2,
+        y2,
+        sides: bf.sides,
+    })
 }
 
-/// 계산된 쪽 테두리 변들을 페이지 아이템 맨 앞에 삽입한다(텍스트/개체 뒤 = 뒤에 그림).
-/// 변 기하는 구역당 1회 계산하고, Item::Path는 페이지마다 새로 만든다(Item는 Clone 불가).
+/// Prepends a resolved page border so it paints behind page content.
 fn prepend_page_borders(
     page: &mut PageList,
-    edges: &[PageBorderEdge],
+    border: &PageBorderRect,
     warnings: &mut RenderIssueAccumulator,
 ) {
-    if edges.is_empty() {
-        return;
-    }
-    let mut items: Vec<Item> = Vec::new();
-    for e in edges {
-        items.extend(crate::border::border_line_items(
-            e.x1, e.y1, e.x2, e.y2, &e.line,
-        ));
-    }
+    let mut items = crate::border::border_rectangle_items(
+        border.x1,
+        border.y1,
+        border.x2,
+        border.y2,
+        &border.sides,
+        [true; 4],
+    );
     if !warnings.charge_display_items(items.len()) {
         return;
     }
@@ -527,7 +513,7 @@ fn prepend_page_borders(
     page.items = items;
 }
 
-/// 단 사이 구분선(단 간격 중앙의 세로선)을 페이지 아이템 맨 앞에 삽입한다(본문 뒤에 그림).
+/// Prepends vertical column dividers at the midpoint of each column gap.
 #[allow(clippy::too_many_arguments)]
 fn prepend_col_dividers(
     page: &mut PageList,
@@ -542,7 +528,7 @@ fn prepend_col_dividers(
 ) {
     let mut items: Vec<Item> = Vec::new();
     for i in 0..col_count.saturating_sub(1) {
-        // 단 i 우변 + 단 간격 절반 = 구분선 x.
+        // Right edge of column i plus half the gap gives the divider x position.
         let x = body_left + (col_width + col_gap) * (i + 1) as f32 - col_gap * 0.5;
         items.extend(crate::border::border_line_items(
             x,
@@ -782,22 +768,19 @@ pub fn layout_document(
         // 본문 영역 하한 (넘침 분할 기준)
         let body_bottom = h - (page_def.margin_bottom.0 + page_def.margin_footer.0) as f32 / 100.0;
 
-        // 쪽 테두리(PAGE_BORDER_FILL BOTH): 변 기하를 구역당 1회 계산해 두고,
-        // 구역의 모든 페이지에 소급 삽입한다(테두리ID 무테두리·미존재면 빈 벡터).
-        let page_border_edges = section_page_border_fill(section)
-            .map(|pbf| {
-                build_page_border_edges(
-                    &pbf,
-                    &doc.header.border_fills,
-                    w,
-                    h,
-                    body_left,
-                    body_top,
-                    body_left + body_width,
-                    body_bottom,
-                )
-            })
-            .unwrap_or_default();
+        // Resolve PAGE_BORDER_FILL BOTH once, then prepend it to every section page.
+        let page_border = section_page_border_fill(section).and_then(|pbf| {
+            build_page_border_rect(
+                &pbf,
+                &doc.header.border_fills,
+                w,
+                h,
+                body_left,
+                body_top,
+                body_left + body_width,
+                body_bottom,
+            )
+        });
 
         let mut page = PageList {
             width_pt: w,
@@ -1318,16 +1301,16 @@ pub fn layout_document(
             return DisplayList { pages };
         }
 
-        // 쪽 테두리를 이 구역의 모든 페이지 맨 앞(뒤에 그림)에 소급 삽입한다.
-        if !page_border_edges.is_empty() {
+        // Prepend the page border to every page in this section.
+        if let Some(border) = &page_border {
             for p in &mut pages[section_first_page..] {
-                prepend_page_borders(p, &page_border_edges, warnings);
+                prepend_page_borders(p, border, warnings);
             }
         }
 
-        // 단 구분선(GG-17): 다단 구역의 모든 페이지에 단 사이 세로선을 소급 삽입한다.
-        // 단 영역의 실제 높이는 페이지 확정 후에야 알 수 있으므로 본문 영역 높이로 둔다
-        // (근사 — 정품 한글 대조 라운드에서 정밀화).
+        // GG-17 prepends dividers to every page of a multi-column section.
+        // Body height remains an approximation until Hancom samples establish
+        // the exact per-page column extent.
         if col_count > 1
             && let Some(divider) = col_def.and_then(|c| c.divider)
             && divider.is_visible()
@@ -2374,29 +2357,26 @@ fn draw_table_rows(
             None,
         );
 
-        // 3) 테두리 (왼/오른/위/아래)
+        // 3) Borders (left, right, top, bottom).
         if let Some(bf) = border_fill {
-            let edges = [
-                (cx, cy, cx, cy + ch),           // 왼
-                (cx + cw, cy, cx + cw, cy + ch), // 오른
-                (cx, cy, cx + cw, cy),           // 위
-                (cx, cy + ch, cx + cw, cy + ch), // 아래
-            ];
-            for (side, (x1, y1, x2, y2)) in bf.sides.iter().zip(edges) {
-                if side.is_visible() {
-                    let items = crate::border::border_line_items(x1, y1, x2, y2, side);
-                    if !warnings.charge_display_items(items.len()) {
-                        return;
-                    }
-                    page.items.extend(items);
-                }
+            let items = crate::border::border_rectangle_items(
+                cx,
+                cy,
+                cx + cw,
+                cy + ch,
+                &bf.sides,
+                [true; 4],
+            );
+            if !warnings.charge_display_items(items.len()) {
+                return;
             }
+            page.items.extend(items);
 
             // 4) 대각선/역대각선 — slash/backSlash 비트가 켜졌을 때만(병합 셀은 전체 영역 가로지름).
             //    diagonal 선은 스타일/색만 제공하므로 방향 비트가 없으면 그리지 않는다.
             let (slash, backslash) = diagonal_dirs(bf.attr);
             if (slash || backslash) && bf.diagonal.is_visible() {
-                // (\, /) 순서. 대각선에도 line_type(점선/이중선)을 적용한다(GG-24).
+                // Emit backslash before slash and preserve compound/dashed styles (GG-24).
                 let mut dirs = Vec::with_capacity(2);
                 if backslash {
                     dirs.push((cx, cy, cx + cw, cy + ch));
@@ -2891,30 +2871,19 @@ fn draw_para_bg_slice(
             },
         );
     }
-    // 테두리: 좌/우변은 항상, 상/하변은 페이지 경계에 걸치지 않은 쪽만(가장자리라 위에 얹어도 무해).
-    let edges = [
-        (&bf.sides[0], (left, top, left, bottom), true),
-        (
-            &bf.sides[1],
-            (left + width, top, left + width, bottom),
-            true,
-        ),
-        (&bf.sides[2], (left, top, left + width, top), draw_top),
-        (
-            &bf.sides[3],
-            (left, bottom, left + width, bottom),
-            draw_bottom,
-        ),
-    ];
-    for (side, (x1, y1, x2, y2), enabled) in edges {
-        if enabled && side.is_visible() {
-            let items = crate::border::border_line_items(x1, y1, x2, y2, side);
-            if !warnings.charge_display_items(items.len()) {
-                return;
-            }
-            page.items.extend(items);
-        }
+    // Left and right are always visible; page-split slices suppress internal top/bottom edges.
+    let items = crate::border::border_rectangle_items(
+        left,
+        top,
+        left + width,
+        bottom,
+        &bf.sides,
+        [true, true, draw_top, draw_bottom],
+    );
+    if !warnings.charge_display_items(items.len()) {
+        return;
     }
+    page.items.extend(items);
 }
 
 fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
@@ -3590,7 +3559,7 @@ mod tab_width_tests {
     use crate::issues::RenderIssueAccumulator;
     use crate::shape::{InlineItem, ShapedRun};
 
-    /// 폰트 불요 더미 런 (폭만 의미 있음).
+    /// Creates a font-independent dummy run whose only meaningful field is width.
     fn dummy_run(width_pt: f32) -> InlineItem {
         InlineItem::Run(ShapedRun {
             font: Arc::new(LoadedFont {
@@ -3618,19 +3587,18 @@ mod tab_width_tests {
         })
     }
 
-    /// 명시 탭 스톱이 있으면 items_width(너비 추정)와 place_wrapped(배치)가 같은
-    /// x로 진행해야 한다 — 종전 floor-only 추정은 명시 스톱을 무시해 정렬 보정이
-    /// 어긋났다(GG 탭 불일치).
+    /// Explicit tab stops must advance to the same x position in width
+    /// estimation and final placement.
     #[test]
-    fn 명시_탭스톱_너비와_배치_일치() {
+    fn explicit_tab_stops_match_width_estimation_and_placement() {
         let tabs = [150.0f32];
         let make_items = || vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
 
-        // 너비 추정: 10 + (탭 → 150) + 20 = 170. (기본 간격이면 10 → 40.)
+        // Width estimate: 10 + tab to 150 + 20 = 170.
         let natural = items_width(&make_items(), &tabs);
         assert!((natural - 170.0).abs() < 0.01, "natural={natural}");
 
-        // 배치: 탭 뒤 런의 x = 150 (명시 스톱) — 너비 추정과 동일 규칙.
+        // Placement uses the same explicit stop at x=150.
         let mut page = PageList {
             width_pt: 600.0,
             height_pt: 800.0,
@@ -3657,11 +3625,11 @@ mod tab_width_tests {
             })
             .collect();
         assert_eq!(xs.len(), 2);
-        assert!((xs[1] - 150.0).abs() < 0.01, "탭 뒤 x={}", xs[1]);
-        // 두 경로의 탭 직후 x가 정확히 일치.
+        assert!((xs[1] - 150.0).abs() < 0.01, "x after tab={}", xs[1]);
+        // The estimated and placed positions after the tab match exactly.
         assert!((xs[1] - (natural - 20.0)).abs() < 0.01);
 
-        // 명시 스톱 없음 → 기본 간격(40pt) 대체는 종전과 동일.
+        // With no explicit stop, retain the existing 40 pt fallback interval.
         let natural_default = items_width(&make_items(), &[]);
         assert!((natural_default - (40.0 + 20.0)).abs() < 0.01);
     }

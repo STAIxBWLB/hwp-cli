@@ -458,18 +458,13 @@ fn capture_element(
     Ok(String::from_utf8_lossy(&writer.into_inner()).into_owned())
 }
 
-/// `<hp:ctrl>` — colPr/머리말/꼬리말/각주 등 컨트롤 묶음.
+/// Parses the `<hp:colPr>` control and consumes its child subtree.
 ///
-/// 각 자식 컨트롤의 서브트리를 끝까지 소비하고, 문단 리스트(`hp:subList`)는
-/// 재귀 수집한다 — 머리말 안의 텍스트·이미지가 여기로 들어온다.
-/// hwpx `<hp:header/footer applyPageType id>` → hwp5 머리말/꼬리말 8B 페이로드.
-/// `적용쪽(u32)` + `id(u32)`. 적용쪽: BOTH=0, EVEN=1, ODD=2. 정품 실측:
-/// `<hp:header id="2" applyPageType="BOTH">` → `00000000 02000000`.
-/// hwpx `<hp:colPr type layout colCount sameSz sameGap>` → ColumnDef.
-/// 매핑(OWPML↔hwplib/HWP5): type NEWSPAPER=0 일반/BALANCED=1 배분/PARALLEL=2 평행,
-/// layout LEFT=0/RIGHT=1/MIRROR=2 맞쪽. 구분선(`hp:colLine`) 자식은 의미 파싱한다(GG-17).
-/// 단별 폭(colSz) 자식은 v1 미수집(등폭 기준; 필요 시 정답지로 보강).
-/// Start 이벤트면 colPr 닫힘까지 자식을 소비한다(호출부에서 collect_sub_lists 생략 전제).
+/// OWPML column types map to NEWSPAPER=0, BALANCED=1, PARALLEL=2;
+/// layouts map to LEFT=0, RIGHT=1, MIRROR=2. GG-17 parses an optional
+/// `<hp:colLine>` child into `ColumnDef.divider`. Per-column `<hp:colSz>`
+/// widths are not collected yet. A start event consumes through the closing
+/// `colPr`, so callers must not traverse that subtree again.
 fn parse_col_pr(
     reader: &mut XmlReader<'_>,
     e: &BytesStart<'_>,
@@ -495,7 +490,7 @@ fn parse_col_pr(
         divider: None,
     };
     if is_start {
-        // 자식: colSz(단별 폭, v1 미수집) / colLine(구분선 — 의미 파싱).
+        // Parse colLine semantically; per-column colSz widths remain uncollected.
         loop {
             match next_event(reader)? {
                 Event::Start(c) | Event::Empty(c) if c.local_name().as_ref() == b"colLine" => {
@@ -722,8 +717,8 @@ fn parse_ctrl(
                         (id, 21, Vec::new())
                     }
                 };
-                // 다단(colPr): 속성을 ColumnDef로 캡처(렌더러 단 배치·구분선용).
-                // Start면 자식(colSz/colLine)까지 parse_col_pr가 소비한다.
+                // Capture colPr for renderer column layout and divider support.
+                // A start event makes parse_col_pr consume colSz/colLine children.
                 let column_def = if name.as_slice() == b"colPr" {
                     Some(parse_col_pr(reader, e, matches!(event, Event::Start(_)))?)
                 } else {
@@ -739,7 +734,7 @@ fn parse_ctrl(
                     equation: None,
                     column_def,
                 };
-                // colPr의 자식(colSz/colLine)은 parse_col_pr가 이미 소비했다.
+                // parse_col_pr has already consumed a colPr subtree.
                 if matches!(event, Event::Start(_)) && name.as_slice() != b"colPr" {
                     collect_sub_lists(reader, &name, &mut generic, warnings)?;
                 }

@@ -880,7 +880,7 @@ fn write_col_ctrl(out: &mut String, col: Option<&hwp_model::ColumnDef>) {
         ),
         None => ("NEWSPAPER", "LEFT", 1, 1, 0),
     };
-    // 구분선(GG-17): hp:colLine 자식으로 방출. 없으면 자식 없는 빈 요소(종전과 동일).
+    // GG-17 emits a divider as hp:colLine; otherwise preserve the empty colPr form.
     match col.and_then(|c| c.divider.as_ref()) {
         Some(d) => {
             let _ = write!(

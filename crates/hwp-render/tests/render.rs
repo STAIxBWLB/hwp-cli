@@ -365,8 +365,8 @@ fn 빈_문서_렌더() {
     assert_eq!(dark_pixels(&out.pages[0]), 0, "빈 문서는 흰 페이지");
 }
 
-/// 수식 조판(equation.rs): 스크립트를 실제 math로 배치한다. 분수(over)는 분수선(Item::Path)을,
-/// 첨자(^/_)·근호(sqrt)·기호는 글리프를 만든다. 폰트 유무와 무관하게 분수선은 그려져야 한다.
+/// Equation layout emits fraction bars as paths and scripts, radicals, and
+/// symbols as glyphs. Fraction bars do not depend on font availability.
 #[test]
 fn 수식_조판_렌더() {
     use hwp_model::{Control, Equation, GenericControl};
@@ -411,7 +411,7 @@ fn 수식_조판_렌더() {
         },
     )
     .unwrap();
-    // 분수 2개(over) → 분수선 Item::Path ≥ 2, 그리고 글리프 픽셀.
+    // Two `over` expressions produce at least two fraction paths plus glyph pixels.
     if std::env::var_os("HWP_EQ_PNG").is_some() {
         out.pages[0].save_png("/tmp/eq_test.png").ok();
     }
@@ -726,19 +726,30 @@ fn 쪽_테두리_렌더() {
     fn lines(page: &PageList) -> Vec<(f32, f32, f32, f32, u32, f32)> {
         page.items
             .iter()
-            .filter_map(|it| match it {
-                // 선분 Path(MoveTo+LineTo 2점, 스트로크)만 취한다.
+            .flat_map(|it| match it {
                 Item::Path {
                     commands,
                     stroke: Some(stroke),
                     ..
                 } => match commands.as_slice() {
                     [PathCmd::MoveTo(x1, y1), PathCmd::LineTo(x2, y2)] => {
-                        Some((*x1, *y1, *x2, *y2, stroke.color, stroke.width))
+                        vec![(*x1, *y1, *x2, *y2, stroke.color, stroke.width)]
                     }
-                    _ => None,
+                    [
+                        PathCmd::MoveTo(x1, y1),
+                        PathCmd::LineTo(x2, y2),
+                        PathCmd::LineTo(x3, y3),
+                        PathCmd::LineTo(x4, y4),
+                        PathCmd::Close,
+                    ] => vec![
+                        (*x1, *y1, *x2, *y2, stroke.color, stroke.width),
+                        (*x2, *y2, *x3, *y3, stroke.color, stroke.width),
+                        (*x3, *y3, *x4, *y4, stroke.color, stroke.width),
+                        (*x4, *y4, *x1, *y1, stroke.color, stroke.width),
+                    ],
+                    _ => Vec::new(),
                 },
-                _ => None,
+                _ => Vec::new(),
             })
             .collect()
     }
@@ -780,13 +791,8 @@ fn 쪽_테두리_렌더() {
         let ls = lines(page);
         assert_eq!(ls.len(), 4, "4변(전 변 실선)이 그려져야: {}", ls.len());
 
-        // 맨 앞 4개가 테두리(텍스트 뒤에 그림).
-        for i in 0..4 {
-            assert!(
-                matches!(page.items[i], Item::Path { .. }),
-                "쪽 테두리는 페이지 맨 앞(뒤에 그림)에 삽입돼야 한다"
-            );
-        }
+        // The joined rectangle is prepended so it paints behind text.
+        assert!(matches!(page.items.first(), Some(Item::Path { .. })));
 
         // 색·굵기.
         for &(_, _, _, _, color, width) in &ls {
@@ -1561,7 +1567,7 @@ fn table_fragments_reserve_pending_footnote_space() {
         .items
         .iter()
         .find_map(|item| match item {
-            // 각주 구분선: 수평 선분 Path(MoveTo+LineTo), 길이>100, 굵기≤0.6.
+            // Footnote separator: horizontal path longer than 100 pt and at most 0.6 pt wide.
             hwp_render::display::Item::Path {
                 commands,
                 stroke: Some(stroke),
@@ -1689,10 +1695,9 @@ fn 페이지_걸친_문단의_표는_새쪽_흐름위치에_앵커() {
     );
 }
 
-/// 단 구분선(GG-17): 2단 colDef에 divider가 있으면 단 사이 간격 중앙에
-/// 본문 높이의 세로선 Path가 그려진다(구분선의 line_type=점선도 반영).
+/// GG-17 draws a styled divider at the midpoint of a two-column gap.
 #[test]
-fn 다단_구분선_렌더() {
+fn renders_multi_column_divider() {
     use hwp_model::{BorderLine, ColumnDef, Control, GenericControl};
     use hwp_render::display::{Item, PathCmd};
 
@@ -1727,7 +1732,7 @@ fn 다단_구분선_렌더() {
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
     let page = &list.pages[0];
 
-    // 기대 위치: 본문 좌변 + 단폭 + 간격/2, 본문 상단~하단.
+    // Expected x: body left + column width + half the gap.
     let p = doc.sections[0].section_def().unwrap().page.unwrap();
     let body_left = p.margin_left.0 as f32 / 100.0;
     let (body_top, body_bottom) = 본문_기하(&doc);
@@ -1756,13 +1761,13 @@ fn 다단_구분선_렌더() {
                 && (y1 - body_top).abs() < 0.1
                 && (y2 - body_bottom).abs() < 0.1
         })
-        .expect("단 사이 구분선 세로선이 있어야 한다");
+        .expect("expected a vertical column divider");
     assert!(
         !divider.3.dash.is_empty(),
-        "DOT 구분선은 dash가 적용돼야 한다"
+        "DOT divider must use a dash pattern"
     );
 
-    // divider 없음(기본 문서) → 구분선 무출력.
+    // A default single-column document has no divider.
     let doc = hwp_convert::from_markdown("본문 한 줄.\n");
     let mut store = hwp_render::FontStore::new();
     let mut warns = hwp_render::RenderIssueAccumulator::new();
@@ -1775,5 +1780,5 @@ fn 다단_구분선_렌더() {
                 [PathCmd::MoveTo(x1, _), PathCmd::LineTo(x2, _)] if (x1 - x2).abs() < 0.01)
         )
     });
-    assert!(!has_vertical, "단일 단 문서에는 세로 구분선이 없어야 한다");
+    assert!(!has_vertical, "single-column document must have no divider");
 }

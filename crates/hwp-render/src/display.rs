@@ -36,7 +36,7 @@ pub enum Item {
         h: f32,
         data: Arc<Vec<u8>>,
     },
-    /// 임의 경로 — 그리기 개체(선/사각형/타원/호/다각형)·테두리·선분(밑줄 등). 좌표 pt, 페이지 공간.
+    /// Arbitrary page-space path for shapes, borders, and line decorations.
     Path {
         commands: Vec<PathCmd>,
         /// 채움 (단색/그러데이션). None=채움 없음. (이미지 채움은 별도 Item::Image로 emit.)

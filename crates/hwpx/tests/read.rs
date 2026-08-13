@@ -491,9 +491,9 @@ fn 테두리채움_대각선_방향_파싱() {
     assert_ne!(bfs[2].attr & 0x20, 0, "backSlash on");
 }
 
-/// colPr의 `<hp:colLine>` 자식을 ColumnDef.divider로 파싱한다(GG-17).
+/// GG-17 parses a `<hp:colLine>` child into `ColumnDef.divider`.
 #[test]
-fn colpr_구분선_파싱() {
+fn parses_colpr_divider() {
     let xml = r##"<?xml version="1.0"?>
 <hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
   <hp:p>
@@ -507,18 +507,18 @@ fn colpr_구분선_파싱() {
     assert!(warnings.is_empty(), "{warnings:?}");
     let para = &section.paragraphs[0];
     let Some(Control::Generic(g)) = para.controls.iter().find(|c| c.ctrl_id() == *b"cold") else {
-        panic!("cold 컨트롤이 있어야 한다");
+        panic!("expected a cold control");
     };
     let col = g.column_def.as_ref().expect("ColumnDef");
     assert_eq!(col.count, 2);
     assert_eq!(col.kind, 1); // BALANCED
     assert_eq!(col.gap, 1417);
-    let d = col.divider.expect("구분선");
+    let d = col.divider.expect("divider");
     assert_eq!(d.line_type, 3, "DOT");
-    assert_eq!(d.width, 6, "0.4mm → 인덱스 6");
-    assert_eq!(d.color, 0x0000_00FF, "#FF0000 → BGR");
+    assert_eq!(d.width, 6, "0.4 mm maps to width index 6");
+    assert_eq!(d.color, 0x0000_00FF, "#FF0000 converts to BGR");
 
-    // 구분선 없는 colPr(빈 요소)는 divider=None (기본 문서 불변).
+    // An empty colPr has no divider and preserves the default document behavior.
     let xml_plain = r##"<?xml version="1.0"?>
 <hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
   <hp:p>
@@ -534,7 +534,7 @@ fn colpr_구분선_파싱() {
         .iter()
         .find(|c| c.ctrl_id() == *b"cold")
     else {
-        panic!("cold 컨트롤이 있어야 한다");
+        panic!("expected a cold control");
     };
     assert!(g.column_def.as_ref().unwrap().divider.is_none());
 }

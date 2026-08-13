@@ -109,10 +109,9 @@ fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
     }
 }
 
-/// hwp5 테두리선 종류(1실선/2긴점선/3점선/4점쇄선/5이점쇄선/6장대시…) →
-/// dash_pattern 스타일 코드(0=실선/1=파선/2=점선/3=일점쇄선/4=이점쇄선/5=긴파선).
-/// hwp-convert/src/gso.rs의 hwp5_line_style와 쌍(의존 방향상 복제 — 한쪽을 고치면
-/// 다른 쪽도 고칠 것).
+/// Maps HWP5 border line types to `dash_pattern` style codes.
+///
+/// Keep this mapping synchronized with `hwp-convert/src/gso.rs`.
 fn hwp5_line_style(lt: u8) -> u8 {
     match lt {
         2 => 1,
@@ -354,7 +353,7 @@ fn draw_component(
                 if style.fill.is_none() && style.stroke.is_none() {
                     continue;
                 }
-                // 선 화살촉(시작/끝) — 끝점 방향 채운 삼각형. SC_LINE에만(hwpx 경로와 동일).
+                // SC_LINE arrowheads are filled triangles aligned to their endpoints.
                 if child.tag == SC_LINE
                     && let Some(st) = &style.stroke
                     && (style.arrow_start || style.arrow_end)
@@ -425,7 +424,7 @@ struct Style {
     fill: Option<Fill>,
     /// 이미지 채움 — 도형 경계 상자에 깐다.
     image: Option<Arc<Vec<u8>>>,
-    /// 선 화살촉 유무(시작/끝) — 모양·크기는 유무로 평탄화(hwpx 경로와 동일).
+    /// Whether start/end arrowheads are present; shape and size are flattened.
     arrow_start: bool,
     arrow_end: bool,
 }
@@ -493,7 +492,7 @@ fn parse_style(d: &[u8], doc: &Document, issues: &mut RenderIssueAccumulator) ->
                 width: w,
                 dash: dash_pattern(hwp5_line_style(lt), w),
             });
-            // 표82(테두리 선 정보 속성): bit10-15 시작/16-21 끝 화살표 모양(0=없음).
+            // Table 82: bits 10-15 encode the start arrow, 16-21 the end arrow.
             arrow_start = (lattr >> 10) & 0x3F != 0;
             arrow_end = (lattr >> 16) & 0x3F != 0;
         }
@@ -1135,25 +1134,25 @@ mod tests {
     }
 
     #[test]
-    fn hwp5_raw_선_점선_화살표_적용() {
-        // SHAPE_COMPONENT raw(base=4, cnt=1, 항등 행렬) + SC_LINE 자식 합성.
-        // 테두리선 정보(표81/82, 13B): color u32 + width i32 + attr u32.
-        // attr = 선 종류 2(긴점선→파선) | 끝 화살표 모양(bit16-21) 1.
+    fn hwp5_raw_line_applies_dash_and_arrowhead() {
+        // Compose one identity SHAPE_COMPONENT with one SC_LINE child.
+        // The 13-byte line info stores color, width, and attributes.
+        // Type 2 selects dash; end-arrow bits 16-21 select one arrowhead.
         let mut d = vec![0u8; 204];
-        d[4] = 0xFF; // CHID 두 번이 아님 → base=4
+        d[4] = 0xFF; // Prevent duplicate CHID detection so the base stays at 4.
         d[46..48].copy_from_slice(&1u16.to_le_bytes()); // cnt=1
         for o in [48usize, 96, 144] {
-            // 항등 행렬 (a=1, d=1)
+            // Identity matrix (a=1, d=1).
             d[o..o + 8].copy_from_slice(&1.0f64.to_le_bytes());
             d[o + 24..o + 32].copy_from_slice(&1.0f64.to_le_bytes());
         }
         let bo = 192; // base + 92 + cnt*96
-        d[bo..bo + 4].copy_from_slice(&0x0000_0000u32.to_le_bytes()); // color=검정
+        d[bo..bo + 4].copy_from_slice(&0x0000_0000u32.to_le_bytes()); // Black.
         d[bo + 4..bo + 8].copy_from_slice(&100i32.to_le_bytes()); // width=1pt
         d[bo + 8..bo + 12].copy_from_slice(&(2u32 | (1 << 16)).to_le_bytes());
 
         let mut line = vec![0u8; 16];
-        line[8..12].copy_from_slice(&10000i32.to_le_bytes()); // 끝점 x=10000 (100pt)
+        line[8..12].copy_from_slice(&10000i32.to_le_bytes()); // End x=100 pt.
 
         let sc = OpaqueRecord {
             tag: SHAPE_COMPONENT,
@@ -1182,26 +1181,26 @@ mod tests {
         };
         let mut issues = RenderIssueAccumulator::new();
         draw_gso_shapes(&g, (0.0, 0.0), &doc, &mut page, &mut issues);
-        // 끝 화살촉 path 1개 + 선 path 1개 = 2.
+        // One arrowhead path plus one line path.
         assert_eq!(page.items.len(), 2, "{:?}", page.items.len());
         let Item::Path { fill, stroke, .. } = &page.items[0] else {
             panic!("Path");
         };
-        assert!(fill.is_some() && stroke.is_none(), "화살촉=채움 삼각형");
+        assert!(fill.is_some() && stroke.is_none(), "arrowhead is fill-only");
         let Item::Path { stroke, .. } = &page.items[1] else {
             panic!("Path");
         };
-        let s = stroke.as_ref().expect("선 stroke");
-        assert_eq!(s.dash.len(), 2, "파선 dash 2구간(raw 긴점선→파선)");
+        let s = stroke.as_ref().expect("line stroke");
+        assert_eq!(s.dash.len(), 2, "raw type 2 has one dash-gap pair");
     }
 
     #[test]
-    fn hwp5_raw_선종류_매핑() {
-        // gso.rs의 hwp5_line_style과 동일 표(쌍 유지).
-        assert_eq!(hwp5_line_style(1), 0, "실선");
+    fn hwp5_raw_line_type_mapping_matches_converter() {
+        // Keep this table synchronized with gso.rs.
+        assert_eq!(hwp5_line_style(1), 0, "solid");
         assert_eq!(hwp5_line_style(2), 1);
         assert_eq!(hwp5_line_style(3), 2);
         assert_eq!(hwp5_line_style(6), 5);
-        assert_eq!(hwp5_line_style(7), 0, "범위 밖은 실선");
+        assert_eq!(hwp5_line_style(7), 0, "out-of-range values are solid");
     }
 }

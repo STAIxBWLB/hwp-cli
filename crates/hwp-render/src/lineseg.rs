@@ -304,7 +304,7 @@ fn compute_linesegs(
     // 폰트 셰이핑으로 글자 폭을 재고, 본문 폭 기준 그리디 줄바꿈.
     // place_wrapped(layout.rs)와 동일한 글리프 x_advance 누적 규칙.
     let items = shape_range(store, doc, para, (0, total), warnings);
-    // 탭 진행은 place_wrapped와 같은 규칙(명시 스톱 우선, 기본 간격 대체).
+    // Match place_wrapped: prefer explicit tab stops, then use the default interval.
     let tabs = crate::tab::tab_stops(doc, para);
     let mut segs = Vec::new();
     let mut line_start = 0u32;
