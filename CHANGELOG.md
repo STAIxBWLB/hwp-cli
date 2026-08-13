@@ -29,10 +29,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   body space no longer clips silently at the media box: `pageBreak=NONE` pushes it wholesale to
   the next page, `TABLE`/`CELL` split it at row boundaries (cell-internal splitting is
   approximated as row-boundary splitting), and `repeatHeader` redraws the leading all-header-cell
-  rows at the top of every continuation page. Tables treated as characters never split ("one
-  character"). Splits and residual clips are reported as typed render issues
-  (`table_split_across_pages` info, `table_row_too_tall_clipped`,
-  `table_cell_page_span_clipped`).
+  rows at the top of every continuation page. Row-spanning cells are kept intact by excluding
+  boundaries that cross them. Tables treated as characters never split ("one character"). Splits
+  and oversized indivisible row bands are reported as typed render issues
+  (`table_split_across_pages` info, `table_row_too_tall_clipped`). Hancom Office oracle comparison
+  remains pending, so this does not yet certify output parity.
 
 **Fixed**
 

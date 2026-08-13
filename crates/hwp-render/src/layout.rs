@@ -1035,8 +1035,8 @@ pub fn layout_document(
                     warnings,
                 );
                 content_bottom = objects_bottom;
-                // 폴백 문단은 페이지를 걸치지 않는다(단일 조각 — 상·하 테두리 모두).
-                // 단, 달린 표가 쪽을 나눴으면 마지막 쪽의 표 구간만 근사로 칠한다.
+                // A fallback paragraph is one slice with both borders. If an
+                // attached table split, approximate only its final-page slice.
                 if let Some(top) = para_top {
                     let (slice_insert, slice_top, slice_first) = if objects_split {
                         (0, body_top, false)
@@ -1113,9 +1113,8 @@ pub fn layout_document(
                             return DisplayList { pages };
                         }
                         paras_on_page = 0;
-                        // 페이지를 건너간 문단의 개체(표 등) 앵커는 첫 페이지의
-                        // para_top이 아니라 새 페이지의 흐름 위치로 재앵커한다
-                        // (stale para_top — 마지막 페이지에 첫 페이지 y로 그리던 버그).
+                        // Re-anchor attached objects to the new page's flow
+                        // position instead of the paragraph's stale first-page y.
                         para_top = None;
                     } else {
                         // A column boundary advances within the current page.
@@ -1219,7 +1218,7 @@ pub fn layout_document(
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
             }
 
-            let (objects_bottom, _objects_split) = layout_para_objects(
+            let (objects_bottom, objects_split) = layout_para_objects(
                 doc,
                 store,
                 &mut page,
@@ -1248,16 +1247,21 @@ pub fn layout_document(
             content_bottom = objects_bottom;
             // 마지막(또는 유일) 배경 조각: 하변 테두리 O, 상변은 첫 조각일 때만(=경계 안 걸침).
             if let Some(top) = bg_slice_top {
+                let (slice_insert, slice_top, slice_first) = if objects_split {
+                    (0, body_top, false)
+                } else {
+                    (bg_slice_insert, top, bg_first_slice)
+                };
                 draw_para_bg_slice(
                     doc,
                     &mut page,
                     para,
                     body_left + bg_slice_col_x + geom.left,
                     (col_width - geom.left - geom.right).max(1.0),
-                    bg_slice_insert,
-                    top,
+                    slice_insert,
+                    slice_top,
                     content_bottom,
-                    bg_first_slice,
+                    slice_first,
                     true,
                     warnings,
                 );
@@ -1321,11 +1325,10 @@ fn push_page_checked(
     true
 }
 
-/// 표의 쪽 경계 분할에 필요한 페이지 전이 상태. 본문 흐름(최상위 문단)에서만
-/// Some으로 전달된다. 셀·글상자 안의 중첩 표는 쪽을 걸치지 않으므로 None.
+/// Page-transition state used while splitting a body-flow table.
 ///
-/// `page` 자체는 들지 않는다 — 호출부가 이미 `&mut PageList`를 쥐고 있어
-/// 중복 빌림을 피하기 위해 `break_page`의 인자로 받는다.
+/// Nested tables inside cells or text boxes receive `None`. The current page
+/// stays with the caller and is passed to `break_page` to avoid aliasing it.
 struct TableSplitCtx<'a, 's: 'a> {
     pages: &'a mut Vec<PageList>,
     page_numbers: &'a mut PageNumberState,
@@ -1343,10 +1346,8 @@ struct TableSplitCtx<'a, 's: 'a> {
 }
 
 impl TableSplitCtx<'_, '_> {
-    /// 표준 페이지 마감 시퀀스(본문 넘침 분할과 동일 순서)를 수행하고 새 페이지를
-    /// 연다. 마감 후 상태 리셋까지 마치면 — 다음 문단의 lineseg 경계 플래그가
-    /// 흡수돼(has_flow=false) 한글의 쪽 경계와 이중 분할되지 않는다.
-    /// 페이지 예산 초과로 못 열면 false.
+    /// Runs the normal page-finalization sequence and opens a fresh page.
+    /// Returns false if the page budget prevents the transition.
     fn break_page(
         &mut self,
         doc: &Document,
@@ -1375,6 +1376,14 @@ impl TableSplitCtx<'_, '_> {
         *self.col_band = 0;
         *self.has_flow = false;
         true
+    }
+
+    /// Mark the continuation fragment as real flow on the new page. A later
+    /// explicit or cached page break must not be suppressed merely because
+    /// the page was opened by a table continuation.
+    fn mark_flow(&mut self) {
+        *self.paras_on_page = (*self.paras_on_page).max(1);
+        *self.has_flow = true;
     }
 }
 
@@ -1436,6 +1445,40 @@ impl Furniture<'_> {
             }
         }
     }
+}
+
+fn page_notes_reservation_height(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &PageList,
+    notes: &[&Note],
+    body_left: f32,
+    body_width: f32,
+) -> f32 {
+    if notes.is_empty() {
+        return 0.0;
+    }
+    let mut scratch = PageList {
+        width_pt: page.width_pt,
+        height_pt: page.height_pt,
+        items: Vec::new(),
+    };
+    let mut scratch_warnings = RenderIssueAccumulator::new();
+    let mut height = 0.0f32;
+    for note in notes {
+        height = render_one_note(
+            doc,
+            store,
+            &mut scratch,
+            note,
+            body_left,
+            body_width,
+            height,
+            &mut scratch_warnings,
+        );
+        height += 3.0;
+    }
+    height + 5.0
 }
 
 /// 페이지 하단에 각주/미주 영역을 그린다(구분선 + 번호 + 내용).
@@ -1629,7 +1672,7 @@ fn layout_para_objects(
 ) -> (f32, bool) {
     let mut bottom = content_bottom;
     let mut object_y = anchor_top;
-    // 표가 쪽을 나눴는가 — 나눴으면 반환 커서는 마지막 페이지 좌표다.
+    // After a split, the returned cursor is relative to the final page.
     let mut page_split = false;
 
     for control in &para.controls {
@@ -1648,7 +1691,7 @@ fn layout_para_objects(
                 );
                 if table_split {
                     // 쪽이 나뉐 뒤의 커서는 새 페이지 좌표 — 이전 페이지의
-                    // bottom과 max하면 빈 쪽이 생긴다.
+                    // page's bottom; doing so would create a blank page.
                     bottom = end;
                     page_split = true;
                 } else {
@@ -1860,7 +1903,7 @@ fn layout_table(
     x: f32,
     y: f32,
     avail_width: f32,
-    split: Option<&mut TableSplitCtx<'_, '_>>,
+    mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
 ) -> (f32, bool) {
     let cols = table.cols.max(1) as usize;
@@ -1869,6 +1912,7 @@ fn layout_table(
     // 그리드 기하: span=1 셀에서 열 폭/행 높이를 확정, 모르는 칸은 평균으로
     let mut col_w = vec![0.0f32; cols];
     let mut row_h = vec![0.0f32; rows];
+    let mut row_covered = vec![false; rows];
     for cell in &table.cells {
         let (c, r) = (cell.col as usize, cell.row as usize);
         if cell.col_span == 1 && c < cols {
@@ -1877,9 +1921,24 @@ fn layout_table(
         if cell.row_span == 1 && r < rows {
             row_h[r] = row_h[r].max(cell.height.to_pt() as f32);
         }
+        if c < cols && r < rows {
+            let span_end = (r + (cell.row_span as usize).max(1)).min(rows);
+            row_covered[r..span_end].fill(true);
+        }
     }
     derive_col_widths(&mut col_w, table, avail_width);
     fill_unknown(&mut row_h, 18.0);
+    if row_covered.iter().any(|covered| !covered) {
+        warnings.push_once(
+            RenderIssueCode::InvalidTableCellOmitted,
+            b"uncovered-table-row",
+        );
+        for (height, covered) in row_h.iter_mut().zip(&row_covered) {
+            if !covered {
+                *height = 0.0;
+            }
+        }
+    }
 
     // 측정 패스: 실제 내용 높이로 행 높이를 확장한다(저장된 cell.height는 한글의 줄바꿈
     // 기준이라, 셰이핑/합성 줄바꿈이 더 많은 줄을 만들면 내용이 다음 행을 침범해 겹친다 —
@@ -1938,12 +1997,12 @@ fn layout_table(
         }
     }
 
-    // 누적 오프셋 (row_prefix는 표 상단 기준 — 쪽 분할 조각의 베이스 계산용)
+    // Prefixes are table-relative so every page fragment can add its own y.
     let col_x: Vec<f32> = prefix_sums(&col_w, x);
     let row_prefix: Vec<f32> = prefix_sums(&row_h, 0.0);
     let total_h: f32 = row_h.iter().sum();
 
-    // 그리드 밖 셀은 조각 방출 때 중복 집계되지 않게 여기서 한 번만 보고한다.
+    // Report out-of-grid cells once rather than once per fragment.
     for cell in &table.cells {
         if cell.col as usize >= cols || cell.row as usize >= rows {
             warnings.push(
@@ -1953,16 +2012,17 @@ fn layout_table(
         }
     }
 
-    // 제목 행 수: 선두부터 "그 행에서 시작하는 셀이 모두 제목 셀"인 연속 행.
-    // 표 전체가 제목 행이면 반복 대상으로 삼지 않는다.
+    // Count the leading all-header block and include rows covered by a header
+    // cell's row span. A mixed row inside that span is unsafe to replay.
     let header_rows = if table.repeat_header() {
-        let mut n = 0usize;
-        while n < rows {
-            let r = n as u16;
+        let mut row = 0usize;
+        let mut end = 0usize;
+        let mut valid = true;
+        while row < rows {
             let mut any = false;
             let mut all_header = true;
             for cell in &table.cells {
-                if cell.row == r {
+                if cell.row as usize == row && (cell.col as usize) < cols {
                     any = true;
                     if !cell.is_header() {
                         all_header = false;
@@ -1970,94 +2030,177 @@ fn layout_table(
                     }
                 }
             }
-            if !any || !all_header {
+            if !any {
+                if row < end {
+                    row += 1;
+                    continue;
+                }
                 break;
             }
-            n += 1;
+            if !all_header {
+                valid = row >= end;
+                break;
+            }
+            for cell in &table.cells {
+                if cell.row as usize == row && (cell.col as usize) < cols {
+                    end = end.max((row + (cell.row_span as usize).max(1)).min(rows));
+                }
+            }
+            row += 1;
         }
-        if n >= rows { 0 } else { n }
+        if !valid || end >= rows { 0 } else { end }
     } else {
         0
     };
     let header_h: f32 = row_h[..header_rows].iter().sum();
 
-    // 쪽 분할 계획: (시작 행, 끝 행, 데이터 영역 상단 y, 제목 행 재그리기 여부).
-    let mut fragments: Vec<(usize, usize, f32, bool)> = vec![(0, rows, y, false)];
-    let mut split_happened = false;
-    if let Some(ctx) = split {
+    // A boundary is legal only when it does not cut through a row-spanning
+    // cell. Keep the complete header block together as well, otherwise a
+    // continuation could both replay and render the same header row.
+    let mut legal_boundary = vec![true; rows + 1];
+    for cell in &table.cells {
+        let start = cell.row as usize;
+        if start >= rows {
+            continue;
+        }
+        let end = (start + (cell.row_span as usize).max(1)).min(rows);
+        for allowed in &mut legal_boundary[start + 1..end] {
+            *allowed = false;
+        }
+    }
+    if header_rows > 1 {
+        for allowed in &mut legal_boundary[1..header_rows] {
+            *allowed = false;
+        }
+    }
+
+    // Fragment tuple: first row, exclusive end row, data top, replay header,
+    // and whether a page must be finalized immediately before emission.
+    let mut fragments: Vec<(usize, usize, f32, bool, bool)> = vec![(0, rows, y, false, false)];
+    if let Some(ctx) = split.as_deref() {
         let body_top = ctx.body_top;
         let body_bottom = ctx.body_bottom;
+        let first_body_bottom = (body_bottom
+            - page_notes_reservation_height(
+                doc,
+                store,
+                page,
+                ctx.page_notes,
+                ctx.body_left,
+                ctx.body_width,
+            ))
+        .max(body_top);
         let page_h = body_bottom - body_top;
         let treat_as_char = table.placement.as_ref().is_some_and(|p| p.treat_as_char);
         let policy = table.page_break_policy();
-        if y + total_h > body_bottom {
+        if y + total_h > first_body_bottom {
             if treat_as_char || (policy == hwp_model::TablePageBreak::None && total_h <= page_h) {
-                // 글자처럼 취급 표는 "한 글자"라 나눌 수 없고(GE-8), pageBreak=NONE은
-                // 통째로 다음 쪽으로 밀 뿐 나누지 않는다(04 §6.1 불변식).
+                // An inline table is one indivisible character (GE-8).
+                // NONE also keeps a page-sized table together.
                 if y > body_top && total_h <= page_h {
-                    if ctx.break_page(doc, store, page, warnings) {
-                        split_happened = true;
-                        fragments = vec![(0, rows, body_top, false)];
-                    }
+                    fragments = vec![(0, rows, body_top, false, true)];
                 } else if total_h > page_h {
-                    // 한 쪽에도 안 들어가는 글자처럼 취급 표 — 넘침(절단)을 보고.
+                    // An indivisible table taller than a page must surface its overflow.
                     warnings.push(RenderIssueCode::TableRowTooTallClipped, b"treat-as-char");
                 }
             } else {
-                // 행 경계 분할 (pageBreak=TABLE/CELL; 한 쪽을 넘는 NONE의 폴백).
-                // CELL의 셀 내부 분할은 미지원 — 행이 한 쪽을 넘을 때만
-                // TableRowTooTallClipped로 표면화된다.
-                let mut frags: Vec<(usize, usize, f32, bool)> = Vec::new();
-                let mut rs = 0usize;
-                let mut top = y;
-                let mut cur_y = y;
-                let mut can_break = true;
-                for (r, &rh) in row_h.iter().enumerate() {
-                    if can_break
-                        && cur_y + rh > body_bottom
-                        && (r > rs || cur_y > body_top + header_h + 0.5)
+                // TABLE/CELL split at row boundaries; oversized NONE tables
+                // use the same fallback. Cell-internal splitting is not yet supported.
+                let boundaries: Vec<usize> = (0..=rows)
+                    .filter(|&boundary| legal_boundary[boundary])
+                    .collect();
+                let bands: Vec<(usize, usize, f32)> = boundaries
+                    .windows(2)
+                    .map(|pair| {
+                        let start = pair[0];
+                        let end = pair[1];
+                        (start, end, row_h[start..end].iter().sum())
+                    })
+                    .collect();
+
+                let mut frags = Vec::new();
+                let mut fragment_start = 0usize;
+                let mut fragment_top = y;
+                let mut fragment_bottom = first_body_bottom;
+                let mut fragment_h = 0.0f32;
+                let mut break_before = false;
+                for &(band_start, band_end, band_h) in &bands {
+                    let replay_header = header_rows > 0 && fragment_start > 0;
+                    let fresh_top = body_top + if replay_header { header_h } else { 0.0 };
+
+                    // If no band has been accepted and only a page-bottom
+                    // sliver remains, move the same band to a fresh page.
+                    if fragment_h == 0.0
+                        && fragment_top + band_h > fragment_bottom
+                        && fragment_top > fresh_top + 0.5
                     {
-                        if r > rs {
-                            frags.push((rs, r, top, header_rows > 0 && rs > 0));
-                        }
-                        // r == rs(조각의 첫 행)인데 안 들어가는 경우는 슬라이버
-                        // 공간뿐 — 통째로 다음 쪽에서 시작한다.
-                        if ctx.break_page(doc, store, page, warnings) {
-                            split_happened = true;
-                            rs = r;
-                            top = body_top + if r == 0 { 0.0 } else { header_h };
-                            cur_y = top;
-                        } else {
-                            can_break = false; // 페이지 예산 소진 — 나머지는 현재 쪽에
-                        }
+                        fragment_top = fresh_top;
+                        fragment_bottom = body_bottom;
+                        break_before = true;
                     }
-                    if rh > page_h - header_h {
-                        warnings.push(RenderIssueCode::TableRowTooTallClipped, format!("row {r}"));
+
+                    // Flush at the last legal boundary before overflow. Each
+                    // band is indivisible, so row-spanning cells stay intact.
+                    if fragment_h > 0.0 && fragment_top + fragment_h + band_h > fragment_bottom {
+                        frags.push((
+                            fragment_start,
+                            band_start,
+                            fragment_top,
+                            header_rows > 0 && fragment_start > 0,
+                            break_before,
+                        ));
+                        fragment_start = band_start;
+                        fragment_top = body_top + if header_rows > 0 { header_h } else { 0.0 };
+                        fragment_bottom = body_bottom;
+                        fragment_h = 0.0;
+                        break_before = true;
                     }
-                    cur_y += rh;
+
+                    let available = fragment_bottom - fragment_top;
+                    if fragment_h == 0.0 && band_h > available + 0.5 {
+                        warnings.push(
+                            RenderIssueCode::TableRowTooTallClipped,
+                            format!("rows {band_start}..{band_end}"),
+                        );
+                    }
+                    fragment_h += band_h;
                 }
-                frags.push((rs, rows, top, header_rows > 0 && rs > 0));
+                frags.push((
+                    fragment_start,
+                    rows,
+                    fragment_top,
+                    header_rows > 0 && fragment_start > 0,
+                    break_before,
+                ));
                 fragments = frags;
             }
         }
     }
-    if split_happened {
-        warnings.push(
-            RenderIssueCode::TableSplitAcrossPages,
-            format!("{rows} rows"),
-        );
-    }
 
-    // 조각 방출 — 표 셀 안 목록 카운터는 표마다 리셋, 셀 순서로 진행.
-    // 이어지는 쪽의 제목 행은 실제 카운터를 진행하지 않도록 복제 상태로 그린다.
+    // Emit each fragment before advancing the page. Planning must not replace
+    // the current PageList, otherwise all fragments land on the final page.
+    // Repeated headers always replay from the state before the original
+    // header, while the main state advances through body rows exactly once.
     let mut cell_ls = crate::list::ListState::default();
+    let header_ls_seed = cell_ls.clone();
     let mut end_y = y;
-    for &(rs, re, data_top, with_header) in &fragments {
+    let mut emitted_fragments = 0usize;
+    let mut page_advanced = false;
+    for &(rs, re, data_top, with_header, break_before) in &fragments {
         if re <= rs {
             continue;
         }
+        if break_before {
+            let Some(ctx) = split.as_deref_mut() else {
+                break;
+            };
+            if !ctx.break_page(doc, store, page, warnings) {
+                break;
+            }
+            page_advanced = true;
+        }
         if with_header {
-            let mut header_ls = cell_ls.clone();
+            let mut header_ls = header_ls_seed.clone();
             draw_table_rows(
                 doc,
                 store,
@@ -2090,13 +2233,22 @@ fn layout_table(
             warnings,
         );
         end_y = data_top + (row_prefix[re] - row_prefix[rs]);
+        emitted_fragments += 1;
+        if let Some(ctx) = split.as_deref_mut() {
+            ctx.mark_flow();
+        }
     }
-    (end_y, split_happened)
+    if page_advanced && emitted_fragments > 1 {
+        warnings.push(
+            RenderIssueCode::TableSplitAcrossPages,
+            format!("{rows} rows"),
+        );
+    }
+    (end_y, page_advanced)
 }
 
-/// 표의 행 범위 하나(쪽 분할 조각)를 그린다. `base_y + row_prefix[r]`가 행 상단.
-/// 쪽 경계에 걸친 병합 셀은 이 조각 높이로 절단하고(다음 조각에서 다시 그리지 않는
-/// 근사) TableCellPageSpanClipped로 보고한다.
+/// Draw one row-range fragment. `base_y + row_prefix[r]` is the row top.
+/// The planner guarantees that the range never cuts through a row span.
 #[allow(clippy::too_many_arguments)]
 fn draw_table_rows(
     doc: &Document,
@@ -2118,7 +2270,7 @@ fn draw_table_rows(
     for (ci, cell) in table.cells.iter().enumerate() {
         let (c, r) = (cell.col as usize, cell.row as usize);
         if c >= cols || r >= rows || !range.contains(&r) {
-            continue; // 그리드 밖 셀은 layout_table에서 이미 보고됨
+            continue; // `layout_table` already reported this out-of-grid cell.
         }
         let cx = col_x[c];
         let cy = base_y + row_prefix[r];
@@ -2127,12 +2279,11 @@ fn draw_table_rows(
             .sum();
         let span_end = (r + (cell.row_span as usize).max(1)).min(rows);
         if span_end > range.end {
-            warnings.push(
-                RenderIssueCode::TableCellPageSpanClipped,
-                format!("{r}:{c}"),
-            );
+            debug_assert!(false, "fragment cut through row span at {r}:{c}");
+            warnings.push(RenderIssueCode::InvalidTableCellOmitted, format!("{r}:{c}"));
+            continue;
         }
-        let ch: f32 = row_h[r..span_end.min(range.end)].iter().sum();
+        let ch: f32 = row_h[r..span_end].iter().sum();
 
         let border_fill = doc
             .header

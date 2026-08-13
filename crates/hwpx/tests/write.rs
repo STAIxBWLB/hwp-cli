@@ -155,6 +155,47 @@ fn markdown_생성_왕복() {
     assert!(md_out.contains("| 1 | 2 |"), "{md_out}");
 }
 
+#[test]
+fn table_cell_header_and_vertical_alignment_round_trip() {
+    let mut doc = hwp_convert::from_markdown("| Header |\n| --- |\n| Value |\n");
+    let table = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| &mut paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("generated table");
+    table.cells[0].list_attr = (1 << 18) | (2 << 5);
+
+    let out = tmp("table-cell-attributes.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    archive
+        .by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    assert!(xml.contains(r#"header="1""#), "{xml}");
+    assert!(xml.contains(r#"vertAlign="BOTTOM""#), "{xml}");
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let cell = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => table.cells.first(),
+            _ => None,
+        })
+        .expect("round-tripped cell");
+    assert!(cell.is_header());
+    assert_eq!(cell.vert_align(), 2);
+}
+
 /// GI-3/GI-4 왕복: md(이미지+인라인 코드) → hwpx 저장 → 재읽기에서 Picture·bin·코드 글자모양 생존.
 #[test]
 fn md_이미지_코드_hwpx_왕복() {

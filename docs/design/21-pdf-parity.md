@@ -118,9 +118,10 @@ Hancom already tells us where its page breaks are: `LineSeg.flags` bit0 (페이�
 break signal and falls back to the `v_pos` reset heuristic only for synthesized linesegs (flags
 `0x0006_0000`). Page-indexed comparison is meaningless while a table clips across pages, so
 pagination correctness (including table splitting, PR 2) is a **precondition** for measurement,
-not a consumer of it. **Status 2026-08-13: PR 2 landed** — tables split at row boundaries per
-`Table.attr` pageBreak policy with 제목 줄 자동 반복, and splits/clips are reported through typed
-render issues instead of silent media-box clipping.
+not a consumer of it. **Implementation status 2026-08-13: PR #81** splits tables at legal row
+boundaries per `Table.attr` pageBreak policy, preserves row-spanning cells, and supports repeated
+header rows. Hancom Office oracle comparison remains pending, so this is not yet a parity
+certification.
 
 ## 7. Data policy
 

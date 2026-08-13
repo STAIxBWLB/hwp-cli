@@ -162,16 +162,18 @@ is itself knowledge).
   all implemented in the shared DisplayList stage. PNG, SVG and PDF use the same result. GE-4 (`pgnp
   formatType` fixed to DIGIT in HWPX conversion) and GG-16 (header/footer kind selection) remain.
 - **2026-08-13 (PDF parity PR 2, [issue #79](https://github.com/STAIxBWLB/hwp-cli/issues/79))**:
-  renderer-side table page splitting landed. A table crossing `body_bottom` now follows
+  PR #81 implements renderer-side table page splitting. A table crossing `body_bottom` follows
   `Table.attr` bits 0-1 (pageBreak NONE/TABLE/CELL) and bit2 (repeatHeader) plus `Cell.list_attr`
   bit18 (header cell): NONE pushes the table wholesale to the next page, TABLE/CELL split at row
   boundaries with header rows redrawn on continuation pages, and `treat_as_char` tables never split
-  (GE-8's "one character" rule). The silent media-box clip is gone — splits are reported
-  (`TableSplitAcrossPages` info, `TableRowTooTallClipped`, `TableCellPageSpanClipped`). Also fixed
+  (GE-8's "one character" rule). Boundaries that cross row-spanning cells are excluded. Splits and
+  oversized indivisible row bands are reported (`TableSplitAcrossPages` info,
+  `TableRowTooTallClipped`). Also fixed
   the stale-`para_top` anchor bug for page-spanning paragraphs. New model accessors
   `Table::page_break_policy/repeat_header`, `Cell::is_header/vert_align`. Cell-internal splitting
-  (pageBreak=CELL) is approximated as row-boundary splitting. Outstanding: the Hancom verification
-  round (제목 줄 자동 반복 ground truth) and multi-column-aware table splitting.
+  (pageBreak=CELL) is approximated as row-boundary splitting. This is implementation status, not a
+  Hancom parity certification. Outstanding: the Hancom verification round (제목 줄 자동 반복
+  ground truth) and multi-column-aware table splitting.
 
 ---
 

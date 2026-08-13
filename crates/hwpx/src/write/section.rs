@@ -1664,9 +1664,15 @@ fn write_table(
     for (_, cells) in by_row {
         out.push_str("<hp:tr>");
         for cell in cells {
+            let header = u8::from(cell.is_header());
+            let vert_align = match cell.vert_align() {
+                1 => "CENTER",
+                2 => "BOTTOM",
+                _ => "TOP",
+            };
             let _ = write!(
                 out,
-                r##"<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="{}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"##,
+                r##"<hp:tc name="" header="{header}" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="{}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="{vert_align}" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"##,
                 cell.border_fill.0.max(1),
             );
             for para in &cell.paragraphs {

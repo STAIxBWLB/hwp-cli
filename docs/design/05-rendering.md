@@ -129,8 +129,10 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
    split runs the standard page-close sequence (notes → furniture → `push_page_checked` → flow-state
    reset), so the next paragraph's Hancom boundary flag is absorbed instead of double-breaking. When
    `repeat_header()` is set, the leading rows whose cells are all `Cell::is_header()` (`list_attr`
-   bit18) are redrawn at `body_top` of every continuation page. A merged cell spanning the split is
-   truncated to the fragment height and reported (`TableCellPageSpanClipped`).
+   bit18) are redrawn at `body_top` of every continuation page. Candidate boundaries crossed by a
+   `row_span` are excluded, so a merged cell moves as one indivisible row band instead of being
+   truncated. An indivisible band taller than the usable page is reported as
+   `TableRowTooTallClipped`.
 
 `cell_margins`: the cell's own, then the table's `inner_margins`, then the default
 `DEFAULT_CELL_MARGINS=[510,510,141,141]` HWPUNIT. The return value is /100 pt.

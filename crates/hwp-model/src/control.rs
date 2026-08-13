@@ -219,20 +219,22 @@ pub struct Cell {
     pub paragraphs: Vec<Paragraph>,
 }
 
-/// 표의 쪽 나눔 정책 (`Table.attr` bits 0-1, hwpx `pageBreak`).
-/// 비트 위치는 genuine 파일 실측 근거 (docs/design/04-hwpx-owpml.md §6.1).
+/// Table page-break policy (`Table.attr` bits 0-1, HWPX `pageBreak`).
+///
+/// The mapping is preserved by the HWP/HWPX readers and writers. Renderer
+/// behavior still requires comparison with a Hancom Office oracle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TablePageBreak {
-    /// 나누지 않음 — 남은 공간에 안 들어가면 통째로 다음 쪽으로 밀린다.
+    /// Keep the table together when it fits on one page.
     None,
-    /// 행 경계에서 나눔.
+    /// Split at table row boundaries.
     Table,
-    /// 셀 안에서도 나눔 (렌더러는 현재 Table과 동일하게 취급).
+    /// Allow cell splitting (currently rendered at row boundaries).
     Cell,
 }
 
 impl Table {
-    /// 쪽 나눔 정책 (`attr` bits 0-1: NONE=0, TABLE=1, CELL=2).
+    /// Returns the page-break policy (`attr` bits 0-1).
     pub fn page_break_policy(&self) -> TablePageBreak {
         match self.attr & 0x3 {
             1 => TablePageBreak::Table,
@@ -241,20 +243,19 @@ impl Table {
         }
     }
 
-    /// 제목 줄 자동 반복 (`attr` bit2, hwpx `repeatHeader`).
+    /// Returns whether leading header rows repeat (`attr` bit 2).
     pub fn repeat_header(&self) -> bool {
         self.attr & 0x4 != 0
     }
 }
 
 impl Cell {
-    /// 제목 셀 여부 (`list_attr` bit18, hwpx `hp:tc@header`) — 표가 쪽에 걸칠 때
-    /// 이어지는 쪽에서 반복되는 행의 셀.
+    /// Returns whether this is a header cell (`list_attr` bit 18).
     pub fn is_header(&self) -> bool {
         self.list_attr & (1 << 18) != 0
     }
 
-    /// 세로 정렬 (`list_attr` bits 5-6: TOP=0, CENTER=1, BOTTOM=2).
+    /// Returns vertical alignment (`list_attr` bits 5-6).
     pub fn vert_align(&self) -> u8 {
         ((self.list_attr >> 5) & 0x3) as u8
     }
@@ -419,7 +420,7 @@ mod tests {
     use super::{Cell, GsoPlacement, Table, TablePageBreak};
     use crate::units::HwpUnit;
 
-    /// 쪽 나눔·제목 줄 반복·제목 셀 비트 접근자 (04-hwpx-owpml.md §6 실측 비트).
+    /// Locks the model accessors to the serialized attribute mappings.
     #[test]
     fn 표_쪽나눔_제목셀_비트_접근자() {
         let table = |attr: u32| Table {
@@ -461,7 +462,7 @@ mod tests {
         assert_eq!(cell(0).vert_align(), 0);
         assert_eq!(cell(0x20).vert_align(), 1);
         assert_eq!(cell(0x40).vert_align(), 2);
-        // 제목 셀 + 세로 정렬 비트는 서로 간섭하지 않는다.
+        // Header and vertical-alignment bits are independent.
         let both = cell((1 << 18) | 0x20);
         assert!(both.is_header());
         assert_eq!(both.vert_align(), 1);
