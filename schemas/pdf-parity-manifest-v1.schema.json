@@ -36,11 +36,13 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "source", "oracle"],
+        "required": ["name", "source", "source_sha256", "oracle", "oracle_sha256"],
         "properties": {
           "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
           "source": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.(hwp|hwpx)$" },
-          "oracle": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.pdf$" }
+          "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "oracle": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.pdf$" },
+          "oracle_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
         }
       }
     }

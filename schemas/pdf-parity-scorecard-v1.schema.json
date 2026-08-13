@@ -28,7 +28,14 @@
     "scored": { "type": "boolean" },
     "unscored_reasons": {
       "type": "array",
-      "items": { "enum": ["page_count_delta", "font_substitution"] },
+      "items": {
+        "enum": [
+          "page_count_delta",
+          "font_coverage_unavailable",
+          "font_substitution",
+          "pdf_font_contract"
+        ]
+      },
       "uniqueItems": true
     },
     "pages": {
@@ -44,11 +51,19 @@
     "fonts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ours", "oracle", "ours_all_embedded_subset_unicode"],
+      "required": [
+        "ours",
+        "oracle",
+        "ours_all_embedded_subset_unicode",
+        "oracle_all_embedded_subset_unicode",
+        "all_embedded_subset_unicode"
+      ],
       "properties": {
         "ours": { "type": "array", "items": { "$ref": "#/$defs/font" } },
         "oracle": { "type": "array", "items": { "$ref": "#/$defs/font" } },
-        "ours_all_embedded_subset_unicode": { "type": "boolean" }
+        "ours_all_embedded_subset_unicode": { "type": "boolean" },
+        "oracle_all_embedded_subset_unicode": { "type": "boolean" },
+        "all_embedded_subset_unicode": { "type": "boolean" }
       }
     },
     "font_coverage": {

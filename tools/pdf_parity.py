@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""PDF 동등성 배치 러너 (issue #79 PR 4) — docs/design/21-pdf-parity.md §3의 다섯 지표.
+"""Hancom PDF parity batch runner for issue #79 PR 4.
 
-케이스마다 우리 PDF(hwp render --format pdf)와 한컴 기준 PDF를 나란히 재서
-1) pdffonts 임베드/서브셋/유니코드, 2) pdfinfo 쪽수, 3) pdftotext -layout 정규화
-텍스트 등가, 4~5) 같은 Poppler(pdftoppm -r 150) 래스터의 dx/dy·ink_ratio·
-bad_pixel_pct·mae(hwp diff --format json)를 모아 점수카드 JSON을 만든다.
+The runner compares locally rendered PDFs with private Hancom oracle PDFs using
+the five metrics defined in docs/design/21-pdf-parity.md section 3. It validates
+and enforces every locally checkable manifest pin before measuring any case.
+Only names, SHA-256 digests, and numeric results are allowed in published files.
 
-데이터 정책(docs/design/21 §7): 기준 PDF는 로컬 전용, 커밋되는 산출물은 이름과
-SHA-256, 수치뿐 — 절대 경로가 새지 않도록 쓰기 전에 가드를 둔다.
-
-직접 실행보다 scripts/pdf-parity.sh 래퍼를 쓴다(도구 점검·hwp 빌드 포함).
+Use scripts/pdf-parity.sh instead of invoking this module directly. The wrapper
+checks external tools and builds the hwp binary and JSON Schema validator.
 """
 
 import argparse
@@ -28,8 +26,12 @@ CONTRACT_SCORECARD = "hwp-pdf-parity-scorecard-v1"
 CONTRACT_SCOREBOARD = "hwp-pdf-parity-scoreboard-v1"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SCHEMAS = REPO_ROOT / "schemas"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PLACEHOLDER_RE = re.compile(r"(?:todo|placeholder)", re.IGNORECASE)
+FONT_EXTENSIONS = {".otc", ".otf", ".ttc", ".ttf"}
 
-# pdffonts 한 행: name type encoding emb sub uni object-ID(2토큰).
+# A pdffonts row is: name, type, encoding, emb, sub, uni, object ID (two tokens).
 FONT_ROW = re.compile(
     r"^(?P<name>.*?)\s+"
     r"(?P<type>CID Font Type 0C?|CID TrueType(?: \(OpenType\))?|CID Type 0C?(?: \(OT\))?"
@@ -61,10 +63,72 @@ def sha256_file(path: Path) -> str:
 
 
 def poppler_version() -> str:
-    # pdfinfo -v는 stderr로 버전을 내는 배포판이 있어 양쪽을 모두 본다.
+    # Some pdfinfo builds write their version to stderr.
     proc = subprocess.run(["pdfinfo", "-v"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise die("pdfinfo 버전을 확인할 수 없음")
     out = (proc.stdout or proc.stderr).strip()
     return out.splitlines()[0] if out else "unknown"
+
+
+def validator_path() -> Path:
+    suffix = ".exe" if os.name == "nt" else ""
+    return REPO_ROOT / f"target/debug/examples/validate_structured_corpus{suffix}"
+
+
+def validate_documents(pairs: list) -> None:
+    """Validate every (schema name, document path) pair using the Rust validator."""
+    validator = validator_path()
+    if not validator.is_file():
+        raise die("JSON 스키마 검증기 없음 (scripts/pdf-parity.sh run 사용 필요)")
+    arguments = []
+    for schema, document in pairs:
+        arguments.extend([str(SCHEMAS / f"{schema}.schema.json"), str(document)])
+    proc = subprocess.run(
+        [str(validator), *arguments], capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        reason = detail[-1] if detail else "unknown validation failure"
+        raise die(f"JSON 스키마 검증 실패: {reason}")
+
+
+def require_concrete_pin(label: str, value: str) -> None:
+    if not value.strip() or PLACEHOLDER_RE.search(value):
+        raise die(f"manifest pin 미설정: {label}")
+
+
+def font_directory() -> Path:
+    return Path(os.environ.get("HWP_FONT_DIR", "fonts")).expanduser()
+
+
+def verify_manifest_pins(manifest: dict) -> str:
+    """Verify metadata, Poppler, and font file pins before any case is scored."""
+    pins = manifest["pins"]
+    for key in ("hancom_build", "windows_version", "pdf_settings", "poppler_version"):
+        require_concrete_pin(key, pins[key])
+
+    actual_poppler = poppler_version()
+    if pins["poppler_version"] != actual_poppler:
+        raise die(
+            "Poppler 버전 불일치: "
+            f"manifest={pins['poppler_version']!r}, actual={actual_poppler!r}"
+        )
+
+    directory = font_directory()
+    if not directory.is_dir():
+        raise die(f"고정 폰트 디렉터리 없음: {directory}")
+    available = {
+        sha256_file(path)
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix.lower() in FONT_EXTENSIONS
+    }
+    for family, expected in pins["fonts"].items():
+        if not SHA256_RE.fullmatch(expected):
+            raise die(f"manifest font SHA-256 미설정 또는 형식 오류: {family}")
+        if expected not in available:
+            raise die(f"고정 폰트 SHA-256 불일치 또는 파일 없음: {family}")
+    return actual_poppler
 
 
 def pdf_pages(pdf: Path) -> int:
@@ -76,10 +140,10 @@ def pdf_pages(pdf: Path) -> int:
 
 
 def pdf_fonts(pdf: Path) -> list:
-    """pdffonts → [{name, type, embedded, subset, unicode}]."""
+    """Return normalized pdffonts rows."""
     out = run(["pdffonts", str(pdf)]).stdout
     fonts = []
-    for line in out.splitlines()[2:]:  # 헤더 2행 건너뜀
+    for line in out.splitlines()[2:]:  # Skip the two header rows.
         if not line.strip():
             continue
         m = FONT_ROW.match(line)
@@ -98,7 +162,7 @@ def pdf_fonts(pdf: Path) -> list:
 
 
 def page_text(pdf: Path, page: int) -> str:
-    """pdftotext -layout 한 쪽 — 공백 런 붕괴·빈 줄 제거로 정규화."""
+    """Normalize one pdftotext -layout page by collapsing whitespace."""
     out = run(["pdftotext", "-layout", "-f", str(page), "-l", str(page), str(pdf), "-"]).stdout
     lines = [re.sub(r"\s+", " ", ln).strip() for ln in out.splitlines()]
     return "\n".join(ln for ln in lines if ln)
@@ -127,7 +191,7 @@ def raster_diff(hwp_bin: Path, source_name: str, ours_png: Path, ref_png: Path,
 
 
 def render_ours(hwp_bin: Path, source: Path, out_pdf: Path, dpi: int) -> dict:
-    """우리 PDF를 만들고 폰트 커버리지(stderr)를 파싱해 돌려준다."""
+    """Render a PDF and parse the font coverage report from stderr."""
     proc = subprocess.run(
         [str(hwp_bin), "render", str(source), "-o", str(out_pdf),
          "--format", "pdf", "--dpi", str(dpi)],
@@ -154,7 +218,7 @@ def render_ours(hwp_bin: Path, source: Path, out_pdf: Path, dpi: int) -> dict:
 
 def score_case(name: str, source: Path, oracle: Path, hwp_bin: Path, dpi: int,
                work: Path) -> dict:
-    """케이스 하나의 다섯 지표를 모아 점수카드를 만든다."""
+    """Collect the five metric groups for one case."""
     coverage = render_ours(hwp_bin, source, work / "ours.pdf", dpi)
     ours_pdf = work / "ours.pdf"
 
@@ -162,7 +226,15 @@ def score_case(name: str, source: Path, oracle: Path, hwp_bin: Path, dpi: int,
     delta = ours_pages - oracle_pages
 
     ours_fonts, oracle_fonts = pdf_fonts(ours_pdf), pdf_fonts(oracle)
-    fonts_ok = all(f["embedded"] and f["subset"] and f["unicode"] for f in ours_fonts)
+    ours_fonts_ok = all(
+        font["embedded"] and font["subset"] and font["unicode"]
+        for font in ours_fonts
+    )
+    oracle_fonts_ok = all(
+        font["embedded"] and font["subset"] and font["unicode"]
+        for font in oracle_fonts
+    )
+    fonts_ok = ours_fonts_ok and oracle_fonts_ok
 
     compared = min(ours_pages, oracle_pages)
     equal = 0
@@ -181,12 +253,16 @@ def score_case(name: str, source: Path, oracle: Path, hwp_bin: Path, dpi: int,
         entry.update(raster_diff(hwp_bin, source.name, ours_png, ref_png, n, dpi))
         raster.append(entry)
 
-    substitution_free = True if coverage is None else coverage["substitution_free"]
+    substitution_free = coverage is not None and coverage["substitution_free"]
     reasons = []
     if delta != 0:
         reasons.append("page_count_delta")
-    if not substitution_free:
+    if coverage is None:
+        reasons.append("font_coverage_unavailable")
+    elif not substitution_free:
         reasons.append("font_substitution")
+    if not fonts_ok:
+        reasons.append("pdf_font_contract")
 
     return {
         "contract": CONTRACT_SCORECARD,
@@ -200,7 +276,9 @@ def score_case(name: str, source: Path, oracle: Path, hwp_bin: Path, dpi: int,
         "fonts": {
             "ours": ours_fonts,
             "oracle": oracle_fonts,
-            "ours_all_embedded_subset_unicode": fonts_ok,
+            "ours_all_embedded_subset_unicode": ours_fonts_ok,
+            "oracle_all_embedded_subset_unicode": oracle_fonts_ok,
+            "all_embedded_subset_unicode": fonts_ok,
         },
         "font_coverage": coverage,
         "substitution_free": substitution_free,
@@ -230,13 +308,13 @@ def summarize(card: dict) -> dict:
         "bad_pixel_pct_max": max((r["bad_pixel_pct"] for r in raster), default=0.0),
         "mae_max": max((r["mae"] for r in raster), default=0.0),
         "fonts_all_embedded_subset_unicode": card["fonts"]
-        ["ours_all_embedded_subset_unicode"],
+        ["all_embedded_subset_unicode"],
         "substitution_free": card["substitution_free"],
     }
 
 
 def guard_no_paths(payload: str, forbidden: list) -> None:
-    """커밋될 산출물에 로컬 절대 경로가 새지 않았는지 검사한다."""
+    """Reject local absolute paths from committable output payloads."""
     for needle in forbidden:
         if needle and needle in payload:
             raise die(f"산출물에 로컬 경로 누출: {needle}")
@@ -249,29 +327,135 @@ def write_json(path: Path, value: dict, forbidden: list) -> None:
     path.write_text(payload, encoding="utf-8")
 
 
+def resolve_case_file(root: Path, filename: str, label: str) -> Path:
+    """Resolve a regular case file without allowing a symlink escape."""
+    try:
+        resolved_root = root.resolve(strict=True)
+    except OSError:
+        raise die(f"{label} 디렉터리 없음: {root}")
+    candidate = resolved_root / filename
+    if candidate.is_symlink() or not candidate.is_file():
+        raise die(f"{label} 파일 없음 또는 심볼릭 링크: {filename}")
+    try:
+        resolved = candidate.resolve(strict=True)
+        contained = os.path.commonpath([str(resolved_root), str(resolved)]) == str(
+            resolved_root
+        )
+    except (OSError, ValueError):
+        contained = False
+    if not contained:
+        raise die(f"{label} 파일이 허용 디렉터리를 벗어남: {filename}")
+    return candidate
+
+
+def prepare_cases(manifest: dict, manifest_path: Path, oracle_dir: Path) -> list:
+    """Reject duplicate names and verify every pinned artifact before rendering."""
+    if not manifest["cases"]:
+        raise die("manifest cases가 비어 있음")
+    source_root = manifest_path.parent / "source"
+    case_names = [case["name"] for case in manifest["cases"]]
+    if len(set(case_names)) != len(case_names):
+        duplicate = next(name for name in case_names if case_names.count(name) > 1)
+        raise die(f"중복 case 이름: {duplicate}")
+    prepared = []
+    for case in manifest["cases"]:
+        name = case["name"]
+        source = resolve_case_file(source_root, case["source"], f"케이스 {name} source")
+        oracle = resolve_case_file(oracle_dir, case["oracle"], f"케이스 {name} oracle")
+        source_hash = sha256_file(source)
+        oracle_hash = sha256_file(oracle)
+        if source_hash != case["source_sha256"]:
+            raise die(f"케이스 {name}: source SHA-256 불일치")
+        if oracle_hash != case["oracle_sha256"]:
+            raise die(f"케이스 {name}: oracle SHA-256 불일치")
+        prepared.append(
+            {
+                "name": name,
+                "source": source,
+                "oracle": oracle,
+                "source_sha256": source_hash,
+                "oracle_sha256": oracle_hash,
+            }
+        )
+    return prepared
+
+
+def validate_output_directory(out_dir: Path) -> None:
+    if out_dir.is_symlink() or (out_dir.exists() and not out_dir.is_dir()):
+        raise die(f"점수판 출력 디렉터리 경로가 안전하지 않음: {out_dir}")
+
+
+def publish_artifacts(stage: Path, out_dir: Path, filenames: list) -> None:
+    """Publish a validated file set with rollback for any mid-publish failure."""
+    validate_output_directory(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir = stage / ".previous"
+    backup_dir.mkdir()
+    published = []
+    backups = []
+    try:
+        for filename in filenames:
+            source = stage / filename
+            destination = out_dir / filename
+            if destination.is_symlink() or (
+                destination.exists() and not destination.is_file()
+            ):
+                raise die(f"기존 점수판 산출물 경로가 안전하지 않음: {filename}")
+            if destination.exists():
+                backup = backup_dir / filename
+                os.replace(destination, backup)
+                backups.append((backup, destination))
+            os.replace(source, destination)
+            published.append(destination)
+    except BaseException:
+        for destination in reversed(published):
+            if destination.is_file() or destination.is_symlink():
+                destination.unlink()
+        for backup, destination in reversed(backups):
+            if backup.exists():
+                os.replace(backup, destination)
+        raise
+
+
 def cmd_run(args) -> int:
-    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    manifest_path = Path(args.manifest)
+    validate_documents([("pdf-parity-manifest-v1", manifest_path)])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("contract") != CONTRACT_MANIFEST:
         raise die(f"manifest 계약 불일치: {manifest.get('contract')!r}")
     oracle_dir = Path(args.oracle_dir).expanduser()
     if not oracle_dir.is_dir():
         raise die(f"기준 PDF 디렉터리 없음: {oracle_dir} (로컬 전용, 커밋 금지)")
     out_dir = Path(args.out)
+    validate_output_directory(out_dir)
+    hwp_bin = Path(args.hwp_bin)
+    if not hwp_bin.is_file():
+        raise die(f"hwp 실행 파일 없음: {hwp_bin}")
     dpi = int(manifest["pins"]["dpi"])
-    source_root = Path(args.manifest).parent / "source"
+    actual_poppler = verify_manifest_pins(manifest)
+    cases = prepare_cases(manifest, manifest_path, oracle_dir)
 
-    forbidden = [str(oracle_dir), str(Path.home()), str(REPO_ROOT) + os.sep]
+    forbidden = [
+        str(oracle_dir.resolve()),
+        str(Path.home()),
+        str(REPO_ROOT) + os.sep,
+    ]
     cards = []
-    for case in manifest["cases"]:
+    for case in cases:
         name = case["name"]
-        source = source_root / case["source"]
-        oracle = oracle_dir / case["oracle"]
-        for p in (source, oracle):
-            if not p.is_file():
-                raise die(f"케이스 {name}: 파일 없음 — {p.name}")
         with tempfile.TemporaryDirectory(prefix="hwp-parity-") as tmp:
-            card = score_case(name, source, oracle, Path(args.hwp_bin), dpi, Path(tmp))
-        write_json(out_dir / f"{name}.json", card, forbidden)
+            card = score_case(
+                name,
+                case["source"],
+                case["oracle"],
+                hwp_bin,
+                dpi,
+                Path(tmp),
+            )
+        if card["source"]["sha256"] != case["source_sha256"]:
+            raise die(f"케이스 {name}: 측정 중 source 파일 변경 감지")
+        if card["oracle"]["sha256"] != case["oracle_sha256"]:
+            raise die(f"케이스 {name}: 측정 중 oracle 파일 변경 감지")
         cards.append(card)
         mark = "scored" if card["scored"] else f"unscored({','.join(card['unscored_reasons'])})"
         print(f"[pdf-parity] {name}: pages Δ{card['pages']['delta']}, "
@@ -281,42 +465,46 @@ def cmd_run(args) -> int:
     board = {
         "contract": CONTRACT_SCOREBOARD,
         "generated_by": "scripts/pdf-parity.sh",
-        "poppler_version": poppler_version(),
+        "poppler_version": actual_poppler,
         "dpi": dpi,
         "cases": [summarize(c) for c in cards],
     }
-    write_json(out_dir / "scoreboard.json", board, forbidden)
 
-    csv_lines = ["case,page,dx,dy,ink_ratio,bad_pixel_pct,mae"]
-    for c in cards:
-        for r in c["raster"]:
-            csv_lines.append(
-                f"{c['case']},{r['page']},{r['dx']},{r['dy']},"
-                f"{r['ink_ratio']:.6f},{r['bad_pixel_pct']:.6f},{r['mae']:.4f}"
-            )
-    csv_payload = "\n".join(csv_lines) + "\n"
-    guard_no_paths(csv_payload, forbidden)
-    (out_dir / "scoreboard.csv").write_text(csv_payload, encoding="utf-8")
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".pdf-parity-stage-", dir=out_dir.parent) as tmp:
+        stage = Path(tmp)
+        for card in cards:
+            write_json(stage / f"{card['case']}.json", card, forbidden)
+        write_json(stage / "scoreboard.json", board, forbidden)
 
-    # 스키마 검증 (래퍼가 빌드해 둔 예제 검증기 재사용).
-    validator = REPO_ROOT / "target/debug/examples/validate_structured_corpus"
-    if validator.is_file():
-        pairs = []
-        for schema, doc in [
-            ("pdf-parity-scoreboard-v1", out_dir / "scoreboard.json"),
-            ("pdf-parity-manifest-v1", Path(args.manifest)),
-        ] + [("pdf-parity-scorecard-v1", out_dir / f"{c['case']}.json") for c in cards]:
-            pairs += [str(REPO_ROOT / f"schemas/{schema}.schema.json"), str(doc)]
-        subprocess.run([str(validator)] + pairs, check=True)
-        print("[pdf-parity] 스키마 검증 통과")
-    else:
-        print("[pdf-parity] 경고: 스키마 검증기 없음 — 검증 건너뜀", file=sys.stderr)
+        csv_lines = ["case,page,dx,dy,ink_ratio,bad_pixel_pct,mae"]
+        for card in cards:
+            for raster in card["raster"]:
+                csv_lines.append(
+                    f"{card['case']},{raster['page']},{raster['dx']},{raster['dy']},"
+                    f"{raster['ink_ratio']:.6f},{raster['bad_pixel_pct']:.6f},"
+                    f"{raster['mae']:.4f}"
+                )
+        csv_payload = "\n".join(csv_lines) + "\n"
+        guard_no_paths(csv_payload, forbidden)
+        (stage / "scoreboard.csv").write_text(csv_payload, encoding="utf-8")
+
+        pairs = [("pdf-parity-scoreboard-v1", stage / "scoreboard.json")]
+        pairs.extend(
+            ("pdf-parity-scorecard-v1", stage / f"{card['case']}.json")
+            for card in cards
+        )
+        validate_documents(pairs)
+        filenames = [f"{card['case']}.json" for card in cards]
+        filenames.extend(["scoreboard.json", "scoreboard.csv"])
+        publish_artifacts(stage, out_dir, filenames)
+    print("[pdf-parity] 스키마 검증 통과")
     print(f"[pdf-parity] 점수판: {out_dir}/scoreboard.json (+ .csv, 케이스 {len(cards)}건)")
     return 0
 
 
 def cmd_selftest(args) -> int:
-    """하네스 자기 검증: 같은 PDF를 기준으로 돌리면 모든 지표가 완벽해야 한다."""
+    """Verify that comparing one rendered PDF with itself is exact."""
     source = Path(args.source) if args.source else None
     if source is None:
         candidates = sorted((REPO_ROOT / "fixtures/hwp5").glob("*.hwp"))
@@ -328,9 +516,10 @@ def cmd_selftest(args) -> int:
     dpi = 150
     with tempfile.TemporaryDirectory(prefix="hwp-parity-selftest-") as tmp:
         work = Path(tmp)
-        render_ours(Path(args.hwp_bin), source, work / "ours.pdf", dpi)
-        # 기준 = 우리 PDF 자신.
-        card = score_case("selftest", source, work / "ours.pdf",
+        oracle = work / "oracle.pdf"
+        render_ours(Path(args.hwp_bin), source, oracle, dpi)
+        # Compare two independent renders so the oracle is never overwritten in place.
+        card = score_case("selftest", source, oracle,
                           Path(args.hwp_bin), dpi, work)
     problems = []
     if card["pages"]["delta"] != 0:
@@ -339,10 +528,17 @@ def cmd_selftest(args) -> int:
     if t["pages_equal"] != t["pages_compared"]:
         problems.append(f"텍스트 불일치 (첫 쪽 {t['first_diff_page']})")
     for r in card["raster"]:
-        if (r["dx"], r["dy"]) != (0, 0) or r["bad_pixel_pct"] != 0.0 or r["ink_ratio"] != 1.0:
+        if (
+            (r["dx"], r["dy"]) != (0, 0)
+            or r["bad_pixel_pct"] != 0.0
+            or r["ink_ratio"] != 1.0
+            or r["mae"] != 0.0
+        ):
             problems.append(f"래스터 불일치 (쪽 {r['page']})")
-    if not card["fonts"]["ours_all_embedded_subset_unicode"]:
+    if not card["fonts"]["all_embedded_subset_unicode"]:
         problems.append("임베드/서브셋/유니코드 아닌 폰트")
+    if not card["substitution_free"]:
+        problems.append("글꼴 커버리지 확인 실패 또는 대체 감지")
     if problems:
         for p in problems:
             print(f"[pdf-parity] selftest 실패: {p}", file=sys.stderr)

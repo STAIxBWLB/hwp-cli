@@ -59,6 +59,9 @@ jobs:
       - name: Clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: PDF parity runner tests
+        if: ${{ !cancelled() }}
+        run: python3 -m unittest tools/test_pdf_parity.py
       # Fonts are not committed; the script fetches them from upstream and verifies
       # manifest hashes.
       - name: Structured document corpus (pinned OFL fonts, offline cargo)

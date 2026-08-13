@@ -37,7 +37,14 @@
           "scored": { "type": "boolean" },
           "unscored_reasons": {
             "type": "array",
-            "items": { "enum": ["page_count_delta", "font_substitution"] },
+            "items": {
+              "enum": [
+                "page_count_delta",
+                "font_coverage_unavailable",
+                "font_substitution",
+                "pdf_font_contract"
+              ]
+            },
             "uniqueItems": true
           },
           "pages_delta": { "type": "integer" },

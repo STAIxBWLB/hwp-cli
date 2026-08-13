@@ -84,8 +84,10 @@ Hancom PDF and our PDF.
 `scripts/pdf-parity.sh run` scores every manifest case into the committable numeric scoreboard
 under `fixtures/pdf-parity/public/scoreboard/` (schema-validated, names + SHA-256 + numbers
 only), `selftest` verifies the harness without an oracle, and `hwp diff --format json` /
-`--ours-png` is the per-page raster metric source. The 3–5 Hancom baseline exports and the
-first committed numbers are the remaining owner action.
+`--ours-png` is the per-page raster metric source. Scoring fails closed unless the manifest,
+Poppler version, font files, and source/oracle digests match their pins; validated outputs are
+published as one rollback-protected set. The 3–5 Hancom baseline exports and the first committed
+numbers are the remaining owner action.
 
 ## 4. Gates
 
@@ -129,6 +131,8 @@ so **a parity number measured under substituted fonts is meaningless**.
   FontSubsetFallback counts; the CLI render report prints the coverage line.
 - `FontCoverage::substitution_free()` is the hard gate: no parity figure may be published for a
   case whose render was not substitution-free.
+- Missing coverage is a gate failure, as is any font in either PDF that `pdffonts` does not report
+  as embedded, subset, and Unicode-capable.
 
 ## 6. Pagination truth (F3)
 

@@ -54,10 +54,12 @@ HWP_FONT_DIR=$PWD/fonts \
    (HWP/HWPX만 — 커밋 가능한 유일한 산출물).
 2. 한글에서 **파일 → PDF로 저장하기**(기본 설정)로 낸 뒤, 정확한 한글 빌드·Windows
    버전·PDF 설정을 `fixtures/pdf-parity/public/manifest.json`(`pins`)에 적고, 고정 폰트
-   (함초롬바탕/돋움, `fonts/`)의 SHA-256도 함께 기록한다.
+   (함초롬바탕/돋움, `fonts/`)의 SHA-256도 함께 기록한다. 고정 폰트가 저장소의 `fonts/`
+   디렉터리에 없으면 `HWP_FONT_DIR`을 지정한다.
 3. 낸 PDF는 로컬에만 둔다 — `$HWP_PDF_PARITY_ORACLE_DIR` 아래(커밋 금지, oracle 트리는
    전부 gitignore).
-4. manifest에 케이스를 추가한다: `{name, source, oracle}`.
+4. manifest에 케이스를 추가한다:
+   `{name, source, source_sha256, oracle, oracle_sha256}`.
 5. 실행:
 
    ```sh
@@ -65,9 +67,10 @@ HWP_FONT_DIR=$PWD/fonts \
    ```
 
    점수판(`public/scoreboard/<case>.json`, `scoreboard.json`, `scoreboard.csv`)은 이름·
-   SHA-256·수치뿐이며(경로·기준 바이트 없음) 커밋되는 유일한 산출물이다. 쪽수가 다르거나
-   폰트 대체가 있는 케이스는 기록하되 `"scored": false`로 표시한다(F1 게이트 — 대체 폰트
-   렌더의 parity 수치는 발행 금지).
+   SHA-256·수치뿐이며(경로·기준 바이트 없음) 커밋되는 유일한 산출물이다. 렌더 전에 닫힌
+   manifest 스키마, Poppler 버전, 고정 폰트 파일, 모든 source/oracle SHA-256을 검증한다.
+   글꼴 커버리지를 확인할 수 없거나, 폰트 대체·쪽수 차이·PDF의 임베드/서브셋/Unicode
+   계약 위반이 있으면 해당 케이스를 `"scored": false`로 표시한다.
 
 `scripts/pdf-parity.sh selftest`는 하네스 자기 검증(fixture를 자기 PDF와 비교하면 모든
 지표가 완벽해야 함)으로 한글 기준 없이 돌릴 수 있다.

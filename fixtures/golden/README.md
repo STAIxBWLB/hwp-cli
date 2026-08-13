@@ -60,10 +60,11 @@ Per-case baseline procedure (owner, on Windows Hancom Office 2024):
    `fixtures/pdf-parity/public/source/` (HWP/HWPX only — the only committable artifacts).
 2. In Hancom: **File → Save as PDF** with default settings; record the exact Hancom build,
    Windows version and PDF settings in `fixtures/pdf-parity/public/manifest.json` (`pins`),
-   plus the SHA-256 of the pinned fonts (HCR Batang/Dotum in `fonts/`).
+   plus the SHA-256 of the pinned fonts (HCR Batang/Dotum in `fonts/`). Set `HWP_FONT_DIR` when
+   the pinned font directory is not the repository's `fonts/` directory.
 3. Keep the exported PDF local — put it in `$HWP_PDF_PARITY_ORACLE_DIR` (never committed;
    the whole oracle tree is gitignored).
-4. Add the case to the manifest: `{name, source, oracle}`.
+4. Add the case to the manifest: `{name, source, source_sha256, oracle, oracle_sha256}`.
 5. Run:
 
    ```sh
@@ -72,9 +73,10 @@ Per-case baseline procedure (owner, on Windows Hancom Office 2024):
 
    The scoreboard (`public/scoreboard/<case>.json`, `scoreboard.json`, `scoreboard.csv`)
    contains names, SHA-256 hashes and numbers only — no paths, no oracle bytes — and is the
-   only output that gets committed. Cases with a page-count delta or any font substitution
-   are recorded but marked `"scored": false` (the F1 gate: no parity figure may be published
-   from a substituted-font render).
+   only output that gets committed. Before rendering, the runner validates the closed manifest
+   schema and verifies the Poppler version, pinned font files, and every source/oracle digest.
+   Missing font coverage, any substitution, a page-count delta, or a PDF font that is not
+   embedded/subset/Unicode-capable records the case as `"scored": false`.
 
 `scripts/pdf-parity.sh selftest` checks the harness itself (a fixture against its own PDF
 must produce perfect metrics) and needs no Hancom baseline.

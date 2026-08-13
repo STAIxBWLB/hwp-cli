@@ -82,8 +82,10 @@ FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바�
 **구현 상태 2026-08-13 (PR 4):** 배치 러너가 있다 — `scripts/pdf-parity.sh run`이 manifest의
 모든 케이스를 채점해 커밋 가능한 수치 점수판(`fixtures/pdf-parity/public/scoreboard/`,
 스키마 검증, 이름+SHA-256+수치뿐)을 만들고, `selftest`는 기준 없이 하네스를 검증하며,
-`hwp diff --format json` / `--ours-png`가 쪽별 래스터 지표 원천이다. 3~5건의 한글 기준
-내기와 첫 커밋 수치는 남은 소유자 액션.
+`hwp diff --format json` / `--ours-png`가 쪽별 래스터 지표 원천이다. manifest, Poppler
+버전, 폰트 파일, source/oracle digest가 pin과 일치해야 채점하며, 검증된 산출물 집합만
+rollback 보호 방식으로 게시한다. 3~5건의 한글 기준 내기와 첫 커밋 수치는 남은 소유자
+액션.
 
 ## 4. 게이트
 
@@ -127,6 +129,8 @@ structured-corpus run(`scripts/check-structured-corpus.sh`)은 고정 Noto Sans 
   FontSubsetFallback 횟수를 집계하고, CLI 렌더 리포트가 커버리지 줄을 출력한다.
 - `FontCoverage::substitution_free()`가 하드 게이트다: 대체 없이 렌더되지 않은 케이스의
   parity 수치는 발행할 수 없다.
+- 커버리지 자체를 확인할 수 없는 경우도 게이트 실패로 처리한다. 두 PDF 중 하나라도
+  `pdffonts` 기준 임베드·서브셋·Unicode 지원을 모두 충족하지 못하면 역시 채점하지 않는다.
 
 ## 6. 페이지네이션 정본 (F3)
 

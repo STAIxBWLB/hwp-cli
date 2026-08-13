@@ -1,11 +1,10 @@
-//! `hwp diff` — 렌더 결과를 한글 기준 PNG와 비교해 오차를 측정한다.
+//! Compare one rendered page with a Hancom-produced reference PNG.
 //!
-//! 한글에서 같은 페이지를 같은 DPI로 낸 기준 이미지와 우리 렌더를 픽셀·프로파일
-//! 비교해 위치 오차(dx/dy)·픽셀 차이율을 보고하고 차이 이미지를 저장한다.
-//! `--format json`은 배치 러너(scripts/pdf-parity.sh)용 기계 판독 리포트(contract
-//! hwp-diff-report-v1)를 stdout에 출력한다. `--ours-png`는 문서 렌더 대신 주어진
-//! 래스터(우리 PDF의 pdftoppm 결과)를 기준과 비교한다 — docs/design/21 §3 규약:
-//! 지표 4~5는 양쪽 PDF를 같은 Poppler로 래스터화해 비교한다.
+//! The command measures pixel and projection-profile differences at the same DPI,
+//! reports positional offsets and pixel error, and can save a difference image.
+//! `--format json` emits the machine-readable `hwp-diff-report-v1` contract for
+//! `scripts/pdf-parity.sh`. `--ours-png` compares an already-rasterized PDF page
+//! instead of rendering the document, so both PDFs use the same Poppler path.
 
 use std::path::{Path, PathBuf};
 
@@ -25,7 +24,7 @@ pub fn run(
     ours_png: Option<&Path>,
 ) -> anyhow::Result<()> {
     let dpi = crate::commands::render::validated_dpi(dpi)?;
-    // ours 래스터: --ours-png가 있으면 문서 렌더를 건어너고 그 파일을 쓴다.
+    // Reuse a pre-rasterized page when the parity runner supplies --ours-png.
     let (ours, coverage) = if let Some(png) = ours_png {
         (hwp_render::load_png(png)?, None)
     } else {
@@ -75,7 +74,8 @@ pub fn run(
             let out_path = out
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| reference.with_extension("diff.png"));
-            write_diff_image(input, &out_path, &encode_png(&diff_img)?)?;
+            let ours_input = ours_png.unwrap_or(input);
+            write_diff_image(&[ours_input, reference], &out_path, &encode_png(&diff_img)?)?;
         }
         DiffFormat::Json => {
             let json = diff_report_json(
@@ -90,27 +90,29 @@ pub fn run(
                 coverage,
             );
             println!("{}", serde_json::to_string_pretty(&json)?);
-            // 배치 모드는 차이 이미지를 -o 지정 시에만 저장한다(기본 산출물 남발 방지).
+            // JSON mode writes an image only when the caller explicitly requests one.
             if let Some(out_path) = out {
-                write_diff_image(input, out_path, &encode_png(&diff_img)?)?;
+                let ours_input = ours_png.unwrap_or(input);
+                write_diff_image(&[ours_input, reference], out_path, &encode_png(&diff_img)?)?;
             }
         }
     }
     Ok(())
 }
 
-/// 차이 이미지 PNG 인코딩.
+/// Encode the difference image as PNG.
 fn encode_png(diff_img: &tiny_skia::Pixmap) -> anyhow::Result<Vec<u8>> {
     diff_img
         .encode_png()
         .map_err(|error| anyhow::anyhow!("차이 이미지 인코딩 실패: {error}"))
 }
 
-/// 차이 이미지를 검증 쓰기한다.
-fn write_diff_image(input: &Path, out_path: &Path, png: &[u8]) -> anyhow::Result<()> {
+/// Publish a validated difference image without overwriting either immutable input.
+fn write_diff_image(inputs: &[&Path], out_path: &Path, png: &[u8]) -> anyhow::Result<()> {
+    crate::commands::output::reject_output_aliases(out_path, inputs)?;
     crate::commands::output::write_validated(
         out_path,
-        Some(input),
+        None,
         |staged| {
             std::fs::write(staged, png)?;
             Ok(())
@@ -129,8 +131,8 @@ fn write_diff_image(input: &Path, out_path: &Path, png: &[u8]) -> anyhow::Result
     Ok(())
 }
 
-/// 기계 판독 리포트 JSON (contract `hwp-diff-report-v1`).
-/// `ours_png`·`font_coverage`는 해당 경로에서만 들어간다.
+/// Build the machine-readable `hwp-diff-report-v1` payload.
+/// `ours_png` and `font_coverage` appear only on their respective code paths.
 #[allow(clippy::too_many_arguments)]
 fn diff_report_json(
     input: &Path,
@@ -187,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn json_리포트_계약() {
+    fn json_report_contract() {
         let v = diff_report_json(
             Path::new("doc.hwp"),
             None,
@@ -203,17 +205,13 @@ mod tests {
         assert_eq!(v["page"], 2);
         assert_eq!(v["dx"], 1);
         assert_eq!(v["dy"], -1);
-        // 문서 렌더 경로가 아니면 두 필드 모두 생략.
+        // Neither optional field applies to this synthetic report.
         assert!(v.get("ours_png").is_none());
         assert!(v.get("font_coverage").is_none());
     }
 
     #[test]
-    fn json_리포트_래스터_경로() {
-        let coverage = hwp_render::FontCoverage {
-            matched: 2,
-            ..Default::default()
-        };
+    fn json_report_raster_path_has_no_font_coverage() {
         let v = diff_report_json(
             Path::new("doc.hwp"),
             Some(Path::new("ours-1.png")),
@@ -223,10 +221,27 @@ mod tests {
             1240,
             1754,
             &report(),
-            Some(coverage),
+            None,
         );
         assert_eq!(v["ours_png"], "ours-1.png");
-        assert_eq!(v["font_coverage"]["matched"], 2);
-        assert_eq!(v["font_coverage"]["substitution_free"], true);
+        assert!(v.get("font_coverage").is_none());
+    }
+
+    #[test]
+    fn difference_output_cannot_replace_a_raster_input() {
+        let directory =
+            std::env::temp_dir().join(format!("hwp-cli-diff-alias-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let ours = directory.join("ours.png");
+        let reference = directory.join("reference.png");
+        std::fs::write(&ours, b"ours").unwrap();
+        std::fs::write(&reference, b"reference").unwrap();
+
+        assert!(write_diff_image(&[&ours, &reference], &ours, b"replacement").is_err());
+        assert_eq!(std::fs::read(&ours).unwrap(), b"ours");
+        assert!(write_diff_image(&[&ours, &reference], &reference, b"replacement").is_err());
+        assert_eq!(std::fs::read(&reference).unwrap(), b"reference");
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# scripts/pdf-parity.sh — Hancom 기준 PDF 동등성 배치 러너 (issue #79 PR 4).
+# Hancom PDF parity batch runner for issue #79 PR 4.
 #
-#   scripts/pdf-parity.sh selftest [--source <doc>]   하네스 자기 검증 (fixture vs 자기 PDF)
-#   scripts/pdf-parity.sh run [--oracle-dir <dir>]    manifest 케이스 집계 → 점수판
+#   scripts/pdf-parity.sh selftest [--source <doc>]   Verify the harness against itself.
+#   scripts/pdf-parity.sh run [--oracle-dir <dir>]    Aggregate manifest cases.
 #
-# 다섯 지표 정의와 게이트는 docs/design/21-pdf-parity.md §3/§4, 데이터 정책은 §7.
-# 기준(oracle) PDF는 로컬 전용 — 기본 위치는 $HWP_PDF_PARITY_ORACLE_DIR 이며 절대
-# 커밋하지 않는다. 커밋되는 산출물은 fixtures/pdf-parity/public/scoreboard/ 아래
-# 수치 JSON/CSV뿐이다. 구현 상세는 tools/pdf_parity.py.
+# Metric definitions and gates live in docs/design/21-pdf-parity.md sections 3-4;
+# the data policy is section 7. Oracle PDFs remain local under
+# $HWP_PDF_PARITY_ORACLE_DIR. Only numeric JSON/CSV scoreboards are committable.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -36,7 +35,7 @@ case "$cmd" in
     ;;
   run)
     shift
-    # 산출물 스키마 검증기 (임의 개수의 schema/instance 쌍, tools/pdf_parity.py가 호출).
+    # Build the closed-schema validator used before scoring and before publishing.
     cargo build -p hwp-cli --example validate_structured_corpus --quiet
     python3 tools/pdf_parity.py run --hwp-bin "$HWP_BIN" \
       --manifest "$MANIFEST" --out "$OUT_DIR" "$@"
