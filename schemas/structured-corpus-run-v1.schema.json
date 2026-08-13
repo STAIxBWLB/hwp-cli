@@ -265,7 +265,18 @@
               "output_bytes": { "type": "integer", "minimum": 1 },
               "two_run_render_identical": { "const": true },
               "two_run_pdf_identical": { "const": true },
-              "pdf": { "$ref": "#/$defs/pdf" },
+              "pdf": {
+                "allOf": [
+                  { "$ref": "#/$defs/pdf" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "page_count": { "const": 1 },
+                      "tounicode_roundtrip_ok": { "const": true }
+                    }
+                  }
+                ]
+              },
               "semantic": { "$ref": "#/$defs/semantic" },
               "certification": { "$ref": "#/$defs/certification" }
             }
@@ -281,8 +292,8 @@
       "properties": {
         "sha256": { "$ref": "#/$defs/sha256" },
         "bytes": { "type": "integer", "minimum": 1, "maximum": 134217728 },
-        "page_count": { "const": 1 },
-        "tounicode_roundtrip_ok": { "const": true }
+        "page_count": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "tounicode_roundtrip_ok": { "type": "boolean" }
       }
     },
     "semantic": {

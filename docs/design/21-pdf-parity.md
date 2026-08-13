@@ -70,7 +70,10 @@ Hancom PDF and our PDF.
 
 ## 4. Gates
 
-### 4.1 Blocking gate — every public corpus page
+### 4.1 Normative Hancom-oracle gate — future public corpus
+
+This is the normative target for future public Hancom-oracle scoring. It is not the current
+structured-corpus gate; the current self-consistency checks are listed separately in §4.2.
 
 - Page count: exact match
 - MediaBox delta ≤ 0.5 pt
@@ -82,11 +85,20 @@ Hancom PDF and our PDF.
 - `pdftotext -layout` normalized output matches the expected visible text and order
 - Byte-identical PDF on two runs with identical input and fonts
 
-### 4.2 Self-backend gate
+### 4.2 Current structured-corpus self-consistency gate
 
-Same DisplayList, PDF raster vs PNG backend: `dx`/`dy` ≤ 1 px, ink ratio 0.99–1.01,
-bad pixels ≤ 2 %. The structured corpus run (`scripts/check-structured-corpus.sh`) enforces the
-"three backends agree" invariant under the pinned Noto Sans KR.
+The structured-corpus run (`scripts/check-structured-corpus.sh`) currently enforces backend
+self-consistency under the pinned Noto Sans KR:
+
+- PDF page count equals the PNG backend page count.
+- Every displayed PDF glyph round-trips through its ToUnicode mapping to the complete expected
+  logical text; this is a full mapping check, not only a required-text substring check.
+- Two PDF renders with identical input and fonts are byte-identical.
+
+It does not currently rasterize PDF and PNG output against each other. Therefore `dx`, `dy`,
+`ink_ratio`, `bad_pixel_pct`, and MAE are not current structured-corpus thresholds. Those are
+future/normative raster requirements for the Hancom-oracle gate in §4.1, activated only when the
+pinned oracle PDF/PNG fixtures and comparison harness are available.
 
 ## 5. The font gate (F1)
 
@@ -110,16 +122,21 @@ not a consumer of it.
 
 ## 7. Data policy
 
-- **Public corpus** (`fixtures/pdf-parity/public/`): owner-authored / anonymized documents only,
-  as HWP/HWPX pairs covering basic text, paragraphs, lists, tables, columns, headers/footers/page
+- **Public corpus** (`fixtures/pdf-parity/public/`): owner-authored / anonymized source documents
+  only, as HWP/HWPX pairs covering basic text, paragraphs, lists, tables, columns, headers/footers/page
   numbers, footnotes/endnotes, images, shapes, equations and composite reports. `.gitignore`
-  explicitly allows only this directory. The manifest pins the exact Hancom build, Windows
-  version, PDF settings, font SHA-256, source/oracle SHA-256, Poppler version and 150 DPI.
+  ignores the entire `fixtures/pdf-parity/` tree by default and re-allows only HWP/HWPX files under
+  `public/source/`, Markdown/JSON recipe files under `public/recipes/`, `public/manifest.json`,
+  and numeric JSON/CSV scoreboards under `public/scoreboard/` (with the root `scoreboard.json` and
+  `scoreboard.csv` names also allowed). Public oracle PDFs/PNGs and every private-corpus path stay
+  ignored. The manifest pins the exact Hancom build, Windows version, PDF settings, font SHA-256,
+  source/oracle SHA-256, Poppler version and 150 DPI.
 - **Private corpus** (`HWP_PDF_PARITY_CORPUS_DIR`): real composite documents. Reports contain
   hashes and aggregate metrics only — never originals, PDFs or absolute paths.
-- **Hancom-derived artifacts are never committed** — local baselines, committed recipe, committed
-  numbers. Baselines are produced manually (3–5 cases) via 파일 → PDF로 저장하기 →
-  `pdftoppm -png -r 150` and kept local.
+- **Hancom-derived artifacts are never committed** — exported oracle PDFs/PNGs and private source
+  documents stay local. The checked-in recipe, manifest and numeric scoreboard contain only the
+  procedure, pins, hashes and aggregate numbers; they are not oracle artifacts. Baselines are
+  produced manually (3–5 cases) via 파일 → PDF로 저장하기 → `pdftoppm -png -r 150` and kept local.
 - Third-party real documents, Hancom spec copies and private oracle PDFs are never committed.
 
 ## 8. Anti-pattern guards

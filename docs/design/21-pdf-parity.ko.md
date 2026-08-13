@@ -70,7 +70,10 @@ catalog/Info 기능 — 을 확정했다:
 
 ## 4. 게이트
 
-### 4.1 블로킹 게이트 — 공개 코퍼스 모든 페이지
+### 4.1 정본 한컴 오라클 게이트 — 향후 공개 코퍼스
+
+이는 향후 공개 한컴 오라클 채점에 적용할 정본 목표다. 현재 structured-corpus 게이트가
+아니며, 현재 자체 일관성 검사는 §4.2에 별도로 적는다.
 
 - 페이지 수: 완전 일치
 - MediaBox 차이 0.5 pt 이하
@@ -82,11 +85,20 @@ catalog/Info 기능 — 을 확정했다:
 - `pdftotext -layout` 정규화 결과가 기대 가시 텍스트·순서와 일치
 - 동일 입력·글꼴로 두 번 생성한 PDF가 byte-identical
 
-### 4.2 자체 백엔드 게이트
+### 4.2 현재 structured-corpus 자체 일관성 게이트
 
-같은 DisplayList의 PDF 래스터와 PNG 백엔드 비교: `dx`/`dy` 1 px 이하, ink ratio
-0.99–1.01, bad pixels 2 % 이하. structured corpus run(`scripts/check-structured-corpus.sh`)이
-고정 Noto Sans KR 아래 "세 백엔드 일치" 불변식을 강제한다.
+structured-corpus run(`scripts/check-structured-corpus.sh`)은 고정 Noto Sans KR 아래에서 다음
+백엔드 자체 일관성을 현재 강제한다:
+
+- PDF 페이지 수가 PNG 백엔드 페이지 수와 일치
+- 표시된 PDF 글리프 전체가 ToUnicode 매핑을 거쳐 완전한 기대 논리 텍스트로 왕복하는지 확인
+  (required-text 부분 문자열만 확인하는 검사가 아님)
+- 동일 입력·글꼴로 PDF를 두 번 렌더링한 결과가 byte-identical
+
+현재는 PDF와 PNG 출력을 서로 raster 비교하지 않는다. 따라서 `dx`, `dy`, `ink_ratio`,
+`bad_pixel_pct`, MAE는 현재 structured-corpus 임계값이 아니다. 이 값들은 §4.1의 한컴 오라클
+게이트에 적용할 향후/정본 래스터 요구사항이며, 고정 오라클 PDF/PNG 픽스처와 비교 하네스가
+준비된 뒤에만 활성화한다.
 
 ## 5. 글꼴 게이트 (F1)
 
@@ -109,16 +121,20 @@ IR에 파싱돼 있다. 렌더러는 이 비트를 1급 페이지/단 경계 신
 
 ## 7. 데이터 정책
 
-- **공개 코퍼스**(`fixtures/pdf-parity/public/`): 소유자 자작·가명화 문서만. 기본 텍스트,
+- **공개 코퍼스**(`fixtures/pdf-parity/public/`): 소유자 자작·가명화 원본 문서만. 기본 텍스트,
   문단, 목록, 표, 다단, 머리말·꼬리말·쪽번호, 각주·미주, 이미지, 도형, 수식, 복합 보고서를
-  HWP/HWPX 쌍으로 커버한다. `.gitignore`는 이 디렉터리만 명시적으로 허용한다. 매니페스트는
-  정확한 Hancom 빌드, Windows 버전, PDF 설정, 글꼴 SHA-256, source/oracle SHA-256, Poppler
-  버전, 150 DPI를 고정한다.
+  HWP/HWPX 쌍으로 커버한다. `.gitignore`는 `fixtures/pdf-parity/` 전체를 기본 무시하고,
+  `public/source/` 아래 HWP/HWPX 파일, `public/recipes/` 아래 Markdown/JSON 레시피 파일,
+  `public/manifest.json`, `public/scoreboard/` 아래 숫자 JSON/CSV 스코어보드만 다시 허용한다
+  (루트의 `scoreboard.json`과 `scoreboard.csv`도 허용). 공개 오라클 PDF/PNG와 모든 비공개
+  코퍼스 경로는 계속 무시한다. 매니페스트는 정확한 Hancom 빌드, Windows 버전, PDF 설정,
+  글꼴 SHA-256, source/oracle SHA-256, Poppler 버전, 150 DPI를 고정한다.
 - **비공개 코퍼스**(`HWP_PDF_PARITY_CORPUS_DIR`): 실제 복합 문서. 보고서는 해시와 집계
   지표만 담고 원문·PDF·절대 경로는 기록하지 않는다.
-- **Hancom 유래 아티팩트는 커밋하지 않는다** — 로컬 베이스라인, 커밋된 레시피, 커밋된 수치.
-  베이스라인은 파일 → PDF로 저장하기 → `pdftoppm -png -r 150`로 수동 생성(3–5건)하고 로컬에
-  둔다.
+- **한컴 유래 아티팩트는 커밋하지 않는다** — 내보낸 오라클 PDF/PNG와 비공개 원본 문서는
+  로컬에 둔다. 커밋하는 레시피·매니페스트·숫자 스코어보드는 절차, 핀, 해시, 집계 수치만
+  담으며 오라클 아티팩트가 아니다. 베이스라인은 파일 → PDF로 저장하기 →
+  `pdftoppm -png -r 150`로 수동 생성(3–5건)하고 로컬에 둔다.
 - 제3자 실제 문서, 한컴 명세 사본, 비공개 오라클 PDF는 커밋하지 않는다.
 
 ## 8. 안티패턴 가드

@@ -218,9 +218,9 @@ fn 멀티페이지_lineseg_페이지_상대_v_pos() {
     );
 }
 
-/// Hancom이 저장한 lineseg는 flags bit0(페이지 첫 줄)/bit1(단 첫 줄)으로 경계를
-/// 명시한다(F3). flags가 v_pos 휴리스틱과 충돌하면 flags를 따라야 한다:
-/// v_pos가 단조 증가해 리셋 감지가 무력해도 bit0이 박힌 줄은 새 페이지를 시작한다.
+/// Hancom-saved linesegs declare boundaries with bit0 (first line of a page)
+/// and bit1 (first line of a column). Flags must win when they conflict with
+/// the v_pos-reset heuristic.
 #[test]
 fn lineseg_flags가_v_pos_휴리스틱에_우선() {
     let mut doc = hwp_convert::from_markdown("첫 문단\n\n둘째 문단\n\n셋째 문단\n");
@@ -228,8 +228,8 @@ fn lineseg_flags가_v_pos_휴리스틱에_우선() {
     let mut warns = hwp_render::RenderIssueAccumulator::new();
     hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
 
-    // 세 문단 모두 1줄. v_pos는 단조 증가시켜 리셋 휴리스틱을 무력화하고,
-    // 둘째 문단에만 bit0(페이지 첫 줄)을 박는다.
+    // Keep v_pos monotonic to disable the heuristic and put bit0 only on the
+    // second paragraph.
     for (i, p) in doc.sections[0].paragraphs.iter_mut().enumerate() {
         assert_eq!(p.line_segs.len(), 1, "문단당 1줄 가정");
         p.line_segs[0].v_pos = (i as i32) * 2000;
@@ -249,6 +249,95 @@ fn lineseg_flags가_v_pos_휴리스틱에_우선() {
         2,
         "flags bit0(페이지 첫 줄)은 v_pos 증가와 무관하게 페이지를 넘겨야 한다"
     );
+}
+
+#[test]
+fn authoritative_page_flags_preserve_an_empty_page_without_a_leading_page() {
+    let mut doc = hwp_convert::from_markdown("first\n\nblank\n\nthird\n");
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+
+    assert_eq!(doc.sections[0].paragraphs.len(), 3);
+    doc.sections[0].paragraphs[1].chars = vec![hwp_model::HwpChar::CharCtrl(
+        hwp_model::ctrl_char::PARA_BREAK,
+    )];
+    for paragraph in &mut doc.sections[0].paragraphs {
+        assert_eq!(paragraph.line_segs.len(), 1);
+        paragraph.line_segs[0].v_pos = 0;
+        paragraph.line_segs[0].flags = 0x0006_0001;
+    }
+
+    let out = render_document(
+        &doc,
+        &RenderOptions {
+            dpi: 36.0,
+            font_dirs: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        out.pages.len(),
+        3,
+        "the initial bit0 must not add a leading page"
+    );
+    assert!(dark_pixels(&out.pages[0]) > 0);
+    assert_eq!(
+        dark_pixels(&out.pages[1]),
+        0,
+        "the empty flow band must survive"
+    );
+    assert!(dark_pixels(&out.pages[2]) > 0);
+}
+
+#[test]
+fn authoritative_column_flags_preserve_an_empty_first_column() {
+    use hwp_model::{ColumnDef, Control, GenericControl, HwpChar};
+
+    let mut doc = hwp_convert::from_markdown("blank\n\nright column\n");
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+
+    assert_eq!(doc.sections[0].paragraphs.len(), 2);
+    doc.sections[0].paragraphs[0].chars = vec![HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK)];
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(GenericControl {
+            ctrl_id: *b"cold",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: Some(ColumnDef {
+                count: 2,
+                kind: 0,
+                direction: 0,
+                same_width: true,
+                gap: 1000,
+                widths: Vec::new(),
+                divider: None,
+            }),
+        }));
+    for paragraph in &mut doc.sections[0].paragraphs {
+        assert_eq!(paragraph.line_segs.len(), 1);
+        paragraph.line_segs[0].v_pos = 0;
+        paragraph.line_segs[0].flags = 0x0006_0002;
+    }
+
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    assert_eq!(list.pages.len(), 1);
+    let page = &list.pages[0];
+    assert!(page.items.iter().any(|item| matches!(
+        item,
+        hwp_render::display::Item::Glyphs { x, .. } if *x > page.width_pt / 2.0
+    )));
+    assert!(!page.items.iter().any(|item| matches!(
+        item,
+        hwp_render::display::Item::Glyphs { x, .. } if *x < page.width_pt / 2.0
+    )));
 }
 
 /// 문단 위/아래 간격(spacing_top/bottom)이 합성 줄 배치 v_pos 에 반영되어야 한다.

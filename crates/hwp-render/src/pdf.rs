@@ -320,6 +320,39 @@ pub fn render_pdf(
     Ok(pdf.finish())
 }
 
+/// Return the text sequence that the PDF backend is expected to emit through
+/// text-showing operators. This is intentionally derived before ToUnicode
+/// serialization so corpus validation can detect an incorrect CMap mapping.
+///
+/// Decorative shadow and emboss/engrave passes emit the same glyphs again, so
+/// their repetitions are included to match the content stream exactly.
+pub(crate) fn expected_text_trace(list: &DisplayList) -> Result<String, RenderError> {
+    let mut trace = String::new();
+    for (page_index, page) in list.pages.iter().enumerate() {
+        if page_index > 0 {
+            trace.push('\n');
+        }
+        for item in &page.items {
+            let Item::Glyphs { run, .. } = item else {
+                continue;
+            };
+            if !run.glyphs.is_empty() && run.text.is_empty() {
+                return Err(RenderError::Pdf(
+                    "source text is unavailable for an emitted glyph run".to_string(),
+                ));
+            }
+            if run.shadow.is_some() {
+                trace.push_str(&run.text);
+            }
+            if run.emboss || run.engrave {
+                trace.push_str(&run.text);
+            }
+            trace.push_str(&run.text);
+        }
+    }
+    Ok(trace)
+}
+
 /// 폰트 1개의 PDF 객체(FontFile·Descriptor·CIDFont·Type0·ToUnicode)를 쓴다.
 fn write_font(pdf: &mut Pdf, f: &FontInfo) -> Result<(), RenderError> {
     let face = ttf_parser::Face::parse(&f.data, f.index)

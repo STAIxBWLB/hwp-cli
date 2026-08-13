@@ -298,6 +298,15 @@ pub struct PdfOutput {
     pub report: RenderIssueReport,
 }
 
+/// PDF output plus the pre-serialization text sequence used by corpus
+/// validation. Existing PDF render APIs intentionally keep returning
+/// [`PdfOutput`].
+pub struct PdfValidationOutput {
+    pub data: Vec<u8>,
+    pub report: RenderIssueReport,
+    pub expected_text: String,
+}
+
 /// 문서를 단일 멀티페이지 PDF로 렌더링한다 (폰트 임베드 + 검색 가능 텍스트).
 /// `pages`는 1-기반 페이지 번호 목록; `None`이면 전체 페이지.
 pub fn render_document_pdf(
@@ -309,9 +318,9 @@ pub fn render_document_pdf(
     finish_pdf(list, report, pages)
 }
 
-/// 인증 전용 격리 PDF 렌더. 시스템 글꼴을 탐색하지 않고 `font_files`만 사용한다.
-/// 구조화 코퍼스처럼 폰트를 hash로 고정하는 경로에서 PNG 격리 렌더와 같은
-/// 글꼴 집합으로 PDF를 만들 때 사용한다.
+/// Isolated PDF render for certification. It searches only `font_files`, not
+/// ambient system fonts, so the PDF and PNG corpus paths use the same pinned
+/// font set.
 pub fn render_document_pdf_isolated(
     doc: &Document,
     opts: &RenderOptions,
@@ -322,25 +331,64 @@ pub fn render_document_pdf_isolated(
     finish_pdf(list, report, pages)
 }
 
+/// Isolated PDF render with a pre-serialization text trace for corpus
+/// validation. The trace is independent of the emitted ToUnicode CMap and
+/// therefore detects incorrect mappings, not only missing mappings.
+pub fn render_document_pdf_isolated_with_text_trace(
+    doc: &Document,
+    opts: &RenderOptions,
+    pages: Option<&[usize]>,
+    font_files: &[std::path::PathBuf],
+) -> Result<PdfValidationOutput, RenderError> {
+    let (list, report, _, _) = build_display_list_with_font_scope(doc, opts, false, font_files);
+    finish_pdf_with_text_trace(list, report, pages)
+}
+
 fn finish_pdf(
     mut list: display::DisplayList,
     mut report: RenderIssueAccumulator,
     pages: Option<&[usize]>,
 ) -> Result<PdfOutput, RenderError> {
-    if let Some(sel) = pages {
-        let mut taken: Vec<Option<display::PageList>> = list.pages.into_iter().map(Some).collect();
-        let mut picked = Vec::with_capacity(sel.len());
-        for &n in sel {
-            if let Some(page) = taken.get_mut(n.wrapping_sub(1)).and_then(Option::take) {
-                picked.push(page);
-            }
-        }
-        list = display::DisplayList { pages: picked };
-    }
+    select_pdf_pages(&mut list, pages);
     let data = pdf::render_pdf(&list, &mut report)?;
     Ok(PdfOutput {
         data,
         report: report.finish(),
+    })
+}
+
+fn select_pdf_pages(list: &mut display::DisplayList, pages: Option<&[usize]>) {
+    let Some(selected) = pages else {
+        return;
+    };
+    let mut available: Vec<Option<display::PageList>> = std::mem::take(&mut list.pages)
+        .into_iter()
+        .map(Some)
+        .collect();
+    let mut picked = Vec::with_capacity(selected.len());
+    for &number in selected {
+        if let Some(page) = available
+            .get_mut(number.wrapping_sub(1))
+            .and_then(Option::take)
+        {
+            picked.push(page);
+        }
+    }
+    list.pages = picked;
+}
+
+fn finish_pdf_with_text_trace(
+    mut list: display::DisplayList,
+    mut report: RenderIssueAccumulator,
+    pages: Option<&[usize]>,
+) -> Result<PdfValidationOutput, RenderError> {
+    select_pdf_pages(&mut list, pages);
+    let expected_text = pdf::expected_text_trace(&list)?;
+    let data = pdf::render_pdf(&list, &mut report)?;
+    Ok(PdfValidationOutput {
+        data,
+        report: report.finish(),
+        expected_text,
     })
 }
 

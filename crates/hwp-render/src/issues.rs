@@ -187,24 +187,23 @@ pub struct RenderIssueReport {
     pub sha256: String,
 }
 
-/// 렌더 한 번의 글꼴 해석 결과 집계. matched는 info 채널(FontMatched),
-/// 나머지는 issues 채널에서 모은다. 공개 parity 수치는
-/// `substitution_free()`가 true일 때만 발행할 수 있다(F1 하드 게이트).
+/// Aggregated font-resolution outcomes for one render. Successful matches come
+/// from the info channel; all other outcomes come from the issue channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FontCoverage {
-    /// 요청 글꼴이 그대로 해석된 횟수 (FontMatched, info).
+    /// Requests resolved to the requested font.
     pub matched: u64,
-    /// 다른 글꼴로 대체된 횟수 (FontSubstituted).
+    /// Requests resolved through substitution.
     pub substituted: u64,
-    /// 해석 실패 횟수 (FontMissing).
+    /// Requests with no resolvable font.
     pub missing: u64,
-    /// 서브셋 생성 실패로 전체 글꼴을 심은 횟수 (FontSubsetFallback).
+    /// Fonts embedded in full because subsetting failed.
     pub subset_fallback: u64,
 }
 
 impl FontCoverage {
-    /// parity 수치 발행 게이트: 대체·실패·서브셋 폴백이 모두 0건이어야 한다.
-    /// 대체 글꼴로 잰 수치는 advance/줄바꿈/글리프 형태가 모두 달라 의미가 없다(F1).
+    /// Gate parity publication on zero substitutions, misses, and subset
+    /// fallbacks because each changes metrics relevant to layout or glyphs.
     pub const fn substitution_free(&self) -> bool {
         self.substituted == 0 && self.missing == 0 && self.subset_fallback == 0
     }
@@ -221,7 +220,7 @@ impl RenderIssueReport {
             })
     }
 
-    /// 글꼴 해석 이슈를 집계해 FontCoverage로 요약한다.
+    /// Aggregate font-resolution entries into parity coverage counters.
     pub fn font_coverage(&self) -> FontCoverage {
         let mut coverage = FontCoverage::default();
         for summary in self.info.iter().chain(&self.issues) {

@@ -1,11 +1,11 @@
-//! 우리 PDF 백엔드(crates/hwp-render/src/pdf.rs)가 방출하는 바이트만 대상으로 하는
-//! 범위 한정 왕복 검사기다. 범용 PDF 텍스트 추출기가 아니다.
+//! Scoped round-trip inspector for bytes emitted by our PDF backend
+//! (`crates/hwp-render/src/pdf.rs`). This is not a general PDF text extractor.
 //!
-//! 다루는 구조는 우리 백엔드가 보장하는 것으로 한정한다:
-//! - 고전 xref를 쓰는 비압축 간접 객체 (`N 0 obj` … `endobj`)
-//! - Type0 + Identity-H + 서브셋 CID 폰트와 ToUnicode CMap (bfchar/bfrange)
-//! - FlateDecode 또는 비압축 스트림 (`/Length`는 항상 존재)
-//! - 콘텐츠 스트림의 `Tf`/`Tj`/`TJ` 텍스트 연산자와 2바이트 BE GID 문자열
+//! Supported structures are deliberately limited to backend invariants:
+//! - uncompressed indirect objects (`N 0 obj` ... `endobj`) with classic xref
+//! - Type0 + Identity-H subset CID fonts and ToUnicode CMaps (bfchar/bfrange)
+//! - FlateDecode or uncompressed streams with an explicit `/Length`
+//! - `Tf`/`Tj`/`TJ` text operators with two-byte big-endian GID strings
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -13,16 +13,16 @@ use std::io::Read as _;
 
 use anyhow::{Context as _, Result, bail};
 
-/// PDF에서 추출한 검사 결과.
+/// Inspection result extracted from a PDF.
 pub struct PdfInspection {
-    /// 페이지 트리 `/Count`와 실제 kid 수가 일치함을 확인한 페이지 수.
+    /// Page count after verifying `/Count` against the actual kid count.
     pub page_count: usize,
-    /// 콘텐츠 스트림 순서대로 ToUnicode로 디코드한 텍스트 (페이지 사이는 개행).
+    /// ToUnicode-decoded text in content-stream order, with newlines between pages.
     pub decoded_text: String,
 }
 
-/// PDF 바이트를 파싱해 페이지 수와 ToUnicode 디코드 텍스트를 돌려준다.
-/// 콘텐츠에 등장하는 모든 GID가 대응 폰트의 ToUnicode에 있어야 성공한다.
+/// Parse PDF bytes and return the page count and ToUnicode-decoded text.
+/// Every GID shown in a content stream must exist in the corresponding CMap.
 pub fn inspect_pdf(data: &[u8]) -> Result<PdfInspection> {
     if !data.starts_with(b"%PDF-") {
         bail!("PDF 헤더가 없습니다");
@@ -60,7 +60,7 @@ pub fn inspect_pdf(data: &[u8]) -> Result<PdfInspection> {
     }
     let page_count = page_count.context("페이지 트리가 없습니다")?;
 
-    // Type0 객체 → ToUnicode CMap (GID → 유니코드 문자열).
+    // Type0 object -> ToUnicode CMap (GID -> Unicode string).
     let mut cmaps: HashMap<u32, HashMap<u16, String>> = HashMap::new();
     for (&type0, &tounicode) in &tounicode_of_type0 {
         let object = find_object(&objects, tounicode)?;
@@ -71,7 +71,7 @@ pub fn inspect_pdf(data: &[u8]) -> Result<PdfInspection> {
         );
     }
 
-    // 페이지 트리 순서대로 콘텐츠를 디코드한다.
+    // Decode content in page-tree order.
     let mut decoded_text = String::new();
     for (index, &kid) in kids.iter().enumerate() {
         let page = pages
@@ -102,14 +102,14 @@ pub fn inspect_pdf(data: &[u8]) -> Result<PdfInspection> {
 
 struct PageObject {
     contents: u32,
-    /// 리소스 이름 ("F0" …) → Type0 객체 번호.
+    /// Resource name ("F0", ...) -> Type0 object number.
     fonts: Vec<(String, u32)>,
 }
 
 struct IndirectObject {
     id: u32,
     tokens: Vec<Token>,
-    /// 디코딩 전 stream 바이트 범위.
+    /// Raw stream byte range before decoding.
     stream: Option<(usize, usize)>,
 }
 
@@ -129,7 +129,7 @@ enum Tok {
 #[derive(Debug, Clone)]
 struct Token {
     tok: Tok,
-    /// 토큰 직후 위치 (stream 데이터 시작 계산용).
+    /// Position immediately after the token, used to locate stream data.
     end: usize,
 }
 
@@ -142,8 +142,8 @@ impl Tok {
     }
 }
 
-/// 간접 객체를 순차 스캔한다. 스트림은 `/Length`만큼 건너뛰어 stream 데이터 안의
-/// 우연한 "endobj"/" obj" 바이트에 속지 않는다.
+/// Scan indirect objects sequentially. Stream bytes are skipped using `/Length`
+/// so embedded `endobj` or ` obj` byte sequences cannot confuse the scanner.
 fn parse_objects(data: &[u8]) -> Result<Vec<IndirectObject>> {
     let mut objects = Vec::new();
     let mut pos = 0usize;
@@ -190,7 +190,7 @@ fn parse_objects(data: &[u8]) -> Result<Vec<IndirectObject>> {
     Ok(objects)
 }
 
-/// " obj" 직전의 "N 0" 헤더를 확인해 객체 번호를 돌려준다. 형태가 아니면 None.
+/// Parse an `N 0 obj` header immediately before the marker.
 fn parse_object_header(data: &[u8], marker: usize) -> Option<u32> {
     if marker == 0 || data[marker - 1] != b'0' {
         return None;
@@ -216,8 +216,8 @@ fn parse_object_header(data: &[u8], marker: usize) -> Option<u32> {
         .ok()
 }
 
-/// 객체 본문을 토큰화한다. stream 키워드를 만나면 EOL을 소비하고 stream 데이터
-/// 시작 위치를 돌려주며, 비스트림 객체는 endobj에서 멈추고 그 직후 위치를 돌려준다.
+/// Tokenize an object body. For streams, consume the EOL after `stream` and
+/// return the data start; otherwise stop immediately after `endobj`.
 fn tokenize_object(data: &[u8], start: usize) -> Result<(Vec<Token>, Option<usize>, usize)> {
     let mut tokens = Vec::new();
     let mut pos = start;
@@ -244,7 +244,7 @@ fn tokenize_object(data: &[u8], start: usize) -> Result<(Vec<Token>, Option<usiz
     bail!("객체가 endobj 없이 끝났습니다")
 }
 
-/// 콘텐츠 스트림 전체를 토큰화한다 (EOF에서 정상 종료).
+/// Tokenize a complete content stream, treating EOF as normal termination.
 fn tokenize_all(data: &[u8]) -> Result<Vec<Token>> {
     let mut tokens = Vec::new();
     let mut pos = 0usize;
@@ -331,8 +331,8 @@ fn is_delimiter(byte: u8) -> bool {
         )
 }
 
-/// 리터럴 문자열: 균형 괄호, `\n \r \t \b \f \( \) \\`, 8진수(최대 3자리),
-/// 역슬래시+개행 연속을 처리한다.
+/// Parse literal strings with balanced parentheses, standard escapes, up to
+/// three octal digits, and backslash-newline continuation.
 fn parse_literal_string(data: &[u8], start: usize) -> Result<(Vec<u8>, usize)> {
     let mut bytes = Vec::new();
     let mut depth = 1usize;
@@ -477,7 +477,7 @@ fn ref_after(tokens: &[Token], name: &str) -> Option<u32> {
     u32::try_from(object).ok()
 }
 
-/// `/Kids [1 0 R 2 0 R]` 형태 배열의 참조 목록.
+/// Parse references from an array such as `/Kids [1 0 R 2 0 R]`.
 fn refs_in_array_after(tokens: &[Token], name: &str) -> Option<Vec<u32>> {
     let pos = tokens
         .iter()
@@ -499,7 +499,7 @@ fn refs_in_array_after(tokens: &[Token], name: &str) -> Option<Vec<u32>> {
     Some(refs)
 }
 
-/// 페이지 `/Resources` 안의 `/Font` 사전: 리소스 이름 → Type0 객체 번호.
+/// Parse a page `/Resources` font dictionary into resource-name -> Type0 object.
 fn font_resource_map(tokens: &[Token]) -> Result<Vec<(String, u32)>> {
     let pos = tokens
         .iter()
@@ -538,16 +538,21 @@ fn font_resource_map(tokens: &[Token]) -> Result<Vec<(String, u32)>> {
     Ok(fonts)
 }
 
-/// 콘텐츠 스트림의 shown 문자열을 현재 폰트의 ToUnicode로 디코드해 이어 붙인다.
+/// Decode shown strings with the current font's ToUnicode CMap.
 fn decode_content(content: &[u8], fonts: &HashMap<&str, &HashMap<u16, String>>) -> Result<String> {
     let tokens = tokenize_all(content)?;
     let mut current_font: Option<&str> = None;
     let mut pending: Vec<&[u8]> = Vec::new();
+    let mut in_array = false;
     let mut out = String::new();
     for (index, token) in tokens.iter().enumerate() {
         match &token.tok {
             Tok::Str(bytes) => pending.push(bytes),
-            Tok::ArrOpen | Tok::ArrClose => pending.clear(),
+            Tok::ArrOpen => {
+                pending.clear();
+                in_array = true;
+            }
+            Tok::ArrClose => in_array = false,
             Tok::Kw(keyword) => {
                 match keyword.as_str() {
                     "Tf" => {
@@ -575,13 +580,14 @@ fn decode_content(content: &[u8], fonts: &HashMap<&str, &HashMap<u16, String>>) 
                 }
                 pending.clear();
             }
+            _ if !in_array => pending.clear(),
             _ => {}
         }
     }
     Ok(out)
 }
 
-/// 2바이트 BE GID 문자열을 ToUnicode로 디코드한다. 매핑이 없는 GID는 오류다.
+/// Decode a two-byte big-endian GID string; missing mappings are errors.
 fn decode_shown(
     bytes: &[u8],
     current_font: Option<&str>,
@@ -605,7 +611,7 @@ fn decode_shown(
     Ok(out)
 }
 
-/// ToUnicode CMap 본문(bfchar/bfrange)을 GID → 유니코드 문자열 맵으로 파싱한다.
+/// Parse bfchar/bfrange entries into a GID -> Unicode string map.
 fn parse_tounicode(cmap: &[u8]) -> Result<HashMap<u16, String>> {
     let text = std::str::from_utf8(cmap).context("ToUnicode CMap이 UTF-8이 아닙니다")?;
     #[derive(PartialEq)]
@@ -642,7 +648,7 @@ fn parse_tounicode(cmap: &[u8]) -> Result<HashMap<u16, String>> {
                     bail!("bfrange 범위가 역전되었습니다");
                 }
                 if groups.len() == 3 {
-                    // 단순 형태: 연속 코드포인트로 증가.
+                    // Simple form: increment consecutive code points.
                     let base = parse_utf16(groups[2])?;
                     let mut chars = base.chars();
                     let (Some(first), None) = (chars.next(), chars.next()) else {
@@ -654,7 +660,7 @@ fn parse_tounicode(cmap: &[u8]) -> Result<HashMap<u16, String>> {
                         map.insert(gid, ch.to_string());
                     }
                 } else {
-                    // 배열 형태: [<d1> <d2> …].
+                    // Array form: [<d1> <d2> ...].
                     if groups.len() - 2 != usize::from(high - low) + 1 {
                         bail!("bfrange 배열 길이가 범위와 다릅니다");
                     }
@@ -670,7 +676,7 @@ fn parse_tounicode(cmap: &[u8]) -> Result<HashMap<u16, String>> {
     Ok(map)
 }
 
-/// 한 줄에서 `<…>` 16진 그룹을 모은다.
+/// Collect `<...>` hexadecimal groups from one line.
 fn hex_groups(line: &str) -> Vec<&str> {
     let mut groups = Vec::new();
     let mut rest = line;
@@ -692,7 +698,7 @@ fn parse_gid(hex: &str) -> Result<u16> {
     Ok(u16::from_str_radix(hex, 16)?)
 }
 
-/// UTF-16BE 16진 문자열을 String으로 디코드한다 (서로게이트 쌍 포함).
+/// Decode a UTF-16BE hexadecimal string, including surrogate pairs.
 fn parse_utf16(hex: &str) -> Result<String> {
     if hex.is_empty() || !hex.len().is_multiple_of(4) {
         bail!("UTF-16BE 16진 길이가 올바르지 않습니다: {hex}");
@@ -755,5 +761,18 @@ mod tests {
         assert!(decode_shown(&[0x00, 0x02], Some("F0"), &fonts).is_err());
         assert!(decode_shown(&[0x00], Some("F0"), &fonts).is_err());
         assert!(decode_shown(&[0x00, 0x01], Some("F9"), &fonts).is_err());
+    }
+
+    #[test]
+    fn text_showing_operators_decode_tj_and_tj_arrays() {
+        let mut cmap = HashMap::new();
+        cmap.insert(1u16, "가".to_string());
+        cmap.insert(2u16, "나".to_string());
+        cmap.insert(3u16, "다".to_string());
+        let mut fonts = HashMap::new();
+        fonts.insert("F0", &cmap);
+
+        let content = b"/F0 10 Tf <0001> Tj [<0002> -120 <0003>] TJ";
+        assert_eq!(decode_content(content, &fonts).unwrap(), "가나다");
     }
 }

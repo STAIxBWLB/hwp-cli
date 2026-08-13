@@ -39,7 +39,7 @@ const FROZEN_MANIFEST_SCHEMA_SHA256: &str =
     "b8057de94b15deebceb58f014071d57d96fd9bb61603d9cbc2fd94a4398b3b3a";
 #[cfg(test)]
 const FROZEN_RUN_SCHEMA_SHA256: &str =
-    "187efe046c1a9481bafa51494464ba0e3cee2b04c29dd0772b53f0c9816f7ba0";
+    "f6b4ada36bb9151fadb5233770a6a235c106a815c7eb8567237c871deb5f10b5";
 #[cfg(test)]
 const FROZEN_ARTIFACT_SCHEMA_SHA256: &str =
     "8735bbe43e21a40bbcf4d20f61c0b886414ffcd5c4d0c690635e191334800ef7";
@@ -885,8 +885,9 @@ fn run_format(
     } else {
         summary.reason_codes.push("two_run_render_mismatch");
     }
-    // PDF 백엔드 검증은 PNG 인증이 성공해 페이지 수 기준(total_pages)이 확정된 경우에만
-    // 실행한다. 인증 실패 시에는 앞서 기록된 사유 코드로 충분하다.
+    // Run the PDF backend check only after PNG certification establishes the
+    // expected page count. Earlier reason codes already diagnose certification
+    // failures.
     let expected_pdf_pages = summary
         .certification
         .as_ref()
@@ -899,7 +900,6 @@ fn run_format(
             format,
             render_dpi,
             font_files,
-            &case.expected.semantic.required_text,
             expected_pages,
             &documents_dir,
             extension,
@@ -911,9 +911,8 @@ fn run_format(
     summary
 }
 
-/// PDF 백엔드 검증 — PNG 백엔드와 페이지 수가 일치하고(세 백엔드 합의), 콘텐츠의
-/// 모든 GID가 우리가 방출한 ToUnicode CMap으로 원문 문자로 왕복하며, 같은 문서를
-/// 두 번 렌더링하면 바이트가 동일해야 한다(two_run_render_identical의 PDF 판).
+/// Validate PDF page-count agreement, the complete pre-serialization text
+/// trace through ToUnicode, and same-platform two-run byte determinism.
 #[allow(clippy::too_many_arguments)]
 fn check_pdf_backend(
     summary: &mut FormatSummary,
@@ -922,7 +921,6 @@ fn check_pdf_backend(
     format: CorpusFormat,
     render_dpi: f32,
     font_files: &[PathBuf],
-    required_text: &[String],
     expected_pages: usize,
     documents_dir: &Path,
     extension: &str,
@@ -932,62 +930,77 @@ fn check_pdf_backend(
         font_dirs: Vec::new(),
     };
     let mut pdfs = Vec::with_capacity(2);
+    let mut expected_texts = Vec::with_capacity(2);
     for (label, document_path) in [("run-a", first), ("run-b", second)] {
         let Some(document) = read_generated_document(document_path, format) else {
             summary.reason_codes.push("pdf_render_failed");
             return;
         };
-        let output =
-            match hwp_render::render_document_pdf_isolated(&document, &options, None, font_files) {
-                Ok(output) if output.report.issue_count == 0 => output,
-                _ => {
-                    summary.reason_codes.push("pdf_render_failed");
-                    return;
-                }
-            };
+        let output = match hwp_render::render_document_pdf_isolated_with_text_trace(
+            &document, &options, None, font_files,
+        ) {
+            Ok(output) if output.report.issue_count == 0 => output,
+            _ => {
+                summary.reason_codes.push("pdf_render_failed");
+                return;
+            }
+        };
         let path = documents_dir.join(format!("{label}-{extension}.pdf"));
         if write_new(&path, &output.data).is_err() {
             summary.reason_codes.push("workspace_failed");
             return;
         }
+        expected_texts.push(output.expected_text);
         pdfs.push(output.data);
     }
     summary.two_run_pdf_identical = pdfs[0] == pdfs[1];
     if !summary.two_run_pdf_identical {
         summary.reason_codes.push("two_run_pdf_mismatch");
     }
-    let (page_count, roundtrip_ok) = match pdf_roundtrip::inspect_pdf(&pdfs[0]) {
+    let inspection = match pdf_roundtrip::inspect_pdf(&pdfs[0]) {
         Ok(inspection) => {
             if inspection.page_count != expected_pages {
                 summary.reason_codes.push("pdf_page_count_mismatch");
             }
-            let roundtrip_ok = tounicode_roundtrip_matches(&inspection.decoded_text, required_text);
+            let roundtrip_ok =
+                tounicode_trace_matches(&inspection.decoded_text, &expected_texts[0]);
             if !roundtrip_ok {
                 summary.reason_codes.push("pdf_tounicode_roundtrip_failed");
             }
-            (inspection.page_count, roundtrip_ok)
+            Some((inspection.page_count, roundtrip_ok))
         }
         Err(_) => {
             summary.reason_codes.push("pdf_tounicode_roundtrip_failed");
-            (0, false)
+            None
         }
     };
-    summary.pdf = Some(PdfSummary {
-        sha256: sha256_hex(&pdfs[0]),
-        bytes: u64::try_from(pdfs[0].len()).unwrap_or(u64::MAX),
-        page_count,
-        tounicode_roundtrip_ok: roundtrip_ok,
-    });
+    if let Some((page_count, roundtrip_ok)) = inspection {
+        summary.pdf = Some(PdfSummary {
+            sha256: sha256_hex(&pdfs[0]),
+            bytes: u64::try_from(pdfs[0].len()).unwrap_or(u64::MAX),
+            page_count,
+            tounicode_roundtrip_ok: roundtrip_ok,
+        });
+    }
 }
 
-/// 디코드 텍스트(공백 제거)가 모든 필수 문자열(공백 제거)을 포함하는지 확인한다.
-/// 글리프 런 분할·줄바꿈으로 공백 위치는 달라질 수 있으므로 공백을 제거하고 비교한다.
-fn tounicode_roundtrip_matches(decoded: &str, required_text: &[String]) -> bool {
-    let decoded: String = decoded.chars().filter(|ch| !ch.is_whitespace()).collect();
-    required_text.iter().all(|required| {
-        let needle: String = required.chars().filter(|ch| !ch.is_whitespace()).collect();
-        !needle.is_empty() && decoded.contains(&needle)
-    })
+/// Compare the complete emitted text trace while normalizing platform-neutral
+/// whitespace spellings. Whitespace cardinality is retained so a missing or
+/// incorrect space mapping cannot pass.
+fn tounicode_trace_matches(decoded: &str, expected: &str) -> bool {
+    normalize_text_trace(decoded) == normalize_text_trace(expected)
+}
+
+fn normalize_text_trace(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_whitespace() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 enum PreparedGenerator {
@@ -1141,7 +1154,8 @@ fn read_semantic(
     })
 }
 
-/// 생성된 HWPX/HWP 문서를 경고 없이 읽는다 (read_semantic과 PDF 검증의 공통 진입).
+/// Read a generated HWPX/HWP document without warnings. Semantic and PDF
+/// validation share this entry point.
 fn read_generated_document(path: &Path, format: CorpusFormat) -> Option<hwp_model::Document> {
     match format {
         CorpusFormat::Hwpx => hwpx::read_document(path)
@@ -2656,6 +2670,124 @@ mod tests {
                 assert!(!validator.is_valid(&malformed), "{name}: {malformed}");
             }
         }
+    }
+
+    #[test]
+    fn tounicode_trace_requires_every_character_and_whitespace_slot() {
+        assert!(tounicode_trace_matches("all text\r", "all text\n"));
+        assert!(!tounicode_trace_matches(
+            "required text X",
+            "required text Y"
+        ));
+        assert!(!tounicode_trace_matches("missing space", "missing  space"));
+    }
+
+    #[test]
+    fn failed_pdf_diagnostics_validate_while_passed_pdf_is_strict() {
+        let root = workspace_root();
+        let bytes = read_regular_bounded(
+            &root.join("schemas/structured-corpus-run-v1.schema.json"),
+            MAX_REPORT_BYTES,
+        )
+        .unwrap();
+        let corpus_schema: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let mut format_schema = corpus_schema.pointer("/$defs/format").unwrap().clone();
+        format_schema.as_object_mut().unwrap().insert(
+            "$schema".to_string(),
+            serde_json::json!("https://json-schema.org/draft/2020-12/schema"),
+        );
+        format_schema
+            .as_object_mut()
+            .unwrap()
+            .insert("$defs".to_string(), corpus_schema["$defs"].clone());
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&format_schema)
+            .unwrap();
+
+        let hash = "a".repeat(64);
+        let failed_with_diagnostics = serde_json::json!({
+            "format": "hwp",
+            "status": "failed",
+            "reason_codes": ["pdf_tounicode_roundtrip_failed"],
+            "two_run_byte_identical": true,
+            "output_sha256": hash,
+            "output_bytes": 1,
+            "two_run_render_identical": true,
+            "two_run_pdf_identical": true,
+            "pdf": {
+                "sha256": "b".repeat(64),
+                "bytes": 1,
+                "page_count": 2,
+                "tounicode_roundtrip_ok": false
+            },
+            "semantic": null,
+            "certification": null
+        });
+        assert!(validator.is_valid(&failed_with_diagnostics));
+
+        let mut failed_without_inspection = failed_with_diagnostics.clone();
+        failed_without_inspection["pdf"] = serde_json::Value::Null;
+        assert!(validator.is_valid(&failed_without_inspection));
+
+        let clear_detection = serde_json::json!({
+            "result": "not_detected",
+            "count": 0,
+            "complete": true
+        });
+        let mut passed = serde_json::json!({
+            "format": "hwp",
+            "status": "passed",
+            "reason_codes": [],
+            "two_run_byte_identical": true,
+            "output_sha256": "a".repeat(64),
+            "output_bytes": 1,
+            "two_run_render_identical": true,
+            "two_run_pdf_identical": true,
+            "pdf": {
+                "sha256": "b".repeat(64),
+                "bytes": 1,
+                "page_count": 1,
+                "tounicode_roundtrip_ok": true
+            },
+            "semantic": {
+                "plain_text_sha256": "c".repeat(64),
+                "structural_semantic_sha256": "d".repeat(64),
+                "text_chars": 80,
+                "sections": 1,
+                "paragraphs": 5,
+                "tables": 1,
+                "required_text_count": 3
+            },
+            "certification": {
+                "overall": "passed",
+                "total_pages": 1,
+                "selected_pages": [1],
+                "render_issue_count": 0,
+                "render_issue_sha256": "e".repeat(64),
+                "fonts": [{
+                    "font_file_sha256": FROZEN_FONT_SHA256,
+                    "outcome": "matched"
+                }],
+                "pages": [{
+                    "page": 1,
+                    "png_sha256": "f".repeat(64),
+                    "visual_blank": false,
+                    "outside_page_bounds": clear_detection,
+                    "possible_collision": {
+                        "result": "not_detected",
+                        "count": 0,
+                        "complete": true
+                    }
+                }]
+            }
+        });
+        assert!(validator.is_valid(&passed));
+        passed["pdf"]["page_count"] = serde_json::json!(2);
+        assert!(!validator.is_valid(&passed));
+        passed["pdf"]["page_count"] = serde_json::json!(1);
+        passed["pdf"]["tounicode_roundtrip_ok"] = serde_json::json!(false);
+        assert!(!validator.is_valid(&passed));
     }
 
     #[test]
