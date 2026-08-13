@@ -187,10 +187,32 @@ fn write_border_fills(out: &mut String, header: &DocHeader) {
             write_border_line(out, el, line);
         }
         write_border_line(out, "diagonal", &bf.diagonal);
-        if let Some(bg) = bf.visible_bg() {
+        if let Some(g) = &bf.gradient
+            && g.stops.len() >= 2
+        {
+            // GG-7 gradient fill in the same form emitted for shapes.
             let _ = write!(
                 out,
-                r##"<hc:fillBrush><hc:winBrush faceColor="{}" hatchColor="#999999" alpha="0"/></hc:fillBrush>"##,
+                r##"<hc:fillBrush><hc:gradation type="{}" angle="{}" centerX="0" centerY="0" step="255" colorNum="{}" stepCenter="50" alpha="0">"##,
+                if g.radial { "RADIAL" } else { "LINEAR" },
+                g.angle_deg.round() as i32,
+                g.stops.len(),
+            );
+            for (_, c) in &g.stops {
+                let _ = write!(out, r##"<hc:color value="{}"/>"##, color_attr(*c));
+            }
+            out.push_str("</hc:gradation></hc:fillBrush>");
+        } else if let Some(bg) = bf.visible_bg() {
+            // Carry a hatch color when present. HWPX has no mapped field for the hatch
+            // style, so that value is lost pending comparison with genuine Hangul output.
+            // Otherwise retain the constant observed in genuine files.
+            let hatch = bf
+                .hatch
+                .map(|(c, _)| color_attr(c))
+                .unwrap_or_else(|| "#999999".to_string());
+            let _ = write!(
+                out,
+                r##"<hc:fillBrush><hc:winBrush faceColor="{}" hatchColor="{hatch}" alpha="0"/></hc:fillBrush>"##,
                 color_attr(bg)
             );
         }

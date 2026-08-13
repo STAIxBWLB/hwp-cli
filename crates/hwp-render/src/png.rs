@@ -159,13 +159,31 @@ fn render_page(
                 w: iw,
                 h: ih,
                 data,
+                crop,
+                flip,
+                rotation_deg,
+                brightness,
+                contrast,
             } => {
-                match images.decode(data, issues)? {
+                match images.decode(data, *crop, *brightness, *contrast, issues)? {
                     Some(src) => {
-                        let sx = (iw * px_scale) / src.width() as f32;
-                        let sy = (ih * px_scale) / src.height() as f32;
-                        let t = Transform::from_scale(sx, sy)
-                            .post_translate(*x * px_scale, *y * px_scale);
+                        // Map source pixels into device pixels, then flip and rotate around center.
+                        let m = crate::display::flip_rotate_matrix(
+                            (x + iw / 2.0) * px_scale,
+                            (y + ih / 2.0) * px_scale,
+                            *flip,
+                            *rotation_deg,
+                        );
+                        let fit = [
+                            (iw * px_scale) / src.width() as f32,
+                            0.0,
+                            0.0,
+                            (ih * px_scale) / src.height() as f32,
+                            *x * px_scale,
+                            *y * px_scale,
+                        ];
+                        let m = crate::display::mat_mul(m, fit);
+                        let t = Transform::from_row(m[0], m[2], m[1], m[3], m[4], m[5]);
                         pixmap.draw_pixmap(
                             0,
                             0,
@@ -257,20 +275,49 @@ fn render_page(
                             Fill::Solid(c) => {
                                 let (r, g, b) = colorref_rgb(*c);
                                 paint.set_color_rgba8(r, g, b, 255);
+                                pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
                             }
-                            Fill::Gradient(grad) => match gradient_shader(grad, commands, px_scale)
-                            {
-                                Some(sh) => paint.shader = sh,
-                                None => {
-                                    let (r, g, b) = grad
-                                        .stops
-                                        .first()
-                                        .map_or((0, 0, 0), |&(_, c)| colorref_rgb(c));
-                                    paint.set_color_rgba8(r, g, b, 255);
+                            Fill::Gradient(grad) => {
+                                match gradient_shader(grad, commands, px_scale) {
+                                    Some(sh) => paint.shader = sh,
+                                    None => {
+                                        let (r, g, b) = grad
+                                            .stops
+                                            .first()
+                                            .map_or((0, 0, 0), |&(_, c)| colorref_rgb(c));
+                                        paint.set_color_rgba8(r, g, b, 255);
+                                    }
                                 }
-                            },
+                                pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
+                            }
+                            Fill::Hatch { fg, bg, style } => {
+                                // Paint an optional background, then hatch lines clipped by bounds.
+                                if *bg != 0xFFFF_FFFF {
+                                    let (r, g, b) = colorref_rgb(*bg);
+                                    paint.set_color_rgba8(r, g, b, 255);
+                                    pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
+                                }
+                                let (x0, y0, x1, y1) = path_bbox(commands);
+                                let segs = crate::display::hatch_segments(*style, x0, y0, x1, y1);
+                                if !segs.is_empty() {
+                                    let mut hb = PathBuilder::new();
+                                    for (a, b) in segs {
+                                        hb.move_to(a.0, a.1);
+                                        hb.line_to(b.0, b.1);
+                                    }
+                                    if let Some(hpath) = hb.finish() {
+                                        let (r, g, b) = colorref_rgb(*fg);
+                                        let mut hpaint = Paint::default();
+                                        hpaint.set_color_rgba8(r, g, b, 255);
+                                        let hstroke = Stroke {
+                                            width: crate::display::HATCH_LINE_WIDTH,
+                                            ..Stroke::default()
+                                        };
+                                        pixmap.stroke_path(&hpath, &hpaint, &hstroke, t, None);
+                                    }
+                                }
+                            }
                         }
-                        pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
                     }
                     if let Some(s) = stroke {
                         let (r, g, b) = colorref_rgb(s.color);
@@ -341,22 +388,31 @@ fn gradient_shader(g: &Gradient, cmds: &[PathCmd], px_scale: f32) -> Option<Shad
     }
 }
 
-/// 인코딩된 이미지를 tiny-skia Pixmap으로 디코드한다 (premultiplied RGBA).
+/// Decodes an encoded image into a premultiplied-RGBA tiny-skia pixmap.
+/// The cache key includes the byte digest, format, adjustment, and crop
+/// parameters, so distinct effects on the same image decode independently.
 #[derive(Default)]
 struct ImageDecodeContext {
     identity_keys: HashMap<(usize, usize), (String, String)>,
-    decoded: HashMap<(String, String), Option<Arc<Pixmap>>>,
+    decoded: HashMap<DecodeKey, Option<Arc<Pixmap>>>,
     unique_pixels: u64,
     unique_decoded_bytes: u64,
     references: u64,
 }
 
+type DecodeKey = (String, String, i8, i8, Option<[u32; 4]>);
+
 impl ImageDecodeContext {
     fn decode(
         &mut self,
         data: &Arc<Vec<u8>>,
+        crop: Option<[f32; 4]>,
+        brightness: i8,
+        contrast: i8,
         issues: &mut RenderIssueAccumulator,
     ) -> Result<Option<Arc<Pixmap>>, RenderError> {
+        let brightness = brightness.clamp(-100, 100);
+        let contrast = contrast.clamp(-100, 100);
         self.references = self.references.saturating_add(1);
         if self.references > MAX_IMAGE_REFERENCES {
             return image_budget_error(issues, "references");
@@ -374,6 +430,13 @@ impl ImageDecodeContext {
             self.identity_keys.insert(identity, key.clone());
             key
         };
+        let key: DecodeKey = (
+            key.0,
+            key.1,
+            brightness,
+            contrast,
+            crop.map(|c| c.map(f32::to_bits)),
+        );
         if let Some(cached) = self.decoded.get(&key) {
             return Ok(cached.clone());
         }
@@ -434,6 +497,14 @@ impl ImageDecodeContext {
             }
         };
         let mut rgba = dynamic.into_rgba8().into_raw();
+        // Apply brightness and contrast to straight RGB before premultiplication.
+        if brightness != 0 || contrast != 0 {
+            for pixel in rgba.chunks_exact_mut(4) {
+                for ch in &mut pixel[..3] {
+                    *ch = crate::display::apply_brightness_contrast(*ch, brightness, contrast);
+                }
+            }
+        }
         for pixel in rgba.chunks_exact_mut(4) {
             let alpha = u16::from(pixel[3]);
             pixel[0] = (u16::from(pixel[0]) * alpha / 255) as u8;
@@ -448,10 +519,50 @@ impl ImageDecodeContext {
         };
         self.unique_pixels = next_pixels;
         self.unique_decoded_bytes = next_bytes;
+        // Convert the HWPUNIT crop rectangle into a source-pixel sub-pixmap.
+        let pixmap = match crop.and_then(|c| crate::display::crop_fractions(c, width, height)) {
+            Some([fl, ft, fr, fb]) if fl > 0.0 || ft > 0.0 || fr < 1.0 || fb < 1.0 => {
+                let (cl, ct, cr, cb) = crop_pixel_bounds([fl, ft, fr, fb], width, height);
+                let (cw, ch) = (cr - cl, cb - ct);
+                match Pixmap::new(cw, ch) {
+                    Some(mut out) => {
+                        let src_px = pixmap.pixels();
+                        let dst_px = out.pixels_mut();
+                        for row in 0..ch {
+                            let s = ((ct + row) * width + cl) as usize;
+                            let d = (row * cw) as usize;
+                            dst_px[d..d + cw as usize].copy_from_slice(&src_px[s..s + cw as usize]);
+                        }
+                        out
+                    }
+                    None => return image_budget_error(issues, "crop_pixmap_allocation"),
+                }
+            }
+            _ => pixmap,
+        };
         let pixmap = Arc::new(pixmap);
         self.decoded.insert(key, Some(pixmap.clone()));
         Ok(Some(pixmap))
     }
+}
+
+/// Returns non-empty, end-exclusive source-pixel bounds for a valid crop.
+/// Starts use floor and ends use ceil so every crop that intersects a source
+/// pixel retains at least that pixel, including crops adjacent to the right
+/// and bottom edges.
+fn crop_pixel_bounds(
+    [left, top, right, bottom]: [f32; 4],
+    width: u32,
+    height: u32,
+) -> (u32, u32, u32, u32) {
+    debug_assert!(width > 0 && height > 0);
+    let left = (left * width as f32).floor() as u32;
+    let top = (top * height as f32).floor() as u32;
+    let left = left.min(width - 1);
+    let top = top.min(height - 1);
+    let right = ((right * width as f32).ceil() as u32).clamp(left + 1, width);
+    let bottom = ((bottom * height as f32).ceil() as u32).clamp(top + 1, height);
+    (left, top, right, bottom)
 }
 
 fn image_limits() -> Limits {
@@ -679,7 +790,9 @@ mod tests {
             assert!(bytes.len() < 1024);
             let mut context = ImageDecodeContext::default();
             let mut issues = RenderIssueAccumulator::new();
-            let error = context.decode(&Arc::new(bytes), &mut issues).unwrap_err();
+            let error = context
+                .decode(&Arc::new(bytes), None, 0, 0, &mut issues)
+                .unwrap_err();
             assert!(matches!(
                 error,
                 RenderError::ImageDecodeBudgetExceeded { .. }
@@ -706,11 +819,33 @@ mod tests {
             } else {
                 &duplicate_arc
             };
-            assert!(context.decode(source, &mut issues).unwrap().is_some());
+            assert!(
+                context
+                    .decode(source, None, 0, 0, &mut issues)
+                    .unwrap()
+                    .is_some()
+            );
         }
         assert_eq!(context.references, 20_000);
         assert_eq!(context.decoded.len(), 1);
         assert_eq!(context.unique_pixels, 1);
         assert_eq!(context.unique_decoded_bytes, 4);
+    }
+
+    #[test]
+    fn subpixel_crop_at_source_edges_stays_in_bounds() {
+        assert_eq!(
+            crop_pixel_bounds([0.999, 0.999, 1.0, 1.0], 4, 3),
+            (3, 2, 4, 3)
+        );
+
+        let bytes = Arc::new(encoded(ImageFormat::Png));
+        let mut context = ImageDecodeContext::default();
+        let mut issues = RenderIssueAccumulator::new();
+        let pixmap = context
+            .decode(&bytes, Some([74.0, 74.0, 75.0, 75.0]), 0, 0, &mut issues)
+            .unwrap()
+            .expect("valid PNG");
+        assert_eq!((pixmap.width(), pixmap.height()), (1, 1));
     }
 }

@@ -998,12 +998,21 @@ fn default_picture() -> hwp_model::Picture {
         vert_offset: 0,
         horz_offset: 0,
         description: None,
+        crop: None,
+        flip: 0,
+        rotation: None,
+        brightness: 0,
+        contrast: 0,
+        effect_flags: 0,
+        effects_raw: Vec::new(),
         bin_ref: hwp_model::BinRef::ItemRef(String::new()),
         extras: Vec::new(),
     }
 }
 
-/// `<hp:pic>` — 이미지 개체. 크기(hp:sz)/배치(hp:pos)/참조(hc:img)만 의미 파싱.
+/// Parses an `<hp:pic>` image semantically: size, placement, binary reference,
+/// flip, rotation, crop, brightness, and contrast. `hp:imgRect` duplicates
+/// `hp:sz` and is therefore not read separately.
 fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
     let mut pic = default_picture();
     let mut depth = 1u32;
@@ -1028,6 +1037,26 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
                         if let Some(item) = attr(e, "binaryItemIDRef") {
                             pic.bin_ref = hwp_model::BinRef::ItemRef(item);
                         }
+                        pic.brightness = attr_i32(e, "bright").unwrap_or(0).clamp(-100, 100) as i8;
+                        pic.contrast = attr_i32(e, "contrast").unwrap_or(0).clamp(-100, 100) as i8;
+                    }
+                    b"flip" => {
+                        let h = attr(e, "horizontal").as_deref() == Some("1");
+                        let v = attr(e, "vertical").as_deref() == Some("1");
+                        pic.flip = u8::from(h) | (u8::from(v) << 1);
+                    }
+                    b"rotationInfo" => {
+                        let angle = attr_i32(e, "angle").unwrap_or(0);
+                        pic.rotation = (angle != 0).then_some(angle as f32);
+                    }
+                    // Crop in source-image HWPUNIT coordinates.
+                    b"imgClip" => {
+                        pic.crop = Some([
+                            attr_i32(e, "left").unwrap_or(0) as f32,
+                            attr_i32(e, "top").unwrap_or(0) as f32,
+                            attr_i32(e, "right").unwrap_or(0) as f32,
+                            attr_i32(e, "bottom").unwrap_or(0) as f32,
+                        ]);
                     }
                     b"shapeComment" if matches!(event, Event::Start(_)) => {
                         let value = read_element_text(reader, b"shapeComment")?;
@@ -1047,6 +1076,11 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
             Event::Eof => break,
             _ => {}
         }
+    }
+    // Normalize the writer's no-crop constant (0, 0, w, h) to None, preserving
+    // the semantic behavior of readers that ignored imgClip.
+    if pic.crop == Some([0.0, 0.0, pic.width.0 as f32, pic.height.0 as f32]) {
+        pic.crop = None;
     }
     Ok(pic)
 }
@@ -1605,5 +1639,58 @@ mod page_ctrl_tests {
             )
             .is_none()
         );
+    }
+
+    /// GG-15: reads all supported `hp:pic` transform and adjustment attributes into the IR.
+    #[test]
+    fn 그림_변환_보정_속성_읽기() {
+        let xml = concat!(
+            r##"<?xml version="1.0"?><hs:sec><hp:p paraPrIDRef="0" styleIDRef="0">"##,
+            r##"<hp:run charPrIDRef="0"><hp:pic id="1" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="1" reverse="0">"##,
+            r##"<hp:sz width="4000" height="3000" widthRelTo="ABSOLUTE" heightRelTo="ABSOLUTE" protect="0"/>"##,
+            r##"<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>"##,
+            r##"<hp:flip horizontal="1" vertical="0"/>"##,
+            r##"<hp:rotationInfo angle="30" centerX="2000" centerY="1500" rotateimage="1"/>"##,
+            r##"<hc:img binaryItemIDRef="image1" bright="30" contrast="-20" effect="REAL_PIC" alpha="0"/>"##,
+            r##"<hp:imgClip left="100" right="3900" top="200" bottom="2800"/>"##,
+            r##"</hp:pic></hp:run></hp:p></hs:sec>"##,
+        );
+        let (section, _) = parse_section(xml).unwrap();
+        let pic = section.paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .expect("그림 개체");
+        assert_eq!(pic.flip, 1, "가로 뒤집기");
+        assert_eq!(pic.rotation, Some(30.0));
+        assert_eq!(pic.crop, Some([100.0, 200.0, 3900.0, 2800.0]));
+        assert_eq!(pic.brightness, 30);
+        assert_eq!(pic.contrast, -20);
+        assert_eq!(
+            pic.bin_ref,
+            hwp_model::BinRef::ItemRef("image1".to_string())
+        );
+    }
+
+    #[test]
+    fn picture_adjustments_are_clamped_to_the_model_range() {
+        let xml = concat!(
+            r##"<?xml version="1.0"?><hs:sec><hp:p paraPrIDRef="0" styleIDRef="0">"##,
+            r##"<hp:run charPrIDRef="0"><hp:pic id="1"><hp:sz width="1" height="1"/><hc:img binaryItemIDRef="image1" bright="130" contrast="-120"/></hp:pic></hp:run></hp:p></hs:sec>"##,
+        );
+        let (section, _) = parse_section(xml).unwrap();
+        let picture = section.paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Picture(picture) => Some(picture),
+                _ => None,
+            })
+            .expect("picture");
+        assert_eq!(picture.brightness, 100);
+        assert_eq!(picture.contrast, -100);
     }
 }

@@ -155,6 +155,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
     let mut numbering_ids: HashMap<u16, u16> = HashMap::new();
     let mut bullet_ids: HashMap<u16, u16> = HashMap::new();
     let mut current_tab: Option<hwp_model::TabDef> = None;
+    // Active hc:gradation state inside borderFill: radial flag, angle, colors.
+    let mut current_gradation: Option<(bool, f32, Vec<u32>)> = None;
     // 정품 tabItem은 hp:switch로 감싸 case(HwpUnitChar, unit=HWPUNIT, pos=X)와
     // default(unit 없음, pos=2X)를 함께 낸다. case만 취하고 default는 버리기 위해
     // hp:default 안에 있는 동안 tabItem 수집을 막는다(중복 방지). switch 없는 naked
@@ -641,6 +643,25 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             bf.fill_type |= 0x1;
                             bf.bg_color = Some(parse_color(&c));
                         }
+                        // Genuine HWPX also uses constant hatchColor values for solid fills,
+                        // so do not infer a hatch from this attribute. Only HWP5 preserves it.
+                    }
+                    // hc:gradation is a border-fill gradient (GG-7). The flat event loop
+                    // retains explicit state while collecting its colors.
+                    b"gradation" if current_border.is_some() && !empty => {
+                        let gtype = attr(e, "type").unwrap_or_default();
+                        current_gradation = Some((
+                            !gtype.eq_ignore_ascii_case("LINEAR"),
+                            attr_i32(e, "angle").unwrap_or(0) as f32,
+                            Vec::new(),
+                        ));
+                    }
+                    b"color" => {
+                        if let Some((_, _, colors)) = &mut current_gradation
+                            && let Some(v) = attr(e, "value")
+                        {
+                            colors.push(parse_color(&v));
+                        }
                     }
                     b"style" => {
                         header.styles.push(Style {
@@ -671,6 +692,25 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                 b"borderFill" => {
                     if let Some(bf) = current_border.take() {
                         header.border_fills.push(bf);
+                    }
+                }
+                b"gradation" => {
+                    if let (Some(bf), Some((radial, angle_deg, colors))) =
+                        (&mut current_border, current_gradation.take())
+                        && colors.len() >= 2
+                    {
+                        let last = (colors.len() - 1) as f32;
+                        let stops = colors
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, c)| (i as f32 / last, c))
+                            .collect();
+                        bf.fill_type |= 0x4;
+                        bf.gradient = Some(hwp_model::GradientSpec {
+                            radial,
+                            angle_deg,
+                            stops,
+                        });
                     }
                 }
                 b"paraPr" => {

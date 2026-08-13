@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Section, Table};
 
-use crate::display::{DisplayList, Fill, Item, PageList, PathCmd, Stroke};
+use crate::display::{DisplayList, Fill, Gradient, Item, PageList, PathCmd, Stroke};
 use crate::error::RenderError;
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
@@ -1628,6 +1628,45 @@ fn render_list_marker(
     }
 }
 
+/// Converts a `BorderFill` background into a display item (GG-7).
+/// Gradients and hatches require `Item::Path`; solid fills retain `Item::Rect`.
+fn bg_fill_item(bf: &BorderFill, x: f32, y: f32, w: f32, h: f32) -> Option<Item> {
+    if let Some(g) = bf.visible_gradient() {
+        return Some(Item::Path {
+            commands: rect_path_cmds(x, y, w, h),
+            fill: Some(Fill::Gradient(Gradient {
+                radial: g.radial,
+                angle_deg: g.angle_deg,
+                stops: g.stops.clone(),
+            })),
+            stroke: None,
+        });
+    }
+    if let Some((fg, style, bg)) = bf.visible_hatch() {
+        return Some(Item::Path {
+            commands: rect_path_cmds(x, y, w, h),
+            fill: Some(Fill::Hatch {
+                fg,
+                bg,
+                style: style as u32,
+            }),
+            stroke: None,
+        });
+    }
+    bf.visible_bg().map(|fill| Item::Rect { x, y, w, h, fill })
+}
+
+/// Axis-aligned rectangle path for background fills.
+fn rect_path_cmds(x: f32, y: f32, w: f32, h: f32) -> Vec<PathCmd> {
+    vec![
+        PathCmd::MoveTo(x, y),
+        PathCmd::LineTo(x + w, y),
+        PathCmd::LineTo(x + w, y + h),
+        PathCmd::LineTo(x, y + h),
+        PathCmd::Close,
+    ]
+}
+
 /// Item을 (dx, dy)만큼 평행이동한 사본.
 fn translate_item(item: Item, dx: f32, dy: f32) -> Item {
     match item {
@@ -1643,12 +1682,28 @@ fn translate_item(item: Item, dx: f32, dy: f32) -> Item {
             h,
             fill,
         },
-        Item::Image { x, y, w, h, data } => Item::Image {
+        Item::Image {
+            x,
+            y,
+            w,
+            h,
+            data,
+            crop,
+            flip,
+            rotation_deg,
+            brightness,
+            contrast,
+        } => Item::Image {
             x: x + dx,
             y: y + dy,
             w,
             h,
             data,
+            crop,
+            flip,
+            rotation_deg,
+            brightness,
+            contrast,
         },
         Item::Path {
             commands,
@@ -1731,12 +1786,24 @@ fn layout_para_objects(
                         if !warnings.charge_display_items(1) {
                             return (bottom, page_split);
                         }
+                        // Picture effects from tables 108-116 are reported but not yet rendered.
+                        if pic.effect_flags != 0 {
+                            warnings.push(
+                                RenderIssueCode::PictureEffectsUnsupported,
+                                format!("flags={:#010x}", pic.effect_flags),
+                            );
+                        }
                         page.items.push(Item::Image {
                             x,
                             y: object_y,
                             w,
                             h,
                             data: warnings.cached_binary(bytes),
+                            crop: pic.crop,
+                            flip: pic.flip,
+                            rotation_deg: pic.rotation.unwrap_or(0.0),
+                            brightness: pic.brightness,
+                            contrast: pic.contrast,
                         });
                         bottom = bottom.max(object_y + h);
                         object_y += h;
@@ -2323,17 +2390,11 @@ fn draw_table_rows(
             .get((cell.border_fill.0 as usize).saturating_sub(1));
 
         // 1) 배경
-        if let Some(bg) = border_fill.and_then(|bf| bf.visible_bg()) {
+        if let Some(item) = border_fill.and_then(|bf| bg_fill_item(bf, cx, cy, cw, ch)) {
             if !warnings.charge_display_items(1) {
                 return;
             }
-            page.items.push(Item::Rect {
-                x: cx,
-                y: cy,
-                w: cw,
-                h: ch,
-                fill: bg,
-            });
+            page.items.push(item);
         }
 
         // 2) 내용 — 셀 여백 + 세로정렬(list_attr bits5~6: 0=위, 1=가운데, 2=아래).
@@ -2881,21 +2942,12 @@ fn draw_para_bg_slice(
         return;
     };
     // 배경(텍스트보다 뒤에 오도록 삽입).
-    if let Some(fill) = bf.visible_bg() {
+    if let Some(item) = bg_fill_item(bf, left, top, width, bottom - top) {
         let ins = insert_idx.min(page.items.len());
         if !warnings.charge_display_items(1) {
             return;
         }
-        page.items.insert(
-            ins,
-            Item::Rect {
-                x: left,
-                y: top,
-                w: width,
-                h: bottom - top,
-                fill,
-            },
-        );
+        page.items.insert(ins, item);
     }
     // Left and right are always visible; page-split slices suppress internal top/bottom edges.
     let items = crate::border::border_rectangle_items(
@@ -2974,7 +3026,7 @@ pub(crate) fn push_run(
     };
     let box_top = y - em * 0.80;
     let box_bottom = y + em * 0.25;
-    let bg_fill = bf.and_then(BorderFill::visible_bg);
+    let bg_item = bf.and_then(|bf| bg_fill_item(bf, x, box_top, w, box_bottom - box_top));
 
     let decor_w = em * 0.05; // Initial underline/strike width pending U5 measurements.
     let ul_color = if run.underline_color == 0xFFFF_FFFF {
@@ -3010,7 +3062,7 @@ pub(crate) fn push_run(
         })
         .unwrap_or(0);
     let total_items = 1usize
-        .saturating_add(usize::from(bg_fill.is_some()))
+        .saturating_add(usize::from(bg_item.is_some()))
         .saturating_add(underline_count)
         .saturating_add(strike_count)
         .saturating_add(emphasis_count)
@@ -3053,14 +3105,8 @@ pub(crate) fn push_run(
     ));
     debug_assert_eq!(decor.len(), underline_count + strike_count + emphasis_count);
 
-    if let Some(fill) = bg_fill {
-        page.items.push(Item::Rect {
-            x,
-            y: box_top,
-            w,
-            h: box_bottom - box_top,
-            fill,
-        });
+    if let Some(item) = bg_item {
+        page.items.push(item);
     }
     page.items.push(Item::Glyphs { x, y, run });
 
@@ -3883,11 +3929,70 @@ mod certification_budget_tests {
             vert_offset: 0,
             horz_offset: 0,
             description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
             bin_ref: BinRef::ItemRef("shared-image".to_string()),
             extras: Vec::new(),
         });
         document.sections[0].paragraphs[0].controls = vec![picture; 300];
         assert_budget_failure(&document, LayoutBudget::certification());
+    }
+
+    /// GG-15: picture-effect flags produce a typed warning instead of a silent omission.
+    #[test]
+    fn 그림효과_플래그는_타입화된_보고() {
+        let mut document = hwp_convert::from_markdown("x");
+        document.bin_streams.push(BinStream {
+            name: "fx-image".to_string(),
+            data: vec![0; 16],
+        });
+        let picture = Control::Picture(Picture {
+            common_data: Vec::new(),
+            width: HwpUnit(100),
+            height: HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0x1, // 그림자 효과
+            effects_raw: vec![1, 0, 0, 0],
+            bin_ref: BinRef::ItemRef("fx-image".to_string()),
+            extras: Vec::new(),
+        });
+        document.sections[0].paragraphs[0].controls = vec![picture];
+        let mut store = FontStore::new();
+        let mut warns = RenderIssueAccumulator::new();
+        let _ = layout_document(&document, &mut store, &mut warns);
+        let report = warns.finish();
+        let issue = report
+            .issues
+            .iter()
+            .find(|i| i.code == RenderIssueCode::PictureEffectsUnsupported)
+            .expect("효과 미지원 보고");
+        assert_eq!(issue.severity, crate::issues::RenderIssueSeverity::Warning);
+
+        // Zero flags produce no warning.
+        let document2 = hwp_convert::from_markdown("x");
+        let mut warns2 = RenderIssueAccumulator::new();
+        let _ = layout_document(&document2, &mut store, &mut warns2);
+        assert!(
+            !warns2
+                .finish()
+                .issues
+                .iter()
+                .any(|i| i.code == RenderIssueCode::PictureEffectsUnsupported)
+        );
     }
 
     #[test]
@@ -3959,6 +4064,13 @@ mod certification_budget_tests {
             vert_offset: 0,
             horz_offset: 0,
             description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
             bin_ref: BinRef::ItemRef("one-byte-image".to_string()),
             extras: Vec::new(),
         });

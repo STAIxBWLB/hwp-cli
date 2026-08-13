@@ -57,6 +57,33 @@ pub struct Picture {
     /// header description BSTR; HWPX stores it as `hp:shapeComment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Crop rectangle (left, top, right, bottom) in source-image HWPUNIT
+    /// coordinates under the 96 dpi convention. Stored at HWP5 picture byte
+    /// 44 and in HWPX `hp:imgClip`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<[f32; 4]>,
+    /// Flip mode from HWPX `hp:flip`: 0=none, 1=horizontal, 2=vertical, 3=both.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub flip: u8,
+    /// Clockwise-positive rotation in degrees in a y-down coordinate system.
+    /// HWP5 derives it from the GSO matrix; HWPX uses `hp:rotationInfo@angle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<f32>,
+    /// Brightness (-100..100, 0=unchanged), from HWP5 byte 68 or HWPX `hc:img@bright`.
+    #[serde(default, skip_serializing_if = "is_zero_i8")]
+    pub brightness: i8,
+    /// Contrast (-100..100, 0=unchanged), from HWP5 byte 69 or HWPX `hc:img@contrast`.
+    #[serde(default, skip_serializing_if = "is_zero_i8")]
+    pub contrast: i8,
+    /// Raw HWP5 picture-effect flags (`UINT32` at byte 78). Zero means no
+    /// effect. Effects such as shadow and glow (tables 108-116) are parsed
+    /// and reported but are not rendered.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub effect_flags: u32,
+    /// Raw picture-effect stream from byte 78 through the record end,
+    /// including flags and payload. Preserved for reporting and future work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "hex_bytes")]
+    pub effects_raw: Vec<u8>,
     /// 바이너리 데이터 참조
     pub bin_ref: BinRef,
     pub extras: Vec<OpaqueRecord>,
@@ -393,6 +420,14 @@ fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
 
+fn is_zero_i8(v: &i8) -> bool {
+    *v == 0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -404,6 +439,63 @@ pub struct GradientSpec {
     pub angle_deg: f32,
     /// (위치 0..1, COLORREF). 위치 오름차순.
     pub stops: Vec<(f32, u32)>,
+}
+
+impl GradientSpec {
+    /// Parses an HWP5 table 28 gradient block: type, angle, horizontal center,
+    /// vertical center, spread, and color count as `i16`; positions as
+    /// `INT32[num]` when `num > 2`; then `COLORREF[num]`. Returns the parsed
+    /// specification and consumed byte count.
+    pub fn parse_hwp5(d: &[u8], off: usize) -> Option<(Self, usize)> {
+        let rd_u16 =
+            |o: usize| -> Option<u16> { d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
+        let rd_i32 = |o: usize| -> Option<i32> {
+            d.get(o..o + 4)
+                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let rd_u32 = |o: usize| -> Option<u32> {
+            d.get(o..o + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let gtype = rd_u16(off)? as i16;
+        let angle = rd_u16(off + 2)? as i16 as f32;
+        let num = rd_u16(off + 10)? as usize;
+        if !(1..=16).contains(&num) {
+            return None;
+        }
+        let mut cur = off + 12;
+        let positions: Vec<f32> = if num > 2 {
+            let mut v = Vec::with_capacity(num);
+            for i in 0..num {
+                v.push(rd_i32(cur + i * 4)? as f32);
+            }
+            cur += num * 4;
+            let max = v.iter().cloned().fold(1.0_f32, f32::max);
+            v.iter().map(|p| (p / max).clamp(0.0, 1.0)).collect()
+        } else {
+            (0..num)
+                .map(|i| i as f32 / (num.max(2) - 1) as f32)
+                .collect()
+        };
+        let mut stops = Vec::with_capacity(num);
+        for i in 0..num {
+            let c = rd_u32(cur + i * 4)?;
+            stops.push((positions.get(i).copied().unwrap_or(0.0), c));
+        }
+        cur += num * 4;
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Preserve the established shape renderer mapping where type 1 is radial.
+        // Table 30 can be read as type 2 being radial; changing this requires
+        // comparison against a genuine Hangul-authored file.
+        Some((
+            GradientSpec {
+                radial: gtype == 1,
+                angle_deg: angle,
+                stops,
+            },
+            cur - off,
+        ))
+    }
 }
 
 /// LIST_HEADER 하나가 여는 문단 리스트.

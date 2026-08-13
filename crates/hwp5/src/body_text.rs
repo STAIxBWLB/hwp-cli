@@ -305,7 +305,9 @@ fn find_picture_record(children: &[RecordNode]) -> Option<&RecordNode> {
 ///
 /// 그림 개체 속성 레이아웃 (스펙 §표 91): 테두리 색(4)+굵기(4)+속성(4)
 /// + 꼭지점 4점(32) + 자르기(16) + 안쪽 여백(8) + 밝기(1)+명암(1)+효과(1)
-/// + **BinItem ID(2)** — 오프셋 71.
+/// + **BinItem ID (2 bytes)** at offset 71, followed by border alpha (1 byte)
+///   and instance ID (4 bytes)
+/// + variable picture-effect data from tables 107-108, with flags at byte 78.
 fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model::Picture> {
     // 개체 공통 속성(표 69): 속성(4) 세로offset(4) 가로offset(4) 폭(4) 높이(4) z-order(4)
     let mut r = ByteReader::new(common);
@@ -320,9 +322,45 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
 
     let pic_node = find_picture_record(children)
         .ok_or_else(|| crate::error::Hwp5Error::MalformedRecord("그림 레코드 없음".into()))?;
-    let mut pr = ByteReader::new(&pic_node.data);
+    let pd = &pic_node.data;
+    let mut pr = ByteReader::new(pd);
     pr.read_bytes(71)?;
     let bin_id = pr.read_u16()?;
+
+    // The crop rectangle at byte 44 uses source-image HWPUNIT coordinates.
+    // Normalize a full natural-size crop to None so synthesized records and
+    // the semantic no-crop representation compare equally.
+    let rd_i32 = |o: usize| -> Option<i32> {
+        pd.get(o..o + 4)
+            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let crop = match (rd_i32(44), rd_i32(48), rd_i32(52), rd_i32(56)) {
+        (Some(l), Some(t), Some(r_), Some(b)) => {
+            let natural = (rd_i32(82), rd_i32(86));
+            let full =
+                matches!(natural, (Some(nw), Some(nh)) if l == 0 && t == 0 && r_ == nw && b == nh);
+            if full {
+                None
+            } else {
+                Some([l as f32, t as f32, r_ as f32, b as f32])
+            }
+        }
+        _ => None,
+    };
+    let brightness = pd.get(68).map(|&v| (v as i8).clamp(-100, 100)).unwrap_or(0);
+    let contrast = pd.get(69).map(|&v| (v as i8).clamp(-100, 100)).unwrap_or(0);
+    let effect_flags = rd_i32(78).map(|v| v as u32).unwrap_or(0);
+    // Discard the stream when flags are zero, including the writer's 13-byte constant block.
+    let effects_raw = if effect_flags != 0 {
+        pd.get(78..).unwrap_or(&[]).to_vec()
+    } else {
+        Vec::new()
+    };
+    // Rotation lives in the parent SHAPE_COMPONENT matrix, not the picture record.
+    let rotation = children
+        .iter()
+        .find(|c| c.tag == tag::SHAPE_COMPONENT)
+        .and_then(|sc| gso_rotation_deg(&sc.data));
 
     Ok(hwp_model::Picture {
         common_data: common.to_vec(),
@@ -337,9 +375,59 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
         vert_offset,
         horz_offset,
         description: parse_gso_description(common),
+        crop,
+        flip: 0, // The HWP5 flip bit is unverified; only HWPX populates it for now.
+        rotation,
+        brightness,
+        contrast,
+        effect_flags,
+        effects_raw,
         bin_ref: hwp_model::BinRef::Id(hwp_model::BinDataId(bin_id)),
         extras: children.iter().map(to_opaque).collect(),
     })
+}
+
+/// Extracts rotation in degrees from a SHAPE_COMPONENT transform matrix.
+/// The measured layout is `[CHID x2 or x1] + object properties + translation
+/// (48 bytes) + (scale 48 + rotation 48) x count`, matching
+/// `shape_draw::parse_style`. The result is clockwise-positive in y-down
+/// coordinates; magnitudes below 0.01 degrees return `None`.
+fn gso_rotation_deg(d: &[u8]) -> Option<f32> {
+    let rd_u16 =
+        |o: usize| -> Option<u16> { d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
+    let rd_f64 = |o: usize| -> Option<f64> {
+        d.get(o..o + 8)
+            .and_then(|b| b.try_into().ok())
+            .map(f64::from_le_bytes)
+    };
+    if d.len() < 8 {
+        return None;
+    }
+    // Top-level records repeat CHID twice; grouped members contain it once.
+    let base = if d[0..4] == d[4..8] { 8 } else { 4 };
+    let cnt = rd_u16(base + 42)? as usize;
+    // Linear part [a b; d e]: x'=a*x+b*y+c, y'=d*x+e*y+f.
+    let mat = |o: usize| -> Option<(f64, f64, f64, f64)> {
+        Some((rd_f64(o)?, rd_f64(o + 8)?, rd_f64(o + 24)?, rd_f64(o + 32)?))
+    };
+    let (ta, tb, td, te) = mat(base + 44)?;
+    let pair = base + 44 + 48 + cnt.saturating_sub(1) * 96;
+    let (a, dd) = if d.len() >= pair + 96 {
+        // Compose only the linear part of m = translation * (scale * rotation).
+        let (sa, sb, sd, se) = mat(pair)?;
+        let (ra, rb, rd, re) = mat(pair + 48)?;
+        let (ma, _mb, md, _me) = (
+            sa * ra + sb * rd,
+            sa * rb + sb * re,
+            sd * ra + se * rd,
+            sd * rb + se * re,
+        );
+        (ta * ma + tb * md, td * ma + te * md)
+    } else {
+        (ta, td)
+    };
+    let deg = dd.atan2(a).to_degrees();
+    (deg.abs() >= 0.01).then_some(deg as f32)
 }
 
 /// HWP5 common object property (table 69) description BSTR.
@@ -770,5 +858,77 @@ mod tests {
         );
         assert_eq!(parse_gso_description(&common[..common.len() - 1]), None);
         assert_eq!(parse_gso_description(&common[..40]), None);
+    }
+
+    /// GG-15: promotes crop, brightness, contrast, effect flags, and the
+    /// SHAPE_COMPONENT rotation matrix into the IR.
+    #[test]
+    fn 그림_변환_보정_속성_파싱() {
+        let mut common = Vec::new();
+        common.extend_from_slice(&1u32.to_le_bytes()); // attr: 글자처럼
+        common.extend_from_slice(&[0u8; 20]); // offsets/폭/높이/z-order
+
+        // A 91-byte picture record containing crop, adjustments, bin ID, and effect flags.
+        let mut pic_data = vec![0u8; 91];
+        for (o, v) in [(44, 100i32), (48, 200), (52, 4100), (56, 3200)] {
+            pic_data[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        pic_data[68] = 30u8; // 밝기 +30
+        pic_data[69] = (-20i8) as u8; // 명암 -20
+        pic_data[71..73].copy_from_slice(&3u16.to_le_bytes());
+        pic_data[78..82].copy_from_slice(&0x3u32.to_le_bytes()); // 효과 플래그
+        let pic_node = RecordNode {
+            tag: tag::SHAPE_COMPONENT_PICTURE,
+            data: pic_data,
+            children: Vec::new(),
+        };
+        // A 196-byte SHAPE_COMPONENT with repeated CHID, properties, and a 30-degree rotation.
+        let mut sc_data = vec![0u8; 196];
+        sc_data[0..4].copy_from_slice(b"cip$");
+        sc_data[4..8].copy_from_slice(b"cip$");
+        sc_data[50..52].copy_from_slice(&1u16.to_le_bytes()); // cnt=1
+        // Translation and scale are identity matrices.
+        for base in [52usize, 100] {
+            sc_data[base..base + 8].copy_from_slice(&1.0f64.to_le_bytes());
+            sc_data[base + 32..base + 40].copy_from_slice(&1.0f64.to_le_bytes());
+        }
+        let t = 30.0f64.to_radians();
+        for (o, v) in [
+            (148, t.cos()),
+            (156, -t.sin()),
+            (172, t.sin()),
+            (180, t.cos()),
+        ] {
+            sc_data[o..o + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        let sc_node = RecordNode {
+            tag: tag::SHAPE_COMPONENT,
+            data: sc_data,
+            children: Vec::new(),
+        };
+
+        let p = parse_picture_gso(&common, &[sc_node, pic_node]).unwrap();
+        assert_eq!(p.crop, Some([100.0, 200.0, 4100.0, 3200.0]));
+        assert_eq!(p.brightness, 30);
+        assert_eq!(p.contrast, -20);
+        assert_eq!(p.effect_flags, 0x3);
+        assert_eq!(p.effects_raw.len(), 91 - 78, "효과 스트림 @78~끝 보존");
+        let rot = p.rotation.expect("회전 각도 승계");
+        assert!((rot - 30.0).abs() < 0.01, "30° 분해, 실제 {rot}");
+    }
+
+    /// An identity rotation matrix produces `None`.
+    #[test]
+    fn 회전없음이면_none() {
+        let mut sc_data = vec![0u8; 196];
+        sc_data[0..4].copy_from_slice(b"cip$");
+        sc_data[4..8].copy_from_slice(b"cip$");
+        sc_data[50..52].copy_from_slice(&1u16.to_le_bytes());
+        for base in [52usize, 100, 148] {
+            sc_data[base..base + 8].copy_from_slice(&1.0f64.to_le_bytes());
+            sc_data[base + 32..base + 40].copy_from_slice(&1.0f64.to_le_bytes());
+        }
+        assert_eq!(gso_rotation_deg(&sc_data), None);
+        assert_eq!(gso_rotation_deg(&[]), None);
     }
 }

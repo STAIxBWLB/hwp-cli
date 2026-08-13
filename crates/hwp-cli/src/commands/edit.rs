@@ -2551,6 +2551,13 @@ mod tests {
                     vert_offset: 0,
                     horz_offset: 0,
                     description: None,
+                    crop: None,
+                    flip: 0,
+                    rotation: None,
+                    brightness: 0,
+                    contrast: 0,
+                    effect_flags: 0,
+                    effects_raw: Vec::new(),
                     bin_ref: hwp_model::BinRef::ItemRef("first.png".to_string()),
                     extras: Vec::new(),
                 }));

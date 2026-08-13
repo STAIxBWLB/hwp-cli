@@ -394,7 +394,7 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 |---|---|---|---|---|
 | GG-5 | **셀 테두리 선 종류 무시** — `BorderLine.line_type`(점선·이중선) 미반영으로 모든 셀 테두리가 실선 1줄이었음 | `hwp-render/src/border.rs`(`border_strokes`), `layout.rs`(`draw_table_rows`) | ✅ **해소(2026-08-13, PR 5)**: 점선 계열(코드 2~7)은 `Stroke.dash`, 이중선 계열(8~11)은 오프셋 병렬 선으로 렌더(굵기 분할은 근사 — 한컴 라운드 확인 대상). `Item::Line` 삭제, 모든 테두리 emit은 `Item::Path` | S |
 | GG-6 | **문단 테두리 선 종류 무시** — GG-5와 같은 뿌리, 경로만 다름 | `layout.rs`(`draw_para_bg_slice`) | ✅ **해소(2026-08-13, PR 5)**: GG-5와 같은 `border_strokes` 헬퍼 | S |
-| GG-7 | **셀·문단 배경 무늬(hatch)·그러데이션 무시** — `BorderFill`이 단색 `bg_color`만 모델링(무늬는 tail raw). 도형 배경 그러데이션은 되는데 셀/문단은 단색뿐 | `layout.rs:1040,1536`, `hwp-model/src/header.rs:333-344` | 근사(단색만) | M |
+| GG-7 | **셀·문단 배경 무늬(hatch)·그러데이션 무시** — `BorderFill`이 단색 `bg_color`만 모델링(무늬·그러데이션은 tail raw)이었음 | `hwp-model/src/header.rs`(`hatch`/`gradient`), `hwp-render/src/display.rs`(`Fill::Hatch`), `layout.rs`(`bg_fill_item`) | ✅ **해소(2026-08-14, PR 8)**: hwp5 tail 파싱(무늬색/종류, 그러데이션 블록) + hwpx `hc:gradation` 왕복. 셀·문단·글자 배경이 `Item::Path`의 `Fill::Gradient`/`Fill::Hatch`로 세 백엔드 렌더(png 선분, svg `<pattern>`, pdf 평탄 선). 무늬 간격/굵기는 근사. hwpx는 무늬 종류 표현 불가(색만) | M |
 | GG-8 | **강조점(dot emphasis) 미렌더** — `CharShape.attr` bits 21~24가 보존되나 접근자·렌더 모두 없었음 | `hwp-model/src/header.rs`(`emphasis_kind`), `hwp-render/src/layout.rs`(`push_run`) | ✅ **해소(2026-08-13, PR 6)**: 13종 전부(DOT_ABOVE~DOT_BELOW, hwplib `EmphasisSort` 순서) 글리프별 렌더. hwpx `symMark` 왕복. spec rev1.2 표 35와 hwplib의 3/4 TILDE/CARON 순서 충돌은 한컴 눈대조 대상 | S |
 | GG-9 | **밑줄 모양(이중·점선·물결)·'글자 위' 밑줄 미렌더** — kind==1(아래)만 인식, 모양 비트(4~7) 접근자 없음 | `hwp-model/src/header.rs`(`underline_shape_code`), `hwp-render/src/border.rs`(`decor_strokes`) | ✅ **해소(2026-08-13, PR 6)**: kind==3(위) 렌더 + 0-기반 모양 코드(solid~double-wave, hwplib `BorderType2`) 적용 — 점선 계열은 `Stroke.dash`, 이중·가중은 오프셋 스트로크, 물결은 cubic 경로. 위 밑줄 y·물결 상수는 한컴 라운드 확인용 플레이스홀더 | S |
 | GG-10 | **취소선 모양 무시** — 이중 취소선 등 미반영, 실선 1줄 고정 | `hwp-render/src/shape.rs`(`strike_shape`), `border.rs`(`decor_strokes`) | ✅ **해소(2026-08-13, PR 6)**: bits 26~29(B8 관측 기반)가 GG-9와 같은 장식 스트로크 표를 구동. hwpx 취소선 모양 왕복. 3D 코드는 실선 강등 | S |
@@ -402,7 +402,7 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 | GG-12 | **개요(outline) 번호 부분 지원** — 기본 head_type 1 마커는 렌더하지만 사용자 정의 개요·재시작과 확인된 한글 14자 이후 순번은 모델링 및 정답지 검증 전 | `hwp-model/src/list.rs`(`ListState::marker_for_render`), `hwp-render/src/layout.rs` | 근사(기본 7수준 형식, 빈 문단·글상자 범위 지원) | M |
 | GG-13 | ~~**쪽번호 미렌더** — 페이지 카운터 부재, pgnp/atno 컨트롤은 skipped 집계 후 미렌더~~ | `hwp-render/src/page_number.rs`, `layout.rs`(`PageNumberState`), `shape.rs`(`shape_range_page`) | ✅ **해소(2026-07-30)** — 시작·재시작·숨김, pgnp 위치/장식/지원 서식, PAGE atno 동적 치환. 미지원 서식은 십진 경고 폴백; GE-4·GG-16은 별도 잔존 | M |
 | GG-14 | **미주(endnote) 배치 근사** — 문서/구역 끝이 아니라 **앵커 페이지 하단**에 각주와 동일 렌더(GC-3의 '모양'과 별개인 '위치' 문제) | `hwp-render/src/footnote.rs:35-72`, `layout.rs:263,598`(kind 미구분) | 근사(각주식 배치) | M |
-| GG-15 | **이미지 회전·자르기(imgClip)·반전·밝기/대비·워터마크·그림 효과 미렌더** — `Item::Image`에 변환 필드 없음, `common_data` 내 효과 미해석. 그림 효과(표 108~116: 그림자·네온·부드러운 가장자리·반사·색상 효과·투명도)도 파싱 자체가 없음(2026-07-19 감사 정밀화) | `layout.rs:741-760`, `display.rs:41-47`, `hwp-model/src/control.rs:43` | 근사(원본 배치) | M |
+| GG-15 | **이미지 회전·자르기(imgClip)·반전·밝기/대비·그림 효과 미렌더** — `Item::Image`에 변환 필드가 없고 그림 효과(표 108~116)는 미해석이었음 | `hwp-model/src/control.rs`(`Picture`), `hwp-render/src/display.rs`(`Item::Image`), `layout.rs`(Picture emit) | ⚠ **부분 해소(2026-08-14, PR 8)**: 회전/반전/자르기/밝기/대비를 파싱(hwp5 레코드 오프셋 + hwpx 속성)해 세 백엔드 렌더(png Transform+선행 자르기, pdf 행렬+clip, svg transform+clipPath). 잔여: 그림 효과는 파싱 후 `picture_effects_unsupported` 경고로 보고(렌더 안 함), hwp5 반전 비트 미확정, 밝기/대비 픽셀 맵은 선형 근사 | M |
 | GG-16 | **머리말/꼬리말 홀수/짝수/첫쪽 구분 무시** — 최초 head/foot 하나를 모든 페이지에 반복(GC-7 구역 EVEN_ADJUST와 별개) | `layout.rs:152-165` | 근사(단일화) | S |
 | GG-17 | **단 구분선 미렌더** — `ColumnDef.divider`가 양쪽 reader에서 드롭되고 렌더러도 미사용이었음 | `hwp-model/src/control.rs`, `hwpx/src/read/section.rs`(`colLine`), `hwp-render/src/layout.rs` | ⚠ **부분 해소(2026-08-13, PR 5)**: hwpx `hp:colLine` 읽기·쓰기 + 단 사이 구분선 렌더. 보류: hwp5 coldef 구분선 파싱(바이트 오프셋 미확정 — 로컬 픽스처 전부 동일한 단일 단 COLDEF, `hwp5/src/body_text.rs`의 `TODO(GG-17)`), hwpx → hwp5 합성 방향의 구분선 | S |
 | GG-18 | **줄간격 모델 근사(합성 한정)** — attr1&0x3로 판정, 고정(1)·최소(3)를 동일 처리, 여백만(2)을 비율로 오해. 실파일은 캐시 lineseg라 무관 | `hwp-render/src/lineseg.rs`(`line_advance_hu`, `compute_linesegs`), `hwp-model/src/header.rs`(`line_spacing_type`) | ✅ **해소(2026-08-14, PR 7)**: 버전 인식 `line_spacing`/`line_spacing_type` — 비율 `base*v/100`, 고정 정확히 `v/2`(클램프 제거), 여백만 `base + v/2`, 최소 `max(base, v/2)`(줄별 자연 높이는 `base` 근사, 한컴 확인 대상) | M |
@@ -410,7 +410,7 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 | GG-20 | **인라인 제어문자 폭 무시** — 고정폭 빈칸·하이픈·묶음 빈칸 등이 폭 계산에 미반영 | `hwp-render/src/shape.rs`(조각 루프, `fw_space_run`), `layout.rs`·`lineseg.rs`(줄바꿈 guard) | ✅ **해소(2026-08-14, PR 7)**: HYPHEN은 실제 `-` 셰이핑. NB_SPACE는 식별 가능한 U+00A0 source를 보존하면서 일반 공백 폭으로 셰이핑하고 양옆 줄바꿈을 금지. FW_SPACE는 고정 1em 폭 | S |
 | GG-21 | **hwp5 직접렌더 경로 도형 선종류·화살촉 미적용** — `dash_pattern`/`arrowheads`가 hwpx ShapeGeom 경로에만 연결되고 hwp5 raw 경로는 `Stroke::solid` 고정이었음 | `hwp-render/src/shape_draw.rs`(`hwp5_line_style` + `draw_component` SC_LINE arm) | ✅ **해소(2026-08-13, PR 5)**: raw 경로가 선 속성을 `hwp5_line_style`로 매핑해 `dash_pattern` 적용 + `arrowheads` 방출(시작·끝 비트는 유무로 평탄화 — hwpx 경로와 동일). 화살촉 **모양·크기**는 양 경로 모두 고정 삼각형 유지 | S |
 | GG-22 | **글자 단위 테두리/배경 미렌더** — `CharShape.border_fill_id`는 hwp5·hwpx 파싱/왕복 완비인데 렌더가 무참조(렌더의 border_fill_id 참조는 전부 ParaShape 경로) | `hwp-model` CharShape ↔ `hwp-render/src/layout.rs`(`push_run` — 종전 무참조) | ✅ **해소(2026-08-13, PR 6)**: 런 단위 배경 Rect(글리프보다 먼저 emit) + 4변 테두리(`border_rectangle_items`) — 문단 배경 로직 재사용. 상자 메트릭(y-0.80em~y+0.25em)은 한컴 라운드 확인용 플레이스홀더 | S~M |
-| GG-23 | **타원→호 변환 미해석** — 타원 레코드(표 96) 60B 중 28B만 읽고 호 변환 플래그(표 97 bit1)·start/end 좌표 4쌍(32B)을 무시 → 부채꼴/호로 변환된 타원이 항상 완전한 타원으로 렌더 | `hwp-render/src/shape_draw.rs:558-570` | 근사(완전 타원) | M(변환 호 정답지 필요) |
+| GG-23 | **타원→호 변환 미해석** — 타원 레코드(표 96) 60B 중 28B만 읽어 변환된 타원이 항상 완전한 타원으로 렌더됐음 | `hwp-render/src/shape_draw.rs`(SC_ELLIPSE, `ellipse_arc_path`) | ✅ **해소(2026-08-14, PR 8)**: 호 변환 플래그(attr bit1)·start/end 좌표·호 종류(bits 2~9)를 읽고 `arc_path`의 축 벡터 일반화로 호/부채꼴/현을 렌더. 종류 값 매핑(0/1/2=호/부채꼴/현)과 sweep 방향은 한컴 정답지 대기 | M |
 | GG-24 | **대각선 테두리 선 종류·BORDER_FILL 효과 비트 미렌더** — 대각선 자체는 `diagonal_dirs` 패스 이후 렌더되나 `line_type`은 드롭, attr의 3D·그림자 효과 비트는 raw 보존 뿐 | `hwp-model` BorderFill.diagonal ↔ `hwp-render/src/border.rs` | ⚠ **부분 해소(2026-08-13, PR 5)**: 대각선도 `border_strokes`로 `line_type` 반영(GG-5와 같은 헬퍼). 3D·그림자 효과 비트는 raw 보존 유지 | S(빈도 낮음) |
 
 > 재수색에서 **갭이 아님**으로 확인된 것(오보고 방지): 장평(x_scale), 양각/음각/외곽선/글자그림자
@@ -563,7 +563,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 - **GC-1, GC-2, GC-3**: 세로쓰기·쪽테두리·각주모양 — 해당 조판을 쓴 정품 파일
 - **GD-1~GD-3**: 행렬·큰연산자·복잡 구분자를 포함한 정품 수식
 - **GG-1, GG-2**: 07§F 서사대로 실기 반복 필요
-- **GG-7, GG-13~GG-15, GG-19**: 정품 렌더와의 픽셀 대조로 확정(GG-12는 PR 3, GG-18은 PR 7에서 해소)
+- **GG-13~GG-15, GG-19**: 정품 렌더와의 픽셀 대조로 확정(GG-12는 PR 3, GG-18은 PR 7, GG-7·GG-23은 PR 8에서 해소)
 - **GA-2, GJ-2, GJ-3**: 공식 스펙으로 착수 가능하되, 스펙-실파일 불일치 사례가 알려져 있어
   ([08](08-external-research.ko.md) — 단 정의 14 vs 16B) 정품 코퍼스 검증을 병행
 - **판정 유보 3건(2026-07-19 스펙 전수 감사 — 갭 여부 자체가 미확정, 정품 실측 전 등재 금지)**:

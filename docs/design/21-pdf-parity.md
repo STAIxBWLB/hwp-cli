@@ -121,6 +121,18 @@ modes (ratio / fixed / margin-only / minimum) via the version-aware `line_spacin
 scoreboard (owner action from PR 4) validates or adjusts it. GG-20/GG-3/GG-4 move pixels on
 genuine Hancom-saved files; GG-18 is synthesis-only.
 
+**Implementation status 2026-08-14 (PR 8):** the images-and-fills batch landed (GG-15, GG-7,
+GG-23). `Item::Image` gained its contract change — crop, flip, rotation, brightness, contrast —
+parsed from the hwp5 picture record and the hwpx `hp:pic` attributes and honored by all three
+backends (png Transform + pre-crop, pdf matrix + clip, svg transform + clipPath; the pdf JPEG
+fast path and the svg zero-copy embed are kept when no pixel effect applies). Picture effects
+(spec tables 108-116) are parsed and reported as the typed `picture_effects_unsupported`
+warning, not rendered. Cell, paragraph and character backgrounds honor hatch and gradient
+fills (`Fill::Hatch` is new: png segments, svg `<pattern>`, pdf flattened lines). Converted
+ellipses render as arcs/pies/chords via the axis-vector `ellipse_arc_path`. Approximations
+flagged for the Hancom round: brightness/contrast curve, hatch spacing/weight, arc kind and
+sweep mapping, rotation sign conventions; hwp5 flip bits are unlocated.
+
 ## 4. Gates
 
 ### 4.1 Normative Hancom-oracle gate — future public corpus

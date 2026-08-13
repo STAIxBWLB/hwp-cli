@@ -347,6 +347,11 @@ fn draw_component(
                         w: (x1 - x0).max(0.1),
                         h: (y1 - y0).max(0.1),
                         data: img.clone(),
+                        crop: None,
+                        flip: 0,
+                        rotation_deg: 0.0,
+                        brightness: 0,
+                        contrast: 0,
                     });
                 }
                 // 채움·선이 모두 없고 이미지도 없으면 그리지 않는다(보이지 않는 프레임).
@@ -517,40 +522,16 @@ fn parse_style(d: &[u8], doc: &Document, issues: &mut RenderIssueAccumulator) ->
     })
 }
 
-/// Table 28 그러데이션: type(i16) 각(i16) cx(i16) cy(i16) spread(i16) num(i16),
-/// num>2면 INT32[num] 위치, 이어서 COLORREF[num] 색.
+/// Table 28 gradient: type, angle, centers, spread, and count as `i16`;
+/// positions as `INT32[num]` when `num > 2`; then `COLORREF[num]`.
+/// [`hwp_model::GradientSpec::parse_hwp5`] is the canonical parser shared
+/// with `BorderFill`.
 fn parse_gradient(d: &[u8], fo: usize) -> Option<Gradient> {
-    let gtype = rd_u16(d, fo)? as i16;
-    let angle = rd_u16(d, fo + 2)? as i16 as f32;
-    let num = rd_u16(d, fo + 10)? as usize;
-    if !(1..=16).contains(&num) {
-        return None;
-    }
-    let mut off = fo + 12;
-    let positions: Vec<f32> = if num > 2 {
-        let mut v = Vec::with_capacity(num);
-        for i in 0..num {
-            v.push(rd_i32(d, off + i * 4)? as f32);
-        }
-        off += num * 4;
-        let max = v.iter().cloned().fold(1.0_f32, f32::max);
-        v.iter().map(|p| (p / max).clamp(0.0, 1.0)).collect()
-    } else {
-        (0..num)
-            .map(|i| i as f32 / (num.max(2) - 1) as f32)
-            .collect()
-    };
-    let mut stops = Vec::with_capacity(num);
-    for i in 0..num {
-        let c = rd_u32(d, off + i * 4)?;
-        stops.push((positions.get(i).copied().unwrap_or(0.0), c));
-    }
-    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-    // HWP 그러데이션 유형: 1=원형(radial), 그 외=선형(각도 사용).
+    let (g, _) = hwp_model::GradientSpec::parse_hwp5(d, fo)?;
     Some(Gradient {
-        radial: gtype == 1,
-        angle_deg: angle,
-        stops,
+        radial: g.radial,
+        angle_deg: g.angle_deg,
+        stops: g.stops,
     })
 }
 
@@ -642,17 +623,30 @@ fn geometry(tag: u16, d: &[u8], s: &Style, origin: (f64, f64)) -> Option<Vec<Pat
             Some(cmds)
         }
         SC_ELLIPSE => {
-            // UINT32 attr + center + ax1(끝점) + ax2(끝점).
+            // Table 97 UINT32 attributes followed by center and two axis endpoints.
+            let attr = rd_u32(d, 0)?;
             let (cx, cy) = p(4)?;
             let (a1x, a1y) = p(12)?;
             let (a2x, a2y) = p(20)?;
-            Some(ellipse_path(
-                cx,
-                cy,
-                (a1x - cx, a1y - cy),
-                (a2x - cx, a2y - cy),
-                &to_pt,
-            ))
+            let (a1, a2) = ((a1x - cx, a1y - cy), (a2x - cx, a2y - cy));
+            // Bit 1 marks an ellipse converted to an arc (GG-23). Bytes 28 and
+            // 36 hold the endpoints; bits 2-9 hold kind 0=open, 1=pie, 2=chord.
+            // The kind mapping still requires comparison with genuine Hangul output.
+            if attr & 0x2 != 0 {
+                let (sx, sy) = p(28)?;
+                let (ex, ey) = p(36)?;
+                let kind = (attr >> 2) & 0xFF;
+                return Some(ellipse_arc_path(
+                    (cx, cy),
+                    a1,
+                    a2,
+                    (sx, sy),
+                    (ex, ey),
+                    kind,
+                    &to_pt,
+                ));
+            }
+            Some(ellipse_path(cx, cy, a1, a2, &to_pt))
         }
         SC_ARC => {
             // BYTE arctype + center + start(ax1) + end(ax2).
@@ -789,6 +783,95 @@ fn ellipse_path(
         ),
         PathCmd::Close,
     ]
+}
+
+/// Approximates a GG-23 ellipse arc from its center, two axis vectors, and
+/// endpoints with cubic Beziers. It uses the same shorter-sweep convention as
+/// `arc_path`. Table 97 bits 2-9 encode 0=open, 1=pie, and 2=chord; the mapping
+/// still requires comparison with genuine Hangul output.
+fn ellipse_arc_path(
+    c: (f64, f64),
+    a1: (f64, f64),
+    a2: (f64, f64),
+    start: (f64, f64),
+    end: (f64, f64),
+    kind: u32,
+    to_pt: &impl Fn(f64, f64) -> (f32, f32),
+) -> Vec<PathCmd> {
+    let (cx, cy) = c;
+    // Solve theta in basis (a1, a2) for P(theta) = C + a1*cos(theta) + a2*sin(theta).
+    let det = a1.0 * a2.1 - a1.1 * a2.0;
+    if det.abs() < f64::EPSILON {
+        return Vec::new();
+    }
+    let theta = |p: (f64, f64)| {
+        let (sx, sy) = (p.0 - cx, p.1 - cy);
+        let cos = (sx * a2.1 - a2.0 * sy) / det;
+        let sin = (a1.0 * sy - sx * a1.1) / det;
+        sin.atan2(cos)
+    };
+    let t0 = theta(start);
+    let mut sweep = theta(end) - t0;
+    // Choose the shorter sweep in [-pi, pi].
+    while sweep > std::f64::consts::PI {
+        sweep -= std::f64::consts::TAU;
+    }
+    while sweep < -std::f64::consts::PI {
+        sweep += std::f64::consts::TAU;
+    }
+    // A degenerate equal-endpoint arc falls back to a complete ellipse.
+    if sweep.abs() < 1e-6 {
+        return ellipse_path(cx, cy, a1, a2, to_pt);
+    }
+    let pt = |th: f64| {
+        to_pt(
+            cx + a1.0 * th.cos() + a2.0 * th.sin(),
+            cy + a1.1 * th.cos() + a2.1 * th.sin(),
+        )
+    };
+    let segs = (sweep.abs() / (std::f64::consts::PI / 2.0)).ceil().max(1.0) as usize;
+    let dphi = sweep / segs as f64;
+    let alpha = (4.0 / 3.0) * (dphi / 4.0).tan();
+    let start_pt = pt(t0);
+    let mut cmds = vec![PathCmd::MoveTo(start_pt.0, start_pt.1)];
+    let mut th = t0;
+    for _ in 0..segs {
+        let th1 = th + dphi;
+        // Tangent P'(theta) = -a1*sin(theta) + a2*cos(theta); controls are P +/- alpha*P'.
+        let derv = |t: f64| {
+            (
+                a2.0 * t.cos() - a1.0 * t.sin(),
+                a2.1 * t.cos() - a1.1 * t.sin(),
+            )
+        };
+        let (px, py) = (
+            cx + a1.0 * th.cos() + a2.0 * th.sin(),
+            cy + a1.1 * th.cos() + a2.1 * th.sin(),
+        );
+        let (dx0, dy0) = derv(th);
+        let c1 = to_pt(px + alpha * dx0, py + alpha * dy0);
+        let (qx, qy) = (
+            cx + a1.0 * th1.cos() + a2.0 * th1.sin(),
+            cy + a1.1 * th1.cos() + a2.1 * th1.sin(),
+        );
+        let (dx1, dy1) = derv(th1);
+        let c2 = to_pt(qx - alpha * dx1, qy - alpha * dy1);
+        let p1 = pt(th1);
+        cmds.push(PathCmd::CubicTo(c1.0, c1.1, c2.0, c2.1, p1.0, p1.1));
+        th = th1;
+    }
+    match kind {
+        // Pie: close through the center.
+        1 => {
+            let c = to_pt(cx, cy);
+            cmds.push(PathCmd::LineTo(c.0, c.1));
+            cmds.push(PathCmd::Close);
+        }
+        // Chord: close directly from end to start.
+        2 => cmds.push(PathCmd::Close),
+        _ => {}
+    }
+    cmds
 }
 
 /// 중심 C, 시작/끝 점으로 원호를 큐빅 베지에로 근사(짧은 쪽 sweep).
@@ -1202,5 +1285,87 @@ mod tests {
         assert_eq!(hwp5_line_style(3), 2);
         assert_eq!(hwp5_line_style(6), 5);
         assert_eq!(hwp5_line_style(7), 0, "out-of-range values are solid");
+    }
+
+    /// GG-23: ellipse bit 1 and endpoint coordinates produce open, pie, and chord paths.
+    #[test]
+    fn 타원_호변환_경로() {
+        let style = Style {
+            m: Mat {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 1.0,
+                f: 0.0,
+            },
+            stroke: None,
+            fill: None,
+            image: None,
+            arrow_start: false,
+            arrow_end: false,
+        };
+        let mut d = vec![0u8; 60];
+        let put = |d: &mut [u8], o: usize, v: i32| {
+            d[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        // Center (5000, 5000) with orthogonal 1000-unit axes describes a circle.
+        put(&mut d, 4, 5000);
+        put(&mut d, 8, 5000);
+        put(&mut d, 12, 6000);
+        put(&mut d, 16, 5000);
+        put(&mut d, 20, 5000);
+        put(&mut d, 24, 6000);
+        // Start is C+a1 and end is the 90-degree point C+a2; point conversion divides by 100.
+        put(&mut d, 28, 6000);
+        put(&mut d, 32, 5000);
+        put(&mut d, 36, 5000);
+        put(&mut d, 40, 6000);
+
+        // Bit 1 alone creates an open arc with MoveTo and cubic segments but no Close.
+        put(&mut d, 0, 0x2);
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        let PathCmd::MoveTo(x, y) = cmds[0] else {
+            panic!("MoveTo 기대: {:?}", cmds[0])
+        };
+        assert!(
+            (x - 60.0).abs() < 0.01 && (y - 50.0).abs() < 0.01,
+            "시작점 {x},{y}"
+        );
+        assert!(!matches!(cmds.last(), Some(PathCmd::Close)), "열린 호");
+        // The endpoint is near (50, 60).
+        let Some(PathCmd::CubicTo(.., ex, ey)) = cmds.last() else {
+            panic!("CubicTo 기대")
+        };
+        assert!(
+            (ex - 50.0).abs() < 0.01 && (ey - 60.0).abs() < 0.01,
+            "끝점 {ex},{ey}"
+        );
+
+        // Pie kind 1 closes through the center.
+        put(&mut d, 0, 0x2 | (1 << 2));
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, PathCmd::LineTo(x, y) if (*x - 50.0).abs() < 0.01 && (*y - 50.0).abs() < 0.01)),
+            "중심 경유: {cmds:?}"
+        );
+
+        // Chord kind 2 closes without visiting the center.
+        put(&mut d, 0, 0x2 | (2 << 2));
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
+        assert!(
+            !cmds.iter()
+                .any(|c| matches!(c, PathCmd::LineTo(x, y) if (*x - 50.0).abs() < 0.01 && (*y - 50.0).abs() < 0.01)),
+            "중심 미경유: {cmds:?}"
+        );
+
+        // Without bit 1, preserve the full ellipse path: MoveTo, four cubics, Close.
+        put(&mut d, 0, 0);
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        assert_eq!(cmds.len(), 6);
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
     }
 }

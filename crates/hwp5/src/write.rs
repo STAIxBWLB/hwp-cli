@@ -486,6 +486,53 @@ fn build_picture_extras(
     }]
 }
 
+/// Applies IR crop, brightness, contrast, and rotation to synthesized picture
+/// extras. This runs only for newly materialized extras, such as HWPX-origin
+/// pictures; original HWP5 extras remain on the lossless raw round-trip path.
+/// [`is_materialized_generated_picture`] applies the same patch so post-write
+/// verification compares the exact materialized representation.
+fn patch_picture_extras_fx(
+    extras: &mut [OpaqueRecord],
+    crop: Option<[f32; 4]>,
+    brightness: i8,
+    contrast: i8,
+    rotation: Option<f32>,
+) {
+    let default = crop.is_none() && brightness == 0 && contrast == 0 && rotation.is_none();
+    if default {
+        return;
+    }
+    let Some(sc) = extras.first_mut() else { return };
+    if sc.tag != tag::SHAPE_COMPONENT {
+        return;
+    }
+    // Replace the synthesized 196-byte template's rotation matrix at byte 148.
+    if let Some(deg) = rotation
+        && sc.data.len() >= 196
+    {
+        let t = (deg as f64).to_radians();
+        let (sn, cs) = (t.sin(), t.cos());
+        // [a b c; d e f], clockwise-positive in y-down coordinates. This is
+        // the inverse convention used by gso_rotation_deg.
+        for (o, v) in [(148, cs), (156, -sn), (172, sn), (180, cs)] {
+            sc.data[o..o + 8].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    let Some(p) = sc.children.first_mut() else {
+        return;
+    };
+    if p.tag != tag::SHAPE_COMPONENT_PICTURE || p.data.len() < 73 {
+        return;
+    }
+    if let Some([l, t, r, b]) = crop {
+        for (o, v) in [(44, l), (48, t), (52, r), (56, b)] {
+            p.data[o..o + 4].copy_from_slice(&(v as i32).to_le_bytes());
+        }
+    }
+    p.data[68] = brightness.clamp(-100, 100) as u8;
+    p.data[69] = contrast.clamp(-100, 100) as u8;
+}
+
 /// Returns true only for the exact Picture scaffolding synthesized by this
 /// writer from an IR picture whose `common_data`/`extras` were empty.
 ///
@@ -543,14 +590,21 @@ pub fn is_materialized_generated_picture(picture: &hwp_model::Picture, media: &[
     let natural = image_pixel_size(media)
         .map(natural_size_hwpunit)
         .unwrap_or((picture.width.0, picture.height.0));
-    picture.extras
-        == build_picture_extras(
-            picture.width.0,
-            picture.height.0,
-            natural,
-            bin_id.0,
-            instance_id ^ 0x0010_0000,
-        )
+    let mut expected = build_picture_extras(
+        picture.width.0,
+        picture.height.0,
+        natural,
+        bin_id.0,
+        instance_id ^ 0x0010_0000,
+    );
+    patch_picture_extras_fx(
+        &mut expected,
+        picture.crop,
+        picture.brightness,
+        picture.contrast,
+        picture.rotation,
+    );
+    picture.extras == expected
 }
 
 // ── hwpx-출신 도형/글상자 안전 저하 ──────────────────────────────────────
@@ -906,6 +960,13 @@ fn synth_pictures_para(
                 // 한다 — 유니크 비트를 토글해 파생(역시 유니크 유지).
                 let pic_inst = inst_id ^ 0x0010_0000;
                 p.extras = build_picture_extras(p.width.0, p.height.0, natural, sid, pic_inst);
+                patch_picture_extras_fx(
+                    &mut p.extras,
+                    p.crop,
+                    p.brightness,
+                    p.contrast,
+                    p.rotation,
+                );
                 p.bin_ref = hwp_model::BinRef::Id(hwp_model::BinDataId(sid));
             }
             Control::Table(t) => {

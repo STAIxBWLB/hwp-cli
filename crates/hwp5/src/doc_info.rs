@@ -363,13 +363,40 @@ fn parse_border_fill(data: &[u8]) -> Result<hwp_model::BorderFill> {
     } else {
         None
     };
+    let tail = r.take_rest().to_vec();
+    // Parse table 28 fill data from the tail start. Bit 0 adds a 4-byte pattern
+    // color and 4-byte style; bit 2 then adds a gradient block. Preserve the
+    // original tail for lossless round trips.
+    let mut off = 0usize;
+    let hatch = if fill_type & 0x1 != 0 {
+        let read = |o: usize| -> Option<u32> {
+            tail.get(o..o + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let color = read(0);
+        let style = read(4).map(|v| v as i32);
+        off = 8;
+        match (color, style) {
+            (Some(c), Some(s)) if s != -1 => Some((c, s)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let gradient = if fill_type & 0x4 != 0 {
+        hwp_model::GradientSpec::parse_hwp5(&tail, off).map(|(g, _)| g)
+    } else {
+        None
+    };
     Ok(hwp_model::BorderFill {
         attr,
         sides,
         diagonal,
         fill_type,
         bg_color,
-        tail: r.take_rest().to_vec(),
+        hatch,
+        gradient,
+        tail,
     })
 }
 
@@ -575,5 +602,64 @@ mod tab_def_tests {
         assert_eq!(td.items[0].pos, 100);
         // 헤더조차 모자라면 빈 정의(패닉 없음).
         assert!(parse_tab_def(&[1, 2]).items.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod border_fill_tests {
+    use super::parse_border_fill;
+
+    /// Common prefix through attributes, four sides, diagonal, and fill type.
+    fn prefix(fill_type: u32) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&0u16.to_le_bytes());
+        for _ in 0..5 {
+            d.extend_from_slice(&[0u8, 0]);
+            d.extend_from_slice(&0u32.to_le_bytes());
+        }
+        d.extend_from_slice(&fill_type.to_le_bytes());
+        d
+    }
+
+    /// GG-7: fill-type bit 0 parses the tail's pattern color and style.
+    #[test]
+    fn 무늬_채움_파싱() {
+        let mut d = prefix(0x1);
+        d.extend_from_slice(&0x0000_FFFFu32.to_le_bytes()); // 배경색 (R,B=FF)
+        d.extend_from_slice(&0x0000_00FFu32.to_le_bytes()); // 무늬색 (R=FF)
+        d.extend_from_slice(&3i32.to_le_bytes()); // 무늬 종류 3 (\)
+        d.extend_from_slice(&[0u8; 9]); // 추가 채우기 속성 크기(4)+투명도(1) 등
+        let bf = parse_border_fill(&d).unwrap();
+        assert_eq!(bf.hatch, Some((0x0000_00FF, 3)));
+        assert!(bf.gradient.is_none());
+        assert_eq!(bf.visible_hatch(), Some((0x0000_00FF, 3, 0x0000_FFFF)));
+
+        // Style -1 means no hatch; the tail still remains losslessly preserved.
+        let mut d2 = prefix(0x1);
+        d2.extend_from_slice(&0x00FF_FFFFu32.to_le_bytes());
+        d2.extend_from_slice(&0u32.to_le_bytes());
+        d2.extend_from_slice(&(-1i32).to_le_bytes());
+        let bf2 = parse_border_fill(&d2).unwrap();
+        assert_eq!(bf2.hatch, None);
+        assert_eq!(bf2.tail.len(), 8);
+    }
+
+    /// GG-7: fill-type bit 2 parses a gradient with the shared model parser.
+    #[test]
+    fn 그러데이션_채움_파싱() {
+        let mut d = prefix(0x4);
+        // Linear gradient at 90 degrees with two colors.
+        d.extend_from_slice(&0i16.to_le_bytes());
+        d.extend_from_slice(&90i16.to_le_bytes());
+        d.extend_from_slice(&[0u8; 6]); // cx cy spread
+        d.extend_from_slice(&2i16.to_le_bytes()); // num=2
+        d.extend_from_slice(&0x0000_00FFu32.to_le_bytes()); // R=FF
+        d.extend_from_slice(&0x00FF_0000u32.to_le_bytes()); // B=FF
+        let bf = parse_border_fill(&d).unwrap();
+        let g = bf.gradient.as_ref().expect("그러데이션 파싱");
+        assert!(!g.radial);
+        assert_eq!(g.angle_deg, 90.0);
+        assert_eq!(g.stops, vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)]);
+        assert!(bf.visible_gradient().is_some());
     }
 }

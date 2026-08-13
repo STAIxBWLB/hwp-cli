@@ -418,16 +418,24 @@ impl BorderLine {
 }
 
 /// BORDER_FILL — 테두리/배경 (실측으로 확정한 레이아웃).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BorderFill {
     pub attr: u16,
     /// 왼/오른/위/아래
     pub sides: [BorderLine; 4],
     pub diagonal: BorderLine,
-    /// 채우기 종류 비트 (bit0 = 단색)
+    /// Fill-type bits: bit 0=solid, bit 1=image, bit 2=gradient.
     pub fill_type: u32,
     /// 단색 배경 (COLORREF, 0xFFFFFFFF = 없음)
     pub bg_color: Option<u32>,
+    /// Hatch fill as `(COLORREF, table 29 style 1-6)`. When fill-type bit 0
+    /// is set, this is read from the pattern color and style in `tail`;
+    /// style -1 means no hatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hatch: Option<(u32, i32)>,
+    /// Gradient fill from fill-type bit 2. It takes precedence over hatch and solid fills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<crate::control::GradientSpec>,
     #[serde(with = "hex_bytes")]
     pub tail: Vec<u8>,
 }
@@ -436,6 +444,23 @@ impl BorderFill {
     /// 그릴 배경색 (없음 표식 제외).
     pub fn visible_bg(&self) -> Option<u32> {
         self.bg_color.filter(|&c| c != 0xFFFF_FFFF)
+    }
+
+    /// Returns a visible hatch as `(pattern color, style, background color)`.
+    /// `0xFFFFFFFF` means no background. A gradient suppresses the hatch.
+    pub fn visible_hatch(&self) -> Option<(u32, i32, u32)> {
+        if self.gradient.is_some() {
+            return None;
+        }
+        let (color, style) = self.hatch?;
+        (1..=6)
+            .contains(&style)
+            .then_some((color, style, self.bg_color.unwrap_or(0xFFFF_FFFF)))
+    }
+
+    /// Returns a gradient only when it has at least two stops.
+    pub fn visible_gradient(&self) -> Option<&crate::control::GradientSpec> {
+        self.gradient.as_ref().filter(|g| g.stops.len() >= 2)
     }
 }
 

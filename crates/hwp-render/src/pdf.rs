@@ -141,8 +141,18 @@ pub(crate) fn render_pdf_with_metadata(
                     w: iw,
                     h: ih,
                     data,
-                } => match decode_image(data) {
+                    crop,
+                    flip,
+                    rotation_deg,
+                    brightness,
+                    contrast,
+                } => match decode_image(data, *brightness, *contrast) {
                     Some(payload) => {
+                        let (pw, ph) = match &payload {
+                            ImagePayload::Jpeg { w, h, .. } | ImagePayload::Raw { w, h, .. } => {
+                                (*w, *h)
+                            }
+                        };
                         let id = alloc(&mut counter);
                         let smask_id = matches!(
                             &payload,
@@ -154,8 +164,39 @@ pub(crate) fn render_pdf_with_metadata(
                         .then(|| alloc(&mut counter));
                         let name = format!("Im{}", images.len());
                         content.save_state();
-                        content.transform([*iw, 0.0, 0.0, *ih, *x, h - (*y + *ih)]);
-                        content.x_object(Name(name.as_bytes()));
+                        // Scale the cropped source region to fill the destination box.
+                        let (mut sx0, mut sy0, mut ssw, mut ssh) = (0.0, 0.0, 1.0, 1.0);
+                        let mut crop_clip = None;
+                        if let Some(f) = crop
+                            .and_then(|c| crate::display::crop_fractions(c, pw as u32, ph as u32))
+                        {
+                            let [fl, ft, fr, fb] = f;
+                            if fl > 0.0 || ft > 0.0 || fr < 1.0 || fb < 1.0 {
+                                (sx0, sy0, ssw, ssh) = (fl, ft, fr - fl, fb - ft);
+                                crop_clip = Some(pdf_source_crop_rect(f));
+                            }
+                        }
+                        // Compose fit, flip, and rotation in y-down page space, then convert to
+                        // PDF coordinates: M_pdf = C(page y-flip) * M_down * F(source v-flip).
+                        // PDF images use a unit square whose v=1 edge contains the first row.
+                        let fit = [
+                            *iw / ssw,
+                            0.0,
+                            0.0,
+                            *ih / ssh,
+                            *x - sx0 * (*iw / ssw),
+                            *y - sy0 * (*ih / ssh),
+                        ];
+                        let fr = crate::display::flip_rotate_matrix(
+                            *x + *iw / 2.0,
+                            *y + *ih / 2.0,
+                            *flip,
+                            *rotation_deg,
+                        );
+                        let m = crate::display::mat_mul(fr, fit);
+                        let m = crate::display::mat_mul(m, [1.0, 0.0, 0.0, -1.0, 0.0, 1.0]);
+                        let m = [m[0], -m[1], m[2], -m[3], m[4], h - m[5]];
+                        emit_image_xobject(&mut content, m, crop_clip, &name);
                         content.restore_state();
                         images.push(ImagePlan {
                             id,
@@ -258,6 +299,33 @@ pub(crate) fn render_pdf_with_metadata(
                         pdf_gradient_bands(&mut content, grad, commands, h);
                         content.restore_state();
                         // 테두리(선)는 별도로 다시 그린다.
+                        if let Some(s) = stroke {
+                            apply_stroke(&mut content, s);
+                            pdf_emit_path(&mut content, commands, h);
+                            content.stroke();
+                        }
+                    } else if let Some(Fill::Hatch { fg, bg, style }) = fill {
+                        // Hatch fill: clip to the path, paint the background, then emit flat lines.
+                        content.save_state();
+                        pdf_emit_path(&mut content, commands, h);
+                        content.clip_nonzero();
+                        content.end_path();
+                        let (x0, y0, x1, y1) = path_bbox(commands);
+                        if *bg != 0xFFFF_FFFF {
+                            let (r, g, b) = colorref_rgb(*bg);
+                            content.set_fill_rgb(r, g, b);
+                            content.rect(x0, h - y1, x1 - x0, y1 - y0);
+                            content.fill_nonzero();
+                        }
+                        let (r, g, b) = colorref_rgb(*fg);
+                        content.set_stroke_rgb(r, g, b);
+                        content.set_line_width(crate::display::HATCH_LINE_WIDTH);
+                        for (a, b) in crate::display::hatch_segments(*style, x0, y0, x1, y1) {
+                            content.move_to(a.0, h - a.1);
+                            content.line_to(b.0, h - b.1);
+                        }
+                        content.stroke();
+                        content.restore_state();
                         if let Some(s) = stroke {
                             apply_stroke(&mut content, s);
                             pdf_emit_path(&mut content, commands, h);
@@ -1039,10 +1107,38 @@ enum ImagePayload {
     },
 }
 
-/// 인코딩 이미지 바이트를 PDF 임베드용 페이로드로 디코드한다.
-fn decode_image(data: &Arc<Vec<u8>>) -> Option<ImagePayload> {
+/// Converts y-down crop fractions into the PDF image unit square, whose
+/// vertical axis points upward. The returned rectangle is `(x, y, w, h)`.
+fn pdf_source_crop_rect([left, top, right, bottom]: [f32; 4]) -> [f32; 4] {
+    [left, 1.0 - bottom, right - left, bottom - top]
+}
+
+/// Emits a transformed image reference with an optional source-space crop.
+/// Installing the transform before defining the clip makes the clip rotate
+/// and flip with the image rather than remaining axis-aligned in page space.
+fn emit_image_xobject(
+    content: &mut Content,
+    transform: [f32; 6],
+    crop: Option<[f32; 4]>,
+    name: &str,
+) {
+    content.transform(transform);
+    if let Some([x, y, width, height]) = crop {
+        content.rect(x, y, width, height);
+        content.clip_nonzero();
+        content.end_path();
+    }
+    content.x_object(Name(name.as_bytes()));
+}
+
+/// Decodes encoded image bytes into a PDF image payload.
+/// Nonzero brightness or contrast bypasses the DCTDecode fast path so the
+/// pixel adjustment can be applied.
+fn decode_image(data: &Arc<Vec<u8>>, brightness: i8, contrast: i8) -> Option<ImagePayload> {
     // JPEG 빠른 경로: 회색/RGB는 원본을 DCTDecode로 그대로. (CMYK·파싱 실패는 디코드 경로로)
-    if data.len() >= 2
+    if brightness == 0
+        && contrast == 0
+        && data.len() >= 2
         && data[0] == 0xFF
         && data[1] == 0xD8
         && let Some((w, h, comps)) = jpeg_info(data)
@@ -1059,7 +1155,14 @@ fn decode_image(data: &Arc<Vec<u8>>) -> Option<ImagePayload> {
     let dynamic = image::load_from_memory(data).ok()?;
     let rgba = dynamic.to_rgba8();
     let (w, h) = rgba.dimensions();
-    let rgb: Vec<u8> = rgba.pixels().flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let map = |v: u8| crate::display::apply_brightness_contrast(v, brightness, contrast);
+    let rgb: Vec<u8> = if brightness == 0 && contrast == 0 {
+        rgba.pixels().flat_map(|p| [p[0], p[1], p[2]]).collect()
+    } else {
+        rgba.pixels()
+            .flat_map(|p| [map(p[0]), map(p[1]), map(p[2])])
+            .collect()
+    };
     let alpha: Option<Vec<u8>> = dynamic
         .color()
         .has_alpha()
@@ -1235,5 +1338,46 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_ne!(entries[0], entries[1]);
         assert_eq!(fonts.len(), 2);
+    }
+
+    #[test]
+    fn source_crop_rect_flips_only_the_vertical_axis() {
+        let actual = pdf_source_crop_rect([0.1, 0.2, 0.8, 0.9]);
+        for (actual, expected) in actual.into_iter().zip([0.1, 0.1, 0.7, 0.7]) {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn image_crop_clip_is_emitted_after_the_transform() {
+        let mut content = Content::new();
+        emit_image_xobject(
+            &mut content,
+            [0.866, 0.5, -0.5, 0.866, 10.0, 20.0],
+            Some([0.1, 0.2, 0.7, 0.6]),
+            "Im0",
+        );
+        let stream = String::from_utf8(content.finish().to_vec()).unwrap();
+        let tokens = stream.split_whitespace().collect::<Vec<_>>();
+        let matrix = tokens
+            .iter()
+            .position(|token| *token == "cm")
+            .expect("matrix operator");
+        let clip_rect = tokens
+            .iter()
+            .position(|token| *token == "re")
+            .expect("crop rectangle");
+        let clip = tokens
+            .iter()
+            .position(|token| *token == "W")
+            .expect("clip operator");
+        let image = tokens
+            .iter()
+            .position(|token| *token == "Do")
+            .expect("image operator");
+        assert!(
+            matrix < clip_rect && clip_rect < clip && clip < image,
+            "{stream}"
+        );
     }
 }

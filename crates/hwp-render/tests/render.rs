@@ -595,6 +595,205 @@ fn 그러데이션_채움_백엔드() {
     );
 }
 
+/// GG-7: a synthetic display list verifies hatch rendering in all three backends.
+#[test]
+fn 무늬_채움_백엔드() {
+    use hwp_render::display::{DisplayList, Fill, Item, PageList, PathCmd};
+    let rect = || {
+        vec![
+            PathCmd::MoveTo(10.0, 10.0),
+            PathCmd::LineTo(90.0, 10.0),
+            PathCmd::LineTo(90.0, 90.0),
+            PathCmd::LineTo(10.0, 90.0),
+            PathCmd::Close,
+        ]
+    };
+    let page = PageList {
+        width_pt: 100.0,
+        height_pt: 100.0,
+        items: vec![Item::Path {
+            commands: rect(),
+            fill: Some(Fill::Hatch {
+                fg: 0x0000_00FF, // Red hatch.
+                bg: 0x00FF_FFFF, // White background in COLORREF BGR order.
+                style: 1,        // Horizontal hatch.
+            }),
+            stroke: None,
+        }],
+    };
+    let list = DisplayList { pages: vec![page] };
+
+    // SVG defines a pattern and references it by URL.
+    let svg = hwp_render::svg::render_svg(&list).remove(0);
+    assert!(svg.contains("<pattern"), "SVG 패턴 정의 없음: {svg}");
+    assert!(
+        svg.contains("url(#hatch0)"),
+        "SVG fill url 참조 없음: {svg}"
+    );
+
+    // PNG contains both red hatch lines and a white background.
+    let pngs = hwp_render::png::render_png(&list, 96.0).unwrap();
+    let px = &pngs[0];
+    let col = 50; // A column inside the fill region.
+    let mut min_r = 255u8;
+    let mut max_r = 0u8;
+    for y in 15..115 {
+        let p = px.pixel(col, y).unwrap();
+        min_r = min_r.min(p.red());
+        max_r = max_r.max(p.red());
+    }
+    assert!(max_r > 200, "배경(흰) 존재: max_r={max_r}");
+    // Red hatch lines have low green and blue channels.
+    let dark_rows = (15..115)
+        .filter(|&y| {
+            let p = px.pixel(col, y).unwrap();
+            p.red() > 150 && p.green() < 150
+        })
+        .count();
+    assert!(dark_rows >= 2, "가로 무늬 선 존재: {dark_rows}행");
+
+    // PDF renders without panic and includes more than a simple rectangle fill.
+    let mut issues = hwp_render::RenderIssueAccumulator::new();
+    let pdf = hwp_render::pdf::render_pdf(&list, &mut issues).unwrap();
+    assert!(pdf.len() > 500, "PDF 생성: {}B", pdf.len());
+}
+
+/// GG-15: verifies that flip, rotation, crop, and brightness alter rendered pixels.
+#[test]
+fn 이미지_변환_보정_백엔드() {
+    use hwp_render::display::{DisplayList, Item, PageList};
+    use std::sync::Arc;
+
+    // A 4x2 PNG has a red left half, blue right half, and 300x150 HWPUNIT natural size.
+    let png_bytes = {
+        let mut img = image::RgbaImage::new(4, 2);
+        for y in 0..2 {
+            for x in 0..4 {
+                img.put_pixel(
+                    x,
+                    y,
+                    if x < 2 {
+                        image::Rgba([255, 0, 0, 255])
+                    } else {
+                        image::Rgba([0, 0, 255, 255])
+                    },
+                );
+            }
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    };
+
+    let render = |img: Item| -> tiny_skia::Pixmap {
+        let list = DisplayList {
+            pages: vec![PageList {
+                width_pt: 120.0,
+                height_pt: 70.0,
+                items: vec![img],
+            }],
+        };
+        hwp_render::png::render_png(&list, 96.0).unwrap().remove(0)
+    };
+    let base = |crop, flip, rotation_deg, brightness, contrast| Item::Image {
+        x: 10.0,
+        y: 10.0,
+        w: 100.0,
+        h: 50.0,
+        data: Arc::new(png_bytes.clone()),
+        crop,
+        flip,
+        rotation_deg,
+        brightness,
+        contrast,
+    };
+    // At 96 dpi, 1 pt = 4/3 px, placing the box near x=13..147 and y=13..80.
+    let left_px = |px: &tiny_skia::Pixmap| px.pixel(20, 40).unwrap();
+    let right_px = |px: &tiny_skia::Pixmap| px.pixel(140, 40).unwrap();
+
+    // Baseline: red on the left and blue on the right.
+    let px = render(base(None, 0, 0.0, 0, 0));
+    assert!(left_px(&px).red() > 200 && right_px(&px).blue() > 200);
+
+    // Horizontal flip: blue on the left and red on the right.
+    let px = render(base(None, 1, 0.0, 0, 0));
+    assert!(
+        left_px(&px).blue() > 200 && right_px(&px).red() > 200,
+        "가로 뒤집기: 좌={:?} 우={:?}",
+        left_px(&px),
+        right_px(&px)
+    );
+
+    // Clockwise 90-degree rotation moves the red left half to the top.
+    let px = render(base(None, 0, 90.0, 0, 0));
+    let top = px.pixel(80, 16).unwrap();
+    let bottom = px.pixel(80, 76).unwrap();
+    assert!(
+        top.red() > 150 && bottom.blue() > 150,
+        "90° 회전: 상={:?} 하={:?}",
+        top,
+        bottom
+    );
+
+    // Cropping to the left half fills the destination with red.
+    let px = render(base(Some([0.0, 0.0, 150.0, 150.0]), 0, 0.0, 0, 0));
+    assert!(
+        right_px(&px).red() > 200,
+        "자른 영역이 박스를 채움: {:?}",
+        right_px(&px)
+    );
+
+    // Brightness +50 raises the green channel of red pixels.
+    let px = render(base(None, 0, 0.0, 50, 0));
+    let l = left_px(&px);
+    assert!(l.red() > 200 && l.green() > 80, "밝기 보정: {l:?}");
+
+    // SVG represents rotation with a matrix and crop with a clipPath.
+    let list = DisplayList {
+        pages: vec![PageList {
+            width_pt: 120.0,
+            height_pt: 70.0,
+            items: vec![base(Some([0.0, 0.0, 150.0, 150.0]), 1, 30.0, 0, 0)],
+        }],
+    };
+    let svg = hwp_render::svg::render_svg(&list).remove(0);
+    assert!(
+        svg.contains("transform=\"matrix("),
+        "SVG 회전/뒤집기: {svg}"
+    );
+    assert!(svg.contains("<clipPath"), "SVG 자르기 클립: {svg}");
+    // Zero adjustment preserves direct embedding without re-encoding.
+    assert!(svg.contains("data:image/png;base64,"), "SVG 임베드: {svg}");
+
+    // SVG brightness uses the PNG re-encoding path.
+    let list = DisplayList {
+        pages: vec![PageList {
+            width_pt: 120.0,
+            height_pt: 70.0,
+            items: vec![base(None, 0, 0.0, 50, 0)],
+        }],
+    };
+    let svg = hwp_render::svg::render_svg(&list).remove(0);
+    assert!(
+        svg.contains("data:image/png;base64,"),
+        "SVG 재인코드: {svg}"
+    );
+
+    // PDF handles rotation, crop, and adjustment together without panic.
+    let list = DisplayList {
+        pages: vec![PageList {
+            width_pt: 120.0,
+            height_pt: 70.0,
+            items: vec![base(Some([0.0, 0.0, 150.0, 150.0]), 2, 45.0, 10, 10)],
+        }],
+    };
+    let mut issues = hwp_render::RenderIssueAccumulator::new();
+    let pdf = hwp_render::pdf::render_pdf(&list, &mut issues).unwrap();
+    assert!(pdf.len() > 300, "PDF 생성: {}B", pdf.len());
+}
+
 /// GC-8 내어쓰기(음수 first-line indent): 첫 줄이 나머지 줄보다 왼쪽에 놓여야 한다.
 /// 폴백(캐시 없는) 문단 경로를 탄다 — 합성 문서(line_segs 없음)라 layout이 그리디
 /// 줄바꿈한다. 픽셀 골든이 아니라 DisplayList의 글리프 x를 줄별로 비교한다.
