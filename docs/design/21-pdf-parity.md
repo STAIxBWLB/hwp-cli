@@ -112,9 +112,9 @@ verification round.
 
 **Implementation status 2026-08-14 (PR 7):** the advance-affecting batch landed (GG-20, GG-3,
 GG-4, GG-18) together with the single re-baseline. Inline control characters now carry width
-(HYPHEN shapes `-`, NB_SPACE takes the space advance without adding a wrap opportunity,
-FW_SPACE gets a fixed 1em advance); justification distinguishes 양쪽/배분/나눔 (trailing-gap
-and last-line rules per mode, Hancom confirmation pending); letter spacing is computed in the
+(HYPHEN shapes `-`, NB_SPACE keeps a no-break source while using the ordinary space advance,
+and FW_SPACE gets a fixed 1em advance); justification distinguishes justify/distribute/divide
+(trailing-gap and last-line rules per mode, Hancom confirmation pending); letter spacing is computed in the
 HWPUNIT integer domain with half-up rounding; and synthesized line spacing honors all four
 modes (ratio / fixed / margin-only / minimum) via the version-aware `line_spacing_type`.
 `MAX_BAD_PIXEL_PCT` tightened 0.60 → 0.30 as the re-baseline promise — the first committed

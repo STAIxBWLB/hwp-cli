@@ -3,6 +3,7 @@
 //! 파이프라인: 문자 모양 경계 → HWP 언어 분류 재분할 → 폰트 해석 →
 //! rustybuzz 셰이핑 → 자간/장평 후처리.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -148,6 +149,14 @@ pub(crate) fn glyph_source_sequences(run: &ShapedRun) -> Vec<String> {
         return distribute_source(&run.text, run.glyphs.len());
     }
     sources_from_clusters(&run.text, shaped.glyph_infos())
+}
+
+/// Returns true when a shaped source cluster contains HWP's grouped space.
+///
+/// Grouped spaces are represented as U+00A0 in `ShapedRun::text` so the layout
+/// and synthesized-line-segment paths can suppress both adjacent wrap points.
+pub(crate) fn source_has_no_break_space(source: &str) -> bool {
+    source.contains('\u{00a0}')
 }
 
 fn sources_from_clusters(text: &str, infos: &[rustybuzz::GlyphInfo]) -> Vec<String> {
@@ -367,14 +376,17 @@ fn shape_range_dynamic(
                         }
                     }
                 }
-                // 하이픈(24)·묶음 빈칸(30) (GG-20): 실제 글리프로 폭을 갖는다(종전엔
-                // 폭 0으로 생략). 하이픈은 '-', 묶음 빈칸은 현재 문자 모양의 공백 글리프.
-                // 줄바꿈은 글리프 그리디라(05 §7) 공백 우선 분리 로직 자체가 없으므로
-                // 묶음 빈칸에 별도 분리 금지 장치가 필요 없다.
+                // HYPHEN (24) and NB_SPACE (30) carry real glyph advances (GG-20).
+                // Preserve NB_SPACE as U+00A0 in the run source so both wrapping paths
+                // can suppress the break points immediately before and after it.
                 HwpChar::CharCtrl(code)
                     if matches!(*code, ctrl_char::HYPHEN | ctrl_char::NB_SPACE) =>
                 {
-                    let c = if *code == ctrl_char::HYPHEN { '-' } else { ' ' };
+                    let c = if *code == ctrl_char::HYPHEN {
+                        '-'
+                    } else {
+                        '\u{00a0}'
+                    };
                     let shape_id = shape_id_at(para, pos);
                     let lang = lang_slot_of(c);
                     match pieces.last_mut() {
@@ -389,8 +401,8 @@ fn shape_range_dynamic(
                         }),
                     }
                 }
-                // 고정폭 빈칸(31) (GG-20): 비례 공백 글리프와 무관하게 유효 크기의
-                // 1em(상대 크기·장평 반영). 탭처럼 별도 런으로 끼우고 뒤 조각 경계를 둔다.
+                // FW_SPACE (31) gets a fixed 1em advance after relative-size and
+                // width-scaling adjustments, independent of the proportional space glyph.
                 HwpChar::CharCtrl(code) if *code == ctrl_char::FW_SPACE => {
                     let shape = doc.header.char_shapes.get(shape_id_at(para, pos) as usize);
                     if let Some(run) = fw_space_run(store, doc, shape, pos) {
@@ -569,8 +581,8 @@ fn shape_piece(
         .collect()
 }
 
-/// 고정폭 빈칸(FW_SPACE) 런: 공백 글리프를 셰이핑한 뒤 폭을 유효 크기의 1em
-/// (상대 크기·장평 반영, 자간 제외)으로 덮어쓴다. 비례 공백 글리프 폭과 무관하다.
+/// Shapes FW_SPACE as a space glyph, then overrides its advance with the
+/// effective 1em width (relative size and width scaling, excluding tracking).
 fn fw_space_run(
     store: &mut FontStore,
     doc: &Document,
@@ -588,15 +600,15 @@ fn fw_space_run(
     Some(run)
 }
 
-/// 자간(GG-4): 유효 크기(HWPUNIT — 상대 크기·첨자 축소 반영) × %를 정수 영역에서
-/// half-up 반올림(동점은 +∞ 쪽, 음수 포함)한 뒤 pt로 환산한다.
-/// 마지막 글자의 trailing 자간 포함 여부는 한컴 실측 라운드에서 확인한다.
+/// Computes letter spacing in the HWPUNIT integer domain with half-up rounding
+/// (ties toward positive infinity, including negative values), then converts to points.
+/// Whether Hancom includes trailing tracking after the last glyph still needs measurement.
 fn letter_spacing_pt(base_hu: i32, rel: u8, script: bool, pct: i8) -> f32 {
-    let mut size_hu = base_hu * i32::from(rel) / 100;
+    let mut size_hu = i64::from(base_hu) * i64::from(rel) / 100;
     if script {
         size_hu = size_hu * 65 / 100;
     }
-    ((size_hu * i32::from(pct) + 50).div_euclid(100)) as f32 / 100.0
+    ((size_hu * i64::from(pct) + 50).div_euclid(100)) as f32 / 100.0
 }
 
 /// 주어진 글꼴 하나로 텍스트를 셰이핑해 [`ShapedRun`]을 만든다(첨자·자간·장평·
@@ -636,8 +648,8 @@ fn shape_with_font(
         r
     };
 
-    // 자간(GG-4): HWPUNIT 정수 영역에서 half-up 반올림 후 pt로 환산한다
-    // (종전 pt 실수 곱셈의 반올림 오차 제거 — 한컴은 HWPUNIT 정수 도메인).
+    // Compute letter spacing in the HWPUNIT integer domain before converting to
+    // points (GG-4), avoiding the previous floating-point rounding drift.
     let spacing_pt = letter_spacing_pt(
         base,
         rel,
@@ -646,8 +658,15 @@ fn shape_with_font(
     );
     let x_scale = cs.ratios.get(lang).copied().unwrap_or(100).max(1) as f32 / 100.0;
 
+    // Keep U+00A0 in the run source for wrap semantics while shaping it as an
+    // ordinary space so NB_SPACE retains the active font's regular space advance.
+    let shaping_text = if text.contains('\u{00a0}') {
+        Cow::Owned(text.replace('\u{00a0}', " "))
+    } else {
+        Cow::Borrowed(text)
+    };
     let mut buffer = rustybuzz::UnicodeBuffer::new();
-    buffer.push_str(text);
+    buffer.push_str(&shaping_text);
     let output = rustybuzz::shape(&face, &[], buffer);
 
     let mut glyphs = Vec::with_capacity(output.len());
@@ -1012,7 +1031,7 @@ mod link_tests {
         }
     }
 
-    /// 컨트롤 문자 셰이핑 측정용 — 한 문단을 만들어 shape_range로 셰이핑한다.
+    /// Shapes one synthetic paragraph for inline-control advance assertions.
     fn shape_chars(doc: &Document, store: &mut FontStore, chars: Vec<HwpChar>) -> Vec<InlineItem> {
         let para = Paragraph {
             chars,
@@ -1033,15 +1052,15 @@ mod link_tests {
     }
 
     #[test]
-    fn 컨트롤_문자_너비_gg20() {
+    fn inline_control_advances_gg20() {
         let doc = hwp_convert::from_markdown("x");
         let mut store = FontStore::new();
-        // 폰트 부재 환경은 스킵(셰이핑 결과 없음).
+        // Font-less environments cannot exercise the shaping assertions.
         if shape_chars(&doc, &mut store, vec![HwpChar::Text('a')]).is_empty() {
             return;
         }
-        // 묶음 빈칸(30): 일반 공백과 같은 폭. 줄바꿈/분리 항목 없이 같은 런에 합쳐진다
-        // (줄바꿈은 글리프 그리디라 공백 우선 분리 자체가 없다 — 05 §7).
+        // NB_SPACE (30) retains the ordinary-space advance but remains identifiable
+        // in the shaped source so the wrapping paths can suppress adjacent breaks.
         let nb = shape_chars(
             &doc,
             &mut store,
@@ -1056,15 +1075,16 @@ mod link_tests {
             &mut store,
             vec![HwpChar::Text('a'), HwpChar::Text(' '), HwpChar::Text('b')],
         );
-        assert_eq!(nb.len(), 1, "묶음 빈칸은 분리 항목을 만들지 않는다");
+        assert_eq!(nb.len(), 1, "NB_SPACE should remain in the surrounding run");
         if let InlineItem::Run(r) = &nb[0] {
-            assert_eq!(r.text, "a b");
+            assert_eq!(r.text, "a\u{00a0}b");
+            assert!(source_has_no_break_space("\u{00a0}"));
         }
         assert!(
             (runs_width(&nb) - runs_width(&sp)).abs() < 0.01,
-            "묶음 빈칸 폭 = 공백 글리프 폭"
+            "NB_SPACE must use the ordinary space advance"
         );
-        // 하이픈(24): '-' 글리프 자연 폭.
+        // HYPHEN (24) uses the natural '-' glyph advance.
         let hy = shape_chars(&doc, &mut store, vec![HwpChar::CharCtrl(ctrl_char::HYPHEN)]);
         let dash = shape_chars(&doc, &mut store, vec![HwpChar::Text('-')]);
         if let InlineItem::Run(r) = &hy[0] {
@@ -1072,9 +1092,10 @@ mod link_tests {
         }
         assert!(
             (runs_width(&hy) - runs_width(&dash)).abs() < 0.01,
-            "하이픈 폭 = '-' 글리프 폭"
+            "HYPHEN must use the '-' glyph advance"
         );
-        // 고정폭 빈칸(31): 비례 공백 글리프와 무관하게 유효 크기의 1em.
+        // FW_SPACE (31) uses the effective 1em width, independent of the
+        // proportional space glyph.
         let fw = shape_chars(
             &doc,
             &mut store,
@@ -1086,21 +1107,23 @@ mod link_tests {
             / 100.0;
         assert!(
             (runs_width(&fw) - em).abs() < 0.01,
-            "고정폭 빈칸 = 1em({em}), 실제 {}",
+            "FW_SPACE should be 1em ({em}); actual {}",
             runs_width(&fw)
         );
     }
 
     #[test]
-    fn 자간_hwpunit_반올림_gg4() {
-        // 10pt(1000 HWPUNIT), -7% → -70 HWPUNIT → -0.7pt
+    fn letter_spacing_uses_hwpunit_half_up_rounding_gg4() {
+        // 10pt (1000 HWPUNIT), -7% -> -70 HWPUNIT -> -0.7pt.
         assert!((letter_spacing_pt(1000, 100, false, -7) + 0.7).abs() < 1e-6);
-        // half-up(동점은 +∞ 쪽): 100.5 → 101, -100.5 → -100
+        // Half-up ties move toward positive infinity: 100.5 -> 101, -100.5 -> -100.
         assert!((letter_spacing_pt(1005, 100, false, 10) - 1.01).abs() < 1e-6);
         assert!((letter_spacing_pt(1005, 100, false, -10) + 1.0).abs() < 1e-6);
-        // 상대 크기·첨자 축소(65%) 반영
+        // Relative size and the 65% script reduction are applied before rounding.
         assert!((letter_spacing_pt(1000, 50, false, 10) - 0.5).abs() < 1e-6);
         assert!((letter_spacing_pt(1000, 100, true, 10) - 0.65).abs() < 1e-6);
+        // Malicious or damaged input must not overflow the integer-domain calculation.
+        assert!(letter_spacing_pt(i32::MAX, u8::MAX, false, i8::MAX).is_finite());
     }
 
     #[test]

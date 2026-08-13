@@ -16,12 +16,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   parity roadmap ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Inline control
   characters now carry width: HYPHEN shapes a real `-`, NB_SPACE takes the space advance
   without adding a wrap opportunity, and FW_SPACE gets a fixed 1em advance (GG-20).
-  Justification distinguishes 양쪽/배분/나눔 — distribute includes the trailing gap, divide
-  excludes it, and both stretch the last line (GG-3; last-line semantics await Hancom
+  Justification distinguishes justify/distribute/divide: distribute includes the trailing gap,
+  divide excludes it, and both stretch the last line (GG-3; last-line semantics await Hancom
   confirmation). Letter spacing is computed in the HWPUNIT integer domain with half-up
   rounding (GG-4). Synthesized line spacing honors all four modes via the version-aware
   `line_spacing_type`: ratio, fixed (exact, no clamp), margin-only and minimum (GG-18). The
-  golden gate `MAX_BAD_PIXEL_PCT` tightens 0.60 → 0.30 as the re-baseline promise; the first
+  golden gate `MAX_BAD_PIXEL_PCT` tightens 0.60 to 0.30 as the re-baseline promise; the first
   committed scoreboard validates or adjusts it.
 
 - Character decoration fidelity, the sixth step of the PDF parity roadmap

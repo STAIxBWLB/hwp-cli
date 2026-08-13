@@ -2732,9 +2732,11 @@ fn last_content_seg(para: &Paragraph) -> usize {
         .unwrap_or(n.saturating_sub(1))
 }
 
-/// 정렬에 따른 가로 shift(pt). 양쪽(0)은 마지막 줄이 아닐 때만, 배분(4)·나눔(5)은
-/// 마지막 줄에도 items의 글리프 advance를 늘려 줄을 seg_width까지 채우고 shift 0을
-/// 반환한다. (4/5의 마지막 줄 적용은 한컴 실측 라운드 확인 사항.)
+/// Returns the horizontal shift for a paragraph alignment mode.
+///
+/// Justify (0) stretches non-final lines only. Distribute (4) and divide (5)
+/// also stretch the final line to `seg_width`; that final-line behavior still
+/// needs confirmation against Hancom output.
 fn align_line(
     items: &mut [InlineItem],
     align: u8,
@@ -2742,35 +2744,36 @@ fn align_line(
     natural: f32,
     is_last: bool,
 ) -> f32 {
-    // 잉여 폭. 폰트 부재 등으로 natural이 비정상이면 캡(≤100% stretch)으로 폭주 방지.
-    let slack = (seg_width - natural).max(0.0).min(natural.max(1.0));
+    let available = (seg_width - natural).max(0.0);
     match align {
-        2 => (seg_width - natural).max(0.0),         // 오른쪽
-        3 => ((seg_width - natural) / 2.0).max(0.0), // 가운데
+        2 => available,
+        3 => available / 2.0,
         0 if !is_last => {
-            // 양쪽: 공백 우선, 없으면 마지막 보이는 글리프 전까지 균등(현행 유지).
+            // Retain the defensive 100% stretch cap for ordinary justification,
+            // which may otherwise amplify a missing-font width estimate.
+            let slack = available.min(natural.max(1.0));
             justify_line(items, slack, true, false);
             0.0
         }
         4 => {
-            // 배분: 마지막 글리프 뒤 gap까지 전부 균등 — 마지막 줄에도 적용.
-            justify_line(items, slack, false, true);
+            // Distribute includes the trailing gap and must fill the entire segment.
+            justify_line(items, available, false, true);
             0.0
         }
         5 => {
-            // 나눔: 마지막 글리프 뒤 gap만 빼고 균등 — 마지막 줄에도 적용.
-            justify_line(items, slack, false, false);
+            // Divide excludes the trailing gap and must fill the entire segment.
+            justify_line(items, available, false, false);
             0.0
         }
         _ => 0.0,
     }
 }
 
-/// Distribute justification slack. `spaces_first`(양쪽) gives all slack to
+/// Distributes justification slack. `spaces_first` gives all slack to
 /// whitespace before the last visible glyph, falling back to even gaps.
-/// Otherwise(배분/나눔) the slack is spread evenly over inter-glyph gaps with no
+/// Otherwise the slack is spread evenly over inter-glyph gaps with no
 /// space priority — `include_trailing` decides whether the gap after the last
-/// glyph counts (배분) or not (나눔). Shaping-cluster source mappings identify
+/// glyph counts (distribute) or not (divide). Shaping-cluster source mappings identify
 /// whitespace correctly even when ligatures change the glyph count.
 fn justify_line(items: &mut [InlineItem], slack: f32, spaces_first: bool, include_trailing: bool) {
     if slack <= 0.0 {
@@ -2788,15 +2791,15 @@ fn justify_line(items: &mut [InlineItem], slack: f32, spaces_first: bool, includ
         }
     }
     let total = is_space.len();
-    if total < 2 {
+    if total == 0 || (total < 2 && !include_trailing) {
         return;
     }
-    // 마지막 보이는(비공백) 글리프 — 양쪽은 그 이후엔 분배하지 않는다.
+    // Ordinary justification does not distribute after the last visible glyph.
     let last_visible = is_space.iter().rposition(|&s| !s).unwrap_or(total - 1);
     let space_count = is_space[..last_visible].iter().filter(|&&s| s).count();
 
-    // 공백 우선(양쪽)일 때만 공백에 몰아준다. 배분/나눔은 공백 우선 없이 균등
-    // (05-rendering §1.4 — 한글의 배분/나눔은 글자 사이 균등 분배).
+    // Only ordinary justification prioritizes whitespace. Distribute and divide
+    // treat every eligible glyph gap equally (05-rendering section 1.4).
     let use_spaces = spaces_first && space_count > 0;
     let denom = if use_spaces {
         space_count as f32
@@ -2815,7 +2818,7 @@ fn justify_line(items: &mut [InlineItem], slack: f32, spaces_first: bool, includ
                 let apply = if use_spaces {
                     is_space[gi] && gi < last_visible
                 } else if include_trailing {
-                    true // 마지막 글리프 뒤 gap까지 (배분)
+                    true
                 } else {
                     gi < last_visible
                 };
@@ -3288,8 +3291,9 @@ fn emphasis_mark(kind: u8, cx: f32, cy: f32, em: f32, color: u32) -> Vec<Item> {
     }
 }
 
-/// 인라인 항목들을 배치한다. `max_width`를 넘으면 글리프 단위 그리디
-/// 줄바꿈(`f32::INFINITY`면 비활성). 마지막 베이스라인 y를 반환한다.
+/// Places inline items with greedy glyph-level wrapping at `max_width`.
+///
+/// An infinite width disables wrapping. The return value is the final baseline.
 #[allow(clippy::too_many_arguments)]
 fn place_wrapped(
     page: &mut PageList,
@@ -3307,6 +3311,7 @@ fn place_wrapped(
     // 첫 줄만 들여쓰기/내어쓰기(first_indent). 이후 줄·줄바꿈은 x0(문단 좌여백)로 복귀.
     let mut x = x0 + first_indent;
     let mut y = first_baseline_y;
+    let mut previous_no_break = false;
 
     if std::env::var_os("HWP_RENDER_TRACE").is_some() {
         let preview: String = items
@@ -3325,21 +3330,26 @@ fn place_wrapped(
     for item in items {
         match item {
             InlineItem::Run(run) => {
+                let sources = crate::shape::glyph_source_sequences(&run);
                 if max_width.is_infinite() || x + run.width_pt <= limit {
                     let w = run.width_pt;
+                    previous_no_break = sources
+                        .last()
+                        .is_some_and(|source| crate::shape::source_has_no_break_space(source));
                     push_run(page, x, y, run, border_fills, warnings);
                     x += w;
                     continue;
                 }
-                // 글리프 단위 분할 (CJK는 글자 사이 어디서나 분리 가능)
-                let sources = crate::shape::glyph_source_sequences(&run);
+                // CJK can wrap between glyph clusters except on either side of NB_SPACE.
                 let mut start = 0usize;
                 let mut piece_x = x;
                 let mut acc = 0.0f32;
                 for (i, g) in run.glyphs.iter().enumerate() {
                     let over = piece_x + acc + g.x_advance > limit;
                     let line_has_content = i > start || piece_x > x0;
-                    if over && line_has_content {
+                    let current_no_break = crate::shape::source_has_no_break_space(&sources[i]);
+                    let break_allowed = !previous_no_break && !current_no_break;
+                    if over && line_has_content && break_allowed {
                         if i > start {
                             let piece = run.slice_with_sources(start, i, &sources);
                             push_run(page, piece_x, y, piece, border_fills, warnings);
@@ -3350,6 +3360,7 @@ fn place_wrapped(
                         start = i;
                     }
                     acc += g.x_advance;
+                    previous_no_break = current_no_break;
                 }
                 if start < run.glyphs.len() {
                     let piece = run.slice_with_sources(start, run.glyphs.len(), &sources);
@@ -3362,10 +3373,12 @@ fn place_wrapped(
             }
             InlineItem::Tab => {
                 x = x0 + crate::tab::next_tab(tabs, x - x0, TAB_INTERVAL_PT);
+                previous_no_break = false;
             }
             InlineItem::LineBreak(_) => {
                 y += line_advance;
                 x = x0;
+                previous_no_break = false;
             }
         }
     }
@@ -3592,33 +3605,33 @@ mod justify_tests {
     }
 
     #[test]
-    fn 배분은_마지막글리프_뒤까지_균등() {
-        // slack 15를 3개 gap(마지막 글리프 뒤 포함)에 5씩.
+    fn distribute_includes_the_trailing_gap() {
+        // Split 15pt of slack across three gaps, including the trailing gap.
         let mut items = vec![run(&[10.0, 10.0, 10.0])];
         let shift = align_line(&mut items, 4, 45.0, 30.0, false);
         assert_eq!(shift, 0.0);
         if let InlineItem::Run(r) = &items[0] {
             for g in &r.glyphs {
-                assert!((g.x_advance - 15.0).abs() < 0.01, "모든 gap 균등(뒤 포함)");
+                assert!((g.x_advance - 15.0).abs() < 0.01);
             }
         }
         assert!((total_adv(&items) - 45.0).abs() < 0.01);
     }
 
     #[test]
-    fn 배분은_마지막_줄도_늘림() {
-        // 양쪽과 달리 마지막 줄에도 적용 (한컴 실측 라운드 확인 사항).
+    fn distribute_stretches_the_final_line() {
+        // Unlike ordinary justification, distribute also stretches the final line.
         let mut items = vec![run(&[10.0, 10.0, 10.0])];
         align_line(&mut items, 4, 45.0, 30.0, true);
         assert!(
             (total_adv(&items) - 45.0).abs() < 0.01,
-            "배분은 마지막 줄도 seg_width까지"
+            "distribute should fill seg_width on the final line"
         );
     }
 
     #[test]
-    fn 나눔은_마지막글리프_뒤_제외_균등() {
-        // slack 15를 마지막 글리프 앞 2개 gap에 7.5씩.
+    fn divide_excludes_the_trailing_gap() {
+        // Split 15pt of slack across the two gaps before the final glyph.
         let mut items = vec![run(&[10.0, 10.0, 10.0])];
         align_line(&mut items, 5, 45.0, 30.0, false);
         if let InlineItem::Run(r) = &items[0] {
@@ -3626,29 +3639,43 @@ mod justify_tests {
             assert!((r.glyphs[1].x_advance - 17.5).abs() < 0.01);
             assert!(
                 (r.glyphs[2].x_advance - 10.0).abs() < 0.01,
-                "마지막 글리프 뒤 gap은 불변"
+                "the trailing gap must remain unchanged"
             );
         }
         assert!((total_adv(&items) - 45.0).abs() < 0.01);
     }
 
     #[test]
-    fn 나눔은_마지막_줄도_늘리고_공백우선_없음() {
-        // 마지막 줄에도 적용 + 공백에 우선권 없이 균등(공백도 1 gap 취급).
+    fn divide_stretches_the_final_line_without_space_priority() {
+        // The final line is stretched and whitespace receives no priority.
         let mut items = vec![run_t("a b", &[10.0, 5.0, 10.0])];
-        align_line(&mut items, 5, 40.0, 25.0, true); // slack 15, gap 2개
+        align_line(&mut items, 5, 40.0, 25.0, true);
         if let InlineItem::Run(r) = &items[0] {
             assert!((r.glyphs[0].x_advance - 17.5).abs() < 0.01);
             assert!(
                 (r.glyphs[1].x_advance - 12.5).abs() < 0.01,
-                "공백도 균등 1몫(우선 없음)"
+                "whitespace should receive one equal gap share"
             );
             assert!((r.glyphs[2].x_advance - 10.0).abs() < 0.01);
         }
         assert!(
             (total_adv(&items) - 40.0).abs() < 0.01,
-            "나눔은 마지막 줄도 seg_width까지"
+            "divide should fill seg_width on the final line"
         );
+    }
+
+    #[test]
+    fn distribute_uses_all_slack_on_a_short_line() {
+        let mut items = vec![run(&[10.0, 10.0])];
+        align_line(&mut items, 4, 100.0, 20.0, false);
+        assert!((total_adv(&items) - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn distribute_can_stretch_a_single_glyph_via_its_trailing_gap() {
+        let mut items = vec![run(&[10.0])];
+        align_line(&mut items, 4, 30.0, 10.0, false);
+        assert!((total_adv(&items) - 30.0).abs() < 0.01);
     }
 }
 
@@ -3950,7 +3977,7 @@ mod tab_width_tests {
     use crate::display::{Item, PageList};
     use crate::fonts::LoadedFont;
     use crate::issues::RenderIssueAccumulator;
-    use crate::shape::{InlineItem, ShapedRun};
+    use crate::shape::{Glyph, InlineItem, ShapedRun};
 
     /// Creates a font-independent dummy run whose only meaningful field is width.
     fn dummy_run(width_pt: f32) -> InlineItem {
@@ -3983,6 +4010,21 @@ mod tab_width_tests {
             text: String::new(),
             start_wchar: 0,
         })
+    }
+
+    fn dummy_glyph_run(text: &str) -> InlineItem {
+        let mut item = dummy_run(10.0);
+        let InlineItem::Run(run) = &mut item else {
+            unreachable!();
+        };
+        run.text = text.to_string();
+        run.glyphs.push(Glyph {
+            id: 1,
+            x_advance: 10.0,
+            x_offset: 0.0,
+            y_offset: 0.0,
+        });
+        item
     }
 
     /// Explicit tab stops must advance to the same x position in width
@@ -4031,6 +4073,42 @@ mod tab_width_tests {
         // With no explicit stop, retain the existing 40 pt fallback interval.
         let natural_default = items_width(&make_items(), &[]);
         assert!((natural_default - (40.0 + 20.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn grouped_space_suppresses_adjacent_wraps_across_runs() {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            vec![
+                dummy_glyph_run("a"),
+                dummy_glyph_run("\u{00a0}"),
+                dummy_glyph_run("b"),
+            ],
+            0.0,
+            100.0,
+            15.0,
+            16.0,
+            &[],
+            0.0,
+            &[],
+            &mut warns,
+        );
+
+        let baselines: Vec<f32> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { y, .. } => Some(*y),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(baselines, [100.0, 100.0, 100.0]);
     }
 }
 
