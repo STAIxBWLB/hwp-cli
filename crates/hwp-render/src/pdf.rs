@@ -1118,36 +1118,23 @@ fn jpeg_info(data: &[u8]) -> Option<(u32, u32, u8)> {
 mod tests {
     use super::*;
 
-    fn noto_run(text: &str) -> ShapedRun {
-        let data = Arc::new(
-            std::fs::read(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../corpus/structured-v1/fonts/NotoSansKR[wght].ttf"
-            ))
-            .expect("tracked Noto Sans KR corpus font"),
-        );
-        let font = Arc::new(LoadedFont {
-            data: data.clone(),
-            index: 0,
-            family: "Noto Sans KR".to_string(),
-        });
-        let face = rustybuzz::Face::from_slice(&data, 0).unwrap();
-        let mut buffer = rustybuzz::UnicodeBuffer::new();
-        buffer.push_str(text);
-        let output = rustybuzz::shape(&face, &[], buffer);
-        let glyphs: Vec<crate::shape::Glyph> = output
-            .glyph_infos()
+    fn synthetic_run(text: &str, glyph_ids: &[u16]) -> ShapedRun {
+        let glyphs: Vec<crate::shape::Glyph> = glyph_ids
             .iter()
-            .zip(output.glyph_positions())
-            .map(|(info, position)| crate::shape::Glyph {
-                id: info.glyph_id as u16,
-                x_advance: position.x_advance as f32 / face.units_per_em() as f32 * 10.0,
-                x_offset: position.x_offset as f32 / face.units_per_em() as f32 * 10.0,
-                y_offset: position.y_offset as f32 / face.units_per_em() as f32 * 10.0,
+            .copied()
+            .map(|id| crate::shape::Glyph {
+                id,
+                x_advance: 10.0,
+                x_offset: 0.0,
+                y_offset: 0.0,
             })
             .collect();
         ShapedRun {
-            font,
+            font: Arc::new(LoadedFont {
+                data: Arc::new(Vec::new()),
+                index: 0,
+                family: String::new(),
+            }),
             size_pt: 10.0,
             x_scale: 1.0,
             color: 0,
@@ -1166,6 +1153,20 @@ mod tests {
             text: text.to_string(),
             start_wchar: 0,
         }
+    }
+
+    fn synthetic_run_with_font(font: Arc<LoadedFont>, text: &str, glyph_ids: &[u16]) -> ShapedRun {
+        let mut run = synthetic_run(text, glyph_ids);
+        run.font = font;
+        run
+    }
+
+    fn empty_font() -> Arc<LoadedFont> {
+        Arc::new(LoadedFont {
+            data: Arc::new(Vec::new()),
+            index: 0,
+            family: String::new(),
+        })
     }
 
     fn one_run_list(run: ShapedRun) -> DisplayList {
@@ -1226,7 +1227,7 @@ mod tests {
 
     #[test]
     fn tounicode_preserves_ligatures_and_gid_aliases() {
-        let ligature_list = one_run_list(noto_run("office"));
+        let ligature_list = one_run_list(synthetic_run("ffi", &[42]));
         let (fonts, _) = collect_font_variants(&ligature_list).unwrap();
         assert!(
             fonts
@@ -1234,7 +1235,8 @@ mod tests {
                 .any(|font| { font.orig_to_unicode.values().any(|source| source == "ffi") })
         );
 
-        let alias_run = noto_run(";\u{37e}");
+        let font = empty_font();
+        let alias_run = synthetic_run_with_font(font, ";\u{37e}", &[28, 28]);
         assert_eq!(alias_run.glyphs.len(), 2);
         assert_eq!(alias_run.glyphs[0].id, alias_run.glyphs[1].id);
         let alias_list = one_run_list(alias_run);

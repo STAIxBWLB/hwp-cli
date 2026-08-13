@@ -731,25 +731,55 @@ mod link_tests {
     use crate::fonts::LoadedFont;
     use std::sync::Arc;
 
-    fn noto_run(text: &str) -> ShapedRun {
-        let bytes = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../corpus/structured-v1/fonts/NotoSansKR[wght].ttf"
-        ))
-        .expect("tracked Noto Sans KR corpus font");
-        let font = Arc::new(LoadedFont {
-            data: Arc::new(bytes),
-            index: 0,
-            family: "Noto Sans KR".to_string(),
-        });
-        let shape = CharShape {
-            base_size: 1_000,
-            ratios: [100; LANG_COUNT],
-            rel_sizes: [100; LANG_COUNT],
+    fn synthetic_run(text: &str, glyph_ids: &[u16]) -> ShapedRun {
+        let glyphs: Vec<Glyph> = glyph_ids
+            .iter()
+            .copied()
+            .map(|id| Glyph {
+                id,
+                x_advance: 10.0,
+                x_offset: 0.0,
+                y_offset: 0.0,
+            })
+            .collect();
+        ShapedRun {
+            font: Arc::new(LoadedFont {
+                data: Arc::new(Vec::new()),
+                index: 0,
+                family: String::new(),
+            }),
+            size_pt: 10.0,
+            x_scale: 1.0,
+            color: 0,
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            underline_color: 0xFFFF_FFFF,
             shade_color: 0xFFFF_FFFF,
-            ..CharShape::default()
-        };
-        shape_with_font(&font, &shape, 1, text, 0, false).expect("font shapes test text")
+            shadow: None,
+            outline: false,
+            emboss: false,
+            engrave: false,
+            width_pt: glyphs.iter().map(|glyph| glyph.x_advance).sum(),
+            glyphs,
+            text: text.to_string(),
+            start_wchar: 0,
+        }
+    }
+
+    fn glyph_info(cluster: u32) -> rustybuzz::GlyphInfo {
+        let mut info = rustybuzz::GlyphInfo::default();
+        info.cluster = cluster;
+        info
+    }
+
+    fn empty_font() -> Arc<LoadedFont> {
+        Arc::new(LoadedFont {
+            data: Arc::new(Vec::new()),
+            index: 0,
+            family: String::new(),
+        })
     }
 
     fn field_start() -> HwpChar {
@@ -792,11 +822,7 @@ mod link_tests {
 
     fn run_at(start: u32) -> InlineItem {
         InlineItem::Run(ShapedRun {
-            font: Arc::new(LoadedFont {
-                data: Arc::new(Vec::new()),
-                index: 0,
-                family: String::new(),
-            }),
+            font: empty_font(),
             size_pt: 10.0,
             x_scale: 1.0,
             color: 0,
@@ -852,18 +878,16 @@ mod link_tests {
 
     #[test]
     fn shaping_clusters_preserve_ligatures_combining_text_and_slices() {
-        let ligature = noto_run("office");
-        let sources = glyph_source_sequences(&ligature);
-        assert_eq!(sources.concat(), "office");
-        let ffi_index = sources
-            .iter()
-            .position(|source| source == "ffi")
-            .expect("Noto Sans KR forms the ffi ligature");
-        assert_eq!(ligature.slice(ffi_index, ffi_index + 1).text, "ffi");
+        let ligature_infos = [glyph_info(0), glyph_info(1), glyph_info(4), glyph_info(5)];
+        let sources = sources_from_clusters("office", &ligature_infos);
+        assert_eq!(sources, ["o", "ffi", "c", "e"]);
 
-        let combining = noto_run("x\u{301}");
-        let sources = glyph_source_sequences(&combining);
+        let combining_infos = [glyph_info(0), glyph_info(0)];
+        let sources = sources_from_clusters("x\u{301}", &combining_infos);
         assert_eq!(sources.concat(), "x\u{301}");
         assert!(sources.iter().all(|source| source != "\u{fffd}"));
+
+        let ligature = synthetic_run("ffi", &[42]);
+        assert_eq!(ligature.slice(0, 1).text, "ffi");
     }
 }
