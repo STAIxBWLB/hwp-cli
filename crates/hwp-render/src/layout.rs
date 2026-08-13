@@ -922,7 +922,7 @@ pub fn layout_document(
             let geom = para_geometry(doc, para);
             let links = crate::shape::hyperlink_ranges(para);
             // 목록 마커(불릿/번호) — 문서 순서로 카운터 진행(목록 아니면 None).
-            let marker = list_state.marker(doc, para);
+            let marker = list_state.marker_for_render(doc, para);
 
             // 이 문단의 첫 줄 상단 (표 앵커 위치)
             let mut para_top: Option<f32> = None;
@@ -2453,7 +2453,7 @@ fn layout_box_para_iter<'a>(
         // 목록 마커(셀 안 번호/불릿) — 렌더 패스에서만 counter 진행(측정 패스는 None).
         let marker = list_state
             .as_deref_mut()
-            .and_then(|ls| ls.marker(doc, para));
+            .and_then(|ls| ls.marker_for_render(doc, para));
 
         if para.line_segs.is_empty() {
             if para.chars.is_empty() {
@@ -3155,6 +3155,7 @@ mod justify_tests {
                 x_advance: a,
                 x_offset: 0.0,
                 y_offset: 0.0,
+                ch: None,
             })
             .collect();
         InlineItem::Run(crate::shape::ShapedRun {

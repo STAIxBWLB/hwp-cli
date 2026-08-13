@@ -18,6 +18,9 @@ pub struct Glyph {
     pub x_advance: f32,
     pub x_offset: f32,
     pub y_offset: f32,
+    /// 원문 문자 (셰이핑 cluster 기준). 합자·재배열 시 위치 인덱스와 어긋나므로
+    /// PDF ToUnicode는 위치 추정 대신 이 값을 우선 쓴다.
+    pub ch: Option<char>,
 }
 
 /// 같은 (폰트, 크기, 스타일)로 셰이핑된 글리프 런.
@@ -468,6 +471,9 @@ fn shape_with_font(
             x_advance: advance,
             x_offset: gpos.x_offset as f32 * scale * x_scale,
             y_offset: gpos.y_offset as f32 * scale + y_raise,
+            ch: text
+                .get(info.cluster as usize..)
+                .and_then(|s| s.chars().next()),
         });
         width += advance;
     }

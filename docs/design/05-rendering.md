@@ -67,7 +67,7 @@ cursor), `paras_on_page=0`, `page_notes: Vec<&Note>` and `list_state: ListState`
 ### 1.3 Paragraph handling branches
 
 Per paragraph, prepare `footnote::para_marks`/`para_notes` (collecting footnote markers and notes),
-`tab::tab_stops`, `para_geometry`, `hyperlink_ranges` and `list_state.marker`, then:
+`tab::tab_stops`, `para_geometry`, `hyperlink_ranges` and `list_state.marker_for_render`, then:
 
 - **When `line_segs` is empty (fallback)**: an empty paragraph advances `content_bottom += 16.0`.
   Otherwise the whole paragraph is shaped with `shape_range_notes` and broken greedily against
@@ -373,6 +373,12 @@ and engrave.
 (InlineCtrl code 4). `apply_link_style` applies an underline plus `LINK_BLUE=0x00CC0000` to the runs
 in that range. `shape_plain` is for synthesized text (equations, markers): it shapes a single run as a
 whole (no fallback splitting, with `shade_color=0xFFFFFFFF` to avoid the black-box trap).
+
+List markers come from `ListState::marker_for_render` (`hwp-model/src/list.rs`): numbering
+(head_type 2) and bullet (3) paragraphs as before, plus outline (head_type 1) paragraphs, which get
+fixed per-level markers (`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`) from a dedicated counter
+family — the outline `numbering_id` is a raw, unnormalized reference (GG-12). Text converters
+(markdown and friends) keep calling `marker()`, which leaves outlines as heading structure only.
 
 ---
 

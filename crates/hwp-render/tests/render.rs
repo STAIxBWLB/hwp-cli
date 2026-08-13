@@ -883,6 +883,37 @@ fn 목록_마커_내어쓰기_배치() {
     );
 }
 
+#[test]
+fn 개요_번호_마커_렌더() {
+    use hwp_model::{ParaShape, ParaShapeId};
+    let mut doc = hwp_convert::from_markdown("첫째\n\n둘째\n\n셋째\n");
+    // 개요(head_type 1) 수준 1·2 문단 모양을 추가하고 문단에 연결한다.
+    let base = doc.header.para_shapes.len() as u16;
+    doc.header.para_shapes.push(ParaShape {
+        attr1: (1 << 23) | (1 << 25),
+        ..ParaShape::default()
+    });
+    doc.header.para_shapes.push(ParaShape {
+        attr1: (1 << 23) | (2 << 25),
+        ..ParaShape::default()
+    });
+    doc.sections[0].paragraphs[0].para_shape = ParaShapeId(base);
+    doc.sections[0].paragraphs[1].para_shape = ParaShapeId(base);
+    doc.sections[0].paragraphs[2].para_shape = ParaShapeId(base + 1);
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    let texts = page_texts(&list.pages[0]);
+    if texts.is_empty() {
+        eprintln!("스킵: 사용 가능한 폰트 없음 — 글리프 미생성");
+        return;
+    }
+    assert!(texts.contains(&"1."), "개요 수준1 마커: {texts:?}");
+    assert!(texts.contains(&"2."), "개요 수준1 두 번째 마커: {texts:?}");
+    assert!(texts.contains(&"가."), "개요 수준2 마커: {texts:?}");
+}
+
 fn generic_control(
     ctrl_id: [u8; 4],
     data: Vec<u8>,

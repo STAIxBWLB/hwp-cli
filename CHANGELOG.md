@@ -24,6 +24,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   published from a substituted-font render. The durable contract — oracle, five-metric set,
   thresholds, font gate, data policy and non-goals — is
   [docs/design/21-pdf-parity.md](docs/design/21-pdf-parity.md).
+- Outline numbering and PDF document metadata, the third step of the PDF parity roadmap
+  ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Outline paragraphs (head_type 1) now
+  render their fixed per-level markers (`1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`) — GG-12
+  resolved — and emitted PDFs carry the Hancom-matching document-level properties: PDF 1.4 header,
+  `/Lang (ko-KR)`, `/PageLayout /SinglePage`, `/MarkInfo <</Marked false>>`, XMP `/Metadata`,
+  `/OutputIntents` with an embedded sRGB IEC61966-2.1 ICC profile, and an `/Info` dictionary
+  limited to Author, Creator, Producer, CreationDate, ModDate and PDFVersion, sourced from
+  document metadata only (two-run byte determinism preserved). `Glyph` now carries its source
+  character from the shaping cluster, so ToUnicode mappings stay correct for ligatured or
+  reordered runs.
 - Table page splitting with header-row repeat, the second step of the PDF parity roadmap
   ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). A table taller than the remaining
   body space no longer clips silently at the media box: `pageBreak=NONE` pushes it wholesale to

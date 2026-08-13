@@ -12,6 +12,9 @@ use crate::{Document, NumFmt, Paragraph};
 #[derive(Default, Clone)]
 pub struct ListState {
     counters: HashMap<u16, [u32; 8]>,
+    /// 개요(head_type 1) 전용 카운터. 개요의 numbering_id는 비정규화 원시값
+    /// (정품 표본은 0)이라 번호 정의별 카운터와 별도 계열로 둔다.
+    outline_counters: [u32; 8],
 }
 
 impl ListState {
@@ -19,8 +22,8 @@ impl ListState {
     pub fn marker(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
         let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
         let ty = ps.head_type();
-        // 번호(2)·불릿(3)만 마커를 그린다. 개요(1)는 머리 번호 없이 구조 수준으로만
-        // 쓰이는 경우가 많아(스타일 제목 등) 가짜 번호가 붙지 않도록 제외(v1).
+        // 번호(2)·불릿(3)만 마커를 그린다. 개요(1)는 텍스트 변환 경로에서 구조 수준
+        // (헤딩)으로만 쓰므로 여기선 제외 — 개요 번호 렌더(GG-12)는 marker_for_render().
         if ty != 2 && ty != 3 {
             return None;
         }
@@ -56,6 +59,35 @@ impl ListState {
             })
             .collect();
         Some(format!("{}.", parts.join(".")))
+    }
+
+    /// 렌더용 마커 — 개요(head_type 1)도 수준별 고정 형식으로 번호를 단다(GG-12).
+    /// 한글 기본 개요 형식: 1. / 가. / 1) / 가) / (1) / (가) / ① (수준 1~7).
+    pub fn marker_for_render(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
+        let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
+        if ps.head_type() == 1 {
+            return Some(self.outline_marker(ps.head_level()));
+        }
+        self.marker(doc, para)
+    }
+
+    /// 개요 번호: 수준 카운터 증가 + 더 깊은 수준 리셋 후 수준별 고정 형식 적용.
+    fn outline_marker(&mut self, level: u8) -> String {
+        let level = level.clamp(1, 7) as usize;
+        self.outline_counters[level] += 1;
+        for c in &mut self.outline_counters[level + 1..] {
+            *c = 0;
+        }
+        let n = self.outline_counters[level].max(1);
+        match level {
+            1 => format!("{}.", format_number(n, NumFmt::Digit)),
+            2 => format!("{}.", format_number(n, NumFmt::HangulSyllable)),
+            3 => format!("{})", format_number(n, NumFmt::Digit)),
+            4 => format!("{})", format_number(n, NumFmt::HangulSyllable)),
+            5 => format!("({})", format_number(n, NumFmt::Digit)),
+            6 => format!("({})", format_number(n, NumFmt::HangulSyllable)),
+            _ => format_number(n, NumFmt::CircledDigit),
+        }
     }
 }
 
@@ -242,6 +274,51 @@ mod tests {
         assert_eq!(st.marker(&doc, &p(0)).as_deref(), Some("1."));
         assert_eq!(st.marker(&doc, &p(1)).as_deref(), Some("1."));
         assert_eq!(st.marker(&doc, &p(0)).as_deref(), Some("2."));
+    }
+
+    #[test]
+    fn 개요_마커() {
+        use crate::{ParaShape, ParaShapeId};
+        let mut doc = Document::default();
+        let mk = |lv: u32| ParaShape {
+            attr1: (1 << 23) | (lv << 25),
+            ..ParaShape::default()
+        };
+        doc.header.para_shapes = vec![mk(1), mk(2), mk(3), mk(5), mk(6), mk(7)];
+        let p = |id| Paragraph {
+            para_shape: ParaShapeId(id),
+            ..Paragraph::default()
+        };
+        // marker()(텍스트 변환용)는 개요를 내지 않는다.
+        let mut st = ListState::default();
+        assert_eq!(st.marker(&doc, &p(0)), None);
+
+        let mut st = ListState::default();
+        assert_eq!(st.marker_for_render(&doc, &p(0)).as_deref(), Some("1."));
+        assert_eq!(st.marker_for_render(&doc, &p(0)).as_deref(), Some("2."));
+        assert_eq!(st.marker_for_render(&doc, &p(1)).as_deref(), Some("가."));
+        assert_eq!(st.marker_for_render(&doc, &p(1)).as_deref(), Some("나."));
+        assert_eq!(st.marker_for_render(&doc, &p(2)).as_deref(), Some("1)"));
+        // 상위 수준 재진입: 하위 리셋, 상위는 이어진다.
+        assert_eq!(st.marker_for_render(&doc, &p(0)).as_deref(), Some("3."));
+        assert_eq!(st.marker_for_render(&doc, &p(1)).as_deref(), Some("가."));
+        // 수준 5~7 고정 형식.
+        assert_eq!(st.marker_for_render(&doc, &p(3)).as_deref(), Some("(1)"));
+        assert_eq!(st.marker_for_render(&doc, &p(4)).as_deref(), Some("(가)"));
+        assert_eq!(st.marker_for_render(&doc, &p(5)).as_deref(), Some("①"));
+
+        // 번호(2) 카운터와 독립이다.
+        let mk2 = || ParaShape {
+            attr1: (2 << 23) | (1 << 25),
+            numbering_id: 0,
+            ..ParaShape::default()
+        };
+        doc.header.para_shapes.push(mk2());
+        doc.header.numbering_levels = vec![vec![crate::NumLevel::default(); 7]];
+        let mut st = ListState::default();
+        assert_eq!(st.marker_for_render(&doc, &p(0)).as_deref(), Some("1."));
+        assert_eq!(st.marker_for_render(&doc, &p(6)).as_deref(), Some("1."));
+        assert_eq!(st.marker_for_render(&doc, &p(0)).as_deref(), Some("2."));
     }
 
     #[test]

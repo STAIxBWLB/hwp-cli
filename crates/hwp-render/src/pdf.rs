@@ -7,6 +7,11 @@
 //! 이미지는 JPEG는 원본을 DCTDecode로, 그 외는 [`image`]로 디코드해 RGB(+SMask)로
 //! 임베드한다. 좌표는 DisplayList(좌상단·y아래) → PDF(좌하단·y위)로 뒤집는다.
 //!
+//! 문서 수준 메타데이터는 한컴 PDF와 같은 6종을 낸다(docs/design/21 §2):
+//! /Lang·/PageLayout·/MarkInfo·XMP /Metadata·/OutputIntents(sRGB ICC 임베드)·
+//! /Info(Author·Creator·Producer·CreationDate·ModDate·PDFVersion). 시각은 문서
+//! Metadata의 값만 쓰고 현재 시각은 절대 찍지 않는다(2회 실행 바이트 동일 게이트).
+//!
 //! 폰트 아웃라인 종류별 임베드:
 //! - glyf(트루타입): CIDFontType2 + FontFile2(Length1).
 //! - CFF(OTF, `CFF ` 테이블): CIDFontType0 + FontFile3(Subtype=OpenType).
@@ -20,8 +25,13 @@ use std::sync::Arc;
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use pdf_writer::types::{CidFontType, FontFlags, SystemInfo, TextRenderingMode, UnicodeCmap};
-use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
+use pdf_writer::types::{
+    CidFontType, FontFlags, OutputIntentSubtype, PageLayout, SystemInfo, TextRenderingMode,
+    UnicodeCmap,
+};
+use pdf_writer::{Content, Date, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
+
+use hwp_model::Metadata;
 use rustybuzz::ttf_parser;
 use subsetter::{GlyphRemapper, subset};
 
@@ -40,6 +50,7 @@ const BOLD_STROKE: f32 = 0.045;
 pub fn render_pdf(
     list: &DisplayList,
     warnings: &mut RenderIssueAccumulator,
+    meta: &Metadata,
 ) -> Result<Vec<u8>, RenderError> {
     // ── 1. 폰트 수집: 고유 폰트별 사용 글리프 + 원문(ToUnicode) 누적 ──
     let mut fonts: Vec<FontInfo> = Vec::new();
@@ -56,11 +67,11 @@ pub fn render_pdf(
                 let chars: Vec<char> = run.text.chars().collect();
                 for (i, g) in run.glyphs.iter().enumerate() {
                     f.remapper.remap(g.id);
-                    // 원문 우선, 부분 런(slice 후 text 비움)은 역 cmap으로 보완.
-                    let ch = chars
-                        .get(i)
-                        .copied()
-                        .or_else(|| f.reverse_cmap.get(&g.id).copied());
+                    // 원문 cluster(Glyph.ch) 우선 — 합자·재배열 시 위치 인덱스는 어긋난다.
+                    // 부분 런(slice 후 text 비움)은 위치 추정 → 역 cmap 순으로 보완.
+                    let ch =
+                        g.ch.or_else(|| chars.get(i).copied())
+                            .or_else(|| f.reverse_cmap.get(&g.id).copied());
                     if let Some(ch) = ch {
                         f.orig_to_unicode.entry(g.id).or_insert(ch);
                     }
@@ -73,6 +84,9 @@ pub fn render_pdf(
     let mut counter = 1i32;
     let catalog_id = alloc(&mut counter);
     let page_tree_id = alloc(&mut counter);
+    let info_id = alloc(&mut counter);
+    let xmp_id = alloc(&mut counter);
+    let icc_id = alloc(&mut counter);
     for (i, f) in fonts.iter_mut().enumerate() {
         f.res_name = format!("F{i}");
         f.type0_id = alloc(&mut counter);
@@ -302,7 +316,55 @@ pub fn render_pdf(
 
     // ── 4. PDF 작성 ──
     let mut pdf = Pdf::new();
-    pdf.catalog(catalog_id).pages(page_tree_id);
+    pdf.set_version(1, 4); // 한컴 PDF와 같은 1.4
+    {
+        let mut cat = pdf.catalog(catalog_id);
+        cat.pages(page_tree_id);
+        // 한컴 PDF 문서 수준 속성 (docs/design/21 §2).
+        cat.lang(TextStr("ko-KR"));
+        cat.page_layout(PageLayout::SinglePage);
+        cat.mark_info().marked(false);
+        cat.metadata(xmp_id);
+        {
+            let mut intents = cat.output_intents();
+            {
+                let mut oi = intents.push();
+                oi.subtype(OutputIntentSubtype::PDFA);
+                oi.output_condition_identifier(TextStr("sRGB IEC61966-2.1"));
+                oi.info(TextStr("sRGB IEC61966-2.1"));
+                oi.dest_output_profile(icc_id);
+            }
+            intents.finish();
+        }
+        cat.finish();
+    }
+    // /Info — 한컴과 같은 6키 한정. Author·날짜는 문서 메타데이터가 있을 때만.
+    {
+        let mut info = pdf.document_info(info_id);
+        if let Some(author) = &meta.author {
+            info.author(TextStr(author));
+        }
+        info.creator(TextStr(PRODUCER));
+        info.producer(TextStr(PRODUCER));
+        if let Some(d) = meta.create_time.and_then(filetime_to_date) {
+            info.creation_date(d);
+        }
+        if let Some(d) = meta.modify_time.and_then(filetime_to_date) {
+            info.modified_date(d);
+        }
+        info.pair(Name(b"PDFVersion"), TextStr("1.4"));
+        info.finish();
+    }
+    {
+        let xmp = xmp_packet(meta);
+        pdf.metadata(xmp_id, xmp.as_bytes()).finish();
+    }
+    {
+        let mut icc = pdf.icc_profile(icc_id, SRGB_ICC);
+        icc.n(3);
+        icc.alternate().device_rgb();
+        icc.finish();
+    }
     {
         let kids: Vec<Ref> = plans.iter().map(|p| p.page_id).collect();
         pdf.pages(page_tree_id)
@@ -351,6 +413,106 @@ pub(crate) fn expected_text_trace(list: &DisplayList) -> Result<String, RenderEr
         }
     }
     Ok(trace)
+}
+
+/// /Info Producer·Creator 값 (배포 버전 포함, 2회 실행 결정론 유지).
+const PRODUCER: &str = concat!("hwp-cli ", env!("CARGO_PKG_VERSION"));
+
+/// /OutputIntents에 임베드하는 sRGB IEC61966-2.1 ICC 프로파일.
+/// 출처·SHA-256은 docs/design/21-pdf-parity.md 참고.
+static SRGB_ICC: &[u8] = include_bytes!("../assets/sRGB-IEC61966-2.1.icc");
+
+/// FILETIME(1601-01-01 UTC 기준 100ns) → PDF Date (UTC). 범위 밖이면 None.
+fn filetime_to_date(ft: u64) -> Option<Date> {
+    let (y, mo, d, h, mi, sec) = filetime_to_utc(ft)?;
+    Some(
+        Date::new(y as u16)
+            .month(mo)
+            .day(d)
+            .hour(h)
+            .minute(mi)
+            .second(sec)
+            .utc_offset_hour(0),
+    )
+}
+
+/// FILETIME → UTC (연,월,일,시,분,초). 1970 이전이면 None.
+fn filetime_to_utc(ft: u64) -> Option<(i32, u8, u8, u8, u8, u8)> {
+    let secs = (ft / 10_000_000).checked_sub(11_644_473_600)?;
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (y, mo, d) = civil_from_days(days);
+    Some((
+        y,
+        mo,
+        d,
+        (rem / 3_600) as u8,
+        ((rem % 3_600) / 60) as u8,
+        (rem % 60) as u8,
+    ))
+}
+
+/// 1970-01-01 기준 일수 → (연,월,일). Howard Hinnant의 civil_from_days.
+fn civil_from_days(z: i64) -> (i32, u8, u8) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u8; // [1, 31]
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 } as u8; // [1, 12]
+    ((if mo <= 2 { y + 1 } else { y }) as i32, mo, d)
+}
+
+/// (연,월,일,시,분,초) → ISO 8601 UTC 문자열 (XMP용).
+fn iso8601(t: (i32, u8, u8, u8, u8, u8)) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        t.0, t.1, t.2, t.3, t.4, t.5
+    )
+}
+
+/// XMP 메타데이터 패킷 (최소 구성, dc/pdf/xmp 스키마만).
+fn xmp_packet(meta: &Metadata) -> String {
+    let mut s = String::new();
+    s.push_str("<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
+    s.push_str("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n");
+    s.push_str("<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n");
+    s.push_str("<rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\n");
+    if let Some(t) = &meta.title {
+        s.push_str("<dc:title><rdf:Alt><rdf:li xml:lang=\"ko-KR\">");
+        s.push_str(&xml_escape(t));
+        s.push_str("</rdf:li></rdf:Alt></dc:title>\n");
+    }
+    if let Some(a) = &meta.author {
+        s.push_str("<dc:creator><rdf:Seq><rdf:li>");
+        s.push_str(&xml_escape(a));
+        s.push_str("</rdf:li></rdf:Seq></dc:creator>\n");
+    }
+    s.push_str("<pdf:Producer>");
+    s.push_str(PRODUCER);
+    s.push_str("</pdf:Producer>\n");
+    if let Some(d) = meta.create_time.and_then(filetime_to_utc) {
+        s.push_str("<xmp:CreateDate>");
+        s.push_str(&iso8601(d));
+        s.push_str("</xmp:CreateDate>\n");
+    }
+    if let Some(d) = meta.modify_time.and_then(filetime_to_utc) {
+        s.push_str("<xmp:ModifyDate>");
+        s.push_str(&iso8601(d));
+        s.push_str("</xmp:ModifyDate>\n");
+    }
+    s.push_str("</rdf:Description>\n</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>");
+    s
+}
+
+/// XML 텍스트 노드용 이스케이프.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// 폰트 1개의 PDF 객체(FontFile·Descriptor·CIDFont·Type0·ToUnicode)를 쓴다.
@@ -889,4 +1051,48 @@ fn jpeg_info(data: &[u8]) -> Option<(u32, u32, u8)> {
         i += 2 + len;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filetime_변환() {
+        // 1970-01-01T00:00:00Z
+        assert_eq!(
+            filetime_to_utc(11_644_473_600 * 10_000_000),
+            Some((1970, 1, 1, 0, 0, 0))
+        );
+        // 2024-01-02T03:04:05Z
+        assert_eq!(
+            filetime_to_utc(133_486_382_450_000_000),
+            Some((2024, 1, 2, 3, 4, 5))
+        );
+        // 윤년 경계: 2000-02-29T12:00:00Z
+        assert_eq!(
+            filetime_to_utc(125_962_992_000_000_000),
+            Some((2000, 2, 29, 12, 0, 0))
+        );
+        // 1970 이전은 None (PDF Date는 음수 연도 불가).
+        assert_eq!(filetime_to_utc(0), None);
+    }
+
+    #[test]
+    fn xmp_패킷_필드() {
+        let mut meta = Metadata::default();
+        let empty = xmp_packet(&meta);
+        assert!(empty.contains("<pdf:Producer>hwp-cli "));
+        assert!(!empty.contains("dc:title"));
+        assert!(!empty.contains("xmp:CreateDate"));
+
+        meta.title = Some("보고서 & <초안>".to_string());
+        meta.author = Some("홍길동".to_string());
+        meta.create_time = Some(133_486_382_450_000_000);
+        let xmp = xmp_packet(&meta);
+        assert!(xmp.contains(">보고서 &amp; &lt;초안&gt;<"));
+        assert!(xmp.contains("<rdf:li>홍길동</rdf:li>"));
+        assert!(xmp.contains("<xmp:CreateDate>2024-01-02T03:04:05Z</xmp:CreateDate>"));
+        assert!(!xmp.contains("xmp:ModifyDate"));
+    }
 }
