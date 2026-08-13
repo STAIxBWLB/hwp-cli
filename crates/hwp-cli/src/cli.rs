@@ -241,6 +241,13 @@ pub enum Cmd {
         /// Per-channel tolerance; differences at or below this count as equal
         #[arg(long, default_value_t = 16)]
         tolerance: u8,
+        /// Report output format (json = machine-readable, for the parity batch runner)
+        #[arg(long, value_enum, default_value_t = DiffFormat::Text)]
+        format: DiffFormat,
+        /// Compare this raster (e.g. pdftoppm of our PDF) against --ref instead of
+        /// rendering the input document; the input path is only recorded in the report
+        #[arg(long)]
+        ours_png: Option<PathBuf>,
     },
 
     /// Edit an existing document (text replacement, table cells); images and formatting preserved
@@ -544,6 +551,12 @@ pub enum RenderFormat {
     Png,
     Svg,
     Pdf,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DiffFormat {
+    Text,
+    Json,
 }
 
 #[cfg(test)]

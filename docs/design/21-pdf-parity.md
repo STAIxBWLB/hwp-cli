@@ -80,6 +80,15 @@ antialiasing — engine artifacts, not fidelity. The decisive metrics need no pi
 Rasterization for metrics 4–5 uses the same pinned Poppler (`pdftoppm -png -r 150`) for both the
 Hancom PDF and our PDF.
 
+**Implementation status 2026-08-13 (PR 4):** the batch runner exists —
+`scripts/pdf-parity.sh run` scores every manifest case into the committable numeric scoreboard
+under `fixtures/pdf-parity/public/scoreboard/` (schema-validated, names + SHA-256 + numbers
+only), `selftest` verifies the harness without an oracle, and `hwp diff --format json` /
+`--ours-png` is the per-page raster metric source. Scoring fails closed unless the manifest,
+Poppler version, font files, and source/oracle digests match their pins; validated outputs are
+published as one rollback-protected set. The 3–5 Hancom baseline exports and the first committed
+numbers are the remaining owner action.
+
 ## 4. Gates
 
 ### 4.1 Normative Hancom-oracle gate — future public corpus
@@ -122,6 +131,8 @@ so **a parity number measured under substituted fonts is meaningless**.
   FontSubsetFallback counts; the CLI render report prints the coverage line.
 - `FontCoverage::substitution_free()` is the hard gate: no parity figure may be published for a
   case whose render was not substitution-free.
+- Missing coverage is a gate failure, as is any font in either PDF that `pdffonts` does not report
+  as embedded, subset, and Unicode-capable.
 
 ## 6. Pagination truth (F3)
 

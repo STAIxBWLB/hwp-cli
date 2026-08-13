@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.local/schemas/pdf-parity-scoreboard-v1.schema.json",
+  "title": "hwp PDF parity aggregate scoreboard v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "generated_by", "poppler_version", "dpi", "cases"],
+  "properties": {
+    "contract": { "const": "hwp-pdf-parity-scoreboard-v1" },
+    "generated_by": { "const": "scripts/pdf-parity.sh" },
+    "poppler_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "dpi": { "const": 150 },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "scored",
+          "unscored_reasons",
+          "pages_delta",
+          "text_pages_equal",
+          "text_pages_compared",
+          "raster_pages",
+          "max_abs_dx",
+          "max_abs_dy",
+          "ink_ratio_min",
+          "ink_ratio_max",
+          "bad_pixel_pct_max",
+          "mae_max",
+          "fonts_all_embedded_subset_unicode",
+          "substitution_free"
+        ],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
+          "scored": { "type": "boolean" },
+          "unscored_reasons": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "page_count_delta",
+                "font_coverage_unavailable",
+                "font_substitution",
+                "pdf_font_contract"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "pages_delta": { "type": "integer" },
+          "text_pages_equal": { "type": "integer", "minimum": 0 },
+          "text_pages_compared": { "type": "integer", "minimum": 0 },
+          "raster_pages": { "type": "integer", "minimum": 0 },
+          "max_abs_dx": { "type": "integer", "minimum": 0 },
+          "max_abs_dy": { "type": "integer", "minimum": 0 },
+          "ink_ratio_min": { "type": "number", "minimum": 0 },
+          "ink_ratio_max": { "type": "number", "minimum": 0 },
+          "bad_pixel_pct_max": { "type": "number", "minimum": 0, "maximum": 1 },
+          "mae_max": { "type": "number", "minimum": 0, "maximum": 255 },
+          "fonts_all_embedded_subset_unicode": { "type": "boolean" },
+          "substitution_free": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

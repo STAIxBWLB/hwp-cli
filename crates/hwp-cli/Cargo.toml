@@ -27,6 +27,7 @@ getrandom = { workspace = true }
 # hwp-render가 이미 끌어오는 의존성이라 의존성 그래프는 커지지 않는다.
 flate2 = { workspace = true }
 regex = { workspace = true }
+tiny-skia = { workspace = true }
 image = { workspace = true }
 quick-xml = { workspace = true }
 libc = { workspace = true }

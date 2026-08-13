@@ -164,6 +164,8 @@ Compare a render against a Hancom reference PNG (offset and pixel difference)
 | `-o, --out` | `<OUT>` |  | Difference image output path (defaults to <ref>.diff.png) |
 | `--font-dir` | `<FONT_DIR>` |  | Additional font directory (repeatable) |
 | `--tolerance` | `<TOLERANCE>` | `16` | Per-channel tolerance; differences at or below this count as equal |
+| `--format` | `text` \| `json` | `text` | Report output format (json = machine-readable, for the parity batch runner) |
+| `--ours-png` | `<OURS_PNG>` |  | Compare this raster (e.g. pdftoppm of our PDF) against --ref instead of rendering the input document; the input path is only recorded in the report |
 
 ## `hwp edit`
 

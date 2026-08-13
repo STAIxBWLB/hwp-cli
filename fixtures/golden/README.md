@@ -46,3 +46,37 @@ glyph shape error grows, which is separate from position error and is measured b
 automatically (passing or skipping when an image is absent). Tighten the thresholds step by step to
 prevent regressions. It is skipped by default in CI, which has no fonts (the structural smoke test in
 `tests/render.rs` always runs).
+
+## PDF parity baselines (issue #79)
+
+The batch runner `scripts/pdf-parity.sh` scores our PDF against Hancom's own PDF with the
+five-metric set of [docs/design/21-pdf-parity.md](../../docs/design/21-pdf-parity.md) §3
+(`pdffonts`, `pdfinfo`, per-page `pdftotext -layout`, and `dx/dy` + `bad_pixel_pct`/`MAE`
+after rasterizing both PDFs with the same `pdftoppm -png -r 150`).
+
+Per-case baseline procedure (owner, on Windows Hancom Office 2024):
+
+1. Author or anonymize the source document and commit it under
+   `fixtures/pdf-parity/public/source/` (HWP/HWPX only — the only committable artifacts).
+2. In Hancom: **File → Save as PDF** with default settings; record the exact Hancom build,
+   Windows version and PDF settings in `fixtures/pdf-parity/public/manifest.json` (`pins`),
+   plus the SHA-256 of the pinned fonts (HCR Batang/Dotum in `fonts/`). Set `HWP_FONT_DIR` when
+   the pinned font directory is not the repository's `fonts/` directory.
+3. Keep the exported PDF local — put it in `$HWP_PDF_PARITY_ORACLE_DIR` (never committed;
+   the whole oracle tree is gitignored).
+4. Add the case to the manifest: `{name, source, source_sha256, oracle, oracle_sha256}`.
+5. Run:
+
+   ```sh
+   scripts/pdf-parity.sh run --oracle-dir "$HWP_PDF_PARITY_ORACLE_DIR"
+   ```
+
+   The scoreboard (`public/scoreboard/<case>.json`, `scoreboard.json`, `scoreboard.csv`)
+   contains names, SHA-256 hashes and numbers only — no paths, no oracle bytes — and is the
+   only output that gets committed. Before rendering, the runner validates the closed manifest
+   schema and verifies the Poppler version, pinned font files, and every source/oracle digest.
+   Missing font coverage, any substitution, a page-count delta, or a PDF font that is not
+   embedded/subset/Unicode-capable records the case as `"scored": false`.
+
+`scripts/pdf-parity.sh selftest` checks the harness itself (a fixture against its own PDF
+must produce perfect metrics) and needs no Hancom baseline.

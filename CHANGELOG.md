@@ -12,6 +12,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Hancom baseline parity scoreboard, the fourth step of the PDF parity roadmap
+  ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). `scripts/pdf-parity.sh run` scores
+  every manifest case against a local Hancom-exported oracle PDF with the five-metric set of
+  docs/design/21-pdf-parity.md §3: `pdffonts` embedded/subset/unicode flags, `pdfinfo` page
+  count, per-page normalized `pdftotext -layout` equality, and `dx`/`dy`/`ink_ratio` +
+  `bad_pixel_pct`/`MAE` from rasterizing both PDFs with the same `pdftoppm -png -r 150`, and
+  writes schema-validated numeric scoreboards (names, SHA-256 and numbers only, no local
+  paths) under `fixtures/pdf-parity/public/scoreboard/`. Manifest, Poppler, font-file, and
+  source/oracle pins are verified before rendering. Cases with a page-count delta, missing
+  coverage, any font substitution, or a PDF font contract violation are recorded but marked
+  unscored (F1 gate). `scripts/pdf-parity.sh selftest` verifies the harness without an oracle,
+  and `hwp diff` gained `--format json`
+  (contract `hwp-diff-report-v1`) plus `--ours-png` for raster-vs-raster comparison. The
+  Hancom baseline exports and the first committed numbers are owner actions;
+  `fixtures/golden/README.md` documents the per-case procedure.
+
 - PDF parity groundwork for Hancom Office 2024 equivalence
   ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). The renderer now reads
   `LineSeg.flags` bit0/bit1 (page-first / column-first line) as the first-class page/column

@@ -164,6 +164,8 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `-o, --out` | `<OUT>` |  | 차이 이미지 출력 경로 (생략 시 <ref>.diff.png) |
 | `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
 | `--tolerance` | `<TOLERANCE>` | `16` | 채널 차이 허용 오차 (이하면 동일 취급) |
+| `--format` | `text` \| `json` | `text` | 리포트 출력 형식 (json = 기계 판독, parity 배치 러너용) |
+| `--ours-png` | `<OURS_PNG>` |  | 문서 렌더 대신 이 래스터(우리 PDF의 pdftoppm 결과)를 --ref와 비교; 입력 경로는 리포트 기록용 |
 
 ## `hwp edit`
 
