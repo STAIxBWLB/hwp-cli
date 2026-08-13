@@ -52,6 +52,17 @@ catalog/Info 기능 — 을 확정했다:
   결함이 아니다)
 - PDF 1.4; tagged PDF 아님
 
+**상태 (2026-08-13, PR 3):** 6개 catalog/Info 기능을 모두 낸다. `/Lang (ko-KR)`,
+`/PageLayout /SinglePage`, `/MarkInfo <</Marked false>>`, 최소 XMP `/Metadata` 패킷
+(dc/pdf/xmp), `/OutputIntents`(GTS_PDFA1 + 임베디드 ICC), 그리고 `/Info`는 6키 한정 —
+Author는 문서에 있을 때만, Creator/Producer는 `hwp-cli <버전>`, CreationDate/ModDate는 문서
+FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바이트 동일 게이트 유지), `PDFVersion`
+쌍. 헤더 버전은 PDF 1.4. 임베디드 프로파일은 ICC Registry의 `sRGB2014` v2 프로파일이며
+`crates/hwp-render/assets/sRGB2014.icc.hex`로 커밋한다. 출처와 재배포 조건은 인접한
+`LICENSE-sRGB2014.txt`에 기록하고, 디코딩한 3,024바이트 프로파일의 SHA-256
+`384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a`를 테스트로 고정한다.
+이 필드들은 확인한 구조 계약을 구현한 상태이며, 한컴 값과의 정확한 동일성은 로컬 정답지 실행이 남아 있다.
+
 ## 3. 다섯 지표 집합 (우선순위 순)
 
 양쪽 모두 벡터 텍스트이므로 픽셀 차이 지표는 글꼴 대체와 안티앨리어싱에 지배된다 — 엔진

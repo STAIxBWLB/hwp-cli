@@ -52,6 +52,18 @@ the document-level parity surface — six catalog/Info features:
   `/ExtGState`, `/SMask` (Hancom flattens gradients — our banded approximation is not a defect)
 - PDF 1.4; not a tagged PDF
 
+**Status (2026-08-13, PR 3):** all six catalog/Info features are emitted. `/Lang (ko-KR)`,
+`/PageLayout /SinglePage`, `/MarkInfo <</Marked false>>`, a minimal XMP `/Metadata` packet
+(dc/pdf/xmp), `/OutputIntents` (GTS_PDFA1 + embedded ICC), and `/Info` limited to the six keys:
+Author only when the document has one, Creator/Producer `hwp-cli <version>`, CreationDate/ModDate
+converted from the document's FILETIME metadata (never wall-clock, preserving two-run byte
+determinism), and a `PDFVersion` pair. The header version is PDF 1.4. The embedded profile is the
+ICC Registry's `sRGB2014` v2 profile, committed as
+`crates/hwp-render/assets/sRGB2014.icc.hex`, with its source and redistribution terms in the
+adjacent `LICENSE-sRGB2014.txt`. The decoded 3,024-byte profile is pinned by SHA-256
+`384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a`. These fields implement the
+captured structural contract; exact Hancom value equality still requires the local oracle run.
+
 ## 3. The five-metric set (priority order)
 
 Both sides are vector text, so pixel diff metrics are dominated by font substitution and

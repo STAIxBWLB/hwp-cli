@@ -7,6 +7,11 @@
 //! 이미지는 JPEG는 원본을 DCTDecode로, 그 외는 [`image`]로 디코드해 RGB(+SMask)로
 //! 임베드한다. 좌표는 DisplayList(좌상단·y아래) → PDF(좌하단·y위)로 뒤집는다.
 //!
+//! Document metadata emits the six Hancom PDF surface features from design 21 §2:
+//! /Lang, /PageLayout, /MarkInfo, XMP /Metadata, /OutputIntents with an embedded sRGB ICC
+//! profile, and /Info. Timestamps come only from the document metadata so repeated renders remain
+//! byte-identical.
+//!
 //! 폰트 아웃라인 종류별 임베드:
 //! - glyf(트루타입): CIDFontType2 + FontFile2(Length1).
 //! - CFF(OTF, `CFF ` 테이블): CIDFontType0 + FontFile3(Subtype=OpenType).
@@ -16,12 +21,17 @@
 
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use pdf_writer::types::{CidFontType, FontFlags, SystemInfo, TextRenderingMode, UnicodeCmap};
-use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
+use pdf_writer::types::{
+    CidFontType, FontFlags, OutputIntentSubtype, PageLayout, SystemInfo, TextRenderingMode,
+    UnicodeCmap,
+};
+use pdf_writer::{Content, Date, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
+
+use hwp_model::{Metadata, filetime_to_iso8601_utc};
 use rustybuzz::ttf_parser;
 use subsetter::{GlyphRemapper, subset};
 
@@ -29,50 +39,41 @@ use crate::display::{DisplayList, Fill, Gradient, Item, PathCmd, Stroke, path_bb
 use crate::error::RenderError;
 use crate::fonts::LoadedFont;
 use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
-use crate::shape::ShapedRun;
+use crate::shape::{ShapedRun, glyph_source_sequences};
 
 /// 합성 기울임 탄젠트 (png.rs/svg.rs와 동일, ≈12°).
 const ITALIC_SKEW: f32 = 0.2126;
 /// 합성 굵게 스트로크 굵기 (글자 크기 대비, png.rs와 동일). 한컴 굵게 대조 보정(4.5%).
 const BOLD_STROKE: f32 = 0.045;
 
-/// 문서 전체를 단일 멀티페이지 PDF 바이트로 렌더링한다.
+/// Render a display list without document metadata.
+///
+/// This retains the pre-PR-82 public API for callers that build a [`DisplayList`] directly.
 pub fn render_pdf(
     list: &DisplayList,
     warnings: &mut RenderIssueAccumulator,
 ) -> Result<Vec<u8>, RenderError> {
-    // ── 1. 폰트 수집: 고유 폰트별 사용 글리프 + 원문(ToUnicode) 누적 ──
-    let mut fonts: Vec<FontInfo> = Vec::new();
-    let mut font_index: HashMap<(usize, u32), usize> = HashMap::new();
-    for page in &list.pages {
-        for item in &page.items {
-            if let Item::Glyphs { run, .. } = item {
-                let key = font_key(&run.font);
-                let idx = *font_index.entry(key).or_insert_with(|| {
-                    fonts.push(FontInfo::new(run.font.clone()));
-                    fonts.len() - 1
-                });
-                let f = &mut fonts[idx];
-                let chars: Vec<char> = run.text.chars().collect();
-                for (i, g) in run.glyphs.iter().enumerate() {
-                    f.remapper.remap(g.id);
-                    // 원문 우선, 부분 런(slice 후 text 비움)은 역 cmap으로 보완.
-                    let ch = chars
-                        .get(i)
-                        .copied()
-                        .or_else(|| f.reverse_cmap.get(&g.id).copied());
-                    if let Some(ch) = ch {
-                        f.orig_to_unicode.entry(g.id).or_insert(ch);
-                    }
-                }
-            }
-        }
-    }
+    render_pdf_with_metadata(list, warnings, &Metadata::default())
+}
+
+/// Render a display list with document metadata supplied by the high-level document APIs.
+pub(crate) fn render_pdf_with_metadata(
+    list: &DisplayList,
+    warnings: &mut RenderIssueAccumulator,
+    meta: &Metadata,
+) -> Result<Vec<u8>, RenderError> {
+    // ── 1. Collect font variants and complete source mappings for ToUnicode. ──
+    // A source font may need multiple PDF font resources when one original GID
+    // represents different Unicode sequences (for example, cmap aliases).
+    let (mut fonts, glyph_font_index) = collect_font_variants(list)?;
 
     // ── 2. ref 할당 + 폰트 서브셋 ──
     let mut counter = 1i32;
     let catalog_id = alloc(&mut counter);
     let page_tree_id = alloc(&mut counter);
+    let info_id = alloc(&mut counter);
+    let xmp_id = alloc(&mut counter);
+    let icc_id = alloc(&mut counter);
     for (i, f) in fonts.iter_mut().enumerate() {
         f.res_name = format!("F{i}");
         f.type0_id = alloc(&mut counter);
@@ -100,8 +101,8 @@ pub fn render_pdf(
         };
         // ToUnicode는 출력 글리프 ID(서브셋이면 재매핑, 아니면 원본) 기준으로 키.
         let mut tu = HashMap::with_capacity(f.orig_to_unicode.len());
-        for (&orig, &ch) in &f.orig_to_unicode {
-            tu.insert(out_gid(f.subset_ok, &f.remapper, orig), ch);
+        for (&orig, source) in &f.orig_to_unicode {
+            tu.insert(out_gid(f.subset_ok, &f.remapper, orig), source.clone());
         }
         f.to_unicode = tu;
     }
@@ -187,7 +188,18 @@ pub fn render_pdf(
                     }
                 },
                 Item::Glyphs { x, y, run } => {
-                    if let Some(&idx) = font_index.get(&font_key(&run.font)) {
+                    let sources = glyph_source_sequences(run);
+                    let glyph_fonts: Vec<usize> = run
+                        .glyphs
+                        .iter()
+                        .zip(sources.iter())
+                        .filter_map(|(glyph, source)| {
+                            glyph_font_index
+                                .get(&(font_key(&run.font), glyph.id, source.clone()))
+                                .copied()
+                        })
+                        .collect();
+                    if glyph_fonts.len() == run.glyphs.len() {
                         // 글자 음영(배경 하이라이트) — 글리프 뒤 사각형.
                         if run.shade_color != 0xFFFF_FFFF {
                             let (sr, sg, sb) = colorref_rgb(run.shade_color);
@@ -203,14 +215,26 @@ pub fn render_pdf(
                         // 그림자 — 본문 전에 오프셋 복사.
                         if let Some(sc) = run.shadow {
                             let d = run.size_pt * 0.06;
-                            write_glyph_run(&mut content, &fonts[idx], *x, *y, h, run, sc, d, d);
+                            write_glyph_run(
+                                &mut content,
+                                &fonts,
+                                &glyph_fonts,
+                                *x,
+                                *y,
+                                h,
+                                run,
+                                sc,
+                                d,
+                                d,
+                            );
                         }
                         // 양각/음각 — 흰 하이라이트 사본 오프셋(양각=좌상, 음각=우하).
                         if run.emboss || run.engrave {
                             let d = run.size_pt * 0.05 * if run.emboss { -1.0 } else { 1.0 };
                             write_glyph_run(
                                 &mut content,
-                                &fonts[idx],
+                                &fonts,
+                                &glyph_fonts,
                                 *x,
                                 *y,
                                 h,
@@ -222,7 +246,8 @@ pub fn render_pdf(
                         }
                         write_glyph_run(
                             &mut content,
-                            &fonts[idx],
+                            &fonts,
+                            &glyph_fonts,
                             *x,
                             *y,
                             h,
@@ -302,7 +327,55 @@ pub fn render_pdf(
 
     // ── 4. PDF 작성 ──
     let mut pdf = Pdf::new();
-    pdf.catalog(catalog_id).pages(page_tree_id);
+    pdf.set_version(1, 4);
+    {
+        let mut cat = pdf.catalog(catalog_id);
+        cat.pages(page_tree_id);
+        // Hancom PDF document-level surface (design 21 §2).
+        cat.lang(TextStr("ko-KR"));
+        cat.page_layout(PageLayout::SinglePage);
+        cat.mark_info().marked(false);
+        cat.metadata(xmp_id);
+        {
+            let mut intents = cat.output_intents();
+            {
+                let mut oi = intents.push();
+                oi.subtype(OutputIntentSubtype::PDFA);
+                oi.output_condition_identifier(TextStr("sRGB2014"));
+                oi.info(TextStr("sRGB2014"));
+                oi.dest_output_profile(icc_id);
+            }
+            intents.finish();
+        }
+        cat.finish();
+    }
+    // /Info is limited to the six Hancom keys. Author and dates are conditional.
+    {
+        let mut info = pdf.document_info(info_id);
+        if let Some(author) = &meta.author {
+            info.author(TextStr(author));
+        }
+        info.creator(TextStr(PRODUCER));
+        info.producer(TextStr(PRODUCER));
+        if let Some(d) = meta.create_time.and_then(filetime_to_date) {
+            info.creation_date(d);
+        }
+        if let Some(d) = meta.modify_time.and_then(filetime_to_date) {
+            info.modified_date(d);
+        }
+        info.pair(Name(b"PDFVersion"), TextStr("1.4"));
+        info.finish();
+    }
+    {
+        let xmp = xmp_packet(meta);
+        pdf.metadata(xmp_id, xmp.as_bytes()).finish();
+    }
+    {
+        let mut icc = pdf.icc_profile(icc_id, srgb_icc());
+        icc.n(3);
+        icc.alternate().device_rgb();
+        icc.finish();
+    }
     {
         let kids: Vec<Ref> = plans.iter().map(|p| p.page_id).collect();
         pdf.pages(page_tree_id)
@@ -336,21 +409,140 @@ pub(crate) fn expected_text_trace(list: &DisplayList) -> Result<String, RenderEr
             let Item::Glyphs { run, .. } = item else {
                 continue;
             };
-            if !run.glyphs.is_empty() && run.text.is_empty() {
-                return Err(RenderError::Pdf(
-                    "source text is unavailable for an emitted glyph run".to_string(),
-                ));
-            }
+            let emitted_text = glyph_source_sequences(run).concat();
             if run.shadow.is_some() {
-                trace.push_str(&run.text);
+                trace.push_str(&emitted_text);
             }
             if run.emboss || run.engrave {
-                trace.push_str(&run.text);
+                trace.push_str(&emitted_text);
             }
-            trace.push_str(&run.text);
+            trace.push_str(&emitted_text);
         }
     }
     Ok(trace)
+}
+
+/// Deterministic /Info Producer and Creator value, including the package version.
+const PRODUCER: &str = concat!("hwp-cli ", env!("CARGO_PKG_VERSION"));
+
+/// ICC-maintained v2 sRGB profile embedded in /OutputIntents.
+///
+/// The committed representation is hexadecimal text so its license and provenance remain easy to
+/// audit. Decoding happens once per process. See the adjacent LICENSE file and design 21 §2.
+fn srgb_icc() -> &'static [u8] {
+    static PROFILE: OnceLock<Vec<u8>> = OnceLock::new();
+    PROFILE
+        .get_or_init(|| {
+            let digits: Vec<u8> = include_str!("../assets/sRGB2014.icc.hex")
+                .bytes()
+                .filter(|b| !b.is_ascii_whitespace())
+                .collect();
+            assert!(digits.len().is_multiple_of(2), "invalid embedded ICC hex");
+            digits
+                .chunks_exact(2)
+                .map(|pair| {
+                    let hi = (pair[0] as char)
+                        .to_digit(16)
+                        .expect("invalid embedded ICC hex");
+                    let lo = (pair[1] as char)
+                        .to_digit(16)
+                        .expect("invalid embedded ICC hex");
+                    ((hi << 4) | lo) as u8
+                })
+                .collect()
+        })
+        .as_slice()
+}
+
+/// Convert a FILETIME value to a UTC PDF date.
+fn filetime_to_date(ft: u64) -> Option<Date> {
+    let (y, mo, d, h, mi, sec) = filetime_to_utc(ft)?;
+    Some(
+        Date::new(y as u16)
+            .month(mo)
+            .day(d)
+            .hour(h)
+            .minute(mi)
+            .second(sec)
+            .utc_offset_hour(0),
+    )
+}
+
+/// Convert FILETIME to UTC components through the model's canonical conversion.
+fn filetime_to_utc(ft: u64) -> Option<(i32, u8, u8, u8, u8, u8)> {
+    let iso = supported_iso8601_utc(ft)?;
+    Some((
+        iso.get(0..4)?.parse().ok()?,
+        iso.get(5..7)?.parse().ok()?,
+        iso.get(8..10)?.parse().ok()?,
+        iso.get(11..13)?.parse().ok()?,
+        iso.get(14..16)?.parse().ok()?,
+        iso.get(17..19)?.parse().ok()?,
+    ))
+}
+
+/// Keep PDF /Info and XMP on the same four-digit year domain.
+fn supported_iso8601_utc(ft: u64) -> Option<String> {
+    let iso = filetime_to_iso8601_utc(ft)?;
+    if iso.len() != 20 || !iso.as_bytes().get(0..4)?.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let year: u16 = iso.get(0..4)?.parse().ok()?;
+    (year > 0).then_some(iso)
+}
+
+/// Build the minimal dc/pdf/xmp metadata packet.
+fn xmp_packet(meta: &Metadata) -> String {
+    let mut s = String::new();
+    s.push_str("<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
+    s.push_str("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n");
+    s.push_str("<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n");
+    s.push_str("<rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\">\n");
+    if let Some(t) = &meta.title {
+        s.push_str("<dc:title><rdf:Alt><rdf:li xml:lang=\"ko-KR\">");
+        s.push_str(&xml_escape(t));
+        s.push_str("</rdf:li></rdf:Alt></dc:title>\n");
+    }
+    if let Some(a) = &meta.author {
+        s.push_str("<dc:creator><rdf:Seq><rdf:li>");
+        s.push_str(&xml_escape(a));
+        s.push_str("</rdf:li></rdf:Seq></dc:creator>\n");
+    }
+    s.push_str("<pdf:Producer>");
+    s.push_str(PRODUCER);
+    s.push_str("</pdf:Producer>\n");
+    if let Some(d) = meta.create_time.and_then(supported_iso8601_utc) {
+        s.push_str("<xmp:CreateDate>");
+        s.push_str(&d);
+        s.push_str("</xmp:CreateDate>\n");
+    }
+    if let Some(d) = meta.modify_time.and_then(supported_iso8601_utc) {
+        s.push_str("<xmp:ModifyDate>");
+        s.push_str(&d);
+        s.push_str("</xmp:ModifyDate>\n");
+    }
+    s.push_str("</rdf:Description>\n</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>");
+    s
+}
+
+/// Escape an XML text node and replace characters forbidden by XML 1.0.
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\u{9}'
+            | '\u{a}'
+            | '\u{d}'
+            | '\u{20}'..='\u{d7ff}'
+            | '\u{e000}'..='\u{fffd}'
+            | '\u{10000}'..='\u{10ffff}' => out.push(ch),
+            _ => out.push('\u{fffd}'),
+        }
+    }
+    out
 }
 
 /// 폰트 1개의 PDF 객체(FontFile·Descriptor·CIDFont·Type0·ToUnicode)를 쓴다.
@@ -444,7 +636,11 @@ fn write_font(pdf: &mut Pdf, f: &FontInfo) -> Result<(), RenderError> {
 
     // ToUnicode CMap (검색·복사용)
     {
-        let mut entries: Vec<(u16, char)> = f.to_unicode.iter().map(|(&g, &c)| (g, c)).collect();
+        let mut entries: Vec<(u16, &str)> = f
+            .to_unicode
+            .iter()
+            .map(|(&glyph, source)| (glyph, source.as_str()))
+            .collect();
         entries.sort_unstable_by_key(|e| e.0);
         let mut cmap = UnicodeCmap::new(
             Name(b"Adobe-Identity-UCS"),
@@ -454,8 +650,8 @@ fn write_font(pdf: &mut Pdf, f: &FontInfo) -> Result<(), RenderError> {
                 supplement: 0,
             },
         );
-        for (g, c) in entries {
-            cmap.pair(g, c);
+        for (glyph, source) in entries {
+            cmap.pair_with_multiple(glyph, source.chars());
         }
         let buf = cmap.finish();
         pdf.cmap(f.tounicode_id, &buf);
@@ -548,7 +744,8 @@ fn write_page(pdf: &mut Pdf, plan: &PagePlan, page_tree_id: Ref, fonts: &[FontIn
 #[allow(clippy::too_many_arguments)]
 fn write_glyph_run(
     content: &mut Content,
-    f: &FontInfo,
+    fonts: &[FontInfo],
+    glyph_fonts: &[usize],
     x: f32,
     y: f32,
     page_h: f32,
@@ -558,7 +755,6 @@ fn write_glyph_run(
     dy: f32,
 ) {
     content.begin_text();
-    content.set_font(Name(f.res_name.as_bytes()), run.size_pt);
     content.set_horizontal_scaling(run.x_scale * 100.0); // 장평(Tz)
     let (r, g, b) = colorref_rgb(color);
     content.set_fill_rgb(r, g, b);
@@ -578,7 +774,9 @@ fn write_glyph_run(
     let shear = if run.italic { ITALIC_SKEW } else { 0.0 };
 
     let mut pen_x = x + dx;
-    for gl in &run.glyphs {
+    for (gl, &font_index) in run.glyphs.iter().zip(glyph_fonts) {
+        let f = &fonts[font_index];
+        content.set_font(Name(f.res_name.as_bytes()), run.size_pt);
         let gid = out_gid(f.subset_ok, &f.remapper, gl.id);
         // Tm: 크기·장평은 Tf/Tz가 적용, 여기선 기울임 시어(c)·베이스라인 이동만.
         // y 뒤집기: PDF는 y-위 → page_h - (y - y_offset). 그림자는 dy만큼 더 내린다.
@@ -732,14 +930,12 @@ struct FontInfo {
     data: Arc<Vec<u8>>,
     index: u32,
     remapper: GlyphRemapper,
-    /// 원본 글리프 ID → 유니코드 (cmap 역방향, ToUnicode 보완용).
-    reverse_cmap: HashMap<u16, char>,
-    /// 원본 글리프 ID → 유니코드 (문서 원문 기준).
-    orig_to_unicode: HashMap<u16, char>,
+    /// Original GID to source Unicode sequence for this PDF font variant.
+    orig_to_unicode: HashMap<u16, String>,
     subset_ok: bool,
     subset_bytes: Vec<u8>,
-    /// 출력 글리프 ID → 유니코드 (ToUnicode CMap용).
-    to_unicode: HashMap<u16, char>,
+    /// Output GID to source Unicode sequence for the ToUnicode CMap.
+    to_unicode: HashMap<u16, String>,
     /// 페이지 리소스 키 ("F0" …).
     res_name: String,
     /// /BaseFont 값 (서브셋이면 "ABCDEF+F0").
@@ -753,12 +949,10 @@ struct FontInfo {
 
 impl FontInfo {
     fn new(font: Arc<LoadedFont>) -> Self {
-        let reverse_cmap = build_reverse_cmap(&font.data, font.index);
         Self {
             data: font.data.clone(),
             index: font.index,
             remapper: GlyphRemapper::new(),
-            reverse_cmap,
             orig_to_unicode: HashMap::new(),
             subset_ok: false,
             subset_bytes: Vec::new(),
@@ -774,28 +968,57 @@ impl FontInfo {
     }
 }
 
-/// 폰트의 유니코드 cmap을 역방향(글리프 ID → 문자)으로 만든다.
-fn build_reverse_cmap(data: &[u8], index: u32) -> HashMap<u16, char> {
-    let mut map = HashMap::new();
-    let Ok(face) = ttf_parser::Face::parse(data, index) else {
-        return map;
-    };
-    let Some(cmap) = face.tables().cmap else {
-        return map;
-    };
-    for sub in cmap.subtables {
-        if !sub.is_unicode() {
-            continue;
-        }
-        let mut cps = Vec::new();
-        sub.codepoints(|cp| cps.push(cp));
-        for cp in cps {
-            if let (Some(gid), Some(ch)) = (sub.glyph_index(cp), char::from_u32(cp)) {
-                map.entry(gid.0).or_insert(ch);
+type FontKey = (usize, u32);
+type GlyphFontKey = (FontKey, u16, String);
+
+fn collect_font_variants(
+    list: &DisplayList,
+) -> Result<(Vec<FontInfo>, HashMap<GlyphFontKey, usize>), RenderError> {
+    let mut fonts = Vec::<FontInfo>::new();
+    let mut variants = HashMap::<FontKey, Vec<usize>>::new();
+    let mut lookup = HashMap::<GlyphFontKey, usize>::new();
+
+    for page in &list.pages {
+        for item in &page.items {
+            let Item::Glyphs { run, .. } = item else {
+                continue;
+            };
+            let font_key = font_key(&run.font);
+            for (glyph, source) in run.glyphs.iter().zip(glyph_source_sequences(run)) {
+                let key = (font_key, glyph.id, source.clone());
+                if lookup.contains_key(&key) {
+                    continue;
+                }
+                let compatible = variants.get(&font_key).and_then(|indices| {
+                    indices.iter().copied().find(|&index| {
+                        fonts[index]
+                            .orig_to_unicode
+                            .get(&glyph.id)
+                            .is_none_or(|existing| existing == &source)
+                    })
+                });
+                let index = if let Some(index) = compatible {
+                    index
+                } else {
+                    if fonts.len() >= crate::fonts::MAX_FONT_RESOLUTIONS {
+                        return Err(RenderError::Pdf(
+                            "PDF font variant limit exceeded".to_string(),
+                        ));
+                    }
+                    fonts.push(FontInfo::new(run.font.clone()));
+                    let index = fonts.len() - 1;
+                    variants.entry(font_key).or_default().push(index);
+                    index
+                };
+                fonts[index].remapper.remap(glyph.id);
+                fonts[index]
+                    .orig_to_unicode
+                    .insert(glyph.id, source.clone());
+                lookup.insert(key, index);
             }
         }
     }
-    map
+    Ok((fonts, lookup))
 }
 
 struct PagePlan {
@@ -889,4 +1112,138 @@ fn jpeg_info(data: &[u8]) -> Option<(u32, u32, u8)> {
         i += 2 + len;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_run(text: &str, glyph_ids: &[u16]) -> ShapedRun {
+        let glyphs: Vec<crate::shape::Glyph> = glyph_ids
+            .iter()
+            .copied()
+            .map(|id| crate::shape::Glyph {
+                id,
+                x_advance: 10.0,
+                x_offset: 0.0,
+                y_offset: 0.0,
+            })
+            .collect();
+        ShapedRun {
+            font: Arc::new(LoadedFont {
+                data: Arc::new(Vec::new()),
+                index: 0,
+                family: String::new(),
+            }),
+            size_pt: 10.0,
+            x_scale: 1.0,
+            color: 0,
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            underline_color: 0xFFFF_FFFF,
+            shade_color: 0xFFFF_FFFF,
+            shadow: None,
+            outline: false,
+            emboss: false,
+            engrave: false,
+            width_pt: glyphs.iter().map(|glyph| glyph.x_advance).sum(),
+            glyphs,
+            text: text.to_string(),
+            start_wchar: 0,
+        }
+    }
+
+    fn synthetic_run_with_font(font: Arc<LoadedFont>, text: &str, glyph_ids: &[u16]) -> ShapedRun {
+        let mut run = synthetic_run(text, glyph_ids);
+        run.font = font;
+        run
+    }
+
+    fn empty_font() -> Arc<LoadedFont> {
+        Arc::new(LoadedFont {
+            data: Arc::new(Vec::new()),
+            index: 0,
+            family: String::new(),
+        })
+    }
+
+    fn one_run_list(run: ShapedRun) -> DisplayList {
+        DisplayList {
+            pages: vec![crate::display::PageList {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                items: vec![Item::Glyphs {
+                    x: 10.0,
+                    y: 30.0,
+                    run,
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn filetime_변환() {
+        // 1970-01-01T00:00:00Z
+        assert_eq!(
+            filetime_to_utc(11_644_473_600 * 10_000_000),
+            Some((1970, 1, 1, 0, 0, 0))
+        );
+        // 2024-01-02T03:04:05Z
+        assert_eq!(
+            filetime_to_utc(133_486_382_450_000_000),
+            Some((2024, 1, 2, 3, 4, 5))
+        );
+        // Leap-day boundary: 2000-02-29T12:00:00Z.
+        assert_eq!(
+            filetime_to_utc(125_962_992_000_000_000),
+            Some((2000, 2, 29, 12, 0, 0))
+        );
+        // Zero means unspecified in the IR; valid pre-Unix FILETIME values are preserved.
+        assert_eq!(filetime_to_utc(0), None);
+        let pre_unix = hwp_model::iso8601_utc_to_filetime("1900-03-01T00:00:00Z").unwrap();
+        assert_eq!(filetime_to_utc(pre_unix), Some((1900, 3, 1, 0, 0, 0)));
+        assert_eq!(supported_iso8601_utc(u64::MAX), None);
+    }
+
+    #[test]
+    fn xmp_패킷_필드() {
+        let mut meta = Metadata::default();
+        let empty = xmp_packet(&meta);
+        assert!(empty.contains("<pdf:Producer>hwp-cli "));
+        assert!(!empty.contains("dc:title"));
+        assert!(!empty.contains("xmp:CreateDate"));
+
+        meta.title = Some("보고서 & <초안> 😀".to_string());
+        meta.author = Some("홍길동\u{0}".to_string());
+        meta.create_time = Some(133_486_382_450_000_000);
+        let xmp = xmp_packet(&meta);
+        assert!(xmp.contains(">보고서 &amp; &lt;초안&gt; 😀<"));
+        assert!(xmp.contains("<rdf:li>홍길동\u{fffd}</rdf:li>"));
+        assert!(xmp.contains("<xmp:CreateDate>2024-01-02T03:04:05Z</xmp:CreateDate>"));
+        assert!(!xmp.contains("xmp:ModifyDate"));
+    }
+
+    #[test]
+    fn tounicode_preserves_ligatures_and_gid_aliases() {
+        let ligature_list = one_run_list(synthetic_run("ffi", &[42]));
+        let (fonts, _) = collect_font_variants(&ligature_list).unwrap();
+        assert!(
+            fonts
+                .iter()
+                .any(|font| { font.orig_to_unicode.values().any(|source| source == "ffi") })
+        );
+
+        let font = empty_font();
+        let alias_run = synthetic_run_with_font(font, ";\u{37e}", &[28, 28]);
+        assert_eq!(alias_run.glyphs.len(), 2);
+        assert_eq!(alias_run.glyphs[0].id, alias_run.glyphs[1].id);
+        let alias_list = one_run_list(alias_run);
+        let (fonts, lookup) = collect_font_variants(&alias_list).unwrap();
+        let entries: Vec<_> = lookup.values().copied().collect();
+        assert_eq!(entries.len(), 2);
+        assert_ne!(entries[0], entries[1]);
+        assert_eq!(fonts.len(), 2);
+    }
 }

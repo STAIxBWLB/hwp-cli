@@ -399,7 +399,7 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 | GG-9 | **밑줄 모양(이중·점선·물결)·'글자 위' 밑줄 미렌더** — kind==1(아래)만 인식, 모양 비트(4~7) 접근자 없음 | `hwp-model/src/header.rs:115-121`, `layout.rs:1615-1622` | 근사(아래 실선만) | S |
 | GG-10 | **취소선 모양 무시** — 이중 취소선 등 미반영, 실선 1줄 고정 | `hwp-render/src/shape.rs:34,369`, `layout.rs:1623` | 근사(실선 고정) | S |
 | GG-11 | **글자 그림자 오프셋 무시** — `CharShape.shadow_gap` 미사용, 고정 대각 오프셋(0.05~0.06em) | `hwp-model/src/header.rs:91`(무참조), `png.rs:138`, `pdf.rs:206` | 근사(고정 오프셋) | S |
-| GG-12 | **개요(outline) 번호 미렌더** — head_type 2(번호)·3(불릿)만 마커 생성, 1(개요)은 제외 | `hwp-render/src/list.rs:17-21` | 드롭(번호 없음) | M |
+| GG-12 | **개요(outline) 번호 부분 지원** — 기본 head_type 1 마커는 렌더하지만 사용자 정의 개요·재시작과 확인된 한글 14자 이후 순번은 모델링 및 정답지 검증 전 | `hwp-model/src/list.rs`(`ListState::marker_for_render`), `hwp-render/src/layout.rs` | 근사(기본 7수준 형식, 빈 문단·글상자 범위 지원) | M |
 | GG-13 | ~~**쪽번호 미렌더** — 페이지 카운터 부재, pgnp/atno 컨트롤은 skipped 집계 후 미렌더~~ | `hwp-render/src/page_number.rs`, `layout.rs`(`PageNumberState`), `shape.rs`(`shape_range_page`) | ✅ **해소(2026-07-30)** — 시작·재시작·숨김, pgnp 위치/장식/지원 서식, PAGE atno 동적 치환. 미지원 서식은 십진 경고 폴백; GE-4·GG-16은 별도 잔존 | M |
 | GG-14 | **미주(endnote) 배치 근사** — 문서/구역 끝이 아니라 **앵커 페이지 하단**에 각주와 동일 렌더(GC-3의 '모양'과 별개인 '위치' 문제) | `hwp-render/src/footnote.rs:35-72`, `layout.rs:263,598`(kind 미구분) | 근사(각주식 배치) | M |
 | GG-15 | **이미지 회전·자르기(imgClip)·반전·밝기/대비·워터마크·그림 효과 미렌더** — `Item::Image`에 변환 필드 없음, `common_data` 내 효과 미해석. 그림 효과(표 108~116: 그림자·네온·부드러운 가장자리·반사·색상 효과·투명도)도 파싱 자체가 없음(2026-07-19 감사 정밀화) | `layout.rs:741-760`, `display.rs:41-47`, `hwp-model/src/control.rs:43` | 근사(원본 배치) | M |

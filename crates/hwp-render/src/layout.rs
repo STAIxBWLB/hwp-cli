@@ -921,8 +921,12 @@ pub fn layout_document(
             let tabs = crate::tab::tab_stops(doc, para);
             let geom = para_geometry(doc, para);
             let links = crate::shape::hyperlink_ranges(para);
-            // 목록 마커(불릿/번호) — 문서 순서로 카운터 진행(목록 아니면 None).
-            let marker = list_state.marker(doc, para);
+            // Do not consume a list counter for a paragraph that has no visible line at all.
+            let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
+                None
+            } else {
+                list_state.marker_for_render(doc, para)
+            };
 
             // 이 문단의 첫 줄 상단 (표 앵커 위치)
             let mut para_top: Option<f32> = None;
@@ -1769,6 +1773,7 @@ fn layout_para_objects(
                 };
 
                 let mut max_bottom = by;
+                let mut box_list_state = crate::list::ListState::default();
                 for (k, range) in columns.iter().enumerate() {
                     let (cx, cy) = if k == 0 {
                         (bx, by)
@@ -1786,7 +1791,7 @@ fn layout_para_objects(
                         cy,
                         bw,
                         warnings,
-                        None,
+                        Some(&mut box_list_state),
                         None,
                     );
                     max_bottom = max_bottom.max(inner);
@@ -1837,8 +1842,18 @@ fn layout_para_objects(
                     let bw = (s0.w as f32 / 100.0).max(8.0);
                     let bh = s0.h as f32 / 100.0;
                     let flat = g.paragraph_lists.iter().flat_map(|l| l.paragraphs.iter());
+                    let mut box_list_state = crate::list::ListState::default();
                     let inner = layout_box_para_iter(
-                        doc, store, page, flat, bx, by, bw, warnings, None, None,
+                        doc,
+                        store,
+                        page,
+                        flat,
+                        bx,
+                        by,
+                        bw,
+                        warnings,
+                        Some(&mut box_list_state),
+                        None,
                     );
                     if s0.anchored {
                         // 흐름 전진(hwp5 인라인 글상자와 동형).
@@ -2450,10 +2465,14 @@ fn layout_box_para_iter<'a>(
     for para in paras {
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
-        // 목록 마커(셀 안 번호/불릿) — 렌더 패스에서만 counter 진행(측정 패스는 None).
-        let marker = list_state
-            .as_deref_mut()
-            .and_then(|ls| ls.marker(doc, para));
+        // Do not advance a list counter for a completely empty box paragraph.
+        let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
+            None
+        } else {
+            list_state
+                .as_deref_mut()
+                .and_then(|ls| ls.marker_for_render(doc, para))
+        };
 
         if para.line_segs.is_empty() {
             if para.chars.is_empty() {
@@ -2737,21 +2756,23 @@ fn align_line(
     }
 }
 
-/// 양쪽 정렬: 잉여 폭 slack을 분배. 줄에 **공백이 있으면 공백에만**(단어 사이 벌림),
-/// 없으면 전 글자 사이에 균등 분배한다. 후행 공백(마지막 보이는 글리프 뒤)에는 분배하지
-/// 않아 보이는 텍스트가 오른쪽 끝에 닿도록 한다. 글리프↔글자는 CJK 1:1 가정.
+/// Distribute justification slack to whitespace when present, otherwise across
+/// glyph gaps. Trailing whitespace is excluded so visible text reaches the
+/// right edge. Shaping-cluster source mappings identify whitespace correctly
+/// even when ligatures change the glyph count.
 fn justify_line(items: &mut [InlineItem], slack: f32) {
     if slack <= 0.0 {
         return;
     }
-    // 줄 전체 글리프의 공백 여부(런 내 글자 순서 매핑).
+    // Determine whitespace from the source sequence represented by each glyph.
     let mut is_space: Vec<bool> = Vec::new();
     for item in items.iter() {
         if let InlineItem::Run(run) = item {
-            let mut chars = run.text.chars();
-            for _ in 0..run.glyphs.len() {
-                is_space.push(chars.next().is_some_and(|c| c.is_whitespace()));
-            }
+            is_space.extend(
+                crate::shape::glyph_source_sequences(run)
+                    .iter()
+                    .map(|source| source.chars().all(char::is_whitespace)),
+            );
         }
     }
     let total = is_space.len();
@@ -3011,6 +3032,7 @@ fn place_wrapped(
                     continue;
                 }
                 // 글리프 단위 분할 (CJK는 글자 사이 어디서나 분리 가능)
+                let sources = crate::shape::glyph_source_sequences(&run);
                 let mut start = 0usize;
                 let mut piece_x = x;
                 let mut acc = 0.0f32;
@@ -3019,7 +3041,7 @@ fn place_wrapped(
                     let line_has_content = i > start || piece_x > x0;
                     if over && line_has_content {
                         if i > start {
-                            let piece = run.slice(start, i);
+                            let piece = run.slice_with_sources(start, i, &sources);
                             push_run(page, piece_x, y, piece, warnings);
                         }
                         y += line_advance;
@@ -3030,7 +3052,7 @@ fn place_wrapped(
                     acc += g.x_advance;
                 }
                 if start < run.glyphs.len() {
-                    let piece = run.slice(start, run.glyphs.len());
+                    let piece = run.slice_with_sources(start, run.glyphs.len(), &sources);
                     let w = piece.width_pt;
                     push_run(page, piece_x, y, piece, warnings);
                     x = piece_x + w;

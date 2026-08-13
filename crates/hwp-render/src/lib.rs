@@ -26,7 +26,7 @@ pub mod shape_draw;
 pub mod svg;
 pub mod tab;
 
-use hwp_model::Document;
+use hwp_model::{Document, Metadata};
 
 pub use diff::{DiffReport, compare};
 pub use error::RenderError;
@@ -315,7 +315,7 @@ pub fn render_document_pdf(
     pages: Option<&[usize]>,
 ) -> Result<PdfOutput, RenderError> {
     let (list, report, _, _) = build_display_list(doc, opts);
-    finish_pdf(list, report, pages)
+    finish_pdf(list, report, pages, &doc.metadata)
 }
 
 /// Isolated PDF render for certification. It searches only `font_files`, not
@@ -328,7 +328,7 @@ pub fn render_document_pdf_isolated(
     font_files: &[std::path::PathBuf],
 ) -> Result<PdfOutput, RenderError> {
     let (list, report, _, _) = build_display_list_with_font_scope(doc, opts, false, font_files);
-    finish_pdf(list, report, pages)
+    finish_pdf(list, report, pages, &doc.metadata)
 }
 
 /// Isolated PDF render with a pre-serialization text trace for corpus
@@ -341,16 +341,17 @@ pub fn render_document_pdf_isolated_with_text_trace(
     font_files: &[std::path::PathBuf],
 ) -> Result<PdfValidationOutput, RenderError> {
     let (list, report, _, _) = build_display_list_with_font_scope(doc, opts, false, font_files);
-    finish_pdf_with_text_trace(list, report, pages)
+    finish_pdf_with_text_trace(list, report, pages, &doc.metadata)
 }
 
 fn finish_pdf(
     mut list: display::DisplayList,
     mut report: RenderIssueAccumulator,
     pages: Option<&[usize]>,
+    meta: &Metadata,
 ) -> Result<PdfOutput, RenderError> {
     select_pdf_pages(&mut list, pages);
-    let data = pdf::render_pdf(&list, &mut report)?;
+    let data = pdf::render_pdf_with_metadata(&list, &mut report, meta)?;
     Ok(PdfOutput {
         data,
         report: report.finish(),
@@ -381,10 +382,11 @@ fn finish_pdf_with_text_trace(
     mut list: display::DisplayList,
     mut report: RenderIssueAccumulator,
     pages: Option<&[usize]>,
+    meta: &Metadata,
 ) -> Result<PdfValidationOutput, RenderError> {
     select_pdf_pages(&mut list, pages);
     let expected_text = pdf::expected_text_trace(&list)?;
-    let data = pdf::render_pdf(&list, &mut report)?;
+    let data = pdf::render_pdf_with_metadata(&list, &mut report, meta)?;
     Ok(PdfValidationOutput {
         data,
         report: report.finish(),
