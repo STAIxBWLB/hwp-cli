@@ -128,35 +128,41 @@ impl CharShape {
         self.underline_kind() == 1
     }
 
-    /// 위 밑줄 여부 (kind==3, 글자 위).
+    /// Returns whether the underline is above the text (`kind == 3`).
     pub fn has_underline_above(&self) -> bool {
         self.underline_kind() == 3
     }
 
-    /// 밑줄 모양 코드 (bits 4~7, 0-기반). hwplib `BorderType2` 순서
-    /// (한글문서파일형식 5.0 rev1.2 표 35 계열):
+    /// Returns the zero-based underline shape from bits 4..=7.
+    ///
+    /// Values follow hwplib's `BorderType2` ordering (HWP 5.0 revision 1.2,
+    /// table 35 family):
     /// 0 Solid, 1 Dash, 2 Dot, 3 DashDot, 4 DashDotDot, 5 LongDash, 6 CircleDot,
     /// 7 Double, 8 ThinThick, 9 ThickThin, 10 ThinThickThin, 11 Wave, 12 DoubleWave.
-    /// (13~16은 3D 변형 — 렌더 대상 아님, 실선으로 degrade.)
+    /// Values 13..=15 are 3D variants and degrade to solid rendering.
     pub fn underline_shape_code(&self) -> u8 {
         ((self.attr >> 4) & 0xF) as u8
     }
 
-    /// 강조점 종류 (bits 21~24). hwplib `EmphasisSort` ↔ hwpxlib `SymMarkSort` 1:1
-    /// (한글문서파일형식 5.0 rev1.2 표 35):
+    /// Returns the emphasis kind from bits 21..=24.
+    ///
+    /// hwplib `EmphasisSort` and hwpxlib `SymMarkSort` use this ordering
+    /// (HWP 5.0 revision 1.2, table 35):
     /// 0 NONE, 1 DOT_ABOVE, 2 RING_ABOVE, 3 TILDE, 4 CARON, 5 SIDE(･), 6 COLON,
     /// 7 GRAVE_ACCENT, 8 ACUTE_ACCENT, 9 CIRCUMFLEX, 10 MACRON, 11 HOOK_ABOVE,
     /// 12 DOT_BELOW.
-    /// 주의: 스펙 rev1.2 표 35는 1~6만 싣고 3=ˇ(caron)/4=˜(tilde)로 hwplib과
-    /// 3/4가 뒤바뀌어 있다 — hwplib/hwpxlib 순서를 채택하며, 3/4 교환 여부는
-    /// Hancom 시각 확인 라운드에서 확정한다.
+    /// The published table only lists values 1 through 6 and swaps 3 (caron)
+    /// and 4 (tilde) relative to hwplib. This implementation follows the
+    /// hwplib/hwpxlib order pending Hancom visual verification.
     pub fn emphasis_kind(&self) -> u8 {
         ((self.attr >> 21) & 0xF) as u8
     }
 
-    /// 취소선 모양 코드 (bits 26~29, 0-기반 `BorderType2` 계열 — 값 표는
-    /// `underline_shape_code`와 동일). 비트 위치는 실문서 관측 기반
-    /// (docs/design/07-hangul-compat-rules.md B8)이라 Hancom 확인 대상.
+    /// Returns the zero-based strike shape from bits 26..=29.
+    ///
+    /// Values follow the same `BorderType2` ordering as
+    /// [`CharShape::underline_shape_code`]. The bit position is based on the
+    /// observed documents in compatibility rule B8 and awaits Hancom verification.
     pub fn strike_shape_code(&self) -> u8 {
         ((self.attr >> 26) & 0xF) as u8
     }

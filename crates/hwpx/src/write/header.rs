@@ -31,8 +31,8 @@ pub(crate) fn line_type_name(code: u8) -> &'static str {
     }
 }
 
-/// 0-기반 장식 코드(hwp5 attr bits 4~7/26~29) → OWPML 선 모양 이름
-/// (read의 decor_code 역함수 — WAVE/DOUBLE_WAVE 포함).
+/// Converts a zero-based decoration code from HWP5 attribute bits 4..=7 or
+/// 26..=29 to an OWPML line-shape name, including WAVE and DOUBLE_WAVE.
 fn decor_name(code: u8) -> &'static str {
     match code {
         11 => "WAVE",
@@ -41,8 +41,8 @@ fn decor_name(code: u8) -> &'static str {
     }
 }
 
-/// 강조점 코드(hwp5 attr bits 21~24) → OWPML symMark 이름
-/// (read의 sym_mark_code 역함수, hwpxlib `SymMarkSort` 순서).
+/// Converts an emphasis code from HWP5 attribute bits 21..=24 to an OWPML
+/// `symMark` name using hwpxlib's `SymMarkSort` ordering.
 fn sym_mark_name(code: u8) -> &'static str {
     match code {
         1 => "DOT_ABOVE",
@@ -273,11 +273,7 @@ fn write_char_properties(out: &mut String, header: &DocHeader) {
             3 => "TOP",
             _ => "NONE",
         };
-        // 밑줄 모양: 0(미지정)이면 기존 관례대로 SOLID, 아니면 보존된 종류 코드.
-        let ul_shape = match cs.underline_shape {
-            0 => "SOLID",
-            c => line_type_name(c),
-        };
+        let ul_shape = decor_name(cs.underline_shape_code());
         let _ = write!(
             out,
             r##"<hh:underline type="{ul_type}" shape="{ul_shape}" color="{}"/>"##,
@@ -287,7 +283,7 @@ fn write_char_properties(out: &mut String, header: &DocHeader) {
                 color_attr(cs.underline_color)
             }
         );
-        // 취소선 모양: 보존한 0-기반 장식 코드(bits 26~29)에서 복원, 없으면 SOLID.
+        // Restore the strike shape from normalized attribute bits 26..=29.
         let strike_shape = if cs.has_strike() {
             decor_name(cs.strike_shape_code())
         } else {

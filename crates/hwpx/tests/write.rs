@@ -1770,57 +1770,94 @@ fn ge_a4_아래첨자_왕복() {
     assert!(!cs2.is_superscript(), "위첨자는 켜지지 않음");
 }
 
-/// GE-α5 밑줄 모양: SOLID가 아닌 모양(DASH)이 왕복에서 보존된다(이전엔 shape="SOLID" 고정).
+/// GE-alpha5: a non-solid underline shape survives an HWPX round trip.
 #[test]
-fn ge_a5_밑줄_모양_왕복() {
+fn ge_a5_underline_shape_roundtrip() {
     let (cs1, cs2) =
         왕복_charpr(r##"<hh:underline type="BOTTOM" shape="DASH" color="#000000"/>"##);
-    assert_ne!(cs1.underline_shape, 0, "원본 밑줄 모양 파싱");
-    assert_eq!(cs2.underline_shape, cs1.underline_shape, "밑줄 모양 보존");
-    assert_eq!(cs2.underline_kind(), 1, "밑줄 종류(아래)도 보존");
-    // 방출된 XML에 shape="DASH"가 실제로 들어간다.
+    assert_eq!(cs1.underline_shape_code(), 1, "parsed DASH shape");
+    assert_eq!(cs2.underline_shape_code(), 1, "preserved DASH shape");
+    assert_eq!(cs2.underline_kind(), 1, "preserved bottom underline kind");
+    // The serialized XML contains the normalized shape name.
     let xml = r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"><hh:underline type="BOTTOM" shape="DASH" color="#000000"/></hh:charPr></hh:charProperties></hh:head>"##;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
     let out = hwpx::write::header::write_header(&h1, 1);
-    assert!(out.contains(r#"shape="DASH""#), "방출 XML에 DASH: {out}");
+    assert!(out.contains(r#"shape="DASH""#), "serialized DASH: {out}");
 }
 
-/// GG-8 강조점 symMark: attr bits 21~24가 symMark 이름으로 방출되고 왕복한다
-/// (이전엔 symMark="NONE" 고정).
+/// HWP5-style normalized underline bits serialize without the HWPX-only legacy field.
 #[test]
-fn gg8_symmark_왕복() {
+fn normalized_underline_shape_writes_without_legacy_field() {
+    for (code, expected) in [(1u32, "DASH"), (11, "WAVE"), (12, "DOUBLE_WAVE")] {
+        let xml = r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"><hh:underline type="BOTTOM" shape="SOLID" color="#000000"/></hh:charPr></hh:charProperties></hh:head>"##;
+        let (mut header, _) = hwpx::read::header::parse_header(xml).unwrap();
+        let shape = &mut header.char_shapes[0];
+        shape.attr = (shape.attr & !(0xFu32 << 4)) | (code << 4);
+        shape.underline_shape = 0;
+
+        let out = hwpx::write::header::write_header(&header, 1);
+
+        assert!(
+            out.contains(&format!(
+                r#"<hh:underline type="BOTTOM" shape="{expected}""#
+            )),
+            "serialized {expected}: {out}"
+        );
+        let (roundtripped, _) = hwpx::read::header::parse_header(&out).unwrap();
+        assert_eq!(
+            u32::from(roundtripped.char_shapes[0].underline_shape_code()),
+            code,
+            "round-tripped {expected}"
+        );
+    }
+}
+
+/// GG-8 emphasis bits serialize as `symMark` names and survive a round trip.
+#[test]
+fn gg8_symmark_roundtrip() {
     let xml = r##"<hh:head><hh:charProperties itemCnt="2"><hh:charPr id="0" height="1000" symMark="DOT_ABOVE"/><hh:charPr id="1" height="1000" symMark="COLON"/></hh:charProperties></hh:head>"##;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
     assert_eq!(h1.char_shapes[0].emphasis_kind(), 1);
     assert_eq!(h1.char_shapes[1].emphasis_kind(), 6);
     let out = hwpx::write::header::write_header(&h1, 1);
-    assert!(out.contains(r#"symMark="DOT_ABOVE""#), "방출 XML: {out}");
-    assert!(out.contains(r#"symMark="COLON""#), "방출 XML: {out}");
+    assert!(
+        out.contains(r#"symMark="DOT_ABOVE""#),
+        "serialized XML: {out}"
+    );
+    assert!(out.contains(r#"symMark="COLON""#), "serialized XML: {out}");
     let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
-    assert_eq!(h2.char_shapes[0].emphasis_kind(), 1, "왕복 보존");
-    assert_eq!(h2.char_shapes[1].emphasis_kind(), 6, "왕복 보존");
-    // 강조점 없음은 NONE 유지.
+    assert_eq!(
+        h2.char_shapes[0].emphasis_kind(),
+        1,
+        "round-trip preservation"
+    );
+    assert_eq!(
+        h2.char_shapes[1].emphasis_kind(),
+        6,
+        "round-trip preservation"
+    );
+    // No emphasis remains NONE.
     let (_, cs_none) = 왕복_charpr("");
     assert_eq!(cs_none.emphasis_kind(), 0);
 }
 
-/// GG-10 취소선 모양: SOLID가 아닌 모양(DASH_DOT)이 왕복한다(이전엔 SOLID 고정).
+/// GG-10: a non-solid strike shape survives an HWPX round trip.
 #[test]
-fn gg10_취소선_모양_왕복() {
+fn gg10_strike_shape_roundtrip() {
     let (cs1, cs2) = 왕복_charpr(r##"<hh:strikeout shape="DASH_DOT" color="#000000"/>"##);
-    assert!(cs1.has_strike(), "원본 취소선 파싱");
-    assert_eq!(cs1.strike_shape_code(), 3, "DASH_DOT → 0-기반 3");
-    assert!(cs2.has_strike(), "재읽기 취소선 보존");
-    assert_eq!(cs2.strike_shape_code(), 3, "모양 코드 왕복 보존");
-    // 방출된 XML에 shape="DASH_DOT"이 실제로 들어간다.
+    assert!(cs1.has_strike(), "parsed strike");
+    assert_eq!(cs1.strike_shape_code(), 3, "DASH_DOT maps to code 3");
+    assert!(cs2.has_strike(), "preserved strike");
+    assert_eq!(cs2.strike_shape_code(), 3, "round-trip shape code");
+    // The serialized XML contains shape="DASH_DOT".
     let xml = r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"><hh:strikeout shape="DASH_DOT" color="#000000"/></hh:charPr></hh:charProperties></hh:head>"##;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
     let out = hwpx::write::header::write_header(&h1, 1);
     assert!(
         out.contains(r#"<hh:strikeout shape="DASH_DOT""#),
-        "방출 XML: {out}"
+        "serialized XML: {out}"
     );
-    // 취소선 없음은 여전히 NONE.
+    // No strike remains NONE.
     let (_, cs_plain) = 왕복_charpr("");
     assert!(!cs_plain.has_strike());
 }

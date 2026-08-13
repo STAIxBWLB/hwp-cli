@@ -495,7 +495,7 @@ pub fn render_into(
 ) {
     use crate::display::Item;
     for (run, dx, dy) in eq.runs {
-        // 수식 런은 합성 기본 글자모양(border_fill_id=0)이라 테두리 테이블이 필요 없다.
+        // Equation runs use a synthetic character shape with border_fill_id=0.
         crate::layout::push_run(page, ox + dx, baseline_y + dy, run, &[], issues);
     }
     for (x1, y1, x2, y2, wdt) in eq.lines {

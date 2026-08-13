@@ -29,15 +29,15 @@ pub struct ShapedRun {
     pub color: u32,
     pub bold: bool,
     pub italic: bool,
-    /// 밑줄 종류 (0 없음, 1 글자 아래, 3 글자 위) — CharShape::underline_kind 그대로.
+    /// Underline kind from `CharShape::underline_kind`: 0 none, 1 below, 3 above.
     pub underline_kind: u8,
-    /// 밑줄 모양 코드 (0-기반 BorderType2 계열, CharShape::underline_shape_code)
+    /// Zero-based `BorderType2` underline shape.
     pub underline_shape: u8,
     /// 취소선
     pub strike: bool,
-    /// 취소선 모양 코드 (0-기반, CharShape::strike_shape_code)
+    /// Zero-based strike shape from `CharShape::strike_shape_code`.
     pub strike_shape: u8,
-    /// 강조점 종류 (0=없음, 1~12 — CharShape::emphasis_kind)
+    /// Emphasis kind from `CharShape::emphasis_kind` (0 none, 1..=12).
     pub emphasis: u8,
     /// 밑줄 색 (COLORREF, 0xFFFFFFFF = 글자색 따름)
     pub underline_color: u32,
@@ -45,7 +45,7 @@ pub struct ShapedRun {
     pub shade_color: u32,
     /// 그림자 색 (Some이면 그림자 그림)
     pub shadow: Option<u32>,
-    /// 그림자 간격 % (x, y). (0, 0)이면 백엔드 기본 오프셋.
+    /// Shadow gap percentages. `(0, 0)` selects the backend-compatible fallback.
     pub shadow_gap: (i8, i8),
     /// 외곽선(빈 글자 — 채움 없이 윤곽선만)
     pub outline: bool,
@@ -53,7 +53,7 @@ pub struct ShapedRun {
     pub emboss: bool,
     /// 음각(3D 새김)
     pub engrave: bool,
-    /// 글자 테두리/배경 참조 (1-기반, 0 = 미지정)
+    /// One-based character border/background reference; 0 means unspecified.
     pub border_fill_id: u16,
     pub glyphs: Vec<Glyph>,
     pub width_pt: f32,
@@ -63,9 +63,11 @@ pub struct ShapedRun {
 }
 
 impl ShapedRun {
-    /// 그림자 오프셋 (pt). shadow_gap(글자 크기 대비 %, OWPML offsetX/Y 관례)이
-    /// 있으면 그 값을 쓰고, (0, 0)=미지정이면 기존 기본 0.06em을 유지한다 —
-    /// 진짜 기본 간격은 Hancom 확인 대상.
+    /// Returns the shadow offset in points.
+    ///
+    /// Nonzero `shadow_gap` values are percentages of the font size following
+    /// OWPML offsetX/offsetY conventions. `(0, 0)` retains the legacy 0.06em
+    /// fallback pending Hancom verification.
     pub fn shadow_offset(&self) -> (f32, f32) {
         if self.shadow_gap == (0, 0) {
             let d = self.size_pt * 0.06;
@@ -908,15 +910,15 @@ mod link_tests {
     }
 
     #[test]
-    fn 그림자_오프셋_간격반영() {
-        // (0,0)=미지정 → 기존 기본 0.06em 유지.
+    fn shadow_offset_uses_serialized_gap() {
+        // An unspecified gap retains the legacy 0.06em fallback.
         let run = synthetic_run("x", &[1]);
         let (dx, dy) = run.shadow_offset();
         assert!(
             (dx - 0.6).abs() < 0.01 && (dy - 0.6).abs() < 0.01,
-            "기본 0.06em"
+            "default 0.06em"
         );
-        // shadow_gap % → size_pt 비율 오프셋 (GG-11).
+        // Serialized percentages scale with the font size (GG-11).
         let mut run = synthetic_run("x", &[1]);
         run.shadow_gap = (10, -5);
         let (dx, dy) = run.shadow_offset();

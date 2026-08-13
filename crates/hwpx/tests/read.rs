@@ -168,9 +168,9 @@ fn 취소선_3d_shape는_비취소선() {
     );
 }
 
-/// 강조점 symMark 읽기: attr bits 21~24 (hwpxlib SymMarkSort 순서).
+/// Reads `symMark` into attribute bits 21..=24 using hwpxlib ordering.
 #[test]
-fn symmark_강조점_읽기() {
+fn reads_symmark_emphasis_bits() {
     let xml = r##"<?xml version="1.0"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
   <hh:refList>
@@ -187,10 +187,10 @@ fn symmark_강조점_읽기() {
     assert_eq!(header.char_shapes[2].emphasis_kind(), 0, "NONE");
 }
 
-/// 밑줄/취소선 모양의 0-기반 장식 코드 정규화 (attr bits 4~7 / 26~29).
-/// raw hwpx 1-기반 코드는 underline_shape에 그대로 보존(왕복용)된다.
+/// Normalizes underline and strike shapes into zero-based decoration codes.
+/// Core HWPX line types also retain their one-based legacy underline code.
 #[test]
-fn 밑줄_취소선_모양_장식코드() {
+fn normalizes_underline_and_strike_shape_codes() {
     let xml = r##"<?xml version="1.0"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
   <hh:refList>
@@ -210,17 +210,21 @@ fn 밑줄_취소선_모양_장식코드() {
 </hh:head>"##;
     let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
     let cs0 = &header.char_shapes[0];
-    assert_eq!(cs0.underline_shape_code(), 1, "DASH → 0-기반 1");
-    assert_eq!(cs0.underline_shape, 2, "raw hwpx 1-기반 코드 보존");
+    assert_eq!(
+        cs0.underline_shape_code(),
+        1,
+        "DASH maps to zero-based code 1"
+    );
+    assert_eq!(cs0.underline_shape, 2, "legacy one-based HWPX code");
     assert!(cs0.has_strike());
-    assert_eq!(cs0.strike_shape_code(), 3, "DASH_DOT → 0-기반 3");
-    // WAVE는 line_type_code에 없어 방어 매핑 11.
+    assert_eq!(cs0.strike_shape_code(), 3, "DASH_DOT maps to code 3");
+    // WAVE is absent from the general border table and maps explicitly to 11.
     assert_eq!(
         header.char_shapes[1].underline_shape_code(),
         11,
         "WAVE → 11"
     );
-    // 밑줄 없음(NONE)의 shape은 무의미 — 장식 비트를 켜지 않는다.
+    // An inactive underline does not set decoration bits.
     assert_eq!(header.char_shapes[2].underline_shape_code(), 0);
 }
 
