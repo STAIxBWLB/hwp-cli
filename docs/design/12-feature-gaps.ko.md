@@ -374,8 +374,8 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 |---|---|---|---|---|---|---|
 | GG-1 (=07§F1) | **글상자 드롭** — 왕복 hwp에서 글상자 박스 자체 소실(텍스트는 본문 hoist로 보존) | `hwp5/src/write.rs:467`(`degrade_hwpx_gso`) | [07§F1](07-hangul-compat-rules.ko.md) 승계. 근본 해결은 SHAPE_COMPONENT 239B **속성 충실도** 확보 필요 | 드롭(안전 저하) | 합성(hwpx→hwp5) | L |
 | GG-2 (=07§F2) | **페이지 오버플로** — 합성 멀티페이지 세로 넘침(md는 content_h 리셋으로 방어) | `hwp-render/src/lineseg.rs`(`synthesize_linesegs`) | [07§F2](07-hangul-compat-rules.ko.md) 승계. 줄배치 속성 충실도가 유력 원인 | 근사 | 렌더·합성 | L |
-| GG-3 (=U2) | **양쪽정렬 근사** — 잉여폭을 공백 우선 분배, 글리프↔글자 CJK 1:1 가정 | `hwp-render/src/layout.rs:386`, [05](05-rendering.ko.md) §1.4(`justify_line`) | 공백 없으면 마지막 글리프 전 gap 균등. 비CJK 혼용 시 오차 | 근사 | 렌더 | M |
-| GG-4 (=U4) | **자간 근사** — `spacing_pt = size_pt × spacings[lang]/100` 단순 적용 | [05](05-rendering.ko.md):184(`// 자간`) | 언어별 자간을 pt 스케일로 근사 | 근사 | 렌더 | M |
+| GG-3 (=U2) | **양쪽정렬 근사** — 양쪽(0)·배분(4)·나눔(5)을 동일 처리, 공백 우선 분배, 마지막 줄 미적용 | `hwp-render/src/layout.rs`(`align_line`/`justify_line`), [05](05-rendering.ko.md) §1.4 | 0은 공백 우선·마지막 줄 제외 유지, 4(배분)는 후행 gap 포함·마지막 줄 적용, 5(나눔)는 후행 gap 제외·마지막 줄 적용 | ✅ **해소(2026-08-14, PR 7)** — 4/5의 마지막 줄 의미론은 한컴 확인 대상 | 렌더 | M |
+| GG-4 (=U4) | **자간 근사** — `spacing_pt = size_pt × spacings[lang]/100`를 pt 실수로 단순 적용 | `hwp-render/src/shape.rs`(`letter_spacing_pt`), [05](05-rendering.ko.md) §3.2 | HWPUNIT 정수 도메인 half-up 반올림(상대 크기·첨자 체인 포함) 후 pt 변환 | ✅ **해소(2026-08-14, PR 7)** — 줄 끝 자간 계상 여부는 한컴 확인 대상 | 렌더 | M |
 
 **U1·U3에 대하여:** 00§5는 "U2(양쪽정렬)·U4(자간)"만 명명한다. `U1`·`U3`은 docs 전체와 git 이력
 어디에도 정의가 없어(추측 금지 원칙) **의도적으로 제외**했다. U-계열이 U1~U4 완전 열거로 확정되면
@@ -405,9 +405,9 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 | GG-15 | **이미지 회전·자르기(imgClip)·반전·밝기/대비·워터마크·그림 효과 미렌더** — `Item::Image`에 변환 필드 없음, `common_data` 내 효과 미해석. 그림 효과(표 108~116: 그림자·네온·부드러운 가장자리·반사·색상 효과·투명도)도 파싱 자체가 없음(2026-07-19 감사 정밀화) | `layout.rs:741-760`, `display.rs:41-47`, `hwp-model/src/control.rs:43` | 근사(원본 배치) | M |
 | GG-16 | **머리말/꼬리말 홀수/짝수/첫쪽 구분 무시** — 최초 head/foot 하나를 모든 페이지에 반복(GC-7 구역 EVEN_ADJUST와 별개) | `layout.rs:152-165` | 근사(단일화) | S |
 | GG-17 | **단 구분선 미렌더** — `ColumnDef.divider`가 양쪽 reader에서 드롭되고 렌더러도 미사용이었음 | `hwp-model/src/control.rs`, `hwpx/src/read/section.rs`(`colLine`), `hwp-render/src/layout.rs` | ⚠ **부분 해소(2026-08-13, PR 5)**: hwpx `hp:colLine` 읽기·쓰기 + 단 사이 구분선 렌더. 보류: hwp5 coldef 구분선 파싱(바이트 오프셋 미확정 — 로컬 픽스처 전부 동일한 단일 단 COLDEF, `hwp5/src/body_text.rs`의 `TODO(GG-17)`), hwpx → hwp5 합성 방향의 구분선 | S |
-| GG-18 | **줄간격 모델 근사(합성 한정)** — attr1&0x3로 판정, 고정(1)·최소(3)를 동일 처리, 여백만(2)을 비율로 오해. `line_spacing_type` 필드 미사용. 실파일은 캐시 lineseg라 무관 | `hwp-render/src/lineseg.rs:264-270`, `hwp-model/src/header.rs:195` | 근사(합성 경로) | M |
+| GG-18 | **줄간격 모델 근사(합성 한정)** — attr1&0x3로 판정, 고정(1)·최소(3)를 동일 처리, 여백만(2)을 비율로 오해. 실파일은 캐시 lineseg라 무관 | `hwp-render/src/lineseg.rs:261-287`, `hwp-model/src/header.rs`(`line_spacing_type`) | ✅ **해소(2026-08-14, PR 7)**: 버전 인식 `line_spacing`/`line_spacing_type` — 비율 `base*v/100`, 고정 정확히 `v/2`(클클램프 제거), 여백만 `base + v/2`, 최소 `max(base, v/2)`(줄별 자연 높이는 `base` 근사, 한컴 확인 대상) | M |
 | GG-19 | **금칙처리·외톨이줄 보호·한 줄 입력 등 ParaShape 속성 비트 다수 미지원(합성 한정)** — 그리디 줄바꿈만. 범위 확장(2026-07-19 감사): attr1의 줄나눔 기준·공백 최소값·다음 문단과 함께·문단 보호·앞쪽 쪽나눔·**세로 정렬**·테두리 연결·여백 무시·문단 꼬리 모양(표 44), attr2의 한영/한글숫자 간격 자동 조정(표 45)도 접근자 없이 raw 왕복만 | `lineseg.rs:301-333`, `hwp5/src/doc_info.rs:269-319`(attr1 접근자 3종뿐) | 근사(합성 경로) | M |
-| GG-20 | **인라인 제어문자 폭 무시** — 고정폭 빈칸·하이픈·묶음 빈칸 등이 폭 계산에 미반영 | `hwp-render/src/shape.rs:201`(`_ => {}`) | 근사(폭 0) | S |
+| GG-20 | **인라인 제어문자 폭 무시** — 고정폭 빈칸·하이픈·묶음 빈칸 등이 폭 계산에 미반영 | `hwp-render/src/shape.rs`(조각 루프, `fw_space_run`) | ✅ **해소(2026-08-14, PR 7)**: HYPHEN은 실제 `-` 셰이핑, NB_SPACE는 공백 폭(분리 기회 없음 — 그리디 글리프 줄바꿈은 애초에 공백을 분리점으로 취급 안 함), FW_SPACE는 고정 1em 폭 | S |
 | GG-21 | **hwp5 직접렌더 경로 도형 선종류·화살촉 미적용** — `dash_pattern`/`arrowheads`가 hwpx ShapeGeom 경로에만 연결되고 hwp5 raw 경로는 `Stroke::solid` 고정이었음 | `hwp-render/src/shape_draw.rs`(`hwp5_line_style` + `draw_component` SC_LINE arm) | ✅ **해소(2026-08-13, PR 5)**: raw 경로가 선 속성을 `hwp5_line_style`로 매핑해 `dash_pattern` 적용 + `arrowheads` 방출(시작·끝 비트는 유무로 평탄화 — hwpx 경로와 동일). 화살촉 **모양·크기**는 양 경로 모두 고정 삼각형 유지 | S |
 | GG-22 | **글자 단위 테두리/배경 미렌더** — `CharShape.border_fill_id`는 hwp5·hwpx 파싱/왕복 완비인데 렌더가 무참조(렌더의 border_fill_id 참조는 전부 ParaShape 경로) | `hwp-model` CharShape ↔ `hwp-render/src/layout.rs`(`push_run` — 종전 무참조) | ✅ **해소(2026-08-13, PR 6)**: 런 단위 배경 Rect(글리프보다 먼저 emit) + 4변 테두리(`border_rectangle_items`) — 문단 배경 로직 재사용. 상자 메트릭(y-0.80em~y+0.25em)은 한컴 라운드 확인용 플레이스홀더 | S~M |
 | GG-23 | **타원→호 변환 미해석** — 타원 레코드(표 96) 60B 중 28B만 읽고 호 변환 플래그(표 97 bit1)·start/end 좌표 4쌍(32B)을 무시 → 부채꼴/호로 변환된 타원이 항상 완전한 타원으로 렌더 | `hwp-render/src/shape_draw.rs:558-570` | 근사(완전 타원) | M(변환 호 정답지 필요) |
@@ -510,7 +510,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 | | **난이도 S**(자료구조만) | **난이도 M**(정답지 필요) | **난이도 L**(실기 반복) |
 |---|---|---|---|
 | **가치 高**(빈출) | GC-4·GC-5(탭·구역속성), GC-8·GC-9(내어쓰기·문단배경) — ✅해소(2026-07-15): ~~GE-α1~α5·α7, GH-1·GH-2, GL-1, GA-5, GE-β4~~ / ✅해소(2026-07-18, md): ~~GH-3·GH-4·GH-5·GH-6, GH-8~~ | GG-3·GG-4(양쪽정렬·자간), GF-2(찾아보기·겹침), **GA-2★**(배포용 읽기 — 공식 스펙 공개), ~~GJ-1 출력~~(DOCX 내보내기 2026-08-01 해소), **GK-1**(셀 병합), **GK-2**(열 삭제 — 추가는 07-19 해소) — ✅GC-2·GC-3은 07-19 해소(J1 실기 대기) | GG-1·GG-2(글상자 드롭·오버플로) |
-| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), **GG-16·GG-20**(렌더 국소 — GG-5·GG-6·GG-8~GG-11·GG-17·GG-21·GG-22는 2026-08-13 해소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-3·GM-4·GM-8**(병합·분할·비교) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 포함 시), **GM-9 Web**(인증형 hosted MCP·tenant 격리·운영, Desktop은 해소) |
+| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), **GG-16**(렌더 국소 — GG-5·GG-6·GG-8~GG-11·GG-17·GG-20·GG-21·GG-22는 2026-08-13/14 해소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-3·GM-4·GM-8**(병합·분할·비교) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 포함 시), **GM-9 Web**(인증형 hosted MCP·tenant 격리·운영, Desktop은 해소) |
 | **가치 低**(드묾) | GA-3·GA-4(거부 메시지), **GI-5**(embed-bin), **GL-2·GL-3**(추출 세분) | **GJ-4**(rtf) | GA-1(암호화), GB-8·GB-9·GB-11(변경추적 등), **GJ-7**(역방향 입력), **GJ-8**(HWPX 배포용) |
 
 **읽는 법:** 좌상단(S·高)이 **가성비 최상** — GE-α(글자효과 왕복)에 더해 **GH-1·GH-2**(md/html
@@ -563,7 +563,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 - **GC-1, GC-2, GC-3**: 세로쓰기·쪽테두리·각주모양 — 해당 조판을 쓴 정품 파일
 - **GD-1~GD-3**: 행렬·큰연산자·복잡 구분자를 포함한 정품 수식
 - **GG-1, GG-2**: 07§F 서사대로 실기 반복 필요
-- **GG-7, GG-12~GG-15, GG-18, GG-19**: 정품 렌더와의 픽셀 대조로 확정
+- **GG-7, GG-13~GG-15, GG-19**: 정품 렌더와의 픽셀 대조로 확정(GG-12는 PR 3, GG-18은 PR 7에서 해소)
 - **GA-2, GJ-2, GJ-3**: 공식 스펙으로 착수 가능하되, 스펙-실파일 불일치 사례가 알려져 있어
   ([08](08-external-research.ko.md) — 단 정의 14 vs 16B) 정품 코퍼스 검증을 병행
 - **판정 유보 3건(2026-07-19 스펙 전수 감사 — 갭 여부 자체가 미확정, 정품 실측 전 등재 금지)**:

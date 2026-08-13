@@ -258,16 +258,30 @@ fn compute_linesegs(
             1000,
             |cs| if cs.base_size > 0 { cs.base_size } else { 1000 },
         );
-    // 줄간격은 문단 모양에서 유도한다. 종류는 attr1 bits0-1(0 비율%, 1 고정, 3 최소),
-    // 값은 line_spacing_old(@24). 길이 종류(고정/최소)는 HWPUNIT의 2배 단위라 ÷2.
-    // 미지정이면 정품 기본 160%(가나다 실측). (예전엔 160% 고정이라 문단별
-    // 줄간격(130/170 등)을 무시해 페이지네이션이 어긋났다.)
+    // 줄간격은 문단 모양에서 유도한다(GG-18, 스펙 표 46). 종류·값은 포맷 경계에서
+    // 버전 인식으로 채워진 line_spacing_type/line_spacing을 쓴다(hwp5: 5.0.2.5+ tail,
+    // 미만은 line_spacing_old 폴백 — doc_info.rs; hwpx·markdown도 두 필드를 채움).
+    // 길이 종류(고정/여백만/최소)는 HWPUNIT의 2배 단위라 ÷2. 미지정이면 정품 기본
+    // 160%(가나다 실측).
     let (line_advance, line_spacing) = {
         let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
-        let ls_type = ps.map_or(0, |p| (p.attr1 & 0x3) as u8);
-        let ls_val = ps.map_or(0, |p| p.line_spacing_old);
+        let ls_type = ps.map_or(0, |p| p.line_spacing_type);
+        let ls_val = ps.map_or(0, |p| {
+            if p.line_spacing > 0 {
+                p.line_spacing
+            } else {
+                p.line_spacing_old
+            }
+        });
         let adv = match ls_type {
-            1 | 3 if ls_val > 0 => (ls_val / 2).max(base),
+            // 1 고정: v/2 그대로 — base 클램프 없음(겹침은 의도된 동작).
+            1 if ls_val > 0 => ls_val / 2,
+            // 2 여백만: base + v/2 (종전엔 비율로 오독했다 — 실제 버그 수정).
+            2 if ls_val > 0 => base + ls_val / 2,
+            // 3 최소: max(줄 자연 높이, v/2). 줄별 자연 높이는 이 시점에 셰이핑 전이라
+            // 못 구하므로 base로 대신한다(한컴 실측 라운드 확인 사항).
+            3 if ls_val > 0 => (ls_val / 2).max(base),
+            // 0 비율: base * v / 100.
             _ if ls_val > 0 => base * ls_val / 100,
             _ => base * 160 / 100,
         };

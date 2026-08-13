@@ -367,6 +367,42 @@ fn shape_range_dynamic(
                         }
                     }
                 }
+                // 하이픈(24)·묶음 빈칸(30) (GG-20): 실제 글리프로 폭을 갖는다(종전엔
+                // 폭 0으로 생략). 하이픈은 '-', 묶음 빈칸은 현재 문자 모양의 공백 글리프.
+                // 줄바꿈은 글리프 그리디라(05 §7) 공백 우선 분리 로직 자체가 없으므로
+                // 묶음 빈칸에 별도 분리 금지 장치가 필요 없다.
+                HwpChar::CharCtrl(code)
+                    if matches!(*code, ctrl_char::HYPHEN | ctrl_char::NB_SPACE) =>
+                {
+                    let c = if *code == ctrl_char::HYPHEN { '-' } else { ' ' };
+                    let shape_id = shape_id_at(para, pos);
+                    let lang = lang_slot_of(c);
+                    match pieces.last_mut() {
+                        Some(last) if last.shape_id == shape_id && last.lang == lang => {
+                            last.text.push(c);
+                        }
+                        _ => pieces.push(Piece {
+                            shape_id,
+                            lang,
+                            text: c.to_string(),
+                            start: pos,
+                        }),
+                    }
+                }
+                // 고정폭 빈칸(31) (GG-20): 비례 공백 글리프와 무관하게 유효 크기의
+                // 1em(상대 크기·장평 반영). 탭처럼 별도 런으로 끼우고 뒤 조각 경계를 둔다.
+                HwpChar::CharCtrl(code) if *code == ctrl_char::FW_SPACE => {
+                    let shape = doc.header.char_shapes.get(shape_id_at(para, pos) as usize);
+                    if let Some(run) = fw_space_run(store, doc, shape, pos) {
+                        items.push((pieces.len(), InlineItem::Run(run)));
+                        pieces.push(Piece {
+                            shape_id: shape_id_at(para, pos + 1),
+                            lang: 0,
+                            text: String::new(),
+                            start: pos + 1,
+                        });
+                    }
+                }
                 // 강제 줄바꿈: 같은 문단 안에서 줄을 나눈다(코드블록·shift+enter).
                 HwpChar::CharCtrl(code) if *code == ctrl_char::LINE_BREAK => {
                     items.push((pieces.len(), InlineItem::LineBreak(pos + 1)));
@@ -533,6 +569,36 @@ fn shape_piece(
         .collect()
 }
 
+/// 고정폭 빈칸(FW_SPACE) 런: 공백 글리프를 셰이핑한 뒤 폭을 유효 크기의 1em
+/// (상대 크기·장평 반영, 자간 제외)으로 덮어쓴다. 비례 공백 글리프 폭과 무관하다.
+fn fw_space_run(
+    store: &mut FontStore,
+    doc: &Document,
+    shape: Option<&CharShape>,
+    pos: u32,
+) -> Option<ShapedRun> {
+    let mut run = shape_piece(store, doc, shape, 1, " ", pos)
+        .into_iter()
+        .next()?;
+    let em = run.size_pt * run.x_scale;
+    for g in &mut run.glyphs {
+        g.x_advance = em;
+    }
+    run.width_pt = em * run.glyphs.len() as f32;
+    Some(run)
+}
+
+/// 자간(GG-4): 유효 크기(HWPUNIT — 상대 크기·첨자 축소 반영) × %를 정수 영역에서
+/// half-up 반올림(동점은 +∞ 쪽, 음수 포함)한 뒤 pt로 환산한다.
+/// 마지막 글자의 trailing 자간 포함 여부는 한컴 실측 라운드에서 확인한다.
+fn letter_spacing_pt(base_hu: i32, rel: u8, script: bool, pct: i8) -> f32 {
+    let mut size_hu = base_hu * i32::from(rel) / 100;
+    if script {
+        size_hu = size_hu * 65 / 100;
+    }
+    ((size_hu * i32::from(pct) + 50).div_euclid(100)) as f32 / 100.0
+}
+
 /// 주어진 글꼴 하나로 텍스트를 셰이핑해 [`ShapedRun`]을 만든다(첨자·자간·장평·
 /// 음영/그림자/외곽선/양각/음각 효과 필드까지 채운다). `bold`는 호출부가 결정
 /// (요청이 굵음이거나, 굵은 페이스 없는 heavy 글꼴이라 faux-bold가 필요할 때 true).
@@ -570,8 +636,14 @@ fn shape_with_font(
         r
     };
 
-    // 자간: 글자 크기 기준 % (U4 — 반올림 방식은 실측 보정 예정)
-    let spacing_pt = size_pt * cs.spacings.get(lang).copied().unwrap_or(0) as f32 / 100.0;
+    // 자간(GG-4): HWPUNIT 정수 영역에서 half-up 반올림 후 pt로 환산한다
+    // (종전 pt 실수 곱셈의 반올림 오차 제거 — 한컴은 HWPUNIT 정수 도메인).
+    let spacing_pt = letter_spacing_pt(
+        base,
+        rel,
+        sup || sub,
+        cs.spacings.get(lang).copied().unwrap_or(0),
+    );
     let x_scale = cs.ratios.get(lang).copied().unwrap_or(100).max(1) as f32 / 100.0;
 
     let mut buffer = rustybuzz::UnicodeBuffer::new();
@@ -938,6 +1010,97 @@ mod link_tests {
             assert_eq!(run.text, text, "전체 텍스트 보존(세그먼트 누락 없음)");
             assert!(!run.glyphs.is_empty(), "글리프 생성됨");
         }
+    }
+
+    /// 컨트롤 문자 셰이핑 측정용 — 한 문단을 만들어 shape_range로 셰이핑한다.
+    fn shape_chars(doc: &Document, store: &mut FontStore, chars: Vec<HwpChar>) -> Vec<InlineItem> {
+        let para = Paragraph {
+            chars,
+            ..Paragraph::default()
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        shape_range(store, doc, &para, (0, para.wchar_len()), &mut warns)
+    }
+
+    fn runs_width(items: &[InlineItem]) -> f32 {
+        items
+            .iter()
+            .map(|i| match i {
+                InlineItem::Run(r) => r.width_pt,
+                _ => 0.0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn 컨트롤_문자_너비_gg20() {
+        let doc = hwp_convert::from_markdown("x");
+        let mut store = FontStore::new();
+        // 폰트 부재 환경은 스킵(셰이핑 결과 없음).
+        if shape_chars(&doc, &mut store, vec![HwpChar::Text('a')]).is_empty() {
+            return;
+        }
+        // 묶음 빈칸(30): 일반 공백과 같은 폭. 줄바꿈/분리 항목 없이 같은 런에 합쳐진다
+        // (줄바꿈은 글리프 그리디라 공백 우선 분리 자체가 없다 — 05 §7).
+        let nb = shape_chars(
+            &doc,
+            &mut store,
+            vec![
+                HwpChar::Text('a'),
+                HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                HwpChar::Text('b'),
+            ],
+        );
+        let sp = shape_chars(
+            &doc,
+            &mut store,
+            vec![HwpChar::Text('a'), HwpChar::Text(' '), HwpChar::Text('b')],
+        );
+        assert_eq!(nb.len(), 1, "묶음 빈칸은 분리 항목을 만들지 않는다");
+        if let InlineItem::Run(r) = &nb[0] {
+            assert_eq!(r.text, "a b");
+        }
+        assert!(
+            (runs_width(&nb) - runs_width(&sp)).abs() < 0.01,
+            "묶음 빈칸 폭 = 공백 글리프 폭"
+        );
+        // 하이픈(24): '-' 글리프 자연 폭.
+        let hy = shape_chars(&doc, &mut store, vec![HwpChar::CharCtrl(ctrl_char::HYPHEN)]);
+        let dash = shape_chars(&doc, &mut store, vec![HwpChar::Text('-')]);
+        if let InlineItem::Run(r) = &hy[0] {
+            assert_eq!(r.text, "-");
+        }
+        assert!(
+            (runs_width(&hy) - runs_width(&dash)).abs() < 0.01,
+            "하이픈 폭 = '-' 글리프 폭"
+        );
+        // 고정폭 빈칸(31): 비례 공백 글리프와 무관하게 유효 크기의 1em.
+        let fw = shape_chars(
+            &doc,
+            &mut store,
+            vec![HwpChar::CharCtrl(ctrl_char::FW_SPACE)],
+        );
+        let cs = &doc.header.char_shapes[0];
+        let em = cs.base_size as f32 / 100.0 * f32::from(cs.rel_sizes[1]) / 100.0
+            * f32::from(cs.ratios[1])
+            / 100.0;
+        assert!(
+            (runs_width(&fw) - em).abs() < 0.01,
+            "고정폭 빈칸 = 1em({em}), 실제 {}",
+            runs_width(&fw)
+        );
+    }
+
+    #[test]
+    fn 자간_hwpunit_반올림_gg4() {
+        // 10pt(1000 HWPUNIT), -7% → -70 HWPUNIT → -0.7pt
+        assert!((letter_spacing_pt(1000, 100, false, -7) + 0.7).abs() < 1e-6);
+        // half-up(동점은 +∞ 쪽): 100.5 → 101, -100.5 → -100
+        assert!((letter_spacing_pt(1005, 100, false, 10) - 1.01).abs() < 1e-6);
+        assert!((letter_spacing_pt(1005, 100, false, -10) + 1.0).abs() < 1e-6);
+        // 상대 크기·첨자 축소(65%) 반영
+        assert!((letter_spacing_pt(1000, 50, false, 10) - 0.5).abs() < 1e-6);
+        assert!((letter_spacing_pt(1000, 100, true, 10) - 0.65).abs() < 1e-6);
     }
 
     #[test]

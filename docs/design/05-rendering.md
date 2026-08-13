@@ -98,11 +98,15 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
 
 - Right: `shift = max(seg_width - natural, 0)`.
 - Center: `shift = max((seg_width - natural)/2, 0)`.
-- Justify, distribute and divide (except the last line): `justify_line` distributes the surplus
+- Justify (0, except the last line): `justify_line` distributes the surplus
   `slack = clamp(seg_width - natural, 0, natural)` across glyph advances. **When spaces exist it goes
   only to the space glyphs; otherwise it is spread evenly over the gaps before the last visible
   glyph.** Trailing spaces get nothing (so the text reaches the right edge). Glyph-to-character is
   assumed 1:1 for CJK.
+- Distribute (4): the surplus is spread evenly over every gap **including after the last glyph**, and
+  the last line is stretched too.
+- Divide (5): the surplus is spread evenly over the gaps **excluding after the last glyph**, and the
+  last line is stretched too. (The 4/5 last-line semantics await Hancom confirmation.)
 
 ### 1.5 Table layout (`layout_table`)
 
@@ -265,11 +269,13 @@ Line metrics are derived from the `base_size` of the first character shape (1000
 
 ```
 base          = char_shapes[first_run].base_size (>0)
-ls_type       = para_shape.attr1 & 0x3   // 0 percent, 1 fixed, 3 minimum
-ls_val        = para_shape.line_spacing_old
-line_advance  = { fixed or minimum (ls_val>0): max(ls_val/2, base)   // length kinds are 2 × HWPUNIT
-                  percent (ls_val>0):          base * ls_val / 100
-                  unspecified:                 base * 160 / 100 }    // the genuine default of 160%
+ls_type       = para_shape.line_spacing_type()   // 0 percent, 1 fixed, 2 margin-only, 3 minimum
+ls_val        = para_shape.line_spacing (version-aware; falls back to line_spacing_old)
+line_advance  = { fixed (ls_val>0):       ls_val / 2               // exact — overlap by design
+                  margin-only (ls_val>0): base + ls_val / 2
+                  minimum (ls_val>0):     max(ls_val/2, base)      // natural height ≈ base for now
+                  percent (ls_val>0):     base * ls_val / 100
+                  unspecified:            base * 160 / 100 }       // the genuine default of 160%
 line_spacing  = max(line_advance - base, 0)
 baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
@@ -335,7 +341,7 @@ size_pt   = sup||sub ? full_size*0.65 : full_size
 scale     = size_pt / upem
 y_raise   = full_size * cs.char_offset(lang)/100
             + (sup ? full_size*0.34 : 0) + (sub ? -full_size*0.16 : 0)
-spacing_pt= size_pt * cs.spacings[lang] / 100            // letter spacing
+spacing_pt= hwpunit_round(size_hu * cs.spacings[lang] / 100) / 100   // letter spacing, HWPUNIT half-up
 x_scale   = cs.ratios[lang] / 100                        // width scaling
 ```
 

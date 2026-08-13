@@ -12,7 +12,9 @@ use hwp_render::{RenderOptions, render_document};
 /// 기준 이미지를 만든 DPI (README 권장값과 일치해야 함).
 const GOLDEN_DPI: f32 = 150.0;
 /// 단계별로 조일 느슨한 상한(현재는 게이트만 — 충실도 개선하며 낮춘다).
-const MAX_BAD_PIXEL_PCT: f32 = 0.60;
+/// PR 7(GG-3/4/18/20 advance 일괄 + 재기준)에서 0.60 → 0.30으로 조였다. 아직 정품
+/// 기준 이미지가 없어 측정값이 아닌 약속이다 — 첫 커밋 scoreboard가 검증하거나 조정한다.
+const MAX_BAD_PIXEL_PCT: f32 = 0.30;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

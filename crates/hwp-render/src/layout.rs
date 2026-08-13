@@ -2732,8 +2732,9 @@ fn last_content_seg(para: &Paragraph) -> usize {
         .unwrap_or(n.saturating_sub(1))
 }
 
-/// 정렬에 따른 가로 shift(pt). 양쪽/배분/나눔(0/4/5)이고 마지막 줄이 아니면
-/// items의 글리프 advance를 늘려 줄을 seg_width까지 채우고 shift 0을 반환한다.
+/// 정렬에 따른 가로 shift(pt). 양쪽(0)은 마지막 줄이 아닐 때만, 배분(4)·나눔(5)은
+/// 마지막 줄에도 items의 글리프 advance를 늘려 줄을 seg_width까지 채우고 shift 0을
+/// 반환한다. (4/5의 마지막 줄 적용은 한컴 실측 라운드 확인 사항.)
 fn align_line(
     items: &mut [InlineItem],
     align: u8,
@@ -2741,24 +2742,37 @@ fn align_line(
     natural: f32,
     is_last: bool,
 ) -> f32 {
+    // 잉여 폭. 폰트 부재 등으로 natural이 비정상이면 캡(≤100% stretch)으로 폭주 방지.
+    let slack = (seg_width - natural).max(0.0).min(natural.max(1.0));
     match align {
         2 => (seg_width - natural).max(0.0),         // 오른쪽
         3 => ((seg_width - natural) / 2.0).max(0.0), // 가운데
-        0 | 4 | 5 if !is_last => {
-            // 잉여 폭 분배. 폰트 부재 등으로 natural이 비정상이면 캡(≤100% stretch)으로 폭주 방지.
-            let slack = (seg_width - natural).max(0.0).min(natural.max(1.0));
-            justify_line(items, slack);
+        0 if !is_last => {
+            // 양쪽: 공백 우선, 없으면 마지막 보이는 글리프 전까지 균등(현행 유지).
+            justify_line(items, slack, true, false);
+            0.0
+        }
+        4 => {
+            // 배분: 마지막 글리프 뒤 gap까지 전부 균등 — 마지막 줄에도 적용.
+            justify_line(items, slack, false, true);
+            0.0
+        }
+        5 => {
+            // 나눔: 마지막 글리프 뒤 gap만 빼고 균등 — 마지막 줄에도 적용.
+            justify_line(items, slack, false, false);
             0.0
         }
         _ => 0.0,
     }
 }
 
-/// Distribute justification slack to whitespace when present, otherwise across
-/// glyph gaps. Trailing whitespace is excluded so visible text reaches the
-/// right edge. Shaping-cluster source mappings identify whitespace correctly
-/// even when ligatures change the glyph count.
-fn justify_line(items: &mut [InlineItem], slack: f32) {
+/// Distribute justification slack. `spaces_first`(양쪽) gives all slack to
+/// whitespace before the last visible glyph, falling back to even gaps.
+/// Otherwise(배분/나눔) the slack is spread evenly over inter-glyph gaps with no
+/// space priority — `include_trailing` decides whether the gap after the last
+/// glyph counts (배분) or not (나눔). Shaping-cluster source mappings identify
+/// whitespace correctly even when ligatures change the glyph count.
+fn justify_line(items: &mut [InlineItem], slack: f32, spaces_first: bool, include_trailing: bool) {
     if slack <= 0.0 {
         return;
     }
@@ -2777,14 +2791,17 @@ fn justify_line(items: &mut [InlineItem], slack: f32) {
     if total < 2 {
         return;
     }
-    // 마지막 보이는(비공백) 글리프 — 그 이후엔 분배하지 않는다.
+    // 마지막 보이는(비공백) 글리프 — 양쪽은 그 이후엔 분배하지 않는다.
     let last_visible = is_space.iter().rposition(|&s| !s).unwrap_or(total - 1);
     let space_count = is_space[..last_visible].iter().filter(|&&s| s).count();
 
-    // 공백 우선; 없으면 전 글자 사이(마지막 보이는 글리프 전까지의 gap).
-    let use_spaces = space_count > 0;
+    // 공백 우선(양쪽)일 때만 공백에 몰아준다. 배분/나눔은 공백 우선 없이 균등
+    // (05-rendering §1.4 — 한글의 배분/나눔은 글자 사이 균등 분배).
+    let use_spaces = spaces_first && space_count > 0;
     let denom = if use_spaces {
         space_count as f32
+    } else if include_trailing {
+        total as f32
     } else {
         last_visible.max(1) as f32
     };
@@ -2797,6 +2814,8 @@ fn justify_line(items: &mut [InlineItem], slack: f32) {
             for g in run.glyphs.iter_mut() {
                 let apply = if use_spaces {
                     is_space[gi] && gi < last_visible
+                } else if include_trailing {
+                    true // 마지막 글리프 뒤 gap까지 (배분)
                 } else {
                     gi < last_visible
                 };
@@ -3570,6 +3589,66 @@ mod justify_tests {
         );
         let mut right = vec![run(&[10.0, 10.0])];
         assert!((align_line(&mut right, 2, 40.0, 20.0, false) - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn 배분은_마지막글리프_뒤까지_균등() {
+        // slack 15를 3개 gap(마지막 글리프 뒤 포함)에 5씩.
+        let mut items = vec![run(&[10.0, 10.0, 10.0])];
+        let shift = align_line(&mut items, 4, 45.0, 30.0, false);
+        assert_eq!(shift, 0.0);
+        if let InlineItem::Run(r) = &items[0] {
+            for g in &r.glyphs {
+                assert!((g.x_advance - 15.0).abs() < 0.01, "모든 gap 균등(뒤 포함)");
+            }
+        }
+        assert!((total_adv(&items) - 45.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn 배분은_마지막_줄도_늘림() {
+        // 양쪽과 달리 마지막 줄에도 적용 (한컴 실측 라운드 확인 사항).
+        let mut items = vec![run(&[10.0, 10.0, 10.0])];
+        align_line(&mut items, 4, 45.0, 30.0, true);
+        assert!(
+            (total_adv(&items) - 45.0).abs() < 0.01,
+            "배분은 마지막 줄도 seg_width까지"
+        );
+    }
+
+    #[test]
+    fn 나눔은_마지막글리프_뒤_제외_균등() {
+        // slack 15를 마지막 글리프 앞 2개 gap에 7.5씩.
+        let mut items = vec![run(&[10.0, 10.0, 10.0])];
+        align_line(&mut items, 5, 45.0, 30.0, false);
+        if let InlineItem::Run(r) = &items[0] {
+            assert!((r.glyphs[0].x_advance - 17.5).abs() < 0.01);
+            assert!((r.glyphs[1].x_advance - 17.5).abs() < 0.01);
+            assert!(
+                (r.glyphs[2].x_advance - 10.0).abs() < 0.01,
+                "마지막 글리프 뒤 gap은 불변"
+            );
+        }
+        assert!((total_adv(&items) - 45.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn 나눔은_마지막_줄도_늘리고_공백우선_없음() {
+        // 마지막 줄에도 적용 + 공백에 우선권 없이 균등(공백도 1 gap 취급).
+        let mut items = vec![run_t("a b", &[10.0, 5.0, 10.0])];
+        align_line(&mut items, 5, 40.0, 25.0, true); // slack 15, gap 2개
+        if let InlineItem::Run(r) = &items[0] {
+            assert!((r.glyphs[0].x_advance - 17.5).abs() < 0.01);
+            assert!(
+                (r.glyphs[1].x_advance - 12.5).abs() < 0.01,
+                "공백도 균등 1몫(우선 없음)"
+            );
+            assert!((r.glyphs[2].x_advance - 10.0).abs() < 0.01);
+        }
+        assert!(
+            (total_adv(&items) - 40.0).abs() < 0.01,
+            "나눔은 마지막 줄도 seg_width까지"
+        );
     }
 }
 
