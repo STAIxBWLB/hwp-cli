@@ -28,6 +28,7 @@ fn render_page(page: &PageList) -> String {
     // (폰트 데이터 주소, 글리프 ID) → path d 캐시
     let mut outline_cache: HashMap<(usize, u16), Option<String>> = HashMap::new();
     let mut grad_id = 0usize;
+    let mut clip_id = 0usize;
 
     for item in &page.items {
         match item {
@@ -50,12 +51,58 @@ fn render_page(page: &PageList) -> String {
                 w: iw,
                 h: ih,
                 data,
+                crop,
+                flip,
+                rotation_deg,
+                brightness,
+                contrast,
             } => {
-                let mime = sniff_mime(data);
+                // 밝기/명암이 0이면 원본 바이트를 그대로 임베드(무손실 빠른 경로).
+                // 보정이 있으면 디코드 → 픽셀 맵 → PNG 재인코드.
+                let (mime, payload) = if *brightness == 0 && *contrast == 0 {
+                    (sniff_mime(data), base64(data))
+                } else {
+                    match effect_png_data_url(data, *brightness, *contrast) {
+                        Some(png) => ("image/png", png),
+                        None => (sniff_mime(data), base64(data)),
+                    }
+                };
+                // 뷰포트: 자르기가 있으면 crop 영역이 박스를 채우도록 확장하고 클립.
+                let (mut vx, mut vy, mut vw, mut vh) = (*x, *y, *iw, *ih);
+                let mut clip_attr = String::new();
+                if let Some(c) = crop
+                    && let Some((pw, ph)) = image_dimensions(data)
+                    && let Some([fl, ft, fr, fb]) = crate::display::crop_fractions(*c, pw, ph)
+                    && (fl > 0.0 || ft > 0.0 || fr < 1.0 || fb < 1.0)
+                {
+                    vw = *iw / (fr - fl);
+                    vh = *ih / (fb - ft);
+                    vx = *x - fl * vw;
+                    vy = *y - ft * vh;
+                    let id = format!("clip{clip_id}");
+                    clip_id += 1;
+                    let _ = writeln!(
+                        out,
+                        r#"<clipPath id="{id}"><rect x="{x:.2}" y="{y:.2}" width="{iw:.2}" height="{ih:.2}"/></clipPath>"#
+                    );
+                    clip_attr = format!(r#" clip-path="url(#{id})""#);
+                }
+                let mut transform_attr = String::new();
+                if *flip != 0 || *rotation_deg != 0.0 {
+                    let m = crate::display::flip_rotate_matrix(
+                        *x + *iw / 2.0,
+                        *y + *ih / 2.0,
+                        *flip,
+                        *rotation_deg,
+                    );
+                    transform_attr = format!(
+                        r#" transform="matrix({:.4} {:.4} {:.4} {:.4} {:.2} {:.2})""#,
+                        m[0], m[1], m[2], m[3], m[4], m[5]
+                    );
+                }
                 let _ = writeln!(
                     out,
-                    r#"<image x="{x:.2}" y="{y:.2}" width="{iw:.2}" height="{ih:.2}" preserveAspectRatio="none" href="data:{mime};base64,{}"/>"#,
-                    base64(data)
+                    r#"<image x="{vx:.2}" y="{vy:.2}" width="{vw:.2}" height="{vh:.2}" preserveAspectRatio="none"{transform_attr}{clip_attr} href="data:{mime};base64,{payload}"/>"#
                 );
             }
             Item::Glyphs { x, y, run } => {
@@ -183,6 +230,12 @@ fn render_page(page: &PageList) -> String {
                         out.push_str(&svg_gradient_def(&id, g, commands));
                         format!("url(#{id})")
                     }
+                    Some(Fill::Hatch { fg, bg, style }) => {
+                        let id = format!("hatch{grad_id}");
+                        grad_id += 1;
+                        out.push_str(&svg_hatch_def(&id, *fg, *bg, *style));
+                        format!("url(#{id})")
+                    }
                 };
                 let stroke_attr = match stroke {
                     Some(s) => {
@@ -267,6 +320,51 @@ fn svg_gradient_def(id: &str, g: &Gradient, cmds: &[PathCmd]) -> String {
     }
 }
 
+/// 해치 무늬 <pattern> 정의. userSpaceOnUse라 인접 셀끼리 무늬 위상이 맞는다.
+/// 대각선 패턴은 수직 간격이 HATCH_SPACING이 되도록 타일을 √2배 키운다(png/pdf와 정합).
+fn svg_hatch_def(id: &str, fg: u32, bg: u32, style: u32) -> String {
+    let diagonal = matches!(style, 3 | 4 | 6);
+    let tile = if diagonal {
+        crate::display::HATCH_SPACING * std::f32::consts::SQRT_2
+    } else {
+        crate::display::HATCH_SPACING
+    };
+    let lw = crate::display::HATCH_LINE_WIDTH;
+    let fg = hex_color(fg);
+    let mut content = String::new();
+    if bg != 0xFFFF_FFFF {
+        let _ = write!(
+            content,
+            r#"<rect width="{tile:.3}" height="{tile:.3}" fill="{}"/>"#,
+            hex_color(bg)
+        );
+    }
+    let line = |x1: f32, y1: f32, x2: f32, y2: f32| {
+        format!(
+            r#"<line x1="{x1:.3}" y1="{y1:.3}" x2="{x2:.3}" y2="{y2:.3}" stroke="{fg}" stroke-width="{lw}"/>"#
+        )
+    };
+    match style {
+        1 => content.push_str(&line(0.0, 0.0, tile, 0.0)),
+        2 => content.push_str(&line(0.0, 0.0, 0.0, tile)),
+        3 => content.push_str(&line(0.0, 0.0, tile, tile)),
+        4 => content.push_str(&line(0.0, tile, tile, 0.0)),
+        5 => {
+            content.push_str(&line(0.0, 0.0, tile, 0.0));
+            content.push_str(&line(0.0, 0.0, 0.0, tile));
+        }
+        6 => {
+            content.push_str(&line(0.0, 0.0, tile, tile));
+            content.push_str(&line(0.0, tile, tile, 0.0));
+        }
+        _ => {}
+    }
+    format!(
+        r#"<pattern id="{id}" patternUnits="userSpaceOnUse" width="{tile:.3}" height="{tile:.3}">{content}</pattern>
+"#
+    )
+}
+
 /// COLORREF(0x00BBGGRR) → "#rrggbb". 없음(0xFFFFFFFF)은 검정.
 fn hex_color(c: u32) -> String {
     if c == 0xFFFF_FFFF {
@@ -288,6 +386,32 @@ fn sniff_mime(data: &[u8]) -> &'static str {
         [b'B', b'M', ..] => "image/bmp",
         _ => "application/octet-stream",
     }
+}
+
+/// 이미지 픽셀 크기 — 헤더만 읽는다(자르기 비율 환산용).
+fn image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(data))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+/// 밝기/명암 적용 이미지를 PNG data URL 페이로드(base64)로 재인코드한다.
+fn effect_png_data_url(data: &[u8], brightness: i8, contrast: i8) -> Option<String> {
+    let dynamic = image::load_from_memory(data).ok()?;
+    let mut rgba = dynamic.to_rgba8();
+    for pixel in rgba.pixels_mut() {
+        let [r, g, b, _] = &mut pixel.0;
+        *r = crate::display::apply_brightness_contrast(*r, brightness, contrast);
+        *g = crate::display::apply_brightness_contrast(*g, brightness, contrast);
+        *b = crate::display::apply_brightness_contrast(*b, brightness, contrast);
+    }
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(rgba)
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .ok()?;
+    Some(base64(&buf.into_inner()))
 }
 
 /// 표준 base64 인코딩 (의존성 없이).

@@ -347,6 +347,11 @@ fn draw_component(
                         w: (x1 - x0).max(0.1),
                         h: (y1 - y0).max(0.1),
                         data: img.clone(),
+                        crop: None,
+                        flip: 0,
+                        rotation_deg: 0.0,
+                        brightness: 0,
+                        contrast: 0,
                     });
                 }
                 // 채움·선이 모두 없고 이미지도 없으면 그리지 않는다(보이지 않는 프레임).
@@ -518,39 +523,14 @@ fn parse_style(d: &[u8], doc: &Document, issues: &mut RenderIssueAccumulator) ->
 }
 
 /// Table 28 그러데이션: type(i16) 각(i16) cx(i16) cy(i16) spread(i16) num(i16),
-/// num>2면 INT32[num] 위치, 이어서 COLORREF[num] 색.
+/// num>2면 INT32[num] 위치, 이어서 COLORREF[num] 색. 파싱 정본은 모델의
+/// [`hwp_model::GradientSpec::parse_hwp5`](BorderFill 채우기와 공유).
 fn parse_gradient(d: &[u8], fo: usize) -> Option<Gradient> {
-    let gtype = rd_u16(d, fo)? as i16;
-    let angle = rd_u16(d, fo + 2)? as i16 as f32;
-    let num = rd_u16(d, fo + 10)? as usize;
-    if !(1..=16).contains(&num) {
-        return None;
-    }
-    let mut off = fo + 12;
-    let positions: Vec<f32> = if num > 2 {
-        let mut v = Vec::with_capacity(num);
-        for i in 0..num {
-            v.push(rd_i32(d, off + i * 4)? as f32);
-        }
-        off += num * 4;
-        let max = v.iter().cloned().fold(1.0_f32, f32::max);
-        v.iter().map(|p| (p / max).clamp(0.0, 1.0)).collect()
-    } else {
-        (0..num)
-            .map(|i| i as f32 / (num.max(2) - 1) as f32)
-            .collect()
-    };
-    let mut stops = Vec::with_capacity(num);
-    for i in 0..num {
-        let c = rd_u32(d, off + i * 4)?;
-        stops.push((positions.get(i).copied().unwrap_or(0.0), c));
-    }
-    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-    // HWP 그러데이션 유형: 1=원형(radial), 그 외=선형(각도 사용).
+    let (g, _) = hwp_model::GradientSpec::parse_hwp5(d, fo)?;
     Some(Gradient {
-        radial: gtype == 1,
-        angle_deg: angle,
-        stops,
+        radial: g.radial,
+        angle_deg: g.angle_deg,
+        stops: g.stops,
     })
 }
 
@@ -642,17 +622,29 @@ fn geometry(tag: u16, d: &[u8], s: &Style, origin: (f64, f64)) -> Option<Vec<Pat
             Some(cmds)
         }
         SC_ELLIPSE => {
-            // UINT32 attr + center + ax1(끝점) + ax2(끝점).
+            // UINT32 attr(표 97) + center + ax1(끝점) + ax2(끝점).
+            let attr = rd_u32(d, 0)?;
             let (cx, cy) = p(4)?;
             let (a1x, a1y) = p(12)?;
             let (a2x, a2y) = p(20)?;
-            Some(ellipse_path(
-                cx,
-                cy,
-                (a1x - cx, a1y - cy),
-                (a2x - cx, a2y - cy),
-                &to_pt,
-            ))
+            let (a1, a2) = ((a1x - cx, a1y - cy), (a2x - cx, a2y - cy));
+            // bit1: 호(ARC)로 변환된 타원(GG-23) — start/end(@28/@36)와
+            // 호 종류(bits 2-9: 0=호, 1=부채꼴, 2=활꼴 — 값 매핑 한글 대조 후속).
+            if attr & 0x2 != 0 {
+                let (sx, sy) = p(28)?;
+                let (ex, ey) = p(36)?;
+                let kind = (attr >> 2) & 0xFF;
+                return Some(ellipse_arc_path(
+                    (cx, cy),
+                    a1,
+                    a2,
+                    (sx, sy),
+                    (ex, ey),
+                    kind,
+                    &to_pt,
+                ));
+            }
+            Some(ellipse_path(cx, cy, a1, a2, &to_pt))
         }
         SC_ARC => {
             // BYTE arctype + center + start(ax1) + end(ax2).
@@ -789,6 +781,94 @@ fn ellipse_path(
         ),
         PathCmd::Close,
     ]
+}
+
+/// 타원→호 변환(GG-23): 중심 c, 두 축 벡터(a1, a2), 시작/끝 점으로 타원호를
+/// 큐빅 베지에로 근사한다. sweep은 arc_path와 같은 짧은 쪽 규약.
+/// kind는 표 97 bits 2-9 (0=열린 호, 1=부채꼴, 2=활꼴 — 값 매핑 한글 대조 후속).
+fn ellipse_arc_path(
+    c: (f64, f64),
+    a1: (f64, f64),
+    a2: (f64, f64),
+    start: (f64, f64),
+    end: (f64, f64),
+    kind: u32,
+    to_pt: &impl Fn(f64, f64) -> (f32, f32),
+) -> Vec<PathCmd> {
+    let (cx, cy) = c;
+    // 타원 매개식 P(θ) = C + a1·cosθ + a2·sinθ — 기저 (a1, a2)에서 θ를 푼다.
+    let det = a1.0 * a2.1 - a1.1 * a2.0;
+    if det.abs() < f64::EPSILON {
+        return Vec::new();
+    }
+    let theta = |p: (f64, f64)| {
+        let (sx, sy) = (p.0 - cx, p.1 - cy);
+        let cos = (sx * a2.1 - a2.0 * sy) / det;
+        let sin = (a1.0 * sy - sx * a1.1) / det;
+        sin.atan2(cos)
+    };
+    let t0 = theta(start);
+    let mut sweep = theta(end) - t0;
+    // 짧은 쪽 [-π, π].
+    while sweep > std::f64::consts::PI {
+        sweep -= std::f64::consts::TAU;
+    }
+    while sweep < -std::f64::consts::PI {
+        sweep += std::f64::consts::TAU;
+    }
+    // 시작=끝(퇴화)이면 온 타원으로 폐백.
+    if sweep.abs() < 1e-6 {
+        return ellipse_path(cx, cy, a1, a2, to_pt);
+    }
+    let pt = |th: f64| {
+        to_pt(
+            cx + a1.0 * th.cos() + a2.0 * th.sin(),
+            cy + a1.1 * th.cos() + a2.1 * th.sin(),
+        )
+    };
+    let segs = (sweep.abs() / (std::f64::consts::PI / 2.0)).ceil().max(1.0) as usize;
+    let dphi = sweep / segs as f64;
+    let alpha = (4.0 / 3.0) * (dphi / 4.0).tan();
+    let start_pt = pt(t0);
+    let mut cmds = vec![PathCmd::MoveTo(start_pt.0, start_pt.1)];
+    let mut th = t0;
+    for _ in 0..segs {
+        let th1 = th + dphi;
+        // 접선 P'(θ) = -a1·sinθ + a2·cosθ; 제어점 = P ± α·P'.
+        let derv = |t: f64| {
+            (
+                a2.0 * t.cos() - a1.0 * t.sin(),
+                a2.1 * t.cos() - a1.1 * t.sin(),
+            )
+        };
+        let (px, py) = (
+            cx + a1.0 * th.cos() + a2.0 * th.sin(),
+            cy + a1.1 * th.cos() + a2.1 * th.sin(),
+        );
+        let (dx0, dy0) = derv(th);
+        let c1 = to_pt(px + alpha * dx0, py + alpha * dy0);
+        let (qx, qy) = (
+            cx + a1.0 * th1.cos() + a2.0 * th1.sin(),
+            cy + a1.1 * th1.cos() + a2.1 * th1.sin(),
+        );
+        let (dx1, dy1) = derv(th1);
+        let c2 = to_pt(qx - alpha * dx1, qy - alpha * dy1);
+        let p1 = pt(th1);
+        cmds.push(PathCmd::CubicTo(c1.0, c1.1, c2.0, c2.1, p1.0, p1.1));
+        th = th1;
+    }
+    match kind {
+        // 부채꼴: 중심을 지나 시작점으로 닫는다.
+        1 => {
+            let c = to_pt(cx, cy);
+            cmds.push(PathCmd::LineTo(c.0, c.1));
+            cmds.push(PathCmd::Close);
+        }
+        // 활꼴: 끝→시작 직선으로 닫는다.
+        2 => cmds.push(PathCmd::Close),
+        _ => {}
+    }
+    cmds
 }
 
 /// 중심 C, 시작/끝 점으로 원호를 큐빅 베지에로 근사(짧은 쪽 sweep).
@@ -1202,5 +1282,87 @@ mod tests {
         assert_eq!(hwp5_line_style(3), 2);
         assert_eq!(hwp5_line_style(6), 5);
         assert_eq!(hwp5_line_style(7), 0, "out-of-range values are solid");
+    }
+
+    /// GG-23: 타원 attr bit1 + start/end 좌표로 호/부채꼴/활꼴 경로를 만든다.
+    #[test]
+    fn 타원_호변환_경로() {
+        let style = Style {
+            m: Mat {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 1.0,
+                f: 0.0,
+            },
+            stroke: None,
+            fill: None,
+            image: None,
+            arrow_start: false,
+            arrow_end: false,
+        };
+        let mut d = vec![0u8; 60];
+        let put = |d: &mut [u8], o: usize, v: i32| {
+            d[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        // 중심 (5000,5000), 제1축 (1000,0), 제2축 (0,1000) — 반경 1000의 원.
+        put(&mut d, 4, 5000);
+        put(&mut d, 8, 5000);
+        put(&mut d, 12, 6000);
+        put(&mut d, 16, 5000);
+        put(&mut d, 20, 5000);
+        put(&mut d, 24, 6000);
+        // start = θ0 (C+a1), end = θ=90° (C+a2). pt 환산은 /100.
+        put(&mut d, 28, 6000);
+        put(&mut d, 32, 5000);
+        put(&mut d, 36, 5000);
+        put(&mut d, 40, 6000);
+
+        // bit1만: 열린 호 — MoveTo(start) + 큐빅, Close 없음.
+        put(&mut d, 0, 0x2);
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        let PathCmd::MoveTo(x, y) = cmds[0] else {
+            panic!("MoveTo 기대: {:?}", cmds[0])
+        };
+        assert!(
+            (x - 60.0).abs() < 0.01 && (y - 50.0).abs() < 0.01,
+            "시작점 {x},{y}"
+        );
+        assert!(!matches!(cmds.last(), Some(PathCmd::Close)), "열린 호");
+        // 끝점은 (50, 60) 근처.
+        let Some(PathCmd::CubicTo(.., ex, ey)) = cmds.last() else {
+            panic!("CubicTo 기대")
+        };
+        assert!(
+            (ex - 50.0).abs() < 0.01 && (ey - 60.0).abs() < 0.01,
+            "끝점 {ex},{ey}"
+        );
+
+        // 부채꼴(kind=1): 중심을 지나 Close.
+        put(&mut d, 0, 0x2 | (1 << 2));
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, PathCmd::LineTo(x, y) if (*x - 50.0).abs() < 0.01 && (*y - 50.0).abs() < 0.01)),
+            "중심 경유: {cmds:?}"
+        );
+
+        // 활꼴(kind=2): 중심 미경유, Close만.
+        put(&mut d, 0, 0x2 | (2 << 2));
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
+        assert!(
+            !cmds.iter()
+                .any(|c| matches!(c, PathCmd::LineTo(x, y) if (*x - 50.0).abs() < 0.01 && (*y - 50.0).abs() < 0.01)),
+            "중심 미경유: {cmds:?}"
+        );
+
+        // bit1 꺼짐: 온 타원(기존 동작 — MoveTo + 4큐빅 + Close).
+        put(&mut d, 0, 0);
+        let cmds = geometry(SC_ELLIPSE, &d, &style, (0.0, 0.0)).unwrap();
+        assert_eq!(cmds.len(), 6);
+        assert!(matches!(cmds.last(), Some(PathCmd::Close)));
     }
 }

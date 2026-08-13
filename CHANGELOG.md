@@ -12,6 +12,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Image and fill fidelity, the eighth step of the PDF parity roadmap
+  ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). `Item::Image` gained its contract
+  change — crop, flip, rotation, brightness, contrast — parsed from the hwp5 picture record
+  and the hwpx `hp:pic` attributes and honored by the png (Transform + pre-crop), pdf (matrix
+  + clip) and svg (transform + clipPath) backends; the pdf JPEG fast path and the svg
+  zero-copy embed are kept when no pixel effect applies (GG-15). Picture effects (spec tables
+  108 to 116) are parsed and surfaced as the typed `picture_effects_unsupported` render
+  warning rather than rendered. Cell, paragraph and character backgrounds now honor hatch and
+  gradient fills via the new `Fill::Hatch` (png segments, svg `<pattern>`, pdf flattened
+  lines) and the existing gradient support (GG-7). Ellipses converted to arcs render as
+  arcs/pies/chords through the axis-vector `ellipse_arc_path` (GG-23).
+
 - Advance-affecting fidelity batch plus the single re-baseline, the seventh step of the PDF
   parity roadmap ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Inline control
   characters now carry width: HYPHEN shapes a real `-`, NB_SPACE takes the space advance

@@ -963,6 +963,13 @@ fn attach_picture(
         vert_offset: 0,
         horz_offset: 0,
         description: Some(description.to_string()),
+        crop: None,
+        flip: 0,
+        rotation: None,
+        brightness: 0,
+        contrast: 0,
+        effect_flags: 0,
+        effects_raw: Vec::new(),
         bin_ref: hwp_model::BinRef::ItemRef(name),
         extras: Vec::new(),
     };

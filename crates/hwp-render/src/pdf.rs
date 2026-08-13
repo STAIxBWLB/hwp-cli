@@ -141,8 +141,18 @@ pub(crate) fn render_pdf_with_metadata(
                     w: iw,
                     h: ih,
                     data,
-                } => match decode_image(data) {
+                    crop,
+                    flip,
+                    rotation_deg,
+                    brightness,
+                    contrast,
+                } => match decode_image(data, *brightness, *contrast) {
                     Some(payload) => {
+                        let (pw, ph) = match &payload {
+                            ImagePayload::Jpeg { w, h, .. } | ImagePayload::Raw { w, h, .. } => {
+                                (*w, *h)
+                            }
+                        };
                         let id = alloc(&mut counter);
                         let smask_id = matches!(
                             &payload,
@@ -154,7 +164,40 @@ pub(crate) fn render_pdf_with_metadata(
                         .then(|| alloc(&mut counter));
                         let name = format!("Im{}", images.len());
                         content.save_state();
-                        content.transform([*iw, 0.0, 0.0, *ih, *x, h - (*y + *ih)]);
+                        // 자르기: crop 영역이 박스를 채우도록 매핑을 키우고 박스로 클립.
+                        let (mut sx0, mut sy0, mut ssw, mut ssh) = (0.0, 0.0, 1.0, 1.0);
+                        if let Some(f) = crop
+                            .and_then(|c| crate::display::crop_fractions(c, pw as u32, ph as u32))
+                        {
+                            let [fl, ft, fr, fb] = f;
+                            if fl > 0.0 || ft > 0.0 || fr < 1.0 || fb < 1.0 {
+                                content.rect(*x, h - (*y + *ih), *iw, *ih);
+                                content.clip_nonzero();
+                                content.end_path();
+                                (sx0, sy0, ssw, ssh) = (fl, ft, fr - fl, fb - ft);
+                            }
+                        }
+                        // y-아래 page 공간에서 fit+뒤집기+회전을 합성한 뒤 PDF 축으로 변환:
+                        // M_pdf = C(page y-flip) · M_down · F(src v-flip). PDF 이미지
+                        // 소스는 unit square(v=1이 첫 행)다.
+                        let fit = [
+                            *iw / ssw,
+                            0.0,
+                            0.0,
+                            *ih / ssh,
+                            *x - sx0 * (*iw / ssw),
+                            *y - sy0 * (*ih / ssh),
+                        ];
+                        let fr = crate::display::flip_rotate_matrix(
+                            *x + *iw / 2.0,
+                            *y + *ih / 2.0,
+                            *flip,
+                            *rotation_deg,
+                        );
+                        let m = crate::display::mat_mul(fr, fit);
+                        let m = crate::display::mat_mul(m, [1.0, 0.0, 0.0, -1.0, 0.0, 1.0]);
+                        let m = [m[0], -m[1], m[2], -m[3], m[4], h - m[5]];
+                        content.transform(m);
                         content.x_object(Name(name.as_bytes()));
                         content.restore_state();
                         images.push(ImagePlan {
@@ -258,6 +301,33 @@ pub(crate) fn render_pdf_with_metadata(
                         pdf_gradient_bands(&mut content, grad, commands, h);
                         content.restore_state();
                         // 테두리(선)는 별도로 다시 그린다.
+                        if let Some(s) = stroke {
+                            apply_stroke(&mut content, s);
+                            pdf_emit_path(&mut content, commands, h);
+                            content.stroke();
+                        }
+                    } else if let Some(Fill::Hatch { fg, bg, style }) = fill {
+                        // 무늬 채움: 경로 클립 + 배경 + 무늬 선분(/Pattern 대신 평탄 선).
+                        content.save_state();
+                        pdf_emit_path(&mut content, commands, h);
+                        content.clip_nonzero();
+                        content.end_path();
+                        let (x0, y0, x1, y1) = path_bbox(commands);
+                        if *bg != 0xFFFF_FFFF {
+                            let (r, g, b) = colorref_rgb(*bg);
+                            content.set_fill_rgb(r, g, b);
+                            content.rect(x0, h - y1, x1 - x0, y1 - y0);
+                            content.fill_nonzero();
+                        }
+                        let (r, g, b) = colorref_rgb(*fg);
+                        content.set_stroke_rgb(r, g, b);
+                        content.set_line_width(crate::display::HATCH_LINE_WIDTH);
+                        for (a, b) in crate::display::hatch_segments(*style, x0, y0, x1, y1) {
+                            content.move_to(a.0, h - a.1);
+                            content.line_to(b.0, h - b.1);
+                        }
+                        content.stroke();
+                        content.restore_state();
                         if let Some(s) = stroke {
                             apply_stroke(&mut content, s);
                             pdf_emit_path(&mut content, commands, h);
@@ -1040,9 +1110,12 @@ enum ImagePayload {
 }
 
 /// 인코딩 이미지 바이트를 PDF 임베드용 페이로드로 디코드한다.
-fn decode_image(data: &Arc<Vec<u8>>) -> Option<ImagePayload> {
+/// 밝기/명암이 0이 아니면 DCTDecode 빠른 경로를 건너뛰고 디코드 후 픽셀 맵을 적용한다.
+fn decode_image(data: &Arc<Vec<u8>>, brightness: i8, contrast: i8) -> Option<ImagePayload> {
     // JPEG 빠른 경로: 회색/RGB는 원본을 DCTDecode로 그대로. (CMYK·파싱 실패는 디코드 경로로)
-    if data.len() >= 2
+    if brightness == 0
+        && contrast == 0
+        && data.len() >= 2
         && data[0] == 0xFF
         && data[1] == 0xD8
         && let Some((w, h, comps)) = jpeg_info(data)
@@ -1059,7 +1132,14 @@ fn decode_image(data: &Arc<Vec<u8>>) -> Option<ImagePayload> {
     let dynamic = image::load_from_memory(data).ok()?;
     let rgba = dynamic.to_rgba8();
     let (w, h) = rgba.dimensions();
-    let rgb: Vec<u8> = rgba.pixels().flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let map = |v: u8| crate::display::apply_brightness_contrast(v, brightness, contrast);
+    let rgb: Vec<u8> = if brightness == 0 && contrast == 0 {
+        rgba.pixels().flat_map(|p| [p[0], p[1], p[2]]).collect()
+    } else {
+        rgba.pixels()
+            .flat_map(|p| [map(p[0]), map(p[1]), map(p[2])])
+            .collect()
+    };
     let alpha: Option<Vec<u8>> = dynamic
         .color()
         .has_alpha()

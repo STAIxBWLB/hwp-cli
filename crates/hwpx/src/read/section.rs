@@ -998,12 +998,21 @@ fn default_picture() -> hwp_model::Picture {
         vert_offset: 0,
         horz_offset: 0,
         description: None,
+        crop: None,
+        flip: 0,
+        rotation: None,
+        brightness: 0,
+        contrast: 0,
+        effect_flags: 0,
+        effects_raw: Vec::new(),
         bin_ref: hwp_model::BinRef::ItemRef(String::new()),
         extras: Vec::new(),
     }
 }
 
-/// `<hp:pic>` — 이미지 개체. 크기(hp:sz)/배치(hp:pos)/참조(hc:img)만 의미 파싱.
+/// `<hp:pic>` — 이미지 개체. 크기(hp:sz)/배치(hp:pos)/참조(hc:img)와
+/// 변환(hp:flip/hp:rotationInfo/hp:imgClip)·밝기/명암(hc:img)을 의미 파싱한다.
+/// hp:imgRect(표시 사각형)는 hp:sz와 중복이라 읽지 않는다.
 fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
     let mut pic = default_picture();
     let mut depth = 1u32;
@@ -1028,6 +1037,26 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
                         if let Some(item) = attr(e, "binaryItemIDRef") {
                             pic.bin_ref = hwp_model::BinRef::ItemRef(item);
                         }
+                        pic.brightness = attr_i32(e, "bright").unwrap_or(0).clamp(-128, 127) as i8;
+                        pic.contrast = attr_i32(e, "contrast").unwrap_or(0).clamp(-128, 127) as i8;
+                    }
+                    b"flip" => {
+                        let h = attr(e, "horizontal").as_deref() == Some("1");
+                        let v = attr(e, "vertical").as_deref() == Some("1");
+                        pic.flip = u8::from(h) | (u8::from(v) << 1);
+                    }
+                    b"rotationInfo" => {
+                        let angle = attr_i32(e, "angle").unwrap_or(0);
+                        pic.rotation = (angle != 0).then_some(angle as f32);
+                    }
+                    // 자르기 (좌/상/우/하, 원본 이미지 HWPUNIT 좌표).
+                    b"imgClip" => {
+                        pic.crop = Some([
+                            attr_i32(e, "left").unwrap_or(0) as f32,
+                            attr_i32(e, "top").unwrap_or(0) as f32,
+                            attr_i32(e, "right").unwrap_or(0) as f32,
+                            attr_i32(e, "bottom").unwrap_or(0) as f32,
+                        ]);
                     }
                     b"shapeComment" if matches!(event, Event::Start(_)) => {
                         let value = read_element_text(reader, b"shapeComment")?;
@@ -1047,6 +1076,11 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
             Event::Eof => break,
             _ => {}
         }
+    }
+    // writer가 crop=None일 때 방출하는 상수 (0,0,w,h)는 자르기 없음으로 정규화한다
+    // (이전 reader가 imgClip을 무시하던 동작과 동일 — 의미 왕복 유지).
+    if pic.crop == Some([0.0, 0.0, pic.width.0 as f32, pic.height.0 as f32]) {
+        pic.crop = None;
     }
     Ok(pic)
 }
@@ -1604,6 +1638,40 @@ mod page_ctrl_tests {
                 r##"<hp:gradation type="LINEAR"><hp:color value="#FF0000"/></hp:gradation>"##
             )
             .is_none()
+        );
+    }
+
+    /// GG-15: hp:pic의 flip/rotationInfo/imgClip/hc:img@bright/contrast를 IR로 읽는다.
+    #[test]
+    fn 그림_변환_보정_속성_읽기() {
+        let xml = concat!(
+            r##"<?xml version="1.0"?><hs:sec><hp:p paraPrIDRef="0" styleIDRef="0">"##,
+            r##"<hp:run charPrIDRef="0"><hp:pic id="1" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="1" reverse="0">"##,
+            r##"<hp:sz width="4000" height="3000" widthRelTo="ABSOLUTE" heightRelTo="ABSOLUTE" protect="0"/>"##,
+            r##"<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>"##,
+            r##"<hp:flip horizontal="1" vertical="0"/>"##,
+            r##"<hp:rotationInfo angle="30" centerX="2000" centerY="1500" rotateimage="1"/>"##,
+            r##"<hc:img binaryItemIDRef="image1" bright="30" contrast="-20" effect="REAL_PIC" alpha="0"/>"##,
+            r##"<hp:imgClip left="100" right="3900" top="200" bottom="2800"/>"##,
+            r##"</hp:pic></hp:run></hp:p></hs:sec>"##,
+        );
+        let (section, _) = parse_section(xml).unwrap();
+        let pic = section.paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .expect("그림 개체");
+        assert_eq!(pic.flip, 1, "가로 뒤집기");
+        assert_eq!(pic.rotation, Some(30.0));
+        assert_eq!(pic.crop, Some([100.0, 200.0, 3900.0, 2800.0]));
+        assert_eq!(pic.brightness, 30);
+        assert_eq!(pic.contrast, -20);
+        assert_eq!(
+            pic.bin_ref,
+            hwp_model::BinRef::ItemRef("image1".to_string())
         );
     }
 }

@@ -76,6 +76,9 @@ pub enum RenderIssueCode {
     ImageDataMissingOmitted,
     ImageDecodePlaceholder,
     ImageDecodeBudgetExceeded,
+    /// 그림 효과(그림자/네온/반사 등, 스펙 표 108-116)는 파싱·보고만 하고
+    /// 렌더하지 않는다 — 효과 플래그가 있는 그림에 발행.
+    PictureEffectsUnsupported,
     InvalidTableCellOmitted,
     TableSplitAcrossPages,
     TableRowTooTallClipped,
@@ -109,6 +112,7 @@ impl RenderIssueCode {
             Self::ImageDataMissingOmitted => "image_data_missing_omitted",
             Self::ImageDecodePlaceholder => "image_decode_placeholder",
             Self::ImageDecodeBudgetExceeded => "image_decode_budget_exceeded",
+            Self::PictureEffectsUnsupported => "picture_effects_unsupported",
             Self::InvalidTableCellOmitted => "invalid_table_cell_omitted",
             Self::TableSplitAcrossPages => "table_split_across_pages",
             Self::TableRowTooTallClipped => "table_row_too_tall_clipped",
@@ -124,7 +128,9 @@ impl RenderIssueCode {
     pub const fn severity(self) -> RenderIssueSeverity {
         match self {
             Self::FontMatched | Self::TableSplitAcrossPages => RenderIssueSeverity::Info,
-            Self::FontSubstituted | Self::FontSubsetFallback => RenderIssueSeverity::Warning,
+            Self::FontSubstituted | Self::FontSubsetFallback | Self::PictureEffectsUnsupported => {
+                RenderIssueSeverity::Warning
+            }
             Self::ParseBudgetExceeded
             | Self::RenderExecutionFailed
             | Self::PaginationDriftDetected

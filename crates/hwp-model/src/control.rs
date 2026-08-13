@@ -57,6 +57,31 @@ pub struct Picture {
     /// header description BSTR; HWPX stores it as `hp:shapeComment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 자르기 사각형 (좌, 상, 우, 하) — 원본 이미지 좌표(HWPUNIT, 96dpi 규약).
+    /// hwp5 그림 레코드 @44 / hwpx hp:imgClip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<[f32; 4]>,
+    /// 뒤집기 (0=없음, 1=가로, 2=세로, 3=양쪽) — hwpx hp:flip.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub flip: u8,
+    /// 회전 각도(도, y-아래 좌표계 시계 방향 양수). hwp5는 GSO 회전 행렬에서
+    /// 분해하고 hwpx는 hp:rotationInfo@angle에서 읽는다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<f32>,
+    /// 밝기 (-100..100, 0=원본). hwp5 @68 / hwpx hc:img@bright.
+    #[serde(default, skip_serializing_if = "is_zero_i8")]
+    pub brightness: i8,
+    /// 명암 (-100..100, 0=원본). hwp5 @69 / hwpx hc:img@contrast.
+    #[serde(default, skip_serializing_if = "is_zero_i8")]
+    pub contrast: i8,
+    /// 그림 효과 플래그 원본 (hwp5 그림 효과 정보 UINT32 @78). 0=효과 없음.
+    /// 효과(그림자/네온 등, 스펙 표 108-116)는 파싱·보고만 하고 렌더하지 않는다.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub effect_flags: u32,
+    /// 그림 효과 정보 스트림 원본(@78부터 레코드 끝) — 플래그+효과 페이로드.
+    /// 보고/후속 구현 대비 보존 전용.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "hex_bytes")]
+    pub effects_raw: Vec<u8>,
     /// 바이너리 데이터 참조
     pub bin_ref: BinRef,
     pub extras: Vec<OpaqueRecord>,
@@ -393,6 +418,14 @@ fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
 
+fn is_zero_i8(v: &i8) -> bool {
+    *v == 0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -404,6 +437,61 @@ pub struct GradientSpec {
     pub angle_deg: f32,
     /// (위치 0..1, COLORREF). 위치 오름차순.
     pub stops: Vec<(f32, u32)>,
+}
+
+impl GradientSpec {
+    /// hwp5 채우기 정보(표 28)의 그러데이션 블록 파싱: 유형(i16) 기울임(i16)
+    /// 가로중심(i16) 세로중심(i16) 번짐(i16) 색수(i16), num>2면 INT32[num] 위치,
+    /// 이어서 COLORREF[num] 색. 성공 시 (명세, 소비 바이트)를 반환한다.
+    pub fn parse_hwp5(d: &[u8], off: usize) -> Option<(Self, usize)> {
+        let rd_u16 =
+            |o: usize| -> Option<u16> { d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
+        let rd_i32 = |o: usize| -> Option<i32> {
+            d.get(o..o + 4)
+                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let rd_u32 = |o: usize| -> Option<u32> {
+            d.get(o..o + 4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let gtype = rd_u16(off)? as i16;
+        let angle = rd_u16(off + 2)? as i16 as f32;
+        let num = rd_u16(off + 10)? as usize;
+        if !(1..=16).contains(&num) {
+            return None;
+        }
+        let mut cur = off + 12;
+        let positions: Vec<f32> = if num > 2 {
+            let mut v = Vec::with_capacity(num);
+            for i in 0..num {
+                v.push(rd_i32(cur + i * 4)? as f32);
+            }
+            cur += num * 4;
+            let max = v.iter().cloned().fold(1.0_f32, f32::max);
+            v.iter().map(|p| (p / max).clamp(0.0, 1.0)).collect()
+        } else {
+            (0..num)
+                .map(|i| i as f32 / (num.max(2) - 1) as f32)
+                .collect()
+        };
+        let mut stops = Vec::with_capacity(num);
+        for i in 0..num {
+            let c = rd_u32(cur + i * 4)?;
+            stops.push((positions.get(i).copied().unwrap_or(0.0), c));
+        }
+        cur += num * 4;
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // 그러데이션 유형: 기존 렌더러(shape_draw) 해석과 동일하게 1=원형으로 둔다.
+        // (스펙 표 30 텍스트는 2=원형으로 읽히나 기존 동작 변경은 한글 대조 후속.)
+        Some((
+            GradientSpec {
+                radial: gtype == 1,
+                angle_deg: angle,
+                stops,
+            },
+            cur - off,
+        ))
+    }
 }
 
 /// LIST_HEADER 하나가 여는 문단 리스트.

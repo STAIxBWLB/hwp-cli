@@ -2339,3 +2339,127 @@ fn 각주_미주_왕복() {
     assert!(text.contains("각주 내용"), "각주 본문 왕복: {text}");
     assert!(text.contains("미주 내용"), "미주 본문 왕복: {text}");
 }
+
+/// GG-15: 그림 변환/보정 속성(flip/rotation/imgClip/bright/contrast)의 hwpx 왕복.
+#[test]
+fn 그림_변환_보정_속성_hwpx_왕복() {
+    use std::io::Write as _;
+    let dir = std::env::temp_dir().join("hwpx-gg15-pic-fx");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend([0, 0, 0, 13]);
+    png.extend(b"IHDR");
+    png.extend(16u32.to_be_bytes());
+    png.extend(16u32.to_be_bytes());
+    png.extend([0u8; 8]);
+    let fig = dir.join("g.png");
+    std::fs::File::create(&fig)
+        .unwrap()
+        .write_all(&png)
+        .unwrap();
+
+    let mut doc = hwp_convert::from_markdown_with(
+        "이미지.\n\n![alt](g.png)\n",
+        &hwp_convert::MarkdownImportOptions {
+            base_dir: Some(&dir),
+            preset: None,
+            ..Default::default()
+        },
+    );
+    for para in &mut doc.sections[0].paragraphs {
+        for c in &mut para.controls {
+            if let hwp_model::Control::Picture(p) = c {
+                p.flip = 1; // 가로 뒤집기
+                p.rotation = Some(30.0);
+                p.crop = Some([100.0, 200.0, 3900.0, 2800.0]);
+                p.brightness = 30;
+                p.contrast = -20;
+            }
+        }
+    }
+    let out = tmp("gg15_pic_fx.hwpx");
+    let warnings = hwpx::write_document(&doc, &out).unwrap();
+    assert!(!warnings.iter().any(|w| w.contains("DROP")), "{warnings:?}");
+
+    let bytes = std::fs::read(&out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut raw = Vec::new();
+    zip.by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_end(&mut raw)
+        .unwrap();
+    let xml = String::from_utf8(raw).unwrap();
+    assert!(
+        xml.contains(r#"<hp:flip horizontal="1" vertical="0"/>"#),
+        "flip 방출: {xml}"
+    );
+    assert!(
+        xml.contains(r#"rotationInfo angle="30""#),
+        "회전 방출: {xml}"
+    );
+    assert!(
+        xml.contains(r#"<hp:imgClip left="100" right="3900" top="200" bottom="2800"/>"#),
+        "자르기 방출: {xml}"
+    );
+    assert!(xml.contains(r#"bright="30""#), "밝기 방출: {xml}");
+    assert!(xml.contains(r#"contrast="-20""#), "명암 방출: {xml}");
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let pic = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            hwp_model::Control::Picture(p) => Some(p),
+            _ => None,
+        })
+        .expect("그림 개체");
+    assert_eq!(pic.flip, 1);
+    assert_eq!(pic.rotation, Some(30.0));
+    assert_eq!(pic.crop, Some([100.0, 200.0, 3900.0, 2800.0]));
+    assert_eq!(pic.brightness, 30);
+    assert_eq!(pic.contrast, -20);
+}
+
+/// GG-7: borderFill 그러데이션의 hwpx 왕복 (header.xml hc:gradation).
+#[test]
+fn 셀배경_그러데이션_hwpx_왕복() {
+    let mut doc = hwp_convert::from_markdown("그러데이션.\n");
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        fill_type: 0x4,
+        gradient: Some(hwp_model::GradientSpec {
+            radial: false,
+            angle_deg: 90.0,
+            stops: vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)],
+        }),
+        ..hwp_model::BorderFill::default()
+    });
+    let out = tmp("gg7_grad.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+
+    let bytes = std::fs::read(&out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut raw = Vec::new();
+    zip.by_name("Contents/header.xml")
+        .unwrap()
+        .read_to_end(&mut raw)
+        .unwrap();
+    let xml = String::from_utf8(raw).unwrap();
+    assert!(
+        xml.contains(r#"<hc:gradation type="LINEAR" angle="90""#),
+        "그러데이션 방출: {xml}"
+    );
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let g = reread
+        .header
+        .border_fills
+        .iter()
+        .find_map(|bf| bf.gradient.as_ref())
+        .expect("그러데이션 재읽기");
+    assert!(!g.radial);
+    assert_eq!(g.angle_deg, 90.0);
+    assert_eq!(g.stops.len(), 2);
+    assert_eq!(g.stops[0].1, 0x0000_00FF);
+    assert_eq!(g.stops[1].1, 0x00FF_0000);
+}

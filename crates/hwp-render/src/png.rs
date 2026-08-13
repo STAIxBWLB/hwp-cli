@@ -159,13 +159,31 @@ fn render_page(
                 w: iw,
                 h: ih,
                 data,
+                crop,
+                flip,
+                rotation_deg,
+                brightness,
+                contrast,
             } => {
-                match images.decode(data, issues)? {
+                match images.decode(data, *crop, *brightness, *contrast, issues)? {
                     Some(src) => {
-                        let sx = (iw * px_scale) / src.width() as f32;
-                        let sy = (ih * px_scale) / src.height() as f32;
-                        let t = Transform::from_scale(sx, sy)
-                            .post_translate(*x * px_scale, *y * px_scale);
+                        // 소스 px → 대상 영역(device px) 매핑 + 중심 기준 뒤집기/회전.
+                        let m = crate::display::flip_rotate_matrix(
+                            (x + iw / 2.0) * px_scale,
+                            (y + ih / 2.0) * px_scale,
+                            *flip,
+                            *rotation_deg,
+                        );
+                        let fit = [
+                            (iw * px_scale) / src.width() as f32,
+                            0.0,
+                            0.0,
+                            (ih * px_scale) / src.height() as f32,
+                            *x * px_scale,
+                            *y * px_scale,
+                        ];
+                        let m = crate::display::mat_mul(m, fit);
+                        let t = Transform::from_row(m[0], m[2], m[1], m[3], m[4], m[5]);
                         pixmap.draw_pixmap(
                             0,
                             0,
@@ -257,20 +275,49 @@ fn render_page(
                             Fill::Solid(c) => {
                                 let (r, g, b) = colorref_rgb(*c);
                                 paint.set_color_rgba8(r, g, b, 255);
+                                pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
                             }
-                            Fill::Gradient(grad) => match gradient_shader(grad, commands, px_scale)
-                            {
-                                Some(sh) => paint.shader = sh,
-                                None => {
-                                    let (r, g, b) = grad
-                                        .stops
-                                        .first()
-                                        .map_or((0, 0, 0), |&(_, c)| colorref_rgb(c));
-                                    paint.set_color_rgba8(r, g, b, 255);
+                            Fill::Gradient(grad) => {
+                                match gradient_shader(grad, commands, px_scale) {
+                                    Some(sh) => paint.shader = sh,
+                                    None => {
+                                        let (r, g, b) = grad
+                                            .stops
+                                            .first()
+                                            .map_or((0, 0, 0), |&(_, c)| colorref_rgb(c));
+                                        paint.set_color_rgba8(r, g, b, 255);
+                                    }
                                 }
-                            },
+                                pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
+                            }
+                            Fill::Hatch { fg, bg, style } => {
+                                // 배경색(있으면) → 무늬 선분(bbox 클립 근사).
+                                if *bg != 0xFFFF_FFFF {
+                                    let (r, g, b) = colorref_rgb(*bg);
+                                    paint.set_color_rgba8(r, g, b, 255);
+                                    pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
+                                }
+                                let (x0, y0, x1, y1) = path_bbox(commands);
+                                let segs = crate::display::hatch_segments(*style, x0, y0, x1, y1);
+                                if !segs.is_empty() {
+                                    let mut hb = PathBuilder::new();
+                                    for (a, b) in segs {
+                                        hb.move_to(a.0, a.1);
+                                        hb.line_to(b.0, b.1);
+                                    }
+                                    if let Some(hpath) = hb.finish() {
+                                        let (r, g, b) = colorref_rgb(*fg);
+                                        let mut hpaint = Paint::default();
+                                        hpaint.set_color_rgba8(r, g, b, 255);
+                                        let hstroke = Stroke {
+                                            width: crate::display::HATCH_LINE_WIDTH,
+                                            ..Stroke::default()
+                                        };
+                                        pixmap.stroke_path(&hpath, &hpaint, &hstroke, t, None);
+                                    }
+                                }
+                            }
                         }
-                        pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
                     }
                     if let Some(s) = stroke {
                         let (r, g, b) = colorref_rgb(s.color);
@@ -342,19 +389,26 @@ fn gradient_shader(g: &Gradient, cmds: &[PathCmd], px_scale: f32) -> Option<Shad
 }
 
 /// 인코딩된 이미지를 tiny-skia Pixmap으로 디코드한다 (premultiplied RGBA).
+/// 캐시 키는 바이트 digest + 포맷 + 보정/자르기 파라미터 — 같은 이미지라도
+/// 효과가 다륾면 별도 항목으로 디코드한다.
 #[derive(Default)]
 struct ImageDecodeContext {
     identity_keys: HashMap<(usize, usize), (String, String)>,
-    decoded: HashMap<(String, String), Option<Arc<Pixmap>>>,
+    decoded: HashMap<DecodeKey, Option<Arc<Pixmap>>>,
     unique_pixels: u64,
     unique_decoded_bytes: u64,
     references: u64,
 }
 
+type DecodeKey = (String, String, i8, i8, Option<[u32; 4]>);
+
 impl ImageDecodeContext {
     fn decode(
         &mut self,
         data: &Arc<Vec<u8>>,
+        crop: Option<[f32; 4]>,
+        brightness: i8,
+        contrast: i8,
         issues: &mut RenderIssueAccumulator,
     ) -> Result<Option<Arc<Pixmap>>, RenderError> {
         self.references = self.references.saturating_add(1);
@@ -374,6 +428,13 @@ impl ImageDecodeContext {
             self.identity_keys.insert(identity, key.clone());
             key
         };
+        let key: DecodeKey = (
+            key.0,
+            key.1,
+            brightness,
+            contrast,
+            crop.map(|c| c.map(f32::to_bits)),
+        );
         if let Some(cached) = self.decoded.get(&key) {
             return Ok(cached.clone());
         }
@@ -434,6 +495,14 @@ impl ImageDecodeContext {
             }
         };
         let mut rgba = dynamic.into_rgba8().into_raw();
+        // 밝기/명암 보정 — premultiply 전 원본 RGB에 적용.
+        if brightness != 0 || contrast != 0 {
+            for pixel in rgba.chunks_exact_mut(4) {
+                for ch in &mut pixel[..3] {
+                    *ch = crate::display::apply_brightness_contrast(*ch, brightness, contrast);
+                }
+            }
+        }
         for pixel in rgba.chunks_exact_mut(4) {
             let alpha = u16::from(pixel[3]);
             pixel[0] = (u16::from(pixel[0]) * alpha / 255) as u8;
@@ -448,6 +517,34 @@ impl ImageDecodeContext {
         };
         self.unique_pixels = next_pixels;
         self.unique_decoded_bytes = next_bytes;
+        // 자르기: HWPUNIT(96dpi) 사각형을 픽셀 영역으로 환산해 부분 픽스맵을 만든다.
+        let pixmap = match crop.and_then(|c| crate::display::crop_fractions(c, width, height)) {
+            Some([fl, ft, fr, fb]) if fl > 0.0 || ft > 0.0 || fr < 1.0 || fb < 1.0 => {
+                let (cl, ct) = (
+                    (fl * width as f32).round() as u32,
+                    (ft * height as f32).round() as u32,
+                );
+                let (cr, cb) = (
+                    (fr * width as f32).round() as u32,
+                    (fb * height as f32).round() as u32,
+                );
+                let (cw, ch) = (cr.saturating_sub(cl).max(1), cb.saturating_sub(ct).max(1));
+                match Pixmap::new(cw, ch) {
+                    Some(mut out) => {
+                        let src_px = pixmap.pixels();
+                        let dst_px = out.pixels_mut();
+                        for row in 0..ch {
+                            let s = ((ct + row) * width + cl) as usize;
+                            let d = (row * cw) as usize;
+                            dst_px[d..d + cw as usize].copy_from_slice(&src_px[s..s + cw as usize]);
+                        }
+                        out
+                    }
+                    None => pixmap,
+                }
+            }
+            _ => pixmap,
+        };
         let pixmap = Arc::new(pixmap);
         self.decoded.insert(key, Some(pixmap.clone()));
         Ok(Some(pixmap))
@@ -679,7 +776,9 @@ mod tests {
             assert!(bytes.len() < 1024);
             let mut context = ImageDecodeContext::default();
             let mut issues = RenderIssueAccumulator::new();
-            let error = context.decode(&Arc::new(bytes), &mut issues).unwrap_err();
+            let error = context
+                .decode(&Arc::new(bytes), None, 0, 0, &mut issues)
+                .unwrap_err();
             assert!(matches!(
                 error,
                 RenderError::ImageDecodeBudgetExceeded { .. }
@@ -706,7 +805,12 @@ mod tests {
             } else {
                 &duplicate_arc
             };
-            assert!(context.decode(source, &mut issues).unwrap().is_some());
+            assert!(
+                context
+                    .decode(source, None, 0, 0, &mut issues)
+                    .unwrap()
+                    .is_some()
+            );
         }
         assert_eq!(context.references, 20_000);
         assert_eq!(context.decoded.len(), 1);
