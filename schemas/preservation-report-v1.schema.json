@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/preservation-report-v1.schema.json",
+  "title": "hwp-preservation-report-v1",
+  "description": "Typed, content-free preservation ledger emitted by hwp convert --loss-report and the native writers. Reports carry only stable codes, resource classes, dispositions and aggregate counts — never paths, entry names, text or hashes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "events"],
+  "properties": {
+    "contract": { "const": "hwp-preservation-report-v1" },
+    "events": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "resource", "disposition", "count"],
+      "properties": {
+        "code": {
+          "enum": [
+            "binary_asset_removed",
+            "binary_relationship_removed",
+            "control_metadata_unrepresentable",
+            "control_removed",
+            "gso_header_unrepresentable",
+            "gso_shape_unrepresentable",
+            "hwp_container_storage_removed",
+            "hwp_container_stream_removed",
+            "hwp_opaque_stream_changed",
+            "hwpx_opaque_entry_changed",
+            "hwpx_package_entry_removed",
+            "metadata_value_removed",
+            "opaque_control_unrepresentable",
+            "picture_control_removed"
+          ]
+        },
+        "resource": {
+          "enum": [
+            "container_stream",
+            "container_storage",
+            "package_entry",
+            "control",
+            "binary_asset",
+            "relationship",
+            "metadata"
+          ]
+        },
+        "disposition": {
+          "enum": ["removed", "changed_non_target", "unrepresentable"]
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

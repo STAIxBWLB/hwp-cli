@@ -51,6 +51,7 @@ fn main() -> anyhow::Result<()> {
             out_dir,
             to,
             strict,
+            loss_report,
             preserve_layout,
             embed_bin,
             media_dir,
@@ -63,6 +64,7 @@ fn main() -> anyhow::Result<()> {
             out_dir.as_deref(),
             to,
             strict,
+            loss_report.as_deref(),
             preserve_layout,
             embed_bin,
             &commands::convert::MdOpts {

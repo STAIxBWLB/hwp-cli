@@ -33,6 +33,7 @@ pub fn run(
     output: &Path,
     to: Option<ConvertFormat>,
     strict: bool,
+    loss_report: Option<&Path>,
     preserve_layout: bool,
     embed_bin: bool,
     md_opts: &MdOpts,
@@ -43,6 +44,7 @@ pub fn run(
         output,
         to,
         strict,
+        loss_report,
         preserve_layout,
         embed_bin,
         md_opts,
@@ -66,6 +68,7 @@ pub fn run_multi(
     out_dir: Option<&Path>,
     to: Option<ConvertFormat>,
     strict: bool,
+    loss_report: Option<&Path>,
     preserve_layout: bool,
     embed_bin: bool,
     md_opts: &MdOpts,
@@ -111,6 +114,7 @@ pub fn run_multi(
         out_dir,
         to,
         strict,
+        loss_report,
         preserve_layout,
         embed_bin,
         md_opts,
@@ -129,6 +133,7 @@ fn run_multi_inner(
     out_dir: Option<&Path>,
     to: Option<ConvertFormat>,
     strict: bool,
+    loss_report: Option<&Path>,
     preserve_layout: bool,
     embed_bin: bool,
     md_opts: &MdOpts,
@@ -140,6 +145,9 @@ fn run_multi_inner(
                 anyhow::bail!("여러 입력에는 --out-dir이 필요합니다 (-o는 단일 입력 전용)");
             }
             if out.as_os_str() == "-" {
+                if loss_report.is_some() {
+                    anyhow::bail!("출력이 `-`(stdout)이면 --loss-report를 지원하지 않습니다");
+                }
                 let Some(target) = to else {
                     anyhow::bail!("출력이 `-`(stdout)이면 --to가 필요합니다");
                 };
@@ -152,6 +160,7 @@ fn run_multi_inner(
                 out,
                 to,
                 strict,
+                loss_report,
                 preserve_layout,
                 embed_bin,
                 md_opts,
@@ -162,6 +171,11 @@ fn run_multi_inner(
             let Some(target) = to else {
                 anyhow::bail!("여러 입력(--out-dir)에는 --to가 필요합니다");
             };
+            if loss_report.is_some() {
+                anyhow::bail!(
+                    "--loss-report는 단일 입력 변환에서만 지원합니다 (--out-dir와 병용 불가)"
+                );
+            }
             // Pre-check: reject collisions where identical stems from different directories would overwrite one output.
             let mut seen = std::collections::BTreeMap::new();
             for input in inputs {
@@ -194,6 +208,7 @@ fn run_multi_inner(
                     &out,
                     Some(target),
                     strict,
+                    None,
                     preserve_layout,
                     embed_bin,
                     md_opts,
@@ -257,12 +272,17 @@ fn target_extension(target: ConvertFormat) -> &'static str {
 ///
 /// 출력은 검증이 끝날 때까지 destination에 게시하지 않으며, Markdown 이미지 sidecar도
 /// 본문과 같은 복구 journal에 참여한다. 사용자 메시지 출력은 호출자가 담당한다.
+///
+/// `loss_report`가 주어지면 preservation 검사 직후(strict 거부 전)에 typed ledger
+/// (`hwp-preservation-report-v1`)를 무손실이어도 항상 JSON으로 게시한다 — 자동화가
+/// 성공/실패와 무관하게 같은 경로에서 판정 근거를 읽을 수 있게 하기 위함이다.
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     input: &Path,
     output: &Path,
     to: Option<ConvertFormat>,
     strict: bool,
+    loss_report: Option<&Path>,
     preserve_layout: bool,
     embed_bin: bool,
     md_opts: &MdOpts,
@@ -272,6 +292,14 @@ pub fn execute(
         Some(t) => t,
         None => infer_format(output)?,
     };
+    if let Some(report_path) = loss_report
+        && (report_path == input || report_path == output)
+    {
+        anyhow::bail!(
+            "--loss-report 경로가 입력/출력과 같을 수 없습니다: {}",
+            report_path.display()
+        );
+    }
     let doc = load_document(input)?;
     if matches!(target, ConvertFormat::Md) {
         let (media_destination, media_prefix) = markdown_media_paths(output, md_opts.media_dir)?;
@@ -296,10 +324,14 @@ pub fn execute(
             },
             |_, _, _| Ok(()),
         )?;
-        return Ok(ConvertReport {
+        let report = ConvertReport {
             warnings,
             preservation: hwp_model::PreservationReport::new(),
-        });
+        };
+        if let Some(report_path) = loss_report {
+            write_loss_report(report_path, &report.preservation)?;
+        }
+        return Ok(report);
     }
 
     let source_format = crate::format::detect(input)?;
@@ -364,6 +396,20 @@ pub fn execute(
                 report.preservation.extend(
                     crate::commands::preservation::inspect_same_format_container(source, staged)?,
                 );
+            } else {
+                // 크로스 포맷: IR이 원본 컨테이너에서 보존한 패키지/컨테이너 수준
+                // 자산 중 대상 포맷이 표현 못 하는 것을 typed event로 계상한다.
+                let target_format = match target {
+                    ConvertFormat::Hwp => crate::format::FileFormat::Hwp5,
+                    _ => crate::format::FileFormat::Hwpx,
+                };
+                report.preservation.extend(
+                    crate::commands::preservation::inspect_cross_format_container(
+                        &doc,
+                        source_format,
+                        target_format,
+                    ),
+                );
             }
             let output_document = load_document(staged)
                 .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
@@ -374,6 +420,10 @@ pub fn execute(
         Ok(report)
     };
     let verify_staged = |staged: &std::path::Path, report: &hwp_model::WriteReport| {
+        // strict 거부 전에 기록해야 실패한 변환의 판정 근거가 파일로 남는다.
+        if let Some(report_path) = loss_report {
+            write_loss_report(report_path, &report.preservation)?;
+        }
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
             if same_native_format || strict {
                 crate::commands::reject_preservation_loss("convert", &report.preservation)?;
@@ -453,6 +503,38 @@ pub(crate) fn print_warnings(warnings: &[String]) {
     for w in warnings {
         eprintln!("경고: {w}");
     }
+}
+
+/// `--loss-report` 산출물 — 다른 출력과 같은 staged/검증 트랜잭션으로 게시한다
+/// (렌더 `--report`의 write_report와 같은 규율). 보고서는 content-free 계약이라
+/// 입력·출력 경로를 싣지 않는다.
+fn write_loss_report(
+    path: &Path,
+    report: &hwp_model::PreservationReport,
+) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(report)?;
+    crate::commands::output::write_validated(
+        path,
+        None,
+        |staged| {
+            std::fs::write(staged, &bytes)?;
+            Ok(())
+        },
+        |staged, _| {
+            let written = std::fs::read(staged)?;
+            if written != bytes {
+                anyhow::bail!("보존 보고서 검증 중 바이트 불일치: {}", staged.display());
+            }
+            let parsed: serde_json::Value = serde_json::from_slice(&written)
+                .map_err(|error| anyhow::anyhow!("보존 보고서 JSON 검증 실패: {error}"))?;
+            if !parsed.is_object() {
+                anyhow::bail!("보존 보고서가 JSON 객체가 아닙니다");
+            }
+            Ok(())
+        },
+    )?;
+    eprintln!("보존 보고서 저장: {}", path.display());
+    Ok(())
 }
 
 /// `--font-dir`가 비었으면 `HWP_FONT_DIR`(없으면 `fonts/`)로 기본 폰트 디렉터리를 정한다.
@@ -984,6 +1066,7 @@ mod tests {
             &destination,
             Some(ConvertFormat::Hwpx),
             false,
+            None,
             false,
             false,
             &MdOpts::default(),
@@ -1029,6 +1112,179 @@ mod tests {
             .unwrap();
         writer.write_all(b"owner-authored opaque payload").unwrap();
         writer.finish().unwrap();
+    }
+
+    /// 크로스 포맷(hwpx→hwp) 변환에서 패키지 수준 잉여 엔트리(DocOptions 등)는
+    /// hwp 컨테이너에 대응 슬롯이 없어 사라진다. strict는 fail-closed로 게시를
+    /// 거부하고 기존 destination을 보존해야 하며, --loss-report는 거부 전에도
+    /// typed ledger를 남겨야 한다(epic #90 PR 3).
+    #[test]
+    fn strict_cross_format_hwpx_to_hwp_fails_closed_with_loss_report() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-convert-cross-strict-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let generated = dir.join("generated.hwpx");
+        let source = dir.join("source.hwpx");
+        let destination = dir.join("result.hwp");
+        let report_path = dir.join("loss.json");
+        hwpx::write_document(
+            &hwp_convert::from_markdown("owner-authored fixture"),
+            &generated,
+        )
+        .unwrap();
+        append_synthetic_package_entry(&generated, &source);
+        std::fs::write(&destination, b"ORIGINAL").unwrap();
+
+        let result = execute(
+            &source,
+            &destination,
+            Some(ConvertFormat::Hwp),
+            true,
+            Some(&report_path),
+            false,
+            false,
+            &MdOpts::default(),
+            Vec::new(),
+        );
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("hwpx_package_entry_removed"),
+            "strict 거부 사유에 typed code가 있어야 한다: {error}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(value["contract"], "hwp-preservation-report-v1");
+        let events = value["events"].as_array().unwrap();
+        assert!(
+            events.iter().any(|event| event["code"] == "hwpx_package_entry_removed"
+                && event["resource"] == "package_entry"
+                && event["disposition"] == "removed"
+                && event["count"].as_u64().unwrap() >= 1),
+            "loss report events: {events:?}"
+        );
+        assert_loss_report_schema_valid(&value);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 비-strict 크로스 포맷 변환은 손실을 ledger에 남기고 게시한다.
+    /// --loss-report는 실행 결과와 같은 이벤트를 스키마 적합 JSON으로 기록한다.
+    #[test]
+    fn non_strict_cross_format_hwpx_to_hwp_publishes_with_loss_report() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-convert-cross-nonstrict-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let generated = dir.join("generated.hwpx");
+        let source = dir.join("source.hwpx");
+        let destination = dir.join("result.hwp");
+        let report_path = dir.join("loss.json");
+        hwpx::write_document(
+            &hwp_convert::from_markdown("owner-authored fixture"),
+            &generated,
+        )
+        .unwrap();
+        append_synthetic_package_entry(&generated, &source);
+
+        let report = execute(
+            &source,
+            &destination,
+            Some(ConvertFormat::Hwp),
+            false,
+            Some(&report_path),
+            false,
+            false,
+            &MdOpts::default(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .preservation
+                .events
+                .iter()
+                .any(|event| event.code == hwp_model::PreservationCode::HwpxPackageEntryRemoved),
+            "preservation events: {:?}",
+            report.preservation.events
+        );
+        assert_ne!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(value["contract"], "hwp-preservation-report-v1");
+        assert_eq!(
+            value["events"].as_array().unwrap().len(),
+            report.preservation.events.len(),
+            "loss report는 실행 결과 ledger와 같은 이벤트 수를 가져야 한다"
+        );
+        assert_loss_report_schema_valid(&value);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// --loss-report가 무손실 변환에서도 유효한(빈 events) 보고서를 쓰는지 확인.
+    #[test]
+    fn loss_report_is_written_even_when_conversion_is_lossless() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-convert-lossless-report-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let generated = dir.join("generated.hwpx");
+        let source = dir.join("source.hwpx");
+        let destination = dir.join("result.hwpx");
+        let report_path = dir.join("loss.json");
+        hwpx::write_document(
+            &hwp_convert::from_markdown("owner-authored fixture"),
+            &generated,
+        )
+        .unwrap();
+        append_synthetic_package_entry(&generated, &source);
+
+        let report = execute(
+            &source,
+            &destination,
+            Some(ConvertFormat::Hwpx),
+            false,
+            Some(&report_path),
+            false,
+            false,
+            &MdOpts::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(report.preservation.is_lossless());
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(value["contract"], "hwp-preservation-report-v1");
+        assert_eq!(value["events"], serde_json::json!([]));
+        assert_loss_report_schema_valid(&value);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 생성된 loss report가 공개 스키마(`schemas/preservation-report-v1`)에
+    /// 부합하는지 검증한다 — 렌더 보고서 테스트(tests/cli.rs)와 같은 게이트.
+    fn assert_loss_report_schema_valid(value: &serde_json::Value) {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../schemas/preservation-report-v1.schema.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap();
+        assert!(
+            validator.is_valid(value),
+            "schema rejected loss report: {value}"
+        );
     }
 
     #[test]

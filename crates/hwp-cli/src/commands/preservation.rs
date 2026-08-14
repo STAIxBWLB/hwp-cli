@@ -105,6 +105,55 @@ pub(crate) fn inspect_conversion_semantics(
     report
 }
 
+/// Account for package/container-level assets that a cross-format conversion
+/// cannot carry, using only what the IR retained from the source container.
+///
+/// - hwpx → hwp: `Document::hwpx_extra_entries` (DocOptions, original
+///   META-INF/* overrides, extra previews, scripts, ...) have no counterpart in
+///   an HWP container and are dropped by the hwp5 writer. The hwpx reader
+///   already excludes entries the writer regenerates byte-identically
+///   (`is_writer_default_entry`), so every remaining entry is a genuine loss.
+/// - hwp → hwpx: the `hwp5_xml_template`/`hwp5_doc_history` pass-through slots
+///   have no HWPX package representation, so their streams (and owning
+///   storages) disappear. Opaque CFB streams the IR never captured
+///   (MemoExtended, Scripts, ...) stay invisible here by design — this phase
+///   deliberately does not diff the raw container.
+///
+/// Same-format pairs return an empty report; the package-level same-format
+/// inspector owns that case.
+pub(crate) fn inspect_cross_format_container(
+    source: &Document,
+    source_format: FileFormat,
+    target_format: FileFormat,
+) -> PreservationReport {
+    let mut report = PreservationReport::new();
+    match (source_format, target_format) {
+        (FileFormat::Hwpx, FileFormat::Hwp5) => record_removed(
+            &mut report,
+            PreservationCode::HwpxPackageEntryRemoved,
+            PreservationResourceKind::PackageEntry,
+            source.hwpx_extra_entries.len(),
+        ),
+        (FileFormat::Hwp5, FileFormat::Hwpx) => {
+            record_removed(
+                &mut report,
+                PreservationCode::HwpContainerStreamRemoved,
+                PreservationResourceKind::ContainerStream,
+                source.hwp5_xml_template.len() + source.hwp5_doc_history.len(),
+            );
+            record_removed(
+                &mut report,
+                PreservationCode::HwpContainerStorageRemoved,
+                PreservationResourceKind::ContainerStorage,
+                usize::from(!source.hwp5_xml_template.is_empty())
+                    + usize::from(!source.hwp5_doc_history.is_empty()),
+            );
+        }
+        _ => {}
+    }
+    report
+}
+
 pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow::Result<()> {
     if report.is_lossless() {
         return Ok(());
@@ -517,5 +566,83 @@ mod tests {
         );
         let error = reject_loss("convert", &report).unwrap_err().to_string();
         assert!(error.contains("control_removed: 3 item(s)"));
+    }
+
+    #[test]
+    fn cross_format_hwpx_extra_entries_have_no_hwp_representation() {
+        let source = Document {
+            hwpx_extra_entries: vec![
+                ("DocOptions/Layout.xml".to_string(), b"private layout".to_vec()),
+                ("Scripts/custom.js".to_string(), b"private script".to_vec()),
+            ],
+            ..Document::default()
+        };
+
+        let report =
+            inspect_cross_format_container(&source, FileFormat::Hwpx, FileFormat::Hwp5);
+        assert_eq!(report.events.len(), 1);
+        assert_eq!(
+            report.events[0].code,
+            PreservationCode::HwpxPackageEntryRemoved
+        );
+        assert_eq!(
+            report.events[0].resource,
+            PreservationResourceKind::PackageEntry
+        );
+        assert_eq!(
+            report.events[0].disposition,
+            PreservationDisposition::Removed
+        );
+        assert_eq!(report.events[0].count, 2);
+        // Entry 이름(구조 정보)도 공개 보고서에는 싣지 않는다 — 코드·건수만.
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("DocOptions"));
+        assert!(!serialized.contains("private"));
+
+        // 같은 포맷 쌍은 패키지 수준 same-format 검사기가 담당한다.
+        assert!(
+            inspect_cross_format_container(&source, FileFormat::Hwpx, FileFormat::Hwpx)
+                .is_lossless()
+        );
+    }
+
+    #[test]
+    fn cross_format_hwp5_opaque_slots_have_no_hwpx_representation() {
+        let source = Document {
+            hwp5_xml_template: vec![
+                ("/XMLTemplate/Schema.xml".to_string(), b"x".to_vec()),
+                ("/XMLTemplate/Instance.xml".to_string(), b"y".to_vec()),
+            ],
+            hwp5_doc_history: vec![("/DocHistory/LastDoc.xml".to_string(), b"z".to_vec())],
+            ..Document::default()
+        };
+
+        let report =
+            inspect_cross_format_container(&source, FileFormat::Hwp5, FileFormat::Hwpx);
+        assert_eq!(report.events.len(), 2);
+        assert!(report.events.iter().any(|event| {
+            event.code == PreservationCode::HwpContainerStreamRemoved
+                && event.resource == PreservationResourceKind::ContainerStream
+                && event.count == 3
+        }));
+        assert!(report.events.iter().any(|event| {
+            event.code == PreservationCode::HwpContainerStorageRemoved
+                && event.resource == PreservationResourceKind::ContainerStorage
+                && event.count == 2
+        }));
+
+        assert!(
+            inspect_cross_format_container(&source, FileFormat::Hwp5, FileFormat::Hwp5)
+                .is_lossless()
+        );
+        // 슬롯이 비어 있으면 이벤트도 없다.
+        assert!(
+            inspect_cross_format_container(
+                &Document::default(),
+                FileFormat::Hwp5,
+                FileFormat::Hwpx,
+            )
+            .is_lossless()
+        );
     }
 }

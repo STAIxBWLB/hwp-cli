@@ -1418,6 +1418,7 @@ fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         &request.output,
         request.to,
         request.strict,
+        None,
         false,
         request.embed_bin,
         &crate::commands::convert::MdOpts {

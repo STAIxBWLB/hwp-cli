@@ -170,6 +170,11 @@ pub const KO: &[(&str, &str, &str)] = &[
     ),
     (
         "convert",
+        "loss_report",
+        "typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 (단일 입력 전용)",
+    ),
+    (
+        "convert",
         "preserve_layout",
         "줄 배치 캐시 보존 (무수정 왕복 전용 — 한글은 내용과 어긋난 줄 배치를 변조로 판정하므로 기본은 제거)",
     ),

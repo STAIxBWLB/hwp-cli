@@ -12,6 +12,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Cross-format loss detection and an explicit typed loss report for `hwp convert`
+  ([#90](https://github.com/STAIxBWLB/hwp-cli/issues/90)). Cross-format native conversion
+  now inventories package/container-level assets the IR cannot carry: HWPX extra package
+  entries (DocOptions, original META-INF overrides, scripts) lost on the way to HWP, and
+  the hwp5 XMLTemplate/DocHistory pass-through slots lost on the way to HWPX. These are
+  emitted as content-free typed events, so `--strict` cross-format conversion now fails
+  closed on them, and the new `--loss-report <PATH>` flag publishes the
+  `hwp-preservation-report-v1` ledger as JSON (schema-validated, empty-but-valid on a
+  lossless run) even when strict mode rejects the output.
+
 - Captions, endnotes and odd/even furniture, the ninth and final step of the PDF parity
   roadmap ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Table, picture and shape
   captions are parsed end to end (GB-13): a new `Caption` IR (side, direction, gap, width,
