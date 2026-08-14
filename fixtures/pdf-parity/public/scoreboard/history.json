@@ -1,8 +1,8 @@
 {
   "contract": "hwp-pdf-parity-history-v1",
   "profile": {
-    "source_sha256": "8c4e62fb8166828eaddd2d0d304732acd88484ba8526692545b316985e0c0aba",
-    "oracle_sha256": "8fe8a4a4f3f6640248a1efde26421c7134374b4203363acca1a5967b2c0602e7",
+    "source_sha256": "4ff3c231d835f37ceaa08ccd41f7db66d74d65a5a03c0791f6f683cc9fde0d39",
+    "oracle_sha256": "b663df719837fd3b07d458a7e5aea441d8bcd0895ac90983fe67714067070f9f",
     "poppler_version": "pdfinfo version 26.07.0",
     "dpi": 150,
     "font_sha256": [
@@ -74,9 +74,9 @@
       "text_order_equal": true,
       "font_substitutions": 0,
       "max_bad_pixel_pct": 0.3,
-      "bad_pixel_pct": 0.017935043200850487,
-      "mae": 2.877977132797241,
-      "candidate_pdf_sha256": "11eeb2606d1444828e5e5b8c6976c586cdebe89ab15139dd6ad5d9003e06f2f1"
+      "bad_pixel_pct": 0.01794285885989666,
+      "mae": 2.8790488243103027,
+      "candidate_pdf_sha256": "a75323f5493bcf01b43dd38ec34d36f8cf4647546a3cb663f48a667e8e4895ae"
     }
   ],
   "monotonic_non_increasing": true

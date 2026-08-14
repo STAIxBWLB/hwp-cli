@@ -18,8 +18,8 @@
 use std::collections::HashSet;
 
 use hwp_model::{
-    BorderFill, Caption, CaptionSide, Control, Document, HwpUnit, PageDef, Paragraph, Section,
-    Table,
+    BorderFill, Caption, CaptionSide, CharShapeId, Control, Document, HwpChar, HwpUnit, PageDef,
+    Paragraph, Section, Table,
 };
 
 use crate::display::{DisplayList, Fill, Gradient, Item, PageList, PathCmd, Stroke};
@@ -551,6 +551,7 @@ fn prepend_col_dividers(
 struct PageNumberState {
     logical: u32,
     placement: Option<crate::page_number::PageNumberPlacement>,
+    char_shape: Option<CharShapeId>,
     hidden: bool,
 }
 
@@ -559,6 +560,7 @@ impl PageNumberState {
         Self {
             logical: u32::from(start.max(1)),
             placement: None,
+            char_shape: None,
             hidden: false,
         }
     }
@@ -567,13 +569,16 @@ impl PageNumberState {
     /// paragraph. `pgnp` remains active until another placement replaces it;
     /// `pghd` is reset after the current page is finalized.
     fn apply_controls(&mut self, para: &Paragraph, warnings: &mut RenderIssueAccumulator) {
-        for control in &para.controls {
+        for (control_index, control) in para.controls.iter().enumerate() {
             let Control::Generic(control) = control else {
                 continue;
             };
             match &control.ctrl_id {
                 b"pgnp" => match crate::page_number::parse_pgnp(&control.data) {
-                    Some(placement) => self.placement = Some(placement),
+                    Some(placement) => {
+                        self.placement = Some(placement);
+                        self.char_shape = control_char_shape(para, control_index);
+                    }
                     None => warnings.push_once(RenderIssueCode::PageControlPayloadOmitted, b"pgnp"),
                 },
                 b"pghd" => {
@@ -615,22 +620,39 @@ impl PageNumberState {
             self.logical,
             warnings,
         );
-        if self.visible_number().is_some()
-            && let Some(placement) = self.placement
-        {
-            render_positioned_page_number(
-                doc,
-                store,
-                page,
-                furniture,
-                self.logical,
-                placement,
-                warnings,
-            );
+        if self.visible_number().is_some() {
+            render_positioned_page_number(doc, store, page, furniture, self, warnings);
         }
         self.logical = self.logical.saturating_add(1);
         self.hidden = false;
     }
+}
+
+/// Returns the character shape active at an extended control's WCHAR position.
+/// HWPX groups controls inside a run, while HWP5 links the matching CTRL_HEADER
+/// through `ctrl_index`; both representations therefore resolve through the
+/// paragraph's character-shape run table.
+fn control_char_shape(para: &Paragraph, control_index: usize) -> Option<CharShapeId> {
+    let mut pos = 0u32;
+    for ch in &para.chars {
+        if matches!(
+            ch,
+            HwpChar::ExtCtrl {
+                ctrl_index: Some(index),
+                ..
+            } if *index as usize == control_index
+        ) {
+            return para
+                .char_shape_runs
+                .iter()
+                .rev()
+                .find(|(start, _)| *start <= pos)
+                .map(|(_, id)| *id)
+                .or_else(|| para.char_shape_runs.first().map(|(_, id)| *id));
+        }
+        pos = pos.saturating_add(ch.wchar_width());
+    }
+    para.char_shape_runs.first().map(|(_, id)| *id)
 }
 
 fn page_control_is_rendered(control: &Control) -> bool {
@@ -669,10 +691,12 @@ fn render_positioned_page_number(
     store: &mut FontStore,
     page: &mut PageList,
     furniture: &Furniture<'_>,
-    logical: u32,
-    placement: crate::page_number::PageNumberPlacement,
+    number: &PageNumberState,
     warnings: &mut RenderIssueAccumulator,
 ) {
+    let Some(placement) = number.placement else {
+        return;
+    };
     if placement.position == 0 {
         return;
     }
@@ -683,15 +707,19 @@ fn render_positioned_page_number(
         );
         return;
     }
-    let text = crate::page_number::format_placement(logical, placement, warnings);
-    let Some(run) = crate::shape::shape_plain(store, doc, &text, 10.0, 0, false) else {
+    let text = crate::page_number::format_placement(number.logical, placement, warnings);
+    let run = number
+        .char_shape
+        .and_then(|id| crate::shape::shape_plain_with_char_shape(store, doc, &text, id))
+        .or_else(|| crate::shape::shape_plain(store, doc, &text, 10.0, 0, false));
+    let Some(run) = run else {
         warnings.push_once(RenderIssueCode::PageNumberShapingOmitted, b"positioned");
         return;
     };
     let top = matches!(placement.position, 1..=3 | 7 | 9);
-    let x = if page_number_alignment(placement.position, logical) < 0 {
+    let x = if page_number_alignment(placement.position, number.logical) < 0 {
         furniture.body_left
-    } else if page_number_alignment(placement.position, logical) > 0 {
+    } else if page_number_alignment(placement.position, number.logical) > 0 {
         furniture.body_left + furniture.body_width - run.width_pt
     } else {
         furniture.body_left + (furniture.body_width - run.width_pt) * 0.5
@@ -4610,7 +4638,8 @@ fn place_wrapped(
 
 #[cfg(test)]
 mod page_number_layout_tests {
-    use super::page_number_alignment;
+    use super::{control_char_shape, page_number_alignment};
+    use hwp_model::{CharShapeId, HwpChar, Paragraph};
 
     #[test]
     fn 고정_위치_정렬() {
@@ -4632,6 +4661,25 @@ mod page_number_layout_tests {
             assert_eq!(page_number_alignment(inside, 1), -1);
             assert_eq!(page_number_alignment(inside, 2), 1);
         }
+    }
+
+    #[test]
+    fn 쪽번호_컨트롤은_자신의_문자모양을_사용() {
+        let para = Paragraph {
+            chars: vec![
+                HwpChar::Text('앞'),
+                HwpChar::ExtCtrl {
+                    code: 3,
+                    ctrl_id: *b"pgnp",
+                    payload: Vec::new(),
+                    ctrl_index: Some(1),
+                },
+            ],
+            char_shape_runs: vec![(0, CharShapeId(2)), (1, CharShapeId(7))],
+            ..Paragraph::default()
+        };
+
+        assert_eq!(control_char_shape(&para, 1), Some(CharShapeId(7)));
     }
 }
 

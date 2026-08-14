@@ -847,6 +847,34 @@ pub fn shape_plain(
     shape_with_font(&selection.font, &cs, lang, text, 0, selection.faux_bold)
 }
 
+/// Shapes synthetic text with a source document character shape. Positioned
+/// page numbers use this path so their font, weight, size, and decorations
+/// match the run containing the page-number control.
+pub(crate) fn shape_plain_with_char_shape(
+    store: &mut FontStore,
+    doc: &Document,
+    text: &str,
+    char_shape_id: hwp_model::CharShapeId,
+) -> Option<ShapedRun> {
+    let shape = doc.header.char_shapes.get(char_shape_id.0 as usize)?;
+    let lang = if text.chars().any(|c| ('가'..='힣').contains(&c)) {
+        0
+    } else {
+        1
+    };
+    let face_id = shape.face_ids.get(lang).copied().unwrap_or(0);
+    let face_name = doc
+        .header
+        .fonts
+        .get(lang)
+        .and_then(|faces| faces.get(face_id as usize))
+        .map(|face| face.name.as_str())
+        .unwrap_or("");
+    let bold = shape.is_bold() || is_heavy_name(face_name);
+    let selection = store.resolve_selection(doc, lang, face_id, bold)?;
+    shape_with_font(&selection.font, shape, lang, text, 0, selection.faux_bold)
+}
+
 /// 각주/미주 본문 마커(윗첨자 번호). 주변 글자모양을 따라 ~65% 크기로 줄이고
 /// 베이스라인을 위로 올린다. 글리프↔WCHAR 매핑(start_wchar)은 앵커 위치로 둔다.
 fn note_mark_run(

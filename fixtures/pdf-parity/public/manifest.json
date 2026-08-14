@@ -25,9 +25,9 @@
     {
       "name": "public-rfp-hwp",
       "source": "public-safety-rfp-p1.hwp",
-      "source_sha256": "8c4e62fb8166828eaddd2d0d304732acd88484ba8526692545b316985e0c0aba",
+      "source_sha256": "4ff3c231d835f37ceaa08ccd41f7db66d74d65a5a03c0791f6f683cc9fde0d39",
       "oracle": "public-safety-rfp-p1.pdf",
-      "oracle_sha256": "8fe8a4a4f3f6640248a1efde26421c7134374b4203363acca1a5967b2c0602e7",
+      "oracle_sha256": "b663df719837fd3b07d458a7e5aea441d8bcd0895ac90983fe67714067070f9f",
       "rois": [
         { "name": "title", "page": 1, "x": 0.08, "y": 0.06, "width": 0.84, "height": 0.08 },
         { "name": "summary-table", "page": 1, "x": 0.08, "y": 0.13, "width": 0.84, "height": 0.1 },
@@ -38,9 +38,9 @@
     {
       "name": "public-rfp-hwpx",
       "source": "public-safety-rfp-p1.hwpx",
-      "source_sha256": "a5b6bb59bc4492f81deeada58cd4b6c0a13579d06afe39e0aaec2687a3eaaf5c",
+      "source_sha256": "9af272aeff59a3e5953c92400458990d511a04e13bea7d9c348591846aebbefd",
       "oracle": "public-safety-rfp-p1.pdf",
-      "oracle_sha256": "8fe8a4a4f3f6640248a1efde26421c7134374b4203363acca1a5967b2c0602e7",
+      "oracle_sha256": "b663df719837fd3b07d458a7e5aea441d8bcd0895ac90983fe67714067070f9f",
       "rois": [
         { "name": "title", "page": 1, "x": 0.08, "y": 0.06, "width": 0.84, "height": 0.08 },
         { "name": "summary-table", "page": 1, "x": 0.08, "y": 0.13, "width": 0.84, "height": 0.1 },
