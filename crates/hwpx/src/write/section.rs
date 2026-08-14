@@ -24,18 +24,42 @@ pub struct BinCollector {
 }
 
 impl BinCollector {
+    /// 외과 수술 재작성용 seed: 원본 패키지에 이미 있는 바이너리를 원본 id/href로
+    /// 미리 등록한다. 시드된 바이트를 참조하는 그림은 원본 `binaryItemIDRef`를
+    /// 그대로 유지하므로, 재직렬화된 섹션과 (raw 복사되거나 재생성되는)
+    /// content.hpf 매니페스트가 같은 id 체계를 공유한다.
+    pub(crate) fn seed(&mut self, id: String, href: String, mime: String, bytes: Vec<u8>) {
+        self.items.push((id, href, mime, bytes));
+    }
+
     /// BinRef를 해석해 패키지 항목으로 등록하고 item id를 돌려준다.
     fn register(&mut self, doc: &Document, bin_ref: &BinRef) -> Option<String> {
         let bytes = doc.resolve_bin(bin_ref)?.to_vec();
-        // 같은 바이트는 재사용
+        // 같은 바이트는 재사용 (seed 포함)
         if let Some((id, ..)) = self.items.iter().find(|(.., b)| *b == bytes) {
             return Some(id.clone());
         }
         let (ext, mime) = sniff(&bytes);
-        let id = format!("image{}", self.items.len() + 1);
-        let href = format!("BinData/{id}.{ext}");
-        self.items.push((id.clone(), href, mime.to_string(), bytes));
-        Some(id)
+        Some(self.allocate(ext, mime, bytes))
+    }
+
+    /// seed·기수집 항목과 id/href가 충돌하지 않는 새 이름으로 항목을 추가하고
+    /// id를 돌려준다. seed가 없으면 기존과 같은 image1, image2, … 순서가 나온다.
+    pub(crate) fn allocate(&mut self, ext: &str, mime: &str, bytes: Vec<u8>) -> String {
+        let mut n = self.items.len() + 1;
+        loop {
+            let id = format!("image{n}");
+            let href = format!("BinData/{id}.{ext}");
+            if !self
+                .items
+                .iter()
+                .any(|(taken_id, taken_href, ..)| *taken_id == id || *taken_href == href)
+            {
+                self.items.push((id.clone(), href, mime.to_string(), bytes));
+                return id;
+            }
+            n += 1;
+        }
     }
 }
 

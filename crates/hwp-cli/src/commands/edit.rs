@@ -2,7 +2,9 @@
 //!
 //! 원본을 IR로 읽어(이미지·opaque 보존) 텍스트 치환·표 셀 설정을 적용한 뒤
 //! 출력 포맷으로 저장한다. hwp 출력은 합성 경로(`write_hwp_edited`)를 거쳐
-//! 편집으로 낡은 줄 배치·문단 불변식을 다시 세운다.
+//! 편집으로 낡은 줄 배치·문단 불변식을 다시 세운다. 같은 포맷 hwpx→hwpx는
+//! 패키지 외과 수술 경로(`hwpx::patch::rewrite_document_staged`)로, 편집된
+//! 콘텐츠 엔트리만 재직렬화하고 나머지 엔트리는 raw 복사로 바이트 보존한다.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -1452,7 +1454,31 @@ fn write_output(
             crate::commands::convert::write_hwp_structural(doc, output)
         }
         OutputFormat::Hwp => crate::commands::convert::write_hwp_edited(doc, output),
-        OutputFormat::Hwpx => Ok(hwpx::write_document_with_report(doc, output)?),
+        OutputFormat::Hwpx => {
+            // 같은 포맷(hwpx→hwpx)이면 패키지 외과 수술 경로: dirty 콘텐츠 엔트리만
+            // IR에서 재직렬화하고 나머지 엔트리(BinData·META-INF·미리보기·DocOptions 등)는
+            // 원본 패키지에서 raw 복사로 바이트 보존한다.
+            if let Some((source_path, original)) = source
+                && original.meta.source_format == "hwpx"
+            {
+                // dirty 판정은 편집 전후 IR 비교로 계산한다(op별 수동 매핑보다
+                // 누락 위험이 없다). 섹션 지정은 앵커/패턴/전역 표 인덱스 기반 op의
+                // 대상 섹션을 값싸게 증명할 수 없어 항상 전체 섹션을 dirty로 둔다.
+                let dirty = hwpx::patch::DirtyEntries {
+                    sections: None,
+                    header: doc.header != original.header,
+                    content_hpf: doc.metadata != original.metadata,
+                };
+                return Ok(hwpx::patch::rewrite_document_staged(
+                    source_path,
+                    output,
+                    doc,
+                    &dirty,
+                    &hwpx::PackageLimits::default(),
+                )?);
+            }
+            Ok(hwpx::write_document_with_report(doc, output)?)
+        }
         OutputFormat::Json => {
             fs::write(output, hwp_convert::to_json(doc, true, true)?)?;
             Ok(hwp_model::WriteReport::new())
