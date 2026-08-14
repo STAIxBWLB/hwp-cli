@@ -24,8 +24,7 @@ const MANIFEST_XML: &[u8] =
 const LAYOUT_XML: &[u8] =
     br#"<?xml version="1.0" encoding="UTF-8"?><layout>DISTINCTIVE-DOCOPTIONS-MARKER</layout>"#;
 
-const HEADER_XML: &str =
-    r##"<?xml version="1.0" encoding="UTF-8"?><hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"/>"##;
+const HEADER_XML: &str = r##"<?xml version="1.0" encoding="UTF-8"?><hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"/>"##;
 
 /// run-level 미해석 개체 2종(hp:container + 하위 subList 텍스트, hp:chartex)과
 /// image1을 참조하는 hp:pic을 담은 본문.

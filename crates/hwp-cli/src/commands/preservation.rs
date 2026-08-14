@@ -572,14 +572,16 @@ mod tests {
     fn cross_format_hwpx_extra_entries_have_no_hwp_representation() {
         let source = Document {
             hwpx_extra_entries: vec![
-                ("DocOptions/Layout.xml".to_string(), b"private layout".to_vec()),
+                (
+                    "DocOptions/Layout.xml".to_string(),
+                    b"private layout".to_vec(),
+                ),
                 ("Scripts/custom.js".to_string(), b"private script".to_vec()),
             ],
             ..Document::default()
         };
 
-        let report =
-            inspect_cross_format_container(&source, FileFormat::Hwpx, FileFormat::Hwp5);
+        let report = inspect_cross_format_container(&source, FileFormat::Hwpx, FileFormat::Hwp5);
         assert_eq!(report.events.len(), 1);
         assert_eq!(
             report.events[0].code,
@@ -617,8 +619,7 @@ mod tests {
             ..Document::default()
         };
 
-        let report =
-            inspect_cross_format_container(&source, FileFormat::Hwp5, FileFormat::Hwpx);
+        let report = inspect_cross_format_container(&source, FileFormat::Hwp5, FileFormat::Hwpx);
         assert_eq!(report.events.len(), 2);
         assert!(report.events.iter().any(|event| {
             event.code == PreservationCode::HwpContainerStreamRemoved

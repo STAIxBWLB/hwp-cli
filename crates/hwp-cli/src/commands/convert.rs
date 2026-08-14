@@ -508,10 +508,7 @@ pub(crate) fn print_warnings(warnings: &[String]) {
 /// `--loss-report` 산출물 — 다른 출력과 같은 staged/검증 트랜잭션으로 게시한다
 /// (렌더 `--report`의 write_report와 같은 규율). 보고서는 content-free 계약이라
 /// 입력·출력 경로를 싣지 않는다.
-fn write_loss_report(
-    path: &Path,
-    report: &hwp_model::PreservationReport,
-) -> anyhow::Result<()> {
+fn write_loss_report(path: &Path, report: &hwp_model::PreservationReport) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(report)?;
     crate::commands::output::write_validated(
         path,
@@ -1079,8 +1076,7 @@ mod tests {
             "preservation events: {:?}",
             report.preservation.events
         );
-        let mut archive =
-            zip::ZipArchive::new(std::fs::File::open(&destination).unwrap()).unwrap();
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&destination).unwrap()).unwrap();
         let mut bytes = Vec::new();
         archive
             .by_name("SyntheticOpaque/entry.bin")
@@ -1161,10 +1157,12 @@ mod tests {
         assert_eq!(value["contract"], "hwp-preservation-report-v1");
         let events = value["events"].as_array().unwrap();
         assert!(
-            events.iter().any(|event| event["code"] == "hwpx_package_entry_removed"
-                && event["resource"] == "package_entry"
-                && event["disposition"] == "removed"
-                && event["count"].as_u64().unwrap() >= 1),
+            events
+                .iter()
+                .any(|event| event["code"] == "hwpx_package_entry_removed"
+                    && event["resource"] == "package_entry"
+                    && event["disposition"] == "removed"
+                    && event["count"].as_u64().unwrap() >= 1),
             "loss report events: {events:?}"
         );
         assert_loss_report_schema_valid(&value);

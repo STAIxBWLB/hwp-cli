@@ -239,12 +239,7 @@ fn parse_paragraph(
                                 let mut raw_reader = Reader::from_str(&raw);
                                 // 캡처본의 첫 이벤트(개체 자신의 여는 태그)를 소비한다.
                                 let _ = next_event(&mut raw_reader)?;
-                                collect_sub_lists(
-                                    &mut raw_reader,
-                                    &name,
-                                    &mut generic,
-                                    warnings,
-                                )?;
+                                collect_sub_lists(&mut raw_reader, &name, &mut generic, warnings)?;
                             }
                             generic.hwpx_raw_xml = Some(raw);
                         }
