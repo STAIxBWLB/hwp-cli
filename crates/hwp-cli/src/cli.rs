@@ -110,7 +110,9 @@ pub enum Cmd {
         #[arg(long)]
         strict: bool,
         /// Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this
-        /// path, even when the conversion succeeds without loss (single input only)
+        /// path, even when the conversion succeeds without loss (single input only).
+        /// The preservation inspection only runs for hwp/hwpx targets — for other output
+        /// formats (docx, md, ...) the ledger is always empty
         #[arg(long)]
         loss_report: Option<PathBuf>,
         /// Preserve the line layout cache (unmodified round-trips only; Hancom treats

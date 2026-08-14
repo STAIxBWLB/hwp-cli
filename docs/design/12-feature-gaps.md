@@ -124,6 +124,9 @@ is itself knowledge).
   24 media (previously 9), strict conversion fails closed in both directions, and all eight
   outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 4+):
   table insertion (#77/#78), WMF vectors, the pagination/font gate and certification.
+  hwpx→hwp conversion does not yet flag settings.xml/version.xml/preview slot loss with
+  typed events. And content.hpf regeneration keeps only modeled manifest items/metadata,
+  so unmodeled manifest items survive as orphan package entries (raw-copied but unlisted).
 
 - **2026-07-15**: GA-5 (version gate), GE-α1 to α5 and α7 (character effects, underline shape and
   numbering format in the hwpx round-trip), GE-β4 (summary information fields), GH-1 and GH-2

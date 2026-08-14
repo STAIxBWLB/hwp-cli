@@ -116,10 +116,16 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
     }
 
     // 문서 메타데이터 (content.hpf OPF — 최선 노력: 없거나 손상돼도 진단 계속)
-    let metadata = pkg
-        .read_entry_string("Contents/content.hpf")
-        .ok()
-        .map(|xml| parse_content_meta(&xml))
+    let content_hpf = pkg.read_entry_string("Contents/content.hpf").ok();
+    let metadata = content_hpf
+        .as_deref()
+        .map(parse_content_meta)
+        .unwrap_or_default();
+    // OPF 매니페스트의 BinData (id, href) 매핑 — 전체 재작성 writer가 BinCollector
+    // id를 원본 id로 시드해 원문 캡처 개체의 binaryItemIDRef가 어긋나지 않게 한다.
+    let hwpx_bin_manifest = content_hpf
+        .as_deref()
+        .map(parse_bin_manifest)
         .unwrap_or_default();
 
     // 부속 파트 원문 pass-through 슬롯: settings.xml(앱 설정·캐럿)·version.xml(버전
@@ -154,6 +160,7 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
             hwp5_xml_template: Vec::new(),
             hwp5_doc_history: Vec::new(),
             hwpx_extra_entries,
+            hwpx_bin_manifest,
         },
         warnings,
     })
@@ -238,6 +245,48 @@ pub fn parse_content_meta(xml: &str) -> hwp_model::Metadata {
         }
     }
     meta
+}
+
+/// content.hpf OPF 매니페스트에서 BinData 항목의 (id, href) 매핑을 읽는다(최선 노력).
+///
+/// 전체 재작성 writer가 BinCollector id를 원본 매니페스트 id로 시드하는 데 쓴다 —
+/// 원문 캡처된 개체(hp:container 등) 안의 `binaryItemIDRef`가 재직렬화 후에도
+/// 원본 바이트를 가리키게 한다. 파싱 실패·BinData 항목 없음이면 빈 벡터(호출자는
+/// 기존 image{N} 할당 경로를 그대로 탄다).
+pub fn parse_bin_manifest(xml: &str) -> Vec<(String, String)> {
+    use quick_xml::events::Event;
+
+    let mut items = Vec::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
+                if event.name().local_name().as_ref() != b"item" {
+                    continue;
+                }
+                let mut id = None;
+                let mut href = None;
+                for attr in event.attributes().flatten() {
+                    let value = String::from_utf8_lossy(&attr.value).into_owned();
+                    match attr.key.local_name().as_ref() {
+                        b"id" => id = Some(value),
+                        b"href" => href = Some(value),
+                        _ => {}
+                    }
+                }
+                if let (Some(id), Some(href)) = (id, href)
+                    && href.starts_with("BinData/")
+                {
+                    items.push((id, href));
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    items
 }
 
 fn resolve_entity(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {

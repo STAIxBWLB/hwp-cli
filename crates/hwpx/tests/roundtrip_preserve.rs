@@ -247,3 +247,126 @@ fn 원문_보유_개체는_방출하고_없으면_손실이벤트를_낸다() {
         hwp_model::PreservationCode::OpaqueControlUnrepresentable
     );
 }
+
+// ── #90 PR3 후속: 전체 재작성 경로의 binaryItemIDRef 매니페스트 시드 ──────────
+
+const PNG_ONE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 0, 0, 1];
+const PNG_TWO: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 2, 0, 0, 2];
+const PNG_THREE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 3, 0, 0, 3];
+const PNG_FOUR: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 4, 0, 0, 4];
+
+/// OPF manifest id ≠ 파일명 stem·참조 등장 순서 ≠ 파일명 순서인 합성 HWPX.
+/// - image2.png를 참조하는 typed pic이 image1.png 참조 pic보다 먼저 등장
+/// - 원문 캡처 hp:container 안의 pic이 id "chartA"(stem 불일치)를 참조
+/// - 미참조 image3.png (id "unused1", stem 불일치)
+fn build_manifest_seed_fixture(path: &std::path::Path) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+    zip.start_file("mimetype", stored).unwrap();
+    zip.write_all(b"application/hwp+zip").unwrap();
+    zip.start_file("version.xml", deflated).unwrap();
+    zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+        .unwrap();
+    zip.start_file("Contents/content.hpf", deflated).unwrap();
+    zip.write_all(
+        r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>시드 문서</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/><opf:item id="image1" href="BinData/image1.png" media-type="image/png" isEmbeded="1"/><opf:item id="image2" href="BinData/image2.png" media-type="image/png" isEmbeded="1"/><opf:item id="unused1" href="BinData/image3.png" media-type="image/png" isEmbeded="1"/><opf:item id="chartA" href="BinData/image4.png" media-type="image/png" isEmbeded="1"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
+            .as_bytes(),
+    )
+    .unwrap();
+    zip.start_file("Contents/header.xml", deflated).unwrap();
+    zip.write_all(HEADER_XML.as_bytes()).unwrap();
+    zip.start_file("Contents/section0.xml", deflated).unwrap();
+    zip.write_all(
+        r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>본문</hp:t><hp:pic id="5" zOrder="0"><hp:sz width="100" height="100"/><hp:pos treatAsChar="1" vertOffset="0" horzOffset="0"/><hp:img binaryItemIDRef="image2" bright="0" contrast="0"/></hp:pic><hp:pic id="6" zOrder="1"><hp:sz width="100" height="100"/><hp:pos treatAsChar="1" vertOffset="0" horzOffset="0"/><hp:img binaryItemIDRef="image1" bright="0" contrast="0"/></hp:pic><hp:container id="77" zOrder="3"><hp:sz width="1000" height="500"/><hp:subList><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:pic id="7" zOrder="0"><hp:sz width="50" height="50"/><hp:pos treatAsChar="1" vertOffset="0" horzOffset="0"/><hp:img binaryItemIDRef="chartA" bright="0" contrast="0"/></hp:pic></hp:run></hp:p></hp:subList></hp:container></hp:run></hp:p></hs:sec>"##
+            .as_bytes(),
+    )
+    .unwrap();
+    zip.start_file("BinData/image1.png", deflated).unwrap();
+    zip.write_all(PNG_ONE).unwrap();
+    zip.start_file("BinData/image2.png", deflated).unwrap();
+    zip.write_all(PNG_TWO).unwrap();
+    zip.start_file("BinData/image3.png", deflated).unwrap();
+    zip.write_all(PNG_THREE).unwrap();
+    zip.start_file("BinData/image4.png", deflated).unwrap();
+    zip.write_all(PNG_FOUR).unwrap();
+    zip.finish().unwrap();
+}
+
+/// content.hpf 매니페스트에서 BinData 항목의 (id → href) 매핑을 뽑는다.
+fn manifest_bin_map(xml: &str) -> std::collections::BTreeMap<String, String> {
+    hwpx::read::parse_bin_manifest(xml).into_iter().collect()
+}
+
+/// 전체 재작성(hwpx→IR→hwpx) 후에도 모든 binaryItemIDRef가 원본과 같은 바이트를
+/// 가리켜야 한다 — 원문 캡처 컨테이너 안의 참조·id≠stem 매니페스트 항목까지.
+#[test]
+fn 전체_재작성은_원본_manifest_id로_binary참조를_보존한다() {
+    let dir = std::env::temp_dir().join("hwpx-roundtrip-manifest-seed");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("src.hwpx");
+    let out = dir.join("out.hwpx");
+    build_manifest_seed_fixture(&src);
+    let source_entries = read_entries(&src);
+
+    let read = hwpx::read_document(&src).unwrap();
+    let report = hwpx::write_document_with_report(&read.document, &out).unwrap();
+    assert!(
+        report.preservation.is_lossless(),
+        "preservation events: {:?}",
+        report.preservation.events
+    );
+
+    let out_entries = read_entries(&out);
+    let bytes_of = |entries: &[(String, Vec<u8>)], name: &str| -> Vec<u8> {
+        entries
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("엔트리 없음: {name}"))
+            .1
+            .clone()
+    };
+    let src_manifest = manifest_bin_map(
+        &String::from_utf8(bytes_of(&source_entries, "Contents/content.hpf")).unwrap(),
+    );
+    let out_manifest = manifest_bin_map(
+        &String::from_utf8(bytes_of(&out_entries, "Contents/content.hpf")).unwrap(),
+    );
+
+    // 1. 매니페스트의 BinData 항목 수 보존(미참조 항목 포함).
+    assert_eq!(out_manifest.len(), src_manifest.len(), "매니페스트 항목 수");
+
+    // 2. 출력의 모든 binaryItemIDRef(원문 컨테이너 안 포함)가 출력 매니페스트에서
+    //    원본과 같은 바이트로 해석돼야 한다.
+    let section = String::from_utf8(bytes_of(&out_entries, "Contents/section0.xml")).unwrap();
+    let refs: Vec<&str> = section
+        .match_indices("binaryItemIDRef=\"")
+        .map(|(i, _)| {
+            let rest = &section[i + "binaryItemIDRef=\"".len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect();
+    assert_eq!(refs.len(), 3, "pic 2 + 컨테이너 안 pic 1: {section}");
+    for r in refs {
+        let out_href = out_manifest
+            .get(r)
+            .unwrap_or_else(|| panic!("출력 매니페스트에 {r} 없음(댕글링 참조)"));
+        let src_href = src_manifest
+            .get(r)
+            .unwrap_or_else(|| panic!("원본 매니페스트에 {r} 없음"));
+        assert_eq!(
+            bytes_of(&out_entries, out_href),
+            bytes_of(&source_entries, src_href),
+            "{r} 참조 바이트가 원본과 다르다"
+        );
+    }
+
+    // 3. 원본 BinData 엔트리 집합·바이트 보존(미참조 image3.png 포함).
+    for (name, bytes) in &source_entries {
+        if name.starts_with("BinData/") {
+            assert_eq!(&bytes_of(&out_entries, name), bytes, "{name} 바이트 보존");
+        }
+    }
+}

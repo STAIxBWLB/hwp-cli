@@ -292,13 +292,22 @@ pub fn execute(
         Some(t) => t,
         None => infer_format(output)?,
     };
-    if let Some(report_path) = loss_report
-        && (report_path == input || report_path == output)
-    {
-        anyhow::bail!(
-            "--loss-report 경로가 입력/출력과 같을 수 없습니다: {}",
-            report_path.display()
-        );
+    if let Some(report_path) = loss_report {
+        // 경로 정규화(canonicalize 기반 — `.`/`..`/심볼릭 링크 철자 변형 해소) +
+        // output.rs의 identity 기반 별칭 탐지를 함께 쓴다. raw Path 비교만으로는
+        // `sub/../in.hwpx` 같은 철자 변형을 놓치고, 경로 비교만으로는 하드 링크
+        // 별칭을 놓친다. 리포트는 입력을 덮어쓰면 안 되고, 출력과 같으면 문서
+        // 게시가 리포트를 조용히 덮어쓰므로 둘 다 거부한다.
+        let report_normalized = normalize_for_alias_compare(report_path);
+        for other in [input, output] {
+            if report_normalized == normalize_for_alias_compare(other) {
+                anyhow::bail!(
+                    "--loss-report 경로가 입력/출력과 같을 수 없습니다: {}",
+                    report_path.display()
+                );
+            }
+        }
+        crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
     let doc = load_document(input)?;
     if matches!(target, ConvertFormat::Md) {
@@ -503,6 +512,22 @@ pub(crate) fn print_warnings(warnings: &[String]) {
     for w in warnings {
         eprintln!("경고: {w}");
     }
+}
+
+/// `--loss-report` 별칭 가드용 경로 정규화. 존재하는 경로는 canonicalize하고,
+/// 아직 없는 경로(새 리포트 파일)는 부모 디렉터리만 canonicalize해 파일명을
+/// 붙인다 — `.`/`..`/심볼릭 링크 철자 변형이 같은 파일을 가리키면 같아진다.
+/// 정규화가 불가능하면 절대경로로, 그마저 실패하면 원본 경로로 되돌아간다.
+fn normalize_for_alias_compare(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+        && let Ok(canonical_parent) = std::fs::canonicalize(parent)
+    {
+        return canonical_parent.join(name);
+    }
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// `--loss-report` 산출물 — 다른 출력과 같은 staged/검증 트랜잭션으로 게시한다
@@ -1265,6 +1290,97 @@ mod tests {
         assert_eq!(value["contract"], "hwp-preservation-report-v1");
         assert_eq!(value["events"], serde_json::json!([]));
         assert_loss_report_schema_valid(&value);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// --loss-report가 입력의 lexical 변형(`./in.hwpx`, `sub/../in.hwpx`)이어도
+    /// 거부하고 입력을 보존한다. raw Path 비교는 `.`는 걸러도 `..` 철자는 놓친다
+    /// (epic #90 PR 3 후속).
+    #[test]
+    fn loss_report_lexical_alias_of_input_is_rejected() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-convert-loss-report-alias-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let source = dir.join("source.hwpx");
+        let destination = dir.join("result.hwpx");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(&source, b"ORIGINAL").unwrap();
+
+        for alias in [
+            dir.join(".").join("source.hwpx"),
+            dir.join("sub").join("..").join("source.hwpx"),
+        ] {
+            let result = execute(
+                &source,
+                &destination,
+                Some(ConvertFormat::Hwpx),
+                false,
+                Some(&alias),
+                false,
+                false,
+                &MdOpts::default(),
+                Vec::new(),
+            );
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains("--loss-report"),
+                "별칭 {} 거부 사유: {error}",
+                alias.display()
+            );
+            assert_eq!(
+                std::fs::read(&source).unwrap(),
+                b"ORIGINAL",
+                "입력 파일은 그대로여야 한다"
+            );
+            assert!(
+                !destination.exists(),
+                "거부된 변환은 출력을 게시하지 않는다"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// --loss-report가 출력(-o)과 같으면 거부한다 — 리포트를 게시한 뒤 문서 게시가
+    /// 조용히 덮어쓰는 순서 버그 방지.
+    #[test]
+    fn loss_report_same_as_output_is_rejected() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-convert-loss-report-output-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let source = dir.join("source.hwpx");
+        let destination = dir.join("result.hwpx");
+        hwpx::write_document(
+            &hwp_convert::from_markdown("owner-authored fixture"),
+            &source,
+        )
+        .unwrap();
+
+        let result = execute(
+            &source,
+            &destination,
+            Some(ConvertFormat::Hwpx),
+            false,
+            Some(&destination),
+            false,
+            false,
+            &MdOpts::default(),
+            Vec::new(),
+        );
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("--loss-report"),
+            "출력 동일 거부 사유: {error}"
+        );
+        assert!(
+            !destination.exists(),
+            "거부된 변환은 출력을 게시하지 않는다"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

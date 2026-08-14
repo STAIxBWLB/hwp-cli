@@ -82,7 +82,7 @@ Convert between formats
 | `--out-dir` | `<OUT_DIR>` |  | Output directory for multiple inputs (file names are "<stem>.<ext>", requires --to) |
 | `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` \| `docx` |  | Output format (inferred from the extension when omitted) |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found during conversion |
-| `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the conversion succeeds without loss (single input only) |
+| `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the conversion succeeds without loss (single input only). The preservation inspection only runs for hwp/hwpx targets — for other output formats (docx, md, ...) the ledger is always empty |
 | `--preserve-layout` |  |  | Preserve the line layout cache (unmodified round-trips only; Hancom treats a layout inconsistent with the content as tampering, so it is dropped by default) |
 | `--embed-bin` |  |  | Embed attached binaries (images) as base64 in JSON output (self-contained JSON) |
 | `--media-dir` | `<MEDIA_DIR>` |  | (md) Image extraction directory, default "<output stem>.media". A relative path resolves against the output file and links use the path as given (e.g. figs) |

@@ -86,6 +86,36 @@ pub fn write_document_with_report_with_limits(
 
     // 본문 먼저 직렬화 (BinData 수집 포함)
     let mut bins = BinCollector::default();
+    // hwpx 원본이면 OPF 매니페스트의 원본 id/href로 seed한다(외과 수술 경로
+    // patch.rs의 시드와 같은 의미). 원문 캡처된 개체(hp:container 등) 안의
+    // binaryItemIDRef는 원본 id를 그대로 방출하므로, collector가 원본 id 체계를
+    // 알아야 그 참조가 원본 바이트를 계속 가리킨다. 소스 바이너리 전부가 seed되면
+    // 아래 미참조 바이너리 passthrough는 자연히 no-op이 된다.
+    if !doc.hwpx_bin_manifest.is_empty() {
+        let mut used_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut seeded_hrefs: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (id, href) in &doc.hwpx_bin_manifest {
+            let Some(stream) = doc.bin_streams.iter().find(|s| s.name == *href) else {
+                continue; // 매니페스트에만 있고 스트림이 없으면 시드할 바이트가 없다
+            };
+            if !seeded_hrefs.insert(stream.name.as_str()) {
+                continue;
+            }
+            let mut candidate = id.clone();
+            let mut n = 2u32;
+            while !used_ids.insert(candidate.clone()) {
+                candidate = format!("{id}_{n}");
+                n += 1;
+            }
+            let (_, mime) = section::sniff(&stream.data);
+            bins.seed(
+                candidate,
+                href.clone(),
+                mime.to_string(),
+                stream.data.clone(),
+            );
+        }
+    }
     let sections: Vec<String> = doc
         .sections
         .iter()

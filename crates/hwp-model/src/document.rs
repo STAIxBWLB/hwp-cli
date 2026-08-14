@@ -46,6 +46,12 @@ pub struct Document {
     /// 예: DocOptions, 스크립트, 추가 Preview, 원본 META-INF/*. hwpx 출신이 아니면 비어 있다.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwpx_extra_entries: Vec<(String, Vec<u8>)>,
+    /// hwpx 원본 `Contents/content.hpf`의 OPF manifest 중 BinData 항목의
+    /// (id, href) 매핑. 전체 재작성 경로에서 BinCollector id를 원본 manifest id로
+    /// 시드해, 원문 캡처된 개체 안의 `binaryItemIDRef`가 원본 바이트를 계속
+    /// 가리키게 한다. hwp5 출신·합성 문서는 빈 벡터(기존 image{N} 할당 유지).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hwpx_bin_manifest: Vec<(String, String)>,
 }
 
 /// 문서 수준 메타데이터 (요약 정보 / OPF 메타).

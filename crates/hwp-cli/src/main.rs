@@ -16,6 +16,21 @@ use hwp_cli::cli::{Cli, Cmd};
 use hwp_cli::i18n;
 
 fn main() -> anyhow::Result<()> {
+    // clap derive가 만드는 명령 트리 생성/파싱은 디버그 빌드에서 프레임이 커져
+    // Windows 기본 main 스레드 스택(1MB)을 넘는다(실기 CI 확정). 모든 작업을
+    // 큰 스택의 워커 스레드에서 실행해 플랫폼·빌드 프로파일 차이를 흡수한다.
+    let worker = std::thread::Builder::new()
+        .name("hwp-main".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(real_main)?;
+    match worker.join() {
+        Ok(result) => result,
+        // 워커의 패닉을 그대로 다시 던져 패닉 메시지·동작을 보존한다.
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+fn real_main() -> anyhow::Result<()> {
     // 도움말 언어는 clap이 help/오류를 출력하기 전에 정해야 한다.
     let command = i18n::localize(Cli::command(), i18n::Lang::detect());
     let cli = match Cli::from_arg_matches(&command.get_matches()) {

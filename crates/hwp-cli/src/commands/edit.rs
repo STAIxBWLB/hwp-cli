@@ -2089,6 +2089,10 @@ fn canonical_document(
         canonical
             .hwpx_version_xml
             .get_or_insert_with(|| hwpx::DEFAULT_VERSION_XML.to_string());
+        // 매니페스트 (id, href)는 writer가 bin_streams에서 결정론적으로 재배정하는
+        // 이름 메타다(편집으로 bin이 추가/삭제되면 원본 슬롯과 달라진다). 바이트
+        // 정체성은 위의 content-hash bin_streams 비교가 담당하므로 digest에서는 제외.
+        canonical.hwpx_bin_manifest.clear();
         canonical
             .metadata
             .author

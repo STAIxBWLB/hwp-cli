@@ -129,6 +129,7 @@ pub fn from_html_with(html: &str, opts: &HtmlImportOptions) -> Result<Document, 
         hwp5_xml_template: Vec::new(),
         hwp5_doc_history: Vec::new(),
         hwpx_extra_entries: Vec::new(),
+        hwpx_bin_manifest: Vec::new(),
     })
 }
 

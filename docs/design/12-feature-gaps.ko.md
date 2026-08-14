@@ -110,7 +110,10 @@
   엔트리 전량 바이트 동일(미디어 24→24, 이미지 삽입 후 25; container 5→5), `hwp validate`
   클린, non-strict hwp→hwpx는 미디어 24개 전량 보존(종전 9), strict 변환은 양방향 모두
   fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 4+):
-  표 삽입(#77/#78), WMF 벡터, pagination/font 게이트, 인증.
+  표 삽입(#77/#78), WMF 벡터, pagination/font 게이트, 인증. hwpx→hwp 변환은
+  settings.xml/version.xml/preview 슬롯 손실을 아직 typed 이벤트로 집계하지 않는다.
+  content.hpf 재생성은 모델링된 manifest 항목/메타데이터만 유지하므로, 비모델 manifest
+  항목은 고아 엔트리로 남는다(raw-copy는 되지만 목록에는 미등재).
 
 - **2026-07-15**: GA-5(버전 게이트), GE-α1~α5·α7(글자효과·밑줄모양·번호형식 hwpx 왕복),
   GE-β4(요약정보 필드), GH-1·GH-2(md/html 링크·이미지), GL-1(추출 옵션 CLI 노출) —

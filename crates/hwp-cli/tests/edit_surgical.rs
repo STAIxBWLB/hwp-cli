@@ -118,6 +118,43 @@ fn tiny_png(path: &Path) {
     std::fs::write(path, &png).unwrap();
 }
 
+/// hp:container(미해석 개체)의 subList 안에 1×1 표를 담은 합성 HWPX.
+/// 표 op이 컨테이너 안 표를 바꾸면 원문 XML이 낡으므로 fail-closed로 거부돼야 한다.
+fn build_container_table_fixture(path: &Path) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+    zip.start_file("mimetype", stored).unwrap();
+    zip.write_all(b"application/hwp+zip").unwrap();
+    zip.start_file("version.xml", deflated).unwrap();
+    zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+        .unwrap();
+    zip.start_file("Contents/content.hpf", deflated).unwrap();
+    zip.write_all(
+        r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>컨테이너 표 문서</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
+            .as_bytes(),
+    )
+    .unwrap();
+    zip.start_file("Contents/header.xml", deflated).unwrap();
+    zip.write_all(
+        r##"<?xml version="1.0" encoding="UTF-8"?><hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"/>"##
+            .as_bytes(),
+    )
+    .unwrap();
+    zip.start_file("Contents/section0.xml", deflated).unwrap();
+    zip.write_all(
+        r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>앵커 문단</hp:t><hp:container id="78" zOrder="3"><hp:sz width="2000" height="1000"/><hp:subList><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:tbl id="9" zOrder="0" pageBreak="NONE" repeatHeader="0" rowCnt="1" colCnt="1" cellSpacing="0" borderFillIDRef="0" noAdjust="0"><hp:sz width="1000" height="500"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:tr><hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="0"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>컨테이너 셀</hp:t></hp:run></hp:p></hp:subList><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:cellSz width="1000" height="500"/><hp:cellMargin left="0" right="0" top="0" bottom="0"/></hp:tc></hp:tr></hp:tbl></hp:run></hp:p></hp:subList></hp:container></hp:run></hp:p></hs:sec>"##
+            .as_bytes(),
+    )
+    .unwrap();
+    zip.start_file("settings.xml", deflated).unwrap();
+    zip.write_all(br#"<?xml version="1.0"?><setting>CLI-SETTINGS-MARKER</setting>"#)
+        .unwrap();
+    zip.finish().unwrap();
+}
+
 /// 표 op(set-cell): 본문만 재직렬화되고 header/content.hpf/미리보기/META-INF는
 /// 입력과 바이트 동일해야 한다(전체 재작성이었다면 header.xml이 재합성된다).
 #[test]
@@ -438,5 +475,42 @@ fn container_and_picture_survive_surgical_edit() {
             "settings.xml",
             "Contents/header.xml",
         ],
+    );
+}
+
+/// 컨테이너(hp:container) 안의 표를 겨냥한 표 op은 컨테이너 원문 XML을 낡게 만든다.
+/// writer는 컨테이너를 재방출할 emitter가 없으므로 OpaqueControlUnrepresentable을
+/// 기록하고, fail-closed 보존 검사가 편집을 거부해야 한다(조용한 성공 = 편집 유실이
+/// 진짜 버그). 거부되면 출력은 게시되지 않고 입력도 그대로여야 한다.
+#[test]
+fn table_op_inside_opaque_container_fails_closed() {
+    let src = tmp("surgical_container_tbl.hwpx");
+    build_container_table_fixture(&src);
+    let src_bytes = std::fs::read(&src).unwrap();
+    let out = tmp("surgical_container_tbl_out.hwpx");
+
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set-cell", "0:0:0=변경시도"])
+        .output()
+        .unwrap();
+    assert!(
+        !r.status.success(),
+        "컨테이너 안 표 편집은 거부돼야 한다: {}",
+        String::from_utf8_lossy(&r.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        stderr.contains("보존 불가") && stderr.contains("opaque_control_unrepresentable"),
+        "fail-closed 보존 오류여야 한다: {stderr}"
+    );
+    assert!(!out.exists(), "거부된 편집은 출력을 게시하지 않는다");
+    assert_eq!(
+        std::fs::read(&src).unwrap(),
+        src_bytes,
+        "입력 파일은 그대로여야 한다"
     );
 }
