@@ -21,6 +21,7 @@ pub mod ids;
 pub mod list;
 pub mod opaque;
 pub mod paragraph;
+pub mod preservation;
 pub mod text;
 pub mod units;
 
@@ -37,6 +38,10 @@ pub use header::{
 pub use ids::{BinDataId, BorderFillId, CharShapeId, FaceNameId, ParaShapeId, StyleId};
 pub use opaque::OpaqueRecord;
 pub use paragraph::{CharKind, HwpChar, LineSeg, ParaHeaderInfo, Paragraph, char_kind, ctrl_char};
+pub use preservation::{
+    PRESERVATION_REPORT_CONTRACT, PreservationCode, PreservationDisposition, PreservationEvent,
+    PreservationReport, PreservationResourceKind, WriteReport,
+};
 pub use text::TextOptions;
 pub use units::{
     HwpUnit, filetime_to_iso8601_utc, filetime_to_korean_kst, iso8601_utc_to_filetime,

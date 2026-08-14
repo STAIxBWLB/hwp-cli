@@ -37,6 +37,27 @@ than static analysis**.
 
 ---
 
+## Typed preservation gate
+
+Native writers expose `hwp-preservation-report-v1`, a content-free ledger whose event code, resource
+class and disposition are closed enums. Counts are aggregate only. Document text, package names,
+container paths, payload fragments and hashes are never part of the public report.
+
+- Writer omissions and unrepresentable payloads are typed loss events. The old `Vec<String>` APIs
+  remain compatibility wrappers, but publication policy never parses a `DROP:` prefix.
+- Source-free HWP/HWPX authoring rejects every typed loss event before atomic publication.
+- Same-format conversion and editing additionally inventory HWP streams/storages or HWPX entries.
+  Any unexpected removal or change to an opaque non-target item blocks publication even without
+  `--strict`.
+- Cross-format `--strict` rejects semantic asset, control, relationship or metadata loss. Non-strict
+  conversion may publish only while returning the explicit typed ledger.
+
+This gate prevents known silent loss; it does not certify Hancom compatibility. The current full HWP
+rewriter still requires the source-preserving repair and independent Hancom-open checks tracked by
+issue #90. Package-surgical HWPX editing remains a later #90 step.
+
+---
+
 ## A. The file "corrupt/tampered" gate (rules that block opening at all)
 
 The most fatal layer. When Hancom shows `"파일이 손상되었습니다"` (the file is corrupt) or

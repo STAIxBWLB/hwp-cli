@@ -61,6 +61,23 @@ impl Hwp5Container {
         v
     }
 
+    /// Lists every storage in path order, excluding the root storage (`/`).
+    ///
+    /// Preservation checks must detect removal of empty opaque storages as well
+    /// as streams. Paths are used only for private aggregation and never appear
+    /// in the public report.
+    pub fn list_storages(&self) -> Vec<String> {
+        let mut storages: Vec<String> = self
+            .cfb
+            .walk()
+            .filter(|entry| entry.is_storage())
+            .map(|entry| entry.path().to_string_lossy().replace('\\', "/"))
+            .filter(|path| path != "/")
+            .collect();
+        storages.sort();
+        storages
+    }
+
     /// Certification-oriented stream enumeration. The entry and normalized
     /// name budgets are enforced while walking the CFB directory, before a
     /// caller can clone all paths into a stream cache.

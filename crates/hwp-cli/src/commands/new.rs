@@ -20,6 +20,7 @@ pub enum NewInput<'a> {
 pub struct NewReport {
     pub output: String,
     pub warnings: Vec<String>,
+    pub preservation: hwp_model::PreservationReport,
 }
 
 pub fn run(
@@ -51,6 +52,7 @@ pub fn run(
     };
     let report = execute(output, input, set_meta, preset, strict)?;
     crate::commands::convert::print_warnings(&report.warnings);
+    crate::commands::preservation::print_report(&report.preservation);
     eprintln!("생성 완료: {}", output.display());
     Ok(())
 }
@@ -137,27 +139,28 @@ pub fn execute(
         hwp_convert::apply_meta(&mut doc, spec).map_err(|e| anyhow::anyhow!(e))?;
     }
 
-    let mut warnings = crate::commands::output::write_validated(
+    let mut writer_report = crate::commands::output::write_validated(
         output,
         None,
         |staged| {
             if write_hwp {
                 crate::commands::convert::write_hwp(&doc, staged, false)
             } else {
-                Ok(hwpx::write_document(&doc, staged)?)
+                Ok(hwpx::write_document_with_report(&doc, staged)?)
             }
         },
-        |staged, writer_warnings| {
-            crate::commands::reject_drop_warnings("new", writer_warnings)?;
+        |staged, writer_report| {
+            crate::commands::reject_preservation_loss("new", &writer_report.preservation)?;
             crate::commands::cat::load_document(staged)
                 .map_err(|e| anyhow::anyhow!("생성 문서 재읽기 실패: {e:#}"))?;
             Ok(())
         },
     )?;
     // markdown import 경고(계약 위반 드롭 등)를 리포트에 실어 CLI/MCP에서 프로그램적으로 보이게 한다.
-    warnings.extend(import_warnings);
+    writer_report.warnings.extend(import_warnings);
     Ok(NewReport {
         output: output.display().to_string(),
-        warnings,
+        warnings: writer_report.warnings,
+        preservation: writer_report.preservation,
     })
 }

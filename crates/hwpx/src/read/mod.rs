@@ -92,6 +92,15 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
     // 버리지 않는다".
     let hwpx_settings_xml = pkg.read_entry_string("settings.xml").ok();
     let hwpx_version_xml = pkg.read_entry_string("version.xml").ok();
+    let has_preview_image = pkg
+        .entries()?
+        .iter()
+        .any(|entry| entry.name == "Preview/PrvImage.png");
+    let hwpx_preview_image = if load_binary_data && has_preview_image {
+        Some(pkg.read_entry("Preview/PrvImage.png")?)
+    } else {
+        None
+    };
 
     Ok(ReadResult {
         document: Document {
@@ -105,6 +114,7 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
             bin_streams,
             hwpx_settings_xml,
             hwpx_version_xml,
+            hwpx_preview_image,
             // hwpx 출신은 hwp5 전용 스토리지가 없다(GE-β7/β8 경로 무관).
             hwp5_xml_template: Vec::new(),
             hwp5_doc_history: Vec::new(),

@@ -28,6 +28,26 @@ hwp-cli는 pyhwp·자체 리더/렌더로는 100% 통과하지만 **한컴오피
 
 ---
 
+## 타입드 보존 게이트
+
+네이티브 writer는 `hwp-preservation-report-v1` 형식의 content-free ledger를 제공한다. event
+code, resource class, disposition은 닫힌 enum이며 개수만 집계한다. 문서 텍스트, 패키지 이름,
+컨테이너 경로, payload 일부, hash는 공개 보고서에 포함하지 않는다.
+
+- writer omission과 표현 불가 payload는 typed loss event로 기록한다. 기존 `Vec<String>` API는
+  호환 wrapper로 유지하지만, 발행 정책은 `DROP:` prefix를 파싱하지 않는다.
+- 원본 없는 HWP/HWPX 작성은 typed loss event가 하나라도 있으면 atomic publication 전에 거부한다.
+- 같은 포맷 변환·편집은 HWP stream/storage 또는 HWPX entry inventory도 대조한다. 예상하지 않은
+  제거 또는 opaque non-target 항목 변경은 `--strict` 없이도 발행을 차단한다.
+- 포맷 간 `--strict` 변환은 asset, control, relationship, metadata의 의미 손실을 거부한다.
+  non-strict 변환은 typed ledger를 명시적으로 반환하는 경우에만 발행할 수 있다.
+
+이 게이트는 알려진 silent loss를 막지만 한컴 호환성을 인증하지 않는다. 현재 HWP full rewriter에는
+이슈 #90의 source-preserving repair와 독립 한컴 열기 검증이 여전히 필요하다. package-surgical HWPX
+편집도 #90의 후속 단계로 남아 있다.
+
+---
+
 ## A. 파일 "손상/변조" 게이트 (열기 자체가 거부되는 규칙)
 
 가장 치명적인 계층. 한글이 파일을 열 때 `"파일이 손상되었습니다"` / `"문서가 변조되었을 가능성 — 보안 수준을 낮춤"` 팝업을 띄우면 내용이 아예 안 보인다. 5.1.x 버전 선언과 레코드 레이아웃의 정합성을 한글이 검사한다.

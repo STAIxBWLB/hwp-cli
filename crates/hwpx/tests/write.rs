@@ -33,6 +33,154 @@ const VALID_PNG_1X1: &[u8] = &[
     0x42, 0x60, 0x82,
 ];
 
+fn append_control(doc: &mut hwp_model::Document, control: hwp_model::Control) {
+    let para = &mut doc.sections[0].paragraphs[0];
+    let index = para.controls.len() as u32;
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: control.ctrl_id(),
+        payload: Vec::new(),
+        ctrl_index: Some(index),
+    });
+    para.controls.push(control);
+}
+
+#[test]
+fn typed_report_records_unsupported_control_without_warning_parsing() {
+    let mut doc = hwp_convert::from_markdown("본문\n");
+    append_control(
+        &mut doc,
+        hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"ole ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+        }),
+    );
+
+    let out = tmp("typed-report-unsupported-control.hwpx");
+    let report = hwpx::write_document_with_report(&doc, &out).unwrap();
+
+    assert!(
+        report.warnings.is_empty(),
+        "ordinary warnings: {:?}",
+        report.warnings
+    );
+    assert_eq!(report.preservation.events.len(), 1);
+    let event = &report.preservation.events[0];
+    assert_eq!(
+        event.code,
+        hwp_model::PreservationCode::OpaqueControlUnrepresentable
+    );
+    assert_eq!(event.resource, hwp_model::PreservationResourceKind::Control);
+    assert_eq!(
+        event.disposition,
+        hwp_model::PreservationDisposition::Unrepresentable
+    );
+    assert_eq!(event.count, 1);
+}
+
+#[test]
+fn typed_report_records_missing_picture_binary_as_asset_loss() {
+    let mut doc = hwp_convert::from_markdown("본문\n");
+    append_control(
+        &mut doc,
+        hwp_model::Control::Picture(hwp_model::Picture {
+            common_data: Vec::new(),
+            width: hwp_model::HwpUnit(1000),
+            height: hwp_model::HwpUnit(500),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: None,
+            bin_ref: hwp_model::BinRef::ItemRef("missing-image".to_string()),
+            extras: Vec::new(),
+        }),
+    );
+
+    let out = tmp("typed-report-missing-image.hwpx");
+    let report = hwpx::write_document_with_report(&doc, &out).unwrap();
+
+    assert!(
+        report.warnings.is_empty(),
+        "ordinary warnings: {:?}",
+        report.warnings
+    );
+    assert_eq!(report.preservation.events.len(), 1);
+    let event = &report.preservation.events[0];
+    assert_eq!(event.code, hwp_model::PreservationCode::BinaryAssetRemoved);
+    assert_eq!(
+        event.resource,
+        hwp_model::PreservationResourceKind::BinaryAsset
+    );
+    assert_eq!(
+        event.disposition,
+        hwp_model::PreservationDisposition::Removed
+    );
+    assert_eq!(event.count, 1);
+
+    let legacy =
+        hwpx::write_document(&doc, &tmp("typed-report-missing-image-legacy.hwpx")).unwrap();
+    assert_eq!(legacy.len(), 1);
+    assert!(
+        legacy[0].starts_with("DROP: binary_asset_removed"),
+        "{legacy:?}"
+    );
+}
+
+#[test]
+fn typed_report_records_both_gso_drop_paths() {
+    let generic_gso = |data: Vec<u8>| {
+        hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data,
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+        })
+    };
+
+    let mut invalid_header = hwp_convert::from_markdown("본문\n");
+    append_control(&mut invalid_header, generic_gso(Vec::new()));
+    let header_report =
+        hwpx::write_document_with_report(&invalid_header, &tmp("typed-report-gso-header.hwpx"))
+            .unwrap();
+    assert_eq!(header_report.preservation.events.len(), 1);
+    assert_eq!(
+        header_report.preservation.events[0].code,
+        hwp_model::PreservationCode::GsoHeaderUnrepresentable
+    );
+
+    let mut invalid_shapes = hwp_convert::from_markdown("본문\n");
+    append_control(&mut invalid_shapes, generic_gso(vec![0; 24]));
+    let shape_report =
+        hwpx::write_document_with_report(&invalid_shapes, &tmp("typed-report-gso-shape.hwpx"))
+            .unwrap();
+    assert_eq!(shape_report.preservation.events.len(), 1);
+    assert_eq!(
+        shape_report.preservation.events[0].code,
+        hwp_model::PreservationCode::GsoShapeUnrepresentable
+    );
+}
+
 /// hwpx → IR → hwpx → IR 왕복: 의미 동등성.
 #[test]
 fn 왕복_의미_동등() {
@@ -1126,6 +1274,28 @@ fn ge_b5_settings_version_원문_passthrough_왕복() {
     let back = hwp_convert::from_json(&json).unwrap();
     assert_eq!(back.hwpx_settings_xml.as_deref(), Some(settings));
     assert_eq!(back.hwpx_version_xml.as_deref(), Some(version));
+}
+
+#[test]
+fn preview_image_bytes_are_preserved_on_same_format_rewrite() {
+    let mut doc = hwp_convert::from_markdown("preview pass-through\n");
+    doc.hwpx_preview_image = Some(VALID_PNG_1X1.to_vec());
+
+    let out = tmp("preview-image-passthrough.hwpx");
+    let report = hwpx::write_document_with_report(&doc, &out).unwrap();
+    assert!(report.preservation.is_lossless());
+
+    let bytes = std::fs::read(&out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut preview = Vec::new();
+    zip.by_name("Preview/PrvImage.png")
+        .unwrap()
+        .read_to_end(&mut preview)
+        .unwrap();
+    assert_eq!(preview, VALID_PNG_1X1);
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    assert_eq!(reread.hwpx_preview_image.as_deref(), Some(VALID_PNG_1X1));
 }
 
 /// GE-β5 보강: 슬롯이 None이면 두 파트가 기존 기본 상수와 바이트 동일하게 방출된다

@@ -39,7 +39,10 @@
 > **Opaque 보존은 왕복에서는 갭이 아니다. 합성(포맷 간 변환)과 렌더에서만 갭이다.**
 
 - hwp5의 `OpaqueRecord`(서브트리째 보존, [10](10-hwp5-structure-map.ko.md) §0 상태표)는
-  `hwp5→hwp5` 왕복에서 **바이트를 잃지 않는다** → 그 경로에선 갭 아님.
+  `hwp5→hwp5` 왕복에서 **바이트를 잃지 않는다** → 레코드 수준에서는 그 경로의 갭이 아니다.
+  다만 IR 기반 full container rewrite가 부속 CFB stream이나 storage metadata까지 보존한다는 뜻은
+  아니다. 2026-08-14부터 typed preservation gate가 이 넓은 범위의 손실을 감지해 발행을 거부하며,
+  source-preserving HWP container repair는 이슈 #90에 남아 있다.
 - 같은 레코드를 `hwp5→hwpx`로 **합성**하려면 의미를 해석해 OWPML로 다시 써야 하는데, 그 지식이
   없으므로 **드롭**된다 → 합성 경로에선 갭.
 - 렌더러가 그 개체(차트·OLE 등)를 그리려면 페이로드 해석이 필요한데 안 되므로 **빈자리** →
@@ -72,6 +75,13 @@
 ### 0.5 해소 이력
 
 해소된 항목은 카탈로그에서 지우지 않고 해당 행에 ✅와 날짜를 남긴다(무엇이 갭이었는지가 곧 지식이므로).
+
+- **2026-08-14 (이슈 #90 보존 게이트)**: 네이티브 writer에 closed-enum, content-free
+  `hwp-preservation-report-v1` ledger를 추가했다. 원본 없는 작성과 같은 포맷 write는 writer omission
+  또는 예상하지 않은 container/package loss가 있으면 atomic하게 실패하고, 포맷 간 strict 변환은
+  semantic asset, control, relationship, metadata도 비교한다. 이는 silent publication을 해소한 것이며
+  writer 자체의 갭을 해소한 것은 아니다. source-preserving HWP repair와 package-surgical HWPX 편집은
+  이슈 #90에 남아 있다.
 
 - **2026-07-15**: GA-5(버전 게이트), GE-α1~α5·α7(글자효과·밑줄모양·번호형식 hwpx 왕복),
   GE-β4(요약정보 필드), GH-1·GH-2(md/html 링크·이미지), GL-1(추출 옵션 CLI 노출) —
@@ -327,7 +337,7 @@ stale 갭이 아니다 — 갭은 아래 항목들이다.
 
 | ID | 대상 | 근거 코드 | 현 동작 | 영향 경로 | 난이도 |
 |---|---|---|---|---|---|
-| GE-β1 | **미리보기 이미지(PrvImage / Preview/PrvImage.png)** — read가 IR로 미포착, 재생성기(썸네일 렌더러)도 없음 | hwp5 `write.rs:226-228`(opts 제공 시만), hwpx `write/mod.rs:113`(PrvText만), `patch.rs:3` | 드롭(되쓰기) | 되쓰기 | S(렌더러 재활용 시) |
+| GE-β1 | **미리보기 이미지(PrvImage / Preview/PrvImage.png)** — ✅ HWPX raw pass-through는 2026-08-14 해소. HWP read는 아직 원본 preview를 IR로 포착하지 않고 writer는 명시적으로 렌더한 option만 사용 | hwp5 `write.rs`(opts 제공 시만), hwpx `read/mod.rs` + `write/mod.rs`, `patch.rs` | HWPX 보존, HWP 재생성 또는 생략 | HWP 되쓰기 | S(렌더러 재활용 시) |
 | GE-β2 | **Scripts(매크로)** — 원본 JScript를 버리고 한글 빈 문서 표본 상수로 대체 | hwp5 `write.rs:213-221`(표본 바이트 상수), hwpx `patch.rs:4` | 드롭→상수 | 되쓰기 | S |
 | GE-β3 | **DocOptions 부속 스트림** — `_LinkDoc`은 524B 0 상수, DRM·서명 6스트림은 미방출 | `write.rs:208-210`, [10](10-hwp5-structure-map.ko.md) §1 | 드롭/상수 | 되쓰기 | M |
 | GE-β4 | **요약정보 필드 소실** — 작성/수정일시·마지막저장자·설명 | `summary.rs`·`write.rs`·`hwp-model/src/document.rs`·hwpx `templates.rs` | ✅ **해소(2026-07-15)** — Metadata에 description/last_saved_by/create_time/modify_time(raw FILETIME u64) 추가, read/write 왕복. 인쇄일시·통계는 잔존(기본값 방출) | 되쓰기 | S |

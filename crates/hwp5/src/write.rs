@@ -11,8 +11,9 @@ use std::path::Path;
 
 use hwp_model::{
     BorderLine, Caption, CaptionDirection, CaptionSide, Cell, CharShape, Control, Document,
-    FaceName, HwpChar, LANG_COUNT, Metadata, OpaqueRecord, ParaShape, Paragraph, Picture, RawEntry,
-    Section, SectionDef, Style, Table,
+    FaceName, HwpChar, LANG_COUNT, Metadata, OpaqueRecord, ParaShape, Paragraph, Picture,
+    PreservationCode, PreservationDisposition, PreservationResourceKind, RawEntry, Section,
+    SectionDef, Style, Table, WriteReport,
 };
 
 use crate::codec::{ByteWriter, compress};
@@ -40,8 +41,21 @@ pub struct WriteOptions {
 }
 
 /// 문서를 HWP 5.0 파일로 저장한다. 경고(평탄화/드롭) 목록을 반환한다.
+///
+/// This is the legacy compatibility surface. New callers should use
+/// [`write_document_with_report`] so preservation events remain typed rather
+/// than being reconstructed from warning strings.
 pub fn write_document(doc: &Document, path: &Path, opts: &WriteOptions) -> Result<Vec<String>> {
-    let mut warnings = Vec::new();
+    write_document_with_report(doc, path, opts).map(WriteReport::into_legacy_warnings)
+}
+
+/// Writes an HWP 5.0 document and returns typed warnings and preservation events.
+pub fn write_document_with_report(
+    doc: &Document,
+    path: &Path,
+    opts: &WriteOptions,
+) -> Result<WriteReport> {
+    let mut report = WriteReport::new();
 
     // hwpx 출신 문서 정규화: hwp5 레코드(SHAPE_COMPONENT)가 없는 그림은
     // 쓸 수 없으므로 컨트롤과 확장 문자를 동기 제거한다
@@ -62,14 +76,14 @@ pub fn write_document(doc: &Document, path: &Path, opts: &WriteOptions) -> Resul
         // hwpx/md 출신 이미지에 hwp5 도형 레코드(SHAPE_COMPONENT + 그림)를 먼저
         // 합성한다 — 합성되면 extras가 채워져 아래 strip이 드롭하지 않는다.
         if synth_pictures {
-            synthesize_pictures(&mut d, &mut warnings);
+            synthesize_pictures(&mut d, &mut report);
         }
         if synth_gso {
-            degrade_hwpx_gso(&mut d, &mut warnings);
+            degrade_hwpx_gso(&mut d, &mut report);
         }
         for section in &mut d.sections {
             for para in &mut section.paragraphs {
-                strip_unwritable_pictures(para, &mut warnings);
+                strip_unwritable_pictures(para, &mut report);
             }
         }
         // 합성 5.1.x 문서: 줄 배치(PARA_LINE_SEG)를 합성한다. 5.1.x는 줄 배치
@@ -104,7 +118,7 @@ pub fn write_document(doc: &Document, path: &Path, opts: &WriteOptions) -> Resul
     };
 
     // 레코드 스트림 구성
-    let doc_info_nodes = emit_doc_info(doc, &mut warnings);
+    let doc_info_nodes = emit_doc_info(doc, &mut report);
     let doc_info = RecordNode::serialize_forest(&doc_info_nodes);
     // PARA_HEADER 꼬리 게이트: 5.0.3.2 이상은 '변경추적 병합 문단여부' UINT16이
     // 필수다(스펙 표 58, 전체 길이 24B). 합성 문단(tail 비어 있음)에만 적용해
@@ -125,7 +139,7 @@ pub fn write_document(doc: &Document, path: &Path, opts: &WriteOptions) -> Resul
                 synthesize,
                 opts.preserve_linesegs,
                 add_tracking_tail,
-                &mut warnings,
+                &mut report,
             );
             if synthesize {
                 assign_instance_ids(&mut roots, &mut inst_counter);
@@ -199,7 +213,7 @@ pub fn write_document(doc: &Document, path: &Path, opts: &WriteOptions) -> Resul
         }
     }
     if bin_written < doc.bin_streams.len() {
-        warnings.push(format!(
+        report.warning(format!(
             "BinData {}개 중 {}개만 동봉 (hwp5 BIN_DATA 테이블이 참조하는 항목만)",
             doc.bin_streams.len(),
             bin_written
@@ -262,7 +276,7 @@ pub fn write_document(doc: &Document, path: &Path, opts: &WriteOptions) -> Resul
         cfb.set_modified_time(&entry_path, cfb_epoch)?;
     }
     cfb.flush()?;
-    Ok(warnings)
+    Ok(report)
 }
 
 /// PARA_HEADER instance_id(offset 18~22)가 0이면 유니크 non-zero 값을 부여.
@@ -620,13 +634,13 @@ pub fn is_materialized_generated_picture(picture: &hwp_model::Picture, media: &[
 
 /// hwpx-출신 글상자의 문단을 본문으로 hoist해 텍스트를 보존한다(도형 래퍼는 생략).
 /// 순수 장식 도형은 건드리지 않아 strip이 드롭한다. 본문·표 셀·중첩 리스트 재귀.
-fn degrade_hwpx_gso(doc: &mut Document, warnings: &mut Vec<String>) {
+fn degrade_hwpx_gso(doc: &mut Document, warnings: &mut WriteReport) {
     for section in &mut doc.sections {
         degrade_hwpx_gso_list(&mut section.paragraphs, warnings);
     }
 }
 
-fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut Vec<String>) {
+fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport) {
     // 중첩 컨테이너(표 셀·모든 Generic 문단 리스트)를 먼저 재귀 처리한다.
     for p in paras.iter_mut() {
         for c in &mut p.controls {
@@ -662,7 +676,7 @@ fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut Vec<String>)
                     hoisted.extend(l.paragraphs.iter().cloned());
                 }
                 removed.push(i as u32);
-                warnings.push(
+                warnings.warning(
                     "hwpx 출신 글상자를 본문 텍스트로 저하(도형 래퍼 생략 — 한글 수용)".to_string(),
                 );
             }
@@ -743,7 +757,7 @@ fn has_synthesizable_picture(doc: &Document) -> bool {
 }
 
 /// 합성 문서의 hwpx 출신 이미지에 도형 레코드 + BIN_DATA 항목을 채운다.
-fn synthesize_pictures(doc: &mut Document, warnings: &mut Vec<String>) {
+fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     let bin_names: Vec<String> = doc.bin_streams.iter().map(|b| b.name.clone()).collect();
     if bin_names.is_empty() {
         return;
@@ -863,7 +877,7 @@ fn synth_pictures_para(
     inst: &mut u32,
     new_items: &mut Vec<hwp_model::BinDataItem>,
     renames: &mut Vec<(usize, String)>,
-    warnings: &mut Vec<String>,
+    warnings: &mut WriteReport,
 ) {
     for control in &mut para.controls {
         match control {
@@ -879,7 +893,12 @@ fn synth_pictures_para(
                     .position(|n| !item_ref.is_empty() && n.contains(&item_ref))
                     .or(if bin_names.is_empty() { None } else { Some(0) });
                 let Some(idx) = pick else {
-                    warnings.push("DROP: 이미지 바이너리 스트림을 찾지 못해 생략".to_string());
+                    warnings.loss(
+                        PreservationCode::BinaryAssetRemoved,
+                        PreservationResourceKind::BinaryAsset,
+                        PreservationDisposition::Removed,
+                        1,
+                    );
                     continue;
                 };
                 // 같은 스트림에 이미 storage_id가 있으면 재사용(공유 이미지).
@@ -1028,7 +1047,7 @@ fn synth_pictures_para(
 fn append_gso_description(
     common: &mut Vec<u8>,
     description: Option<&str>,
-    warnings: &mut Vec<String>,
+    warnings: &mut WriteReport,
 ) {
     let Some(description) = description.filter(|value| !value.is_empty()) else {
         common.extend_from_slice(&0u16.to_le_bytes());
@@ -1036,7 +1055,12 @@ fn append_gso_description(
     };
     let encoded = description.encode_utf16().collect::<Vec<_>>();
     let Ok(len) = u16::try_from(encoded.len()) else {
-        warnings.push("DROP: 그림 개체 설명이 HWP5 u16 길이 한계를 초과해 생략".to_string());
+        warnings.loss(
+            PreservationCode::ControlMetadataUnrepresentable,
+            PreservationResourceKind::Metadata,
+            PreservationDisposition::Unrepresentable,
+            1,
+        );
         common.extend_from_slice(&0u16.to_le_bytes());
         return;
     };
@@ -1048,14 +1072,18 @@ fn append_gso_description(
 
 /// hwp5 레코드가 없는 그림 컨트롤을 확장 문자와 동기 제거하고
 /// 남은 ExtCtrl의 ctrl_index를 재조정한다 (중첩 구조 재귀).
-fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut Vec<String>) {
+fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
     let mut removed: Vec<u32> = Vec::new();
     let mut kept = Vec::with_capacity(para.controls.len());
     for (i, mut control) in std::mem::take(&mut para.controls).into_iter().enumerate() {
         match &mut control {
             Control::Picture(p) if p.extras.is_empty() => {
-                warnings
-                    .push("DROP: hwp5 그림 레코드가 없는 이미지를 생략 (hwpx 출신)".to_string());
+                warnings.loss(
+                    PreservationCode::PictureControlRemoved,
+                    PreservationResourceKind::Control,
+                    PreservationDisposition::Removed,
+                    1,
+                );
                 removed.push(i as u32);
                 continue;
             }
@@ -1070,10 +1098,12 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut Vec<String>) {
                     && !((g.ctrl_id == *b"fn  " || g.ctrl_id == *b"en  ")
                         && !g.paragraph_lists.is_empty()) =>
             {
-                warnings.push(format!(
-                    "DROP: hwp5 페이로드가 없는 {:?} 컨트롤을 생략 (hwpx 출신)",
-                    String::from_utf8_lossy(&g.ctrl_id)
-                ));
+                warnings.loss(
+                    PreservationCode::OpaqueControlUnrepresentable,
+                    PreservationResourceKind::Control,
+                    PreservationDisposition::Unrepresentable,
+                    1,
+                );
                 removed.push(i as u32);
                 continue;
             }
@@ -1511,7 +1541,7 @@ fn hwp_string(w: &mut ByteWriter, s: &str) {
 
 // ─────────────────────────── DocInfo ───────────────────────────
 
-fn emit_doc_info(doc: &Document, _warnings: &mut Vec<String>) -> Vec<RecordNode> {
+fn emit_doc_info(doc: &Document, _warnings: &mut WriteReport) -> Vec<RecordNode> {
     let h = &doc.header;
     let mut roots = Vec::new();
 
@@ -1925,7 +1955,7 @@ fn emit_section(
     synthesize: bool,
     preserve_linesegs: bool,
     add_tracking_tail: bool,
-    warnings: &mut Vec<String>,
+    warnings: &mut WriteReport,
 ) -> Vec<RecordNode> {
     let mut roots: Vec<RecordNode> = section
         .paragraphs
@@ -1949,7 +1979,7 @@ fn emit_paragraph(
     synthesize: bool,
     preserve_linesegs: bool,
     add_tracking_tail: bool,
-    warnings: &mut Vec<String>,
+    warnings: &mut WriteReport,
 ) -> RecordNode {
     // 합성 경로(md/hwpx 출신)는 한글 문단 불변식을 직렬화 시 보정한다. 모든
     // 합성 문단(본문·표 셀·글상자)이 이 단일 지점을 거치므로 누락이 없다.
@@ -2149,13 +2179,17 @@ fn emit_control(
     synthesize: bool,
     preserve_linesegs: bool,
     add_tracking_tail: bool,
-    warnings: &mut Vec<String>,
+    warnings: &mut WriteReport,
 ) -> RecordNode {
     match control {
         Control::SectionDef(def) => emit_section_def(def),
-        Control::Table(table) => {
-            emit_table(table, synthesize, preserve_linesegs, add_tracking_tail)
-        }
+        Control::Table(table) => emit_table(
+            table,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            warnings,
+        ),
         Control::Picture(pic) => emit_picture(
             pic,
             synthesize,
@@ -2207,7 +2241,7 @@ fn emit_control(
                 }
             }
             if !g.extras.is_empty() && !g.paragraph_lists.is_empty() {
-                warnings.push(format!(
+                warnings.warning(format!(
                     "{:?} 컨트롤 내부 구조가 평탄화되어 저장됨 — 한글에서 확인 필요",
                     String::from_utf8_lossy(&g.ctrl_id)
                 ));
@@ -2283,6 +2317,7 @@ fn emit_table(
     synthesize: bool,
     preserve_linesegs: bool,
     add_tracking_tail: bool,
+    report: &mut WriteReport,
 ) -> RecordNode {
     let mut w = ByteWriter::new();
     w.write_bytes(b" lbt");
@@ -2358,7 +2393,6 @@ fn emit_table(
         tw.write_bytes(&table.table_tail);
     }
 
-    let mut cell_warnings = Vec::new();
     // Table 71 caption records precede the TABLE record.
     let mut children = match &table.caption {
         Some(caption) => emit_caption_records(
@@ -2366,7 +2400,7 @@ fn emit_table(
             synthesize,
             preserve_linesegs,
             add_tracking_tail,
-            &mut cell_warnings,
+            report,
         ),
         None => Vec::new(),
     };
@@ -2383,7 +2417,7 @@ fn emit_table(
                 synthesize,
                 preserve_linesegs,
                 add_tracking_tail,
-                &mut cell_warnings,
+                report,
             ));
         }
     }
@@ -2432,7 +2466,7 @@ fn emit_caption_records(
     synthesize: bool,
     preserve_linesegs: bool,
     add_tracking_tail: bool,
-    warnings: &mut Vec<String>,
+    warnings: &mut WriteReport,
 ) -> Vec<RecordNode> {
     let mut out = vec![emit_caption_header(caption)];
     for p in &caption.paragraphs {
@@ -2480,13 +2514,13 @@ fn emit_picture(
     synthesize: bool,
     preserve_linesegs: bool,
     add_tracking_tail: bool,
-    warnings: &mut Vec<String>,
+    warnings: &mut WriteReport,
 ) -> RecordNode {
     let mut w = ByteWriter::new();
     w.write_bytes(b" osg");
     if pic.common_data.is_empty() {
         // hwpx/md 출신: 개체 공통 속성 최소 구성 (글자처럼 취급)
-        warnings.push("그림 개체 공통 속성을 기본값으로 생성 — 한글에서 확인 필요".to_string());
+        warnings.warning("그림 개체 공통 속성을 기본값으로 생성 — 한글에서 확인 필요");
         w.write_u32(u32::from(pic.treat_as_char)); // 속성
         w.write_u32(0); // 세로 오프셋
         w.write_u32(0); // 가로 오프셋
@@ -2577,7 +2611,7 @@ mod tests {
             true,
             false,
             false,
-            &mut Vec::new(),
+            &mut WriteReport::new(),
         );
         assert_eq!(node.children[0].tag, tag::LIST_HEADER);
         assert_eq!(node.children[1].tag, tag::PARA_HEADER);
@@ -2661,15 +2695,15 @@ mod tests {
 
     #[test]
     fn gso_설명_utf16_u16_경계() {
-        let mut warnings = Vec::new();
+        let mut report = WriteReport::new();
         let mut common = Vec::new();
-        append_gso_description(&mut common, Some("😀"), &mut warnings);
+        append_gso_description(&mut common, Some("😀"), &mut report);
         assert_eq!(u16::from_le_bytes(common[0..2].try_into().unwrap()), 2);
         assert_eq!(common.len(), 6);
-        assert!(warnings.is_empty());
+        assert!(report.warnings.is_empty());
 
         let mut max_common = Vec::new();
-        append_gso_description(&mut max_common, Some(&"가".repeat(65_535)), &mut warnings);
+        append_gso_description(&mut max_common, Some(&"가".repeat(65_535)), &mut report);
         assert_eq!(
             u16::from_le_bytes(max_common[0..2].try_into().unwrap()),
             u16::MAX
@@ -2677,12 +2711,105 @@ mod tests {
         assert_eq!(max_common.len(), 2 + 65_535 * 2);
 
         let mut overflow = Vec::new();
-        append_gso_description(&mut overflow, Some(&"가".repeat(65_536)), &mut warnings);
+        append_gso_description(&mut overflow, Some(&"가".repeat(65_536)), &mut report);
         assert_eq!(overflow, 0u16.to_le_bytes());
         assert_eq!(
-            warnings.last().map(String::as_str),
-            Some("DROP: 그림 개체 설명이 HWP5 u16 길이 한계를 초과해 생략")
+            report.preservation.events.as_slice(),
+            &[hwp_model::PreservationEvent::new(
+                PreservationCode::ControlMetadataUnrepresentable,
+                PreservationResourceKind::Metadata,
+                PreservationDisposition::Unrepresentable,
+                1,
+            )]
         );
+    }
+
+    #[test]
+    fn typed_write_report_keeps_loss_events_out_of_ordinary_warnings() {
+        let mut doc = hwp_convert::from_markdown("typed report");
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"head",
+                data: Vec::new(),
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+            }));
+        let output =
+            std::env::temp_dir().join(format!("hwp5-typed-report-{}.hwp", std::process::id()));
+
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|warning| !warning.starts_with("DROP:"))
+        );
+        assert_eq!(report.preservation.events.len(), 1);
+        let event = &report.preservation.events[0];
+        assert_eq!(event.code, PreservationCode::OpaqueControlUnrepresentable);
+        assert_eq!(event.resource, PreservationResourceKind::Control);
+        assert_eq!(event.disposition, PreservationDisposition::Unrepresentable);
+        assert_eq!(event.count, 1);
+
+        let legacy = write_document(&doc, &output, &WriteOptions::default()).unwrap();
+        assert!(
+            legacy
+                .iter()
+                .any(|warning| { warning.starts_with("DROP: opaque_control_unrepresentable") })
+        );
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn typed_write_report_accounts_for_missing_picture_payload() {
+        let mut doc = hwp_convert::from_markdown("picture report");
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Picture(Picture {
+                common_data: Vec::new(),
+                width: hwp_model::HwpUnit(1000),
+                height: hwp_model::HwpUnit(500),
+                treat_as_char: true,
+                z_order: 0,
+                vert_offset: 0,
+                horz_offset: 0,
+                description: None,
+                crop: None,
+                flip: 0,
+                rotation: None,
+                brightness: 0,
+                contrast: 0,
+                effect_flags: 0,
+                effects_raw: Vec::new(),
+                caption: None,
+                bin_ref: hwp_model::BinRef::ItemRef("missing-image".to_string()),
+                extras: Vec::new(),
+            }));
+        let output = std::env::temp_dir().join(format!(
+            "hwp5-typed-picture-report-{}.hwp",
+            std::process::id()
+        ));
+
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|warning| !warning.starts_with("DROP:"))
+        );
+        assert!(report.preservation.events.iter().any(|event| {
+            event.code == PreservationCode::PictureControlRemoved
+                && event.resource == PreservationResourceKind::Control
+                && event.disposition == PreservationDisposition::Removed
+                && event.count == 1
+        }));
+        std::fs::remove_file(output).unwrap();
     }
 
     fn synth_table(placement: Option<hwp_model::GsoPlacement>) -> Table {
@@ -2716,7 +2843,13 @@ mod tests {
             z_order: 3,
             ..Default::default()
         };
-        let node = emit_table(&synth_table(Some(pl)), true, false, false);
+        let node = emit_table(
+            &synth_table(Some(pl)),
+            true,
+            false,
+            false,
+            &mut WriteReport::new(),
+        );
         assert_eq!(&node.data[0..4], b" lbt", "표 ctrl ID");
         assert_eq!(
             node.data.len(),
@@ -2735,7 +2868,13 @@ mod tests {
         );
 
         // 2) md 출신 경로(placement=None, common_data 비어 있음).
-        let node = emit_table(&synth_table(None), true, false, false);
+        let node = emit_table(
+            &synth_table(None),
+            true,
+            false,
+            false,
+            &mut WriteReport::new(),
+        );
         assert_eq!(node.data.len(), 46, "md 경로: 46B (스펙 표 69 최소)");
         assert_eq!(
             i32::from_le_bytes(node.data[40..44].try_into().unwrap()),

@@ -302,6 +302,7 @@ fn read_document_from_streams(
         bin_streams,
         hwpx_settings_xml: None,
         hwpx_version_xml: None,
+        hwpx_preview_image: None,
         hwp5_xml_template,
         hwp5_doc_history,
     };
@@ -386,6 +387,7 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
         // hwp5 출신 문서는 hwpx 부속 파트가 없다 → None(쓰기 시 기본 상수).
         hwpx_settings_xml: None,
         hwpx_version_xml: None,
+        hwpx_preview_image: None,
         hwp5_xml_template,
         hwp5_doc_history,
     };

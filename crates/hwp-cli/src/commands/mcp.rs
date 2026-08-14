@@ -1346,6 +1346,7 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             "output": report.output,
             "applied": report.applied,
             "warnings": report.warnings,
+            "preservation": report.preservation,
         }))
         .unwrap_or_default(),
     )])
@@ -1433,6 +1434,7 @@ fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             "output": request.output,
             "strict": request.strict,
             "warnings": report.warnings,
+            "preservation": report.preservation,
         }))
         .unwrap_or_default(),
     )])
@@ -1467,6 +1469,7 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         &serde_json::to_string_pretty(&json!({
             "output": report.output,
             "warnings": report.warnings,
+            "preservation": report.preservation,
         }))
         .unwrap_or_default(),
     )])
@@ -2784,9 +2787,11 @@ mod tests {
             &ctx(),
         );
         assert!(
-            result
-                .as_ref()
-                .is_err_and(|error| error.contains("보존 불가") && error.contains("zzzz")),
+            result.as_ref().is_err_and(|error| {
+                error.contains("보존 불가")
+                    && error.contains("opaque_control_unrepresentable")
+                    && !error.contains("zzzz")
+            }),
             "DROP은 hard failure여야: {result:?}"
         );
         assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");

@@ -45,7 +45,10 @@ The same record can be a gap or not **depending on which path you look from**. T
 
 - An hwp5 `OpaqueRecord` (the whole subtree preserved; see the status table in
   [10](10-hwp5-structure-map.md) §0) **loses no bytes** in an `hwp5 → hwp5` round-trip, so it is
-  not a gap on that path.
+  not a record-level gap on that path. This does not imply that an IR-based full container rewrite
+  preserves ancillary CFB streams or storage metadata. Since 2026-08-14, the typed preservation gate
+  detects that wider loss and refuses publication; source-preserving HWP container repair remains
+  tracked by issue #90.
 - To **synthesize** that same record as `hwp5 → hwpx`, its meaning would have to be interpreted and
   rewritten as OWPML; that knowledge is missing, so it is **dropped**, making it a gap on the
   synthesis path.
@@ -83,6 +86,13 @@ The `crates/` prefix is omitted (`hwp5/src/write.rs` means `crates/hwp5/src/writ
 
 Resolved items are not deleted from the catalog; the row keeps a ✅ and a date (what used to be a gap
 is itself knowledge).
+
+- **2026-08-14 (issue #90 preservation gate)**: native writers gained the closed-enum,
+  content-free `hwp-preservation-report-v1` ledger. Source-free authoring and same-format writes now
+  fail atomically on writer omissions or unexpected container/package loss; cross-format strict
+  conversion also compares semantic assets, controls, relationships and metadata. This resolves
+  silent publication, not the underlying writer gaps: source-preserving HWP repair and
+  package-surgical HWPX editing remain open in #90.
 
 - **2026-07-15**: GA-5 (version gate), GE-α1 to α5 and α7 (character effects, underline shape and
   numbering format in the hwpx round-trip), GE-β4 (summary information fields), GH-1 and GH-2
@@ -383,7 +393,7 @@ time and is therefore not a stale gap; the gaps are the items below.
 
 | ID | Target | Code evidence | Current behavior | Paths | Difficulty |
 |---|---|---|---|---|---|
-| GE-β1 | **The preview image (PrvImage / Preview/PrvImage.png)**: read does not capture it into the IR and there is no regenerator (thumbnail renderer) | hwp5 `write.rs:226-228` (only when opts provide it), hwpx `write/mod.rs:113` (PrvText only), `patch.rs:3` | dropped (rewrite) | rewrite | S (if the renderer is reused) |
+| GE-β1 | **The preview image (PrvImage / Preview/PrvImage.png)**: ✅ HWPX raw pass-through resolved 2026-08-14; HWP read still does not capture the source preview and its writer uses only an explicitly rendered option | hwp5 `write.rs` (only when opts provide it), hwpx `read/mod.rs` + `write/mod.rs`, `patch.rs` | HWPX preserved; HWP regenerated or omitted | HWP rewrite | S (if the renderer is reused) |
 | GE-β2 | **Scripts (macros)**: the original JScript is discarded and replaced with the constant from an empty Hancom document | hwp5 `write.rs:213-221` (sample byte constants), hwpx `patch.rs:4` | dropped → constant | rewrite | S |
 | GE-β3 | **DocOptions ancillary streams**: `_LinkDoc` is a 524B zero constant and the six DRM and signature streams are not emitted | `write.rs:208-210`, [10](10-hwp5-structure-map.md) §1 | dropped/constant | rewrite | M |
 | GE-β4 | **Summary information fields lost**: creation and modification time, last saved by, description | `summary.rs`, `write.rs`, `hwp-model/src/document.rs`, hwpx `templates.rs` | ✅ **resolved (2026-07-15)**: Metadata gained description, last_saved_by, create_time and modify_time (raw FILETIME u64) with a read/write round-trip. Print time and statistics remain (defaults emitted) | rewrite | S |

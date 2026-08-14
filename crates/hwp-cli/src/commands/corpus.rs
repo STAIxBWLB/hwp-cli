@@ -1062,12 +1062,12 @@ fn generate(
             if !read.warnings.is_empty() {
                 anyhow::bail!("intermediate HWPX emitted warnings")
             }
-            let warnings = crate::commands::convert::write_hwp_structural_isolated(
+            let writer_report = crate::commands::convert::write_hwp_structural_isolated(
                 &read.document,
                 output,
                 font_files,
             )?;
-            crate::commands::reject_drop_warnings("corpus", &warnings)
+            crate::commands::reject_preservation_loss("corpus", &writer_report.preservation)
         })();
         let cleanup = if intermediate.is_file() {
             fs::remove_file(&intermediate).context("corpus intermediate cleanup failed")

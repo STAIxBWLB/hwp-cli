@@ -240,6 +240,7 @@ pub struct EditReport {
     pub output: String,
     pub applied: usize,
     pub warnings: Vec<String>,
+    pub preservation: hwp_model::PreservationReport,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -407,6 +408,7 @@ impl EditPlan {
 pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
     let report = execute(input, output, plan)?;
     crate::commands::convert::print_warnings(&report.warnings);
+    crate::commands::preservation::print_report(&report.preservation);
     eprintln!("편집 완료: {} → {}", input.display(), output.display());
     Ok(())
 }
@@ -448,6 +450,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             output: output.display().to_string(),
             applied: report.applied_requests,
             warnings: report.warnings,
+            preservation: hwp_model::PreservationReport::new(),
         });
     }
 
@@ -954,13 +957,30 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         .iter()
         .map(|request| format!("미적용 편집 요청: {request}"))
         .collect::<Vec<_>>();
-    let writer_warnings = crate::commands::output::write_validated(
+    let writer_report = crate::commands::output::write_validated(
         output,
         Some(input),
-        |staged| write_output(&doc, staged, structural, output_format),
-        |staged, writer_warnings| {
+        |staged| {
+            let mut report = write_output(&doc, staged, structural, output_format)?;
             if output_format.supports_verify() {
-                crate::commands::reject_drop_warnings("edit", writer_warnings)?;
+                let removed_binary_allowance =
+                    crate::commands::preservation::intentional_removed_binary_assets(
+                        &original_doc,
+                        &doc,
+                    );
+                report.preservation.extend(
+                    crate::commands::preservation::inspect_same_format_container_with_binary_allowance(
+                        input,
+                        staged,
+                        removed_binary_allowance,
+                    )?,
+                );
+            }
+            Ok(report)
+        },
+        |staged, writer_report| {
+            if output_format.supports_verify() {
+                crate::commands::reject_preservation_loss("edit", &writer_report.preservation)?;
             }
             if plan.verify {
                 verify_output(staged, Some(&doc))?;
@@ -968,11 +988,12 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             Ok(())
         },
     )?;
-    warnings.extend(writer_warnings);
+    warnings.extend(writer_report.warnings);
     Ok(EditReport {
         output: output.display().to_string(),
         applied: edits,
         warnings,
+        preservation: writer_report.preservation,
     })
 }
 
@@ -1389,21 +1410,21 @@ fn write_output(
     output: &Path,
     structural: bool,
     output_format: OutputFormat,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<hwp_model::WriteReport> {
     match output_format {
         // 구조 편집은 삽입 문단/행에 불변식을 세우려 합성 경로를 강제한다.
         OutputFormat::Hwp if structural => {
             crate::commands::convert::write_hwp_structural(doc, output)
         }
         OutputFormat::Hwp => crate::commands::convert::write_hwp_edited(doc, output),
-        OutputFormat::Hwpx => Ok(hwpx::write_document(doc, output)?),
+        OutputFormat::Hwpx => Ok(hwpx::write_document_with_report(doc, output)?),
         OutputFormat::Json => {
             fs::write(output, hwp_convert::to_json(doc, true, true)?)?;
-            Ok(Vec::new())
+            Ok(hwp_model::WriteReport::new())
         }
         OutputFormat::Markdown => {
             fs::write(output, hwp_convert::to_markdown(doc))?;
-            Ok(Vec::new())
+            Ok(hwp_model::WriteReport::new())
         }
     }
 }

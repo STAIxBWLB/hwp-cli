@@ -24,4 +24,8 @@ pub use package::{
     PackageLimitsProfile,
 };
 pub use read::{ReadResult, parse_content_meta, read_document, read_structure};
-pub use write::{DEFAULT_SETTINGS_XML, DEFAULT_VERSION_XML, write_document};
+pub use write::{
+    DEFAULT_SETTINGS_XML, DEFAULT_VERSION_XML, HwpxWriteOptions, write_document,
+    write_document_with, write_document_with_limits, write_document_with_report,
+    write_document_with_report_with, write_document_with_report_with_limits,
+};

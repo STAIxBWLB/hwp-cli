@@ -71,17 +71,18 @@ The read/write path for each part:
 | `Contents/section{i}.xml` | body (paragraphs, tables, shapes) | `read/section.rs:52` `parse_section` | `write/section.rs:50` `write_section` | see §3.1 and §4 |
 | `BinData/imageN.*` | embedded image originals | `read/mod.rs:47` → `BinStream` | `write/mod.rs:110` ← `BinCollector` (`section.rs:24`) | bytes preserved (deduplicated) |
 | `Preview/PrvText.txt` | preview text | **none** | `write/mod.rs:113`, the first 1000 characters of `doc.plain_text()` | regenerated from the body |
-| `Preview/PrvImage.png` | preview thumbnail | **none** | **none (lost on the IR path)** | preserved only by `patch.rs` through a raw copy |
+| `Preview/PrvImage.png` | preview thumbnail | raw pass-through (`Document.hwpx_preview_image`, excluded from JSON) | re-emits the original when present | ✅ bytes preserved on the native IR path (2026-08-14); `patch.rs` still raw-copies the entire entry |
 
 **Write entry order** (`write/mod.rs:72-114`, leftmost first): `mimetype` (STORED) → `version.xml` →
 `META-INF/container.rdf` → `container.xml` → `manifest.xml` → `Contents/content.hpf` → `header.xml` →
-`section{0..}.xml` → `BinData/*` → `Preview/PrvText.txt` → `settings.xml`. `mimetype` must be the
+`section{0..}.xml` → `BinData/*` → `Preview/PrvText.txt` → optional `Preview/PrvImage.png` →
+`settings.xml`. `mimetype` must be the
 first local header and uncompressed (an OPC rule; violating it makes Hancom judge the file corrupt).
 
 **Read entry** (`read/mod.rs:24` `read_document`): header → sections (sorted numerically so that
-`section0 < ... < section10`, `package.rs:105`) → BinData → version → content.hpf. `settings.xml`,
-`Preview/*` and `META-INF/*` have no read path and never enter the IR; on an IR round-trip, write
-fills them with constants or regenerates them.
+`section0 < ... < section10`, `package.rs:105`) → BinData → version → content.hpf → settings and
+preview-image pass-through. Preview text is regenerated. `META-INF/*` still has no IR read path and
+is filled with constants on a full rewrite.
 
 ---
 
