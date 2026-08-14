@@ -411,6 +411,12 @@ impl EditPlan {
     }
 }
 
+/// Render an optional insertion boundary for progress output.
+fn fmt_at(at: Option<u16>) -> String {
+    at.map(|a| a.to_string())
+        .unwrap_or_else(|| "end".to_string())
+}
+
 /// Parsed `--add-row` spec: `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]` (#77).
 struct AddRowSpec {
     table: usize,
@@ -799,8 +805,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     hwp_convert::add_rows_at(&mut doc, s.table, s.at, s.count, s.template_row)
                         .map_err(|e| anyhow::anyhow!(e))?;
                     eprintln!(
-                        "표 행 추가: 표{} 위치{:?} 개수{} 템플릿{:?}",
-                        s.table, s.at, s.count, s.template_row
+                        "표 행 추가: 표{} 위치{} 개수{} 템플릿{}",
+                        s.table,
+                        fmt_at(s.at),
+                        s.count,
+                        fmt_at(s.template_row)
                     );
                     edits += 1;
                 }
@@ -811,8 +820,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     hwp_convert::add_table_columns(&mut doc, s.table, s.at, s.count)
                         .map_err(|e| anyhow::anyhow!(e))?;
                     eprintln!(
-                        "표 열 추가: 표{} 위치{:?} 개수{} (전체 폭 유지)",
-                        s.table, s.at, s.count
+                        "표 열 추가: 표{} 위치{} 개수{} (전체 폭 유지)",
+                        s.table,
+                        fmt_at(s.at),
+                        s.count
                     );
                     edits += 1;
                 }
@@ -1378,13 +1389,20 @@ fn apply_typed_operation(
         } => {
             hwp_convert::add_rows_at(doc, *table, *at, *count, *template_row)
                 .map_err(|error| anyhow::anyhow!(error))?;
-            eprintln!("표 행 추가: 표{table} 위치={at:?} 개수={count} 템플릿={template_row:?}");
+            eprintln!(
+                "표 행 추가: 표{table} 위치={} 개수={count} 템플릿={}",
+                fmt_at(*at),
+                fmt_at(*template_row)
+            );
             *edits += 1;
         }
         TypedEditOperation::AddCol { table, at, count } => {
             hwp_convert::add_table_columns(doc, *table, *at, *count)
                 .map_err(|error| anyhow::anyhow!(error))?;
-            eprintln!("표 열 추가: 표{table} 위치={at:?} 개수={count} (전체 폭 유지)");
+            eprintln!(
+                "표 열 추가: 표{table} 위치={} 개수={count} (전체 폭 유지)",
+                fmt_at(*at)
+            );
             *edits += 1;
         }
         TypedEditOperation::DeleteRow { table, row } => {

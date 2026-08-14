@@ -1255,6 +1255,12 @@ fn add_rows_in_table_inner(
             if donor.row_span > 1 {
                 nc.height = hwp_model::HwpUnit(rowh[tpl as usize]);
             }
+            if donor.col_span > 1 || donor.row_span > 1 {
+                // The hwp5 LIST_HEADER tail embeds the donor's (region) width;
+                // after projecting the geometry that byte pattern is stale.
+                // Clear it so the writer synthesizes a tail for the new width.
+                nc.header_tail = Vec::new();
+            }
             let mut para = blank_para_like(donor.paragraphs.first());
             next_inst = next_inst.wrapping_add(1);
             para.header.instance_id = next_inst;
@@ -1999,16 +2005,17 @@ mod tests {
         // and its region width is projected back to the per-column width.
         let mut doc = from_markdown("| 가 | 나 | 다 |\n|---|---|---|\n| 1 | 2 | 3 |\n");
         merge_cells(&mut doc, 0, 0, 0, 0, 2).unwrap(); // header row: 3-wide merge
-        let colw_sum: i32 = {
-            let t = first_table(&doc);
-            let w: i32 = t
+        // Give the merged anchor a non-empty LIST_HEADER tail (as hwp5-sourced
+        // documents have) to prove the projected cells do not inherit it stale.
+        {
+            let t = first_table_mut(&mut doc);
+            let anchor = t
                 .cells
-                .iter()
-                .filter(|c| c.row == 1)
-                .map(|c| c.width.0)
-                .sum();
-            w
-        };
+                .iter_mut()
+                .find(|c| c.row == 0 && c.col == 0)
+                .unwrap();
+            anchor.header_tail = vec![0x5a; 12];
+        }
         // Insert one row before row 1 using merged row 0 as the style template.
         add_rows_at(&mut doc, 0, Some(1), 1, Some(0)).unwrap();
         let t = first_table(&doc);
@@ -2017,10 +2024,21 @@ mod tests {
         let new: Vec<&hwp_model::Cell> = t.cells.iter().filter(|c| c.row == 1).collect();
         assert_eq!(new.len(), 3, "merged donor projected to three 1x1 cells");
         assert!(new.iter().all(|c| cell_text(c).is_empty()));
-        let new_sum: i32 = new.iter().map(|c| c.width.0).sum();
-        assert_eq!(
-            new_sum, colw_sum,
-            "projected widths tile the full table width"
+        // Each new cell gets its own column's width (row 2 holds the original 1x1
+        // cells, so it is the per-column reference).
+        for c in &new {
+            let reference = t
+                .cells
+                .iter()
+                .find(|x| x.row == 2 && x.col == c.col)
+                .expect("original row cell");
+            assert_eq!(c.width, reference.width, "per-column width projection");
+        }
+        // The donor tail embeds the merged region's width; projected cells must
+        // not carry it stale (the writer re-synthesizes one for the new width).
+        assert!(
+            new.iter().all(|c| c.header_tail.is_empty()),
+            "stale donor tail cleared"
         );
     }
 
