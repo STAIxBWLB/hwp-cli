@@ -3213,9 +3213,10 @@ fn emit_cell_header(cell: &Cell) -> RecordNode {
     }
 }
 
-/// 표본 실측 46B 레이아웃 충전: 텍스트 폭(셀 폭 반복) + 예약 8B. 셀 LIST_HEADER의
-/// `header_tail`이 비어 있을 때 writer가 합성하는 바이트 — canonicalizer도 같은
-/// 투영을 쓰므로 이 함수가 단일 기준이다.
+/// Measured 46-byte genuine-file layout padding: text width (repeats the cell
+/// width) + 8 reserved bytes. These are the bytes the writer synthesizes when a
+/// cell LIST_HEADER's `header_tail` is empty — the canonicalizer uses the same
+/// projection, so this function is the single source of truth.
 pub fn synthesized_cell_header_tail(width: i32) -> Vec<u8> {
     let mut v = Vec::with_capacity(12);
     v.extend_from_slice(&width.to_le_bytes());
