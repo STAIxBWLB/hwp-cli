@@ -692,13 +692,14 @@ fn split_cell_in_table(table: &mut hwp_model::Table, row: u16, col: u16) -> Resu
 }
 
 /// `table_index`번째 표(0-기반) **끝에** 열을 하나 추가한다(mcp·기존 CLI 호환).
-/// 전체 표 폭은 유지된다([`add_table_columns`]의 append 특수형). 병합 셀 표도 지원.
+/// Total table width is preserved (the append special case of [`add_table_columns`]).
+/// Merged tables are supported.
 pub fn add_col(doc: &mut Document, table_index: usize) -> Result<(), String> {
     add_table_columns(doc, table_index, None, 1)
 }
 
-/// `table_index`번째 표의 at_col 위치(0-기반, 0..=cols)에 빈 열을 하나 삽입한다.
-/// [`add_table_columns`]의 count=1 특수형.
+/// Insert a single empty column before `at_col` (0-based, 0..=cols) of table
+/// `table_index` — the count=1 special case of [`add_table_columns`].
 pub fn add_table_column(doc: &mut Document, table_index: usize, at_col: u16) -> Result<(), String> {
     add_table_columns(doc, table_index, Some(at_col), 1)
 }
@@ -788,7 +789,7 @@ fn add_table_column_in_table(
         };
         acc += scaled[i];
     }
-    // 최종 열 폭(길이 cols+count): 삽입 위치에 new_w × count 삽입.
+    // Final column widths (length cols+count): insert new_w x count at `at_col`.
     let mut final_colw: Vec<i64> = Vec::with_capacity(cols as usize + count as usize);
     final_colw.extend_from_slice(&scaled[..at_col as usize]);
     final_colw.extend(std::iter::repeat_n(new_w, count as usize));
@@ -800,7 +801,7 @@ fn add_table_column_in_table(
             "표 폭({total})이 부족해 열 {count}개를 삽입할 수 없습니다 (열당 최소 1단위)"
         ));
     }
-    // 구조 갱신: 삽입 대역을 가로지르는 병합 확장 + 이후 셀 이동.
+    // Structure update: extend merges crossing the band + shift later cells.
     let rowh = row_heights(table);
     let tmpl = table.cells[0].clone();
     let mut band_covered = vec![vec![false; count as usize]; table.rows as usize];
@@ -819,7 +820,7 @@ fn add_table_column_in_table(
             }
         }
     }
-    // 대역에서 확장 스팬에 덮이지 않은 좌표에 새 1×1 빈 셀.
+    // New blank 1x1 cells at band coordinates not covered by an extended span.
     let mut next_inst = max_instance_id(table);
     for r in 0..table.rows {
         for k in 0..count {
@@ -850,10 +851,11 @@ fn add_table_column_in_table(
     validate_table_invariants(table)
 }
 
-/// 병합 없는 표 **끝**에 열 count개 추가 — #9 원본 알고리즘(행별 정확 폭 재분배)의
-/// count 일반화. 각 행의 총폭을 독립적으로 보존하므로 열 폭이 행마다 달라도(비그리드)
-/// 정확하다. 병합 표엔 쓰지 않는다(열 정렬이 깨짐 — 그 경우는
-/// [`add_table_column_in_table`]의 열 폭 기반 경로가 처리).
+/// Append `count` columns to a merge-free table — the count generalization of the
+/// original #9 algorithm (exact per-row width redistribution). Each row's total
+/// width is preserved independently, so non-uniform (non-grid) rows stay exact.
+/// Not used for merged tables (column alignment breaks there — the column-width
+/// based path in [`add_table_column_in_table`] handles those).
 fn add_col_append_uniform(table: &mut hwp_model::Table, count: u16) -> Result<(), String> {
     let cols = table.cols;
     let count64 = i64::from(count);
