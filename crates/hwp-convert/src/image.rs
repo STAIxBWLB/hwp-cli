@@ -336,6 +336,8 @@ fn insert_image_rec(para: &mut Paragraph, anchor: &str, pic: &Picture) -> bool {
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
                         if insert_image_rec(p, anchor, pic) {
+                            // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                            g.hwpx_raw_xml = None;
                             return true;
                         }
                     }
@@ -504,6 +506,8 @@ fn insert_seal_rec(
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
                         if insert_seal_rec(p, anchor, seal_w, seal_h, name) {
+                            // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                            g.hwpx_raw_xml = None;
                             return true;
                         }
                     }

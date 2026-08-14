@@ -49,8 +49,10 @@ container paths, payload fragments and hashes are never part of the public repor
 - Same-format conversion and editing additionally inventory HWP streams/storages or HWPX entries.
   Any unexpected removal or change to an opaque non-target item blocks publication even without
   `--strict`.
-- Cross-format `--strict` rejects semantic asset, control, relationship or metadata loss. Non-strict
-  conversion may publish only while returning the explicit typed ledger.
+- Cross-format `--strict` rejects semantic asset, control, relationship or metadata loss, and
+  package/container-level assets the IR cannot carry (HWPX extra entries → HWP; HWP
+  XMLTemplate/DocHistory slots → HWPX). `--loss-report <PATH>` writes the ledger as JSON even on
+  success. Non-strict conversion may publish only while returning the explicit typed ledger.
 
 This gate prevents known silent loss; it does not certify Hancom compatibility. The current full HWP
 rewriter still requires the source-preserving repair and independent Hancom-open checks tracked by

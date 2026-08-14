@@ -9,18 +9,21 @@
 //! <hp:t>관명}}</hp:t>`) 문자열 치환이 매칭하지 못한다. XML 이벤트 단위 재구성이
 //! 필요한 편집은 IR 경로(`hwp edit`)를 쓴다.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hwp_model::WriteReport;
+
 use crate::error::{HwpxError, Result};
 use crate::package::{
     HwpxPackage, PackageLimits, inspect_archive, preflight_central_directory, read_bounded,
     verify_archive_integrity,
 };
+use crate::write::section::BinCollector;
 
 static PATCH_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const HWPX_PARAGRAPH_NAMESPACE: &str = "http://www.hancom.co.kr/hwpml/2011/paragraph";
@@ -611,6 +614,235 @@ fn invalid_data(e: std::string::FromUtf8Error) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, e)
 }
 
+/// 외과 수술 재작성에서 다시 직렬화할 콘텐츠 엔트리 집합.
+///
+/// 여기 열거되지 않은 엔트리(BinData, META-INF, Preview, DocOptions, 비대상
+/// section 등)는 모두 원본 패키지에서 raw 복사로 바이트 보존한다.
+#[derive(Debug, Clone)]
+pub struct DirtyEntries {
+    /// 재직렬화할 `Contents/section{i}.xml` 인덱스. `None`이면 전체 섹션.
+    pub sections: Option<Vec<usize>>,
+    /// `Contents/header.xml` 재생성 여부.
+    pub header: bool,
+    /// `Contents/content.hpf` 재생성 여부. 새 BinData 엔트리가 추가되면
+    /// 매니페스트 갱신을 위해 패치가 강제로 켠다.
+    pub content_hpf: bool,
+}
+
+impl DirtyEntries {
+    /// 모든 콘텐츠 엔트리를 다시 직렬화한다.
+    pub fn all() -> Self {
+        Self {
+            sections: None,
+            header: true,
+            content_hpf: true,
+        }
+    }
+}
+
+/// 편집된 IR을 원본 HWPX 패키지에 외과적으로 반영한다: `dirty`로 표시된 콘텐츠
+/// 엔트리만 IR에서 재직렬화하고, 나머지 엔트리는 raw 복사로 바이트 보존한다.
+/// 편집으로 새로 들어온 바이너리는 새 `BinData/*` 엔트리로 패키지 끝에 추가하고
+/// content.hpf 매니페스트를 갱신한다(이 경우 content.hpf는 dirty 여부와 무관하게
+/// 재생성된다).
+///
+/// 기존 바이너리는 원본 패키지의 OPF 매니페스트 id로 [`BinCollector`]를 seed해서
+/// 재직렬화된 섹션의 `binaryItemIDRef`가 원본 id/href를 그대로 유지하게 한다.
+pub fn rewrite_document_staged(
+    input: &Path,
+    output: &Path,
+    doc: &hwp_model::Document,
+    dirty: &DirtyEntries,
+    limits: &PackageLimits,
+) -> Result<WriteReport> {
+    // 원본 패키지의 엔트리 목록과 OPF 매니페스트 (href → id)를 읽는다.
+    // in-place 편집도 입력 파일은 게시 전까지 바뀌지 않으므로 여기서 읽어도 안전하다.
+    let mut source = HwpxPackage::open_with_limits(input, limits)?;
+    let source_entry_names: BTreeSet<String> = source
+        .entries()?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    let manifest_ids = source
+        .read_entry("Contents/content.hpf")
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .map(|xml| opf_item_ids(&xml))
+        .unwrap_or_default();
+    drop(source);
+
+    // seed: 원본 패키지에 실제로 존재하는 BinData 엔트리만 심는다. 편집으로 새로
+    // 들어온 스트림(패키지에 없는 이름)은 seed하지 않는다 — 뒤에서 새 엔트리로 추가된다.
+    let mut bins = BinCollector::default();
+    let mut used_ids: BTreeSet<String> = BTreeSet::new();
+    for stream in &doc.bin_streams {
+        if !stream.name.starts_with("BinData/") || !source_entry_names.contains(&stream.name) {
+            continue;
+        }
+        let base_id = manifest_ids
+            .get(&stream.name)
+            .cloned()
+            .unwrap_or_else(|| bin_stem_id(&stream.name));
+        let id = unique_bin_id(base_id, &mut used_ids);
+        let (_, mime) = crate::write::section::sniff(&stream.data);
+        bins.seed(
+            id,
+            stream.name.clone(),
+            mime.to_string(),
+            stream.data.clone(),
+        );
+    }
+    let seed_count = bins.items.len();
+
+    // dirty 섹션만 IR에서 재직렬화한다.
+    let section_indices: Vec<usize> = match &dirty.sections {
+        Some(indices) => indices.clone(),
+        None => (0..doc.sections.len()).collect(),
+    };
+    let mut report = WriteReport::new();
+    let mut replacements: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for &i in &section_indices {
+        let Some(section) = doc.sections.get(i) else {
+            return Err(HwpxError::PackageIntegrity(format!(
+                "dirty 섹션 인덱스가 문서 범위를 벗어납니다: {i}"
+            )));
+        };
+        let xml = crate::write::section::write_section_with_report(
+            doc,
+            section,
+            false, // 편집으로 낡은 줄 배치는 한글이 재계산(보안 경고 방지)
+            &mut bins,
+            &mut report,
+        );
+        replacements.insert(format!("Contents/section{i}.xml"), xml.into_bytes());
+    }
+
+    // 패키지에 없는 신규 스트림이 섹션 직렬화에서 수집되지 않았으면(참조 없는 추가)
+    // write/mod.rs의 passthrough와 같은 규칙으로 새 엔트리를 배정한다.
+    for stream in &doc.bin_streams {
+        if stream.name.starts_with("BinData/") && source_entry_names.contains(&stream.name) {
+            continue; // seed 처리됨
+        }
+        if bins.items.iter().any(|(.., bytes)| *bytes == stream.data) {
+            continue; // 같은 바이트가 이미 등록됨
+        }
+        let (ext, mime) = crate::write::section::sniff(&stream.data);
+        bins.allocate(ext, mime, stream.data.clone());
+    }
+    // seed 이후로 collector에 등록된 항목이 패키지에 추가할 새 엔트리다.
+    let appends: Vec<(String, Vec<u8>)> = bins.items[seed_count..]
+        .iter()
+        .map(|(_, href, _, bytes)| (href.clone(), bytes.clone()))
+        .collect();
+
+    // content.hpf: dirty이거나 새 BinData가 추가되면 seed+신규 전체 매니페스트로
+    // 재생성한다. seed id는 원본 매니페스트 id라 기존 항목 나열은 원본과 같다.
+    if dirty.content_hpf || !appends.is_empty() {
+        let bin_meta: Vec<(String, String, String)> = bins
+            .items
+            .iter()
+            .map(|(id, href, mime, _)| (id.clone(), href.clone(), mime.clone()))
+            .collect();
+        let xml = crate::write::templates::content_hpf(
+            doc.sections.len(),
+            &bin_meta,
+            &doc.hwpx_opf_extra_items,
+            &doc.metadata,
+        );
+        replacements.insert("Contents/content.hpf".to_string(), xml.into_bytes());
+    }
+
+    if dirty.header {
+        let xml = crate::write::header::write_header(&doc.header, doc.sections.len().max(1));
+        replacements.insert("Contents/header.xml".to_string(), xml.into_bytes());
+    }
+
+    // replacements에 있는데 원본 패키지에 없는 엔트리는 조용히 유실되므로 감지한다.
+    let mut consumed: BTreeSet<String> = BTreeSet::new();
+    process_package_with_appends(
+        input,
+        output,
+        limits,
+        |name| replacements.contains_key(name),
+        |name, _data| {
+            consumed.insert(name.to_string());
+            Ok(replacements.get(name).cloned())
+        },
+        appends,
+    )?;
+    if consumed.len() != replacements.len() {
+        let missing: Vec<&String> = replacements
+            .keys()
+            .filter(|name| !consumed.contains(*name))
+            .collect();
+        return Err(HwpxError::PackageIntegrity(format!(
+            "dirty 엔트리가 원본 패키지에 없습니다: {missing:?}"
+        )));
+    }
+    Ok(report)
+}
+
+/// OPF(content.hpf) 매니페스트에서 `opf:item`의 (href → id) 매핑을 읽는다.
+/// seed id를 원본 매니페스트 id와 맞추는 데 쓴다 — 재직렬화된 섹션의
+/// `binaryItemIDRef`가 raw 복사된 매니페스트와 어긋나지 않게 한다.
+/// 파싱에 실패하면 빈 매핑을 돌려준다(호출자가 파일명 stem으로 폴백).
+fn opf_item_ids(xml: &str) -> BTreeMap<String, String> {
+    use quick_xml::events::Event;
+
+    let mut map = BTreeMap::new();
+    let mut reader = quick_xml::Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
+                if event.name().local_name().as_ref() != b"item" {
+                    continue;
+                }
+                let mut id = None;
+                let mut href = None;
+                for attr in event.attributes().flatten() {
+                    let value = String::from_utf8_lossy(&attr.value).into_owned();
+                    match attr.key.local_name().as_ref() {
+                        b"id" => id = Some(value),
+                        b"href" => href = Some(value),
+                        _ => {}
+                    }
+                }
+                if let (Some(id), Some(href)) = (id, href) {
+                    map.insert(href, id);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    map
+}
+
+/// OPF 매니페스트에 해당 항목이 없을 때 쓰는 stem 규칙: `BinData/<파일>`의
+/// 파일명 stem(확장자 앞까지)을 item id로 뽑는다.
+/// [`hwp_model::Document::resolve_bin`]의 stem 휴리스틱과 같은 규칙을 쓴다.
+fn bin_stem_id(name: &str) -> String {
+    let fname = name.rsplit('/').next().unwrap_or(name);
+    fname.split('.').next().unwrap_or(fname).to_string()
+}
+
+/// 매니페스트/stem에서 얻은 id가 이미 쓰였으면 `_2`, `_3`… 접미로 유일하게 만든다.
+fn unique_bin_id(base: String, used: &mut BTreeSet<String>) -> String {
+    if used.insert(base.clone()) {
+        return base;
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = format!("{base}_{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// 변환 대상 엔트리 판별 (본문 섹션 XML).
 fn is_section_entry(name: &str) -> bool {
     name.starts_with("Contents/section") && name.ends_with(".xml")
@@ -626,8 +858,29 @@ fn process_package(
     input: &Path,
     output: &Path,
     limits: &PackageLimits,
+    should_transform: impl FnMut(&str) -> bool,
+    transform: impl FnMut(&str, Vec<u8>) -> Result<Option<Vec<u8>>>,
+) -> Result<()> {
+    process_package_with_appends(
+        input,
+        output,
+        limits,
+        should_transform,
+        transform,
+        Vec::new(),
+    )
+}
+
+/// [`process_package`] + 엔트리 루프 뒤 새 엔트리(`appends`)를 패키지 끝에
+/// 추가하는 확장. 외과 수술 재작성에서 편집으로 새로 들어온 BinData를 싣는 데 쓴다.
+/// 추가 엔트리 이름이 기존 엔트리와 겹치면 거부한다(중복 엔트리 패키지 방지).
+fn process_package_with_appends(
+    input: &Path,
+    output: &Path,
+    limits: &PackageLimits,
     mut should_transform: impl FnMut(&str) -> bool,
     mut transform: impl FnMut(&str, Vec<u8>) -> Result<Option<Vec<u8>>>,
+    appends: Vec<(String, Vec<u8>)>,
 ) -> Result<()> {
     let destination = inspect_destination(output)?;
     let (_source_guard, snapshot) = snapshot_input(input, output, limits)?;
@@ -647,8 +900,10 @@ fn process_package(
     zip.set_raw_comment(source_comment.clone().into_boxed_slice())?;
     let mut output_total = 0u64;
     let mut preserve_raw = vec![false; entries.len()];
+    let mut written_names: BTreeSet<String> = BTreeSet::new();
 
     for (i, info) in entries.into_iter().enumerate() {
+        written_names.insert(info.name.clone());
         if should_transform(&info.name) {
             let limit = limits.entry_uncompressed_limit(&info.name);
             let transformed = {
@@ -680,6 +935,20 @@ fn process_package(
             zip.raw_copy_file(raw)?;
             preserve_raw[i] = true;
         }
+    }
+    // 편집으로 새로 들어온 엔트리(신규 BinData 등)를 패키지 끝에 추가한다.
+    for (name, data) in &appends {
+        if !written_names.insert(name.clone()) {
+            return Err(HwpxError::PackageIntegrity(format!(
+                "추가 엔트리 이름이 기존 패키지와 중복됩니다: {name}"
+            )));
+        }
+        limits.check_entry(name, data.len() as u64, None)?;
+        output_total = limits.add_uncompressed_total(output_total, data.len() as u64)?;
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file(name, opts)?;
+        zip.write_all(data)?;
     }
     let staged_file = zip.finish()?;
     staged_file.sync_all()?;
@@ -831,9 +1100,10 @@ fn rebuild_with_preserved_entries(
     comment: &[u8],
 ) -> Result<()> {
     let generated = capture_zip_layout(generated_path)?;
-    if source.entries.len() != generated.entries.len()
+    // generated는 source 엔트리(같은 순서) 뒤에 0개 이상의 추가 엔트리를 붙인 형태다.
+    if generated.entries.len() < source.entries.len()
         || source.entries.len() != preserve_raw.len()
-        || source.entries.len() > usize::from(u16::MAX)
+        || generated.entries.len() > usize::from(u16::MAX)
         || comment.len() > usize::from(u16::MAX)
     {
         return Err(HwpxError::PackageIntegrity(
@@ -844,8 +1114,11 @@ fn rebuild_with_preserved_entries(
     let (_guard, mut rebuilt) = SiblingTemp::create(generated_path, "rebuild")?;
     let mut source_file = File::open(source_path)?;
     let mut generated_file = File::open(generated_path)?;
-    let mut new_offsets = Vec::with_capacity(source.entries.len());
-    for (index, preserve) in preserve_raw.iter().copied().enumerate() {
+    let mut new_offsets = Vec::with_capacity(generated.entries.len());
+    let mut source_entries = source.entries.iter();
+    // source 범위를 넘어서는 추가 엔트리는 raw 보존 대상이 아니다(항상 generated에서 복사).
+    let mut preserved = preserve_raw.iter().copied().chain(std::iter::repeat(false));
+    for generated_entry in &generated.entries {
         let offset = rebuilt.stream_position()?;
         if offset > u64::from(u32::MAX) {
             return Err(HwpxError::PackageIntegrity(
@@ -853,11 +1126,11 @@ fn rebuild_with_preserved_entries(
             ));
         }
         new_offsets.push(offset as u32);
-        let (reader, range): (&mut File, &Range<u64>) = if preserve {
-            (&mut source_file, &source.entries[index].local_range)
-        } else {
-            (&mut generated_file, &generated.entries[index].local_range)
-        };
+        let (reader, range): (&mut File, &Range<u64>) =
+            match (source_entries.next(), preserved.next().unwrap_or(false)) {
+                (Some(source_entry), true) => (&mut source_file, &source_entry.local_range),
+                _ => (&mut generated_file, &generated_entry.local_range),
+            };
         copy_range(reader, &mut rebuilt, range)?;
     }
 
@@ -867,17 +1140,24 @@ fn rebuild_with_preserved_entries(
             "ZIP64 central offset은 exact raw 보존 범위를 벗어납니다".to_string(),
         ));
     }
-    for (index, preserve) in preserve_raw.iter().copied().enumerate() {
-        let original = if preserve {
-            &source.entries[index].central_record
-        } else {
-            &generated.entries[index].central_record
-        };
-        if central_name(original)? != central_name(&generated.entries[index].central_record)? {
+    let mut source_entries = source.entries.iter();
+    let mut preserved = preserve_raw.iter().copied().chain(std::iter::repeat(false));
+    for (generated_entry, new_offset) in generated.entries.iter().zip(&new_offsets) {
+        // source 범위 안의 엔트리는 generated와 순서·이름이 같아야 한다(1:1 대응).
+        // 그 뒤의 엔트리는 새로 추가된 것이라 대응하는 source 레코드가 없다.
+        let source_entry = source_entries.next();
+        if let Some(source_entry) = source_entry
+            && central_name(&source_entry.central_record)?
+                != central_name(&generated_entry.central_record)?
+        {
             return Err(HwpxError::PackageIntegrity(
                 "ZIP raw metadata 엔트리 이름이 일치하지 않습니다".to_string(),
             ));
         }
+        let original = match (source_entry, preserved.next().unwrap_or(false)) {
+            (Some(source_entry), true) => &source_entry.central_record,
+            _ => &generated_entry.central_record,
+        };
         if u32::from_le_bytes(original[42..46].try_into().expect("fixed central header"))
             == u32::MAX
         {
@@ -886,7 +1166,7 @@ fn rebuild_with_preserved_entries(
             ));
         }
         let mut record = original.clone();
-        record[42..46].copy_from_slice(&new_offsets[index].to_le_bytes());
+        record[42..46].copy_from_slice(&new_offset.to_le_bytes());
         rebuilt.write_all(&record)?;
     }
     let central_end = rebuilt.stream_position()?;
@@ -898,7 +1178,7 @@ fn rebuild_with_preserved_entries(
                 "ZIP64 central size는 exact raw 보존 범위를 벗어납니다".to_string(),
             )
         })?;
-    let entries = source.entries.len() as u16;
+    let entries = generated.entries.len() as u16;
     rebuilt.write_all(END_OF_CENTRAL_SIGNATURE)?;
     rebuilt.write_all(&0u16.to_le_bytes())?;
     rebuilt.write_all(&0u16.to_le_bytes())?;

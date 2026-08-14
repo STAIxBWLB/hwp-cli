@@ -1612,6 +1612,7 @@ mod tests {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             })
         };
         let anchor = |idx: u32, id: &[u8; 4]| HwpChar::ExtCtrl {
@@ -1658,6 +1659,7 @@ mod tests {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         });
         let cell_para = Paragraph {
             chars: "셀 본문"
@@ -1712,6 +1714,7 @@ mod tests {
                 }),
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             })
         };
         let anchor = |idx: u32| HwpChar::ExtCtrl {
@@ -2049,6 +2052,7 @@ mod tests {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             })
         };
         let anchor = |idx: u32, id: &[u8; 4]| HwpChar::ExtCtrl {
@@ -2388,6 +2392,7 @@ mod tests {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         })
     }
 
@@ -2655,6 +2660,7 @@ mod tests {
             }),
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         })
     }
 

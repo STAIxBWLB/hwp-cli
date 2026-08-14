@@ -1983,6 +1983,7 @@ impl<'a> Compiler<'a> {
                     divider: None,
                 }),
                 caption: None,
+                hwpx_raw_xml: None,
             }),
         )?;
         if let Some(header) = &section.header {
@@ -2077,6 +2078,7 @@ impl<'a> Compiler<'a> {
                     equation: None,
                     column_def: None,
                     caption: None,
+                    hwpx_raw_xml: None,
                 }),
             )?;
         }
@@ -2360,6 +2362,7 @@ impl<'a> Compiler<'a> {
                 }),
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }),
         )?;
         self.report.equations += 1;
@@ -2795,6 +2798,7 @@ fn generic_control(ctrl_id: [u8; 4], data: Vec<u8>) -> hwp_model::Control {
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     })
 }
 
@@ -2847,6 +2851,7 @@ fn append_field(
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }),
     )?;
     set_run_shape(paragraph, shape);

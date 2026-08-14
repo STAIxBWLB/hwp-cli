@@ -39,7 +39,9 @@ code, resource class, disposition은 닫힌 enum이며 개수만 집계한다. �
 - 원본 없는 HWP/HWPX 작성은 typed loss event가 하나라도 있으면 atomic publication 전에 거부한다.
 - 같은 포맷 변환·편집은 HWP stream/storage 또는 HWPX entry inventory도 대조한다. 예상하지 않은
   제거 또는 opaque non-target 항목 변경은 `--strict` 없이도 발행을 차단한다.
-- 포맷 간 `--strict` 변환은 asset, control, relationship, metadata의 의미 손실을 거부한다.
+- 포맷 간 `--strict` 변환은 asset, control, relationship, metadata의 의미 손실과 IR이 옮길 수
+  없는 패키지/컨테이너 수준 자산(HWPX 잉여 엔트리 → HWP, HWP XMLTemplate/DocHistory 슬롯 →
+  HWPX)을 거부한다. `--loss-report <PATH>`는 성공 시에도 ledger를 JSON으로 기록한다.
   non-strict 변환은 typed ledger를 명시적으로 반환하는 경우에만 발행할 수 있다.
 
 이 게이트는 알려진 silent loss를 막지만 한컴 호환성을 인증하지 않는다. 현재 HWP full rewriter에는

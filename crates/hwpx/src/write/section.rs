@@ -24,22 +24,46 @@ pub struct BinCollector {
 }
 
 impl BinCollector {
+    /// 외과 수술 재작성용 seed: 원본 패키지에 이미 있는 바이너리를 원본 id/href로
+    /// 미리 등록한다. 시드된 바이트를 참조하는 그림은 원본 `binaryItemIDRef`를
+    /// 그대로 유지하므로, 재직렬화된 섹션과 (raw 복사되거나 재생성되는)
+    /// content.hpf 매니페스트가 같은 id 체계를 공유한다.
+    pub(crate) fn seed(&mut self, id: String, href: String, mime: String, bytes: Vec<u8>) {
+        self.items.push((id, href, mime, bytes));
+    }
+
     /// BinRef를 해석해 패키지 항목으로 등록하고 item id를 돌려준다.
     fn register(&mut self, doc: &Document, bin_ref: &BinRef) -> Option<String> {
         let bytes = doc.resolve_bin(bin_ref)?.to_vec();
-        // 같은 바이트는 재사용
+        // 같은 바이트는 재사용 (seed 포함)
         if let Some((id, ..)) = self.items.iter().find(|(.., b)| *b == bytes) {
             return Some(id.clone());
         }
         let (ext, mime) = sniff(&bytes);
-        let id = format!("image{}", self.items.len() + 1);
-        let href = format!("BinData/{id}.{ext}");
-        self.items.push((id.clone(), href, mime.to_string(), bytes));
-        Some(id)
+        Some(self.allocate(ext, mime, bytes))
+    }
+
+    /// seed·기수집 항목과 id/href가 충돌하지 않는 새 이름으로 항목을 추가하고
+    /// id를 돌려준다. seed가 없으면 기존과 같은 image1, image2, … 순서가 나온다.
+    pub(crate) fn allocate(&mut self, ext: &str, mime: &str, bytes: Vec<u8>) -> String {
+        let mut n = self.items.len() + 1;
+        loop {
+            let id = format!("image{n}");
+            let href = format!("BinData/{id}.{ext}");
+            if !self
+                .items
+                .iter()
+                .any(|(taken_id, taken_href, ..)| *taken_id == id || *taken_href == href)
+            {
+                self.items.push((id.clone(), href, mime.to_string(), bytes));
+                return id;
+            }
+            n += 1;
+        }
     }
 }
 
-fn sniff(data: &[u8]) -> (&'static str, &'static str) {
+pub(crate) fn sniff(data: &[u8]) -> (&'static str, &'static str) {
     match data {
         [0x89, b'P', b'N', b'G', ..] => ("png", "image/png"),
         [0xFF, 0xD8, ..] => ("jpg", "image/jpeg"),
@@ -72,8 +96,16 @@ pub fn write_section_with_report(
 ) -> String {
     let mut out = String::with_capacity(16 * 1024);
     out.push_str(
-        r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">"##,
+        r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core""##,
     );
+    // 원본 섹션 루트의 추가 xmlns 선언을 그대로 싣는다 — 원문 캡처 개체가 루트에만
+    // 선언된 확장 접두어를 쓰면, 이 선언 없이는 재방출 XML이 namespace-well-formed하지
+    // 않다. 빈 슬롯(hwp5 출신·합성 문서)이면 기존과 바이트 동일한 루트가 나온다.
+    for decl in &doc.hwpx_section_xmlns {
+        out.push(' ');
+        out.push_str(decl);
+    }
+    out.push('>');
     let mut ids = IdSeq::default();
     for (pi, para) in section.paragraphs.iter().enumerate() {
         // 첫 문단에 구역 정의가 없으면 기본 secPr 주입
@@ -412,6 +444,18 @@ fn write_paragraph(
                         let eq = g.equation.as_ref().expect("is_some 가드");
                         let before = out.len();
                         write_equation(out, g, eq, ids);
+                        run_shapes += count_shape_tags(&out[before..]);
+                    }
+                    Control::Generic(g) if g.hwpx_raw_xml.is_some() => {
+                        // hwpx 원본 run-level 개체(hp:container 등) 원문 pass-through —
+                        // reader가 캡처한 XML을 의미 해석 없이 그대로 방출한다.
+                        // 도형 개수 bookkeeping은 picture arm과 같게 센다(원문 안에
+                        // hp:pic 등 개체 요소가 중첩돼 있을 수 있다).
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        shape_break!();
+                        let before = out.len();
+                        out.push_str(g.hwpx_raw_xml.as_deref().expect("is_some 가드"));
                         run_shapes += count_shape_tags(&out[before..]);
                     }
                     Control::Generic(_) => {
@@ -1352,8 +1396,12 @@ fn write_shape_element(
     };
     write_obj_scaffold(out, sz.0, sz.1, cur_w, cur_h);
     if s.border_width <= 0 {
-        out.push_str(
-            r##"<hp:lineShape color="#000000" width="0" style="NONE" endCap="FLAT" headStyle="NORMAL" tailStyle="NORMAL" headfill="1" tailfill="1" headSz="SMALL_SMALL" tailSz="SMALL_SMALL" outlineStyle="NORMAL" alpha="0"/>"##,
+        // 테두리 없음(NONE)이어도 원본 lineShape 색 속성은 보존한다 — 정품은
+        // NONE 테두리에도 실측 색을 싣는데, #000000으로 뭉개면 왕복이 깨진다.
+        let _ = write!(
+            out,
+            r##"<hp:lineShape color="{}" width="0" style="NONE" endCap="FLAT" headStyle="NORMAL" tailStyle="NORMAL" headfill="1" tailfill="1" headSz="SMALL_SMALL" tailSz="SMALL_SMALL" outlineStyle="NORMAL" alpha="0"/>"##,
+            color_hex(s.border_color),
         );
     } else {
         let _ = write!(
@@ -1861,9 +1909,12 @@ fn write_picture(
         .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
         .unwrap_or([0, 0, w, h]);
     if pic.treat_as_char {
+        // 인라인 그림도 원본 z-순서를 보존한다(정품 소스는 인라인 그림에도 0이 아닌
+        // zOrder를 싣는다 — 0으로 뭉개면 왕복 의미 검증이 깨진다).
+        let zorder = pic.z_order;
         let _ = write!(
             out,
-            r##"<hp:pic id="{id}" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{caption_xml}{description}</hp:pic>"##,
+            r##"<hp:pic id="{id}" zOrder="{zorder}" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{caption_xml}{description}</hp:pic>"##,
             w / 2,
             h / 2,
             brightness,

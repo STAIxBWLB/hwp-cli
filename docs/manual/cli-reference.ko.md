@@ -82,6 +82,7 @@
 | `--out-dir` | `<OUT_DIR>` |  | 여러 입력의 출력 디렉터리 (파일명은 "<스템>.<확장자>", --to 필요) |
 | `--to` | `hwp` \| `hwpx` \| `md` \| `json` \| `html` \| `pdf` \| `odt` \| `txt` \| `csv` \| `docx` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--strict` |  |  | 변환 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
+| `--loss-report` | `<LOSS_REPORT>` |  | typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 (단일 입력 전용). 보존 검사는 hwp/hwpx 출력에서만 실행되므로 그 외 포맷(docx, md 등)에서는 항상 빈 ledger |
 | `--preserve-layout` |  |  | 줄 배치 캐시 보존 (무수정 왕복 전용 — 한글은 내용과 어긋난 줄 배치를 변조로 판정하므로 기본은 제거) |
 | `--embed-bin` |  |  | JSON 출력 시 첨부 바이너리(이미지)를 base64로 임베드 (자급식 JSON) |
 | `--media-dir` | `<MEDIA_DIR>` |  | (md) 이미지 추출 디렉터리 — 기본 "<출력스템>.media". 상대경로는 출력 파일 기준으로 해석하고 링크는 입력한 경로 그대로 쓴다 (예: figs) |

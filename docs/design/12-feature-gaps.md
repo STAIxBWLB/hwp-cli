@@ -47,7 +47,8 @@ The same record can be a gap or not **depending on which path you look from**. T
   [10](10-hwp5-structure-map.md) §0) **loses no bytes** in an `hwp5 → hwp5` round-trip, so it is
   not a record-level gap on that path. Since 2026-08-14, native HWP rewrites copy the immutable source
   CFB and patch only planned streams, preserving ancillary streams, storages and untouched binary
-  payloads. Package-surgical HWPX editing remains tracked by issue #90.
+  payloads. Package-surgical HWPX editing landed the same day; see the third #90 entry in
+  the resolution history (§0.5).
 - To **synthesize** that same record as `hwp5 → hwpx`, its meaning would have to be interpreted and
   rewritten as OWPML; that knowledge is missing, so it is **dropped**, making it a gap on the
   synthesis path.
@@ -90,15 +91,42 @@ is itself knowledge).
   content-free `hwp-preservation-report-v1` ledger. Source-free authoring and same-format writes now
   fail atomically on writer omissions or unexpected container/package loss; cross-format strict
   conversion also compares semantic assets, controls, relationships and metadata. This resolves
-  silent publication but did not itself repair either native writer; the next resolution entry
-  records the HWP repair. Package-surgical HWPX editing remains open in #90.
+  silent publication but did not itself repair either native writer; the next resolution entries
+  record the HWP repair and then the HWPX repair.
 
 - **2026-08-14 (issue #90 source-preserving HWP writer)**: same-format HWP `convert`, `edit` and IR
   `fill` now write against an immutable input snapshot. A no-op is an exact file copy; edits derive a
   stream mutation plan, retain untouched CFB entries and BinData byte-for-byte, preserve unchanged
   BodyText subtrees, and synthesize line layout only for changed or inserted paragraphs. Private
   complex-document acceptance passed no-op, metadata, text, paragraph, table-cell and image cases in
-  Hancom with no corruption warning. The remaining #90 work includes package-surgical HWPX editing.
+  Hancom with no corruption warning. Package-surgical HWPX editing followed in the next entry.
+
+- **2026-08-14 (issue #90 package-surgical HWPX editing and cross-format loss detection)**:
+  the hwpx reader retains verbatim XML for opaque run-level controls
+  (`GenericControl.hwpx_raw_xml`, e.g. `hp:container`) and the writer re-emits it, so a full
+  HWPX rewrite no longer drops them. Non-regenerated package entries (original META-INF
+  overrides, DocOptions, `Contents/memoExtended.xml`, extra previews) ride
+  `Document.hwpx_extra_entries`, and unreferenced BinData entries pass through into the
+  regenerated content.hpf manifest instead of being dropped. Every same-format HWPX `edit`
+  now goes through `hwpx::patch::rewrite_document_staged`, which reserializes only the
+  dirty content entries (header.xml / content.hpf / section*.xml, decided by before/after
+  IR comparison) and raw-copies every other ZIP entry byte-for-byte; inserted images append
+  as new BinData entries with the original OPF manifest ids preserved. Cross-format
+  conversion now inventories package assets the target format cannot represent (HWPX extra
+  entries on the way to HWP; the hwp5 XMLTemplate/DocHistory slots on the way to HWPX) as
+  typed `hwp-preservation-report-v1` events, so `--strict` fails closed on such loss and
+  `hwp convert --loss-report <PATH>` writes the JSON verdict either way. Two latent writer
+  fidelity bugs were fixed en route (inline `hp:pic` zOrder, no-border lineShape color).
+  Private complex-document acceptance (36 package entries, 24 BinData including 7 WMF, 5
+  `hp:container`): metadata, text, paragraph, table-cell and image HWPX edits keep the
+  entry set identical with all opaque entries byte-identical (media 24→24, 25 after an
+  image insert; containers 5→5), `hwp validate` is clean, non-strict hwp→hwpx preserves all
+  24 media (previously 9), strict conversion fails closed in both directions, and all eight
+  outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 4+):
+  table insertion (#77/#78), WMF vectors, the pagination/font gate and certification.
+  hwpx→hwp conversion does not yet flag settings.xml/version.xml/preview slot loss with
+  typed events. And content.hpf regeneration keeps only modeled manifest items/metadata,
+  so unmodeled manifest items survive as orphan package entries (raw-copied but unlisted).
 
 - **2026-07-15**: GA-5 (version gate), GE-α1 to α5 and α7 (character effects, underline shape and
   numbering format in the hwpx round-trip), GE-β4 (summary information fields), GH-1 and GH-2
@@ -229,10 +257,12 @@ key point is **the difference per format**:
 - **hwpx read** falls back to `GenericControl`, discarding the object's own properties and keeping
   **only the child subList text** in the IR ([11](11-hwpx-structure-map.md) §3.3).
 - **hwpx write** finally emits `DROP` when that Generic is neither a known ctrl_id nor a gso_shape
-  (`hwpx/src/write/section.rs:364`), **losing even the text**.
+  and carries no retained raw XML, **losing even the text**. On the same-format path this no longer
+  fires: since 2026-08-14 (#90) the reader retains the control's verbatim XML
+  (`GenericControl.hwpx_raw_xml`) and the writer re-emits it unchanged.
 
 The same object therefore behaves differently per path: "hwp5 round-trip lossless / hwpx round-trip
-lost / synthesis lost / render blank".
+lost / synthesis lost / render blank" (GB-6 excepted on the hwpx round-trip since 2026-08-14, #90).
 
 | ID | Object (hwp5 tag / hwpx element) | Code evidence | Spec | Current behavior | Paths | Difficulty |
 |---|---|---|---|---|---|---|
@@ -241,7 +271,7 @@ lost / synthesis lost / render blank".
 | GB-3 | **Video** (`VIDEO_DATA` 0x62 / `hp:video`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364` | §4.3.9.8 | hwp5 Opaque preserved / hwpx dropped | round-trip (hwpx only), synthesis, render | L |
 | GB-4 | **Word art** (`SHAPE_COMPONENT_TEXTART` 0x5A / `hp:textart`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191` (text fallback) → `write/section.rs:364` (DROP) | §4.3.9 (word art) | hwp5 Opaque preserved / hwpx falls back to text then drops | round-trip (hwpx only), synthesis, render | M |
 | GB-5 | **Form objects** (`FORM_OBJECT` 0x5B / `hp:formObject`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191` → `:364` | §4.3.9 (forms) | hwp5 Opaque preserved / hwpx text only then dropped | round-trip (hwpx only), synthesis, render | M |
-| GB-6 | **Grouped objects** (`SHAPE_COMPONENT_CONTAINER` 0x56 / `hp:container`): ★ **asymmetric**, because hwp5 raw-preserves it and therefore **even renders it** (recursing into children) while hwpx falls back then drops | hwp5 rendering in `hwp-render/src/shape_draw.rs` ([10](10-hwp5-structure-map.md) §8 raw-preserved), hwpx `read/section.rs:191` → `write/section.rs:364` | §4.3.9.7 | hwp5 raw-preserved (renders) / hwpx dropped | round-trip (hwpx only), synthesis | M |
+| GB-6 | **Grouped objects** (`SHAPE_COMPONENT_CONTAINER` 0x56 / `hp:container`): ★ **asymmetric**, because hwp5 raw-preserves it and therefore **even renders it** (recursing into children) while hwpx falls back without interpreting it — since 2026-08-14 (#90) the verbatim XML is carried through a same-format rewrite, so only synthesis and rendering still lose it | hwp5 rendering in `hwp-render/src/shape_draw.rs` ([10](10-hwp5-structure-map.md) §8 raw-preserved), hwpx `read/section.rs` (GenericControl raw-XML carry) | §4.3.9.7 | hwp5 raw-preserved (renders) / hwpx raw-XML carried (round-trip lossless, not rendered) | synthesis, render | M |
 | GB-7 | **Memos** (`MEMO_LIST` 0x5D in the body plus `MEMO_SHAPE` 0x5C in DocInfo / no `hp:` emission in hwpx) | hwp5 `body_text.rs:617`, `doc_info.rs:148` (Opaque); hwpx declares only the namespace ([11](11-hwpx-structure-map.md) §2) | §4.3 (memos), §4.2 table 13 | hwp5 Opaque preserved / hwpx unimplemented | round-trip (hwpx only), synthesis, render | M |
 | GB-8 | **Change tracking and edit history** (`TRACKCHANGE` 0x20, `TRACK_CHANGE` 0x60, `TRACK_CHANGE_AUTHOR` 0x61, `PARA_RANGE_TAG` 0x46 / hwpx `hhs:` history). PARA_RANGE_TAG's purpose in the specification also covers **range marking such as highlighting and proofreading marks** (§4.3.5), not only change tracking | hwp5 `doc_info.rs:148`, `body_text.rs:73` (Opaque); hwpx unimplemented ([11](11-hwpx-structure-map.md) §5(c)) | §4.2 table 13, §4.3.5 | hwp5 Opaque preserved / hwpx unimplemented | round-trip (hwpx only), synthesis | L |
 | GB-9 | **Arbitrary document and distribution data** (`DOC_DATA` 0x1B, `DISTRIBUTE_DOC_DATA` 0x1C, `COMPATIBLE_DOCUMENT` 0x1E, `LAYOUT_COMPATIBILITY` 0x1F) | hwp5 `doc_info.rs:57` (Opaque), though the writer **synthesizes** COMPATIBLE and LAYOUT separately ([07](07-hangul-compat-rules.md) A4) | §4.2.12 to §4.2.15 | hwp5 Opaque preserved (plus synthesis handling) / hwpx unimplemented | synthesis (partly resolved) | L |
@@ -255,7 +285,8 @@ lost / synthesis lost / render blank".
 **GB lesson:** looking only at hwp5 → hwp5 round-trips, the entire GB series appears "lossless" and
 the gap is invisible (exactly the trap in §0.3). The defects appear only in **hwpx round-trips,
 cross-format synthesis and rendering**. GB-6 (grouping) is especially subtle: hwp5 even renders it,
-and it disappears only on the way to hwpx. Restoring most of this series requires **reverse
+and on the hwpx side it used to vanish entirely; since 2026-08-14 (#90) its raw XML survives a
+same-format rewrite, so the loss is now confined to synthesis and rendering. Restoring most of this series requires **reverse
 engineering the payload from a genuine file containing that object** (M/L), so obtaining ground truth
 comes first ([00](00-overview.md) §4). ★ The exception is **the hwpx path of GB-1**: in HWPX a
 chart is not OLE but an **OOXML DrawingML `chartSpace` XML part** (`Chart/chartN.xml` plus a manifest

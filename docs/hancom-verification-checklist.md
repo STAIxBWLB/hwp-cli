@@ -256,6 +256,33 @@ commit the source or derived outputs. Run each case from the same immutable sour
 For every output, verify `FileHeader`, `MemoExtended`, scripts, document options, unknown entries and
 untouched BinData before opening it in Hancom. A parser-only pass is insufficient.
 
+## N. Package-surgical HWPX edits and cross-format loss gates (issue #90)
+
+Use a private, genuinely complex HWPX (36 package entries, 24 BinData items including 7 WMF, 5
+`hp:container` groups). Do not commit the source or derived outputs. The harness is
+`run-authoring-validation-c.sh` (private, not committed); the oracle is Hancom Office HWP 12.30.0
+on macOS.
+
+| Case | Required result |
+|---|---|
+| Metadata edit (HWPX→HWPX) | ZIP entry set identical; every opaque entry byte-identical; opens without a warning |
+| Text edit | The same, with the edited text visible |
+| Paragraph insertion | The same, with the inserted paragraph visible and the surrounding layout stable |
+| Table-cell edit | The same, with only the target cell content changed |
+| Image insertion | The same plus one new BinData item (media 24→25); opens without a warning |
+| Non-strict hwpx→hwp convert | The typed loss report lists the removed HWPX package entries; opens without a warning |
+| Non-strict hwp→hwpx convert | All 24 media preserved (previously 9); opens without a warning |
+| HWP edit (the source-preserving writer) | The container round-trips; opens without a warning |
+
+CLI-side gates to check before opening: ZIP entry-set identity for every surgical edit, byte
+identity of every opaque entry (media 24→24, containers 5→5), `hwp validate` clean on all outputs,
+strict hwpx→hwp failing closed (`binary_asset_removed`, `control_removed`,
+`hwpx_package_entry_removed`, `opaque_control_unrepresentable`) and strict hwp→hwpx failing closed
+(`control_removed`, `metadata_value_removed`).
+
+**Hancom results (2026-08-14):** all eight outputs (5 HWPX edits, 2 non-strict conversions, 1 HWP
+edit) opened with no corruption or repair dialog.
+
 ## Reporting results
 
 Tell us pass or fail per file and, on failure, the popup message and symptom; we then fix only the

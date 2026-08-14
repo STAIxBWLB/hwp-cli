@@ -87,10 +87,15 @@ fn restyle_para(
                 }
             }
             Control::Generic(g) => {
+                let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         n += restyle_para(p, pattern, fmt, shapes);
                     }
+                }
+                if n > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}
@@ -253,10 +258,15 @@ fn align_para(
                 }
             }
             Control::Generic(g) => {
+                let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         n += align_para(p, pattern, align, pshapes);
                     }
+                }
+                if n > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}
@@ -384,10 +394,15 @@ fn props_para(
                 }
             }
             Control::Generic(g) => {
+                let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         n += props_para(p, pattern, props, pshapes);
                     }
+                }
+                if n > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}

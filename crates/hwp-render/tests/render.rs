@@ -313,6 +313,7 @@ fn authoritative_column_flags_preserve_an_empty_first_column() {
                 divider: None,
             }),
             caption: None,
+            hwpx_raw_xml: None,
         }));
     for paragraph in &mut doc.sections[0].paragraphs {
         assert_eq!(paragraph.line_segs.len(), 1);
@@ -403,6 +404,7 @@ fn 수식_조판_렌더() {
                 }),
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }));
     }
     let out = render_document(
@@ -1181,6 +1183,7 @@ fn 글상자_내부_개요_번호_마커_렌더() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }));
 
     let mut store = hwp_render::FontStore::new();
@@ -1209,6 +1212,7 @@ fn generic_control(
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     })
 }
 
@@ -1753,6 +1757,7 @@ fn generic_shape_caption_is_rendered() {
                     ..hwp_model::Paragraph::default()
                 }],
             }),
+            hwpx_raw_xml: None,
         }));
 
     let (list, _) = 표_레이아웃(&doc);
@@ -2200,6 +2205,7 @@ fn table_fragments_reserve_pending_footnote_space() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }));
 
     let (list, _report) = 표_레이아웃(&doc);
@@ -2366,6 +2372,7 @@ fn renders_multi_column_divider() {
                 }),
             }),
             caption: None,
+            hwpx_raw_xml: None,
         }));
 
     let mut store = hwp_render::FontStore::new();
@@ -2551,6 +2558,7 @@ fn 미주는_구역끝_각주는_앵커페이지() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         })
     };
     let anchor = &mut doc.sections[0].paragraphs[0];
@@ -2620,6 +2628,7 @@ fn endnotes_paginate_across_all_required_pages() {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }));
     }
 

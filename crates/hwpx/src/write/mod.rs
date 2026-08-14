@@ -5,7 +5,7 @@
 
 pub mod header;
 pub mod section;
-mod templates;
+pub(crate) mod templates;
 
 use std::fs::File;
 use std::io::Write as _;
@@ -86,6 +86,36 @@ pub fn write_document_with_report_with_limits(
 
     // 본문 먼저 직렬화 (BinData 수집 포함)
     let mut bins = BinCollector::default();
+    // hwpx 원본이면 OPF 매니페스트의 원본 id/href로 seed한다(외과 수술 경로
+    // patch.rs의 시드와 같은 의미). 원문 캡처된 개체(hp:container 등) 안의
+    // binaryItemIDRef는 원본 id를 그대로 방출하므로, collector가 원본 id 체계를
+    // 알아야 그 참조가 원본 바이트를 계속 가리킨다. 소스 바이너리 전부가 seed되면
+    // 아래 미참조 바이너리 passthrough는 자연히 no-op이 된다.
+    if !doc.hwpx_bin_manifest.is_empty() {
+        let mut used_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut seeded_hrefs: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (id, href) in &doc.hwpx_bin_manifest {
+            let Some(stream) = doc.bin_streams.iter().find(|s| s.name == *href) else {
+                continue; // 매니페스트에만 있고 스트림이 없으면 시드할 바이트가 없다
+            };
+            if !seeded_hrefs.insert(stream.name.as_str()) {
+                continue;
+            }
+            let mut candidate = id.clone();
+            let mut n = 2u32;
+            while !used_ids.insert(candidate.clone()) {
+                candidate = format!("{id}_{n}");
+                n += 1;
+            }
+            let (_, mime) = section::sniff(&stream.data);
+            bins.seed(
+                candidate,
+                href.clone(),
+                mime.to_string(),
+                stream.data.clone(),
+            );
+        }
+    }
     let sections: Vec<String> = doc
         .sections
         .iter()
@@ -110,13 +140,75 @@ pub fn write_document_with_report_with_limits(
             .map_or(preview.len(), |(i, _)| i),
     );
 
+    // BinCollector가 수집하지 않은(참조되지 않는) 바이너리를 패키지에 복원한다.
+    // hwpx 원본(BinData/ 이름)은 엔트리 정체성(이름+바이트) 기준으로 건너뛴다 —
+    // 같은 바이트가 이미 방출됐어도 원본 이름이 출력에 없으면 원본 이름으로 보존한다
+    // (엔트리 유실 방지). hwp5 출신 등 패키지 이름이 아닌 스트림은 기존처럼 바이트
+    // 동일 판정(BinCollector dedup 규칙)으로 건너뛴다. 이름은 hwpx 원본이면
+    // `BinData/...`를 그대로, hwp5 출신 등이면 `BinData/<파일명>`을 쓰되 이번
+    // 패키지에서 이미 쓴 이름과 충돌하면 `_2`, `_3`… 접미를 붙인다.
+    let mut written_names: std::collections::BTreeSet<String> = bins
+        .items
+        .iter()
+        .map(|(_, href, _, _)| href.clone())
+        .collect();
+    let mut used_ids: std::collections::BTreeSet<String> =
+        bins.items.iter().map(|(id, ..)| id.clone()).collect();
+    // (id, href, mime, bytes) — content_hpf 매니페스트와 패키지 방출이 함께 쓴다.
+    let mut passthrough_bins: Vec<(String, String, String, &[u8])> = Vec::new();
+    for stream in &doc.bin_streams {
+        if stream.name.starts_with("BinData/") {
+            let represented = bins
+                .items
+                .iter()
+                .any(|(_, href, _, bytes)| *href == stream.name && *bytes == stream.data)
+                || passthrough_bins
+                    .iter()
+                    .any(|(_, href, _, bytes)| *href == stream.name && *bytes == stream.data);
+            if represented {
+                continue;
+            }
+        } else if bins.items.iter().any(|(.., bytes)| *bytes == stream.data) {
+            continue;
+        }
+        let (_, mime) = section::sniff(&stream.data);
+        let base = if stream.name.starts_with("BinData/") {
+            stream.name.clone()
+        } else {
+            let fname = stream.name.rsplit('/').next().unwrap_or(&stream.name);
+            format!("BinData/{}", sanitize_bin_name(fname))
+        };
+        let (dir, stem, ext) = split_dir_stem_ext(&base);
+        let mut href = base.clone();
+        let mut id = stem.clone();
+        let mut n = 2u32;
+        while written_names.contains(&href) || used_ids.contains(&id) {
+            href = format!("{dir}{stem}_{n}{ext}");
+            id = format!("{stem}_{n}");
+            n += 1;
+        }
+        written_names.insert(href.clone());
+        used_ids.insert(id.clone());
+        passthrough_bins.push((id, href, mime.to_string(), &stream.data));
+    }
+
     let bin_meta: Vec<(String, String, String)> = bins
         .items
         .iter()
         .map(|(id, href, mime, _)| (id.clone(), href.clone(), mime.clone()))
+        .chain(
+            passthrough_bins
+                .iter()
+                .map(|(id, href, mime, _)| (id.clone(), href.clone(), mime.clone())),
+        )
         .collect();
 
-    let content_hpf = templates::content_hpf(sections.len(), &bin_meta, &doc.metadata);
+    let content_hpf = templates::content_hpf(
+        sections.len(),
+        &bin_meta,
+        &doc.hwpx_opf_extra_items,
+        &doc.metadata,
+    );
     let version_xml = doc
         .hwpx_version_xml
         .as_deref()
@@ -126,6 +218,51 @@ pub fn write_document_with_report_with_limits(
         .as_deref()
         .unwrap_or(templates::SETTINGS_XML);
 
+    // 원본 패키지 잉여 엔트리 pass-through. META-INF 3종은 표준 위치에서 원본
+    // 바이트로 대체하고, 나머지는 표준 시퀀스 뒤에 원본 순서대로 방출한다.
+    let extra_map: std::collections::BTreeMap<&str, &[u8]> = doc
+        .hwpx_extra_entries
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let container_rdf = extra_map
+        .get("META-INF/container.rdf")
+        .copied()
+        .unwrap_or(templates::CONTAINER_RDF.as_bytes());
+    let container_xml = extra_map
+        .get("META-INF/container.xml")
+        .copied()
+        .unwrap_or(templates::CONTAINER_XML.as_bytes());
+    let manifest_xml = extra_map
+        .get("META-INF/manifest.xml")
+        .copied()
+        .unwrap_or(templates::MANIFEST_XML.as_bytes());
+    // 표준 시퀀스에 속하지 않아 뒤에 그대로 방출할 잉여 엔트리(원본 순서).
+    let standard_names: std::collections::BTreeSet<&str> = [
+        "mimetype",
+        "version.xml",
+        "META-INF/container.rdf",
+        "META-INF/container.xml",
+        "META-INF/manifest.xml",
+        "Contents/content.hpf",
+        "Contents/header.xml",
+        "Preview/PrvText.txt",
+        "Preview/PrvImage.png",
+        "settings.xml",
+    ]
+    .into_iter()
+    .collect();
+    let trailing_extras: Vec<(&str, &[u8])> = doc
+        .hwpx_extra_entries
+        .iter()
+        .filter(|(name, _)| {
+            !standard_names.contains(name.as_str())
+                && !name.starts_with("Contents/section")
+                && !written_names.contains(name)
+        })
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+
     // 실제 파일을 만들기 전에 생성 패키지도 읽기 경로와 같은 크기·중복 정책으로
     // 검증한다. 직렬화된 XML과 이미 수집된 바이너리만 계상하므로 출력은 남지 않는다.
     let mut output_entries: Vec<(String, u64)> = vec![
@@ -133,15 +270,15 @@ pub fn write_document_with_report_with_limits(
         ("version.xml".to_string(), version_xml.len() as u64),
         (
             "META-INF/container.rdf".to_string(),
-            templates::CONTAINER_RDF.len() as u64,
+            container_rdf.len() as u64,
         ),
         (
             "META-INF/container.xml".to_string(),
-            templates::CONTAINER_XML.len() as u64,
+            container_xml.len() as u64,
         ),
         (
             "META-INF/manifest.xml".to_string(),
-            templates::MANIFEST_XML.len() as u64,
+            manifest_xml.len() as u64,
         ),
         ("Contents/content.hpf".to_string(), content_hpf.len() as u64),
         ("Contents/header.xml".to_string(), header_xml.len() as u64),
@@ -157,6 +294,11 @@ pub fn write_document_with_report_with_limits(
             .iter()
             .map(|(_, href, _, bytes)| (href.clone(), bytes.len() as u64)),
     );
+    output_entries.extend(
+        passthrough_bins
+            .iter()
+            .map(|(_, href, _, bytes)| (href.clone(), bytes.len() as u64)),
+    );
     output_entries.push(("Preview/PrvText.txt".to_string(), preview.len() as u64));
     if let Some(preview_image) = &doc.hwpx_preview_image {
         output_entries.push((
@@ -165,6 +307,11 @@ pub fn write_document_with_report_with_limits(
         ));
     }
     output_entries.push(("settings.xml".to_string(), settings_xml.len() as u64));
+    output_entries.extend(
+        trailing_extras
+            .iter()
+            .map(|(name, bytes)| (name.to_string(), bytes.len() as u64)),
+    );
     validate_output_entries(output_entries, limits)?;
 
     let file = File::create(path)?;
@@ -193,21 +340,10 @@ pub fn write_document_with_report_with_limits(
 
     // version.xml — 슬롯이 있으면 원문 pass-through, 없으면 기본 상수(바이트 동일).
     put(&mut zip, "version.xml", version_xml.as_bytes())?;
-    put(
-        &mut zip,
-        "META-INF/container.rdf",
-        templates::CONTAINER_RDF.as_bytes(),
-    )?;
-    put(
-        &mut zip,
-        "META-INF/container.xml",
-        templates::CONTAINER_XML.as_bytes(),
-    )?;
-    put(
-        &mut zip,
-        "META-INF/manifest.xml",
-        templates::MANIFEST_XML.as_bytes(),
-    )?;
+    // META-INF 3종 — 원본 패키지에 있으면 원본 바이트, 없으면 템플릿(바이트 동일).
+    put(&mut zip, "META-INF/container.rdf", container_rdf)?;
+    put(&mut zip, "META-INF/container.xml", container_xml)?;
+    put(&mut zip, "META-INF/manifest.xml", manifest_xml)?;
     put(&mut zip, "Contents/content.hpf", content_hpf.as_bytes())?;
     put(&mut zip, "Contents/header.xml", header_xml.as_bytes())?;
     for (i, xml) in sections.iter().enumerate() {
@@ -220,13 +356,48 @@ pub fn write_document_with_report_with_limits(
     for (_, href, _, bytes) in &bins.items {
         put(&mut zip, href, bytes)?;
     }
+    // 참조되지 않아 collector가 수집하지 않은 원본 바이너리 복원.
+    for (_, href, _, bytes) in &passthrough_bins {
+        put(&mut zip, href, bytes)?;
+    }
     put(&mut zip, "Preview/PrvText.txt", preview.as_bytes())?;
     if let Some(preview_image) = &doc.hwpx_preview_image {
         put(&mut zip, "Preview/PrvImage.png", preview_image)?;
     }
     // settings.xml — 슬롯이 있으면 원문 pass-through, 없으면 기본 상수(바이트 동일).
     put(&mut zip, "settings.xml", settings_xml.as_bytes())?;
+    // writer가 재생성하지 않는 원본 패키지 잉여 엔트리(DocOptions·스크립트 등)를
+    // 원본 순서·바이트 그대로 방출한다.
+    for (name, bytes) in &trailing_extras {
+        put(&mut zip, name, bytes)?;
+    }
 
     zip.finish()?;
     Ok(report)
+}
+
+/// 패키지 경로를 (디렉터리 접두, 확장자 없는 파일명 stem, 확장자)로 나눈다.
+/// 예: `BinData/image1.png` → ("BinData/", "image1", ".png").
+fn split_dir_stem_ext(name: &str) -> (String, String, String) {
+    let (dir, fname) = match name.rsplit_once('/') {
+        Some((d, f)) => (format!("{d}/"), f),
+        None => (String::new(), name),
+    };
+    match fname.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (dir, stem.to_string(), format!(".{ext}")),
+        _ => (dir, fname.to_string(), String::new()),
+    }
+}
+
+/// hwp5 출신 등 패키지 경로가 아닌 바이너리 이름을 OPC part 파일명으로 정제한다.
+fn sanitize_bin_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }

@@ -49,6 +49,16 @@ The order produced by `write/mod.rs::write_document_with` (leftmost first):
   constants** (format compatibility). Only `application` and `appVersion` carry the authoring program
   (hwp-cli, `CARGO_PKG_VERSION`).
 
+**Rewriting an existing document (2026-08-14, #90).** The table above is the shape of a *fresh*
+write. When the input is an existing HWPX, entries the writer does not regenerate are not dropped:
+the original META-INF overrides, DocOptions, `Contents/memoExtended.xml`, extra previews and any
+other unrecognized entry ride `Document.hwpx_extra_entries` and are re-emitted with their original
+bytes and order, and BinData entries the body no longer references pass through instead of being
+dropped, listed in the regenerated content.hpf manifest. A same-format edit does not even take the
+full-rewrite path: `hwpx::patch::rewrite_document_staged` reserializes only the dirty content
+entries (header.xml / content.hpf / section*.xml, decided by a before/after IR comparison) and
+raw-copies every other ZIP entry byte-for-byte.
+
 ### 1.2 The read path (`package.rs`, `read/mod.rs`)
 
 `HwpxPackage::open(path)`:
@@ -82,7 +92,8 @@ Entries that fail to parse sort last as `u32::MAX`.
 - `<opf:metadata>`: `<opf:title>`, `<opf:language>ko`, `<dc:creator>`, `<dc:subject>`,
   `<opf:meta name="keywords" content="..."/>`, plus the application marker
   `<opf:meta name="creator" content="text">hwp-cli</opf:meta>`.
-- `<opf:manifest>`: `header`, `section{i}`, `settings` and the binary items (`isEmbeded="1"`).
+- `<opf:manifest>`: `header`, `section{i}`, `settings` and the binary items (`isEmbeded="1"`); on a
+  rewrite, passed-through unreferenced BinData entries are listed here too (§1.1).
 - `<opf:spine>`: `header` and `section{i}` as `<opf:itemref linear="yes"/>`.
 
 `BinCollector` fills the binary items' id, href and mime. `read/mod.rs::parse_content_meta` reads only
@@ -319,7 +330,10 @@ increasing by shape index (`i`).
 ## 5. Controls under hp:ctrl (parse_ctrl ↔ the writer arms)
 
 A control inside `hp:ctrl` maps to an hwp5 ctrl_id plus a control character code, and its payload is
-synthesized here. The writer drops a GenericControl with an empty payload.
+synthesized here. The writer drops a GenericControl with an empty payload — but since 2026-08-14
+(#90) a GenericControl that retains its source XML (`hwpx_raw_xml`, e.g. an `hp:container` read from
+an HWPX input) is re-emitted verbatim, so the drop fires only when neither a payload nor retained
+raw XML exists.
 
 | OWPML | ctrl_id | Code | Payload | Builder / inverse |
 |-------|---------|------|----------|---------|
@@ -456,8 +470,11 @@ inside a shape is always preserved, as in §3.5.
 | gso common attr | the individual `<hp:pos>` attributes | the attr(u32) bits composed | preserves inline versus floating |
 | z-order | absent from hwpx ShapeGeom | the order index, or gso*Z_SCALE+i | overlap order |
 
-**Unsupported controls** are dropped with a `DROP:` warning (some text boxes, gso that failed to
-parse and so on). Warnings propagate as a `Vec<String>` up to `read_document` and `write_document`.
+**Unsupported controls** are dropped with a typed preservation event (the
+`hwp-preservation-report-v1` ledger, still surfaced in the legacy `DROP: <code>` warning form) —
+some text boxes, gso that failed to parse and so on. Same-format HWPX rewrites are exempt for
+run-level controls: their verbatim XML is carried in `GenericControl.hwpx_raw_xml` and re-emitted
+(§5). Warnings propagate as a `Vec<String>` up to `read_document` and `write_document`.
 
 ---
 

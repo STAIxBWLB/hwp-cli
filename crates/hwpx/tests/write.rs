@@ -60,6 +60,7 @@ fn typed_report_records_unsupported_control_without_warning_parsing() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }),
     );
 
@@ -155,6 +156,7 @@ fn typed_report_records_both_gso_drop_paths() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         })
     };
 
@@ -541,6 +543,7 @@ fn caption_round_trip() {
             last_width: 3000,
             paragraphs: vec![caption_para("Shape 1")],
         }),
+        hwpx_raw_xml: None,
     };
     let para = &mut doc.sections[0].paragraphs[0];
     para.chars.push(hwp_model::HwpChar::ExtCtrl {
@@ -844,6 +847,7 @@ fn 머리말_적용쪽_hwpx_왕복() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         };
         // 머리말 컨트롤을 문단에 ExtCtrl(코드 16)로 부착.
         let para = &mut doc.sections[0].paragraphs[0];
@@ -1038,6 +1042,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }));
     }
     para.header.ctrl_mask = 0;
@@ -1792,6 +1797,7 @@ fn eqed_control(equation: hwp_model::Equation) -> hwp_model::GenericControl {
         equation: Some(equation),
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     }
 }
 
@@ -1837,6 +1843,7 @@ fn 수식_hwpx_왕복() {
                 equation: Some(eq),
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             },
         );
     }
@@ -1900,6 +1907,7 @@ fn 글상자_hwp5출신_hwpx_왕복() {
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
 
@@ -2001,6 +2009,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
 
@@ -2107,6 +2116,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
 
@@ -2557,6 +2567,7 @@ fn 쪽_컨트롤_hwpx_페이로드_왕복() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }));
     }
     para.header.ctrl_mask = 0;
@@ -2743,6 +2754,7 @@ fn 각주_미주_왕복() {
                         equation: None,
                         column_def: None,
                         caption: None,
+                        hwpx_raw_xml: None,
                     })],
                     ..Paragraph::default()
                 }],
@@ -2753,6 +2765,7 @@ fn 각주_미주_왕복() {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         })
     };
     let anchor = |idx: u32, id: &[u8; 4]| HwpChar::ExtCtrl {

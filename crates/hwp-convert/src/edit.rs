@@ -49,6 +49,7 @@ fn replace_in_para(para: &mut Paragraph, from: &str, to: &str, budget: &mut usiz
                 }
             }
             Control::Generic(g) => {
+                let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         if *budget == 0 {
@@ -56,6 +57,10 @@ fn replace_in_para(para: &mut Paragraph, from: &str, to: &str, budget: &mut usiz
                         }
                         n += replace_in_para(p, from, to, budget);
                     }
+                }
+                if n > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}
@@ -194,9 +199,9 @@ pub fn add_rows(
 }
 
 /// `table_index`번째 표(0-기반)의 (행 수, 열 수)를 반환한다. 데이터 구동 채우기가
-/// 추가할 행 수를 계산할 때 쓴다(현재 행 수 조회).
+/// 추가할 행 수를 계산할 때 쓴다(현재 행 수 조회). 읽기 전용 — `hwpx_raw_xml`을 건드리지 않는다.
 pub fn table_dims(doc: &mut Document, table_index: usize) -> Option<(u16, u16)> {
-    with_nth_table(doc, table_index, |t| (t.rows, t.cols))
+    with_nth_table_readonly(doc, table_index, |t| (t.rows, t.cols))
 }
 
 /// `table_index`번째 표(0-기반)의 `row`행을 삭제한다(이후 행 재번호, row_cell_counts
@@ -912,9 +917,30 @@ pub fn apply_meta(doc: &mut Document, spec: &str) -> Result<(), String> {
 
 /// 문서 등장 순서 `index`번째 표를 찾아 `f`를 적용한다(0-기반). 본문·표 셀·글상자
 /// 문단을 재귀로 훑는다. 표를 찾으면 `Some(f의 결과)`, 못 찾으면 `None`.
+/// `f`가 개체 원문 XML(`hwpx_raw_xml`)을 품은 Generic 안의 표를 바꾸면 그 원문은
+/// 낡으므로 지운다 — writer가 stale XML을 방출하는 것을 막는다(방출할 emitter가
+/// 없어 fail-closed 보존 오류로 이어진다).
 fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     doc: &mut Document,
     index: usize,
+    f: F,
+) -> Option<R> {
+    walk_nth_table_root(doc, index, true, f)
+}
+
+/// 읽기 전용 변형([`table_dims`]) — 내용을 바꾸지 않으므로 `hwpx_raw_xml`을 지우지 않는다.
+fn with_nth_table_readonly<R, F: FnOnce(&mut hwp_model::Table) -> R>(
+    doc: &mut Document,
+    index: usize,
+    f: F,
+) -> Option<R> {
+    walk_nth_table_root(doc, index, false, f)
+}
+
+fn walk_nth_table_root<R, F: FnOnce(&mut hwp_model::Table) -> R>(
+    doc: &mut Document,
+    index: usize,
+    mutating: bool,
     f: F,
 ) -> Option<R> {
     let mut seen = 0;
@@ -922,7 +948,7 @@ fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     let mut out = None;
     for section in &mut doc.sections {
         for para in &mut section.paragraphs {
-            walk_nth_table(para, index, &mut seen, &mut f, &mut out);
+            walk_nth_table(para, index, mutating, &mut seen, &mut f, &mut out);
             if out.is_some() {
                 return out;
             }
@@ -934,6 +960,7 @@ fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
 fn walk_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     para: &mut Paragraph,
     index: usize,
+    mutating: bool,
     seen: &mut usize,
     f: &mut Option<F>,
     out: &mut Option<R>,
@@ -954,7 +981,7 @@ fn walk_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
                 *seen += 1;
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        walk_nth_table(p, index, seen, f, out);
+                        walk_nth_table(p, index, mutating, seen, f, out);
                         if out.is_some() {
                             return;
                         }
@@ -964,8 +991,12 @@ fn walk_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
             Control::Generic(g) => {
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        walk_nth_table(p, index, seen, f, out);
+                        walk_nth_table(p, index, mutating, seen, f, out);
                         if out.is_some() {
+                            if mutating {
+                                // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                                g.hwpx_raw_xml = None;
+                            }
                             return;
                         }
                     }
@@ -1302,10 +1333,15 @@ fn delete_object_in_para(
                 }
             }
             Control::Generic(g) => {
+                let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         n += delete_object_in_para(p, kind, selector, table_seen);
                     }
+                }
+                if n > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}

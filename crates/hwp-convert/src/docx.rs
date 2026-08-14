@@ -1442,6 +1442,7 @@ mod tests {
                 }),
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }));
             para.chars.push(HwpChar::ExtCtrl {
                 code: ctrl_char::OBJECT,

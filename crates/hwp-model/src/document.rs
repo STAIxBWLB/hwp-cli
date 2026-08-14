@@ -42,6 +42,28 @@ pub struct Document {
     /// 해석하지 않는다(§4.4 파서는 범위 밖). hwpx 출신·이력이 없는 문서는 빈 벡터.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwp5_doc_history: Vec<(String, Vec<u8>)>,
+    /// hwpx 원본 패키지 중 writer가 재생성하지 않는 엔트리(원본 순서·바이트 보존).
+    /// 예: DocOptions, 스크립트, 추가 Preview, 원본 META-INF/*. hwpx 출신이 아니면 비어 있다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hwpx_extra_entries: Vec<(String, Vec<u8>)>,
+    /// hwpx 원본 `Contents/content.hpf`의 OPF manifest 중 BinData 항목의
+    /// (id, href) 매핑. 전체 재작성 경로에서 BinCollector id를 원본 manifest id로
+    /// 시드해, 원문 캡처된 개체 안의 `binaryItemIDRef`가 원본 바이트를 계속
+    /// 가리키게 한다. hwp5 출신·합성 문서는 빈 벡터(기존 image{N} 할당 유지).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hwpx_bin_manifest: Vec<(String, String)>,
+    /// hwpx 원본 OPF manifest 중 writer가 재생성하지 않는 확장 파트 항목의
+    /// (id, href, media-type) — BinData/header/section/settings 외 항목(예:
+    /// DocOptions/Layout.xml). content.hpf 재생성 시 그대로 다시 등재해 패키지
+    /// 엔트리가 고아(미등재)가 되지 않게 한다. hwp5 출신·합성 문서는 빈 벡터.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hwpx_opf_extra_items: Vec<(String, String, String)>,
+    /// hwpx 원본 섹션 루트의 추가 xmlns 선언(원문 속성 문자열 `xmlns:foo="uri"`,
+    /// writer 표준 hs/hp/hc 제외, 전 섹션 합집합). 원문 캡처 개체가 루트에만
+    /// 선언된 확장 접두어(hp10:, 벤더 접두어 등)를 쓸 수 있어, 재직렬화된 섹션
+    /// 루트에 그대로 실어야 namespace-well-formed하다. hwp5 출신·합성 문서는 빈 벡터.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hwpx_section_xmlns: Vec<String>,
 }
 
 /// 문서 수준 메타데이터 (요약 정보 / OPF 메타).
