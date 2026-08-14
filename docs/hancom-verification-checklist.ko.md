@@ -219,6 +219,32 @@ commit하지 않는다. 모든 케이스는 같은 불변 source snapshot에서 
 각 결과에서 `FileHeader`, `MemoExtended`, scripts, document options, 미지 entry, 미변경 BinData를
 확인한 뒤 실제 한글로 연다. parser-only 통과는 충분하지 않다.
 
+## N. package-surgical HWPX 편집과 포맷 간 손실 게이트 (이슈 #90)
+
+비공개 정품 복합 HWPX(패키지 36엔트리, BinData 24 — WMF 7 포함, `hp:container` 5)를 사용한다.
+source와 파생 결과는 commit하지 않는다. 하네스는 `run-authoring-validation-c.sh`(비공개, 미커밋),
+오라클은 Hancom Office HWP 12.30.0 macOS.
+
+| 케이스 | 필수 결과 |
+|---|---|
+| metadata 편집 (HWPX→HWPX) | ZIP 엔트리 집합 동일, opaque 엔트리 전량 바이트 동일, 경고 없이 열림 |
+| text 편집 | 동일 + 변경 텍스트 표시 |
+| paragraph 삽입 | 동일 + 삽입 문단 표시, 주변 layout 안정 |
+| table-cell 편집 | 동일 + 대상 셀 내용만 변경 |
+| image 삽입 | 동일 + 새 BinData 1개 추가(미디어 24→25), 경고 없이 열림 |
+| non-strict hwpx→hwp 변환 | typed loss report가 제거된 HWPX 패키지 엔트리를 열거, 경고 없이 열림 |
+| non-strict hwp→hwpx 변환 | 미디어 24개 전량 보존(종전 9), 경고 없이 열림 |
+| HWP 편집(source-preserving writer) | 컨테이너 왕복, 경고 없이 열림 |
+
+열기 전 CLI 측 게이트: 모든 surgical 편집의 ZIP 엔트리 집합 동일, opaque 엔트리 전량 바이트
+동일(미디어 24→24, container 5→5), 모든 결과물 `hwp validate` 클린, strict hwpx→hwp는
+fail-closed(`binary_asset_removed`, `control_removed`, `hwpx_package_entry_removed`,
+`opaque_control_unrepresentable`), strict hwp→hwpx도 fail-closed(`control_removed`,
+`metadata_value_removed`).
+
+**한글 실기 결과(2026-08-14):** 8개 결과물(HWPX 편집 5, non-strict 변환 2, HWP 편집 1) 모두
+손상/복구 대화상자 없이 열림.
+
 ## 결과 회수
 각 파일에 O/X와 (실패 시) 팝업 메시지·증상을 알려주시면, 실패 항목만 정품 대조 패턴
 (가나다·다문단 실측)으로 수정합니다. 통과 항목은 미검증 → 실기 통과로 확정합니다.

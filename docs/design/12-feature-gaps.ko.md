@@ -41,8 +41,8 @@
 - hwp5의 `OpaqueRecord`(서브트리째 보존, [10](10-hwp5-structure-map.ko.md) §0 상태표)는
   `hwp5→hwp5` 왕복에서 **바이트를 잃지 않는다** → 레코드 수준에서는 그 경로의 갭이 아니다.
   2026-08-14부터 네이티브 HWP 되쓰기는 불변 source CFB를 복사한 뒤 계획된 stream만 교체하여
-  부속 stream, storage, 미변경 binary payload까지 보존한다. package-surgical HWPX 편집은 이슈
-  #90에 남아 있다.
+  부속 stream, storage, 미변경 binary payload까지 보존한다. package-surgical HWPX 편집도 같은 날
+  착수되어 해소 이력(§0.5)의 세 번째 #90 항목을 참조한다.
 - 같은 레코드를 `hwp5→hwpx`로 **합성**하려면 의미를 해석해 OWPML로 다시 써야 하는데, 그 지식이
   없으므로 **드롭**된다 → 합성 경로에선 갭.
 - 렌더러가 그 개체(차트·OLE 등)를 그리려면 페이로드 해석이 필요한데 안 되므로 **빈자리** →
@@ -80,15 +80,37 @@
   `hwp-preservation-report-v1` ledger를 추가했다. 원본 없는 작성과 같은 포맷 write는 writer omission
   또는 예상하지 않은 container/package loss가 있으면 atomic하게 실패하고, 포맷 간 strict 변환은
   semantic asset, control, relationship, metadata도 비교한다. 이는 silent publication을 해소한 것이며
-  writer 자체의 갭을 해소한 것은 아니며, 다음 해소 이력에 HWP repair를 별도로 기록한다.
-  package-surgical HWPX 편집은 이슈 #90에 남아 있다.
+  writer 자체의 갭을 해소한 것은 아니며, 다음 해소 이력에 HWP repair와 HWPX repair를 차례로
+  기록한다.
 
 - **2026-08-14 (이슈 #90 source-preserving HWP writer)**: 같은 포맷 HWP `convert`, `edit`, IR
   `fill`이 불변 input snapshot을 기준으로 쓴다. 무수정은 exact file copy이며, 편집은 stream
   mutation plan을 만들고 미변경 CFB entry와 BinData를 바이트 동일하게 유지한다. BodyText는
   미변경 subtree를 보존하고 변경·삽입 문단에만 line layout을 합성한다. 비공개 복합 문서로
   no-op, metadata, text, paragraph, table-cell, image를 검증했으며 한글 손상 경고 없이 모두
-  통과했다. #90의 잔여 작업에는 package-surgical HWPX 편집이 포함된다.
+  통과했다. package-surgical HWPX 편집은 다음 항목에서 해소한다.
+
+- **2026-08-14 (이슈 #90 package-surgical HWPX 편집 + 포맷 간 손실 감지)**: hwpx reader가
+  IR이 모델링하지 못하는 run 수준 컨트롤(예: `hp:container`)의 원문 XML을
+  `GenericControl.hwpx_raw_xml`에 보존하고 writer가 그대로 재방출해, 전체 되쓰기에서도
+  드롭되지 않는다. writer가 재생성하지 않는 패키지 엔트리(원본 META-INF override,
+  DocOptions, `Contents/memoExtended.xml`, 추가 Preview)는 `Document.hwpx_extra_entries`로
+  옮겨 보존하고, 본문이 참조하지 않는 BinData 엔트리도 드롭 대신 통과시켜 재생성된
+  content.hpf manifest에 등재한다. 모든 같은 포맷 HWPX `edit`은
+  `hwpx::patch::rewrite_document_staged`를 거쳐, 변경된 콘텐츠 엔트리(header.xml /
+  content.hpf / section*.xml — before/after IR 비교로 판정)만 IR에서 재직렬화하고 나머지
+  ZIP 엔트리는 바이트 그대로 raw-copy한다. 삽입 이미지는 원본 OPF manifest id를 보존한 채
+  새 BinData 엔트리로 추가된다. 포맷 간 변환은 타깃 포맷이 표현 못 하는 패키지 자산
+  (HWP→HWPX 방향의 hwp5 XMLTemplate/DocHistory 슬롯, HWPX→HWP 방향의 hwpx 잉여 엔트리)을
+  typed `hwp-preservation-report-v1` 이벤트로 집계해 `--strict`는 이런 손실에서 fail-closed로
+  실패하고, `hwp convert --loss-report <PATH>`는 어느 쪽이든 JSON verdict를 기록한다.
+  과정에서 선재 writer 결함 2건(인라인 `hp:pic` zOrder, 테두리 없는 lineShape 색상)도
+  고쳤다. 비공개 복합 문서 검증(패키지 36엔트리, BinData 24 — WMF 7 포함, `hp:container`
+  5): metadata·text·paragraph·table-cell·image HWPX 편집 모두 엔트리 집합 동일, opaque
+  엔트리 전량 바이트 동일(미디어 24→24, 이미지 삽입 후 25; container 5→5), `hwp validate`
+  클린, non-strict hwp→hwpx는 미디어 24개 전량 보존(종전 9), strict 변환은 양방향 모두
+  fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 4+):
+  표 삽입(#77/#78), WMF 벡터, pagination/font 게이트, 인증.
 
 - **2026-07-15**: GA-5(버전 게이트), GE-α1~α5·α7(글자효과·밑줄모양·번호형식 hwpx 왕복),
   GE-β4(요약정보 필드), GH-1·GH-2(md/html 링크·이미지), GL-1(추출 옵션 CLI 노출) —
@@ -189,9 +211,10 @@
 
 - **hwp5** = `OpaqueRecord`로 서브트리째 보존 → `hwp5→hwp5` 왕복 무손실([10](10-hwp5-structure-map.ko.md) §8 Opaque 목록).
 - **hwpx read** = `GenericControl` fallback → 개체 고유 속성은 버리고 **자식 subList 텍스트만** IR에 남김([11](11-hwpx-structure-map.ko.md) §3.3).
-- **hwpx write** = 그 Generic이 알려진 ctrl_id도 gso_shapes도 아니면 최종 `DROP`(`hwpx/src/write/section.rs:364`) → **텍스트까지 소실**.
+- **hwpx write** = 그 Generic이 알려진 ctrl_id도 gso_shapes도 아니고 보존된 원문 XML도 없으면 최종 `DROP` → **텍스트까지 소실**. 단 같은 포맷 경로에서는 2026-08-14(#90)부터 reader가 컨트롤 원문 XML(`GenericControl.hwpx_raw_xml`)을 보존하고 writer가 그대로 재방출하므로 이 DROP은 발화하지 않는다.
 
-따라서 같은 개체가 "hwp5 왕복=무손실 / hwpx 왕복=소실 / 합성=소실 / 렌더=빈자리"로 경로마다 다르다.
+따라서 같은 개체가 "hwp5 왕복=무손실 / hwpx 왕복=소실 / 합성=소실 / 렌더=빈자리"로 경로마다 다르다
+(GB-6은 2026-08-14, #90부터 hwpx 왕복 예외).
 
 | ID | 개체(hwp5 태그 / hwpx 요소) | 근거 코드 | 스펙/포맷 근거 | 현 동작 | 영향 경로 | 난이도 |
 |---|---|---|---|---|---|---|
@@ -200,7 +223,7 @@
 | GB-3 | **동영상**(`VIDEO_DATA` 0x62 / `hp:video`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364` | §4.3.9.8 | hwp5=Opaque 보존 / hwpx=드롭 | 왕복(hwpx만)·합성·렌더 | L |
 | GB-4 | **글맵시**(`SHAPE_COMPONENT_TEXTART` 0x5A / `hp:textart`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191`(fallback 텍스트)→`write/section.rs:364`(DROP) | §4.3.9(글맵시) | hwp5=Opaque 보존 / hwpx=텍스트만 fallback 후 드롭 | 왕복(hwpx만)·합성·렌더 | M |
 | GB-5 | **양식 개체**(`FORM_OBJECT` 0x5B / `hp:formObject`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191`→`:364` | §4.3.9(양식) | hwp5=Opaque 보존 / hwpx=텍스트만 후 드롭 | 왕복(hwpx만)·합성·렌더 | M |
-| GB-6 | **묶음 개체**(`SHAPE_COMPONENT_CONTAINER` 0x56 / `hp:container`) — ★**비대칭**: hwp5는 raw보존이라 **렌더까지 됨**(자식 재귀), hwpx는 fallback 후 DROP | hwp5 렌더 `hwp-render/src/shape_draw.rs`([10](10-hwp5-structure-map.ko.md) §8 raw보존), hwpx `read/section.rs:191`→`write/section.rs:364` | §4.3.9.7 | hwp5=raw보존(렌더 O) / hwpx=드롭 | 왕복(hwpx만)·합성 | M |
+| GB-6 | **묶음 개체**(`SHAPE_COMPONENT_CONTAINER` 0x56 / `hp:container`) — ★**비대칭**: hwp5는 raw보존이라 **렌더까지 됨**(자식 재귀), hwpx는 해석 없이 fallback — 단 2026-08-14(#90)부터 같은 포맷 되쓰기에서 원문 XML을 보존·재방출해 왕복은 무손실, 손실은 합성·렌더에만 남음 | hwp5 렌더 `hwp-render/src/shape_draw.rs`([10](10-hwp5-structure-map.ko.md) §8 raw보존), hwpx `read/section.rs`(GenericControl 원문 XML 보존) | §4.3.9.7 | hwp5=raw보존(렌더 O) / hwpx=원문 XML 보존(왕복 무손실, 렌더 X) | 합성·렌더 | M |
 | GB-7 | **메모**(`MEMO_LIST` 0x5D 본문 + `MEMO_SHAPE` 0x5C DocInfo / hwpx `hp:` 미방출) | hwp5 `body_text.rs:617`·`doc_info.rs:148`(Opaque), hwpx 네임스페이스 선언만([11](11-hwpx-structure-map.ko.md) §2) | §4.3(메모)·§4.2 표13 | hwp5=Opaque 보존 / hwpx=미구현 | 왕복(hwpx만)·합성·렌더 | M |
 | GB-8 | **변경추적·편집이력**(`TRACKCHANGE` 0x20·`TRACK_CHANGE` 0x60·`TRACK_CHANGE_AUTHOR` 0x61·`PARA_RANGE_TAG` 0x46 / hwpx `hhs:` history — PARA_RANGE_TAG 용도는 스펙상 **형광펜·교정부호 등 영역 마킹**도 포함(§4.3.5), 변경추적만이 아님) | hwp5 `doc_info.rs:148`·`body_text.rs:73`(Opaque), hwpx 미구현([11](11-hwpx-structure-map.ko.md) §5(c)) | §4.2 표13·§4.3.5 | hwp5=Opaque 보존 / hwpx=미구현 | 왕복(hwpx만)·합성 | L |
 | GB-9 | **문서 임의·배포 데이터**(`DOC_DATA` 0x1B·`DISTRIBUTE_DOC_DATA` 0x1C·`COMPATIBLE_DOCUMENT` 0x1E·`LAYOUT_COMPATIBILITY` 0x1F) | hwp5 `doc_info.rs:57`(Opaque). 단 writer는 COMPATIBLE/LAYOUT을 **별도 합성**([07](07-hangul-compat-rules.ko.md) A4) | §4.2.12~4.2.15 | hwp5=Opaque 보존(+합성 처리 有) / hwpx=미구현 | 합성(부분 해소) | L |
@@ -213,7 +236,8 @@
 
 **GB 교훈:** hwp5→hwp5 왕복만 보면 GB 전체가 "무손실"이라 갭이 안 보인다(그게 §0.3의 함정). 결함은
 **hwpx 왕복·포맷 간 합성·렌더**에서만 터진다. GB-6(묶음)은 특히 미묘하다 — hwp5는 렌더까지 되는데
-hwpx로만 가면 사라진다. 이 계열의 복원은 대부분 **정품 파일에 그 개체를 담아 페이로드를 역설계**
+hwpx에서는 해석이 안 된다. 2026-08-14(#90)부터는 원문 XML이 같은 포맷 되쓰기에서 살아남아 손실은
+합성·렌더로 한정된다. 이 계열의 복원은 대부분 **정품 파일에 그 개체를 담아 페이로드를 역설계**
 (M/L)해야 하므로 정답지 확보가 선행 조건이다([00](00-overview.ko.md) §4).
 ★예외가 **GB-1의 hwpx 경로**다: HWPX에서 차트는 OLE가 아니라 **OOXML DrawingML `chartSpace`
 XML 파트**(`Chart/chartN.xml` + manifest 등재 + `hp:chart chartIDRef`)여서, 기존 hwpx 쓰기

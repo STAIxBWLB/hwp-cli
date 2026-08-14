@@ -22,6 +22,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `hwp-preservation-report-v1` ledger as JSON (schema-validated, empty-but-valid on a
   lossless run) even when strict mode rejects the output.
 
+- Lossless HWPX package round-trip and package-surgical same-format editing
+  ([#90](https://github.com/STAIxBWLB/hwp-cli/issues/90)). The hwpx reader retains
+  verbatim XML for run-level controls the IR does not model
+  (`GenericControl.hwpx_raw_xml`, e.g. `hp:container`) and the writer re-emits it, so an
+  opaque control survives a full rewrite. Package entries the writer does not regenerate
+  (original META-INF overrides, DocOptions, `Contents/memoExtended.xml`, extra previews)
+  ride the new `Document.hwpx_extra_entries` slot, and unreferenced BinData entries pass
+  through instead of being dropped, listed in the regenerated content.hpf manifest. Every
+  same-format HWPX→HWPX `hwp edit` operation now goes through
+  `hwpx::patch::rewrite_document_staged`: only the dirty content entries (header.xml,
+  content.hpf, section*.xml, decided by before/after IR comparison) are reserialized from
+  the IR, every other ZIP entry is raw-copied byte-for-byte, and inserted images append as
+  new BinData entries with the original OPF manifest ids preserved. Two latent writer
+  fidelity bugs fixed en route: the inline `hp:pic` zOrder and the no-border lineShape
+  color now round-trip instead of being hardcoded.
+
 - Captions, endnotes and odd/even furniture, the ninth and final step of the PDF parity
   roadmap ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Table, picture and shape
   captions are parsed end to end (GB-13): a new `Caption` IR (side, direction, gap, width,

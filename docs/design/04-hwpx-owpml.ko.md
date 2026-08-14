@@ -38,6 +38,8 @@ HWPX는 OPC(Open Packaging Conventions) 규약의 ZIP 아카이브다. 항목·�
 - `mimetype`은 ZIP의 **첫 로컬 헤더**여야 하고 `CompressionMethod::Stored`여야 한다. 파일 앞부분에 무압축 매직이 오도록 하는 OPC 규약. 위반 시 한글이 손상 파일로 판단.
 - `version.xml`의 `major="5" minor="1" micro="1" buildNumber="0" xmlVersion="1.5"`는 **고정 상수**(포맷 호환). `application`/`appVersion`만 작성 프로그램(hwp-cli, `CARGO_PKG_VERSION`) 값.
 
+**기존 문서 되쓰기(2026-08-14, #90).** 위 표는 *신규* 쓰기의 모습이다. 입력이 기존 HWPX이면 writer가 재생성하지 않는 엔트리를 버리지 않는다: 원본 META-INF override, DocOptions, `Contents/memoExtended.xml`, 추가 Preview 등 미지 엔트리는 `Document.hwpx_extra_entries`에 실려 원본 바이트·순서 그대로 재방출되고, 본문이 더는 참조하지 않는 BinData 엔트리도 드롭 대신 통과시켜 재생성된 content.hpf manifest에 등재한다. 같은 포맷 편집은 전체 되쓰기 경로조차 타지 않는다: `hwpx::patch::rewrite_document_staged`가 변경된 콘텐츠 엔트리(header.xml / content.hpf / section*.xml — before/after IR 비교로 판정)만 재직렬화하고 나머지 ZIP 엔트리는 바이트 그대로 raw-copy한다.
+
 ### 1.2 읽기 경로 (`package.rs`, `read/mod.rs`)
 
 `HwpxPackage::open(path)`:
@@ -61,7 +63,7 @@ n.trim_start_matches("Contents/section").trim_end_matches(".xml").parse::<u32>()
 
 `templates::content_hpf(section_count, bin_items, meta)`가 합성. `<opf:package>` 안에:
 - `<opf:metadata>`: `<opf:title>`, `<opf:language>ko`, `<dc:creator>`, `<dc:subject>`, `<opf:meta name="keywords" content="…"/>`, 그리고 앱 표식 `<opf:meta name="creator" content="text">hwp-cli</opf:meta>`.
-- `<opf:manifest>`: `header` + `section{i}` + `settings` + 바이너리 항목(`isEmbeded="1"`).
+- `<opf:manifest>`: `header` + `section{i}` + `settings` + 바이너리 항목(`isEmbeded="1"`). 되쓰기에서는 통과시킨 미참조 BinData 엔트리도 여기 등재한다(§1.1).
 - `<opf:spine>`: `header`·`section{i}`를 `<opf:itemref linear="yes"/>`로.
 
 바이너리 항목 id/href/mime는 `BinCollector`가 채운다. `read/mod.rs::parse_content_meta`는 이 파일의 `title`/`creator`/`subject` local-name과 `meta[name=keywords]`만 읽는다(`name="creator"`인 앱 표식은 local-name이 `meta`라 무시).
@@ -248,7 +250,7 @@ hwpx 표/도형은 `<hp:pos>`/`<hp:sz>`/`<hp:outMargin>`/`zOrder`를 읽어 `Gso
 
 ## 5. hp:ctrl 자식 컨트롤 (parse_ctrl ↔ writer arms)
 
-`hp:ctrl` 안의 컨트롤은 hwp5 ctrl_id + 컨트롤 문자 코드로 매핑되고, 페이로드를 여기서 합성한다. writer는 빈 페이로드 GenericControl을 드롭한다.
+`hp:ctrl` 안의 컨트롤은 hwp5 ctrl_id + 컨트롤 문자 코드로 매핑되고, 페이로드를 여기서 합성한다. writer는 빈 페이로드 GenericControl을 드롭한다 — 단 2026-08-14(#90)부터 원문 XML을 보존한 GenericControl(`hwpx_raw_xml`, 예: HWPX 입력에서 읽은 `hp:container`)은 그대로 재방출하므로, 페이로드도 보존 XML도 없을 때만 드롭이 발화한다.
 
 | OWPML | ctrl_id | 코드 | 페이로드 | 빌더/역 |
 |-------|---------|------|----------|---------|
@@ -340,7 +342,7 @@ hwpx 표/도형은 `<hp:pos>`/`<hp:sz>`/`<hp:outMargin>`/`zOrder`를 읽어 `Gso
 | gso 공통 attr | `<hp:pos>` 개별 속성 | attr(u32) 비트 합성 | 인라인/부동 보존 |
 | z-order | hwpx ShapeGeom엔 없음 | 순서 인덱스 or gso*Z_SCALE+i | 겹침 순서 |
 
-**미지원 컨트롤**은 `DROP:` 경고로 집계하고 드롭한다(글상자 일부·해석 실패 gso 등). 경고는 `Vec<String>`로 상위(`read_document`/`write_document`)까지 전파.
+**미지원 컨트롤**은 typed 보존 이벤트(`hwp-preservation-report-v1` ledger — 레거시 `DROP: <code>` 경고 형태로도 표면화)로 집계하고 드롭한다(글상자 일부·해석 실패 gso 등). 단 같은 포맷 HWPX 되쓰기의 run 수준 컨트롤은 예외: 원문 XML을 `GenericControl.hwpx_raw_xml`에 보존해 재방출한다(§5). 경고는 `Vec<String>`로 상위(`read_document`/`write_document`)까지 전파.
 
 ---
 
