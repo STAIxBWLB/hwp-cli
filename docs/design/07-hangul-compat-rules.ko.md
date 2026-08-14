@@ -186,6 +186,20 @@ code, resource class, disposition은 닫힌 enum이며 개수만 집계한다. �
 
 ---
 
+## G. 원본 보존형 네이티브 HWP 편집
+
+| # | 현상 | 원인 | 수정 | 정답지 |
+|---|---|---|---|---|
+| G1 | 정품 복합 문서의 텍스트 하나를 편집해도 손상 경고 | section 전체 재방출 시 `CTRL_DATA`, `PAGE_DEF`, `PAGE_BORDER_FILL` 같은 level-sensitive typed-control 자식의 순서 이동 | source CFB를 복사하고 변경 section stream 안에서도 미변경 문단/control subtree를 원본에서 이식 | BodyText 이분 탐색 + 정품 복합 제안서 일부; 미변경 subtree 바이트 동일 |
+| G2 | stale line layout 제거 또는 전체 재생성 시 손상 경고·layout churn | 변경된 5.1.x 문단에는 내용과 정합한 `PARA_LINE_SEG`가 필요하고, 미변경 문단은 원본 cache를 유지해야 함 | 편집본에 layout을 합성한 뒤 의미상 미변경 네이티브 문단을 불변 snapshot 값으로 복원 | 한글에서 no-op, metadata, text, paragraph 삽입, table-cell 편집, image 삽입 모두 경고 없이 열림 |
+| G3 | 같은 포맷 no-op이 보조 stream 또는 CFB metadata 변경 | 새 container 조립으로 미지 stream/storage/directory 속성을 재현할 수 없음 | no-op은 exact file copy, 편집은 mutation plan이 지목한 stream만 교체 | exact-file 비교 + `MemoExtended`, 미변경 BinData, 미지 entry 보존 |
+
+한글 acceptance는 선택적 smoke test가 아니라 네이티브 writer 계약이다. 내부 재읽기와 typed
+preservation 검사를 먼저 통과한 뒤 [체크리스트](../hancom-verification-checklist.ko.md)의 편집 6종을
+실제 한글에서 열어야 한다.
+
+---
+
 ## 종합 교훈 — 왜 이 프로젝트는 "실기·정답지"에 목숨을 걸었나
 
 1. **관대한 도구는 거짓 통과를 준다.** pyhwp·자체 렌더가 100% 통과해도 한글은 거부한다(A1 CFB V3, D6 무채움, D8 run한계 전부 우리 도구는 통과). "재읽기 무경고"는 필요조건일 뿐 충분조건이 아니다.

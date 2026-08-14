@@ -239,6 +239,23 @@ What to report on failure: whether the equation appears as **an empty box or que
 the three it is points at a different wrong attribute (`font`/`baseUnit` versus `version` versus child
 element order). Obtaining a single genuine saved file would let us replace the attributes immediately.
 
+## M. Source-preserving native HWP edits (issue #90)
+
+Use a private, genuinely complex HWP containing tables, images and opaque auxiliary streams. Do not
+commit the source or derived outputs. Run each case from the same immutable source snapshot.
+
+| Case | Required result |
+|---|---|
+| No-op same-format convert | Exact file bytes; opens without a warning |
+| Metadata edit | Only summary information changes; opens without a warning |
+| Text edit | Unchanged controls and assets remain byte-identical; edited text is visible |
+| Paragraph insertion | The inserted paragraph is visible and surrounding layout remains stable |
+| Table-cell edit | Only the target cell content changes; table geometry remains intact |
+| Image insertion | Existing assets remain byte-identical; one new relationship and payload appear |
+
+For every output, verify `FileHeader`, `MemoExtended`, scripts, document options, unknown entries and
+untouched BinData before opening it in Hancom. A parser-only pass is insufficient.
+
 ## Reporting results
 
 Tell us pass or fail per file and, on failure, the popup message and symptom; we then fix only the

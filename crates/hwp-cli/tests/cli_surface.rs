@@ -318,11 +318,9 @@ fn mcp_stdio_session() {
 /// hwp5 합성 왕복 게이트: hwpx 픽스처 → a.hwp → `convert a.hwp -o b.hwp --preserve-layout`
 /// 후 **스트림 단위 바이트 동일** 단언.
 ///
-/// 주의: 이 테스트는 로컬 전용 정품 identity 게이트(crates/hwp5/tests/identity.rs,
-/// 로컬 픽스처 필요)를 대체하지 않고 **보완**한다 — 커밋 픽스처로 CI에서 도는 합성 경로
-/// 왕복이다. 전체 파일 비교는 불가: cfb 크레이트가 디렉터리 엔트리에 Timestamp::now()
-/// (18바이트)를 찍어 파일 단위 해시는 매번 달라진다(실측). `--preserve-layout`은
-/// 줄 배치 캐시 보존 전제 — 무수정 왕복 경로를 타게 하는 필수 플래그.
+/// This CI-safe synthetic case complements the local genuine-file identity
+/// gate. A same-format no-op now copies the immutable HWP source snapshot, so
+/// the whole file, including CFB directory metadata, must be byte-identical.
 #[test]
 fn hwp5_synthetic_identity_gate() {
     let dir = tmp_dir("hwp5_identity");
@@ -352,6 +350,12 @@ fn hwp5_synthetic_identity_gate() {
         r2.status.success(),
         "hwp→hwp(preserve-layout): {}",
         String::from_utf8_lossy(&r2.stderr)
+    );
+
+    assert_eq!(
+        std::fs::read(&a).unwrap(),
+        std::fs::read(&b).unwrap(),
+        "same-format no-op is an exact source snapshot copy"
     );
 
     let mut ca = hwp5::Hwp5Container::open(&a).unwrap();

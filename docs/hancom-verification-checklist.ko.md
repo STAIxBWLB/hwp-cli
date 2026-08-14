@@ -202,6 +202,23 @@ hwpx)를 확보하지 못해 수식 전용 속성(`version`·`baseLine`·`baseUn
 수식 편집기가 열리는지. 셋 중 무엇이냐에 따라 잘못된 속성이 갈린다(`font`/`baseUnit` vs
 `version` vs 자식 요소 순서). 정품 저장본 1개만 확보되면 그 속성으로 즉시 교체한다.
 
+## M. 원본 보존형 네이티브 HWP 편집 (이슈 #90)
+
+표·이미지·opaque 보조 stream을 포함한 비공개 정품 복합 HWP를 사용한다. source와 파생 결과는
+commit하지 않는다. 모든 케이스는 같은 불변 source snapshot에서 시작한다.
+
+| 케이스 | 필수 결과 |
+|---|---|
+| 같은 포맷 no-op convert | 파일 전체 바이트 동일, 경고 없이 열림 |
+| metadata 편집 | summary information만 변경, 경고 없이 열림 |
+| text 편집 | 미변경 control·asset 바이트 동일, 변경 텍스트 표시 |
+| paragraph 삽입 | 삽입 문단 표시, 주변 layout 안정 |
+| table-cell 편집 | 대상 셀 내용만 변경, 표 geometry 유지 |
+| image 삽입 | 기존 asset 바이트 동일, 새 relationship·payload 1개 추가 |
+
+각 결과에서 `FileHeader`, `MemoExtended`, scripts, document options, 미지 entry, 미변경 BinData를
+확인한 뒤 실제 한글로 연다. parser-only 통과는 충분하지 않다.
+
 ## 결과 회수
 각 파일에 O/X와 (실패 시) 팝업 메시지·증상을 알려주시면, 실패 항목만 정품 대조 패턴
 (가나다·다문단 실측)으로 수정합니다. 통과 항목은 미검증 → 실기 통과로 확정합니다.

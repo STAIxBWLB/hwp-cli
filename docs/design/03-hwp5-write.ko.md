@@ -400,3 +400,38 @@ CTRL_HEADER data = `" lbt"`(=tbl 역순) + 개체 공통 속성(`common_data` �
 10. hwp5 원본 gso는 raw_children로 무손실; hwpx 도형은 안전 저하(재합성은 손상 재발).
 
 이 모든 값은 스펙이 아니라 정품 파일 실측 + 한글 실기 게이트로 확정한 정답지다.
+
+---
+
+## 13. 원본 보존형 네이티브 HWP 되쓰기
+
+네이티브 HWP 편집은 입력 컨테이너를 새로 조립하지 않는다. `rewrite_document_with_report`는
+불변 source 경로, 그 snapshot에서 읽은 IR, 편집 IR을 함께 받는다. 쓰기 전에 source를 다시 읽어
+원본 IR과 다르면 snapshot mismatch로 거부하고, 원본과 편집본의 차이로 mutation plan을 만든다.
+
+mutation plan이 소유하는 대상은 아래뿐이다.
+
+- 메타데이터 변경: `\u0005HwpSummaryInformation`
+- header 또는 BinData 관계 변경: `DocInfo`
+- section 변경: 해당 `BodyText/SectionN`과 미리보기
+- binary 변경·삭제: 해당 `BinData/*`
+
+무수정은 `fs::copy`이므로 CFB 전체가 바이트 동일하다. 편집 시에도 source CFB를 먼저 복사한 뒤
+선택한 stream만 교체한다. `FileHeader`, `MemoExtended`, `Scripts`, `DocOptions`, XMLTemplate,
+DocHistory, 미지 stream/storage, 미변경 binary, 패치 대상과 무관한 CFB directory entry는 source가 계속 소유한다.
+
+BodyText도 외과적으로 materialize한다. 문단은 고유한 non-zero `instance_id`, 완전 동일성, 동일
+길이 위치 fallback 순으로 대응한다. 미변경 문단은 원본 record subtree를 그대로 사용한다. 변경
+문단 안에서도 미변경 typed control은 source subtree를 이식하고, 표 셀 편집은 변경 셀 문단만
+재귀적으로 교체한다. `CTRL_DATA`, `PAGE_DEF`, `PAGE_BORDER_FILL`처럼 의미 IR에서 분리해 표현해도
+실제 record level과 순서가 중요한 구조를 지키기 위함이다. `ParaHeaderInfo::hwp5_child_order`도
+opaque 문단 자식과 `CTRL_HEADER` 사이의 원본 순서를 보존한다.
+
+변경·삽입 문단은 renderer로 새 `PARA_LINE_SEG`를 계산한다. 계산 후 표 셀과 generic control 내부를
+포함한 의미상 미변경 문단은 불변 snapshot 값으로 복원한다. 이 방식으로 stale layout cache와
+문서 전체 layout churn을 함께 피한다.
+
+CLI의 `convert` 무수정, `edit`, IR `fill` 경로는 쓰기 전에 private immutable input snapshot을
+만든다. 결과 공개는 기존처럼 atomic하며 typed preservation gate를 통과해야 한다. 회귀 테스트는
+무수정 exact copy, metadata-only targeting, opaque stream 보존, 미변경 typed control subtree 보존,
+image 관계 materialization, 같은 포맷 CLI 바이트 동일을 고정한다.

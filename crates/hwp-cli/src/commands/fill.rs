@@ -384,23 +384,7 @@ fn fill_tables_ir(
         ));
     }
 
-    let writer_report = crate::commands::output::write_validated(
-        output,
-        Some(input),
-        |staged| {
-            let mut report = write_table_fill(&doc, staged, added > 0)?;
-            report.preservation.extend(
-                crate::commands::preservation::inspect_same_format_container(input, staged)?,
-            );
-            Ok(report)
-        },
-        |staged, writer_report| {
-            crate::commands::reject_preservation_loss("fill", &writer_report.preservation)?;
-            ensure_valid_document(staged)?;
-            crate::commands::edit::verify_document(staged, &doc)?;
-            Ok(())
-        },
-    )?;
+    let writer_report = write_ir_fill(input, output, &original, &doc, added > 0)?;
     warnings.extend(writer_report.warnings);
 
     Ok(FillReport {
@@ -550,23 +534,7 @@ fn fill_parts_ir(
         warnings.push(format!("미치환 자리표시자: {}", unmatched.join(", ")));
     }
 
-    let writer_report = crate::commands::output::write_validated(
-        output,
-        Some(input),
-        |staged| {
-            let mut report = write_table_fill(&doc, staged, true)?;
-            report.preservation.extend(
-                crate::commands::preservation::inspect_same_format_container(input, staged)?,
-            );
-            Ok(report)
-        },
-        |staged, writer_report| {
-            crate::commands::reject_preservation_loss("fill", &writer_report.preservation)?;
-            ensure_valid_document(staged)?;
-            crate::commands::edit::verify_document(staged, &doc)?;
-            Ok(())
-        },
-    )?;
+    let writer_report = write_ir_fill(input, output, &original, &doc, true)?;
     warnings.extend(writer_report.warnings);
 
     Ok(FillReport {
@@ -663,6 +631,7 @@ fn strip_section_controls(para: &mut hwp_model::Paragraph) {
 }
 
 fn write_table_fill(
+    source: Option<(&Path, &hwp_model::Document)>,
     doc: &hwp_model::Document,
     output: &Path,
     structural: bool,
@@ -673,10 +642,68 @@ fn write_table_fill(
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
+        Some("hwp")
+            if source.is_some_and(|(_, original)| original.meta.source_format == "hwp5") =>
+        {
+            let (source, original) = source.expect("guarded source");
+            crate::commands::convert::write_hwp_preserving_source(
+                source,
+                original,
+                doc,
+                output,
+                !structural,
+                structural,
+            )
+        }
         Some("hwp") if structural => crate::commands::convert::write_hwp_structural(doc, output),
         Some("hwp") => crate::commands::convert::write_hwp_edited(doc, output),
         Some("hwpx") => Ok(hwpx::write_document_with_report(doc, output)?),
         other => anyhow::bail!("fill 출력은 .hwp 또는 .hwpx만 지원합니다 (확장자: {other:?})"),
+    }
+}
+
+fn write_ir_fill(
+    input: &Path,
+    output: &Path,
+    original: &hwp_model::Document,
+    edited: &hwp_model::Document,
+    structural: bool,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    let write_staged = |source: &Path, staged: &Path| {
+        let mut report = write_table_fill(Some((source, original)), edited, staged, structural)?;
+        report
+            .preservation
+            .extend(crate::commands::preservation::inspect_same_format_container(source, staged)?);
+        Ok(report)
+    };
+    let verify_staged = |staged: &Path, writer_report: &hwp_model::WriteReport| {
+        crate::commands::reject_preservation_loss("fill", &writer_report.preservation)?;
+        ensure_valid_document(staged)?;
+        crate::commands::edit::verify_document(staged, edited)?;
+        Ok(())
+    };
+    let hwp_source_and_output = original.meta.source_format == "hwp5"
+        && output
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("hwp"));
+    if hwp_source_and_output {
+        let (_, report) = crate::commands::output::write_with_private_input_snapshot(
+            output,
+            input,
+            hwp_cli::certification::MAX_INPUT_BYTES,
+            crate::commands::output::SnapshotOutputMode::Publish,
+            |snapshot, staged, _| write_staged(snapshot, staged),
+            verify_staged,
+        )?;
+        Ok(report)
+    } else {
+        crate::commands::output::write_validated(
+            output,
+            Some(input),
+            |staged| write_staged(input, staged),
+            verify_staged,
+        )
     }
 }
 

@@ -156,6 +156,22 @@ pub struct ParaHeaderInfo {
     /// 버전에 따라 붙는 꼬리 (변경 추적 병합 등) — 왕복 보존
     #[serde(with = "hex_bytes")]
     pub tail: Vec<u8>,
+    /// HWP5 PARA_HEADER 아래에서 opaque 레코드와 CTRL_HEADER가 나타난 순서.
+    ///
+    /// CTRL_DATA처럼 컨트롤과 같은 레벨에 저장되는 레코드는 이 순서를 잃으면
+    /// 한글이 문서를 손상된 것으로 판정할 수 있다. 다른 포맷에는 의미가 없는
+    /// HWP5 왕복 캐시이며, 합성 문서는 비어 있다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hwp5_child_order: Vec<Hwp5ParagraphChild>,
+}
+
+/// HWP5 문단의 비표준 자식 레코드 순서.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Hwp5ParagraphChild {
+    /// [`Paragraph::extras`]의 다음 레코드.
+    Extra,
+    /// [`Paragraph::controls`]의 다음 컨트롤.
+    Control,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

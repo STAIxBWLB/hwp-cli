@@ -37,7 +37,9 @@ pub use header::{
 };
 pub use ids::{BinDataId, BorderFillId, CharShapeId, FaceNameId, ParaShapeId, StyleId};
 pub use opaque::OpaqueRecord;
-pub use paragraph::{CharKind, HwpChar, LineSeg, ParaHeaderInfo, Paragraph, char_kind, ctrl_char};
+pub use paragraph::{
+    CharKind, Hwp5ParagraphChild, HwpChar, LineSeg, ParaHeaderInfo, Paragraph, char_kind, ctrl_char,
+};
 pub use preservation::{
     PRESERVATION_REPORT_CONTRACT, PreservationCode, PreservationDisposition, PreservationEvent,
     PreservationReport, PreservationResourceKind, WriteReport,

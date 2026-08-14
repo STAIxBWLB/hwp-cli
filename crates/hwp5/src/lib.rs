@@ -33,4 +33,6 @@ pub use error::Hwp5Error;
 pub use file_header::FileHeader;
 pub use read::{BoundedReadLimits, BoundedReadSnapshot, ReadResult, ScriptPresence, read_document};
 pub use summary::parse_summary;
-pub use write::{WriteOptions, write_document, write_document_with_report};
+pub use write::{
+    WriteOptions, rewrite_document_with_report, write_document, write_document_with_report,
+};
