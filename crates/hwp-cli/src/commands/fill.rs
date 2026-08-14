@@ -24,6 +24,7 @@ pub struct FillReport {
     pub filled: usize,
     pub rows_added: usize,
     pub warnings: Vec<String>,
+    pub preservation: hwp_model::PreservationReport,
 }
 
 pub fn run(
@@ -58,6 +59,7 @@ pub fn run(
     };
 
     let report = execute(input, output, set, data_value.as_ref(), allow_partial, &[])?;
+    crate::commands::preservation::print_report(&report.preservation);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report_json(&report))?);
@@ -254,6 +256,7 @@ pub fn execute_values(
         filled: total,
         rows_added: 0,
         warnings: report_warnings,
+        preservation: hwp_model::PreservationReport::new(),
     })
 }
 
@@ -381,18 +384,24 @@ fn fill_tables_ir(
         ));
     }
 
-    let writer_warnings = crate::commands::output::write_validated(
+    let writer_report = crate::commands::output::write_validated(
         output,
         Some(input),
-        |staged| write_table_fill(&doc, staged, added > 0),
-        |staged, writer_warnings| {
-            crate::commands::reject_drop_warnings("fill", writer_warnings)?;
+        |staged| {
+            let mut report = write_table_fill(&doc, staged, added > 0)?;
+            report.preservation.extend(
+                crate::commands::preservation::inspect_same_format_container(input, staged)?,
+            );
+            Ok(report)
+        },
+        |staged, writer_report| {
+            crate::commands::reject_preservation_loss("fill", &writer_report.preservation)?;
             ensure_valid_document(staged)?;
             crate::commands::edit::verify_document(staged, &doc)?;
             Ok(())
         },
     )?;
-    warnings.extend(writer_warnings);
+    warnings.extend(writer_report.warnings);
 
     Ok(FillReport {
         output: output.display().to_string(),
@@ -410,6 +419,7 @@ fn fill_tables_ir(
         filled,
         rows_added: added,
         warnings,
+        preservation: writer_report.preservation,
     })
 }
 
@@ -540,18 +550,24 @@ fn fill_parts_ir(
         warnings.push(format!("미치환 자리표시자: {}", unmatched.join(", ")));
     }
 
-    let writer_warnings = crate::commands::output::write_validated(
+    let writer_report = crate::commands::output::write_validated(
         output,
         Some(input),
-        |staged| write_table_fill(&doc, staged, true),
-        |staged, writer_warnings| {
-            crate::commands::reject_drop_warnings("fill", writer_warnings)?;
+        |staged| {
+            let mut report = write_table_fill(&doc, staged, true)?;
+            report.preservation.extend(
+                crate::commands::preservation::inspect_same_format_container(input, staged)?,
+            );
+            Ok(report)
+        },
+        |staged, writer_report| {
+            crate::commands::reject_preservation_loss("fill", &writer_report.preservation)?;
             ensure_valid_document(staged)?;
             crate::commands::edit::verify_document(staged, &doc)?;
             Ok(())
         },
     )?;
-    warnings.extend(writer_warnings);
+    warnings.extend(writer_report.warnings);
 
     Ok(FillReport {
         output: output.display().to_string(),
@@ -561,6 +577,7 @@ fn fill_parts_ir(
         filled,
         rows_added: 0,
         warnings,
+        preservation: writer_report.preservation,
     })
 }
 
@@ -649,7 +666,7 @@ fn write_table_fill(
     doc: &hwp_model::Document,
     output: &Path,
     structural: bool,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<hwp_model::WriteReport> {
     match output
         .extension()
         .and_then(|extension| extension.to_str())
@@ -658,7 +675,7 @@ fn write_table_fill(
     {
         Some("hwp") if structural => crate::commands::convert::write_hwp_structural(doc, output),
         Some("hwp") => crate::commands::convert::write_hwp_edited(doc, output),
-        Some("hwpx") => Ok(hwpx::write_document(doc, output)?),
+        Some("hwpx") => Ok(hwpx::write_document_with_report(doc, output)?),
         other => anyhow::bail!("fill 출력은 .hwp 또는 .hwpx만 지원합니다 (확장자: {other:?})"),
     }
 }

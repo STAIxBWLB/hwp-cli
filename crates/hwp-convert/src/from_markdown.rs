@@ -520,6 +520,7 @@ fn from_markdown_inner(
             bin_streams: b.bin_streams,
             hwpx_settings_xml: None,
             hwpx_version_xml: None,
+            hwpx_preview_image: None,
             hwp5_xml_template: Vec::new(),
             hwp5_doc_history: Vec::new(),
         },

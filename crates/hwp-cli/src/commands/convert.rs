@@ -24,6 +24,7 @@ pub struct MdOpts<'a> {
 #[derive(Debug, Default)]
 pub struct ConvertReport {
     pub warnings: Vec<String>,
+    pub preservation: hwp_model::PreservationReport,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -48,6 +49,7 @@ pub fn run(
         font_dirs,
     )?;
     print_warnings(&report.warnings);
+    crate::commands::preservation::print_report(&report.preservation);
     eprintln!("변환 완료: {} → {}", input.display(), output.display());
     Ok(())
 }
@@ -294,64 +296,103 @@ pub fn execute(
             },
             |_, _, _| Ok(()),
         )?;
-        return Ok(ConvertReport { warnings });
+        return Ok(ConvertReport {
+            warnings,
+            preservation: hwp_model::PreservationReport::new(),
+        });
     }
 
-    let warnings = crate::commands::output::write_validated(
+    let source_format = crate::format::detect(input)?;
+    let same_native_format = matches!(
+        (source_format, target),
+        (crate::format::FileFormat::Hwp5, ConvertFormat::Hwp)
+            | (crate::format::FileFormat::Hwpx, ConvertFormat::Hwpx)
+    );
+    let write_report = crate::commands::output::write_validated(
         output,
         Some(input),
-        |staged| match target {
-            ConvertFormat::Md => unreachable!("Markdown은 sidecar 트랜잭션 경로에서 처리"),
-            ConvertFormat::Html => {
-                std::fs::write(staged, hwp_convert::to_html(&doc))?;
-                Ok(Vec::new())
-            }
-            ConvertFormat::Txt => {
-                std::fs::write(staged, doc.plain_text())?;
-                Ok(Vec::new())
-            }
-            ConvertFormat::Csv => {
-                std::fs::write(staged, hwp_convert::to_csv(&doc))?;
-                Ok(Vec::new())
-            }
-            ConvertFormat::Docx => {
-                std::fs::write(staged, hwp_convert::to_docx(&doc)?)?;
-                Ok(Vec::new())
-            }
-            ConvertFormat::Odt => {
-                std::fs::write(staged, hwp_convert::to_odt(&doc)?)?;
-                Ok(Vec::new())
-            }
-            ConvertFormat::Pdf => {
-                let result =
-                    hwp_render::render_document_pdf(&doc, &pdf_render_opts(font_dirs), None)?;
-                std::fs::write(staged, &result.data)?;
-                Ok(render_issue_messages(&result.report))
-            }
-            ConvertFormat::Json => {
-                std::fs::write(staged, hwp_convert::to_json(&doc, true, embed_bin)?)?;
-                Ok(Vec::new())
-            }
-            ConvertFormat::Hwpx => Ok(hwpx::write::write_document_with(
-                &doc,
-                staged,
-                &hwpx::write::HwpxWriteOptions {
-                    preserve_linesegs: preserve_layout,
-                },
-            )?),
-            ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout),
-        },
-        |staged, warnings| {
-            // DROP 여부를 게시 전에 판정한다. strict 실패 시 기존 destination은 그대로다.
+        |staged| {
+            let mut report = match target {
+                ConvertFormat::Md => {
+                    unreachable!("Markdown은 sidecar 트랜잭션 경로에서 처리")
+                }
+                ConvertFormat::Html => {
+                    std::fs::write(staged, hwp_convert::to_html(&doc))?;
+                    hwp_model::WriteReport::new()
+                }
+                ConvertFormat::Txt => {
+                    std::fs::write(staged, doc.plain_text())?;
+                    hwp_model::WriteReport::new()
+                }
+                ConvertFormat::Csv => {
+                    std::fs::write(staged, hwp_convert::to_csv(&doc))?;
+                    hwp_model::WriteReport::new()
+                }
+                ConvertFormat::Docx => {
+                    std::fs::write(staged, hwp_convert::to_docx(&doc)?)?;
+                    hwp_model::WriteReport::new()
+                }
+                ConvertFormat::Odt => {
+                    std::fs::write(staged, hwp_convert::to_odt(&doc)?)?;
+                    hwp_model::WriteReport::new()
+                }
+                ConvertFormat::Pdf => {
+                    let result =
+                        hwp_render::render_document_pdf(&doc, &pdf_render_opts(font_dirs), None)?;
+                    std::fs::write(staged, &result.data)?;
+                    hwp_model::WriteReport {
+                        warnings: render_issue_messages(&result.report),
+                        preservation: hwp_model::PreservationReport::new(),
+                    }
+                }
+                ConvertFormat::Json => {
+                    std::fs::write(staged, hwp_convert::to_json(&doc, true, embed_bin)?)?;
+                    hwp_model::WriteReport::new()
+                }
+                ConvertFormat::Hwpx => hwpx::write::write_document_with_report_with(
+                    &doc,
+                    staged,
+                    &hwpx::write::HwpxWriteOptions {
+                        preserve_linesegs: preserve_layout,
+                    },
+                )?,
+                ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout)?,
+            };
+
             if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-                bail_on_strict(strict, warnings)?;
+                if same_native_format {
+                    report.preservation.extend(
+                        crate::commands::preservation::inspect_same_format_container(
+                            input, staged,
+                        )?,
+                    );
+                }
+                let output_document = load_document(staged)
+                    .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
+                report.preservation.extend(
+                    crate::commands::preservation::inspect_conversion_semantics(
+                        &doc,
+                        &output_document,
+                    ),
+                );
+            }
+            Ok(report)
+        },
+        |staged, report| {
+            if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
+                if same_native_format || strict {
+                    crate::commands::reject_preservation_loss("convert", &report.preservation)?;
+                }
                 load_document(staged)
                     .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
             }
             Ok(())
         },
     )?;
-    Ok(ConvertReport { warnings })
+    Ok(ConvertReport {
+        warnings: write_report.warnings,
+        preservation: write_report.preservation,
+    })
 }
 
 fn markdown_media_paths(
@@ -398,31 +439,6 @@ pub(crate) fn print_warnings(warnings: &[String]) {
     for w in warnings {
         eprintln!("경고: {w}");
     }
-}
-
-/// `--strict`이고 보존 불가(`DROP:`) 경고가 있으면 비정상 종료한다.
-/// 구조 보존 대상(hwp/hwpx)에만 의미가 있다 (md/html/pdf는 본디 손실 변환).
-fn bail_on_strict(strict: bool, warnings: &[String]) -> anyhow::Result<()> {
-    if !strict {
-        return Ok(());
-    }
-    let drops: Vec<&str> = warnings
-        .iter()
-        .filter(|w| w.starts_with("DROP: "))
-        .map(|w| w.as_str())
-        .collect();
-    if drops.is_empty() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "--strict: 보존 불가 데이터 {}건 드롭\n{}",
-        drops.len(),
-        drops
-            .iter()
-            .map(|w| format!("  - {}", w.trim_start_matches("DROP: ")))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
 }
 
 /// `--font-dir`가 비었으면 `HWP_FONT_DIR`(없으면 `fonts/`)로 기본 폰트 디렉터리를 정한다.
@@ -479,7 +495,7 @@ pub fn write_hwp(
     doc: &hwp_model::Document,
     output: &std::path::Path,
     preserve_layout: bool,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<hwp_model::WriteReport> {
     write_hwp_impl(doc, output, preserve_layout, false, None)
 }
 
@@ -496,7 +512,7 @@ pub fn write_hwp(
 pub fn write_hwp_edited(
     doc: &hwp_model::Document,
     output: &std::path::Path,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<hwp_model::WriteReport> {
     if doc.meta.source_format == "hwp5" {
         // 원본 줄 배치 보존(preserve), 합성 정규화 없음 — 편집 문단만 count=0.
         write_hwp_impl(doc, output, true, false, None)
@@ -513,7 +529,7 @@ pub fn write_hwp_edited(
 pub fn write_hwp_structural(
     doc: &hwp_model::Document,
     output: &std::path::Path,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<hwp_model::WriteReport> {
     write_hwp_impl(doc, output, false, true, None)
 }
 
@@ -526,7 +542,7 @@ pub fn write_hwp_structural_isolated(
     doc: &hwp_model::Document,
     output: &std::path::Path,
     font_files: &[std::path::PathBuf],
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<hwp_model::WriteReport> {
     if font_files.is_empty() {
         anyhow::bail!("isolated HWP writer requires at least one explicit font file");
     }
@@ -539,7 +555,7 @@ fn write_hwp_impl(
     preserve_layout: bool,
     edited: bool,
     isolated_font_files: Option<&[std::path::PathBuf]>,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<hwp_model::WriteReport> {
     let font_dir =
         std::path::PathBuf::from(std::env::var("HWP_FONT_DIR").unwrap_or_else(|_| "fonts".into()));
     let synthesize = doc.meta.source_format != "hwp5" || edited;
@@ -549,7 +565,7 @@ fn write_hwp_impl(
         .flat_map(|s| &s.paragraphs)
         .any(|p| !p.line_segs.is_empty());
 
-    let mut report: Vec<String> = Vec::new();
+    let mut report = hwp_model::WriteReport::new();
     let owned;
     let doc = if !synthesize || preserve_layout {
         // hwp5 무수정/preserve-layout: 원본 줄 배치 그대로.
@@ -585,7 +601,9 @@ fn write_hwp_impl(
         let mut warns = hwp_render::RenderIssueAccumulator::new();
         hwp_render::lineseg::synthesize_linesegs(&mut d, &mut store, &mut warns);
         warns.absorb(store.issues.finish());
-        report.append(&mut render_issue_messages(&warns.finish()));
+        report
+            .warnings
+            .append(&mut render_issue_messages(&warns.finish()));
         owned = d;
         &owned
     };
@@ -616,7 +634,7 @@ fn write_hwp_impl(
             .and_then(|out| out.pages.first().and_then(|p| p.encode_png().ok()))
     };
 
-    let warnings = hwp5::write_document(
+    let writer_report = hwp5::write_document_with_report(
         doc,
         output,
         &hwp5::WriteOptions {
@@ -625,7 +643,8 @@ fn write_hwp_impl(
             edited,
         },
     )?;
-    report.extend(warnings);
+    report.warnings.extend(writer_report.warnings);
+    report.preservation.extend(writer_report.preservation);
     Ok(report)
 }
 
@@ -676,6 +695,7 @@ fn clear_linesegs(doc: &mut hwp_model::Document) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read as _, Write as _};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -710,13 +730,82 @@ mod tests {
             None,
             |staged| {
                 std::fs::write(staged, b"PARTIAL CONVERSION")?;
-                Ok(vec!["DROP: 지원하지 않는 테스트 컨트롤".to_string()])
+                let mut report = hwp_model::WriteReport::new();
+                report.loss(
+                    hwp_model::PreservationCode::OpaqueControlUnrepresentable,
+                    hwp_model::PreservationResourceKind::Control,
+                    hwp_model::PreservationDisposition::Unrepresentable,
+                    1,
+                );
+                Ok(report)
             },
-            |_, warnings| bail_on_strict(true, warnings),
+            |_, report| crate::commands::reject_preservation_loss("convert", &report.preservation),
         );
         assert!(result.is_err());
         assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn same_format_container_loss_fails_closed_without_strict() {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-convert-preservation-test-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let generated = dir.join("generated.hwpx");
+        let source = dir.join("source.hwpx");
+        let destination = dir.join("result.hwpx");
+        hwpx::write_document(
+            &hwp_convert::from_markdown("owner-authored fixture"),
+            &generated,
+        )
+        .unwrap();
+        append_synthetic_package_entry(&generated, &source);
+        std::fs::write(&destination, b"ORIGINAL").unwrap();
+
+        let result = execute(
+            &source,
+            &destination,
+            Some(ConvertFormat::Hwpx),
+            false,
+            false,
+            false,
+            &MdOpts::default(),
+            Vec::new(),
+        );
+
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("hwpx_package_entry_removed: 1 item(s)"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn append_synthetic_package_entry(source: &Path, output: &Path) {
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(source).unwrap()).unwrap();
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(output).unwrap());
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let options =
+                zip::write::SimpleFileOptions::default().compression_method(entry.compression());
+            writer.start_file(entry.name(), options).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer
+            .start_file(
+                "SyntheticOpaque/entry.bin",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(b"owner-authored opaque payload").unwrap();
+        writer.finish().unwrap();
     }
 
     #[test]

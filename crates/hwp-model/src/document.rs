@@ -27,6 +27,10 @@ pub struct Document {
     /// 통과시키기 위한 슬롯. hwp5 출신 문서는 `None`(쓰기 시 기본 상수).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hwpx_version_xml: Option<String>,
+    /// Raw HWPX preview image bytes. The payload is intentionally excluded from
+    /// JSON, like [`BinStream::data`], and exists only for same-format pass-through.
+    #[serde(skip)]
+    pub hwpx_preview_image: Option<Vec<u8>>,
     /// hwp5 `/XMLTemplate` 스토리지의 스트림 원문(스트림 CFB 경로 + 압축 미해제
     /// 바이트). XML 스키마 바인딩 문서(전자정부 서식 등, §3.2.10)의 부속 파트를 IR
     /// 경유 되쓰기에서 그대로 통과시키는 슬롯. 내용은 해석하지 않는다. hwpx 출신·해당

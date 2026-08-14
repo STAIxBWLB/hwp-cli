@@ -2,14 +2,16 @@
 //!
 //! 런 상태 기계: 문자 모양 경계에서 `<hp:run>`을 전환하며 텍스트를
 //! 흘려보내고, 확장 컨트롤 위치에서 표/그림/머리말 등을 직렬화한다.
-//! 미지원 컨트롤(글상자 등)은 드롭하되 경고로 집계한다.
+//! Unsupported controls are omitted only with a typed preservation event.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hwp_model::{
     BinRef, Caption, CaptionDirection, CaptionSide, Cell, Control, Document, Equation,
-    GenericControl, HwpChar, PageDef, Paragraph, Picture, Section, SectionDef, ShapeKind, Table,
+    GenericControl, HwpChar, PageDef, Paragraph, Picture, PreservationCode,
+    PreservationDisposition, PreservationResourceKind, Section, SectionDef, ShapeKind, Table,
+    WriteReport,
 };
 
 use crate::write::templates::{color_attr, esc};
@@ -54,6 +56,20 @@ pub fn write_section(
     bins: &mut BinCollector,
     warnings: &mut Vec<String>,
 ) -> String {
+    let mut report = WriteReport::new();
+    let output = write_section_with_report(doc, section, preserve_linesegs, bins, &mut report);
+    warnings.extend(report.into_legacy_warnings());
+    output
+}
+
+/// Serializes one section while retaining typed preservation events.
+pub fn write_section_with_report(
+    doc: &Document,
+    section: &Section,
+    preserve_linesegs: bool,
+    bins: &mut BinCollector,
+    report: &mut WriteReport,
+) -> String {
     let mut out = String::with_capacity(16 * 1024);
     out.push_str(
         r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">"##,
@@ -74,7 +90,7 @@ pub fn write_section(
             bins,
             inject,
             preserve_linesegs,
-            warnings,
+            report,
         );
     }
     out.push_str("</hs:sec>");
@@ -129,7 +145,7 @@ fn write_paragraph(
     bins: &mut BinCollector,
     inject_secpr: bool,
     preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     let _ = write!(
         out,
@@ -256,19 +272,19 @@ fn write_paragraph(
                     Control::Generic(g) if g.ctrl_id == *b"head" || g.ctrl_id == *b"foot" => {
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
-                        write_header_footer(out, doc, g, ids, bins, preserve_linesegs, warnings);
+                        write_header_footer(out, doc, g, ids, bins, preserve_linesegs, report);
                     }
                     Control::Table(table) => {
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
-                        write_table(out, doc, table, ids, bins, preserve_linesegs, warnings);
+                        write_table(out, doc, table, ids, bins, preserve_linesegs, report);
                     }
                     Control::Picture(pic) => {
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         shape_break!();
                         let before = out.len();
-                        write_picture(out, doc, pic, ids, bins, warnings);
+                        write_picture(out, doc, pic, ids, bins, report);
                         run_shapes += count_shape_tags(&out[before..]);
                     }
                     Control::Generic(g) if hwp_convert::field::is_field_ctrl_id(&g.ctrl_id) => {
@@ -366,7 +382,7 @@ fn write_paragraph(
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         shape_break!();
                         let before = out.len();
-                        write_ir_shapes(out, doc, g, ids, bins, preserve_linesegs, warnings);
+                        write_ir_shapes(out, doc, g, ids, bins, preserve_linesegs, report);
                         run_shapes += count_shape_tags(&out[before..]);
                     }
                     Control::Generic(g) if g.ctrl_id == *b"gso " => {
@@ -376,7 +392,7 @@ fn write_paragraph(
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         shape_break!();
                         let before = out.len();
-                        write_gso(out, doc, g, ids, bins, preserve_linesegs, warnings);
+                        write_gso(out, doc, g, ids, bins, preserve_linesegs, report);
                         run_shapes += count_shape_tags(&out[before..]);
                     }
                     Control::Generic(g) if g.ctrl_id == *b"fn  " || g.ctrl_id == *b"en  " => {
@@ -384,7 +400,7 @@ fn write_paragraph(
                         // 속성을 무시하고 subList 문단만 수집하므로 표준 속성으로 방출한다.
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
-                        write_foot_end_note(out, doc, g, ids, bins, preserve_linesegs, warnings);
+                        write_foot_end_note(out, doc, g, ids, bins, preserve_linesegs, report);
                     }
                     Control::Generic(g) if g.equation.is_some() => {
                         // 수식 — hp:ctrl이 아닌 run 직속 개체(리더 parse_equation의 역).
@@ -398,11 +414,13 @@ fn write_paragraph(
                         write_equation(out, g, eq, ids);
                         run_shapes += count_shape_tags(&out[before..]);
                     }
-                    Control::Generic(g) => {
-                        warnings.push(format!(
-                            "DROP: hwpx 쓰기 미지원 컨트롤 드롭: {:?}",
-                            String::from_utf8_lossy(&g.ctrl_id)
-                        ));
+                    Control::Generic(_) => {
+                        report.loss(
+                            PreservationCode::OpaqueControlUnrepresentable,
+                            PreservationResourceKind::Control,
+                            PreservationDisposition::Unrepresentable,
+                            1,
+                        );
                     }
                 }
             }
@@ -925,7 +943,7 @@ fn write_header_footer(
     ids: &mut IdSeq,
     bins: &mut BinCollector,
     preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     let el = if g.ctrl_id == *b"head" {
         "header"
@@ -943,16 +961,7 @@ fn write_header_footer(
             r##"<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"##,
         );
         for para in &list.paragraphs {
-            write_paragraph(
-                out,
-                doc,
-                para,
-                ids,
-                bins,
-                false,
-                preserve_linesegs,
-                warnings,
-            );
+            write_paragraph(out, doc, para, ids, bins, false, preserve_linesegs, report);
         }
         out.push_str("</hp:subList>");
     }
@@ -970,7 +979,7 @@ fn write_foot_end_note(
     ids: &mut IdSeq,
     bins: &mut BinCollector,
     preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     // 한글 저장본 실측 형태(정답지=커밋 픽스처): number는 종류별 1-기반 수열,
     // suffixChar="41", instId는 문서 고유값(정품도 임의 u32 — 큰 베이스로 합성).
@@ -1004,7 +1013,7 @@ fn write_foot_end_note(
                 bins,
                 false,
                 preserve_linesegs,
-                warnings,
+                report,
             );
             const PAGE_SNIP: &str = r##"<hp:ctrl><hp:autoNum numType="PAGE"/></hp:ctrl>"##;
             if buf.contains(PAGE_SNIP) {
@@ -1230,7 +1239,7 @@ fn write_draw_text(
     bins: &mut BinCollector,
     width: i32,
     _preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     if g.paragraph_lists.is_empty() {
         return;
@@ -1245,7 +1254,7 @@ fn write_draw_text(
             // 도형 텍스트는 항상 linesegarray를 방출한다(정품 실측 — 한글은 글상자 문단에
             // 줄배치를 항상 담는다). line_segs가 없으면 no-op이라 안전. 본문(전역
             // preserve_linesegs)과 무관하게 강제.
-            write_paragraph(out, doc, para, ids, bins, false, true, warnings);
+            write_paragraph(out, doc, para, ids, bins, false, true, report);
         }
     }
     out.push_str(
@@ -1304,7 +1313,7 @@ fn write_shape_element(
     text: Option<&GenericControl>,
     caption: Option<&Caption>,
     preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     let el = match s.kind {
         ShapeKind::Rect => "rect",
@@ -1384,7 +1393,7 @@ fn write_shape_element(
     // shadow(type=NONE)도 정품 실측 필수 요소.
     out.push_str(r##"<hp:shadow type="NONE" color="#B2B2B2" offsetX="0" offsetY="0" alpha="0"/>"##);
     if let Some(g) = text {
-        write_draw_text(out, doc, g, ids, bins, sz.0, preserve_linesegs, warnings);
+        write_draw_text(out, doc, g, ids, bins, sz.0, preserve_linesegs, report);
     }
     // 기하 좌표점은 drawText 뒤(정품 순서). Rect/Ellipse는 bbox 4모서리 pt0~3 —
     // 이 점이 없으면 한글이 도형 외곽을 몰라 렌더하지 않는다(빈 화면 원인).
@@ -1447,7 +1456,7 @@ fn write_shape_element(
         sz.0, sz.1,
     );
     if let Some(caption) = caption {
-        write_caption(out, doc, caption, i64::from(sz.0), ids, bins, warnings);
+        write_caption(out, doc, caption, i64::from(sz.0), ids, bins, report);
     }
     if let Some(description) = s.description.as_deref().filter(|value| !value.is_empty()) {
         let _ = write!(
@@ -1470,10 +1479,15 @@ fn write_gso(
     ids: &mut IdSeq,
     bins: &mut BinCollector,
     preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     let Some((attr, voff, hoff, w, h, zorder)) = parse_gso_header(&g.data) else {
-        warnings.push("DROP: gso 공통 헤더 파싱 실패 — 드롭".to_string());
+        report.loss(
+            PreservationCode::GsoHeaderUnrepresentable,
+            PreservationResourceKind::Control,
+            PreservationDisposition::Unrepresentable,
+            1,
+        );
         return;
     };
     let shapes = hwp_convert::gso::shapes_from_raw(&g.raw_children);
@@ -1512,10 +1526,15 @@ fn write_gso(
             Some(g),
             g.caption.as_ref(),
             preserve_linesegs,
-            warnings,
+            report,
         );
     } else if shapes.is_empty() {
-        warnings.push("DROP: gso 도형 해석 실패(ARC/이미지채움 등) — 드롭".to_string());
+        report.loss(
+            PreservationCode::GsoShapeUnrepresentable,
+            PreservationResourceKind::Control,
+            PreservationDisposition::Unrepresentable,
+            1,
+        );
     } else {
         // 장식 도형: 도형별 요소. 배치 = gso 오프셋 + 박스 내 도형 오프셋.
         // ★그룹 도형(도넛=회색+흰 구멍 등, 한 gso 다중 도형)은 gso z-order를 공유하면
@@ -1544,7 +1563,7 @@ fn write_gso(
                 None,
                 (i == 0).then_some(g.caption.as_ref()).flatten(),
                 preserve_linesegs,
-                warnings,
+                report,
             );
         }
     }
@@ -1565,7 +1584,7 @@ fn write_ir_shapes(
     ids: &mut IdSeq,
     bins: &mut BinCollector,
     preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     for (i, s) in g.gso_shapes.iter().enumerate() {
         // 글자처럼(anchored)이면 정품 인라인 관례(PARA/COLUMN), 아니면 PAPER 절대 좌표.
@@ -1592,7 +1611,7 @@ fn write_ir_shapes(
             text,
             (i == 0).then_some(g.caption.as_ref()).flatten(),
             preserve_linesegs,
-            warnings,
+            report,
         );
     }
 }
@@ -1610,7 +1629,7 @@ fn write_caption(
     obj_width: i64,
     ids: &mut IdSeq,
     bins: &mut BinCollector,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     let side = match caption.side {
         CaptionSide::Left => "LEFT",
@@ -1635,7 +1654,7 @@ fn write_caption(
         caption.gap,
     );
     for para in &caption.paragraphs {
-        write_paragraph(out, doc, para, ids, bins, false, true, warnings);
+        write_paragraph(out, doc, para, ids, bins, false, true, report);
     }
     out.push_str("</hp:subList></hp:caption>");
 }
@@ -1650,7 +1669,7 @@ fn write_table(
     // 표 셀 줄 배치는 전역 옵션과 무관하게 항상 방출한다(아래 참조). 시그니처는
     // 다른 write_* 와 대칭 유지를 위해 남긴다.
     _preserve_linesegs: bool,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
@@ -1728,7 +1747,7 @@ fn write_table(
     );
     // hwpxlib TableWriter orders caption after outMargin and before inMargin.
     if let Some(caption) = &table.caption {
-        write_caption(out, doc, caption, sz_w, ids, bins, warnings);
+        write_caption(out, doc, caption, sz_w, ids, bins, report);
     }
     let _ = write!(
         out,
@@ -1766,7 +1785,7 @@ fn write_table(
                 // 잘린다(GE-8 실기 결함). write_paragraph 내부 가드가 line_segs가 있을
                 // 때만 방출하므로, 편집으로 줄 배치를 지운 문단(edit.rs가 clear)·md
                 // 출신(줄 배치 없음)은 자동으로 비게 돼 "변조" 경고 위험이 없다.
-                write_paragraph(out, doc, para, ids, bins, false, true, warnings);
+                write_paragraph(out, doc, para, ids, bins, false, true, report);
             }
             let cm = cell.margins;
             let _ = write!(
@@ -1795,13 +1814,15 @@ fn write_picture(
     pic: &Picture,
     ids: &mut IdSeq,
     bins: &mut BinCollector,
-    warnings: &mut Vec<String>,
+    report: &mut WriteReport,
 ) {
     let Some(item) = bins.register(doc, &pic.bin_ref) else {
-        warnings.push(format!(
-            "DROP: 그림 데이터를 찾지 못해 드롭: {:?}",
-            pic.bin_ref
-        ));
+        report.loss(
+            PreservationCode::BinaryAssetRemoved,
+            PreservationResourceKind::BinaryAsset,
+            PreservationDisposition::Removed,
+            1,
+        );
         return;
     };
     let (w, h) = (pic.width.0.max(1), pic.height.0.max(1));
@@ -1825,7 +1846,7 @@ fn write_picture(
         .as_ref()
         .map(|c| {
             let mut s = String::new();
-            write_caption(&mut s, doc, c, i64::from(w), ids, bins, warnings);
+            write_caption(&mut s, doc, c, i64::from(w), ids, bins, report);
             s
         })
         .unwrap_or_default();

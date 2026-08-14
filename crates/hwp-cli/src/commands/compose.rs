@@ -185,7 +185,7 @@ fn execute_spec_v2_with_source(
         return Ok(report);
     }
     let document = compiled.document;
-    let warnings = crate::commands::output::write_validated(
+    let writer_report = crate::commands::output::write_validated(
         output,
         source_path,
         |staged| {
@@ -198,11 +198,11 @@ fn execute_spec_v2_with_source(
                     crate::commands::convert::write_hwp_structural(&document, staged)
                 }
             } else {
-                Ok(hwpx::write_document(&document, staged)?)
+                Ok(hwpx::write_document_with_report(&document, staged)?)
             }
         },
-        |staged, writer_warnings| {
-            crate::commands::reject_drop_warnings("compose", writer_warnings)?;
+        |staged, writer_report| {
+            crate::commands::reject_preservation_loss("compose", &writer_report.preservation)?;
             if font_files.is_some() {
                 crate::commands::edit::verify_document_quiet(staged, &document)
             } else {
@@ -211,7 +211,7 @@ fn execute_spec_v2_with_source(
             .context("합성 문서 의미 검증 실패")
         },
     )?;
-    report.warnings = warnings;
+    report.warnings = writer_report.warnings;
     Ok(report)
 }
 
@@ -242,7 +242,7 @@ pub(crate) fn execute_spec_with_source_and_fonts(
     }
 
     let document = compiled.document;
-    let warnings = crate::commands::output::write_validated(
+    let writer_report = crate::commands::output::write_validated(
         output,
         source_path,
         |staged| {
@@ -255,11 +255,11 @@ pub(crate) fn execute_spec_with_source_and_fonts(
                     crate::commands::convert::write_hwp_structural(&document, staged)
                 }
             } else {
-                Ok(hwpx::write_document(&document, staged)?)
+                Ok(hwpx::write_document_with_report(&document, staged)?)
             }
         },
-        |staged, writer_warnings| {
-            crate::commands::reject_drop_warnings("compose", writer_warnings)?;
+        |staged, writer_report| {
+            crate::commands::reject_preservation_loss("compose", &writer_report.preservation)?;
             if font_files.is_some() {
                 crate::commands::edit::verify_document_quiet(staged, &document)
             } else {
@@ -268,7 +268,7 @@ pub(crate) fn execute_spec_with_source_and_fonts(
             .context("합성 문서 의미 검증 실패")
         },
     )?;
-    report.warnings = warnings;
+    report.warnings = writer_report.warnings;
     Ok(report)
 }
 

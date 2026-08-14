@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::Path;
 
-use hwp_model::Document;
+use hwp_model::{Document, WriteReport};
 use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
@@ -38,7 +38,7 @@ pub struct HwpxWriteOptions {
 
 /// 문서를 HWPX 파일로 저장한다 (줄 배치 제거 — 한글이 재계산).
 pub fn write_document(doc: &Document, path: &Path) -> Result<Vec<String>> {
-    write_document_with(doc, path, &HwpxWriteOptions::default())
+    write_document_with_report(doc, path).map(WriteReport::into_legacy_warnings)
 }
 
 /// 옵션 지정 저장.
@@ -47,7 +47,7 @@ pub fn write_document_with(
     path: &Path,
     opts: &HwpxWriteOptions,
 ) -> Result<Vec<String>> {
-    write_document_with_limits(doc, path, opts, &PackageLimits::default())
+    write_document_with_report_with(doc, path, opts).map(WriteReport::into_legacy_warnings)
 }
 
 /// 옵션과 패키지 자원 제한을 지정해 저장한다.
@@ -57,14 +57,47 @@ pub fn write_document_with_limits(
     opts: &HwpxWriteOptions,
     limits: &PackageLimits,
 ) -> Result<Vec<String>> {
-    let mut warnings = Vec::new();
+    write_document_with_report_with_limits(doc, path, opts, limits)
+        .map(WriteReport::into_legacy_warnings)
+}
+
+/// Writes an HWPX document and returns typed preservation diagnostics.
+pub fn write_document_with_report(doc: &Document, path: &Path) -> Result<WriteReport> {
+    write_document_with_report_with(doc, path, &HwpxWriteOptions::default())
+}
+
+/// Writes with options and returns typed preservation diagnostics.
+pub fn write_document_with_report_with(
+    doc: &Document,
+    path: &Path,
+    opts: &HwpxWriteOptions,
+) -> Result<WriteReport> {
+    write_document_with_report_with_limits(doc, path, opts, &PackageLimits::default())
+}
+
+/// Writes with options and package limits, returning typed preservation diagnostics.
+pub fn write_document_with_report_with_limits(
+    doc: &Document,
+    path: &Path,
+    opts: &HwpxWriteOptions,
+    limits: &PackageLimits,
+) -> Result<WriteReport> {
+    let mut report = WriteReport::new();
 
     // 본문 먼저 직렬화 (BinData 수집 포함)
     let mut bins = BinCollector::default();
     let sections: Vec<String> = doc
         .sections
         .iter()
-        .map(|s| section::write_section(doc, s, opts.preserve_linesegs, &mut bins, &mut warnings))
+        .map(|s| {
+            section::write_section_with_report(
+                doc,
+                s,
+                opts.preserve_linesegs,
+                &mut bins,
+                &mut report,
+            )
+        })
         .collect();
     let header_xml = header::write_header(&doc.header, doc.sections.len().max(1));
 
@@ -125,6 +158,12 @@ pub fn write_document_with_limits(
             .map(|(_, href, _, bytes)| (href.clone(), bytes.len() as u64)),
     );
     output_entries.push(("Preview/PrvText.txt".to_string(), preview.len() as u64));
+    if let Some(preview_image) = &doc.hwpx_preview_image {
+        output_entries.push((
+            "Preview/PrvImage.png".to_string(),
+            preview_image.len() as u64,
+        ));
+    }
     output_entries.push(("settings.xml".to_string(), settings_xml.len() as u64));
     validate_output_entries(output_entries, limits)?;
 
@@ -182,9 +221,12 @@ pub fn write_document_with_limits(
         put(&mut zip, href, bytes)?;
     }
     put(&mut zip, "Preview/PrvText.txt", preview.as_bytes())?;
+    if let Some(preview_image) = &doc.hwpx_preview_image {
+        put(&mut zip, "Preview/PrvImage.png", preview_image)?;
+    }
     // settings.xml — 슬롯이 있으면 원문 pass-through, 없으면 기본 상수(바이트 동일).
     put(&mut zip, "settings.xml", settings_xml.as_bytes())?;
 
     zip.finish()?;
-    Ok(warnings)
+    Ok(report)
 }

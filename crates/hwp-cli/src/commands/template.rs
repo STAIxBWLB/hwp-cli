@@ -323,7 +323,7 @@ fn ensure_report_budget(plan: &template_spec::ExpansionPlan) -> anyhow::Result<(
 
 fn verify_reference_output(path: &Path) -> anyhow::Result<()> {
     let read = hwpx::read_document(path).context("reference output semantic read failed")?;
-    crate::commands::reject_drop_warnings("template", &read.warnings)?;
+    reject_read_warnings("template", &read.warnings)?;
     let validation = crate::commands::validate::validate_json(path);
     if validation.get("valid").and_then(serde_json::Value::as_bool) != Some(true) {
         anyhow::bail!("reference output package validation failed");
@@ -369,18 +369,37 @@ fn validate_reference_counts(
 
 fn strict_reference_gate(input: &Path, output: &Path) -> anyhow::Result<()> {
     let read = hwpx::read_document(input).context("reference read failed")?;
-    crate::commands::reject_drop_warnings("template reference read", &read.warnings)?;
+    reject_read_warnings("template reference read", &read.warnings)?;
     crate::commands::output::validate_without_publish(
         output,
         Some(input),
-        |staged| Ok(hwpx::write_document(&read.document, staged)?),
-        |staged, warnings| {
-            crate::commands::reject_drop_warnings("template reference regeneration", warnings)?;
+        |staged| {
+            let mut report = hwpx::write_document_with_report(&read.document, staged)?;
+            report.preservation.extend(
+                crate::commands::preservation::inspect_same_format_container(input, staged)?,
+            );
+            Ok(report)
+        },
+        |staged, report| {
+            crate::commands::reject_preservation_loss(
+                "template reference regeneration",
+                &report.preservation,
+            )?;
             crate::commands::edit::verify_document(staged, &read.document)
                 .context("reference strict semantic gate failed")
         },
     )?;
     Ok(())
+}
+
+fn reject_read_warnings(context: &str, warnings: &[String]) -> anyhow::Result<()> {
+    if warnings.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{context}: strict reference read emitted {} diagnostic(s)",
+        warnings.len()
+    )
 }
 
 fn recheck_reference(path: &Path, base_dir: &Path, roots: &[PathBuf]) -> anyhow::Result<()> {

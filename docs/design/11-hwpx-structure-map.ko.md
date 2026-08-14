@@ -69,16 +69,17 @@ HWPX는 OPC(Open Packaging Conventions) ZIP 아카이브다. 아래는 한글이
 | `Contents/section{i}.xml` | 본문(문단·표·도형) | `read/section.rs:52` `parse_section` | `write/section.rs:50` `write_section` | §3.1/§4 참조 |
 | `BinData/imageN.*` | 임베드 이미지 원본 | `read/mod.rs:47` → `BinStream` | `write/mod.rs:110` ← `BinCollector`(`section.rs:24`) | 바이트 보존(중복 제거) |
 | `Preview/PrvText.txt` | 미리보기 텍스트 | **없음** | `write/mod.rs:113` `doc.plain_text()` 선두 1000자 | 본문에서 재생성 |
-| `Preview/PrvImage.png` | 미리보기 썸네일 | **없음** | **없음(IR 경로 손실)** | `patch.rs`만 raw 복사로 보존 |
+| `Preview/PrvImage.png` | 미리보기 썸네일 | raw pass-through(`Document.hwpx_preview_image`, JSON 제외) | 존재하면 원본 재방출 | ✅ 네이티브 IR 경로 바이트 보존(2026-08-14), `patch.rs`는 계속 전체 entry raw 복사 |
 
 **쓰기 엔트리 순서**(`write/mod.rs:72‑114`, 왼쪽이 먼저): `mimetype`(STORED) → `version.xml` →
 `META-INF/container.rdf` → `container.xml` → `manifest.xml` → `Contents/content.hpf` → `header.xml` →
-`section{0..}.xml` → `BinData/*` → `Preview/PrvText.txt` → `settings.xml`. `mimetype`은 반드시 첫
+`section{0..}.xml` → `BinData/*` → `Preview/PrvText.txt` → 선택적 `Preview/PrvImage.png` →
+`settings.xml`. `mimetype`은 반드시 첫
 로컬 헤더 + 무압축이어야 한다(OPC 규약; 위반 시 한글이 손상 파일로 판단).
 
 **읽기 진입**(`read/mod.rs:24` `read_document`): header → section(수치 정렬 `section0<…<section10`,
-`package.rs:105`) → BinData → version → content.hpf 순. `settings.xml`·`Preview/*`·`META-INF/*`는
-읽기 경로가 없어 IR로 들어오지 않는다 — IR 왕복 시 write가 상수/재생성으로 채운다.
+`package.rs:105`) → BinData → version → content.hpf → settings와 preview-image pass-through 순.
+Preview text는 재생성한다. `META-INF/*`는 여전히 IR 읽기 경로가 없으며 full rewrite에서 상수로 채운다.
 
 ---
 
