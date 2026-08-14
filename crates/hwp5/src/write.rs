@@ -10,8 +10,9 @@ use std::io::Write as _;
 use std::path::Path;
 
 use hwp_model::{
-    BorderLine, Cell, CharShape, Control, Document, FaceName, HwpChar, LANG_COUNT, Metadata,
-    OpaqueRecord, ParaShape, Paragraph, Picture, RawEntry, Section, SectionDef, Style, Table,
+    BorderLine, Caption, CaptionDirection, CaptionSide, Cell, CharShape, Control, Document,
+    FaceName, HwpChar, LANG_COUNT, Metadata, OpaqueRecord, ParaShape, Paragraph, Picture, RawEntry,
+    Section, SectionDef, Style, Table,
 };
 
 use crate::codec::{ByteWriter, compress};
@@ -2155,7 +2156,13 @@ fn emit_control(
         Control::Table(table) => {
             emit_table(table, synthesize, preserve_linesegs, add_tracking_tail)
         }
-        Control::Picture(pic) => emit_picture(pic, warnings),
+        Control::Picture(pic) => emit_picture(
+            pic,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            warnings,
+        ),
         Control::Generic(g) => {
             let mut w = ByteWriter::new();
             w.write_bytes(&reversed(g.ctrl_id));
@@ -2342,12 +2349,23 @@ fn emit_table(
         tw.write_bytes(&table.table_tail);
     }
 
-    let mut children = vec![RecordNode {
+    let mut cell_warnings = Vec::new();
+    // 캡션(표 71): TABLE 레코드 앞에 방출.
+    let mut children = match &table.caption {
+        Some(caption) => emit_caption_records(
+            caption,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            &mut cell_warnings,
+        ),
+        None => Vec::new(),
+    };
+    children.push(RecordNode {
         tag: tag::TABLE,
         data: tw.into_bytes(),
         children: Vec::new(),
-    }];
-    let mut cell_warnings = Vec::new();
+    });
     for cell in &table.cells {
         children.push(emit_cell_header(cell));
         for p in &cell.paragraphs {
@@ -2366,6 +2384,57 @@ fn emit_table(
         data: w.into_bytes(),
         children,
     }
+}
+
+/// 캡션 LIST_HEADER (표 71-73, 22바이트) — body_text::parse_caption_header의 역.
+fn emit_caption_header(caption: &Caption) -> RecordNode {
+    let mut w = ByteWriter::new();
+    w.write_i32(caption.paragraphs.len() as i32);
+    // listflags(표 65): 텍스트 방향(bits0-2)만 복원한다 — 줄바꿈(bits3-4)·세로
+    // 정렬(bits5-6)은 IR이 보존하지 않는다.
+    // TODO(hancom-verify): 정품 캡션 LIST_HEADER의 listflags 상위 비트 실측 필요.
+    w.write_u32(match caption.direction {
+        CaptionDirection::Horizontal => 0,
+        CaptionDirection::Vertical => 1,
+    });
+    let side = match caption.side {
+        CaptionSide::Left => 0,
+        CaptionSide::Right => 1,
+        CaptionSide::Top => 2,
+        CaptionSide::Bottom => 3,
+    };
+    // bit2: 캡션 폭에 마진 포함(full-size) — width=None과 대응.
+    w.write_u32(side | (u32::from(caption.width.is_none()) << 2));
+    w.write_i32(caption.width.unwrap_or(0) as i32);
+    w.write_u16(caption.gap.clamp(0, i32::from(u16::MAX)) as u16);
+    w.write_i32(caption.last_width as i32);
+    RecordNode {
+        tag: tag::LIST_HEADER,
+        data: w.into_bytes(),
+        children: Vec::new(),
+    }
+}
+
+/// 캡션 레코드 열(LIST_HEADER + 문단들). 캡션은 개체 요소 레코드(TABLE 등)보다
+/// **앞**에 온다(pyhwp seen_table_body 실측 규칙).
+fn emit_caption_records(
+    caption: &Caption,
+    synthesize: bool,
+    preserve_linesegs: bool,
+    add_tracking_tail: bool,
+    warnings: &mut Vec<String>,
+) -> Vec<RecordNode> {
+    let mut out = vec![emit_caption_header(caption)];
+    for p in &caption.paragraphs {
+        out.push(emit_paragraph(
+            p,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            warnings,
+        ));
+    }
+    out
 }
 
 fn emit_cell_header(cell: &Cell) -> RecordNode {
@@ -2396,7 +2465,13 @@ fn emit_cell_header(cell: &Cell) -> RecordNode {
     }
 }
 
-fn emit_picture(pic: &Picture, warnings: &mut Vec<String>) -> RecordNode {
+fn emit_picture(
+    pic: &Picture,
+    synthesize: bool,
+    preserve_linesegs: bool,
+    add_tracking_tail: bool,
+    warnings: &mut Vec<String>,
+) -> RecordNode {
     let mut w = ByteWriter::new();
     w.write_bytes(b" osg");
     if pic.common_data.is_empty() {
@@ -2419,7 +2494,18 @@ fn emit_picture(pic: &Picture, warnings: &mut Vec<String>) -> RecordNode {
     } else {
         w.write_bytes(&pic.common_data);
     }
-    let children = pic.extras.iter().map(opaque_to_node).collect();
+    // 캡션(표 71): 개체 공통 속성 뒤 — 자식 레코드 맨 앞에 방출.
+    let mut children = match &pic.caption {
+        Some(caption) => emit_caption_records(
+            caption,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            warnings,
+        ),
+        None => Vec::new(),
+    };
+    children.extend(pic.extras.iter().map(opaque_to_node));
     RecordNode {
         tag: tag::CTRL_HEADER,
         data: w.into_bytes(),
@@ -2546,6 +2632,7 @@ mod tests {
             border_fill: hwp_model::BorderFillId(1),
             table_tail: Vec::new(),
             cells: Vec::new(),
+            caption: None,
             extras: Vec::new(),
         }
     }

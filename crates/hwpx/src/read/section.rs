@@ -12,9 +12,9 @@
 
 use hwp_model::opaque::OpaqueRecord;
 use hwp_model::{
-    Cell, CharShapeId, ColumnDef, Control, Equation, GenericControl, GradientSpec, HwpChar,
-    HwpUnit, LineSeg, PageDef, ParaShapeId, Paragraph, ParagraphList, SECPR_PAGEPR_SLOT, Section,
-    SectionDef, ShapeGeom, ShapeKind, StyleId, Table,
+    Caption, CaptionDirection, CaptionSide, Cell, CharShapeId, ColumnDef, Control, Equation,
+    GenericControl, GradientSpec, HwpChar, HwpUnit, LineSeg, PageDef, ParaShapeId, Paragraph,
+    ParagraphList, SECPR_PAGEPR_SLOT, Section, SectionDef, ShapeGeom, ShapeKind, StyleId, Table,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
@@ -172,6 +172,7 @@ fn parse_paragraph(
                             gso_shapes: Vec::new(),
                             equation: Some(eq),
                             column_def: None,
+                            caption: None,
                         }));
                     }
                     b"linesegarray" => {
@@ -183,7 +184,7 @@ fn parse_paragraph(
                         let mut picture = if empty {
                             default_picture()
                         } else {
-                            parse_picture(reader)?
+                            parse_picture(reader, warnings)?
                         };
                         // z-순서는 <hp:pic> 시작 태그 속성(자식 <hp:pos>가 아님).
                         // 누락하면 머리말/본문 로고 겹침 순서가 어긋난다.
@@ -206,6 +207,7 @@ fn parse_paragraph(
                             gso_shapes: Vec::new(),
                             equation: None,
                             column_def: None,
+                            caption: None,
                         };
                         if !empty {
                             if let Some(kind) = shape_kind(&name) {
@@ -657,6 +659,7 @@ fn parse_ctrl(
                         gso_shapes: Vec::new(),
                         equation: None,
                         column_def: None,
+                        caption: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 3, ctrl_id);
                     para.controls.push(Control::Generic(generic));
@@ -689,6 +692,7 @@ fn parse_ctrl(
                         gso_shapes: Vec::new(),
                         equation: None,
                         column_def: None,
+                        caption: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 22, *b"bokm");
                     para.controls.push(Control::Generic(generic));
@@ -733,6 +737,7 @@ fn parse_ctrl(
                     gso_shapes: Vec::new(),
                     equation: None,
                     column_def,
+                    caption: None,
                 };
                 // parse_col_pr has already consumed a colPr subtree.
                 if matches!(event, Event::Start(_)) && name.as_slice() != b"colPr" {
@@ -838,6 +843,7 @@ fn parse_table(
         border_fill: hwp_model::BorderFillId(attr_u16(start, "borderFillIDRef").unwrap_or(0)),
         table_tail: Vec::new(),
         cells: Vec::new(),
+        caption: None,
         extras: Vec::new(),
     };
 
@@ -855,6 +861,9 @@ fn parse_table(
                 b"tc" => {
                     let cell = parse_cell(reader, &e, warnings)?;
                     table.cells.push(cell);
+                }
+                b"caption" => {
+                    table.caption = Some(parse_caption(reader, &e, warnings)?);
                 }
                 b"tr" => {} // 행은 cellAddr로 복원되므로 컨테이너로만 취급
                 _ => {
@@ -913,6 +922,58 @@ fn parse_table(
     }
     table.row_cell_counts = counts;
     Ok(table)
+}
+
+/// `<hp:caption>` — 캡션 (hwpxlib Caption 근거: side/fullSz/width/gap/lastWidth
+/// + hp:subList 문단들). fullSz="1"이면 폭 미사용(None 매핑).
+fn parse_caption(
+    reader: &mut XmlReader<'_>,
+    start: &BytesStart<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<Caption> {
+    let side = match attr(start, "side").as_deref() {
+        Some("LEFT") => CaptionSide::Left,
+        Some("RIGHT") => CaptionSide::Right,
+        Some("TOP") => CaptionSide::Top,
+        _ => CaptionSide::Bottom,
+    };
+    let full_size = attr(start, "fullSz").as_deref() == Some("1");
+    let mut caption = Caption {
+        side,
+        // 텍스트 방향은 subList@textDirection이 정본. 없으면 위치로 추정한다
+        // (LEFT/RIGHT=세로 — 캡션 폭이 세로 방향일 때만 쓰인다는 표 72 주석과 정합).
+        direction: match side {
+            CaptionSide::Left | CaptionSide::Right => CaptionDirection::Vertical,
+            _ => CaptionDirection::Horizontal,
+        },
+        gap: attr_i32(start, "gap").unwrap_or(0),
+        width: if full_size {
+            None
+        } else {
+            attr_u32(start, "width")
+        },
+        last_width: attr_u32(start, "lastWidth").unwrap_or(0),
+        paragraphs: Vec::new(),
+    };
+    loop {
+        match next_event(reader)? {
+            Event::Start(e) => match e.local_name().as_ref() {
+                b"subList" => match attr(&e, "textDirection").as_deref() {
+                    Some("VERTICAL") => caption.direction = CaptionDirection::Vertical,
+                    Some("HORIZONTAL") => caption.direction = CaptionDirection::Horizontal,
+                    _ => {}
+                },
+                b"p" => caption
+                    .paragraphs
+                    .push(parse_paragraph(reader, &e, warnings)?),
+                _ => {}
+            },
+            Event::End(e) if e.local_name().as_ref() == b"caption" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(caption)
 }
 
 /// `<hp:tc>` — 셀 하나.
@@ -1005,6 +1066,7 @@ fn default_picture() -> hwp_model::Picture {
         contrast: 0,
         effect_flags: 0,
         effects_raw: Vec::new(),
+        caption: None,
         bin_ref: hwp_model::BinRef::ItemRef(String::new()),
         extras: Vec::new(),
     }
@@ -1013,7 +1075,10 @@ fn default_picture() -> hwp_model::Picture {
 /// Parses an `<hp:pic>` image semantically: size, placement, binary reference,
 /// flip, rotation, crop, brightness, and contrast. `hp:imgRect` duplicates
 /// `hp:sz` and is therefore not read separately.
-fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
+fn parse_picture(
+    reader: &mut XmlReader<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<hwp_model::Picture> {
     let mut pic = default_picture();
     let mut depth = 1u32;
     loop {
@@ -1061,6 +1126,9 @@ fn parse_picture(reader: &mut XmlReader<'_>) -> Result<hwp_model::Picture> {
                     b"shapeComment" if matches!(event, Event::Start(_)) => {
                         let value = read_element_text(reader, b"shapeComment")?;
                         pic.description = (!value.is_empty()).then_some(value);
+                    }
+                    b"caption" if matches!(event, Event::Start(_)) => {
+                        pic.caption = Some(parse_caption(reader, e, warnings)?);
                     }
                     // 중첩 pic은 여는 태그만 깊이 증가 (Empty는 닫는 태그가 없음)
                     b"pic" if matches!(event, Event::Start(_)) => depth += 1,
@@ -1222,7 +1290,9 @@ fn collect_shape(
             Event::Empty(e) => read_attrs(&e),
             Event::Start(e) => {
                 let n = e.local_name().as_ref().to_vec();
-                if n == b"subList" {
+                if n == b"caption" {
+                    generic.caption = Some(parse_caption(reader, &e, warnings)?);
+                } else if n == b"subList" {
                     let mut list = ParagraphList {
                         header_data: Vec::new(),
                         paragraphs: Vec::new(),

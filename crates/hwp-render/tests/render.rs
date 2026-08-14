@@ -312,6 +312,7 @@ fn authoritative_column_flags_preserve_an_empty_first_column() {
                 widths: Vec::new(),
                 divider: None,
             }),
+            caption: None,
         }));
     for paragraph in &mut doc.sections[0].paragraphs {
         assert_eq!(paragraph.line_segs.len(), 1);
@@ -401,6 +402,7 @@ fn 수식_조판_렌더() {
                     ..Equation::default()
                 }),
                 column_def: None,
+                caption: None,
             }));
     }
     let out = render_document(
@@ -1178,6 +1180,7 @@ fn 글상자_내부_개요_번호_마커_렌더() {
             }],
             equation: None,
             column_def: None,
+            caption: None,
         }));
 
     let mut store = hwp_render::FontStore::new();
@@ -1205,6 +1208,7 @@ fn generic_control(
         gso_shapes: Vec::new(),
         equation: None,
         column_def: None,
+        caption: None,
     })
 }
 
@@ -1385,6 +1389,7 @@ fn 표_분할_문서(
         border_fill: hwp_model::BorderFillId(fill_base + 1),
         table_tail: Vec::new(),
         cells: (0..rows).map(|r| cell(r, r < header_rows)).collect(),
+        caption: None,
         extras: Vec::new(),
     };
     let anchor = &mut doc.sections[0].paragraphs[0];
@@ -1429,6 +1434,98 @@ fn 표_레이아웃(
     let mut warns = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(doc, &mut store, &mut warns);
     (list, warns.finish())
+}
+
+/// GB-13: 캡션 달린 표 — 캡션 텍스트가 셀 텍스트 아래(gap 반영)에 배치된다.
+#[test]
+fn 캡션_표_아래_배치() {
+    let mut doc = hwp_convert::from_markdown("| 가 |\n| --- |\n| 1 |\n");
+    let table = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| &mut paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("generated table");
+    table.caption = Some(hwp_model::Caption {
+        side: hwp_model::CaptionSide::Bottom,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 850, // 8.5pt
+        width: None,
+        last_width: 0,
+        paragraphs: vec![hwp_model::Paragraph {
+            chars: "캡션텍스트".chars().map(hwp_model::HwpChar::Text).collect(),
+            ..hwp_model::Paragraph::default()
+        }],
+    });
+
+    let (list, _) = 표_레이아웃(&doc);
+    let page = &list.pages[0];
+    let glyph_y = |needle: &str| {
+        page.items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Glyphs { y, run, .. } => {
+                    run.text.contains(needle).then_some(*y)
+                }
+                _ => None,
+            })
+            .next()
+    };
+    let cell_y = glyph_y("1").expect("셀 텍스트");
+    let caption_y = glyph_y("캡션텍스트").expect("캡션 텍스트 배치");
+    assert!(
+        caption_y > cell_y + 8.5,
+        "캡션은 표 아래 gap(8.5pt) 이상 아래: 셀 {cell_y} vs 캡션 {caption_y}"
+    );
+}
+
+/// GB-13: 위쪽 캡션은 표 위에 배치되고 표는 그만큼 아래로 밀린다.
+#[test]
+fn 캡션_표_위_배치() {
+    let mut doc = hwp_convert::from_markdown("| 가 |\n| --- |\n| 1 |\n");
+    let table = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| &mut paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("generated table");
+    table.caption = Some(hwp_model::Caption {
+        side: hwp_model::CaptionSide::Top,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 850,
+        width: None,
+        last_width: 0,
+        paragraphs: vec![hwp_model::Paragraph {
+            chars: "캡션텍스트".chars().map(hwp_model::HwpChar::Text).collect(),
+            ..hwp_model::Paragraph::default()
+        }],
+    });
+
+    let (list, _) = 표_레이아웃(&doc);
+    let page = &list.pages[0];
+    let glyph_y = |needle: &str| {
+        page.items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Glyphs { y, run, .. } => {
+                    run.text.contains(needle).then_some(*y)
+                }
+                _ => None,
+            })
+            .next()
+    };
+    let cell_y = glyph_y("1").expect("셀 텍스트");
+    let caption_y = glyph_y("캡션텍스트").expect("캡션 텍스트 배치");
+    assert!(
+        caption_y < cell_y,
+        "위쪽 캡션은 셀 텍스트보다 위: 캡션 {caption_y} vs 셀 {cell_y}"
+    );
 }
 
 /// TABLE policy splits at row boundaries without silently clipping cells.
@@ -1759,6 +1856,7 @@ fn table_fragments_reserve_pending_footnote_space() {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         }));
 
     let (list, _report) = 표_레이아웃(&doc);
@@ -1924,6 +2022,7 @@ fn renders_multi_column_divider() {
                     color: 0,
                 }),
             }),
+            caption: None,
         }));
 
     let mut store = hwp_render::FontStore::new();
@@ -1980,4 +2079,145 @@ fn renders_multi_column_divider() {
         )
     });
     assert!(!has_vertical, "single-column document must have no divider");
+}
+
+// ---------- Odd/even furniture + endnote placement (GG-16 / GG-14) ----------
+
+/// Builds a `head` control whose paragraph list holds one text paragraph.
+/// `apply` is the head/foot apply value (0=양쪽, 1=짝수, 2=홀수); `None`
+/// leaves the data empty, which the renderer treats as BOTH.
+fn 머리말_컨트롤(apply: Option<u32>, text: &str) -> hwp_model::Control {
+    let para = hwp_convert::from_markdown(text)
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    generic_control(
+        *b"head",
+        apply.map_or_else(Vec::new, |a| a.to_le_bytes().to_vec()),
+        vec![hwp_model::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: vec![para],
+        }],
+    )
+}
+
+/// GG-16: apply=ODD/EVEN 머리말은 쪽 번호 홀짝에 맞는 페이지에만 그려진다.
+#[test]
+fn 머리말_홀짝_적용대상_선택() {
+    let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n");
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(머리말_컨트롤(Some(2), "홀수머리말"));
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(머리말_컨트롤(Some(1), "짝수머리말"));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    assert_eq!(list.pages.len(), 2);
+    let p1 = page_texts(&list.pages[0]);
+    if p1.is_empty() {
+        eprintln!("스킵: 사용 가능한 폰트 없음 - 머리말 글리프 미생성");
+        return;
+    }
+    let p1: String = p1.concat();
+    let p2: String = page_texts(&list.pages[1]).concat();
+    assert!(p1.contains("홀수머리말"), "1쪽(홀수)에 홀수 머리말: {p1:?}");
+    assert!(
+        !p1.contains("짝수머리말"),
+        "1쪽(홀수)에 짝수 머리말 금지: {p1:?}"
+    );
+    assert!(p2.contains("짝수머리말"), "2쪽(짝수)에 짝수 머리말: {p2:?}");
+    assert!(
+        !p2.contains("홀수머리말"),
+        "2쪽(짝수)에 홀수 머리말 금지: {p2:?}"
+    );
+}
+
+/// GG-16 회귀: 머리말이 하나뿐이면(apply 데이터 없음=BOTH) 모든 페이지에 그려진다.
+#[test]
+fn 머리말_단일_모든페이지_반복() {
+    let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n");
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(머리말_컨트롤(None, "공통머리말"));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    assert_eq!(list.pages.len(), 2);
+    let p1 = page_texts(&list.pages[0]);
+    if p1.is_empty() {
+        eprintln!("스킵: 사용 가능한 폰트 없음 - 머리말 글리프 미생성");
+        return;
+    }
+    let p1: String = p1.concat();
+    let p2: String = page_texts(&list.pages[1]).concat();
+    assert!(p1.contains("공통머리말"), "1쪽에 공통 머리말: {p1:?}");
+    assert!(p2.contains("공통머리말"), "2쪽에 공통 머리말: {p2:?}");
+}
+
+/// GG-14: 미주는 앵커 페이지 하단이 아니라 구역 끝 블록에 그려지고,
+/// 각주는 지금처럼 앵커 페이지 하단에 남는다.
+#[test]
+fn 미주는_구역끝_각주는_앵커페이지() {
+    let mut doc = hwp_convert::from_markdown("본문\n\n다음 쪽\n");
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+
+    let note = |ctrl_id: &[u8; 4], text: &str| {
+        let para = hwp_convert::from_markdown(text)
+            .sections
+            .remove(0)
+            .paragraphs
+            .remove(0);
+        hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *ctrl_id,
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![para],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+        })
+    };
+    let anchor = &mut doc.sections[0].paragraphs[0];
+    let base = anchor.controls.len() as u32;
+    for (i, ctrl_id) in [*b"fn  ", *b"en  "].iter().enumerate() {
+        anchor.chars.push(hwp_model::HwpChar::ExtCtrl {
+            code: hwp_model::ctrl_char::FOOTNOTE_ENDNOTE,
+            ctrl_id: *ctrl_id,
+            payload: vec![0; 12],
+            ctrl_index: Some(base + i as u32),
+        });
+    }
+    anchor.controls.push(note(b"fn  ", "각주내용"));
+    anchor.controls.push(note(b"en  ", "미주내용"));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    assert_eq!(list.pages.len(), 2);
+    let p1 = page_texts(&list.pages[0]);
+    if p1.is_empty() {
+        eprintln!("스킵: 사용 가능한 폰트 없음 - 노트 글리프 미생성");
+        return;
+    }
+    let p1: String = p1.concat();
+    let p2: String = page_texts(&list.pages[1]).concat();
+    assert!(p1.contains("각주내용"), "각주는 앵커 페이지(1쪽)에: {p1:?}");
+    assert!(
+        !p1.contains("미주내용"),
+        "미주는 앵커 페이지(1쪽)에 그리지 않는다: {p1:?}"
+    );
+    assert!(p2.contains("미주내용"), "미주는 구역 끝(2쪽)에: {p2:?}");
+    assert!(!p2.contains("각주내용"), "각주는 2쪽에 없다: {p2:?}");
 }

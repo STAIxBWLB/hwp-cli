@@ -536,6 +536,7 @@ fn make_field_control(ctrl_id: [u8; 4], name: Option<&str>, command: Option<&str
         gso_shapes: Vec::new(),
         equation: None,
         column_def: None,
+        caption: None,
     })
 }
 
@@ -868,6 +869,7 @@ mod tests {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         });
         let mut chars = vec![HwpChar::ExtCtrl {
             code: FIELD_START,

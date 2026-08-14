@@ -123,6 +123,19 @@ clipPath. 픽셀 효과가 없으면 pdf JPEG 고속 경로·svg 제로카피 �
 렌더한다. 한컴 라운드 확인 대상 근사: 밝기/대비 곡선, 무늬 간격/굵기, 호 종류·sweep 매핑,
 회전 부호 관례. hwp5 반전 비트는 미확정.
 
+**구현 상태 2026-08-14 (PR 9):** 로드맵 마지막 배치 반영(GB-13, GG-14, GG-16). 캡션 파싱이
+전 구간 연결됐다 — Table/Picture/GenericControl에 `Caption` IR(side·direction·gap·width·
+last_width·paragraphs)을 두고, hwp5는 pyhwp의 `TableCaption`/`GShapeObjectCaption` 모델대로
+캡션 LIST_HEADER를 판별(TABLE 레코드 이전의 LIST_HEADER가 캡션, gso 직속 LIST_HEADER
+자식도 동일)해 재합성하며, hwpx `<hp:caption>`은 side/fullSz/width/gap/lastWidth
+속성(direction은 `subList@textDirection`)과 함께 왕복하고, 렌더러는 속성 쪽과 gap으로
+캡션 블록을 배치한다. 미주는 앵커 페이지를 떠난다 — 레이아웃이 페이지 노트를 `NoteKind`로
+분리해 예약을 각주 전용으로 유지하고, 누적한 미주를 구역 끝 마무리 블록으로 플러시한다
+(공간 부족 시 새 쪽). 홀짝 furniture — 모든 head/foot 컨트롤을 적용쪽 값(data bits 0-1:
+BOTH/EVEN/ODD)과 함께 수집해 출력 쪽번호 패리티로 선택하되, BOTH→첫 항목 폴백으로
+단일 머리말 구역은 불변이다. 한컴 라운드 근사 항목: 캡션 listflags 상위 비트, 스펙 표
+71/72 길이 불일치(표 72 준거), 첫쪽 전용 furniture(소스 포맷 표현 부재).
+
 ## 4. 게이트
 
 ### 4.1 정본 한컴 오라클 게이트 — 향후 공개 코퍼스

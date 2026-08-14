@@ -1611,6 +1611,7 @@ mod tests {
                 gso_shapes: vec![],
                 equation: None,
                 column_def: None,
+                caption: None,
             })
         };
         let anchor = |idx: u32, id: &[u8; 4]| HwpChar::ExtCtrl {
@@ -1656,6 +1657,7 @@ mod tests {
             gso_shapes: vec![],
             equation: None,
             column_def: None,
+            caption: None,
         });
         let cell_para = Paragraph {
             chars: "셀 본문"
@@ -1709,6 +1711,7 @@ mod tests {
                     ..Equation::default()
                 }),
                 column_def: None,
+                caption: None,
             })
         };
         let anchor = |idx: u32| HwpChar::ExtCtrl {
@@ -1793,6 +1796,7 @@ mod tests {
             inner_margins: [0; 4],
             border_fill: BorderFillId(0),
             table_tail: vec![],
+            caption: None,
             extras: vec![],
         };
         let mut doc = from_markdown("표\n");
@@ -1960,6 +1964,7 @@ mod tests {
             row_cell_counts: vec![1, 2],
             border_fill: BorderFillId(0),
             table_tail: vec![],
+            caption: None,
             cells: vec![
                 cell(0, 0, 2, 1, "병합"),
                 cell(1, 0, 1, 1, "가"),
@@ -2043,6 +2048,7 @@ mod tests {
                 gso_shapes: vec![],
                 equation: None,
                 column_def: None,
+                caption: None,
             })
         };
         let anchor = |idx: u32, id: &[u8; 4]| HwpChar::ExtCtrl {
@@ -2357,6 +2363,7 @@ mod tests {
             row_cell_counts: vec![1, 2],
             border_fill: BorderFillId(0),
             table_tail: vec![],
+            caption: None,
             cells: vec![
                 cell(0, 0, 2, 1, "제목행"),
                 cell(1, 0, 1, 1, "가"),
@@ -2380,6 +2387,7 @@ mod tests {
             gso_shapes: vec![],
             equation: None,
             column_def: None,
+            caption: None,
         })
     }
 
@@ -2646,6 +2654,7 @@ mod tests {
                 ..Equation::default()
             }),
             column_def: None,
+            caption: None,
         })
     }
 
@@ -2677,6 +2686,7 @@ mod tests {
             row_cell_counts: vec![1],
             border_fill: BorderFillId(0),
             table_tail: vec![],
+            caption: None,
             cells: vec![Cell {
                 list_attr: 0,
                 col: 0,

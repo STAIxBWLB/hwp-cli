@@ -1982,6 +1982,7 @@ impl<'a> Compiler<'a> {
                     widths: Vec::new(),
                     divider: None,
                 }),
+                caption: None,
             }),
         )?;
         if let Some(header) = &section.header {
@@ -2075,6 +2076,7 @@ impl<'a> Compiler<'a> {
                     gso_shapes: Vec::new(),
                     equation: None,
                     column_def: None,
+                    caption: None,
                 }),
             )?;
         }
@@ -2357,6 +2359,7 @@ impl<'a> Compiler<'a> {
                     raw_props: Vec::new(),
                 }),
                 column_def: None,
+                caption: None,
             }),
         )?;
         self.report.equations += 1;
@@ -2407,6 +2410,7 @@ impl<'a> Compiler<'a> {
                 contrast: 0,
                 effect_flags: 0,
                 effects_raw: Vec::new(),
+                caption: None,
                 bin_ref: hwp_model::BinRef::ItemRef(embedded.item_ref),
                 extras: Vec::new(),
             }),
@@ -2564,6 +2568,7 @@ impl<'a> Compiler<'a> {
             border_fill: hwp_model::BorderFillId(3),
             table_tail: Vec::new(),
             cells,
+            caption: None,
             extras: Vec::new(),
         };
         let mut paragraph = empty_paragraph();
@@ -2789,6 +2794,7 @@ fn generic_control(ctrl_id: [u8; 4], data: Vec<u8>) -> hwp_model::Control {
         gso_shapes: Vec::new(),
         equation: None,
         column_def: None,
+        caption: None,
     })
 }
 
@@ -2840,6 +2846,7 @@ fn append_field(
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         }),
     )?;
     set_run_shape(paragraph, shape);

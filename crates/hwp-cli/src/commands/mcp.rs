@@ -2763,6 +2763,7 @@ mod tests {
                 gso_shapes: Vec::new(),
                 equation: None,
                 column_def: None,
+                caption: None,
             }));
         let insert_at = paragraph.chars.len().saturating_sub(1);
         paragraph.chars.insert(
@@ -3453,6 +3454,7 @@ mod tests {
                 gso_shapes: Vec::new(),
                 equation: None,
                 column_def: None,
+                caption: None,
             }));
         let header_index = body.controls.len() as u32;
         body.controls
@@ -3468,6 +3470,7 @@ mod tests {
                 gso_shapes: Vec::new(),
                 equation: None,
                 column_def: None,
+                caption: None,
             }));
         body.chars.insert(
             0,

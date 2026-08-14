@@ -630,6 +630,7 @@ pub(crate) fn footnote_anchor(
         gso_shapes: Vec::new(),
         equation: None,
         column_def: None,
+        caption: None,
     });
     (ch, control)
 }
@@ -1118,6 +1119,7 @@ impl Builder {
                     contrast: 0,
                     effect_flags: 0,
                     effects_raw: Vec::new(),
+                    caption: None,
                     bin_ref: BinRef::ItemRef(name.clone()),
                     extras: Vec::new(),
                 }));
@@ -1562,6 +1564,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         }),
     );
     let ext = |code: u16, ctrl_id: [u8; 4], idx: u32| {
@@ -1596,6 +1599,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
                 gso_shapes: Vec::new(),
                 equation: None,
                 column_def: None,
+                caption: None,
             }),
         );
         para.chars.insert(2, ext(21, *b"pgnp", 2));
@@ -1657,6 +1661,7 @@ fn table_paragraph(tb: TableBuilder) -> Paragraph {
         row_cell_counts: vec![cols as u16; rows],
         border_fill: BorderFillId(TABLE_BORDER_FILL),
         table_tail: Vec::new(),
+        caption: None,
         cells,
         extras: Vec::new(),
     };

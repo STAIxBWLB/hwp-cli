@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use hwp_model::{
-    BinRef, Cell, Control, Document, Equation, GenericControl, HwpChar, PageDef, Paragraph,
-    Picture, Section, SectionDef, ShapeKind, Table,
+    BinRef, Caption, CaptionDirection, CaptionSide, Cell, Control, Document, Equation,
+    GenericControl, HwpChar, PageDef, Paragraph, Picture, Section, SectionDef, ShapeKind, Table,
 };
 
 use crate::write::templates::{color_attr, esc};
@@ -1579,6 +1579,47 @@ fn write_ir_shapes(
     }
 }
 
+/// `<hp:caption>` — 표/그림 캡션 (GB-13). hwpxlib CaptionWriter/ShapeObjectWriter
+/// 근거: sz/pos/outMargin 뒤에 온다(표는 inMargin·tr 앞, 그림은 shapeComment 앞).
+/// lastWidth는 텍스트 최대 폭(=개체 폭, 표 72) — 미상(0)이면 개체 폭으로 폴 백.
+#[allow(clippy::too_many_arguments)]
+fn write_caption(
+    out: &mut String,
+    doc: &Document,
+    caption: &Caption,
+    obj_width: i64,
+    ids: &mut IdSeq,
+    bins: &mut BinCollector,
+    warnings: &mut Vec<String>,
+) {
+    let side = match caption.side {
+        CaptionSide::Left => "LEFT",
+        CaptionSide::Right => "RIGHT",
+        CaptionSide::Top => "TOP",
+        CaptionSide::Bottom => "BOTTOM",
+    };
+    let full = u8::from(caption.width.is_none());
+    let width = caption.width.unwrap_or(0);
+    let last = if caption.last_width > 0 {
+        caption.last_width
+    } else {
+        obj_width.max(0) as u32
+    };
+    let text_dir = match caption.direction {
+        CaptionDirection::Horizontal => "HORIZONTAL",
+        CaptionDirection::Vertical => "VERTICAL",
+    };
+    let _ = write!(
+        out,
+        r##"<hp:caption side="{side}" fullSz="{full}" width="{width}" gap="{}" lastWidth="{last}"><hp:subList id="" textDirection="{text_dir}" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"##,
+        caption.gap,
+    );
+    for para in &caption.paragraphs {
+        write_paragraph(out, doc, para, ids, bins, false, true, warnings);
+    }
+    out.push_str("</hp:subList></hp:caption>");
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_table(
     out: &mut String,
@@ -1654,7 +1695,7 @@ fn write_table(
     let om = pl.map_or([283u16; 4], |p| p.out_margins);
     let _ = write!(
         out,
-        r##"<hp:tbl id="{}" zOrder="{z_order}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="{page_break}" repeatHeader="{repeat_header}" rowCnt="{}" colCnt="{}" cellSpacing="{}" borderFillIDRef="{}" noAdjust="{no_adjust}"><hp:sz width="{sz_w}" widthRelTo="ABSOLUTE" height="{sz_h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="{treat_as_char}" affectLSpacing="{affect_lspacing}" flowWithText="{flow_with_text}" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{vert_rel}" horzRelTo="{horz_rel}" vertAlign="{vert_align}" horzAlign="{horz_align}" vertOffset="{vert_offset}" horzOffset="{horz_offset}"/><hp:outMargin left="{}" right="{}" top="{}" bottom="{}"/><hp:inMargin left="{}" right="{}" top="{}" bottom="{}"/>"##,
+        r##"<hp:tbl id="{}" zOrder="{z_order}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="{page_break}" repeatHeader="{repeat_header}" rowCnt="{}" colCnt="{}" cellSpacing="{}" borderFillIDRef="{}" noAdjust="{no_adjust}"><hp:sz width="{sz_w}" widthRelTo="ABSOLUTE" height="{sz_h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="{treat_as_char}" affectLSpacing="{affect_lspacing}" flowWithText="{flow_with_text}" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{vert_rel}" horzRelTo="{horz_rel}" vertAlign="{vert_align}" horzAlign="{horz_align}" vertOffset="{vert_offset}" horzOffset="{horz_offset}"/><hp:outMargin left="{}" right="{}" top="{}" bottom="{}"/>"##,
         ids.next(),
         table.rows,
         table.cols,
@@ -1664,10 +1705,15 @@ fn write_table(
         om[1],
         om[2],
         om[3],
-        m[0],
-        m[1],
-        m[2],
-        m[3],
+    );
+    // 캡션은 outMargin 뒤·inMargin 앞 (hwpxlib TableWriter 자식 순서).
+    if let Some(caption) = &table.caption {
+        write_caption(out, doc, caption, sz_w, ids, bins, warnings);
+    }
+    let _ = write!(
+        out,
+        r##"<hp:inMargin left="{}" right="{}" top="{}" bottom="{}"/>"##,
+        m[0], m[1], m[2], m[3],
     );
 
     // 행별 그룹화 (셀은 행 우선 순서로 보존되어 있음)
@@ -1750,6 +1796,16 @@ fn write_picture(
         .filter(|value| !value.is_empty())
         .map(|value| format!("<hp:shapeComment>{}</hp:shapeComment>", esc(value)))
         .unwrap_or_default();
+    // 캡션은 outMargin 뒤·shapeComment 앞 (hwpxlib ShapeObjectWriter 자식 순서).
+    let caption_xml = pic
+        .caption
+        .as_ref()
+        .map(|c| {
+            let mut s = String::new();
+            write_caption(&mut s, doc, c, i64::from(w), ids, bins, warnings);
+            s
+        })
+        .unwrap_or_default();
     // GG-15: preserve parsed transform and adjustment properties instead of
     // replacing them with the old constants.
     let (flip_h, flip_v) = (pic.flip & 1, (pic.flip >> 1) & 1);
@@ -1763,7 +1819,7 @@ fn write_picture(
     if pic.treat_as_char {
         let _ = write!(
             out,
-            r##"<hp:pic id="{id}" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{description}</hp:pic>"##,
+            r##"<hp:pic id="{id}" zOrder="0" numberingType="PICTURE" textWrap="SQUARE" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{caption_xml}{description}</hp:pic>"##,
             w / 2,
             h / 2,
             brightness,
@@ -1773,7 +1829,7 @@ fn write_picture(
         let (voff, hoff, zorder) = (pic.vert_offset, pic.horz_offset, pic.z_order);
         let _ = write!(
             out,
-            r##"<hp:pic id="{id}" zOrder="{zorder}" numberingType="PICTURE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{voff}" horzOffset="{hoff}"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{description}</hp:pic>"##,
+            r##"<hp:pic id="{id}" zOrder="{zorder}" numberingType="PICTURE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{voff}" horzOffset="{hoff}"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{caption_xml}{description}</hp:pic>"##,
             w / 2,
             h / 2,
             brightness,

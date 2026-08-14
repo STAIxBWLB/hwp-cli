@@ -84,9 +84,50 @@ pub struct Picture {
     /// including flags and payload. Preserved for reporting and future work.
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "hex_bytes")]
     pub effects_raw: Vec<u8>,
+    /// 캡션 (hwp5: 개체 공통 속성 뒤 LIST_HEADER, hwpx: `<hp:caption>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<Caption>,
     /// 바이너리 데이터 참조
     pub bin_ref: BinRef,
     pub extras: Vec<OpaqueRecord>,
+}
+
+/// 캡션 위치 (HWP §4.3.9 표 73 캡션 속성 bits 0-1 / HWPX `hp:caption@side`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptionSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// 캡션 텍스트 방향 (hwp5: LIST_HEADER listflags bits 0-2, 표 65 /
+/// hwpx: 캡션 `hp:subList@textDirection`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptionDirection {
+    Horizontal,
+    Vertical,
+}
+
+/// 표/그림/도형의 캡션 (HWP §4.3.9 표 71-73 / HWPX `<hp:caption>`).
+///
+/// hwp5에서는 개체 공통 속성 뒤·개체 요소 레코드(TABLE 등) 앞에 오는
+/// LIST_HEADER + 문단들로 저장된다(pyhwp `TableCaption`/`GShapeObjectCaption`
+/// 실측 근거). hwpx에서는 `<hp:tbl>`/`<hp:pic>` 등의 `<hp:caption>` 자식.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Caption {
+    pub side: CaptionSide,
+    pub direction: CaptionDirection,
+    /// 캡션과 틀 사이 간격 (HWPUNIT, 바이너리는 HWPUNIT16).
+    pub gap: i32,
+    /// 캡션 폭 (HWPUNIT). None = full-size(바깥 여백까지 확대 — 바이너리 속성
+    /// bit2 / hwpx `fullSz="1"`). 세로 방향(Left/Right)일 때만 의미가 있다(표 72).
+    pub width: Option<u32>,
+    /// 텍스트의 최대 길이(=개체의 폭, 표 72) — hwpx `hp:caption@lastWidth`와 대응.
+    /// 0이면 미상(writer가 개체 폭으로 폴 백).
+    #[serde(default)]
+    pub last_width: u32,
+    pub paragraphs: Vec<Paragraph>,
 }
 
 /// BinData 참조 방식.
@@ -223,6 +264,9 @@ pub struct Table {
     pub table_tail: Vec<u8>,
     /// 셀 목록 (LIST_HEADER 등장 순서 — 행 우선)
     pub cells: Vec<Cell>,
+    /// 캡션 (hwp5: TABLE 레코드 앞의 LIST_HEADER, hwpx: `<hp:caption>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<Caption>,
     pub extras: Vec<OpaqueRecord>,
 }
 
@@ -314,6 +358,11 @@ pub struct GenericControl {
     /// 다단 정의(`cold`/hp:colPr) — 렌더러 단 배치·구분선용. 없으면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_def: Option<ColumnDef>,
+    /// 캡션 (gso 개체의 직계 LIST_HEADER / hwpx 도형의 `<hp:caption>`).
+    /// GenericControl은 raw_children이 재직렬화 정본이라 이 필드는 의미 파싱
+    /// (렌더·텍스트) 전용이다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<Caption>,
 }
 
 /// 다단(multi-column) 정의 — COLDEF(`cold`)/hp:colPr. 렌더러가 단 배치·구분선에 사용.
@@ -527,6 +576,7 @@ mod tests {
             border_fill: Default::default(),
             table_tail: Vec::new(),
             cells: Vec::new(),
+            caption: None,
             extras: Vec::new(),
         };
         assert_eq!(table(0).page_break_policy(), TablePageBreak::None);

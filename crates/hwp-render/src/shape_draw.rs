@@ -1255,6 +1255,7 @@ mod tests {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         };
         let doc = Document::default();
         let mut page = PageList {

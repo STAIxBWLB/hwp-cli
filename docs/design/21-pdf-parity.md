@@ -133,6 +133,22 @@ ellipses render as arcs/pies/chords via the axis-vector `ellipse_arc_path`. Appr
 flagged for the Hancom round: brightness/contrast curve, hatch spacing/weight, arc kind and
 sweep mapping, rotation sign conventions; hwp5 flip bits are unlocated.
 
+**Implementation status 2026-08-14 (PR 9):** the final roadmap batch landed (GB-13, GG-14,
+GG-16). Captions are now parsed end to end: a `Caption` IR (side, direction, gap, width,
+last_width, paragraphs) on Table/Picture/GenericControl; hwp5 discriminates caption
+LIST_HEADERs per pyhwp's `TableCaption`/`GShapeObjectCaption` model (a LIST_HEADER before
+the TABLE record is the caption; a direct gso LIST_HEADER child likewise) and re-synthesizes
+them; hwpx `<hp:caption>` round-trips with its side/fullSz/width/gap/lastWidth attributes
+(direction from `subList@textDirection`); the renderer places the caption block on the
+attribute side with its gap. Endnotes leave the anchor page: layout splits page notes by
+`NoteKind`, keeps the reservation footnote-only, and flushes accumulated endnotes as a
+closing block at section end (new page when it does not fit). Odd/even furniture: all
+head/foot controls are collected with their apply value (data bits 0-1: BOTH/EVEN/ODD) and
+the renderer selects by printed page parity, falling back to BOTH then first entry so
+single-header sections are unchanged. Approximations for the Hancom round: caption listflags
+upper bits, the spec table 71/72 length inconsistency (table 72 followed), and FIRST-page
+furniture (no source-format representation).
+
 ## 4. Gates
 
 ### 4.1 Normative Hancom-oracle gate — future public corpus

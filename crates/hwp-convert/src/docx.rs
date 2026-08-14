@@ -1339,6 +1339,7 @@ mod tests {
                 row_cell_counts: vec![2, 2],
                 border_fill: BorderFillId(0),
                 table_tail: vec![],
+                caption: None,
                 cells: vec![
                     cell(0, 0, 2, 1, "가로"),
                     cell(0, 2, 1, 2, "세로"),
@@ -1440,6 +1441,7 @@ mod tests {
                     ..Equation::default()
                 }),
                 column_def: None,
+                caption: None,
             }));
             para.chars.push(HwpChar::ExtCtrl {
                 code: ctrl_char::OBJECT,

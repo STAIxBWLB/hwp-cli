@@ -17,7 +17,10 @@
 
 use std::collections::HashSet;
 
-use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Section, Table};
+use hwp_model::{
+    BorderFill, Caption, CaptionSide, Control, Document, HwpUnit, PageDef, Paragraph, Section,
+    Table,
+};
 
 use crate::display::{DisplayList, Fill, Gradient, Item, PageList, PathCmd, Stroke};
 use crate::error::RenderError;
@@ -604,7 +607,14 @@ impl PageNumberState {
         furniture: &Furniture<'_>,
         warnings: &mut RenderIssueAccumulator,
     ) {
-        furniture.render(doc, store, page, self.visible_number(), warnings);
+        furniture.render(
+            doc,
+            store,
+            page,
+            self.visible_number(),
+            self.logical,
+            warnings,
+        );
         if self.visible_number().is_some()
             && let Some(placement) = self.placement
         {
@@ -818,32 +828,34 @@ pub fn layout_document(
         // blank pages and columns.
         let mut has_flow_in_current_band = false;
 
-        // 머리말/꼬리말: 구역에서 처음 정의된 것을 모든 페이지에 반복
-        let mut header_ctrl = None;
-        let mut footer_ctrl = None;
+        // 머리말/꼬리말: 구역에 정의된 모든 head/foot을 적용 대상(홀/짝/양쪽)과
+        // 함께 모은다(GG-16). 페이지 마감 시 현재 쪽 번호 홀짝으로 하나를 고른다.
+        let mut header_ctrls = Vec::new();
+        let mut footer_ctrls = Vec::new();
         for para in &section.paragraphs {
             for c in &para.controls {
                 if let Control::Generic(g) = c {
                     match &g.ctrl_id {
-                        b"head" if header_ctrl.is_none() => header_ctrl = Some(g),
-                        b"foot" if footer_ctrl.is_none() => footer_ctrl = Some(g),
+                        b"head" => header_ctrls.push((g, head_foot_apply(g))),
+                        b"foot" => footer_ctrls.push((g, head_foot_apply(g))),
                         _ => {}
                     }
                 }
             }
         }
         let furniture = Furniture {
-            header: header_ctrl,
-            footer: footer_ctrl,
+            header: header_ctrls,
+            footer: footer_ctrls,
             page_def: &page_def,
             body_left,
             body_width,
         };
 
-        // 각주/미주: 구역 전체에 번호를 매기고, 페이지마다 앵커가 든 노트를 모아
-        // 하단에 그린다.
+        // 각주/미주: 구역 전체에 번호를 매긴다. 각주는 앵커가 든 페이지 하단에,
+        // 미주는 구역 끝에 모아 그린다(GG-14) — 페이지마다 각주만 따로 모은다.
         let notes = footnote::collect_notes(&section.paragraphs);
         let mut page_notes: Vec<&Note> = Vec::new();
+        let mut pending_endnotes: Vec<&Note> = Vec::new();
         // 목록(번호/불릿) 카운터 — 구역 단위, 문서 순서로 진행.
         let mut list_state = crate::list::ListState::default();
 
@@ -924,8 +936,14 @@ pub fn layout_document(
             paras_on_page += 1;
 
             // 본문 각주/미주 마커(윗첨자 번호)와 이 페이지에 속할 노트 수집.
+            // 각주는 페이지 하단으로, 미주는 구역 끝 대기 목록으로 나눈다(GG-14).
             let marks = footnote::para_marks(&notes, para);
-            page_notes.extend(footnote::para_notes(&notes, para));
+            for note in footnote::para_notes(&notes, para) {
+                match note.kind {
+                    footnote::NoteKind::Foot => page_notes.push(note),
+                    footnote::NoteKind::End => pending_endnotes.push(note),
+                }
+            }
             let tabs = crate::tab::tab_stops(doc, para);
             let geom = para_geometry(doc, para);
             let links = crate::shape::hyperlink_ranges(para);
@@ -1298,6 +1316,38 @@ pub fn layout_document(
             warnings,
         );
         page_notes.clear();
+        // 미주(GG-14): 앵커 페이지가 아니라 구역 끝에 모아 그린다. 블록이 현재
+        // 페이지에 안 들어가면 새 페이지를 연 뒤 본문 흐름 뒤에 블록을 붙인다.
+        if !pending_endnotes.is_empty() {
+            let needed = page_notes_reservation_height(
+                doc,
+                store,
+                &page,
+                &pending_endnotes,
+                body_left,
+                body_width,
+            );
+            if content_bottom + needed > body_bottom && paras_on_page > 0 {
+                page_numbers.finish(doc, store, &mut page, &furniture, warnings);
+                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                    return DisplayList { pages };
+                }
+                // 문단 루프가 끝난 뒤라 흐름 상태 리셋은 content_bottom만 필요하다.
+                content_bottom = body_top;
+            }
+            let block_bottom = (content_bottom + needed).min(body_bottom);
+            render_page_notes(
+                doc,
+                store,
+                &mut page,
+                &pending_endnotes,
+                body_left,
+                body_width,
+                block_bottom,
+                warnings,
+            );
+            pending_endnotes.clear();
+        }
         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
         if !push_page_checked(&mut pages, &mut page, None, warnings) {
             return DisplayList { pages };
@@ -1427,12 +1477,36 @@ impl TableSplitCtx<'_, '_> {
 const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
 
 /// 페이지 가구 (머리말/꼬리말) — 페이지 마감 시마다 그린다.
+/// 머리말/꼬리말은 (컨트롤, 적용 대상) 목록으로 들고, 쪽 번호 홀짝으로 고른다(GG-16).
 struct Furniture<'a> {
-    header: Option<&'a hwp_model::GenericControl>,
-    footer: Option<&'a hwp_model::GenericControl>,
+    header: Vec<(&'a hwp_model::GenericControl, u8)>,
+    footer: Vec<(&'a hwp_model::GenericControl, u8)>,
     page_def: &'a PageDef,
     body_left: f32,
     body_width: f32,
+}
+
+/// head/foot 컨트롤의 적용 대상: data[0..4] LE u32의 bits 0-1
+/// (0=양쪽, 1=짝수 쪽, 2=홀수 쪽). 데이터가 없거나 짧으면 양쪽(0)으로 본다.
+fn head_foot_apply(g: &hwp_model::GenericControl) -> u8 {
+    g.data.get(0..4).map_or(0, |b| {
+        (u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0x3) as u8
+    })
+}
+
+/// 현재 쪽 번호 홀짝에 맞는 머리말/꼬리말을 고른다.
+/// 폭락 순서: 정확한 홀짝 일치 → 양쪽(BOTH) → 첫 항목(기존 동작 보존).
+fn select_furniture<'a>(
+    entries: &[(&'a hwp_model::GenericControl, u8)],
+    printed: u32,
+) -> Option<&'a hwp_model::GenericControl> {
+    let want = if printed % 2 == 1 { 2 } else { 1 };
+    entries
+        .iter()
+        .find(|e| e.1 == want)
+        .or_else(|| entries.iter().find(|e| e.1 == 0))
+        .or_else(|| entries.first())
+        .map(|e| e.0)
 }
 
 impl Furniture<'_> {
@@ -1442,9 +1516,10 @@ impl Furniture<'_> {
         store: &mut FontStore,
         page: &mut PageList,
         page_number: Option<u32>,
+        printed: u32,
         warnings: &mut RenderIssueAccumulator,
     ) {
-        if let Some(h) = self.header {
+        if let Some(h) = select_furniture(&self.header, printed) {
             let top = self.page_def.margin_top.to_pt() as f32;
             for list in &h.paragraph_lists {
                 layout_box_paragraphs(
@@ -1461,7 +1536,7 @@ impl Furniture<'_> {
                 );
             }
         }
-        if let Some(f) = self.footer {
+        if let Some(f) = select_furniture(&self.footer, printed) {
             let top = page.height_pt
                 - self.page_def.margin_bottom.to_pt() as f32
                 - self.page_def.margin_footer.to_pt() as f32;
@@ -1732,6 +1807,73 @@ fn translate_cmd(c: PathCmd, dx: f32, dy: f32) -> PathCmd {
     }
 }
 
+/// 캡션 조판 폭(pt): 명시 폭(세로 방향 캡션, 표 72)이 있으면 그 값, 아니면 개체 폭.
+fn caption_wrap_pt(caption: &Caption, obj_width: f32) -> f32 {
+    caption
+        .width
+        .map_or(obj_width, |w| (w as f32 / 100.0).max(4.0))
+}
+
+/// 캡션 문단들을 스크래치 페이지에 조판해 (아이템, 블록 높이)를 돌려준다 (GB-13).
+/// 실제 위치는 쪽(side)에 따라 호출자가 평행이동해 결정한다.
+fn layout_caption_items(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &PageList,
+    caption: &Caption,
+    wrap_width: f32,
+    warnings: &mut RenderIssueAccumulator,
+) -> (Vec<Item>, f32) {
+    if caption.paragraphs.is_empty() {
+        return (Vec::new(), 0.0);
+    }
+    let mut scratch = PageList {
+        width_pt: page.width_pt,
+        height_pt: page.height_pt,
+        items: Vec::new(),
+    };
+    let bottom = layout_box_paragraphs(
+        doc,
+        store,
+        &mut scratch,
+        &caption.paragraphs,
+        0.0,
+        0.0,
+        wrap_width.max(4.0),
+        warnings,
+        None,
+        None,
+    );
+    (scratch.items, bottom)
+}
+
+/// 캡션 블록을 개체 직사각형 (x, y, w, h) 기준 side 방향으로 gap만큼 띄워 배치한다.
+/// 아래쪽 캡션이면 블록 하단(흐름 커서 보정용)을, 그 외에는 None을 반환한다.
+fn place_caption_items(
+    page: &mut PageList,
+    items: Vec<Item>,
+    height: f32,
+    caption: &Caption,
+    obj: (f32, f32, f32, f32),
+    wrap: f32,
+) -> Option<f32> {
+    if items.is_empty() {
+        return None;
+    }
+    let gap = caption.gap as f32 / 100.0;
+    let (ox, oy, ow, oh) = obj;
+    let (dx, dy) = match caption.side {
+        CaptionSide::Bottom => (ox, oy + oh + gap),
+        CaptionSide::Top => (ox, oy - gap - height),
+        CaptionSide::Left => ((ox - gap - wrap).max(0.0), oy),
+        CaptionSide::Right => (ox + ow + gap, oy),
+    };
+    for item in items {
+        page.items.push(translate_item(item, dx, dy));
+    }
+    (caption.side == CaptionSide::Bottom).then_some(oy + oh + gap + height)
+}
+
 /// 문단에 달린 블록 개체(표/이미지)를 배치한다. 갱신된 콘텐츠 하단을 반환.
 #[allow(clippy::too_many_arguments)]
 fn layout_para_objects(
@@ -1754,6 +1896,17 @@ fn layout_para_objects(
     for control in &para.controls {
         match control {
             Control::Table(table) => {
+                // 캡션(GB-13): 위쪽 캡션은 표 배치 전에 높이를 재서 자리를 마련한다.
+                let mut top_caption: Option<(Vec<Item>, f32)> = None;
+                if let Some(cap) = &table.caption
+                    && cap.side == CaptionSide::Top
+                {
+                    let wrap = caption_wrap_pt(cap, avail_width);
+                    let (items, h) = layout_caption_items(doc, store, page, cap, wrap, warnings);
+                    top_caption = Some((items, h));
+                    object_y += h + cap.gap as f32 / 100.0;
+                }
+                let table_y = object_y;
                 let (end, table_split) = layout_table(
                     doc,
                     store,
@@ -1774,6 +1927,36 @@ fn layout_para_objects(
                     bottom = bottom.max(end);
                 }
                 object_y = end; // 한 문단에 개체가 여럿이면 세로로 이어 배치
+                // 캡션 배치. 표 폭은 정확한 그리드 합산 대신 가용 폭으로 근사한다
+                // (좌/우 캡션의 가로 위치 정도에만 쓰인다). side 정보가 퇴화하면
+                // (파서 기본값) 아래쪽으로 둔다.
+                if let Some(cap) = &table.caption {
+                    let wrap = caption_wrap_pt(cap, avail_width);
+                    if cap.side == CaptionSide::Top {
+                        // 위쪽 캡션은 표가 시작된 (이) 페이지 좌표라 분할과 무관하다.
+                        if let Some((items, h)) = top_caption {
+                            place_caption_items(
+                                page,
+                                items,
+                                h,
+                                cap,
+                                (x, table_y, avail_width, 0.0),
+                                wrap,
+                            );
+                        }
+                    } else if !table_split {
+                        // 분할된 표의 end는 마지막 쪽 좌표라 이 페이지에 못 둔다 — 생략.
+                        let (items, h) =
+                            layout_caption_items(doc, store, page, cap, wrap, warnings);
+                        let obj = (x, table_y, avail_width, end - table_y);
+                        if let Some(cap_bottom) =
+                            place_caption_items(page, items, h, cap, obj, wrap)
+                        {
+                            bottom = bottom.max(cap_bottom);
+                            object_y = cap_bottom;
+                        }
+                    }
+                }
             }
             Control::Picture(pic) => {
                 let (w, h) = (pic.width.to_pt() as f32, pic.height.to_pt() as f32);
@@ -1793,9 +1976,21 @@ fn layout_para_objects(
                                 format!("flags={:#010x}", pic.effect_flags),
                             );
                         }
+                        // 캡션(GB-13): 위쪽이면 그림 위에 자리를 먼저 마련한다.
+                        let mut img_y = object_y;
+                        let mut top_caption: Option<(Vec<Item>, f32)> = None;
+                        if let Some(cap) = &pic.caption
+                            && cap.side == CaptionSide::Top
+                        {
+                            let wrap = caption_wrap_pt(cap, w);
+                            let (items, ch) =
+                                layout_caption_items(doc, store, page, cap, wrap, warnings);
+                            top_caption = Some((items, ch));
+                            img_y += ch + cap.gap as f32 / 100.0;
+                        }
                         page.items.push(Item::Image {
                             x,
-                            y: object_y,
+                            y: img_y,
                             w,
                             h,
                             data: warnings.cached_binary(bytes),
@@ -1805,8 +2000,34 @@ fn layout_para_objects(
                             brightness: pic.brightness,
                             contrast: pic.contrast,
                         });
-                        bottom = bottom.max(object_y + h);
-                        object_y += h;
+                        bottom = bottom.max(img_y + h);
+                        object_y = img_y + h;
+                        // 캡션 배치 (기본 아래쪽).
+                        if let Some(cap) = &pic.caption {
+                            let wrap = caption_wrap_pt(cap, w);
+                            if cap.side == CaptionSide::Top {
+                                if let Some((items, ch)) = top_caption {
+                                    place_caption_items(
+                                        page,
+                                        items,
+                                        ch,
+                                        cap,
+                                        (x, img_y, w, 0.0),
+                                        wrap,
+                                    );
+                                }
+                            } else {
+                                let (items, ch) =
+                                    layout_caption_items(doc, store, page, cap, wrap, warnings);
+                                let obj = (x, img_y, w, h);
+                                if let Some(cap_bottom) =
+                                    place_caption_items(page, items, ch, cap, obj, wrap)
+                                {
+                                    bottom = bottom.max(cap_bottom);
+                                    object_y = cap_bottom;
+                                }
+                            }
+                        }
                     }
                     None => warnings.push(
                         RenderIssueCode::ImageDataMissingOmitted,
@@ -3759,6 +3980,7 @@ mod table_width_tests {
             border_fill: BorderFillId(1),
             table_tail: Vec::new(),
             cells,
+            caption: None,
             extras: Vec::new(),
         }
     }
@@ -3859,6 +4081,7 @@ mod certification_budget_tests {
             gso_shapes: shapes,
             equation: None,
             column_def: None,
+            caption: None,
         })
     }
 
@@ -3936,6 +4159,7 @@ mod certification_budget_tests {
             contrast: 0,
             effect_flags: 0,
             effects_raw: Vec::new(),
+            caption: None,
             bin_ref: BinRef::ItemRef("shared-image".to_string()),
             extras: Vec::new(),
         });
@@ -3967,6 +4191,7 @@ mod certification_budget_tests {
             contrast: 0,
             effect_flags: 0x1, // 그림자 효과
             effects_raw: vec![1, 0, 0, 0],
+            caption: None,
             bin_ref: BinRef::ItemRef("fx-image".to_string()),
             extras: Vec::new(),
         });
@@ -4071,6 +4296,7 @@ mod certification_budget_tests {
             contrast: 0,
             effect_flags: 0,
             effects_raw: Vec::new(),
+            caption: None,
             bin_ref: BinRef::ItemRef("one-byte-image".to_string()),
             extras: Vec::new(),
         });

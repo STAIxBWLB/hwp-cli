@@ -109,6 +109,13 @@ fn extract_control(control: &Control, out: &mut String, opts: &TextOptions) {
                 // 셀 내부 개행은 공백으로 평탄화
                 out.push_str(cell_text.trim_end().replace('\n', " ").as_str());
             }
+            // 캡션 텍스트는 표 뒤에 덧붙인다.
+            if let Some(caption) = &table.caption {
+                for para in &caption.paragraphs {
+                    push_newline(out);
+                    para.extract_into(out, opts);
+                }
+            }
             push_newline(out);
         }
         Control::Generic(g) => {

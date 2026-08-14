@@ -2540,6 +2540,7 @@ mod tests {
             gso_shapes: Vec::new(),
             equation,
             column_def: None,
+            caption: None,
         })
     }
 
@@ -3062,6 +3063,7 @@ mod tests {
                 contrast: 0,
                 effect_flags: 0,
                 effects_raw: Vec::new(),
+                caption: None,
                 bin_ref: hwp_model::BinRef::ItemRef("projection-image".to_string()),
                 extras: Vec::new(),
             }));

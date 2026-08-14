@@ -9,9 +9,9 @@
 //! - TABLE의 "행 크기" 배열은 행별 셀 개수다.
 
 use hwp_model::{
-    Cell, CharKind, CharShapeId, ColumnDef, Control, Equation, GenericControl, HwpChar, HwpUnit,
-    LineSeg, PageDef, ParaHeaderInfo, ParaShapeId, Paragraph, ParagraphList, Section, SectionDef,
-    StyleId, Table, char_kind,
+    Caption, CaptionDirection, CaptionSide, Cell, CharKind, CharShapeId, ColumnDef, Control,
+    Equation, GenericControl, HwpChar, HwpUnit, LineSeg, PageDef, ParaHeaderInfo, ParaShapeId,
+    Paragraph, ParagraphList, Section, SectionDef, StyleId, Table, char_kind,
 };
 
 use crate::codec::ByteReader;
@@ -262,6 +262,7 @@ fn parse_control(node: &RecordNode, warnings: &mut Vec<String>) -> Control {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         });
     }
     let mut ctrl_id = [node.data[0], node.data[1], node.data[2], node.data[3]];
@@ -271,12 +272,15 @@ fn parse_control(node: &RecordNode, warnings: &mut Vec<String>) -> Control {
     match &ctrl_id {
         b"secd" => Control::SectionDef(parse_section_def(rest, &node.children, warnings)),
         b"tbl " => Control::Table(parse_table(rest, &node.children, warnings)),
-        // 그리기 개체: 문단(글상자)이 없고 그림 레코드가 있으면 이미지로 해석
+        // 그리기 개체: 문단(글상자)이 없고 그림 레코드가 있으면 이미지로 해석.
+        // 직계 LIST_HEADER+문단은 글상자가 아니라 캡션이므로(표 71) 판정에서 제외.
         b"gso "
-            if !node.children.iter().any(subtree_has_paragraphs)
-                && find_picture_record(&node.children).is_some() =>
+            if !node.children.iter().any(|c| match c.tag {
+                tag::LIST_HEADER | tag::PARA_HEADER => false,
+                _ => subtree_has_paragraphs(c),
+            }) && find_picture_record(&node.children).is_some() =>
         {
-            match parse_picture_gso(&rest, &node.children) {
+            match parse_picture_gso(&rest, &node.children, warnings) {
                 Ok(p) => Control::Picture(p),
                 Err(e) => {
                     warnings.push(format!("그림 개체 파싱 실패: {e}"));
@@ -301,6 +305,83 @@ fn find_picture_record(children: &[RecordNode]) -> Option<&RecordNode> {
     None
 }
 
+/// 캡션 LIST_HEADER 페이로드(표 71-73)를 파싱한다. 레이아웃(22바이트, pyhwp
+/// `tagid56_list_header.TableCaption` 실측과 일치):
+///   문단 수 i32 + listflags u32(표 65: bits0-2 텍스트 방향) + 캡션 속성 u32
+///   (표 73: bits0-1 위치, bit2 폭 마진 포함) + 캡션 폭 HWPUNIT + 간격 HWPUNIT16
+///   + 텍스트 최대 길이 HWPUNIT.
+fn parse_caption_header(data: &[u8]) -> Result<Caption> {
+    let mut r = ByteReader::new(data);
+    let _para_count = r.read_i32()?;
+    let list_attr = r.read_u32()?;
+    let flags = r.read_u32()?;
+    let width = r.read_i32()?;
+    let gap = r.read_u16()?;
+    let max_width = r.read_i32()?;
+    Ok(Caption {
+        side: match flags & 0x3 {
+            0 => CaptionSide::Left,
+            1 => CaptionSide::Right,
+            2 => CaptionSide::Top,
+            _ => CaptionSide::Bottom,
+        },
+        direction: if list_attr & 0x7 == 1 {
+            CaptionDirection::Vertical
+        } else {
+            CaptionDirection::Horizontal
+        },
+        gap: i32::from(gap),
+        // bit2(캡션 폭에 마진 포함 — full-size)이면 폭 미사용.
+        width: if flags & 0x4 != 0 {
+            None
+        } else {
+            Some(width.max(0) as u32)
+        },
+        last_width: max_width.max(0) as u32,
+        paragraphs: Vec::new(),
+    })
+}
+
+/// gso 직계 자식에서 캡션(LIST_HEADER + 뒤따르는 문단들)을 분리한다.
+/// gso의 직계 LIST_HEADER는 캡션뿐이다(pyhwp `GShapeObjectCaption` — 글상자
+/// 문단 리스트는 SHAPE_COMPONENT 아래에 중첩). 소비된 노드는 extras에서 빠진다.
+fn take_gso_caption(
+    children: &[RecordNode],
+    warnings: &mut Vec<String>,
+) -> (Option<Caption>, Vec<hwp_model::OpaqueRecord>) {
+    let mut caption: Option<Caption> = None;
+    // 캡션 LIST_HEADER 직후의 직계 문단들만 캡션 소속 — 다른 레코드가 끼면 닫는다.
+    let mut caption_open = false;
+    let mut extras = Vec::new();
+    for child in children {
+        match child.tag {
+            tag::LIST_HEADER if caption.is_none() => match parse_caption_header(&child.data) {
+                Ok(c) => {
+                    caption = Some(c);
+                    caption_open = true;
+                }
+                Err(e) => {
+                    warnings.push(format!("캡션 LIST_HEADER 파싱 실패: {e}"));
+                    extras.push(to_opaque(child));
+                }
+            },
+            tag::PARA_HEADER if caption_open => {
+                let para = parse_paragraph(child, warnings);
+                caption
+                    .as_mut()
+                    .expect("caption_open이면 Some")
+                    .paragraphs
+                    .push(para);
+            }
+            _ => {
+                caption_open = false;
+                extras.push(to_opaque(child));
+            }
+        }
+    }
+    (caption, extras)
+}
+
 /// gso 그림 개체: 개체 공통 속성(크기)과 그림 레코드의 BinItem ID를 추출한다.
 ///
 /// 그림 개체 속성 레이아웃 (스펙 §표 91): 테두리 색(4)+굵기(4)+속성(4)
@@ -308,7 +389,11 @@ fn find_picture_record(children: &[RecordNode]) -> Option<&RecordNode> {
 /// + **BinItem ID (2 bytes)** at offset 71, followed by border alpha (1 byte)
 ///   and instance ID (4 bytes)
 /// + variable picture-effect data from tables 107-108, with flags at byte 78.
-fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model::Picture> {
+fn parse_picture_gso(
+    common: &[u8],
+    children: &[RecordNode],
+    warnings: &mut Vec<String>,
+) -> Result<hwp_model::Picture> {
     // 개체 공통 속성(표 69): 속성(4) 세로offset(4) 가로offset(4) 폭(4) 높이(4) z-order(4)
     let mut r = ByteReader::new(common);
     let attr = r.read_u32()?;
@@ -361,6 +446,8 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
         .iter()
         .find(|c| c.tag == tag::SHAPE_COMPONENT)
         .and_then(|sc| gso_rotation_deg(&sc.data));
+    // 캡션(표 71): gso 직계 LIST_HEADER + 뒤따르는 문단들. 소비된 노드는 extras에서 제외.
+    let (caption, extras) = take_gso_caption(children, warnings);
 
     Ok(hwp_model::Picture {
         common_data: common.to_vec(),
@@ -382,8 +469,9 @@ fn parse_picture_gso(common: &[u8], children: &[RecordNode]) -> Result<hwp_model
         contrast,
         effect_flags,
         effects_raw,
+        caption,
         bin_ref: hwp_model::BinRef::Id(hwp_model::BinDataId(bin_id)),
-        extras: children.iter().map(to_opaque).collect(),
+        extras,
     })
 }
 
@@ -523,19 +611,58 @@ fn parse_table(common_data: Vec<u8>, children: &[RecordNode], warnings: &mut Vec
         border_fill: hwp_model::BorderFillId(0),
         table_tail: Vec::new(),
         cells: Vec::new(),
+        caption: None,
         extras: Vec::new(),
     };
     let mut current_cell: Option<Cell> = None;
+    let mut current_caption: Option<Caption> = None;
+    // 캡션 vs 셀 LIST_HEADER 판별 (pyhwp tagid56_list_header 실측 규칙): TABLE
+    // 레코드 **이전**의 LIST_HEADER는 캡션(표 71 — 개체 공통 속성 뒤에 옴), 이후는
+    // 셀. 보조 규칙: 선언된 셀 수(행별 셀 수 합)를 채운 뒤의 LIST_HEADER도 캡션.
+    let mut seen_table_record = false;
+    let mut declared_cells: Option<usize> = None;
 
     for child in children {
         match child.tag {
             tag::TABLE => {
-                if let Err(e) = parse_table_record(&child.data, &mut table) {
-                    warnings.push(format!("TABLE 레코드 파싱 실패: {e}"));
-                    table.extras.push(to_opaque(child));
+                if let Some(cap) = current_caption.take() {
+                    table.caption = Some(cap);
+                }
+                seen_table_record = true;
+                match parse_table_record(&child.data, &mut table) {
+                    Ok(()) => {
+                        declared_cells =
+                            Some(table.row_cell_counts.iter().map(|&c| c as usize).sum());
+                    }
+                    Err(e) => {
+                        warnings.push(format!("TABLE 레코드 파싱 실패: {e}"));
+                        table.extras.push(to_opaque(child));
+                    }
                 }
             }
             tag::LIST_HEADER => {
+                let filled = declared_cells.is_some_and(|d| {
+                    d > 0 && table.cells.len() + usize::from(current_cell.is_some()) >= d
+                });
+                let is_caption = (!seen_table_record || filled)
+                    && table.caption.is_none()
+                    && current_caption.is_none();
+                if is_caption {
+                    if let Some(done) = current_cell.take() {
+                        table.cells.push(done);
+                    }
+                    match parse_caption_header(&child.data) {
+                        Ok(cap) => current_caption = Some(cap),
+                        Err(e) => {
+                            warnings.push(format!("캡션 LIST_HEADER 파싱 실패: {e}"));
+                            table.extras.push(to_opaque(child));
+                        }
+                    }
+                    continue;
+                }
+                if let Some(cap) = current_caption.take() {
+                    table.caption = Some(cap);
+                }
                 if let Some(done) = current_cell.take() {
                     table.cells.push(done);
                 }
@@ -549,6 +676,10 @@ fn parse_table(common_data: Vec<u8>, children: &[RecordNode], warnings: &mut Vec
             }
             tag::PARA_HEADER => {
                 let para = parse_paragraph(child, warnings);
+                if let Some(cap) = &mut current_caption {
+                    cap.paragraphs.push(para);
+                    continue;
+                }
                 match &mut current_cell {
                     Some(cell) => cell.paragraphs.push(para),
                     None => {
@@ -559,6 +690,9 @@ fn parse_table(common_data: Vec<u8>, children: &[RecordNode], warnings: &mut Vec
             }
             _ => table.extras.push(to_opaque(child)),
         }
+    }
+    if let Some(cap) = current_caption.take() {
+        table.caption = Some(cap);
     }
     if let Some(done) = current_cell.take() {
         table.cells.push(done);
@@ -666,6 +800,26 @@ fn parse_generic(
     } else {
         None
     };
+    // gso 직계 LIST_HEADER는 캡션(표 71, pyhwp GShapeObjectCaption). 문단 리스트 수집과
+    // 별도로 의미 파싱해 둔다 — raw_children이 재직렬화 정본이라 왕복에는 무관하다.
+    let caption = if &ctrl_id == b"gso " {
+        children
+            .iter()
+            .position(|c| c.tag == tag::LIST_HEADER)
+            .and_then(|i| {
+                let mut cap = parse_caption_header(&children[i].data).ok()?;
+                for c in &children[i + 1..] {
+                    if c.tag == tag::PARA_HEADER {
+                        cap.paragraphs.push(parse_paragraph(c, warnings));
+                    } else {
+                        break;
+                    }
+                }
+                Some(cap)
+            })
+    } else {
+        None
+    };
     let mut g = GenericControl {
         ctrl_id,
         data,
@@ -676,6 +830,7 @@ fn parse_generic(
         gso_shapes: Vec::new(),
         equation,
         column_def,
+        caption,
     };
     collect_paragraph_lists(children, &mut g, warnings);
     g
@@ -830,7 +985,7 @@ mod tests {
             children: Vec::new(),
         };
 
-        let p = parse_picture_gso(&common, &[pic_node]).unwrap();
+        let p = parse_picture_gso(&common, &[pic_node], &mut Vec::new()).unwrap();
         assert!(!p.treat_as_char, "부유(글자처럼=false)");
         assert_eq!(p.vert_offset, 5000, "세로 offset 승계");
         assert_eq!(p.horz_offset, 3000, "가로 offset 승계");
@@ -907,7 +1062,7 @@ mod tests {
             children: Vec::new(),
         };
 
-        let p = parse_picture_gso(&common, &[sc_node, pic_node]).unwrap();
+        let p = parse_picture_gso(&common, &[sc_node, pic_node], &mut Vec::new()).unwrap();
         assert_eq!(p.crop, Some([100.0, 200.0, 4100.0, 3200.0]));
         assert_eq!(p.brightness, 30);
         assert_eq!(p.contrast, -20);
@@ -930,5 +1085,133 @@ mod tests {
         }
         assert_eq!(gso_rotation_deg(&sc_data), None);
         assert_eq!(gso_rotation_deg(&[]), None);
+    }
+
+    /// 캡션 LIST_HEADER(표 71-73, 22B) 합성 바이트.
+    fn caption_header_bytes(side: u32, full_size: bool, gap: u16, max_width: i32) -> Vec<u8> {
+        let flags = side | u32::from(full_size) << 2;
+        let mut d = Vec::new();
+        d.extend_from_slice(&1i32.to_le_bytes()); // 문단 수
+        d.extend_from_slice(&0u32.to_le_bytes()); // listflags: 가로
+        d.extend_from_slice(&flags.to_le_bytes()); // 캡션 속성 (표 73)
+        d.extend_from_slice(&0i32.to_le_bytes()); // 캡션 폭 (가로 방향이라 미사용)
+        d.extend_from_slice(&gap.to_le_bytes()); // 캡션과 틀 사이 간격
+        d.extend_from_slice(&max_width.to_le_bytes()); // 텍스트 최대 길이(=개체 폭)
+        d
+    }
+
+    fn para_header_node() -> RecordNode {
+        RecordNode {
+            tag: tag::PARA_HEADER,
+            data: vec![0u8; 22],
+            children: Vec::new(),
+        }
+    }
+
+    /// GB-13: TABLE 레코드 **앞**의 LIST_HEADER는 캡션, 뒤는 셀로 판별한다
+    /// (pyhwp tagid56_list_header 위치 규칙).
+    #[test]
+    fn 표_캡션_리스트헤더_판별() {
+        // 1x1 표 TABLE 레코드: attr + rows + cols + cellspacing + 안쪽여백 + 행별셀수 + borderfill
+        let mut tbl = Vec::new();
+        tbl.extend_from_slice(&0u32.to_le_bytes());
+        tbl.extend_from_slice(&1u16.to_le_bytes()); // rows
+        tbl.extend_from_slice(&1u16.to_le_bytes()); // cols
+        tbl.extend_from_slice(&0u16.to_le_bytes()); // cellspacing
+        tbl.extend_from_slice(&[0u8; 8]); // 안쪽 여백
+        tbl.extend_from_slice(&1u16.to_le_bytes()); // 행별 셀 수
+        tbl.extend_from_slice(&1u16.to_le_bytes()); // border fill id
+
+        // 셀 LIST_HEADER(34B): 문단 수 + 속성 + col/row/span + 폭/높이 + 여백 + borderfill
+        let mut cell = Vec::new();
+        cell.extend_from_slice(&1i32.to_le_bytes());
+        cell.extend_from_slice(&0u32.to_le_bytes());
+        cell.extend_from_slice(&[0u8; 8]); // col/row/colspan/rowspan
+        cell.extend_from_slice(&1000i32.to_le_bytes());
+        cell.extend_from_slice(&500i32.to_le_bytes());
+        cell.extend_from_slice(&[0u8; 8]); // 여백
+        cell.extend_from_slice(&1u16.to_le_bytes()); // border fill
+
+        let children = vec![
+            RecordNode {
+                tag: tag::LIST_HEADER,
+                data: caption_header_bytes(3, false, 850, 42520), // bottom
+                children: Vec::new(),
+            },
+            para_header_node(), // 캡션 문단
+            RecordNode {
+                tag: tag::TABLE,
+                data: tbl,
+                children: Vec::new(),
+            },
+            RecordNode {
+                tag: tag::LIST_HEADER,
+                data: cell,
+                children: Vec::new(),
+            },
+            para_header_node(), // 셀 문단
+        ];
+
+        let mut warnings = Vec::new();
+        let table = parse_table(Vec::new(), &children, &mut warnings);
+        let caption = table.caption.expect("캡션 파싱");
+        assert_eq!(caption.side, CaptionSide::Bottom);
+        assert_eq!(caption.direction, CaptionDirection::Horizontal);
+        assert_eq!(caption.gap, 850);
+        assert_eq!(caption.width, Some(0));
+        assert_eq!(caption.last_width, 42520);
+        assert_eq!(caption.paragraphs.len(), 1, "캡션 문단 수");
+        assert_eq!(table.cells.len(), 1, "셀은 1개만");
+        assert_eq!(table.cells[0].paragraphs.len(), 1, "셀 문단 수");
+    }
+
+    /// full-size 캡션(bit2)은 width=None으로 매핑된다.
+    #[test]
+    fn 캡션_fullsize_폭_매핑() {
+        let cap = parse_caption_header(&caption_header_bytes(0, true, 100, 0)).unwrap();
+        assert_eq!(cap.side, CaptionSide::Left);
+        assert_eq!(cap.width, None);
+        let cap = parse_caption_header(&caption_header_bytes(2, false, 100, 0)).unwrap();
+        assert_eq!(cap.side, CaptionSide::Top);
+        assert_eq!(cap.width, Some(0));
+    }
+
+    /// GB-13: 그림 gso의 직계 LIST_HEADER+문단은 캡션으로 분리되고 extras에서 빠진다.
+    #[test]
+    fn 그림_캡션_분리() {
+        let mut common = Vec::new();
+        common.extend_from_slice(&1u32.to_le_bytes()); // attr: 글자처럼
+        common.extend_from_slice(&[0u8; 16]); // 오프셋/폭/높이
+        common.extend_from_slice(&[0u8; 4]); // z-order
+        common.extend_from_slice(&[0u8; 8]); // 바깥 여백
+
+        let mut pic_data = vec![0u8; 71];
+        pic_data.extend_from_slice(&2u16.to_le_bytes()); // bin id
+        let pic_node = RecordNode {
+            tag: tag::SHAPE_COMPONENT_PICTURE,
+            data: pic_data,
+            children: Vec::new(),
+        };
+        let children = vec![
+            RecordNode {
+                tag: tag::LIST_HEADER,
+                data: caption_header_bytes(3, false, 600, 9000),
+                children: Vec::new(),
+            },
+            para_header_node(),
+            pic_node,
+        ];
+
+        let p = parse_picture_gso(&common, &children, &mut Vec::new()).unwrap();
+        let caption = p.caption.expect("그림 캡션");
+        assert_eq!(caption.side, CaptionSide::Bottom);
+        assert_eq!(caption.gap, 600);
+        assert_eq!(caption.paragraphs.len(), 1);
+        assert_eq!(
+            p.extras.len(),
+            1,
+            "캡션 레코드는 extras에서 빠지고 그림 레코드만 남는다"
+        );
+        assert_eq!(p.extras[0].tag, tag::SHAPE_COMPONENT_PICTURE);
     }
 }
