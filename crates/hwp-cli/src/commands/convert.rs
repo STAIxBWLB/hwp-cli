@@ -308,87 +308,101 @@ pub fn execute(
         (crate::format::FileFormat::Hwp5, ConvertFormat::Hwp)
             | (crate::format::FileFormat::Hwpx, ConvertFormat::Hwpx)
     );
-    let write_report = crate::commands::output::write_validated(
-        output,
-        Some(input),
-        |staged| {
-            let mut report = match target {
-                ConvertFormat::Md => {
-                    unreachable!("Markdown은 sidecar 트랜잭션 경로에서 처리")
+    let write_staged = |source: &std::path::Path, staged: &std::path::Path| {
+        let mut report = match target {
+            ConvertFormat::Md => {
+                unreachable!("Markdown은 sidecar 트랜잭션 경로에서 처리")
+            }
+            ConvertFormat::Html => {
+                std::fs::write(staged, hwp_convert::to_html(&doc))?;
+                hwp_model::WriteReport::new()
+            }
+            ConvertFormat::Txt => {
+                std::fs::write(staged, doc.plain_text())?;
+                hwp_model::WriteReport::new()
+            }
+            ConvertFormat::Csv => {
+                std::fs::write(staged, hwp_convert::to_csv(&doc))?;
+                hwp_model::WriteReport::new()
+            }
+            ConvertFormat::Docx => {
+                std::fs::write(staged, hwp_convert::to_docx(&doc)?)?;
+                hwp_model::WriteReport::new()
+            }
+            ConvertFormat::Odt => {
+                std::fs::write(staged, hwp_convert::to_odt(&doc)?)?;
+                hwp_model::WriteReport::new()
+            }
+            ConvertFormat::Pdf => {
+                let result =
+                    hwp_render::render_document_pdf(&doc, &pdf_render_opts(font_dirs), None)?;
+                std::fs::write(staged, &result.data)?;
+                hwp_model::WriteReport {
+                    warnings: render_issue_messages(&result.report),
+                    preservation: hwp_model::PreservationReport::new(),
                 }
-                ConvertFormat::Html => {
-                    std::fs::write(staged, hwp_convert::to_html(&doc))?;
-                    hwp_model::WriteReport::new()
-                }
-                ConvertFormat::Txt => {
-                    std::fs::write(staged, doc.plain_text())?;
-                    hwp_model::WriteReport::new()
-                }
-                ConvertFormat::Csv => {
-                    std::fs::write(staged, hwp_convert::to_csv(&doc))?;
-                    hwp_model::WriteReport::new()
-                }
-                ConvertFormat::Docx => {
-                    std::fs::write(staged, hwp_convert::to_docx(&doc)?)?;
-                    hwp_model::WriteReport::new()
-                }
-                ConvertFormat::Odt => {
-                    std::fs::write(staged, hwp_convert::to_odt(&doc)?)?;
-                    hwp_model::WriteReport::new()
-                }
-                ConvertFormat::Pdf => {
-                    let result =
-                        hwp_render::render_document_pdf(&doc, &pdf_render_opts(font_dirs), None)?;
-                    std::fs::write(staged, &result.data)?;
-                    hwp_model::WriteReport {
-                        warnings: render_issue_messages(&result.report),
-                        preservation: hwp_model::PreservationReport::new(),
-                    }
-                }
-                ConvertFormat::Json => {
-                    std::fs::write(staged, hwp_convert::to_json(&doc, true, embed_bin)?)?;
-                    hwp_model::WriteReport::new()
-                }
-                ConvertFormat::Hwpx => hwpx::write::write_document_with_report_with(
-                    &doc,
-                    staged,
-                    &hwpx::write::HwpxWriteOptions {
-                        preserve_linesegs: preserve_layout,
-                    },
-                )?,
-                ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout)?,
-            };
+            }
+            ConvertFormat::Json => {
+                std::fs::write(staged, hwp_convert::to_json(&doc, true, embed_bin)?)?;
+                hwp_model::WriteReport::new()
+            }
+            ConvertFormat::Hwpx => hwpx::write::write_document_with_report_with(
+                &doc,
+                staged,
+                &hwpx::write::HwpxWriteOptions {
+                    preserve_linesegs: preserve_layout,
+                },
+            )?,
+            ConvertFormat::Hwp if source_format == crate::format::FileFormat::Hwp5 => {
+                write_hwp_preserving_source(source, &doc, &doc, staged, preserve_layout, false)?
+            }
+            ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout)?,
+        };
 
-            if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-                if same_native_format {
-                    report.preservation.extend(
-                        crate::commands::preservation::inspect_same_format_container(
-                            input, staged,
-                        )?,
-                    );
-                }
-                let output_document = load_document(staged)
-                    .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
+        if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
+            if same_native_format {
                 report.preservation.extend(
-                    crate::commands::preservation::inspect_conversion_semantics(
-                        &doc,
-                        &output_document,
-                    ),
+                    crate::commands::preservation::inspect_same_format_container(source, staged)?,
                 );
             }
-            Ok(report)
-        },
-        |staged, report| {
-            if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-                if same_native_format || strict {
-                    crate::commands::reject_preservation_loss("convert", &report.preservation)?;
-                }
-                load_document(staged)
-                    .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
+            let output_document = load_document(staged)
+                .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
+            report.preservation.extend(
+                crate::commands::preservation::inspect_conversion_semantics(&doc, &output_document),
+            );
+        }
+        Ok(report)
+    };
+    let verify_staged = |staged: &std::path::Path, report: &hwp_model::WriteReport| {
+        if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
+            if same_native_format || strict {
+                crate::commands::reject_preservation_loss("convert", &report.preservation)?;
             }
-            Ok(())
-        },
-    )?;
+            load_document(staged)
+                .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;
+        }
+        Ok(())
+    };
+    let write_report = if source_format == crate::format::FileFormat::Hwp5
+        && matches!(target, ConvertFormat::Hwp)
+    {
+        let (_, report) = crate::commands::output::write_with_private_input_snapshot(
+            output,
+            input,
+            hwp_cli::certification::MAX_INPUT_BYTES,
+            crate::commands::output::SnapshotOutputMode::Publish,
+            |snapshot, staged, _| write_staged(snapshot, staged),
+            verify_staged,
+        )?;
+        report
+    } else {
+        crate::commands::output::write_validated(
+            output,
+            Some(input),
+            |staged| write_staged(input, staged),
+            verify_staged,
+        )?
+    };
     Ok(ConvertReport {
         warnings: write_report.warnings,
         preservation: write_report.preservation,
@@ -496,7 +510,28 @@ pub fn write_hwp(
     output: &std::path::Path,
     preserve_layout: bool,
 ) -> anyhow::Result<hwp_model::WriteReport> {
-    write_hwp_impl(doc, output, preserve_layout, false, None)
+    write_hwp_impl(doc, output, preserve_layout, false, None, None)
+}
+
+/// Writes an HWP edit against an immutable source snapshot. The low-level
+/// writer derives its target stream set from `original` versus `doc` and keeps
+/// every unrelated CFB entry owned by `source`.
+pub fn write_hwp_preserving_source(
+    source: &std::path::Path,
+    original: &hwp_model::Document,
+    doc: &hwp_model::Document,
+    output: &std::path::Path,
+    preserve_layout: bool,
+    structural: bool,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    write_hwp_impl(
+        doc,
+        output,
+        preserve_layout,
+        structural,
+        None,
+        Some((source, original)),
+    )
 }
 
 /// 편집된 문서를 hwp로 다시 쓴다.
@@ -515,9 +550,9 @@ pub fn write_hwp_edited(
 ) -> anyhow::Result<hwp_model::WriteReport> {
     if doc.meta.source_format == "hwp5" {
         // 원본 줄 배치 보존(preserve), 합성 정규화 없음 — 편집 문단만 count=0.
-        write_hwp_impl(doc, output, true, false, None)
+        write_hwp_impl(doc, output, true, false, None, None)
     } else {
-        write_hwp_impl(doc, output, false, true, None)
+        write_hwp_impl(doc, output, false, true, None, None)
     }
 }
 
@@ -530,7 +565,7 @@ pub fn write_hwp_structural(
     doc: &hwp_model::Document,
     output: &std::path::Path,
 ) -> anyhow::Result<hwp_model::WriteReport> {
-    write_hwp_impl(doc, output, false, true, None)
+    write_hwp_impl(doc, output, false, true, None, None)
 }
 
 /// 구조 문서를 시스템 글꼴 없이 명시된 파일만으로 HWP로 쓴다.
@@ -546,7 +581,7 @@ pub fn write_hwp_structural_isolated(
     if font_files.is_empty() {
         anyhow::bail!("isolated HWP writer requires at least one explicit font file");
     }
-    write_hwp_impl(doc, output, false, true, Some(font_files))
+    write_hwp_impl(doc, output, false, true, Some(font_files), None)
 }
 
 fn write_hwp_impl(
@@ -555,6 +590,7 @@ fn write_hwp_impl(
     preserve_layout: bool,
     edited: bool,
     isolated_font_files: Option<&[std::path::PathBuf]>,
+    source: Option<(&std::path::Path, &hwp_model::Document)>,
 ) -> anyhow::Result<hwp_model::WriteReport> {
     let font_dir =
         std::path::PathBuf::from(std::env::var("HWP_FONT_DIR").unwrap_or_else(|_| "fonts".into()));
@@ -564,10 +600,43 @@ fn write_hwp_impl(
         .iter()
         .flat_map(|s| &s.paragraphs)
         .any(|p| !p.line_segs.is_empty());
+    let source_has_edits = source.is_some_and(|(_, original)| original != doc);
 
     let mut report = hwp_model::WriteReport::new();
     let owned;
-    let doc = if !synthesize || preserve_layout {
+    let doc = if source_has_edits {
+        // Native HWP edits keep every unchanged paragraph as an immutable source
+        // subtree. Missing line layout therefore identifies changed/new paragraphs;
+        // synthesize them before stream materialization. The source-aware writer
+        // replaces the renderer's output for every unchanged paragraph with the
+        // original record tree, so originally cache-less paragraphs stay untouched.
+        let mut d = doc.clone();
+        let mut store = if isolated_font_files.is_some() {
+            hwp_render::FontStore::new_isolated()
+        } else {
+            hwp_render::FontStore::new()
+        };
+        if let Some(files) = isolated_font_files {
+            for file in files {
+                store.load_file(file).with_context(|| {
+                    format!("isolated font file could not be loaded: {}", file.display())
+                })?;
+            }
+        } else {
+            store.load_dir(&font_dir);
+        }
+        let mut warns = hwp_render::RenderIssueAccumulator::new();
+        hwp_render::lineseg::synthesize_linesegs(&mut d, &mut store, &mut warns);
+        if let Some((_, original)) = source {
+            restore_unchanged_native_paragraphs(original, doc, &mut d);
+        }
+        warns.absorb(store.issues.finish());
+        report
+            .warnings
+            .append(&mut render_issue_messages(&warns.finish()));
+        owned = d;
+        &owned
+    } else if source.is_some() || !synthesize || preserve_layout {
         // hwp5 무수정/preserve-layout: 원본 줄 배치 그대로.
         doc
     } else if has_source_linesegs {
@@ -634,18 +703,160 @@ fn write_hwp_impl(
             .and_then(|out| out.pages.first().and_then(|p| p.encode_png().ok()))
     };
 
-    let writer_report = hwp5::write_document_with_report(
-        doc,
-        output,
-        &hwp5::WriteOptions {
-            prv_image,
-            preserve_linesegs: preserve_layout,
-            edited,
-        },
-    )?;
+    let options = hwp5::WriteOptions {
+        prv_image,
+        preserve_linesegs: preserve_layout,
+        edited,
+    };
+    let writer_report = if let Some((source, original)) = source {
+        hwp5::rewrite_document_with_report(source, original, doc, output, &options)?
+    } else {
+        hwp5::write_document_with_report(doc, output, &options)?
+    };
     report.warnings.extend(writer_report.warnings);
     report.preservation.extend(writer_report.preservation);
     Ok(report)
+}
+
+/// After renderer layout synthesis, put every semantically unchanged native
+/// paragraph back exactly as it appeared in the immutable input snapshot.
+/// This limits new PARA_LINE_SEG records to edited and inserted paragraphs,
+/// including paragraphs nested in table cells and generic controls.
+fn restore_unchanged_native_paragraphs(
+    original: &hwp_model::Document,
+    edited: &hwp_model::Document,
+    synthesized: &mut hwp_model::Document,
+) {
+    for (section_index, synthesized_section) in synthesized.sections.iter_mut().enumerate() {
+        let (Some(original_section), Some(edited_section)) = (
+            original.sections.get(section_index),
+            edited.sections.get(section_index),
+        ) else {
+            continue;
+        };
+        restore_unchanged_paragraph_list(
+            &original_section.paragraphs,
+            &edited_section.paragraphs,
+            &mut synthesized_section.paragraphs,
+        );
+    }
+}
+
+fn restore_unchanged_paragraph_list(
+    original: &[hwp_model::Paragraph],
+    edited: &[hwp_model::Paragraph],
+    synthesized: &mut [hwp_model::Paragraph],
+) {
+    if edited.len() != synthesized.len() {
+        return;
+    }
+    let mut used = vec![false; original.len()];
+    for edited_index in 0..edited.len() {
+        let instance_id = edited[edited_index].header.instance_id;
+        let original_index = if instance_id != 0
+            && edited
+                .iter()
+                .filter(|paragraph| paragraph.header.instance_id == instance_id)
+                .count()
+                == 1
+        {
+            let matches = original
+                .iter()
+                .enumerate()
+                .filter(|(index, paragraph)| {
+                    !used[*index] && paragraph.header.instance_id == instance_id
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if matches.len() == 1 {
+                Some(matches[0])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+        .or_else(|| {
+            original
+                .iter()
+                .enumerate()
+                .find(|(index, paragraph)| !used[*index] && *paragraph == &edited[edited_index])
+                .map(|(index, _)| index)
+        })
+        .or_else(|| {
+            (original.len() == edited.len() && !used[edited_index]).then_some(edited_index)
+        });
+
+        if let Some(original_index) = original_index {
+            used[original_index] = true;
+            restore_unchanged_paragraph(
+                &original[original_index],
+                &edited[edited_index],
+                &mut synthesized[edited_index],
+            );
+        }
+    }
+}
+
+fn restore_unchanged_paragraph(
+    original: &hwp_model::Paragraph,
+    edited: &hwp_model::Paragraph,
+    synthesized: &mut hwp_model::Paragraph,
+) {
+    if original == edited {
+        *synthesized = original.clone();
+        return;
+    }
+    for ((original_control, edited_control), synthesized_control) in original
+        .controls
+        .iter()
+        .zip(&edited.controls)
+        .zip(&mut synthesized.controls)
+    {
+        if original_control == edited_control {
+            *synthesized_control = original_control.clone();
+            continue;
+        }
+        match (original_control, edited_control, synthesized_control) {
+            (
+                hwp_model::Control::Table(original_table),
+                hwp_model::Control::Table(edited_table),
+                hwp_model::Control::Table(synthesized_table),
+            ) => {
+                for ((original_cell, edited_cell), synthesized_cell) in original_table
+                    .cells
+                    .iter()
+                    .zip(&edited_table.cells)
+                    .zip(&mut synthesized_table.cells)
+                {
+                    restore_unchanged_paragraph_list(
+                        &original_cell.paragraphs,
+                        &edited_cell.paragraphs,
+                        &mut synthesized_cell.paragraphs,
+                    );
+                }
+            }
+            (
+                hwp_model::Control::Generic(original_generic),
+                hwp_model::Control::Generic(edited_generic),
+                hwp_model::Control::Generic(synthesized_generic),
+            ) => {
+                for ((original_list, edited_list), synthesized_list) in original_generic
+                    .paragraph_lists
+                    .iter()
+                    .zip(&edited_generic.paragraph_lists)
+                    .zip(&mut synthesized_generic.paragraph_lists)
+                {
+                    restore_unchanged_paragraph_list(
+                        &original_list.paragraphs,
+                        &edited_list.paragraphs,
+                        &mut synthesized_list.paragraphs,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn render_issue_messages(report: &hwp_render::RenderIssueReport) -> Vec<String> {
@@ -814,5 +1025,55 @@ mod tests {
         issues.push(hwp_render::RenderIssueCode::FontMatched, b"font");
         let report = issues.finish();
         assert!(render_issue_messages(&report).is_empty());
+    }
+
+    #[test]
+    fn native_layout_restore_limits_synthesis_to_changed_paragraphs() {
+        let mut original = hwp_convert::from_markdown("first\n\nsecond");
+        assert_eq!(original.sections[0].paragraphs.len(), 2);
+        for (index, paragraph) in original.sections[0].paragraphs.iter_mut().enumerate() {
+            paragraph.header.instance_id = index as u32 + 1;
+            paragraph.line_segs = vec![hwp_model::LineSeg {
+                text_start: 0,
+                v_pos: index as i32 * 100,
+                line_height: 1000,
+                text_height: 1000,
+                baseline_gap: 800,
+                line_spacing: 600,
+                col_start: 0,
+                seg_width: 5000,
+                flags: 0x60000,
+            }];
+        }
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs[0]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[0].line_segs.clear();
+        let mut synthesized = edited.clone();
+        for paragraph in &mut synthesized.sections[0].paragraphs {
+            paragraph.line_segs = vec![hwp_model::LineSeg {
+                text_start: 0,
+                v_pos: 999,
+                line_height: 999,
+                text_height: 999,
+                baseline_gap: 999,
+                line_spacing: 999,
+                col_start: 0,
+                seg_width: 999,
+                flags: 0,
+            }];
+        }
+
+        restore_unchanged_native_paragraphs(&original, &edited, &mut synthesized);
+
+        assert_eq!(
+            synthesized.sections[0].paragraphs[0].line_segs[0].v_pos,
+            999
+        );
+        assert_eq!(
+            synthesized.sections[0].paragraphs[1].line_segs,
+            original.sections[0].paragraphs[1].line_segs
+        );
     }
 }

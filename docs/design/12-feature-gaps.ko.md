@@ -40,9 +40,9 @@
 
 - hwp5의 `OpaqueRecord`(서브트리째 보존, [10](10-hwp5-structure-map.ko.md) §0 상태표)는
   `hwp5→hwp5` 왕복에서 **바이트를 잃지 않는다** → 레코드 수준에서는 그 경로의 갭이 아니다.
-  다만 IR 기반 full container rewrite가 부속 CFB stream이나 storage metadata까지 보존한다는 뜻은
-  아니다. 2026-08-14부터 typed preservation gate가 이 넓은 범위의 손실을 감지해 발행을 거부하며,
-  source-preserving HWP container repair는 이슈 #90에 남아 있다.
+  2026-08-14부터 네이티브 HWP 되쓰기는 불변 source CFB를 복사한 뒤 계획된 stream만 교체하여
+  부속 stream, storage, 미변경 binary payload까지 보존한다. package-surgical HWPX 편집은 이슈
+  #90에 남아 있다.
 - 같은 레코드를 `hwp5→hwpx`로 **합성**하려면 의미를 해석해 OWPML로 다시 써야 하는데, 그 지식이
   없으므로 **드롭**된다 → 합성 경로에선 갭.
 - 렌더러가 그 개체(차트·OLE 등)를 그리려면 페이로드 해석이 필요한데 안 되므로 **빈자리** →
@@ -80,8 +80,15 @@
   `hwp-preservation-report-v1` ledger를 추가했다. 원본 없는 작성과 같은 포맷 write는 writer omission
   또는 예상하지 않은 container/package loss가 있으면 atomic하게 실패하고, 포맷 간 strict 변환은
   semantic asset, control, relationship, metadata도 비교한다. 이는 silent publication을 해소한 것이며
-  writer 자체의 갭을 해소한 것은 아니다. source-preserving HWP repair와 package-surgical HWPX 편집은
-  이슈 #90에 남아 있다.
+  writer 자체의 갭을 해소한 것은 아니며, 다음 해소 이력에 HWP repair를 별도로 기록한다.
+  package-surgical HWPX 편집은 이슈 #90에 남아 있다.
+
+- **2026-08-14 (이슈 #90 source-preserving HWP writer)**: 같은 포맷 HWP `convert`, `edit`, IR
+  `fill`이 불변 input snapshot을 기준으로 쓴다. 무수정은 exact file copy이며, 편집은 stream
+  mutation plan을 만들고 미변경 CFB entry와 BinData를 바이트 동일하게 유지한다. BodyText는
+  미변경 subtree를 보존하고 변경·삽입 문단에만 line layout을 합성한다. 비공개 복합 문서로
+  no-op, metadata, text, paragraph, table-cell, image를 검증했으며 한글 손상 경고 없이 모두
+  통과했다. #90의 잔여 작업에는 package-surgical HWPX 편집이 포함된다.
 
 - **2026-07-15**: GA-5(버전 게이트), GE-α1~α5·α7(글자효과·밑줄모양·번호형식 hwpx 왕복),
   GE-β4(요약정보 필드), GH-1·GH-2(md/html 링크·이미지), GL-1(추출 옵션 CLI 노출) —

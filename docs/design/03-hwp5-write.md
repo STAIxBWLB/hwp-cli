@@ -567,3 +567,41 @@ alike, and the invariant `wchar_len() == nchars` exposes a classification error 
 
 Every one of these values is ground truth confirmed by measuring genuine files and passing the Hancom
 gate, not by reading the specification.
+
+---
+
+## 13. Source-preserving native HWP rewrites
+
+Native HWP editing does not rebuild the input container. `rewrite_document_with_report` receives an
+immutable source path, the IR read from that exact snapshot, and the edited IR. It re-reads the source
+and rejects a snapshot mismatch before deriving a mutation plan.
+
+The plan owns only these targets:
+
+- metadata changes replace `\u0005HwpSummaryInformation`;
+- header or BinData relationship changes replace `DocInfo`;
+- section changes replace only the corresponding `BodyText/SectionN` stream and its previews;
+- changed or removed binaries touch only their `BinData/*` streams.
+
+A no-op is `fs::copy`, so the complete CFB file is byte-identical. For an edit, the source CFB is
+copied first and selected streams are patched in place. `FileHeader`, `MemoExtended`, `Scripts`,
+`DocOptions`, XMLTemplate, DocHistory, unknown streams, unknown storages, untouched binaries and CFB
+directory entries unrelated to patched streams remain source-owned.
+
+BodyText materialization also stays surgical. Paragraphs are matched by unique non-zero
+`instance_id`, then exact equality, with a same-length positional fallback. An unchanged paragraph is
+the original record subtree. In a changed paragraph, unchanged typed controls are transplanted from
+the source tree; a table-cell edit recursively patches only the changed cell paragraph. This matters
+because records such as `CTRL_DATA`, `PAGE_DEF` and `PAGE_BORDER_FILL` can be level-sensitive even
+when the semantic IR represents them separately. `ParaHeaderInfo::hwp5_child_order` additionally
+retains the source order between opaque paragraph children and `CTRL_HEADER` records.
+
+Changed or inserted paragraphs get fresh `PARA_LINE_SEG` values from the renderer. After synthesis,
+all semantically unchanged native paragraphs, including table-cell and generic-control paragraphs,
+are restored from the immutable snapshot. This avoids both stale layout caches and global layout
+churn.
+
+The CLI `convert` no-op, `edit`, and IR `fill` paths take a private immutable input snapshot before
+writing. The published output is still atomic and passes the typed preservation gate. The regression
+suite covers exact no-op copy, metadata-only targeting, opaque stream preservation, unchanged typed
+control subtree preservation, image relationship materialization, and same-format CLI byte identity.

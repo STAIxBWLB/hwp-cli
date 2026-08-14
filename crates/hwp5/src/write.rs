@@ -6,6 +6,7 @@
 //! 수준). ID_MAPPINGS 카운트는 테이블 길이에서 유도한다(수동 동기화
 //! 금지) — 원본에 버전별 추가 카운트가 있으면 꼬리만 보존.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::Path;
 
@@ -16,10 +17,10 @@ use hwp_model::{
     SectionDef, Style, Table, WriteReport,
 };
 
-use crate::codec::{ByteWriter, compress};
+use crate::codec::{ByteWriter, compress, decompress};
 use crate::error::Result;
 use crate::file_header::{FILE_HEADER_SIZE, FileHeader, HwpVersion};
-use crate::record::{RecordNode, tag};
+use crate::record::{RecordNode, ScanMode, scan_stream, tag};
 
 #[derive(Default)]
 pub struct WriteOptions {
@@ -40,6 +41,24 @@ pub struct WriteOptions {
     pub edited: bool,
 }
 
+#[derive(Debug)]
+struct HwpStreamMaterialization {
+    storages: BTreeSet<String>,
+    streams: BTreeMap<String, Vec<u8>>,
+    bin_stream_paths: BTreeMap<String, String>,
+    report: WriteReport,
+}
+
+#[derive(Debug)]
+struct HwpMutationPlan {
+    metadata_changed: bool,
+    header_changed: bool,
+    changed_sections: BTreeSet<usize>,
+    removed_sections: BTreeSet<usize>,
+    changed_bins: BTreeSet<String>,
+    removed_bins: BTreeSet<String>,
+}
+
 /// 문서를 HWP 5.0 파일로 저장한다. 경고(평탄화/드롭) 목록을 반환한다.
 ///
 /// This is the legacy compatibility surface. New callers should use
@@ -55,7 +74,448 @@ pub fn write_document_with_report(
     path: &Path,
     opts: &WriteOptions,
 ) -> Result<WriteReport> {
+    let materialization = materialize_document(doc, opts, true, false)?;
+    write_materialized_document(path, &materialization)?;
+    Ok(materialization.report)
+}
+
+/// Rewrites an HWP document by copying its immutable source container and
+/// replacing only streams selected by a mutation plan derived from the
+/// original and edited IR values.
+///
+/// A no-op is an exact file copy. Opaque streams, storages, directory metadata,
+/// FileHeader, scripts, document options, history, and every unrelated binary
+/// stream remain owned by the source container rather than being regenerated.
+pub fn rewrite_document_with_report(
+    source: &Path,
+    original: &Document,
+    edited: &Document,
+    path: &Path,
+    opts: &WriteOptions,
+) -> Result<WriteReport> {
+    if source_output_alias(source, path)? {
+        return Err(crate::error::Hwp5Error::SourceRewrite(
+            "source and output paths must be different".to_string(),
+        ));
+    }
+    let source_document = crate::read_document(source)?.document;
+    if source_document != *original {
+        return Err(crate::error::Hwp5Error::SourceSnapshotMismatch);
+    }
+    validate_source_rewrite_contract(original, edited)?;
+
+    if original == edited {
+        std::fs::copy(source, path)?;
+        return Ok(WriteReport::new());
+    }
+
+    let plan = HwpMutationPlan::derive(original, edited);
+    let mut source_container = crate::Hwp5Container::open(source)?;
+    let compressed = source_container.file_header().is_compressed();
+    let source_bin_paths = source_container
+        .list_streams()
+        .into_iter()
+        .filter_map(|entry| {
+            let normalized = entry
+                .path
+                .strip_prefix("/BinData/")
+                .map(normalized_bin_name);
+            normalized.map(|name| (name, entry.path))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let source_section_roots = plan
+        .changed_sections
+        .iter()
+        .filter(|index| **index < original.sections.len())
+        .map(|index| {
+            let stream_path = format!("/BodyText/Section{index}");
+            let bytes = source_container.read_record_stream(&stream_path)?;
+            let scan = scan_stream(&bytes, ScanMode::Strict)?;
+            Ok((*index, scan.roots))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    drop(source_container);
+
+    let mut materialization = materialize_document(edited, opts, compressed, true)?;
+    preserve_unchanged_body_subtrees(
+        original,
+        edited,
+        compressed,
+        &source_section_roots,
+        &mut materialization,
+    )?;
+    std::fs::copy(source, path)?;
+    patch_source_container(path, &plan, &source_bin_paths, &materialization)?;
+    Ok(materialization.report)
+}
+
+fn source_output_alias(source: &Path, output: &Path) -> Result<bool> {
+    if source == output {
+        return Ok(true);
+    }
+    let source_metadata = std::fs::metadata(source)?;
+    let output_metadata = match std::fs::metadata(output) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(source_metadata.dev() == output_metadata.dev()
+            && source_metadata.ino() == output_metadata.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (source_metadata, output_metadata);
+        Ok(std::fs::canonicalize(source)? == std::fs::canonicalize(output)?)
+    }
+}
+
+/// Replaces regenerated, unchanged typed controls with their immutable source
+/// subtrees. This keeps level-sensitive records such as a section definition's
+/// CTRL_DATA/PAGE_DEF sequence byte-identical while still allowing the edited
+/// paragraph records around them to change.
+fn preserve_unchanged_body_subtrees(
+    original: &Document,
+    edited: &Document,
+    compressed: bool,
+    source_sections: &BTreeMap<usize, Vec<RecordNode>>,
+    materialization: &mut HwpStreamMaterialization,
+) -> Result<()> {
+    for (index, source_roots) in source_sections {
+        let stream_path = format!("/BodyText/Section{index}");
+        let materialized = required_materialized_stream(materialization, &stream_path)?;
+        let decoded = if compressed {
+            decompress(materialized, &stream_path)?
+        } else {
+            materialized.to_vec()
+        };
+        let emitted_roots = scan_stream(&decoded, ScanMode::Strict)?.roots;
+        let original_section = original.sections.get(*index).ok_or_else(|| {
+            crate::error::Hwp5Error::SourceRewrite(format!(
+                "source section {index} is missing from the original IR"
+            ))
+        })?;
+        let edited_section = edited.sections.get(*index).ok_or_else(|| {
+            crate::error::Hwp5Error::SourceRewrite(format!(
+                "changed section {index} is missing from the edited IR"
+            ))
+        })?;
+        let merged = merge_section_roots(
+            source_roots,
+            &emitted_roots,
+            original_section,
+            edited_section,
+        )?;
+        materialization.streams.insert(
+            stream_path,
+            encode_compressed_stream(RecordNode::serialize_forest(&merged), compressed),
+        );
+    }
+    Ok(())
+}
+
+fn merge_section_roots(
+    source_roots: &[RecordNode],
+    emitted_roots: &[RecordNode],
+    original: &Section,
+    edited: &Section,
+) -> Result<Vec<RecordNode>> {
+    let source_paragraphs = source_roots
+        .iter()
+        .filter(|node| node.tag == tag::PARA_HEADER)
+        .collect::<Vec<_>>();
+    let emitted_paragraphs = emitted_roots
+        .iter()
+        .filter(|node| node.tag == tag::PARA_HEADER)
+        .collect::<Vec<_>>();
+    if source_paragraphs.len() != original.paragraphs.len()
+        || emitted_paragraphs.len() != edited.paragraphs.len()
+    {
+        return Err(crate::error::Hwp5Error::SourceRewrite(
+            "paragraph records cannot be matched to the source and edited IR".to_string(),
+        ));
+    }
+
+    let matches = match_paragraphs(&original.paragraphs, &edited.paragraphs);
+    if original.extras == edited.extras
+        && source_paragraphs.len() == emitted_paragraphs.len()
+        && matches
+            .iter()
+            .enumerate()
+            .all(|(edited_index, matched)| *matched == Some(edited_index))
+    {
+        let mut paragraph_index = 0usize;
+        return Ok(source_roots
+            .iter()
+            .map(|source_node| {
+                if source_node.tag != tag::PARA_HEADER {
+                    return source_node.clone();
+                }
+                let merged = merge_paragraph_node(
+                    source_node,
+                    emitted_paragraphs[paragraph_index],
+                    &original.paragraphs[paragraph_index],
+                    &edited.paragraphs[paragraph_index],
+                );
+                paragraph_index += 1;
+                merged
+            })
+            .collect());
+    }
+
+    let mut roots = Vec::with_capacity(emitted_roots.len());
+    for (edited_index, emitted_node) in emitted_paragraphs.iter().enumerate() {
+        if let Some(original_index) = matches[edited_index] {
+            roots.push(merge_paragraph_node(
+                source_paragraphs[original_index],
+                emitted_node,
+                &original.paragraphs[original_index],
+                &edited.paragraphs[edited_index],
+            ));
+        } else {
+            roots.push((*emitted_node).clone());
+        }
+    }
+
+    if original.extras == edited.extras {
+        roots.extend(
+            source_roots
+                .iter()
+                .filter(|node| node.tag != tag::PARA_HEADER)
+                .cloned(),
+        );
+    } else {
+        roots.extend(
+            emitted_roots
+                .iter()
+                .filter(|node| node.tag != tag::PARA_HEADER)
+                .cloned(),
+        );
+    }
+    Ok(roots)
+}
+
+fn match_paragraphs(original: &[Paragraph], edited: &[Paragraph]) -> Vec<Option<usize>> {
+    let mut used = vec![false; original.len()];
+    let mut matches = vec![None; edited.len()];
+    for (edited_index, paragraph) in edited.iter().enumerate() {
+        let instance_id = paragraph.header.instance_id;
+        if instance_id == 0
+            || edited
+                .iter()
+                .filter(|candidate| candidate.header.instance_id == instance_id)
+                .count()
+                != 1
+        {
+            continue;
+        }
+        let candidates = original
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| {
+                !used[*index] && candidate.header.instance_id == instance_id
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if candidates.len() == 1 {
+            used[candidates[0]] = true;
+            matches[edited_index] = Some(candidates[0]);
+        }
+    }
+    for (edited_index, paragraph) in edited.iter().enumerate() {
+        if matches[edited_index].is_some() {
+            continue;
+        }
+        if let Some((original_index, _)) = original
+            .iter()
+            .enumerate()
+            .find(|(index, candidate)| !used[*index] && *candidate == paragraph)
+        {
+            used[original_index] = true;
+            matches[edited_index] = Some(original_index);
+        }
+    }
+    if original.len() == edited.len() {
+        for edited_index in 0..edited.len() {
+            if matches[edited_index].is_none() && !used[edited_index] {
+                used[edited_index] = true;
+                matches[edited_index] = Some(edited_index);
+            }
+        }
+    }
+    matches
+}
+
+fn merge_paragraph_node(
+    source: &RecordNode,
+    emitted: &RecordNode,
+    original: &Paragraph,
+    edited: &Paragraph,
+) -> RecordNode {
+    if original == edited {
+        return source.clone();
+    }
+    let source_controls = source
+        .children
+        .iter()
+        .filter(|node| node.tag == tag::CTRL_HEADER)
+        .collect::<Vec<_>>();
+    let control_matches = match_controls(&original.controls, &edited.controls);
+    let mut merged = emitted.clone();
+    let mut edited_control_index = 0usize;
+    for child in &mut merged.children {
+        if child.tag != tag::CTRL_HEADER {
+            continue;
+        }
+        if let Some(Some(original_control_index)) = control_matches.get(edited_control_index)
+            && let (Some(source_control), Some(original_control), Some(edited_control)) = (
+                source_controls.get(*original_control_index),
+                original.controls.get(*original_control_index),
+                edited.controls.get(edited_control_index),
+            )
+        {
+            *child = merge_control_node(source_control, child, original_control, edited_control);
+        }
+        edited_control_index += 1;
+    }
+    merged
+}
+
+fn match_controls(original: &[Control], edited: &[Control]) -> Vec<Option<usize>> {
+    let mut used = vec![false; original.len()];
+    let mut matches = vec![None; edited.len()];
+    for (edited_index, control) in edited.iter().enumerate() {
+        if edited
+            .iter()
+            .filter(|candidate| *candidate == control)
+            .count()
+            != 1
+        {
+            continue;
+        }
+        let candidates = original
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| !used[*index] && *candidate == control)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if candidates.len() == 1 {
+            used[candidates[0]] = true;
+            matches[edited_index] = Some(candidates[0]);
+        }
+    }
+    if original.len() == edited.len() {
+        for edited_index in 0..edited.len() {
+            if matches[edited_index].is_none() && !used[edited_index] {
+                used[edited_index] = true;
+                matches[edited_index] = Some(edited_index);
+            }
+        }
+    }
+    matches
+}
+
+fn merge_control_node(
+    source: &RecordNode,
+    emitted: &RecordNode,
+    original: &Control,
+    edited: &Control,
+) -> RecordNode {
+    if original == edited {
+        return source.clone();
+    }
+    match (original, edited) {
+        (Control::Table(original), Control::Table(edited)) => {
+            merge_table_control(source, emitted, original, edited)
+        }
+        _ => emitted.clone(),
+    }
+}
+
+fn merge_table_control(
+    source: &RecordNode,
+    emitted: &RecordNode,
+    original: &Table,
+    edited: &Table,
+) -> RecordNode {
+    let mut original_structure = original.clone();
+    let mut edited_structure = edited.clone();
+    clear_table_paragraphs(&mut original_structure);
+    clear_table_paragraphs(&mut edited_structure);
+    let original_paragraphs = table_paragraphs(original);
+    let edited_paragraphs = table_paragraphs(edited);
+    if original_structure != edited_structure
+        || original_paragraphs.len() != edited_paragraphs.len()
+    {
+        return emitted.clone();
+    }
+
+    let source_indices = source
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.tag == tag::PARA_HEADER)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let emitted_paragraphs_nodes = emitted
+        .children
+        .iter()
+        .filter(|node| node.tag == tag::PARA_HEADER)
+        .collect::<Vec<_>>();
+    if source_indices.len() != original_paragraphs.len()
+        || emitted_paragraphs_nodes.len() != edited_paragraphs.len()
+    {
+        return emitted.clone();
+    }
+
+    let mut merged = source.clone();
+    for index in 0..original_paragraphs.len() {
+        if original_paragraphs[index] != edited_paragraphs[index] {
+            let child_index = source_indices[index];
+            merged.children[child_index] = merge_paragraph_node(
+                &source.children[child_index],
+                emitted_paragraphs_nodes[index],
+                original_paragraphs[index],
+                edited_paragraphs[index],
+            );
+        }
+    }
+    merged
+}
+
+fn clear_table_paragraphs(table: &mut Table) {
+    if let Some(caption) = &mut table.caption {
+        caption.paragraphs.clear();
+    }
+    for cell in &mut table.cells {
+        cell.paragraphs.clear();
+    }
+}
+
+fn table_paragraphs(table: &Table) -> Vec<&Paragraph> {
+    let mut paragraphs = table
+        .caption
+        .iter()
+        .flat_map(|caption| caption.paragraphs.iter())
+        .collect::<Vec<_>>();
+    paragraphs.extend(table.cells.iter().flat_map(|cell| cell.paragraphs.iter()));
+    paragraphs
+}
+
+fn materialize_document(
+    doc: &Document,
+    opts: &WriteOptions,
+    compressed: bool,
+    source_preserving: bool,
+) -> Result<HwpStreamMaterialization> {
     let mut report = WriteReport::new();
+    let input_bin_names = doc
+        .bin_streams
+        .iter()
+        .map(|stream| normalized_bin_name(&stream.name))
+        .collect::<Vec<_>>();
 
     // hwpx 출신 문서 정규화: hwp5 레코드(SHAPE_COMPONENT)가 없는 그림은
     // 쓸 수 없으므로 컨트롤과 확장 문자를 동기 제거한다
@@ -104,7 +564,9 @@ pub fn write_document_with_report(
             // 왕복에서 잃는다(hwpx writer/reader가 직렬화/복원하지 않음). 합성
             // 경로에서만 정상 표본 기준값을 보정 주입한다 — hwp5 무수정 왕복
             // (synthesize=false)은 거치지 않으므로 바이트 동일 게이트 무영향.
-            ensure_para_shape_defaults(&mut d.header);
+            if !source_preserving {
+                ensure_para_shape_defaults(&mut d.header);
+            }
             for section in &mut d.sections {
                 if let Some(p) = section.paragraphs.first_mut() {
                     p.header.break_type |= 0x03;
@@ -171,23 +633,18 @@ pub fn write_document_with_report(
     );
     let prv_text: Vec<u8> = preview.encode_utf16().flat_map(u16::to_le_bytes).collect();
 
-    // CFB 조립 — 반드시 버전 3 (512B 섹터): 한글은 V4(4096B)를
-    // "손상된 파일"로 판정한다 (실기 게이트 실측)
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    let mut cfb = cfb::CompoundFile::create_with_version(cfb::Version::V3, file)?;
-    cfb.create_new_stream("/FileHeader")?
-        .write_all(&header.serialize())?;
-    cfb.create_new_stream("/DocInfo")?
-        .write_all(&compress(&doc_info))?;
-    cfb.create_storage("/BodyText")?;
+    let mut storages = BTreeSet::from(["/BodyText".to_string()]);
+    let mut streams = BTreeMap::new();
+    streams.insert("/FileHeader".to_string(), header.serialize());
+    streams.insert(
+        "/DocInfo".to_string(),
+        encode_compressed_stream(doc_info, compressed),
+    );
     for (i, body) in sections.iter().enumerate() {
-        cfb.create_new_stream(format!("/BodyText/Section{i}"))?
-            .write_all(&compress(body))?;
+        streams.insert(
+            format!("/BodyText/Section{i}"),
+            encode_compressed_stream(body.clone(), compressed),
+        );
     }
     // BIN_DATA 테이블이 참조하는 스트림만 동봉 (hwp5 명명 규칙)
     let referenced: Vec<String> = doc
@@ -201,13 +658,21 @@ pub fn write_document_with_report(
         })
         .collect();
     let mut bin_written = 0usize;
+    let mut bin_stream_paths = BTreeMap::new();
     if !referenced.is_empty() && !doc.bin_streams.is_empty() {
-        cfb.create_storage("/BinData")?;
-        for bin in &doc.bin_streams {
+        storages.insert("/BinData".to_string());
+        for (index, bin) in doc.bin_streams.iter().enumerate() {
             let base = bin.name.rsplit('/').next().unwrap_or(&bin.name);
             if referenced.iter().any(|r| r.eq_ignore_ascii_case(base)) {
-                cfb.create_new_stream(format!("/BinData/{base}"))?
-                    .write_all(&compress(&bin.data))?;
+                let stream_path = format!("/BinData/{base}");
+                streams.insert(
+                    stream_path.clone(),
+                    encode_compressed_stream(bin.data.clone(), compressed),
+                );
+                bin_stream_paths.insert(normalized_bin_name(base), stream_path.clone());
+                if let Some(input_name) = input_bin_names.get(index) {
+                    bin_stream_paths.insert(input_name.clone(), stream_path);
+                }
                 bin_written += 1;
             }
         }
@@ -219,31 +684,30 @@ pub fn write_document_with_report(
             bin_written
         ));
     }
-    // 보조 스트림: 한글 저장 파일에 항상 존재 (부재 시 손상 판정 위험)
-    cfb.create_storage("/DocOptions")?;
-    cfb.create_new_stream("/DocOptions/_LinkDoc")?
-        .write_all(&[0u8; 524])?;
-    cfb.create_storage("/Scripts")?;
-    // 표본(한글 빈 문서) 원시 바이트 그대로 — 해제 시 버전 마커/빈 스크립트
-    cfb.create_new_stream("/Scripts/JScriptVersion")?
-        .write_all(&[
+    storages.insert("/DocOptions".to_string());
+    streams.insert("/DocOptions/_LinkDoc".to_string(), vec![0u8; 524]);
+    storages.insert("/Scripts".to_string());
+    streams.insert(
+        "/Scripts/JScriptVersion".to_string(),
+        vec![
             0x63, 0x64, 0x80, 0x00, 0x00, 0xF7, 0xDF, 0x88, 0xA9, 0x08, 0x00, 0x00, 0x00,
-        ])?;
-    cfb.create_new_stream("/Scripts/DefaultJScript")?
-        .write_all(&[
+        ],
+    );
+    streams.insert(
+        "/Scripts/DefaultJScript".to_string(),
+        vec![
             0x63, 0x60, 0x40, 0x05, 0xFF, 0x81, 0x00, 0x00, 0x6E, 0xBB, 0x6E, 0xD1, 0x14, 0x00,
             0x00, 0x00,
-        ])?;
-    // 요약 정보 (표본과 동일한 14개 속성 구조, 메타데이터 채움)
-    cfb.create_new_stream("/\u{5}HwpSummaryInformation")?
-        .write_all(&hwp_summary_information(&doc.metadata))?;
-    cfb.create_new_stream("/PrvText")?.write_all(&prv_text)?;
+        ],
+    );
+    streams.insert(
+        "/\u{5}HwpSummaryInformation".to_string(),
+        hwp_summary_information(&doc.metadata),
+    );
+    streams.insert("/PrvText".to_string(), prv_text);
     if let Some(img) = &opts.prv_image {
-        cfb.create_new_stream("/PrvImage")?.write_all(img)?;
+        streams.insert("/PrvImage".to_string(), img.clone());
     }
-    // XMLTemplate·DocHistory 스토리지 원문 재방출(§3.2.10·§3.2.11 — 내용 미해석
-    // pass-through). read가 압축 미해제로 포착했으므로 그대로 쓴다(compress 금지 —
-    // 바이트 동일 보존). 스트림의 상위 스토리지는 mkdir -p로 확보한다.
     for (path, bytes) in doc
         .hwp5_xml_template
         .iter()
@@ -252,15 +716,42 @@ pub fn write_document_with_report(
         if let Some((parent, _)) = path.rsplit_once('/')
             && !parent.is_empty()
         {
+            storages.insert(parent.to_string());
+        }
+        streams.insert(path.clone(), bytes.clone());
+    }
+
+    Ok(HwpStreamMaterialization {
+        storages,
+        streams,
+        bin_stream_paths,
+        report,
+    })
+}
+
+fn write_materialized_document(
+    path: &Path,
+    materialization: &HwpStreamMaterialization,
+) -> Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    let mut cfb = cfb::CompoundFile::create_with_version(cfb::Version::V3, file)?;
+    for storage in &materialization.storages {
+        cfb.create_storage_all(storage)?;
+    }
+    for (stream_path, bytes) in &materialization.streams {
+        if let Some((parent, _)) = stream_path.rsplit_once('/')
+            && !parent.is_empty()
+        {
             cfb.create_storage_all(parent)?;
         }
-        cfb.create_new_stream(path.as_str())?.write_all(bytes)?;
+        cfb.create_new_stream(stream_path)?.write_all(bytes)?;
     }
-    // 신규 합성 CFB의 directory timestamp는 내용과 무관한 현재 시각을 사용하면
-    // 동일 문서도 매번 다른 바이트가 된다. CFB epoch(1601-01-01)로 root/storage를
-    // 고정한다. stream timestamp는 CFB 규격상 이미 0이며 cfb API도 변경하지 않는다.
-    // 이 함수는 언제나 새 파일을 조립하는 경로라 기존 파일의 원본 timestamp 보존
-    // 계약에는 영향을 주지 않는다.
+
     const SECONDS_FROM_CFB_TO_UNIX_EPOCH: u64 = 11_644_473_600;
     let cfb_epoch = std::time::UNIX_EPOCH
         .checked_sub(std::time::Duration::from_secs(
@@ -276,7 +767,198 @@ pub fn write_document_with_report(
         cfb.set_modified_time(&entry_path, cfb_epoch)?;
     }
     cfb.flush()?;
-    Ok(report)
+    Ok(())
+}
+
+fn encode_compressed_stream(bytes: Vec<u8>, compressed: bool) -> Vec<u8> {
+    if compressed { compress(&bytes) } else { bytes }
+}
+
+fn validate_source_rewrite_contract(original: &Document, edited: &Document) -> Result<()> {
+    if original.meta.source_format != "hwp5" || edited.meta.source_format != "hwp5" {
+        return Err(crate::error::Hwp5Error::SourceRewrite(
+            "source-preserving rewrite requires HWP5 IR".to_string(),
+        ));
+    }
+    if original.meta != edited.meta {
+        return Err(crate::error::Hwp5Error::SourceRewrite(
+            "source format and version cannot be changed by a native rewrite".to_string(),
+        ));
+    }
+    if original.hwpx_settings_xml != edited.hwpx_settings_xml
+        || original.hwpx_version_xml != edited.hwpx_version_xml
+        || original.hwpx_preview_image != edited.hwpx_preview_image
+        || original.hwp5_xml_template != edited.hwp5_xml_template
+        || original.hwp5_doc_history != edited.hwp5_doc_history
+    {
+        return Err(crate::error::Hwp5Error::SourceRewrite(
+            "opaque ancillary payloads are not editable through the HWP IR writer".to_string(),
+        ));
+    }
+    ensure_unique_bin_names(original)?;
+    ensure_unique_bin_names(edited)?;
+    Ok(())
+}
+
+fn ensure_unique_bin_names(document: &Document) -> Result<()> {
+    let mut names = BTreeSet::new();
+    for stream in &document.bin_streams {
+        let name = normalized_bin_name(&stream.name);
+        if !names.insert(name) {
+            return Err(crate::error::Hwp5Error::SourceRewrite(
+                "duplicate case-insensitive BinData names cannot be rewritten safely".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl HwpMutationPlan {
+    fn derive(original: &Document, edited: &Document) -> Self {
+        let changed_sections = edited
+            .sections
+            .iter()
+            .enumerate()
+            .filter(|(index, section)| original.sections.get(*index) != Some(*section))
+            .map(|(index, _)| index)
+            .collect();
+        let removed_sections = (edited.sections.len()..original.sections.len()).collect();
+
+        let original_bins = document_bins(original);
+        let edited_bins = document_bins(edited);
+        let changed_bins: BTreeSet<String> = edited_bins
+            .iter()
+            .filter(|(name, stream)| original_bins.get(*name) != Some(stream))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let removed_bins: BTreeSet<String> = original_bins
+            .keys()
+            .filter(|name| !edited_bins.contains_key(*name))
+            .cloned()
+            .collect();
+        let bin_relationships_changed = original_bins.keys().ne(edited_bins.keys());
+        let header_changed = original.header != edited.header
+            || original.sections.len() != edited.sections.len()
+            || bin_relationships_changed;
+
+        Self {
+            metadata_changed: original.metadata != edited.metadata,
+            header_changed,
+            changed_sections,
+            removed_sections,
+            changed_bins,
+            removed_bins,
+        }
+    }
+}
+
+fn document_bins(document: &Document) -> BTreeMap<String, &hwp_model::BinStream> {
+    document
+        .bin_streams
+        .iter()
+        .map(|stream| (normalized_bin_name(&stream.name), stream))
+        .collect()
+}
+
+fn normalized_bin_name(name: &str) -> String {
+    name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase()
+}
+
+fn patch_source_container(
+    path: &Path,
+    plan: &HwpMutationPlan,
+    source_bin_paths: &BTreeMap<String, String>,
+    materialization: &HwpStreamMaterialization,
+) -> Result<()> {
+    let mut cfb = cfb::open_rw(path)?;
+
+    if plan.metadata_changed {
+        replace_cfb_stream(
+            &mut cfb,
+            "/\u{5}HwpSummaryInformation",
+            required_materialized_stream(materialization, "/\u{5}HwpSummaryInformation")?,
+        )?;
+    }
+    if plan.header_changed {
+        replace_cfb_stream(
+            &mut cfb,
+            "/DocInfo",
+            required_materialized_stream(materialization, "/DocInfo")?,
+        )?;
+    }
+    for index in &plan.changed_sections {
+        let stream_path = format!("/BodyText/Section{index}");
+        replace_cfb_stream(
+            &mut cfb,
+            &stream_path,
+            required_materialized_stream(materialization, &stream_path)?,
+        )?;
+    }
+    for index in &plan.removed_sections {
+        let stream_path = format!("/BodyText/Section{index}");
+        if cfb.is_stream(&stream_path) {
+            cfb.remove_stream(&stream_path)?;
+        }
+    }
+
+    for normalized_name in &plan.changed_bins {
+        let stream_path = materialization
+            .bin_stream_paths
+            .get(normalized_name)
+            .ok_or_else(|| {
+                crate::error::Hwp5Error::SourceRewrite(
+                    "a changed BinData item is not representable in the materialized document"
+                        .to_string(),
+                )
+            })?;
+        let bytes = required_materialized_stream(materialization, stream_path)?;
+        replace_cfb_stream(&mut cfb, stream_path, bytes)?;
+    }
+    for normalized_name in &plan.removed_bins {
+        if let Some(stream_path) = source_bin_paths.get(normalized_name)
+            && cfb.is_stream(stream_path)
+        {
+            cfb.remove_stream(stream_path)?;
+        }
+    }
+
+    if !plan.changed_sections.is_empty() || !plan.removed_sections.is_empty() {
+        replace_cfb_stream(
+            &mut cfb,
+            "/PrvText",
+            required_materialized_stream(materialization, "/PrvText")?,
+        )?;
+        if let Some(preview) = materialization.streams.get("/PrvImage") {
+            replace_cfb_stream(&mut cfb, "/PrvImage", preview)?;
+        }
+    }
+    cfb.flush()?;
+    Ok(())
+}
+
+fn required_materialized_stream<'a>(
+    materialization: &'a HwpStreamMaterialization,
+    path: &str,
+) -> Result<&'a [u8]> {
+    materialization
+        .streams
+        .get(path)
+        .map(Vec::as_slice)
+        .ok_or_else(|| crate::error::Hwp5Error::StreamNotFound(path.to_string()))
+}
+
+fn replace_cfb_stream(
+    cfb: &mut cfb::CompoundFile<std::fs::File>,
+    path: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    if let Some((parent, _)) = path.rsplit_once('/')
+        && !parent.is_empty()
+    {
+        cfb.create_storage_all(parent)?;
+    }
+    cfb.create_stream(path)?.write_all(bytes)?;
+    Ok(())
 }
 
 /// PARA_HEADER instance_id(offset 18~22)가 0이면 유니크 non-zero 값을 부여.
@@ -2117,8 +2799,32 @@ fn emit_paragraph(
             children: Vec::new(),
         });
     }
-    children.extend(para.extras.iter().map(opaque_to_node));
-    for control in &para.controls {
+    let mut next_extra = 0;
+    let mut next_control = 0;
+    for kind in &para.header.hwp5_child_order {
+        match kind {
+            hwp_model::Hwp5ParagraphChild::Extra => {
+                if let Some(extra) = para.extras.get(next_extra) {
+                    children.push(opaque_to_node(extra));
+                    next_extra += 1;
+                }
+            }
+            hwp_model::Hwp5ParagraphChild::Control => {
+                if let Some(control) = para.controls.get(next_control) {
+                    children.push(emit_control(
+                        control,
+                        synthesize,
+                        preserve_linesegs,
+                        add_tracking_tail,
+                        warnings,
+                    ));
+                    next_control += 1;
+                }
+            }
+        }
+    }
+    children.extend(para.extras[next_extra..].iter().map(opaque_to_node));
+    for control in &para.controls[next_control..] {
         children.push(emit_control(
             control,
             synthesize,
@@ -2560,6 +3266,424 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_rewrite_path(label: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "hwp5-source-rewrite-{label}-{}-{unique}.hwp",
+            std::process::id(),
+        ))
+    }
+
+    fn add_opaque_source_entries(path: &Path) {
+        let mut cfb = cfb::open_rw(path).unwrap();
+        cfb.create_stream("/MemoExtended")
+            .unwrap()
+            .write_all(b"opaque-memo-payload")
+            .unwrap();
+        cfb.create_storage_all("/OpaqueStorage").unwrap();
+        cfb.create_stream("/OpaqueStorage/Hidden")
+            .unwrap()
+            .write_all(b"opaque-hidden-payload")
+            .unwrap();
+        cfb.flush().unwrap();
+    }
+
+    fn raw_streams(path: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        container
+            .list_streams()
+            .into_iter()
+            .map(|stream| {
+                let bytes = container.read_stream_raw(&stream.path).unwrap();
+                (stream.path, bytes)
+            })
+            .collect()
+    }
+
+    fn find_control_node(nodes: &[RecordNode], reversed_id: &[u8; 4]) -> Option<RecordNode> {
+        for node in nodes {
+            if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(reversed_id) {
+                return Some(node.clone());
+            }
+            if let Some(found) = find_control_node(&node.children, reversed_id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn section_definition_node(path: &Path) -> RecordNode {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        let roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+        find_control_node(&roots, b"dces").expect("section definition")
+    }
+
+    fn prepend_section_ctrl_data(path: &Path) {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        let compressed = container.file_header().is_compressed();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+
+        fn prepend(nodes: &mut [RecordNode]) -> bool {
+            for node in nodes {
+                if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b"dces") {
+                    node.children.insert(
+                        0,
+                        RecordNode {
+                            tag: tag::CTRL_DATA,
+                            data: b"source-order-sentinel".to_vec(),
+                            children: Vec::new(),
+                        },
+                    );
+                    return true;
+                }
+                if prepend(&mut node.children) {
+                    return true;
+                }
+            }
+            false
+        }
+        assert!(prepend(&mut roots));
+        let encoded = encode_compressed_stream(RecordNode::serialize_forest(&roots), compressed);
+        let mut cfb = cfb::open_rw(path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&encoded)
+            .unwrap();
+        cfb.flush().unwrap();
+    }
+
+    #[test]
+    fn source_preserving_noop_is_an_exact_file_copy() {
+        let source = source_rewrite_path("noop-source");
+        let output = source_rewrite_path("noop-output");
+        let document = hwp_convert::from_markdown("source preserving no-op");
+        write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+        add_opaque_source_entries(&source);
+        let original = crate::read_document(&source).unwrap().document;
+
+        rewrite_document_with_report(
+            &source,
+            &original,
+            &original,
+            &output,
+            &WriteOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            std::fs::read(&output).unwrap()
+        );
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_preserving_rewrite_rejects_hardlink_output_alias() {
+        let source = source_rewrite_path("alias-source");
+        let output = source_rewrite_path("alias-output");
+        let document = hwp_convert::from_markdown("source alias guard");
+        write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+        std::fs::hard_link(&source, &output).unwrap();
+        let original_bytes = std::fs::read(&source).unwrap();
+        let original = crate::read_document(&source).unwrap().document;
+
+        let error = rewrite_document_with_report(
+            &source,
+            &original,
+            &original,
+            &output,
+            &WriteOptions::default(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, crate::error::Hwp5Error::SourceRewrite(_)));
+        assert_eq!(std::fs::read(&source).unwrap(), original_bytes);
+        std::fs::remove_file(output).unwrap();
+        std::fs::remove_file(source).unwrap();
+    }
+
+    #[test]
+    fn source_mutation_plan_updates_docinfo_when_section_count_changes() {
+        let original = hwp_convert::from_markdown("first section");
+        let mut added = original.clone();
+        added.sections.push(hwp_model::Section::default());
+        let add_plan = HwpMutationPlan::derive(&original, &added);
+        assert!(add_plan.header_changed);
+        assert_eq!(add_plan.changed_sections, BTreeSet::from([1]));
+        assert!(add_plan.removed_sections.is_empty());
+
+        let remove_plan = HwpMutationPlan::derive(&added, &original);
+        assert!(remove_plan.header_changed);
+        assert_eq!(remove_plan.removed_sections, BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn source_mutation_plan_does_not_rewrite_docinfo_for_bin_payload_only() {
+        let original = hwp_convert::from_markdown("binary payload");
+        let mut edited = original.clone();
+        edited.bin_streams.push(hwp_model::BinStream {
+            name: "BIN0001.png".to_string(),
+            data: vec![1, 2, 3],
+        });
+        let with_bin = edited.clone();
+        edited.bin_streams[0].data = vec![4, 5, 6];
+
+        let plan = HwpMutationPlan::derive(&with_bin, &edited);
+        assert!(!plan.header_changed);
+        assert_eq!(
+            plan.changed_bins,
+            BTreeSet::from(["bin0001.png".to_string()])
+        );
+        assert!(plan.removed_bins.is_empty());
+    }
+
+    #[test]
+    fn control_matching_preserves_shifted_unique_controls_without_guessing_duplicates() {
+        fn generic(id: [u8; 4]) -> Control {
+            Control::Generic(hwp_model::GenericControl {
+                ctrl_id: id,
+                data: Vec::new(),
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+            })
+        }
+
+        let first = generic(*b"one ");
+        let second = generic(*b"two ");
+        assert_eq!(
+            match_controls(&[first, second.clone()], std::slice::from_ref(&second)),
+            vec![Some(1)]
+        );
+        assert_eq!(
+            match_controls(&[second.clone(), second.clone()], &[second]),
+            vec![None]
+        );
+    }
+
+    #[test]
+    fn source_preserving_metadata_edit_changes_only_summary_stream() {
+        let source = source_rewrite_path("metadata-source");
+        let output = source_rewrite_path("metadata-output");
+        let document = hwp_convert::from_markdown("source preserving metadata");
+        write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+        add_opaque_source_entries(&source);
+        let original = crate::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        edited.metadata.title = Some("edited title".to_string());
+
+        rewrite_document_with_report(
+            &source,
+            &original,
+            &edited,
+            &output,
+            &WriteOptions {
+                preserve_linesegs: true,
+                ..WriteOptions::default()
+            },
+        )
+        .unwrap();
+
+        let source_streams = raw_streams(&source);
+        let output_streams = raw_streams(&output);
+        assert_eq!(
+            source_streams.keys().collect::<Vec<_>>(),
+            output_streams.keys().collect::<Vec<_>>()
+        );
+        for (path, source_bytes) in source_streams {
+            if path == "/\u{5}HwpSummaryInformation" {
+                assert_ne!(source_bytes, output_streams[&path]);
+            } else {
+                assert_eq!(
+                    source_bytes, output_streams[&path],
+                    "unexpected stream change: {path}"
+                );
+            }
+        }
+        assert_eq!(
+            crate::read_document(&output)
+                .unwrap()
+                .document
+                .metadata
+                .title
+                .as_deref(),
+            Some("edited title")
+        );
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn source_preserving_text_edit_keeps_opaque_streams_raw() {
+        let source = source_rewrite_path("text-source");
+        let output = source_rewrite_path("text-output");
+        let document = hwp_convert::from_markdown("replace this text");
+        write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+        add_opaque_source_entries(&source);
+        let original = crate::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        assert_eq!(
+            hwp_convert::replace_text(&mut edited, "replace", "updated", true),
+            1
+        );
+
+        rewrite_document_with_report(
+            &source,
+            &original,
+            &edited,
+            &output,
+            &WriteOptions {
+                preserve_linesegs: true,
+                ..WriteOptions::default()
+            },
+        )
+        .unwrap();
+
+        let source_streams = raw_streams(&source);
+        let output_streams = raw_streams(&output);
+        for path in [
+            "/FileHeader",
+            "/DocInfo",
+            "/MemoExtended",
+            "/OpaqueStorage/Hidden",
+        ] {
+            assert_eq!(
+                source_streams[path], output_streams[path],
+                "unexpected stream change: {path}"
+            );
+        }
+        assert_ne!(
+            source_streams["/BodyText/Section0"],
+            output_streams["/BodyText/Section0"]
+        );
+        assert_ne!(source_streams["/PrvText"], output_streams["/PrvText"]);
+        assert!(
+            crate::read_document(&output)
+                .unwrap()
+                .document
+                .plain_text()
+                .contains("updated")
+        );
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn source_preserving_text_edit_keeps_unchanged_typed_control_subtrees_raw() {
+        let source = source_rewrite_path("typed-control-source");
+        let output = source_rewrite_path("typed-control-output");
+        let document = hwp_convert::from_markdown("replace this text");
+        write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+        prepend_section_ctrl_data(&source);
+        let original = crate::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        assert_eq!(
+            hwp_convert::replace_text(&mut edited, "replace", "updated", true),
+            1
+        );
+
+        rewrite_document_with_report(
+            &source,
+            &original,
+            &edited,
+            &output,
+            &WriteOptions {
+                preserve_linesegs: true,
+                ..WriteOptions::default()
+            },
+        )
+        .unwrap();
+
+        let source_section = section_definition_node(&source);
+        assert_eq!(source_section.children[0].tag, tag::CTRL_DATA);
+        assert_eq!(source_section, section_definition_node(&output));
+        assert!(
+            crate::read_document(&output)
+                .unwrap()
+                .document
+                .plain_text()
+                .contains("updated")
+        );
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn source_preserving_image_insert_materializes_only_new_relationships() {
+        let source = source_rewrite_path("image-source");
+        let output = source_rewrite_path("image-output");
+        let asset = source_rewrite_path("image-asset").with_extension("gif");
+        let gif = vec![
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x02, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c,
+            0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00,
+            0x3b,
+        ];
+        std::fs::write(&asset, gif).unwrap();
+        let document = hwp_convert::from_markdown("image anchor");
+        write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+        add_opaque_source_entries(&source);
+        let original = crate::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        hwp_convert::insert_image(
+            &mut edited,
+            "anchor",
+            &asset,
+            hwp_convert::ImageSize::Mm(20.0, 10.0),
+        )
+        .unwrap();
+
+        let report = rewrite_document_with_report(
+            &source,
+            &original,
+            &edited,
+            &output,
+            &WriteOptions {
+                edited: true,
+                ..WriteOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(report.preservation.is_lossless());
+
+        let source_streams = raw_streams(&source);
+        let output_streams = raw_streams(&output);
+        for path in ["/FileHeader", "/MemoExtended", "/OpaqueStorage/Hidden"] {
+            assert_eq!(
+                source_streams[path], output_streams[path],
+                "unexpected stream change: {path}"
+            );
+        }
+        let reopened = crate::read_document(&output).unwrap().document;
+        assert_eq!(reopened.bin_streams.len(), original.bin_streams.len() + 1);
+        let picture = reopened.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                Control::Picture(picture) => Some(picture),
+                _ => None,
+            })
+            .expect("inserted picture");
+        assert!(reopened.resolve_bin(&picture.bin_ref).is_some());
+
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(output).unwrap();
+        std::fs::remove_file(asset).unwrap();
+    }
 
     #[test]
     fn caption_hwpunit_values_saturate_instead_of_wrapping() {

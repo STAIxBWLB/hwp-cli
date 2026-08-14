@@ -249,6 +249,20 @@ sufficient"; only Hancom decides.
 
 ---
 
+## G. Source-preserving native HWP edits
+
+| # | Symptom | Cause | Fix | Ground truth |
+|---|---|---|---|---|
+| G1 | A text edit corrupts an otherwise genuine complex document | Re-emitting a whole section moves level-sensitive typed-control children such as `CTRL_DATA` around `PAGE_DEF` and `PAGE_BORDER_FILL` | Copy the source CFB and merge unchanged paragraph/control subtrees into only the changed section stream | BodyText bisection plus a complex genuine proposal fragment; all unchanged subtrees are byte-identical |
+| G2 | Removing stale line layout or globally regenerating it causes a corruption warning or layout churn | A changed 5.1.x paragraph needs a content-consistent `PARA_LINE_SEG`, while unchanged paragraphs must retain their original caches | Synthesize layout for the edited document, then restore every semantically unchanged native paragraph from the immutable snapshot | Hancom opened no-op, metadata, text, paragraph insertion, table-cell edit and image insertion outputs without warnings |
+| G3 | Same-format no-op loses auxiliary streams or changes CFB metadata | A fresh container assembly cannot reproduce unknown streams, storages and directory properties | Treat no-op as an exact file copy; on edits patch only streams named by the mutation plan | Exact-file comparison plus preservation of `MemoExtended`, untouched BinData and unknown entries |
+
+The Hancom acceptance procedure is now part of the native writer contract, not an optional smoke
+test. Internal re-read and typed preservation checks must pass first, followed by real Hancom opens of
+the six edit classes in [the checklist](../hancom-verification-checklist.md).
+
+---
+
 ## Overall lessons: why this project stakes everything on Hancom testing and ground truth
 
 1. **Lenient tools give false passes.** pyhwp and our own renderer can pass 100% while Hancom refuses

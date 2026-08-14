@@ -51,6 +51,12 @@ pub enum Hwp5Error {
 
     #[error("배포용 문서(ViewText)는 지원하지 않습니다")]
     DistributionDoc,
+
+    #[error("HWP 원본 snapshot이 편집 기준 문서와 일치하지 않습니다")]
+    SourceSnapshotMismatch,
+
+    #[error("HWP 원본 보존 재작성 실패: {0}")]
+    SourceRewrite(String),
 }
 
 pub type Result<T> = std::result::Result<T, Hwp5Error>;

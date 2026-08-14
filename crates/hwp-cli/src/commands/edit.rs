@@ -957,37 +957,58 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         .iter()
         .map(|request| format!("미적용 편집 요청: {request}"))
         .collect::<Vec<_>>();
-    let writer_report = crate::commands::output::write_validated(
-        output,
-        Some(input),
-        |staged| {
-            let mut report = write_output(&doc, staged, structural, output_format)?;
-            if output_format.supports_verify() {
-                let removed_binary_allowance =
-                    crate::commands::preservation::intentional_removed_binary_assets(
-                        &original_doc,
-                        &doc,
-                    );
-                report.preservation.extend(
-                    crate::commands::preservation::inspect_same_format_container_with_binary_allowance(
-                        input,
-                        staged,
-                        removed_binary_allowance,
-                    )?,
+    let write_staged = |source: &Path, staged: &Path| {
+        let mut report = write_output(
+            &doc,
+            staged,
+            structural,
+            output_format,
+            Some((source, &original_doc)),
+        )?;
+        if output_format.supports_verify() {
+            let removed_binary_allowance =
+                crate::commands::preservation::intentional_removed_binary_assets(
+                    &original_doc,
+                    &doc,
                 );
-            }
-            Ok(report)
-        },
-        |staged, writer_report| {
-            if output_format.supports_verify() {
-                crate::commands::reject_preservation_loss("edit", &writer_report.preservation)?;
-            }
-            if plan.verify {
-                verify_output(staged, Some(&doc))?;
-            }
-            Ok(())
-        },
-    )?;
+            report.preservation.extend(
+                crate::commands::preservation::inspect_same_format_container_with_binary_allowance(
+                    source,
+                    staged,
+                    removed_binary_allowance,
+                )?,
+            );
+        }
+        Ok(report)
+    };
+    let verify_staged = |staged: &Path, writer_report: &hwp_model::WriteReport| {
+        if output_format.supports_verify() {
+            crate::commands::reject_preservation_loss("edit", &writer_report.preservation)?;
+        }
+        if plan.verify {
+            verify_output(staged, Some(&doc))?;
+        }
+        Ok(())
+    };
+    let writer_report =
+        if output_format == OutputFormat::Hwp && original_doc.meta.source_format == "hwp5" {
+            let (_, report) = crate::commands::output::write_with_private_input_snapshot(
+                output,
+                input,
+                hwp_cli::certification::MAX_INPUT_BYTES,
+                crate::commands::output::SnapshotOutputMode::Publish,
+                |snapshot, staged, _| write_staged(snapshot, staged),
+                verify_staged,
+            )?;
+            report
+        } else {
+            crate::commands::output::write_validated(
+                output,
+                Some(input),
+                |staged| write_staged(input, staged),
+                verify_staged,
+            )?
+        };
     warnings.extend(writer_report.warnings);
     Ok(EditReport {
         output: output.display().to_string(),
@@ -1410,8 +1431,22 @@ fn write_output(
     output: &Path,
     structural: bool,
     output_format: OutputFormat,
+    source: Option<(&Path, &hwp_model::Document)>,
 ) -> anyhow::Result<hwp_model::WriteReport> {
     match output_format {
+        OutputFormat::Hwp
+            if source.is_some_and(|(_, original)| original.meta.source_format == "hwp5") =>
+        {
+            let (source, original) = source.expect("guarded source");
+            crate::commands::convert::write_hwp_preserving_source(
+                source,
+                original,
+                doc,
+                output,
+                !structural,
+                structural,
+            )
+        }
         // 구조 편집은 삽입 문단/행에 불변식을 세우려 합성 경로를 강제한다.
         OutputFormat::Hwp if structural => {
             crate::commands::convert::write_hwp_structural(doc, output)
@@ -1698,6 +1733,7 @@ fn canonical_document(
         paragraph.header.ctrl_mask = 0;
         paragraph.header.instance_id = 0;
         paragraph.header.tail.clear();
+        paragraph.header.hwp5_child_order.clear();
         // HWP5 writer는 모든 문단을 PARA_BREAK로 닫지만 HWPX는 문단 경계 자체가
         // 같은 의미를 표현하고 reader가 이 문자를 만들지 않는다. 포맷 간 검증에서
         // 이 writer 정규화만 의미 차이로 보지 않는다.

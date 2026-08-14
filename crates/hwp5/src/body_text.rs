@@ -10,8 +10,9 @@
 
 use hwp_model::{
     Caption, CaptionDirection, CaptionSide, Cell, CharKind, CharShapeId, ColumnDef, Control,
-    Equation, GenericControl, HwpChar, HwpUnit, LineSeg, PageDef, ParaHeaderInfo, ParaShapeId,
-    Paragraph, ParagraphList, Section, SectionDef, StyleId, Table, char_kind,
+    Equation, GenericControl, Hwp5ParagraphChild, HwpChar, HwpUnit, LineSeg, PageDef,
+    ParaHeaderInfo, ParaShapeId, Paragraph, ParagraphList, Section, SectionDef, StyleId, Table,
+    char_kind,
 };
 
 use crate::codec::ByteReader;
@@ -69,8 +70,16 @@ fn parse_paragraph(node: &RecordNode, warnings: &mut Vec<String>) -> Paragraph {
                 Ok(segs) => para.line_segs = segs,
                 Err(e) => warnings.push(format!("PARA_LINE_SEG 파싱 실패: {e}")),
             },
-            tag::CTRL_HEADER => para.controls.push(parse_control(child, warnings)),
-            _ => para.extras.push(to_opaque(child)),
+            tag::CTRL_HEADER => {
+                para.header
+                    .hwp5_child_order
+                    .push(Hwp5ParagraphChild::Control);
+                para.controls.push(parse_control(child, warnings));
+            }
+            _ => {
+                para.header.hwp5_child_order.push(Hwp5ParagraphChild::Extra);
+                para.extras.push(to_opaque(child));
+            }
         }
     }
 
@@ -106,6 +115,7 @@ fn parse_para_header(data: &[u8]) -> Result<(ParaShapeId, StyleId, ParaHeaderInf
         break_type,
         instance_id,
         tail: r.take_rest().to_vec(),
+        hwp5_child_order: Vec::new(),
     };
     Ok((para_shape, style, info, nchars_raw & 0x7FFF_FFFF))
 }
