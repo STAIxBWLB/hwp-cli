@@ -1291,6 +1291,7 @@ fn write_shape_element(
     pos_xml: &str,
     zorder: i32,
     text: Option<&GenericControl>,
+    caption: Option<&Caption>,
     preserve_linesegs: bool,
     warnings: &mut Vec<String>,
 ) {
@@ -1434,6 +1435,9 @@ fn write_shape_element(
         r##"<hp:sz width="{}" widthRelTo="ABSOLUTE" height="{}" heightRelTo="ABSOLUTE" protect="0"/>{pos_xml}<hp:outMargin left="0" right="0" top="0" bottom="0"/>"##,
         sz.0, sz.1,
     );
+    if let Some(caption) = caption {
+        write_caption(out, doc, caption, i64::from(sz.0), ids, bins, warnings);
+    }
     if let Some(description) = s.description.as_deref().filter(|value| !value.is_empty()) {
         let _ = write!(
             out,
@@ -1495,6 +1499,7 @@ fn write_gso(
             &pos,
             zorder * Z_SCALE,
             Some(g),
+            g.caption.as_ref(),
             preserve_linesegs,
             warnings,
         );
@@ -1526,6 +1531,7 @@ fn write_gso(
                 &pos,
                 zorder * Z_SCALE + i as i32,
                 None,
+                (i == 0).then_some(g.caption.as_ref()).flatten(),
                 preserve_linesegs,
                 warnings,
             );
@@ -1573,15 +1579,18 @@ fn write_ir_shapes(
             &pos,
             i as i32,
             text,
+            (i == 0).then_some(g.caption.as_ref()).flatten(),
             preserve_linesegs,
             warnings,
         );
     }
 }
 
-/// `<hp:caption>` — 표/그림 캡션 (GB-13). hwpxlib CaptionWriter/ShapeObjectWriter
-/// 근거: sz/pos/outMargin 뒤에 온다(표는 inMargin·tr 앞, 그림은 shapeComment 앞).
-/// lastWidth는 텍스트 최대 폭(=개체 폭, 표 72) — 미상(0)이면 개체 폭으로 폴 백.
+/// Writes `<hp:caption>` after `sz`/`pos`/`outMargin`, matching hwpxlib
+/// CaptionWriter/ShapeObjectWriter. Tables place it before `inMargin`/`tr`,
+/// while pictures and shapes place it before `shapeComment`.
+/// `lastWidth` is the maximum text extent (object width in table 72); when
+/// unknown (zero), the object width is used.
 #[allow(clippy::too_many_arguments)]
 fn write_caption(
     out: &mut String,
@@ -1603,7 +1612,7 @@ fn write_caption(
     let last = if caption.last_width > 0 {
         caption.last_width
     } else {
-        obj_width.max(0) as u32
+        obj_width.clamp(0, i64::from(u32::MAX)) as u32
     };
     let text_dir = match caption.direction {
         CaptionDirection::Horizontal => "HORIZONTAL",
@@ -1706,7 +1715,7 @@ fn write_table(
         om[2],
         om[3],
     );
-    // 캡션은 outMargin 뒤·inMargin 앞 (hwpxlib TableWriter 자식 순서).
+    // hwpxlib TableWriter orders caption after outMargin and before inMargin.
     if let Some(caption) = &table.caption {
         write_caption(out, doc, caption, sz_w, ids, bins, warnings);
     }
@@ -1796,7 +1805,7 @@ fn write_picture(
         .filter(|value| !value.is_empty())
         .map(|value| format!("<hp:shapeComment>{}</hp:shapeComment>", esc(value)))
         .unwrap_or_default();
-    // 캡션은 outMargin 뒤·shapeComment 앞 (hwpxlib ShapeObjectWriter 자식 순서).
+    // hwpxlib ShapeObjectWriter orders caption after outMargin and before shapeComment.
     let caption_xml = pic
         .caption
         .as_ref()

@@ -205,8 +205,8 @@ fn table_cell_header_and_vertical_alignment_round_trip() {
     assert_eq!(cell.vert_align(), 2);
 }
 
-/// GB-13 왕복: 캡션 달린 표/그림 → hwpx 저장 시 `<hp:caption>` 방출 → 재읽기에서
-/// side/gap/fullSz/문단이 보존된다.
+/// GB-13: table, picture, and shape captions preserve side/gap/fullSz/text
+/// through HWPX write and read.
 #[test]
 fn caption_round_trip() {
     use hwp_model::{Caption, CaptionDirection, CaptionSide, Paragraph};
@@ -216,7 +216,7 @@ fn caption_round_trip() {
         ..Paragraph::default()
     };
 
-    // 표 캡션 (아래쪽, 폭 미지정 → fullSz="1").
+    // Bottom table caption with implicit full-size width.
     let mut doc = hwp_convert::from_markdown("| Header |\n| --- |\n| Value |\n");
     let table = doc.sections[0]
         .paragraphs
@@ -251,7 +251,7 @@ fn caption_round_trip() {
         "{xml}"
     );
     assert!(xml.contains("표 1. 캡션"), "{xml}");
-    // 캡션은 outMargin 뒤·inMargin 앞 (hwpxlib 자식 순서).
+    // hwpxlib orders a table caption after outMargin and before inMargin.
     let cap_at = xml.find("<hp:caption").unwrap();
     assert!(xml[..cap_at].contains("<hp:outMargin"), "{xml}");
     assert!(xml[cap_at..].contains("<hp:inMargin"), "{xml}");
@@ -279,7 +279,7 @@ fn caption_round_trip() {
         caption.paragraphs
     );
 
-    // 그림 캡션 (왼쪽, 폭 지정 → fullSz="0").
+    // Left picture caption with an explicit width.
     let mut doc = hwp_convert::from_markdown("본문\n");
     let picture = hwp_model::Picture {
         common_data: Vec::new(),
@@ -357,6 +357,82 @@ fn caption_round_trip() {
             .first()
             .is_some_and(|p| p.plain_text() == "그림 1")
     );
+
+    let mut doc = hwp_convert::from_markdown("Body\n");
+    let generic = hwp_model::GenericControl {
+        ctrl_id: *b"gso ",
+        data: Vec::new(),
+        paragraph_lists: Vec::new(),
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: vec![hwp_model::ShapeGeom {
+            kind: hwp_model::ShapeKind::Rect,
+            x: 100,
+            y: 200,
+            w: 3000,
+            h: 1500,
+            points: Vec::new(),
+            fill: 0xFFFF_FFFF,
+            fill_gradient: None,
+            border_color: 0,
+            border_width: 10,
+            round_ratio: 0,
+            border_style: 0,
+            arrow_start: 0,
+            arrow_end: 0,
+            anchored: true,
+            description: None,
+        }],
+        equation: None,
+        column_def: None,
+        caption: Some(Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: 250,
+            width: None,
+            last_width: 3000,
+            paragraphs: vec![caption_para("Shape 1")],
+        }),
+    };
+    let para = &mut doc.sections[0].paragraphs[0];
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"gso ",
+        payload: Vec::new(),
+        ctrl_index: Some(para.controls.len() as u32),
+    });
+    para.controls.push(hwp_model::Control::Generic(generic));
+
+    let out = tmp("caption-shape.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    archive
+        .by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    let rect_at = xml.find("<hp:rect").unwrap();
+    let caption_at = xml[rect_at..].find("<hp:caption").unwrap() + rect_at;
+    let rect_end = xml[rect_at..].find("</hp:rect>").unwrap() + rect_at;
+    assert!(
+        caption_at < rect_end,
+        "caption must remain inside the shape: {xml}"
+    );
+    assert!(xml.contains("Shape 1"), "{xml}");
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let caption = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Generic(generic) => generic.caption.as_ref(),
+            _ => None,
+        })
+        .expect("round-tripped shape caption");
+    assert_eq!(caption.paragraphs[0].plain_text(), "Shape 1");
 }
 
 /// GI-3/GI-4 왕복: md(이미지+인라인 코드) → hwpx 저장 → 재읽기에서 Picture·bin·코드 글자모양 생존.

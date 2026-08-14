@@ -4,7 +4,7 @@
 //! (ctrl_id보다 안정적): 표/개체(11)·각주/미주(17)는 포함,
 //! 머리말/꼬리말(16)·숨은 설명(15)은 제외가 기본값.
 
-use crate::control::Control;
+use crate::control::{Caption, CaptionSide, Control};
 use crate::document::{Document, Section};
 use crate::paragraph::{HwpChar, Paragraph, ctrl_char};
 
@@ -87,9 +87,21 @@ impl Paragraph {
 
 fn extract_control(control: &Control, out: &mut String, opts: &TextOptions) {
     match control {
-        Control::SectionDef(_) | Control::Picture(_) => {}
+        Control::SectionDef(_) => {}
+        Control::Picture(picture) => {
+            if let Some(caption) = &picture.caption {
+                extract_caption(caption, out, opts);
+            }
+        }
         Control::Table(table) => {
-            // 셀 사이는 탭, 행 사이는 개행 — hwp5txt와 유사한 평문 표현
+            if let Some(caption) = table
+                .caption
+                .as_ref()
+                .filter(|caption| caption_precedes_object(caption.side))
+            {
+                extract_caption(caption, out, opts);
+            }
+            // Cells use tabs and rows use newlines, similar to hwp5txt output.
             push_newline(out);
             let mut current_row = u16::MAX;
             for cell in &table.cells {
@@ -106,19 +118,26 @@ fn extract_control(control: &Control, out: &mut String, opts: &TextOptions) {
                     para.extract_into(&mut cell_text, opts);
                     cell_text.push('\n');
                 }
-                // 셀 내부 개행은 공백으로 평탄화
+                // Flatten line breaks inside a cell to spaces.
                 out.push_str(cell_text.trim_end().replace('\n', " ").as_str());
             }
-            // 캡션 텍스트는 표 뒤에 덧붙인다.
-            if let Some(caption) = &table.caption {
-                for para in &caption.paragraphs {
-                    push_newline(out);
-                    para.extract_into(out, opts);
-                }
+            if let Some(caption) = table
+                .caption
+                .as_ref()
+                .filter(|caption| !caption_precedes_object(caption.side))
+            {
+                extract_caption(caption, out, opts);
             }
             push_newline(out);
         }
         Control::Generic(g) => {
+            if let Some(caption) = g
+                .caption
+                .as_ref()
+                .filter(|caption| caption_precedes_object(caption.side))
+            {
+                extract_caption(caption, out, opts);
+            }
             for list in &g.paragraph_lists {
                 for para in &list.paragraphs {
                     if !out.is_empty() && !out.ends_with(['\n', ' ', '\t']) {
@@ -127,7 +146,25 @@ fn extract_control(control: &Control, out: &mut String, opts: &TextOptions) {
                     para.extract_into(out, opts);
                 }
             }
+            if let Some(caption) = g
+                .caption
+                .as_ref()
+                .filter(|caption| !caption_precedes_object(caption.side))
+            {
+                extract_caption(caption, out, opts);
+            }
         }
+    }
+}
+
+fn caption_precedes_object(side: CaptionSide) -> bool {
+    matches!(side, CaptionSide::Left | CaptionSide::Top)
+}
+
+fn extract_caption(caption: &Caption, out: &mut String, opts: &TextOptions) {
+    for para in &caption.paragraphs {
+        push_newline(out);
+        para.extract_into(out, opts);
     }
 }
 
@@ -135,5 +172,127 @@ fn extract_control(control: &Control, out: &mut String, opts: &TextOptions) {
 fn push_newline(out: &mut String) {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BinRef, BorderFillId, CaptionDirection, Cell, GenericControl, HwpChar, HwpUnit, Picture,
+        Table,
+    };
+
+    fn paragraph(text: &str) -> Paragraph {
+        Paragraph {
+            chars: text.chars().map(HwpChar::Text).collect(),
+            ..Paragraph::default()
+        }
+    }
+
+    fn caption(side: CaptionSide, text: &str) -> Caption {
+        Caption {
+            side,
+            direction: CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![paragraph(text)],
+        }
+    }
+
+    fn table_with_caption(side: CaptionSide) -> Control {
+        Control::Table(Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId(0),
+            table_tail: Vec::new(),
+            cells: vec![Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: HwpUnit(100),
+                height: HwpUnit(100),
+                margins: [0; 4],
+                border_fill: BorderFillId(0),
+                header_tail: Vec::new(),
+                paragraphs: vec![paragraph("cell")],
+            }],
+            caption: Some(caption(side, "caption")),
+            extras: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn table_caption_follows_visual_reading_order() {
+        let mut out = String::new();
+        extract_control(
+            &table_with_caption(CaptionSide::Top),
+            &mut out,
+            &TextOptions::default(),
+        );
+        assert!(
+            out.find("caption").unwrap() < out.find("cell").unwrap(),
+            "{out:?}"
+        );
+
+        out.clear();
+        extract_control(
+            &table_with_caption(CaptionSide::Bottom),
+            &mut out,
+            &TextOptions::default(),
+        );
+        assert!(
+            out.find("cell").unwrap() < out.find("caption").unwrap(),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn picture_and_generic_captions_are_included() {
+        let picture = Control::Picture(Picture {
+            common_data: Vec::new(),
+            width: HwpUnit(100),
+            height: HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: Some(caption(CaptionSide::Bottom, "picture caption")),
+            bin_ref: BinRef::ItemRef(String::new()),
+            extras: Vec::new(),
+        });
+        let generic = Control::Generic(GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: Some(caption(CaptionSide::Top, "shape caption")),
+        });
+        let mut out = String::new();
+        extract_control(&picture, &mut out, &TextOptions::default());
+        extract_control(&generic, &mut out, &TextOptions::default());
+        assert!(out.contains("picture caption"), "{out:?}");
+        assert!(out.contains("shape caption"), "{out:?}");
     }
 }

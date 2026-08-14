@@ -128,12 +128,14 @@ clipPath. 픽셀 효과가 없으면 pdf JPEG 고속 경로·svg 제로카피 �
 last_width·paragraphs)을 두고, hwp5는 pyhwp의 `TableCaption`/`GShapeObjectCaption` 모델대로
 캡션 LIST_HEADER를 판별(TABLE 레코드 이전의 LIST_HEADER가 캡션, gso 직속 LIST_HEADER
 자식도 동일)해 재합성하며, hwpx `<hp:caption>`은 side/fullSz/width/gap/lastWidth
-속성(direction은 `subList@textDirection`)과 함께 왕복하고, 렌더러는 속성 쪽과 gap으로
-캡션 블록을 배치한다. 미주는 앵커 페이지를 떠난다 — 레이아웃이 페이지 노트를 `NoteKind`로
-분리해 예약을 각주 전용으로 유지하고, 누적한 미주를 구역 끝 마무리 블록으로 플러시한다
-(공간 부족 시 새 쪽). 홀짝 furniture — 모든 head/foot 컨트롤을 적용쪽 값(data bits 0-1:
-BOTH/EVEN/ODD)과 함께 수집해 출력 쪽번호 패리티로 선택하되, BOTH→첫 항목 폴백으로
-단일 머리말 구역은 불변이다. 한컴 라운드 근사 항목: 캡션 listflags 상위 비트, 스펙 표
+속성(direction은 `subList@textDirection`)과 함께 왕복한다. 표·그림·일반 도형·미지원 GSO
+캡션은 읽기 순서를 보존하고 속성 쪽과 gap에 따라 렌더된다. 미주는 앵커 페이지를 떠난다.
+레이아웃이 페이지 노트를 `NoteKind`로 분리해 예약을 각주 전용으로 유지하고, 누적한 미주를
+마지막 쪽 각주와 겹치지 않는 구역 끝 블록으로 여러 쪽에 걸쳐 배치한다. 홀짝 furniture는
+모든 head/foot 컨트롤의 적용쪽 값(data bits 0-1: BOTH/EVEN/ODD)을 보존하고, 출력 쪽번호와
+정확히 일치하는 항목 다음 BOTH만 폴백으로 선택한다. 적용쪽 데이터가 없으면 BOTH로
+해석하므로 일반 단일 머리말 구역은 유지되며, 홀수/짝수 전용 항목은 반대쪽에 나타나지 않는다.
+한컴 라운드 근사 항목: 캡션 listflags 상위 비트, 스펙 표
 71/72 길이 불일치(표 72 준거), 첫쪽 전용 furniture(소스 포맷 표현 부재).
 
 ## 4. 게이트

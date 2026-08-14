@@ -828,8 +828,8 @@ pub fn layout_document(
         // blank pages and columns.
         let mut has_flow_in_current_band = false;
 
-        // 머리말/꼬리말: 구역에 정의된 모든 head/foot을 적용 대상(홀/짝/양쪽)과
-        // 함께 모은다(GG-16). 페이지 마감 시 현재 쪽 번호 홀짝으로 하나를 고른다.
+        // Collect every section header/footer with its odd/even/both target.
+        // Page finalization selects the entry for the printed parity (GG-16).
         let mut header_ctrls = Vec::new();
         let mut footer_ctrls = Vec::new();
         for para in &section.paragraphs {
@@ -851,8 +851,8 @@ pub fn layout_document(
             body_width,
         };
 
-        // 각주/미주: 구역 전체에 번호를 매긴다. 각주는 앵커가 든 페이지 하단에,
-        // 미주는 구역 끝에 모아 그린다(GG-14) — 페이지마다 각주만 따로 모은다.
+        // Number notes across the section. Footnotes stay on their anchor page;
+        // endnotes accumulate for the section-closing block (GG-14).
         let notes = footnote::collect_notes(&section.paragraphs);
         let mut page_notes: Vec<&Note> = Vec::new();
         let mut pending_endnotes: Vec<&Note> = Vec::new();
@@ -936,7 +936,7 @@ pub fn layout_document(
             paras_on_page += 1;
 
             // 본문 각주/미주 마커(윗첨자 번호)와 이 페이지에 속할 노트 수집.
-            // 각주는 페이지 하단으로, 미주는 구역 끝 대기 목록으로 나눈다(GG-14).
+            // Split footnotes into the page queue and endnotes into the section queue.
             let marks = footnote::para_marks(&notes, para);
             for note in footnote::para_notes(&notes, para) {
                 match note.kind {
@@ -1305,6 +1305,8 @@ pub fn layout_document(
                 skipped_controls.to_le_bytes(),
             );
         }
+        let final_footnote_height =
+            page_notes_reservation_height(doc, store, &page, &page_notes, body_left, body_width);
         render_page_notes(
             doc,
             store,
@@ -1316,36 +1318,66 @@ pub fn layout_document(
             warnings,
         );
         page_notes.clear();
-        // 미주(GG-14): 앵커 페이지가 아니라 구역 끝에 모아 그린다. 블록이 현재
-        // 페이지에 안 들어가면 새 페이지를 연 뒤 본문 흐름 뒤에 블록을 붙인다.
+        // Endnotes form a section-closing flow. Partition them by measured
+        // note height, preserving last-page footnote space and opening as many
+        // continuation pages as required.
         if !pending_endnotes.is_empty() {
-            let needed = page_notes_reservation_height(
-                doc,
-                store,
-                &page,
-                &pending_endnotes,
-                body_left,
-                body_width,
-            );
-            if content_bottom + needed > body_bottom && paras_on_page > 0 {
-                page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
-                    return DisplayList { pages };
+            let heights: Vec<f32> = pending_endnotes
+                .iter()
+                .map(|note| measure_note_height(doc, store, &page, note, body_left, body_width))
+                .collect();
+            let mut next = 0usize;
+            let mut page_limit = (body_bottom - final_footnote_height).max(body_top);
+            while next < pending_endnotes.len() {
+                let available = (page_limit - content_bottom).max(0.0);
+                let mut used = 5.0; // separator gap
+                let mut end = next;
+                while end < pending_endnotes.len() && used + heights[end] <= available + 0.01 {
+                    used += heights[end];
+                    end += 1;
                 }
-                // 문단 루프가 끝난 뒤라 흐름 상태 리셋은 content_bottom만 필요하다.
-                content_bottom = body_top;
+
+                if end == next
+                    && (content_bottom > body_top + 0.01 || page_limit < body_bottom - 0.01)
+                {
+                    page_numbers.finish(doc, store, &mut page, &furniture, warnings);
+                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                        return DisplayList { pages };
+                    }
+                    content_bottom = body_top;
+                    page_limit = body_bottom;
+                    continue;
+                }
+
+                // A single note may itself exceed the body height. Consume it
+                // to guarantee progress; the renderer will clip that legacy
+                // unsupported case instead of looping indefinitely.
+                if end == next {
+                    used += heights[end];
+                    end += 1;
+                }
+                let block_bottom = (content_bottom + used).min(page_limit);
+                render_page_notes(
+                    doc,
+                    store,
+                    &mut page,
+                    &pending_endnotes[next..end],
+                    body_left,
+                    body_width,
+                    block_bottom,
+                    warnings,
+                );
+                content_bottom = (content_bottom + used).min(page_limit);
+                next = end;
+                if next < pending_endnotes.len() {
+                    page_numbers.finish(doc, store, &mut page, &furniture, warnings);
+                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                        return DisplayList { pages };
+                    }
+                    content_bottom = body_top;
+                    page_limit = body_bottom;
+                }
             }
-            let block_bottom = (content_bottom + needed).min(body_bottom);
-            render_page_notes(
-                doc,
-                store,
-                &mut page,
-                &pending_endnotes,
-                body_left,
-                body_width,
-                block_bottom,
-                warnings,
-            );
             pending_endnotes.clear();
         }
         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
@@ -1477,7 +1509,8 @@ impl TableSplitCtx<'_, '_> {
 const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
 
 /// 페이지 가구 (머리말/꼬리말) — 페이지 마감 시마다 그린다.
-/// 머리말/꼬리말은 (컨트롤, 적용 대상) 목록으로 들고, 쪽 번호 홀짝으로 고른다(GG-16).
+/// Header/footer entries retain their apply target and are selected by printed
+/// page parity (GG-16).
 struct Furniture<'a> {
     header: Vec<(&'a hwp_model::GenericControl, u8)>,
     footer: Vec<(&'a hwp_model::GenericControl, u8)>,
@@ -1486,16 +1519,16 @@ struct Furniture<'a> {
     body_width: f32,
 }
 
-/// head/foot 컨트롤의 적용 대상: data[0..4] LE u32의 bits 0-1
-/// (0=양쪽, 1=짝수 쪽, 2=홀수 쪽). 데이터가 없거나 짧으면 양쪽(0)으로 본다.
+/// Header/footer apply target in `data[0..4]` LE u32 bits 0-1:
+/// 0=both, 1=even, 2=odd. Missing or short data defaults to both.
 fn head_foot_apply(g: &hwp_model::GenericControl) -> u8 {
     g.data.get(0..4).map_or(0, |b| {
         (u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0x3) as u8
     })
 }
 
-/// 현재 쪽 번호 홀짝에 맞는 머리말/꼬리말을 고른다.
-/// 폭락 순서: 정확한 홀짝 일치 → 양쪽(BOTH) → 첫 항목(기존 동작 보존).
+/// Selects an exact parity entry, then a BOTH fallback. A parity-specific
+/// header must not leak onto the opposite page when no fallback exists.
 fn select_furniture<'a>(
     entries: &[(&'a hwp_model::GenericControl, u8)],
     printed: u32,
@@ -1505,7 +1538,6 @@ fn select_furniture<'a>(
         .iter()
         .find(|e| e.1 == want)
         .or_else(|| entries.iter().find(|e| e.1 == 0))
-        .or_else(|| entries.first())
         .map(|e| e.0)
 }
 
@@ -1556,6 +1588,32 @@ impl Furniture<'_> {
             }
         }
     }
+}
+
+fn measure_note_height(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &PageList,
+    note: &Note,
+    body_left: f32,
+    body_width: f32,
+) -> f32 {
+    let mut scratch = PageList {
+        width_pt: page.width_pt,
+        height_pt: page.height_pt,
+        items: Vec::new(),
+    };
+    let mut scratch_warnings = RenderIssueAccumulator::new();
+    render_one_note(
+        doc,
+        store,
+        &mut scratch,
+        note,
+        body_left,
+        body_width,
+        0.0,
+        &mut scratch_warnings,
+    ) + 3.0
 }
 
 fn page_notes_reservation_height(
@@ -1807,15 +1865,71 @@ fn translate_cmd(c: PathCmd, dx: f32, dy: f32) -> PathCmd {
     }
 }
 
-/// 캡션 조판 폭(pt): 명시 폭(세로 방향 캡션, 표 72)이 있으면 그 값, 아니면 개체 폭.
+/// Caption layout width in points: explicit width for vertical captions, or
+/// the object width otherwise (table 72).
 fn caption_wrap_pt(caption: &Caption, obj_width: f32) -> f32 {
     caption
         .width
         .map_or(obj_width, |w| (w as f32 / 100.0).max(4.0))
 }
 
-/// 캡션 문단들을 스크래치 페이지에 조판해 (아이템, 블록 높이)를 돌려준다 (GB-13).
-/// 실제 위치는 쪽(side)에 따라 호출자가 평행이동해 결정한다.
+struct CaptionPrelude {
+    items: Vec<Item>,
+    height: f32,
+    gap: f32,
+}
+
+struct CaptionBlock<'a> {
+    caption: &'a Caption,
+    items: Vec<Item>,
+    height: f32,
+    wrap: f32,
+}
+
+fn prepare_caption_block<'a>(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &PageList,
+    caption: Option<&'a Caption>,
+    object_width: f32,
+    warnings: &mut RenderIssueAccumulator,
+) -> Option<CaptionBlock<'a>> {
+    caption.map(|caption| {
+        let wrap = caption_wrap_pt(caption, object_width);
+        let (items, height) = layout_caption_items(doc, store, page, caption, wrap, warnings);
+        CaptionBlock {
+            caption,
+            items,
+            height,
+            wrap,
+        }
+    })
+}
+
+fn inline_top_caption_offset(block: Option<&CaptionBlock<'_>>) -> f32 {
+    block
+        .filter(|block| block.caption.side == CaptionSide::Top)
+        .map_or(0.0, |block| block.height + block.caption.gap as f32 / 100.0)
+}
+
+fn place_caption_block(
+    page: &mut PageList,
+    block: CaptionBlock<'_>,
+    object: (f32, f32, f32, f32),
+) -> f32 {
+    let object_bottom = object.1 + object.3;
+    let side = block.caption.side;
+    let height = block.height;
+    let bottom = place_caption_items(page, block.items, height, block.caption, object, block.wrap);
+    match side {
+        CaptionSide::Bottom => bottom.unwrap_or(object_bottom),
+        CaptionSide::Left | CaptionSide::Right => object_bottom.max(object.1 + height),
+        CaptionSide::Top => object_bottom,
+    }
+}
+
+/// Lays caption paragraphs onto a scratch page and returns items plus height.
+/// The caller translates them according to the caption side (GB-13).
 fn layout_caption_items(
     doc: &Document,
     store: &mut FontStore,
@@ -1847,8 +1961,8 @@ fn layout_caption_items(
     (scratch.items, bottom)
 }
 
-/// 캡션 블록을 개체 직사각형 (x, y, w, h) 기준 side 방향으로 gap만큼 띄워 배치한다.
-/// 아래쪽 캡션이면 블록 하단(흐름 커서 보정용)을, 그 외에는 None을 반환한다.
+/// Places a caption beside the object rectangle with its configured gap.
+/// Returns the caption bottom for bottom captions so body flow can advance.
 fn place_caption_items(
     page: &mut PageList,
     items: Vec<Item>,
@@ -1896,18 +2010,24 @@ fn layout_para_objects(
     for control in &para.controls {
         match control {
             Control::Table(table) => {
-                // 캡션(GB-13): 위쪽 캡션은 표 배치 전에 높이를 재서 자리를 마련한다.
-                let mut top_caption: Option<(Vec<Item>, f32)> = None;
+                // Measure a top caption before table planning so every fragment
+                // reserves the correct first-fragment offset. The table emitter
+                // places it after any page break selected by the planner.
+                let mut top_caption: Option<CaptionPrelude> = None;
                 if let Some(cap) = &table.caption
                     && cap.side == CaptionSide::Top
                 {
                     let wrap = caption_wrap_pt(cap, avail_width);
                     let (items, h) = layout_caption_items(doc, store, page, cap, wrap, warnings);
-                    top_caption = Some((items, h));
-                    object_y += h + cap.gap as f32 / 100.0;
+                    let gap = cap.gap as f32 / 100.0;
+                    top_caption = Some(CaptionPrelude {
+                        items,
+                        height: h,
+                        gap,
+                    });
+                    object_y += h + gap;
                 }
-                let table_y = object_y;
-                let (end, table_split) = layout_table(
+                let (end, table_split, final_fragment_top) = layout_table(
                     doc,
                     store,
                     page,
@@ -1915,6 +2035,7 @@ fn layout_para_objects(
                     x,
                     object_y,
                     avail_width,
+                    top_caption,
                     split.as_deref_mut(),
                     warnings,
                 );
@@ -1926,29 +2047,15 @@ fn layout_para_objects(
                 } else {
                     bottom = bottom.max(end);
                 }
-                object_y = end; // 한 문단에 개체가 여럿이면 세로로 이어 배치
-                // 캡션 배치. 표 폭은 정확한 그리드 합산 대신 가용 폭으로 근사한다
-                // (좌/우 캡션의 가로 위치 정도에만 쓰인다). side 정보가 퇴화하면
-                // (파서 기본값) 아래쪽으로 둔다.
+                object_y = end; // Stack multiple objects in one paragraph vertically.
+                // Use available width as the table-width approximation; it only
+                // affects the horizontal position of left/right captions.
                 if let Some(cap) = &table.caption {
                     let wrap = caption_wrap_pt(cap, avail_width);
-                    if cap.side == CaptionSide::Top {
-                        // 위쪽 캡션은 표가 시작된 (이) 페이지 좌표라 분할과 무관하다.
-                        if let Some((items, h)) = top_caption {
-                            place_caption_items(
-                                page,
-                                items,
-                                h,
-                                cap,
-                                (x, table_y, avail_width, 0.0),
-                                wrap,
-                            );
-                        }
-                    } else if !table_split {
-                        // 분할된 표의 end는 마지막 쪽 좌표라 이 페이지에 못 둔다 — 생략.
+                    if cap.side != CaptionSide::Top {
                         let (items, h) =
                             layout_caption_items(doc, store, page, cap, wrap, warnings);
-                        let obj = (x, table_y, avail_width, end - table_y);
+                        let obj = (x, final_fragment_top, avail_width, end - final_fragment_top);
                         if let Some(cap_bottom) =
                             place_caption_items(page, items, h, cap, obj, wrap)
                         {
@@ -1976,7 +2083,7 @@ fn layout_para_objects(
                                 format!("flags={:#010x}", pic.effect_flags),
                             );
                         }
-                        // 캡션(GB-13): 위쪽이면 그림 위에 자리를 먼저 마련한다.
+                        // Reserve space above the picture for a top caption.
                         let mut img_y = object_y;
                         let mut top_caption: Option<(Vec<Item>, f32)> = None;
                         if let Some(cap) = &pic.caption
@@ -2002,7 +2109,7 @@ fn layout_para_objects(
                         });
                         bottom = bottom.max(img_y + h);
                         object_y = img_y + h;
-                        // 캡션 배치 (기본 아래쪽).
+                        // Place the caption; bottom is the default side.
                         if let Some(cap) = &pic.caption {
                             let wrap = caption_wrap_pt(cap, w);
                             if cap.side == CaptionSide::Top {
@@ -2035,7 +2142,7 @@ fn layout_para_objects(
                     ),
                 }
             }
-            // 글상자(text box): 텍스트 있는 gso 개체의 내부 문단을 박스 영역에 배치.
+            // Text box: lay out the GSO's paragraph lists inside its frame.
             Control::Generic(g) if g.ctrl_id == *b"gso " && !g.paragraph_lists.is_empty() => {
                 let Some(b) = crate::gso::parse_gso_box(&g.data) else {
                     warnings.push(RenderIssueCode::TextBoxGeometryInvalidOmitted, b"gso");
@@ -2043,9 +2150,18 @@ fn layout_para_objects(
                 };
                 let bw = (b.width as f32 / 100.0).max(8.0);
                 let bh = b.height as f32 / 100.0;
-                // 글자처럼취급=흐름 위치, 떠 있음=PAPER/PAGE 기준 페이지 절대 위치.
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings);
+                let inline = b.treat_as_char();
+                let top_offset = if inline {
+                    inline_top_caption_offset(caption.as_ref())
+                } else {
+                    0.0
+                };
+                // Inline objects use the flow cursor; floating objects retain
+                // their PAPER/PAGE-relative coordinates.
                 let (bx, by, inline) = if b.treat_as_char() {
-                    (x, object_y, true)
+                    (x, object_y + top_offset, true)
                 } else {
                     (
                         b.horz_offset as f32 / 100.0,
@@ -2054,7 +2170,7 @@ fn layout_para_objects(
                     )
                 };
 
-                // 글상자 자체 테두리/배경(사각형 프레임)을 텍스트 뒤에 먼저 그린다.
+                // Draw the text-box frame/background before its text.
                 let frame_origin = if inline {
                     (bx as f64 * 100.0, by as f64 * 100.0)
                 } else {
@@ -2062,9 +2178,8 @@ fn layout_para_objects(
                 };
                 crate::shape_draw::draw_gso_shapes(g, frame_origin, doc, page, warnings);
 
-                // 다단/연결 글상자: 내부 문단의 v_pos 리셋(단 나누기)으로 단을 분할한다.
-                // 단 0은 이 박스, 단 1+는 연결 글상자(같은 크기·세로위치, 더 오른쪽
-                // 떠 있는 gso 박스) 위치로 흐른다. 없으면 가로로 한 단 진행(근사).
+                // Split linked text boxes at internal v_pos resets. Column zero
+                // uses this box; later columns use continuation boxes when known.
                 let flat: Vec<&Paragraph> = g
                     .paragraph_lists
                     .iter()
@@ -2102,13 +2217,17 @@ fn layout_para_objects(
                     max_bottom = max_bottom.max(inner);
                 }
 
+                let used = (max_bottom - by).max(bh);
+                let mut flow_end = by + used;
+                if let Some(caption) = caption {
+                    flow_end = flow_end.max(place_caption_block(page, caption, (bx, by, bw, used)));
+                }
                 if inline {
-                    let used = (max_bottom - by).max(bh);
-                    bottom = bottom.max(by + used);
-                    object_y += used;
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
                 }
             }
-            // 순수 도형 (텍스트 없는 gso): 선/사각형/타원/호/다각형.
+            // Text-free HWP5 GSO shape.
             Control::Generic(g)
                 if g.ctrl_id == *b"gso "
                     && g.paragraph_lists.is_empty()
@@ -2117,16 +2236,49 @@ fn layout_para_objects(
                 let Some(b) = crate::gso::parse_gso_box(&g.data) else {
                     continue;
                 };
-                let origin = if b.treat_as_char() {
-                    (x as f64 * 100.0, object_y as f64 * 100.0)
+                let bw = (b.width as f32 / 100.0).max(8.0);
+                let bh = (b.height as f32 / 100.0).max(0.0);
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings);
+                let inline = b.treat_as_char();
+                let top_offset = if inline {
+                    inline_top_caption_offset(caption.as_ref())
+                } else {
+                    0.0
+                };
+                let (bx, by) = if inline {
+                    (x, object_y + top_offset)
+                } else {
+                    (b.horz_offset as f32 / 100.0, b.vert_offset as f32 / 100.0)
+                };
+                let origin = if inline {
+                    (bx as f64 * 100.0, by as f64 * 100.0)
                 } else {
                     (b.horz_offset as f64, b.vert_offset as f64)
                 };
                 crate::shape_draw::draw_gso_shapes(g, origin, doc, page, warnings);
+                let mut flow_end = by + bh;
+                if let Some(caption) = caption {
+                    flow_end = flow_end.max(place_caption_block(page, caption, (bx, by, bw, bh)));
+                }
+                if inline {
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
+                }
             }
-            // hwpx 구조화 도형(rect/ellipse/line/polygon/curve) — 글상자 텍스트 포함.
+            // Structured HWPX shape, optionally with text and a caption.
             Control::Generic(g) if !g.gso_shapes.is_empty() => {
-                // 글자처럼(anchored) 도형은 흐름 위치로 이동(clone-조정 — 원본 불변).
+                let source = &g.gso_shapes[0];
+                let bw = (source.w as f32 / 100.0).max(8.0);
+                let bh = (source.h as f32 / 100.0).max(0.0);
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings);
+                let top_offset = if source.anchored {
+                    inline_top_caption_offset(caption.as_ref())
+                } else {
+                    0.0
+                };
+                // Move anchored shapes to the flow position without mutating IR.
                 let adjusted: Vec<hwp_model::ShapeGeom> = g
                     .gso_shapes
                     .iter()
@@ -2134,18 +2286,17 @@ fn layout_para_objects(
                         let mut s2 = s.clone();
                         if s.anchored {
                             s2.x = (x * 100.0) as i32;
-                            s2.y = (object_y * 100.0) as i32;
+                            s2.y = ((object_y + top_offset) * 100.0) as i32;
                         }
                         s2
                     })
                     .collect();
                 crate::shape_draw::draw_ir_shapes(&adjusted, page, warnings);
-                // 글상자 텍스트: 첫 도형 bbox 안에 배치(v1 단일 단 — hwp5 arm의 다단은 미지원).
+                let s0 = &adjusted[0];
+                let (bx, by) = (s0.x as f32 / 100.0, s0.y as f32 / 100.0);
+                let mut flow_end = by + bh;
+                // Lay text inside the first shape's box (single-column v1).
                 if !g.paragraph_lists.is_empty() {
-                    let s0 = &adjusted[0];
-                    let (bx, by) = (s0.x as f32 / 100.0, s0.y as f32 / 100.0);
-                    let bw = (s0.w as f32 / 100.0).max(8.0);
-                    let bh = s0.h as f32 / 100.0;
                     let flat = g.paragraph_lists.iter().flat_map(|l| l.paragraphs.iter());
                     let mut box_list_state = crate::list::ListState::default();
                     let inner = layout_box_para_iter(
@@ -2160,12 +2311,46 @@ fn layout_para_objects(
                         Some(&mut box_list_state),
                         None,
                     );
-                    if s0.anchored {
-                        // 흐름 전진(hwp5 인라인 글상자와 동형).
-                        let used = (inner - by).max(bh);
-                        bottom = bottom.max(by + used);
-                        object_y += used;
-                    }
+                    flow_end = flow_end.max(inner);
+                }
+                if let Some(caption) = caption {
+                    flow_end = flow_end.max(place_caption_block(
+                        page,
+                        caption,
+                        (bx, by, bw, flow_end - by),
+                    ));
+                }
+                if s0.anchored {
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
+                }
+            }
+            // Preserve a caption even when the underlying GSO subtype (for
+            // example OLE) has no drawable shape implementation yet.
+            Control::Generic(g) if g.ctrl_id == *b"gso " && g.caption.is_some() => {
+                let Some(b) = crate::gso::parse_gso_box(&g.data) else {
+                    continue;
+                };
+                let bw = (b.width as f32 / 100.0).max(8.0);
+                let bh = (b.height as f32 / 100.0).max(0.0);
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings)
+                        .expect("guarded by caption.is_some()");
+                let inline = b.treat_as_char();
+                let top_offset = if inline {
+                    inline_top_caption_offset(Some(&caption))
+                } else {
+                    0.0
+                };
+                let (bx, by) = if inline {
+                    (x, object_y + top_offset)
+                } else {
+                    (b.horz_offset as f32 / 100.0, b.vert_offset as f32 / 100.0)
+                };
+                let flow_end = place_caption_block(page, caption, (bx, by, bw, bh));
+                if inline {
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
                 }
             }
             // 수식(hp:equation) — 스크립트를 실제 math로 조판(equation.rs).
@@ -2223,11 +2408,15 @@ fn layout_table(
     x: f32,
     y: f32,
     avail_width: f32,
+    mut top_caption: Option<CaptionPrelude>,
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
-) -> (f32, bool) {
+) -> (f32, bool, f32) {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
+    let top_caption_extent = top_caption
+        .as_ref()
+        .map_or(0.0, |caption| caption.height + caption.gap);
 
     // 그리드 기하: span=1 셀에서 열 폭/행 높이를 확정, 모르는 칸은 평균으로
     let mut col_w = vec![0.0f32; cols];
@@ -2411,15 +2600,16 @@ fn layout_table(
             ))
         .max(body_top);
         let page_h = body_bottom - body_top;
+        let unsplit_h = total_h + top_caption_extent;
         let treat_as_char = table.placement.as_ref().is_some_and(|p| p.treat_as_char);
         let policy = table.page_break_policy();
         if y + total_h > first_body_bottom {
-            if treat_as_char || (policy == hwp_model::TablePageBreak::None && total_h <= page_h) {
+            if treat_as_char || (policy == hwp_model::TablePageBreak::None && unsplit_h <= page_h) {
                 // An inline table is one indivisible character (GE-8).
                 // NONE also keeps a page-sized table together.
-                if y > body_top && total_h <= page_h {
-                    fragments = vec![(0, rows, body_top, false, true)];
-                } else if total_h > page_h {
+                if y > body_top + top_caption_extent && unsplit_h <= page_h {
+                    fragments = vec![(0, rows, body_top + top_caption_extent, false, true)];
+                } else if unsplit_h > page_h {
                     // An indivisible table taller than a page must surface its overflow.
                     warnings.push(RenderIssueCode::TableRowTooTallClipped, b"treat-as-char");
                 }
@@ -2446,7 +2636,13 @@ fn layout_table(
                 let mut break_before = false;
                 for &(band_start, band_end, band_h) in &bands {
                     let replay_header = header_rows > 0 && fragment_start > 0;
-                    let fresh_top = body_top + if replay_header { header_h } else { 0.0 };
+                    let fresh_top = body_top
+                        + if replay_header { header_h } else { 0.0 }
+                        + if fragment_start == 0 {
+                            top_caption_extent
+                        } else {
+                            0.0
+                        };
 
                     // If no band has been accepted and only a page-bottom
                     // sliver remains, move the same band to a fresh page.
@@ -2504,6 +2700,7 @@ fn layout_table(
     let mut cell_ls = crate::list::ListState::default();
     let header_ls_seed = cell_ls.clone();
     let mut end_y = y;
+    let mut final_fragment_top = y;
     let mut emitted_fragments = 0usize;
     let mut page_advanced = false;
     for &(rs, re, data_top, with_header, break_before) in &fragments {
@@ -2518,6 +2715,14 @@ fn layout_table(
                 break;
             }
             page_advanced = true;
+        }
+        if emitted_fragments == 0
+            && let Some(prelude) = top_caption.take()
+        {
+            let caption_y = data_top - prelude.gap - prelude.height;
+            for item in prelude.items {
+                page.items.push(translate_item(item, x, caption_y));
+            }
         }
         if with_header {
             let mut header_ls = header_ls_seed.clone();
@@ -2553,6 +2758,7 @@ fn layout_table(
             warnings,
         );
         end_y = data_top + (row_prefix[re] - row_prefix[rs]);
+        final_fragment_top = data_top - if with_header { header_h } else { 0.0 };
         emitted_fragments += 1;
         if let Some(ctx) = split.as_deref_mut() {
             ctx.mark_flow();
@@ -2564,7 +2770,7 @@ fn layout_table(
             format!("{rows} rows"),
         );
     }
-    (end_y, page_advanced)
+    (end_y, page_advanced, final_fragment_top)
 }
 
 /// Draw one row-range fragment. `base_y + row_prefix[r]` is the row top.

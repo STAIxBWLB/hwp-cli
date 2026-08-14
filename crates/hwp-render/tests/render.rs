@@ -1436,7 +1436,7 @@ fn 표_레이아웃(
     (list, warns.finish())
 }
 
-/// GB-13: 캡션 달린 표 — 캡션 텍스트가 셀 텍스트 아래(gap 반영)에 배치된다.
+/// GB-13: a bottom table caption is placed below cell text with its gap.
 #[test]
 fn 캡션_표_아래_배치() {
     let mut doc = hwp_convert::from_markdown("| 가 |\n| --- |\n| 1 |\n");
@@ -1482,7 +1482,7 @@ fn 캡션_표_아래_배치() {
     );
 }
 
-/// GB-13: 위쪽 캡션은 표 위에 배치되고 표는 그만큼 아래로 밀린다.
+/// GB-13: a top caption precedes the table and shifts it downward.
 #[test]
 fn 캡션_표_위_배치() {
     let mut doc = hwp_convert::from_markdown("| 가 |\n| --- |\n| 1 |\n");
@@ -1528,6 +1528,69 @@ fn 캡션_표_위_배치() {
     );
 }
 
+#[test]
+fn generic_shape_caption_is_rendered() {
+    let mut doc = hwp_convert::from_markdown("Body\n");
+    let para = &mut doc.sections[0].paragraphs[0];
+    let control_index = para.controls.len() as u32;
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"gso ",
+        payload: Vec::new(),
+        ctrl_index: Some(control_index),
+    });
+    para.controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: vec![hwp_model::ShapeGeom {
+                kind: hwp_model::ShapeKind::Rect,
+                x: 0,
+                y: 0,
+                w: 5000,
+                h: 2000,
+                points: Vec::new(),
+                fill: 0xFFFF_FFFF,
+                fill_gradient: None,
+                border_color: 0,
+                border_width: 10,
+                round_ratio: 0,
+                border_style: 0,
+                arrow_start: 0,
+                arrow_end: 0,
+                anchored: true,
+                description: None,
+            }],
+            equation: None,
+            column_def: None,
+            caption: Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 200,
+                width: None,
+                last_width: 5000,
+                paragraphs: vec![hwp_model::Paragraph {
+                    chars: "shape-caption"
+                        .chars()
+                        .map(hwp_model::HwpChar::Text)
+                        .collect(),
+                    ..hwp_model::Paragraph::default()
+                }],
+            }),
+        }));
+
+    let (list, _) = 표_레이아웃(&doc);
+    let text = page_texts(&list.pages[0]).concat();
+    if text.is_empty() {
+        eprintln!("skip: no usable font for shape caption shaping");
+        return;
+    }
+    assert!(text.contains("shape-caption"), "{text:?}");
+}
+
 /// TABLE policy splits at row boundaries without silently clipping cells.
 #[test]
 fn 표_쪽분할_행경계_클립없음() {
@@ -1565,6 +1628,58 @@ fn 표_쪽분할_행경계_클립없음() {
             .iter()
             .any(|i| i.code == hwp_render::RenderIssueCode::TableSplitAcrossPages),
         "분할이 info로 보고되어야 한다"
+    );
+}
+
+#[test]
+fn split_table_keeps_bottom_caption_on_final_fragment() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let rows = ((body_bottom - body_top) / 100.0) as u16 + 3;
+    let mut doc = 표_분할_문서(1, rows, 100, 0, false, 0);
+    let table = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| paragraph.controls.iter_mut())
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .unwrap();
+    table.caption = Some(hwp_model::Caption {
+        side: hwp_model::CaptionSide::Bottom,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 300,
+        width: None,
+        last_width: 0,
+        paragraphs: vec![hwp_model::Paragraph {
+            chars: "split-caption"
+                .chars()
+                .map(hwp_model::HwpChar::Text)
+                .collect(),
+            ..hwp_model::Paragraph::default()
+        }],
+    });
+
+    let (list, _) = 표_레이아웃(&doc);
+    let texts: Vec<String> = list
+        .pages
+        .iter()
+        .map(|page| page_texts(page).concat())
+        .collect();
+    if texts.iter().all(String::is_empty) {
+        eprintln!("skip: no usable font for caption shaping");
+        return;
+    }
+    assert!(list.pages.len() >= 2);
+    assert!(texts.last().unwrap().contains("split-caption"), "{texts:?}");
+    assert_eq!(
+        texts
+            .iter()
+            .filter(|text| text.contains("split-caption"))
+            .count(),
+        1,
+        "{texts:?}"
     );
 }
 
@@ -1758,6 +1873,61 @@ fn 표_page_break_none이면_통째로_다음쪽() {
     assert!(
         (min_y - body_top).abs() < 0.6,
         "표는 새 쪽 본문 상단에서 시작: y={min_y}"
+    );
+}
+
+#[test]
+fn top_caption_moves_with_an_unsplittable_table() {
+    let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
+    let (body_top, body_bottom) = 본문_기하(&probe);
+    let page_h = body_bottom - body_top;
+    let filler = ((page_h - 300.0) / 16.0).floor() as usize;
+    let mut doc = 표_분할_문서(0, 3, 100, 0, false, filler);
+    let table = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| paragraph.controls.iter_mut())
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .unwrap();
+    table.caption = Some(hwp_model::Caption {
+        side: hwp_model::CaptionSide::Top,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 300,
+        width: None,
+        last_width: 0,
+        paragraphs: vec![hwp_model::Paragraph {
+            chars: "moved-top-caption"
+                .chars()
+                .map(hwp_model::HwpChar::Text)
+                .collect(),
+            ..hwp_model::Paragraph::default()
+        }],
+    });
+
+    let (list, _) = 표_레이아웃(&doc);
+    assert_eq!(list.pages.len(), 2);
+    assert!(채움_사각형(&list, 0).is_empty());
+    let page_text: Vec<String> = list
+        .pages
+        .iter()
+        .map(|page| page_texts(page).concat())
+        .collect();
+    if page_text.iter().all(String::is_empty) {
+        eprintln!("skip: no usable font for caption shaping");
+        return;
+    }
+    assert!(!page_text[0].contains("moved-top-caption"), "{page_text:?}");
+    assert!(page_text[1].contains("moved-top-caption"), "{page_text:?}");
+    let table_top = 채움_사각형(&list, 1)
+        .iter()
+        .map(|rect| rect.0)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        table_top > body_top,
+        "the top caption and gap must precede the table: y={table_top}"
     );
 }
 
@@ -2084,7 +2254,7 @@ fn renders_multi_column_divider() {
 // ---------- Odd/even furniture + endnote placement (GG-16 / GG-14) ----------
 
 /// Builds a `head` control whose paragraph list holds one text paragraph.
-/// `apply` is the head/foot apply value (0=양쪽, 1=짝수, 2=홀수); `None`
+/// `apply` is the head/foot target (0=both, 1=even, 2=odd); `None`
 /// leaves the data empty, which the renderer treats as BOTH.
 fn 머리말_컨트롤(apply: Option<u32>, text: &str) -> hwp_model::Control {
     let para = hwp_convert::from_markdown(text)
@@ -2102,7 +2272,7 @@ fn 머리말_컨트롤(apply: Option<u32>, text: &str) -> hwp_model::Control {
     )
 }
 
-/// GG-16: apply=ODD/EVEN 머리말은 쪽 번호 홀짝에 맞는 페이지에만 그려진다.
+/// GG-16: ODD/EVEN headers render only on matching printed pages.
 #[test]
 fn 머리말_홀짝_적용대상_선택() {
     let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n");
@@ -2137,7 +2307,7 @@ fn 머리말_홀짝_적용대상_선택() {
     );
 }
 
-/// GG-16 회귀: 머리말이 하나뿐이면(apply 데이터 없음=BOTH) 모든 페이지에 그려진다.
+/// GG-16: a single header with no apply data defaults to BOTH.
 #[test]
 fn 머리말_단일_모든페이지_반복() {
     let mut doc = hwp_convert::from_markdown("첫 쪽\n\n둘째 쪽\n");
@@ -2161,8 +2331,29 @@ fn 머리말_단일_모든페이지_반복() {
     assert!(p2.contains("공통머리말"), "2쪽에 공통 머리말: {p2:?}");
 }
 
-/// GG-14: 미주는 앵커 페이지 하단이 아니라 구역 끝 블록에 그려지고,
-/// 각주는 지금처럼 앵커 페이지 하단에 남는다.
+#[test]
+fn parity_specific_header_does_not_leak_to_the_opposite_page() {
+    let mut doc = hwp_convert::from_markdown("First\n\nSecond\n");
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(머리말_컨트롤(Some(2), "odd-only-header"));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    let first = page_texts(&list.pages[0]).concat();
+    if first.is_empty() {
+        eprintln!("skip: no usable font for header shaping");
+        return;
+    }
+    let second = page_texts(&list.pages[1]).concat();
+    assert!(first.contains("odd-only-header"), "{first:?}");
+    assert!(!second.contains("odd-only-header"), "{second:?}");
+}
+
+/// GG-14: endnotes move to the section-closing block while footnotes remain on
+/// their anchor page.
 #[test]
 fn 미주는_구역끝_각주는_앵커페이지() {
     let mut doc = hwp_convert::from_markdown("본문\n\n다음 쪽\n");
@@ -2220,4 +2411,67 @@ fn 미주는_구역끝_각주는_앵커페이지() {
     );
     assert!(p2.contains("미주내용"), "미주는 구역 끝(2쪽)에: {p2:?}");
     assert!(!p2.contains("각주내용"), "각주는 2쪽에 없다: {p2:?}");
+}
+
+#[test]
+fn endnotes_paginate_across_all_required_pages() {
+    let mut doc = hwp_convert::from_markdown("Body\n");
+    let anchor = &mut doc.sections[0].paragraphs[0];
+    for number in 0..80u32 {
+        let control_index = anchor.controls.len() as u32;
+        anchor.chars.push(hwp_model::HwpChar::ExtCtrl {
+            code: hwp_model::ctrl_char::FOOTNOTE_ENDNOTE,
+            ctrl_id: *b"en  ",
+            payload: vec![0; 12],
+            ctrl_index: Some(control_index),
+        });
+        let para = hwp_model::Paragraph {
+            chars: format!("ENDNOTE-{number:03}")
+                .chars()
+                .map(hwp_model::HwpChar::Text)
+                .collect(),
+            ..hwp_model::Paragraph::default()
+        };
+        anchor
+            .controls
+            .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"en  ",
+                data: Vec::new(),
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![para],
+                }],
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+            }));
+    }
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+    let page_text: Vec<String> = list
+        .pages
+        .iter()
+        .map(|page| page_texts(page).concat())
+        .collect();
+    if page_text.iter().all(String::is_empty) {
+        eprintln!("skip: no usable font for endnote shaping");
+        return;
+    }
+    assert!(list.pages.len() >= 3, "pages={}", list.pages.len());
+    for number in 0..80u32 {
+        let needle = format!("ENDNOTE-{number:03}");
+        assert_eq!(
+            page_text
+                .iter()
+                .filter(|text| text.contains(&needle))
+                .count(),
+            1,
+            "{needle}: {page_text:?}"
+        );
+    }
 }

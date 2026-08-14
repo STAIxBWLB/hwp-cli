@@ -924,8 +924,8 @@ fn parse_table(
     Ok(table)
 }
 
-/// `<hp:caption>` — 캡션 (hwpxlib Caption 근거: side/fullSz/width/gap/lastWidth
-/// + hp:subList 문단들). fullSz="1"이면 폭 미사용(None 매핑).
+/// Parses `<hp:caption>` using hwpxlib's side/fullSz/width/gap/lastWidth
+/// contract plus subList paragraphs. `fullSz="1"` maps to no explicit width.
 fn parse_caption(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
@@ -940,8 +940,8 @@ fn parse_caption(
     let full_size = attr(start, "fullSz").as_deref() == Some("1");
     let mut caption = Caption {
         side,
-        // 텍스트 방향은 subList@textDirection이 정본. 없으면 위치로 추정한다
-        // (LEFT/RIGHT=세로 — 캡션 폭이 세로 방향일 때만 쓰인다는 표 72 주석과 정합).
+        // subList@textDirection is authoritative. Without it, infer vertical
+        // direction for LEFT/RIGHT, consistent with table 72's width rule.
         direction: match side {
             CaptionSide::Left | CaptionSide::Right => CaptionDirection::Vertical,
             _ => CaptionDirection::Horizontal,

@@ -2180,7 +2180,16 @@ fn emit_control(
                     children: g.raw_children.iter().map(opaque_to_node).collect(),
                 };
             }
-            let mut children = Vec::new();
+            let mut children = match &g.caption {
+                Some(caption) => emit_caption_records(
+                    caption,
+                    synthesize,
+                    preserve_linesegs,
+                    add_tracking_tail,
+                    warnings,
+                ),
+                None => Vec::new(),
+            };
             for list in &g.paragraph_lists {
                 children.push(RecordNode {
                     tag: tag::LIST_HEADER,
@@ -2350,7 +2359,7 @@ fn emit_table(
     }
 
     let mut cell_warnings = Vec::new();
-    // 캡션(표 71): TABLE 레코드 앞에 방출.
+    // Table 71 caption records precede the TABLE record.
     let mut children = match &table.caption {
         Some(caption) => emit_caption_records(
             caption,
@@ -2386,13 +2395,14 @@ fn emit_table(
     }
 }
 
-/// 캡션 LIST_HEADER (표 71-73, 22바이트) — body_text::parse_caption_header의 역.
+/// Caption LIST_HEADER (tables 71-73, 22 bytes), inverse of
+/// `body_text::parse_caption_header`.
 fn emit_caption_header(caption: &Caption) -> RecordNode {
     let mut w = ByteWriter::new();
     w.write_i32(caption.paragraphs.len() as i32);
-    // listflags(표 65): 텍스트 방향(bits0-2)만 복원한다 — 줄바꿈(bits3-4)·세로
-    // 정렬(bits5-6)은 IR이 보존하지 않는다.
-    // TODO(hancom-verify): 정품 캡션 LIST_HEADER의 listflags 상위 비트 실측 필요.
+    // Reconstruct only text direction (table 65 bits 0-2); the IR does not
+    // preserve line wrapping (bits 3-4) or vertical alignment (bits 5-6).
+    // TODO(hancom-verify): measure upper listflag bits in a genuine caption.
     w.write_u32(match caption.direction {
         CaptionDirection::Horizontal => 0,
         CaptionDirection::Vertical => 1,
@@ -2403,11 +2413,11 @@ fn emit_caption_header(caption: &Caption) -> RecordNode {
         CaptionSide::Top => 2,
         CaptionSide::Bottom => 3,
     };
-    // bit2: 캡션 폭에 마진 포함(full-size) — width=None과 대응.
+    // Bit 2 extends caption width through margins (full-size), mapped to None.
     w.write_u32(side | (u32::from(caption.width.is_none()) << 2));
-    w.write_i32(caption.width.unwrap_or(0) as i32);
+    w.write_i32(caption.width.unwrap_or(0).min(i32::MAX as u32) as i32);
     w.write_u16(caption.gap.clamp(0, i32::from(u16::MAX)) as u16);
-    w.write_i32(caption.last_width as i32);
+    w.write_i32(caption.last_width.min(i32::MAX as u32) as i32);
     RecordNode {
         tag: tag::LIST_HEADER,
         data: w.into_bytes(),
@@ -2415,8 +2425,8 @@ fn emit_caption_header(caption: &Caption) -> RecordNode {
     }
 }
 
-/// 캡션 레코드 열(LIST_HEADER + 문단들). 캡션은 개체 요소 레코드(TABLE 등)보다
-/// **앞**에 온다(pyhwp seen_table_body 실측 규칙).
+/// Caption record sequence (LIST_HEADER plus paragraphs). It precedes the
+/// object record such as TABLE, matching pyhwp `seen_table_body` behavior.
 fn emit_caption_records(
     caption: &Caption,
     synthesize: bool,
@@ -2494,7 +2504,7 @@ fn emit_picture(
     } else {
         w.write_bytes(&pic.common_data);
     }
-    // 캡션(표 71): 개체 공통 속성 뒤 — 자식 레코드 맨 앞에 방출.
+    // Table 71 caption follows common object properties and leads child records.
     let mut children = match &pic.caption {
         Some(caption) => emit_caption_records(
             caption,
@@ -2516,6 +2526,62 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_hwpunit_values_saturate_instead_of_wrapping() {
+        let caption = Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: i32::MAX,
+            width: Some(u32::MAX),
+            last_width: u32::MAX,
+            paragraphs: Vec::new(),
+        };
+        let record = emit_caption_header(&caption);
+        assert_eq!(
+            i32::from_le_bytes(record.data[12..16].try_into().unwrap()),
+            i32::MAX
+        );
+        assert_eq!(
+            u16::from_le_bytes(record.data[16..18].try_into().unwrap()),
+            u16::MAX
+        );
+        assert_eq!(
+            i32::from_le_bytes(record.data[18..22].try_into().unwrap()),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    fn synthesized_generic_gso_emits_its_caption_first() {
+        let generic = hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: Some(Caption {
+                side: CaptionSide::Bottom,
+                direction: CaptionDirection::Horizontal,
+                gap: 100,
+                width: None,
+                last_width: 200,
+                paragraphs: vec![hwp_model::Paragraph::default()],
+            }),
+        };
+        let node = emit_control(
+            &Control::Generic(generic),
+            true,
+            false,
+            false,
+            &mut Vec::new(),
+        );
+        assert_eq!(node.children[0].tag, tag::LIST_HEADER);
+        assert_eq!(node.children[1].tag, tag::PARA_HEADER);
+    }
 
     /// hwpx 출신 이미지의 합성 도형 레코드가 정품 5.1.x 구조여야 한다.
     /// SHAPE_COMPONENT(196B, "$pic") → SHAPE_COMPONENT_PICTURE(91B): 자르기는
