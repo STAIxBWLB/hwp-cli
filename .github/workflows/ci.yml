@@ -36,8 +36,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Gate layout: platform-independent checks run ONCE in `lint`; the 3-OS matrix in `test`
-# runs only cargo test. Same command set as scripts/check.sh (local mirror) plus the
-# structured-corpus gate — keep them in sync or "local green, CI red" drift comes back.
+# runs only cargo test; the fixed Ubuntu PDF-parity job runs the committed public oracle.
+# Same command set as scripts/check.sh (local mirror) plus the structured-corpus and public
+# parity gates — keep them in sync or "local green, CI red" drift comes back.
 jobs:
   lint:
     name: lint
@@ -68,6 +69,43 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/check-structured-corpus.sh
+
+  pdf-parity:
+    name: pdf-parity
+    timeout-minutes: 30
+    # The manifest pins the Poppler binary, so do not use ubuntu-latest here.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Poppler tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y poppler-utils
+          expected="$(python3 -c 'import json; print(json.load(open("fixtures/pdf-parity/public/manifest.json", encoding="utf-8"))["pins"]["poppler_version"])')"
+          actual="$(pdfinfo -v 2>&1 | sed -n '1p')"
+          echo "pdfinfo: $actual"
+          test "$actual" = "$expected"
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch exact OFL fonts
+        shell: bash
+        run: bash scripts/fetch-pdf-parity-fonts.sh
+      - name: Build hwp
+        run: cargo build --locked -p hwp-cli
+      - name: Public PDF parity oracle
+        shell: bash
+        env:
+          HWP_FONT_DIR: fixtures/pdf-parity/fonts
+        run: bash scripts/pdf-parity.sh run --oracle-dir fixtures/pdf-parity/public/oracle
+      - name: Upload numeric parity scorecards
+        uses: actions/upload-artifact@v7
+        with:
+          name: pdf-parity-scoreboard
+          path: fixtures/pdf-parity/public/scoreboard/
+          if-no-files-found: error
+          retention-days: 7
 
   test:
     name: test (${{ matrix.os }})

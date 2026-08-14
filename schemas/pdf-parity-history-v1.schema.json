@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/pdf-parity-history-v1.schema.json",
+  "title": "hwp PDF parity cross-PR history v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "profile", "monotonic_metrics", "rows", "monotonic_non_increasing"],
+  "properties": {
+    "contract": { "const": "hwp-pdf-parity-history-v1" },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_sha256", "oracle_sha256", "poppler_version", "dpi", "font_sha256"],
+      "properties": {
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "oracle_sha256": { "$ref": "#/$defs/sha256" },
+        "poppler_version": { "const": "pdfinfo version 26.07.0" },
+        "dpi": { "const": 150 },
+        "font_sha256": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "monotonic_metrics": {
+      "const": ["bad_pixel_pct", "mae"]
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        { "$ref": "#/$defs/pr4" },
+        { "$ref": "#/$defs/pr5" },
+        { "$ref": "#/$defs/pr6" },
+        { "$ref": "#/$defs/pr7" },
+        { "$ref": "#/$defs/pr8" },
+        { "$ref": "#/$defs/pr9" }
+      ],
+      "items": false
+    },
+    "monotonic_non_increasing": { "const": true }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "revision", "page_delta", "text_order_equal", "font_substitutions", "max_bad_pixel_pct", "bad_pixel_pct", "mae", "candidate_pdf_sha256"],
+      "properties": {
+        "label": { "enum": ["PR4", "PR5", "PR6", "PR7", "PR8", "PR9"] },
+        "revision": {
+          "oneOf": [
+            { "$ref": "#/$defs/commit" },
+            { "const": "pr89-final-tree" }
+          ]
+        },
+        "page_delta": { "const": 0 },
+        "text_order_equal": { "const": true },
+        "font_substitutions": { "const": 0 },
+        "max_bad_pixel_pct": { "enum": [0.6, 0.3] },
+        "bad_pixel_pct": { "type": "number", "minimum": 0, "maximum": 0.05 },
+        "mae": { "type": "number", "minimum": 0, "maximum": 5 },
+        "candidate_pdf_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "pr4": { "allOf": [{ "$ref": "#/$defs/row" }, { "properties": { "label": { "const": "PR4" }, "revision": { "const": "ee871c8430fd22edf418845aef14c6ee118df831" }, "max_bad_pixel_pct": { "const": 0.6 } } }] },
+    "pr5": { "allOf": [{ "$ref": "#/$defs/row" }, { "properties": { "label": { "const": "PR5" }, "revision": { "const": "c7447b8d4ec72a5f2930b9d0aff6c34800e3df2f" }, "max_bad_pixel_pct": { "const": 0.6 } } }] },
+    "pr6": { "allOf": [{ "$ref": "#/$defs/row" }, { "properties": { "label": { "const": "PR6" }, "revision": { "const": "0d7ea9cd93682e01c29fa75b9d3d66f1cf8c9692" }, "max_bad_pixel_pct": { "const": 0.6 } } }] },
+    "pr7": { "allOf": [{ "$ref": "#/$defs/row" }, { "properties": { "label": { "const": "PR7" }, "revision": { "const": "685600175aed81c69b9b6d1b56fc0c51ee5d6be3" }, "max_bad_pixel_pct": { "const": 0.3 } } }] },
+    "pr8": { "allOf": [{ "$ref": "#/$defs/row" }, { "properties": { "label": { "const": "PR8" }, "revision": { "const": "ff97ce6282b030189844c8980bd49fa432a36355" }, "max_bad_pixel_pct": { "const": 0.3 } } }] },
+    "pr9": { "allOf": [{ "$ref": "#/$defs/row" }, { "properties": { "label": { "const": "PR9" }, "revision": { "const": "pr89-final-tree" }, "max_bad_pixel_pct": { "const": 0.3 } } }] }
+  }
+}

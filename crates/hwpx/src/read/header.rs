@@ -202,6 +202,18 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             });
                         }
                     }
+                    b"substFont" => {
+                        // OWPML stores a font's fallback face as a nested
+                        // <hh:substFont face="..."/>.  The HWP5-compatible IR
+                        // keeps that name on FaceName::alt_name; do not let the
+                        // nested element disappear while parsing the flat
+                        // reference list.
+                        if let Some(slot) = current_lang
+                            && let Some(font) = header.fonts[slot].last_mut()
+                        {
+                            font.alt_name = attr(e, "face").or_else(|| attr(e, "name"));
+                        }
+                    }
                     b"charPr" => {
                         let mut attr_bits = 0u32;
                         if attr(e, "useFontSpace").as_deref() == Some("1") {

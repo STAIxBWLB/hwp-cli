@@ -122,21 +122,25 @@ fn write_fontfaces(out: &mut String, header: &DocHeader) {
             fonts.len()
         );
         for (i, f) in fonts.iter().enumerate() {
-            match &f.type_info {
-                Some(attrs) => {
-                    let _ = write!(
-                        out,
-                        r##"<hh:font id="{i}" face="{}" type="TTF" isEmbedded="0"><hh:typeInfo{attrs}/></hh:font>"##,
-                        esc(&f.name)
-                    );
+            if f.type_info.is_some() || f.alt_name.is_some() {
+                let _ = write!(
+                    out,
+                    r##"<hh:font id="{i}" face="{}" type="TTF" isEmbedded="0">"##,
+                    esc(&f.name)
+                );
+                if let Some(alt_name) = &f.alt_name {
+                    let _ = write!(out, r##"<hh:substFont face="{}"/>"##, esc(alt_name));
                 }
-                None => {
-                    let _ = write!(
-                        out,
-                        r##"<hh:font id="{i}" face="{}" type="TTF" isEmbedded="0"/>"##,
-                        esc(&f.name)
-                    );
+                if let Some(attrs) = &f.type_info {
+                    let _ = write!(out, r##"<hh:typeInfo{attrs}/>"##);
                 }
+                out.push_str("</hh:font>");
+            } else {
+                let _ = write!(
+                    out,
+                    r##"<hh:font id="{i}" face="{}" type="TTF" isEmbedded="0"/>"##,
+                    esc(&f.name)
+                );
             }
         }
         out.push_str("</hh:fontface>");

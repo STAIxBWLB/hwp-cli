@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/pdf-parity-scorecard-v2.schema.json",
+  "title": "hwp PDF parity per-case scorecard v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "case",
+    "source",
+    "oracle",
+    "dpi",
+    "thresholds",
+    "passed_gates",
+    "failed_gates",
+    "eligible",
+    "pages",
+    "media_box",
+    "fonts",
+    "render",
+    "text",
+    "raster",
+    "rois",
+    "determinism"
+  ],
+  "properties": {
+    "contract": { "const": "hwp-pdf-parity-scorecard-v2" },
+    "case": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
+    "source": { "$ref": "#/$defs/artifact" },
+    "oracle": { "$ref": "#/$defs/artifact" },
+    "dpi": { "const": 150 },
+    "thresholds": { "$ref": "#/$defs/thresholds" },
+    "passed_gates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "failed_gates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "eligible": { "type": "boolean" },
+    "pages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ours", "oracle", "delta"],
+      "properties": {
+        "ours": { "type": "integer", "minimum": 0 },
+        "oracle": { "type": "integer", "minimum": 0 },
+        "delta": { "type": "integer" }
+      }
+    },
+    "media_box": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pages_compared", "pages_equal", "max_delta_pt", "within_threshold", "per_page"],
+      "properties": {
+        "pages_compared": { "type": "integer", "minimum": 0 },
+        "pages_equal": { "type": "integer", "minimum": 0 },
+        "max_delta_pt": { "type": "number", "minimum": 0 },
+        "within_threshold": { "type": "boolean" },
+        "per_page": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/media_box_page" }
+        }
+      }
+    },
+    "fonts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "oracle", "candidate_all_embedded_subset_unicode", "oracle_all_embedded_subset_unicode", "passed"],
+      "properties": {
+        "candidate": { "type": "array", "items": { "$ref": "#/$defs/font" } },
+        "oracle": { "type": "array", "items": { "$ref": "#/$defs/font" } },
+        "candidate_all_embedded_subset_unicode": { "type": "boolean" },
+        "oracle_all_embedded_subset_unicode": { "type": "boolean" },
+        "passed": { "type": "boolean" }
+      }
+    },
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report_source", "report_available", "complete", "font_coverage", "substitutions", "unsupported", "incomplete", "fatal", "issue_codes", "passed"],
+      "properties": {
+        "report_source": { "enum": ["json", "stderr", "none", "mixed"] },
+        "report_available": { "type": "boolean" },
+        "complete": { "type": "boolean" },
+        "font_coverage": {
+          "oneOf": [
+            { "$ref": "#/$defs/font_coverage" },
+            { "type": "null" }
+          ]
+        },
+        "substitutions": { "type": "integer", "minimum": 0 },
+        "unsupported": { "type": "integer", "minimum": 0 },
+        "incomplete": { "type": "integer", "minimum": 0 },
+        "fatal": { "type": "integer", "minimum": 0 },
+        "issue_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]*$", "maxLength": 128 }
+        },
+        "passed": { "type": "boolean" }
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pages_compared", "pages_equal", "first_diff_page", "order_equal", "passed"],
+      "properties": {
+        "pages_compared": { "type": "integer", "minimum": 0 },
+        "pages_equal": { "type": "integer", "minimum": 0 },
+        "first_diff_page": { "type": ["integer", "null"], "minimum": 1 },
+        "order_equal": { "type": "boolean" },
+        "passed": { "type": "boolean" }
+      }
+    },
+    "raster": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/raster_page" }
+    },
+    "rois": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/roi_result" }
+    },
+    "determinism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runs", "byte_equal", "sha256", "passed"],
+      "properties": {
+        "runs": { "const": 2 },
+        "byte_equal": { "type": "boolean" },
+        "sha256": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/sha256" }
+        },
+        "passed": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gate": { "enum": ["page_count", "media_box", "text", "fonts", "render_issues", "raster", "roi", "determinism"] },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*\\.(hwp|hwpx|pdf)$" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_box_pt", "dx_px", "dy_px", "ink_ratio_min", "ink_ratio_max", "bad_pixel_pct_max", "mae_max", "roi_match_radius_px", "roi_precision_min", "roi_recall_min"],
+      "properties": {
+        "media_box_pt": { "const": 0.5 },
+        "dx_px": { "const": 2 },
+        "dy_px": { "const": 2 },
+        "ink_ratio_min": { "const": 0.97 },
+        "ink_ratio_max": { "const": 1.03 },
+        "bad_pixel_pct_max": { "const": 0.05 },
+        "mae_max": { "const": 5 },
+        "roi_match_radius_px": { "const": 10 },
+        "roi_precision_min": { "const": 0.95 },
+        "roi_recall_min": { "const": 0.95 }
+      }
+    },
+    "font": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "embedded", "subset", "unicode"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 256 },
+        "type": { "type": "string", "maxLength": 64 },
+        "embedded": { "type": "boolean" },
+        "subset": { "type": "boolean" },
+        "unicode": { "type": "boolean" }
+      }
+    },
+    "font_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matched", "substituted", "missing", "subset_fallback", "substitution_free"],
+      "properties": {
+        "matched": { "type": "integer", "minimum": 0 },
+        "substituted": { "type": "integer", "minimum": 0 },
+        "missing": { "type": "integer", "minimum": 0 },
+        "subset_fallback": { "type": "integer", "minimum": 0 },
+        "substitution_free": { "type": "boolean" }
+      }
+    },
+    "media_box_page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page", "ours", "oracle", "delta_pt"],
+      "properties": {
+        "page": { "type": "integer", "minimum": 1 },
+        "ours": { "$ref": "#/$defs/box" },
+        "oracle": { "$ref": "#/$defs/box" },
+        "delta_pt": { "type": "number", "minimum": 0 }
+      }
+    },
+    "box": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "number" }
+    },
+    "raster_page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page", "dx", "dy", "ink_ratio", "bad_pixel_pct", "mae", "passed"],
+      "properties": {
+        "page": { "type": "integer", "minimum": 1 },
+        "dx": { "type": "integer" },
+        "dy": { "type": "integer" },
+        "ink_ratio": { "type": "number", "minimum": 0 },
+        "bad_pixel_pct": { "type": "number", "minimum": 0, "maximum": 1 },
+        "mae": { "type": "number", "minimum": 0, "maximum": 255 },
+        "passed": { "type": "boolean" }
+      }
+    },
+    "roi_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "page", "x", "y", "width", "height", "precision", "recall", "passed"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$", "maxLength": 64 },
+        "page": { "type": "integer", "minimum": 1 },
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "precision": { "type": "number", "minimum": 0, "maximum": 1 },
+        "recall": { "type": "number", "minimum": 0, "maximum": 1 },
+        "passed": { "type": "boolean" }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "eligible": { "const": true },
+        "failed_gates": { "maxItems": 0 },
+        "passed_gates": {
+          "minItems": 8,
+          "maxItems": 8,
+          "contains": { "const": "page_count" },
+          "allOf": [
+            { "contains": { "const": "media_box" } },
+            { "contains": { "const": "text" } },
+            { "contains": { "const": "fonts" } },
+            { "contains": { "const": "render_issues" } },
+            { "contains": { "const": "raster" } },
+            { "contains": { "const": "roi" } },
+            { "contains": { "const": "determinism" } }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "eligible": { "const": false },
+        "failed_gates": { "minItems": 1 }
+      }
+    }
+  ]
+}

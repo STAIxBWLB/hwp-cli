@@ -875,10 +875,10 @@ fn parse_table(
             // 따로 소비하므로 여기서 보이는 건 이 표의 것뿐이다. 순서: left,right,top,bottom.
             Event::Empty(e) if e.local_name().as_ref() == b"inMargin" => {
                 table.inner_margins = [
-                    attr_u16(&e, "left").unwrap_or(0),
-                    attr_u16(&e, "right").unwrap_or(0),
-                    attr_u16(&e, "top").unwrap_or(0),
-                    attr_u16(&e, "bottom").unwrap_or(0),
+                    attr_margin_u16(&e, "left"),
+                    attr_margin_u16(&e, "right"),
+                    attr_margin_u16(&e, "top"),
+                    attr_margin_u16(&e, "bottom"),
                 ];
             }
             // 배치: <hp:pos>(글자처럼취급/위치기준/오프셋), <hp:sz>(경계 너비/높이 —
@@ -976,6 +976,19 @@ fn parse_caption(
     Ok(caption)
 }
 
+/// Reads an HWPX cell/table margin while retaining the schema's unsigned
+/// 32-bit default sentinel. `4294967295` means "use the enclosing table
+/// default"; the IR uses `u16::MAX` for that sentinel so HWP5 identity data is
+/// not normalized by the renderer. Ordinary margins remain the existing u16
+/// values.
+fn attr_margin_u16(e: &BytesStart<'_>, name: &str) -> u16 {
+    match attr_u32(e, name) {
+        Some(u32::MAX) => u16::MAX,
+        Some(value) => u16::try_from(value).unwrap_or(0),
+        None => 0,
+    }
+}
+
 /// `<hp:tc>` — 셀 하나.
 fn parse_cell(
     reader: &mut XmlReader<'_>,
@@ -1018,10 +1031,10 @@ fn parse_cell(
                 }
                 b"cellMargin" => {
                     cell.margins = [
-                        attr_u16(&e, "left").unwrap_or(0),
-                        attr_u16(&e, "right").unwrap_or(0),
-                        attr_u16(&e, "top").unwrap_or(0),
-                        attr_u16(&e, "bottom").unwrap_or(0),
+                        attr_margin_u16(&e, "left"),
+                        attr_margin_u16(&e, "right"),
+                        attr_margin_u16(&e, "top"),
+                        attr_margin_u16(&e, "bottom"),
                     ];
                 }
                 b"subList" => {
@@ -1165,7 +1178,14 @@ fn collect_sub_lists(
         match next_event(reader)? {
             Event::Start(e) => {
                 let name = e.local_name().as_ref().to_vec();
-                if name == b"subList" {
+                if name == b"caption" {
+                    // Unknown/generic shape containers (for example hp:container)
+                    // do not go through collect_shape, but they can still carry
+                    // the same hp:caption child as primitive shapes. Keep the
+                    // caption separate from the object's text lists so renderers
+                    // and text extraction can apply the configured side/order.
+                    generic.caption = Some(parse_caption(reader, &e, warnings)?);
+                } else if name == b"subList" {
                     let mut list = ParagraphList {
                         header_data: Vec::new(),
                         paragraphs: Vec::new(),

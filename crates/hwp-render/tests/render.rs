@@ -1436,6 +1436,179 @@ fn 표_레이아웃(
     (list, warns.finish())
 }
 
+/// Regime-A CELL tables use the cached line layout as the only trustworthy
+/// internal page boundary.  This fixture keeps all assertions structural so
+/// a font substitution cannot change the expected geometry.
+#[test]
+fn cached_cell_fragments_preserve_text_nested_object_and_continuation_borders() {
+    // 650 pt fits on a fresh page, but the preceding paragraphs leave less
+    // than the 600 pt cached text run on page 1. There is deliberately no
+    // cached page flag/reset: the last fitting cached line boundary must be
+    // selected from the actual remaining capacity.
+    let mut doc = 표_분할_문서(2, 1, 650, 0, false, 8);
+    let mut source = hwp_convert::from_markdown("x")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    let chars: Vec<_> = (0..60)
+        .map(|index| hwp_model::HwpChar::Text(char::from(b'a' + (index % 26) as u8)))
+        .collect();
+    let line_segs: Vec<_> = (0..60)
+        .map(|index| hwp_model::LineSeg {
+            text_start: index,
+            v_pos: index as i32 * 1000,
+            line_height: 1000,
+            text_height: 900,
+            baseline_gap: 800,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 50000,
+            flags: 0x0006_0000,
+        })
+        .collect();
+    source.chars = chars.clone();
+    source.line_segs = line_segs;
+    source.controls.clear();
+
+    let nested_fill = doc.header.border_fills.len() as u16 + 1;
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x0011_2233),
+        ..Default::default()
+    });
+    let nested = hwp_model::Table {
+        common_data: Vec::new(),
+        placement: None,
+        attr: 0,
+        rows: 1,
+        cols: 1,
+        cell_spacing: 0,
+        inner_margins: [0; 4],
+        row_cell_counts: vec![1],
+        border_fill: hwp_model::BorderFillId(nested_fill),
+        table_tail: Vec::new(),
+        cells: vec![hwp_model::Cell {
+            list_attr: 0,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: hwp_model::HwpUnit(1800),
+            height: hwp_model::HwpUnit(1000),
+            margins: [0; 4],
+            border_fill: hwp_model::BorderFillId(nested_fill),
+            header_tail: Vec::new(),
+            paragraphs: Vec::new(),
+        }],
+        caption: None,
+        extras: Vec::new(),
+    };
+    source.controls.push(hwp_model::Control::Table(nested));
+
+    let outer = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| &mut paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("outer table");
+    outer.cells[0].height = hwp_model::HwpUnit(65000);
+    outer.cells[0].paragraphs = vec![source];
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_eq!(
+        list.pages.len(),
+        2,
+        "remaining-space line boundary creates one continuation page"
+    );
+    for page in &list.pages {
+        let rects = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Rect { y, h, .. } => Some((*y, *h)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rects
+                .iter()
+                .all(|(y, h)| *y >= 0.0 && *y + *h <= page.height_pt + 0.6),
+            "fragment bounds exceed page: {rects:?}"
+        );
+    }
+    let all_text =
+        list.pages
+            .iter()
+            .flat_map(page_texts)
+            .fold(String::new(), |mut text, fragment| {
+                text.push_str(fragment);
+                text
+            });
+    if all_text.is_empty() {
+        eprintln!("skip text-order assertion: no usable font");
+    } else {
+        assert_eq!(all_text.matches("abcdefghijklmnopqrstuvwxyz").count(), 2);
+        assert!(all_text.starts_with("abcdefghijklmnopqrstuvwxyz"));
+    }
+    let nested_rects = list
+        .pages
+        .iter()
+        .flat_map(|page| page.items.iter())
+        .filter(|item| {
+            matches!(
+                item,
+                hwp_render::display::Item::Rect {
+                    fill: 0x0011_2233,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(nested_rects, 1, "nested object must be emitted once");
+    assert!(
+        report
+            .info
+            .iter()
+            .any(|issue| { issue.code == hwp_render::RenderIssueCode::TableSplitAcrossPages })
+    );
+    assert!(report.issues.iter().all(|issue| {
+        issue.code != hwp_render::RenderIssueCode::TableCellFragmentationIncomplete
+    }));
+}
+
+#[test]
+fn cell_split_without_cached_boundary_is_incomplete() {
+    let mut doc = 표_분할_문서(2, 1, 900, 0, false, 0);
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("outer table");
+    table.cells[0].height = hwp_model::HwpUnit(90000);
+    table.cells[0].paragraphs = vec![
+        hwp_convert::from_markdown("uncached")
+            .sections
+            .remove(0)
+            .paragraphs
+            .remove(0),
+    ];
+
+    let (_list, report) = 표_레이아웃(&doc);
+    let issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.code == hwp_render::RenderIssueCode::TableCellFragmentationIncomplete)
+        .expect("required CELL split must report missing cache");
+    assert_eq!(issue.severity, hwp_render::RenderIssueSeverity::Incomplete);
+    assert_eq!(issue.stage, hwp_render::RenderIssueStage::Layout);
+}
+
 /// GB-13: a bottom table caption is placed below cell text with its gap.
 #[test]
 fn 캡션_표_아래_배치() {

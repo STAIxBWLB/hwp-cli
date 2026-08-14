@@ -205,6 +205,11 @@ pub const KO: &[(&str, &str, &str)] = &[
     ("render", "pages", "페이지 범위: \"1\", \"1-3\", \"all\""),
     ("render", "dpi", "해상도 DPI (유한한 36..=600)"),
     ("render", "format", "출력 포맷 (생략 시 확장자에서 추론)"),
+    (
+        "render",
+        "report",
+        "기계 판독 렌더 보고서(JSON)를 원자적으로 기록",
+    ),
     ("render", "font_dir", "추가 폰트 디렉터리 (반복 가능)"),
     // new
     ("new", "", "새 문서 생성"),

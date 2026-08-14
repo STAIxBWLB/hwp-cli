@@ -33,7 +33,7 @@ Korean tone.
 
 ```bash
 cargo build                    # debug build (bin: hwp)
-scripts/check.sh               # local CI mirror = the 3 CI gates (fmt+clippy+test, required before PR)
+scripts/check.sh               # local CI mirror = Rust + fixture gates (required before PR)
 HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus + self-verification harness
 ```
 
@@ -62,8 +62,11 @@ HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus
   against origin's main**. (The old fork → upstream setup is retired.)
 - Submit as a PR and **squash merge once CI is green (ubuntu + macOS + windows all required)**,
   keeping the `(#N)` suffix convention in the merge commit title.
-- The pre-PR local gate is `scripts/check.sh` - the same three commands as CI (fmt → clippy
-  --all-targets -D warnings → test). Do not open a PR that does not pass it.
+- The pre-PR local gate is `scripts/check.sh` - the same three Rust commands as CI (fmt → clippy
+  --all-targets -D warnings → test), the PDF-runner tests, and the structured corpus gate. The
+  public PDF oracle gate runs automatically when the pinned `pdfinfo version 24.02.0` is available;
+  on other hosts use `HWP_PDF_PARITY=1` to require it explicitly. CI always runs that gate on
+  `ubuntu-24.04`. Do not open a PR that does not pass the applicable gates.
 
 ## Data policy (important)
 
@@ -76,6 +79,12 @@ HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus
 - **Never commit the Hancom specification or derivatives** (extracted text, page captures) - see
   `docs/README.md`. Cite the spec by section number only (e.g. `한글문서파일형식 5.0 §4.2.6`). The
   local `docs/spec.txt` (gitignored) is for reference while working.
+- **Narrow PDF-parity exception:** the owner-authored, anonymized one-page source and exactly
+  `fixtures/pdf-parity/public/oracle/public-safety-rfp-p1.pdf` may be committed for the public
+  regression gate. Its provenance is Mac Hancom HWP 12.30.0 build 6446 on macOS 26.6.1 build
+  25G76, Quartz PDFContext, default Save as PDF, A4, one page. This is a bounded local fixture,
+  not a universal or Windows parity claim. Private or third-party Hancom artifacts, other oracle
+  PDFs/PNGs, and private corpus documents remain forbidden.
 
 ## Design knowledge lives in docs/design/
 

@@ -1508,6 +1508,196 @@ impl TableSplitCtx<'_, '_> {
 /// 기본 셀 안쪽 여백 (HWPUNIT — 한글 기본값).
 const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
 
+/// One cached page-sized run of a cell.  The selections retain paragraph
+/// boundaries, while `first_v_pos` translates Hancom's page-relative cache to
+/// the fragment's page-space origin.
+#[derive(Debug, Clone)]
+struct CellFragmentGroup {
+    selections: Vec<BoxParaSelection>,
+    first_v_pos: i32,
+    height: f32,
+    has_content: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CellSplitPlan {
+    groups: Vec<CellFragmentGroup>,
+}
+
+impl CellSplitPlan {
+    fn is_usable(&self) -> bool {
+        self.groups.len() > 1 && self.groups.iter().all(|group| group.has_content)
+    }
+}
+
+/// Build Regime-A cell fragments from the line layout saved by Hancom.
+///
+/// A CELL table is only safely splittable at a cached line boundary. Explicit
+/// cached page starts (`flags & 1` or a vertical-position reset) are preserved;
+/// otherwise a boundary is selected immediately before the first cached line
+/// that would exceed the remaining page capacity. A paragraph without line
+/// segments is not guessed into a page: callers must surface an incomplete
+/// render when that paragraph is part of a required split.
+fn cached_cell_split_plan(
+    cell: &hwp_model::Cell,
+    measured_content_h: f32,
+    first_capacity_pt: f32,
+    following_capacity_pt: f32,
+) -> Option<CellSplitPlan> {
+    let para_count = cell.paragraphs.len();
+    let mut first_v = vec![0i32];
+    let mut max_end = vec![0i32];
+    let mut has_content = vec![false];
+    let mut boundaries = HashSet::new();
+    let mut current = 0usize;
+    let mut previous_v = None;
+    let mut saw_line = false;
+    let mut current_capacity = first_capacity_pt.max(0.0);
+    let following_capacity = following_capacity_pt.max(1.0);
+
+    for (para_index, para) in cell.paragraphs.iter().enumerate() {
+        if para.line_segs.is_empty() {
+            // Empty paragraphs are harmless; text without cached geometry is
+            // not, because it could cross the required split.
+            if !para.chars.is_empty() {
+                return None;
+            }
+            continue;
+        }
+        let wchar_len = para.wchar_len();
+        if para
+            .line_segs
+            .iter()
+            .any(|seg| seg.text_start > wchar_len || seg.line_height <= 0 || seg.v_pos < 0)
+        {
+            return None;
+        }
+
+        for (seg_index, seg) in para.line_segs.iter().enumerate() {
+            let line_end = para
+                .line_segs
+                .get(seg_index + 1)
+                .map_or(wchar_len, |next| next.text_start);
+            if line_end <= seg.text_start {
+                // A trailing empty cache record is legal.  It carries no
+                // visible content and therefore cannot define a split.
+                continue;
+            }
+            let end = seg
+                .v_pos
+                .saturating_add(seg.line_height.max(seg.text_height));
+            if !saw_line && (end - seg.v_pos) as f32 / 100.0 > current_capacity + 0.5 {
+                // No complete cached line fits in the current-page sliver.
+                // Size the first group for the fresh-page capacity; the
+                // emitter will move it before drawing.
+                current_capacity = following_capacity;
+            }
+            let explicit_boundary = saw_line
+                && (seg.flags & 0x1 != 0
+                    || previous_v.is_some_and(|previous| seg.v_pos < previous));
+            let capacity_boundary = saw_line
+                && !explicit_boundary
+                && has_content[current]
+                && (end - first_v[current]) as f32 / 100.0 > current_capacity + 0.5;
+            if explicit_boundary || capacity_boundary {
+                boundaries.insert((para_index, seg_index));
+                current += 1;
+                first_v.push(seg.v_pos);
+                max_end.push(seg.v_pos);
+                has_content.push(false);
+                current_capacity = following_capacity;
+            }
+            if !has_content[current] {
+                first_v[current] = seg.v_pos;
+            }
+            max_end[current] = max_end[current].max(end);
+            has_content[current] = true;
+            previous_v = Some(seg.v_pos);
+            saw_line = true;
+        }
+    }
+
+    // Rebuild the per-group paragraph ranges in a second, deterministic pass.
+    // Keeping the validation pass separate makes malformed cache handling
+    // explicit and reuses the exact explicit/capacity decisions above.
+    if !saw_line || !has_content.iter().all(|value| *value) {
+        return None;
+    }
+    let group_count = has_content.len();
+    let mut groups = (0..group_count)
+        .map(|index| CellFragmentGroup {
+            selections: vec![BoxParaSelection::Empty; para_count],
+            first_v_pos: first_v[index],
+            height: ((max_end[index] - first_v[index]).max(1) as f32) / 100.0,
+            has_content: true,
+        })
+        .collect::<Vec<_>>();
+    current = 0;
+    for (para_index, para) in cell.paragraphs.iter().enumerate() {
+        if para.line_segs.is_empty() {
+            // A control-only paragraph has no line boundary of its own. It is
+            // attached to the current cached group so nested tables/images
+            // are emitted once without inventing a page split. A paragraph
+            // containing text would need a cached range and was rejected in
+            // the validation pass above.
+            if !para.controls.is_empty() {
+                groups[current].selections[para_index] = BoxParaSelection::All;
+            }
+            continue;
+        }
+        let wchar_len = para.wchar_len();
+        for (seg_index, seg) in para.line_segs.iter().enumerate() {
+            let line_end = para
+                .line_segs
+                .get(seg_index + 1)
+                .map_or(wchar_len, |next| next.text_start);
+            if line_end <= seg.text_start {
+                continue;
+            }
+            if boundaries.contains(&(para_index, seg_index)) {
+                current += 1;
+            }
+            match &mut groups[current].selections[para_index] {
+                BoxParaSelection::Empty => {
+                    groups[current].selections[para_index] =
+                        BoxParaSelection::Segments(seg_index..seg_index + 1);
+                }
+                BoxParaSelection::Segments(range) => range.end = seg_index + 1,
+                BoxParaSelection::All => return None,
+            }
+        }
+    }
+
+    // A measured nested object or a cache tail can add a small amount beyond
+    // the line geometry. Keep object overflow on the fragment that owns the
+    // object; otherwise keep ordinary cache drift on the final fragment rather
+    // than manufacturing another page boundary that is not in the source.
+    let cached_height: f32 = groups.iter().map(|group| group.height).sum();
+    if measured_content_h > cached_height
+        && let Some(target) = groups
+            .iter()
+            .position(|group| {
+                group
+                    .selections
+                    .iter()
+                    .enumerate()
+                    .any(|(para_index, selection)| {
+                        !cell.paragraphs[para_index].controls.is_empty()
+                            && match selection {
+                                BoxParaSelection::All => true,
+                                BoxParaSelection::Segments(range) => range.start == 0,
+                                BoxParaSelection::Empty => false,
+                            }
+                    })
+            })
+            .or_else(|| groups.len().checked_sub(1))
+            .and_then(|index| groups.get_mut(index))
+    {
+        target.height += measured_content_h - cached_height;
+    }
+    Some(CellSplitPlan { groups })
+}
+
 /// 페이지 가구 (머리말/꼬리말) — 페이지 마감 시마다 그린다.
 /// Header/footer entries retain their apply target and are selected by printed
 /// page parity (GG-16).
@@ -2206,13 +2396,16 @@ fn layout_para_objects(
                         doc,
                         store,
                         page,
-                        flat[range.clone()].iter().copied(),
+                        flat[range.clone()]
+                            .iter()
+                            .map(|para| (*para, BoxParaSelection::All)),
                         cx,
                         cy,
                         bw,
                         warnings,
                         Some(&mut box_list_state),
                         None,
+                        0,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -2303,13 +2496,14 @@ fn layout_para_objects(
                         doc,
                         store,
                         page,
-                        flat,
+                        flat.map(|para| (para, BoxParaSelection::All)),
                         bx,
                         by,
                         bw,
                         warnings,
                         Some(&mut box_list_state),
                         None,
+                        0,
                     );
                     flow_end = flow_end.max(inner);
                 }
@@ -2384,13 +2578,34 @@ fn layout_para_objects(
 
 /// 셀 여백 (왼/오른/위/아래) pt — 셀 지정 → 표 기본 → 한글 기본.
 fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
-    let m = if cell.margins.iter().any(|&v| v > 0) {
-        cell.margins
-    } else if table.inner_margins.iter().any(|&v| v > 0) {
-        table.inner_margins
+    // HWP5 uses 0xffff in a cell LIST_HEADER to mean "use the table
+    // default".  It is important that the sentinel remains in the IR for a
+    // lossless hwp5 -> hwp5 round trip, so resolve it only at render time.
+    // An all-zero cell margin array is the older IR convention for an omitted
+    // cell margin and keeps the existing table/default fallback behavior.
+    let table_default = if table.inner_margins.iter().any(|&v| v > 0 && v != u16::MAX) {
+        std::array::from_fn(|i| {
+            if table.inner_margins[i] == u16::MAX {
+                DEFAULT_CELL_MARGINS[i]
+            } else {
+                table.inner_margins[i]
+            }
+        })
     } else {
         DEFAULT_CELL_MARGINS
     };
+    let raw = if cell.margins.iter().all(|&v| v == 0) {
+        table_default
+    } else {
+        cell.margins
+    };
+    let m: [u16; 4] = std::array::from_fn(|i| {
+        if raw[i] == u16::MAX {
+            table_default[i]
+        } else {
+            raw[i]
+        }
+    });
     (
         m[0] as f32 / 100.0,
         m[1] as f32 / 100.0,
@@ -2583,6 +2798,40 @@ fn layout_table(
         }
     }
 
+    // CELL policy is the one table mode where a single row may legitimately
+    // cross a page.  Use the source's cached line boundaries for that case;
+    // the row-based planner below remains the conservative fallback for
+    // TABLE/NONE and for CELL documents that do not carry enough cache data.
+    if table.page_break_policy() == hwp_model::TablePageBreak::Cell
+        && !table
+            .placement
+            .as_ref()
+            .is_some_and(|placement| placement.treat_as_char)
+        && split
+            .as_deref()
+            .is_some_and(|ctx| y + total_h > ctx.body_bottom)
+        && let Some(result) = layout_table_cell_fragments(
+            doc,
+            store,
+            page,
+            table,
+            col_x.as_slice(),
+            col_w.as_slice(),
+            row_h.as_slice(),
+            row_prefix.as_slice(),
+            content_h_by_cell.as_slice(),
+            x,
+            y,
+            top_caption_extent,
+            header_rows,
+            &mut top_caption,
+            &mut split,
+            warnings,
+        )
+    {
+        return result;
+    }
+
     // Fragment tuple: first row, exclusive end row, data top, replay header,
     // and whether a page must be finalized immediately before emission.
     let mut fragments: Vec<(usize, usize, f32, bool, bool)> = vec![(0, rows, y, false, false)];
@@ -2614,8 +2863,10 @@ fn layout_table(
                     warnings.push(RenderIssueCode::TableRowTooTallClipped, b"treat-as-char");
                 }
             } else {
-                // TABLE/CELL split at row boundaries; oversized NONE tables
-                // use the same fallback. Cell-internal splitting is not yet supported.
+                // TABLE splits at row boundaries; CELL falls back here only
+                // when no row requires an internal split or its cached cell
+                // boundaries were reported incomplete above. Oversized NONE
+                // tables use the same conservative fallback.
                 let boundaries: Vec<usize> = (0..=rows)
                     .filter(|&boundary| legal_boundary[boundary])
                     .collect();
@@ -2773,6 +3024,465 @@ fn layout_table(
     (end_y, page_advanced, final_fragment_top)
 }
 
+/// CELL-policy table emitter.  It is intentionally separate from the row
+/// planner above: a row fragment has a different border contract and its
+/// content must be selected from the cached line ranges rather than replaying
+/// the whole cell on every page.
+#[allow(clippy::too_many_arguments)]
+fn layout_table_cell_fragments(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &mut PageList,
+    table: &Table,
+    col_x: &[f32],
+    col_w: &[f32],
+    row_h: &[f32],
+    row_prefix: &[f32],
+    content_h_by_cell: &[f32],
+    x: f32,
+    y: f32,
+    top_caption_extent: f32,
+    header_rows: usize,
+    top_caption: &mut Option<CaptionPrelude>,
+    split: &mut Option<&mut TableSplitCtx<'_, '_>>,
+    warnings: &mut RenderIssueAccumulator,
+) -> Option<(f32, bool, f32)> {
+    let (body_top, body_bottom, first_body_bottom) = {
+        let ctx = split.as_deref()?;
+        let first_body_bottom = (ctx.body_bottom
+            - page_notes_reservation_height(
+                doc,
+                store,
+                page,
+                ctx.page_notes,
+                ctx.body_left,
+                ctx.body_width,
+            ))
+        .max(ctx.body_top);
+        (ctx.body_top, ctx.body_bottom, first_body_bottom)
+    };
+    let header_height: f32 = row_h[..header_rows].iter().sum();
+
+    let rows = row_h.len();
+    let mut cell_plans: Vec<Option<CellSplitPlan>> = vec![None; table.cells.len()];
+    let mut row_group_counts = vec![1usize; rows];
+    let mut found_cached_split = false;
+    let has_any_row_span = table.cells.iter().any(|cell| cell.row_span.max(1) > 1);
+    let mut planned_cursor = y;
+    let mut planned_bottom = first_body_bottom;
+    let mut planned_emitted_parts = 0usize;
+
+    for row in 0..rows {
+        let mut row_cells = Vec::new();
+        for (cell_index, cell) in table.cells.iter().enumerate() {
+            let start = cell.row as usize;
+            let end = (start + usize::from(cell.row_span.max(1))).min(rows);
+            if start <= row && row < end {
+                row_cells.push((cell_index, cell));
+            }
+        }
+        if row_cells.is_empty() {
+            warnings.push(
+                RenderIssueCode::TableCellFragmentationIncomplete,
+                format!("row={row}:no-cells"),
+            );
+            return None;
+        }
+
+        let row_crosses_page = planned_cursor + row_h[row] > planned_bottom + 0.5;
+        if !row_crosses_page {
+            planned_cursor += row_h[row];
+            planned_emitted_parts += 1;
+            continue;
+        }
+
+        let remaining_height = (planned_bottom - planned_cursor).max(0.0);
+        let continuation_top = body_top
+            + if planned_emitted_parts == 0 {
+                top_caption_extent
+            } else if header_rows > 0 && row >= header_rows {
+                header_height
+            } else {
+                0.0
+            };
+        let continuation_height = (body_bottom - continuation_top).max(1.0);
+        let mut row_groups = 1usize;
+        let mut cells_requiring_boundary = Vec::new();
+        for &(cell_index, cell) in &row_cells {
+            if cell.row as usize != row || cell.row_span.max(1) != 1 {
+                continue;
+            }
+            let measured = content_h_by_cell.get(cell_index).copied().unwrap_or(0.0);
+            let has_cell_payload = cell
+                .paragraphs
+                .iter()
+                .any(|para| !para.chars.is_empty() || !para.controls.is_empty());
+            if !has_cell_payload {
+                continue;
+            }
+            let (_, _, mt, mb) = cell_margins(table, cell);
+            let needs_boundary = measured + mt + mb > remaining_height + 0.5
+                || measured + mt + mb > continuation_height + 0.5;
+            if needs_boundary {
+                cells_requiring_boundary.push(cell_index);
+            }
+            let Some(mut plan) = cached_cell_split_plan(
+                cell,
+                measured,
+                remaining_height - mt - mb,
+                continuation_height - mt - mb,
+            ) else {
+                continue;
+            };
+            if !plan.is_usable() {
+                continue;
+            }
+            for group in &mut plan.groups {
+                group.height += mt + mb;
+            }
+            let cached_height: f32 = plan.groups.iter().map(|group| group.height).sum();
+            if row_h[row] > cached_height {
+                // Preserve the declared row height as blank continuation
+                // area.  It does not need a text boundary, but must not push
+                // a cached line outside the cell's visual fragment.
+                if let Some(group) = plan.groups.last_mut() {
+                    group.height += row_h[row] - cached_height;
+                }
+            }
+            row_groups = row_groups.max(plan.groups.len());
+            cell_plans[cell_index] = Some(plan);
+        }
+
+        if row_groups > 1
+            && cells_requiring_boundary.iter().any(|cell_index| {
+                cell_plans[*cell_index]
+                    .as_ref()
+                    .is_none_or(|plan| !plan.is_usable())
+            })
+        {
+            warnings.push(
+                RenderIssueCode::TableCellFragmentationIncomplete,
+                format!("row={row}:cache"),
+            );
+            return None;
+        }
+
+        if row_groups == 1 {
+            // No cached content needs to use the current-page remainder. Let
+            // the existing row-boundary planner move this row as a unit.
+            if row_h[row] > continuation_height + 0.5 {
+                warnings.push(
+                    RenderIssueCode::TableCellFragmentationIncomplete,
+                    format!("row={row}:boundary"),
+                );
+                return None;
+            }
+            planned_cursor = continuation_top + row_h[row];
+            planned_bottom = body_bottom;
+            planned_emitted_parts += 1;
+            continue;
+        }
+
+        found_cached_split = true;
+        row_group_counts[row] = row_groups;
+        for group_index in 0..row_groups {
+            let part_height = table
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, cell)| cell.row as usize == row)
+                .filter_map(|(cell_index, _)| {
+                    cell_plans[cell_index]
+                        .as_ref()
+                        .and_then(|plan| plan.groups.get(group_index))
+                        .map(|group| group.height)
+                })
+                .fold(0.0f32, f32::max)
+                .max(1.0);
+            if planned_cursor + part_height > planned_bottom + 0.5 {
+                planned_cursor = body_top
+                    + if planned_emitted_parts == 0 {
+                        top_caption_extent
+                    } else if header_rows > 0 && row >= header_rows {
+                        header_height
+                    } else {
+                        0.0
+                    };
+                planned_bottom = body_bottom;
+            }
+            if planned_cursor + part_height > planned_bottom + 0.5 {
+                warnings.push(
+                    RenderIssueCode::TableCellFragmentationIncomplete,
+                    format!("row={row}:fragment={group_index}:height"),
+                );
+                return None;
+            }
+            planned_cursor += part_height;
+            planned_emitted_parts += 1;
+        }
+    }
+    // A CELL row may fit on a fresh page yet still be split by Hancom to use
+    // the space remaining on the current page. Cached line boundaries, not
+    // `row_height > full_body_height`, define that Regime-A split.
+    if !found_cached_split {
+        return None;
+    }
+    if has_any_row_span {
+        warnings.push(
+            RenderIssueCode::TableCellFragmentationIncomplete,
+            b"row-span-with-cell-fragment",
+        );
+        return None;
+    }
+
+    // A local list state advances through body cells exactly once. Replayed
+    // headers use a seed so their marker is stable on every continuation.
+    let mut cell_ls = crate::list::ListState::default();
+    let header_ls_seed = cell_ls.clone();
+    let mut cursor = y;
+    let mut current_bottom = first_body_bottom;
+    let mut emitted_parts = 0usize;
+    let mut page_advanced = false;
+    let mut final_fragment_top = y;
+    for row in 0..rows {
+        let group_count = row_group_counts[row];
+        for group_index in 0..group_count {
+            let part_height = if group_count == 1 {
+                row_h[row]
+            } else {
+                table
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| cell.row as usize == row)
+                    .filter_map(|(cell_index, _)| {
+                        cell_plans[cell_index]
+                            .as_ref()
+                            .and_then(|plan| plan.groups.get(group_index))
+                            .map(|group| group.height)
+                    })
+                    .fold(0.0f32, f32::max)
+                    .max(1.0)
+            };
+            let mut replay_header = false;
+            if cursor + part_height > current_bottom + 0.5 {
+                let ctx = split.as_deref_mut()?;
+                if emitted_parts == 0 && cursor <= body_top + top_caption_extent + 0.5 {
+                    warnings.push(
+                        RenderIssueCode::TableRowTooTallClipped,
+                        format!("cell row={row} fragment={group_index}"),
+                    );
+                } else if !ctx.break_page(doc, store, page, warnings) {
+                    return Some((cursor, page_advanced, final_fragment_top));
+                } else {
+                    page_advanced = true;
+                    cursor = body_top
+                        + if emitted_parts == 0 {
+                            top_caption_extent
+                        } else {
+                            0.0
+                        };
+                    current_bottom = body_bottom;
+                    replay_header = header_rows > 0 && row >= header_rows && emitted_parts > 0;
+                }
+            }
+            if replay_header {
+                let mut header_ls = header_ls_seed.clone();
+                draw_table_rows(
+                    doc,
+                    store,
+                    page,
+                    table,
+                    col_x,
+                    col_w,
+                    row_h,
+                    row_prefix,
+                    content_h_by_cell,
+                    0..header_rows,
+                    body_top,
+                    &mut header_ls,
+                    warnings,
+                );
+                cursor = body_top + row_h[..header_rows].iter().sum::<f32>();
+                if cursor + part_height > body_bottom + 0.5 {
+                    warnings.push(
+                        RenderIssueCode::TableRowTooTallClipped,
+                        format!("cell row={row} header"),
+                    );
+                }
+            }
+            if emitted_parts == 0
+                && let Some(prelude) = top_caption.take()
+            {
+                let caption_y = cursor - prelude.gap - prelude.height;
+                for item in prelude.items {
+                    page.items.push(translate_item(item, x, caption_y));
+                }
+            }
+
+            for (cell_index, cell) in table.cells.iter().enumerate() {
+                if cell.row as usize != row {
+                    continue;
+                }
+                let plan = cell_plans[cell_index].as_ref();
+                let group = plan.and_then(|split_plan| split_plan.groups.get(group_index));
+                let selections = if let Some(group) = group {
+                    group.selections.clone()
+                } else if group_index == 0 {
+                    vec![BoxParaSelection::All; cell.paragraphs.len()]
+                } else {
+                    vec![BoxParaSelection::Empty; cell.paragraphs.len()]
+                };
+                let v_origin = group.map_or(0, |fragment| fragment.first_v_pos);
+                draw_table_cell_fragment(
+                    doc,
+                    store,
+                    page,
+                    table,
+                    cell,
+                    cell_index,
+                    col_x,
+                    col_w,
+                    cursor,
+                    part_height,
+                    content_h_by_cell.get(cell_index).copied().unwrap_or(0.0),
+                    selections,
+                    v_origin,
+                    group_count == 1 || group_index == 0,
+                    group_count == 1 || group_index + 1 == group_count,
+                    &mut cell_ls,
+                    warnings,
+                );
+            }
+            cursor += part_height;
+            final_fragment_top = cursor - part_height;
+            emitted_parts += 1;
+            if let Some(ctx) = split.as_deref_mut() {
+                ctx.mark_flow();
+            }
+        }
+    }
+
+    if page_advanced && emitted_parts > 1 {
+        warnings.push(
+            RenderIssueCode::TableSplitAcrossPages,
+            format!("{} rows (cell fragments)", rows),
+        );
+    }
+    Some((cursor, page_advanced, final_fragment_top))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_table_cell_fragment(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &mut PageList,
+    table: &Table,
+    cell: &hwp_model::Cell,
+    cell_index: usize,
+    col_x: &[f32],
+    col_w: &[f32],
+    cy: f32,
+    ch: f32,
+    measured_content_h: f32,
+    selections: Vec<BoxParaSelection>,
+    v_origin: i32,
+    draw_top: bool,
+    draw_bottom: bool,
+    cell_ls: &mut crate::list::ListState,
+    warnings: &mut RenderIssueAccumulator,
+) {
+    let c = cell.col as usize;
+    if c >= col_w.len() {
+        return;
+    }
+    let cx = col_x[c];
+    let cw: f32 = col_w[c..(c + cell.col_span as usize).min(col_w.len())]
+        .iter()
+        .sum();
+    if cw <= 0.0 || ch <= 0.0 {
+        return;
+    }
+    let border_fill = doc
+        .header
+        .border_fills
+        .get((cell.border_fill.0 as usize).saturating_sub(1));
+    if let Some(item) = border_fill.and_then(|bf| bg_fill_item(bf, cx, cy, cw, ch))
+        && warnings.charge_display_items(1)
+    {
+        page.items.push(item);
+    }
+
+    let (ml, mr, mt, mb) = cell_margins(table, cell);
+    let available_h = (ch - mt - mb).max(0.0);
+    // Vertical alignment applies to the complete cell, not independently to
+    // each continuation fragment. Re-centering every fragment creates a large
+    // blank band and can push selected cached lines under the next row.
+    let voff = if draw_top && draw_bottom {
+        let spare = (available_h - measured_content_h).max(0.0);
+        match cell.vert_align() {
+            1 => spare * 0.5,
+            2 => spare,
+            _ => 0.0,
+        }
+    } else {
+        0.0
+    };
+    if !selections
+        .iter()
+        .all(|selection| matches!(selection, BoxParaSelection::Empty))
+    {
+        let _ = layout_box_para_iter(
+            doc,
+            store,
+            page,
+            cell.paragraphs.iter().zip(selections),
+            cx + ml,
+            cy + mt + voff,
+            (cw - ml - mr).max(4.0),
+            warnings,
+            Some(cell_ls),
+            None,
+            v_origin,
+        );
+    }
+
+    if let Some(bf) = border_fill {
+        let items = crate::border::border_rectangle_items(
+            cx,
+            cy,
+            cx + cw,
+            cy + ch,
+            &bf.sides,
+            [true, true, draw_top, draw_bottom],
+        );
+        if warnings.charge_display_items(items.len()) {
+            page.items.extend(items);
+        }
+        // Diagonals describe the complete cell, so emit them only on the
+        // first fragment; continuation fragments carry the four-sided frame.
+        if draw_top {
+            let (slash, backslash) = diagonal_dirs(bf.attr);
+            if (slash || backslash) && bf.diagonal.is_visible() {
+                let mut dirs = Vec::with_capacity(2);
+                if backslash {
+                    dirs.push((cx, cy, cx + cw, cy + ch));
+                }
+                if slash {
+                    dirs.push((cx, cy + ch, cx + cw, cy));
+                }
+                for (dx1, dy1, dx2, dy2) in dirs {
+                    let items = crate::border::border_line_items(dx1, dy1, dx2, dy2, &bf.diagonal);
+                    if warnings.charge_display_items(items.len()) {
+                        page.items.extend(items);
+                    }
+                }
+            }
+        }
+    }
+    let _ = cell_index;
+}
+
 /// Draw one row-range fragment. `base_y + row_prefix[r]` is the row top.
 /// The planner guarantees that the range never cuts through a row span.
 #[allow(clippy::too_many_arguments)]
@@ -2913,14 +3623,26 @@ fn layout_box_paragraphs(
         doc,
         store,
         page,
-        paras.iter(),
+        paras.iter().map(|para| (para, BoxParaSelection::All)),
         origin_x,
         origin_y,
         width,
         warnings,
         list_state,
         page_number,
+        0,
     )
+}
+
+/// A cached cell fragment selects a contiguous range of line segments from
+/// each paragraph.  `Empty` is deliberately distinct from `All`: a paragraph
+/// can own a nested object, but must not be replayed on every continuation
+/// page merely because its text was split there.
+#[derive(Debug, Clone)]
+enum BoxParaSelection {
+    All,
+    Segments(std::ops::Range<usize>),
+    Empty,
 }
 
 /// `layout_box_paragraphs`의 반복자 버전 — 단(컬럼)으로 분할된 조각도 받는다.
@@ -2935,18 +3657,22 @@ fn layout_box_para_iter<'a>(
     doc: &Document,
     store: &mut FontStore,
     page: &mut PageList,
-    paras: impl Iterator<Item = &'a Paragraph>,
+    paras: impl Iterator<Item = (&'a Paragraph, BoxParaSelection)>,
     origin_x: f32,
     origin_y: f32,
     width: f32,
     warnings: &mut RenderIssueAccumulator,
     mut list_state: Option<&mut crate::list::ListState>,
     page_number: Option<u32>,
+    v_origin: i32,
 ) -> f32 {
     let mut content_bottom = origin_y;
     // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
     let mut flow_floor = origin_y;
-    for para in paras {
+    for (para, selection) in paras {
+        if matches!(selection, BoxParaSelection::Empty) {
+            continue;
+        }
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
         // Do not advance a list counter for a completely empty box paragraph.
@@ -3020,7 +3746,15 @@ fn layout_box_para_iter<'a>(
             flow_floor = flow_floor.max(content_bottom);
         } else {
             let last_content = last_content_seg(para);
-            for (i, seg) in para.line_segs.iter().enumerate() {
+            let selected = match &selection {
+                BoxParaSelection::All => 0..para.line_segs.len(),
+                BoxParaSelection::Segments(range) => {
+                    range.start.min(para.line_segs.len())..range.end.min(para.line_segs.len())
+                }
+                BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
+            };
+            for i in selected {
+                let seg = &para.line_segs[i];
                 let line_start = seg.text_start;
                 let line_end = para
                     .line_segs
@@ -3055,10 +3789,16 @@ fn layout_box_para_iter<'a>(
                 );
 
                 let gap_pt = seg.baseline_gap as f32 / 100.0;
-                let stored = origin_y + (seg.v_pos + seg.baseline_gap) as f32 / 100.0;
+                let v_pos = seg.v_pos.saturating_sub(v_origin);
+                let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
                 // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
                 let baseline_y = stored.max(flow_floor + gap_pt);
-                if i == 0 {
+                let first_selected = match &selection {
+                    BoxParaSelection::All => i == 0,
+                    BoxParaSelection::Segments(range) => i == range.start,
+                    BoxParaSelection::Empty => false,
+                };
+                if first_selected {
                     para_top = Some(baseline_y - gap_pt);
                     if let Some(m) = &marker {
                         let size = items_max_size(&items).unwrap_or(8.0);
@@ -3107,22 +3847,32 @@ fn layout_box_para_iter<'a>(
         }
 
         // 셀 안의 중첩 표/이미지 — 바닥을 늘렸으면 흐름 하한도 올려 후속 캐시 문단 겹침 방지.
-        let before_objects = content_bottom;
-        let (objects_bottom, _no_split) = layout_para_objects(
-            doc,
-            store,
-            page,
-            para,
-            origin_x,
-            para_top.unwrap_or(content_bottom),
-            content_bottom,
-            width,
-            None, // 상자(셀/글상자) 안의 중첩 개체는 쪽을 걸치지 않는다
-            warnings,
-        );
-        content_bottom = objects_bottom;
-        if content_bottom > before_objects {
-            flow_floor = flow_floor.max(content_bottom);
+        // A nested object belongs to the first fragment that contains this
+        // paragraph.  Rendering it for every selected line range would
+        // duplicate the object on continuation pages.
+        let render_objects = match &selection {
+            BoxParaSelection::All => true,
+            BoxParaSelection::Segments(range) => range.start == 0,
+            BoxParaSelection::Empty => false,
+        };
+        if render_objects {
+            let before_objects = content_bottom;
+            let (objects_bottom, _no_split) = layout_para_objects(
+                doc,
+                store,
+                page,
+                para,
+                origin_x,
+                para_top.unwrap_or(content_bottom),
+                content_bottom,
+                width,
+                None, // 상자(셀/글상자) 안의 중첩 개체는 쪽을 걸치지 않는다
+                warnings,
+            );
+            content_bottom = objects_bottom;
+            if content_bottom > before_objects {
+                flow_floor = flow_floor.max(content_bottom);
+            }
         }
     }
     content_bottom
@@ -4252,6 +5002,28 @@ mod table_width_tests {
         assert!((col_w[0] - 50.0).abs() < 0.5, "{col_w:?}");
         assert!((col_w[1] - 75.0).abs() < 0.5, "{col_w:?}");
         assert!((col_w[2] - 25.0).abs() < 0.5, "{col_w:?}");
+    }
+
+    #[test]
+    fn max_cell_margin_is_inherited_without_mutating_the_ir() {
+        let mut c = cell(0, 0, 1, 10000);
+        c.margins = [u16::MAX, 0, u16::MAX, u16::MAX];
+        let t = table(1, 1, vec![c.clone()]);
+        let margins = cell_margins(
+            &Table {
+                inner_margins: [700, 800, 900, 1000],
+                ..t.clone()
+            },
+            &c,
+        );
+        assert_eq!(margins, (7.0, 0.0, 9.0, 10.0));
+        assert_eq!(c.margins, [u16::MAX, 0, u16::MAX, u16::MAX]);
+
+        let defaults = Table {
+            inner_margins: [0; 4],
+            ..t
+        };
+        assert_eq!(cell_margins(&defaults, &c), (5.1, 0.0, 1.41, 1.41));
     }
 }
 

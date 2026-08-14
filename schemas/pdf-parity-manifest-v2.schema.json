@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/pdf-parity-manifest-v2.schema.json",
+  "title": "hwp PDF parity manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "pins", "thresholds", "cases"],
+  "properties": {
+    "contract": { "const": "hwp-pdf-parity-manifest-v2" },
+    "pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dpi", "poppler_version", "fonts"],
+      "properties": {
+        "dpi": { "const": 150 },
+        "poppler_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fonts": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "additionalProperties": { "$ref": "#/$defs/sha256" }
+        },
+        "oracle_profile": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "media_box_pt",
+        "dx_px",
+        "dy_px",
+        "ink_ratio_min",
+        "ink_ratio_max",
+        "bad_pixel_pct_max",
+        "mae_max",
+        "roi_match_radius_px",
+        "roi_precision_min",
+        "roi_recall_min"
+      ],
+      "properties": {
+        "media_box_pt": { "const": 0.5 },
+        "dx_px": { "const": 2 },
+        "dy_px": { "const": 2 },
+        "ink_ratio_min": { "const": 0.97 },
+        "ink_ratio_max": { "const": 1.03 },
+        "bad_pixel_pct_max": { "const": 0.05 },
+        "mae_max": { "const": 5 },
+        "roi_match_radius_px": { "const": 10 },
+        "roi_precision_min": { "const": 0.95 },
+        "roi_recall_min": { "const": 0.95 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "source_sha256", "oracle", "oracle_sha256", "rois"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
+        "source": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*\\.(hwp|hwpx)$",
+          "maxLength": 256
+        },
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "oracle": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*\\.pdf$",
+          "maxLength": 256
+        },
+        "oracle_sha256": { "$ref": "#/$defs/sha256" },
+        "render_report": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*\\.json$",
+          "maxLength": 256
+        },
+        "rois": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/roi" }
+        }
+      }
+    },
+    "roi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "page"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$", "maxLength": 64 },
+        "page": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "top_left": { "$ref": "#/$defs/point" },
+        "bottom_right": { "$ref": "#/$defs/point" }
+      },
+      "oneOf": [
+        { "required": ["x", "y", "width", "height"] },
+        { "required": ["top_left", "bottom_right"] }
+      ]
+    },
+    "point": {
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "number", "minimum": 0, "maximum": 1 },
+            "y": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      ]
+    }
+  }
+}

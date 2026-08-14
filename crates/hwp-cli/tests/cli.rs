@@ -4,6 +4,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use sha2::Digest as _;
+
 fn hwp() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hwp"))
 }
@@ -21,6 +23,137 @@ fn skip_if_no_fixtures() -> bool {
     }
     eprintln!("스킵: fixtures 없음 — fixtures/README.md 참고");
     true
+}
+
+#[test]
+fn render_report_is_closed_hashed_and_schema_validated() {
+    let input = tmp("hwp_cli_render_report_input.hwpx");
+    let output = tmp("hwp_cli_render_report_output.svg");
+    let report_path = tmp("hwp_cli_render_report.json");
+    for path in [&input, &output, &report_path] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    let created = hwp()
+        .args(["new", "-o"])
+        .arg(&input)
+        .output()
+        .expect("hwp new");
+    assert!(
+        created.status.success(),
+        "hwp new: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let rendered = hwp()
+        .args(["render", "--format", "svg", "--report"])
+        .arg(&report_path)
+        .args(["-o"])
+        .arg(&output)
+        .arg(&input)
+        .output()
+        .expect("hwp render");
+    assert!(
+        rendered.status.success(),
+        "hwp render: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/render-report-v1.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap();
+    assert!(
+        validator.is_valid(&value),
+        "schema rejected report: {value}"
+    );
+    assert_eq!(value["contract"], "hwp-render-report-v1");
+    assert_eq!(value["schema_version"], "1.0");
+    assert_eq!(value["format"], "svg");
+    assert_eq!(value["total_pages"], 1);
+    assert_eq!(value["selected_pages"], serde_json::json!([1]));
+    let input_bytes = std::fs::read(&input).unwrap();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&input_bytes);
+    let input_hash = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(value["input"]["sha256"], input_hash);
+    assert!(!value.to_string().contains(input.to_string_lossy().as_ref()));
+    assert!(
+        !value
+            .to_string()
+            .contains(output.to_string_lossy().as_ref())
+    );
+
+    for path in [&input, &output, &report_path] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn render_report_alias_does_not_clobber_render_output() {
+    let input = tmp("hwp_cli_render_report_alias_input.hwpx");
+    let output = tmp("hwp_cli_render_report_alias_output.svg");
+    for path in [&input, &output] {
+        let _ = std::fs::remove_file(path);
+    }
+    let created = hwp().args(["new", "-o"]).arg(&input).output().unwrap();
+    assert!(created.status.success());
+    std::fs::write(&output, b"KEEP EXISTING OUTPUT").unwrap();
+    let rendered = hwp()
+        .args(["render", "--format", "svg", "--report"])
+        .arg(&output)
+        .args(["-o"])
+        .arg(&output)
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(!rendered.status.success());
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        b"KEEP EXISTING OUTPUT",
+        "alias rejection must not clobber the render output"
+    );
+    for path in [&input, &output] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn render_report_failure_leaves_no_partial_report() {
+    let input = tmp("hwp_cli_render_report_failure_input.hwpx");
+    let output = tmp("hwp_cli_render_report_failure_output.svg");
+    let report_path = tmp("hwp_cli_render_report_failure.json");
+    for path in [&input, &output, &report_path] {
+        let _ = std::fs::remove_file(path);
+    }
+    let created = hwp().args(["new", "-o"]).arg(&input).output().unwrap();
+    assert!(created.status.success());
+    let failed = hwp()
+        .args(["render", "--pages", "999", "--format", "svg", "--report"])
+        .arg(&report_path)
+        .args(["-o"])
+        .arg(&output)
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(
+        !report_path.exists(),
+        "failed render must not publish a report"
+    );
+    assert!(!output.exists(), "failed render must not publish output");
+    for path in [&input, &output, &report_path] {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]

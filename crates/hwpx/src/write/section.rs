@@ -1020,6 +1020,17 @@ fn write_foot_end_note(
     let _ = write!(out, "</hp:{el}></hp:ctrl>");
 }
 
+/// HWPX writes omitted cell/table margins as the unsigned 32-bit sentinel
+/// `4294967295`. The IR keeps that meaning in `u16::MAX`; expand it only at
+/// HWPX serialization time (HWP5 identity serialization remains untouched).
+fn margin_attr(value: u16) -> u32 {
+    if value == u16::MAX {
+        u32::MAX
+    } else {
+        u32::from(value)
+    }
+}
+
 /// 수식 → `<hp:equation>`(run 직속). 자식 순서는 개체 공통 규약(sz → pos → outMargin,
 /// 그 뒤 개체 전용)을 따른다 — 한컴 공식 모델 `AbstractShapeObjectType`과 동일.
 ///
@@ -1722,7 +1733,10 @@ fn write_table(
     let _ = write!(
         out,
         r##"<hp:inMargin left="{}" right="{}" top="{}" bottom="{}"/>"##,
-        m[0], m[1], m[2], m[3],
+        margin_attr(m[0]),
+        margin_attr(m[1]),
+        margin_attr(m[2]),
+        margin_attr(m[3]),
     );
 
     // 행별 그룹화 (셀은 행 우선 순서로 보존되어 있음)
@@ -1764,10 +1778,10 @@ fn write_table(
                 cell.row_span,
                 cell.width.0,
                 cell.height.0,
-                cm[0],
-                cm[1],
-                cm[2],
-                cm[3],
+                margin_attr(cm[0]),
+                margin_attr(cm[1]),
+                margin_attr(cm[2]),
+                margin_attr(cm[3]),
             );
         }
         out.push_str("</hp:tr>");

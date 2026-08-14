@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Hancom PDF parity batch runner for issue #79 PR 4.
+# Hancom PDF parity batch runner for issue #79.
 #
 #   scripts/pdf-parity.sh selftest [--source <doc>]   Verify the harness against itself.
 #   scripts/pdf-parity.sh run [--oracle-dir <dir>]    Aggregate manifest cases.
 #
 # Metric definitions and gates live in docs/design/21-pdf-parity.md sections 3-4;
-# the data policy is section 7. Oracle PDFs remain local under
-# $HWP_PDF_PARITY_ORACLE_DIR. Only numeric JSON/CSV scoreboards are committable.
+# the data policy is section 7. One anonymized public oracle is explicitly
+# allowed; all other oracle PDFs remain local. Scoreboards contain numeric and
+# digest data only.
+# v2 manifests are platform-neutral and enforce every normative §4.1 gate;
+# v1 manifests remain accepted for existing local baselines.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

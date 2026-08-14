@@ -2,22 +2,81 @@
 //!
 //! PNG/SVG는 페이지별 파일(out-1.png …)로, PDF는 단일 멀티페이지 파일로 쓴다.
 
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::{Read as _, Write as _};
+use std::path::{Component, Path, PathBuf};
 
 use crate::commands::cat::load_document;
+use hwp_cli::certification::{
+    RenderIssueReportEntry, canonical_render_issue_sha256, map_render_issue,
+};
 use hwp_cli::cli::RenderFormat;
+use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 
-pub fn run(
+const RENDER_REPORT_SCHEMA_VERSION: &str = "1.0";
+const RENDER_REPORT_CONTRACT: &str = "hwp-render-report-v1";
+
+#[derive(Debug, Serialize)]
+struct RenderReportFile {
+    schema_version: &'static str,
+    contract: &'static str,
+    input: RenderInputReport,
+    format: &'static str,
+    dpi: f32,
+    total_pages: usize,
+    selected_pages: Vec<usize>,
+    font_coverage: RenderFontCoverage,
+    issues: Vec<RenderIssueReportEntry>,
+    info: Vec<RenderIssueReportEntry>,
+    issue_count: u64,
+    info_count: u64,
+    issue_log_complete: bool,
+    issue_sha256: String,
+    complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RenderInputReport {
+    format: &'static str,
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RenderFontCoverage {
+    matched: u64,
+    substituted: u64,
+    missing: u64,
+    subset_fallback: u64,
+    substitution_free: bool,
+}
+
+/// Render a document and optionally publish a machine-readable report.
+///
+/// The report is built only after the render bytes have been fully encoded and
+/// published. Its own destination is staged and verified through the common
+/// output transaction, so render or report failures never expose a partial JSON
+/// file. The report deliberately contains no input/output paths.
+pub fn run_with_report(
     input: &Path,
     output: &Path,
     pages_spec: &str,
     dpi: f64,
     format: Option<RenderFormat>,
     font_dirs: Vec<PathBuf>,
+    report_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let dpi = validated_dpi(dpi)?;
     let format = format.unwrap_or_else(|| infer_format(output));
+    let input_report = report_path.map(|_| build_input_report(input)).transpose()?;
     let doc = load_document(input)?;
+    if let Some(before) = &input_report {
+        let after = build_input_report(input)?;
+        if before != &after {
+            anyhow::bail!("렌더 입력이 문서 로드 중 바뀌었습니다");
+        }
+    }
     // --font-dir 미지정 시 번들 함초롬 글꼴(HWP_FONT_DIR/fonts)을 기본 로드.
     let opts = hwp_render::RenderOptions {
         dpi,
@@ -41,15 +100,36 @@ pub fn run(
                 dimensions.push((path.clone(), pixmap.width(), pixmap.height()));
                 outputs.push((path, png));
             }
+            if let Some(report_path) = report_path {
+                ensure_report_destination(
+                    report_path,
+                    input,
+                    outputs.iter().map(|(path, _)| path.as_path()),
+                )?;
+            }
             publish_render_set(&outputs, input)?;
             for (path, width, height) in dimensions {
                 eprintln!("저장: {} ({}×{}px)", path.display(), width, height);
+            }
+            if let Some(report_path) = report_path {
+                write_report(
+                    report_path,
+                    input_report
+                        .clone()
+                        .expect("report path guarantees an input report"),
+                    "png",
+                    dpi,
+                    result.total_pages,
+                    selected,
+                    result.report,
+                )?;
             }
         }
         RenderFormat::Svg => {
             let result = hwp_render::render_document_svg(&doc, &opts);
             report(&result.report);
-            let selected = parse_pages(pages_spec, result.pages.len())?;
+            let total_pages = result.pages.len();
+            let selected = parse_pages(pages_spec, total_pages)?;
             let multi = selected.len() > 1;
             let outputs = selected
                 .iter()
@@ -60,10 +140,30 @@ pub fn run(
                     )
                 })
                 .collect::<Vec<_>>();
+            if let Some(report_path) = report_path {
+                ensure_report_destination(
+                    report_path,
+                    input,
+                    outputs.iter().map(|(path, _)| path.as_path()),
+                )?;
+            }
             publish_render_set(&outputs, input)?;
             for &page_no in &selected {
                 let path = page_path(output, page_no, multi);
                 eprintln!("저장: {}", path.display());
+            }
+            if let Some(report_path) = report_path {
+                write_report(
+                    report_path,
+                    input_report
+                        .clone()
+                        .expect("report path guarantees an input report"),
+                    "svg",
+                    dpi,
+                    total_pages,
+                    selected,
+                    result.report,
+                )?;
             }
         }
         RenderFormat::Pdf => {
@@ -72,6 +172,9 @@ pub fn run(
             let selected = parse_pages(pages_spec, total)?;
             let result = hwp_render::render_document_pdf(&doc, &opts, Some(&selected))?;
             report(&result.report);
+            if let Some(report_path) = report_path {
+                ensure_report_destination(report_path, input, std::iter::once(output))?;
+            }
             write_render_bytes(output, input, &result.data)?;
             eprintln!(
                 "저장: {} ({}쪽, {} bytes)",
@@ -79,9 +182,218 @@ pub fn run(
                 selected.len(),
                 result.data.len()
             );
+            if let Some(report_path) = report_path {
+                write_report(
+                    report_path,
+                    input_report.expect("report path guarantees an input report"),
+                    "pdf",
+                    dpi,
+                    total,
+                    selected,
+                    result.report,
+                )?;
+            }
         }
     }
     Ok(())
+}
+
+fn build_input_report(input: &Path) -> anyhow::Result<RenderInputReport> {
+    let mut file = File::open(input).map_err(|error| {
+        anyhow::anyhow!("렌더 입력을 열 수 없습니다 ({}): {error}", input.display())
+    })?;
+    let bytes = file
+        .metadata()
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "렌더 입력 상태를 확인할 수 없습니다 ({}): {error}",
+                input.display()
+            )
+        })?
+        .len();
+    let mut hasher = Sha256::new();
+    let mut observed = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            anyhow::anyhow!(
+                "렌더 입력을 읽을 수 없습니다 ({}): {error}",
+                input.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        observed = observed
+            .checked_add(read as u64)
+            .ok_or_else(|| anyhow::anyhow!("렌더 입력 크기 overflow"))?;
+        hasher.update(&buffer[..read]);
+    }
+    if observed != bytes {
+        anyhow::bail!("렌더 입력이 해시 계산 중 바뀌었습니다: {observed} != {bytes} bytes");
+    }
+    Ok(RenderInputReport {
+        format: input_format(input),
+        bytes,
+        sha256: hex_digest(hasher.finalize().as_slice()),
+    })
+}
+
+fn input_format(input: &Path) -> &'static str {
+    match input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("hwp") => "hwp5",
+        Some("hwpx") => "hwpx",
+        _ => "unknown",
+    }
+}
+
+fn format_issue_report(source: hwp_render::RenderIssueReport) -> RenderReportIssueChannels {
+    let issues: Vec<_> = source.issues.into_iter().map(map_render_issue).collect();
+    let info: Vec<_> = source.info.into_iter().map(map_render_issue).collect();
+    let issue_count = issues.iter().map(|issue| issue.count).sum();
+    let info_count = info.iter().map(|issue| issue.count).sum();
+    let issue_sha256 = canonical_render_issue_sha256(&issues);
+    assert_eq!(issue_count, source.issue_count);
+    assert_eq!(info_count, source.info_count);
+    assert_eq!(issue_sha256, source.sha256);
+    RenderReportIssueChannels {
+        issues,
+        info,
+        issue_count,
+        info_count,
+        issue_log_complete: source.complete,
+        issue_sha256,
+        complete: source.complete,
+    }
+}
+
+struct RenderReportIssueChannels {
+    issues: Vec<RenderIssueReportEntry>,
+    info: Vec<RenderIssueReportEntry>,
+    issue_count: u64,
+    info_count: u64,
+    issue_log_complete: bool,
+    issue_sha256: String,
+    complete: bool,
+}
+
+fn write_report(
+    report_path: &Path,
+    input: RenderInputReport,
+    format: &'static str,
+    dpi: f32,
+    total_pages: usize,
+    selected_pages: Vec<usize>,
+    source: hwp_render::RenderIssueReport,
+) -> anyhow::Result<()> {
+    let coverage = source.font_coverage();
+    let channels = format_issue_report(source);
+    let report = RenderReportFile {
+        schema_version: RENDER_REPORT_SCHEMA_VERSION,
+        contract: RENDER_REPORT_CONTRACT,
+        input,
+        format,
+        dpi,
+        total_pages,
+        selected_pages,
+        font_coverage: RenderFontCoverage {
+            matched: coverage.matched,
+            substituted: coverage.substituted,
+            missing: coverage.missing,
+            subset_fallback: coverage.subset_fallback,
+            substitution_free: coverage.substitution_free(),
+        },
+        issues: channels.issues,
+        info: channels.info,
+        issue_count: channels.issue_count,
+        info_count: channels.info_count,
+        issue_log_complete: channels.issue_log_complete,
+        issue_sha256: channels.issue_sha256,
+        complete: channels.complete,
+    };
+    let bytes = serde_json::to_vec_pretty(&report)?;
+    crate::commands::output::write_validated(
+        report_path,
+        None,
+        |staged| {
+            let mut file = File::create(staged)?;
+            file.write_all(&bytes)?;
+            file.flush()?;
+            Ok(())
+        },
+        |staged, _| {
+            let written = std::fs::read(staged)?;
+            if written != bytes {
+                anyhow::bail!("렌더 보고서 검증 중 바이트 불일치: {}", staged.display());
+            }
+            let parsed: serde_json::Value = serde_json::from_slice(&written)
+                .map_err(|error| anyhow::anyhow!("렌더 보고서 JSON 검증 실패: {error}"))?;
+            if !parsed.is_object() {
+                anyhow::bail!("렌더 보고서가 JSON 객체가 아닙니다");
+            }
+            Ok(())
+        },
+    )?;
+    eprintln!("렌더 보고서 저장: {}", report_path.display());
+    Ok(())
+}
+
+fn ensure_report_destination<'a>(
+    report_path: &Path,
+    input: &Path,
+    outputs: impl IntoIterator<Item = &'a Path>,
+) -> anyhow::Result<()> {
+    if paths_alias(report_path, input) {
+        anyhow::bail!(
+            "렌더 보고서 경로가 입력 문서를 덮어쓸 수 있어 거부합니다: {}",
+            report_path.display()
+        );
+    }
+    for output in outputs {
+        if paths_alias(report_path, output) {
+            anyhow::bail!(
+                "렌더 보고서 경로가 렌더 출력과 같거나 별칭이라 거부합니다: {}",
+                report_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn paths_alias(left: &Path, right: &Path) -> bool {
+    let left_absolute = lexical_absolute(left);
+    let right_absolute = lexical_absolute(right);
+    if left_absolute.is_some() && left_absolute == right_absolute {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn lexical_absolute(path: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Some(normalized)
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub(crate) fn validated_dpi(dpi: f64) -> anyhow::Result<f32> {

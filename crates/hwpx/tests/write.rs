@@ -435,6 +435,60 @@ fn caption_round_trip() {
     assert_eq!(caption.paragraphs[0].plain_text(), "Shape 1");
 }
 
+/// HWPX's 32-bit UINT_MAX margin sentinel is represented by u16::MAX in the
+/// shared IR, but must expand back to 4294967295 when serialized as HWPX.
+#[test]
+fn margin_sentinel_hwpx_round_trip() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:tbl rowCnt="1" colCnt="1">
+        <hp:inMargin left="4294967295" right="510" top="4294967295" bottom="141"/>
+        <hp:tr><hp:tc>
+          <hp:subList><hp:p><hp:run><hp:t>x</hp:t></hp:run></hp:p></hp:subList>
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellMargin left="4294967295" right="510" top="4294967295" bottom="141"/>
+        </hp:tc></hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, warnings) = hwpx::read::section::parse_section(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let doc = hwp_model::Document::default();
+    let mut bins = hwpx::write::section::BinCollector::default();
+    let mut write_warnings = Vec::new();
+    let written =
+        hwpx::write::section::write_section(&doc, &section, false, &mut bins, &mut write_warnings);
+    assert!(write_warnings.is_empty(), "{write_warnings:?}");
+    assert!(
+        written.contains(
+            r#"<hp:inMargin left="4294967295" right="510" top="4294967295" bottom="141"/>"#
+        ),
+        "table margin sentinel was not expanded: {written}"
+    );
+    assert!(
+        written.contains(
+            r#"<hp:cellMargin left="4294967295" right="510" top="4294967295" bottom="141"/>"#
+        ),
+        "cell margin sentinel was not expanded: {written}"
+    );
+
+    let (reread, warnings) = hwpx::read::section::parse_section(&written).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let Some(hwp_model::Control::Table(table)) = reread
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find(|control| matches!(control, hwp_model::Control::Table(_)))
+    else {
+        panic!("table control after write/read: {:?}", reread.paragraphs);
+    };
+    assert_eq!(table.inner_margins, [u16::MAX, 510, u16::MAX, 141]);
+    assert_eq!(table.cells[0].margins, [u16::MAX, 510, u16::MAX, 141]);
+}
+
 /// GI-3/GI-4 왕복: md(이미지+인라인 코드) → hwpx 저장 → 재읽기에서 Picture·bin·코드 글자모양 생존.
 #[test]
 fn md_이미지_코드_hwpx_왕복() {
