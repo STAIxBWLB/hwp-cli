@@ -743,8 +743,12 @@ pub fn rewrite_document_staged(
             .iter()
             .map(|(id, href, mime, _)| (id.clone(), href.clone(), mime.clone()))
             .collect();
-        let xml =
-            crate::write::templates::content_hpf(doc.sections.len(), &bin_meta, &doc.metadata);
+        let xml = crate::write::templates::content_hpf(
+            doc.sections.len(),
+            &bin_meta,
+            &doc.hwpx_opf_extra_items,
+            &doc.metadata,
+        );
         replacements.insert("Contents/content.hpf".to_string(), xml.into_bytes());
     }
 

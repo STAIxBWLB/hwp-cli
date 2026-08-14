@@ -96,8 +96,16 @@ pub fn write_section_with_report(
 ) -> String {
     let mut out = String::with_capacity(16 * 1024);
     out.push_str(
-        r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">"##,
+        r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core""##,
     );
+    // 원본 섹션 루트의 추가 xmlns 선언을 그대로 싣는다 — 원문 캡처 개체가 루트에만
+    // 선언된 확장 접두어를 쓰면, 이 선언 없이는 재방출 XML이 namespace-well-formed하지
+    // 않다. 빈 슬롯(hwp5 출신·합성 문서)이면 기존과 바이트 동일한 루트가 나온다.
+    for decl in &doc.hwpx_section_xmlns {
+        out.push(' ');
+        out.push_str(decl);
+    }
+    out.push('>');
     let mut ids = IdSeq::default();
     for (pi, para) in section.paragraphs.iter().enumerate() {
         // 첫 문단에 구역 정의가 없으면 기본 secPr 주입

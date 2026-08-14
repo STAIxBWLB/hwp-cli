@@ -50,8 +50,27 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
     );
 
     let mut sections = Vec::new();
+    let mut hwpx_section_xmlns: Vec<String> = Vec::new();
     for entry in pkg.section_entries()? {
         let xml = pkg.read_entry_string(&entry)?;
+        // 루트에만 선언된 확장 접두어를 전 섹션 합집합으로 보존한다(접두어 기준 dedup —
+        // 같은 접두어의 다른 URI 선언이 중복 속성으로 방출되면 not well-formed).
+        for decl in section::extract_section_root_xmlns(&xml) {
+            let prefix = decl
+                .strip_prefix("xmlns:")
+                .and_then(|rest| rest.split('=').next())
+                .unwrap_or("");
+            let dominated = hwpx_section_xmlns.iter().any(|existing| {
+                existing
+                    .strip_prefix("xmlns:")
+                    .and_then(|rest| rest.split('=').next())
+                    .unwrap_or("")
+                    == prefix
+            });
+            if !dominated {
+                hwpx_section_xmlns.push(decl);
+            }
+        }
         let (section, sec_warnings) = section::parse_section(&xml)?;
         warnings.extend(sec_warnings.into_iter().map(|w| format!("[{entry}] {w}")));
         sections.push(section);
@@ -127,6 +146,12 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
         .as_deref()
         .map(parse_bin_manifest)
         .unwrap_or_default();
+    // writer가 재생성하지 않는 확장 파트의 매니페스트 항목 — content.hpf 재생성 시
+    // 다시 등재해 raw-copy된 엔트리가 고아 파트가 되지 않게 한다.
+    let hwpx_opf_extra_items = content_hpf
+        .as_deref()
+        .map(parse_opf_extra_items)
+        .unwrap_or_default();
 
     // 부속 파트 원문 pass-through 슬롯: settings.xml(앱 설정·캐럿)·version.xml(버전
     // 메타)을 통째로 보존한다. 없으면 None → 쓰기 시 기본 상수. "모르는 데이터는
@@ -161,6 +186,8 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
             hwp5_doc_history: Vec::new(),
             hwpx_extra_entries,
             hwpx_bin_manifest,
+            hwpx_opf_extra_items,
+            hwpx_section_xmlns,
         },
         warnings,
     })
@@ -247,13 +274,10 @@ pub fn parse_content_meta(xml: &str) -> hwp_model::Metadata {
     meta
 }
 
-/// content.hpf OPF 매니페스트에서 BinData 항목의 (id, href) 매핑을 읽는다(최선 노력).
-///
-/// 전체 재작성 writer가 BinCollector id를 원본 매니페스트 id로 시드하는 데 쓴다 —
-/// 원문 캡처된 개체(hp:container 등) 안의 `binaryItemIDRef`가 재직렬화 후에도
-/// 원본 바이트를 가리키게 한다. 파싱 실패·BinData 항목 없음이면 빈 벡터(호출자는
-/// 기존 image{N} 할당 경로를 그대로 탄다).
-pub fn parse_bin_manifest(xml: &str) -> Vec<(String, String)> {
+/// content.hpf OPF 매니페스트의 모든 `<opf:item>`을 (id, href, media-type)으로 읽는다
+/// (최선 노력). id/href가 없는 항목은 건너뛰고, media-type이 없으면 None이다.
+/// 속성값은 원문(이스케이프 상태 그대로)을 유지해 재방출 시 이중 이스케이프를 피한다.
+fn parse_opf_items(xml: &str) -> Vec<(String, String, Option<String>)> {
     use quick_xml::events::Event;
 
     let mut items = Vec::new();
@@ -267,18 +291,18 @@ pub fn parse_bin_manifest(xml: &str) -> Vec<(String, String)> {
                 }
                 let mut id = None;
                 let mut href = None;
+                let mut mime = None;
                 for attr in event.attributes().flatten() {
                     let value = String::from_utf8_lossy(&attr.value).into_owned();
                     match attr.key.local_name().as_ref() {
                         b"id" => id = Some(value),
                         b"href" => href = Some(value),
+                        b"media-type" => mime = Some(value),
                         _ => {}
                     }
                 }
-                if let (Some(id), Some(href)) = (id, href)
-                    && href.starts_with("BinData/")
-                {
-                    items.push((id, href));
+                if let (Some(id), Some(href)) = (id, href) {
+                    items.push((id, href, mime));
                 }
             }
             Ok(Event::Eof) => break,
@@ -287,6 +311,43 @@ pub fn parse_bin_manifest(xml: &str) -> Vec<(String, String)> {
         }
     }
     items
+}
+
+/// content.hpf OPF 매니페스트에서 BinData 항목의 (id, href) 매핑을 읽는다(최선 노력).
+///
+/// 전체 재작성 writer가 BinCollector id를 원본 매니페스트 id로 시드하는 데 쓴다 —
+/// 원문 캡처된 개체(hp:container 등) 안의 `binaryItemIDRef`가 재직렬화 후에도
+/// 원본 바이트를 가리키게 한다. 파싱 실패·BinData 항목 없음이면 빈 벡터(호출자는
+/// 기존 image{N} 할당 경로를 그대로 탄다).
+pub fn parse_bin_manifest(xml: &str) -> Vec<(String, String)> {
+    parse_opf_items(xml)
+        .into_iter()
+        .filter(|(_, href, _)| href.starts_with("BinData/"))
+        .map(|(id, href, _)| (id, href))
+        .collect()
+}
+
+/// OPF 매니페스트에서 writer가 재생성하지 않는 확장 파트 항목의 (id, href, media-type)을
+/// 읽는다(최선 노력) — BinData·header·section·settings 외 항목(예: DocOptions/Layout.xml).
+/// content.hpf 재생성 시 이 항목들을 다시 등재해 raw-copy된 패키지 엔트리가 매니페스트에서
+/// 사라지는(고아 파트) 일을 막는다.
+pub fn parse_opf_extra_items(xml: &str) -> Vec<(String, String, String)> {
+    parse_opf_items(xml)
+        .into_iter()
+        .filter(|(_, href, _)| {
+            !href.starts_with("BinData/")
+                && href != "Contents/header.xml"
+                && href != "settings.xml"
+                && !(href.starts_with("Contents/section") && href.ends_with(".xml"))
+        })
+        .map(|(id, href, mime)| {
+            (
+                id,
+                href,
+                mime.unwrap_or_else(|| "application/octet-stream".to_string()),
+            )
+        })
+        .collect()
 }
 
 fn resolve_entity(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {

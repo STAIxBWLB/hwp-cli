@@ -25,9 +25,13 @@ pub const SETTINGS_XML: &str = r##"<?xml version="1.0" encoding="UTF-8" standalo
 pub const FULL_XMLNS: &str = r##"xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hp10="http://www.hancom.co.kr/hwpml/2016/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core" xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hhs="http://www.hancom.co.kr/hwpml/2011/history" xmlns:hm="http://www.hancom.co.kr/hwpml/2011/master-page" xmlns:hpf="http://www.hancom.co.kr/schema/2011/hpf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf/" xmlns:ooxmlchart="http://www.hancom.co.kr/hwpml/2016/ooxmlchart" xmlns:hwpunitchar="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0""##;
 
 /// content.hpf — manifest 항목(섹션 수, 바이너리 항목) + 문서 메타데이터를 끼워 만든다.
+/// `extra_items`는 writer가 재생성하지 않는 확장 파트의 원본 매니페스트 항목
+/// (id, href, media-type — 예: DocOptions/Layout.xml)으로, bin 항목 뒤에 그대로
+/// 등재해 raw-copy된 패키지 엔트리가 고아 파트가 되지 않게 한다.
 pub fn content_hpf(
     section_count: usize,
     bin_items: &[(String, String, String)],
+    extra_items: &[(String, String, String)],
     meta: &hwp_model::Metadata,
 ) -> String {
     use std::fmt::Write as _;
@@ -53,6 +57,13 @@ pub fn content_hpf(
         let _ = write!(
             manifest,
             r##"<opf:item id="{id}" href="{href}" media-type="{mime}" isEmbeded="1"/>"##
+        );
+    }
+    // 확장 파트 원본 항목 — 값은 원문 속성(이스케이프 상태) 그대로라 esc 없이 방출한다.
+    for (id, href, mime) in extra_items {
+        let _ = write!(
+            manifest,
+            r##"<opf:item id="{id}" href="{href}" media-type="{mime}"/>"##
         );
     }
     // 정품 표본(content.hpf)의 metadata 형식·순서를 그대로 재현한다:
@@ -164,7 +175,7 @@ mod tests {
             create_time: Some(created),
             modify_time: Some(modified),
         };
-        let xml = content_hpf(1, &[], &meta);
+        let xml = content_hpf(1, &[], &[], &meta);
         // 정품 형식(요소 텍스트) 방출 확인.
         assert!(xml.contains("<opf:title>제목 A=B=&gt;C &amp; &lt;x&gt;</opf:title>"));
         assert!(xml.contains(r##"<opf:meta name="creator" content="text">지은이</opf:meta>"##));
@@ -202,7 +213,7 @@ mod tests {
     /// creator는 author None일 때 앱 이름 "hwp-cli"를 유지한다.
     #[test]
     fn content_hpf_none_필드_빈요소() {
-        let xml = content_hpf(1, &[], &hwp_model::Metadata::default());
+        let xml = content_hpf(1, &[], &[], &hwp_model::Metadata::default());
         // 빈 요소로 존재.
         assert!(xml.contains(r##"<opf:meta name="subject" content="text"/>"##));
         assert!(xml.contains(r##"<opf:meta name="description" content="text"/>"##));

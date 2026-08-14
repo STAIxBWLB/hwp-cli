@@ -525,6 +525,8 @@ fn from_markdown_inner(
             hwp5_doc_history: Vec::new(),
             hwpx_extra_entries: Vec::new(),
             hwpx_bin_manifest: Vec::new(),
+            hwpx_opf_extra_items: Vec::new(),
+            hwpx_section_xmlns: Vec::new(),
         },
         b.warnings,
         b.hard_error,

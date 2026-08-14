@@ -141,7 +141,10 @@ pub fn write_document_with_report_with_limits(
     );
 
     // BinCollector가 수집하지 않은(참조되지 않는) 바이너리를 패키지에 복원한다.
-    // 바이트 동일 판정은 BinCollector의 dedup 규칙과 같다. 이름은 hwpx 원본이면
+    // hwpx 원본(BinData/ 이름)은 엔트리 정체성(이름+바이트) 기준으로 건너뛴다 —
+    // 같은 바이트가 이미 방출됐어도 원본 이름이 출력에 없으면 원본 이름으로 보존한다
+    // (엔트리 유실 방지). hwp5 출신 등 패키지 이름이 아닌 스트림은 기존처럼 바이트
+    // 동일 판정(BinCollector dedup 규칙)으로 건너뛴다. 이름은 hwpx 원본이면
     // `BinData/...`를 그대로, hwp5 출신 등이면 `BinData/<파일명>`을 쓰되 이번
     // 패키지에서 이미 쓴 이름과 충돌하면 `_2`, `_3`… 접미를 붙인다.
     let mut written_names: std::collections::BTreeSet<String> = bins
@@ -154,7 +157,18 @@ pub fn write_document_with_report_with_limits(
     // (id, href, mime, bytes) — content_hpf 매니페스트와 패키지 방출이 함께 쓴다.
     let mut passthrough_bins: Vec<(String, String, String, &[u8])> = Vec::new();
     for stream in &doc.bin_streams {
-        if bins.items.iter().any(|(.., bytes)| *bytes == stream.data) {
+        if stream.name.starts_with("BinData/") {
+            let represented = bins
+                .items
+                .iter()
+                .any(|(_, href, _, bytes)| *href == stream.name && *bytes == stream.data)
+                || passthrough_bins
+                    .iter()
+                    .any(|(_, href, _, bytes)| *href == stream.name && *bytes == stream.data);
+            if represented {
+                continue;
+            }
+        } else if bins.items.iter().any(|(.., bytes)| *bytes == stream.data) {
             continue;
         }
         let (_, mime) = section::sniff(&stream.data);
@@ -189,7 +203,12 @@ pub fn write_document_with_report_with_limits(
         )
         .collect();
 
-    let content_hpf = templates::content_hpf(sections.len(), &bin_meta, &doc.metadata);
+    let content_hpf = templates::content_hpf(
+        sections.len(),
+        &bin_meta,
+        &doc.hwpx_opf_extra_items,
+        &doc.metadata,
+    );
     let version_xml = doc
         .hwpx_version_xml
         .as_deref()

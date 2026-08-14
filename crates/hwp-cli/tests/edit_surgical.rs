@@ -79,7 +79,7 @@ fn build_container_fixture(path: &Path) {
         .unwrap();
     zip.start_file("Contents/content.hpf", deflated).unwrap();
     zip.write_all(
-        r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>컨테이너 문서</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/><opf:item id="image1" href="BinData/image1.png" media-type="image/png" isEmbeded="1"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
+        r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>컨테이너 문서</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/><opf:item id="layout" href="DocOptions/Layout.xml" media-type="application/xml"/><opf:item id="image1" href="BinData/image1.png" media-type="image/png" isEmbeded="1"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
             .as_bytes(),
     )
     .unwrap();
@@ -97,6 +97,9 @@ fn build_container_fixture(path: &Path) {
     .unwrap();
     zip.start_file("BinData/image1.png", deflated).unwrap();
     zip.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 1, 1, 1])
+        .unwrap();
+    zip.start_file("DocOptions/Layout.xml", deflated).unwrap();
+    zip.write_all(br#"<?xml version="1.0"?><layout>DISTINCTIVE-DOCOPTIONS-MARKER</layout>"#)
         .unwrap();
     zip.start_file("Preview/PrvImage.png", deflated).unwrap();
     zip.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 9, 9, 9, 9])
@@ -513,4 +516,37 @@ fn table_op_inside_opaque_container_fails_closed() {
         src_bytes,
         "입력 파일은 그대로여야 한다"
     );
+}
+
+/// 확장 파트(DocOptions/Layout.xml)가 원본 OPF 매니페스트에 등재된 문서의 set-meta:
+/// content.hpf 재생성 후에도 확장 파트 항목이 매니페스트에 남아야 한다(엔트리는
+/// raw-copy되는데 등재가 사라지면 고아 파트가 된다).
+#[test]
+fn meta_edit_keeps_extension_manifest_items() {
+    let src = tmp("surgical_ext_item.hwpx");
+    build_container_fixture(&src);
+    let out = tmp("surgical_ext_item_out.hwpx");
+
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set-meta", "title=확장 파트 편집"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "set-meta: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let hpf = String::from_utf8(read_zip_entry(&out, "Contents/content.hpf")).unwrap();
+    assert!(
+        hpf.contains(
+            r#"<opf:item id="layout" href="DocOptions/Layout.xml" media-type="application/xml"/>"#
+        ),
+        "재생성 매니페스트에 확장 파트 항목 유지: {hpf}"
+    );
+    assert_entries_identical(&src, &out, &["DocOptions/Layout.xml"]);
 }

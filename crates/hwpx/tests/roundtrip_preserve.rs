@@ -272,10 +272,13 @@ fn build_manifest_seed_fixture(path: &std::path::Path) {
         .unwrap();
     zip.start_file("Contents/content.hpf", deflated).unwrap();
     zip.write_all(
-        r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>시드 문서</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/><opf:item id="image1" href="BinData/image1.png" media-type="image/png" isEmbeded="1"/><opf:item id="image2" href="BinData/image2.png" media-type="image/png" isEmbeded="1"/><opf:item id="unused1" href="BinData/image3.png" media-type="image/png" isEmbeded="1"/><opf:item id="chartA" href="BinData/image4.png" media-type="image/png" isEmbeded="1"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
+        r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>시드 문서</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/><opf:item id="layout" href="DocOptions/Layout.xml" media-type="application/xml"/><opf:item id="image1" href="BinData/image1.png" media-type="image/png" isEmbeded="1"/><opf:item id="image2" href="BinData/image2.png" media-type="image/png" isEmbeded="1"/><opf:item id="unused1" href="BinData/image3.png" media-type="image/png" isEmbeded="1"/><opf:item id="chartA" href="BinData/image4.png" media-type="image/png" isEmbeded="1"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
             .as_bytes(),
     )
     .unwrap();
+    zip.start_file("DocOptions/Layout.xml", deflated).unwrap();
+    zip.write_all(br#"<?xml version="1.0"?><layout>DISTINCTIVE-DOCOPTIONS-MARKER</layout>"#)
+        .unwrap();
     zip.start_file("Contents/header.xml", deflated).unwrap();
     zip.write_all(HEADER_XML.as_bytes()).unwrap();
     zip.start_file("Contents/section0.xml", deflated).unwrap();
@@ -369,4 +372,190 @@ fn 전체_재작성은_원본_manifest_id로_binary참조를_보존한다() {
             assert_eq!(&bytes_of(&out_entries, name), bytes, "{name} 바이트 보존");
         }
     }
+
+    // 4. 확장 파트(DocOptions/Layout.xml): 엔트리 바이트 보존 + 재생성된 매니페스트에
+    //    원본 항목(id/href/media-type)이 그대로 등재돼야 한다(고아 파트 방지).
+    assert_eq!(
+        &bytes_of(&out_entries, "DocOptions/Layout.xml"),
+        &bytes_of(&source_entries, "DocOptions/Layout.xml"),
+        "DocOptions 엔트리 바이트 보존"
+    );
+    let out_hpf = String::from_utf8(bytes_of(&out_entries, "Contents/content.hpf")).unwrap();
+    assert!(
+        out_hpf.contains(
+            r#"<opf:item id="layout" href="DocOptions/Layout.xml" media-type="application/xml"/>"#
+        ),
+        "재생성 매니페스트에 확장 파트 항목 유지: {out_hpf}"
+    );
+}
+
+/// content.hpf에 BinData 항목이 없어(매니페스트 슬롯 빔) 시드되지 않는 문서에서,
+/// 이름이 다른 동일 바이트 BinData 엔트리는 바이트 dedup으로 붕괴하지 않고 모두
+/// 원본 이름으로 보존돼야 한다. pic 참조는 출력 매니페스트에서 같은 바이트로 해석된다.
+#[test]
+fn 미시드_경로도_이름_다른_동일바이트_bin_data를_모두_보존한다() {
+    let dir = std::env::temp_dir().join("hwpx-roundtrip-unseeded-dup");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("src.hwpx");
+    let out = dir.join("out.hwpx");
+
+    {
+        let file = std::fs::File::create(&src).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/hwp+zip").unwrap();
+        zip.start_file("version.xml", deflated).unwrap();
+        zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+            .unwrap();
+        // 매니페스트에 BinData 항목이 없다 → hwpx_bin_manifest 슬롯이 비어 미시드 경로.
+        zip.start_file("Contents/content.hpf", deflated).unwrap();
+        zip.write_all(
+            r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>중복 바이너리</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("Contents/header.xml", deflated).unwrap();
+        zip.write_all(HEADER_XML.as_bytes()).unwrap();
+        zip.start_file("Contents/section0.xml", deflated).unwrap();
+        zip.write_all(
+            r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>본문</hp:t><hp:pic id="5" zOrder="0"><hp:sz width="100" height="100"/><hp:pos treatAsChar="1" vertOffset="0" horzOffset="0"/><hp:img binaryItemIDRef="dupA" bright="0" contrast="0"/></hp:pic></hp:run></hp:p></hs:sec>"##
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("BinData/dupA.png", deflated).unwrap();
+        zip.write_all(PNG_DUP).unwrap();
+        zip.start_file("BinData/dupB.png", deflated).unwrap();
+        zip.write_all(PNG_DUP).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let read = hwpx::read_document(&src).unwrap();
+    assert!(
+        read.document.hwpx_bin_manifest.is_empty(),
+        "미시드 경로여야 한다"
+    );
+    hwpx::write_document_with_report(&read.document, &out).unwrap();
+
+    let out_entries = read_entries(&out);
+    let bytes_of = |name: &str| -> Vec<u8> {
+        out_entries
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("엔트리 없음: {name}"))
+            .1
+            .clone()
+    };
+    // 두 엔트리 모두 원본 이름·바이트로 보존.
+    assert_eq!(bytes_of("BinData/dupA.png"), PNG_DUP, "dupA 보존");
+    assert_eq!(bytes_of("BinData/dupB.png"), PNG_DUP, "dupB 보존");
+
+    // pic 참조는 출력 매니페스트에서 같은 바이트로 해석된다.
+    let section = String::from_utf8(bytes_of("Contents/section0.xml")).unwrap();
+    let marker = "binaryItemIDRef=\"";
+    let at = section.find(marker).unwrap();
+    let rest = &section[at + marker.len()..];
+    let pic_ref = &rest[..rest.find('"').unwrap()];
+    let out_manifest =
+        manifest_bin_map(&String::from_utf8(bytes_of("Contents/content.hpf")).unwrap());
+    let href = out_manifest
+        .get(pic_ref)
+        .unwrap_or_else(|| panic!("출력 매니페스트에 {pic_ref} 없음"));
+    assert_eq!(bytes_of(href), PNG_DUP, "pic 참조 바이트 보존");
+}
+
+/// 루트에만 선언된 벤더 접두어(xmlns:vnd)를 쓰는 원문 캡처 개체는, 재직렬화된
+/// 섹션 루트가 그 선언을 실어야 namespace-well-formed하다. 빈 슬롯이면 루트는
+/// 기존과 바이트 동일해야 한다(표준 hs/hp/hc만).
+#[test]
+fn 전체_재작성은_루트의_확장_xmlns_선언을_보존한다() {
+    let dir = std::env::temp_dir().join("hwpx-roundtrip-xmlns");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("src.hwpx");
+    let out = dir.join("out.hwpx");
+
+    {
+        let file = std::fs::File::create(&src).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/hwp+zip").unwrap();
+        zip.start_file("version.xml", deflated).unwrap();
+        zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+            .unwrap();
+        zip.start_file("Contents/content.hpf", deflated).unwrap();
+        zip.write_all(
+            r##"<?xml version="1.0"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>벤더 접두어</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/></opf:spine></opf:package>"##
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("Contents/header.xml", deflated).unwrap();
+        zip.write_all(HEADER_XML.as_bytes()).unwrap();
+        zip.start_file("Contents/section0.xml", deflated).unwrap();
+        // xmlns:vnd는 루트에만 선언 — 컨테이너 원문 안의 <vnd:mark>는 이 선언에 의존한다.
+        zip.write_all(
+            r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:vnd="urn:example"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>본문</hp:t><hp:container id="77" zOrder="3"><hp:sz width="1000" height="500"/><hp:subList><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>컨테이너 텍스트</hp:t></hp:run></hp:p></hp:subList><vnd:mark key="k1"/></hp:container></hp:run></hp:p></hs:sec>"##
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    let read = hwpx::read_document(&src).unwrap();
+    assert_eq!(
+        read.document.hwpx_section_xmlns,
+        vec!["xmlns:vnd=\"urn:example\"".to_string()],
+        "확장 xmlns 캡처"
+    );
+    hwpx::write_document_with_report(&read.document, &out).unwrap();
+
+    let out_entries = read_entries(&out);
+    let section = String::from_utf8(
+        out_entries
+            .iter()
+            .find(|(n, _)| n == "Contents/section0.xml")
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        section.contains(r#"xmlns:vnd="urn:example""#),
+        "루트 확장 xmlns 유실: {section}"
+    );
+    assert!(
+        section.contains(r#"<vnd:mark key="k1"/>"#),
+        "원문 프래그먼트 유실: {section}"
+    );
+
+    // namespace-aware 검증: 모든 접두어가 해석돼야 하고(Unknown 없음), vnd:mark는
+    // urn:example에 바인드돼야 한다.
+    use quick_xml::events::Event;
+    use quick_xml::name::ResolveResult;
+    let mut ns_reader = quick_xml::NsReader::from_str(&section);
+    let mut mark_bound = false;
+    loop {
+        match ns_reader.read_resolved_event() {
+            Ok((ns, Event::Start(e))) | Ok((ns, Event::Empty(e))) => {
+                assert!(
+                    !matches!(ns, ResolveResult::Unknown(_)),
+                    "미바인딩 접두어: {:?}",
+                    String::from_utf8_lossy(e.name().as_ref())
+                );
+                if e.local_name().as_ref() == b"mark" {
+                    mark_bound =
+                        matches!(ns, ResolveResult::Bound(ns) if ns.as_ref() == b"urn:example");
+                }
+            }
+            Ok((_, Event::Eof)) => break,
+            Err(e) => panic!("섹션 XML 파싱 실패: {e}"),
+            _ => {}
+        }
+    }
+    assert!(
+        mark_bound,
+        "vnd:mark가 urn:example에 바인드돼야 한다: {section}"
+    );
 }

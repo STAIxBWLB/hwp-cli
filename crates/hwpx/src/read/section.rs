@@ -49,6 +49,43 @@ fn skip_subtree(reader: &mut XmlReader<'_>, name: &[u8]) -> Result<()> {
     }
 }
 
+/// 섹션 루트 요소의 xmlns 선언 중 writer 표준 셋(hs/hp/hc) 외의 것을 원문 속성
+/// 문자열(`xmlns:foo="uri"`)로 수집한다(첫 시작 태그만 본다). 원문 캡처 개체가
+/// 루트에만 선언된 확장 접두어(hp10:, 벤더 접두어 등)를 쓸 수 있어, writer가
+/// 재직렬화 루트에 이 선언들을 그대로 실어야 namespace-well-formed하다.
+/// 속성값은 원문(이스케이프 상태) 그대로 보존한다.
+pub fn extract_section_root_xmlns(xml: &str) -> Vec<String> {
+    // writer 표준 선언 — 이 접두어들은 루트 상수가 이미 방출한다.
+    const STANDARD: &[&str] = &["hs", "hp", "hc"];
+    let mut reader = Reader::from_str(xml);
+    let mut out = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                    let keep = if key == "xmlns" {
+                        true
+                    } else if let Some(prefix) = key.strip_prefix("xmlns:") {
+                        !STANDARD.contains(&prefix)
+                    } else {
+                        false
+                    };
+                    if !keep {
+                        continue;
+                    }
+                    let value = String::from_utf8_lossy(&attr.value).into_owned();
+                    out.push(format!("{key}=\"{value}\""));
+                }
+                break; // 루트 요소만 본다
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
+}
+
 pub fn parse_section(xml: &str) -> Result<(Section, Vec<String>)> {
     let mut reader = Reader::from_str(xml);
     let mut section = Section::default();
