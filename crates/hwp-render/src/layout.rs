@@ -1698,7 +1698,7 @@ fn cached_cell_split_plan(
     Some(CellSplitPlan { groups })
 }
 
-/// 페이지 가구 (머리말/꼬리말) — 페이지 마감 시마다 그린다.
+/// Page furniture (headers and footers), drawn whenever a page is finalized.
 /// Header/footer entries retain their apply target and are selected by printed
 /// page parity (GG-16).
 struct Furniture<'a> {
@@ -3866,7 +3866,7 @@ fn layout_box_para_iter<'a>(
                 para_top.unwrap_or(content_bottom),
                 content_bottom,
                 width,
-                None, // 상자(셀/글상자) 안의 중첩 개체는 쪽을 걸치지 않는다
+                None, // Nested objects inside a cell/text box do not cross pages.
                 warnings,
             );
             content_bottom = objects_bottom;

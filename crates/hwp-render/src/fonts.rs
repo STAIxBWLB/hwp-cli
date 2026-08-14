@@ -134,7 +134,7 @@ pub struct FontStore {
     db: Database,
     /// fontdb ID → 로드된 폰트
     loaded: HashMap<fontdb::ID, Arc<LoadedFont>>,
-    /// (요청 이름, 대체 이름, weight) → 해석 결과 캐시.
+    /// Resolution cache keyed by requested family, alternate family, and weight.
     resolved: HashMap<FontCacheKey, Option<FontSelection>>,
     /// 문서 문자열을 보관하지 않는 source-bounded 해석 진단.
     pub issues: RenderIssueAccumulator,

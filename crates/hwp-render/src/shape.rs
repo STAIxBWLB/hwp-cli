@@ -641,9 +641,9 @@ fn letter_spacing_pt(base_hu: i32, rel: u8, script: bool, pct: i8) -> f32 {
     ((size_hu * i64::from(pct) + 50).div_euclid(100)) as f32 / 100.0
 }
 
-/// 주어진 글꼴 하나로 텍스트를 셰이핑해 [`ShapedRun`]을 만든다(첨자·자간·장평·
-/// 음영/그림자/외곽선/양각/음각 효과 필드까지 채운다). `bold`는 실제 Bold
-/// face가 없을 때 호출부가 결정하는 합성 굵게 플래그다.
+/// Shapes text with one resolved font into a [`ShapedRun`], applying script,
+/// letter spacing, scaling, shade, shadow, outline, emboss, and engrave fields. `bold` is
+/// synthetic weight selected by the caller only when an exact Bold face is absent.
 fn shape_with_font(
     font: &Arc<LoadedFont>,
     cs: &CharShape,

@@ -100,6 +100,7 @@ jobs:
           HWP_FONT_DIR: fixtures/pdf-parity/fonts
         run: bash scripts/pdf-parity.sh run --oracle-dir fixtures/pdf-parity/public/oracle
       - name: Upload numeric parity scorecards
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: pdf-parity-scoreboard
