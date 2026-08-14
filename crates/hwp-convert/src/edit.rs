@@ -731,16 +731,18 @@ pub fn add_table_columns(
             ));
         }
         let mut work = t.clone();
-        for _ in 0..count {
-            add_table_column_in_table(&mut work, at)?;
-        }
+        add_table_column_in_table(&mut work, at, count)?;
         *t = work;
         Ok(())
     })
     .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
 }
 
-fn add_table_column_in_table(table: &mut hwp_model::Table, at_col: u16) -> Result<(), String> {
+fn add_table_column_in_table(
+    table: &mut hwp_model::Table,
+    at_col: u16,
+    count: u16,
+) -> Result<(), String> {
     let cols = table.cols;
     if at_col > cols {
         return Err(format!(
@@ -750,7 +752,7 @@ fn add_table_column_in_table(table: &mut hwp_model::Table, at_col: u16) -> Resul
     if table.cells.is_empty() || table.rows == 0 {
         return Err("빈 표에는 열을 추가할 수 없습니다".to_string());
     }
-    if cols == u16::MAX {
+    if u32::from(cols) + u32::from(count) > u32::from(u16::MAX) {
         return Err("열 수가 u16 범위를 넘습니다".to_string());
     }
     build_grid(table)?; // 사전 검증
@@ -762,16 +764,20 @@ fn add_table_column_in_table(table: &mut hwp_model::Table, at_col: u16) -> Resul
         .iter()
         .any(|c| c.col_span != 1 || c.row_span != 1);
     if at_col == cols && !has_merge {
-        return add_col_append_uniform(table);
+        return add_col_append_uniform(table, count);
     }
-    // 전체 폭 유지: 기존 열을 비율 축소하고 새 열이 균등 몫을 갖는다(#9 정책 계승).
+    // Total-width preservation in a single pass: existing columns shrink
+    // proportionally and the inserted band takes one uniform share per new
+    // column (#9 policy). Looping the single-column inserter would be quadratic
+    // for large counts and could produce zero-width intermediates.
     let colw = column_widths(table);
     let total: i64 = colw.iter().map(|&w| i64::from(w)).sum();
     if total <= 0 {
         return Err("표 총폭이 0이라 열 폭을 재분배할 수 없습니다".to_string());
     }
-    let new_w = (total / (i64::from(cols) + 1)).max(1);
-    let remain = total - new_w;
+    let count64 = i64::from(count);
+    let new_w = total / (i64::from(cols) + count64);
+    let remain = total - new_w * count64;
     let mut scaled = vec![0i64; cols as usize];
     let mut acc = 0i64;
     for i in 0..cols as usize {
@@ -782,35 +788,48 @@ fn add_table_column_in_table(table: &mut hwp_model::Table, at_col: u16) -> Resul
         };
         acc += scaled[i];
     }
-    // 최종 열 폭(길이 cols+1): 삽입 위치에 new_w 삽입.
-    let mut final_colw: Vec<i64> = Vec::with_capacity(cols as usize + 1);
+    // 최종 열 폭(길이 cols+count): 삽입 위치에 new_w × count 삽입.
+    let mut final_colw: Vec<i64> = Vec::with_capacity(cols as usize + count as usize);
     final_colw.extend_from_slice(&scaled[..at_col as usize]);
-    final_colw.push(new_w);
+    final_colw.extend(std::iter::repeat_n(new_w, count as usize));
     final_colw.extend_from_slice(&scaled[at_col as usize..]);
-    // 구조 갱신: 삽입점 가로지르는 병합 확장 + 이후 셀 이동.
+    // Every column must keep at least 1 HWP unit — clamping would silently grow
+    // the table past its preserved width.
+    if final_colw.iter().any(|&w| w < 1) {
+        return Err(format!(
+            "표 폭({total})이 부족해 열 {count}개를 삽입할 수 없습니다 (열당 최소 1단위)"
+        ));
+    }
+    // 구조 갱신: 삽입 대역을 가로지르는 병합 확장 + 이후 셀 이동.
     let rowh = row_heights(table);
     let tmpl = table.cells[0].clone();
-    let mut rows_extended = vec![false; table.rows as usize];
+    let mut band_covered = vec![vec![false; count as usize]; table.rows as usize];
     for c in &mut table.cells {
         let ac = c.col;
         let ec = c.col + c.col_span; // exclusive
         if ac >= at_col {
-            c.col += 1;
+            c.col += count;
         } else if at_col < ec {
-            c.col_span += 1;
+            // A merge crossing the band extends across all of it.
+            c.col_span += count;
             for r in c.row..c.row + c.row_span {
-                rows_extended[r as usize] = true;
+                for slot in &mut band_covered[r as usize] {
+                    *slot = true;
+                }
             }
         }
     }
-    // 확장에 덮이지 않은 행에 새 1×1 빈 셀.
+    // 대역에서 확장 스팬에 덮이지 않은 좌표에 새 1×1 빈 셀.
     let mut next_inst = max_instance_id(table);
     for r in 0..table.rows {
-        if !rows_extended[r as usize] {
+        for k in 0..count {
+            if band_covered[r as usize][k as usize] {
+                continue;
+            }
             next_inst = next_inst.wrapping_add(1);
             table.cells.push(blank_cell(
                 r,
-                at_col,
+                at_col + k,
                 new_w as i32,
                 rowh[r as usize],
                 &tmpl,
@@ -818,7 +837,7 @@ fn add_table_column_in_table(table: &mut hwp_model::Table, at_col: u16) -> Resul
             ));
         }
     }
-    table.cols += 1;
+    table.cols += count;
     // 모든 셀 width = Σ final_colw[셀이 차지하는 열들] (전체·행 총폭 정확 보존).
     for c in &mut table.cells {
         let s: i64 = (c.col as usize..(c.col + c.col_span) as usize)
@@ -831,13 +850,16 @@ fn add_table_column_in_table(table: &mut hwp_model::Table, at_col: u16) -> Resul
     validate_table_invariants(table)
 }
 
-/// 병합 없는 표 **끝**에 열 추가 — #9 원본 알고리즘(행별 정확 폭 재분배). 각 행의 총폭을
-/// 독립적으로 보존하므로 열 폭이 행마다 달라도(비그리드) 정확하다. 병합 표엔 쓰지 않는다
-/// (열 정렬이 깨짐 — 그 경우는 [`add_table_column_in_table`]의 열 폭 기반 경로가 처리).
-fn add_col_append_uniform(table: &mut hwp_model::Table) -> Result<(), String> {
+/// 병합 없는 표 **끝**에 열 count개 추가 — #9 원본 알고리즘(행별 정확 폭 재분배)의
+/// count 일반화. 각 행의 총폭을 독립적으로 보존하므로 열 폭이 행마다 달라도(비그리드)
+/// 정확하다. 병합 표엔 쓰지 않는다(열 정렬이 깨짐 — 그 경우는
+/// [`add_table_column_in_table`]의 열 폭 기반 경로가 처리).
+fn add_col_append_uniform(table: &mut hwp_model::Table, count: u16) -> Result<(), String> {
     let cols = table.cols;
+    let count64 = i64::from(count);
     let mut next_inst = max_instance_id(table);
-    let mut new_cells = Vec::with_capacity(table.cells.len() + table.rows as usize);
+    let mut new_cells =
+        Vec::with_capacity(table.cells.len() + table.rows as usize * count as usize);
     for r in 0..table.rows {
         let mut row_cells: Vec<hwp_model::Cell> =
             table.cells.iter().filter(|c| c.row == r).cloned().collect();
@@ -848,8 +870,8 @@ fn add_col_append_uniform(table: &mut hwp_model::Table) -> Result<(), String> {
                 "행 {r}의 총폭이 0이라 열 폭을 재분배할 수 없습니다"
             ));
         }
-        let new_w = (row_total / (i64::from(cols) + 1)).max(1);
-        let scaled_target = row_total - new_w;
+        let new_w = row_total / (i64::from(cols) + count64);
+        let scaled_target = row_total - new_w * count64;
         let last_idx = row_cells.len() - 1;
         let mut acc: i64 = 0;
         for (i, c) in row_cells.iter_mut().enumerate() {
@@ -862,20 +884,32 @@ fn add_col_append_uniform(table: &mut hwp_model::Table) -> Result<(), String> {
             c.width = hwp_model::HwpUnit(nw as i32);
             acc += nw;
         }
-        let mut nc = row_cells[last_idx].clone();
-        nc.col = cols;
-        nc.width = hwp_model::HwpUnit(new_w as i32);
-        let mut para = blank_para_like(row_cells.last().and_then(|c| c.paragraphs.first()));
-        next_inst = next_inst.wrapping_add(1);
-        para.header.instance_id = next_inst;
-        nc.paragraphs = vec![para];
+        // Every column must keep at least 1 HWP unit — clamping would silently
+        // grow the table past its preserved width.
+        if new_w < 1 || row_cells.iter().any(|c| c.width.0 < 1) {
+            return Err(format!(
+                "행 {r}의 폭({row_total})이 부족해 열 {count}개를 삽입할 수 없습니다 (열당 최소 1단위)"
+            ));
+        }
         new_cells.extend(row_cells);
-        new_cells.push(nc);
+        for k in 0..count {
+            let mut nc = new_cells[new_cells.len() - 1].clone();
+            nc.col = cols + k;
+            nc.width = hwp_model::HwpUnit(new_w as i32);
+            // The cloned LIST_HEADER tail embeds the donor width; the new cell
+            // gets a fresh width, so let the writer re-synthesize the tail.
+            nc.header_tail = Vec::new();
+            let mut para = blank_para_like(new_cells.last().and_then(|c| c.paragraphs.first()));
+            next_inst = next_inst.wrapping_add(1);
+            para.header.instance_id = next_inst;
+            nc.paragraphs = vec![para];
+            new_cells.push(nc);
+        }
     }
     table.cells = new_cells;
-    table.cols += 1;
+    table.cols += count;
     for cnt in &mut table.row_cell_counts {
-        *cnt += 1;
+        *cnt += count;
     }
     Ok(())
 }
@@ -1225,6 +1259,9 @@ fn add_rows_in_table_inner(
                 cell.row += count16;
             } else if b < r1 {
                 cell.row_span += count16;
+                // Merged cellSz = sum of the covered row heights, so extending
+                // across the inserted band adds count x template-row height.
+                cell.height = hwp_model::HwpUnit(cell.height.0 + rowh[tpl as usize] * count as i32);
                 for slot in covered.iter_mut() {
                     for c in cell.col..cell.col + cell.col_span {
                         slot[c as usize] = true;
@@ -1988,6 +2025,9 @@ mod tests {
         validate_table_invariants(t).unwrap();
         let anchor = t.cells.iter().find(|c| c.row == 0 && c.col == 0).unwrap();
         assert_eq!(anchor.row_span, 5, "crossing span extended by count");
+        // Merged cellSz = sum of covered row heights: the band adds
+        // count x template-row height (1700 each here).
+        assert_eq!(anchor.height.0, 1700 * 5, "span height covers the band");
         for r in 1..=2u16 {
             assert!(
                 t.cells.iter().all(|c| !(c.row == r && c.col == 0)),
@@ -2120,6 +2160,21 @@ mod tests {
             assert_eq!((cell.col_span, cell.row_span), (1, 1));
             assert!(cell_text(cell).is_empty());
         }
+    }
+
+    #[test]
+    fn 열_추가_최소폭_부족_거부() {
+        // Each column must keep >= 1 HWP unit: a 2x2 table of unit-width cells
+        // cannot take 2 more columns without silently growing the total width.
+        let mut doc = width_table(&[&[1, 1], &[1, 1]]);
+        let before = first_table(&doc).clone();
+        let err = add_table_columns(&mut doc, 0, None, 2).unwrap_err();
+        assert!(err.contains("부족"), "min-width guidance: {err}");
+        let err = add_table_columns(&mut doc, 0, Some(0), 2).unwrap_err();
+        assert!(err.contains("부족"), "min-width guidance: {err}");
+        let after = first_table(&doc);
+        assert_eq!(before.cols, after.cols);
+        assert_eq!(before.cells.len(), after.cells.len());
     }
 
     /// 셀 폭을 원하는 대로 갖는 표를 만든다(행별 width 지정, 단순 그리드).
