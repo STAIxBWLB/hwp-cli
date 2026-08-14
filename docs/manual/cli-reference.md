@@ -193,8 +193,8 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--insert-para` | `<INSERT_PARA>` |  | Insert a paragraph, "anchor=>text": after the paragraph containing the anchor (repeatable) |
 | `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor (repeatable) |
 | `--delete-para` | `<DELETE_PARA>` |  | Delete a paragraph, "text": delete the paragraph containing the text (repeatable) |
-| `--add-row` | `<ADD_ROW>` |  | Add a table row, "table": an empty row at the end of table N (repeatable, 0-based; refused for tables with merged cells) |
-| `--add-col` | `<ADD_COL>` |  | Add a table column, "table" (at the end) or "table:position" (inserted): total width is preserved by shrinking existing columns evenly. Merged tables supported (repeatable, 0-based) |
+| `--add-row` | `<ADD_ROW>` |  | Add table rows, "table[:at[:count[:template_row]]]": at omitted or "end" appends, a number inserts before that row; count defaults to 1; template_row donates row height and cell/paragraph/character styling, never text (repeatable, 0-based; merged tables supported) |
+| `--add-col` | `<ADD_COL>` |  | Add table columns, "table[:at[:count]]": at omitted or "end" appends, a number inserts before that column; count defaults to 1; total width is preserved by shrinking existing columns evenly. Merged tables supported (repeatable, 0-based) |
 | `--delete-row` | `<DELETE_ROW>` |  | Delete a table row, "table:row" (repeatable, 0-based; a merged row is refused) |
 | `--delete-col` | `<DELETE_COL>` |  | Delete a table column, "table:col": total width is preserved by redistributing to the remaining columns; merged cells shrink (repeatable, 0-based) |
 | `--merge-cells` | `<MERGE_CELLS>` |  | Merge cells, "table:r1:c1:r2:c2": merge a rectangular area into its top-left anchor (repeatable, 0-based) |

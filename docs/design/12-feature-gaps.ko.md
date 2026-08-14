@@ -109,11 +109,23 @@
   5): metadata·text·paragraph·table-cell·image HWPX 편집 모두 엔트리 집합 동일, opaque
   엔트리 전량 바이트 동일(미디어 24→24, 이미지 삽입 후 25; container 5→5), `hwp validate`
   클린, non-strict hwp→hwpx는 미디어 24개 전량 보존(종전 9), strict 변환은 양방향 모두
-  fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 4+):
-  표 삽입(#77/#78), WMF 벡터, pagination/font 게이트, 인증. hwpx→hwp 변환은
+  fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 5+):
+  표 복제(#78), WMF 벡터, pagination/font 게이트, 인증. hwpx→hwp 변환은
   settings.xml/version.xml/preview 슬롯 손실을 아직 typed 이벤트로 집계하지 않는다.
   content.hpf 재생성은 모델링된 manifest 항목/메타데이터만 유지하므로, 비모델 manifest
   항목은 고아 엔트리로 남는다(raw-copy는 되지만 목록에는 미등재).
+
+- **2026-08-14 (이슈 #77 위치 지정·개수 지정 행/열 삽입)**: `--add-row`가 append 전용에서
+  `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]`로, `--add-col`이 `TABLE[:AT[:COUNT]]`로 확장(`AT`
+  생략·`end`면 끝에 추가. MCP `add_row`/`add_col`에도 optional `at`/`count`/
+  `template_row` 필드 추가). 삽입은 먼저 논리 그리드를 만들어 검증하고, 경계를
+  가로지르는 병합의 `row_span`/`col_span`을 늘리며, 스팬이 덮는 좌표 아래에는 셀을
+  만들지 않는다. 새 1×1 셀의 서식은 `TEMPLATE_ROW`의 각 열을 덮는 가시 셀에서 투영
+  (병합·세로 병합에 덮인 행도 서식 기증 가능, 텍스트는 복제하지 않음). 템플릿 생략 시
+  append는 레거시 '깨끗한 행' 해소자를 유지하고, 위치 삽입은 경계 이하의 가장 가까운
+  행을 쓴다. 열 삽입은 전체 폭 재분배 정책을 유지하고, 새 문단 instance ID는 문서
+  최댓값 위로 부여하며, 모든 실패(범위·u16 오버플로·불변식 위반)는 아무것도 발행하지
+  않는다. opaque HWPX 컨테이너 안의 표는 여전히 fail-closed.
 
 - **2026-07-15**: GA-5(버전 게이트), GE-α1~α5·α7(글자효과·밑줄모양·번호형식 hwpx 왕복),
   GE-β4(요약정보 필드), GH-1·GH-2(md/html 링크·이미지), GL-1(추출 옵션 CLI 노출) —

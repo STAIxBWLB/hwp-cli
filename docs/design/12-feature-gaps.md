@@ -122,11 +122,25 @@ is itself knowledge).
   entry set identical with all opaque entries byte-identical (media 24→24, 25 after an
   image insert; containers 5→5), `hwp validate` is clean, non-strict hwp→hwpx preserves all
   24 media (previously 9), strict conversion fails closed in both directions, and all eight
-  outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 4+):
-  table insertion (#77/#78), WMF vectors, the pagination/font gate and certification.
+  outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 5+):
+  table cloning (#78), WMF vectors, the pagination/font gate and certification.
   hwpx→hwp conversion does not yet flag settings.xml/version.xml/preview slot loss with
   typed events. And content.hpf regeneration keeps only modeled manifest items/metadata,
   so unmodeled manifest items survive as orphan package entries (raw-copied but unlisted).
+
+- **2026-08-14 (issue #77 positioned, counted row/column insertion)**: `--add-row` grew
+  from append-only to `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]` and `--add-col` to
+  `TABLE[:AT[:COUNT]]` (`AT` omitted or `end` appends; MCP `add_row`/`add_col` gained the
+  matching optional `at`/`count`/`template_row` fields). Insertion builds and validates
+  the logical grid first, extends `row_span`/`col_span` of merges crossing the boundary,
+  never creates a cell under a covering span, and projects styles for new 1x1 cells from
+  the visible cell at `TEMPLATE_ROW` (merged and vertically covered rows can donate
+  styles; text is never cloned). Without an explicit template, append keeps the legacy
+  clean-row resolver and positioned insertion uses the nearest row at or before the
+  boundary. Column insertion keeps the total-width redistribution policy, new paragraph
+  instance IDs are issued above the document maximum, and every failure mode (bounds,
+  u16 overflow, invariant violation) publishes nothing. Tables inside opaque HWPX
+  containers stay fail-closed.
 
 - **2026-07-15**: GA-5 (version gate), GE-α1 to α5 and α7 (character effects, underline shape and
   numbering format in the hwpx round-trip), GE-β4 (summary information fields), GH-1 and GH-2

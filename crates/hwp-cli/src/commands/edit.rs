@@ -112,10 +112,14 @@ pub(crate) enum TypedEditOperation {
     },
     AddRow {
         table: usize,
+        at: Option<u16>,
+        count: usize,
+        template_row: Option<u16>,
     },
     AddCol {
         table: usize,
         at: Option<u16>,
+        count: u16,
     },
     DeleteRow {
         table: usize,
@@ -405,6 +409,75 @@ impl EditPlan {
         }
         Ok(None)
     }
+}
+
+/// Parsed `--add-row` spec: `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]` (#77).
+struct AddRowSpec {
+    table: usize,
+    at: Option<u16>,
+    count: usize,
+    template_row: Option<u16>,
+}
+
+/// Parsed `--add-col` spec: `TABLE[:AT[:COUNT]]` (#77).
+struct AddColSpec {
+    table: usize,
+    at: Option<u16>,
+    count: u16,
+}
+
+/// Parse the insertion-boundary field: omitted, empty, or `end` means append.
+fn parse_insert_at(field: Option<&str>, flag: &str) -> anyhow::Result<Option<u16>> {
+    match field.map(str::trim) {
+        None | Some("") | Some("end") => Ok(None),
+        Some(s) => s
+            .parse::<u16>()
+            .map(Some)
+            .with_context(|| format!("{flag} 위치는 숫자 또는 \"end\" 입니다: {s:?}")),
+    }
+}
+
+fn parse_add_row_spec(spec: &str) -> anyhow::Result<AddRowSpec> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if parts.len() > 4 || parts.first().is_none_or(|p| p.trim().is_empty()) {
+        anyhow::bail!("--add-row 형식은 \"표[:위치[:개수[:템플릿행]]]\" 입니다: {spec:?}");
+    }
+    let table: usize = parts[0].trim().parse().context("표 인덱스")?;
+    let at = parse_insert_at(parts.get(1).copied(), "--add-row")?;
+    let count = match parts.get(2).map(|s| s.trim()) {
+        None | Some("") => 1,
+        Some(s) => s.parse::<usize>().context("개수")?,
+    };
+    if count == 0 {
+        anyhow::bail!("--add-row 개수는 1 이상이어야 합니다: {spec:?}");
+    }
+    let template_row = match parts.get(3).map(|s| s.trim()) {
+        None | Some("") => None,
+        Some(s) => Some(s.parse::<u16>().context("템플릿 행")?),
+    };
+    Ok(AddRowSpec {
+        table,
+        at,
+        count,
+        template_row,
+    })
+}
+
+fn parse_add_col_spec(spec: &str) -> anyhow::Result<AddColSpec> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if parts.len() > 3 || parts.first().is_none_or(|p| p.trim().is_empty()) {
+        anyhow::bail!("--add-col 형식은 \"표[:위치[:개수]]\" 입니다: {spec:?}");
+    }
+    let table: usize = parts[0].trim().parse().context("표 인덱스")?;
+    let at = parse_insert_at(parts.get(1).copied(), "--add-col")?;
+    let count = match parts.get(2).map(|s| s.trim()) {
+        None | Some("") => 1,
+        Some(s) => s.parse::<u16>().context("개수")?,
+    };
+    if count == 0 {
+        anyhow::bail!("--add-col 개수는 1 이상이어야 합니다: {spec:?}");
+    }
+    Ok(AddColSpec { table, at, count })
 }
 
 pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
@@ -722,30 +795,25 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             }
             EditOperation::AddRow(specs) => {
                 for spec in specs {
-                    let ti: usize = spec.trim().parse().with_context(|| {
-                        format!("--add-row 형식은 표 인덱스(예: \"0\") 입니다: {spec:?}")
-                    })?;
-                    hwp_convert::add_rows(&mut doc, ti, None, 1).map_err(|e| anyhow::anyhow!(e))?;
-                    eprintln!("표 행 추가: 표{ti}");
+                    let s = parse_add_row_spec(spec)?;
+                    hwp_convert::add_rows_at(&mut doc, s.table, s.at, s.count, s.template_row)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    eprintln!(
+                        "표 행 추가: 표{} 위치{:?} 개수{} 템플릿{:?}",
+                        s.table, s.at, s.count, s.template_row
+                    );
                     edits += 1;
                 }
             }
             EditOperation::AddCol(specs) => {
                 for spec in specs {
-                    // "표"(끝에 추가) 또는 "표:위치"(위치에 삽입).
-                    if let Some((t, at)) = spec.split_once(':') {
-                        let ti: usize = t.trim().parse().context("표 인덱스")?;
-                        let at_col: u16 = at.trim().parse().context("열 위치")?;
-                        hwp_convert::add_table_column(&mut doc, ti, at_col)
-                            .map_err(|e| anyhow::anyhow!(e))?;
-                        eprintln!("표 열 추가: 표{ti} 위치{at_col} (전체 폭 유지)");
-                    } else {
-                        let ti: usize = spec.trim().parse().with_context(|| {
-                            format!("--add-col 형식은 \"표\" 또는 \"표:위치\" 입니다: {spec:?}")
-                        })?;
-                        hwp_convert::add_col(&mut doc, ti).map_err(|e| anyhow::anyhow!(e))?;
-                        eprintln!("표 열 추가: 표{ti} 끝 (전체 폭 유지)");
-                    }
+                    let s = parse_add_col_spec(spec)?;
+                    hwp_convert::add_table_columns(&mut doc, s.table, s.at, s.count)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    eprintln!(
+                        "표 열 추가: 표{} 위치{:?} 개수{} (전체 폭 유지)",
+                        s.table, s.at, s.count
+                    );
                     edits += 1;
                 }
             }
@@ -1302,19 +1370,21 @@ fn apply_typed_operation(
                 *edits += count;
             }
         }
-        TypedEditOperation::AddRow { table } => {
-            hwp_convert::add_rows(doc, *table, None, 1).map_err(|error| anyhow::anyhow!(error))?;
-            eprintln!("표 행 추가: 표{table}");
+        TypedEditOperation::AddRow {
+            table,
+            at,
+            count,
+            template_row,
+        } => {
+            hwp_convert::add_rows_at(doc, *table, *at, *count, *template_row)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!("표 행 추가: 표{table} 위치={at:?} 개수={count} 템플릿={template_row:?}");
             *edits += 1;
         }
-        TypedEditOperation::AddCol { table, at } => {
-            if let Some(at) = at {
-                hwp_convert::add_table_column(doc, *table, *at)
-                    .map_err(|error| anyhow::anyhow!(error))?;
-            } else {
-                hwp_convert::add_col(doc, *table).map_err(|error| anyhow::anyhow!(error))?;
-            }
-            eprintln!("표 열 추가: 표{table}, 위치={at:?}");
+        TypedEditOperation::AddCol { table, at, count } => {
+            hwp_convert::add_table_columns(doc, *table, *at, *count)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!("표 열 추가: 표{table} 위치={at:?} 개수={count} (전체 폭 유지)");
             *edits += 1;
         }
         TypedEditOperation::DeleteRow { table, row } => {
@@ -1842,6 +1912,16 @@ fn canonical_document(
                         });
                     }
                     for cell in &mut table.cells {
+                        if matches!(target, Some(SemanticTarget::Hwp))
+                            && cell.header_tail.is_empty()
+                        {
+                            // The hwp5 writer synthesizes width + 8 reserved zero bytes
+                            // for an empty LIST_HEADER tail, and the reader returns them
+                            // verbatim. Project the same bytes so newly created cells
+                            // (add-col/split-cell/add-table) match their re-read form.
+                            cell.header_tail =
+                                hwp5::write::synthesized_cell_header_tail(cell.width.0);
+                        }
                         for paragraph in &mut cell.paragraphs {
                             canonicalize_paragraph(paragraph, target, source_doc);
                         }
@@ -2515,6 +2595,41 @@ mod tests {
         paragraph.header.chars_flags = 1;
         paragraph.header.tail = vec![9, 9];
         assert_eq!(semantic_signature(&base), semantic_signature(&changed));
+    }
+
+    #[test]
+    fn hwp_canonical_semantics_project_writer_synthesized_cell_header_tail() {
+        // New cells (add-col/split-cell/add-table) carry an empty LIST_HEADER tail;
+        // the hwp5 writer synthesizes width + 8 zero bytes and the reader returns
+        // them verbatim, so the canonicalizer projects the same bytes for Hwp.
+        let base = hwp_convert::from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        let signature = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let with_table = |doc: &mut hwp_model::Document,
+                          f: &mut dyn FnMut(&mut hwp_model::Table)| {
+            for section in &mut doc.sections {
+                for paragraph in &mut section.paragraphs {
+                    for control in &mut paragraph.controls {
+                        if let hwp_model::Control::Table(table) = control {
+                            f(table);
+                            return;
+                        }
+                    }
+                }
+            }
+        };
+        let mut projected = base.clone();
+        with_table(&mut projected, &mut |table| {
+            for cell in &mut table.cells {
+                cell.header_tail = hwp5::write::synthesized_cell_header_tail(cell.width.0);
+            }
+        });
+        assert_eq!(signature(&base), signature(&projected));
+        // A genuinely different tail is document data and must stay compared.
+        let mut real = base.clone();
+        with_table(&mut real, &mut |table| {
+            table.cells[0].header_tail = vec![0xaa; 12];
+        });
+        assert_ne!(signature(&base), signature(&real));
     }
 
     #[test]
