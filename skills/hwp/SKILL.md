@@ -51,7 +51,9 @@ syntax (used by `fill`, `slots` and the template tools).
   `--seal "anchor=>path[@size mm]"`, `--set-format "find:prop=value,..."`,
   `--set-align "find=left|right|center|justify|distribute"`. Structural flags (all
   repeatable): `--insert-para "anchor=>text"`, `--insert-para-before`, `--delete-para "text"`,
-  `--add-row "t"` / `--add-col "t[:pos]"` / `--delete-row "t:r"` / `--delete-col "t:c"` /
+  `--add-row "t[:at[:count[:template_row]]]"` / `--add-col "t[:at[:count]]"` (`at` omitted or
+  `end` appends; a number inserts before that row/column; merged tables supported) /
+  `--delete-row "t:r"` / `--delete-col "t:c"` /
   `--merge-cells "t:r1:c1:r2:c2"` / `--split-cell "t:r:c"` / `--add-table "anchor=>[[row],...]"` /
   `--delete-table "n|anchor"` / `--delete-image "anchor"` / `--delete-field "name"` /
   `--delete-bookmark "name"`, paragraph shape `--set-para "find=>key:value"`

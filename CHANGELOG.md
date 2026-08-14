@@ -12,6 +12,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Positioned, counted table row/column insertion
+  ([#77](https://github.com/STAIxBWLB/hwp-cli/issues/77)). `--add-row` now accepts
+  `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]` and `--add-col` accepts `TABLE[:AT[:COUNT]]`
+  (`AT` omitted or `end` appends; a numeric `AT` inserts before that row/column).
+  MCP `add_row`/`add_col` gained the matching optional `at`, `count`, and
+  `template_row` fields. Insertion validates the logical grid first, extends merges
+  crossing the boundary, never creates a cell under a covering span, and projects
+  styles for new blank cells from the visible cell at `TEMPLATE_ROW` — so merged
+  tables (including rows covered by vertical merges) now work, with text never
+  cloned. Every failure mode (bad bounds, `COUNT` 0, u16 overflow, invariant
+  violation) publishes nothing.
+
 - Cross-format loss detection and an explicit typed loss report for `hwp convert`
   ([#90](https://github.com/STAIxBWLB/hwp-cli/issues/90)). Cross-format native conversion
   now inventories package/container-level assets the IR cannot carry: HWPX extra package

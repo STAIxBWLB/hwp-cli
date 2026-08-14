@@ -416,3 +416,214 @@ fn tbl9_add_col_width_preserved() {
     );
     assert!(cat(&out2).contains("비고"), "새 열 값 확인");
 }
+
+// ── #77: positioned, counted row/column insertion ────────────────────────────
+
+/// Read table `nth` (recursive depth-first index) as JSON via `cat --format json`.
+fn table_json(path: &PathBuf, nth: usize) -> serde_json::Value {
+    fn collect<'a>(paras: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+        for p in paras.as_array().unwrap() {
+            for c in p["controls"].as_array().unwrap() {
+                if let Some(t) = c.get("Table") {
+                    out.push(t);
+                    for cell in t["cells"].as_array().unwrap() {
+                        collect(&cell["paragraphs"], out);
+                    }
+                } else if let Some(g) = c.get("Generic") {
+                    for l in g["paragraph_lists"].as_array().unwrap() {
+                        collect(&l["paragraphs"], out);
+                    }
+                }
+            }
+        }
+    }
+    let out = hwp()
+        .arg("cat")
+        .arg(path)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut tables = Vec::new();
+    collect(&j["sections"][0]["paragraphs"], &mut tables);
+    tables[nth].clone()
+}
+
+/// Table #2 (11x10, 30 merges, no clean row): append stays refused, but positioned
+/// insertion projects styles from the nearest row and succeeds.
+#[test]
+fn tbl2_positioned_add_row_supported() {
+    let src = copy_fixture("tbl2_pos.hwpx");
+    let out = tmp("tbl2_pos_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--add-row", "2:5:2:4", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "positioned add-row on merged table: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let t = table_json(&out, 2);
+    assert_eq!(t["rows"].as_u64().unwrap(), 13, "11 + 2 inserted");
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&out)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "positioned insert keeps the document valid"
+    );
+}
+
+/// Table #0 (5x4, 2 merges): counted positioned row + column insertion in one pass.
+#[test]
+fn tbl0_positioned_counted_row_and_col() {
+    let src = copy_fixture("tbl0_pos.hwpx");
+    let out = tmp("tbl0_pos_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--add-row", "0:2:2:0", "--add-col", "0:1:2"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "positioned counted edits: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let t = table_json(&out, 0);
+    assert_eq!(t["rows"].as_u64().unwrap(), 7, "5 + 2 rows");
+    assert_eq!(t["cols"].as_u64().unwrap(), 6, "4 + 2 cols");
+    // Fill a cell in the inserted band (row 2, col 1).
+    let out2 = tmp("tbl0_pos_out2.hwpx");
+    let r2 = hwp()
+        .arg("edit")
+        .arg(&out)
+        .arg("-o")
+        .arg(&out2)
+        .args(["--set-cell", "0:2:1=삽입셀", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        r2.status.success(),
+        "set-cell into inserted band: {}",
+        String::from_utf8_lossy(&r2.stderr)
+    );
+    assert!(cat(&out2).contains("삽입셀"), "inserted cell filled");
+}
+
+/// Malformed or out-of-bounds specs fail with a nonzero exit and publish nothing.
+#[test]
+fn add_row_col_spec_errors() {
+    for spec in ["0:1:2:3:4", "0:abc", "0:1:0", "0:99"] {
+        let src = copy_fixture("spec_err.hwpx");
+        let out = tmp("spec_err_out.hwpx");
+        let r = hwp()
+            .arg("edit")
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .args(["--add-row", spec])
+            .output()
+            .unwrap();
+        assert!(!r.status.success(), "--add-row {spec:?} must fail");
+        assert!(!out.exists(), "--add-row {spec:?} must not publish");
+    }
+    for spec in ["0:1:2:3", "0:xyz", "0:1:0", "0:99"] {
+        let src = copy_fixture("spec_err_col.hwpx");
+        let out = tmp("spec_err_col_out.hwpx");
+        let r = hwp()
+            .arg("edit")
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .args(["--add-col", spec])
+            .output()
+            .unwrap();
+        assert!(!r.status.success(), "--add-col {spec:?} must fail");
+        assert!(!out.exists(), "--add-col {spec:?} must not publish");
+    }
+}
+
+/// `end` is an explicit append: `--add-row "9:end:2"` behaves like the legacy form.
+#[test]
+fn add_row_end_keyword_appends() {
+    let src = copy_fixture("tbl9_end.hwpx");
+    let out = tmp("tbl9_end_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--add-row", "9:end:2"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "end append: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let t = table_json(&out, 9);
+    assert_eq!(t["rows"].as_u64().unwrap(), 9, "7 + 2 appended");
+}
+
+/// Positioned insertion on synthetic HWP and HWPX documents, then fill + verify.
+#[test]
+fn add_row_positioned_synthetic_both_formats() {
+    let md = tmp("addrow_pos.md");
+    std::fs::write(&md, "| 가 | 나 |\n|----|----|\n| 1 | 2 |\n").unwrap();
+    for ext in ["hwpx", "hwp"] {
+        let form = tmp(&format!("addrow_pos_form.{ext}"));
+        assert!(
+            hwp()
+                .args(["new", "--from"])
+                .arg(&md)
+                .arg("-o")
+                .arg(&form)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let out = tmp(&format!("addrow_pos_out.{ext}"));
+        let r = hwp()
+            .arg("edit")
+            .arg(&form)
+            .arg("-o")
+            .arg(&out)
+            .args(["--add-row", "0:1:2:0", "--verify"])
+            .output()
+            .unwrap();
+        assert!(
+            r.status.success(),
+            "{ext} positioned add-row: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        let out2 = tmp(&format!("addrow_pos_out2.{ext}"));
+        let r2 = hwp()
+            .arg("edit")
+            .arg(&out)
+            .arg("-o")
+            .arg(&out2)
+            .args(["--set-cell", "0:1:0=삽입행", "--set-cell", "0:2:1=삽입행2"])
+            .output()
+            .unwrap();
+        assert!(
+            r2.status.success(),
+            "{ext} set-cell: {}",
+            String::from_utf8_lossy(&r2.stderr)
+        );
+        let text = cat(&out2);
+        assert!(text.contains("삽입행"), "{ext} inserted row 1 filled");
+        assert!(text.contains("삽입행2"), "{ext} inserted row 2 filled");
+        assert!(text.contains('가'), "{ext} original content kept");
+    }
+}

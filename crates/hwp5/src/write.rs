@@ -3202,9 +3202,7 @@ fn emit_cell_header(cell: &Cell) -> RecordNode {
     }
     w.write_u16(cell.border_fill.0);
     if cell.header_tail.is_empty() {
-        // 표본 실측 46B 레이아웃 충전: 텍스트 폭(셀 폭 반복) + 예약 8B
-        w.write_i32(cell.width.0);
-        w.write_bytes(&[0u8; 8]);
+        w.write_bytes(&synthesized_cell_header_tail(cell.width.0));
     } else {
         w.write_bytes(&cell.header_tail);
     }
@@ -3213,6 +3211,16 @@ fn emit_cell_header(cell: &Cell) -> RecordNode {
         data: w.into_bytes(),
         children: Vec::new(),
     }
+}
+
+/// 표본 실측 46B 레이아웃 충전: 텍스트 폭(셀 폭 반복) + 예약 8B. 셀 LIST_HEADER의
+/// `header_tail`이 비어 있을 때 writer가 합성하는 바이트 — canonicalizer도 같은
+/// 투영을 쓰므로 이 함수가 단일 기준이다.
+pub fn synthesized_cell_header_tail(width: i32) -> Vec<u8> {
+    let mut v = Vec::with_capacity(12);
+    v.extend_from_slice(&width.to_le_bytes());
+    v.extend_from_slice(&[0u8; 8]);
+    v
 }
 
 fn emit_picture(

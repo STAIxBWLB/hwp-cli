@@ -1174,14 +1174,26 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         });
     }
     for item in arg_array(args, "add_row")? {
+        let count = optional_item_u16(item, "add_row", "count")?;
+        if count == Some(0) {
+            return Err("add_row: count는 1 이상이어야 합니다".to_string());
+        }
         operations.push(Op::AddRow {
             table: required_item_usize(item, "add_row", "table")?,
+            at: optional_item_u16(item, "add_row", "at")?,
+            count: count.map(usize::from).unwrap_or(1),
+            template_row: optional_item_u16(item, "add_row", "template_row")?,
         });
     }
     for item in arg_array(args, "add_col")? {
+        let count = optional_item_u16(item, "add_col", "count")?;
+        if count == Some(0) {
+            return Err("add_col: count는 1 이상이어야 합니다".to_string());
+        }
         operations.push(Op::AddCol {
             table: required_item_usize(item, "add_col", "table")?,
             at: optional_item_u16(item, "add_col", "at")?,
+            count: count.unwrap_or(1),
         });
     }
     for item in arg_array(args, "delete_row")? {
@@ -1822,11 +1834,16 @@ fn tool_defs() -> Vec<Value> {
                     "matching": {"type": "string"}},
                     "required": ["matching"]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지)"},
                 "add_row": {"type": "array", "items": {"type": "object", "properties": {
-                    "table": {"type": "integer"}},
-                    "required": ["table"]}, "description": "N번째 표 끝에 빈 행 추가(0-기반, 병합 표는 거부)"},
+                    "table": {"type": "integer"},
+                    "at": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "삽입 경계(생략 시 끝, 0-기반)"},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    "template_row": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "행 높이·셀 서식 기증 행(텍스트는 복제 안 함)"}},
+                    "required": ["table"]}, "description": "N번째 표의 at 경계 앞에 빈 행 count개 삽입(생략 시 끝에 1개, 0-기반, 병합 표도 지원)"},
                 "add_col": {"type": "array", "items": {"type": "object", "properties": {
-                    "table": {"type": "integer"}, "at": {"type": "integer", "minimum": 0, "maximum": 65535}},
-                    "required": ["table"]}, "description": "N번째 표의 at 위치(생략 시 끝)에 열 추가(0-기반, 전체 폭 유지, 병합 표도 지원)"},
+                    "table": {"type": "integer"},
+                    "at": {"type": "integer", "minimum": 0, "maximum": 65535},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 65535}},
+                    "required": ["table"]}, "description": "N번째 표의 at 위치(생략 시 끝)에 열 count개 추가(0-기반, 전체 폭 유지, 병합 표도 지원)"},
                 "delete_row": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"}, "row": {"type": "integer"}},
                     "required": ["table", "row"]}, "description": "N번째 표의 R행 삭제(0-기반, 병합 행은 거부)"},
@@ -2272,6 +2289,15 @@ mod tests {
         assert_eq!(
             edit["inputSchema"]["properties"]["add_col"]["items"]["properties"]["at"]["type"],
             "integer"
+        );
+        // #77: positioned/counted row+column insertion fields are exposed.
+        let add_row = &edit["inputSchema"]["properties"]["add_row"]["items"]["properties"];
+        for field in ["at", "count", "template_row"] {
+            assert_eq!(add_row[field]["type"], "integer", "add_row.{field}");
+        }
+        assert_eq!(
+            edit["inputSchema"]["properties"]["add_col"]["items"]["properties"]["count"]["minimum"],
+            1
         );
         for name in ["hwp_render", "hwp_diff"] {
             let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
@@ -2826,6 +2852,59 @@ mod tests {
                 .is_some_and(|warnings| !warnings.is_empty())
         );
         for path in [&source, &destination] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_add_row_col_positioned_counted() {
+        // #77: MCP add_row/add_col accept at/count/template_row and run through the
+        // same conversion primitives as the CLI.
+        let source = temp_file("addrowcol-source.hwpx");
+        let destination = temp_file("addrowcol-out.hwpx");
+        create_hwpx(&source, "| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": destination,
+                "add_row": [{"table": 0, "at": 1, "count": 2, "template_row": 0}],
+                "add_col": [{"table": 0, "at": 1, "count": 2}]
+            }),
+            &ctx(),
+        )
+        .expect("positioned counted MCP edit");
+        // Rows 1-2 and cols 1-2 were inserted into the 2x2 table (now 4x4); fill a
+        // cell of an inserted row to prove the grid is addressable.
+        let fill_destination = temp_file("addrowcol-fill.hwpx");
+        tool_edit(
+            &json!({
+                "input": destination,
+                "output": fill_destination,
+                "set_cell": [{"table": 0, "row": 2, "col": 3, "text": "MCP신규"}]
+            }),
+            &ctx(),
+        )
+        .expect("set_cell into the inserted band");
+        let content = tool_read(
+            &json!({"path": fill_destination, "format": "plain"}),
+            &ctx(),
+        )
+        .unwrap();
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("MCP신규"), "inserted cell filled: {text}");
+        assert!(text.contains("가"), "original content kept: {text}");
+        // count = 0 is rejected.
+        let rejected = tool_edit(
+            &json!({
+                "input": source,
+                "output": temp_file("addrowcol-reject.hwpx"),
+                "add_row": [{"table": 0, "count": 0}]
+            }),
+            &ctx(),
+        );
+        assert!(rejected.is_err(), "count 0 is refused");
+        let _ = std::fs::remove_file(temp_file("addrowcol-reject.hwpx"));
+        for path in [&source, &destination, &fill_destination] {
             let _ = std::fs::remove_file(path);
         }
     }

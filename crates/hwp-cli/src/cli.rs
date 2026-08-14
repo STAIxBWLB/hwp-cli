@@ -439,10 +439,10 @@ pub struct EditArgs {
     /// Delete a paragraph, "text": delete the paragraph containing the text (repeatable)
     #[arg(long = "delete-para")]
     pub delete_para: Vec<String>,
-    /// Add a table row, "table": an empty row at the end of table N (repeatable, 0-based; refused for tables with merged cells)
+    /// Add table rows, "table[:at[:count[:template_row]]]": at omitted or "end" appends, a number inserts before that row; count defaults to 1; template_row donates row height and cell/paragraph/character styling, never text (repeatable, 0-based; merged tables supported)
     #[arg(long = "add-row")]
     pub add_row: Vec<String>,
-    /// Add a table column, "table" (at the end) or "table:position" (inserted): total width is preserved by shrinking existing columns evenly. Merged tables supported (repeatable, 0-based)
+    /// Add table columns, "table[:at[:count]]": at omitted or "end" appends, a number inserts before that column; count defaults to 1; total width is preserved by shrinking existing columns evenly. Merged tables supported (repeatable, 0-based)
     #[arg(long = "add-col")]
     pub add_col: Vec<String>,
     /// Delete a table row, "table:row" (repeatable, 0-based; a merged row is refused)
