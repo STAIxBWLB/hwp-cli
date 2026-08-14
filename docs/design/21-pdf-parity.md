@@ -39,9 +39,30 @@ Quoted from [release-readiness](../release-readiness.md) and issue #79:
 
 ## 2. The oracle
 
-Ground truth is a PDF produced by **최신 패치를 적용한 Windows용 한컴오피스 2024 한글** via
-파일 → PDF로 저장하기. Inspection of genuine Producer `Hancom PDF 1.3.0.550` files established
-the document-level parity surface — six catalog/Info features:
+The public gate currently has one intentionally bounded oracle: an owner-authored, anonymized
+one-page source document and its PDF produced by Mac Hancom HWP. It was saved with HWP 12.30.0
+(build 6446) on macOS 26.6.1 (build 25G76), through the default 파일 → PDF로 저장하기 path.
+The resulting PDF records `macOS 버전 26.6.1(빌드 25G76) Quartz PDFContext` as its producer, is
+A4, and has exactly one page. This provenance is a fixture-specific baseline; it is not a claim
+about Windows Hancom, every Hancom build, or universal cross-platform parity.
+
+The committed source/oracle and the exact OFL font bytes used by the Linux candidate are pinned
+below. Font files are fetched by `scripts/fetch-pdf-parity-fonts.sh` and are not committed:
+
+| artifact | SHA-256 |
+|---|---|
+| `public-safety-rfp-p1.hwp` | `8c4e62fb8166828eaddd2d0d304732acd88484ba8526692545b316985e0c0aba` |
+| `public-safety-rfp-p1.hwpx` | `a5b6bb59bc4492f81deeada58cd4b6c0a13579d06afe39e0aaec2687a3eaaf5c` |
+| `public-safety-rfp-p1.pdf` | `8fe8a4a4f3f6640248a1efde26421c7134374b4203363acca1a5967b2c0602e7` |
+| `Noto Sans CJK KR 2.004 Regular` | `6bcb2a0703aa137e874fc2dffa85f6c21ba9a67fa329e81b8c801663af7e992a` |
+| `Noto Sans CJK KR 2.004 Bold` | `26d0c6748500a0444844280b308f5b62c7ae92ac6c6ac88148e502dd211eb52a` |
+
+The manifest records the public profile as `hancom-hwp12-macos-12.30.0-build-6446-quartz` and
+the expected Poppler binary as `pdfinfo version 24.02.0`. The Quartz producer string is
+provenance only; PDF metadata is not a parity metric for this fixture.
+
+The renderer's document-level output contract retains these six catalog/Info fields. They are
+not a claim that the one-page Quartz oracle contains the same metadata:
 
 - `/Lang (ko-KR)`, `/PageLayout /SinglePage`, XMP `/Metadata`,
   `/OutputIntents` (GTS_PDFA1 + sRGB IEC61966-2.1, embedded ICC), `/MarkInfo <</Marked false>>`
@@ -62,7 +83,8 @@ ICC Registry's `sRGB2014` v2 profile, committed as
 `crates/hwp-render/assets/sRGB2014.icc.hex`, with its source and redistribution terms in the
 adjacent `LICENSE-sRGB2014.txt`. The decoded 3,024-byte profile is pinned by SHA-256
 `384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a`. These fields implement the
-captured structural contract; exact Hancom value equality still requires the local oracle run.
+captured structural contract; the public one-page oracle gate is now exercised in CI, while a
+broader Hancom corpus remains future work.
 
 ## 3. The five-metric set (priority order)
 
@@ -80,14 +102,16 @@ antialiasing — engine artifacts, not fidelity. The decisive metrics need no pi
 Rasterization for metrics 4–5 uses the same pinned Poppler (`pdftoppm -png -r 150`) for both the
 Hancom PDF and our PDF.
 
-**Implementation status 2026-08-13 (PR 4):** the batch runner exists —
+**Implementation status 2026-08-14 (PR 4):** the batch runner exists —
 `scripts/pdf-parity.sh run` scores every manifest case into the committable numeric scoreboard
 under `fixtures/pdf-parity/public/scoreboard/` (schema-validated, names + SHA-256 + numbers
 only), `selftest` verifies the harness without an oracle, and `hwp diff --format json` /
 `--ours-png` is the per-page raster metric source. Scoring fails closed unless the manifest,
 Poppler version, font files, and source/oracle digests match their pins; validated outputs are
-published as one rollback-protected set. The 3–5 Hancom baseline exports and the first committed
-numbers are the remaining owner action.
+published as one rollback-protected set. The public corpus now contains one owner-authored,
+anonymized one-page oracle, and the fixed `ubuntu-24.04` CI job fetches the pinned OFL fonts,
+builds `hwp`, and scores both HWP and HWPX inputs against it. This is a one-case regression gate,
+not a universal parity certification.
 
 **Implementation status 2026-08-13 (PR 5):** the border-fidelity batch landed (GG-5, GG-6,
 GG-17, GG-21, GG-24). Cell, paragraph, page and diagonal borders honor `BorderLine.line_type`
@@ -133,20 +157,45 @@ ellipses render as arcs/pies/chords via the axis-vector `ellipse_arc_path`. Appr
 flagged for the Hancom round: brightness/contrast curve, hatch spacing/weight, arc kind and
 sweep mapping, rotation sign conventions; hwp5 flip bits are unlocated.
 
+**Implementation status 2026-08-14 (PR 9):** the final roadmap batch landed (GB-13, GG-14,
+GG-16). Captions are now parsed end to end: a `Caption` IR (side, direction, gap, width,
+last_width, paragraphs) on Table/Picture/GenericControl; hwp5 discriminates caption
+LIST_HEADERs per pyhwp's `TableCaption`/`GShapeObjectCaption` model (a LIST_HEADER before
+the TABLE record is the caption; a direct gso LIST_HEADER child likewise) and re-synthesizes
+them; hwpx `<hp:caption>` round-trips with its side/fullSz/width/gap/lastWidth attributes
+(direction from `subList@textDirection`); table, picture, generic-shape, and unsupported-GSO
+captions retain reading order and render on the attribute side with their gap. Endnotes leave
+the anchor page: layout splits page notes by `NoteKind`, keeps the reservation footnote-only,
+and paginates accumulated endnotes through a closing block without colliding with final-page
+footnotes. Odd/even furniture: all head/foot controls retain their apply value (data bits 0-1:
+BOTH/EVEN/ODD), and the renderer selects exact printed parity followed only by a BOTH
+fallback. Missing apply data maps to BOTH, preserving ordinary single-header sections without
+leaking an odd/even-only entry onto the opposite page. Approximations for the Hancom round: caption listflags
+upper bits, the spec table 71/72 length inconsistency (table 72 followed), and FIRST-page
+furniture (no source-format representation).
+
 ## 4. Gates
 
-### 4.1 Normative Hancom-oracle gate — future public corpus
+### 4.1 Normative Hancom-oracle gate — current one-case public profile
 
-This is the normative target for future public Hancom-oracle scoring. It is not the current
-structured-corpus gate; the current self-consistency checks are listed separately in §4.2.
+This is the normative gate for the committed one-page public profile. CI runs it on fixed
+`ubuntu-24.04` after installing the distribution `poppler-utils` package, verifying
+`pdfinfo version 24.02.0` against the manifest, fetching the exact OFL fonts, building `hwp`,
+and comparing both public HWP/HWPX inputs with the committed oracle. It is not a universal or
+Windows parity claim, and it is separate from the structured-corpus gate in §4.2.
 
 - Page count: exact match
 - MediaBox delta ≤ 0.5 pt
 - `dx`, `dy` ≤ 2 px each at 150 DPI; `ink_ratio` in 0.97–1.03
 - `bad_pixel_pct` ≤ 5 %, MAE ≤ 5
-- Feature ROI ink precision/recall ≥ 0.95 each
+- Feature ROI ink precision/recall ≥ 0.95 each. An ink pixel matches when the other image has
+  ink within the manifest-pinned 10 px square radius at 150 DPI (4.8 pt); this absorbs vector
+  hinting and cumulative glyph-advance rounding only. Page-level `dx`/`dy`, raster error, text
+  order, and ink-ratio gates remain independent, so the ROI tolerance cannot authorize a shifted,
+  missing, or extra feature.
 - Font substitution, unsupported omission, fatal render issue: **0**
-- `pdffonts`: every font embedded/subset with Unicode support
+- `pdffonts`: every candidate font embedded/subset with Unicode support. Oracle rows remain
+  diagnostic because the Mac producer's page-number font is embedded without a Unicode cmap.
 - `pdftotext -layout` normalized output matches the expected visible text and order
 - Byte-identical PDF on two runs with identical input and fonts
 
@@ -161,9 +210,8 @@ self-consistency under the pinned Noto Sans KR:
 - Two PDF renders with identical input and fonts are byte-identical.
 
 It does not currently rasterize PDF and PNG output against each other. Therefore `dx`, `dy`,
-`ink_ratio`, `bad_pixel_pct`, and MAE are not current structured-corpus thresholds. Those are
-future/normative raster requirements for the Hancom-oracle gate in §4.1, activated only when the
-pinned oracle PDF/PNG fixtures and comparison harness are available.
+`ink_ratio`, `bad_pixel_pct`, and MAE are not structured-corpus thresholds; they are enforced by
+the pinned public Hancom-oracle gate in §4.1.
 
 ## 5. The font gate (F1)
 
@@ -187,8 +235,13 @@ break signal and falls back to the `v_pos` reset heuristic only for synthesized 
 pagination correctness (including table splitting, PR 2) is a **precondition** for measurement,
 not a consumer of it. **Implementation status 2026-08-13: PR #81** splits tables at legal row
 boundaries per `Table.attr` pageBreak policy, preserves row-spanning cells, and supports repeated
-header rows. Hancom Office oracle comparison remains pending, so this is not yet a parity
-certification.
+header rows. **PR #89 follow-up:** `CELL` policy can also continue a single row at an existing
+cached line boundary, including the last line that fits the current-page remainder when the cache
+has no explicit page-reset flag. Fragment content is emitted once with continuation borders; an
+unsafe cache or a row-span/cell-fragment combination is surfaced as typed
+`table_cell_fragmentation_incomplete` instead of being silently clipped. The one-page public
+profile is now compared in CI; broader Hancom corpus coverage remains pending, so this is not a
+universal parity certification.
 
 ## 7. Data policy
 
@@ -197,17 +250,22 @@ certification.
   numbers, footnotes/endnotes, images, shapes, equations and composite reports. `.gitignore`
   ignores the entire `fixtures/pdf-parity/` tree by default and re-allows only HWP/HWPX files under
   `public/source/`, Markdown/JSON recipe files under `public/recipes/`, `public/manifest.json`,
-  and numeric JSON/CSV scoreboards under `public/scoreboard/` (with the root `scoreboard.json` and
-  `scoreboard.csv` names also allowed). Public oracle PDFs/PNGs and every private-corpus path stay
-  ignored. The manifest pins the exact Hancom build, Windows version, PDF settings, font SHA-256,
-  source/oracle SHA-256, Poppler version and 150 DPI.
+  numeric JSON/CSV scoreboards under `public/scoreboard/` (plus the root `scoreboard.json` and
+  `scoreboard.csv` names), and exactly
+  `public/oracle/public-safety-rfp-p1.pdf`. All other public oracle PDFs/PNGs and every
+  private-corpus path stay ignored. The manifest pins the Mac HWP provenance, A4/one-page
+  profile, source/oracle SHA-256, exact OFL font SHA-256 values, Poppler version and 150 DPI.
 - **Private corpus** (`HWP_PDF_PARITY_CORPUS_DIR`): real composite documents. Reports contain
   hashes and aggregate metrics only — never originals, PDFs or absolute paths.
-- **Hancom-derived artifacts are never committed** — exported oracle PDFs/PNGs and private source
-  documents stay local. The checked-in recipe, manifest and numeric scoreboard contain only the
-  procedure, pins, hashes and aggregate numbers; they are not oracle artifacts. Baselines are
-  produced manually (3–5 cases) via 파일 → PDF로 저장하기 → `pdftoppm -png -r 150` and kept local.
-- Third-party real documents, Hancom spec copies and private oracle PDFs are never committed.
+- **Public oracle exception:** the single committed PDF above is an owner-authored, anonymized
+  one-page Mac Hancom HWP 12.30.0 build 6446 capture, produced on macOS 26.6.1 build 25G76 with
+  Quartz PDFContext and default Save as PDF settings. It is a bounded regression fixture, not a
+  universal or Windows claim. Its source/oracle/font hashes and reproduction steps live in
+  `fixtures/pdf-parity/public/recipes/public-safety-rfp-p1.md`.
+- Private Hancom artifacts, third-party real documents, third-party Hancom exports, Hancom
+  specification copies and every other oracle PDF/PNG remain forbidden. The checked-in recipe,
+  manifest and numeric scoreboard contain only procedure, provenance, pins, hashes and aggregate
+  numbers apart from this one explicitly allowed public oracle.
 
 ## 8. Anti-pattern guards
 
@@ -219,8 +277,15 @@ certification.
 
 ## 9. Done means
 
-- The committed scoreboard improves monotonically from the first baseline (PR 4) through PR 9.
-- Font substitution is zero on every scored case.
-- `MAX_BAD_PIXEL_PCT` is tightened exactly once, in the advance-affecting re-baseline PR (PR 7),
-  rather than left at its placeholder.
-- `scripts/check.sh`, the PDF unit/integration tests and the public parity gate all pass.
+- The committed scoreboard is monotonically non-worsening from PR 4 through PR 9 on the same
+  public source/oracle/font/Poppler pins; flat rows are valid when a fixture does not exercise a
+  batch, and any regression is invalid.
+- `MAX_BAD_PIXEL_PCT` was tightened once at PR 7 from 0.60 to 0.30 and is no longer its original
+  placeholder.
+- The fixed Ubuntu public gate passes both HWP/HWPX cases against the committed one-page oracle.
+- Font substitution is zero on every scored case, and the exact source/oracle/font hashes remain
+  unchanged from the manifest and recipe.
+- Any committed scoreboard is schema-valid, path-free, and generated only after the pinned gate
+  passes; broader corpus coverage remains explicitly scoped work.
+- `scripts/check.sh`, the PDF unit/integration tests and the public parity gate all pass in their
+  applicable environments.

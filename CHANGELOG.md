@@ -12,6 +12,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Captions, endnotes and odd/even furniture, the ninth and final step of the PDF parity
+  roadmap ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). Table, picture and shape
+  captions are parsed end to end (GB-13): a new `Caption` IR (side, direction, gap, width,
+  paragraphs) on `Table`/`Picture`/`GenericControl`, hwp5 caption LIST_HEADER
+  discrimination per pyhwp's `TableCaption`/`GShapeObjectCaption` model with re-synthesis,
+  hwpx `<hp:caption>` round-trip, shape-caption preservation, reading-order text extraction,
+  and caption block placement by side and gap in the renderer. Endnotes leave the anchor
+  page: footnotes keep their per-page bottom placement while endnotes accumulate
+  section-wide and paginate through a closing block without colliding with last-page
+  footnotes (GG-14). Odd/even headers and footers are selected by printed page parity from
+  each control's preserved apply value (BOTH/EVEN/ODD); absent apply data defaults to BOTH,
+  while parity-only entries do not leak onto the opposite page (GG-16).
+
 - Image and fill fidelity, the eighth step of the PDF parity roadmap
   ([#79](https://github.com/STAIxBWLB/hwp-cli/issues/79)). `Item::Image` gained its contract
   change — crop, flip, rotation, brightness, contrast — parsed from the hwp5 picture record

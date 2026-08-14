@@ -128,7 +128,7 @@
 - **2026-07-30 (GG-13)**: 쪽번호 렌더 해소 — 문서 시작번호·PAGE `nwno` 재시작·`pghd` 숨김,
   `pgnp` 위치 1~10(안쪽/바깥쪽 홀짝 반전)·장식·지원 번호형식, 본문/머리말/꼬리말 PAGE `atno`
   동적 치환을 공용 DisplayList 단계에 구현. PNG·SVG·PDF가 같은 결과를 사용하며, GE-4
-  (`pgnp formatType` HWPX 변환 DIGIT 고정)와 GG-16(머리말/꼬리말 종류 선택)은 잔존.
+  (`pgnp formatType` HWPX 변환 DIGIT 고정)은 잔존하고, GG-16(머리말/꼬리말 종류 선택)은 PR 9에서 해소.
 - **2026-08-13 (PDF parity PR 2, [issue #79](https://github.com/STAIxBWLB/hwp-cli/issues/79))**:
   PR #81에서 렌더러 쪽 표 쪽 분할 구현. `body_bottom`을 넘는 표가 `Table.attr` bits 0-1(pageBreak
   NONE/TABLE/CELL)·bit2(repeatHeader)와 `Cell.list_attr` bit18(제목 셀)을 따른다 — NONE은
@@ -190,7 +190,7 @@
 | GB-10 | **바탕쪽**(hwpx `hm:` master-page — hwp5 대응 개체 없음) | hwpx read·write 모두 없음([11](11-hwpx-structure-map.ko.md) §2·§5(c)) | OWPML master-page | 미구현 | 왕복·합성·렌더 | M |
 | GB-11 | **미지 개체·금칙문자**(`SHAPE_COMPONENT_UNKNOWN` 0x73·`FORBIDDEN_CHAR` 0x5E) | hwp5 `body_text.rs:617`·`doc_info.rs:57`(Opaque) | §4.2 표13 | hwp5=Opaque 보존 / hwpx=미구현 | 왕복(hwpx만) | L |
 | GB-12 | **참고문헌(Bibliography) 스토리지 미포착** — read가 IR로 안 올리고 write가 미방출 → **IR 경유 되쓰기에서 소실**(identity 왕복은 무관) | hwp5 read/write 분기 없음([10](10-hwp5-structure-map.ko.md) §1 트리 — 2026-07-08 보완 등재) | §3.2.12 Bibliography(.XML 저장) | 드롭(되쓰기) | 되쓰기 | S |
-| GB-13 | **캡션 완전 미해석** — 표/그림/도형/OLE의 캡션(표 71~73)이 IR 필드·파서·hwpx 요소 어디에도 없음(3개 크레이트 `caption` 전수 grep 0건). hwp5 왕복은 common_data raw에 묻혀 무손실이나 합성·렌더에서 "표 1"류 캡션 텍스트가 빈자리 | hwp5 캡션 분기 부재(`body_text.rs` LIST_HEADER 캡션 판정 없음), hwpx read/write 요소명 부재 | §4.3.9 표 71~73 | hwp5=Opaque 보존 / 합성·렌더=드롭 | 합성·렌더 | M(표 68 n/n₂ 경계 정답지 확정 필요) |
+| GB-13 | ~~**캡션 완전 미해석**~~ — 표/그림/도형/OLE의 캡션(표 71~73)이 IR 필드·파서·hwpx 요소 어디에도 없음(3개 크레이트 `caption` 전수 grep 0건). hwp5 왕복은 common_data raw에 묻혀 무손실이나 합성·렌더에서 "표 1"류 캡션 텍스트가 빈자리 | hwp5 캡션 분기 부재(`body_text.rs` LIST_HEADER 캡션 판정 없음), hwpx read/write 요소명 부재 | §4.3.9 표 71~73 | ✅ **해소(2026-08-14, PR 9)** — Table/Picture/GenericControl에 `Caption` IR(side·direction·gap·width·last_width·paragraphs) 추가. hwp5는 pyhwp `TableCaption`/`GShapeObjectCaption` 판별로 캡션을 글상자 목록과 분리하고 HWPUNIT 범위를 포화 처리해 재합성한다. hwpx `<hp:caption>`은 표·그림·일반 도형에서 왕복하고, 텍스트 추출은 시각적 캡션 순서를 보존하며, 렌더러는 분할 표 캡션과 일반/미지원 GSO 캡션을 side·gap에 따라 배치한다. 검증 항목: listflags 상위 비트 미왕복, 스펙 표 71/72 길이 불일치는 표 72 준거 | 합성·렌더 | M |
 | GB-14 | **NUMBERING 시작번호·확장 수준 미파싱** — 문단머리정보(표 39·40)를 읽고 버리며(`_attr`·`_width`·`_dist`), 전역·수준별 시작번호는 파싱 없이 전 레벨 `start: 1` 하드코딩. 수준 8~10 확장 필드는 IR(7레벨 고정)에 개념 자체가 없음 | `hwp5/src/doc_info.rs:452-479`(`read_level`, `start: 1`) | §4.2.8 | 근사(start=1 고정) | 읽기(dump/json)·합성 | M(레코드 후미 레이아웃 정품 대조) |
 | GB-15 | **이미지·체크 글머리표 미해석** — BULLET에서 글머리 문자 1개만 추출, 이미지 글머리 여부/ID·이미지 정보(대비·밝기·효과)·체크 문자 등은 raw로만 보존 | `hwp5/src/doc_info.rs:125-138` | §4.2.9 | hwp5=raw 보존 / 합성·렌더=드롭 | 합성·렌더 | S~M(실사용 빈도 낮음 — 우선순위 최하) |
 
@@ -312,7 +312,7 @@ hwpx/렌더로 내보내는 것"이다 → 정답지로 레코드 레이아웃�
 | GE-α6 | **그러데이션 중심·step** | read `read/section.rs:1217`(`parse_gradation`, angle만) ↔ write `write/section.rs:764`(center/step 상수) | 근사(중심·단계 상수) | 왕복(hwpx→hwpx)·렌더 | M |
 | GE-α7 | **번호 형식**(numbering paraHead) | read `read/header.rs:333` ↔ write `write_numberings` | ✅ **해소(2026-07-15)** — `numbering_levels` 기반, 다중 번호정의 itemCnt도 수정 | 왕복(hwpx→hwpx) | S |
 | GE-α8 | **문단↔번호 연결**(paraPr heading) — read는 해석(attr1 bits23-27 + numbering_id)하나 write가 `type="NONE"` 고정이었음 | read `read/header.rs:309` ↔ write `write_para_properties` | ✅ **해소(2026-07-15 2차)** — OUTLINE/NUMBER/BULLET 역방출, 실기(C6)에서 발견된 결함 | 왕복(hwpx→hwpx)·합성 | S |
-| GE-α9 | **머리말/꼬리말 적용쪽(applyPageType)** — read는 BOTH/EVEN/ODD를 정확히 해석(hwp5-origin도 raw 8B에 적용쪽 보존)하나 write가 `applyPageType="BOTH"` 상수 방출 → 홀·짝 구분 머리말/꼬리말이 hwpx 왕복·합성에서 전부 "양쪽"으로 오기록. **hwpx 파일 자체의 훼손**이라(한글에서 열어도 동일 증상) GG-16(렌더 무시)보다 심각. 서적형 홀짝 머리말은 공문서·논문 빈출. 2026-07-19 스펙 전수 감사 발견 | read `read/section.rs:506-517`(`head_foot_data`) ↔ write `write/section.rs:863-901`(`:879` 상수) | 근사(BOTH 고정) | 왕복(hwpx→hwpx)·합성 | S |
+| GE-α9 | **머리말/꼬리말 적용쪽(applyPageType)** — read는 BOTH/EVEN/ODD를 정확히 해석(hwp5-origin도 raw 8B에 적용쪽 보존)하나 write가 `applyPageType="BOTH"` 상수 방출 → 홀·짝 구분 머리말/꼬리말이 hwpx 왕복·합성에서 전부 "양쪽"으로 오기록. **hwpx 파일 자체의 훼손**이라(한글에서 열어도 동일 증상) GG-16(렌더 무시)보다 심각. 서적형 홀짝 머리말은 공문서·논문 빈출. 2026-07-19 스펙 전수 감사 발견 | read `read/section.rs:506-517`(`head_foot_data`) ↔ write `write/section.rs:863-901`(`:879` 상수) | ✅ **해소(2026-08-14 문서 정합 반영 — 코드는 5db1c6a에서 수정)** — write가 `header_footer_apply_page`(`write/section.rs:907-918`)로 보존된 적용쪽을 방출 | 왕복(hwpx→hwpx)·합성 | S |
 
 > **잔여 소갭(α5 관련):** 밑줄 모양 중 **물결(WAVE)**은 reader `line_type_code`에 매핑이 없어
 > SOLID로 강등된다 — 점선·이중선 등은 정상 왕복. C 시리즈 실기 세트 제작(2026-07-15) 중 발견.
@@ -400,10 +400,10 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 | GG-10 | **취소선 모양 무시** — 이중 취소선 등 미반영, 실선 1줄 고정 | `hwp-render/src/shape.rs`(`strike_shape`), `border.rs`(`decor_strokes`) | ✅ **해소(2026-08-13, PR 6)**: bits 26~29(B8 관측 기반)가 GG-9와 같은 장식 스트로크 표를 구동. hwpx 취소선 모양 왕복. 3D 코드는 실선 강등 | S |
 | GG-11 | **글자 그림자 오프셋 무시** — `CharShape.shadow_gap` 미사용, 고정 대각 오프셋(0.05~0.06em) | `hwp-model/src/header.rs`(`shadow_gap`), `hwp-render` `png.rs`/`pdf.rs`/`svg.rs` | ✅ **해소(2026-08-13, PR 6)**: 세 백엔드 모두 축별 `size_pt * gap/100` 적용. (0,0)이면 종전 0.06em 폭백 유지(정품 기본값은 한컴 확인 대상) | S |
 | GG-12 | **개요(outline) 번호 부분 지원** — 기본 head_type 1 마커는 렌더하지만 사용자 정의 개요·재시작과 확인된 한글 14자 이후 순번은 모델링 및 정답지 검증 전 | `hwp-model/src/list.rs`(`ListState::marker_for_render`), `hwp-render/src/layout.rs` | 근사(기본 7수준 형식, 빈 문단·글상자 범위 지원) | M |
-| GG-13 | ~~**쪽번호 미렌더** — 페이지 카운터 부재, pgnp/atno 컨트롤은 skipped 집계 후 미렌더~~ | `hwp-render/src/page_number.rs`, `layout.rs`(`PageNumberState`), `shape.rs`(`shape_range_page`) | ✅ **해소(2026-07-30)** — 시작·재시작·숨김, pgnp 위치/장식/지원 서식, PAGE atno 동적 치환. 미지원 서식은 십진 경고 폴백; GE-4·GG-16은 별도 잔존 | M |
-| GG-14 | **미주(endnote) 배치 근사** — 문서/구역 끝이 아니라 **앵커 페이지 하단**에 각주와 동일 렌더(GC-3의 '모양'과 별개인 '위치' 문제) | `hwp-render/src/footnote.rs:35-72`, `layout.rs:263,598`(kind 미구분) | 근사(각주식 배치) | M |
+| GG-13 | ~~**쪽번호 미렌더** — 페이지 카운터 부재, pgnp/atno 컨트롤은 skipped 집계 후 미렌더~~ | `hwp-render/src/page_number.rs`, `layout.rs`(`PageNumberState`), `shape.rs`(`shape_range_page`) | ✅ **해소(2026-07-30)** — 시작·재시작·숨김, pgnp 위치/장식/지원 서식, PAGE atno 동적 치환. 미지원 서식은 십진 경고 폴백; GE-4는 별도 잔존(GG-16은 PR 9 해소) | M |
+| GG-14 | ~~**미주(endnote) 배치 근사** — 문서/구역 끝이 아니라 **앵커 페이지 하단**에 각주와 동일 렌더(GC-3의 '모양'과 별개인 '위치' 문제)~~ | `hwp-render/src/footnote.rs:35-72`, `layout.rs`(노트 수집 시 kind 분리, 구역 끝 플러시) | ✅ **해소(2026-08-14, PR 9)** — 레이아웃이 페이지 노트를 `NoteKind`로 분리: 각주는 페이지별 하단 플러시 유지(예약 높이도 각주 전용), 미주는 구역 전체에 누적해 마지막 본문 뒤 마무리 블록으로 렌더(공간 부족 시 새 쪽) | M |
 | GG-15 | **이미지 회전·자르기(imgClip)·반전·밝기/대비·그림 효과 미렌더** — `Item::Image`에 변환 필드가 없고 그림 효과(표 108~116)는 미해석이었음 | `hwp-model/src/control.rs`(`Picture`), `hwp-render/src/display.rs`(`Item::Image`), `layout.rs`(Picture emit) | ⚠ **부분 해소(2026-08-14, PR 8)**: 회전/반전/자르기/밝기/대비를 파싱(hwp5 레코드 오프셋 + hwpx 속성)해 세 백엔드 렌더(png Transform+선행 자르기, pdf 행렬+clip, svg transform+clipPath). 잔여: 그림 효과는 파싱 후 `picture_effects_unsupported` 경고로 보고(렌더 안 함), hwp5 반전 비트 미확정, 밝기/대비 픽셀 맵은 선형 근사 | M |
-| GG-16 | **머리말/꼬리말 홀수/짝수/첫쪽 구분 무시** — 최초 head/foot 하나를 모든 페이지에 반복(GC-7 구역 EVEN_ADJUST와 별개) | `layout.rs:152-165` | 근사(단일화) | S |
+| GG-16 | ~~**머리말/꼬리말 홀수/짝수/첫쪽 구분 무시** — 최초 head/foot 하나를 모든 페이지에 반복(GC-7 구역 EVEN_ADJUST와 별개)~~ | `layout.rs`(`head_foot_apply`, `select_furniture`) | ✅ **해소(2026-08-14, PR 9)** — 모든 head/foot 컨트롤을 적용쪽 값(data bits 0-1: BOTH/EVEN/ODD)과 함께 수집하고 출력 쪽번호 패리티로 선택(폴백 BOTH→첫 항목 — 단일 머리말 구역 동작 불변). 첫쪽 전용 furniture는 소스 포맷 표현이 없어 근사로 잔존 | S |
 | GG-17 | **단 구분선 미렌더** — `ColumnDef.divider`가 양쪽 reader에서 드롭되고 렌더러도 미사용이었음 | `hwp-model/src/control.rs`, `hwpx/src/read/section.rs`(`colLine`), `hwp-render/src/layout.rs` | ⚠ **부분 해소(2026-08-13, PR 5)**: hwpx `hp:colLine` 읽기·쓰기 + 단 사이 구분선 렌더. 보류: hwp5 coldef 구분선 파싱(바이트 오프셋 미확정 — 로컬 픽스처 전부 동일한 단일 단 COLDEF, `hwp5/src/body_text.rs`의 `TODO(GG-17)`), hwpx → hwp5 합성 방향의 구분선 | S |
 | GG-18 | **줄간격 모델 근사(합성 한정)** — attr1&0x3로 판정, 고정(1)·최소(3)를 동일 처리, 여백만(2)을 비율로 오해. 실파일은 캐시 lineseg라 무관 | `hwp-render/src/lineseg.rs`(`line_advance_hu`, `compute_linesegs`), `hwp-model/src/header.rs`(`line_spacing_type`) | ✅ **해소(2026-08-14, PR 7)**: 버전 인식 `line_spacing`/`line_spacing_type` — 비율 `base*v/100`, 고정 정확히 `v/2`(클램프 제거), 여백만 `base + v/2`, 최소 `max(base, v/2)`(줄별 자연 높이는 `base` 근사, 한컴 확인 대상) | M |
 | GG-19 | **금칙처리·외톨이줄 보호·한 줄 입력 등 ParaShape 속성 비트 다수 미지원(합성 한정)** — 그리디 줄바꿈만. 범위 확장(2026-07-19 감사): attr1의 줄나눔 기준·공백 최소값·다음 문단과 함께·문단 보호·앞쪽 쪽나눔·**세로 정렬**·테두리 연결·여백 무시·문단 꼬리 모양(표 44), attr2의 한영/한글숫자 간격 자동 조정(표 45)도 접근자 없이 raw 왕복만 | `lineseg.rs:301-333`, `hwp5/src/doc_info.rs:269-319`(attr1 접근자 3종뿐) | 근사(합성 경로) | M |
@@ -510,7 +510,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 | | **난이도 S**(자료구조만) | **난이도 M**(정답지 필요) | **난이도 L**(실기 반복) |
 |---|---|---|---|
 | **가치 高**(빈출) | GC-4·GC-5(탭·구역속성), GC-8·GC-9(내어쓰기·문단배경) — ✅해소(2026-07-15): ~~GE-α1~α5·α7, GH-1·GH-2, GL-1, GA-5, GE-β4~~ / ✅해소(2026-07-18, md): ~~GH-3·GH-4·GH-5·GH-6, GH-8~~ | GG-3·GG-4(양쪽정렬·자간), GF-2(찾아보기·겹침), **GA-2★**(배포용 읽기 — 공식 스펙 공개), ~~GJ-1 출력~~(DOCX 내보내기 2026-08-01 해소), **GK-1**(셀 병합), **GK-2**(열 삭제 — 추가는 07-19 해소) — ✅GC-2·GC-3은 07-19 해소(J1 실기 대기) | GG-1·GG-2(글상자 드롭·오버플로) |
-| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), **GG-16**(렌더 국소 — GG-5·GG-6·GG-8~GG-11·GG-17·GG-20·GG-21·GG-22는 2026-08-13/14 해소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-3·GM-4·GM-8**(병합·분할·비교) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 포함 시), **GM-9 Web**(인증형 hosted MCP·tenant 격리·운영, Desktop은 해소) |
+| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), ~~GG-16~~(렌더 국소 — PR 9 해소, GG-5·GG-6·GG-8~GG-11·GG-17·GG-20·GG-21·GG-22는 2026-08-13/14 해소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-3·GM-4·GM-8**(병합·분할·비교) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 포함 시), **GM-9 Web**(인증형 hosted MCP·tenant 격리·운영, Desktop은 해소) |
 | **가치 低**(드묾) | GA-3·GA-4(거부 메시지), **GI-5**(embed-bin), **GL-2·GL-3**(추출 세분) | **GJ-4**(rtf) | GA-1(암호화), GB-8·GB-9·GB-11(변경추적 등), **GJ-7**(역방향 입력), **GJ-8**(HWPX 배포용) |
 
 **읽는 법:** 좌상단(S·高)이 **가성비 최상** — GE-α(글자효과 왕복)에 더해 **GH-1·GH-2**(md/html
@@ -563,7 +563,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 - **GC-1, GC-2, GC-3**: 세로쓰기·쪽테두리·각주모양 — 해당 조판을 쓴 정품 파일
 - **GD-1~GD-3**: 행렬·큰연산자·복잡 구분자를 포함한 정품 수식
 - **GG-1, GG-2**: 07§F 서사대로 실기 반복 필요
-- **GG-13~GG-15, GG-19**: 정품 렌더와의 픽셀 대조로 확정(GG-12는 PR 3, GG-18은 PR 7, GG-7·GG-23은 PR 8에서 해소)
+- **GG-13~GG-15, GG-19**: 정품 렌더와의 픽셀 대조로 확정(GG-12는 PR 3, GG-18은 PR 7, GG-7·GG-23은 PR 8, GG-14·GG-16은 PR 9에서 해소)
 - **GA-2, GJ-2, GJ-3**: 공식 스펙으로 착수 가능하되, 스펙-실파일 불일치 사례가 알려져 있어
   ([08](08-external-research.ko.md) — 단 정의 14 vs 16B) 정품 코퍼스 검증을 병행
 - **판정 유보 3건(2026-07-19 스펙 전수 감사 — 갭 여부 자체가 미확정, 정품 실측 전 등재 금지)**:

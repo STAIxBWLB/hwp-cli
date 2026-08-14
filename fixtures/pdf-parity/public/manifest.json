@@ -1,15 +1,52 @@
 {
-  "contract": "hwp-pdf-parity-manifest-v1",
+  "contract": "hwp-pdf-parity-manifest-v2",
   "pins": {
-    "hancom_build": "TODO-owner",
-    "windows_version": "TODO-owner",
-    "pdf_settings": "파일 → PDF로 저장하기 (기본 설정)",
-    "poppler_version": "TODO-owner",
     "dpi": 150,
+    "poppler_version": "pdfinfo version 24.02.0",
     "fonts": {
-      "HCR Batang": "TODO-owner-sha256",
-      "HCR Dotum": "TODO-owner-sha256"
-    }
+      "Noto Sans CJK KR 2.004 Regular": "6bcb2a0703aa137e874fc2dffa85f6c21ba9a67fa329e81b8c801663af7e992a",
+      "Noto Sans CJK KR 2.004 Bold": "26d0c6748500a0444844280b308f5b62c7ae92ac6c6ac88148e502dd211eb52a"
+    },
+    "oracle_profile": "hancom-hwp12-macos-12.30.0-build-6446-quartz"
   },
-  "cases": []
+  "thresholds": {
+    "media_box_pt": 0.5,
+    "dx_px": 2,
+    "dy_px": 2,
+    "ink_ratio_min": 0.97,
+    "ink_ratio_max": 1.03,
+    "bad_pixel_pct_max": 0.05,
+    "mae_max": 5,
+    "roi_match_radius_px": 10,
+    "roi_precision_min": 0.95,
+    "roi_recall_min": 0.95
+  },
+  "cases": [
+    {
+      "name": "public-rfp-hwp",
+      "source": "public-safety-rfp-p1.hwp",
+      "source_sha256": "4ff3c231d835f37ceaa08ccd41f7db66d74d65a5a03c0791f6f683cc9fde0d39",
+      "oracle": "public-safety-rfp-p1.pdf",
+      "oracle_sha256": "b663df719837fd3b07d458a7e5aea441d8bcd0895ac90983fe67714067070f9f",
+      "rois": [
+        { "name": "title", "page": 1, "x": 0.08, "y": 0.06, "width": 0.84, "height": 0.08 },
+        { "name": "summary-table", "page": 1, "x": 0.08, "y": 0.13, "width": 0.84, "height": 0.1 },
+        { "name": "comparison-table", "page": 1, "x": 0.08, "y": 0.26, "width": 0.84, "height": 0.12 },
+        { "name": "requirements", "page": 1, "x": 0.08, "y": 0.38, "width": 0.55, "height": 0.12 }
+      ]
+    },
+    {
+      "name": "public-rfp-hwpx",
+      "source": "public-safety-rfp-p1.hwpx",
+      "source_sha256": "9af272aeff59a3e5953c92400458990d511a04e13bea7d9c348591846aebbefd",
+      "oracle": "public-safety-rfp-p1.pdf",
+      "oracle_sha256": "b663df719837fd3b07d458a7e5aea441d8bcd0895ac90983fe67714067070f9f",
+      "rois": [
+        { "name": "title", "page": 1, "x": 0.08, "y": 0.06, "width": 0.84, "height": 0.08 },
+        { "name": "summary-table", "page": 1, "x": 0.08, "y": 0.13, "width": 0.84, "height": 0.1 },
+        { "name": "comparison-table", "page": 1, "x": 0.08, "y": 0.26, "width": 0.84, "height": 0.12 },
+        { "name": "requirements", "page": 1, "x": 0.08, "y": 0.38, "width": 0.55, "height": 0.12 }
+      ]
+    }
+  ]
 }

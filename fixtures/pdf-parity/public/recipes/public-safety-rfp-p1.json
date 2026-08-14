@@ -1,0 +1,322 @@
+{
+  "version": "1.0",
+  "metadata": {
+    "title": "연안 안전정보 서비스 제안요청서",
+    "author": "hwp-cli PDF parity corpus",
+    "subject": "Anonymous single-page layout fixture"
+  },
+  "page": {
+    "width_mm": 210,
+    "height_mm": 297,
+    "margin_left_mm": 20,
+    "margin_right_mm": 20,
+    "margin_top_mm": 18,
+    "margin_bottom_mm": 18,
+    "margin_header_mm": 10,
+    "margin_footer_mm": 10,
+    "gutter_mm": 0
+  },
+  "styles": {
+    "body": {
+      "font_family": "Noto Sans CJK KR",
+      "font_size_pt": 10,
+      "line_height_percent": 150
+    },
+    "title": {
+      "based_on": "body",
+      "font_size_pt": 17,
+      "bold": true,
+      "align": "center",
+      "spacing_after_pt": 12
+    },
+    "heading": {
+      "based_on": "body",
+      "font_size_pt": 12,
+      "bold": true,
+      "spacing_before_pt": 7,
+      "spacing_after_pt": 4
+    },
+    "label": {
+      "based_on": "body",
+      "bold": true,
+      "align": "center"
+    },
+    "center": {
+      "based_on": "body",
+      "align": "center"
+    }
+  },
+  "sections": [
+    {
+      "page_number": {
+        "position": "bottom_center",
+        "format": "decimal",
+        "start": 1,
+        "prefix": "-",
+        "suffix": "-"
+      },
+      "blocks": [
+        {
+          "type": "paragraph",
+          "style": "title",
+          "runs": [
+            {
+              "type": "text",
+              "text": "연안 안전정보 서비스 제안요청서"
+            }
+          ]
+        },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [
+            { "width_mm": 38 },
+            { "width_mm": 132 }
+          ],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "label",
+                      "runs": [{ "type": "text", "text": "사업명" }]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "body",
+                      "runs": [
+                        {
+                          "type": "text",
+                          "text": "예시시 연안 안전정보 서비스 개선"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "label",
+                      "runs": [{ "type": "text", "text": "기간" }]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "body",
+                      "runs": [{ "type": "text", "text": "2026. 9.-2027. 2." }]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "label",
+                      "runs": [{ "type": "text", "text": "목표" }]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "body",
+                      "runs": [
+                        {
+                          "type": "text",
+                          "text": "명확한 사고 대응 안내와 현장정보 제공"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "style": "heading",
+          "runs": [{ "type": "text", "text": "1. 추진 배경" }]
+        },
+        {
+          "type": "table",
+          "width_mm": 170,
+          "columns": [
+            { "width_mm": 28 },
+            { "width_mm": 71 },
+            { "width_mm": 71 }
+          ],
+          "rows": [
+            {
+              "cells": [
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "label",
+                      "runs": [{ "type": "text", "text": "구분" }]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "label",
+                      "runs": [{ "type": "text", "text": "현재" }]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "label",
+                      "runs": [{ "type": "text", "text": "개선" }]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "center",
+                      "runs": [{ "type": "text", "text": "안내" }]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "body",
+                      "runs": [
+                        {
+                          "type": "text",
+                          "text": "채널별 수동 갱신"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "body",
+                      "runs": [
+                        {
+                          "type": "text",
+                          "text": "상태와 용어 통합"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "center",
+                      "runs": [{ "type": "text", "text": "지도" }]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "body",
+                      "runs": [
+                        {
+                          "type": "text",
+                          "text": "여러 정적 지도 비교"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "blocks": [
+                    {
+                      "type": "paragraph",
+                      "style": "body",
+                      "runs": [
+                        {
+                          "type": "text",
+                          "text": "대피 경로와 안전지점 통합 표시"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "style": "heading",
+          "runs": [{ "type": "text", "text": "2. 요구사항" }]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [
+            {
+              "type": "text",
+              "text": "- 문서 계층과 읽기 순서를 보존할 것"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [
+            {
+              "type": "text",
+              "text": "- 표, 본문, 쪽번호를 검색 가능하게 유지할 것"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "style": "body",
+          "runs": [
+            {
+              "type": "text",
+              "text": "- A4 인쇄에서 잘림 없이 선명하게 출력할 것"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

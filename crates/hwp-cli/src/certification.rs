@@ -1837,7 +1837,12 @@ fn empty_render_report(dpi: f32) -> RenderReport {
     }
 }
 
-fn map_render_issue(issue: hwp_render::RenderIssueSummary) -> RenderIssueReportEntry {
+/// Map the renderer's typed issue summary to the certification/report wire shape.
+///
+/// The renderer intentionally does not depend on serde or the CLI crate. Keep this
+/// conversion in the CLI layer so every machine-readable report uses the same
+/// code/severity/stage/sample semantics.
+pub fn map_render_issue(issue: hwp_render::RenderIssueSummary) -> RenderIssueReportEntry {
     RenderIssueReportEntry {
         code: issue.code.as_str(),
         severity: issue.severity.as_str(),
@@ -1848,7 +1853,8 @@ fn map_render_issue(issue: hwp_render::RenderIssueSummary) -> RenderIssueReportE
     }
 }
 
-fn canonical_render_issue_sha256(issues: &[RenderIssueReportEntry]) -> String {
+/// Compute the canonical digest for the typed non-info issue channel.
+pub fn canonical_render_issue_sha256(issues: &[RenderIssueReportEntry]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"hwp-render-typed-issues-v1\0");
     for issue in issues {

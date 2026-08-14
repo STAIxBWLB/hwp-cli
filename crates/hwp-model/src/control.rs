@@ -84,9 +84,54 @@ pub struct Picture {
     /// including flags and payload. Preserved for reporting and future work.
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "hex_bytes")]
     pub effects_raw: Vec<u8>,
+    /// Caption (HWP5: LIST_HEADER after common object properties; HWPX: `<hp:caption>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<Caption>,
     /// 바이너리 데이터 참조
     pub bin_ref: BinRef,
     pub extras: Vec<OpaqueRecord>,
+}
+
+/// Caption side (HWP section 4.3.9 table 73 bits 0-1 / HWPX `hp:caption@side`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptionSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Caption text direction (HWP5 LIST_HEADER listflags bits 0-2, table 65 /
+/// HWPX `hp:subList@textDirection`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptionDirection {
+    Horizontal,
+    Vertical,
+}
+
+/// Caption for a table, picture, or shape (HWP section 4.3.9 tables 71-73 /
+/// HWPX `<hp:caption>`).
+///
+/// HWP5 stores it as a LIST_HEADER plus paragraphs after common object
+/// properties and before the object record (for example TABLE), matching
+/// pyhwp `TableCaption`/`GShapeObjectCaption`. HWPX stores it as a
+/// `<hp:caption>` child of `<hp:tbl>`, `<hp:pic>`, or a shape element.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Caption {
+    pub side: CaptionSide,
+    pub direction: CaptionDirection,
+    /// Gap between the caption and object frame (HWPUNIT; HWP5 uses HWPUNIT16).
+    pub gap: i32,
+    /// Caption width in HWPUNIT. `None` means full-size through the outer
+    /// margins (HWP5 property bit 2 / HWPX `fullSz="1"`). It is meaningful
+    /// only for vertical Left/Right captions (table 72).
+    pub width: Option<u32>,
+    /// Maximum text extent (object width in table 72), corresponding to HWPX
+    /// `hp:caption@lastWidth`. Zero means unknown and writers fall back to the
+    /// object width.
+    #[serde(default)]
+    pub last_width: u32,
+    pub paragraphs: Vec<Paragraph>,
 }
 
 /// BinData 참조 방식.
@@ -223,6 +268,9 @@ pub struct Table {
     pub table_tail: Vec<u8>,
     /// 셀 목록 (LIST_HEADER 등장 순서 — 행 우선)
     pub cells: Vec<Cell>,
+    /// Caption (HWP5 LIST_HEADER before TABLE; HWPX `<hp:caption>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<Caption>,
     pub extras: Vec<OpaqueRecord>,
 }
 
@@ -314,6 +362,11 @@ pub struct GenericControl {
     /// 다단 정의(`cold`/hp:colPr) — 렌더러 단 배치·구분선용. 없으면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_def: Option<ColumnDef>,
+    /// Caption (direct LIST_HEADER of an HWP5 GSO / `<hp:caption>` on an HWPX
+    /// shape). `raw_children` remains the reserialization source of truth for
+    /// HWP5 controls, so this field is the semantic render/text view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<Caption>,
 }
 
 /// 다단(multi-column) 정의 — COLDEF(`cold`)/hp:colPr. 렌더러가 단 배치·구분선에 사용.
@@ -527,6 +580,7 @@ mod tests {
             border_fill: Default::default(),
             table_tail: Vec::new(),
             cells: Vec::new(),
+            caption: None,
             extras: Vec::new(),
         };
         assert_eq!(table(0).page_break_policy(), TablePageBreak::None);

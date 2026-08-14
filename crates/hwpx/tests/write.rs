@@ -205,6 +205,290 @@ fn table_cell_header_and_vertical_alignment_round_trip() {
     assert_eq!(cell.vert_align(), 2);
 }
 
+/// GB-13: table, picture, and shape captions preserve side/gap/fullSz/text
+/// through HWPX write and read.
+#[test]
+fn caption_round_trip() {
+    use hwp_model::{Caption, CaptionDirection, CaptionSide, Paragraph};
+
+    let caption_para = |text: &str| Paragraph {
+        chars: text.chars().map(hwp_model::HwpChar::Text).collect(),
+        ..Paragraph::default()
+    };
+
+    // Bottom table caption with implicit full-size width.
+    let mut doc = hwp_convert::from_markdown("| Header |\n| --- |\n| Value |\n");
+    let table = doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| &mut paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("generated table");
+    table.caption = Some(Caption {
+        side: CaptionSide::Bottom,
+        direction: CaptionDirection::Horizontal,
+        gap: 850,
+        width: None,
+        last_width: 0,
+        paragraphs: vec![caption_para("표 1. 캡션")],
+    });
+
+    let out = tmp("caption-table.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    archive
+        .by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    assert!(
+        xml.contains(r#"<hp:caption side="BOTTOM" fullSz="1" width="0" gap="850""#),
+        "{xml}"
+    );
+    assert!(xml.contains("표 1. 캡션"), "{xml}");
+    // hwpxlib orders a table caption after outMargin and before inMargin.
+    let cap_at = xml.find("<hp:caption").unwrap();
+    assert!(xml[..cap_at].contains("<hp:outMargin"), "{xml}");
+    assert!(xml[cap_at..].contains("<hp:inMargin"), "{xml}");
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let caption = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => table.caption.as_ref(),
+            _ => None,
+        })
+        .expect("round-tripped caption");
+    assert_eq!(caption.side, CaptionSide::Bottom);
+    assert_eq!(caption.direction, CaptionDirection::Horizontal);
+    assert_eq!(caption.gap, 850);
+    assert_eq!(caption.width, None, "fullSz=1 → width None");
+    assert!(
+        caption
+            .paragraphs
+            .first()
+            .is_some_and(|p| p.plain_text() == "표 1. 캡션"),
+        "{:?}",
+        caption.paragraphs
+    );
+
+    // Left picture caption with an explicit width.
+    let mut doc = hwp_convert::from_markdown("본문\n");
+    let picture = hwp_model::Picture {
+        common_data: Vec::new(),
+        width: hwp_model::HwpUnit(1000),
+        height: hwp_model::HwpUnit(500),
+        treat_as_char: true,
+        z_order: 0,
+        vert_offset: 0,
+        horz_offset: 0,
+        description: None,
+        crop: None,
+        flip: 0,
+        rotation: None,
+        brightness: 0,
+        contrast: 0,
+        effect_flags: 0,
+        effects_raw: Vec::new(),
+        caption: Some(Caption {
+            side: CaptionSide::Left,
+            direction: CaptionDirection::Vertical,
+            gap: 300,
+            width: Some(2000),
+            last_width: 0,
+            paragraphs: vec![caption_para("그림 1")],
+        }),
+        bin_ref: hwp_model::BinRef::ItemRef("img".to_string()),
+        extras: Vec::new(),
+    };
+    doc.bin_streams.push(hwp_model::BinStream {
+        name: "img".to_string(),
+        data: VALID_PNG_1X1.to_vec(),
+    });
+    let para = &mut doc.sections[0].paragraphs[0];
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"gso ",
+        payload: Vec::new(),
+        ctrl_index: Some(para.controls.len() as u32),
+    });
+    para.controls.push(hwp_model::Control::Picture(picture));
+
+    let out = tmp("caption-picture.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    archive
+        .by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    assert!(
+        xml.contains(r#"<hp:caption side="LEFT" fullSz="0" width="2000" gap="300""#),
+        "{xml}"
+    );
+    assert!(xml.contains(r#"textDirection="VERTICAL""#), "{xml}");
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let caption = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Picture(pic) => pic.caption.as_ref(),
+            _ => None,
+        })
+        .expect("round-tripped picture caption");
+    assert_eq!(caption.side, CaptionSide::Left);
+    assert_eq!(caption.direction, CaptionDirection::Vertical);
+    assert_eq!(caption.gap, 300);
+    assert_eq!(caption.width, Some(2000));
+    assert!(
+        caption
+            .paragraphs
+            .first()
+            .is_some_and(|p| p.plain_text() == "그림 1")
+    );
+
+    let mut doc = hwp_convert::from_markdown("Body\n");
+    let generic = hwp_model::GenericControl {
+        ctrl_id: *b"gso ",
+        data: Vec::new(),
+        paragraph_lists: Vec::new(),
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: vec![hwp_model::ShapeGeom {
+            kind: hwp_model::ShapeKind::Rect,
+            x: 100,
+            y: 200,
+            w: 3000,
+            h: 1500,
+            points: Vec::new(),
+            fill: 0xFFFF_FFFF,
+            fill_gradient: None,
+            border_color: 0,
+            border_width: 10,
+            round_ratio: 0,
+            border_style: 0,
+            arrow_start: 0,
+            arrow_end: 0,
+            anchored: true,
+            description: None,
+        }],
+        equation: None,
+        column_def: None,
+        caption: Some(Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: 250,
+            width: None,
+            last_width: 3000,
+            paragraphs: vec![caption_para("Shape 1")],
+        }),
+    };
+    let para = &mut doc.sections[0].paragraphs[0];
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"gso ",
+        payload: Vec::new(),
+        ctrl_index: Some(para.controls.len() as u32),
+    });
+    para.controls.push(hwp_model::Control::Generic(generic));
+
+    let out = tmp("caption-shape.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&out).unwrap())).unwrap();
+    let mut xml = String::new();
+    archive
+        .by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    let rect_at = xml.find("<hp:rect").unwrap();
+    let caption_at = xml[rect_at..].find("<hp:caption").unwrap() + rect_at;
+    let rect_end = xml[rect_at..].find("</hp:rect>").unwrap() + rect_at;
+    assert!(
+        caption_at < rect_end,
+        "caption must remain inside the shape: {xml}"
+    );
+    assert!(xml.contains("Shape 1"), "{xml}");
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let caption = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Generic(generic) => generic.caption.as_ref(),
+            _ => None,
+        })
+        .expect("round-tripped shape caption");
+    assert_eq!(caption.paragraphs[0].plain_text(), "Shape 1");
+}
+
+/// HWPX's 32-bit UINT_MAX margin sentinel is represented by u16::MAX in the
+/// shared IR, but must expand back to 4294967295 when serialized as HWPX.
+#[test]
+fn margin_sentinel_hwpx_round_trip() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:tbl rowCnt="1" colCnt="1">
+        <hp:inMargin left="4294967295" right="510" top="4294967295" bottom="141"/>
+        <hp:tr><hp:tc>
+          <hp:subList><hp:p><hp:run><hp:t>x</hp:t></hp:run></hp:p></hp:subList>
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellMargin left="4294967295" right="510" top="4294967295" bottom="141"/>
+        </hp:tc></hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, warnings) = hwpx::read::section::parse_section(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let doc = hwp_model::Document::default();
+    let mut bins = hwpx::write::section::BinCollector::default();
+    let mut write_warnings = Vec::new();
+    let written =
+        hwpx::write::section::write_section(&doc, &section, false, &mut bins, &mut write_warnings);
+    assert!(write_warnings.is_empty(), "{write_warnings:?}");
+    assert!(
+        written.contains(
+            r#"<hp:inMargin left="4294967295" right="510" top="4294967295" bottom="141"/>"#
+        ),
+        "table margin sentinel was not expanded: {written}"
+    );
+    assert!(
+        written.contains(
+            r#"<hp:cellMargin left="4294967295" right="510" top="4294967295" bottom="141"/>"#
+        ),
+        "cell margin sentinel was not expanded: {written}"
+    );
+
+    let (reread, warnings) = hwpx::read::section::parse_section(&written).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let Some(hwp_model::Control::Table(table)) = reread
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find(|control| matches!(control, hwp_model::Control::Table(_)))
+    else {
+        panic!("table control after write/read: {:?}", reread.paragraphs);
+    };
+    assert_eq!(table.inner_margins, [u16::MAX, 510, u16::MAX, 141]);
+    assert_eq!(table.cells[0].margins, [u16::MAX, 510, u16::MAX, 141]);
+}
+
 /// GI-3/GI-4 왕복: md(이미지+인라인 코드) → hwpx 저장 → 재읽기에서 Picture·bin·코드 글자모양 생존.
 #[test]
 fn md_이미지_코드_hwpx_왕복() {
@@ -411,6 +695,7 @@ fn 머리말_적용쪽_hwpx_왕복() {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         };
         // 머리말 컨트롤을 문단에 ExtCtrl(코드 16)로 부착.
         let para = &mut doc.sections[0].paragraphs[0];
@@ -604,6 +889,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         }));
     }
     para.header.ctrl_mask = 0;
@@ -1335,6 +1621,7 @@ fn eqed_control(equation: hwp_model::Equation) -> hwp_model::GenericControl {
         gso_shapes: Vec::new(),
         equation: Some(equation),
         column_def: None,
+        caption: None,
     }
 }
 
@@ -1379,6 +1666,7 @@ fn 수식_hwpx_왕복() {
                 gso_shapes: Vec::new(),
                 equation: Some(eq),
                 column_def: None,
+                caption: None,
             },
         );
     }
@@ -1441,6 +1729,7 @@ fn 글상자_hwp5출신_hwpx_왕복() {
         gso_shapes: Vec::new(),
         equation: None,
         column_def: None,
+        caption: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
 
@@ -1541,6 +1830,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         gso_shapes: vec![rect.clone(), poly.clone()],
         equation: None,
         column_def: None,
+        caption: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
 
@@ -1646,6 +1936,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
         gso_shapes: Vec::new(),
         equation: None,
         column_def: None,
+        caption: None,
     };
     attach_gso(&mut doc.sections[0].paragraphs[1], gso);
 
@@ -2095,6 +2386,7 @@ fn 쪽_컨트롤_hwpx_페이로드_왕복() {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         }));
     }
     para.header.ctrl_mask = 0;
@@ -2280,6 +2572,7 @@ fn 각주_미주_왕복() {
                         gso_shapes: vec![],
                         equation: None,
                         column_def: None,
+                        caption: None,
                     })],
                     ..Paragraph::default()
                 }],
@@ -2289,6 +2582,7 @@ fn 각주_미주_왕복() {
             gso_shapes: vec![],
             equation: None,
             column_def: None,
+            caption: None,
         })
     };
     let anchor = |idx: u32, id: &[u8; 4]| HwpChar::ExtCtrl {

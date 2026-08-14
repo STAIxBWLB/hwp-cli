@@ -102,6 +102,7 @@ Render pages
 | `--pages` | `<PAGES>` | `all` | Page range: "1", "1-3", "all" |
 | `--dpi` | `<DPI>` | `96` | Resolution in DPI (finite, 36..=600) |
 | `--format` | `png` \| `svg` \| `pdf` |  | Output format (inferred from the extension when omitted) |
+| `--report` | `<REPORT>` |  | Write a closed machine-readable render report atomically |
 | `--font-dir` | `<FONT_DIR>` |  | Additional font directory (repeatable) |
 
 ## `hwp new`

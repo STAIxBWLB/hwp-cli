@@ -379,6 +379,7 @@ pub fn insert_image(
         contrast: 0,
         effect_flags: 0,
         effects_raw: Vec::new(),
+        caption: None,
         bin_ref: BinRef::ItemRef(name.clone()),
         extras: Vec::new(),
     };
@@ -448,6 +449,7 @@ fn insert_seal_in_para(
         contrast: 0,
         effect_flags: 0,
         effects_raw: Vec::new(),
+        caption: None,
         bin_ref: BinRef::ItemRef(name.to_string()),
         extras: Vec::new(),
     };

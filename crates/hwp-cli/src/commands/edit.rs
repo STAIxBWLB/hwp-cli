@@ -2558,6 +2558,7 @@ mod tests {
                     contrast: 0,
                     effect_flags: 0,
                     effects_raw: Vec::new(),
+                    caption: None,
                     bin_ref: hwp_model::BinRef::ItemRef("first.png".to_string()),
                     extras: Vec::new(),
                 }));
@@ -2680,6 +2681,7 @@ mod tests {
                 gso_shapes: Vec::new(),
                 equation: None,
                 column_def: None,
+                caption: None,
             }));
         let mut materialized = source.clone();
         materialized.header.properties.start_numbers = [1; 6];

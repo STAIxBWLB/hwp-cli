@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use fontdb::{Database, Family, Query, Source};
+use fontdb::{Database, Family, Query, Source, Weight};
 use hwp_model::Document;
 use sha2::{Digest as _, Sha256};
 
@@ -84,6 +84,30 @@ pub struct LoadedFont {
     pub family: String,
 }
 
+/// A resolved face together with the shaping effect still required for it.
+///
+/// A bold request uses a real `Weight::BOLD` face when one exists. The renderer
+/// only applies its synthetic stroke when the selected face is not an exact
+/// bold face, preserving the previous faux-bold fallback behavior.
+#[derive(Clone)]
+pub(crate) struct FontSelection {
+    pub font: Arc<LoadedFont>,
+    pub faux_bold: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FontCacheKey {
+    Family {
+        requested: String,
+        alt: Option<String>,
+        bold: bool,
+    },
+    Coverage {
+        character: char,
+        bold: bool,
+    },
+}
+
 /// 렌더 중 실제로 관측한 글꼴 해석 결과.
 ///
 /// 기존의 사람이 읽는 `report` 문자열과 별개인 안정된 기계 판독 표면이다. 인증기는
@@ -110,8 +134,8 @@ pub struct FontStore {
     db: Database,
     /// fontdb ID → 로드된 폰트
     loaded: HashMap<fontdb::ID, Arc<LoadedFont>>,
-    /// (요청 이름) → 해석 결과 캐시
-    resolved: HashMap<String, Option<Arc<LoadedFont>>>,
+    /// Resolution cache keyed by requested family, alternate family, and weight.
+    resolved: HashMap<FontCacheKey, Option<FontSelection>>,
     /// 문서 문자열을 보관하지 않는 source-bounded 해석 진단.
     pub issues: RenderIssueAccumulator,
     /// 기계 판독 가능한 해석 결과. 같은 요청은 캐시되므로 한 번만 기록된다.
@@ -146,12 +170,15 @@ impl FontStore {
     /// 추가 폰트 디렉터리 로드 (`--font-dir`).
     pub fn load_dir(&mut self, dir: &std::path::Path) {
         self.db.load_fonts_dir(dir);
+        self.resolved.clear();
     }
 
     /// 한 파일을 호출 순서대로 적재한다. 인증기는 검증된 manifest 정렬 순서를 그대로
     /// 사용해 디렉터리 열거 순서가 face 선택에 영향을 주지 않게 한다.
     pub fn load_file(&mut self, path: &std::path::Path) -> std::io::Result<()> {
-        self.db.load_font_file(path)
+        let result = self.db.load_font_file(path);
+        self.resolved.clear();
+        result
     }
 
     /// 문서의 (언어 슬롯, 글꼴 ID)를 실제 폰트로 해석한다.
@@ -161,10 +188,41 @@ impl FontStore {
         lang_slot: usize,
         face_id: u16,
     ) -> Option<Arc<LoadedFont>> {
+        self.resolve_with_style(doc, lang_slot, face_id, false)
+    }
+
+    /// Resolve a face for a bold or regular shaping request.
+    ///
+    /// This is the public style-aware wrapper. Callers that also need to know
+    /// whether synthetic bold is required should use the crate-internal
+    /// `resolve_selection` helper.
+    pub fn resolve_with_style(
+        &mut self,
+        doc: &Document,
+        lang_slot: usize,
+        face_id: u16,
+        bold: bool,
+    ) -> Option<Arc<LoadedFont>> {
+        self.resolve_selection(doc, lang_slot, face_id, bold)
+            .map(|selection| selection.font)
+    }
+
+    /// Resolve a face and retain the faux-bold decision for shaping.
+    pub(crate) fn resolve_selection(
+        &mut self,
+        doc: &Document,
+        lang_slot: usize,
+        face_id: u16,
+        bold: bool,
+    ) -> Option<FontSelection> {
         let face = doc.header.fonts.get(lang_slot)?.get(face_id as usize);
         let requested = face.map(|f| f.name.clone()).unwrap_or_default();
         let alt = face.and_then(|f| f.alt_name.clone());
-        let cache_key = format!("{requested}\0{}", alt.as_deref().unwrap_or(""));
+        let cache_key = FontCacheKey::Family {
+            requested: requested.clone(),
+            alt: alt.clone(),
+            bold,
+        };
 
         if let Some(cached) = self.resolved.get(&cache_key) {
             return cached.clone();
@@ -187,11 +245,12 @@ impl FontStore {
 
         let mut result = None;
         for name in &candidates {
-            if let Some(font) = self.try_family(name) {
+            if let Some(selection) = self.try_family_with_style(name, bold) {
+                let font = &selection.font;
                 if *name != requested {
                     self.issues.push(
                         RenderIssueCode::FontSubstituted,
-                        format!("{}\0{}", requested, name),
+                        resolution_detail(&requested, name, bold),
                     );
                     self.record_resolution(FontResolution {
                         requested: requested.clone(),
@@ -201,8 +260,10 @@ impl FontStore {
                         outcome: FontResolutionOutcome::Substituted,
                     });
                 } else {
-                    self.issues
-                        .push(RenderIssueCode::FontMatched, requested.as_bytes());
+                    self.issues.push(
+                        RenderIssueCode::FontMatched,
+                        resolution_detail(&requested, name, bold),
+                    );
                     self.record_resolution(FontResolution {
                         requested: requested.clone(),
                         resolved: Some(font.family.clone()),
@@ -211,7 +272,7 @@ impl FontStore {
                         outcome: FontResolutionOutcome::Matched,
                     });
                 }
-                result = Some(font);
+                result = Some(selection);
                 break;
             }
         }
@@ -219,13 +280,15 @@ impl FontStore {
         if result.is_none()
             && let Some(id) = self.db.query(&Query {
                 families: &[Family::SansSerif],
+                weight: requested_weight(bold),
                 ..Query::default()
             })
-            && let Some(font) = self.load_by_id(id)
+            && let Some(selection) = self.load_selection_by_id(id, bold)
         {
+            let font = &selection.font;
             self.issues.push(
                 RenderIssueCode::FontSubstituted,
-                format!("{}\0{}", requested, font.family),
+                resolution_detail(&requested, &font.family, bold),
             );
             self.record_resolution(FontResolution {
                 requested: requested.clone(),
@@ -234,7 +297,7 @@ impl FontStore {
                 resolved_face_index: Some(font.index),
                 outcome: FontResolutionOutcome::Substituted,
             });
-            result = Some(font);
+            result = Some(selection);
         }
         if result.is_none() {
             self.issues
@@ -255,6 +318,17 @@ impl FontStore {
     /// (함초롬 우선 → CJK 폴백). 주 글꼴이 특정 글자를 못 가질 때 그 글자만 이
     /// 글꼴로 바꿔 두부(□) 글리프를 방지한다. 문자별 결과를 캐시한다.
     pub fn font_covering(&mut self, c: char) -> Option<Arc<LoadedFont>> {
+        self.font_covering_with_style(c, false)
+    }
+
+    /// Resolve a coverage fallback for a regular or bold shaping request.
+    pub fn font_covering_with_style(&mut self, c: char, bold: bool) -> Option<Arc<LoadedFont>> {
+        self.font_covering_selection(c, bold)
+            .map(|selection| selection.font)
+    }
+
+    /// Resolve a coverage fallback and retain the faux-bold decision for shaping.
+    pub(crate) fn font_covering_selection(&mut self, c: char, bold: bool) -> Option<FontSelection> {
         const COVERAGE_FALLBACKS: &[&str] = &[
             "함초롬바탕",
             "HCR Batang",
@@ -267,15 +341,16 @@ impl FontStore {
             "Apple SD Gothic Neo",
             "AppleMyungjo",
         ];
-        let key = format!("\u{1}cover:{}", c as u32);
+        let key = FontCacheKey::Coverage { character: c, bold };
         if let Some(cached) = self.resolved.get(&key) {
             return cached.clone();
         }
         let mut result = None;
         for name in COVERAGE_FALLBACKS {
-            if let Some(font) = self.try_family(name)
-                && font_has_char(&font, c)
+            if let Some(selection) = self.try_family_with_style(name, bold)
+                && font_has_char(&selection.font, c)
             {
+                let font = &selection.font;
                 self.record_resolution(FontResolution {
                     requested: "coverage_fallback".to_string(),
                     resolved: Some(font.family.clone()),
@@ -283,7 +358,7 @@ impl FontStore {
                     resolved_face_index: Some(font.index),
                     outcome: FontResolutionOutcome::CoverageSubstituted,
                 });
-                result = Some(font);
+                result = Some(selection);
                 break;
             }
         }
@@ -300,12 +375,13 @@ impl FontStore {
         result
     }
 
-    fn try_family(&mut self, name: &str) -> Option<Arc<LoadedFont>> {
+    fn try_family_with_style(&mut self, name: &str, bold: bool) -> Option<FontSelection> {
         let id = self.db.query(&Query {
             families: &[Family::Name(name)],
+            weight: requested_weight(bold),
             ..Query::default()
         })?;
-        self.load_by_id(id)
+        self.load_selection_by_id(id, bold)
     }
 
     fn record_resolution(&mut self, resolution: FontResolution) {
@@ -351,6 +427,29 @@ impl FontStore {
         self.loaded.insert(id, loaded.clone());
         Some(loaded)
     }
+
+    fn load_selection_by_id(&mut self, id: fontdb::ID, bold: bool) -> Option<FontSelection> {
+        let actual_weight = self.db.face(id)?.weight;
+        let font = self.load_by_id(id)?;
+        Some(FontSelection {
+            font,
+            faux_bold: bold && actual_weight != Weight::BOLD,
+        })
+    }
+}
+
+fn requested_weight(bold: bool) -> Weight {
+    if bold { Weight::BOLD } else { Weight::NORMAL }
+}
+
+fn resolution_detail(requested: &str, resolved: &str, bold: bool) -> String {
+    if bold {
+        format!("{requested}\0{resolved}\0bold")
+    } else if requested == resolved {
+        requested.to_string()
+    } else {
+        format!("{requested}\0{resolved}")
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -377,6 +476,150 @@ fn font_has_char(font: &LoadedFont, c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hwp_model::{Document, FaceName};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // A 400-byte outline font from ttf-parser's public test corpus. The test
+    // builds two named faces from it, changing only the family name and OS/2
+    // weight, so no host font directory is consulted.
+    const DEMO_TTF_HEX: &str = "000100000007004000020030636d617000090076000001000000002c676c7966f1cb6698000001340000005c68656164f235ddf80000007c0000003668686561066100ca000000b400000024686d74780474006a000000f8000000086c6f6361002e00140000012c000000066d6178700005000b000000d8000000200001000000010000f59c29445f0f3cf5000203e800000000b492f40000000000dc2fa65c00060000025802bc000000030002000000000000000100000400fe70000002580006ffff0258000100000000000000000000000000000002000100000002000b00020000000000000000000000000000000000000000000002580064021c000600000001000000030000000c00040020000000040004000100000041ffff00000041ffffffc000010000000000000014002e0000000200640000025802bc00030007000033112111252111216401f4fe3401a4fe5c02bcfd4428026c000200060000021d02900002000a00001333030113331323272307adc463fef8da60dd593eef42010b0140fdb50290fd70c8c800";
+    static TEMP_FONT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn hex_bytes(hex: &str) -> Vec<u8> {
+        assert_eq!(hex.len() % 2, 0);
+        (0..hex.len())
+            .step_by(2)
+            .map(|offset| u8::from_str_radix(&hex[offset..offset + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn be_u16(bytes: &[u8], offset: usize) -> u16 {
+        u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
+    }
+
+    fn be_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    }
+
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn align4(bytes: &mut Vec<u8>) {
+        while !bytes.len().is_multiple_of(4) {
+            bytes.push(0);
+        }
+    }
+
+    fn table_checksum(bytes: &[u8]) -> u32 {
+        bytes
+            .chunks(4)
+            .map(|chunk| {
+                let mut word = [0; 4];
+                word[..chunk.len()].copy_from_slice(chunk);
+                u32::from_be_bytes(word)
+            })
+            .fold(0u32, u32::wrapping_add)
+    }
+
+    fn weight_font(family: &str, weight: u16) -> Vec<u8> {
+        let base = hex_bytes(DEMO_TTF_HEX);
+        let table_count = usize::from(be_u16(&base, 4));
+        let mut tables = Vec::<([u8; 4], Vec<u8>)>::with_capacity(table_count + 2);
+        for index in 0..table_count {
+            let record = 12 + index * 16;
+            let mut tag = [0; 4];
+            tag.copy_from_slice(&base[record..record + 4]);
+            let offset = be_u32(&base, record + 8) as usize;
+            let length = be_u32(&base, record + 12) as usize;
+            tables.push((tag, base[offset..offset + length].to_vec()));
+        }
+
+        let family_utf16: Vec<u8> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let post_script = family.replace(' ', "");
+        let post_script_utf16: Vec<u8> = post_script
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect();
+        let mut name = Vec::new();
+        push_u16(&mut name, 0); // format
+        push_u16(&mut name, 2); // count
+        push_u16(&mut name, 30); // string offset: 6 + 2 * 12
+        for (name_id, bytes) in [(1u16, &family_utf16), (6u16, &post_script_utf16)] {
+            push_u16(&mut name, 3); // Windows Unicode BMP
+            push_u16(&mut name, 1);
+            push_u16(&mut name, 0x0409);
+            push_u16(&mut name, name_id);
+            push_u16(&mut name, bytes.len() as u16);
+            push_u16(
+                &mut name,
+                if name_id == 1 {
+                    0
+                } else {
+                    family_utf16.len() as u16
+                },
+            );
+        }
+        name.extend_from_slice(&family_utf16);
+        name.extend_from_slice(&post_script_utf16);
+        tables.push((*b"name", name));
+
+        let mut os2 = vec![0; 78];
+        os2[0..2].copy_from_slice(&0u16.to_be_bytes()); // version
+        os2[4..6].copy_from_slice(&weight.to_be_bytes()); // usWeightClass
+        os2[6..8].copy_from_slice(&5u16.to_be_bytes()); // usWidthClass: normal
+        tables.push((*b"OS/2", os2));
+        tables.sort_by_key(|(tag, _)| *tag);
+
+        let count = tables.len() as u16;
+        let mut out =
+            Vec::with_capacity(256 + tables.iter().map(|(_, data)| data.len()).sum::<usize>());
+        push_u32(&mut out, 0x0001_0000);
+        push_u16(&mut out, count);
+        push_u16(&mut out, 128); // searchRange for 16 records
+        push_u16(&mut out, 3); // entrySelector
+        push_u16(&mut out, count * 16 - 128); // rangeShift
+        out.resize(12 + usize::from(count) * 16, 0);
+
+        for (index, (tag, data)) in tables.iter().enumerate() {
+            align4(&mut out);
+            let offset = out.len() as u32;
+            out.extend_from_slice(data);
+            let record = 12 + index * 16;
+            out[record..record + 4].copy_from_slice(tag);
+            out[record + 4..record + 8].copy_from_slice(&table_checksum(data).to_be_bytes());
+            out[record + 8..record + 12].copy_from_slice(&offset.to_be_bytes());
+            out[record + 12..record + 16].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        }
+        out
+    }
+
+    fn temp_font_path(label: &str) -> PathBuf {
+        let serial = TEMP_FONT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "hwp-render-font-weight-{}-{serial}-{label}.ttf",
+            std::process::id()
+        ))
+    }
+
+    fn test_document(family: &str) -> Document {
+        let mut document = Document::default();
+        document.header.fonts[0].push(FaceName {
+            name: family.to_string(),
+            ..FaceName::default()
+        });
+        document
+    }
 
     #[test]
     fn more_than_512_distinct_font_requests_are_bounded_and_fatal() {
@@ -399,5 +642,61 @@ mod tests {
             RenderIssueCode::FontResolutionBudgetExceeded
         );
         assert!(report.has_required_failure());
+    }
+
+    #[test]
+    fn isolated_weight_resolution_selects_regular_and_bold_bytes_deterministically() {
+        let family = "HWP Weight Fixture";
+        let regular_bytes = weight_font(family, 400);
+        let bold_bytes = weight_font(family, 700);
+        let regular_hash = sha256_hex(&regular_bytes);
+        let bold_hash = sha256_hex(&bold_bytes);
+        assert_ne!(regular_hash, bold_hash);
+
+        let regular_path = temp_font_path("regular");
+        let bold_path = temp_font_path("bold");
+        std::fs::write(&regular_path, &regular_bytes).unwrap();
+        std::fs::write(&bold_path, &bold_bytes).unwrap();
+
+        let document = test_document(family);
+        let mut store = FontStore::new_isolated();
+        store.load_file(&regular_path).unwrap();
+        store.load_file(&bold_path).unwrap();
+        let regular = store.resolve(&document, 0, 0).unwrap();
+        let bold = store.resolve_with_style(&document, 0, 0, true).unwrap();
+        assert_eq!(sha256_hex(&regular.data), regular_hash);
+        assert_eq!(sha256_hex(&bold.data), bold_hash);
+        assert_eq!(store.resolutions.len(), 2);
+        assert!(store.resolutions.iter().any(|resolution| {
+            resolution.resolved_sha256.as_deref() == Some(regular_hash.as_str())
+                && resolution.resolved_face_index == Some(0)
+        }));
+        assert!(store.resolutions.iter().any(|resolution| {
+            resolution.resolved_sha256.as_deref() == Some(bold_hash.as_str())
+                && resolution.resolved_face_index == Some(0)
+        }));
+
+        // Reversing the explicitly loaded manifest order must not change the
+        // CSS-style weight match because the faces have distinct weights.
+        let mut reversed = FontStore::new_isolated();
+        reversed.load_file(&bold_path).unwrap();
+        reversed.load_file(&regular_path).unwrap();
+        let reversed_regular = reversed.resolve(&document, 0, 0).unwrap();
+        let reversed_bold = reversed.resolve_with_style(&document, 0, 0, true).unwrap();
+        assert_eq!(sha256_hex(&reversed_regular.data), regular_hash);
+        assert_eq!(sha256_hex(&reversed_bold.data), bold_hash);
+
+        // With no exact bold face the selected regular bytes remain the
+        // fallback, and shaping can still apply faux-bold.
+        let mut regular_only = FontStore::new_isolated();
+        regular_only.load_file(&regular_path).unwrap();
+        let selection = regular_only
+            .resolve_selection(&document, 0, 0, true)
+            .unwrap();
+        assert_eq!(sha256_hex(&selection.font.data), regular_hash);
+        assert!(selection.faux_bold);
+
+        let _ = std::fs::remove_file(regular_path);
+        let _ = std::fs::remove_file(bold_path);
     }
 }

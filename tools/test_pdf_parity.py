@@ -2,8 +2,11 @@
 """Regression tests for the Hancom PDF parity runner."""
 
 import hashlib
+import json
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -152,6 +155,317 @@ class ScoreGateTests(unittest.TestCase):
         self.assertFalse(card["scored"])
         self.assertFalse(card["fonts"]["all_embedded_subset_unicode"])
         self.assertIn("pdf_font_contract", card["unscored_reasons"])
+
+
+def tiny_png(width: int, height: int, ink: set[tuple[int, int]]) -> bytes:
+    """Create an 8-bit grayscale PNG for ROI tests without Pillow."""
+    rows = []
+    for y in range(height):
+        rows.append(bytes(0 if (x, y) in ink else 255 for x in range(width)))
+    raster = b"".join(b"\x00" + row for row in rows)
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raster))
+        + chunk(b"IEND", b"")
+    )
+
+
+class V2ContractTests(unittest.TestCase):
+    def test_render_report_json_and_stderr_fallback_are_normalized(self) -> None:
+        report = parity.normalize_render_report(
+            {
+                "complete": True,
+                "font_coverage": {
+                    "matched": 4,
+                    "substituted": 0,
+                    "missing": 0,
+                    "subset_fallback": 0,
+                },
+                "issues": [
+                    {"code": "picture_effects_unsupported", "severity": "warning", "count": 2},
+                    {"code": "fatal_issue", "severity": "fatal", "count": 1},
+                ],
+            }
+        )
+        self.assertEqual(report["unsupported"], 2)
+        self.assertEqual(report["fatal"], 1)
+        self.assertTrue(report["coverage"]["substitution_free"])
+
+        inconsistent = parity.normalize_render_report(
+            {
+                "font_coverage": {
+                    "matched": 1,
+                    "substituted": 0,
+                    "missing": 0,
+                    "subset_fallback": 0,
+                },
+                "issues": [{"code": "font_substituted", "severity": "warning", "count": 1}],
+            }
+        )
+        self.assertFalse(inconsistent["coverage"]["substitution_free"])
+
+        fallback = parity.parse_render_stderr(
+            "렌더: layout/warning/picture_effects_unsupported count=1 samples_complete=true\n"
+            "렌더: 글꼴 커버리지 matched=2 substituted=1 missing=0 subset_fallback=0\n"
+        )
+        self.assertEqual(fallback["unsupported"], 1)
+        self.assertFalse(fallback["coverage"]["substitution_free"])
+
+        truncated = parity.normalize_render_report(
+            {
+                "complete": True,
+                "issue_count": 1,
+                "issues": [],
+                "font_coverage": {
+                    "matched": 1,
+                    "substituted": 0,
+                    "missing": 0,
+                    "subset_fallback": 0,
+                },
+            }
+        )
+        self.assertEqual(truncated["fatal"], 1)
+        self.assertIn("unclassified_issue", truncated["issue_codes"])
+
+        clean_info = parity.normalize_render_report(
+            {
+                "complete": True,
+                "issue_count": 0,
+                "info_count": 2,
+                "issues": [],
+                "info": [
+                    {"code": "font_matched", "severity": "info", "count": 2}
+                ],
+                "font_coverage": {
+                    "matched": 2,
+                    "substituted": 0,
+                    "missing": 0,
+                    "subset_fallback": 0,
+                },
+            }
+        )
+        self.assertEqual(clean_info["fatal"], 0)
+        self.assertNotIn("unclassified_issue", clean_info["issue_codes"])
+
+    def test_old_cli_report_flag_falls_back_to_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "candidate.pdf"
+            output.write_bytes(b"candidate")
+            calls = []
+
+            def run_process(command, **kwargs):
+                calls.append(command)
+                if "--report" in command:
+                    return mock.Mock(
+                        returncode=2,
+                        stdout="",
+                        stderr="error: unexpected argument '--report' found",
+                    )
+                return mock.Mock(
+                    returncode=0,
+                    stdout="",
+                    stderr="렌더: 글꼴 커버리지 matched=1 substituted=0 missing=0 subset_fallback=0",
+                )
+
+            with mock.patch.object(parity.subprocess, "run", side_effect=run_process):
+                result = parity.render_candidate_once(
+                    root / "hwp",
+                    root / "source.hwpx",
+                    output,
+                    150,
+                    root / "report.json",
+                )
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("--report", calls[-1])
+            self.assertEqual(result["report"]["report_source"], "stderr")
+            self.assertTrue(result["report"]["coverage"]["substitution_free"])
+
+    def test_roi_uses_top_left_normalized_coordinates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ours = root / "ours.png"
+            oracle = root / "oracle.png"
+            ours.write_bytes(tiny_png(4, 4, {(0, 0), (1, 0)}))
+            oracle.write_bytes(tiny_png(4, 4, {(0, 0), (1, 0), (2, 0)}))
+            precision, recall = parity.roi_ink_precision_recall(
+                ours, oracle, 0.0, 0.0, 0.75, 0.5
+            )
+            self.assertAlmostEqual(precision, 1.0)
+            self.assertAlmostEqual(recall, 2 / 3)
+
+    def test_roi_accepts_media_box_rounding_pixel(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ours = root / "ours.png"
+            oracle = root / "oracle.png"
+            ours.write_bytes(tiny_png(5, 4, {(0, 0), (1, 0)}))
+            oracle.write_bytes(tiny_png(4, 5, {(0, 0), (1, 0)}))
+            precision, recall = parity.roi_ink_precision_recall(
+                ours, oracle, 0.0, 0.0, 0.5, 0.5
+            )
+            self.assertAlmostEqual(precision, 1.0)
+            self.assertAlmostEqual(recall, 1.0)
+
+    def test_roi_match_radius_tolerates_nearby_rasterization_not_missing_ink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ours = root / "ours.png"
+            oracle = root / "oracle.png"
+            ours.write_bytes(tiny_png(8, 4, {(1, 1), (6, 1)}))
+            oracle.write_bytes(tiny_png(8, 4, {(2, 1)}))
+            precision, recall = parity.roi_ink_precision_recall(
+                ours, oracle, 0.0, 0.0, 1.0, 1.0, match_radius_px=1
+            )
+            self.assertAlmostEqual(precision, 0.5)
+            self.assertAlmostEqual(recall, 1.0)
+
+    def test_page_text_ignores_layout_spacing_but_preserves_order(self) -> None:
+        completed = mock.Mock(stdout="-  1  -\n가   나\f")
+        with mock.patch.object(parity, "run", return_value=completed):
+            self.assertEqual(parity.page_text(Path("case.pdf"), 1), "-1-가나")
+
+    def test_media_box_delta_is_coordinate_based(self) -> None:
+        self.assertAlmostEqual(
+            parity.media_box_delta((0, 0, 100, 200), (0, 0, 100.4, 199.8)), 0.4
+        )
+
+    def test_v2_gate_lists_are_closed_and_ordered(self) -> None:
+        passed, failed = parity._v2_gate_lists(
+            {"page_count": True, "media_box": False, "text": True}
+        )
+        self.assertEqual(passed, ["page_count", "text"])
+        self.assertEqual(
+            failed,
+            ["media_box", "fonts", "render_issues", "raster", "roi", "determinism"],
+        )
+
+    def test_v2_scorecard_fails_unsupported_and_nondeterministic_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "case.hwpx"
+            oracle = root / "case.pdf"
+            ours_pdf = root / "ours.pdf"
+            source.write_bytes(b"source")
+            oracle.write_bytes(b"oracle")
+            ours_pdf.write_bytes(b"ours")
+            render = {
+                "first": {"path": ours_pdf},
+                "report": {
+                    "coverage": {
+                        "matched": 1,
+                        "substituted": 0,
+                        "missing": 0,
+                        "subset_fallback": 0,
+                        "substitution_free": True,
+                    },
+                    "complete": True,
+                    "unsupported": 1,
+                    "incomplete": 0,
+                    "fatal": 0,
+                    "issue_codes": ["picture_effects_unsupported"],
+                    "report_available": True,
+                    "report_source": "json",
+                },
+                "byte_equal": False,
+                "sha256": [digest(b"ours"), digest(b"different")],
+            }
+            valid_font = {
+                "name": "Pinned",
+                "type": "TrueType",
+                "embedded": True,
+                "subset": True,
+                "unicode": True,
+            }
+            with mock.patch.object(parity, "render_candidate_twice", return_value=render), mock.patch.object(
+                parity, "pdf_pages", return_value=1
+            ), mock.patch.object(
+                parity, "pdf_media_boxes", return_value=[(0.0, 0.0, 100.0, 100.0)]
+            ), mock.patch.object(
+                parity, "pdf_fonts", return_value=[valid_font]
+            ), mock.patch.object(
+                parity, "page_text", return_value="same"
+            ), mock.patch.object(
+                parity, "rasterize", return_value=root / "missing.png"
+            ), mock.patch.object(
+                parity, "raster_diff", return_value={
+                    "dx": 0,
+                    "dy": 0,
+                    "ink_ratio": 1.0,
+                    "bad_pixel_pct": 0.0,
+                    "mae": 0.0,
+                }
+            ):
+                card = parity.score_case_v2(
+                    "case", source, oracle, root / "hwp", 150, root, rois=[]
+                )
+            self.assertFalse(card["eligible"])
+            self.assertIn("render_issues", card["failed_gates"])
+            self.assertIn("determinism", card["failed_gates"])
+
+    def test_v2_scoreboard_summary_has_no_paths_or_text(self) -> None:
+        card = {
+            "case": "case",
+            "source": {"sha256": "a" * 64},
+            "oracle": {"sha256": "b" * 64},
+            "passed_gates": ["page_count"],
+            "failed_gates": ["roi"],
+            "eligible": False,
+            "pages": {"delta": 0},
+            "media_box": {"max_delta_pt": 0.0},
+            "text": {"pages_equal": 1, "pages_compared": 1},
+            "raster": [
+                {"dx": 0, "dy": 0, "ink_ratio": 1.0, "bad_pixel_pct": 0.0, "mae": 0.0}
+            ],
+            "rois": [{"precision": 0.9, "recall": 0.9}],
+            "fonts": {"passed": True},
+            "render": {"passed": True},
+            "determinism": {"passed": True},
+        }
+        row = parity.summarize_v2(card)
+        self.assertNotIn("/", json.dumps(row))
+        self.assertEqual(row["failed_gates"], ["roi"])
+
+    def test_committed_history_is_monotonic_and_path_free(self) -> None:
+        history_path = (
+            Path(__file__).resolve().parent.parent
+            / "fixtures/pdf-parity/public/scoreboard/history.json"
+        )
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [row["label"] for row in history["rows"]],
+            ["PR4", "PR5", "PR6", "PR7", "PR8", "PR9"],
+        )
+        for metric in history["monotonic_metrics"]:
+            values = [row[metric] for row in history["rows"]]
+            self.assertTrue(
+                all(current <= previous for previous, current in zip(values, values[1:])),
+                f"{metric} regressed: {values}",
+            )
+        self.assertEqual(
+            [row["max_bad_pixel_pct"] for row in history["rows"]],
+            [0.6, 0.6, 0.6, 0.3, 0.3, 0.3],
+        )
+        serialized = json.dumps(history, ensure_ascii=False)
+        self.assertNotIn(str(Path.home()), serialized)
+        self.assertNotIn("/tmp/", serialized)
+
+    def test_font_path_names_are_hashed_before_publication(self) -> None:
+        rows = parity.privacy_font_rows(
+            [{"name": "/Users/private/fonts/secret.ttf", "type": "TrueType"}]
+        )
+        self.assertNotIn("/Users/private", rows[0]["name"])
+        self.assertTrue(rows[0]["name"].startswith("font-"))
 
 
 if __name__ == "__main__":

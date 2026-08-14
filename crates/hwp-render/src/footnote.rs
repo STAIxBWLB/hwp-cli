@@ -116,6 +116,7 @@ mod tests {
             gso_shapes: Vec::new(),
             equation: None,
             column_def: None,
+            caption: None,
         }
     }
 

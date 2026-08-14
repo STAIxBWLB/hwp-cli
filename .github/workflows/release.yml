@@ -31,7 +31,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          expected=("lint" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
+          expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
           runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100")"
           failed=0
           for name in "${expected[@]}"; do

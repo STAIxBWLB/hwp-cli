@@ -138,6 +138,7 @@ fn make_bokm_control(name: &str) -> Control {
         gso_shapes: Vec::new(),
         equation: None,
         column_def: None,
+        caption: None,
     })
 }
 

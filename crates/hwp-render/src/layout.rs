@@ -17,7 +17,10 @@
 
 use std::collections::HashSet;
 
-use hwp_model::{BorderFill, Control, Document, HwpUnit, PageDef, Paragraph, Section, Table};
+use hwp_model::{
+    BorderFill, Caption, CaptionSide, CharShapeId, Control, Document, HwpChar, HwpUnit, PageDef,
+    Paragraph, Section, Table,
+};
 
 use crate::display::{DisplayList, Fill, Gradient, Item, PageList, PathCmd, Stroke};
 use crate::error::RenderError;
@@ -548,6 +551,7 @@ fn prepend_col_dividers(
 struct PageNumberState {
     logical: u32,
     placement: Option<crate::page_number::PageNumberPlacement>,
+    char_shape: Option<CharShapeId>,
     hidden: bool,
 }
 
@@ -556,6 +560,7 @@ impl PageNumberState {
         Self {
             logical: u32::from(start.max(1)),
             placement: None,
+            char_shape: None,
             hidden: false,
         }
     }
@@ -564,13 +569,16 @@ impl PageNumberState {
     /// paragraph. `pgnp` remains active until another placement replaces it;
     /// `pghd` is reset after the current page is finalized.
     fn apply_controls(&mut self, para: &Paragraph, warnings: &mut RenderIssueAccumulator) {
-        for control in &para.controls {
+        for (control_index, control) in para.controls.iter().enumerate() {
             let Control::Generic(control) = control else {
                 continue;
             };
             match &control.ctrl_id {
                 b"pgnp" => match crate::page_number::parse_pgnp(&control.data) {
-                    Some(placement) => self.placement = Some(placement),
+                    Some(placement) => {
+                        self.placement = Some(placement);
+                        self.char_shape = control_char_shape(para, control_index);
+                    }
                     None => warnings.push_once(RenderIssueCode::PageControlPayloadOmitted, b"pgnp"),
                 },
                 b"pghd" => {
@@ -604,23 +612,47 @@ impl PageNumberState {
         furniture: &Furniture<'_>,
         warnings: &mut RenderIssueAccumulator,
     ) {
-        furniture.render(doc, store, page, self.visible_number(), warnings);
-        if self.visible_number().is_some()
-            && let Some(placement) = self.placement
-        {
-            render_positioned_page_number(
-                doc,
-                store,
-                page,
-                furniture,
-                self.logical,
-                placement,
-                warnings,
-            );
+        furniture.render(
+            doc,
+            store,
+            page,
+            self.visible_number(),
+            self.logical,
+            warnings,
+        );
+        if self.visible_number().is_some() {
+            render_positioned_page_number(doc, store, page, furniture, self, warnings);
         }
         self.logical = self.logical.saturating_add(1);
         self.hidden = false;
     }
+}
+
+/// Returns the character shape active at an extended control's WCHAR position.
+/// HWPX groups controls inside a run, while HWP5 links the matching CTRL_HEADER
+/// through `ctrl_index`; both representations therefore resolve through the
+/// paragraph's character-shape run table.
+fn control_char_shape(para: &Paragraph, control_index: usize) -> Option<CharShapeId> {
+    let mut pos = 0u32;
+    for ch in &para.chars {
+        if matches!(
+            ch,
+            HwpChar::ExtCtrl {
+                ctrl_index: Some(index),
+                ..
+            } if *index as usize == control_index
+        ) {
+            return para
+                .char_shape_runs
+                .iter()
+                .rev()
+                .find(|(start, _)| *start <= pos)
+                .map(|(_, id)| *id)
+                .or_else(|| para.char_shape_runs.first().map(|(_, id)| *id));
+        }
+        pos = pos.saturating_add(ch.wchar_width());
+    }
+    para.char_shape_runs.first().map(|(_, id)| *id)
 }
 
 fn page_control_is_rendered(control: &Control) -> bool {
@@ -659,10 +691,12 @@ fn render_positioned_page_number(
     store: &mut FontStore,
     page: &mut PageList,
     furniture: &Furniture<'_>,
-    logical: u32,
-    placement: crate::page_number::PageNumberPlacement,
+    number: &PageNumberState,
     warnings: &mut RenderIssueAccumulator,
 ) {
+    let Some(placement) = number.placement else {
+        return;
+    };
     if placement.position == 0 {
         return;
     }
@@ -673,15 +707,19 @@ fn render_positioned_page_number(
         );
         return;
     }
-    let text = crate::page_number::format_placement(logical, placement, warnings);
-    let Some(run) = crate::shape::shape_plain(store, doc, &text, 10.0, 0, false) else {
+    let text = crate::page_number::format_placement(number.logical, placement, warnings);
+    let run = number
+        .char_shape
+        .and_then(|id| crate::shape::shape_plain_with_char_shape(store, doc, &text, id))
+        .or_else(|| crate::shape::shape_plain(store, doc, &text, 10.0, 0, false));
+    let Some(run) = run else {
         warnings.push_once(RenderIssueCode::PageNumberShapingOmitted, b"positioned");
         return;
     };
     let top = matches!(placement.position, 1..=3 | 7 | 9);
-    let x = if page_number_alignment(placement.position, logical) < 0 {
+    let x = if page_number_alignment(placement.position, number.logical) < 0 {
         furniture.body_left
-    } else if page_number_alignment(placement.position, logical) > 0 {
+    } else if page_number_alignment(placement.position, number.logical) > 0 {
         furniture.body_left + furniture.body_width - run.width_pt
     } else {
         furniture.body_left + (furniture.body_width - run.width_pt) * 0.5
@@ -818,32 +856,34 @@ pub fn layout_document(
         // blank pages and columns.
         let mut has_flow_in_current_band = false;
 
-        // 머리말/꼬리말: 구역에서 처음 정의된 것을 모든 페이지에 반복
-        let mut header_ctrl = None;
-        let mut footer_ctrl = None;
+        // Collect every section header/footer with its odd/even/both target.
+        // Page finalization selects the entry for the printed parity (GG-16).
+        let mut header_ctrls = Vec::new();
+        let mut footer_ctrls = Vec::new();
         for para in &section.paragraphs {
             for c in &para.controls {
                 if let Control::Generic(g) = c {
                     match &g.ctrl_id {
-                        b"head" if header_ctrl.is_none() => header_ctrl = Some(g),
-                        b"foot" if footer_ctrl.is_none() => footer_ctrl = Some(g),
+                        b"head" => header_ctrls.push((g, head_foot_apply(g))),
+                        b"foot" => footer_ctrls.push((g, head_foot_apply(g))),
                         _ => {}
                     }
                 }
             }
         }
         let furniture = Furniture {
-            header: header_ctrl,
-            footer: footer_ctrl,
+            header: header_ctrls,
+            footer: footer_ctrls,
             page_def: &page_def,
             body_left,
             body_width,
         };
 
-        // 각주/미주: 구역 전체에 번호를 매기고, 페이지마다 앵커가 든 노트를 모아
-        // 하단에 그린다.
+        // Number notes across the section. Footnotes stay on their anchor page;
+        // endnotes accumulate for the section-closing block (GG-14).
         let notes = footnote::collect_notes(&section.paragraphs);
         let mut page_notes: Vec<&Note> = Vec::new();
+        let mut pending_endnotes: Vec<&Note> = Vec::new();
         // 목록(번호/불릿) 카운터 — 구역 단위, 문서 순서로 진행.
         let mut list_state = crate::list::ListState::default();
 
@@ -924,8 +964,14 @@ pub fn layout_document(
             paras_on_page += 1;
 
             // 본문 각주/미주 마커(윗첨자 번호)와 이 페이지에 속할 노트 수집.
+            // Split footnotes into the page queue and endnotes into the section queue.
             let marks = footnote::para_marks(&notes, para);
-            page_notes.extend(footnote::para_notes(&notes, para));
+            for note in footnote::para_notes(&notes, para) {
+                match note.kind {
+                    footnote::NoteKind::Foot => page_notes.push(note),
+                    footnote::NoteKind::End => pending_endnotes.push(note),
+                }
+            }
             let tabs = crate::tab::tab_stops(doc, para);
             let geom = para_geometry(doc, para);
             let links = crate::shape::hyperlink_ranges(para);
@@ -1287,6 +1333,8 @@ pub fn layout_document(
                 skipped_controls.to_le_bytes(),
             );
         }
+        let final_footnote_height =
+            page_notes_reservation_height(doc, store, &page, &page_notes, body_left, body_width);
         render_page_notes(
             doc,
             store,
@@ -1298,6 +1346,68 @@ pub fn layout_document(
             warnings,
         );
         page_notes.clear();
+        // Endnotes form a section-closing flow. Partition them by measured
+        // note height, preserving last-page footnote space and opening as many
+        // continuation pages as required.
+        if !pending_endnotes.is_empty() {
+            let heights: Vec<f32> = pending_endnotes
+                .iter()
+                .map(|note| measure_note_height(doc, store, &page, note, body_left, body_width))
+                .collect();
+            let mut next = 0usize;
+            let mut page_limit = (body_bottom - final_footnote_height).max(body_top);
+            while next < pending_endnotes.len() {
+                let available = (page_limit - content_bottom).max(0.0);
+                let mut used = 5.0; // separator gap
+                let mut end = next;
+                while end < pending_endnotes.len() && used + heights[end] <= available + 0.01 {
+                    used += heights[end];
+                    end += 1;
+                }
+
+                if end == next
+                    && (content_bottom > body_top + 0.01 || page_limit < body_bottom - 0.01)
+                {
+                    page_numbers.finish(doc, store, &mut page, &furniture, warnings);
+                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                        return DisplayList { pages };
+                    }
+                    content_bottom = body_top;
+                    page_limit = body_bottom;
+                    continue;
+                }
+
+                // A single note may itself exceed the body height. Consume it
+                // to guarantee progress; the renderer will clip that legacy
+                // unsupported case instead of looping indefinitely.
+                if end == next {
+                    used += heights[end];
+                    end += 1;
+                }
+                let block_bottom = (content_bottom + used).min(page_limit);
+                render_page_notes(
+                    doc,
+                    store,
+                    &mut page,
+                    &pending_endnotes[next..end],
+                    body_left,
+                    body_width,
+                    block_bottom,
+                    warnings,
+                );
+                content_bottom = (content_bottom + used).min(page_limit);
+                next = end;
+                if next < pending_endnotes.len() {
+                    page_numbers.finish(doc, store, &mut page, &furniture, warnings);
+                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                        return DisplayList { pages };
+                    }
+                    content_bottom = body_top;
+                    page_limit = body_bottom;
+                }
+            }
+            pending_endnotes.clear();
+        }
         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
         if !push_page_checked(&mut pages, &mut page, None, warnings) {
             return DisplayList { pages };
@@ -1426,13 +1536,227 @@ impl TableSplitCtx<'_, '_> {
 /// 기본 셀 안쪽 여백 (HWPUNIT — 한글 기본값).
 const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
 
-/// 페이지 가구 (머리말/꼬리말) — 페이지 마감 시마다 그린다.
+/// One cached page-sized run of a cell.  The selections retain paragraph
+/// boundaries, while `first_v_pos` translates Hancom's page-relative cache to
+/// the fragment's page-space origin.
+#[derive(Debug, Clone)]
+struct CellFragmentGroup {
+    selections: Vec<BoxParaSelection>,
+    first_v_pos: i32,
+    height: f32,
+    has_content: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CellSplitPlan {
+    groups: Vec<CellFragmentGroup>,
+}
+
+impl CellSplitPlan {
+    fn is_usable(&self) -> bool {
+        self.groups.len() > 1 && self.groups.iter().all(|group| group.has_content)
+    }
+}
+
+/// Build Regime-A cell fragments from the line layout saved by Hancom.
+///
+/// A CELL table is only safely splittable at a cached line boundary. Explicit
+/// cached page starts (`flags & 1` or a vertical-position reset) are preserved;
+/// otherwise a boundary is selected immediately before the first cached line
+/// that would exceed the remaining page capacity. A paragraph without line
+/// segments is not guessed into a page: callers must surface an incomplete
+/// render when that paragraph is part of a required split.
+fn cached_cell_split_plan(
+    cell: &hwp_model::Cell,
+    measured_content_h: f32,
+    first_capacity_pt: f32,
+    following_capacity_pt: f32,
+) -> Option<CellSplitPlan> {
+    let para_count = cell.paragraphs.len();
+    let mut first_v = vec![0i32];
+    let mut max_end = vec![0i32];
+    let mut has_content = vec![false];
+    let mut boundaries = HashSet::new();
+    let mut current = 0usize;
+    let mut previous_v = None;
+    let mut saw_line = false;
+    let mut current_capacity = first_capacity_pt.max(0.0);
+    let following_capacity = following_capacity_pt.max(1.0);
+
+    for (para_index, para) in cell.paragraphs.iter().enumerate() {
+        if para.line_segs.is_empty() {
+            // Empty paragraphs are harmless; text without cached geometry is
+            // not, because it could cross the required split.
+            if !para.chars.is_empty() {
+                return None;
+            }
+            continue;
+        }
+        let wchar_len = para.wchar_len();
+        if para
+            .line_segs
+            .iter()
+            .any(|seg| seg.text_start > wchar_len || seg.line_height <= 0 || seg.v_pos < 0)
+        {
+            return None;
+        }
+
+        for (seg_index, seg) in para.line_segs.iter().enumerate() {
+            let line_end = para
+                .line_segs
+                .get(seg_index + 1)
+                .map_or(wchar_len, |next| next.text_start);
+            if line_end <= seg.text_start {
+                // A trailing empty cache record is legal.  It carries no
+                // visible content and therefore cannot define a split.
+                continue;
+            }
+            let end = seg
+                .v_pos
+                .saturating_add(seg.line_height.max(seg.text_height));
+            if !saw_line && (end - seg.v_pos) as f32 / 100.0 > current_capacity + 0.5 {
+                // No complete cached line fits in the current-page sliver.
+                // Size the first group for the fresh-page capacity; the
+                // emitter will move it before drawing.
+                current_capacity = following_capacity;
+            }
+            let explicit_boundary = saw_line
+                && (seg.flags & 0x1 != 0
+                    || previous_v.is_some_and(|previous| seg.v_pos < previous));
+            let capacity_boundary = saw_line
+                && !explicit_boundary
+                && has_content[current]
+                && (end - first_v[current]) as f32 / 100.0 > current_capacity + 0.5;
+            if explicit_boundary || capacity_boundary {
+                boundaries.insert((para_index, seg_index));
+                current += 1;
+                first_v.push(seg.v_pos);
+                max_end.push(seg.v_pos);
+                has_content.push(false);
+                current_capacity = following_capacity;
+            }
+            if !has_content[current] {
+                first_v[current] = seg.v_pos;
+            }
+            max_end[current] = max_end[current].max(end);
+            has_content[current] = true;
+            previous_v = Some(seg.v_pos);
+            saw_line = true;
+        }
+    }
+
+    // Rebuild the per-group paragraph ranges in a second, deterministic pass.
+    // Keeping the validation pass separate makes malformed cache handling
+    // explicit and reuses the exact explicit/capacity decisions above.
+    if !saw_line || !has_content.iter().all(|value| *value) {
+        return None;
+    }
+    let group_count = has_content.len();
+    let mut groups = (0..group_count)
+        .map(|index| CellFragmentGroup {
+            selections: vec![BoxParaSelection::Empty; para_count],
+            first_v_pos: first_v[index],
+            height: ((max_end[index] - first_v[index]).max(1) as f32) / 100.0,
+            has_content: true,
+        })
+        .collect::<Vec<_>>();
+    current = 0;
+    for (para_index, para) in cell.paragraphs.iter().enumerate() {
+        if para.line_segs.is_empty() {
+            // A control-only paragraph has no line boundary of its own. It is
+            // attached to the current cached group so nested tables/images
+            // are emitted once without inventing a page split. A paragraph
+            // containing text would need a cached range and was rejected in
+            // the validation pass above.
+            if !para.controls.is_empty() {
+                groups[current].selections[para_index] = BoxParaSelection::All;
+            }
+            continue;
+        }
+        let wchar_len = para.wchar_len();
+        for (seg_index, seg) in para.line_segs.iter().enumerate() {
+            let line_end = para
+                .line_segs
+                .get(seg_index + 1)
+                .map_or(wchar_len, |next| next.text_start);
+            if line_end <= seg.text_start {
+                continue;
+            }
+            if boundaries.contains(&(para_index, seg_index)) {
+                current += 1;
+            }
+            match &mut groups[current].selections[para_index] {
+                BoxParaSelection::Empty => {
+                    groups[current].selections[para_index] =
+                        BoxParaSelection::Segments(seg_index..seg_index + 1);
+                }
+                BoxParaSelection::Segments(range) => range.end = seg_index + 1,
+                BoxParaSelection::All => return None,
+            }
+        }
+    }
+
+    // A measured nested object or a cache tail can add a small amount beyond
+    // the line geometry. Keep object overflow on the fragment that owns the
+    // object; otherwise keep ordinary cache drift on the final fragment rather
+    // than manufacturing another page boundary that is not in the source.
+    let cached_height: f32 = groups.iter().map(|group| group.height).sum();
+    if measured_content_h > cached_height
+        && let Some(target) = groups
+            .iter()
+            .position(|group| {
+                group
+                    .selections
+                    .iter()
+                    .enumerate()
+                    .any(|(para_index, selection)| {
+                        !cell.paragraphs[para_index].controls.is_empty()
+                            && match selection {
+                                BoxParaSelection::All => true,
+                                BoxParaSelection::Segments(range) => range.start == 0,
+                                BoxParaSelection::Empty => false,
+                            }
+                    })
+            })
+            .or_else(|| groups.len().checked_sub(1))
+            .and_then(|index| groups.get_mut(index))
+    {
+        target.height += measured_content_h - cached_height;
+    }
+    Some(CellSplitPlan { groups })
+}
+
+/// Page furniture (headers and footers), drawn whenever a page is finalized.
+/// Header/footer entries retain their apply target and are selected by printed
+/// page parity (GG-16).
 struct Furniture<'a> {
-    header: Option<&'a hwp_model::GenericControl>,
-    footer: Option<&'a hwp_model::GenericControl>,
+    header: Vec<(&'a hwp_model::GenericControl, u8)>,
+    footer: Vec<(&'a hwp_model::GenericControl, u8)>,
     page_def: &'a PageDef,
     body_left: f32,
     body_width: f32,
+}
+
+/// Header/footer apply target in `data[0..4]` LE u32 bits 0-1:
+/// 0=both, 1=even, 2=odd. Missing or short data defaults to both.
+fn head_foot_apply(g: &hwp_model::GenericControl) -> u8 {
+    g.data.get(0..4).map_or(0, |b| {
+        (u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0x3) as u8
+    })
+}
+
+/// Selects an exact parity entry, then a BOTH fallback. A parity-specific
+/// header must not leak onto the opposite page when no fallback exists.
+fn select_furniture<'a>(
+    entries: &[(&'a hwp_model::GenericControl, u8)],
+    printed: u32,
+) -> Option<&'a hwp_model::GenericControl> {
+    let want = if printed % 2 == 1 { 2 } else { 1 };
+    entries
+        .iter()
+        .find(|e| e.1 == want)
+        .or_else(|| entries.iter().find(|e| e.1 == 0))
+        .map(|e| e.0)
 }
 
 impl Furniture<'_> {
@@ -1442,9 +1766,10 @@ impl Furniture<'_> {
         store: &mut FontStore,
         page: &mut PageList,
         page_number: Option<u32>,
+        printed: u32,
         warnings: &mut RenderIssueAccumulator,
     ) {
-        if let Some(h) = self.header {
+        if let Some(h) = select_furniture(&self.header, printed) {
             let top = self.page_def.margin_top.to_pt() as f32;
             for list in &h.paragraph_lists {
                 layout_box_paragraphs(
@@ -1461,7 +1786,7 @@ impl Furniture<'_> {
                 );
             }
         }
-        if let Some(f) = self.footer {
+        if let Some(f) = select_furniture(&self.footer, printed) {
             let top = page.height_pt
                 - self.page_def.margin_bottom.to_pt() as f32
                 - self.page_def.margin_footer.to_pt() as f32;
@@ -1481,6 +1806,32 @@ impl Furniture<'_> {
             }
         }
     }
+}
+
+fn measure_note_height(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &PageList,
+    note: &Note,
+    body_left: f32,
+    body_width: f32,
+) -> f32 {
+    let mut scratch = PageList {
+        width_pt: page.width_pt,
+        height_pt: page.height_pt,
+        items: Vec::new(),
+    };
+    let mut scratch_warnings = RenderIssueAccumulator::new();
+    render_one_note(
+        doc,
+        store,
+        &mut scratch,
+        note,
+        body_left,
+        body_width,
+        0.0,
+        &mut scratch_warnings,
+    ) + 3.0
 }
 
 fn page_notes_reservation_height(
@@ -1732,6 +2083,129 @@ fn translate_cmd(c: PathCmd, dx: f32, dy: f32) -> PathCmd {
     }
 }
 
+/// Caption layout width in points: explicit width for vertical captions, or
+/// the object width otherwise (table 72).
+fn caption_wrap_pt(caption: &Caption, obj_width: f32) -> f32 {
+    caption
+        .width
+        .map_or(obj_width, |w| (w as f32 / 100.0).max(4.0))
+}
+
+struct CaptionPrelude {
+    items: Vec<Item>,
+    height: f32,
+    gap: f32,
+}
+
+struct CaptionBlock<'a> {
+    caption: &'a Caption,
+    items: Vec<Item>,
+    height: f32,
+    wrap: f32,
+}
+
+fn prepare_caption_block<'a>(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &PageList,
+    caption: Option<&'a Caption>,
+    object_width: f32,
+    warnings: &mut RenderIssueAccumulator,
+) -> Option<CaptionBlock<'a>> {
+    caption.map(|caption| {
+        let wrap = caption_wrap_pt(caption, object_width);
+        let (items, height) = layout_caption_items(doc, store, page, caption, wrap, warnings);
+        CaptionBlock {
+            caption,
+            items,
+            height,
+            wrap,
+        }
+    })
+}
+
+fn inline_top_caption_offset(block: Option<&CaptionBlock<'_>>) -> f32 {
+    block
+        .filter(|block| block.caption.side == CaptionSide::Top)
+        .map_or(0.0, |block| block.height + block.caption.gap as f32 / 100.0)
+}
+
+fn place_caption_block(
+    page: &mut PageList,
+    block: CaptionBlock<'_>,
+    object: (f32, f32, f32, f32),
+) -> f32 {
+    let object_bottom = object.1 + object.3;
+    let side = block.caption.side;
+    let height = block.height;
+    let bottom = place_caption_items(page, block.items, height, block.caption, object, block.wrap);
+    match side {
+        CaptionSide::Bottom => bottom.unwrap_or(object_bottom),
+        CaptionSide::Left | CaptionSide::Right => object_bottom.max(object.1 + height),
+        CaptionSide::Top => object_bottom,
+    }
+}
+
+/// Lays caption paragraphs onto a scratch page and returns items plus height.
+/// The caller translates them according to the caption side (GB-13).
+fn layout_caption_items(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &PageList,
+    caption: &Caption,
+    wrap_width: f32,
+    warnings: &mut RenderIssueAccumulator,
+) -> (Vec<Item>, f32) {
+    if caption.paragraphs.is_empty() {
+        return (Vec::new(), 0.0);
+    }
+    let mut scratch = PageList {
+        width_pt: page.width_pt,
+        height_pt: page.height_pt,
+        items: Vec::new(),
+    };
+    let bottom = layout_box_paragraphs(
+        doc,
+        store,
+        &mut scratch,
+        &caption.paragraphs,
+        0.0,
+        0.0,
+        wrap_width.max(4.0),
+        warnings,
+        None,
+        None,
+    );
+    (scratch.items, bottom)
+}
+
+/// Places a caption beside the object rectangle with its configured gap.
+/// Returns the caption bottom for bottom captions so body flow can advance.
+fn place_caption_items(
+    page: &mut PageList,
+    items: Vec<Item>,
+    height: f32,
+    caption: &Caption,
+    obj: (f32, f32, f32, f32),
+    wrap: f32,
+) -> Option<f32> {
+    if items.is_empty() {
+        return None;
+    }
+    let gap = caption.gap as f32 / 100.0;
+    let (ox, oy, ow, oh) = obj;
+    let (dx, dy) = match caption.side {
+        CaptionSide::Bottom => (ox, oy + oh + gap),
+        CaptionSide::Top => (ox, oy - gap - height),
+        CaptionSide::Left => ((ox - gap - wrap).max(0.0), oy),
+        CaptionSide::Right => (ox + ow + gap, oy),
+    };
+    for item in items {
+        page.items.push(translate_item(item, dx, dy));
+    }
+    (caption.side == CaptionSide::Bottom).then_some(oy + oh + gap + height)
+}
+
 /// 문단에 달린 블록 개체(표/이미지)를 배치한다. 갱신된 콘텐츠 하단을 반환.
 #[allow(clippy::too_many_arguments)]
 fn layout_para_objects(
@@ -1754,7 +2228,24 @@ fn layout_para_objects(
     for control in &para.controls {
         match control {
             Control::Table(table) => {
-                let (end, table_split) = layout_table(
+                // Measure a top caption before table planning so every fragment
+                // reserves the correct first-fragment offset. The table emitter
+                // places it after any page break selected by the planner.
+                let mut top_caption: Option<CaptionPrelude> = None;
+                if let Some(cap) = &table.caption
+                    && cap.side == CaptionSide::Top
+                {
+                    let wrap = caption_wrap_pt(cap, avail_width);
+                    let (items, h) = layout_caption_items(doc, store, page, cap, wrap, warnings);
+                    let gap = cap.gap as f32 / 100.0;
+                    top_caption = Some(CaptionPrelude {
+                        items,
+                        height: h,
+                        gap,
+                    });
+                    object_y += h + gap;
+                }
+                let (end, table_split, final_fragment_top) = layout_table(
                     doc,
                     store,
                     page,
@@ -1762,6 +2253,7 @@ fn layout_para_objects(
                     x,
                     object_y,
                     avail_width,
+                    top_caption,
                     split.as_deref_mut(),
                     warnings,
                 );
@@ -1773,7 +2265,23 @@ fn layout_para_objects(
                 } else {
                     bottom = bottom.max(end);
                 }
-                object_y = end; // 한 문단에 개체가 여럿이면 세로로 이어 배치
+                object_y = end; // Stack multiple objects in one paragraph vertically.
+                // Use available width as the table-width approximation; it only
+                // affects the horizontal position of left/right captions.
+                if let Some(cap) = &table.caption {
+                    let wrap = caption_wrap_pt(cap, avail_width);
+                    if cap.side != CaptionSide::Top {
+                        let (items, h) =
+                            layout_caption_items(doc, store, page, cap, wrap, warnings);
+                        let obj = (x, final_fragment_top, avail_width, end - final_fragment_top);
+                        if let Some(cap_bottom) =
+                            place_caption_items(page, items, h, cap, obj, wrap)
+                        {
+                            bottom = bottom.max(cap_bottom);
+                            object_y = cap_bottom;
+                        }
+                    }
+                }
             }
             Control::Picture(pic) => {
                 let (w, h) = (pic.width.to_pt() as f32, pic.height.to_pt() as f32);
@@ -1793,9 +2301,21 @@ fn layout_para_objects(
                                 format!("flags={:#010x}", pic.effect_flags),
                             );
                         }
+                        // Reserve space above the picture for a top caption.
+                        let mut img_y = object_y;
+                        let mut top_caption: Option<(Vec<Item>, f32)> = None;
+                        if let Some(cap) = &pic.caption
+                            && cap.side == CaptionSide::Top
+                        {
+                            let wrap = caption_wrap_pt(cap, w);
+                            let (items, ch) =
+                                layout_caption_items(doc, store, page, cap, wrap, warnings);
+                            top_caption = Some((items, ch));
+                            img_y += ch + cap.gap as f32 / 100.0;
+                        }
                         page.items.push(Item::Image {
                             x,
-                            y: object_y,
+                            y: img_y,
                             w,
                             h,
                             data: warnings.cached_binary(bytes),
@@ -1805,8 +2325,34 @@ fn layout_para_objects(
                             brightness: pic.brightness,
                             contrast: pic.contrast,
                         });
-                        bottom = bottom.max(object_y + h);
-                        object_y += h;
+                        bottom = bottom.max(img_y + h);
+                        object_y = img_y + h;
+                        // Place the caption; bottom is the default side.
+                        if let Some(cap) = &pic.caption {
+                            let wrap = caption_wrap_pt(cap, w);
+                            if cap.side == CaptionSide::Top {
+                                if let Some((items, ch)) = top_caption {
+                                    place_caption_items(
+                                        page,
+                                        items,
+                                        ch,
+                                        cap,
+                                        (x, img_y, w, 0.0),
+                                        wrap,
+                                    );
+                                }
+                            } else {
+                                let (items, ch) =
+                                    layout_caption_items(doc, store, page, cap, wrap, warnings);
+                                let obj = (x, img_y, w, h);
+                                if let Some(cap_bottom) =
+                                    place_caption_items(page, items, ch, cap, obj, wrap)
+                                {
+                                    bottom = bottom.max(cap_bottom);
+                                    object_y = cap_bottom;
+                                }
+                            }
+                        }
                     }
                     None => warnings.push(
                         RenderIssueCode::ImageDataMissingOmitted,
@@ -1814,7 +2360,7 @@ fn layout_para_objects(
                     ),
                 }
             }
-            // 글상자(text box): 텍스트 있는 gso 개체의 내부 문단을 박스 영역에 배치.
+            // Text box: lay out the GSO's paragraph lists inside its frame.
             Control::Generic(g) if g.ctrl_id == *b"gso " && !g.paragraph_lists.is_empty() => {
                 let Some(b) = crate::gso::parse_gso_box(&g.data) else {
                     warnings.push(RenderIssueCode::TextBoxGeometryInvalidOmitted, b"gso");
@@ -1822,9 +2368,18 @@ fn layout_para_objects(
                 };
                 let bw = (b.width as f32 / 100.0).max(8.0);
                 let bh = b.height as f32 / 100.0;
-                // 글자처럼취급=흐름 위치, 떠 있음=PAPER/PAGE 기준 페이지 절대 위치.
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings);
+                let inline = b.treat_as_char();
+                let top_offset = if inline {
+                    inline_top_caption_offset(caption.as_ref())
+                } else {
+                    0.0
+                };
+                // Inline objects use the flow cursor; floating objects retain
+                // their PAPER/PAGE-relative coordinates.
                 let (bx, by, inline) = if b.treat_as_char() {
-                    (x, object_y, true)
+                    (x, object_y + top_offset, true)
                 } else {
                     (
                         b.horz_offset as f32 / 100.0,
@@ -1833,7 +2388,7 @@ fn layout_para_objects(
                     )
                 };
 
-                // 글상자 자체 테두리/배경(사각형 프레임)을 텍스트 뒤에 먼저 그린다.
+                // Draw the text-box frame/background before its text.
                 let frame_origin = if inline {
                     (bx as f64 * 100.0, by as f64 * 100.0)
                 } else {
@@ -1841,9 +2396,8 @@ fn layout_para_objects(
                 };
                 crate::shape_draw::draw_gso_shapes(g, frame_origin, doc, page, warnings);
 
-                // 다단/연결 글상자: 내부 문단의 v_pos 리셋(단 나누기)으로 단을 분할한다.
-                // 단 0은 이 박스, 단 1+는 연결 글상자(같은 크기·세로위치, 더 오른쪽
-                // 떠 있는 gso 박스) 위치로 흐른다. 없으면 가로로 한 단 진행(근사).
+                // Split linked text boxes at internal v_pos resets. Column zero
+                // uses this box; later columns use continuation boxes when known.
                 let flat: Vec<&Paragraph> = g
                     .paragraph_lists
                     .iter()
@@ -1870,24 +2424,31 @@ fn layout_para_objects(
                         doc,
                         store,
                         page,
-                        flat[range.clone()].iter().copied(),
+                        flat[range.clone()]
+                            .iter()
+                            .map(|para| (*para, BoxParaSelection::All)),
                         cx,
                         cy,
                         bw,
                         warnings,
                         Some(&mut box_list_state),
                         None,
+                        0,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
 
+                let used = (max_bottom - by).max(bh);
+                let mut flow_end = by + used;
+                if let Some(caption) = caption {
+                    flow_end = flow_end.max(place_caption_block(page, caption, (bx, by, bw, used)));
+                }
                 if inline {
-                    let used = (max_bottom - by).max(bh);
-                    bottom = bottom.max(by + used);
-                    object_y += used;
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
                 }
             }
-            // 순수 도형 (텍스트 없는 gso): 선/사각형/타원/호/다각형.
+            // Text-free HWP5 GSO shape.
             Control::Generic(g)
                 if g.ctrl_id == *b"gso "
                     && g.paragraph_lists.is_empty()
@@ -1896,16 +2457,49 @@ fn layout_para_objects(
                 let Some(b) = crate::gso::parse_gso_box(&g.data) else {
                     continue;
                 };
-                let origin = if b.treat_as_char() {
-                    (x as f64 * 100.0, object_y as f64 * 100.0)
+                let bw = (b.width as f32 / 100.0).max(8.0);
+                let bh = (b.height as f32 / 100.0).max(0.0);
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings);
+                let inline = b.treat_as_char();
+                let top_offset = if inline {
+                    inline_top_caption_offset(caption.as_ref())
+                } else {
+                    0.0
+                };
+                let (bx, by) = if inline {
+                    (x, object_y + top_offset)
+                } else {
+                    (b.horz_offset as f32 / 100.0, b.vert_offset as f32 / 100.0)
+                };
+                let origin = if inline {
+                    (bx as f64 * 100.0, by as f64 * 100.0)
                 } else {
                     (b.horz_offset as f64, b.vert_offset as f64)
                 };
                 crate::shape_draw::draw_gso_shapes(g, origin, doc, page, warnings);
+                let mut flow_end = by + bh;
+                if let Some(caption) = caption {
+                    flow_end = flow_end.max(place_caption_block(page, caption, (bx, by, bw, bh)));
+                }
+                if inline {
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
+                }
             }
-            // hwpx 구조화 도형(rect/ellipse/line/polygon/curve) — 글상자 텍스트 포함.
+            // Structured HWPX shape, optionally with text and a caption.
             Control::Generic(g) if !g.gso_shapes.is_empty() => {
-                // 글자처럼(anchored) 도형은 흐름 위치로 이동(clone-조정 — 원본 불변).
+                let source = &g.gso_shapes[0];
+                let bw = (source.w as f32 / 100.0).max(8.0);
+                let bh = (source.h as f32 / 100.0).max(0.0);
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings);
+                let top_offset = if source.anchored {
+                    inline_top_caption_offset(caption.as_ref())
+                } else {
+                    0.0
+                };
+                // Move anchored shapes to the flow position without mutating IR.
                 let adjusted: Vec<hwp_model::ShapeGeom> = g
                     .gso_shapes
                     .iter()
@@ -1913,38 +2507,72 @@ fn layout_para_objects(
                         let mut s2 = s.clone();
                         if s.anchored {
                             s2.x = (x * 100.0) as i32;
-                            s2.y = (object_y * 100.0) as i32;
+                            s2.y = ((object_y + top_offset) * 100.0) as i32;
                         }
                         s2
                     })
                     .collect();
                 crate::shape_draw::draw_ir_shapes(&adjusted, page, warnings);
-                // 글상자 텍스트: 첫 도형 bbox 안에 배치(v1 단일 단 — hwp5 arm의 다단은 미지원).
+                let s0 = &adjusted[0];
+                let (bx, by) = (s0.x as f32 / 100.0, s0.y as f32 / 100.0);
+                let mut flow_end = by + bh;
+                // Lay text inside the first shape's box (single-column v1).
                 if !g.paragraph_lists.is_empty() {
-                    let s0 = &adjusted[0];
-                    let (bx, by) = (s0.x as f32 / 100.0, s0.y as f32 / 100.0);
-                    let bw = (s0.w as f32 / 100.0).max(8.0);
-                    let bh = s0.h as f32 / 100.0;
                     let flat = g.paragraph_lists.iter().flat_map(|l| l.paragraphs.iter());
                     let mut box_list_state = crate::list::ListState::default();
                     let inner = layout_box_para_iter(
                         doc,
                         store,
                         page,
-                        flat,
+                        flat.map(|para| (para, BoxParaSelection::All)),
                         bx,
                         by,
                         bw,
                         warnings,
                         Some(&mut box_list_state),
                         None,
+                        0,
                     );
-                    if s0.anchored {
-                        // 흐름 전진(hwp5 인라인 글상자와 동형).
-                        let used = (inner - by).max(bh);
-                        bottom = bottom.max(by + used);
-                        object_y += used;
-                    }
+                    flow_end = flow_end.max(inner);
+                }
+                if let Some(caption) = caption {
+                    flow_end = flow_end.max(place_caption_block(
+                        page,
+                        caption,
+                        (bx, by, bw, flow_end - by),
+                    ));
+                }
+                if s0.anchored {
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
+                }
+            }
+            // Preserve a caption even when the underlying GSO subtype (for
+            // example OLE) has no drawable shape implementation yet.
+            Control::Generic(g) if g.ctrl_id == *b"gso " && g.caption.is_some() => {
+                let Some(b) = crate::gso::parse_gso_box(&g.data) else {
+                    continue;
+                };
+                let bw = (b.width as f32 / 100.0).max(8.0);
+                let bh = (b.height as f32 / 100.0).max(0.0);
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings)
+                        .expect("guarded by caption.is_some()");
+                let inline = b.treat_as_char();
+                let top_offset = if inline {
+                    inline_top_caption_offset(Some(&caption))
+                } else {
+                    0.0
+                };
+                let (bx, by) = if inline {
+                    (x, object_y + top_offset)
+                } else {
+                    (b.horz_offset as f32 / 100.0, b.vert_offset as f32 / 100.0)
+                };
+                let flow_end = place_caption_block(page, caption, (bx, by, bw, bh));
+                if inline {
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
                 }
             }
             // 수식(hp:equation) — 스크립트를 실제 math로 조판(equation.rs).
@@ -1978,13 +2606,34 @@ fn layout_para_objects(
 
 /// 셀 여백 (왼/오른/위/아래) pt — 셀 지정 → 표 기본 → 한글 기본.
 fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
-    let m = if cell.margins.iter().any(|&v| v > 0) {
-        cell.margins
-    } else if table.inner_margins.iter().any(|&v| v > 0) {
-        table.inner_margins
+    // HWP5 uses 0xffff in a cell LIST_HEADER to mean "use the table
+    // default".  It is important that the sentinel remains in the IR for a
+    // lossless hwp5 -> hwp5 round trip, so resolve it only at render time.
+    // An all-zero cell margin array is the older IR convention for an omitted
+    // cell margin and keeps the existing table/default fallback behavior.
+    let table_default = if table.inner_margins.iter().any(|&v| v > 0 && v != u16::MAX) {
+        std::array::from_fn(|i| {
+            if table.inner_margins[i] == u16::MAX {
+                DEFAULT_CELL_MARGINS[i]
+            } else {
+                table.inner_margins[i]
+            }
+        })
     } else {
         DEFAULT_CELL_MARGINS
     };
+    let raw = if cell.margins.iter().all(|&v| v == 0) {
+        table_default
+    } else {
+        cell.margins
+    };
+    let m: [u16; 4] = std::array::from_fn(|i| {
+        if raw[i] == u16::MAX {
+            table_default[i]
+        } else {
+            raw[i]
+        }
+    });
     (
         m[0] as f32 / 100.0,
         m[1] as f32 / 100.0,
@@ -2002,11 +2651,15 @@ fn layout_table(
     x: f32,
     y: f32,
     avail_width: f32,
+    mut top_caption: Option<CaptionPrelude>,
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
-) -> (f32, bool) {
+) -> (f32, bool, f32) {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
+    let top_caption_extent = top_caption
+        .as_ref()
+        .map_or(0.0, |caption| caption.height + caption.gap);
 
     // 그리드 기하: span=1 셀에서 열 폭/행 높이를 확정, 모르는 칸은 평균으로
     let mut col_w = vec![0.0f32; cols];
@@ -2173,6 +2826,40 @@ fn layout_table(
         }
     }
 
+    // CELL policy is the one table mode where a single row may legitimately
+    // cross a page.  Use the source's cached line boundaries for that case;
+    // the row-based planner below remains the conservative fallback for
+    // TABLE/NONE and for CELL documents that do not carry enough cache data.
+    if table.page_break_policy() == hwp_model::TablePageBreak::Cell
+        && !table
+            .placement
+            .as_ref()
+            .is_some_and(|placement| placement.treat_as_char)
+        && split
+            .as_deref()
+            .is_some_and(|ctx| y + total_h > ctx.body_bottom)
+        && let Some(result) = layout_table_cell_fragments(
+            doc,
+            store,
+            page,
+            table,
+            col_x.as_slice(),
+            col_w.as_slice(),
+            row_h.as_slice(),
+            row_prefix.as_slice(),
+            content_h_by_cell.as_slice(),
+            x,
+            y,
+            top_caption_extent,
+            header_rows,
+            &mut top_caption,
+            &mut split,
+            warnings,
+        )
+    {
+        return result;
+    }
+
     // Fragment tuple: first row, exclusive end row, data top, replay header,
     // and whether a page must be finalized immediately before emission.
     let mut fragments: Vec<(usize, usize, f32, bool, bool)> = vec![(0, rows, y, false, false)];
@@ -2190,21 +2877,24 @@ fn layout_table(
             ))
         .max(body_top);
         let page_h = body_bottom - body_top;
+        let unsplit_h = total_h + top_caption_extent;
         let treat_as_char = table.placement.as_ref().is_some_and(|p| p.treat_as_char);
         let policy = table.page_break_policy();
         if y + total_h > first_body_bottom {
-            if treat_as_char || (policy == hwp_model::TablePageBreak::None && total_h <= page_h) {
+            if treat_as_char || (policy == hwp_model::TablePageBreak::None && unsplit_h <= page_h) {
                 // An inline table is one indivisible character (GE-8).
                 // NONE also keeps a page-sized table together.
-                if y > body_top && total_h <= page_h {
-                    fragments = vec![(0, rows, body_top, false, true)];
-                } else if total_h > page_h {
+                if y > body_top + top_caption_extent && unsplit_h <= page_h {
+                    fragments = vec![(0, rows, body_top + top_caption_extent, false, true)];
+                } else if unsplit_h > page_h {
                     // An indivisible table taller than a page must surface its overflow.
                     warnings.push(RenderIssueCode::TableRowTooTallClipped, b"treat-as-char");
                 }
             } else {
-                // TABLE/CELL split at row boundaries; oversized NONE tables
-                // use the same fallback. Cell-internal splitting is not yet supported.
+                // TABLE splits at row boundaries; CELL falls back here only
+                // when no row requires an internal split or its cached cell
+                // boundaries were reported incomplete above. Oversized NONE
+                // tables use the same conservative fallback.
                 let boundaries: Vec<usize> = (0..=rows)
                     .filter(|&boundary| legal_boundary[boundary])
                     .collect();
@@ -2225,7 +2915,13 @@ fn layout_table(
                 let mut break_before = false;
                 for &(band_start, band_end, band_h) in &bands {
                     let replay_header = header_rows > 0 && fragment_start > 0;
-                    let fresh_top = body_top + if replay_header { header_h } else { 0.0 };
+                    let fresh_top = body_top
+                        + if replay_header { header_h } else { 0.0 }
+                        + if fragment_start == 0 {
+                            top_caption_extent
+                        } else {
+                            0.0
+                        };
 
                     // If no band has been accepted and only a page-bottom
                     // sliver remains, move the same band to a fresh page.
@@ -2283,6 +2979,7 @@ fn layout_table(
     let mut cell_ls = crate::list::ListState::default();
     let header_ls_seed = cell_ls.clone();
     let mut end_y = y;
+    let mut final_fragment_top = y;
     let mut emitted_fragments = 0usize;
     let mut page_advanced = false;
     for &(rs, re, data_top, with_header, break_before) in &fragments {
@@ -2297,6 +2994,14 @@ fn layout_table(
                 break;
             }
             page_advanced = true;
+        }
+        if emitted_fragments == 0
+            && let Some(prelude) = top_caption.take()
+        {
+            let caption_y = data_top - prelude.gap - prelude.height;
+            for item in prelude.items {
+                page.items.push(translate_item(item, x, caption_y));
+            }
         }
         if with_header {
             let mut header_ls = header_ls_seed.clone();
@@ -2332,6 +3037,7 @@ fn layout_table(
             warnings,
         );
         end_y = data_top + (row_prefix[re] - row_prefix[rs]);
+        final_fragment_top = data_top - if with_header { header_h } else { 0.0 };
         emitted_fragments += 1;
         if let Some(ctx) = split.as_deref_mut() {
             ctx.mark_flow();
@@ -2343,7 +3049,466 @@ fn layout_table(
             format!("{rows} rows"),
         );
     }
-    (end_y, page_advanced)
+    (end_y, page_advanced, final_fragment_top)
+}
+
+/// CELL-policy table emitter.  It is intentionally separate from the row
+/// planner above: a row fragment has a different border contract and its
+/// content must be selected from the cached line ranges rather than replaying
+/// the whole cell on every page.
+#[allow(clippy::too_many_arguments)]
+fn layout_table_cell_fragments(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &mut PageList,
+    table: &Table,
+    col_x: &[f32],
+    col_w: &[f32],
+    row_h: &[f32],
+    row_prefix: &[f32],
+    content_h_by_cell: &[f32],
+    x: f32,
+    y: f32,
+    top_caption_extent: f32,
+    header_rows: usize,
+    top_caption: &mut Option<CaptionPrelude>,
+    split: &mut Option<&mut TableSplitCtx<'_, '_>>,
+    warnings: &mut RenderIssueAccumulator,
+) -> Option<(f32, bool, f32)> {
+    let (body_top, body_bottom, first_body_bottom) = {
+        let ctx = split.as_deref()?;
+        let first_body_bottom = (ctx.body_bottom
+            - page_notes_reservation_height(
+                doc,
+                store,
+                page,
+                ctx.page_notes,
+                ctx.body_left,
+                ctx.body_width,
+            ))
+        .max(ctx.body_top);
+        (ctx.body_top, ctx.body_bottom, first_body_bottom)
+    };
+    let header_height: f32 = row_h[..header_rows].iter().sum();
+
+    let rows = row_h.len();
+    let mut cell_plans: Vec<Option<CellSplitPlan>> = vec![None; table.cells.len()];
+    let mut row_group_counts = vec![1usize; rows];
+    let mut found_cached_split = false;
+    let has_any_row_span = table.cells.iter().any(|cell| cell.row_span.max(1) > 1);
+    let mut planned_cursor = y;
+    let mut planned_bottom = first_body_bottom;
+    let mut planned_emitted_parts = 0usize;
+
+    for row in 0..rows {
+        let mut row_cells = Vec::new();
+        for (cell_index, cell) in table.cells.iter().enumerate() {
+            let start = cell.row as usize;
+            let end = (start + usize::from(cell.row_span.max(1))).min(rows);
+            if start <= row && row < end {
+                row_cells.push((cell_index, cell));
+            }
+        }
+        if row_cells.is_empty() {
+            warnings.push(
+                RenderIssueCode::TableCellFragmentationIncomplete,
+                format!("row={row}:no-cells"),
+            );
+            return None;
+        }
+
+        let row_crosses_page = planned_cursor + row_h[row] > planned_bottom + 0.5;
+        if !row_crosses_page {
+            planned_cursor += row_h[row];
+            planned_emitted_parts += 1;
+            continue;
+        }
+
+        let remaining_height = (planned_bottom - planned_cursor).max(0.0);
+        let continuation_top = body_top
+            + if planned_emitted_parts == 0 {
+                top_caption_extent
+            } else if header_rows > 0 && row >= header_rows {
+                header_height
+            } else {
+                0.0
+            };
+        let continuation_height = (body_bottom - continuation_top).max(1.0);
+        let mut row_groups = 1usize;
+        let mut cells_requiring_boundary = Vec::new();
+        for &(cell_index, cell) in &row_cells {
+            if cell.row as usize != row || cell.row_span.max(1) != 1 {
+                continue;
+            }
+            let measured = content_h_by_cell.get(cell_index).copied().unwrap_or(0.0);
+            let has_cell_payload = cell
+                .paragraphs
+                .iter()
+                .any(|para| !para.chars.is_empty() || !para.controls.is_empty());
+            if !has_cell_payload {
+                continue;
+            }
+            let (_, _, mt, mb) = cell_margins(table, cell);
+            let needs_boundary = measured + mt + mb > remaining_height + 0.5
+                || measured + mt + mb > continuation_height + 0.5;
+            if needs_boundary {
+                cells_requiring_boundary.push(cell_index);
+            }
+            let Some(mut plan) = cached_cell_split_plan(
+                cell,
+                measured,
+                remaining_height - mt - mb,
+                continuation_height - mt - mb,
+            ) else {
+                continue;
+            };
+            if !plan.is_usable() {
+                continue;
+            }
+            for group in &mut plan.groups {
+                group.height += mt + mb;
+            }
+            let cached_height: f32 = plan.groups.iter().map(|group| group.height).sum();
+            if row_h[row] > cached_height {
+                // Preserve the declared row height as blank continuation
+                // area.  It does not need a text boundary, but must not push
+                // a cached line outside the cell's visual fragment.
+                if let Some(group) = plan.groups.last_mut() {
+                    group.height += row_h[row] - cached_height;
+                }
+            }
+            row_groups = row_groups.max(plan.groups.len());
+            cell_plans[cell_index] = Some(plan);
+        }
+
+        if row_groups > 1
+            && cells_requiring_boundary.iter().any(|cell_index| {
+                cell_plans[*cell_index]
+                    .as_ref()
+                    .is_none_or(|plan| !plan.is_usable())
+            })
+        {
+            warnings.push(
+                RenderIssueCode::TableCellFragmentationIncomplete,
+                format!("row={row}:cache"),
+            );
+            return None;
+        }
+
+        if row_groups == 1 {
+            // No cached content needs to use the current-page remainder. Let
+            // the existing row-boundary planner move this row as a unit.
+            if row_h[row] > continuation_height + 0.5 {
+                warnings.push(
+                    RenderIssueCode::TableCellFragmentationIncomplete,
+                    format!("row={row}:boundary"),
+                );
+                return None;
+            }
+            planned_cursor = continuation_top + row_h[row];
+            planned_bottom = body_bottom;
+            planned_emitted_parts += 1;
+            continue;
+        }
+
+        found_cached_split = true;
+        row_group_counts[row] = row_groups;
+        for group_index in 0..row_groups {
+            let part_height = table
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, cell)| cell.row as usize == row)
+                .filter_map(|(cell_index, _)| {
+                    cell_plans[cell_index]
+                        .as_ref()
+                        .and_then(|plan| plan.groups.get(group_index))
+                        .map(|group| group.height)
+                })
+                .fold(0.0f32, f32::max)
+                .max(1.0);
+            if planned_cursor + part_height > planned_bottom + 0.5 {
+                planned_cursor = body_top
+                    + if planned_emitted_parts == 0 {
+                        top_caption_extent
+                    } else if header_rows > 0 && row >= header_rows {
+                        header_height
+                    } else {
+                        0.0
+                    };
+                planned_bottom = body_bottom;
+            }
+            if planned_cursor + part_height > planned_bottom + 0.5 {
+                warnings.push(
+                    RenderIssueCode::TableCellFragmentationIncomplete,
+                    format!("row={row}:fragment={group_index}:height"),
+                );
+                return None;
+            }
+            planned_cursor += part_height;
+            planned_emitted_parts += 1;
+        }
+    }
+    // A CELL row may fit on a fresh page yet still be split by Hancom to use
+    // the space remaining on the current page. Cached line boundaries, not
+    // `row_height > full_body_height`, define that Regime-A split.
+    if !found_cached_split {
+        return None;
+    }
+    if has_any_row_span {
+        warnings.push(
+            RenderIssueCode::TableCellFragmentationIncomplete,
+            b"row-span-with-cell-fragment",
+        );
+        return None;
+    }
+
+    // A local list state advances through body cells exactly once. Replayed
+    // headers use a seed so their marker is stable on every continuation.
+    let mut cell_ls = crate::list::ListState::default();
+    let header_ls_seed = cell_ls.clone();
+    let mut cursor = y;
+    let mut current_bottom = first_body_bottom;
+    let mut emitted_parts = 0usize;
+    let mut page_advanced = false;
+    let mut final_fragment_top = y;
+    for row in 0..rows {
+        let group_count = row_group_counts[row];
+        for group_index in 0..group_count {
+            let part_height = if group_count == 1 {
+                row_h[row]
+            } else {
+                table
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| cell.row as usize == row)
+                    .filter_map(|(cell_index, _)| {
+                        cell_plans[cell_index]
+                            .as_ref()
+                            .and_then(|plan| plan.groups.get(group_index))
+                            .map(|group| group.height)
+                    })
+                    .fold(0.0f32, f32::max)
+                    .max(1.0)
+            };
+            let mut replay_header = false;
+            if cursor + part_height > current_bottom + 0.5 {
+                let ctx = split.as_deref_mut()?;
+                if emitted_parts == 0 && cursor <= body_top + top_caption_extent + 0.5 {
+                    warnings.push(
+                        RenderIssueCode::TableRowTooTallClipped,
+                        format!("cell row={row} fragment={group_index}"),
+                    );
+                } else if !ctx.break_page(doc, store, page, warnings) {
+                    return Some((cursor, page_advanced, final_fragment_top));
+                } else {
+                    page_advanced = true;
+                    cursor = body_top
+                        + if emitted_parts == 0 {
+                            top_caption_extent
+                        } else {
+                            0.0
+                        };
+                    current_bottom = body_bottom;
+                    replay_header = header_rows > 0 && row >= header_rows && emitted_parts > 0;
+                }
+            }
+            if replay_header {
+                let mut header_ls = header_ls_seed.clone();
+                draw_table_rows(
+                    doc,
+                    store,
+                    page,
+                    table,
+                    col_x,
+                    col_w,
+                    row_h,
+                    row_prefix,
+                    content_h_by_cell,
+                    0..header_rows,
+                    body_top,
+                    &mut header_ls,
+                    warnings,
+                );
+                cursor = body_top + row_h[..header_rows].iter().sum::<f32>();
+                if cursor + part_height > body_bottom + 0.5 {
+                    warnings.push(
+                        RenderIssueCode::TableRowTooTallClipped,
+                        format!("cell row={row} header"),
+                    );
+                }
+            }
+            if emitted_parts == 0
+                && let Some(prelude) = top_caption.take()
+            {
+                let caption_y = cursor - prelude.gap - prelude.height;
+                for item in prelude.items {
+                    page.items.push(translate_item(item, x, caption_y));
+                }
+            }
+
+            for (cell_index, cell) in table.cells.iter().enumerate() {
+                if cell.row as usize != row {
+                    continue;
+                }
+                let plan = cell_plans[cell_index].as_ref();
+                let group = plan.and_then(|split_plan| split_plan.groups.get(group_index));
+                let selections = if let Some(group) = group {
+                    group.selections.clone()
+                } else if group_index == 0 {
+                    vec![BoxParaSelection::All; cell.paragraphs.len()]
+                } else {
+                    vec![BoxParaSelection::Empty; cell.paragraphs.len()]
+                };
+                let v_origin = group.map_or(0, |fragment| fragment.first_v_pos);
+                draw_table_cell_fragment(
+                    doc,
+                    store,
+                    page,
+                    table,
+                    cell,
+                    cell_index,
+                    col_x,
+                    col_w,
+                    cursor,
+                    part_height,
+                    content_h_by_cell.get(cell_index).copied().unwrap_or(0.0),
+                    selections,
+                    v_origin,
+                    group_count == 1 || group_index == 0,
+                    group_count == 1 || group_index + 1 == group_count,
+                    &mut cell_ls,
+                    warnings,
+                );
+            }
+            cursor += part_height;
+            final_fragment_top = cursor - part_height;
+            emitted_parts += 1;
+            if let Some(ctx) = split.as_deref_mut() {
+                ctx.mark_flow();
+            }
+        }
+    }
+
+    if page_advanced && emitted_parts > 1 {
+        warnings.push(
+            RenderIssueCode::TableSplitAcrossPages,
+            format!("{} rows (cell fragments)", rows),
+        );
+    }
+    Some((cursor, page_advanced, final_fragment_top))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_table_cell_fragment(
+    doc: &Document,
+    store: &mut FontStore,
+    page: &mut PageList,
+    table: &Table,
+    cell: &hwp_model::Cell,
+    cell_index: usize,
+    col_x: &[f32],
+    col_w: &[f32],
+    cy: f32,
+    ch: f32,
+    measured_content_h: f32,
+    selections: Vec<BoxParaSelection>,
+    v_origin: i32,
+    draw_top: bool,
+    draw_bottom: bool,
+    cell_ls: &mut crate::list::ListState,
+    warnings: &mut RenderIssueAccumulator,
+) {
+    let c = cell.col as usize;
+    if c >= col_w.len() {
+        return;
+    }
+    let cx = col_x[c];
+    let cw: f32 = col_w[c..(c + cell.col_span as usize).min(col_w.len())]
+        .iter()
+        .sum();
+    if cw <= 0.0 || ch <= 0.0 {
+        return;
+    }
+    let border_fill = doc
+        .header
+        .border_fills
+        .get((cell.border_fill.0 as usize).saturating_sub(1));
+    if let Some(item) = border_fill.and_then(|bf| bg_fill_item(bf, cx, cy, cw, ch))
+        && warnings.charge_display_items(1)
+    {
+        page.items.push(item);
+    }
+
+    let (ml, mr, mt, mb) = cell_margins(table, cell);
+    let available_h = (ch - mt - mb).max(0.0);
+    // Vertical alignment applies to the complete cell, not independently to
+    // each continuation fragment. Re-centering every fragment creates a large
+    // blank band and can push selected cached lines under the next row.
+    let voff = if draw_top && draw_bottom {
+        let spare = (available_h - measured_content_h).max(0.0);
+        match cell.vert_align() {
+            1 => spare * 0.5,
+            2 => spare,
+            _ => 0.0,
+        }
+    } else {
+        0.0
+    };
+    if !selections
+        .iter()
+        .all(|selection| matches!(selection, BoxParaSelection::Empty))
+    {
+        let _ = layout_box_para_iter(
+            doc,
+            store,
+            page,
+            cell.paragraphs.iter().zip(selections),
+            cx + ml,
+            cy + mt + voff,
+            (cw - ml - mr).max(4.0),
+            warnings,
+            Some(cell_ls),
+            None,
+            v_origin,
+        );
+    }
+
+    if let Some(bf) = border_fill {
+        let items = crate::border::border_rectangle_items(
+            cx,
+            cy,
+            cx + cw,
+            cy + ch,
+            &bf.sides,
+            [true, true, draw_top, draw_bottom],
+        );
+        if warnings.charge_display_items(items.len()) {
+            page.items.extend(items);
+        }
+        // Diagonals describe the complete cell, so emit them only on the
+        // first fragment; continuation fragments carry the four-sided frame.
+        if draw_top {
+            let (slash, backslash) = diagonal_dirs(bf.attr);
+            if (slash || backslash) && bf.diagonal.is_visible() {
+                let mut dirs = Vec::with_capacity(2);
+                if backslash {
+                    dirs.push((cx, cy, cx + cw, cy + ch));
+                }
+                if slash {
+                    dirs.push((cx, cy + ch, cx + cw, cy));
+                }
+                for (dx1, dy1, dx2, dy2) in dirs {
+                    let items = crate::border::border_line_items(dx1, dy1, dx2, dy2, &bf.diagonal);
+                    if warnings.charge_display_items(items.len()) {
+                        page.items.extend(items);
+                    }
+                }
+            }
+        }
+    }
+    let _ = cell_index;
 }
 
 /// Draw one row-range fragment. `base_y + row_prefix[r]` is the row top.
@@ -2486,14 +3651,26 @@ fn layout_box_paragraphs(
         doc,
         store,
         page,
-        paras.iter(),
+        paras.iter().map(|para| (para, BoxParaSelection::All)),
         origin_x,
         origin_y,
         width,
         warnings,
         list_state,
         page_number,
+        0,
     )
+}
+
+/// A cached cell fragment selects a contiguous range of line segments from
+/// each paragraph.  `Empty` is deliberately distinct from `All`: a paragraph
+/// can own a nested object, but must not be replayed on every continuation
+/// page merely because its text was split there.
+#[derive(Debug, Clone)]
+enum BoxParaSelection {
+    All,
+    Segments(std::ops::Range<usize>),
+    Empty,
 }
 
 /// `layout_box_paragraphs`의 반복자 버전 — 단(컬럼)으로 분할된 조각도 받는다.
@@ -2508,18 +3685,22 @@ fn layout_box_para_iter<'a>(
     doc: &Document,
     store: &mut FontStore,
     page: &mut PageList,
-    paras: impl Iterator<Item = &'a Paragraph>,
+    paras: impl Iterator<Item = (&'a Paragraph, BoxParaSelection)>,
     origin_x: f32,
     origin_y: f32,
     width: f32,
     warnings: &mut RenderIssueAccumulator,
     mut list_state: Option<&mut crate::list::ListState>,
     page_number: Option<u32>,
+    v_origin: i32,
 ) -> f32 {
     let mut content_bottom = origin_y;
     // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
     let mut flow_floor = origin_y;
-    for para in paras {
+    for (para, selection) in paras {
+        if matches!(selection, BoxParaSelection::Empty) {
+            continue;
+        }
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
         // Do not advance a list counter for a completely empty box paragraph.
@@ -2593,7 +3774,15 @@ fn layout_box_para_iter<'a>(
             flow_floor = flow_floor.max(content_bottom);
         } else {
             let last_content = last_content_seg(para);
-            for (i, seg) in para.line_segs.iter().enumerate() {
+            let selected = match &selection {
+                BoxParaSelection::All => 0..para.line_segs.len(),
+                BoxParaSelection::Segments(range) => {
+                    range.start.min(para.line_segs.len())..range.end.min(para.line_segs.len())
+                }
+                BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
+            };
+            for i in selected {
+                let seg = &para.line_segs[i];
                 let line_start = seg.text_start;
                 let line_end = para
                     .line_segs
@@ -2628,10 +3817,16 @@ fn layout_box_para_iter<'a>(
                 );
 
                 let gap_pt = seg.baseline_gap as f32 / 100.0;
-                let stored = origin_y + (seg.v_pos + seg.baseline_gap) as f32 / 100.0;
+                let v_pos = seg.v_pos.saturating_sub(v_origin);
+                let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
                 // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
                 let baseline_y = stored.max(flow_floor + gap_pt);
-                if i == 0 {
+                let first_selected = match &selection {
+                    BoxParaSelection::All => i == 0,
+                    BoxParaSelection::Segments(range) => i == range.start,
+                    BoxParaSelection::Empty => false,
+                };
+                if first_selected {
                     para_top = Some(baseline_y - gap_pt);
                     if let Some(m) = &marker {
                         let size = items_max_size(&items).unwrap_or(8.0);
@@ -2680,22 +3875,32 @@ fn layout_box_para_iter<'a>(
         }
 
         // 셀 안의 중첩 표/이미지 — 바닥을 늘렸으면 흐름 하한도 올려 후속 캐시 문단 겹침 방지.
-        let before_objects = content_bottom;
-        let (objects_bottom, _no_split) = layout_para_objects(
-            doc,
-            store,
-            page,
-            para,
-            origin_x,
-            para_top.unwrap_or(content_bottom),
-            content_bottom,
-            width,
-            None, // 상자(셀/글상자) 안의 중첩 개체는 쪽을 걸치지 않는다
-            warnings,
-        );
-        content_bottom = objects_bottom;
-        if content_bottom > before_objects {
-            flow_floor = flow_floor.max(content_bottom);
+        // A nested object belongs to the first fragment that contains this
+        // paragraph.  Rendering it for every selected line range would
+        // duplicate the object on continuation pages.
+        let render_objects = match &selection {
+            BoxParaSelection::All => true,
+            BoxParaSelection::Segments(range) => range.start == 0,
+            BoxParaSelection::Empty => false,
+        };
+        if render_objects {
+            let before_objects = content_bottom;
+            let (objects_bottom, _no_split) = layout_para_objects(
+                doc,
+                store,
+                page,
+                para,
+                origin_x,
+                para_top.unwrap_or(content_bottom),
+                content_bottom,
+                width,
+                None, // Nested objects inside a cell/text box do not cross pages.
+                warnings,
+            );
+            content_bottom = objects_bottom;
+            if content_bottom > before_objects {
+                flow_floor = flow_floor.max(content_bottom);
+            }
         }
     }
     content_bottom
@@ -3433,7 +4638,8 @@ fn place_wrapped(
 
 #[cfg(test)]
 mod page_number_layout_tests {
-    use super::page_number_alignment;
+    use super::{control_char_shape, page_number_alignment};
+    use hwp_model::{CharShapeId, HwpChar, Paragraph};
 
     #[test]
     fn 고정_위치_정렬() {
@@ -3455,6 +4661,25 @@ mod page_number_layout_tests {
             assert_eq!(page_number_alignment(inside, 1), -1);
             assert_eq!(page_number_alignment(inside, 2), 1);
         }
+    }
+
+    #[test]
+    fn 쪽번호_컨트롤은_자신의_문자모양을_사용() {
+        let para = Paragraph {
+            chars: vec![
+                HwpChar::Text('앞'),
+                HwpChar::ExtCtrl {
+                    code: 3,
+                    ctrl_id: *b"pgnp",
+                    payload: Vec::new(),
+                    ctrl_index: Some(1),
+                },
+            ],
+            char_shape_runs: vec![(0, CharShapeId(2)), (1, CharShapeId(7))],
+            ..Paragraph::default()
+        };
+
+        assert_eq!(control_char_shape(&para, 1), Some(CharShapeId(7)));
     }
 }
 
@@ -3759,6 +4984,7 @@ mod table_width_tests {
             border_fill: BorderFillId(1),
             table_tail: Vec::new(),
             cells,
+            caption: None,
             extras: Vec::new(),
         }
     }
@@ -3825,6 +5051,28 @@ mod table_width_tests {
         assert!((col_w[1] - 75.0).abs() < 0.5, "{col_w:?}");
         assert!((col_w[2] - 25.0).abs() < 0.5, "{col_w:?}");
     }
+
+    #[test]
+    fn max_cell_margin_is_inherited_without_mutating_the_ir() {
+        let mut c = cell(0, 0, 1, 10000);
+        c.margins = [u16::MAX, 0, u16::MAX, u16::MAX];
+        let t = table(1, 1, vec![c.clone()]);
+        let margins = cell_margins(
+            &Table {
+                inner_margins: [700, 800, 900, 1000],
+                ..t.clone()
+            },
+            &c,
+        );
+        assert_eq!(margins, (7.0, 0.0, 9.0, 10.0));
+        assert_eq!(c.margins, [u16::MAX, 0, u16::MAX, u16::MAX]);
+
+        let defaults = Table {
+            inner_margins: [0; 4],
+            ..t
+        };
+        assert_eq!(cell_margins(&defaults, &c), (5.1, 0.0, 1.41, 1.41));
+    }
 }
 
 #[cfg(test)]
@@ -3859,6 +5107,7 @@ mod certification_budget_tests {
             gso_shapes: shapes,
             equation: None,
             column_def: None,
+            caption: None,
         })
     }
 
@@ -3936,6 +5185,7 @@ mod certification_budget_tests {
             contrast: 0,
             effect_flags: 0,
             effects_raw: Vec::new(),
+            caption: None,
             bin_ref: BinRef::ItemRef("shared-image".to_string()),
             extras: Vec::new(),
         });
@@ -3967,6 +5217,7 @@ mod certification_budget_tests {
             contrast: 0,
             effect_flags: 0x1, // 그림자 효과
             effects_raw: vec![1, 0, 0, 0],
+            caption: None,
             bin_ref: BinRef::ItemRef("fx-image".to_string()),
             extras: Vec::new(),
         });
@@ -4071,6 +5322,7 @@ mod certification_budget_tests {
             contrast: 0,
             effect_flags: 0,
             effects_raw: Vec::new(),
+            caption: None,
             bin_ref: BinRef::ItemRef("one-byte-image".to_string()),
             extras: Vec::new(),
         });

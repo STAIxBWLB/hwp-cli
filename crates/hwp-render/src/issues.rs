@@ -82,6 +82,9 @@ pub enum RenderIssueCode {
     InvalidTableCellOmitted,
     TableSplitAcrossPages,
     TableRowTooTallClipped,
+    /// A CELL-policy row needed an internal page boundary, but the source did
+    /// not provide a usable cached line layout to locate one.
+    TableCellFragmentationIncomplete,
     TextBoxGeometryInvalidOmitted,
     ShapeDepthLimitOmitted,
     ShapeStyleInvalidOmitted,
@@ -116,6 +119,7 @@ impl RenderIssueCode {
             Self::InvalidTableCellOmitted => "invalid_table_cell_omitted",
             Self::TableSplitAcrossPages => "table_split_across_pages",
             Self::TableRowTooTallClipped => "table_row_too_tall_clipped",
+            Self::TableCellFragmentationIncomplete => "table_cell_fragmentation_incomplete",
             Self::TextBoxGeometryInvalidOmitted => "text_box_geometry_invalid_omitted",
             Self::ShapeDepthLimitOmitted => "shape_depth_limit_omitted",
             Self::ShapeStyleInvalidOmitted => "shape_style_invalid_omitted",

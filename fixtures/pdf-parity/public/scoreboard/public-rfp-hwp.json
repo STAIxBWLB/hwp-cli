@@ -1,0 +1,203 @@
+{
+  "contract": "hwp-pdf-parity-scorecard-v2",
+  "case": "public-rfp-hwp",
+  "source": {
+    "name": "public-safety-rfp-p1.hwp",
+    "sha256": "4ff3c231d835f37ceaa08ccd41f7db66d74d65a5a03c0791f6f683cc9fde0d39"
+  },
+  "oracle": {
+    "name": "public-safety-rfp-p1.pdf",
+    "sha256": "b663df719837fd3b07d458a7e5aea441d8bcd0895ac90983fe67714067070f9f"
+  },
+  "dpi": 150,
+  "thresholds": {
+    "media_box_pt": 0.5,
+    "dx_px": 2,
+    "dy_px": 2,
+    "ink_ratio_min": 0.97,
+    "ink_ratio_max": 1.03,
+    "bad_pixel_pct_max": 0.05,
+    "mae_max": 5.0,
+    "roi_match_radius_px": 10,
+    "roi_precision_min": 0.95,
+    "roi_recall_min": 0.95
+  },
+  "passed_gates": [
+    "page_count",
+    "media_box",
+    "text",
+    "fonts",
+    "render_issues",
+    "raster",
+    "roi",
+    "determinism"
+  ],
+  "failed_gates": [],
+  "eligible": true,
+  "pages": {
+    "ours": 1,
+    "oracle": 1,
+    "delta": 0
+  },
+  "media_box": {
+    "pages_compared": 1,
+    "pages_equal": 1,
+    "max_delta_pt": 0.2799999999999727,
+    "within_threshold": true,
+    "per_page": [
+      {
+        "page": 1,
+        "ours": [
+          0.0,
+          0.0,
+          595.28,
+          841.89
+        ],
+        "oracle": [
+          0.0,
+          0.0,
+          595.0,
+          842.0
+        ],
+        "delta_pt": 0.2799999999999727
+      }
+    ]
+  },
+  "fonts": {
+    "candidate": [
+      {
+        "name": "AAAAAA+F0",
+        "type": "CID Type 0C (OT)",
+        "embedded": true,
+        "subset": true,
+        "unicode": true
+      },
+      {
+        "name": "BAAAAA+F1",
+        "type": "CID Type 0C (OT)",
+        "embedded": true,
+        "subset": true,
+        "unicode": true
+      }
+    ],
+    "oracle": [
+      {
+        "name": "AAAAAB+HCRDotum",
+        "type": "TrueType",
+        "embedded": true,
+        "subset": true,
+        "unicode": false
+      },
+      {
+        "name": "AAAAAC+NotoSansCJKkr-Bold",
+        "type": "CID Type 0C",
+        "embedded": true,
+        "subset": true,
+        "unicode": true
+      },
+      {
+        "name": "AAAAAD+NotoSansCJKkr-Regular",
+        "type": "CID Type 0C",
+        "embedded": true,
+        "subset": true,
+        "unicode": true
+      }
+    ],
+    "candidate_all_embedded_subset_unicode": true,
+    "oracle_all_embedded_subset_unicode": false,
+    "passed": true
+  },
+  "render": {
+    "report_source": "mixed",
+    "report_available": true,
+    "complete": true,
+    "font_coverage": {
+      "matched": 2,
+      "substituted": 0,
+      "missing": 0,
+      "subset_fallback": 0,
+      "substitution_free": true
+    },
+    "substitutions": 0,
+    "unsupported": 0,
+    "incomplete": 0,
+    "fatal": 0,
+    "issue_codes": [
+      "font_matched"
+    ],
+    "passed": true
+  },
+  "text": {
+    "pages_compared": 1,
+    "pages_equal": 1,
+    "first_diff_page": null,
+    "order_equal": true,
+    "passed": true
+  },
+  "raster": [
+    {
+      "page": 1,
+      "dx": 0,
+      "dy": 0,
+      "ink_ratio": 0.9942722916603088,
+      "bad_pixel_pct": 0.01794285885989666,
+      "mae": 2.8790488243103027,
+      "passed": true
+    }
+  ],
+  "rois": [
+    {
+      "name": "title",
+      "page": 1,
+      "x": 0.08,
+      "y": 0.06,
+      "width": 0.84,
+      "height": 0.08,
+      "precision": 0.9952672605790646,
+      "recall": 0.9685115827437925,
+      "passed": true
+    },
+    {
+      "name": "summary-table",
+      "page": 1,
+      "x": 0.08,
+      "y": 0.13,
+      "width": 0.84,
+      "height": 0.1,
+      "precision": 0.9964019747301481,
+      "recall": 0.9768225874420565,
+      "passed": true
+    },
+    {
+      "name": "comparison-table",
+      "page": 1,
+      "x": 0.08,
+      "y": 0.26,
+      "width": 0.84,
+      "height": 0.12,
+      "precision": 1.0,
+      "recall": 0.9886108313318355,
+      "passed": true
+    },
+    {
+      "name": "requirements",
+      "page": 1,
+      "x": 0.08,
+      "y": 0.38,
+      "width": 0.55,
+      "height": 0.12,
+      "precision": 0.9997884940778342,
+      "recall": 0.9511543394613082,
+      "passed": true
+    }
+  ],
+  "determinism": {
+    "runs": 2,
+    "byte_equal": true,
+    "sha256": [
+      "a75323f5493bcf01b43dd38ec34d36f8cf4647546a3cb663f48a667e8e4895ae",
+      "a75323f5493bcf01b43dd38ec34d36f8cf4647546a3cb663f48a667e8e4895ae"
+    ],
+    "passed": true
+  }
+}

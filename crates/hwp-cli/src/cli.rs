@@ -147,6 +147,9 @@ pub enum Cmd {
         /// Output format (inferred from the extension when omitted)
         #[arg(long, value_enum)]
         format: Option<RenderFormat>,
+        /// Write a closed machine-readable render report atomically
+        #[arg(long)]
+        report: Option<PathBuf>,
         /// Additional font directory (repeatable)
         #[arg(long)]
         font_dir: Vec<PathBuf>,

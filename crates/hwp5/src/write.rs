@@ -10,8 +10,9 @@ use std::io::Write as _;
 use std::path::Path;
 
 use hwp_model::{
-    BorderLine, Cell, CharShape, Control, Document, FaceName, HwpChar, LANG_COUNT, Metadata,
-    OpaqueRecord, ParaShape, Paragraph, Picture, RawEntry, Section, SectionDef, Style, Table,
+    BorderLine, Caption, CaptionDirection, CaptionSide, Cell, CharShape, Control, Document,
+    FaceName, HwpChar, LANG_COUNT, Metadata, OpaqueRecord, ParaShape, Paragraph, Picture, RawEntry,
+    Section, SectionDef, Style, Table,
 };
 
 use crate::codec::{ByteWriter, compress};
@@ -2155,7 +2156,13 @@ fn emit_control(
         Control::Table(table) => {
             emit_table(table, synthesize, preserve_linesegs, add_tracking_tail)
         }
-        Control::Picture(pic) => emit_picture(pic, warnings),
+        Control::Picture(pic) => emit_picture(
+            pic,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            warnings,
+        ),
         Control::Generic(g) => {
             let mut w = ByteWriter::new();
             w.write_bytes(&reversed(g.ctrl_id));
@@ -2173,7 +2180,16 @@ fn emit_control(
                     children: g.raw_children.iter().map(opaque_to_node).collect(),
                 };
             }
-            let mut children = Vec::new();
+            let mut children = match &g.caption {
+                Some(caption) => emit_caption_records(
+                    caption,
+                    synthesize,
+                    preserve_linesegs,
+                    add_tracking_tail,
+                    warnings,
+                ),
+                None => Vec::new(),
+            };
             for list in &g.paragraph_lists {
                 children.push(RecordNode {
                     tag: tag::LIST_HEADER,
@@ -2342,12 +2358,23 @@ fn emit_table(
         tw.write_bytes(&table.table_tail);
     }
 
-    let mut children = vec![RecordNode {
+    let mut cell_warnings = Vec::new();
+    // Table 71 caption records precede the TABLE record.
+    let mut children = match &table.caption {
+        Some(caption) => emit_caption_records(
+            caption,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            &mut cell_warnings,
+        ),
+        None => Vec::new(),
+    };
+    children.push(RecordNode {
         tag: tag::TABLE,
         data: tw.into_bytes(),
         children: Vec::new(),
-    }];
-    let mut cell_warnings = Vec::new();
+    });
     for cell in &table.cells {
         children.push(emit_cell_header(cell));
         for p in &cell.paragraphs {
@@ -2366,6 +2393,58 @@ fn emit_table(
         data: w.into_bytes(),
         children,
     }
+}
+
+/// Caption LIST_HEADER (tables 71-73, 22 bytes), inverse of
+/// `body_text::parse_caption_header`.
+fn emit_caption_header(caption: &Caption) -> RecordNode {
+    let mut w = ByteWriter::new();
+    w.write_i32(caption.paragraphs.len() as i32);
+    // Reconstruct only text direction (table 65 bits 0-2); the IR does not
+    // preserve line wrapping (bits 3-4) or vertical alignment (bits 5-6).
+    // TODO(hancom-verify): measure upper listflag bits in a genuine caption.
+    w.write_u32(match caption.direction {
+        CaptionDirection::Horizontal => 0,
+        CaptionDirection::Vertical => 1,
+    });
+    let side = match caption.side {
+        CaptionSide::Left => 0,
+        CaptionSide::Right => 1,
+        CaptionSide::Top => 2,
+        CaptionSide::Bottom => 3,
+    };
+    // Bit 2 extends caption width through margins (full-size), mapped to None.
+    w.write_u32(side | (u32::from(caption.width.is_none()) << 2));
+    w.write_i32(caption.width.unwrap_or(0).min(i32::MAX as u32) as i32);
+    w.write_u16(caption.gap.clamp(0, i32::from(u16::MAX)) as u16);
+    w.write_i32(caption.last_width.min(i32::MAX as u32) as i32);
+    RecordNode {
+        tag: tag::LIST_HEADER,
+        data: w.into_bytes(),
+        children: Vec::new(),
+    }
+}
+
+/// Caption record sequence (LIST_HEADER plus paragraphs). It precedes the
+/// object record such as TABLE, matching pyhwp `seen_table_body` behavior.
+fn emit_caption_records(
+    caption: &Caption,
+    synthesize: bool,
+    preserve_linesegs: bool,
+    add_tracking_tail: bool,
+    warnings: &mut Vec<String>,
+) -> Vec<RecordNode> {
+    let mut out = vec![emit_caption_header(caption)];
+    for p in &caption.paragraphs {
+        out.push(emit_paragraph(
+            p,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            warnings,
+        ));
+    }
+    out
 }
 
 fn emit_cell_header(cell: &Cell) -> RecordNode {
@@ -2396,7 +2475,13 @@ fn emit_cell_header(cell: &Cell) -> RecordNode {
     }
 }
 
-fn emit_picture(pic: &Picture, warnings: &mut Vec<String>) -> RecordNode {
+fn emit_picture(
+    pic: &Picture,
+    synthesize: bool,
+    preserve_linesegs: bool,
+    add_tracking_tail: bool,
+    warnings: &mut Vec<String>,
+) -> RecordNode {
     let mut w = ByteWriter::new();
     w.write_bytes(b" osg");
     if pic.common_data.is_empty() {
@@ -2419,7 +2504,18 @@ fn emit_picture(pic: &Picture, warnings: &mut Vec<String>) -> RecordNode {
     } else {
         w.write_bytes(&pic.common_data);
     }
-    let children = pic.extras.iter().map(opaque_to_node).collect();
+    // Table 71 caption follows common object properties and leads child records.
+    let mut children = match &pic.caption {
+        Some(caption) => emit_caption_records(
+            caption,
+            synthesize,
+            preserve_linesegs,
+            add_tracking_tail,
+            warnings,
+        ),
+        None => Vec::new(),
+    };
+    children.extend(pic.extras.iter().map(opaque_to_node));
     RecordNode {
         tag: tag::CTRL_HEADER,
         data: w.into_bytes(),
@@ -2430,6 +2526,62 @@ fn emit_picture(pic: &Picture, warnings: &mut Vec<String>) -> RecordNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_hwpunit_values_saturate_instead_of_wrapping() {
+        let caption = Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: i32::MAX,
+            width: Some(u32::MAX),
+            last_width: u32::MAX,
+            paragraphs: Vec::new(),
+        };
+        let record = emit_caption_header(&caption);
+        assert_eq!(
+            i32::from_le_bytes(record.data[12..16].try_into().unwrap()),
+            i32::MAX
+        );
+        assert_eq!(
+            u16::from_le_bytes(record.data[16..18].try_into().unwrap()),
+            u16::MAX
+        );
+        assert_eq!(
+            i32::from_le_bytes(record.data[18..22].try_into().unwrap()),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    fn synthesized_generic_gso_emits_its_caption_first() {
+        let generic = hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: Some(Caption {
+                side: CaptionSide::Bottom,
+                direction: CaptionDirection::Horizontal,
+                gap: 100,
+                width: None,
+                last_width: 200,
+                paragraphs: vec![hwp_model::Paragraph::default()],
+            }),
+        };
+        let node = emit_control(
+            &Control::Generic(generic),
+            true,
+            false,
+            false,
+            &mut Vec::new(),
+        );
+        assert_eq!(node.children[0].tag, tag::LIST_HEADER);
+        assert_eq!(node.children[1].tag, tag::PARA_HEADER);
+    }
 
     /// hwpx 출신 이미지의 합성 도형 레코드가 정품 5.1.x 구조여야 한다.
     /// SHAPE_COMPONENT(196B, "$pic") → SHAPE_COMPONENT_PICTURE(91B): 자르기는
@@ -2546,6 +2698,7 @@ mod tests {
             border_fill: hwp_model::BorderFillId(1),
             table_tail: Vec::new(),
             cells: Vec::new(),
+            caption: None,
             extras: Vec::new(),
         }
     }

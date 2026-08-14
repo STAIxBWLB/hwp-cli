@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use hwp_model::{CharShape, Document, HwpChar, LANG_COUNT, Paragraph, ctrl_char};
 
-use crate::fonts::{FontStore, LoadedFont};
+use crate::fonts::{FontSelection, FontStore, LoadedFont};
 use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 
 /// 셰이핑된 글리프 하나 (단위: pt).
@@ -511,8 +511,23 @@ fn auto_number_run(
     // Keep the whole decorated value in one run. Missing decoration glyphs
     // become tofu rather than making later characters disappear.
     let face_id = shape.face_ids.get(lang).copied().unwrap_or(0);
-    let font = store.resolve(doc, lang, face_id)?;
-    shape_with_font(&font, &shape, lang, text, pos, shape.is_bold())
+    let face_name = doc
+        .header
+        .fonts
+        .get(lang)
+        .and_then(|faces| faces.get(face_id as usize))
+        .map(|face| face.name.as_str())
+        .unwrap_or("");
+    let bold = shape.is_bold() || is_heavy_name(face_name);
+    let selection = store.resolve_selection(doc, lang, face_id, bold)?;
+    shape_with_font(
+        &selection.font,
+        &shape,
+        lang,
+        text,
+        pos,
+        selection.faux_bold,
+    )
 }
 
 /// 한 조각을 셰이핑한다. 해석된 주 글꼴이 일부 글자를 갖지 않으면(.notdef) 그
@@ -529,20 +544,23 @@ fn shape_piece(
     let default_shape = CharShape::default();
     let cs = shape.unwrap_or(&default_shape);
     let face_id = cs.face_ids.get(lang).copied().unwrap_or(0);
-    let Some(primary) = store.resolve(doc, lang, face_id) else {
-        return Vec::new();
-    };
 
-    // 요청 글꼴이 굵은(heavy) 계열인데 대체 글꼴엔 굵은 페이스가 없으면 faux-bold로
-    // 보강한다(예: HY견고딕/헤드라인M → 함초롬돋움 regular).
+    // Resolve the requested weight before splitting by glyph coverage. This
+    // lets a real bold face flow through all primary segments and leaves faux
+    // bold only on a family with no exact bold face.
     let face_name = doc
         .header
         .fonts
         .get(lang)
-        .and_then(|f| f.get(face_id as usize))
-        .map(|f| f.name.as_str())
+        .and_then(|faces| faces.get(face_id as usize))
+        .map(|face| face.name.as_str())
         .unwrap_or("");
     let bold = cs.is_bold() || is_heavy_name(face_name);
+    let Some(primary_selection) = store.resolve_selection(doc, lang, face_id, bold) else {
+        return Vec::new();
+    };
+    let primary = primary_selection.font.clone();
+    let primary_faux_bold = primary_selection.faux_bold;
 
     // 글자별 글꼴 배정: primary가 글리프를 가지면 primary, 아니면 커버리지 폴백.
     let primary_face = rustybuzz::ttf_parser::Face::parse(&primary.data, primary.index).ok();
@@ -558,25 +576,37 @@ fn shape_piece(
     // (글꼴, 텍스트, 시작 wchar) 세그먼트로 분할. start_wchar는 UTF-16 코드유닛
     // 오프셋이므로 문자마다 len_utf16()(BMP=1, 그 외=2)만큼 진행한다(비-BMP 글자에서
     // start_wchar 어긋나 링크범위·lineseg 매핑이 깨지지 않게).
-    let mut segments: Vec<(Arc<LoadedFont>, String, u32)> = Vec::new();
+    let mut segments: Vec<(Arc<LoadedFont>, String, u32, bool)> = Vec::new();
     let mut cur = start_wchar;
     for c in text.chars() {
-        let font = if primary_covers(c) {
-            primary.clone()
+        let selection = if primary_covers(c) {
+            FontSelection {
+                font: primary.clone(),
+                faux_bold: primary_faux_bold,
+            }
         } else {
-            store.font_covering(c).unwrap_or_else(|| primary.clone())
+            store
+                .font_covering_selection(c, bold)
+                .unwrap_or_else(|| FontSelection {
+                    font: primary.clone(),
+                    faux_bold: primary_faux_bold,
+                })
         };
         match segments.last_mut() {
-            Some((f, t, _)) if Arc::ptr_eq(f, &font) => t.push(c),
-            _ => segments.push((font, c.to_string(), cur)),
+            Some((f, t, _, faux_bold))
+                if Arc::ptr_eq(f, &selection.font) && *faux_bold == selection.faux_bold =>
+            {
+                t.push(c)
+            }
+            _ => segments.push((selection.font, c.to_string(), cur, selection.faux_bold)),
         }
         cur += c.len_utf16() as u32;
     }
 
     segments
         .into_iter()
-        .filter_map(|(font, seg_text, seg_start)| {
-            shape_with_font(&font, cs, lang, &seg_text, seg_start, bold)
+        .filter_map(|(font, seg_text, seg_start, faux_bold)| {
+            shape_with_font(&font, cs, lang, &seg_text, seg_start, faux_bold)
         })
         .collect()
 }
@@ -611,9 +641,9 @@ fn letter_spacing_pt(base_hu: i32, rel: u8, script: bool, pct: i8) -> f32 {
     ((size_hu * i64::from(pct) + 50).div_euclid(100)) as f32 / 100.0
 }
 
-/// 주어진 글꼴 하나로 텍스트를 셰이핑해 [`ShapedRun`]을 만든다(첨자·자간·장평·
-/// 음영/그림자/외곽선/양각/음각 효과 필드까지 채운다). `bold`는 호출부가 결정
-/// (요청이 굵음이거나, 굵은 페이스 없는 heavy 글꼴이라 faux-bold가 필요할 때 true).
+/// Shapes text with one resolved font into a [`ShapedRun`], applying script,
+/// letter spacing, scaling, shade, shadow, outline, emboss, and engrave fields. `bold` is
+/// synthetic weight selected by the caller only when an exact Bold face is absent.
 fn shape_with_font(
     font: &Arc<LoadedFont>,
     cs: &CharShape,
@@ -813,8 +843,36 @@ pub fn shape_plain(
     // 나머지 글자가 사라진다(내용 누락). 미지원 글자는 tofu로 두되 누락은 막는다
     // (글자별 폴백은 본문 shape_range 경로 전용).
     let face_id = cs.face_ids.get(lang).copied().unwrap_or(0);
-    let font = store.resolve(doc, lang, face_id)?;
-    shape_with_font(&font, &cs, lang, text, 0, cs.is_bold())
+    let selection = store.resolve_selection(doc, lang, face_id, cs.is_bold())?;
+    shape_with_font(&selection.font, &cs, lang, text, 0, selection.faux_bold)
+}
+
+/// Shapes synthetic text with a source document character shape. Positioned
+/// page numbers use this path so their font, weight, size, and decorations
+/// match the run containing the page-number control.
+pub(crate) fn shape_plain_with_char_shape(
+    store: &mut FontStore,
+    doc: &Document,
+    text: &str,
+    char_shape_id: hwp_model::CharShapeId,
+) -> Option<ShapedRun> {
+    let shape = doc.header.char_shapes.get(char_shape_id.0 as usize)?;
+    let lang = if text.chars().any(|c| ('가'..='힣').contains(&c)) {
+        0
+    } else {
+        1
+    };
+    let face_id = shape.face_ids.get(lang).copied().unwrap_or(0);
+    let face_name = doc
+        .header
+        .fonts
+        .get(lang)
+        .and_then(|faces| faces.get(face_id as usize))
+        .map(|face| face.name.as_str())
+        .unwrap_or("");
+    let bold = shape.is_bold() || is_heavy_name(face_name);
+    let selection = store.resolve_selection(doc, lang, face_id, bold)?;
+    shape_with_font(&selection.font, shape, lang, text, 0, selection.faux_bold)
 }
 
 /// 각주/미주 본문 마커(윗첨자 번호). 주변 글자모양을 따라 ~65% 크기로 줄이고

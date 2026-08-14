@@ -698,6 +698,7 @@ mod tests {
             row_cell_counts: vec![cols; rows as usize],
             border_fill: BorderFillId(0),
             table_tail: vec![],
+            caption: None,
             cells,
             extras: vec![],
         }

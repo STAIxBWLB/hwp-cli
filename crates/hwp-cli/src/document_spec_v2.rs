@@ -970,6 +970,7 @@ fn attach_picture(
         contrast: 0,
         effect_flags: 0,
         effects_raw: Vec::new(),
+        caption: None,
         bin_ref: hwp_model::BinRef::ItemRef(name),
         extras: Vec::new(),
     };
@@ -1031,6 +1032,7 @@ fn attach_text_box(
             gso_shapes: vec![shape],
             equation: None,
             column_def: None,
+            caption: None,
         }),
     )
 }

@@ -41,6 +41,8 @@
 
 # Never re-allow generated Hancom oracle exports or private-corpus paths.
 /fixtures/pdf-parity/public/oracle/**
+!/fixtures/pdf-parity/public/oracle/
+!/fixtures/pdf-parity/public/oracle/public-safety-rfp-p1.pdf
 /fixtures/pdf-parity/private/**
 
 # HWP 5.0 스펙 문서는 한컴 저작물 — 저장소에 동봉하지 않음(공식 배포처 링크만, docs/README.md 참고).

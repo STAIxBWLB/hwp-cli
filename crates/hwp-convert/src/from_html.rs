@@ -759,6 +759,7 @@ impl Parser<'_> {
             row_cell_counts: counts,
             border_fill: BorderFillId(TABLE_BORDER_FILL),
             table_tail: Vec::new(),
+            caption: None,
             cells,
             extras: Vec::new(),
         };
@@ -927,6 +928,7 @@ impl Parser<'_> {
             contrast: 0,
             effect_flags: 0,
             effects_raw: Vec::new(),
+            caption: None,
             bin_ref: BinRef::ItemRef(name.clone()),
             extras: Vec::new(),
         }));

@@ -10,6 +10,12 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn public_parity_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/pdf-parity/public/source")
+        .join(name)
+}
+
 /// fixture 바이너리는 저장소에서 제외된다(로컬 전용). 없으면 `true`(스킵).
 fn skip_if_no_fixtures() -> bool {
     if fixture("minimal.hwpx").exists() {
@@ -272,6 +278,101 @@ fn 합성_섹션_표와_컨트롤문자() {
     assert_eq!(table.row_cell_counts, vec![1, 2]);
 }
 
+/// Unknown/generic HWPX shape containers can carry the same caption subtree as
+/// primitive shapes. The caption must remain semantic data on GenericControl,
+/// rather than being flattened into the object's ordinary paragraph lists.
+#[test]
+fn generic_shape_caption_is_parsed() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:container id="1">
+        <hp:sz width="6000" height="2400"/>
+        <hp:pos treatAsChar="1" vertOffset="0" horzOffset="0"/>
+        <hp:caption side="RIGHT" fullSz="0" width="1800" gap="240" lastWidth="3200">
+          <hp:subList textDirection="VERTICAL">
+            <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>Generic caption</hp:t></hp:run></hp:p>
+          </hp:subList>
+        </hp:caption>
+      </hp:container>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, warnings) = hwpx::read::section::parse_section(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let Some(Control::Generic(generic)) = section.paragraphs[0].controls.first() else {
+        panic!("generic shape control");
+    };
+    let caption = generic.caption.as_ref().expect("generic shape caption");
+    assert_eq!(caption.side, hwp_model::CaptionSide::Right);
+    assert_eq!(caption.direction, hwp_model::CaptionDirection::Vertical);
+    assert_eq!(caption.gap, 240);
+    assert_eq!(caption.width, Some(1800));
+    assert_eq!(caption.last_width, 3200);
+    assert_eq!(caption.paragraphs[0].plain_text(), "Generic caption");
+    assert!(
+        generic.paragraph_lists.is_empty(),
+        "caption paragraphs must not be flattened into object text lists"
+    );
+}
+
+/// HWPX page properties are the source of truth for the public parity fixture.
+/// Keep all page margins (including header/footer) and the orientation flag in
+/// the parser regression gate so layout changes cannot silently mask a read gap.
+#[test]
+fn public_parity_fixture_page_properties_are_preserved() {
+    let path = public_parity_fixture("public-safety-rfp-p1.hwpx");
+    assert!(
+        path.exists(),
+        "public parity fixture missing: {}",
+        path.display()
+    );
+    let document = hwpx::read_document(&path).unwrap().document;
+    let page = document.sections[0]
+        .section_def()
+        .and_then(|def| def.page)
+        .expect("public fixture page properties");
+    assert_eq!(page.width.0, 59528);
+    assert_eq!(page.height.0, 84189);
+    assert_eq!(page.margin_left.0, 5669);
+    assert_eq!(page.margin_right.0, 5669);
+    assert_eq!(page.margin_top.0, 5102);
+    assert_eq!(page.margin_bottom.0, 5102);
+    assert_eq!(page.margin_header.0, 2835);
+    assert_eq!(page.margin_footer.0, 2835);
+    assert_eq!(page.gutter.0, 0);
+    assert_eq!(page.attr, 0);
+}
+
+/// HWPX uses UINT32_MAX as the explicit "inherit table margin" sentinel;
+/// parse it into the IR sentinel instead of silently falling back to zero.
+#[test]
+fn margin_sentinel_is_preserved_on_read() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:tbl rowCnt="1" colCnt="1">
+        <hp:inMargin left="4294967295" right="510" top="4294967295" bottom="141"/>
+        <hp:tr><hp:tc>
+          <hp:subList><hp:p><hp:run><hp:t>x</hp:t></hp:run></hp:p></hp:subList>
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellMargin left="4294967295" right="510" top="4294967295" bottom="141"/>
+        </hp:tc></hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, warnings) = hwpx::read::section::parse_section(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let Some(Control::Table(table)) = section.paragraphs[0].controls.first() else {
+        panic!("table control");
+    };
+    assert_eq!(table.inner_margins, [u16::MAX, 510, u16::MAX, 141]);
+    assert_eq!(table.cells[0].margins, [u16::MAX, 510, u16::MAX, 141]);
+}
+
 /// 정품 형식: `<hp:t>` **안**에 중첩된 `<hp:tab width leader type/>`(mixed content)를
 /// InlineCtrl(9)로 읽고, 앞/뒤 텍스트와의 WCHAR 순서가 보존돼야 한다. 정품 한글이 목차
 /// 문단을 이 형식(`<hp:t>. 개요<hp:tab width leader type/> 1</hp:t>`)으로 저장한다.
@@ -467,6 +568,40 @@ fn 개요_heading_idref_왕복_보존() {
     assert_eq!(
         h2.para_shapes[0].numbering_id, 0,
         "재읽기에도 드리프트 없음"
+    );
+}
+
+/// Nested `hh:substFont` must populate FaceName::alt_name and survive HWPX
+/// header serialization, rather than being dropped by the flat ref-list parser.
+#[test]
+fn subst_font_alt_name_round_trip() {
+    let xml = r##"<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:fontfaces itemCnt="7">
+      <hh:fontface lang="HANGUL" fontCnt="1">
+        <hh:font id="0" face="Primary" type="TTF" isEmbedded="0">
+          <hh:substFont face="Fallback" type="TTF" isEmbedded="0"/>
+        </hh:font>
+      </hh:fontface>
+    </hh:fontfaces>
+  </hh:refList>
+</hh:head>"##;
+    let (header, warnings) = hwpx::read::header::parse_header(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(header.fonts[0][0].name, "Primary");
+    assert_eq!(header.fonts[0][0].alt_name.as_deref(), Some("Fallback"));
+
+    let written = hwpx::write::header::write_header(&header, 1);
+    assert!(
+        written.contains(r#"<hh:substFont face="Fallback"/>"#),
+        "{written}"
+    );
+    let (reread, warnings) = hwpx::read::header::parse_header(&written).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        reread.fonts[0][0].alt_name.as_deref(),
+        Some("Fallback"),
+        "fallback face survives write/read"
     );
 }
 

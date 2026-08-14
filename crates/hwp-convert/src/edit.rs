@@ -1188,6 +1188,7 @@ pub fn add_table(doc: &mut Document, anchor: &str, rows: &[Vec<String>]) -> Resu
         row_cell_counts: vec![cols; n_rows as usize],
         border_fill: BorderFillId(TABLE_BORDER_FILL),
         table_tail: Vec::new(),
+        caption: None,
         cells,
         extras: Vec::new(),
     };

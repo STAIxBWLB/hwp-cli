@@ -1,0 +1,83 @@
+{
+  "contract": "hwp-pdf-parity-history-v1",
+  "profile": {
+    "source_sha256": "4ff3c231d835f37ceaa08ccd41f7db66d74d65a5a03c0791f6f683cc9fde0d39",
+    "oracle_sha256": "b663df719837fd3b07d458a7e5aea441d8bcd0895ac90983fe67714067070f9f",
+    "poppler_version": "pdfinfo version 26.07.0",
+    "dpi": 150,
+    "font_sha256": [
+      "6bcb2a0703aa137e874fc2dffa85f6c21ba9a67fa329e81b8c801663af7e992a",
+      "26d0c6748500a0444844280b308f5b62c7ae92ac6c6ac88148e502dd211eb52a"
+    ]
+  },
+  "monotonic_metrics": ["bad_pixel_pct", "mae"],
+  "rows": [
+    {
+      "label": "PR4",
+      "revision": "ee871c8430fd22edf418845aef14c6ee118df831",
+      "page_delta": 0,
+      "text_order_equal": true,
+      "font_substitutions": 0,
+      "max_bad_pixel_pct": 0.6,
+      "bad_pixel_pct": 0.019208628684282303,
+      "mae": 3.0369091033935547,
+      "candidate_pdf_sha256": "222aba58a454e4ed5eb94c84452c3d5c4dc6796ee2635546f303894b36b72e6e"
+    },
+    {
+      "label": "PR5",
+      "revision": "c7447b8d4ec72a5f2930b9d0aff6c34800e3df2f",
+      "page_delta": 0,
+      "text_order_equal": true,
+      "font_substitutions": 0,
+      "max_bad_pixel_pct": 0.6,
+      "bad_pixel_pct": 0.019208168610930443,
+      "mae": 3.036797046661377,
+      "candidate_pdf_sha256": "69f19d5bd0e5aa0f09992b23fb4722129bfc34ff596f47163a02ac233e6f3f60"
+    },
+    {
+      "label": "PR6",
+      "revision": "0d7ea9cd93682e01c29fa75b9d3d66f1cf8c9692",
+      "page_delta": 0,
+      "text_order_equal": true,
+      "font_substitutions": 0,
+      "max_bad_pixel_pct": 0.6,
+      "bad_pixel_pct": 0.019208168610930443,
+      "mae": 3.036797046661377,
+      "candidate_pdf_sha256": "69f19d5bd0e5aa0f09992b23fb4722129bfc34ff596f47163a02ac233e6f3f60"
+    },
+    {
+      "label": "PR7",
+      "revision": "685600175aed81c69b9b6d1b56fc0c51ee5d6be3",
+      "page_delta": 0,
+      "text_order_equal": true,
+      "font_substitutions": 0,
+      "max_bad_pixel_pct": 0.3,
+      "bad_pixel_pct": 0.019208168610930443,
+      "mae": 3.036797046661377,
+      "candidate_pdf_sha256": "69f19d5bd0e5aa0f09992b23fb4722129bfc34ff596f47163a02ac233e6f3f60"
+    },
+    {
+      "label": "PR8",
+      "revision": "ff97ce6282b030189844c8980bd49fa432a36355",
+      "page_delta": 0,
+      "text_order_equal": true,
+      "font_substitutions": 0,
+      "max_bad_pixel_pct": 0.3,
+      "bad_pixel_pct": 0.019208168610930443,
+      "mae": 3.036797046661377,
+      "candidate_pdf_sha256": "69f19d5bd0e5aa0f09992b23fb4722129bfc34ff596f47163a02ac233e6f3f60"
+    },
+    {
+      "label": "PR9",
+      "revision": "pr89-final-tree",
+      "page_delta": 0,
+      "text_order_equal": true,
+      "font_substitutions": 0,
+      "max_bad_pixel_pct": 0.3,
+      "bad_pixel_pct": 0.01794285885989666,
+      "mae": 2.8790488243103027,
+      "candidate_pdf_sha256": "a75323f5493bcf01b43dd38ec34d36f8cf4647546a3cb663f48a667e8e4895ae"
+    }
+  ],
+  "monotonic_non_increasing": true
+}

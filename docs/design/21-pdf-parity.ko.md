@@ -38,9 +38,30 @@ widow/orphan, 어울림 텍스트 감싸기)는 별개 이슈로 여기서는 �
 
 ## 2. 오라클
 
-정답지는 **최신 패치를 적용한 Windows용 한컴오피스 2024 한글**이 파일 → PDF로 저장하기로
-만든 PDF다. 정품 Producer `Hancom PDF 1.3.0.550` 파일 검사로 문서 수준 동등성 표면 — 6개
-catalog/Info 기능 — 을 확정했다:
+현재 공개 게이트의 정답지는 의도적으로 범위를 제한한 하나의 오라클이다. 소유자가 작성하고
+익명화한 한 쪽 원본 문서를 Mac 한컴 HWP로 저장한 PDF다. HWP 12.30.0(빌드 6446)을 macOS
+26.6.1(빌드 25G76)에서 사용했으며, 기본 파일 → PDF로 저장하기 경로를 적용했다. 생성 PDF의
+Producer는 `macOS 버전 26.6.1(빌드 25G76) Quartz PDFContext`이고, A4, 정확히 1쪽이다. 이
+출처 정보는 해당 픽스처에만 적용되는 기준이며 Windows용 한컴, 모든 한컴 빌드 또는 보편적인
+플랫폼 간 동등성을 주장하지 않는다.
+
+커밋된 원본/오라클과 Linux 후보 렌더에 사용하는 정확한 OFL 글꼴 바이트를 다음과 같이 고정한다.
+글꼴 파일은 `scripts/fetch-pdf-parity-fonts.sh`로 받아 두며 커밋하지 않는다:
+
+| 아티팩트 | SHA-256 |
+|---|---|
+| `public-safety-rfp-p1.hwp` | `8c4e62fb8166828eaddd2d0d304732acd88484ba8526692545b316985e0c0aba` |
+| `public-safety-rfp-p1.hwpx` | `a5b6bb59bc4492f81deeada58cd4b6c0a13579d06afe39e0aaec2687a3eaaf5c` |
+| `public-safety-rfp-p1.pdf` | `8fe8a4a4f3f6640248a1efde26421c7134374b4203363acca1a5967b2c0602e7` |
+| `Noto Sans CJK KR 2.004 Regular` | `6bcb2a0703aa137e874fc2dffa85f6c21ba9a67fa329e81b8c801663af7e992a` |
+| `Noto Sans CJK KR 2.004 Bold` | `26d0c6748500a0444844280b308f5b62c7ae92ac6c6ac88148e502dd211eb52a` |
+
+매니페스트는 공개 프로파일을 `hancom-hwp12-macos-12.30.0-build-6446-quartz`로, 기대하는
+Poppler 바이너리를 `pdfinfo version 24.02.0`으로 기록한다. Quartz Producer 문자열은 출처
+정보일 뿐이며, 이 픽스처에서는 PDF 메타데이터를 동등성 지표로 사용하지 않는다.
+
+렌더러의 문서 수준 출력 계약은 다음 6개 catalog/Info 기능을 유지한다. 한 쪽 Quartz 오라클이
+동일한 메타데이터를 포함한다는 주장은 아니다:
 
 - `/Lang (ko-KR)`, `/PageLayout /SinglePage`, XMP `/Metadata`,
   `/OutputIntents` (GTS_PDFA1 + sRGB IEC61966-2.1, 임베디드 ICC), `/MarkInfo <</Marked false>>`
@@ -61,7 +82,8 @@ FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바�
 `crates/hwp-render/assets/sRGB2014.icc.hex`로 커밋한다. 출처와 재배포 조건은 인접한
 `LICENSE-sRGB2014.txt`에 기록하고, 디코딩한 3,024바이트 프로파일의 SHA-256
 `384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a`를 테스트로 고정한다.
-이 필드들은 확인한 구조 계약을 구현한 상태이며, 한컴 값과의 정확한 동일성은 로컬 정답지 실행이 남아 있다.
+이 필드들은 확인한 구조 계약을 구현한 상태이며, 공개 한 쪽 오라클 게이트는 CI에서 실행한다.
+더 넓은 한컴 코퍼스는 후속 작업 범위다.
 
 ## 3. 다섯 지표 집합 (우선순위 순)
 
@@ -79,13 +101,14 @@ FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바�
 지표 4–5의 래스터화는 Hancom PDF와 자체 PDF 모두 같은 고정 Poppler(`pdftoppm -png -r 150`)를
 쓴다.
 
-**구현 상태 2026-08-13 (PR 4):** 배치 러너가 있다 — `scripts/pdf-parity.sh run`이 manifest의
+**구현 상태 2026-08-14 (PR 4):** 배치 러너가 있다 — `scripts/pdf-parity.sh run`이 manifest의
 모든 케이스를 채점해 커밋 가능한 수치 점수판(`fixtures/pdf-parity/public/scoreboard/`,
 스키마 검증, 이름+SHA-256+수치뿐)을 만들고, `selftest`는 기준 없이 하네스를 검증하며,
 `hwp diff --format json` / `--ours-png`가 쪽별 래스터 지표 원천이다. manifest, Poppler
 버전, 폰트 파일, source/oracle digest가 pin과 일치해야 채점하며, 검증된 산출물 집합만
-rollback 보호 방식으로 게시한다. 3~5건의 한글 기준 내기와 첫 커밋 수치는 남은 소유자
-액션.
+rollback 보호 방식으로 게시한다. 공개 코퍼스에는 소유자가 작성하고 익명화한 한 쪽 오라클이
+있으며, 고정 `ubuntu-24.04` CI 작업이 OFL 글꼴을 받고 `hwp`를 빌드한 뒤 HWP/HWPX 두 입력을
+대조한다. 한 건의 회귀 게이트이며 보편적인 동등성 인증은 아니다.
 
 **구현 상태 2026-08-13 (PR 5):** 테두리 충실도 배치 반영(GG-5, GG-6, GG-17, GG-21, GG-24).
 셀·문단·쪽·대각선 테두리가 `hwp-render/src/border.rs`를 통해 `BorderLine.line_type`을
@@ -123,20 +146,42 @@ clipPath. 픽셀 효과가 없으면 pdf JPEG 고속 경로·svg 제로카피 �
 렌더한다. 한컴 라운드 확인 대상 근사: 밝기/대비 곡선, 무늬 간격/굵기, 호 종류·sweep 매핑,
 회전 부호 관례. hwp5 반전 비트는 미확정.
 
+**구현 상태 2026-08-14 (PR 9):** 로드맵 마지막 배치 반영(GB-13, GG-14, GG-16). 캡션 파싱이
+전 구간 연결됐다 — Table/Picture/GenericControl에 `Caption` IR(side·direction·gap·width·
+last_width·paragraphs)을 두고, hwp5는 pyhwp의 `TableCaption`/`GShapeObjectCaption` 모델대로
+캡션 LIST_HEADER를 판별(TABLE 레코드 이전의 LIST_HEADER가 캡션, gso 직속 LIST_HEADER
+자식도 동일)해 재합성하며, hwpx `<hp:caption>`은 side/fullSz/width/gap/lastWidth
+속성(direction은 `subList@textDirection`)과 함께 왕복한다. 표·그림·일반 도형·미지원 GSO
+캡션은 읽기 순서를 보존하고 속성 쪽과 gap에 따라 렌더된다. 미주는 앵커 페이지를 떠난다.
+레이아웃이 페이지 노트를 `NoteKind`로 분리해 예약을 각주 전용으로 유지하고, 누적한 미주를
+마지막 쪽 각주와 겹치지 않는 구역 끝 블록으로 여러 쪽에 걸쳐 배치한다. 홀짝 furniture는
+모든 head/foot 컨트롤의 적용쪽 값(data bits 0-1: BOTH/EVEN/ODD)을 보존하고, 출력 쪽번호와
+정확히 일치하는 항목 다음 BOTH만 폴백으로 선택한다. 적용쪽 데이터가 없으면 BOTH로
+해석하므로 일반 단일 머리말 구역은 유지되며, 홀수/짝수 전용 항목은 반대쪽에 나타나지 않는다.
+한컴 라운드 근사 항목: 캡션 listflags 상위 비트, 스펙 표
+71/72 길이 불일치(표 72 준거), 첫쪽 전용 furniture(소스 포맷 표현 부재).
+
 ## 4. 게이트
 
-### 4.1 정본 한컴 오라클 게이트 — 향후 공개 코퍼스
+### 4.1 정본 한컴 오라클 게이트 — 현재 공개 한 건 프로파일
 
-이는 향후 공개 한컴 오라클 채점에 적용할 정본 목표다. 현재 structured-corpus 게이트가
-아니며, 현재 자체 일관성 검사는 §4.2에 별도로 적는다.
+이는 커밋된 한 쪽 공개 프로파일에 적용하는 정본 게이트다. CI는 고정
+`ubuntu-24.04`에서 배포판 `poppler-utils`를 설치하고, 매니페스트의
+`pdfinfo version 24.02.0`과 실제 바이너리를 대조하며, 정확한 OFL 글꼴을 받고 `hwp`를 빌드한
+뒤 공개 HWP/HWPX 입력 두 개를 커밋된 오라클과 비교한다. 보편적 또는 Windows 동등성 주장이
+아니며, §4.2의 structured-corpus 게이트와 별개다.
 
 - 페이지 수: 완전 일치
 - MediaBox 차이 0.5 pt 이하
 - `dx`, `dy` 각각 2 px 이하(150 DPI); `ink_ratio` 0.97–1.03
 - `bad_pixel_pct` 5 % 이하, MAE 5 이하
-- 기능 ROI 잉크 precision/recall 각각 0.95 이상
+- 기능 ROI 잉크 precision/recall 각각 0.95 이상. 한 잉크 픽셀은 150 DPI에서 매니페스트로
+  고정한 10 px 정사각 반경(4.8 pt) 안에 상대 잉크가 있을 때 일치로 계산함. 이는 벡터 힌팅과
+  누적 글리프 advance 반올림만 흡수하며, 쪽 단위 `dx`/`dy`, 래스터 오차, 텍스트 순서,
+  잉크 비율 게이트는 독립 적용하므로 이동·누락·추가 기능을 허용하지 않음.
 - 글꼴 대체, 미지원 누락, fatal 렌더 이슈: **0건**
-- `pdffonts`: 모든 글꼴 embedded/subset + Unicode 지원
+- `pdffonts`: 후보 PDF의 모든 글꼴 embedded/subset + Unicode 지원. Mac producer가 쪽번호
+  글꼴을 Unicode cmap 없이 embedded하므로 oracle 글꼴 행은 진단 정보로만 유지함.
 - `pdftotext -layout` 정규화 결과가 기대 가시 텍스트·순서와 일치
 - 동일 입력·글꼴로 두 번 생성한 PDF가 byte-identical
 
@@ -151,9 +196,8 @@ structured-corpus run(`scripts/check-structured-corpus.sh`)은 고정 Noto Sans 
 - 동일 입력·글꼴로 PDF를 두 번 렌더링한 결과가 byte-identical
 
 현재는 PDF와 PNG 출력을 서로 raster 비교하지 않는다. 따라서 `dx`, `dy`, `ink_ratio`,
-`bad_pixel_pct`, MAE는 현재 structured-corpus 임계값이 아니다. 이 값들은 §4.1의 한컴 오라클
-게이트에 적용할 향후/정본 래스터 요구사항이며, 고정 오라클 PDF/PNG 픽스처와 비교 하네스가
-준비된 뒤에만 활성화한다.
+`bad_pixel_pct`, MAE는 structured-corpus 임계값이 아니며, §4.1의 고정 공개 한컴 오라클
+게이트에서 적용한다.
 
 ## 5. 글꼴 게이트 (F1)
 
@@ -174,7 +218,13 @@ structured-corpus run(`scripts/check-structured-corpus.sh`)은 고정 Noto Sans 
 IR에 파싱돼 있다. 렌더러는 이 비트를 1급 페이지/단 경계 신호로 읽고, 합성 lineseg(flags
 `0x0006_0000`)에서만 `v_pos` 리셋 휴리스틱으로 폴백한다. 표가 페이지를 걸쳐 잘리는 동안은
 페이지 인덱스 비교가 무의미하므로, 페이지네이션 정확성(표 분할 포함, PR 2)은 측정의
-**전제조건**이지 소비자가 아니다. **구현 상태 2026-08-13: PR #81**은 `Table.attr` pageBreak 정책에 따라 가능한 행 경계에서 표를 나누고 `row_span` 셀을 보존하며 제목 줄 자동 반복을 지원한다. 한컴오피스 정답지 대조는 남아 있으므로 아직 대등성 인증은 아니다.
+**전제조건**이지 소비자가 아니다. **구현 상태 2026-08-13: PR #81**은 `Table.attr` pageBreak 정책에 따라 가능한 행 경계에서 표를 나누고 `row_span` 셀을 보존하며 제목 줄 자동 반복을 지원한다. 공개 한 쪽 프로파일은 이제 CI에서 대조하며, 더 넓은 한컴 코퍼스는 남아 있으므로 보편적인 대등성 인증은 아니다.
+**PR #89 후속 보완:** `CELL` 정책은 한 행도 기존 cached line 경계에서 이어 그린다. 명시적인
+page-reset flag가 없는 경우에도 현재 쪽의 남은 공간에 들어가는 마지막 cached line 다음에서
+분할한다. 각 조각의 내용은 한 번만 출력하고 이어지는 테두리를 유지한다. 안전한 cache 경계가
+없거나 row-span과 cell fragment가 결합된 경우에는 조용히 자르지 않고 typed
+`table_cell_fragmentation_incomplete`로 보고한다. 공개 한 쪽 프로파일은 CI에서 대조하며,
+더 넓은 한컴 코퍼스는 남아 있으므로 보편적인 대등성 인증은 아니다.
 
 ## 7. 데이터 정책
 
@@ -182,17 +232,21 @@ IR에 파싱돼 있다. 렌더러는 이 비트를 1급 페이지/단 경계 신
   문단, 목록, 표, 다단, 머리말·꼬리말·쪽번호, 각주·미주, 이미지, 도형, 수식, 복합 보고서를
   HWP/HWPX 쌍으로 커버한다. `.gitignore`는 `fixtures/pdf-parity/` 전체를 기본 무시하고,
   `public/source/` 아래 HWP/HWPX 파일, `public/recipes/` 아래 Markdown/JSON 레시피 파일,
-  `public/manifest.json`, `public/scoreboard/` 아래 숫자 JSON/CSV 스코어보드만 다시 허용한다
-  (루트의 `scoreboard.json`과 `scoreboard.csv`도 허용). 공개 오라클 PDF/PNG와 모든 비공개
-  코퍼스 경로는 계속 무시한다. 매니페스트는 정확한 Hancom 빌드, Windows 버전, PDF 설정,
-  글꼴 SHA-256, source/oracle SHA-256, Poppler 버전, 150 DPI를 고정한다.
+  `public/manifest.json`, `public/scoreboard/` 아래 숫자 JSON/CSV 스코어보드(루트의
+  `scoreboard.json`과 `scoreboard.csv`도 허용), 정확히
+  `public/oracle/public-safety-rfp-p1.pdf`만 다시 허용한다. 그 밖의 공개 오라클 PDF/PNG와
+  모든 비공개 코퍼스 경로는 계속 무시한다. 매니페스트는 Mac HWP 출처, A4/한 쪽 프로파일,
+  source/oracle SHA-256, 정확한 OFL 글꼴 SHA-256, Poppler 버전, 150 DPI를 고정한다.
 - **비공개 코퍼스**(`HWP_PDF_PARITY_CORPUS_DIR`): 실제 복합 문서. 보고서는 해시와 집계
   지표만 담고 원문·PDF·절대 경로는 기록하지 않는다.
-- **한컴 유래 아티팩트는 커밋하지 않는다** — 내보낸 오라클 PDF/PNG와 비공개 원본 문서는
-  로컬에 둔다. 커밋하는 레시피·매니페스트·숫자 스코어보드는 절차, 핀, 해시, 집계 수치만
-  담으며 오라클 아티팩트가 아니다. 베이스라인은 파일 → PDF로 저장하기 →
-  `pdftoppm -png -r 150`로 수동 생성(3–5건)하고 로컬에 둔다.
-- 제3자 실제 문서, 한컴 명세 사본, 비공개 오라클 PDF는 커밋하지 않는다.
+- **공개 오라클 예외:** 위의 단일 PDF만 소유자가 작성하고 익명화한 Mac 한컴 HWP 12.30.0
+  빌드 6446 캡처로 커밋한다. macOS 26.6.1 빌드 25G76에서 Quartz PDFContext와 기본 PDF
+  저장 설정으로 만든 A4 한 쪽 픽스처다. 범위가 고정된 회귀 픽스처이며 보편적 또는 Windows
+  동등성 주장이 아니다. source/oracle/글꼴 해시와 재현 절차는
+  `fixtures/pdf-parity/public/recipes/public-safety-rfp-p1.md`에 둔다.
+- 비공개 한컴 아티팩트, 제3자 실제 문서, 제3자 한컴 산출물, 한컴 명세 사본 및 그 밖의 모든
+  오라클 PDF/PNG는 계속 금지한다. 커밋하는 레시피·매니페스트·숫자 스코어보드는 이 한 개의
+  명시적 공개 오라클을 제외하면 절차, 출처, 핀, 해시, 집계 수치만 담는다.
 
 ## 8. 안티패턴 가드
 
@@ -204,8 +258,13 @@ IR에 파싱돼 있다. 렌더러는 이 비트를 1급 페이지/단 경계 신
 
 ## 9. 완료 조건
 
-- 커밋된 스코어보드가 첫 베이스라인(PR 4)부터 PR 9까지 단조 개선된다.
-- 모든 채점 케이스에서 글꼴 대체가 0건이다.
-- `MAX_BAD_PIXEL_PCT`는 advance 영향 배치의 단일 리베이스라인 PR(PR 7)에서 정확히 한 번만
-  조여지고 placeholder로 남지 않는다.
-- `scripts/check.sh`, PDF 단위/통합 테스트, 공개 parity 게이트가 모두 통과한다.
+- 동일 공개 source/oracle/font/Poppler pin에서 PR 4부터 PR 9까지 커밋된 스코어보드가 단조
+  비악화할 것. 픽스처가 해당 배치를 사용하지 않으면 동일 수치를 허용하되 회귀는 허용하지 않음.
+- `MAX_BAD_PIXEL_PCT`가 PR 7에서 0.60에서 0.30으로 한 번 조정됐고 최초 placeholder로 남아
+  있지 않을 것.
+- 고정 Ubuntu 공개 게이트가 커밋된 한 쪽 오라클과 HWP/HWPX 두 케이스를 모두 통과한다.
+- 모든 채점 케이스에서 글꼴 대체가 0건이며, source/oracle/글꼴 해시가 매니페스트와 레시피에서
+  변경되지 않는다.
+- 커밋하는 스코어보드는 고정 게이트 통과 뒤에만 생성하며, 스키마를 만족하고 경로를 포함하지
+  않는다. 더 넓은 코퍼스는 명시적으로 후속 범위다.
+- 해당 환경에서 `scripts/check.sh`, PDF 단위/통합 테스트 및 공개 parity 게이트가 모두 통과한다.

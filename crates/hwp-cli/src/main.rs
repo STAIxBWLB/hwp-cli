@@ -83,8 +83,17 @@ fn main() -> anyhow::Result<()> {
             pages,
             dpi,
             format,
+            report,
             font_dir,
-        } => commands::render::run(&input, &output, &pages, dpi, format, font_dir),
+        } => commands::render::run_with_report(
+            &input,
+            &output,
+            &pages,
+            dpi,
+            format,
+            font_dir,
+            report.as_deref(),
+        ),
         Cmd::Diff {
             input,
             r#ref,
