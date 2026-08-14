@@ -39,7 +39,7 @@ impl BinCollector {
     }
 }
 
-fn sniff(data: &[u8]) -> (&'static str, &'static str) {
+pub(crate) fn sniff(data: &[u8]) -> (&'static str, &'static str) {
     match data {
         [0x89, b'P', b'N', b'G', ..] => ("png", "image/png"),
         [0xFF, 0xD8, ..] => ("jpg", "image/jpeg"),
@@ -412,6 +412,18 @@ fn write_paragraph(
                         let eq = g.equation.as_ref().expect("is_some 가드");
                         let before = out.len();
                         write_equation(out, g, eq, ids);
+                        run_shapes += count_shape_tags(&out[before..]);
+                    }
+                    Control::Generic(g) if g.hwpx_raw_xml.is_some() => {
+                        // hwpx 원본 run-level 개체(hp:container 등) 원문 pass-through —
+                        // reader가 캡처한 XML을 의미 해석 없이 그대로 방출한다.
+                        // 도형 개수 bookkeeping은 picture arm과 같게 센다(원문 안에
+                        // hp:pic 등 개체 요소가 중첩돼 있을 수 있다).
+                        open_run!(cur_shape);
+                        flush_text(out, &mut text_buf, &mut pending_tabs);
+                        shape_break!();
+                        let before = out.len();
+                        out.push_str(g.hwpx_raw_xml.as_deref().expect("is_some 가드"));
                         run_shapes += count_shape_tags(&out[before..]);
                     }
                     Control::Generic(_) => {

@@ -367,6 +367,11 @@ pub struct GenericControl {
     /// HWP5 controls, so this field is the semantic render/text view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<Caption>,
+    /// hwpx 원본 run-level 개체(hp:container 등 미해석 개체)의 원문 XML —
+    /// 무손실 재직렬화용. hwpx reader가 캡처하며, 존재하면 hwpx writer가
+    /// 이 문자열을 그대로 방출한다. hwp5 출신·합성 IR이면 None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hwpx_raw_xml: Option<String>,
 }
 
 /// 다단(multi-column) 정의 — COLDEF(`cold`)/hp:colPr. 렌더러가 단 배치·구분선에 사용.

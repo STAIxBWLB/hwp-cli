@@ -958,7 +958,10 @@ mod tests {
     }
 
     #[test]
-    fn same_format_container_loss_fails_closed_without_strict() {
+    fn same_format_opaque_package_entry_is_preserved() {
+        // 예전에는 writer 고정 목록 밖 엔트리가 silently drop돼 fail-closed로
+        // 거부됐다. 이제 같은 포맷 재작성은 잉여 엔트리를 바이트 그대로 보존하므로
+        // 변환이 성공하고 엔트리가 살아 있어야 한다(epic #90).
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "hwp-convert-preservation-test-{}-{sequence}",
@@ -976,7 +979,7 @@ mod tests {
         append_synthetic_package_entry(&generated, &source);
         std::fs::write(&destination, b"ORIGINAL").unwrap();
 
-        let result = execute(
+        let report = execute(
             &source,
             &destination,
             Some(ConvertFormat::Hwpx),
@@ -985,14 +988,23 @@ mod tests {
             false,
             &MdOpts::default(),
             Vec::new(),
-        );
+        )
+        .unwrap();
 
-        let error = format!("{:#}", result.unwrap_err());
         assert!(
-            error.contains("hwpx_package_entry_removed: 1 item(s)"),
-            "{error}"
+            report.preservation.is_lossless(),
+            "preservation events: {:?}",
+            report.preservation.events
         );
-        assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
+        let mut archive =
+            zip::ZipArchive::new(std::fs::File::open(&destination).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        archive
+            .by_name("SyntheticOpaque/entry.bin")
+            .expect("잉여 패키지 엔트리가 보존돼야 한다")
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"owner-authored opaque payload");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

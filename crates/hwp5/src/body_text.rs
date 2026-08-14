@@ -273,6 +273,7 @@ fn parse_control(node: &RecordNode, warnings: &mut Vec<String>) -> Control {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         });
     }
     let mut ctrl_id = [node.data[0], node.data[1], node.data[2], node.data[3]];
@@ -830,6 +831,7 @@ fn parse_generic(
         equation,
         column_def,
         caption,
+        hwpx_raw_xml: None,
     };
     if let Some((start, end)) = caption_range {
         collect_paragraph_lists(&children[..start], &mut g, warnings);

@@ -166,6 +166,8 @@ fn remap_paragraph(
                         remap_paragraph(p, ps_off, cs_off, rename);
                     }
                 }
+                // ID 재매핑으로 개체 안 문단의 모양 참조가 바뀐다 — 원문 XML은 stale.
+                g.hwpx_raw_xml = None;
             }
             Control::Picture(pic) => {
                 if let hwp_model::BinRef::ItemRef(name) = &mut pic.bin_ref

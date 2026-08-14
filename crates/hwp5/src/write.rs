@@ -3459,6 +3459,7 @@ mod tests {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             })
         }
 
@@ -3729,6 +3730,7 @@ mod tests {
                 last_width: 200,
                 paragraphs: vec![hwp_model::Paragraph::default()],
             }),
+            hwpx_raw_xml: None,
         };
         let node = emit_control(
             &Control::Generic(generic),
@@ -3863,6 +3865,7 @@ mod tests {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }));
         let output =
             std::env::temp_dir().join(format!("hwp5-typed-report-{}.hwp", std::process::id()));

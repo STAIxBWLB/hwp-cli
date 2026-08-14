@@ -80,6 +80,41 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
         .collect::<Vec<_>>()
         .join(".");
 
+    // writer가 재생성·슬롯으로 보존하는 엔트리 외의 모든 패키지 엔트리를 원본
+    // 순서·바이트 그대로 보존한다(원본 META-INF/*, DocOptions, 스크립트, 추가
+    // Preview 등). "모르는 데이터는 버리지 않는다". BinData/*는 bin_streams가,
+    // section/header/settings/version/preview는 기존 슬롯이 담당하므로 제외한다.
+    let mut hwpx_extra_entries = Vec::new();
+    if load_binary_data {
+        const REGENERATED: &[&str] = &[
+            "mimetype",
+            "version.xml",
+            "Contents/content.hpf",
+            "Contents/header.xml",
+            "Preview/PrvText.txt",
+            "Preview/PrvImage.png",
+            "settings.xml",
+        ];
+        for entry in pkg.entries()? {
+            let name = &entry.name;
+            if name.ends_with('/')
+                || REGENERATED.contains(&name.as_str())
+                // section 목록은 패키지 실제 엔트리 기준(section_entries와 같은 판정).
+                || (name.starts_with("Contents/section") && name.ends_with(".xml"))
+                || name.starts_with("BinData/")
+            {
+                continue;
+            }
+            let data = pkg.read_entry(name)?;
+            // writer가 기본 템플릿으로 바이트 동일하게 재생성하는 엔트리는 잉여가
+            // 아니다(캡처하면 의미 검증이 writer 기본값 슬롯 유무를 차이로 오인한다).
+            if is_writer_default_entry(name, &data) {
+                continue;
+            }
+            hwpx_extra_entries.push((name.clone(), data));
+        }
+    }
+
     // 문서 메타데이터 (content.hpf OPF — 최선 노력: 없거나 손상돼도 진단 계속)
     let metadata = pkg
         .read_entry_string("Contents/content.hpf")
@@ -118,9 +153,22 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
             // hwpx 출신은 hwp5 전용 스토리지가 없다(GE-β7/β8 경로 무관).
             hwp5_xml_template: Vec::new(),
             hwp5_doc_history: Vec::new(),
+            hwpx_extra_entries,
         },
         warnings,
     })
+}
+
+/// writer가 기본 템플릿으로 바이트 동일하게 재생성하는 META-INF 엔트리인가.
+/// 이런 엔트리는 `hwpx_extra_entries`에 담지 않는다(재생성이 곧 보존).
+fn is_writer_default_entry(name: &str, bytes: &[u8]) -> bool {
+    let default = match name {
+        "META-INF/container.rdf" => crate::write::templates::CONTAINER_RDF,
+        "META-INF/container.xml" => crate::write::templates::CONTAINER_XML,
+        "META-INF/manifest.xml" => crate::write::templates::MANIFEST_XML,
+        _ => return false,
+    };
+    bytes == default.as_bytes()
 }
 
 /// content.hpf OPF 메타데이터에서 요약정보를 추출한다(최선 노력).

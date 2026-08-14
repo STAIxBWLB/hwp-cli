@@ -1033,6 +1033,7 @@ fn attach_text_box(
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }),
     )
 }

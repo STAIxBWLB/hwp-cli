@@ -365,10 +365,15 @@ fn set_field_para(para: &mut Paragraph, name: &str, value: &str) -> usize {
                 }
             }
             Control::Generic(g) => {
+                let before = nested;
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
                         nested += set_field_para(p, name, value);
                     }
+                }
+                if nested > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}
@@ -537,6 +542,7 @@ fn make_field_control(ctrl_id: [u8; 4], name: Option<&str>, command: Option<&str
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     })
 }
 
@@ -762,6 +768,8 @@ fn create_field_rec(
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
                         if create_field_rec(p, anchor, ctrl_id, name, command, value, value_shape) {
+                            // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                            g.hwpx_raw_xml = None;
                             return true;
                         }
                     }
@@ -870,6 +878,7 @@ mod tests {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         });
         let mut chars = vec![HwpChar::ExtCtrl {
             code: FIELD_START,

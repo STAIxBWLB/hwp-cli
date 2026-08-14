@@ -173,6 +173,7 @@ fn parse_paragraph(
                             equation: Some(eq),
                             column_def: None,
                             caption: None,
+                            hwpx_raw_xml: None,
                         }));
                     }
                     b"linesegarray" => {
@@ -208,9 +209,11 @@ fn parse_paragraph(
                             equation: None,
                             column_def: None,
                             caption: None,
+                            hwpx_raw_xml: None,
                         };
-                        if !empty {
-                            if let Some(kind) = shape_kind(&name) {
+                        if let Some(kind) = shape_kind(&name) {
+                            // 도형은 의미 파싱(gso_shapes) 경로를 유지한다(원문 캡처 없음).
+                            if !empty {
                                 // 둥근 사각형: <hp:rect ratio="N"> (모서리 곡률 %).
                                 let round_ratio = if kind == ShapeKind::Rect {
                                     attr_i32(e, "ratio").unwrap_or(0).clamp(0, 100) as u8
@@ -225,9 +228,25 @@ fn parse_paragraph(
                                     &mut generic,
                                     warnings,
                                 )?;
-                            } else {
-                                collect_sub_lists(reader, &name, &mut generic, warnings)?;
                             }
+                        } else {
+                            // 미해석 개체(hp:container 등)는 원문 XML을 통째로 캡처해
+                            // 무손실 재직렬화에 쓰고, subList/caption은 텍스트 추출·
+                            // 렌더용으로 캡처본 위에서 다시 수집한다(capture_element가
+                            // 원본 reader의 서브트리를 소비하므로 순서가 바뀌면 안 된다).
+                            let raw = capture_element(reader, e, empty)?;
+                            if !empty {
+                                let mut raw_reader = Reader::from_str(&raw);
+                                // 캡처본의 첫 이벤트(개체 자신의 여는 태그)를 소비한다.
+                                let _ = next_event(&mut raw_reader)?;
+                                collect_sub_lists(
+                                    &mut raw_reader,
+                                    &name,
+                                    &mut generic,
+                                    warnings,
+                                )?;
+                            }
+                            generic.hwpx_raw_xml = Some(raw);
                         }
                         push_ext_ctrl(&mut para, &mut wchar_pos, 11, ctrl_id);
                         para.controls.push(Control::Generic(generic));
@@ -660,6 +679,7 @@ fn parse_ctrl(
                         equation: None,
                         column_def: None,
                         caption: None,
+                        hwpx_raw_xml: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 3, ctrl_id);
                     para.controls.push(Control::Generic(generic));
@@ -693,6 +713,7 @@ fn parse_ctrl(
                         equation: None,
                         column_def: None,
                         caption: None,
+                        hwpx_raw_xml: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 22, *b"bokm");
                     para.controls.push(Control::Generic(generic));
@@ -738,6 +759,7 @@ fn parse_ctrl(
                     equation: None,
                     column_def,
                     caption: None,
+                    hwpx_raw_xml: None,
                 };
                 // parse_col_pr has already consumed a colPr subtree.
                 if matches!(event, Event::Start(_)) && name.as_slice() != b"colPr" {

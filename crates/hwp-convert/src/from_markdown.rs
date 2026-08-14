@@ -523,6 +523,7 @@ fn from_markdown_inner(
             hwpx_preview_image: None,
             hwp5_xml_template: Vec::new(),
             hwp5_doc_history: Vec::new(),
+            hwpx_extra_entries: Vec::new(),
         },
         b.warnings,
         b.hard_error,
@@ -632,6 +633,7 @@ pub(crate) fn footnote_anchor(
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     });
     (ch, control)
 }
@@ -1446,6 +1448,8 @@ fn remap_para_ids(para: &mut Paragraph, ps_off: u16, cs_off: u16) {
                         remap_para_ids(p, ps_off, cs_off);
                     }
                 }
+                // ID 재매핑으로 개체 안 문단의 모양 참조가 바뀐다 — 원문 XML은 stale.
+                g.hwpx_raw_xml = None;
             }
             _ => {}
         }
@@ -1566,6 +1570,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         }),
     );
     let ext = |code: u16, ctrl_id: [u8; 4], idx: u32| {
@@ -1601,6 +1606,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }),
         );
         para.chars.insert(2, ext(21, *b"pgnp", 2));

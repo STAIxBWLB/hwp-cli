@@ -1256,6 +1256,7 @@ mod tests {
             equation: None,
             column_def: None,
             caption: None,
+            hwpx_raw_xml: None,
         };
         let doc = Document::default();
         let mut page = PageList {

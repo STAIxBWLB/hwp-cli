@@ -42,6 +42,10 @@ pub struct Document {
     /// 해석하지 않는다(§4.4 파서는 범위 밖). hwpx 출신·이력이 없는 문서는 빈 벡터.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwp5_doc_history: Vec<(String, Vec<u8>)>,
+    /// hwpx 원본 패키지 중 writer가 재생성하지 않는 엔트리(원본 순서·바이트 보존).
+    /// 예: DocOptions, 스크립트, 추가 Preview, 원본 META-INF/*. hwpx 출신이 아니면 비어 있다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hwpx_extra_entries: Vec<(String, Vec<u8>)>,
 }
 
 /// 문서 수준 메타데이터 (요약 정보 / OPF 메타).

@@ -2767,6 +2767,7 @@ mod tests {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }));
         let insert_at = paragraph.chars.len().saturating_sub(1);
         paragraph.chars.insert(
@@ -3460,6 +3461,7 @@ mod tests {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }));
         let header_index = body.controls.len() as u32;
         body.controls
@@ -3476,6 +3478,7 @@ mod tests {
                 equation: None,
                 column_def: None,
                 caption: None,
+                hwpx_raw_xml: None,
             }));
         body.chars.insert(
             0,

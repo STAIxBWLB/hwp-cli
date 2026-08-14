@@ -49,6 +49,7 @@ fn replace_in_para(para: &mut Paragraph, from: &str, to: &str, budget: &mut usiz
                 }
             }
             Control::Generic(g) => {
+                let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         if *budget == 0 {
@@ -56,6 +57,10 @@ fn replace_in_para(para: &mut Paragraph, from: &str, to: &str, budget: &mut usiz
                         }
                         n += replace_in_para(p, from, to, budget);
                     }
+                }
+                if n > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}
@@ -1302,10 +1307,15 @@ fn delete_object_in_para(
                 }
             }
             Control::Generic(g) => {
+                let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
                         n += delete_object_in_para(p, kind, selector, table_seen);
                     }
+                }
+                if n > before {
+                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    g.hwpx_raw_xml = None;
                 }
             }
             _ => {}

@@ -305,6 +305,8 @@ fn read_document_from_streams(
         hwpx_preview_image: None,
         hwp5_xml_template,
         hwp5_doc_history,
+        // hwp5 출신 문서는 hwpx 패키지 잉여 엔트리가 없다.
+        hwpx_extra_entries: Vec::new(),
     };
     Ok(ReadResult { document, warnings })
 }
@@ -390,6 +392,8 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
         hwpx_preview_image: None,
         hwp5_xml_template,
         hwp5_doc_history,
+        // hwp5 출신 문서는 hwpx 패키지 잉여 엔트리가 없다.
+        hwpx_extra_entries: Vec::new(),
     };
     Ok(ReadResult { document, warnings })
 }

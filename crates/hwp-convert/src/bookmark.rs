@@ -139,6 +139,7 @@ fn make_bokm_control(name: &str) -> Control {
         equation: None,
         column_def: None,
         caption: None,
+        hwpx_raw_xml: None,
     })
 }
 
@@ -196,6 +197,8 @@ fn create_bookmark_rec(para: &mut Paragraph, anchor: &str, name: &str) -> bool {
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
                         if create_bookmark_rec(p, anchor, name) {
+                            // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                            g.hwpx_raw_xml = None;
                             return true;
                         }
                     }
