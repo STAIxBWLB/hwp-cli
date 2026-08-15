@@ -68,11 +68,33 @@ Dockerfile은 의도적으로 없다. 베이스 이미지와 LibreOffice 런타�
 명시적인 라이선스·대응 소스 처리가 필요하다. 이 공백이 메워지기 전까지 필수 오라클 모드는 부분
 구현으로 남는다.
 
+## 선택적 증거 검사
+
+문서 정책은 내용 없는(content-free) 선택적 증거 산출물 두 가지를 고정할 수 있다. 각각 정책
+파일 기준 상대 경로에서 64 KiB bounded read로 읽고, 닫힌 계약으로 파싱하며, 없거나 유효하지
+않으면 닫힌 실패(fail closed)를 반환한다. 섹션이 없으면 리포트는 기존 형태와 정확히 같고,
+섹션이 실패하면 `overall=failed`(및 미실행 오라클)가 된다. 리포트 스키마는 이를 전용
+`localPassed + evidenceFailed` 분기로 표현한다.
+
+- `document.preservation`: `preservation-report-v1` 산출물(예: `hwp convert --loss-report`
+  결과)을 읽는다. 집계 손실 합계(event count의 총합)가 `max_loss_codes`(기본 0) 이하이면
+  통과한다. 리포트는 코드별 집계 수만 `checks.preservation`으로 반영한다. 손실 초과 실패는
+  `preservation_loss_detected`, 산출물 누락·무효는 `preservation_report_invalid`를 쓴다.
+- `document.hancom_open`: 한컴오피스 애플리케이션이 복구·손상 경고 없이 문서를 열었다는
+  `hancom-verification-receipt-v1` 산출물을 읽는다. `require_pass`(기본 참)이면 receipt
+  결과가 `pass`여야 한다. 리포트는 receipt의 `application`, `verified_at`, `verifier`만
+  `checks.hancom_open`으로 반영한다. pass가 아닌 receipt는 `hancom_open_not_attested`,
+  누락·무효 receipt는 `hancom_open_receipt_invalid`를 쓰며 아무 필드도 반영하지 않는다.
+
+두 검사 모두 한컴 렌더링 동등성을 주장하지 않는다. 이름 붙인 외부 증거만 입증할 뿐이다.
+
 ## 스키마와 소비자
 
 - `schemas/certification-policy-v1.schema.json`
 - `schemas/certification-report-v1.schema.json`
 - `schemas/certification-oracle-result-v1.schema.json`
+- `schemas/preservation-report-v1.schema.json` (선택적 `preservation` 증거 입력)
+- `schemas/hancom-verification-receipt-v1.schema.json` (선택적 `hancom_open` 증거 입력)
 
 Maru 같은 소비자는 리포트 스키마를 검증한 뒤, JSON Schema로 표현할 수 없는 런타임 불변식을 직접
 확인해야 한다. typed issue 수·해시 재계산, 선택 쪽 진단과 쪽 산출물의 정확한 일치, 산출물 경로의

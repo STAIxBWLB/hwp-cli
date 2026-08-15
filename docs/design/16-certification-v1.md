@@ -75,11 +75,36 @@ dependency closure are not pinned, and no built image/runner attestation exists.
 also omits its GPL `COPYING` file, so future redistribution requires explicit license and
 corresponding-source handling. Required oracle mode remains partial until those gaps are closed.
 
+## Optional evidence checks
+
+The document policy may pin two optional, content-free evidence artifacts. Each is read with a
+64 KiB bounded read from a path relative to the policy file, parsed against its closed contract,
+and fails closed when missing or invalid. Absent sections produce exactly the pre-existing
+report shape; a failed section forces `overall=failed` (and an un-run oracle), which the report
+schema expresses through dedicated `localPassed + evidenceFailed` branches.
+
+- `document.preservation`: loads a `preservation-report-v1` artifact (for example from
+  `hwp convert --loss-report`). The check passes when the aggregated loss total — the sum of
+  event counts — is at most `max_loss_codes` (default 0). The report echoes only the aggregated
+  per-code counts as `checks.preservation`. Failures use `preservation_loss_detected`;
+  missing/invalid artifacts use `preservation_report_invalid`.
+- `document.hancom_open`: loads a `hancom-verification-receipt-v1` artifact attesting that a
+  Hancom Office application opened the document without repair or damage warnings. With
+  `require_pass` (default true) the receipt result must be `pass`. The report echoes only the
+  receipt's `application`, `verified_at`, and `verifier` as `checks.hancom_open`. A non-pass
+  receipt uses `hancom_open_not_attested`; missing/invalid receipts use
+  `hancom_open_receipt_invalid` and echo nothing.
+
+Neither check claims Hancom rendering parity; they attest only the specific external evidence
+they name.
+
 ## Schemas and consumers
 
 - `schemas/certification-policy-v1.schema.json`
 - `schemas/certification-report-v1.schema.json`
 - `schemas/certification-oracle-result-v1.schema.json`
+- `schemas/preservation-report-v1.schema.json` (optional `preservation` evidence input)
+- `schemas/hancom-verification-receipt-v1.schema.json` (optional `hancom_open` evidence input)
 
 Consumers such as Maru must validate the report schema and then verify the runtime invariants that
 JSON Schema cannot express: typed issue count/hash recomputation, exact selected-page diagnostics
