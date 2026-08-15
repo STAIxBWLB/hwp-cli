@@ -43,6 +43,8 @@ const MAX_ORACLE_RESULT_BYTES: u64 = 64 * 1024;
 const MAX_EVIDENCE_ARTIFACT_BYTES: u64 = 64 * 1024;
 /// Mirrors `preservation-report-v1` `events.maxItems`.
 const MAX_PRESERVATION_EVENTS: usize = 1000;
+/// Per-event and per-code loss bound shared with the report schema's `lossCount`.
+const MAX_PRESERVATION_LOSS_COUNT: usize = 1_000_000;
 const MAX_LOG_BYTES_RECORDED: u64 = 64 * 1024;
 const MAX_PARSE_XML_DEPTH: usize = 128;
 const MAX_PARSE_XML_NODES: usize = 1_000_000;
@@ -744,11 +746,9 @@ pub fn execute(
         .preservation
         .as_ref()
         .map(|section| evaluate_preservation_evidence(section, policy_base));
-    let hancom_open_check = policy
-        .document
-        .hancom_open
-        .as_ref()
-        .map(|section| evaluate_hancom_open_evidence(section, policy_base));
+    let hancom_open_check = policy.document.hancom_open.as_ref().map(|section| {
+        evaluate_hancom_open_evidence(section, policy_base, &input_snapshot_report.sha256)
+    });
     let evidence_failed = preservation_check
         .as_ref()
         .is_some_and(|check| check.status != CheckStatus::Passed)
@@ -2085,16 +2085,26 @@ fn valid_receipt_timestamp(value: &str) -> bool {
         && digits(&offset[4..6])
 }
 
-fn valid_receipt(receipt: &HancomVerificationReceipt) -> bool {
+fn valid_receipt(receipt: &HancomVerificationReceipt, input_sha256: &str) -> bool {
     receipt.schema_version == "1.0"
         && matches!(receipt.result.as_str(), "pass" | "fail")
         && valid_receipt_text(&receipt.application)
         && valid_receipt_text(&receipt.verifier)
         && valid_receipt_timestamp(&receipt.verified_at)
-        && receipt
-            .artifact_sha256
-            .as_ref()
-            .is_none_or(|value| validate_sha256(value, "receipt artifact sha256").is_ok())
+        && receipt.artifact_sha256.as_ref().is_none_or(|value| {
+            // A supplied hash must be well-formed and bound to the certified input, so a
+            // receipt produced for a different document cannot be replayed.
+            validate_sha256(value, "receipt artifact sha256").is_ok() && value == input_sha256
+        })
+}
+
+/// `preservation-report-v1` artifact. Unlike the writer-side model type, both fields are
+/// required here so a malformed or stub artifact fails closed instead of reading as lossless.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreservationReportArtifact {
+    contract: String,
+    events: Vec<hwp_model::preservation::PreservationEvent>,
 }
 
 /// The preservation evidence check loads the policy-pinned `preservation-report-v1` artifact
@@ -2116,23 +2126,37 @@ fn evaluate_preservation_evidence(
     ) else {
         return invalid();
     };
-    let Ok(report) = serde_json::from_slice::<hwp_model::preservation::PreservationReport>(&bytes)
-    else {
+    let Ok(report) = serde_json::from_slice::<PreservationReportArtifact>(&bytes) else {
         return invalid();
     };
+    // Per-event counts stay inside the report schema's lossCount range so a huge or wrapping
+    // artifact can never mint a schema-invalid section.
     if report.contract != hwp_model::preservation::PRESERVATION_REPORT_CONTRACT
         || report.events.len() > MAX_PRESERVATION_EVENTS
-        || report.events.iter().any(|event| event.count == 0)
+        || report
+            .events
+            .iter()
+            .any(|event| !(1..=MAX_PRESERVATION_LOSS_COUNT).contains(&event.count))
     {
         return invalid();
     }
     let mut loss_codes: BTreeMap<String, usize> = BTreeMap::new();
     for event in &report.events {
-        *loss_codes
+        let entry = loss_codes
             .entry(event.code.as_str().to_string())
-            .or_default() += event.count;
+            .or_insert(0);
+        let Some(total) = entry.checked_add(event.count) else {
+            return invalid();
+        };
+        *entry = total;
     }
-    let loss_code_count = loss_codes.values().sum();
+    let mut loss_code_count: usize = 0;
+    for count in loss_codes.values() {
+        let Some(total) = loss_code_count.checked_add(*count) else {
+            return invalid();
+        };
+        loss_code_count = total;
+    }
     let passed = loss_code_count <= policy.max_loss_codes;
     PreservationCheckReport {
         status: if passed {
@@ -2156,6 +2180,7 @@ fn evaluate_preservation_evidence(
 fn evaluate_hancom_open_evidence(
     policy: &HancomOpenPolicy,
     policy_base: &Path,
+    input_sha256: &str,
 ) -> HancomOpenCheckReport {
     let invalid = || HancomOpenCheckReport {
         status: CheckStatus::Failed,
@@ -2173,7 +2198,7 @@ fn evaluate_hancom_open_evidence(
     let Ok(receipt) = serde_json::from_slice::<HancomVerificationReceipt>(&bytes) else {
         return invalid();
     };
-    if !valid_receipt(&receipt) {
+    if !valid_receipt(&receipt, input_sha256) {
         return invalid();
     }
     let passed = !policy.require_pass || receipt.result == "pass";
@@ -4903,6 +4928,14 @@ exit 2"#,
 
         for (label, bytes) in [
             ("malformed", b"{not json".to_vec()),
+            // Required fields must be present; a stub must not read as a lossless report.
+            ("empty-object", serde_json::json!({}).to_string().into_bytes()),
+            (
+                "missing-events",
+                serde_json::json!({"contract": "hwp-preservation-report-v1"})
+                    .to_string()
+                    .into_bytes(),
+            ),
             (
                 "wrong-contract",
                 serde_json::json!({"contract": "other", "events": []})
@@ -4915,6 +4948,29 @@ exit 2"#,
                     "contract": "hwp-preservation-report-v1",
                     "events": [
                         {"code": "control_removed", "resource": "control", "disposition": "removed", "count": 0}
+                    ]
+                })
+                .to_string()
+                .into_bytes(),
+            ),
+            // Counts above the report schema's lossCount bound fail closed.
+            (
+                "oversized-count",
+                serde_json::json!({
+                    "contract": "hwp-preservation-report-v1",
+                    "events": [
+                        {"code": "control_removed", "resource": "control", "disposition": "removed", "count": 1_000_001}
+                    ]
+                })
+                .to_string()
+                .into_bytes(),
+            ),
+            (
+                "huge-count",
+                serde_json::json!({
+                    "contract": "hwp-preservation-report-v1",
+                    "events": [
+                        {"code": "control_removed", "resource": "control", "disposition": "removed", "count": 18_446_744_073_709_551_615_u64}
                     ]
                 })
                 .to_string()
@@ -4952,7 +5008,7 @@ exit 2"#,
             receipt: "hancom-receipt.json".to_string(),
             require_pass: true,
         };
-        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Passed);
         assert!(check.reason_codes.is_empty());
         assert_eq!(check.application.as_deref(), Some("Hancom Office HWP"));
@@ -4967,7 +5023,7 @@ exit 2"#,
             require_pass: false,
             ..policy
         };
-        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Passed);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -4982,7 +5038,7 @@ exit 2"#,
             receipt: "hancom-receipt.json".to_string(),
             require_pass: true,
         };
-        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Failed);
         assert_eq!(check.reason_codes, ["hancom_open_not_attested"]);
         assert_eq!(check.application.as_deref(), Some("Hancom Office HWP"));
@@ -4996,7 +5052,7 @@ exit 2"#,
             receipt: "hancom-receipt.json".to_string(),
             require_pass: true,
         };
-        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Failed);
         assert_eq!(check.reason_codes, ["hancom_open_receipt_invalid"]);
         assert!(check.application.is_none());
@@ -5012,7 +5068,7 @@ exit 2"#,
             let mut receipt = valid_receipt_json();
             receipt[mutate] = serde_json::json!("bogus");
             write_receipt(&dir, receipt);
-            let check = evaluate_hancom_open_evidence(&policy, &dir);
+            let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
             assert_eq!(check.status, CheckStatus::Failed, "{label}");
             assert_eq!(
                 check.reason_codes,
@@ -5025,8 +5081,35 @@ exit 2"#,
         let mut receipt = valid_receipt_json();
         receipt["extra"] = serde_json::json!(true);
         write_receipt(&dir, receipt);
-        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Failed);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hancom_open_receipt_hash_binds_to_the_certified_input() {
+        let dir = evidence_scratch_dir("hancom-hash");
+        let policy = HancomOpenPolicy {
+            receipt: "hancom-receipt.json".to_string(),
+            require_pass: true,
+        };
+        // The receipt hash matches the certified input.
+        write_receipt(&dir, valid_receipt_json());
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
+        assert_eq!(check.status, CheckStatus::Passed);
+
+        // A receipt produced for a different document fails closed.
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"1".repeat(64));
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert_eq!(check.reason_codes, ["hancom_open_receipt_invalid"]);
+        assert!(check.application.is_none());
+
+        // An omitted hash remains allowed; the field is optional in the schema.
+        let mut receipt = valid_receipt_json();
+        receipt.as_object_mut().unwrap().remove("artifact_sha256");
+        write_receipt(&dir, receipt);
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"1".repeat(64));
+        assert_eq!(check.status, CheckStatus::Passed);
         fs::remove_dir_all(&dir).unwrap();
     }
 

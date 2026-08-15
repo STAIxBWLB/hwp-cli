@@ -266,6 +266,28 @@ fn evidence_checks_fold_into_the_overall_result() {
             .is_none()
     );
 
+    // A receipt hash pinned to the certified input passes; a hash from another document
+    // fails closed.
+    let input_sha256 = {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(fs::read(&input).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let mut pinned = receipt.clone();
+    pinned["result"] = serde_json::json!("pass");
+    pinned["artifact_sha256"] = serde_json::json!(input_sha256);
+    let bound = run_case(&root, &input, &policy, Some(&pinned), "hash-match");
+    assert_eq!(bound["overall"], "passed");
+    pinned["artifact_sha256"] = serde_json::json!("9".repeat(64));
+    let replayed = run_case(&root, &input, &policy, Some(&pinned), "hash-mismatch");
+    assert_eq!(replayed["overall"], "failed");
+    assert_eq!(
+        replayed["checks"]["hancom_open"]["reason_codes"],
+        serde_json::json!(["hancom_open_receipt_invalid"])
+    );
+
     fs::remove_dir_all(root).unwrap();
 }
 
