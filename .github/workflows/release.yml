@@ -88,8 +88,15 @@ jobs:
       fail-fast: false # one target's failure must not cancel the others
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          # Cross-built against a glibc 2.17 baseline: a native ubuntu-24.04 build needs
+          # GLIBC_2.39, which serverless runtimes do not have (Vercel and AWS Lambda run
+          # Amazon Linux 2023 = glibc 2.34), so the asset was unusable there. The action
+          # strips the `.2.17` suffix when naming the archive, so the published asset name
+          # is unchanged — install.sh, update.rs, update_formula.sh and the formula all
+          # keep matching it.
+          - target: x86_64-unknown-linux-gnu.2.17
             os: ubuntu-latest
+            build-tool: cargo-zigbuild
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-apple-darwin
@@ -102,10 +109,17 @@ jobs:
       # Release binaries build on stable (latest optimizations); MSRV compatibility is
       # already guaranteed by CI, which builds and tests on the pinned MSRV toolchain.
       - uses: dtolnay/rust-toolchain@stable
+      # Ahead of the action, whose own fallback is a bare `pip3 install` that PEP 668
+      # rejects on ubuntu-24.04. The PyPI package depends on `ziglang`, so this also
+      # provides zig — no separate toolchain step.
+      - if: matrix.build-tool == 'cargo-zigbuild'
+        run: pip3 install --break-system-packages cargo-zigbuild
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: hwp
           target: ${{ matrix.target }}
+          # Empty for the native targets — the action then picks its own default.
+          build-tool: ${{ matrix.build-tool }}
           archive: $bin-$tag-$target
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -129,6 +143,13 @@ jobs:
             --pattern "hwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" \
             --dir "$work" --clobber
           tar -xzf "$work/hwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" -C "$work"
+          # The asset is already extracted here, so the serverless-compatibility gate is
+          # free: it must run, and its glibc floor must stay at the cross-build baseline
+          # (a native build would silently raise it back to the runner's glibc).
+          "$work/hwp" --version
+          floor=$(strings -a "$work/hwp" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "glibc floor: $floor"
+          [ "$floor" = "GLIBC_2.17" ] || { echo "::error::glibc floor regressed ($floor) — the Linux asset no longer runs on Vercel/Lambda"; exit 1; }
           bundle="$work/bundle"
           mkdir -p "$bundle/bin"
           cp skills/hwp/SKILL.md "$bundle/SKILL.md"

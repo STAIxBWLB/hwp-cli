@@ -134,6 +134,25 @@ Every [release](https://github.com/STAIxBWLB/hwp-cli/releases) attaches per-plat
 
 Extract and put `hwp` on PATH (verify with `shasum -a 256 -c hwp-*.sha256`).
 
+### Serverless and containers (Vercel, AWS Lambda, Docker)
+
+The Linux archive is cross-built against a **glibc 2.17** baseline, so it runs on Amazon Linux 2 and
+2023, Debian 8+, RHEL/CentOS 7+ and anything newer — including Vercel's Node runtime and AWS Lambda,
+whose glibc is older than the build runner's.
+
+Fetch it in the build step instead of committing the binary; then the pinned tag is the only thing
+to bump:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
+  | sh -s -- --tag v0.8.5 --dir ./bin
+```
+
+Run this from the build command (or a `prebuild` script) so the binary exists before the platform
+collects the deployment bundle — Vercel `includeFiles`, Next.js `outputFileTracingIncludes`, or a
+Docker layer. Fonts are not bundled: mount them and pass `--font-dir` (or `HWP_FONT_DIR`) for
+rendering commands.
+
 ### Building from source
 
 ```sh

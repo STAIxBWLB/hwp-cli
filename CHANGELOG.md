@@ -204,6 +204,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   (`table_split_across_pages` info, `table_row_too_tall_clipped`). Hancom Office oracle comparison
   remains pending, so this does not yet certify output parity.
 
+**Changed**
+
+- The Linux release asset is now cross-built with `cargo-zigbuild` against a glibc 2.17 baseline
+  instead of natively on the ubuntu-24.04 runner. The native build required `GLIBC_2.39`, so it
+  could not run on serverless runtimes (Vercel's Node runtime and AWS Lambda are Amazon Linux 2023,
+  glibc 2.34) and downstream projects had to hand-build and vendor their own binary. The asset name,
+  archive layout and `.sha256` scheme are unchanged, so `scripts/install.sh`, `hwp update` and the
+  Homebrew formula keep working as before; the release workflow now asserts the floor stays at
+  `GLIBC_2.17`. No other platform's build changed.
+
 **Fixed**
 
 - Synthesized line spacing misread the margin-only mode (2) as a ratio and clamped the fixed
