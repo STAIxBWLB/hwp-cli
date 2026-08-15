@@ -637,6 +637,7 @@ pub(crate) fn footnote_anchor(
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        container_box: None,
     });
     (ch, control)
 }
@@ -1574,6 +1575,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         }),
     );
     let ext = |code: u16, ctrl_id: [u8; 4], idx: u32| {
@@ -1610,6 +1612,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                container_box: None,
             }),
         );
         para.chars.insert(2, ext(21, *b"pgnp", 2));

@@ -12,6 +12,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- HWPX container (`hp:container`) rendering
+  ([#90](https://github.com/STAIxBWLB/hwp-cli/issues/90)). The hwpx reader now
+  parses container children into `gso_shapes` plus a new
+  `GenericControl.container_box` (container origin, size, and treat-as-char),
+  recursing into nested containers with accumulated offsets, and the renderer
+  draws the child shapes at the container origin and lays container text out in
+  the container box — so grouped drawing objects render in PDF, PNG, and SVG
+  instead of being counted as `unsupported_control_omitted`. The verbatim raw
+  XML remains the reserialization source of truth, so same-format rewrites stay
+  byte-identical; hwpx→hwp5 conversion keeps the typed
+  `OpaqueControlUnrepresentable` failure.
+
 - Deep table cloning
   ([#78](https://github.com/STAIxBWLB/hwp-cli/issues/78)). `--clone-table
   "SOURCE_TABLE=>ANCHOR[=>blank|keep]"` (MCP `clone_table` with

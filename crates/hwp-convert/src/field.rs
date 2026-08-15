@@ -543,6 +543,7 @@ fn make_field_control(ctrl_id: [u8; 4], name: Option<&str>, command: Option<&str
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        container_box: None,
     })
 }
 
@@ -879,6 +880,7 @@ mod tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         });
         let mut chars = vec![HwpChar::ExtCtrl {
             code: FIELD_START,

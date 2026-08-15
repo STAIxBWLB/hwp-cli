@@ -792,6 +792,7 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        container_box: None,
     };
     // 둘째 문단에 앵커(ExtCtrl 코드 11) + 컨트롤 부착.
     let para = &mut doc.sections[0].paragraphs[1];

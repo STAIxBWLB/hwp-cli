@@ -251,7 +251,7 @@
 | GB-3 | **동영상**(`VIDEO_DATA` 0x62 / `hp:video`) | hwp5 `body_text.rs:617`, hwpx `write/section.rs:364` | §4.3.9.8 | hwp5=Opaque 보존 / hwpx=드롭 | 왕복(hwpx만)·합성·렌더 | L |
 | GB-4 | **글맵시**(`SHAPE_COMPONENT_TEXTART` 0x5A / `hp:textart`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191`(fallback 텍스트)→`write/section.rs:364`(DROP) | §4.3.9(글맵시) | hwp5=Opaque 보존 / hwpx=텍스트만 fallback 후 드롭 | 왕복(hwpx만)·합성·렌더 | M |
 | GB-5 | **양식 개체**(`FORM_OBJECT` 0x5B / `hp:formObject`) | hwp5 `body_text.rs:617`, hwpx `read/section.rs:191`→`:364` | §4.3.9(양식) | hwp5=Opaque 보존 / hwpx=텍스트만 후 드롭 | 왕복(hwpx만)·합성·렌더 | M |
-| GB-6 | **묶음 개체**(`SHAPE_COMPONENT_CONTAINER` 0x56 / `hp:container`) — ★**비대칭**: hwp5는 raw보존이라 **렌더까지 됨**(자식 재귀), hwpx는 해석 없이 fallback — 단 2026-08-14(#90)부터 같은 포맷 되쓰기에서 원문 XML을 보존·재방출해 왕복은 무손실, 손실은 합성·렌더에만 남음 | hwp5 렌더 `hwp-render/src/shape_draw.rs`([10](10-hwp5-structure-map.ko.md) §8 raw보존), hwpx `read/section.rs`(GenericControl 원문 XML 보존) | §4.3.9.7 | hwp5=raw보존(렌더 O) / hwpx=원문 XML 보존(왕복 무손실, 렌더 X) | 합성·렌더 | M |
+| GB-6 | **묶음 개체**(`SHAPE_COMPONENT_CONTAINER` 0x56 / `hp:container`) — hwp5는 raw보존이라 **렌더까지 됨**(자식 재귀). hwpx는 2026-08-14(#90)부터 같은 포맷 되쓰기에서 원문 XML을 보존·재방출(왕복 무손실)하고, 2026-08-15(#90 PR 6a)부터 컨테이너 자식을 `gso_shapes`+`GenericControl.container_box`로 파싱해 **렌더도 지원**(자식 도형을 컨테이너 원점 기준으로 배치, 중첩 컨테이너는 오프셋 누적 평탄화, 컨테이너 텍스트는 상자 안 조판). 남은 손실: hwp→hwpx 합성은 묶음을 형제 도형으로 평탄화하고, hwpx→hwp5는 typed `OpaqueControlUnrepresentable` 실패 유지 | hwp5 렌더 `hwp-render/src/shape_draw.rs`([10](10-hwp5-structure-map.ko.md) §8 raw보존), hwpx `read/section.rs`(`collect_container`), 렌더 arm `hwp-render/src/layout.rs` | §4.3.9.7 | hwp5=raw보존(렌더 O) / hwpx=원문 XML 보존(왕복 무손실)+렌더 O | 합성 | M |
 | GB-7 | **메모**(`MEMO_LIST` 0x5D 본문 + `MEMO_SHAPE` 0x5C DocInfo / hwpx `hp:` 미방출) | hwp5 `body_text.rs:617`·`doc_info.rs:148`(Opaque), hwpx 네임스페이스 선언만([11](11-hwpx-structure-map.ko.md) §2) | §4.3(메모)·§4.2 표13 | hwp5=Opaque 보존 / hwpx=미구현 | 왕복(hwpx만)·합성·렌더 | M |
 | GB-8 | **변경추적·편집이력**(`TRACKCHANGE` 0x20·`TRACK_CHANGE` 0x60·`TRACK_CHANGE_AUTHOR` 0x61·`PARA_RANGE_TAG` 0x46 / hwpx `hhs:` history — PARA_RANGE_TAG 용도는 스펙상 **형광펜·교정부호 등 영역 마킹**도 포함(§4.3.5), 변경추적만이 아님) | hwp5 `doc_info.rs:148`·`body_text.rs:73`(Opaque), hwpx 미구현([11](11-hwpx-structure-map.ko.md) §5(c)) | §4.2 표13·§4.3.5 | hwp5=Opaque 보존 / hwpx=미구현 | 왕복(hwpx만)·합성 | L |
 | GB-9 | **문서 임의·배포 데이터**(`DOC_DATA` 0x1B·`DISTRIBUTE_DOC_DATA` 0x1C·`COMPATIBLE_DOCUMENT` 0x1E·`LAYOUT_COMPATIBILITY` 0x1F) | hwp5 `doc_info.rs:57`(Opaque). 단 writer는 COMPATIBLE/LAYOUT을 **별도 합성**([07](07-hangul-compat-rules.ko.md) A4) | §4.2.12~4.2.15 | hwp5=Opaque 보존(+합성 처리 有) / hwpx=미구현 | 합성(부분 해소) | L |
@@ -264,8 +264,8 @@
 
 **GB 교훈:** hwp5→hwp5 왕복만 보면 GB 전체가 "무손실"이라 갭이 안 보인다(그게 §0.3의 함정). 결함은
 **hwpx 왕복·포맷 간 합성·렌더**에서만 터진다. GB-6(묶음)은 특히 미묘하다 — hwp5는 렌더까지 되는데
-hwpx에서는 해석이 안 된다. 2026-08-14(#90)부터는 원문 XML이 같은 포맷 되쓰기에서 살아남아 손실은
-합성·렌더로 한정된다. 이 계열의 복원은 대부분 **정품 파일에 그 개체를 담아 페이로드를 역설계**
+hwpx에서는 해석이 안 됐다. 2026-08-14(#90)부터 원문 XML이 같은 포맷 되쓰기에서 살아남고,
+2026-08-15(#90 PR 6a)부터 hwpx 컨테이너도 렌더돼 손실은 합성으로 한정된다. 이 계열의 복원은 대부분 **정품 파일에 그 개체를 담아 페이로드를 역설계**
 (M/L)해야 하므로 정답지 확보가 선행 조건이다([00](00-overview.ko.md) §4).
 ★예외가 **GB-1의 hwpx 경로**다: HWPX에서 차트는 OLE가 아니라 **OOXML DrawingML `chartSpace`
 XML 파트**(`Chart/chartN.xml` + manifest 등재 + `hp:chart chartIDRef`)여서, 기존 hwpx 쓰기

@@ -205,6 +205,7 @@ fn 원문_보유_개체는_방출하고_없으면_손실이벤트를_낸다() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         }
     }
 
@@ -240,6 +241,150 @@ fn 원문_보유_개체는_방출하고_없으면_손실이벤트를_낸다() {
         false,
         &mut bins,
         &mut report,
+    );
+    assert_eq!(report.preservation.events.len(), 1);
+    assert_eq!(
+        report.preservation.events[0].code,
+        hwp_model::PreservationCode::OpaqueControlUnrepresentable
+    );
+}
+
+/// 자식 도형을 gso_shapes/container_box로 파싱하게 된 뒤에도, 원문 캡처가 있는
+/// 컨테이너는 writer가 원문 pass-through로 방출해 왕복이 바이트 동일해야 한다.
+#[test]
+fn 컨테이너_자식도형_파싱후에도_원문_왕복_보존() {
+    const CONTAINER_XML: &str = r##"<hp:container id="11" zOrder="1"><hp:sz width="6000" height="2400"/><hp:pos treatAsChar="1" vertOffset="1500" horzOffset="1000"/><hp:rect id="12" ratio="10"><hp:sz width="2000" height="1000"/><hp:pos treatAsChar="0" vertOffset="200" horzOffset="100"/><hp:lineShape color="#FF0000" width="40" style="SOLID"/><hc:fillBrush><hc:winBrush faceColor="#00FF00" hatchColor="#000000" alpha="0"/></hc:fillBrush></hp:rect><hp:subList><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>상자 텍스트</hp:t></hp:run></hp:p></hp:subList></hp:container>"##;
+    let section_xml = format!(
+        r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>본문</hp:t>{CONTAINER_XML}</hp:run></hp:p></hs:sec>"##
+    );
+
+    let dir = std::env::temp_dir().join("hwpx-roundtrip-container-shapes");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("src.hwpx");
+    let out = dir.join("out.hwpx");
+    {
+        let file = std::fs::File::create(&src).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        zip.start_file("mimetype", stored).unwrap();
+        zip.write_all(b"application/hwp+zip").unwrap();
+        zip.start_file("version.xml", deflated).unwrap();
+        zip.write_all(br#"<version major="1" minor="4" micro="0" buildNumber="0"/>"#)
+            .unwrap();
+        zip.start_file("Contents/header.xml", deflated).unwrap();
+        zip.write_all(HEADER_XML.as_bytes()).unwrap();
+        zip.start_file("Contents/section0.xml", deflated).unwrap();
+        zip.write_all(section_xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let read = hwpx::read_document(&src).unwrap();
+    // reader가 자식 도형과 컨테이너 상자를 채웠는지 먼저 확인한다(테스트 전제).
+    let generic = read.document.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            hwp_model::Control::Generic(g) if g.container_box.is_some() => Some(g),
+            _ => None,
+        })
+        .expect("container_box가 채워진 컨테이너 컨트롤");
+    assert!(!generic.gso_shapes.is_empty(), "자식 도형 파싱 전제");
+    assert!(generic.hwpx_raw_xml.is_some(), "원문 캡처 전제");
+
+    let report = hwpx::write_document_with_report(&read.document, &out).unwrap();
+    assert!(
+        report.preservation.is_lossless(),
+        "preservation events: {:?}",
+        report.preservation.events
+    );
+    let out_entries = read_entries(&out);
+    let out_section = String::from_utf8(
+        out_entries
+            .iter()
+            .find(|(n, _)| n == "Contents/section0.xml")
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        out_section.contains(CONTAINER_XML),
+        "container 원문이 바이트 동일하게 방출돼야 한다: {out_section}"
+    );
+}
+
+/// 원문 XML이 무효화된(edit 헬퍼가 지운) 컨테이너는 자식 도형 좌표가 컨테이너
+/// 상대라 ShapeGeom 재합성 경로로 새면 안 된다 — fail-closed로
+/// OpaqueControlUnrepresentable typed loss를 내고 도형 요소를 방출하지 않는다.
+#[test]
+fn 원문없는_컨테이너는_도형을_합성하지_않고_손실이벤트를_낸다() {
+    let mut para = hwp_model::Paragraph::default();
+    para.chars.push(hwp_model::HwpChar::Text('가'));
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"cont",
+        payload: Vec::new(),
+        ctrl_index: Some(0),
+    });
+    para.controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"cont",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: vec![hwp_model::ShapeGeom {
+                kind: hwp_model::ShapeKind::Rect,
+                x: 100,
+                y: 200,
+                w: 2000,
+                h: 1000,
+                points: Vec::new(),
+                fill: 0xFFFF_FFFF,
+                fill_gradient: None,
+                border_color: 0,
+                border_width: 40,
+                round_ratio: 0,
+                border_style: 0,
+                arrow_start: 0,
+                arrow_end: 0,
+                anchored: false,
+                description: None,
+            }],
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: Some(hwp_model::ContainerBox {
+                x: 1000,
+                y: 1500,
+                w: 6000,
+                h: 2400,
+                anchored: false,
+                skipped_objects: 0,
+                text_boxes: Vec::new(),
+            }),
+        }));
+    let section = hwp_model::Section {
+        paragraphs: vec![para],
+        extras: Vec::new(),
+    };
+
+    let doc = hwp_model::Document::default();
+    let mut report = hwp_model::WriteReport::new();
+    let mut bins = hwpx::write::section::BinCollector::default();
+    let xml = hwpx::write::section::write_section_with_report(
+        &doc,
+        &section,
+        false,
+        &mut bins,
+        &mut report,
+    );
+    assert!(
+        !xml.contains("<hp:rect"),
+        "원문 없는 컨테이너의 자식 도형이 합성 방출됨: {xml}"
     );
     assert_eq!(report.preservation.events.len(), 1);
     assert_eq!(
