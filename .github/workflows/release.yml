@@ -62,7 +62,9 @@ jobs:
           fi
 
   # Create the release shell once (notes come from the CHANGELOG section). Skipped if it
-  # already exists (rerun-safe).
+  # already exists (rerun-safe). Created as a draft: `releases/latest` ignores drafts, so
+  # install.sh and `hwp update` cannot pick the release up until publish-release flips it,
+  # which happens only after every asset gate has passed.
   create-release:
     needs: [verify-ci, verify-version]
     runs-on: ubuntu-latest
@@ -78,7 +80,7 @@ jobs:
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             bash scripts/release_notes.sh "$GITHUB_REF_NAME" > /tmp/release-notes.md
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
-              --notes-file /tmp/release-notes.md --verify-tag
+              --notes-file /tmp/release-notes.md --verify-tag --draft
           fi
 
   # Build platform `hwp` binaries -> upload archives (tar.gz/zip) + sha256 to the release.
@@ -163,13 +165,25 @@ jobs:
             "$work/hwp-skill-claude-web.zip.sha256" \
             --clobber
 
+  # Everything is uploaded and gated — make the release public. Any earlier job failing
+  # leaves the release a draft, so a broken or serverless-incompatible asset is never the
+  # release install.sh and `hwp update` resolve to.
+  publish-release:
+    needs: skill-bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+
   # Homebrew formula (the repo itself is the tap): update version/sha256 from the freshly
   # uploaded assets. main is a protected branch, so the bot cannot push directly — open a PR
   # and merge it: squash auto-merge when possible, an immediate squash merge as fallback
   # (repos with no required checks refuse auto-merge on clean PRs). The release is valid
   # either way, and scripts/update_formula.sh X.Y.Z remains the local recovery path.
   update-formula:
-    needs: upload-assets
+    needs: publish-release
     runs-on: ubuntu-latest
     steps:
       # Check out main, not the tag — the formula change targets main.
