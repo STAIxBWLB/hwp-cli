@@ -4,7 +4,7 @@
   "title": "hwp PDF parity aggregate scoreboard v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract", "poppler_version", "dpi", "thresholds", "eligible", "passed_gates", "failed_gates", "cases"],
+  "required": ["contract", "poppler_version", "dpi", "thresholds", "eligible", "passed_gates", "failed_gates", "excluded_gates", "blocking_failed_gates", "cases"],
   "properties": {
     "contract": { "const": "hwp-pdf-parity-scoreboard-v2" },
     "poppler_version": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -17,6 +17,17 @@
       "items": { "$ref": "#/$defs/gate" }
     },
     "failed_gates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "excluded_gates": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "blocking_failed_gates": {
       "type": "array",
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/gate" }
@@ -51,13 +62,15 @@
     "case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "source_sha256", "oracle_sha256", "passed_gates", "failed_gates", "eligible", "pages_delta", "media_box_max_delta_pt", "text_pages_equal", "text_pages_compared", "raster_pages", "max_abs_dx", "max_abs_dy", "ink_ratio_min", "ink_ratio_max", "bad_pixel_pct_max", "mae_max", "roi_count", "roi_precision_min", "roi_recall_min", "fonts_passed", "render_issues_passed", "deterministic"],
+      "required": ["name", "source_sha256", "oracle_sha256", "passed_gates", "failed_gates", "excluded_gates", "blocking_failed_gates", "eligible", "pages_delta", "media_box_max_delta_pt", "text_pages_equal", "text_pages_compared", "raster_pages", "max_abs_dx", "max_abs_dy", "ink_ratio_min", "ink_ratio_max", "bad_pixel_pct_max", "mae_max", "roi_count", "roi_precision_min", "roi_recall_min", "fonts_passed", "render_issues_passed", "deterministic"],
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
         "source_sha256": { "$ref": "#/$defs/sha256" },
         "oracle_sha256": { "$ref": "#/$defs/sha256" },
         "passed_gates": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/gate" } },
         "failed_gates": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/gate" } },
+        "excluded_gates": { "type": "array", "uniqueItems": true, "maxItems": 8, "items": { "$ref": "#/$defs/gate" } },
+        "blocking_failed_gates": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/gate" } },
         "eligible": { "type": "boolean" },
         "pages_delta": { "type": "integer" },
         "media_box_max_delta_pt": { "type": "number", "minimum": 0 },
@@ -77,38 +90,279 @@
         "render_issues_passed": { "type": "boolean" },
         "deterministic": { "type": "boolean" }
       },
-      "oneOf": [
-        { "properties": { "eligible": { "const": true }, "failed_gates": { "maxItems": 0 } } },
-        { "properties": { "eligible": { "const": false }, "failed_gates": { "minItems": 1 } } }
+      "allOf": [
+        {
+          "oneOf": [
+            { "properties": { "eligible": { "const": true }, "blocking_failed_gates": { "maxItems": 0 } } },
+            { "properties": { "eligible": { "const": false }, "blocking_failed_gates": { "minItems": 1 } } }
+          ]
+        },
+        { "$ref": "#/$defs/gate_blocking_consistency" }
+      ]
+    },
+    "gate_blocking_consistency": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "page_count" } },
+              "excluded_gates": { "not": { "contains": { "const": "page_count" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "page_count" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "page_count" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "page_count" } },
+              "excluded_gates": { "not": { "contains": { "const": "page_count" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "media_box" } },
+              "excluded_gates": { "not": { "contains": { "const": "media_box" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "media_box" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "media_box" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "media_box" } },
+              "excluded_gates": { "not": { "contains": { "const": "media_box" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "text" } },
+              "excluded_gates": { "not": { "contains": { "const": "text" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "text" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "text" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "text" } },
+              "excluded_gates": { "not": { "contains": { "const": "text" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "fonts" } },
+              "excluded_gates": { "not": { "contains": { "const": "fonts" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "fonts" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "fonts" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "fonts" } },
+              "excluded_gates": { "not": { "contains": { "const": "fonts" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "render_issues" } },
+              "excluded_gates": { "not": { "contains": { "const": "render_issues" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "render_issues" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "render_issues" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "render_issues" } },
+              "excluded_gates": { "not": { "contains": { "const": "render_issues" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "raster" } },
+              "excluded_gates": { "not": { "contains": { "const": "raster" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "raster" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "raster" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "raster" } },
+              "excluded_gates": { "not": { "contains": { "const": "raster" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "roi" } },
+              "excluded_gates": { "not": { "contains": { "const": "roi" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "roi" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "roi" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "roi" } },
+              "excluded_gates": { "not": { "contains": { "const": "roi" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "determinism" } },
+              "excluded_gates": { "not": { "contains": { "const": "determinism" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "determinism" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "determinism" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "determinism" } },
+              "excluded_gates": { "not": { "contains": { "const": "determinism" } } }
+            }
+          }
+        }
       ]
     }
   },
-  "oneOf": [
+  "allOf": [
     {
-      "properties": {
-        "eligible": { "const": true },
-        "failed_gates": { "maxItems": 0 },
-        "passed_gates": {
-          "minItems": 8,
-          "maxItems": 8,
-          "contains": { "const": "page_count" },
-          "allOf": [
-            { "contains": { "const": "media_box" } },
-            { "contains": { "const": "text" } },
-            { "contains": { "const": "fonts" } },
-            { "contains": { "const": "render_issues" } },
-            { "contains": { "const": "raster" } },
-            { "contains": { "const": "roi" } },
-            { "contains": { "const": "determinism" } }
-          ]
+      "oneOf": [
+        {
+          "properties": {
+            "eligible": { "const": true },
+            "blocking_failed_gates": { "maxItems": 0 }
+          }
+        },
+        {
+          "properties": {
+            "eligible": { "const": false },
+            "blocking_failed_gates": { "minItems": 1 }
+          }
         }
-      }
+      ]
     },
     {
-      "properties": {
-        "eligible": { "const": false },
-        "failed_gates": { "minItems": 1 }
+      "if": { "properties": { "excluded_gates": { "maxItems": 0 } } },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "eligible": { "const": true },
+              "failed_gates": { "maxItems": 0 },
+              "passed_gates": {
+                "minItems": 8,
+                "maxItems": 8,
+                "contains": { "const": "page_count" },
+                "allOf": [
+                  { "contains": { "const": "media_box" } },
+                  { "contains": { "const": "text" } },
+                  { "contains": { "const": "fonts" } },
+                  { "contains": { "const": "render_issues" } },
+                  { "contains": { "const": "raster" } },
+                  { "contains": { "const": "roi" } },
+                  { "contains": { "const": "determinism" } }
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "eligible": { "const": false },
+              "failed_gates": { "minItems": 1 }
+            }
+          }
+        ]
       }
-    }
+    },
+    { "$ref": "#/$defs/gate_blocking_consistency" }
   ]
 }

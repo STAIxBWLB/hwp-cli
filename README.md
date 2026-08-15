@@ -353,7 +353,10 @@ Normative schemas are in [`schemas/`](schemas/) and the contracts in
 `certify` runs package validation, repeated import, bounded native rendering and an optional
 independent import under a frozen policy, then publishes a new directory atomically. The policy pins
 font identity and forbids font substitution, macros and external references, and it fails on bounds,
-collision and unresolved-field problems.
+collision and unresolved-field problems. The policy may also pin two optional, fail-closed evidence
+checks: `preservation` ingests a `preservation-report-v1` artifact with a zero-loss budget, and
+`hancom_open` ingests a `hancom-verification-receipt-v1` attestation; failed or invalid evidence
+forces `overall=failed`.
 
 `corpus` generates seven self-authored Korean documents as both HWPX and HWP, twice each, and passes
 only when the document bytes, semantic statistics, page PNG hashes, render-issue hashes and font

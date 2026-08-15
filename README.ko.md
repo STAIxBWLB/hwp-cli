@@ -325,7 +325,10 @@ hwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/report.hwpx --r
 
 `certify`는 package 검증, 반복 import, bounded native render, 선택적 독립 import를 고정 정책으로
 인증하고 새 디렉터리를 원자적으로 게시한다. 정책은 폰트 identity 고정, 폰트 대체 금지, macro/external
-reference 금지, bounds/collision/unresolved-field 실패를 강제한다.
+reference 금지, bounds/collision/unresolved-field 실패를 강제한다. 정책은 선택적·fail-closed 증거
+검사 둘도 고정할 수 있다: `preservation`은 `preservation-report-v1` 아티팩트를 무손실 예산으로
+검사하고, `hancom_open`은 `hancom-verification-receipt-v1` attestation을 검사한다. 실패하거나
+잘못된 증거는 `overall=failed`로 강제한다.
 
 `corpus`는 자체 작성 한국어 7종 문서를 HWPX/HWP로 각각 2회 생성하고, 두 실행의 문서 바이트·의미 통계·
 페이지 PNG 해시·render issue 해시·폰트 identity가 모두 같아야 통과시킨다.

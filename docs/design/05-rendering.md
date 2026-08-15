@@ -128,9 +128,13 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
 6. **Page splitting** (body flow only, via `TableSplitCtx`; nested tables in cells/text boxes never
    split): when the table would cross `body_bottom`, `Table::page_break_policy()` (`attr` bits 0-1)
    decides. NONE pushes the whole table to the next page (the 04 §6.1 invariant), falling back to
-   row splitting only when the table is taller than a full page; TABLE/CELL split at row boundaries
-   (cell-internal splitting is unimplemented, so a row taller than a page overflows and is reported
-   as `TableRowTooTallClipped`); a `treat_as_char` table never splits ("one character", GE-8). Each
+   row splitting only when the table is taller than a full page; TABLE/CELL split at row boundaries,
+   and CELL additionally continues a single over-height row at an existing cached line boundary
+   (soft `v_pos` packing, row-level blank continuation fragments, span-aware packing, page-bottom
+   sliver containment — the contract is 21-pdf-parity §6), reporting an unsafe cache or a row span
+   intersecting a fragmented row as `table_cell_fragmentation_incomplete`; a band that still
+   exceeds a fresh page overflows and is reported as `TableRowTooTallClipped`; a `treat_as_char`
+   table never splits ("one character", GE-8). Each
    split runs the standard page-close sequence (notes → furniture → `push_page_checked` → flow-state
    reset), so the next paragraph's Hancom boundary flag is absorbed instead of double-breaking. When
    `repeat_header()` is set, the leading rows whose cells are all `Cell::is_header()` (`list_attr`

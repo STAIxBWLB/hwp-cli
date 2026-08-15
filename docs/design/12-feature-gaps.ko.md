@@ -129,6 +129,41 @@
   content.hpf 재생성은 모델링된 manifest 항목/메타데이터만 유지하므로, 비모델 manifest
   항목은 고아 엔트리로 남는다(raw-copy는 되지만 목록에는 미등재).
 
+- **2026-08-15 (이슈 #90 PR 7a — CELL 행 초과 높이 페이지네이션)**: 렌더러가 CELL 정책
+  표에서 현재 쪽의 남은 용량보다 큰 행을 잘라내지 않고 페이지를 넘겨 그린다. 명시
+  플래그 없는 `v_pos` 리셋은 CELL fragment의 남은 용량에 soft하게 채우고, cached
+  content를 넘는 선언 행 높이는 행 단위 빈 continuation fragment로 보존한다. row-span은
+  span 단위로 판단해(하나로 옮길 수 있으면 새 페이지에서 통째로 유지, 셀 단편화가 일어난
+  행과 교차하거나 새 페이지에도 안 들어가면 typed
+  `table_cell_fragmentation_incomplete`로 보고) 쪽 하단의 잘린 조각(sliver)도
+  봉인한다. 전체 동작 계약은 [21-pdf-parity §6](21-pdf-parity.ko.md) 참조.
+
+- **2026-08-15 (이슈 #90 PR 7b — 글꼴 identity 게이트)**: 렌더 리포트가 글꼴 단위의
+  해시화한 요청/해결 identity, 요청 weight 상태, face index,
+  `font_resolution_complete`를 실는다. v2 parity `fonts` 게이트도 이에 맞춰 강화:
+  대체 없는 렌더 + 해석 완결 + 해결된 모든 face의 바이트 해시가 매니페스트 고정 집합에
+  속해야 하며, identity 증거가 없으면 fail-closed. 인증은 가시 중복 글꼴 행을
+  중복 제거한다. PR 6 항목에 남겨둔 PR 7 잔여 델타의 font 절반을 해소했고,
+  pagination 절반은 위의 PR 7a다.
+
+- **2026-08-16 (이슈 #90 PR 8a — 인증 증거 검사)**: 인증에 선택적·fail-closed 증거
+  검사 둘을 닫힌 스키마에 additive로 추가했다. `preservation`은
+  `hwp-preservation-report-v1` 아티팩트를 읽어 무손실(zero-loss) 예산을 강제하고,
+  `hancom_open`은 편집 산출물이 한글에서 손상·복구 없이 열렸다는
+  `hancom-verification-receipt-v1` attestation(신규 스키마)을 읽는다. 증거가
+  실패하거나 형식이 잘못되면 `overall=failed`로 강제하고, 검사를 생략하면 기존
+  verdict 형태를 유지한다.
+
+- **2026-08-16 (이슈 #90 PR 8b, 진행 중 — 매니페스트 선언 parity 게이트 제외)**: v2
+  parity 매니페스트가 선택 항목 `gate_exclusions` 배열(중복 없는 게이트 이름, 최대
+  8개)을 받아, 로컬 비공개 프로파일이 특정 게이트를 측정은 하되 차단하지 않는
+  항목으로 선언할 수 있다. 측정과 `passed_gates`/`failed_gates` 보고는 그대로이고,
+  적격 판정은 `blocking_failed_gates`(실패에서 제외를 뺀 것)로 계산한다. 각
+  스코어카드와 스코어보드가 `excluded_gates` + `blocking_failed_gates`를 필수
+  필드로 에코하므로 숨은 완화가 아니다. 제외를 선언하지 않으면 스키마가 기존
+  strict 규칙을 유지해 공개 CI 프로파일은 변하지 않는다. 계약 상세는
+  [21-pdf-parity §4.3](21-pdf-parity.ko.md) 참조.
+
 - **2026-08-14 (이슈 #77 위치 지정·개수 지정 행/열 삽입)**: `--add-row`가 append 전용에서
   `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]`로, `--add-col`이 `TABLE[:AT[:COUNT]]`로 확장(`AT`
   생략·`end`면 끝에 추가. MCP `add_row`/`add_col`에도 optional `at`/`count`/

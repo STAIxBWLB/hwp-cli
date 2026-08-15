@@ -16,6 +16,12 @@
 - [ ] `scripts/fetch-corpus-fonts.sh`가 빈 `fonts/`에서 고정 폰트 해시를 재현
 - [ ] 코퍼스를 배포에 포함한다면 릴리스 아카이브·라이선스 목록에 Noto Sans KR OFL과 metadata 포함
 - [ ] 독립 오라클은 digest 고정 이미지를 실제로 빌드·검증하기 전까지 부분 구현으로 유지
+- [ ] 비공개 한글 열기 검증 receipt를 `hancom-verification-receipt-v1` 스키마로 기록
+      (인증 `hancom_open` 증거)
+- [ ] 비공개 PDF parity run 적격; 매니페스트에 선언한 `gate_exclusions` 전 항목을 릴리스
+      노트에 열거하고 사유 기재 (현재: `fonts` 제외 — 승인 face 미고정)
+- [ ] 잔여 실패 parity 게이트(`text`, `raster`, `roi`)를 문서화하고 해소 전까지 릴리스
+      차단으로 취급
 - [ ] `git status --short --untracked-files=all` 검토, 무관한 사용자 변경 제외
 - [ ] 준비 점검 실행 자체가 커밋·푸시·태그·패키지 업로드·릴리스를 수행하지 않음
 - [ ] 다운스트림 `STAIxBWLB/skills`의 `skills/hwpx`가 CLI 표면 변화에 맞는지 확인 (그쪽

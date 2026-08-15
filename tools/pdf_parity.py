@@ -36,6 +36,12 @@ CONTRACT_SCOREBOARD_V2 = "hwp-pdf-parity-scoreboard-v2"
 # and the input font bytes, but does not require a Windows or Hancom host label.
 # Thresholds are part of the contract rather than caller-tunable knobs; this
 # prevents a relaxed local profile from producing an apparently eligible case.
+# A local profile may additionally declare `gate_exclusions` in the manifest to
+# mark a gate measured-but-not-blocking (for example `fonts` when the approved
+# font faces are unavailable).  Exclusions are never a hidden relaxation: every
+# gate is still measured and reported in passed_gates/failed_gates, the declared
+# set is echoed as `excluded_gates` in each scorecard and the scoreboard, and
+# eligibility is decided by `blocking_failed_gates` (failed minus excluded).
 V2_GATE_NAMES = (
     "page_count",
     "media_box",
@@ -1076,6 +1082,25 @@ def _v2_thresholds(manifest: dict) -> dict:
     return thresholds
 
 
+def _v2_gate_exclusions(manifest: dict) -> frozenset:
+    """Parse the manifest-declared measured-but-not-blocking gates.
+
+    Defaults to none.  Unknown gate names, duplicates, and non-list values are
+    hard errors, mirroring the fail-fast threshold validation above.
+    """
+    supplied = manifest.get("gate_exclusions", [])
+    if not isinstance(supplied, list):
+        raise die("v2 gate_exclusions 형식 오류: 배열이어야 함")
+    exclusions = set()
+    for gate in supplied:
+        if gate not in V2_GATE_NAMES:
+            raise die(f"v2 gate_exclusions 알 수 없는 게이트: {gate!r}")
+        if gate in exclusions:
+            raise die(f"v2 gate_exclusions 중복 게이트: {gate!r}")
+        exclusions.add(gate)
+    return frozenset(exclusions)
+
+
 def _v2_gate_lists(results: dict[str, bool]) -> tuple[list[str], list[str]]:
     passed = [gate for gate in V2_GATE_NAMES if results.get(gate, False)]
     failed = [gate for gate in V2_GATE_NAMES if not results.get(gate, False)]
@@ -1093,6 +1118,7 @@ def score_case_v2(
     rois: list | None = None,
     report_path: Path | None = None,
     pinned_font_hashes: "frozenset | set | None" = None,
+    excluded_gates: "frozenset | set | None" = None,
 ) -> dict:
     """Score all Issue #79 v2 gates for one source/oracle pair."""
     thresholds = {**V2_THRESHOLDS, **(thresholds or {})}
@@ -1289,6 +1315,11 @@ def score_case_v2(
         "determinism": determinism_passed,
     }
     passed_gates, failed_gates = _v2_gate_lists(gate_results)
+    # Exclusions only relax eligibility, never measurement: failed_gates keeps
+    # every measured failure, the declared set is echoed verbatim, and only
+    # blocking_failed_gates (failed minus excluded) decides eligibility.
+    excluded = frozenset(excluded_gates or ())
+    blocking_failed_gates = [gate for gate in failed_gates if gate not in excluded]
     return {
         "contract": CONTRACT_SCORECARD_V2,
         "case": name,
@@ -1298,7 +1329,9 @@ def score_case_v2(
         "thresholds": thresholds,
         "passed_gates": passed_gates,
         "failed_gates": failed_gates,
-        "eligible": not failed_gates,
+        "excluded_gates": sorted(excluded),
+        "blocking_failed_gates": blocking_failed_gates,
+        "eligible": not blocking_failed_gates,
         "pages": {"ours": ours_pages, "oracle": oracle_pages, "delta": page_delta},
         "media_box": {
             "pages_compared": media_pages,
@@ -1382,6 +1415,8 @@ def summarize_v2(card: dict) -> dict:
         "oracle_sha256": card["oracle"]["sha256"],
         "passed_gates": card["passed_gates"],
         "failed_gates": card["failed_gates"],
+        "excluded_gates": card["excluded_gates"],
+        "blocking_failed_gates": card["blocking_failed_gates"],
         "eligible": card["eligible"],
         "pages_delta": card["pages"]["delta"],
         "media_box_max_delta_pt": card["media_box"]["max_delta_pt"],
@@ -1613,6 +1648,7 @@ def cmd_run_v2(args) -> int:
     actual_poppler = verify_manifest_pins_v2(manifest)
     cases = prepare_cases(manifest, manifest_path, oracle_dir)
     thresholds = _v2_thresholds(manifest)
+    excluded_gates = _v2_gate_exclusions(manifest)
     # Every resolved candidate face must come from the manifest-pinned set.
     pinned_font_hashes = frozenset(manifest["pins"]["fonts"].values())
 
@@ -1642,6 +1678,7 @@ def cmd_run_v2(args) -> int:
                 case.get("rois", []),
                 report_path,
                 pinned_font_hashes,
+                excluded_gates,
             )
         if card["source"]["sha256"] != case["source_sha256"]:
             raise die(f"케이스 {case['name']}: 측정 중 source 파일 변경 감지")
@@ -1658,6 +1695,7 @@ def cmd_run_v2(args) -> int:
     gate_sets = [set(card["passed_gates"]) for card in cards]
     all_passed = [gate for gate in V2_GATE_NAMES if all(gate in passed for passed in gate_sets)]
     all_failed = [gate for gate in V2_GATE_NAMES if gate not in all_passed]
+    blocking_failed = [gate for gate in all_failed if gate not in excluded_gates]
     board = {
         "contract": CONTRACT_SCOREBOARD_V2,
         "poppler_version": actual_poppler,
@@ -1666,6 +1704,8 @@ def cmd_run_v2(args) -> int:
         "eligible": all(card["eligible"] for card in cards),
         "passed_gates": all_passed,
         "failed_gates": all_failed,
+        "excluded_gates": sorted(excluded_gates),
+        "blocking_failed_gates": blocking_failed,
         "cases": [summarize_v2(card) for card in cards],
     }
 
