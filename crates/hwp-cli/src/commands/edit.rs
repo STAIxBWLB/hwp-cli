@@ -39,6 +39,7 @@ enum EditOperation {
     MergeCells(Vec<String>),
     SplitCell(Vec<String>),
     AddTable(Vec<String>),
+    CloneTable(Vec<String>),
     SetPara(Vec<String>),
     SetPage(Vec<String>),
     DeleteImage(Vec<String>),
@@ -145,6 +146,11 @@ pub(crate) enum TypedEditOperation {
         anchor: String,
         rows: Vec<Vec<String>>,
     },
+    CloneTable {
+        source_table: usize,
+        anchor: String,
+        text_mode: hwp_convert::CloneTextMode,
+    },
     SetPara {
         pattern: String,
         /// Paragraph shape converted up to HWPUNIT/pt×100 units (same units as the CLI `parse_para_props`).
@@ -188,6 +194,7 @@ impl TypedEditOperation {
                 | Self::MergeCells { .. }
                 | Self::SplitCell { .. }
                 | Self::AddTable { .. }
+                | Self::CloneTable { .. }
                 | Self::DeleteImage { .. }
                 | Self::DeleteTable { .. }
                 | Self::DeleteField { .. }
@@ -211,6 +218,7 @@ impl EditOperation {
             | Self::MergeCells(_)
             | Self::SplitCell(_)
             | Self::AddTable(_)
+            | Self::CloneTable(_)
             | Self::DeleteImage(_)
             | Self::DeleteTable(_)
             | Self::DeleteField(_)
@@ -304,6 +312,7 @@ impl EditPlan {
             merge_cells,
             split_cell,
             add_table,
+            clone_table,
             set_para,
             set_page,
             delete_image,
@@ -343,6 +352,7 @@ impl EditPlan {
         add!(MergeCells, merge_cells);
         add!(SplitCell, split_cell);
         add!(AddTable, add_table);
+        add!(CloneTable, clone_table);
         add!(SetPara, set_para);
         add!(SetPage, set_page);
         add!(DeleteImage, delete_image);
@@ -484,6 +494,33 @@ fn parse_add_col_spec(spec: &str) -> anyhow::Result<AddColSpec> {
         anyhow::bail!("--add-col 개수는 1 이상이어야 합니다: {spec:?}");
     }
     Ok(AddColSpec { table, at, count })
+}
+
+/// Parsed `--clone-table` spec: `SOURCE_TABLE=>ANCHOR[=>blank|keep]` (#78).
+struct CloneTableSpec {
+    source_table: usize,
+    anchor: String,
+    text_mode: hwp_convert::CloneTextMode,
+}
+
+fn parse_clone_table_spec(spec: &str) -> anyhow::Result<CloneTableSpec> {
+    let mut parts = spec.splitn(3, "=>");
+    let source = parts.next().unwrap_or_default().trim();
+    let anchor = parts.next().map(str::trim).unwrap_or_default();
+    if source.is_empty() || anchor.is_empty() {
+        anyhow::bail!("--clone-table 형식은 \"표=>앵커[=>blank|keep]\" 입니다: {spec:?}");
+    }
+    let source_table: usize = source.parse().context("표 인덱스")?;
+    let text_mode = match parts.next().map(str::trim) {
+        None | Some("") | Some("blank") => hwp_convert::CloneTextMode::Blank,
+        Some("keep") => hwp_convert::CloneTextMode::Keep,
+        Some(other) => anyhow::bail!("--clone-table 모드는 blank|keep 입니다: {other:?}"),
+    };
+    Ok(CloneTableSpec {
+        source_table,
+        anchor: anchor.to_string(),
+        text_mode,
+    })
 }
 
 pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
@@ -900,6 +937,19 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         rows.len(),
                         rows.first().map_or(0, Vec::len)
                     );
+                    edits += 1;
+                }
+            }
+            EditOperation::CloneTable(specs) => {
+                for spec in specs {
+                    let s = parse_clone_table_spec(spec)?;
+                    hwp_convert::clone_table(&mut doc, s.source_table, &s.anchor, s.text_mode)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    let mode = match s.text_mode {
+                        hwp_convert::CloneTextMode::Blank => "blank",
+                        hwp_convert::CloneTextMode::Keep => "keep",
+                    };
+                    eprintln!("표 복제: 표{} → {:?} 뒤 ({mode})", s.source_table, s.anchor);
                     edits += 1;
                 }
             }
@@ -1442,6 +1492,20 @@ fn apply_typed_operation(
                 rows.len(),
                 rows.first().map_or(0, Vec::len)
             );
+            *edits += 1;
+        }
+        TypedEditOperation::CloneTable {
+            source_table,
+            anchor,
+            text_mode,
+        } => {
+            hwp_convert::clone_table(doc, *source_table, anchor, *text_mode)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            let mode = match text_mode {
+                hwp_convert::CloneTextMode::Blank => "blank",
+                hwp_convert::CloneTextMode::Keep => "keep",
+            };
+            eprintln!("표 복제: 표{source_table} → {anchor:?} 뒤 ({mode})");
             *edits += 1;
         }
         TypedEditOperation::SetPara { pattern, props } => {

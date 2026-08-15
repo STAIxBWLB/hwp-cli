@@ -12,6 +12,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Deep table cloning
+  ([#78](https://github.com/STAIxBWLB/hwp-cli/issues/78)). `--clone-table
+  "SOURCE_TABLE=>ANCHOR[=>blank|keep]"` (MCP `clone_table` with
+  `source_table`/`anchor`/`text_mode`) deep-copies a table — geometry, merge
+  topology, widths, borders, fills, and styles — and inserts the clone after the
+  anchor paragraph. `blank` (default) keeps one empty styled paragraph per cell
+  and drops all source text and content controls; `keep` also clones nested
+  tables and pictures, remapping every paragraph/control/object instance ID
+  above the document maxima and reusing binary assets in place. Keep mode aborts
+  atomically on opaque controls (fields, equations, text boxes) whose raw
+  identity bytes cannot be safely remapped; every failure mode publishes
+  nothing.
+
 - Positioned, counted table row/column insertion
   ([#77](https://github.com/STAIxBWLB/hwp-cli/issues/77)). `--add-row` now accepts
   `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]` and `--add-col` accepts `TABLE[:AT[:COUNT]]`

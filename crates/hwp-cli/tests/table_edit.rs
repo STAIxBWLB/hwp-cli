@@ -627,3 +627,340 @@ fn add_row_positioned_synthetic_both_formats() {
         assert!(text.contains('가'), "{ext} original content kept");
     }
 }
+
+// ── #78: deep table cloning (blank / keep) ───────────────────────────────────
+
+/// All tables (recursive depth-first index) as JSON via `cat --format json`.
+fn all_tables_json(path: &PathBuf) -> Vec<serde_json::Value> {
+    fn collect<'a>(paras: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+        for p in paras.as_array().unwrap() {
+            for c in p["controls"].as_array().unwrap() {
+                if let Some(t) = c.get("Table") {
+                    out.push(t);
+                    for cell in t["cells"].as_array().unwrap() {
+                        collect(&cell["paragraphs"], out);
+                    }
+                } else if let Some(g) = c.get("Generic") {
+                    for l in g["paragraph_lists"].as_array().unwrap() {
+                        collect(&l["paragraphs"], out);
+                    }
+                }
+            }
+        }
+    }
+    let out = hwp()
+        .arg("cat")
+        .arg(path)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut tables = Vec::new();
+    collect(&j["sections"][0]["paragraphs"], &mut tables);
+    tables.into_iter().cloned().collect()
+}
+
+/// Concatenated text of every cell paragraph of a table JSON node.
+fn table_text(t: &serde_json::Value) -> String {
+    let mut s = String::new();
+    for cell in t["cells"].as_array().unwrap() {
+        for p in cell["paragraphs"].as_array().unwrap() {
+            for ch in p["chars"].as_array().unwrap() {
+                if let Some(c) = ch.get("Text").and_then(|v| v.as_str()) {
+                    s.push_str(c);
+                }
+            }
+        }
+    }
+    s
+}
+
+/// The fixture anchor "한빛대학교" sits in a top-level paragraph before every
+/// table, so a clone inserted after it becomes the new table #0.
+#[test]
+fn clone_table_blank_after_anchor() {
+    let src = copy_fixture("clone_blank.hwpx");
+    let out = tmp("clone_blank_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--clone-table", "9=>한빛대학교", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "blank clone: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let tables = all_tables_json(&out);
+    assert_eq!(tables.len(), 11, "10 source tables + 1 clone");
+    let clone = &tables[0];
+    assert_eq!(clone["rows"].as_u64().unwrap(), 7);
+    assert_eq!(clone["cols"].as_u64().unwrap(), 2);
+    assert!(
+        table_text(clone).is_empty(),
+        "blank clone carries no source text"
+    );
+    // The source table (shifted to #10) is untouched.
+    assert!(!table_text(&tables[10]).is_empty(), "source table kept");
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&out)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "blank clone keeps the document valid"
+    );
+}
+
+/// Keep mode clones the merged 11x10 table #2 (with its 6 nested tables) —
+/// geometry, merge topology, and content survive; instance ids are remapped
+/// above the source maximum.
+#[test]
+fn clone_table_keep_preserves_content_and_geometry() {
+    let src = copy_fixture("clone_keep.hwpx");
+    let out = tmp("clone_keep_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--clone-table", "2=>한빛대학교=>keep", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "keep clone: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let tables = all_tables_json(&out);
+    assert_eq!(tables.len(), 17, "10 + clone with 6 nested tables");
+    let (clone, source) = (&tables[0], &tables[9]);
+    assert_eq!(clone["rows"].as_u64().unwrap(), 11);
+    assert_eq!(clone["cols"].as_u64().unwrap(), 10);
+    assert_eq!(clone["row_cell_counts"], source["row_cell_counts"]);
+    assert_eq!(
+        table_text(clone),
+        table_text(source),
+        "keep clone preserves content"
+    );
+    // (Instance-id remapping is HWP-only — the HWPX writer assigns element ids
+    // itself; see clone_table_keep_hwp_instance_ids_remapped.)
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&out)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "keep clone keeps the document valid"
+    );
+}
+
+/// HWP outputs carry paragraph instance ids; a keep clone must remap every id
+/// above the document maximum, leaving the whole document collision-free.
+#[test]
+fn clone_table_keep_hwp_instance_ids_remapped() {
+    let src = copy_fixture("clone_keep_hwp.hwpx");
+    let hwp_src = tmp("clone_keep_src.hwp");
+    let c = hwp()
+        .arg("convert")
+        .arg(&src)
+        .arg("-o")
+        .arg(&hwp_src)
+        .output()
+        .unwrap();
+    assert!(
+        c.status.success(),
+        "fixture converts to hwp: {}",
+        String::from_utf8_lossy(&c.stderr)
+    );
+    let out = tmp("clone_keep_hwp_out.hwp");
+    let r = hwp()
+        .arg("edit")
+        .arg(&hwp_src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--clone-table", "2=>한빛대학교=>keep", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "hwp keep clone: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    // Every paragraph instance id in the output is non-zero and unique.
+    let cat = hwp()
+        .arg("cat")
+        .arg(&out)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&cat.stdout).unwrap();
+    let mut ids = Vec::new();
+    fn walk_paras(paras: &serde_json::Value, ids: &mut Vec<u64>) {
+        for p in paras.as_array().unwrap() {
+            ids.push(p["header"]["instance_id"].as_u64().unwrap());
+            for c in p["controls"].as_array().unwrap() {
+                if let Some(t) = c.get("Table") {
+                    for cell in t["cells"].as_array().unwrap() {
+                        walk_paras(&cell["paragraphs"], ids);
+                    }
+                } else if let Some(g) = c.get("Generic") {
+                    for l in g["paragraph_lists"].as_array().unwrap() {
+                        walk_paras(&l["paragraphs"], ids);
+                    }
+                }
+            }
+        }
+    }
+    for section in j["sections"].as_array().unwrap() {
+        walk_paras(&section["paragraphs"], &mut ids);
+    }
+    assert!(ids.iter().all(|&id| id != 0), "all ids assigned");
+    let mut dedup = ids.clone();
+    dedup.sort_unstable();
+    dedup.dedup();
+    assert_eq!(dedup.len(), ids.len(), "no instance id collisions");
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&out)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "hwp keep clone keeps the document valid"
+    );
+}
+
+/// Two sequential clones keep working and keep ids rising.
+#[test]
+fn clone_table_multiple_sequential() {
+    let src = copy_fixture("clone_seq.hwpx");
+    let out1 = tmp("clone_seq_out1.hwpx");
+    let r1 = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out1)
+        .args(["--clone-table", "9=>한빛대학교", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        r1.status.success(),
+        "first clone: {}",
+        String::from_utf8_lossy(&r1.stderr)
+    );
+    let out2 = tmp("clone_seq_out2.hwpx");
+    let r2 = hwp()
+        .arg("edit")
+        .arg(&out1)
+        .arg("-o")
+        .arg(&out2)
+        .args(["--clone-table", "0=>한빛대학교", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        r2.status.success(),
+        "second clone (of the first clone): {}",
+        String::from_utf8_lossy(&r2.stderr)
+    );
+    let tables = all_tables_json(&out2);
+    assert_eq!(tables.len(), 12, "10 + 2 sequential clones");
+    assert_eq!(tables[0]["rows"].as_u64().unwrap(), 7);
+    assert_eq!(tables[1]["rows"].as_u64().unwrap(), 7);
+}
+
+/// Bad indices, missing anchors, and bad mode tokens fail and publish nothing.
+#[test]
+fn clone_table_spec_errors() {
+    for spec in [
+        "99=>한빛대학교",
+        "0=>없는앵커문장",
+        "0=>한빛대학교=>bogus",
+        "x=>한빛대학교",
+    ] {
+        let src = copy_fixture("clone_err.hwpx");
+        let out = tmp("clone_err_out.hwpx");
+        let r = hwp()
+            .arg("edit")
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .args(["--clone-table", spec])
+            .output()
+            .unwrap();
+        assert!(!r.status.success(), "--clone-table {spec:?} must fail");
+        assert!(!out.exists(), "--clone-table {spec:?} must not publish");
+    }
+}
+
+/// Cloning on synthetic HWP and HWPX documents, both modes, then fill + verify.
+#[test]
+fn clone_table_synthetic_both_formats() {
+    let md = tmp("clone_syn.md");
+    std::fs::write(&md, "앵커\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n").unwrap();
+    for ext in ["hwpx", "hwp"] {
+        let form = tmp(&format!("clone_syn_form.{ext}"));
+        assert!(
+            hwp()
+                .args(["new", "--from"])
+                .arg(&md)
+                .arg("-o")
+                .arg(&form)
+                .status()
+                .unwrap()
+                .success()
+        );
+        for mode in ["blank", "keep"] {
+            let out = tmp(&format!("clone_syn_{mode}.{ext}"));
+            let r = hwp()
+                .arg("edit")
+                .arg(&form)
+                .arg("-o")
+                .arg(&out)
+                .args(["--clone-table", &format!("0=>앵커=>{mode}"), "--verify"])
+                .output()
+                .unwrap();
+            assert!(
+                r.status.success(),
+                "{ext} {mode} clone: {}",
+                String::from_utf8_lossy(&r.stderr)
+            );
+            assert!(
+                hwp()
+                    .arg("validate")
+                    .arg(&out)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "{ext} {mode} clone stays valid"
+            );
+            // The clone (new table #0) is addressable by set-cell.
+            let out2 = tmp(&format!("clone_syn_{mode}_fill.{ext}"));
+            let r2 = hwp()
+                .arg("edit")
+                .arg(&out)
+                .arg("-o")
+                .arg(&out2)
+                .args(["--set-cell", "0:0:0=복제셀"])
+                .output()
+                .unwrap();
+            assert!(
+                r2.status.success(),
+                "{ext} {mode} set-cell into clone: {}",
+                String::from_utf8_lossy(&r2.stderr)
+            );
+            let text = cat(&out2);
+            assert!(text.contains("복제셀"), "{ext} {mode} clone cell filled");
+            assert!(text.contains('1'), "{ext} {mode} source table kept");
+        }
+    }
+}

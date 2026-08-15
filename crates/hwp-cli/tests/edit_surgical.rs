@@ -550,3 +550,69 @@ fn meta_edit_keeps_extension_manifest_items() {
     );
     assert_entries_identical(&src, &out, &["DocOptions/Layout.xml"]);
 }
+
+/// 표 복제 op(clone-table, #78): section0.xml만 재직렬화되고 header/content.hpf/
+/// 미리보기/META-INF/settings는 입력과 바이트 동일해야 한다(keep 모드는 BinData를
+/// 새로 추가하지 않고 기존 참조를 재사용한다).
+#[test]
+fn clone_table_preserves_non_target_entries() {
+    let src = copy_fixture("surgical_clone.hwpx");
+    let out = tmp("surgical_clone_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--clone-table", "2=>한빛대학교=>keep"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "clone-table: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    assert_entries_identical(
+        &src,
+        &out,
+        &[
+            "Contents/header.xml",
+            "Contents/content.hpf",
+            "Preview/PrvImage.png",
+            "Preview/PrvText.txt",
+            "META-INF/container.rdf",
+            "META-INF/container.xml",
+            "META-INF/manifest.xml",
+            "settings.xml",
+            "version.xml",
+        ],
+    );
+    // Entry set is unchanged — keep mode reuses BinData references.
+    assert_eq!(
+        zip_entry_names(&src),
+        zip_entry_names(&out),
+        "엔트리 집합 동일(BinData 재사용)"
+    );
+    // The cloned table landed in the section entry (clone = 1 + 6 nested tables).
+    let count_tbls = |path: &Path| {
+        String::from_utf8(read_zip_entry(path, "Contents/section0.xml"))
+            .unwrap()
+            .matches("<hp:tbl")
+            .count()
+    };
+    assert_eq!(
+        count_tbls(&out),
+        count_tbls(&src) + 7,
+        "clone adds 7 tables (1 + 6 nested)"
+    );
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&out)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "validate 통과"
+    );
+}
