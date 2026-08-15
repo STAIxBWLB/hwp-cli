@@ -215,16 +215,19 @@ structured-corpus run(`scripts/check-structured-corpus.sh`)은 고정 Noto Sans 
 ## 6. 페이지네이션 정본 (F3)
 
 한글은 이미 페이지 경계를 알려준다: `LineSeg.flags` bit0(페이지 첫 줄)과 bit1(단 첫 줄)이
-IR에 파싱돼 있다. 렌더러는 이 비트를 1급 페이지/단 경계 신호로 읽고, 합성 lineseg(flags
-`0x0006_0000`)에서만 `v_pos` 리셋 휴리스틱으로 폴백한다. 표가 페이지를 걸쳐 잘리는 동안은
+IR에 파싱돼 있다. 렌더러는 이 비트를 1급 페이지/단 경계 신호로 읽는다. 명시 플래그가 없는
+`v_pos` 리셋은 soft boundary로만 보고 CELL fragment의 남은 용량에 채울 수 있으며, 합성 lineseg(flags
+`0x0006_0000`)에서는 unflagged reset을 soft boundary로 폴백한다. 표가 페이지를 걸쳐 잘리는 동안은
 페이지 인덱스 비교가 무의미하므로, 페이지네이션 정확성(표 분할 포함, PR 2)은 측정의
 **전제조건**이지 소비자가 아니다. **구현 상태 2026-08-13: PR #81**은 `Table.attr` pageBreak 정책에 따라 가능한 행 경계에서 표를 나누고 `row_span` 셀을 보존하며 제목 줄 자동 반복을 지원한다. 공개 한 쪽 프로파일은 이제 CI에서 대조하며, 더 넓은 한컴 코퍼스는 남아 있으므로 보편적인 대등성 인증은 아니다.
 **PR #89 후속 보완:** `CELL` 정책은 한 행도 기존 cached line 경계에서 이어 그린다. 명시적인
 page-reset flag가 없는 경우에도 현재 쪽의 남은 공간에 들어가는 마지막 cached line 다음에서
-분할한다. 각 조각의 내용은 한 번만 출력하고 이어지는 테두리를 유지한다. 안전한 cache 경계가
-없거나 row-span과 cell fragment가 결합된 경우에는 조용히 자르지 않고 typed
-`table_cell_fragmentation_incomplete`로 보고한다. 공개 한 쪽 프로파일은 CI에서 대조하며,
-더 넓은 한컴 코퍼스는 남아 있으므로 보편적인 대등성 인증은 아니다.
+분할한다. 각 조각의 내용은 한 번만 출력하고 이어지는 테두리를 유지하며, cached content를
+넘는 선언 행 높이는 페이지 용량에 맞춘 빈 continuation fragment로 보존한다. 하나로 옮길 수
+있는 row-span은 새 페이지에서 통째로 유지한다. 안전한 cache 경계가 없거나, row-span이 셀
+단편화가 일어난 행과 교차하거나, 새 페이지에도 전체 span이 들어가지 않으면 조용히 자르지
+않고 typed `table_cell_fragmentation_incomplete`로 보고한다. 공개 한 쪽 프로파일은 CI에서
+대조하며, 더 넓은 한컴 코퍼스는 남아 있으므로 보편적인 대등성 인증은 아니다.
 
 ## 7. 데이터 정책
 
