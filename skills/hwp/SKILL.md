@@ -55,6 +55,9 @@ syntax (used by `fill`, `slots` and the template tools).
   `end` appends; a number inserts before that row/column; merged tables supported) /
   `--delete-row "t:r"` / `--delete-col "t:c"` /
   `--merge-cells "t:r1:c1:r2:c2"` / `--split-cell "t:r:c"` / `--add-table "anchor=>[[row],...]"` /
+  `--clone-table "src=>anchor[=>blank|keep]"` (deep-copy table `src` after the anchor —
+  blank keeps structure/styles with empty cells, keep also clones nested tables/images
+  with remapped IDs) /
   `--delete-table "n|anchor"` / `--delete-image "anchor"` / `--delete-field "name"` /
   `--delete-bookmark "name"`, paragraph shape `--set-para "find=>key:value"`
   (line-spacing, indent, left/right/top/bottom mm) and page setup `--set-page "key:value"`
@@ -147,7 +150,7 @@ Tools (16):
 | `hwp_list_bookmarks` | `path` | List bookmarks (bokm) |
 | `hwp_slots` | `path` | List `{{name}}` placeholders |
 | `hwp_render` | `path` | Render pages (`format`: png/svg/pdf, `pages` range); single-page PNG returns base64, larger results write files via `output_path` |
-| `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations (mirrors every `hwp edit` flag, incl. `add_table`, `set_para`, `set_page`, `delete_*`) |
+| `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations (mirrors every `hwp edit` flag, incl. `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*`) |
 | `hwp_convert` | `input`, `output` | Format conversion (`strict` defaults to true over MCP) |
 | `hwp_new` | `output` | Create a document from markdown or JSON IR plus metadata |
 | `hwp_compose` | `output`, `spec`/`spec_path` | Compose DocumentSpec v1/v2 through the same path as the CLI |

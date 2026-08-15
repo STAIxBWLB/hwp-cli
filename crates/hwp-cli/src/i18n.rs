@@ -450,6 +450,11 @@ pub const KO: &[(&str, &str, &str)] = &[
     ),
     (
         "edit",
+        "clone_table",
+        "표 복제 \"원본표=>앵커[=>blank|keep]\" — N번째 표(0-기반, 재귀 순서)를 깊은 복제해 앵커 문단 뒤에 삽입. blank(기본)는 구조·서식만 남기고 셀 내용을 비우고, keep은 지원 콘텐츠(중첩 표·그림)까지 복제(id 재부여) (반복 가능)",
+    ),
+    (
+        "edit",
         "set_para",
         "문단 모양 \"찾기=>키:값\" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm) (반복 가능)",
     ),

@@ -200,6 +200,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--merge-cells` | `<MERGE_CELLS>` |  | 셀 병합 "표:r1:c1:r2:c2" — 사각 영역을 좌상단 앵커로 병합 (반복 가능, 0-기반) |
 | `--split-cell` | `<SPLIT_CELL>` |  | 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반) |
 | `--add-table` | `<ADD_TABLE>` |  | 표 삽입 "앵커=>행JSON" — 앵커 문단 뒤에 균일 표 삽입. 행JSON은 문자열 배열의 배열 (반복 가능) |
+| `--clone-table` | `<CLONE_TABLE>` |  | 표 복제 "원본표=>앵커[=>blank\|keep]" — N번째 표(0-기반, 재귀 순서)를 깊은 복제해 앵커 문단 뒤에 삽입. blank(기본)는 구조·서식만 남기고 셀 내용을 비우고, keep은 지원 콘텐츠(중첩 표·그림)까지 복제(id 재부여) (반복 가능) |
 | `--set-para` | `<SET_PARA>` |  | 문단 모양 "찾기=>키:값" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm) (반복 가능) |
 | `--set-page` | `<SET_PAGE>` |  | 페이지 설정 "키:값" — 키: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape) (반복 가능) |
 | `--delete-image` | `<DELETE_IMAGE>` |  | 그림 삭제 "앵커" — 앵커 문단의 그림 삭제 (반복 가능) |

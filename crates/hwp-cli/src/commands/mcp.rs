@@ -1251,6 +1251,20 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             rows,
         });
     }
+    for item in arg_array(args, "clone_table")? {
+        let text_mode = match item.get("text_mode").and_then(Value::as_str).map(str::trim) {
+            None | Some("") | Some("blank") => hwp_convert::CloneTextMode::Blank,
+            Some("keep") => hwp_convert::CloneTextMode::Keep,
+            Some(_) => {
+                return Err("clone_table: text_mode는 blank|keep 이어야 합니다".to_string());
+            }
+        };
+        operations.push(Op::CloneTable {
+            source_table: required_item_usize(item, "clone_table", "source_table")?,
+            anchor: required_item_str(item, "clone_table", "anchor")?.to_string(),
+            text_mode,
+        });
+    }
     for item in arg_array(args, "set_para")? {
         // The CLI line-spacing (% integer | Npt) split into two numeric arguments — mutually exclusive.
         let line_spacing = match (
@@ -1862,6 +1876,13 @@ fn tool_defs() -> Vec<Value> {
                     "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}},
                     "required": ["anchor", "rows"]},
                     "description": "앵커 문단 뒤에 균일 표 삽입(rows는 행(문자열 배열)의 배열)"},
+                "clone_table": {"type": "array", "items": {"type": "object", "properties": {
+                    "source_table": {"type": "integer", "minimum": 0, "description": "원본 표(0-기반, 재귀 순서)"},
+                    "anchor": {"type": "string", "description": "복제본을 삽입할 앵커 문단 텍스트(그 뒤에 삽입)"},
+                    "text_mode": {"type": "string", "enum": ["blank", "keep"],
+                        "description": "blank(기본)=구조·서식만 복제하고 셀 내용은 빈 문단 1개, keep=지원 콘텐츠(중첩 표·그림)까지 복제(id 재부여, 안전하게 재매핑할 수 없는 개체가 있으면 실패)"}},
+                    "required": ["source_table", "anchor"]},
+                    "description": "N번째 표를 깊은 복제해 앵커 문단 뒤에 삽입(구조·병합·테두리·채우기·서식 보존)"},
                 "set_para": {"type": "array", "items": {"type": "object", "properties": {
                     "pattern": {"type": "string"},
                     "line_spacing_pct": {"type": "number", "description": "줄간격 비율(%)"},
@@ -2298,6 +2319,16 @@ mod tests {
         assert_eq!(
             edit["inputSchema"]["properties"]["add_col"]["items"]["properties"]["count"]["minimum"],
             1
+        );
+        // #78: clone_table exposes source_table/anchor/text_mode.
+        let clone_table = &edit["inputSchema"]["properties"]["clone_table"];
+        assert_eq!(
+            clone_table["items"]["required"],
+            json!(["source_table", "anchor"])
+        );
+        assert_eq!(
+            clone_table["items"]["properties"]["text_mode"]["enum"],
+            json!(["blank", "keep"])
         );
         for name in ["hwp_render", "hwp_diff"] {
             let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
@@ -2905,6 +2936,63 @@ mod tests {
         assert!(rejected.is_err(), "count 0 is refused");
         let _ = std::fs::remove_file(temp_file("addrowcol-reject.hwpx"));
         for path in [&source, &destination, &fill_destination] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn mcp_clone_table_blank_default_and_keep_mode() {
+        // #78: MCP clone_table runs through the same conversion primitive as the CLI.
+        let source = temp_file("clonetbl-source.hwpx");
+        let blank_out = temp_file("clonetbl-blank.hwpx");
+        let keep_out = temp_file("clonetbl-keep.hwpx");
+        create_hwpx(&source, "앵커문단\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        // text_mode omitted → blank: structure cloned, cell text stripped.
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": blank_out,
+                "clone_table": [{"source_table": 0, "anchor": "앵커문단"}]
+            }),
+            &ctx(),
+        )
+        .expect("blank clone");
+        let content = tool_read(&json!({"path": blank_out, "format": "plain"}), &ctx()).unwrap();
+        let text = content[0]["text"].as_str().unwrap();
+        assert_eq!(
+            text.matches('가').count(),
+            1,
+            "blank clone strips cell text (source only): {text}"
+        );
+        // keep mode clones cell text as well.
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": keep_out,
+                "clone_table": [{"source_table": 0, "anchor": "앵커문단", "text_mode": "keep"}]
+            }),
+            &ctx(),
+        )
+        .expect("keep clone");
+        let content = tool_read(&json!({"path": keep_out, "format": "plain"}), &ctx()).unwrap();
+        let text = content[0]["text"].as_str().unwrap();
+        assert_eq!(
+            text.matches('가').count(),
+            2,
+            "cloned content present: {text}"
+        );
+        // An invalid text_mode is rejected with a bounded error.
+        let rejected = tool_edit(
+            &json!({
+                "input": source,
+                "output": temp_file("clonetbl-reject.hwpx"),
+                "clone_table": [{"source_table": 0, "anchor": "앵커문단", "text_mode": "bogus"}]
+            }),
+            &ctx(),
+        );
+        assert!(rejected.is_err(), "invalid text_mode is refused");
+        let _ = std::fs::remove_file(temp_file("clonetbl-reject.hwpx"));
+        for path in [&source, &blank_out, &keep_out] {
             let _ = std::fs::remove_file(path);
         }
     }

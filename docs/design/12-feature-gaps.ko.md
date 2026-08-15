@@ -109,8 +109,8 @@
   5): metadata·text·paragraph·table-cell·image HWPX 편집 모두 엔트리 집합 동일, opaque
   엔트리 전량 바이트 동일(미디어 24→24, 이미지 삽입 후 25; container 5→5), `hwp validate`
   클린, non-strict hwp→hwpx는 미디어 24개 전량 보존(종전 9), strict 변환은 양방향 모두
-  fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 5+):
-  표 복제(#78), WMF 벡터, pagination/font 게이트, 인증. hwpx→hwp 변환은
+  fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 6+):
+  WMF 벡터, pagination/font 게이트, 인증. hwpx→hwp 변환은
   settings.xml/version.xml/preview 슬롯 손실을 아직 typed 이벤트로 집계하지 않는다.
   content.hpf 재생성은 모델링된 manifest 항목/메타데이터만 유지하므로, 비모델 manifest
   항목은 고아 엔트리로 남는다(raw-copy는 되지만 목록에는 미등재).
@@ -126,6 +126,19 @@
   행을 쓴다. 열 삽입은 전체 폭 재분배 정책을 유지하고, 새 문단 instance ID는 문서
   최댓값 위로 부여하며, 모든 실패(범위·u16 오버플로·불변식 위반)는 아무것도 발행하지
   않는다. opaque HWPX 컨테이너 안의 표는 여전히 fail-closed.
+
+- **2026-08-15 (이슈 #78 표 깊은 복제)**: `--clone-table "원본표=>앵커[=>blank|keep]"`
+  (MCP `clone_table`의 `source_table`/`anchor`/`text_mode`)이 원본 표를 깊은 복제해
+  앵커 문단 뒤에 삽입한다 — 기하·병합 토폴로지·너비/높이·테두리·채우기·문단/글자
+  서식 보존. `blank`(기본)는 논리 셀마다 빈 서식 문단 1개만 남기고 원본 텍스트와
+  콘텐츠 컨트롤(필드·책갈피·하이퍼링크·그림·수식·중첩 콘텐츠)을 모두 제거한다.
+  `keep`은 중첩 표와 그림까지 복제하되 모든 문단 instance ID를 문서 최댓값 위로
+  재부여하고 gso 개체 식별자(보존 common_data 오프셋 32의 ID, 또는 writer ID 합성을
+  좌우하는 placement z-order)를 새 값으로 고쳐 원본과 가변 ID를 공유하지 않는다.
+  바이너리 에셋은 그 자리에서 재사용. keep 모드는 모델이 안전하게 재매핑할 수 없는
+  opaque `Generic` 컨트롤(필드·수식·글상자)이 있으면 조용히 빼는 대신 원자적으로
+  중단한다. 앵커 매칭은 톱레벨 문단만(`--add-table`과 같은 의미), 모든 실패는
+  아무것도 발행하지 않는다.
 
 - **2026-07-15**: GA-5(버전 게이트), GE-α1~α5·α7(글자효과·밑줄모양·번호형식 hwpx 왕복),
   GE-β4(요약정보 필드), GH-1·GH-2(md/html 링크·이미지), GL-1(추출 옵션 CLI 노출) —

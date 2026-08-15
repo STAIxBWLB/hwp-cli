@@ -200,6 +200,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--merge-cells` | `<MERGE_CELLS>` |  | Merge cells, "table:r1:c1:r2:c2": merge a rectangular area into its top-left anchor (repeatable, 0-based) |
 | `--split-cell` | `<SPLIT_CELL>` |  | Split a cell, "table:row:col": break a merged cell back into 1x1 cells (repeatable, 0-based) |
 | `--add-table` | `<ADD_TABLE>` |  | Insert a table, "anchor=>json": insert a uniform table after the anchor paragraph; json is an array of row arrays (repeatable) |
+| `--clone-table` | `<CLONE_TABLE>` |  | Clone a table, "source_table=>anchor[=>blank\|keep]": deep-copy table source_table (0-based, recursive) after the anchor paragraph; blank (default) keeps structure/styles with empty cells, keep also clones supported content (nested tables, images) with remapped ids (repeatable) |
 | `--set-para` | `<SET_PARA>` |  | Paragraph shape properties, "find=>key:value" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm); repeatable) |
 | `--set-page` | `<SET_PAGE>` |  | Page setup, "key:value" (keys: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape); repeatable) |
 | `--delete-image` | `<DELETE_IMAGE>` |  | Delete an image, "anchor": delete the picture in the anchor paragraph (repeatable) |

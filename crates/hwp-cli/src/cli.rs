@@ -460,6 +460,9 @@ pub struct EditArgs {
     /// Insert a table, "anchor=>json": insert a uniform table after the anchor paragraph; json is an array of row arrays (repeatable)
     #[arg(long = "add-table")]
     pub add_table: Vec<String>,
+    /// Clone a table, "source_table=>anchor[=>blank|keep]": deep-copy table source_table (0-based, recursive) after the anchor paragraph; blank (default) keeps structure/styles with empty cells, keep also clones supported content (nested tables, images) with remapped ids (repeatable)
+    #[arg(long = "clone-table")]
+    pub clone_table: Vec<String>,
     /// Paragraph shape properties, "find=>key:value" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm); repeatable)
     #[arg(long = "set-para")]
     pub set_para: Vec<String>,

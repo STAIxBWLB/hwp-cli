@@ -122,8 +122,8 @@ is itself knowledge).
   entry set identical with all opaque entries byte-identical (media 24→24, 25 after an
   image insert; containers 5→5), `hwp validate` is clean, non-strict hwp→hwpx preserves all
   24 media (previously 9), strict conversion fails closed in both directions, and all eight
-  outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 5+):
-  table cloning (#78), WMF vectors, the pagination/font gate and certification.
+  outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 6+):
+  WMF vectors, the pagination/font gate and certification.
   hwpx→hwp conversion does not yet flag settings.xml/version.xml/preview slot loss with
   typed events. And content.hpf regeneration keeps only modeled manifest items/metadata,
   so unmodeled manifest items survive as orphan package entries (raw-copied but unlisted).
@@ -141,6 +141,23 @@ is itself knowledge).
   instance IDs are issued above the document maximum, and every failure mode (bounds,
   u16 overflow, invariant violation) publishes nothing. Tables inside opaque HWPX
   containers stay fail-closed.
+
+- **2026-08-15 (issue #78 deep table cloning)**: `--clone-table
+  "SOURCE_TABLE=>ANCHOR[=>blank|keep]"` (MCP `clone_table` with
+  `source_table`/`anchor`/`text_mode`) deep-copies the source table — geometry,
+  merge topology, widths/heights, borders, fills, and paragraph/character
+  styles — and inserts the clone after the anchor paragraph. `blank` (default)
+  keeps one empty styled paragraph per logical cell and drops all source text
+  and content controls (fields, bookmarks, hyperlinks, images, equations,
+  nested content). `keep` clones nested tables and pictures as well, remapping
+  every paragraph instance ID above the document maximum and patching gso
+  object identities (the preserved common-data ID at offset 32, or the
+  placement z-order that drives the writer's ID synthesis) so the clone shares
+  no mutable ID with the source; binary assets are reused in place. Keep mode
+  aborts atomically on opaque `Generic` controls (fields, equations, text
+  boxes) whose raw identity bytes the model cannot remap — never a silent drop.
+  Anchor matching is top-level only (same semantics as `--add-table`), and
+  every failure mode publishes nothing.
 
 - **2026-07-15**: GA-5 (version gate), GE-α1 to α5 and α7 (character effects, underline shape and
   numbering format in the hwpx round-trip), GE-β4 (summary information fields), GH-1 and GH-2

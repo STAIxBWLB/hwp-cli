@@ -1415,17 +1415,491 @@ pub fn add_table(doc: &mut Document, anchor: &str, rows: &[Vec<String>]) -> Resu
         controls: vec![Control::Table(table)],
         ..Paragraph::default()
     };
+    Ok(insert_para_after_anchor(doc, anchor, anchor_para)? as usize)
+}
+
+/// Shared anchor semantics for `add_table`/`clone_table`: insert `para`
+/// immediately after the first top-level section paragraph whose text contains
+/// `anchor`. Top-level only — anchors inside cells/text boxes never match.
+fn insert_para_after_anchor(
+    doc: &mut Document,
+    anchor: &str,
+    para: Paragraph,
+) -> Result<u32, String> {
     for section in &mut doc.sections {
         if let Some(i) = section
             .paragraphs
             .iter()
             .position(|p| find_match(&p.chars, anchor, 0).is_some())
         {
-            section.paragraphs.insert(i + 1, anchor_para);
+            section.paragraphs.insert(i + 1, para);
             return Ok(1);
         }
     }
     Err(format!("앵커를 찾을 수 없습니다: {anchor}"))
+}
+
+/// How a cloned table treats source cell content (#78).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloneTextMode {
+    /// Keep one empty styled paragraph per logical cell; drop all source text
+    /// and content controls (fields, bookmarks, images, equations, nested
+    /// content). Geometry, spans, borders, fills, and styles are preserved.
+    Blank,
+    /// Clone every supported paragraph and control subtree (nested tables and
+    /// pictures), remapping all paragraph/control/object instance ids above the
+    /// document maxima. Aborts atomically on opaque controls (`Generic`) whose
+    /// raw identity bytes the model cannot safely remap.
+    Keep,
+}
+
+/// Deep-clone table `source_table` (0-based, recursive order of appearance) and
+/// insert the clone immediately after the first top-level paragraph containing
+/// `anchor` (#78). The source table is never modified; any failure (missing
+/// anchor, invalid index, unsafe opaque child, id overflow) leaves the document
+/// untouched — all fallible work happens on the clone before insertion.
+pub fn clone_table(
+    doc: &mut Document,
+    source_table: usize,
+    anchor: &str,
+    mode: CloneTextMode,
+) -> Result<u32, String> {
+    if anchor.is_empty() {
+        return Err("앵커 텍스트가 없습니다".into());
+    }
+    let (mut clone, payload) = take_table_clone(doc, source_table)
+        .ok_or_else(|| format!("표 #{source_table}를 찾을 수 없습니다"))?;
+    if mode == CloneTextMode::Keep {
+        ensure_cloneable(&clone)?;
+    } else {
+        // Blank: one empty styled paragraph per logical cell and caption; spans,
+        // geometry, and cell-level formatting stay untouched.
+        if let Some(cap) = &mut clone.caption {
+            cap.paragraphs = vec![blank_para_like(cap.paragraphs.first())];
+        }
+        for cell in &mut clone.cells {
+            cell.paragraphs = vec![blank_para_like(cell.paragraphs.first())];
+        }
+    }
+    // Paragraph instance ids must be unique document-wide on the HWP path (the
+    // hwp5-sourced edit path runs with synthesize=false, so the writer will not
+    // reassign them) — blank-mode paragraphs inherit the source ids via
+    // blank_para_like, so both modes remap here.
+    let mut next_para = doc_max_instance_id(doc)
+        .checked_add(1)
+        .ok_or_else(|| "문단 인스턴스 id 오버플로".to_string())?;
+    reassign_clone_para_ids(&mut clone, &mut next_para)?;
+    // Object identity: patch the gso common instance id (common_data @32) or,
+    // for hwpx-sourced tables, bump the placement z-order so the writer's
+    // `0x5000_0000 | z_order` synthesis cannot collide with the source.
+    let mut next_obj = doc_max_object_id(doc)
+        .checked_add(1)
+        .ok_or_else(|| "개체 id 오버플로".to_string())?
+        .max(1);
+    let mut next_z = doc_max_table_z_order(doc).saturating_add(1);
+    remap_clone_object_ids(&mut clone, &mut next_obj, &mut next_z)?;
+    validate_table_invariants(&clone)?;
+
+    let mut anchor_para = Paragraph {
+        chars: vec![
+            HwpChar::ExtCtrl {
+                code: 11,
+                ctrl_id: *b"tbl ",
+                payload,
+                ctrl_index: Some(0),
+            },
+            HwpChar::CharCtrl(13),
+        ],
+        char_shape_runs: vec![(0, CharShapeId(0))],
+        controls: vec![Control::Table(clone)],
+        ..Paragraph::default()
+    };
+    anchor_para.header.instance_id = next_para;
+    insert_para_after_anchor(doc, anchor, anchor_para)
+}
+
+/// Clone the nth table (recursive depth-first order shared with
+/// `walk_nth_table`) out of the document, together with the ExtCtrl payload of
+/// its anchor paragraph (fallback: the same 12-byte default `add_table` uses).
+fn take_table_clone(doc: &Document, index: usize) -> Option<(hwp_model::Table, Vec<u8>)> {
+    let mut seen = 0usize;
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            if let Some(found) = find_table_clone_in_para(para, index, &mut seen) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn find_table_clone_in_para(
+    para: &Paragraph,
+    index: usize,
+    seen: &mut usize,
+) -> Option<(hwp_model::Table, Vec<u8>)> {
+    for ctrl in &para.controls {
+        match ctrl {
+            Control::Table(t) => {
+                if *seen == index {
+                    let payload = para
+                        .chars
+                        .iter()
+                        .find_map(|ch| {
+                            if let HwpChar::ExtCtrl {
+                                ctrl_id, payload, ..
+                            } = ch
+                                && ctrl_id == b"tbl "
+                            {
+                                return Some(payload.clone());
+                            }
+                            None
+                        })
+                        .unwrap_or_else(|| {
+                            let mut p = vec![0u8; 12];
+                            p[..4].copy_from_slice(b" lbt"); // reversed ctrl_id
+                            p
+                        });
+                    return Some((t.clone(), payload));
+                }
+                *seen += 1;
+                for cell in &t.cells {
+                    for p in &cell.paragraphs {
+                        if let Some(found) = find_table_clone_in_para(p, index, seen) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &g.paragraph_lists {
+                    for p in &list.paragraphs {
+                        if let Some(found) = find_table_clone_in_para(p, index, seen) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Keep-mode safety gate: any `Generic` control carries raw identity bytes
+/// (CTRL_HEADER data, preserved subtrees, raw XML) the model cannot remap, so
+/// the clone aborts rather than silently duplicating or dropping it (#78).
+fn ensure_cloneable(table: &hwp_model::Table) -> Result<(), String> {
+    if let Some(cap) = &table.caption {
+        for p in &cap.paragraphs {
+            ensure_cloneable_para(p)?;
+        }
+    }
+    for cell in &table.cells {
+        for p in &cell.paragraphs {
+            ensure_cloneable_para(p)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_cloneable_para(para: &Paragraph) -> Result<(), String> {
+    for ctrl in &para.controls {
+        match ctrl {
+            Control::Table(t) => ensure_cloneable(t)?,
+            Control::Picture(pic) => {
+                if let Some(cap) = &pic.caption {
+                    for p in &cap.paragraphs {
+                        ensure_cloneable_para(p)?;
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                let _ = g;
+                return Err(format!(
+                    "keep 모드에서 안전하게 복제할 수 없는 개체({})가 표에 포함되어 있습니다",
+                    String::from_utf8_lossy(&ctrl.ctrl_id())
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Maximum paragraph instance id across the whole document — body, table cells
+/// (nested tables included), captions, and Generic paragraph lists. The
+/// existing `max_instance_id` is table-local; clone remapping must be global.
+fn doc_max_instance_id(doc: &Document) -> u32 {
+    let mut max = 0u32;
+    for section in &doc.sections {
+        max_instance_id_in_paras(&section.paragraphs, &mut max);
+    }
+    max
+}
+
+fn max_instance_id_in_paras(paras: &[Paragraph], max: &mut u32) {
+    for p in paras {
+        *max = (*max).max(p.header.instance_id);
+        for ctrl in &p.controls {
+            match ctrl {
+                Control::Table(t) => {
+                    if let Some(cap) = &t.caption {
+                        max_instance_id_in_paras(&cap.paragraphs, max);
+                    }
+                    for cell in &t.cells {
+                        max_instance_id_in_paras(&cell.paragraphs, max);
+                    }
+                }
+                Control::Picture(pic) => {
+                    if let Some(cap) = &pic.caption {
+                        max_instance_id_in_paras(&cap.paragraphs, max);
+                    }
+                }
+                Control::Generic(g) => {
+                    // Shape/drawing captions carry paragraphs too — include them
+                    // so the document maximum really is global.
+                    if let Some(cap) = &g.caption {
+                        max_instance_id_in_paras(&cap.paragraphs, max);
+                    }
+                    for list in &g.paragraph_lists {
+                        max_instance_id_in_paras(&list.paragraphs, max);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Reassign every paragraph instance id inside the clone from `next` upward.
+fn reassign_clone_para_ids(table: &mut hwp_model::Table, next: &mut u32) -> Result<(), String> {
+    if let Some(cap) = &mut table.caption {
+        reassign_para_ids(&mut cap.paragraphs, next)?;
+    }
+    for cell in &mut table.cells {
+        reassign_para_ids(&mut cell.paragraphs, next)?;
+    }
+    Ok(())
+}
+
+fn reassign_para_ids(paras: &mut [Paragraph], next: &mut u32) -> Result<(), String> {
+    for p in paras {
+        p.header.instance_id = *next;
+        *next = next
+            .checked_add(1)
+            .ok_or_else(|| "문단 인스턴스 id 오버플로".to_string())?;
+        for ctrl in &mut p.controls {
+            match ctrl {
+                Control::Table(t) => reassign_clone_para_ids(t, next)?,
+                Control::Picture(pic) => {
+                    if let Some(cap) = &mut pic.caption {
+                        reassign_para_ids(&mut cap.paragraphs, next)?;
+                    }
+                }
+                Control::Generic(g) => {
+                    for list in &mut g.paragraph_lists {
+                        reassign_para_ids(&mut list.paragraphs, next)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// gso common instance id (4 bytes LE at offset 32), when the raw bytes carry
+/// one — see `hwp5::write::emit_table`/`is_materialized_generated_picture`.
+fn gso_common_instance_id(common: &[u8]) -> Option<u32> {
+    common
+        .get(32..36)
+        .map(|b| u32::from_le_bytes(b.try_into().expect("slice len checked")))
+}
+
+/// A table's object identity as the HWP writer will emit it: the preserved
+/// gso common id, or the id synthesized from the hwpx placement z-order.
+fn table_object_id(t: &hwp_model::Table) -> u32 {
+    gso_common_instance_id(&t.common_data).unwrap_or_else(|| {
+        t.placement
+            .as_ref()
+            .map(|pl| 0x5000_0000 | (pl.z_order as u32 & 0xffff))
+            .unwrap_or(0)
+    })
+}
+
+/// Maximum gso object id across all tables and pictures in the document.
+fn doc_max_object_id(doc: &Document) -> u32 {
+    let mut max = 0u32;
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            max_object_id_in_para(para, &mut max);
+        }
+    }
+    max
+}
+
+fn max_object_id_in_para(para: &Paragraph, max: &mut u32) {
+    for ctrl in &para.controls {
+        match ctrl {
+            Control::Table(t) => {
+                *max = (*max).max(table_object_id(t));
+                if let Some(cap) = &t.caption {
+                    for p in &cap.paragraphs {
+                        max_object_id_in_para(p, max);
+                    }
+                }
+                for cell in &t.cells {
+                    for p in &cell.paragraphs {
+                        max_object_id_in_para(p, max);
+                    }
+                }
+            }
+            Control::Picture(pic) => {
+                if let Some(id) = gso_common_instance_id(&pic.common_data) {
+                    *max = (*max).max(id);
+                }
+                if let Some(cap) = &pic.caption {
+                    for p in &cap.paragraphs {
+                        max_object_id_in_para(p, max);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                // gso containers carry the same gso common layout — include
+                // their id so a clone never collides with a drawing either.
+                if g.ctrl_id == *b"gso "
+                    && let Some(id) = gso_common_instance_id(&g.data)
+                {
+                    *max = (*max).max(id);
+                }
+                for list in &g.paragraph_lists {
+                    for p in &list.paragraphs {
+                        max_object_id_in_para(p, max);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Maximum placement z-order among all tables (drives the hwpx-sourced id
+/// synthesis `0x5000_0000 | z_order`; bumping it keeps the clone unique).
+fn doc_max_table_z_order(doc: &Document) -> i32 {
+    let mut max = 0i32;
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            max_table_z_order_in_para(para, &mut max);
+        }
+    }
+    max
+}
+
+fn max_table_z_order_in_para(para: &Paragraph, max: &mut i32) {
+    for ctrl in &para.controls {
+        match ctrl {
+            Control::Table(t) => {
+                if t.common_data.is_empty()
+                    && let Some(pl) = &t.placement
+                {
+                    *max = (*max).max(pl.z_order);
+                }
+                if let Some(cap) = &t.caption {
+                    for p in &cap.paragraphs {
+                        max_table_z_order_in_para(p, max);
+                    }
+                }
+                for cell in &t.cells {
+                    for p in &cell.paragraphs {
+                        max_table_z_order_in_para(p, max);
+                    }
+                }
+            }
+            Control::Picture(pic) => {
+                if let Some(cap) = &pic.caption {
+                    for p in &cap.paragraphs {
+                        max_table_z_order_in_para(p, max);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &g.paragraph_lists {
+                    for p in &list.paragraphs {
+                        max_table_z_order_in_para(p, max);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Give the cloned table (and, recursively, every nested table/picture) a fresh
+/// object identity so the clone shares no mutable id with the source (#78).
+/// hwp5-sourced objects get the next free gso common id; hwpx-sourced tables
+/// get a bumped placement z-order (the writer derives their id from it).
+/// Pictures/tables without raw common bytes synthesize id 0 — the pre-existing
+/// writer fallback, unchanged here.
+fn remap_clone_object_ids(
+    table: &mut hwp_model::Table,
+    next_id: &mut u32,
+    next_z: &mut i32,
+) -> Result<(), String> {
+    if !table.common_data.is_empty() {
+        let id = *next_id;
+        *next_id = next_id
+            .checked_add(1)
+            .ok_or_else(|| "개체 id 오버플로".to_string())?;
+        if table.common_data.len() >= 36 {
+            table.common_data[32..36].copy_from_slice(&id.to_le_bytes());
+        }
+    } else if let Some(pl) = &mut table.placement {
+        pl.z_order = *next_z;
+        *next_z = next_z
+            .checked_add(1)
+            .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
+    }
+    // Captions can host nested tables/pictures — remap them too.
+    if let Some(cap) = &mut table.caption {
+        for p in &mut cap.paragraphs {
+            remap_clone_object_ids_in_para(p, next_id, next_z)?;
+        }
+    }
+    for cell in &mut table.cells {
+        for p in &mut cell.paragraphs {
+            remap_clone_object_ids_in_para(p, next_id, next_z)?;
+        }
+    }
+    Ok(())
+}
+
+fn remap_clone_object_ids_in_para(
+    para: &mut Paragraph,
+    next_id: &mut u32,
+    next_z: &mut i32,
+) -> Result<(), String> {
+    for ctrl in &mut para.controls {
+        match ctrl {
+            Control::Table(t) => remap_clone_object_ids(t, next_id, next_z)?,
+            Control::Picture(pic) => {
+                if pic.common_data.len() >= 36 {
+                    let id = *next_id;
+                    *next_id = next_id
+                        .checked_add(1)
+                        .ok_or_else(|| "개체 id 오버플로".to_string())?;
+                    pic.common_data[32..36].copy_from_slice(&id.to_le_bytes());
+                }
+                if let Some(cap) = &mut pic.caption {
+                    for p in &mut cap.paragraphs {
+                        remap_clone_object_ids_in_para(p, next_id, next_z)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Kind of object deletion (GK-8).
@@ -1617,6 +2091,291 @@ mod tests {
         assert_eq!(text, "1");
         // Missing anchor → error.
         assert!(add_table(&mut doc, "없는앵커", &rows).is_err());
+    }
+
+    /// Test helper: collect every table in the document (recursive order).
+    fn all_tables(doc: &Document) -> Vec<&hwp_model::Table> {
+        fn walk<'a>(paras: &'a [Paragraph], out: &mut Vec<&'a hwp_model::Table>) {
+            for p in paras {
+                for ctrl in &p.controls {
+                    match ctrl {
+                        Control::Table(t) => {
+                            out.push(t);
+                            for cell in &t.cells {
+                                walk(&cell.paragraphs, out);
+                            }
+                        }
+                        Control::Generic(g) => {
+                            for list in &g.paragraph_lists {
+                                walk(&list.paragraphs, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for section in &doc.sections {
+            walk(&section.paragraphs, &mut out);
+        }
+        out
+    }
+
+    /// Source for clone tests: "머리" para, a 2x2 table, "끝" para.
+    fn clone_test_doc() -> Document {
+        crate::from_markdown::from_markdown("머리\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n\n끝\n")
+    }
+
+    /// Give every source paragraph a distinct non-zero instance id so the
+    /// clone's remapping is observable.
+    fn seed_instance_ids(doc: &mut Document) {
+        let mut next = 100u32;
+        fn walk(paras: &mut [Paragraph], next: &mut u32) {
+            for p in paras {
+                p.header.instance_id = *next;
+                *next += 1;
+                for ctrl in &mut p.controls {
+                    match ctrl {
+                        Control::Table(t) => {
+                            for cell in &mut t.cells {
+                                walk(&mut cell.paragraphs, next);
+                            }
+                        }
+                        Control::Generic(g) => {
+                            for list in &mut g.paragraph_lists {
+                                walk(&mut list.paragraphs, next);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for section in &mut doc.sections {
+            walk(&mut section.paragraphs, &mut next);
+        }
+    }
+
+    #[test]
+    fn clone_table_blank_구조보존_내용제거() {
+        let mut doc = clone_test_doc();
+        seed_instance_ids(&mut doc);
+        let source_max = doc_max_instance_id(&doc);
+        assert_eq!(
+            clone_table(&mut doc, 0, "끝", CloneTextMode::Blank).unwrap(),
+            1
+        );
+
+        let tables = all_tables(&doc);
+        assert_eq!(tables.len(), 2);
+        let (src, clone) = (tables[0], tables[1]);
+        // Source untouched.
+        assert_eq!(cell_text(&src.cells[2]), "1");
+        // Geometry/merge topology preserved.
+        assert_eq!((clone.rows, clone.cols), (src.rows, src.cols));
+        assert_eq!(clone.row_cell_counts, src.row_cell_counts);
+        for (a, b) in src.cells.iter().zip(&clone.cells) {
+            assert_eq!(
+                (a.col, a.row, a.col_span, a.row_span),
+                (b.col, b.row, b.col_span, b.row_span)
+            );
+            assert_eq!(
+                (a.width, a.height, a.border_fill),
+                (b.width, b.height, b.border_fill)
+            );
+        }
+        // Blank: one empty paragraph per cell, no text, no controls.
+        for cell in &clone.cells {
+            assert_eq!(cell.paragraphs.len(), 1);
+            assert!(cell_text(cell).is_empty());
+            assert!(cell.paragraphs[0].controls.is_empty());
+        }
+        // Instance ids remapped above the source document maximum.
+        let clone_ids: Vec<u32> = clone
+            .cells
+            .iter()
+            .map(|c| c.paragraphs[0].header.instance_id)
+            .collect();
+        assert!(clone_ids.iter().all(|&id| id > source_max));
+        let mut dedup = clone_ids.clone();
+        dedup.sort_unstable();
+        dedup.dedup();
+        assert_eq!(dedup.len(), clone_ids.len());
+        // Source ids unchanged.
+        assert!(
+            src.cells
+                .iter()
+                .all(|c| c.paragraphs[0].header.instance_id <= source_max)
+        );
+    }
+
+    #[test]
+    fn clone_table_keep_내용보존_id재부여() {
+        let mut doc = clone_test_doc();
+        seed_instance_ids(&mut doc);
+        let source_max = doc_max_instance_id(&doc);
+        assert_eq!(
+            clone_table(&mut doc, 0, "머리", CloneTextMode::Keep).unwrap(),
+            1
+        );
+
+        let tables = all_tables(&doc);
+        assert_eq!(tables.len(), 2);
+        // The anchor "머리" precedes the source table, so the clone lands first.
+        let (clone, src) = (tables[0], tables[1]);
+        assert_eq!(cell_text(&clone.cells[2]), "1");
+        assert_eq!(cell_text(&src.cells[2]), "1");
+        assert!(
+            clone
+                .cells
+                .iter()
+                .all(|c| c.paragraphs[0].header.instance_id > source_max)
+        );
+    }
+
+    #[test]
+    fn clone_table_keep_opaque_개체_원자적_거부() {
+        let mut doc = clone_test_doc();
+        with_nth_table(&mut doc, 0, |t| {
+            t.cells[0].paragraphs[0]
+                .controls
+                .push(Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: *b"eqed",
+                    data: vec![1, 2, 3],
+                    paragraph_lists: Vec::new(),
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption: None,
+                    hwpx_raw_xml: None,
+                }));
+        });
+        let err = clone_table(&mut doc, 0, "끝", CloneTextMode::Keep).unwrap_err();
+        assert!(err.contains("eqed"), "bounded ctrl_id error: {err}");
+        // Atomic: nothing was inserted.
+        assert_eq!(all_tables(&doc).len(), 1);
+        // Blank mode strips the same control instead of failing.
+        assert_eq!(
+            clone_table(&mut doc, 0, "끝", CloneTextMode::Blank).unwrap(),
+            1
+        );
+        let tables = all_tables(&doc);
+        assert_eq!(tables.len(), 2);
+        assert!(
+            tables[1]
+                .cells
+                .iter()
+                .all(|c| c.paragraphs.iter().all(|p| p.controls.is_empty()))
+        );
+    }
+
+    #[test]
+    fn clone_table_object_id_재부여() {
+        let mut doc = clone_test_doc();
+        // Pretend the source table came from hwp5: raw gso common with id 7 @32.
+        with_nth_table(&mut doc, 0, |t| {
+            t.common_data = vec![0u8; 44];
+            t.common_data[32..36].copy_from_slice(&7u32.to_le_bytes());
+        });
+        assert_eq!(
+            clone_table(&mut doc, 0, "끝", CloneTextMode::Blank).unwrap(),
+            1
+        );
+        let tables = all_tables(&doc);
+        assert_eq!(
+            u32::from_le_bytes(tables[0].common_data[32..36].try_into().unwrap()),
+            7,
+            "source id untouched"
+        );
+        assert_eq!(
+            u32::from_le_bytes(tables[1].common_data[32..36].try_into().unwrap()),
+            8,
+            "clone gets the next free id"
+        );
+        // A second clone keeps rising — no collision with either existing table.
+        // (Both clones anchor after "끝", so the newer one lands ahead of the older.)
+        assert_eq!(
+            clone_table(&mut doc, 0, "끝", CloneTextMode::Blank).unwrap(),
+            1
+        );
+        let tables = all_tables(&doc);
+        assert_eq!(tables.len(), 3);
+        let mut ids: Vec<u32> = tables
+            .iter()
+            .map(|t| u32::from_le_bytes(t.common_data[32..36].try_into().unwrap()))
+            .collect();
+        assert_eq!(ids[0], 7, "source id untouched");
+        ids.sort_unstable();
+        assert_eq!(ids, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn clone_table_keep_캡션_중첩_개체_id_재부여() {
+        let mut doc = clone_test_doc();
+        // Table 0 gets a caption whose paragraph holds a nested hwp5-sourced
+        // table (gso common id 7) — captions must join the id remap too.
+        let inner = with_nth_table_readonly(&mut doc, 0, |t| t.clone()).unwrap();
+        with_nth_table(&mut doc, 0, |t| {
+            let mut inner = inner;
+            inner.common_data = vec![0u8; 44];
+            inner.common_data[32..36].copy_from_slice(&7u32.to_le_bytes());
+            t.caption = Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 283,
+                width: None,
+                last_width: 0,
+                paragraphs: vec![Paragraph {
+                    controls: vec![Control::Table(inner)],
+                    ..Paragraph::default()
+                }],
+            });
+        });
+        assert_eq!(
+            clone_table(&mut doc, 0, "끝", CloneTextMode::Keep).unwrap(),
+            1
+        );
+        let tables = all_tables(&doc);
+        // "끝" follows the source table, so order is [source, clone].
+        let cap_id = |t: &hwp_model::Table| {
+            let Control::Table(inner) = &t.caption.as_ref().unwrap().paragraphs[0].controls[0]
+            else {
+                panic!("caption nested table")
+            };
+            u32::from_le_bytes(inner.common_data[32..36].try_into().unwrap())
+        };
+        assert_eq!(cap_id(tables[0]), 7, "source caption object untouched");
+        assert_eq!(cap_id(tables[1]), 8, "clone caption object remapped");
+    }
+
+    #[test]
+    fn clone_table_중첩_인덱스와_오류() {
+        let mut doc = clone_test_doc();
+        // Nest a copy of table 0 inside its own first cell → indices 0 (outer), 1 (nested).
+        let inner = with_nth_table_readonly(&mut doc, 0, |t| t.clone()).unwrap();
+        with_nth_table(&mut doc, 0, |t| {
+            t.cells[0].paragraphs[0]
+                .controls
+                .push(Control::Table(inner));
+        });
+        assert_eq!(all_tables(&doc).len(), 2);
+        // Cloning index 1 clones the nested table, not the outer one.
+        assert_eq!(
+            clone_table(&mut doc, 1, "끝", CloneTextMode::Blank).unwrap(),
+            1
+        );
+        let tables = all_tables(&doc);
+        assert_eq!(tables.len(), 3);
+        assert!(tables[2].cells[0].paragraphs[0].controls.is_empty());
+        // Errors: bad index, missing anchor, empty anchor — document unchanged.
+        let before = all_tables(&doc).len();
+        assert!(clone_table(&mut doc, 99, "끝", CloneTextMode::Blank).is_err());
+        assert!(clone_table(&mut doc, 0, "없는앵커", CloneTextMode::Blank).is_err());
+        assert!(clone_table(&mut doc, 0, "", CloneTextMode::Blank).is_err());
+        assert_eq!(all_tables(&doc).len(), before);
     }
 
     #[test]
