@@ -372,6 +372,10 @@ pub struct GenericControl {
     /// 이 문자열을 그대로 방출한다. hwp5 출신·합성 IR이면 None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hwpx_raw_xml: Option<String>,
+    /// hwpx hp:container 상자 — Some이면 이 Generic은 컨테이너이며 gso_shapes는
+    /// 컨테이너 원점 기준 자식 도형. 원문 XML(hwpx_raw_xml)이 재직렬화 원본이다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_box: Option<ContainerBox>,
 }
 
 /// 다단(multi-column) 정의 — COLDEF(`cold`)/hp:colPr. 렌더러가 단 배치·구분선에 사용.
@@ -472,6 +476,20 @@ pub struct ShapeGeom {
     /// Accessible object description (`hp:shapeComment` in HWPX).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// hwpx hp:container 자체 상자(HWPUNIT, PAPER 기준 pos/sz + treatAsChar).
+/// GenericControl.container_box가 Some이면 gso_shapes는 컨테이너 원점 기준
+/// 상대좌표의 자식 도형이다(렌더 전용; 재직렬화 원본은 hwpx_raw_xml).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerBox {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /// 글자처럼 취급(hp:pos treatAsChar) — 참이면 x/y 대신 텍스트 흐름 위치에 배치.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub anchored: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {

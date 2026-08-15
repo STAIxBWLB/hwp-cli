@@ -1034,6 +1034,7 @@ fn attach_text_box(
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         }),
     )
 }

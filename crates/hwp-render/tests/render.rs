@@ -314,6 +314,7 @@ fn authoritative_column_flags_preserve_an_empty_first_column() {
             }),
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         }));
     for paragraph in &mut doc.sections[0].paragraphs {
         assert_eq!(paragraph.line_segs.len(), 1);
@@ -332,6 +333,93 @@ fn authoritative_column_flags_preserve_an_empty_first_column() {
         item,
         hwp_render::display::Item::Glyphs { x, .. } if *x < page.width_pt / 2.0
     )));
+}
+
+/// HWPX 컨테이너(hp:container)는 container_box 원점에 자식 도형(상대좌표)을
+/// 전개해 Item::Path로 렌더하고, unsupported_control_omitted를 기록하지 않는다.
+#[test]
+fn hwpx_container_children_render_at_container_origin() {
+    use hwp_model::{ContainerBox, Control, GenericControl, ShapeGeom, ShapeKind};
+
+    let mut doc = hwp_convert::from_markdown("container host paragraph\n");
+    let shape = |kind, x, y, w, h| ShapeGeom {
+        kind,
+        x,
+        y,
+        w,
+        h,
+        points: Vec::new(),
+        fill: 0xFFFF_FFFF,
+        fill_gradient: None,
+        border_color: 0,
+        border_width: 40,
+        round_ratio: 0,
+        border_style: 0,
+        arrow_start: 0,
+        arrow_end: 0,
+        anchored: false,
+        description: None,
+    };
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(GenericControl {
+            ctrl_id: *b"cont",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: vec![
+                shape(ShapeKind::Rect, 1000, 2000, 5000, 3000),
+                shape(ShapeKind::Ellipse, 3000, 4000, 2000, 1000),
+            ],
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: Some(ContainerBox {
+                x: 10000,
+                y: 20000,
+                w: 6000,
+                h: 2400,
+                anchored: false,
+            }),
+        }));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    // 자식 도형 2개가 컨테이너 원점(10000, 20000)만큼 이동해 Path로 나와야 한다.
+    // rect 절대좌표 (11000, 22000) HWPUNIT → MoveTo(110.0, 220.0) pt.
+    let page = &list.pages[0];
+    let rect_path = page.items.iter().find_map(|item| match item {
+        hwp_render::display::Item::Path { commands, .. } => commands.first(),
+        _ => None,
+    });
+    assert!(
+        matches!(
+            rect_path,
+            Some(hwp_render::display::PathCmd::MoveTo(px, py))
+                if (*px - 110.0).abs() < 0.01 && (*py - 220.0).abs() < 0.01
+        ),
+        "컨테이너 자식 rect가 원점 기준 절대좌표로 전개돼야 한다: {rect_path:?}"
+    );
+    let path_count = page
+        .items
+        .iter()
+        .filter(|item| matches!(item, hwp_render::display::Item::Path { .. }))
+        .count();
+    assert!(path_count >= 2, "자식 도형 2개가 Path로 나와야 한다");
+    let report = warns.finish();
+    assert!(
+        report
+            .issues
+            .iter()
+            .all(|issue| issue.code != hwp_render::RenderIssueCode::UnsupportedControlOmitted),
+        "container는 unsupported_control_omitted 대상이 아니다: {:?}",
+        report.issues
+    );
 }
 
 /// 문단 위/아래 간격(spacing_top/bottom)이 합성 줄 배치 v_pos 에 반영되어야 한다.
@@ -405,6 +493,7 @@ fn 수식_조판_렌더() {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                container_box: None,
             }));
     }
     let out = render_document(
@@ -1184,6 +1273,7 @@ fn 글상자_내부_개요_번호_마커_렌더() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         }));
 
     let mut store = hwp_render::FontStore::new();
@@ -1213,6 +1303,7 @@ fn generic_control(
         column_def: None,
         caption: None,
         hwpx_raw_xml: None,
+        container_box: None,
     })
 }
 
@@ -1758,6 +1849,7 @@ fn generic_shape_caption_is_rendered() {
                 }],
             }),
             hwpx_raw_xml: None,
+            container_box: None,
         }));
 
     let (list, _) = 표_레이아웃(&doc);
@@ -2206,6 +2298,7 @@ fn table_fragments_reserve_pending_footnote_space() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         }));
 
     let (list, _report) = 표_레이아웃(&doc);
@@ -2373,6 +2466,7 @@ fn renders_multi_column_divider() {
             }),
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         }));
 
     let mut store = hwp_render::FontStore::new();
@@ -2559,6 +2653,7 @@ fn 미주는_구역끝_각주는_앵커페이지() {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         })
     };
     let anchor = &mut doc.sections[0].paragraphs[0];
@@ -2629,6 +2724,7 @@ fn endnotes_paginate_across_all_required_pages() {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                container_box: None,
             }));
     }
 

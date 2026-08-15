@@ -905,6 +905,8 @@ pub fn layout_document(
                                     || crate::shape_draw::has_shape(&g.raw_children)))
                         // hwpx 구조화 도형(rect/ellipse/...).
                         || matches!(c, Control::Generic(g) if !g.gso_shapes.is_empty())
+                        // hwpx 컨테이너(hp:container) — 자식 도형/텍스트를 렌더한다.
+                        || matches!(c, Control::Generic(g) if g.container_box.is_some())
                         // 수식(hp:equation).
                         || matches!(c, Control::Generic(g) if g.equation.is_some());
                     !rendered
@@ -2483,6 +2485,70 @@ fn layout_para_objects(
                     flow_end = flow_end.max(place_caption_block(page, caption, (bx, by, bw, bh)));
                 }
                 if inline {
+                    bottom = bottom.max(flow_end);
+                    object_y = flow_end;
+                }
+            }
+            // HWPX 컨테이너(hp:container): container_box 상자 + 원점 기준 상대좌표 자식 도형.
+            Control::Generic(g) if g.container_box.is_some() => {
+                let cb = g.container_box.as_ref().expect("is_some 가드");
+                let bw = (cb.w as f32 / 100.0).max(8.0);
+                let bh = (cb.h as f32 / 100.0).max(0.0);
+                let caption =
+                    prepare_caption_block(doc, store, page, g.caption.as_ref(), bw, warnings);
+                let top_offset = if cb.anchored {
+                    inline_top_caption_offset(caption.as_ref())
+                } else {
+                    0.0
+                };
+                // 컨테이너 원점: anchored면 텍스트 흐름 위치, 아니면 PAPER 기준 오프셋.
+                let origin = if cb.anchored {
+                    ((x * 100.0) as i32, ((object_y + top_offset) * 100.0) as i32)
+                } else {
+                    (cb.x, cb.y)
+                };
+                // 자식 도형을 페이지 절대좌표로 전개한다(IR 불변 유지를 위해 복제본 사용).
+                let adjusted: Vec<hwp_model::ShapeGeom> = g
+                    .gso_shapes
+                    .iter()
+                    .map(|s| {
+                        let mut s2 = s.clone();
+                        s2.x += origin.0;
+                        s2.y += origin.1;
+                        s2.anchored = false;
+                        s2
+                    })
+                    .collect();
+                crate::shape_draw::draw_ir_shapes(&adjusted, page, warnings);
+                let (bx, by) = (origin.0 as f32 / 100.0, origin.1 as f32 / 100.0);
+                let mut flow_end = by + bh;
+                // 컨테이너 텍스트(자식 도형 subList 포함)를 상자 안에 조판(단일 컬럼 v1).
+                if !g.paragraph_lists.is_empty() {
+                    let flat = g.paragraph_lists.iter().flat_map(|l| l.paragraphs.iter());
+                    let mut box_list_state = crate::list::ListState::default();
+                    let inner = layout_box_para_iter(
+                        doc,
+                        store,
+                        page,
+                        flat.map(|para| (para, BoxParaSelection::All)),
+                        bx,
+                        by,
+                        bw,
+                        warnings,
+                        Some(&mut box_list_state),
+                        None,
+                        0,
+                    );
+                    flow_end = flow_end.max(inner);
+                }
+                if let Some(caption) = caption {
+                    flow_end = flow_end.max(place_caption_block(
+                        page,
+                        caption,
+                        (bx, by, bw, flow_end - by),
+                    ));
+                }
+                if cb.anchored {
                     bottom = bottom.max(flow_end);
                     object_y = flow_end;
                 }
@@ -5109,6 +5175,7 @@ mod certification_budget_tests {
             column_def: None,
             caption: None,
             hwpx_raw_xml: None,
+            container_box: None,
         })
     }
 

@@ -12,9 +12,10 @@
 
 use hwp_model::opaque::OpaqueRecord;
 use hwp_model::{
-    Caption, CaptionDirection, CaptionSide, Cell, CharShapeId, ColumnDef, Control, Equation,
-    GenericControl, GradientSpec, HwpChar, HwpUnit, LineSeg, PageDef, ParaShapeId, Paragraph,
-    ParagraphList, SECPR_PAGEPR_SLOT, Section, SectionDef, ShapeGeom, ShapeKind, StyleId, Table,
+    Caption, CaptionDirection, CaptionSide, Cell, CharShapeId, ColumnDef, ContainerBox, Control,
+    Equation, GenericControl, GradientSpec, HwpChar, HwpUnit, LineSeg, PageDef, ParaShapeId,
+    Paragraph, ParagraphList, SECPR_PAGEPR_SLOT, Section, SectionDef, ShapeGeom, ShapeKind,
+    StyleId, Table,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
@@ -211,6 +212,7 @@ fn parse_paragraph(
                             column_def: None,
                             caption: None,
                             hwpx_raw_xml: None,
+                            container_box: None,
                         }));
                     }
                     b"linesegarray" => {
@@ -247,6 +249,7 @@ fn parse_paragraph(
                             column_def: None,
                             caption: None,
                             hwpx_raw_xml: None,
+                            container_box: None,
                         };
                         if let Some(kind) = shape_kind(&name) {
                             // 도형은 의미 파싱(gso_shapes) 경로를 유지한다(원문 캡처 없음).
@@ -274,9 +277,24 @@ fn parse_paragraph(
                             let raw = capture_element(reader, e, empty)?;
                             if !empty {
                                 let mut raw_reader = Reader::from_str(&raw);
-                                // 캡처본의 첫 이벤트(개체 자신의 여는 태그)를 소비한다.
+                                // 캡처본의 첫 이벤트(container 여는 태그)를 소비한다.
                                 let _ = next_event(&mut raw_reader)?;
-                                collect_sub_lists(&mut raw_reader, &name, &mut generic, warnings)?;
+                                if name == b"container" {
+                                    collect_container(
+                                        &mut raw_reader,
+                                        &mut generic,
+                                        warnings,
+                                        0,
+                                        (0, 0),
+                                    )?;
+                                } else {
+                                    collect_sub_lists(
+                                        &mut raw_reader,
+                                        &name,
+                                        &mut generic,
+                                        warnings,
+                                    )?;
+                                }
                             }
                             generic.hwpx_raw_xml = Some(raw);
                         }
@@ -712,6 +730,7 @@ fn parse_ctrl(
                         column_def: None,
                         caption: None,
                         hwpx_raw_xml: None,
+                        container_box: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 3, ctrl_id);
                     para.controls.push(Control::Generic(generic));
@@ -746,6 +765,7 @@ fn parse_ctrl(
                         column_def: None,
                         caption: None,
                         hwpx_raw_xml: None,
+                        container_box: None,
                     };
                     push_ext_ctrl(para, wchar_pos, 22, *b"bokm");
                     para.controls.push(Control::Generic(generic));
@@ -792,6 +812,7 @@ fn parse_ctrl(
                     column_def,
                     caption: None,
                     hwpx_raw_xml: None,
+                    container_box: None,
                 };
                 // parse_col_pr has already consumed a colPr subtree.
                 if matches!(event, Event::Start(_)) && name.as_slice() != b"colPr" {
@@ -1240,24 +1261,9 @@ fn collect_sub_lists(
                     // and text extraction can apply the configured side/order.
                     generic.caption = Some(parse_caption(reader, &e, warnings)?);
                 } else if name == b"subList" {
-                    let mut list = ParagraphList {
-                        header_data: Vec::new(),
-                        paragraphs: Vec::new(),
-                    };
-                    loop {
-                        match next_event(reader)? {
-                            Event::Start(inner) if inner.local_name().as_ref() == b"p" => {
-                                list.paragraphs
-                                    .push(parse_paragraph(reader, &inner, warnings)?);
-                            }
-                            Event::End(inner) if inner.local_name().as_ref() == b"subList" => {
-                                break;
-                            }
-                            Event::Eof => break,
-                            _ => {}
-                        }
-                    }
-                    generic.paragraph_lists.push(list);
+                    generic
+                        .paragraph_lists
+                        .push(read_sub_list(reader, warnings)?);
                 } else if name == end_name {
                     depth += 1;
                 }
@@ -1271,6 +1277,127 @@ fn collect_sub_lists(
             Event::Eof => break,
             _ => {}
         }
+    }
+    Ok(())
+}
+
+/// `hp:subList` 안의 문단들을 모은다(여는 태그는 이미 소비된 상태에서 호출).
+/// collect_sub_lists·collect_container·collect_shape가 공유한다.
+fn read_sub_list(reader: &mut XmlReader<'_>, warnings: &mut Vec<String>) -> Result<ParagraphList> {
+    let mut list = ParagraphList {
+        header_data: Vec::new(),
+        paragraphs: Vec::new(),
+    };
+    loop {
+        match next_event(reader)? {
+            Event::Start(inner) if inner.local_name().as_ref() == b"p" => {
+                list.paragraphs
+                    .push(parse_paragraph(reader, &inner, warnings)?);
+            }
+            Event::End(inner) if inner.local_name().as_ref() == b"subList" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(list)
+}
+
+/// hp:container 전용 수집: 최외곽 컨테이너의 상자(pos/sz/treatAsChar)를
+/// container_box에 담고, 자식 도형을 collect_shape로 파싱해 컨테이너 원점 기준
+/// 상대좌표로 gso_shapes에 담는다. 중첩 컨테이너는 자신의 pos를 오프셋에 누적해
+/// 재귀한다(깊이 상한). 원문 XML은 호출부가 hwpx_raw_xml에 별도 보존한다.
+///
+/// `base`는 부모 컨테이너들의 누적 오프셋이다. 최외곽(depth 0)은 렌더러가
+/// container_box 원점을 더하므로 자식 오프셋은 (0,0)으로 둔다.
+/// 전제: Hancom이 쓰는 대로 pos/sz가 도형 자식보다 먼저 나온다고 가정한다.
+fn collect_container(
+    reader: &mut XmlReader<'_>,
+    generic: &mut GenericControl,
+    warnings: &mut Vec<String>,
+    depth: u32,
+    base: (i32, i32),
+) -> Result<()> {
+    /// 중첩 컨테이너 재귀 상한(hwp5 shape_draw MAX_DEPTH와 같은 취지).
+    const MAX_CONTAINER_DEPTH: u32 = 8;
+    if depth >= MAX_CONTAINER_DEPTH {
+        warnings.push("container nesting depth limit; subtree skipped".to_string());
+        return skip_subtree(reader, b"container");
+    }
+    // 이 컨테이너 자신의 pos(부모 기준). 최외곽(depth 0)은 렌더러가 container_box
+    // 원점을 더하므로 자식 도형에 적용할 누적 오프셋은 (0,0)에서 시작한다.
+    let mut own = (0i32, 0i32);
+    let mut sz = (0i32, 0i32);
+    let mut anchored = false;
+    // pos가 없는 중첩 컨테이너(정품에 존재)도 부모 누적 오프셋은 이어받는다.
+    let mut child_off = base;
+    loop {
+        let ev = next_event(reader)?;
+        let is_empty = matches!(ev, Event::Empty(_));
+        match ev {
+            Event::Start(e) | Event::Empty(e) => {
+                let n = e.local_name().as_ref().to_vec();
+                match n.as_slice() {
+                    b"pos" => {
+                        own.0 = attr_offset_i32(&e, "horzOffset").unwrap_or(0);
+                        own.1 = attr_offset_i32(&e, "vertOffset").unwrap_or(0);
+                        anchored = attr(&e, "treatAsChar").as_deref() == Some("1");
+                        if depth > 0 {
+                            child_off = (base.0 + own.0, base.1 + own.1);
+                        }
+                    }
+                    b"sz" => {
+                        sz.0 = attr_i32(&e, "width").unwrap_or(0);
+                        sz.1 = attr_i32(&e, "height").unwrap_or(0);
+                    }
+                    b"caption" if !is_empty => {
+                        generic.caption = Some(parse_caption(reader, &e, warnings)?);
+                    }
+                    b"subList" if !is_empty => {
+                        generic
+                            .paragraph_lists
+                            .push(read_sub_list(reader, warnings)?);
+                    }
+                    b"container" if !is_empty => {
+                        // 중첩 컨테이너: 현재 누적 오프셋을 base로 넘겨 재귀한다
+                        // (중첩 컨테이너가 자신의 pos를 읽으면 그 위에 더한다).
+                        collect_container(reader, generic, warnings, depth + 1, child_off)?;
+                    }
+                    n if !is_empty && shape_kind(n).is_some() => {
+                        let kind = shape_kind(n).expect("guard");
+                        // 둥근 사각형: <hp:rect ratio="N"> (모서리 곡률 %).
+                        let round_ratio = if kind == ShapeKind::Rect {
+                            attr_i32(&e, "ratio").unwrap_or(0).clamp(0, 100) as u8
+                        } else {
+                            0
+                        };
+                        let shape_base = generic.gso_shapes.len();
+                        collect_shape(reader, n, kind, round_ratio, generic, warnings)?;
+                        // ShapeGeom.points는 bbox 기준이라 오프셋 대상이 아니다.
+                        for s in &mut generic.gso_shapes[shape_base..] {
+                            s.x += child_off.0;
+                            s.y += child_off.1;
+                        }
+                    }
+                    _ => {
+                        if !is_empty {
+                            skip_subtree(reader, &n)?;
+                        }
+                    }
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == b"container" => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if depth == 0 {
+        generic.container_box = Some(ContainerBox {
+            x: own.0,
+            y: own.1,
+            w: sz.0,
+            h: sz.1,
+            anchored,
+        });
     }
     Ok(())
 }

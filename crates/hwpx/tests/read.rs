@@ -317,6 +317,82 @@ fn generic_shape_caption_is_parsed() {
     );
 }
 
+/// hp:container는 자식 도형을 gso_shapes로 파싱한다: 최외곽 상자(pos/sz/
+/// treatAsChar)는 container_box에, 자식 도형은 컨테이너 원점 기준 상대좌표로,
+/// 중첩 컨테이너는 자신의 pos를 오프셋에 누적한다. 원문 XML은 hwpx_raw_xml에
+/// 그대로 남는다(재직렬화 원본).
+#[test]
+fn container_children_are_parsed_into_gso_shapes() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:container id="1">
+        <hp:sz width="6000" height="2400"/>
+        <hp:pos treatAsChar="1" vertOffset="1500" horzOffset="1000"/>
+        <hp:rect id="2" ratio="10">
+          <hp:sz width="2000" height="1000"/>
+          <hp:pos treatAsChar="0" vertOffset="200" horzOffset="100"/>
+          <hp:lineShape color="#FF0000" width="40" style="SOLID"/>
+          <hc:fillBrush><hc:winBrush faceColor="#00FF00" hatchColor="#000000" alpha="0"/></hc:fillBrush>
+        </hp:rect>
+        <hp:polygon id="3">
+          <hp:sz width="300" height="200"/>
+          <hp:pos treatAsChar="0" vertOffset="400" horzOffset="300"/>
+          <hp:pt0 x="0" y="0"/><hp:pt1 x="150" y="100"/><hp:pt2 x="300" y="0"/>
+        </hp:polygon>
+        <hp:container id="4">
+          <hp:pos treatAsChar="0" vertOffset="50" horzOffset="60"/>
+          <hp:ellipse id="5">
+            <hp:sz width="500" height="400"/>
+            <hp:pos treatAsChar="0" vertOffset="70" horzOffset="80"/>
+          </hp:ellipse>
+        </hp:container>
+        <hp:subList>
+          <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>컨테이너 텍스트</hp:t></hp:run></hp:p>
+        </hp:subList>
+      </hp:container>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, warnings) = hwpx::read::section::parse_section(xml).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let Some(Control::Generic(generic)) = section.paragraphs[0].controls.first() else {
+        panic!("container control");
+    };
+    assert_eq!(
+        generic.container_box,
+        Some(hwp_model::ContainerBox {
+            x: 1000,
+            y: 1500,
+            w: 6000,
+            h: 2400,
+            anchored: true,
+        })
+    );
+    assert_eq!(generic.gso_shapes.len(), 3);
+    // 최외곽 컨테이너의 직계 자식은 작성 좌표 그대로(렌더러가 원점을 더한다).
+    let rect = &generic.gso_shapes[0];
+    assert_eq!(rect.kind, hwp_model::ShapeKind::Rect);
+    assert_eq!((rect.x, rect.y, rect.w, rect.h), (100, 200, 2000, 1000));
+    assert_eq!(rect.round_ratio, 10);
+    assert_eq!(rect.border_width, 40);
+    let polygon = &generic.gso_shapes[1];
+    assert_eq!(polygon.kind, hwp_model::ShapeKind::Polygon);
+    assert_eq!((polygon.x, polygon.y), (300, 400));
+    assert_eq!(polygon.points, vec![(0, 0), (150, 100), (300, 0)]);
+    // 중첩 컨테이너의 자식은 작성 좌표 + 중첩 컨테이너 pos 누적.
+    let ellipse = &generic.gso_shapes[2];
+    assert_eq!(ellipse.kind, hwp_model::ShapeKind::Ellipse);
+    assert_eq!((ellipse.x, ellipse.y), (80 + 60, 70 + 50));
+    assert!(generic.hwpx_raw_xml.is_some());
+    assert_eq!(generic.paragraph_lists.len(), 1);
+    assert_eq!(
+        generic.paragraph_lists[0].paragraphs[0].plain_text(),
+        "컨테이너 텍스트"
+    );
+}
+
 /// HWPX page properties are the source of truth for the public parity fixture.
 /// Keep all page margins (including header/footer) and the orientation flag in
 /// the parser regression gate so layout changes cannot silently mask a read gap.

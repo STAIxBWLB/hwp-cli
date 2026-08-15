@@ -289,6 +289,7 @@ mod tests {
             column_def: None,
             caption: Some(caption(CaptionSide::Top, "shape caption")),
             hwpx_raw_xml: None,
+            container_box: None,
         });
         let mut out = String::new();
         extract_control(&picture, &mut out, &TextOptions::default());

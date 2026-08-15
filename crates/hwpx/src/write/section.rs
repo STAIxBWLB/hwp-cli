@@ -408,8 +408,10 @@ fn write_paragraph(
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         out.push_str(r##"<hp:ctrl><hp:autoNum numType="PAGE"/></hp:ctrl>"##);
                     }
-                    Control::Generic(g) if !g.gso_shapes.is_empty() => {
+                    Control::Generic(g) if !g.gso_shapes.is_empty() && g.hwpx_raw_xml.is_none() => {
                         // hwpx-출신 구조화 도형(rect/ellipse/line/…) — ShapeGeom 재직렬화.
+                        // 원문 캡처가 있는 개체(hp:container — 자식 도형을 gso_shapes로
+                        // 파싱하지만 재직렬화 원본은 원문)는 아래 pass-through arm이 담당.
                         open_run!(cur_shape);
                         flush_text(out, &mut text_buf, &mut pending_tabs);
                         shape_break!();

@@ -2967,6 +2967,7 @@ mod tests {
                 column_def: None,
                 caption: None,
                 hwpx_raw_xml: None,
+                container_box: None,
             }));
         let mut materialized = source.clone();
         materialized.header.properties.start_numbers = [1; 6];
