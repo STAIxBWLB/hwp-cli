@@ -1657,6 +1657,11 @@ fn max_instance_id_in_paras(paras: &[Paragraph], max: &mut u32) {
                     }
                 }
                 Control::Generic(g) => {
+                    // Shape/drawing captions carry paragraphs too — include them
+                    // so the document maximum really is global.
+                    if let Some(cap) = &g.caption {
+                        max_instance_id_in_paras(&cap.paragraphs, max);
+                    }
                     for list in &g.paragraph_lists {
                         max_instance_id_in_paras(&list.paragraphs, max);
                     }
@@ -1754,6 +1759,11 @@ fn max_object_id_in_para(para: &Paragraph, max: &mut u32) {
                 if let Some(id) = gso_common_instance_id(&pic.common_data) {
                     *max = (*max).max(id);
                 }
+                if let Some(cap) = &pic.caption {
+                    for p in &cap.paragraphs {
+                        max_object_id_in_para(p, max);
+                    }
+                }
             }
             Control::Generic(g) => {
                 // gso containers carry the same gso common layout — include
@@ -1795,8 +1805,20 @@ fn max_table_z_order_in_para(para: &Paragraph, max: &mut i32) {
                 {
                     *max = (*max).max(pl.z_order);
                 }
+                if let Some(cap) = &t.caption {
+                    for p in &cap.paragraphs {
+                        max_table_z_order_in_para(p, max);
+                    }
+                }
                 for cell in &t.cells {
                     for p in &cell.paragraphs {
+                        max_table_z_order_in_para(p, max);
+                    }
+                }
+            }
+            Control::Picture(pic) => {
+                if let Some(cap) = &pic.caption {
+                    for p in &cap.paragraphs {
                         max_table_z_order_in_para(p, max);
                     }
                 }
@@ -1838,6 +1860,12 @@ fn remap_clone_object_ids(
             .checked_add(1)
             .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
     }
+    // Captions can host nested tables/pictures — remap them too.
+    if let Some(cap) = &mut table.caption {
+        for p in &mut cap.paragraphs {
+            remap_clone_object_ids_in_para(p, next_id, next_z)?;
+        }
+    }
     for cell in &mut table.cells {
         for p in &mut cell.paragraphs {
             remap_clone_object_ids_in_para(p, next_id, next_z)?;
@@ -1854,12 +1882,19 @@ fn remap_clone_object_ids_in_para(
     for ctrl in &mut para.controls {
         match ctrl {
             Control::Table(t) => remap_clone_object_ids(t, next_id, next_z)?,
-            Control::Picture(pic) if pic.common_data.len() >= 36 => {
-                let id = *next_id;
-                *next_id = next_id
-                    .checked_add(1)
-                    .ok_or_else(|| "개체 id 오버플로".to_string())?;
-                pic.common_data[32..36].copy_from_slice(&id.to_le_bytes());
+            Control::Picture(pic) => {
+                if pic.common_data.len() >= 36 {
+                    let id = *next_id;
+                    *next_id = next_id
+                        .checked_add(1)
+                        .ok_or_else(|| "개체 id 오버플로".to_string())?;
+                    pic.common_data[32..36].copy_from_slice(&id.to_le_bytes());
+                }
+                if let Some(cap) = &mut pic.caption {
+                    for p in &mut cap.paragraphs {
+                        remap_clone_object_ids_in_para(p, next_id, next_z)?;
+                    }
+                }
             }
             _ => {}
         }
@@ -2275,6 +2310,45 @@ mod tests {
         assert_eq!(ids[0], 7, "source id untouched");
         ids.sort_unstable();
         assert_eq!(ids, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn clone_table_keep_캡션_중첩_개체_id_재부여() {
+        let mut doc = clone_test_doc();
+        // Table 0 gets a caption whose paragraph holds a nested hwp5-sourced
+        // table (gso common id 7) — captions must join the id remap too.
+        let inner = with_nth_table_readonly(&mut doc, 0, |t| t.clone()).unwrap();
+        with_nth_table(&mut doc, 0, |t| {
+            let mut inner = inner;
+            inner.common_data = vec![0u8; 44];
+            inner.common_data[32..36].copy_from_slice(&7u32.to_le_bytes());
+            t.caption = Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 283,
+                width: None,
+                last_width: 0,
+                paragraphs: vec![Paragraph {
+                    controls: vec![Control::Table(inner)],
+                    ..Paragraph::default()
+                }],
+            });
+        });
+        assert_eq!(
+            clone_table(&mut doc, 0, "끝", CloneTextMode::Keep).unwrap(),
+            1
+        );
+        let tables = all_tables(&doc);
+        // "끝" follows the source table, so order is [source, clone].
+        let cap_id = |t: &hwp_model::Table| {
+            let Control::Table(inner) = &t.caption.as_ref().unwrap().paragraphs[0].controls[0]
+            else {
+                panic!("caption nested table")
+            };
+            u32::from_le_bytes(inner.common_data[32..36].try_into().unwrap())
+        };
+        assert_eq!(cap_id(tables[0]), 7, "source caption object untouched");
+        assert_eq!(cap_id(tables[1]), 8, "clone caption object remapped");
     }
 
     #[test]
