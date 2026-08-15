@@ -1655,6 +1655,13 @@ fn cached_cell_split_plan(
                 && has_content[current]
                 && (end - first_v[current]) as f32 / 100.0 > current_capacity + 0.5;
             if explicit_boundary || reset_boundary || capacity_boundary {
+                // `closed_height` is content-only and both capacities were
+                // passed in already excluding one vertical margin per
+                // fragment, so charging `fragment_margin_v` exactly once per
+                // closed fragment is correct — not a double subtraction.
+                // The emitter draws each fragment as content + mt + mb, and
+                // every fragment after the first must reserve its own margin
+                // out of what remains on the simulated page.
                 let closed_height = (max_end[current] - first_v[current]).max(0) as f32 / 100.0;
                 capacity_left = (capacity_left - closed_height - fragment_margin_v).max(0.0);
                 if explicit_boundary || capacity_boundary {
@@ -3474,10 +3481,20 @@ fn layout_table_cell_fragments(
             // plan is drawn whole into fragment 0 (All selections).  That is
             // safe only while its measured content is contained by the
             // planned first fragment; otherwise the required split has no
-            // cached geometry and the render is incomplete.
-            let first_part_height = cell_plans
+            // cached geometry and the render is incomplete.  `cell_plans`
+            // persists across rows, so the containment height must come only
+            // from plans owned by THIS row — an earlier row's taller first
+            // fragment must not vouch for a later row.
+            let first_part_height = table
+                .cells
                 .iter()
-                .filter_map(|plan| plan.as_ref().and_then(|plan| plan.groups.first()))
+                .enumerate()
+                .filter(|(_, cell)| cell.row as usize == row)
+                .filter_map(|(cell_index, _)| {
+                    cell_plans[cell_index]
+                        .as_ref()
+                        .and_then(|plan| plan.groups.first())
+                })
                 .map(|group| group.height)
                 .fold(0.0f32, f32::max)
                 .max(1.0);
@@ -6163,5 +6180,60 @@ mod decor_tests {
             page.items.is_empty(),
             "a rejected run must be emitted atomically"
         );
+    }
+}
+
+#[cfg(test)]
+mod cell_split_plan_tests {
+    use super::cached_cell_split_plan;
+    use hwp_model::{BorderFillId, Cell, HwpChar, HwpUnit, LineSeg, Paragraph};
+
+    /// Two cached 10 pt runs (50 lines each) separated by a soft v_pos reset
+    /// (no page flag).  With first capacity 634.82 and a 2.82 fragment
+    /// margin, the simulated remainder after run 1 is exactly 132 pt, so 13
+    /// complete lines of run 2 pack into group 1.  Charging the margin twice
+    /// would leave 129.18 pt and pack only 12 lines.
+    #[test]
+    fn fragment_margin_is_charged_once_per_fragment() {
+        let mut chars = Vec::new();
+        let mut line_segs = Vec::new();
+        for _ in 0..2 {
+            for index in 0..50u32 {
+                chars.push(HwpChar::Text('a'));
+                line_segs.push(LineSeg {
+                    text_start: (chars.len() - 1) as u32,
+                    v_pos: index as i32 * 1000,
+                    line_height: 1000,
+                    text_height: 900,
+                    baseline_gap: 800,
+                    line_spacing: 0,
+                    col_start: 0,
+                    seg_width: 50000,
+                    flags: 0x0006_0000,
+                });
+            }
+        }
+        let cell = Cell {
+            list_attr: 0,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(5000),
+            height: HwpUnit(100000),
+            margins: [0; 4],
+            border_fill: BorderFillId(0),
+            header_tail: Vec::new(),
+            paragraphs: vec![Paragraph {
+                chars,
+                line_segs,
+                ..Paragraph::default()
+            }],
+        };
+
+        let plan =
+            cached_cell_split_plan(&cell, 0.0, 634.82, 654.80, 2.82).expect("two-run cached plan");
+        let heights: Vec<f32> = plan.groups.iter().map(|group| group.height).collect();
+        assert_eq!(heights, vec![500.0, 130.0, 370.0]);
     }
 }

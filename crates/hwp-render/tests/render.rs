@@ -2458,6 +2458,82 @@ fn cell_needing_boundary_only_for_page_sliver_is_contained_in_first_fragment() {
     }
 }
 
+/// Two independently fragmented rows: the containment height for a
+/// boundary-needing cell without a split plan must come only from its own
+/// row's plans.  An earlier row's taller first fragment must not vouch for a
+/// later row's unsplittable cell.
+#[test]
+fn uncached_cell_in_second_fragmented_row_stays_fail_closed() {
+    let (mut doc, data_fill, _span_fill) = 이열_셀_표_문서();
+    // Uncached payload with a font-independent height: a nested table with a
+    // 500 pt cell measures ~512 pt regardless of shaping.
+    let nested_fill = doc.header.border_fills.len() as u16 + 1;
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x0011_2233),
+        ..Default::default()
+    });
+    let nested = hwp_model::Table {
+        common_data: Vec::new(),
+        placement: None,
+        attr: 0,
+        rows: 1,
+        cols: 1,
+        cell_spacing: 0,
+        inner_margins: [0; 4],
+        row_cell_counts: vec![1],
+        border_fill: hwp_model::BorderFillId(nested_fill),
+        table_tail: Vec::new(),
+        cells: vec![hwp_model::Cell {
+            list_attr: 0,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: hwp_model::HwpUnit(1800),
+            height: hwp_model::HwpUnit(50000),
+            margins: [0; 4],
+            border_fill: hwp_model::BorderFillId(nested_fill),
+            header_tail: Vec::new(),
+            paragraphs: Vec::new(),
+        }],
+        caption: None,
+        extras: Vec::new(),
+    };
+    // Row 0 fragments with a ~633 pt first fragment.  Row 1 starts on page 2
+    // with ~385 pt remaining; its right cell splits into ~383/+423 pt
+    // fragments, while its left cell carries the uncached ~512 pt payload.
+    // That payload is contained by neither row 1 fragment (~383 pt) — only
+    // row 0's taller first fragment would wrongly vouch for it.
+    let mut tall_row0 = 이열_셀(0, 1, 1, 900, data_fill);
+    tall_row0.paragraphs = vec![cached_cell_paragraph(90)];
+    let mut uncached = 이열_셀(1, 0, 1, 800, data_fill);
+    uncached.paragraphs = vec![hwp_model::Paragraph {
+        controls: vec![hwp_model::Control::Table(nested)],
+        ..hwp_model::Paragraph::default()
+    }];
+    let mut tall_row1 = 이열_셀(1, 1, 1, 800, data_fill);
+    tall_row1.paragraphs = vec![cached_cell_paragraph(80)];
+    let table = outer_table(&mut doc);
+    table.cols = 2;
+    table.rows = 2;
+    table.row_cell_counts = vec![2, 2];
+    table.cells = vec![
+        이열_셀(0, 0, 1, 900, data_fill),
+        tall_row0,
+        uncached,
+        tall_row1,
+    ];
+
+    let (_list, report) = 표_레이아웃(&doc);
+    let issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.code == hwp_render::RenderIssueCode::TableCellFragmentationIncomplete)
+        .expect("unsplittable cell must not borrow an earlier row's fragment height");
+    assert_eq!(issue.severity, hwp_render::RenderIssueSeverity::Incomplete);
+    assert_eq!(issue.stage, hwp_render::RenderIssueStage::Layout);
+}
+
 /// GB-13: a bottom table caption is placed below cell text with its gap.
 #[test]
 fn 캡션_표_아래_배치() {
