@@ -120,6 +120,24 @@ hwp --version
 
 압축을 풀어 `hwp`를 PATH에 둔다(검증: `shasum -a 256 -c hwp-*.sha256`).
 
+### 서버리스·컨테이너 (Vercel, AWS Lambda, Docker)
+
+Linux 아카이브는 **glibc 2.17** 기준으로 크로스 빌드한다. 그래서 Amazon Linux 2·2023, Debian 8+,
+RHEL/CentOS 7+ 및 그 이후 배포판에서 그대로 돌아간다. 빌드 러너보다 glibc가 낮은 Vercel Node
+런타임과 AWS Lambda도 포함된다.
+
+바이너리를 커밋하지 말고 빌드 단계에서 받는다. 그러면 갱신할 것은 고정한 태그 하나뿐이다.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
+  | sh -s -- --tag v0.8.5 --dir ./bin
+```
+
+플랫폼이 배포 번들을 수집하기 전에 바이너리가 있어야 하므로(Vercel `includeFiles`, Next.js
+`outputFileTracingIncludes`, Docker 레이어) 요청 시점이 아니라 빌드 커맨드나 `prebuild`
+스크립트에서 실행한다. 폰트는 동봉되지 않으니 렌더 계열 명령에는 폰트를 함께 올리고
+`--font-dir`(또는 `HWP_FONT_DIR`)로 지정한다.
+
 ### 소스 빌드
 
 ```sh
