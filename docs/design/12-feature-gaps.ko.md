@@ -109,8 +109,22 @@
   5): metadata·text·paragraph·table-cell·image HWPX 편집 모두 엔트리 집합 동일, opaque
   엔트리 전량 바이트 동일(미디어 24→24, 이미지 삽입 후 25; container 5→5), `hwp validate`
   클린, non-strict hwp→hwpx는 미디어 24개 전량 보존(종전 9), strict 변환은 양방향 모두
-  fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 6+):
-  WMF 벡터, pagination/font 게이트, 인증. hwpx→hwp 변환은
+  fail-closed, 8개 결과물 모두 한글에서 손상/복구 대화상자 없이 열림. #90 잔여(PR 7+):
+  pagination/font 게이트, 인증.
+
+- **2026-08-15 (이슈 #90 PR 6 — 벡터 이미지·중첩 컨테이너)**: HWPX `hp:container` 자식을
+  `gso_shapes`+`GenericControl.container_box`로 파싱해 컨테이너 원점 기준으로 렌더한다
+  (중첩 컨테이너는 오프셋 누적 평탄화). 원문 XML은 재직렬화 원본으로 그대로 유지.
+  WMF 그림 바이너리는 bounded 순수 Rust 해석기(`hwp-render/src/wmf.rs`)가 레이아웃 시점에
+  해석한다 — window/DC 상태, pen/brush/font 객체, even-odd/winding 채움 폴리곤·폴리라인,
+  DIB 블릿(1bpp 마스크+컬러 투명 페어, 패턴 브러시는 density-blend 단색 근사), CP949
+  `ExtTextOut` 텍스트 — 세 백엔드 모두 자홍 placeholder 대신 실제 내용을 그린다.
+  부분집합 밖 레코드는 typed bounded-skip(`wmf_unsupported_record_omitted`), 손상
+  스트림은 placeholder(`wmf_parse_invalid_placeholder`)로 fallback하며 둘 다 parity
+  성공으로 세지 않는다. 비공개 복합 문서 parity: `unsupported_control_omitted`·
+  `image_decode_placeholder` 소거(unsupported 8→0), 도형 페이지 raster 오차 개선
+  (최악 페이지 bad-pixel 0.43→0.38), WMF 텍스트 검색 가능화. 잔여 델타는 PR 7의
+  pagination/font 작업 범위. hwpx→hwp 변환은
   settings.xml/version.xml/preview 슬롯 손실을 아직 typed 이벤트로 집계하지 않는다.
   content.hpf 재생성은 모델링된 manifest 항목/메타데이터만 유지하므로, 비모델 manifest
   항목은 고아 엔트리로 남는다(raw-copy는 되지만 목록에는 미등재).

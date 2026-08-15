@@ -41,6 +41,8 @@ tiny-skia = "0.12"
 rustybuzz = "0.20"
 fontdb = "0.23"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
+# WMF 텍스트(CP949 바이트 문자열) 디코딩 — 순수 Rust, HWP 비의존.
+encoding_rs = "0.8"
 
 # PDF backend
 pdf-writer = "0.15"

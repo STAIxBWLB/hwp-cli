@@ -509,6 +509,7 @@ pub fn render_into(
             ],
             fill: None,
             stroke: Some(crate::display::Stroke::solid(0x0000_0000, wdt)),
+            rule: crate::display::FillRule::NonZero,
         });
     }
 }

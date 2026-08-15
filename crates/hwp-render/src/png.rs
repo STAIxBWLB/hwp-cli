@@ -254,7 +254,13 @@ fn render_page(
                 commands,
                 fill,
                 stroke,
+                rule,
             } => {
+                let sk_rule = if *rule == crate::display::FillRule::EvenOdd {
+                    FillRule::EvenOdd
+                } else {
+                    FillRule::Winding
+                };
                 let mut pb = PathBuilder::new();
                 for cmd in commands {
                     match *cmd {
@@ -275,7 +281,7 @@ fn render_page(
                             Fill::Solid(c) => {
                                 let (r, g, b) = colorref_rgb(*c);
                                 paint.set_color_rgba8(r, g, b, 255);
-                                pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
+                                pixmap.fill_path(&path, &paint, sk_rule, t, None);
                             }
                             Fill::Gradient(grad) => {
                                 match gradient_shader(grad, commands, px_scale) {
@@ -288,14 +294,14 @@ fn render_page(
                                         paint.set_color_rgba8(r, g, b, 255);
                                     }
                                 }
-                                pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
+                                pixmap.fill_path(&path, &paint, sk_rule, t, None);
                             }
                             Fill::Hatch { fg, bg, style } => {
                                 // Paint an optional background, then hatch lines clipped by bounds.
                                 if *bg != 0xFFFF_FFFF {
                                     let (r, g, b) = colorref_rgb(*bg);
                                     paint.set_color_rgba8(r, g, b, 255);
-                                    pixmap.fill_path(&path, &paint, FillRule::Winding, t, None);
+                                    pixmap.fill_path(&path, &paint, sk_rule, t, None);
                                 }
                                 let (x0, y0, x1, y1) = path_bbox(commands);
                                 let segs = crate::display::hatch_segments(*style, x0, y0, x1, y1);

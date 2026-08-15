@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use hwp_model::{BinDataId, BinRef, Document, GenericControl, OpaqueRecord, ShapeGeom, ShapeKind};
 
-use crate::display::{Fill, Gradient, Item, PageList, PathCmd, Stroke, path_bbox};
+use crate::display::{Fill, FillRule, Gradient, Item, PageList, PathCmd, Stroke, path_bbox};
 use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 
 // hwp5 레코드 raw 태그 (HWPTAG_BEGIN = 0x10).
@@ -85,6 +85,7 @@ pub fn draw_ir_shapes(
                     commands: head,
                     fill: Some(Fill::Solid(s.border_color)),
                     stroke: None,
+                    rule: FillRule::NonZero,
                 });
             }
         }
@@ -92,6 +93,7 @@ pub fn draw_ir_shapes(
             commands,
             fill,
             stroke,
+            rule: FillRule::NonZero,
         });
     }
 }
@@ -377,6 +379,7 @@ fn draw_component(
                             commands: head,
                             fill: Some(Fill::Solid(st.color)),
                             stroke: None,
+                            rule: FillRule::NonZero,
                         });
                     }
                 }
@@ -384,6 +387,7 @@ fn draw_component(
                     commands,
                     fill: style.fill.clone(),
                     stroke: style.stroke.clone(),
+                    rule: FillRule::NonZero,
                 });
             }
             SHAPE_COMPONENT => draw_component(child, origin, doc, page, warns, depth + 1),
@@ -978,6 +982,7 @@ mod tests {
             commands,
             fill,
             stroke,
+            ..
         } = &page.items[0]
         else {
             panic!("Path가 아님");

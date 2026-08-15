@@ -26,6 +26,7 @@ pub mod shape;
 pub mod shape_draw;
 pub mod svg;
 pub mod tab;
+pub mod wmf;
 
 use hwp_model::{Document, Metadata};
 

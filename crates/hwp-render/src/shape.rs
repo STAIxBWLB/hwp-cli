@@ -847,6 +847,34 @@ pub fn shape_plain(
     shape_with_font(&selection.font, &cs, lang, text, 0, selection.faux_bold)
 }
 
+/// 해석된 폰트 하나로 외부 텍스트(WMF ExtTextOut 등 문서 CharShape가 없는 소스)를
+/// 셰이핑한다. 장식 없이 크기·색·기울임만 적용하는 최소 CharShape 경로.
+pub(crate) fn shape_text_with_font(
+    font: &Arc<LoadedFont>,
+    size_pt: f32,
+    color: u32,
+    italic: bool,
+    text: &str,
+    faux_bold: bool,
+) -> Option<ShapedRun> {
+    let cs = CharShape {
+        base_size: (size_pt * 100.0) as i32,
+        ratios: [100; LANG_COUNT],
+        rel_sizes: [100; LANG_COUNT],
+        attr: u32::from(italic), // bit0 = 기울임
+        text_color: color,
+        // 0xFFFFFFFF=음영 없음 (shape_plain의 검은바 트랩 주석 참조).
+        shade_color: 0xFFFF_FFFF,
+        ..CharShape::default()
+    };
+    let lang = if text.chars().any(|c| ('가'..='힣').contains(&c)) {
+        0
+    } else {
+        1
+    };
+    shape_with_font(font, &cs, lang, text, 0, faux_bold)
+}
+
 /// Shapes synthetic text with a source document character shape. Positioned
 /// page numbers use this path so their font, weight, size, and decorations
 /// match the run containing the page-number control.

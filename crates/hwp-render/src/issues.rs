@@ -91,6 +91,12 @@ pub enum RenderIssueCode {
     ShapeGeometryInvalidOmitted,
     FontSubsetFallback,
     LayoutBudgetExceeded,
+    /// WMF 스트림이 손상/절단되어 해석을 중단하고 자홍색 placeholder로 대체.
+    WmfParseInvalidPlaceholder,
+    /// WMF 부분집합 밖 레코드 계열을 bounded-skip (detail은 함수 코드뿐).
+    WmfUnsupportedRecordOmitted,
+    /// WMF 해석의 레코드/객체/픽셀 상한 초과 → placeholder.
+    WmfBudgetExceeded,
 }
 
 impl RenderIssueCode {
@@ -126,6 +132,9 @@ impl RenderIssueCode {
             Self::ShapeGeometryInvalidOmitted => "shape_geometry_invalid_omitted",
             Self::FontSubsetFallback => "font_subset_fallback",
             Self::LayoutBudgetExceeded => "layout_budget_exceeded",
+            Self::WmfParseInvalidPlaceholder => "wmf_parse_invalid_placeholder",
+            Self::WmfUnsupportedRecordOmitted => "wmf_unsupported_record_omitted",
+            Self::WmfBudgetExceeded => "wmf_budget_exceeded",
         }
     }
 
@@ -141,7 +150,8 @@ impl RenderIssueCode {
             | Self::FontManifestLoadFailed
             | Self::FontResolutionBudgetExceeded
             | Self::LayoutBudgetExceeded
-            | Self::ImageDecodeBudgetExceeded => RenderIssueSeverity::Fatal,
+            | Self::ImageDecodeBudgetExceeded
+            | Self::WmfBudgetExceeded => RenderIssueSeverity::Fatal,
             _ => RenderIssueSeverity::Incomplete,
         }
     }

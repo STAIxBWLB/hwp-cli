@@ -12,6 +12,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- Bounded WMF vector image rendering
+  ([#90](https://github.com/STAIxBWLB/hwp-cli/issues/90)). WMF picture binaries
+  (the Windows Metafile exports Hancom produces for complex figures) previously
+  failed raster decode in every backend and rendered as magenta placeholders.
+  A new pure-Rust WMF interpreter (`hwp-render/src/wmf.rs`) now expands the
+  observed record subset — window/viewport state, DC stacks, pen/brush/font
+  objects, polygons and polylines with even-odd or winding fills, DIB blits
+  (including 1-bpp mask + color transparency pairs, with dithered pattern
+  brushes approximated as density-blended solids), and CP949 `ExtTextOut`
+  text resolved through the normal font pipeline — into display-list items at
+  layout time, so PDF, PNG, and SVG all render them. Records outside the
+  bounded subset are bounded-skips with the typed
+  `wmf_unsupported_record_omitted` issue; malformed streams fall back to the
+  placeholder with `wmf_parse_invalid_placeholder`. Neither counts as parity
+  success. Adds the `encoding_rs` dependency (pure Rust, CP949 decode).
+
 - HWPX container (`hp:container`) rendering
   ([#90](https://github.com/STAIxBWLB/hwp-cli/issues/90)). The hwpx reader now
   parses container children into `gso_shapes` plus a new
