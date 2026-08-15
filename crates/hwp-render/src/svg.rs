@@ -205,6 +205,7 @@ fn render_page(page: &PageList) -> String {
                 commands,
                 fill,
                 stroke,
+                rule,
             } => {
                 let mut d = String::new();
                 for cmd in commands {
@@ -254,7 +255,15 @@ fn render_page(page: &PageList) -> String {
                     }
                     None => String::new(),
                 };
-                let _ = writeln!(out, r#"<path d="{d}" fill="{fill_attr}"{stroke_attr}/>"#);
+                let rule_attr = if *rule == crate::display::FillRule::EvenOdd {
+                    r#" fill-rule="evenodd""#
+                } else {
+                    ""
+                };
+                let _ = writeln!(
+                    out,
+                    r#"<path d="{d}" fill="{fill_attr}"{stroke_attr}{rule_attr}/>"#
+                );
             }
         }
     }

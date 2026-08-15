@@ -288,13 +288,19 @@ pub(crate) fn render_pdf_with_metadata(
                     commands,
                     fill,
                     stroke,
+                    rule,
                 } => {
                     let dashed = stroke.as_ref().is_some_and(|s| s.dash.len() >= 2);
+                    let even_odd = *rule == crate::display::FillRule::EvenOdd;
                     // 그러데이션 채움: 경로로 클립한 뒤 색 띠/원으로 채운다(실제 그러데이션).
                     if let Some(Fill::Gradient(grad)) = fill {
                         content.save_state();
                         pdf_emit_path(&mut content, commands, h);
-                        content.clip_nonzero();
+                        if even_odd {
+                            content.clip_even_odd();
+                        } else {
+                            content.clip_nonzero();
+                        }
                         content.end_path();
                         pdf_gradient_bands(&mut content, grad, commands, h);
                         content.restore_state();
@@ -308,7 +314,11 @@ pub(crate) fn render_pdf_with_metadata(
                         // Hatch fill: clip to the path, paint the background, then emit flat lines.
                         content.save_state();
                         pdf_emit_path(&mut content, commands, h);
-                        content.clip_nonzero();
+                        if even_odd {
+                            content.clip_even_odd();
+                        } else {
+                            content.clip_nonzero();
+                        }
                         content.end_path();
                         let (x0, y0, x1, y1) = path_bbox(commands);
                         if *bg != 0xFFFF_FFFF {
@@ -344,12 +354,20 @@ pub(crate) fn render_pdf_with_metadata(
                             (Some(fc), Some(_)) => {
                                 let (r, g, b) = colorref_rgb(fc);
                                 content.set_fill_rgb(r, g, b);
-                                content.fill_nonzero_and_stroke();
+                                if even_odd {
+                                    content.fill_even_odd_and_stroke();
+                                } else {
+                                    content.fill_nonzero_and_stroke();
+                                }
                             }
                             (Some(fc), None) => {
                                 let (r, g, b) = colorref_rgb(fc);
                                 content.set_fill_rgb(r, g, b);
-                                content.fill_nonzero();
+                                if even_odd {
+                                    content.fill_even_odd();
+                                } else {
+                                    content.fill_nonzero();
+                                }
                             }
                             (None, Some(_)) => {
                                 content.stroke();

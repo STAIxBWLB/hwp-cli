@@ -218,6 +218,26 @@ impl FontStore {
         let face = doc.header.fonts.get(lang_slot)?.get(face_id as usize);
         let requested = face.map(|f| f.name.clone()).unwrap_or_default();
         let alt = face.and_then(|f| f.alt_name.clone());
+        self.resolve_by_name(requested, alt, bold)
+    }
+
+    /// 문서 글꼴 표를 거치지 않는 외부 패밀리 이름(WMF LOGFONT 등)을 본문과 같은
+    /// 후보/폴 벡 규칙으로 해석한다. 대체는 기존 `font_substituted` 이슈로 표면화된다.
+    pub(crate) fn resolve_family_selection(
+        &mut self,
+        name: &str,
+        bold: bool,
+    ) -> Option<FontSelection> {
+        self.resolve_by_name(name.to_string(), None, bold)
+    }
+
+    /// 패밀리 이름(+대체 이름) 해석 공통 경로. 캐시·이슈·해석 로그는 여기서만 다룬다.
+    fn resolve_by_name(
+        &mut self,
+        requested: String,
+        alt: Option<String>,
+        bold: bool,
+    ) -> Option<FontSelection> {
         let cache_key = FontCacheKey::Family {
             requested: requested.clone(),
             alt: alt.clone(),

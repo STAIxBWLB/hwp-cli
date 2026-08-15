@@ -782,6 +782,7 @@ fn 그러데이션_채움_백엔드() {
                 stops: vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)], // 빨강→파랑
             })),
             stroke: None,
+            rule: hwp_render::display::FillRule::NonZero,
         }],
     };
     let list = DisplayList { pages: vec![page] };
@@ -831,6 +832,7 @@ fn 무늬_채움_백엔드() {
                 style: 1,        // Horizontal hatch.
             }),
             stroke: None,
+            rule: hwp_render::display::FillRule::NonZero,
         }],
     };
     let list = DisplayList { pages: vec![page] };

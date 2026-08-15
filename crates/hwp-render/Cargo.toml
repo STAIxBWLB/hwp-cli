@@ -12,6 +12,7 @@ tiny-skia = { workspace = true }
 rustybuzz = { workspace = true }
 fontdb = { workspace = true }
 image = { workspace = true }
+encoding_rs = { workspace = true }
 thiserror = { workspace = true }
 flate2 = { workspace = true }
 pdf-writer = { workspace = true }

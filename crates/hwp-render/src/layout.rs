@@ -22,7 +22,7 @@ use hwp_model::{
     Paragraph, Section, Table,
 };
 
-use crate::display::{DisplayList, Fill, Gradient, Item, PageList, PathCmd, Stroke};
+use crate::display::{DisplayList, Fill, FillRule, Gradient, Item, PageList, PathCmd, Stroke};
 use crate::error::RenderError;
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
@@ -1919,6 +1919,7 @@ fn render_page_notes(
         ],
         fill: None,
         stroke: Some(Stroke::solid(0x0000_0000, 0.5)),
+        rule: FillRule::NonZero,
     });
     // 3) 스크래치 아이템을 top만큼 내려 본 페이지에 합친다.
     for item in scratch.items.drain(..) {
@@ -1993,6 +1994,7 @@ fn bg_fill_item(bf: &BorderFill, x: f32, y: f32, w: f32, h: f32) -> Option<Item>
                 stops: g.stops.clone(),
             })),
             stroke: None,
+            rule: FillRule::NonZero,
         });
     }
     if let Some((fg, style, bg)) = bf.visible_hatch() {
@@ -2004,6 +2006,7 @@ fn bg_fill_item(bf: &BorderFill, x: f32, y: f32, w: f32, h: f32) -> Option<Item>
                 style: style as u32,
             }),
             stroke: None,
+            rule: FillRule::NonZero,
         });
     }
     bf.visible_bg().map(|fill| Item::Rect { x, y, w, h, fill })
@@ -2062,6 +2065,7 @@ fn translate_item(item: Item, dx: f32, dy: f32) -> Item {
             commands,
             fill,
             stroke,
+            rule,
         } => Item::Path {
             commands: commands
                 .into_iter()
@@ -2069,6 +2073,7 @@ fn translate_item(item: Item, dx: f32, dy: f32) -> Item {
                 .collect(),
             fill,
             stroke,
+            rule,
         },
     }
 }
@@ -2293,9 +2298,6 @@ fn layout_para_objects(
                 }
                 match doc.resolve_bin(&pic.bin_ref) {
                     Some(bytes) => {
-                        if !warnings.charge_display_items(1) {
-                            return (bottom, page_split);
-                        }
                         // Picture effects from tables 108-116 are reported but not yet rendered.
                         if pic.effect_flags != 0 {
                             warnings.push(
@@ -2315,18 +2317,41 @@ fn layout_para_objects(
                             top_caption = Some((items, ch));
                             img_y += ch + cap.gap as f32 / 100.0;
                         }
-                        page.items.push(Item::Image {
-                            x,
-                            y: img_y,
-                            w,
-                            h,
-                            data: warnings.cached_binary(bytes),
-                            crop: pic.crop,
-                            flip: pic.flip,
-                            rotation_deg: pic.rotation.unwrap_or(0.0),
-                            brightness: pic.brightness,
-                            contrast: pic.contrast,
-                        });
+                        // WMF 벡터는 변형(뒤집기/회전/밝기·명암)이 없을 때만
+                        // 레이아웃 시점에 해석한다 — 변형이 있으면 기존 래스터
+                        // 경로(Item::Image → 백엔드 디코드)를 유지. crop은 WMF
+                        // 쪽이 윈도우와 교차해 직접 처리한다 (코퍼스는 전부
+                        // full-extent crop). 확장자 힌트는 쓰지 않고 바이트
+                        // 스니프가 유일한 권위다 (스니프는 ~20B 검사라 fast path
+                        // 이득이 없다). Placeholder 결과는 wmf 쪽이 자홍 rect +
+                        // typed issue를 이미 방출하고, Fallback은 아무것도 방출하지
+                        // 않았으니 래스터 경로로 복귀한다.
+                        let untransformed = pic.flip == 0
+                            && pic.rotation.unwrap_or(0.0) == 0.0
+                            && pic.brightness == 0
+                            && pic.contrast == 0;
+                        let wmf_handled = untransformed
+                            && crate::wmf::is_wmf(bytes)
+                            && crate::wmf::draw_wmf(
+                                bytes, x, img_y, w, h, pic.crop, page, store, warnings,
+                            ) != crate::wmf::WmfOutcome::Fallback;
+                        if !wmf_handled {
+                            if !warnings.charge_display_items(1) {
+                                return (bottom, page_split);
+                            }
+                            page.items.push(Item::Image {
+                                x,
+                                y: img_y,
+                                w,
+                                h,
+                                data: warnings.cached_binary(bytes),
+                                crop: pic.crop,
+                                flip: pic.flip,
+                                rotation_deg: pic.rotation.unwrap_or(0.0),
+                                brightness: pic.brightness,
+                                contrast: pic.contrast,
+                            });
+                        }
                         bottom = bottom.max(img_y + h);
                         object_y = img_y + h;
                         // Place the caption; bottom is the default side.
@@ -4448,6 +4473,7 @@ fn decor_line_items(x: f32, y: f32, w: f32, code: u8, width_pt: f32, color: u32)
                 commands: vec![PathCmd::MoveTo(x, y + off), PathCmd::LineTo(x + w, y + off)],
                 fill: None,
                 stroke: Some(stroke),
+                rule: FillRule::NonZero,
             })
             .collect(),
         waves => {
@@ -4462,6 +4488,7 @@ fn decor_line_items(x: f32, y: f32, w: f32, code: u8, width_pt: f32, color: u32)
                         commands: wave_commands(x, y + dy, x + w, half_len, amp),
                         fill: None,
                         stroke: Some(Stroke::solid(color, width_pt)),
+                        rule: FillRule::NonZero,
                     }
                 })
                 .collect()
@@ -4578,11 +4605,13 @@ fn emphasis_mark(kind: u8, cx: f32, cy: f32, em: f32, color: u32) -> Vec<Item> {
         commands: cmds,
         fill: Some(Fill::Solid(color)),
         stroke: None,
+        rule: FillRule::NonZero,
     };
     let stroked = |cmds: Vec<PathCmd>| Item::Path {
         commands: cmds,
         fill: None,
         stroke: Some(Stroke::solid(color, sw)),
+        rule: FillRule::NonZero,
     };
     match kind {
         // 1 DOT_ABOVE: filled circle.

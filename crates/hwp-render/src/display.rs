@@ -57,7 +57,19 @@ pub enum Item {
         fill: Option<Fill>,
         /// 선 스타일(색·굵기·점선). None=선 없음.
         stroke: Option<Stroke>,
+        /// 채움 규칙 (WMF SetPolyFillMode ALTERNATE → EvenOdd). 기본 NonZero.
+        rule: FillRule,
     },
+}
+
+/// 경로 채움 규칙.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FillRule {
+    /// non-zero winding (기본).
+    #[default]
+    NonZero,
+    /// even-odd (WMF ALTERNATE).
+    EvenOdd,
 }
 
 /// 선 스타일 — 색, 굵기(pt), 점선 패턴.

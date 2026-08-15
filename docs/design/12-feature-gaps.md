@@ -122,8 +122,24 @@ is itself knowledge).
   entry set identical with all opaque entries byte-identical (media 24→24, 25 after an
   image insert; containers 5→5), `hwp validate` is clean, non-strict hwp→hwpx preserves all
   24 media (previously 9), strict conversion fails closed in both directions, and all eight
-  outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 6+):
-  WMF vectors, the pagination/font gate and certification.
+  outputs opened in Hancom with no corruption or repair dialog. Still open in #90 (PR 7+):
+  the pagination/font gate and certification.
+
+- **2026-08-15 (issue #90 PR 6 — vector images and nested containers)**: HWPX
+  `hp:container` children are parsed into `gso_shapes` + `GenericControl.container_box`
+  and render at the container origin (nested containers flattened with accumulated
+  offsets); the verbatim raw XML stays the reserialization source of truth. WMF picture
+  binaries are interpreted by a bounded pure-Rust renderer (`hwp-render/src/wmf.rs`) at
+  layout time — window/DC state, pen/brush/font objects, polygons/polylines with
+  even-odd or winding fills, DIB blits (1-bpp mask + color transparency pairs, pattern
+  brushes approximated as density-blended solids), and CP949 `ExtTextOut` text — so all
+  three backends render them instead of emitting magenta placeholders. Out-of-subset
+  records are typed bounded-skips (`wmf_unsupported_record_omitted`), malformed streams
+  fall back to the placeholder (`wmf_parse_invalid_placeholder`); neither counts as
+  parity success. Private complex-document parity: `unsupported_control_omitted` and
+  `image_decode_placeholder` eliminated (unsupported 8→0), figure-page raster error
+  improved (e.g. worst page 0.43→0.38 bad-pixel), WMF text became searchable; the
+  remaining deltas are the PR 7 pagination/font work.
   hwpx→hwp conversion does not yet flag settings.xml/version.xml/preview slot loss with
   typed events. And content.hpf regeneration keeps only modeled manifest items/metadata,
   so unmodeled manifest items survive as orphan package entries (raw-copied but unlisted).

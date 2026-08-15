@@ -137,6 +137,7 @@ pub fn border_line_items(x1: f32, y1: f32, x2: f32, y2: f32, line: &BorderLine) 
             ],
             fill: None,
             stroke: Some(stroke),
+            rule: crate::display::FillRule::NonZero,
         })
         .collect()
 }
@@ -177,6 +178,7 @@ pub fn border_rectangle_items(
                 ],
                 fill: None,
                 stroke: Some(stroke),
+                rule: crate::display::FillRule::NonZero,
             })
             .collect();
     }
@@ -221,6 +223,7 @@ pub fn border_rectangle_items(
                 commands,
                 fill: None,
                 stroke: Some(stroke.clone()),
+                rule: crate::display::FillRule::NonZero,
             });
         }
     }
