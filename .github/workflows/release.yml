@@ -3,7 +3,10 @@ name: Release
 # Pushing a vX.Y.Z tag publishes platform `hwp` binaries to a GitHub Release (archive +
 # sha256) only after (1) the tagged commit already has a green CI run and (2) the tag
 # matches the Cargo.toml version.
-# Release flow: scripts/release.sh X.Y.Z  ->  git push origin main && git push origin vX.Y.Z
+# Release flow (main is protected, so the version bump cannot be pushed to it directly):
+# close the CHANGELOG section and run scripts/release.sh X.Y.Z on a branch, discard the tag
+# it creates there (`git tag -d vX.Y.Z`), open a PR, squash merge it, then tag the merge
+# commit once CI is green on main:  git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z
 on:
   push:
     # glob pattern (not regex) — matches multi-digit and prerelease tags (v10.2.3, v0.2.0-rc1).

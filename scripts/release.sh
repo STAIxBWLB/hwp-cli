@@ -2,10 +2,14 @@
 # scripts/release.sh X.Y.Z
 #
 # 워크스페이스 버전(Cargo.toml [workspace.package] version)을 bump 하고 커밋 + 태그를
-# 만든다. 푸시는 수동 — 태그 푸시가 release.yml 을 트리거해 실제 릴리스가 일어난다:
+# 만든다. main 은 보호 브랜치라 이 커밋을 직접 밀 수 없다 — 브랜치에서 실행하고 PR 로
+# 머지한 뒤, 머지 커밋에 태그를 다시 붙인다(태그 푸시가 release.yml 을 트리거한다):
 #
-#     scripts/release.sh 0.2.0
-#     git push origin main && git push origin v0.2.0
+#     git switch -c chore/release-v0.2.0
+#     scripts/release.sh 0.2.0 && git tag -d v0.2.0   # 브랜치 태그는 버린다
+#     gh pr create ... && gh pr merge --squash        # CHANGELOG 절 마감도 같은 PR 에서
+#     git switch main && git pull                     # main CI 가 초록인지 확인 후
+#     git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
 #
 # 자체 점검:  scripts/release.sh --self-test
 set -euo pipefail
