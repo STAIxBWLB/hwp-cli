@@ -280,12 +280,16 @@ fn parse_paragraph(
                                 // 캡처본의 첫 이벤트(container 여는 태그)를 소비한다.
                                 let _ = next_event(&mut raw_reader)?;
                                 if name == b"container" {
+                                    let mut skipped = 0u32;
+                                    let mut text_boxes = Vec::new();
                                     collect_container(
                                         &mut raw_reader,
                                         &mut generic,
                                         warnings,
                                         0,
                                         (0, 0),
+                                        &mut skipped,
+                                        &mut text_boxes,
                                     )?;
                                 } else {
                                     collect_sub_lists(
@@ -1316,6 +1320,8 @@ fn collect_container(
     warnings: &mut Vec<String>,
     depth: u32,
     base: (i32, i32),
+    skipped: &mut u32,
+    text_boxes: &mut Vec<Option<[i32; 4]>>,
 ) -> Result<()> {
     /// 중첩 컨테이너 재귀 상한(hwp5 shape_draw MAX_DEPTH와 같은 취지).
     const MAX_CONTAINER_DEPTH: u32 = 8;
@@ -1356,11 +1362,21 @@ fn collect_container(
                         generic
                             .paragraph_lists
                             .push(read_sub_list(reader, warnings)?);
+                        // 컨테이너 자체 소유 텍스트 — 소유 상자 없음(None).
+                        text_boxes.push(None);
                     }
                     b"container" if !is_empty => {
                         // 중첩 컨테이너: 현재 누적 오프셋을 base로 넘겨 재귀한다
                         // (중첩 컨테이너가 자신의 pos를 읽으면 그 위에 더한다).
-                        collect_container(reader, generic, warnings, depth + 1, child_off)?;
+                        collect_container(
+                            reader,
+                            generic,
+                            warnings,
+                            depth + 1,
+                            child_off,
+                            skipped,
+                            text_boxes,
+                        )?;
                     }
                     n if !is_empty && shape_kind(n).is_some() => {
                         let kind = shape_kind(n).expect("guard");
@@ -1371,15 +1387,38 @@ fn collect_container(
                             0
                         };
                         let shape_base = generic.gso_shapes.len();
+                        let lists_base = generic.paragraph_lists.len();
                         collect_shape(reader, n, kind, round_ratio, generic, warnings)?;
                         // ShapeGeom.points는 bbox 기준이라 오프셋 대상이 아니다.
                         for s in &mut generic.gso_shapes[shape_base..] {
                             s.x += child_off.0;
                             s.y += child_off.1;
                         }
+                        // 도형이 기여한 문단 리스트에는 오프셋 반영 후의 도형 상자를
+                        // 소유 상자로 단다(도형이 소거됐으면 컨테이너 상자로 폴).
+                        let owned = generic
+                            .gso_shapes
+                            .get(shape_base)
+                            .map(|s| [s.x, s.y, s.w, s.h]);
+                        for _ in lists_base..generic.paragraph_lists.len() {
+                            text_boxes.push(owned);
+                        }
                     }
                     _ => {
                         if !is_empty {
+                            // 메타데이터(pos/sz/outMargin/renderingInfo/shapeComment 등)는
+                            // 조용히 걸너뛰고, 가시 개체(pic/ole/chart/equation/미지 요소)만
+                            // skipped_objects로 집계해 렌더러가 typed loss를 내게 한다.
+                            if !matches!(
+                                n.as_slice(),
+                                b"outMargin"
+                                    | b"renderingInfo"
+                                    | b"shapeComment"
+                                    | b"caption"
+                                    | b"subList"
+                            ) {
+                                *skipped += 1;
+                            }
                             skip_subtree(reader, &n)?;
                         }
                     }
@@ -1397,6 +1436,8 @@ fn collect_container(
             w: sz.0,
             h: sz.1,
             anchored,
+            skipped_objects: *skipped,
+            text_boxes: std::mem::take(text_boxes),
         });
     }
     Ok(())

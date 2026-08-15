@@ -481,7 +481,7 @@ pub struct ShapeGeom {
 /// hwpx hp:container 자체 상자(HWPUNIT, PAPER 기준 pos/sz + treatAsChar).
 /// GenericControl.container_box가 Some이면 gso_shapes는 컨테이너 원점 기준
 /// 상대좌표의 자식 도형이다(렌더 전용; 재직렬화 원본은 hwpx_raw_xml).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerBox {
     pub x: i32,
     pub y: i32,
@@ -490,6 +490,15 @@ pub struct ContainerBox {
     /// 글자처럼 취급(hp:pos treatAsChar) — 참이면 x/y 대신 텍스트 흐름 위치에 배치.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anchored: bool,
+    /// 파싱하지 못해 건너뛴 가시 개체(hp:pic/ole/chart/equation/미지 요소) 자식 수.
+    /// 0보다 크면 렌더러가 UnsupportedControlOmitted typed loss를 기록한다.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub skipped_objects: u32,
+    /// paragraph_lists와 병렬 — 각 문단 리스트의 소유 상자(컨테이너 원점 기준
+    /// [x, y, w, h] HWPUNIT). None이면 컨테이너 자체 소유(컨테이너 상자에 조판).
+    /// 비어 있으면 비컨테이너 경로·텍스트 없는 컨테이너이며 평탄 조판으로 폴한다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text_boxes: Vec<Option<[i32; 4]>>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {

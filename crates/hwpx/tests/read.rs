@@ -335,6 +335,9 @@ fn container_children_are_parsed_into_gso_shapes() {
           <hp:pos treatAsChar="0" vertOffset="200" horzOffset="100"/>
           <hp:lineShape color="#FF0000" width="40" style="SOLID"/>
           <hc:fillBrush><hc:winBrush faceColor="#00FF00" hatchColor="#000000" alpha="0"/></hc:fillBrush>
+          <hp:subList>
+            <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>도형 텍스트</hp:t></hp:run></hp:p>
+          </hp:subList>
         </hp:rect>
         <hp:polygon id="3">
           <hp:sz width="300" height="200"/>
@@ -348,6 +351,10 @@ fn container_children_are_parsed_into_gso_shapes() {
             <hp:pos treatAsChar="0" vertOffset="70" horzOffset="80"/>
           </hp:ellipse>
         </hp:container>
+        <hp:pic id="6">
+          <hp:sz width="100" height="100"/>
+          <hp:pos treatAsChar="0" vertOffset="0" horzOffset="0"/>
+        </hp:pic>
         <hp:subList>
           <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>컨테이너 텍스트</hp:t></hp:run></hp:p>
         </hp:subList>
@@ -368,6 +375,10 @@ fn container_children_are_parsed_into_gso_shapes() {
             w: 6000,
             h: 2400,
             anchored: true,
+            // hp:pic 직계 자식은 미지원 가시 개체 — 건너뛰고 1로 집계.
+            skipped_objects: 1,
+            // rect 소유 subList 1개(도형 상자) + 컨테이너 직속 subList 1개(None).
+            text_boxes: vec![Some([100, 200, 2000, 1000]), None],
         })
     );
     assert_eq!(generic.gso_shapes.len(), 3);
@@ -386,9 +397,13 @@ fn container_children_are_parsed_into_gso_shapes() {
     assert_eq!(ellipse.kind, hwp_model::ShapeKind::Ellipse);
     assert_eq!((ellipse.x, ellipse.y), (80 + 60, 70 + 50));
     assert!(generic.hwpx_raw_xml.is_some());
-    assert_eq!(generic.paragraph_lists.len(), 1);
+    assert_eq!(generic.paragraph_lists.len(), 2);
     assert_eq!(
         generic.paragraph_lists[0].paragraphs[0].plain_text(),
+        "도형 텍스트"
+    );
+    assert_eq!(
+        generic.paragraph_lists[1].paragraphs[0].plain_text(),
         "컨테이너 텍스트"
     );
 }

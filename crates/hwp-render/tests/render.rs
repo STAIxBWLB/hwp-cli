@@ -382,6 +382,8 @@ fn hwpx_container_children_render_at_container_origin() {
                 w: 6000,
                 h: 2400,
                 anchored: false,
+                skipped_objects: 0,
+                text_boxes: Vec::new(),
             }),
         }));
 
@@ -419,6 +421,123 @@ fn hwpx_container_children_render_at_container_origin() {
             .all(|issue| issue.code != hwp_render::RenderIssueCode::UnsupportedControlOmitted),
         "container는 unsupported_control_omitted 대상이 아니다: {:?}",
         report.issues
+    );
+}
+
+/// 컨테이너에 파싱되지 않은 가시 자식(skipped_objects > 0)이 있으면 typed
+/// UnsupportedControlOmitted 손실을 기록한다.
+#[test]
+fn hwpx_container_skipped_objects_raise_typed_loss() {
+    use hwp_model::{ContainerBox, Control, GenericControl};
+
+    let mut doc = hwp_convert::from_markdown("container host paragraph\n");
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(GenericControl {
+            ctrl_id: *b"cont",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: Some(ContainerBox {
+                x: 10000,
+                y: 20000,
+                w: 6000,
+                h: 2400,
+                anchored: false,
+                skipped_objects: 2,
+                text_boxes: Vec::new(),
+            }),
+        }));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+    let _list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    let report = warns.finish();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::UnsupportedControlOmitted),
+        "skipped_objects > 0이면 typed loss가 있어야 한다: {:?}",
+        report.issues
+    );
+}
+
+/// 자식 도형 소유 subList는 컨테이너 상자가 아니라 각 도형 상자(text_boxes)에
+/// 조판된다 — 두 도형의 텍스트 y 위치가 달라야 한다.
+#[test]
+fn hwpx_container_child_text_layout_in_owning_boxes() {
+    use hwp_model::{ContainerBox, Control, GenericControl, ParagraphList};
+
+    let mut doc = hwp_convert::from_markdown("container host paragraph\n");
+    let para_of = |text: &str| {
+        hwp_convert::from_markdown(text)
+            .sections
+            .remove(0)
+            .paragraphs
+            .remove(0)
+    };
+    let list_of = |text: &str| ParagraphList {
+        header_data: Vec::new(),
+        paragraphs: vec![para_of(text)],
+    };
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(GenericControl {
+            ctrl_id: *b"cont",
+            data: Vec::new(),
+            paragraph_lists: vec![list_of("첫째 도형 텍스트\n"), list_of("둘째 도형 텍스트\n")],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: Some(ContainerBox {
+                x: 10000,
+                y: 10000,
+                w: 8000,
+                h: 6000,
+                anchored: false,
+                skipped_objects: 0,
+                // 첫째 리스트는 (0, 0) 상자, 둘째는 (0, 4000) 상자 소유.
+                text_boxes: vec![Some([0, 0, 4000, 2000]), Some([0, 4000, 4000, 2000])],
+            }),
+        }));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    let y_of = |needle: &str| {
+        list.pages[0].items.iter().find_map(|item| match item {
+            hwp_render::display::Item::Glyphs { y, run, .. } if run.text.contains(needle) => {
+                Some(*y)
+            }
+            _ => None,
+        })
+    };
+    let (Some(y1), Some(y2)) = (y_of("첫째 도형"), y_of("둘째 도형")) else {
+        eprintln!("스킵: 사용 가능한 폰트 없음 - 글리프 미생성");
+        return;
+    };
+    // 컨테이너 원점 y=100pt 기준 첫째 상자 0pt / 둘째 상자 40pt 오프셋.
+    assert!(
+        (y1 - 100.0).abs() < 1.0,
+        "첫째 텍스트는 첫째 상자(y=100pt)에: {y1}"
+    );
+    assert!(
+        (y2 - 140.0).abs() < 1.0,
+        "둘째 텍스트는 둘째 상자(y=140pt)에: {y2}"
     );
 }
 

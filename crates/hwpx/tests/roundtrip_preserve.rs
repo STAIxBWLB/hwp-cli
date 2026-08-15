@@ -315,6 +315,84 @@ fn 컨테이너_자식도형_파싱후에도_원문_왕복_보존() {
     );
 }
 
+/// 원문 XML이 무효화된(edit 헬퍼가 지운) 컨테이너는 자식 도형 좌표가 컨테이너
+/// 상대라 ShapeGeom 재합성 경로로 새면 안 된다 — fail-closed로
+/// OpaqueControlUnrepresentable typed loss를 내고 도형 요소를 방출하지 않는다.
+#[test]
+fn 원문없는_컨테이너는_도형을_합성하지_않고_손실이벤트를_낸다() {
+    let mut para = hwp_model::Paragraph::default();
+    para.chars.push(hwp_model::HwpChar::Text('가'));
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"cont",
+        payload: Vec::new(),
+        ctrl_index: Some(0),
+    });
+    para.controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"cont",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: vec![hwp_model::ShapeGeom {
+                kind: hwp_model::ShapeKind::Rect,
+                x: 100,
+                y: 200,
+                w: 2000,
+                h: 1000,
+                points: Vec::new(),
+                fill: 0xFFFF_FFFF,
+                fill_gradient: None,
+                border_color: 0,
+                border_width: 40,
+                round_ratio: 0,
+                border_style: 0,
+                arrow_start: 0,
+                arrow_end: 0,
+                anchored: false,
+                description: None,
+            }],
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: Some(hwp_model::ContainerBox {
+                x: 1000,
+                y: 1500,
+                w: 6000,
+                h: 2400,
+                anchored: false,
+                skipped_objects: 0,
+                text_boxes: Vec::new(),
+            }),
+        }));
+    let section = hwp_model::Section {
+        paragraphs: vec![para],
+        extras: Vec::new(),
+    };
+
+    let doc = hwp_model::Document::default();
+    let mut report = hwp_model::WriteReport::new();
+    let mut bins = hwpx::write::section::BinCollector::default();
+    let xml = hwpx::write::section::write_section_with_report(
+        &doc,
+        &section,
+        false,
+        &mut bins,
+        &mut report,
+    );
+    assert!(
+        !xml.contains("<hp:rect"),
+        "원문 없는 컨테이너의 자식 도형이 합성 방출됨: {xml}"
+    );
+    assert_eq!(report.preservation.events.len(), 1);
+    assert_eq!(
+        report.preservation.events[0].code,
+        hwp_model::PreservationCode::OpaqueControlUnrepresentable
+    );
+}
+
 // ── #90 PR3 후속: 전체 재작성 경로의 binaryItemIDRef 매니페스트 시드 ──────────
 
 const PNG_ONE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 0, 0, 1];
