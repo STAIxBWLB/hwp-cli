@@ -6,7 +6,15 @@
       "forbid_substitution": false
     },
     "macros": "deny",
-    "external_references": "deny"
+    "external_references": "deny",
+    "preservation": {
+      "report": "preservation-report.json",
+      "max_loss_codes": 0
+    },
+    "hancom_open": {
+      "receipt": "hancom-receipt.json",
+      "require_pass": true
+    }
   },
   "render": {
     "dpi": 96,

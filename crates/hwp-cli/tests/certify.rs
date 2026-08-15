@@ -180,6 +180,96 @@ fn mcp_certify_executes_the_same_atomic_contract() {
 }
 
 #[test]
+fn evidence_checks_fold_into_the_overall_result() {
+    fn run_case(
+        root: &Path,
+        input: &Path,
+        policy: &serde_json::Value,
+        receipt: Option<&serde_json::Value>,
+        label: &str,
+    ) -> serde_json::Value {
+        let receipt_path = root.join("hancom-receipt.json");
+        if let Some(receipt) = receipt {
+            fs::write(&receipt_path, receipt.to_string()).unwrap();
+        } else {
+            let _ = fs::remove_file(&receipt_path);
+        }
+        let policy_path = root.join("policy.json");
+        fs::write(&policy_path, serde_json::to_vec_pretty(policy).unwrap()).unwrap();
+        let report = root.join(format!("report-{label}"));
+        let status = Command::new(env!("CARGO_BIN_EXE_hwp"))
+            .arg("certify")
+            .arg(input)
+            .arg("--policy")
+            .arg(&policy_path)
+            .arg("--report")
+            .arg(&report)
+            .status()
+            .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(report.join("report.json")).unwrap()).unwrap();
+        assert_eq!(status.success(), value["overall"] == "passed");
+        value
+    }
+
+    let root = temp_dir("evidence");
+    let input = root.join("input.hwpx");
+    write_empty_hwpx(&input);
+    fs::write(
+        root.join("preservation.json"),
+        serde_json::json!({"contract": "hwp-preservation-report-v1", "events": []}).to_string(),
+    )
+    .unwrap();
+    let mut receipt = serde_json::json!({
+        "schema_version": "1.0",
+        "application": "Hancom Office HWP",
+        "result": "pass",
+        "verified_at": "2026-08-15T12:00:00Z",
+        "verifier": "qa-operator-1"
+    });
+    let mut policy = policy("disabled");
+    policy["document"]["preservation"] =
+        serde_json::json!({"report": "preservation.json", "max_loss_codes": 0});
+    policy["document"]["hancom_open"] =
+        serde_json::json!({"receipt": "hancom-receipt.json", "require_pass": true});
+
+    let passed = run_case(&root, &input, &policy, Some(&receipt), "pass");
+    assert_eq!(passed["overall"], "passed");
+    assert_eq!(passed["checks"]["preservation"]["status"], "passed");
+    assert_eq!(passed["checks"]["hancom_open"]["status"], "passed");
+    assert_eq!(
+        passed["checks"]["hancom_open"]["application"],
+        "Hancom Office HWP"
+    );
+
+    // A fail receipt with require_pass must fail the whole certification even though every
+    // native check passes.
+    receipt["result"] = serde_json::json!("fail");
+    let failed = run_case(&root, &input, &policy, Some(&receipt), "fail");
+    assert_eq!(failed["overall"], "failed");
+    assert_eq!(failed["checks"]["hancom_open"]["status"], "failed");
+    assert_eq!(
+        failed["checks"]["hancom_open"]["reason_codes"],
+        serde_json::json!(["hancom_open_not_attested"])
+    );
+
+    // A missing artifact fails closed.
+    let missing = run_case(&root, &input, &policy, None, "missing");
+    assert_eq!(missing["overall"], "failed");
+    assert_eq!(
+        missing["checks"]["hancom_open"]["reason_codes"],
+        serde_json::json!(["hancom_open_receipt_invalid"])
+    );
+    assert!(
+        missing["checks"]["hancom_open"]
+            .get("application")
+            .is_none()
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn repeated_native_certification_has_identical_artifacts_and_hashes() {
     let root = temp_dir("deterministic");
     let input = root.join("input.hwpx");

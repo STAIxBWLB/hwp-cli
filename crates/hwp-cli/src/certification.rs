@@ -4,7 +4,7 @@
 //! diagnostic means only that this implementation's bounded algorithm did not observe a problem;
 //! it is not evidence of Hancom rendering parity.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,10 @@ pub const MAX_ARTIFACT_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 pub const WINDOWS_CERTIFICATION_TREE_OVERHEAD_UTF16: usize = 101;
 pub const ORACLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_ORACLE_RESULT_BYTES: u64 = 64 * 1024;
+/// Bounded read limit for the optional preservation/hancom_open evidence artifacts.
+const MAX_EVIDENCE_ARTIFACT_BYTES: u64 = 64 * 1024;
+/// Mirrors `preservation-report-v1` `events.maxItems`.
+const MAX_PRESERVATION_EVENTS: usize = 1000;
 const MAX_LOG_BYTES_RECORDED: u64 = 64 * 1024;
 const MAX_PARSE_XML_DEPTH: usize = 128;
 const MAX_PARSE_XML_NODES: usize = 1_000_000;
@@ -83,6 +87,10 @@ pub struct DocumentPolicy {
     pub external_references: PresencePolicy,
     #[serde(default)]
     pub accessibility: AccessibilityPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preservation: Option<PreservationPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hancom_open: Option<HancomOpenPolicy>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -185,6 +193,30 @@ pub struct AccessibilityPolicy {
     pub require_picture_descriptions: bool,
     #[serde(default)]
     pub require_shape_descriptions: bool,
+}
+
+/// Optional evidence check against a `preservation-report-v1` artifact produced by an earlier
+/// conversion run. The artifact carries only stable loss codes and counts, never content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreservationPolicy {
+    /// Path to the preservation report JSON, relative to the policy file.
+    pub report: String,
+    /// Maximum tolerated loss total (sum of event counts). Defaults to zero.
+    #[serde(default)]
+    pub max_loss_codes: usize,
+}
+
+/// Optional evidence check against a `hancom-verification-receipt-v1` artifact attesting that
+/// Hancom Office opened the document without repair or damage warnings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HancomOpenPolicy {
+    /// Path to the verification receipt JSON, relative to the policy file.
+    pub receipt: String,
+    /// When true (default) the receipt result must be `pass`.
+    #[serde(default = "default_true")]
+    pub require_pass: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,6 +359,35 @@ pub struct CheckSet {
     pub package: CheckResult,
     pub repeat_import_consistency: CheckResult,
     pub rules: Vec<RuleResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preservation: Option<PreservationCheckReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hancom_open: Option<HancomOpenCheckReport>,
+}
+
+/// Outcome of the optional preservation evidence check. Content-free: only aggregated loss
+/// codes and counts, echoing the referenced `preservation-report-v1` artifact.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreservationCheckReport {
+    pub status: CheckStatus,
+    pub reason_codes: Vec<String>,
+    pub loss_code_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loss_codes: Option<BTreeMap<String, usize>>,
+}
+
+/// Outcome of the optional Hancom open evidence check. Echoes only the receipt's content-free
+/// attestation fields; a missing or invalid receipt fails closed with no echo fields.
+#[derive(Debug, Clone, Serialize)]
+pub struct HancomOpenCheckReport {
+    pub status: CheckStatus,
+    pub reason_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -676,10 +737,30 @@ pub fn execute(
         }
     }
 
+    // Optional evidence checks evaluate external artifacts pinned by the policy. They do not
+    // depend on native parsing and fail closed on missing or invalid artifacts.
+    let preservation_check = policy
+        .document
+        .preservation
+        .as_ref()
+        .map(|section| evaluate_preservation_evidence(section, policy_base));
+    let hancom_open_check = policy
+        .document
+        .hancom_open
+        .as_ref()
+        .map(|section| evaluate_hancom_open_evidence(section, policy_base));
+    let evidence_failed = preservation_check
+        .as_ref()
+        .is_some_and(|check| check.status != CheckStatus::Passed)
+        || hancom_open_check
+            .as_ref()
+            .is_some_and(|check| check.status != CheckStatus::Passed);
+
     let local_failed = package_check.status != CheckStatus::Passed
         || semantic_check.status != CheckStatus::Passed
         || rules.iter().any(|rule| rule.status == CheckStatus::Failed)
-        || render_report.status != CheckStatus::Passed;
+        || render_report.status != CheckStatus::Passed
+        || evidence_failed;
 
     let (oracle, mut oracle_artifacts) = if local_failed {
         (
@@ -731,6 +812,8 @@ pub fn execute(
             package: package_check,
             repeat_import_consistency: semantic_check,
             rules,
+            preservation: preservation_check,
+            hancom_open: hancom_open_check,
         },
         render: render_report,
         oracle,
@@ -745,6 +828,7 @@ pub fn execute(
     };
     validate_render_report_invariants(&report.render)?;
     validate_rule_composition(&report.checks.rules)?;
+    validate_evidence_check_invariants(&report)?;
     validate_report_artifact_invariants(&report)?;
 
     let report_bytes = with_final_newline(serde_json::to_vec_pretty(&report)?);
@@ -960,6 +1044,15 @@ fn validate_policy(policy: &CertificationPolicy) -> Result<()> {
         }
         (_, None) => anyhow::bail!("활성 oracle에는 configuration이 필요합니다"),
         (_, Some(config)) => validate_oracle_configuration(config)?,
+    }
+    if let Some(preservation) = &policy.document.preservation {
+        validate_relative_asset_path(&preservation.report)?;
+        if preservation.max_loss_codes > MAX_RULE_COUNT {
+            anyhow::bail!("preservation.max_loss_codes가 {MAX_RULE_COUNT} 상한을 초과합니다");
+        }
+    }
+    if let Some(hancom_open) = &policy.document.hancom_open {
+        validate_relative_asset_path(&hancom_open.receipt)?;
     }
     Ok(())
 }
@@ -1928,6 +2021,206 @@ fn validate_rule_composition(rules: &[RuleResult]) -> Result<()> {
                 .any(|(rule, expected)| rule.id != expected))
     {
         anyhow::bail!("certification rule composition invariant violated");
+    }
+    Ok(())
+}
+
+/// Content-free `hancom-verification-receipt-v1` artifact. Mirrors the closed receipt schema;
+/// validated field-by-field after parsing because the CLI never ships the schema at runtime.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HancomVerificationReceipt {
+    schema_version: String,
+    application: String,
+    result: String,
+    verified_at: String,
+    verifier: String,
+    #[serde(default)]
+    artifact_sha256: Option<String>,
+}
+
+fn valid_receipt_text(value: &str) -> bool {
+    !value.is_empty() && value.chars().count() <= 256 && !value.chars().any(char::is_control)
+}
+
+fn valid_receipt_timestamp(value: &str) -> bool {
+    fn digits(bytes: &[u8]) -> bool {
+        bytes.iter().all(u8::is_ascii_digit)
+    }
+    let bytes = value.as_bytes();
+    if !(20..=64).contains(&bytes.len())
+        || !digits(&bytes[0..4])
+        || bytes[4] != b'-'
+        || !digits(&bytes[5..7])
+        || bytes[7] != b'-'
+        || !digits(&bytes[8..10])
+        || bytes[10] != b'T'
+        || !digits(&bytes[11..13])
+        || bytes[13] != b':'
+        || !digits(&bytes[14..16])
+        || bytes[16] != b':'
+        || !digits(&bytes[17..19])
+    {
+        return false;
+    }
+    // Optional fractional seconds, then `Z` or a `±HH:MM` offset.
+    let mut tail = &value[19..];
+    if let Some(rest) = tail.strip_prefix('.') {
+        let Some(index) = rest.find(['Z', '+', '-']) else {
+            return false;
+        };
+        if index == 0 || !digits(&rest.as_bytes()[..index]) {
+            return false;
+        }
+        tail = &rest[index..];
+    }
+    if tail == "Z" {
+        return true;
+    }
+    let offset = tail.as_bytes();
+    offset.len() == 6
+        && matches!(offset[0], b'+' | b'-')
+        && digits(&offset[1..3])
+        && offset[3] == b':'
+        && digits(&offset[4..6])
+}
+
+fn valid_receipt(receipt: &HancomVerificationReceipt) -> bool {
+    receipt.schema_version == "1.0"
+        && matches!(receipt.result.as_str(), "pass" | "fail")
+        && valid_receipt_text(&receipt.application)
+        && valid_receipt_text(&receipt.verifier)
+        && valid_receipt_timestamp(&receipt.verified_at)
+        && receipt
+            .artifact_sha256
+            .as_ref()
+            .is_none_or(|value| validate_sha256(value, "receipt artifact sha256").is_ok())
+}
+
+/// The preservation evidence check loads the policy-pinned `preservation-report-v1` artifact
+/// and compares the aggregated loss total against the budget. Missing, oversized or malformed
+/// artifacts fail closed.
+fn evaluate_preservation_evidence(
+    policy: &PreservationPolicy,
+    policy_base: &Path,
+) -> PreservationCheckReport {
+    let invalid = || PreservationCheckReport {
+        status: CheckStatus::Failed,
+        reason_codes: vec!["preservation_report_invalid".to_string()],
+        loss_code_count: 0,
+        loss_codes: None,
+    };
+    let Ok(bytes) = read_bounded(
+        &policy_base.join(&policy.report),
+        MAX_EVIDENCE_ARTIFACT_BYTES,
+    ) else {
+        return invalid();
+    };
+    let Ok(report) = serde_json::from_slice::<hwp_model::preservation::PreservationReport>(&bytes)
+    else {
+        return invalid();
+    };
+    if report.contract != hwp_model::preservation::PRESERVATION_REPORT_CONTRACT
+        || report.events.len() > MAX_PRESERVATION_EVENTS
+        || report.events.iter().any(|event| event.count == 0)
+    {
+        return invalid();
+    }
+    let mut loss_codes: BTreeMap<String, usize> = BTreeMap::new();
+    for event in &report.events {
+        *loss_codes
+            .entry(event.code.as_str().to_string())
+            .or_default() += event.count;
+    }
+    let loss_code_count = loss_codes.values().sum();
+    let passed = loss_code_count <= policy.max_loss_codes;
+    PreservationCheckReport {
+        status: if passed {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
+        reason_codes: if passed {
+            Vec::new()
+        } else {
+            vec!["preservation_loss_detected".to_string()]
+        },
+        loss_code_count,
+        loss_codes: (!loss_codes.is_empty()).then_some(loss_codes),
+    }
+}
+
+/// The Hancom open evidence check loads the policy-pinned receipt artifact and requires a
+/// `pass` result unless the policy relaxes it. Missing, oversized or malformed receipts fail
+/// closed and echo nothing.
+fn evaluate_hancom_open_evidence(
+    policy: &HancomOpenPolicy,
+    policy_base: &Path,
+) -> HancomOpenCheckReport {
+    let invalid = || HancomOpenCheckReport {
+        status: CheckStatus::Failed,
+        reason_codes: vec!["hancom_open_receipt_invalid".to_string()],
+        application: None,
+        verified_at: None,
+        verifier: None,
+    };
+    let Ok(bytes) = read_bounded(
+        &policy_base.join(&policy.receipt),
+        MAX_EVIDENCE_ARTIFACT_BYTES,
+    ) else {
+        return invalid();
+    };
+    let Ok(receipt) = serde_json::from_slice::<HancomVerificationReceipt>(&bytes) else {
+        return invalid();
+    };
+    if !valid_receipt(&receipt) {
+        return invalid();
+    }
+    let passed = !policy.require_pass || receipt.result == "pass";
+    HancomOpenCheckReport {
+        status: if passed {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
+        reason_codes: if passed {
+            Vec::new()
+        } else {
+            vec!["hancom_open_not_attested".to_string()]
+        },
+        application: Some(receipt.application),
+        verified_at: Some(receipt.verified_at),
+        verifier: Some(receipt.verifier),
+    }
+}
+
+/// Post-build invariants for the optional evidence sections: status/reason consistency,
+/// aggregated preservation counts, and the overall-failure fold.
+fn validate_evidence_check_invariants(report: &CertificationReport) -> Result<()> {
+    let mut evidence_failed = false;
+    if let Some(check) = &report.checks.preservation {
+        if (check.status == CheckStatus::Passed) != check.reason_codes.is_empty() {
+            anyhow::bail!("preservation status/reason invariant violated");
+        }
+        if check
+            .loss_codes
+            .as_ref()
+            .is_some_and(|codes| codes.values().sum::<usize>() != check.loss_code_count)
+        {
+            anyhow::bail!("preservation loss count invariant violated");
+        }
+        evidence_failed |= check.status != CheckStatus::Passed;
+    }
+    if let Some(check) = &report.checks.hancom_open {
+        if (check.status == CheckStatus::Passed) != check.reason_codes.is_empty() {
+            anyhow::bail!("hancom_open status/reason invariant violated");
+        }
+        if check.status != CheckStatus::Passed {
+            evidence_failed = true;
+        }
+    }
+    if evidence_failed && report.overall != OverallStatus::Failed {
+        anyhow::bail!("evidence failure must fail the overall certification");
     }
     Ok(())
 }
@@ -4443,5 +4736,595 @@ exit 2"#,
         assert!(!serialized.contains("secret/team"));
         assert!(!serialized.contains(client));
         assert!(!serialized.contains(server));
+    }
+
+    fn evidence_scratch_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "hwp-certify-evidence-{label}-{}-{}",
+            std::process::id(),
+            random_token().unwrap()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    fn evidence_policy_value() -> serde_json::Value {
+        let mut value = policy_json("disabled");
+        value["document"] = serde_json::json!({
+            "preservation": {"report": "preservation.json", "max_loss_codes": 2},
+            "hancom_open": {"receipt": "hancom-receipt.json", "require_pass": true}
+        });
+        value
+    }
+
+    fn policy_with_evidence() -> CertificationPolicy {
+        serde_json::from_value(evidence_policy_value()).unwrap()
+    }
+
+    #[test]
+    fn evidence_policy_sections_parse_and_validate() {
+        let policy = policy_with_evidence();
+        validate_policy(&policy).unwrap();
+        let preservation = policy.document.preservation.unwrap();
+        assert_eq!(preservation.report, "preservation.json");
+        assert_eq!(preservation.max_loss_codes, 2);
+        let hancom_open = policy.document.hancom_open.unwrap();
+        assert_eq!(hancom_open.receipt, "hancom-receipt.json");
+        assert!(hancom_open.require_pass);
+
+        // Defaults: max_loss_codes = 0, require_pass = true.
+        let mut value = policy_json("disabled");
+        value["document"] = serde_json::json!({
+            "preservation": {"report": "preservation.json"},
+            "hancom_open": {"receipt": "hancom-receipt.json"}
+        });
+        let policy: CertificationPolicy = serde_json::from_value(value).unwrap();
+        validate_policy(&policy).unwrap();
+        assert_eq!(policy.document.preservation.unwrap().max_loss_codes, 0);
+        assert!(policy.document.hancom_open.unwrap().require_pass);
+
+        // The sections stay closed and path-validated like the rest of the policy.
+        let mut value = policy_json("disabled");
+        value["document"] = serde_json::json!({
+            "preservation": {"report": "preservation.json", "bogus": true}
+        });
+        assert!(serde_json::from_value::<CertificationPolicy>(value).is_err());
+        let mut value = policy_json("disabled");
+        value["document"] = serde_json::json!({
+            "hancom_open": {"receipt": "../escape.json"}
+        });
+        let policy: CertificationPolicy = serde_json::from_value(value).unwrap();
+        assert!(validate_policy(&policy).is_err());
+    }
+
+    #[test]
+    fn evidence_policy_sections_match_the_policy_schema() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/certification-policy-v1.schema.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap();
+        let value = evidence_policy_value();
+        assert!(validator.is_valid(&value), "schema rejected {value}");
+
+        // A policy without the optional sections keeps its previous shape and stays valid.
+        let minimal = policy_json("disabled");
+        assert!(minimal.get("document").is_none());
+        assert!(validator.is_valid(&minimal), "schema rejected {minimal}");
+    }
+
+    #[test]
+    fn preservation_evidence_passes_within_the_loss_budget() {
+        let dir = evidence_scratch_dir("preservation-pass");
+        fs::write(
+            dir.join("preservation.json"),
+            serde_json::json!({
+                "contract": "hwp-preservation-report-v1",
+                "events": [
+                    {"code": "control_removed", "resource": "control", "disposition": "removed", "count": 2},
+                    {"code": "control_removed", "resource": "control", "disposition": "unrepresentable", "count": 1},
+                    {"code": "metadata_value_removed", "resource": "metadata", "disposition": "removed", "count": 3}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let policy = PreservationPolicy {
+            report: "preservation.json".to_string(),
+            max_loss_codes: 6,
+        };
+        let check = evaluate_preservation_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Passed);
+        assert!(check.reason_codes.is_empty());
+        assert_eq!(check.loss_code_count, 6);
+        let codes = check.loss_codes.unwrap();
+        assert_eq!(codes["control_removed"], 3);
+        assert_eq!(codes["metadata_value_removed"], 3);
+        fs::remove_dir_all(&dir).unwrap();
+
+        // A lossless report passes the default zero budget and omits loss_codes.
+        let dir = evidence_scratch_dir("preservation-lossless");
+        fs::write(
+            dir.join("preservation.json"),
+            serde_json::json!({"contract": "hwp-preservation-report-v1", "events": []}).to_string(),
+        )
+        .unwrap();
+        let policy = PreservationPolicy {
+            report: "preservation.json".to_string(),
+            max_loss_codes: 0,
+        };
+        let check = evaluate_preservation_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Passed);
+        assert_eq!(check.loss_code_count, 0);
+        assert!(check.loss_codes.is_none());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preservation_evidence_fails_above_the_loss_budget() {
+        let dir = evidence_scratch_dir("preservation-loss");
+        fs::write(
+            dir.join("preservation.json"),
+            serde_json::json!({
+                "contract": "hwp-preservation-report-v1",
+                "events": [
+                    {"code": "picture_control_removed", "resource": "control", "disposition": "removed", "count": 2}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let policy = PreservationPolicy {
+            report: "preservation.json".to_string(),
+            max_loss_codes: 1,
+        };
+        let check = evaluate_preservation_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert_eq!(check.reason_codes, ["preservation_loss_detected"]);
+        assert_eq!(check.loss_code_count, 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preservation_evidence_fails_closed_on_missing_or_invalid_artifacts() {
+        let dir = evidence_scratch_dir("preservation-invalid");
+        let policy = PreservationPolicy {
+            report: "preservation.json".to_string(),
+            max_loss_codes: 0,
+        };
+        let check = evaluate_preservation_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert_eq!(check.reason_codes, ["preservation_report_invalid"]);
+        assert!(check.loss_codes.is_none());
+
+        for (label, bytes) in [
+            ("malformed", b"{not json".to_vec()),
+            (
+                "wrong-contract",
+                serde_json::json!({"contract": "other", "events": []})
+                    .to_string()
+                    .into_bytes(),
+            ),
+            (
+                "zero-count",
+                serde_json::json!({
+                    "contract": "hwp-preservation-report-v1",
+                    "events": [
+                        {"code": "control_removed", "resource": "control", "disposition": "removed", "count": 0}
+                    ]
+                })
+                .to_string()
+                .into_bytes(),
+            ),
+        ] {
+            fs::write(dir.join("preservation.json"), bytes).unwrap();
+            let check = evaluate_preservation_evidence(&policy, &dir);
+            assert_eq!(check.status, CheckStatus::Failed, "{label}");
+            assert_eq!(check.reason_codes, ["preservation_report_invalid"], "{label}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn write_receipt(dir: &Path, receipt: serde_json::Value) {
+        fs::write(dir.join("hancom-receipt.json"), receipt.to_string()).unwrap();
+    }
+
+    fn valid_receipt_json() -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": "1.0",
+            "application": "Hancom Office HWP",
+            "result": "pass",
+            "verified_at": "2026-08-15T12:00:00Z",
+            "verifier": "qa-operator-1",
+            "artifact_sha256": "0".repeat(64)
+        })
+    }
+
+    #[test]
+    fn hancom_open_evidence_passes_and_echoes_the_receipt() {
+        let dir = evidence_scratch_dir("hancom-pass");
+        write_receipt(&dir, valid_receipt_json());
+        let policy = HancomOpenPolicy {
+            receipt: "hancom-receipt.json".to_string(),
+            require_pass: true,
+        };
+        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Passed);
+        assert!(check.reason_codes.is_empty());
+        assert_eq!(check.application.as_deref(), Some("Hancom Office HWP"));
+        assert_eq!(check.verified_at.as_deref(), Some("2026-08-15T12:00:00Z"));
+        assert_eq!(check.verifier.as_deref(), Some("qa-operator-1"));
+
+        // require_pass=false accepts an explicit fail receipt as attested evidence.
+        let mut receipt = valid_receipt_json();
+        receipt["result"] = serde_json::json!("fail");
+        write_receipt(&dir, receipt);
+        let policy = HancomOpenPolicy {
+            require_pass: false,
+            ..policy
+        };
+        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Passed);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hancom_open_evidence_fails_when_not_attested() {
+        let dir = evidence_scratch_dir("hancom-fail");
+        let mut receipt = valid_receipt_json();
+        receipt["result"] = serde_json::json!("fail");
+        write_receipt(&dir, receipt);
+        let policy = HancomOpenPolicy {
+            receipt: "hancom-receipt.json".to_string(),
+            require_pass: true,
+        };
+        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert_eq!(check.reason_codes, ["hancom_open_not_attested"]);
+        assert_eq!(check.application.as_deref(), Some("Hancom Office HWP"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hancom_open_evidence_fails_closed_on_missing_or_invalid_receipts() {
+        let dir = evidence_scratch_dir("hancom-invalid");
+        let policy = HancomOpenPolicy {
+            receipt: "hancom-receipt.json".to_string(),
+            require_pass: true,
+        };
+        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert_eq!(check.reason_codes, ["hancom_open_receipt_invalid"]);
+        assert!(check.application.is_none());
+        assert!(check.verified_at.is_none());
+        assert!(check.verifier.is_none());
+
+        for (label, mutate) in [
+            ("schema-version", "schema_version"),
+            ("result", "result"),
+            ("timestamp", "verified_at"),
+            ("hash", "artifact_sha256"),
+        ] {
+            let mut receipt = valid_receipt_json();
+            receipt[mutate] = serde_json::json!("bogus");
+            write_receipt(&dir, receipt);
+            let check = evaluate_hancom_open_evidence(&policy, &dir);
+            assert_eq!(check.status, CheckStatus::Failed, "{label}");
+            assert_eq!(
+                check.reason_codes,
+                ["hancom_open_receipt_invalid"],
+                "{label}"
+            );
+            assert!(check.application.is_none(), "{label}");
+        }
+        // Unknown fields are rejected by the closed contract.
+        let mut receipt = valid_receipt_json();
+        receipt["extra"] = serde_json::json!(true);
+        write_receipt(&dir, receipt);
+        let check = evaluate_hancom_open_evidence(&policy, &dir);
+        assert_eq!(check.status, CheckStatus::Failed);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn receipt_timestamp_validation_matches_the_schema_shape() {
+        for valid in [
+            "2026-08-15T12:00:00Z",
+            "2026-08-15T12:00:00.123Z",
+            "2026-08-15T12:00:00+09:00",
+            "2026-08-15T12:00:00.5-05:30",
+        ] {
+            assert!(valid_receipt_timestamp(valid), "{valid}");
+        }
+        for invalid in [
+            "2026-08-15 12:00:00Z",
+            "2026-08-15T12:00:00",
+            "2026-08-15T12:00:00.Z",
+            "2026-08-15T12:00:00+0900",
+            "not-a-timestamp0000",
+        ] {
+            assert!(!valid_receipt_timestamp(invalid), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn hancom_receipt_schema_pins_the_closed_contract() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/hancom-verification-receipt-v1.schema.json"
+        ))
+        .unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["required"],
+            serde_json::json!([
+                "schema_version",
+                "application",
+                "result",
+                "verified_at",
+                "verifier"
+            ])
+        );
+        assert_eq!(schema["properties"]["schema_version"]["const"], "1.0");
+        assert_eq!(
+            schema["properties"]["result"]["enum"],
+            serde_json::json!(["pass", "fail"])
+        );
+
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap();
+        assert!(validator.is_valid(&valid_receipt_json()));
+        let mut receipt = valid_receipt_json();
+        receipt["verifier"] = serde_json::json!("has\ncontrol");
+        assert!(!validator.is_valid(&receipt));
+    }
+
+    #[test]
+    fn report_schema_evidence_sections_mirror_the_preservation_codes() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/certification-report-v1.schema.json"
+        ))
+        .unwrap();
+        let checks = &schema["properties"]["checks"]["properties"];
+        assert!(checks.get("preservation").is_some());
+        assert!(checks.get("hancom_open").is_some());
+        let mut schema_codes: Vec<String> = schema["$defs"]["preservationLossCodes"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        schema_codes.sort();
+        let model_codes: Vec<&str> = [
+            hwp_model::preservation::PreservationCode::BinaryAssetRemoved,
+            hwp_model::preservation::PreservationCode::BinaryRelationshipRemoved,
+            hwp_model::preservation::PreservationCode::ControlMetadataUnrepresentable,
+            hwp_model::preservation::PreservationCode::ControlRemoved,
+            hwp_model::preservation::PreservationCode::GsoHeaderUnrepresentable,
+            hwp_model::preservation::PreservationCode::GsoShapeUnrepresentable,
+            hwp_model::preservation::PreservationCode::HwpContainerStorageRemoved,
+            hwp_model::preservation::PreservationCode::HwpContainerStreamRemoved,
+            hwp_model::preservation::PreservationCode::HwpOpaqueStreamChanged,
+            hwp_model::preservation::PreservationCode::HwpxOpaqueEntryChanged,
+            hwp_model::preservation::PreservationCode::HwpxPackageEntryRemoved,
+            hwp_model::preservation::PreservationCode::MetadataValueRemoved,
+            hwp_model::preservation::PreservationCode::OpaqueControlUnrepresentable,
+            hwp_model::preservation::PreservationCode::PictureControlRemoved,
+        ]
+        .into_iter()
+        .map(|code| code.as_str())
+        .collect();
+        assert_eq!(schema_codes, model_codes);
+        let reason_codes = schema["$defs"]["reasonCode"]["enum"].to_string();
+        for reason in [
+            "preservation_loss_detected",
+            "preservation_report_invalid",
+            "hancom_open_not_attested",
+            "hancom_open_receipt_invalid",
+        ] {
+            assert!(reason_codes.contains(reason), "{reason}");
+        }
+    }
+
+    #[test]
+    fn example_native_policy_and_evidence_artifacts_validate_against_their_schemas() {
+        let validator = |schema_path: &str| {
+            let schema: serde_json::Value = serde_json::from_str(schema_path).unwrap();
+            jsonschema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .build(&schema)
+                .unwrap()
+        };
+        let document = |path: &str| -> serde_json::Value { serde_json::from_str(path).unwrap() };
+        let policy = document(include_str!(
+            "../../../examples/certification-v1/native-policy.json"
+        ));
+        let schema = validator(include_str!(
+            "../../../schemas/certification-policy-v1.schema.json"
+        ));
+        assert!(schema.is_valid(&policy), "schema rejected {policy}");
+        let preservation = document(include_str!(
+            "../../../examples/certification-v1/preservation-report.json"
+        ));
+        let schema = validator(include_str!(
+            "../../../schemas/preservation-report-v1.schema.json"
+        ));
+        assert!(
+            schema.is_valid(&preservation),
+            "schema rejected {preservation}"
+        );
+        let receipt = document(include_str!(
+            "../../../examples/certification-v1/hancom-receipt.json"
+        ));
+        let schema = validator(include_str!(
+            "../../../schemas/hancom-verification-receipt-v1.schema.json"
+        ));
+        assert!(schema.is_valid(&receipt), "schema rejected {receipt}");
+
+        // The example policy also parses and validates through the runtime path.
+        let policy: CertificationPolicy = serde_json::from_value(policy).unwrap();
+        validate_policy(&policy).unwrap();
+    }
+
+    /// Build a fully passing native-only report value. Evidence sections are added by the
+    /// callers that need them; the baseline matches the pre-PR-8a wire shape.
+    fn passing_report_value() -> serde_json::Value {
+        let rules: Vec<RuleResult> = [
+            "defined_styles",
+            "used_styles",
+            "numbering.definitions",
+            "numbering.used",
+            "tables",
+            "links",
+            "metadata",
+            "macros",
+            "external_references",
+            "accessibility",
+            "unresolved_fields",
+            "fonts",
+        ]
+        .into_iter()
+        .map(|id| RuleResult {
+            id,
+            status: CheckStatus::Passed,
+            observed_count: 0,
+            reason_codes: Vec::new(),
+        })
+        .collect();
+        let mut render = empty_render_report(96.0);
+        render.status = CheckStatus::Passed;
+        render.reason_codes = Vec::new();
+        let report = CertificationReport {
+            schema_version: REPORT_SCHEMA_VERSION,
+            contract: "hwp-certification-report-v1",
+            overall: OverallStatus::Passed,
+            scope: "native_only",
+            input: InputReport {
+                format: "hwpx".to_string(),
+                bytes: 42,
+                sha256: "0".repeat(64),
+            },
+            policy_sha256: "1".repeat(64),
+            checks: CheckSet {
+                package: passed_check(),
+                repeat_import_consistency: passed_check(),
+                rules,
+                preservation: None,
+                hancom_open: None,
+            },
+            render,
+            oracle: OracleReport {
+                mode: OracleMode::Disabled,
+                status: OracleStatus::Disabled,
+                reason_code: None,
+                expected: None,
+                observed: None,
+                stdout: None,
+                stderr: None,
+                artifact_determinism: "not_applicable",
+            },
+            artifacts: Vec::new(),
+            limitations: vec![
+                "native_not_detected_is_algorithm_scoped",
+                "hancom_rendering_parity_not_claimed",
+                "oracle_artifact_determinism_not_claimed",
+                "oracle_page_count_not_host_verified",
+                "selected_pages_only_when_policy_selects_pages",
+            ],
+        };
+        validate_rule_composition(&report.checks.rules).unwrap();
+        validate_evidence_check_invariants(&report).unwrap();
+        serde_json::to_value(&report).unwrap()
+    }
+
+    /// The report schema cross-references the oracle-result schema by relative file ref;
+    /// inline that def so the test validator resolves every reference locally.
+    fn certification_report_validator() -> jsonschema::Validator {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/certification-report-v1.schema.json"
+        ))
+        .unwrap();
+        let oracle: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/certification-oracle-result-v1.schema.json"
+        ))
+        .unwrap();
+        let mut rewritten = schema.to_string();
+        rewritten = rewritten.replace("certification-oracle-result-v1.schema.json#/", "#/");
+        let mut schema: serde_json::Value = serde_json::from_str(&rewritten).unwrap();
+        schema["$defs"]["attestation"] = oracle["$defs"]["attestation"].clone();
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap()
+    }
+
+    #[test]
+    fn report_without_evidence_sections_still_validates_against_the_updated_schema() {
+        let value = passing_report_value();
+        assert!(value["checks"].get("preservation").is_none());
+        assert!(value["checks"].get("hancom_open").is_none());
+        let validator = certification_report_validator();
+        assert!(validator.is_valid(&value), "schema rejected {value}");
+    }
+
+    #[test]
+    fn report_with_passed_evidence_sections_validates_against_the_updated_schema() {
+        let mut value = passing_report_value();
+        value["checks"]["preservation"] = serde_json::json!({
+            "status": "passed",
+            "reason_codes": [],
+            "loss_code_count": 2,
+            "loss_codes": {"control_removed": 2}
+        });
+        value["checks"]["hancom_open"] = serde_json::json!({
+            "status": "passed",
+            "reason_codes": [],
+            "application": "Hancom Office HWP",
+            "verified_at": "2026-08-15T12:00:00Z",
+            "verifier": "qa-operator-1"
+        });
+        let validator = certification_report_validator();
+        assert!(validator.is_valid(&value), "schema rejected {value}");
+    }
+
+    #[test]
+    fn report_with_failed_evidence_requires_a_failed_overall() {
+        let validator = certification_report_validator();
+        let failed_preservation = serde_json::json!({
+            "status": "failed",
+            "reason_codes": ["preservation_loss_detected"],
+            "loss_code_count": 3,
+            "loss_codes": {"control_removed": 3}
+        });
+
+        // Failed evidence with an otherwise passing local composition: overall failed and the
+        // disabled oracle reports not_claimed (new oneOf branch).
+        let mut value = passing_report_value();
+        value["overall"] = serde_json::json!("failed");
+        value["oracle"]["artifact_determinism"] = serde_json::json!("not_claimed");
+        value["checks"]["preservation"] = failed_preservation.clone();
+        assert!(validator.is_valid(&value), "schema rejected {value}");
+
+        // Failed evidence can never compose with a passed or partial overall.
+        for overall in ["passed", "partial"] {
+            let mut value = passing_report_value();
+            value["overall"] = serde_json::json!(overall);
+            value["checks"]["preservation"] = failed_preservation.clone();
+            assert!(!validator.is_valid(&value), "schema accepted {value}");
+        }
+
+        // The echo fields and loss code names stay closed and content-free.
+        let mut value = passing_report_value();
+        value["overall"] = serde_json::json!("failed");
+        value["oracle"]["artifact_determinism"] = serde_json::json!("not_claimed");
+        let mut section = failed_preservation.clone();
+        section["loss_codes"] = serde_json::json!({"not_a_loss_code": 1});
+        value["checks"]["preservation"] = section;
+        assert!(!validator.is_valid(&value), "schema accepted {value}");
     }
 }

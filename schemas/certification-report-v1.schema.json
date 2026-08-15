@@ -25,6 +25,8 @@
       "properties": {
         "package": { "$ref": "#/$defs/check" },
         "repeat_import_consistency": { "$ref": "#/$defs/check" },
+        "preservation": { "$ref": "#/$defs/preservationCheck" },
+        "hancom_open": { "$ref": "#/$defs/hancomOpenCheck" },
         "rules": {
           "type": "array", "maxItems": 32,
           "items": {
@@ -233,6 +235,32 @@
           }
         }
       ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        { "$ref": "#/$defs/evidenceFailed" },
+        {
+          "properties": {
+            "overall": { "const": "failed" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleDisabledFailed" }
+          }
+        }
+      ]
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/localPassed" },
+        { "$ref": "#/$defs/evidenceFailed" },
+        {
+          "properties": {
+            "overall": { "const": "failed" },
+            "scope": { "const": "native_only" },
+            "oracle": { "$ref": "#/$defs/oracleNotRun" }
+          }
+        }
+      ]
     }
   ],
   "allOf": [
@@ -240,13 +268,96 @@
       "if": { "properties": { "scope": { "const": "native_plus_independent_import" } } },
       "then": { "properties": { "artifacts": { "contains": { "properties": { "path": { "const": "oracle/import.pdf" } }, "required": ["path"] }, "minContains": 1, "maxContains": 1 } } },
       "else": { "properties": { "artifacts": { "not": { "contains": { "properties": { "path": { "const": "oracle/import.pdf" } }, "required": ["path"] } } } } }
+    },
+    {
+      "not": {
+        "allOf": [
+          { "properties": { "overall": { "enum": ["passed", "partial"] } } },
+          { "$ref": "#/$defs/evidenceFailed" }
+        ]
+      }
     }
   ],
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "checkStatus": { "enum": ["passed", "failed", "skipped"] },
+    "lossCount": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "preservationLossCodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 14,
+      "properties": {
+        "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
+        "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
+        "control_metadata_unrepresentable": { "$ref": "#/$defs/lossCount" },
+        "control_removed": { "$ref": "#/$defs/lossCount" },
+        "gso_header_unrepresentable": { "$ref": "#/$defs/lossCount" },
+        "gso_shape_unrepresentable": { "$ref": "#/$defs/lossCount" },
+        "hwp_container_storage_removed": { "$ref": "#/$defs/lossCount" },
+        "hwp_container_stream_removed": { "$ref": "#/$defs/lossCount" },
+        "hwp_opaque_stream_changed": { "$ref": "#/$defs/lossCount" },
+        "hwpx_opaque_entry_changed": { "$ref": "#/$defs/lossCount" },
+        "hwpx_package_entry_removed": { "$ref": "#/$defs/lossCount" },
+        "metadata_value_removed": { "$ref": "#/$defs/lossCount" },
+        "opaque_control_unrepresentable": { "$ref": "#/$defs/lossCount" },
+        "picture_control_removed": { "$ref": "#/$defs/lossCount" }
+      }
+    },
+    "receiptShortString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "receiptTimestamp": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "preservationCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason_codes", "loss_code_count"],
+      "properties": {
+        "status": { "$ref": "#/$defs/checkStatus" },
+        "reason_codes": { "$ref": "#/$defs/reasons" },
+        "loss_code_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "loss_codes": { "$ref": "#/$defs/preservationLossCodes" }
+      },
+      "oneOf": [
+        { "properties": { "status": { "const": "passed" }, "reason_codes": { "maxItems": 0 } } },
+        { "properties": { "status": { "enum": ["failed", "skipped"] }, "reason_codes": { "minItems": 1 } } }
+      ]
+    },
+    "hancomOpenCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason_codes"],
+      "properties": {
+        "status": { "$ref": "#/$defs/checkStatus" },
+        "reason_codes": { "$ref": "#/$defs/reasons" },
+        "application": { "$ref": "#/$defs/receiptShortString" },
+        "verified_at": { "$ref": "#/$defs/receiptTimestamp" },
+        "verifier": { "$ref": "#/$defs/receiptShortString" }
+      },
+      "oneOf": [
+        { "properties": { "status": { "const": "passed" }, "reason_codes": { "maxItems": 0 } } },
+        { "properties": { "status": { "enum": ["failed", "skipped"] }, "reason_codes": { "minItems": 1 } } }
+      ]
+    },
+    "evidenceFailed": {
+      "properties": {
+        "checks": {
+          "anyOf": [
+            { "properties": { "preservation": { "properties": { "status": { "enum": ["failed", "skipped"] } } } }, "required": ["preservation"] },
+            { "properties": { "hancom_open": { "properties": { "status": { "enum": ["failed", "skipped"] } } } }, "required": ["hancom_open"] }
+          ]
+        }
+      }
+    },
     "reasons": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "$ref": "#/$defs/reasonCode" } },
-    "reasonCode": { "enum": ["package_validation_failed", "package_or_import_warnings", "document_parse_failed", "repeat_import_mismatch", "repeat_import_failed", "not_run", "parse_budget_exceeded", "render_policy_failed", "layout_budget_exceeded", "image_decode_budget_exceeded", "pagination_drift_detected", "font_manifest_or_resolution_failed", "render_page_scope_invalid", "render_execution_failed", "disallowed_value", "required_value_missing", "style_reference_out_of_range", "below_minimum", "above_maximum", "disallowed_definition_index", "required_definition_index_missing", "disallowed_scheme", "disallowed_field_present", "required_field_missing", "forbidden_field_present", "forbidden_present", "required_missing", "inspection_incomplete", "picture_description_missing", "shape_description_missing", "unresolved_field_binding", "requested_font_name_invalid", "disallowed_requested_font", "required_requested_font_missing", "font_or_glyph_missing", "font_substitution_forbidden", "font_resolution_report_incomplete", "resolved_font_outside_manifest", "font_resolution_not_run"] },
+    "reasonCode": { "enum": ["package_validation_failed", "package_or_import_warnings", "document_parse_failed", "repeat_import_mismatch", "repeat_import_failed", "not_run", "parse_budget_exceeded", "render_policy_failed", "layout_budget_exceeded", "image_decode_budget_exceeded", "pagination_drift_detected", "font_manifest_or_resolution_failed", "render_page_scope_invalid", "render_execution_failed", "disallowed_value", "required_value_missing", "style_reference_out_of_range", "below_minimum", "above_maximum", "disallowed_definition_index", "required_definition_index_missing", "disallowed_scheme", "disallowed_field_present", "required_field_missing", "forbidden_field_present", "forbidden_present", "required_missing", "inspection_incomplete", "picture_description_missing", "shape_description_missing", "unresolved_field_binding", "requested_font_name_invalid", "disallowed_requested_font", "required_requested_font_missing", "font_or_glyph_missing", "font_substitution_forbidden", "font_resolution_report_incomplete", "resolved_font_outside_manifest", "font_resolution_not_run", "preservation_loss_detected", "preservation_report_invalid", "hancom_open_not_attested", "hancom_open_receipt_invalid"] },
     "check": {
       "type": "object", "additionalProperties": false, "required": ["status", "reason_codes", "issue_count", "issue_sha256"],
       "properties": {

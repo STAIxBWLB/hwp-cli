@@ -120,7 +120,33 @@
             "require_picture_descriptions": { "type": "boolean" },
             "require_shape_descriptions": { "type": "boolean" }
           }
-        }
+        },
+        "preservation": { "$ref": "#/$defs/preservationPolicy" },
+        "hancom_open": { "$ref": "#/$defs/hancomOpenPolicy" }
+      }
+    },
+    "evidencePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "preservationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report"],
+      "properties": {
+        "report": { "$ref": "#/$defs/evidencePath" },
+        "max_loss_codes": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
+    },
+    "hancomOpenPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt"],
+      "properties": {
+        "receipt": { "$ref": "#/$defs/evidencePath" },
+        "require_pass": { "type": "boolean" }
       }
     },
     "metadataFields": {
