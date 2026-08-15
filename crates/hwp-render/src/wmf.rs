@@ -369,9 +369,10 @@ impl Interpreter<'_> {
             }
             // ── 객체 테이블 (GDI: 첫 빈 슬롯에 생성) ──
             CREATE_PEN_INDIRECT => {
-                // LOGPEN16: style u16, width POINTL(x만 사용) 4B, COLORREF u32.
+                // LOGPEN16: style u16, width POINTL(x i16만 유효 — y는 무시,
+                // GDI는 x 컴포넌트만 펜 폭으로 쓴다), COLORREF u32.
                 let style = rd_u16(p, 0)?;
-                let width = rd_i32(p, 2)?;
+                let width = i32::from(rd_i16(p, 2)?);
                 let color = rd_u32(p, 6)? & 0x00FF_FFFF;
                 // PS_NULL(5)만 접는다. 파선 계열(1..4)은 미관측 — 실선으로 그린다.
                 let pen = (style != 5).then_some(Pen { color, width });
@@ -446,7 +447,14 @@ impl Interpreter<'_> {
             // (issue 없음 — 경계 밖 잉크가 살짝 넘칠 수 있음. 측정 후 재검토). ──
             EXCLUDE_CLIP_RECT | INTERSECT_CLIP_RECT | SELECT_CLIP_REGION => {}
             // ── Escape: 실측은 전부 MFCOMMENT(0x000F) — 조용히 무시. ──
-            ESCAPE => {}
+            // ── Escape: MFCOMMENT(0x000F)만 조용히 무시 (실측 전부 이것).
+            // 그 외 escape 함수는 detail=함수 id만 담아 bounded-skip. ──
+            ESCAPE => {
+                let esc = rd_u16(p, 0)?;
+                if esc != 0x000F {
+                    self.unsupported(esc);
+                }
+            }
             // ── 그리기 ──
             MOVE_TO => {
                 // (Y, X) 순서. TA_UPDATECP 텍스트의 기준점.
@@ -977,6 +985,12 @@ fn decode_dib(dib: &[u8]) -> Result<Dib, DibFail> {
     if planes != 1 || !matches!(bpp, 1 | 4 | 8 | 24) || compression != 0 {
         return Err(DibFail::Unsupported);
     }
+    // biClrUsed는 팔레트 할당 크기를 결정하므로 검증 전에 신뢰할 수 없다 —
+    // 1<<bpp(합법 상한, 실측 최대 164/8bpp)를 넘으면 손상으로 본다. 픽셀 버퍼는
+    // 위의 MAX_DIB_PIXELS 검사 이후에만 할당된다.
+    if bpp <= 8 && clr_used > (1usize << bpp) {
+        return Err(DibFail::Invalid);
+    }
     let (w, h) = (w as u32, h_raw.unsigned_abs());
     if u64::from(w) * u64::from(h) > MAX_DIB_PIXELS {
         return Err(DibFail::Budget);
@@ -1079,7 +1093,8 @@ fn pattern_density_blend(dib: &[u8], dc: &Dc) -> Option<u32> {
         let b = (bg >> shift) & 0xFF;
         (f * bits + b * (64 - bits) + 32) / 64
     };
-    Some(mix(0) | (mix(1) << 8) | (mix(2) << 16))
+    // COLORREF(0x00BBGGRR) 채널은 바이트 경계 — shift 0/8/16 (R/G/B).
+    Some(mix(0) | (mix(8) << 8) | (mix(16) << 16))
 }
 
 /// RGBA → PNG 인코딩 (hwp-convert의 encode_png과 같은 품질 설정).
@@ -1142,9 +1157,15 @@ mod tests {
         }
 
         fn create_pen(&mut self, style: u16, width: i32, color: u32) -> &mut Self {
+            self.create_pen_xy(style, width as i16, 0, color)
+        }
+
+        /// POINTL x/y를 따로 쓰는 변형 — y 무시 검증용.
+        fn create_pen_xy(&mut self, style: u16, x: i16, y: i16, color: u32) -> &mut Self {
             let mut p = Vec::new();
             p.extend_from_slice(&style.to_le_bytes());
-            p.extend_from_slice(&width.to_le_bytes()); // POINTL (y 미사용, 0)
+            p.extend_from_slice(&x.to_le_bytes());
+            p.extend_from_slice(&y.to_le_bytes());
             p.extend_from_slice(&color.to_le_bytes());
             self.rec(CREATE_PEN_INDIRECT, &p)
         }
@@ -1652,5 +1673,71 @@ mod tests {
             .find(|s| s.code == RenderIssueCode::WmfUnsupportedRecordOmitted)
             .expect("omission issue");
         assert_eq!(s.count, 1);
+    }
+
+    #[test]
+    fn pattern_blend_non_grayscale_channels() {
+        // fg=red(0x000000FF), bg=blue(0x00FF0000), 50% 체커보드.
+        // 채널별 (f·32 + b·32 + 32)/64: R=(255·32+32)/64=128, G=(0+32)/64=0,
+        // B=(255·32+32)/64=128 → 0x00800080.
+        let mut b = Builder::new();
+        b.rec(SET_TEXT_COLOR, &0x0000_00FFu32.to_le_bytes())
+            .rec(SET_BK_COLOR, &0x00FF_0000u32.to_le_bytes())
+            .create_pattern_brush(&dib_1bpp(
+                [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+                Some([(0, 0, 0), (255, 255, 255)]),
+            ))
+            .select_object(0)
+            .points(POLYGON, &[(0, 0), (10, 0), (0, 10)]);
+        let (ctx, outcome) = draw(&b.finish());
+        assert_eq!(outcome, WmfOutcome::Drawn);
+        let fill = ctx.page.items.iter().find_map(|it| match it {
+            Item::Path {
+                fill: Some(Fill::Solid(c)),
+                ..
+            } => Some(*c),
+            _ => None,
+        });
+        assert_eq!(fill, Some(0x0080_0080));
+    }
+
+    #[test]
+    fn pen_width_uses_pointl_x_only() {
+        // width POINTL = (x=3, y=0x7FFF) — y가 새면 폭이 깨진다.
+        let mut b = Builder::new();
+        b.create_pen_xy(0, 3, 0x7FFF, 0)
+            .select_object(0)
+            .points(POLYLINE, &[(0, 0), (50, 50)]);
+        let (ctx, outcome) = draw(&b.finish());
+        assert_eq!(outcome, WmfOutcome::Drawn);
+        let Item::Path { stroke, .. } = &ctx.page.items[0] else {
+            panic!("Path여야 함");
+        };
+        let w = stroke.as_ref().expect("펜 스트로크").width;
+        assert!((w - 3.0).abs() < 1e-3, "x=3lu × sx(1) = 3pt: {w}");
+    }
+
+    #[test]
+    fn escape_only_mfcomment_is_silent() {
+        let mut b = Builder::new();
+        // MFCOMMENT(0x000F) ×2 — 무시. SETABORTPROC(0x0200), 클립 보드 escape
+        // (0x0201) — 각각 omission. 0x0200을 한 번 더 → 같은 id는 sample dedup.
+        for esc in [0x000Fu16, 0x000F, 0x0200, 0x0201, 0x0200] {
+            b.rec(ESCAPE, &esc.to_le_bytes());
+        }
+        b.create_solid_brush(0x0011_2233)
+            .select_object(0)
+            .points(POLYGON, &[(0, 0), (10, 0), (0, 10)]);
+        let (ctx, outcome) = draw(&b.finish());
+        assert_eq!(outcome, WmfOutcome::Drawn);
+        assert_eq!(ctx.page.items.len(), 1, "escape 뒤 레코드는 계속 해석");
+        let report = ctx.warnings.finish();
+        let s = report
+            .issues
+            .iter()
+            .find(|s| s.code == RenderIssueCode::WmfUnsupportedRecordOmitted)
+            .expect("omission issue");
+        assert_eq!(s.count, 3, "MFCOMMENT 2건은 무시, 나머지 3건");
+        assert_eq!(s.sample_sha256.len(), 2, "distinct escape id당 sample 1개");
     }
 }
