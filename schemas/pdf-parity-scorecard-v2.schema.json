@@ -257,6 +257,218 @@
         "recall": { "type": "number", "minimum": 0, "maximum": 1 },
         "passed": { "type": "boolean" }
       }
+    },
+    "gate_blocking_consistency": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "page_count" } },
+              "excluded_gates": { "not": { "contains": { "const": "page_count" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "page_count" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "page_count" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "page_count" } },
+              "excluded_gates": { "not": { "contains": { "const": "page_count" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "media_box" } },
+              "excluded_gates": { "not": { "contains": { "const": "media_box" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "media_box" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "media_box" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "media_box" } },
+              "excluded_gates": { "not": { "contains": { "const": "media_box" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "text" } },
+              "excluded_gates": { "not": { "contains": { "const": "text" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "text" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "text" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "text" } },
+              "excluded_gates": { "not": { "contains": { "const": "text" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "fonts" } },
+              "excluded_gates": { "not": { "contains": { "const": "fonts" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "fonts" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "fonts" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "fonts" } },
+              "excluded_gates": { "not": { "contains": { "const": "fonts" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "render_issues" } },
+              "excluded_gates": { "not": { "contains": { "const": "render_issues" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "render_issues" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "render_issues" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "render_issues" } },
+              "excluded_gates": { "not": { "contains": { "const": "render_issues" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "raster" } },
+              "excluded_gates": { "not": { "contains": { "const": "raster" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "raster" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "raster" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "raster" } },
+              "excluded_gates": { "not": { "contains": { "const": "raster" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "roi" } },
+              "excluded_gates": { "not": { "contains": { "const": "roi" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "roi" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "roi" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "roi" } },
+              "excluded_gates": { "not": { "contains": { "const": "roi" } } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "determinism" } },
+              "excluded_gates": { "not": { "contains": { "const": "determinism" } } }
+            }
+          },
+          "then": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "determinism" } }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "blocking_failed_gates": { "contains": { "const": "determinism" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "failed_gates": { "contains": { "const": "determinism" } },
+              "excluded_gates": { "not": { "contains": { "const": "determinism" } } }
+            }
+          }
+        }
+      ]
     }
   },
   "allOf": [
@@ -308,6 +520,7 @@
           }
         ]
       }
-    }
+    },
+    { "$ref": "#/$defs/gate_blocking_consistency" }
   ]
 }

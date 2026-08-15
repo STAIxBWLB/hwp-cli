@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Regression tests for the Hancom PDF parity runner."""
 
+import copy
 import hashlib
 import json
 import struct
+import subprocess
 import tempfile
 import unittest
 import zlib
@@ -740,5 +742,89 @@ class V2GateExclusionTests(unittest.TestCase):
         self.assertTrue(card["eligible"])
 
 
-if __name__ == "__main__":
-    unittest.main()
+FIXTURE_SCOREBOARD = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures/pdf-parity/public/scoreboard"
+)
+
+
+@unittest.skipUnless(
+    parity.validator_path().is_file(),
+    "JSON schema validator example not built (scripts/pdf-parity.sh builds it)",
+)
+class V2GateExclusionSchemaTests(unittest.TestCase):
+    """Schema-level checks: blocking_failed_gates must equal failed minus excluded.
+
+    The schemas cannot express a set difference, so each gate carries two
+    if/then implications; these tests exercise both directions against the
+    Rust validator on real fixture-shaped documents.
+    """
+
+    def validates(self, schema: str, doc: dict) -> bool:
+        with tempfile.TemporaryDirectory() as temporary:
+            document = Path(temporary) / "doc.json"
+            document.write_text(json.dumps(doc), encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    str(parity.validator_path()),
+                    str(parity.SCHEMAS / f"{schema}.schema.json"),
+                    str(document),
+                ],
+                capture_output=True,
+                text=True,
+            )
+        return proc.returncode == 0
+
+    def load(self, name: str) -> dict:
+        return json.loads((FIXTURE_SCOREBOARD / name).read_text(encoding="utf-8"))
+
+    @staticmethod
+    def mutate(doc: dict, failed, excluded, blocking, eligible) -> dict:
+        mutated = copy.deepcopy(doc)
+        mutated["failed_gates"] = failed
+        mutated["excluded_gates"] = excluded
+        mutated["blocking_failed_gates"] = blocking
+        passed = [gate for gate in mutated["passed_gates"] if gate not in failed]
+        mutated["passed_gates"] = passed
+        mutated["eligible"] = eligible
+        return mutated
+
+    def test_committed_public_fixtures_validate(self) -> None:
+        board = self.load("scoreboard.json")
+        self.assertTrue(self.validates("pdf-parity-scoreboard-v2", board))
+        for name in ("public-rfp-hwp.json", "public-rfp-hwpx.json"):
+            self.assertTrue(self.validates("pdf-parity-scorecard-v2", self.load(name)))
+
+    def test_legitimate_exclusion_validates_in_all_positions(self) -> None:
+        card = self.mutate(self.load("public-rfp-hwp.json"), ["fonts"], ["fonts"], [], True)
+        self.assertTrue(self.validates("pdf-parity-scorecard-v2", card))
+        board = self.mutate(self.load("scoreboard.json"), ["fonts"], ["fonts"], [], True)
+        board["cases"] = [
+            self.mutate(case, ["fonts"], ["fonts"], [], True) for case in board["cases"]
+        ]
+        self.assertTrue(self.validates("pdf-parity-scoreboard-v2", board))
+
+    def test_non_excluded_failure_cannot_be_hidden_from_blocking(self) -> None:
+        # The review counterexample: a non-excluded gate failed, but
+        # blocking_failed_gates was supplied empty with eligible=true.
+        card = self.mutate(self.load("public-rfp-hwp.json"), ["text"], ["fonts"], [], True)
+        self.assertFalse(self.validates("pdf-parity-scorecard-v2", card))
+        board_root = self.mutate(self.load("scoreboard.json"), ["text"], ["fonts"], [], True)
+        self.assertFalse(self.validates("pdf-parity-scoreboard-v2", board_root))
+        board_case = self.load("scoreboard.json")
+        board_case["excluded_gates"] = ["fonts"]
+        board_case["cases"] = [
+            self.mutate(case, ["text"], ["fonts"], [], True)
+            for case in board_case["cases"]
+        ]
+        self.assertFalse(self.validates("pdf-parity-scoreboard-v2", board_case))
+
+    def test_blocking_gates_must_be_real_non_excluded_failures(self) -> None:
+        # A blocking gate absent from failed_gates is rejected.
+        phantom = self.mutate(self.load("public-rfp-hwp.json"), [], [], ["roi"], False)
+        self.assertFalse(self.validates("pdf-parity-scorecard-v2", phantom))
+        # A blocking gate that is also excluded is rejected.
+        doubled = self.mutate(
+            self.load("scoreboard.json"), ["roi"], ["roi"], ["roi"], False
+        )
+        self.assertFalse(self.validates("pdf-parity-scoreboard-v2", doubled))
