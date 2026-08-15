@@ -1165,12 +1165,25 @@ def score_case_v2(
         substitution_free = all(record["outcome"] == "matched" for record in font_records)
     else:
         substitution_free = False
+    if font_records is not None:
+        # A clean aggregate never overrides per-font evidence: any recorded
+        # substitution (including glyph-level coverage fallback) or missing
+        # font fails the gate even when the aggregate claims otherwise.
+        substitution_free = substitution_free and all(
+            record["outcome"] == "matched" for record in font_records
+        )
     if font_records is not None and pinned_font_hashes is not None:
+        # A resolved record without a valid byte hash is failed identity
+        # evidence: it cannot be proven pinned, so it counts as outside the
+        # manifest.  `missing` records legitimately carry no hash.
         outside_manifest = sum(
             1
             for record in font_records
-            if record["resolved_sha256"] is not None
-            and record["resolved_sha256"] not in pinned_font_hashes
+            if record["outcome"] != "missing"
+            and (
+                record["resolved_sha256"] is None
+                or record["resolved_sha256"] not in pinned_font_hashes
+            )
         )
     else:
         outside_manifest = 0

@@ -636,6 +636,43 @@ class V2FontGateTests(unittest.TestCase):
         # incomplete/fatal gate is unaffected by it.
         self.assertIn("render_issues", card["passed_gates"])
 
+    def test_clean_aggregate_does_not_override_coverage_substituted_record(self) -> None:
+        # The aggregate claims substitution-free, but a glyph-level coverage
+        # fallback record must still fail the fonts gate.
+        report = self.clean_report(
+            [{"outcome": "coverage_substituted", "resolved_sha256": "c" * 64}]
+        )
+        card = self.score_with_report(report, frozenset({"c" * 64}))
+        self.assertIn("fonts", card["failed_gates"])
+        self.assertFalse(card["fonts"]["substitution_free"])
+        self.assertFalse(card["eligible"])
+
+    def test_resolved_record_without_byte_hash_counts_as_outside_manifest(self) -> None:
+        records = [
+            {"outcome": "matched", "resolved_sha256": None},
+            {"outcome": "substituted", "resolved_sha256": None},
+            {"outcome": "coverage_substituted", "resolved_sha256": None},
+            # A missing font legitimately carries no hash and is not counted.
+            {"outcome": "missing", "resolved_sha256": None},
+        ]
+        card = self.score_with_report(self.clean_report(records), frozenset({"c" * 64}))
+        self.assertIn("fonts", card["failed_gates"])
+        self.assertFalse(card["fonts"]["pinned_faces"])
+        self.assertEqual(card["fonts"]["outside_manifest_faces"], 3)
+
+    def test_all_matched_pinned_records_pass_fonts_gate(self) -> None:
+        records = [
+            {"outcome": "matched", "resolved_sha256": "c" * 64},
+            {"outcome": "matched", "resolved_sha256": "d" * 64},
+        ]
+        pinned = frozenset({"c" * 64, "d" * 64})
+        card = self.score_with_report(self.clean_report(records), pinned)
+        self.assertIn("fonts", card["passed_gates"])
+        self.assertTrue(card["fonts"]["substitution_free"])
+        self.assertTrue(card["fonts"]["pinned_faces"])
+        self.assertTrue(card["fonts"]["resolution_complete"])
+        self.assertEqual(card["fonts"]["outside_manifest_faces"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
