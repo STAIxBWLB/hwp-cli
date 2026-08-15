@@ -220,11 +220,14 @@ sans-serif. Every substitution changes every advance, every wrap decision and ev
 so **a parity number measured under substituted fonts is meaningless**.
 
 - `RenderIssueReport::font_coverage()` aggregates FontMatched / FontSubstituted / FontMissing /
-  FontSubsetFallback counts; the CLI render report prints the coverage line.
-- `FontCoverage::substitution_free()` is the hard gate: no parity figure may be published for a
-  case whose render was not substitution-free.
-- Missing coverage is a gate failure, as is any font in either PDF that `pdffonts` does not report
-  as embedded, subset, and Unicode-capable.
+  FontSubsetFallback counts; the CLI render report also publishes hash-only requested/resolved font
+  identities, requested weight state, face index, and resolution completeness.
+- `FontCoverage::substitution_free()` is part of the hard gate: no parity figure may be published
+  for a case whose render was not substitution-free. Resolution must also be complete, and every
+  resolved font-byte hash must belong to the manifest-pinned set. Only a directly requested family,
+  including a proven secondary alias on the selected face, may count as matched.
+- Missing coverage or identity evidence is a gate failure, as is any font in either PDF that
+  `pdffonts` does not report as embedded, subset, and Unicode-capable.
 
 ## 6. Pagination truth (F3)
 

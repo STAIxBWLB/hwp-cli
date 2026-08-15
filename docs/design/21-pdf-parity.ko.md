@@ -206,10 +206,13 @@ structured-corpus run(`scripts/check-structured-corpus.sh`)은 고정 Noto Sans 
 아래 잰 parity 수치는 무의미하다**.
 
 - `RenderIssueReport::font_coverage()`가 FontMatched / FontSubstituted / FontMissing /
-  FontSubsetFallback 횟수를 집계하고, CLI 렌더 리포트가 커버리지 줄을 출력한다.
-- `FontCoverage::substitution_free()`가 하드 게이트다: 대체 없이 렌더되지 않은 케이스의
-  parity 수치는 발행할 수 없다.
-- 커버리지 자체를 확인할 수 없는 경우도 게이트 실패로 처리한다. 두 PDF 중 하나라도
+  FontSubsetFallback 횟수를 집계하고, CLI 렌더 리포트는 해시화한 요청/해결 글꼴 identity,
+  요청 weight 상태, face index, 해석 완결성도 함께 발행한다.
+- `FontCoverage::substitution_free()`는 하드 게이트의 일부다: 대체 없이 렌더되지 않은 케이스의
+  parity 수치는 발행할 수 없다. 해석 완결성도 충족해야 하고, 해결된 모든 font-byte 해시는
+  manifest에 고정된 집합에 속해야 한다. 직접 요청한 패밀리(선택된 face의 검증된 보조 별칭 포함)만
+  matched로 인정한다.
+- 커버리지나 identity 증거를 확인할 수 없는 경우도 게이트 실패로 처리한다. 두 PDF 중 하나라도
   `pdffonts` 기준 임베드·서브셋·Unicode 지원을 모두 충족하지 못하면 역시 채점하지 않는다.
 
 ## 6. 페이지네이션 정본 (F3)

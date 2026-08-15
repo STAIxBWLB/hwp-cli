@@ -27,6 +27,8 @@ struct RenderReportFile {
     total_pages: usize,
     selected_pages: Vec<usize>,
     font_coverage: RenderFontCoverage,
+    font_resolution_complete: bool,
+    fonts: Vec<RenderFontRecord>,
     issues: Vec<RenderIssueReportEntry>,
     info: Vec<RenderIssueReportEntry>,
     issue_count: u64,
@@ -34,6 +36,18 @@ struct RenderReportFile {
     issue_log_complete: bool,
     issue_sha256: String,
     complete: bool,
+}
+
+/// Deterministic privacy-safe per-font identity record: only hashed family
+/// names and font bytes, never raw names or paths.
+#[derive(Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+struct RenderFontRecord {
+    requested_sha256: String,
+    requested_bold: bool,
+    resolved_family_sha256: Option<String>,
+    resolved_sha256: Option<String>,
+    resolved_face_index: Option<u32>,
+    outcome: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -121,6 +135,8 @@ pub fn run_with_report(
                     dpi,
                     result.total_pages,
                     selected,
+                    &result.diagnostics.fonts,
+                    result.diagnostics.font_resolution_complete,
                     result.report,
                 )?;
             }
@@ -162,6 +178,8 @@ pub fn run_with_report(
                     dpi,
                     total_pages,
                     selected,
+                    &result.fonts,
+                    result.font_resolution_complete,
                     result.report,
                 )?;
             }
@@ -190,6 +208,8 @@ pub fn run_with_report(
                     dpi,
                     total,
                     selected,
+                    &result.fonts,
+                    result.font_resolution_complete,
                     result.report,
                 )?;
             }
@@ -282,6 +302,27 @@ struct RenderReportIssueChannels {
     complete: bool,
 }
 
+fn sha256_text(value: &str) -> String {
+    hex_digest(Sha256::digest(value.as_bytes()).as_slice())
+}
+
+fn font_record(resolution: &hwp_render::FontResolution) -> RenderFontRecord {
+    RenderFontRecord {
+        requested_sha256: sha256_text(&resolution.requested),
+        requested_bold: resolution.requested_bold,
+        resolved_family_sha256: resolution.resolved.as_deref().map(sha256_text),
+        resolved_sha256: resolution.resolved_sha256.clone(),
+        resolved_face_index: resolution.resolved_face_index,
+        outcome: match resolution.outcome {
+            hwp_render::FontResolutionOutcome::Matched => "matched",
+            hwp_render::FontResolutionOutcome::Substituted => "substituted",
+            hwp_render::FontResolutionOutcome::Missing => "missing",
+            hwp_render::FontResolutionOutcome::CoverageSubstituted => "coverage_substituted",
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_report(
     report_path: &Path,
     input: RenderInputReport,
@@ -289,10 +330,15 @@ fn write_report(
     dpi: f32,
     total_pages: usize,
     selected_pages: Vec<usize>,
+    fonts: &[hwp_render::FontResolution],
+    font_resolution_complete: bool,
     source: hwp_render::RenderIssueReport,
 ) -> anyhow::Result<()> {
     let coverage = source.font_coverage();
     let channels = format_issue_report(source);
+    let mut font_records: Vec<RenderFontRecord> = fonts.iter().map(font_record).collect();
+    font_records.sort();
+    font_records.truncate(hwp_render::fonts::MAX_FONT_RESOLUTIONS);
     let report = RenderReportFile {
         schema_version: RENDER_REPORT_SCHEMA_VERSION,
         contract: RENDER_REPORT_CONTRACT,
@@ -308,6 +354,8 @@ fn write_report(
             subset_fallback: coverage.subset_fallback,
             substitution_free: coverage.substitution_free(),
         },
+        font_resolution_complete,
+        fonts: font_records,
         issues: channels.issues,
         info: channels.info,
         issue_count: channels.issue_count,

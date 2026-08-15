@@ -468,5 +468,174 @@ class V2ContractTests(unittest.TestCase):
         self.assertTrue(rows[0]["name"].startswith("font-"))
 
 
+class V2FontGateTests(unittest.TestCase):
+    def test_fonts_array_normalization_keeps_only_outcome_and_byte_hash(self) -> None:
+        report = parity.normalize_render_report(
+            {
+                "complete": True,
+                "font_resolution_complete": True,
+                "font_coverage": {
+                    "matched": 2,
+                    "substituted": 0,
+                    "missing": 0,
+                    "subset_fallback": 0,
+                },
+                "fonts": [
+                    {
+                        "requested_sha256": "a" * 64,
+                        "requested_bold": False,
+                        "resolved_family_sha256": "b" * 64,
+                        "resolved_sha256": "c" * 64,
+                        "resolved_face_index": 0,
+                        "outcome": "matched",
+                    },
+                    {
+                        # Certification-style byte-hash field name.
+                        "requested_name_sha256": "d" * 64,
+                        "font_file_sha256": "e" * 64,
+                        "outcome": "substituted",
+                    },
+                    {
+                        "requested_sha256": "f" * 64,
+                        "resolved_sha256": "not-a-hash",
+                        "outcome": "missing",
+                    },
+                    {"outcome": "bogus"},
+                    "not-a-dict",
+                ],
+            }
+        )
+        self.assertEqual(
+            report["fonts"],
+            [
+                {"outcome": "matched", "resolved_sha256": "c" * 64},
+                {"outcome": "substituted", "resolved_sha256": "e" * 64},
+                {"outcome": "missing", "resolved_sha256": None},
+            ],
+        )
+        self.assertTrue(report["font_resolution_complete"])
+        self.assertEqual(report["incomplete"], 0)
+
+    def test_incomplete_font_resolution_is_incomplete_evidence(self) -> None:
+        report = parity.normalize_render_report(
+            {
+                "complete": True,
+                "font_resolution_complete": False,
+                "font_coverage": {
+                    "matched": 1,
+                    "substituted": 0,
+                    "missing": 0,
+                    "subset_fallback": 0,
+                },
+            }
+        )
+        self.assertFalse(report["font_resolution_complete"])
+        self.assertEqual(report["incomplete"], 1)
+        self.assertIn("font_resolution_incomplete", report["issue_codes"])
+
+    def score_with_report(self, report: dict, pinned) -> dict:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "case.hwpx"
+            oracle = root / "case.pdf"
+            ours_pdf = root / "ours.pdf"
+            source.write_bytes(b"source")
+            oracle.write_bytes(b"oracle")
+            ours_pdf.write_bytes(b"ours")
+            render = {
+                "first": {"path": ours_pdf},
+                "report": report,
+                "byte_equal": True,
+                "sha256": [digest(b"ours"), digest(b"ours")],
+            }
+            valid_font = {
+                "name": "Pinned",
+                "type": "TrueType",
+                "embedded": True,
+                "subset": True,
+                "unicode": True,
+            }
+            with mock.patch.object(parity, "render_candidate_twice", return_value=render), mock.patch.object(
+                parity, "pdf_pages", return_value=1
+            ), mock.patch.object(
+                parity, "pdf_media_boxes", return_value=[(0.0, 0.0, 100.0, 100.0)]
+            ), mock.patch.object(
+                parity, "pdf_fonts", return_value=[valid_font]
+            ), mock.patch.object(
+                parity, "page_text", return_value="same"
+            ), mock.patch.object(
+                parity, "rasterize", return_value=root / "missing.png"
+            ), mock.patch.object(
+                parity, "raster_diff", return_value={
+                    "dx": 0,
+                    "dy": 0,
+                    "ink_ratio": 1.0,
+                    "bad_pixel_pct": 0.0,
+                    "mae": 0.0,
+                }
+            ):
+                return parity.score_case_v2(
+                    "case", source, oracle, root / "hwp", 150, root,
+                    rois=[], pinned_font_hashes=pinned,
+                )
+
+    def clean_report(self, fonts, complete=True) -> dict:
+        return {
+            "coverage": {
+                "matched": 1,
+                "substituted": 0,
+                "missing": 0,
+                "subset_fallback": 0,
+                "substitution_free": True,
+            },
+            "complete": True,
+            "unsupported": 0,
+            "incomplete": 0,
+            "fatal": 0,
+            "issue_codes": [],
+            "report_available": True,
+            "report_source": "json",
+            "fonts": fonts,
+            "font_resolution_complete": complete,
+        }
+
+    def test_outside_manifest_resolved_hash_fails_fonts_gate(self) -> None:
+        pinned = frozenset({"c" * 64})
+        clean = self.score_with_report(
+            self.clean_report([{"outcome": "matched", "resolved_sha256": "c" * 64}]),
+            pinned,
+        )
+        self.assertIn("fonts", clean["passed_gates"])
+        self.assertTrue(clean["fonts"]["pinned_faces"])
+        self.assertEqual(clean["fonts"]["outside_manifest_faces"], 0)
+
+        outside = self.score_with_report(
+            self.clean_report([{"outcome": "matched", "resolved_sha256": "9" * 64}]),
+            pinned,
+        )
+        self.assertIn("fonts", outside["failed_gates"])
+        self.assertFalse(outside["fonts"]["pinned_faces"])
+        self.assertEqual(outside["fonts"]["outside_manifest_faces"], 1)
+        self.assertFalse(outside["eligible"])
+
+        missing_records = self.score_with_report(self.clean_report(None), pinned)
+        self.assertIn("fonts", missing_records["failed_gates"])
+
+        incomplete = self.score_with_report(self.clean_report([], complete=False), pinned)
+        self.assertIn("fonts", incomplete["failed_gates"])
+        self.assertFalse(incomplete["fonts"]["resolution_complete"])
+
+    def test_fonts_gate_fails_on_substitution_not_render_issues(self) -> None:
+        report = self.clean_report([{"outcome": "substituted", "resolved_sha256": "c" * 64}])
+        report["coverage"]["substituted"] = 1
+        report["coverage"]["substitution_free"] = False
+        card = self.score_with_report(report, frozenset({"c" * 64}))
+        self.assertIn("fonts", card["failed_gates"])
+        self.assertFalse(card["fonts"]["substitution_free"])
+        # Substitution evidence moved to the fonts gate; the general
+        # incomplete/fatal gate is unaffected by it.
+        self.assertIn("render_issues", card["passed_gates"])
+
+
 if __name__ == "__main__":
     unittest.main()

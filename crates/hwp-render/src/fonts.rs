@@ -115,6 +115,10 @@ enum FontCacheKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontResolution {
     pub requested: String,
+    /// Whether the request asked for a bold face.  Regular and bold requests
+    /// for the same family can resolve to different faces and must stay
+    /// distinct records, so identity includes the requested weight state.
+    pub requested_bold: bool,
     pub resolved: Option<String>,
     pub resolved_sha256: Option<String>,
     pub resolved_face_index: Option<u32>,
@@ -123,7 +127,14 @@ pub struct FontResolution {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontResolutionOutcome {
+    /// fontdb resolved the directly requested family name.  The requested
+    /// name may be a secondary family alias of the selected face (fontdb
+    /// matches every family name a face carries); that is still a direct
+    /// match, not a substitution.
     Matched,
+    /// Resolution through the document's alt name, a class fallback-list
+    /// entry, or the generic sans fallback — anything that is not the
+    /// directly requested family.
     Substituted,
     Missing,
     /// 주 글꼴에 특정 글리프가 없어 문자 단위 폴백을 사용한 경우.
@@ -274,6 +285,7 @@ impl FontStore {
                     );
                     self.record_resolution(FontResolution {
                         requested: requested.clone(),
+                        requested_bold: bold,
                         resolved: Some(font.family.clone()),
                         resolved_sha256: Some(sha256_hex(&font.data)),
                         resolved_face_index: Some(font.index),
@@ -286,6 +298,7 @@ impl FontStore {
                     );
                     self.record_resolution(FontResolution {
                         requested: requested.clone(),
+                        requested_bold: bold,
                         resolved: Some(font.family.clone()),
                         resolved_sha256: Some(sha256_hex(&font.data)),
                         resolved_face_index: Some(font.index),
@@ -312,6 +325,7 @@ impl FontStore {
             );
             self.record_resolution(FontResolution {
                 requested: requested.clone(),
+                requested_bold: bold,
                 resolved: Some(font.family.clone()),
                 resolved_sha256: Some(sha256_hex(&font.data)),
                 resolved_face_index: Some(font.index),
@@ -324,6 +338,7 @@ impl FontStore {
                 .push(RenderIssueCode::FontMissing, requested.as_bytes());
             self.record_resolution(FontResolution {
                 requested: requested.clone(),
+                requested_bold: bold,
                 resolved: None,
                 resolved_sha256: None,
                 resolved_face_index: None,
@@ -373,6 +388,7 @@ impl FontStore {
                 let font = &selection.font;
                 self.record_resolution(FontResolution {
                     requested: "coverage_fallback".to_string(),
+                    requested_bold: bold,
                     resolved: Some(font.family.clone()),
                     resolved_sha256: Some(sha256_hex(&font.data)),
                     resolved_face_index: Some(font.index),
@@ -385,6 +401,7 @@ impl FontStore {
         if result.is_none() {
             self.record_resolution(FontResolution {
                 requested: "coverage_fallback".to_string(),
+                requested_bold: bold,
                 resolved: None,
                 resolved_sha256: None,
                 resolved_face_index: None,
@@ -553,6 +570,13 @@ mod tests {
     }
 
     fn weight_font(family: &str, weight: u16) -> Vec<u8> {
+        weight_font_with_families(&[(family, 0x0409)], weight)
+    }
+
+    /// Build a single-face font carrying one family name per (name, language)
+    /// pair, so a face with a secondary family alias can be tested without a
+    /// host font directory.
+    fn weight_font_with_families(families: &[(&str, u16)], weight: u16) -> Vec<u8> {
         let base = hex_bytes(DEMO_TTF_HEX);
         let table_count = usize::from(be_u16(&base, 4));
         let mut tables = Vec::<([u8; 4], Vec<u8>)>::with_capacity(table_count + 2);
@@ -565,33 +589,40 @@ mod tests {
             tables.push((tag, base[offset..offset + length].to_vec()));
         }
 
-        let family_utf16: Vec<u8> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
-        let post_script = family.replace(' ', "");
-        let post_script_utf16: Vec<u8> = post_script
-            .encode_utf16()
-            .flat_map(u16::to_be_bytes)
+        let post_script = families[0].0.replace(' ', "");
+        let mut encoded: Vec<(u16, u16, Vec<u8>)> = families
+            .iter()
+            .map(|(name, language)| {
+                (
+                    1u16,
+                    *language,
+                    name.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+                )
+            })
             .collect();
+        encoded.push((
+            6u16,
+            0x0409,
+            post_script
+                .encode_utf16()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+        ));
         let mut name = Vec::new();
         push_u16(&mut name, 0); // format
-        push_u16(&mut name, 2); // count
-        push_u16(&mut name, 30); // string offset: 6 + 2 * 12
-        for (name_id, bytes) in [(1u16, &family_utf16), (6u16, &post_script_utf16)] {
+        push_u16(&mut name, encoded.len() as u16); // count
+        push_u16(&mut name, 6 + encoded.len() as u16 * 12); // string storage offset
+        let mut storage = Vec::new();
+        for (name_id, language, bytes) in &encoded {
             push_u16(&mut name, 3); // Windows Unicode BMP
             push_u16(&mut name, 1);
-            push_u16(&mut name, 0x0409);
-            push_u16(&mut name, name_id);
+            push_u16(&mut name, *language);
+            push_u16(&mut name, *name_id);
             push_u16(&mut name, bytes.len() as u16);
-            push_u16(
-                &mut name,
-                if name_id == 1 {
-                    0
-                } else {
-                    family_utf16.len() as u16
-                },
-            );
+            push_u16(&mut name, storage.len() as u16);
+            storage.extend_from_slice(bytes);
         }
-        name.extend_from_slice(&family_utf16);
-        name.extend_from_slice(&post_script_utf16);
+        name.extend_from_slice(&storage);
         tables.push((*b"name", name));
 
         let mut os2 = vec![0; 78];
@@ -647,6 +678,7 @@ mod tests {
         for index in 0..=MAX_FONT_RESOLUTIONS {
             store.record_resolution(FontResolution {
                 requested: format!("font-{index}"),
+                requested_bold: false,
                 resolved: None,
                 resolved_sha256: None,
                 resolved_face_index: None,
@@ -687,6 +719,17 @@ mod tests {
         assert_eq!(sha256_hex(&regular.data), regular_hash);
         assert_eq!(sha256_hex(&bold.data), bold_hash);
         assert_eq!(store.resolutions.len(), 2);
+        let mut weight_states: Vec<bool> = store
+            .resolutions
+            .iter()
+            .map(|resolution| resolution.requested_bold)
+            .collect();
+        weight_states.sort();
+        assert_eq!(
+            weight_states,
+            vec![false, true],
+            "regular and bold requests stay distinct identity records"
+        );
         assert!(store.resolutions.iter().any(|resolution| {
             resolution.resolved_sha256.as_deref() == Some(regular_hash.as_str())
                 && resolution.resolved_face_index == Some(0)
@@ -718,5 +761,111 @@ mod tests {
 
         let _ = std::fs::remove_file(regular_path);
         let _ = std::fs::remove_file(bold_path);
+    }
+
+    #[test]
+    fn bold_request_on_a_regular_only_face_is_a_distinct_record() {
+        // Without the requested weight state, the bold resolution selects the
+        // same regular bytes and dedups into the regular record, hiding the
+        // bold request from the report.
+        let family = "HWP Bold Identity Fixture";
+        let bytes = weight_font(family, 400);
+        let hash = sha256_hex(&bytes);
+        let path = temp_font_path("regular-only");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let document = test_document(family);
+        let mut store = FontStore::new_isolated();
+        store.load_file(&path).unwrap();
+        store.resolve(&document, 0, 0).unwrap();
+        store.resolve_with_style(&document, 0, 0, true).unwrap();
+        assert_eq!(store.resolutions.len(), 2);
+        let mut states: Vec<bool> = store
+            .resolutions
+            .iter()
+            .map(|resolution| resolution.requested_bold)
+            .collect();
+        states.sort();
+        assert_eq!(states, vec![false, true]);
+        assert!(store.resolutions.iter().all(|resolution| {
+            resolution.outcome == FontResolutionOutcome::Matched
+                && resolution.resolved_sha256.as_deref() == Some(hash.as_str())
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn secondary_family_alias_on_the_selected_face_stays_matched() {
+        // fontdb matches every family name a face carries, so requesting the
+        // secondary (Korean-language) alias resolves the same face directly.
+        let bytes = weight_font_with_families(
+            &[
+                ("HWP Alias Primary", 0x0409),
+                ("HWP Alias Secondary", 0x0412),
+            ],
+            400,
+        );
+        let hash = sha256_hex(&bytes);
+        let path = temp_font_path("aliased");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let document = test_document("HWP Alias Secondary");
+        let mut store = FontStore::new_isolated();
+        store.load_file(&path).unwrap();
+        let resolved = store.resolve(&document, 0, 0).unwrap();
+        assert_eq!(sha256_hex(&resolved.data), hash);
+        assert_eq!(store.resolutions.len(), 1);
+        let resolution = &store.resolutions[0];
+        assert_eq!(resolution.outcome, FontResolutionOutcome::Matched);
+        assert_eq!(resolution.resolved_sha256.as_deref(), Some(hash.as_str()));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn alt_name_and_class_fallback_are_substitution_outcomes() {
+        // The document's own alt name resolves the face but is not the
+        // directly requested family.
+        let alt_bytes = weight_font("HWP Alt Face", 400);
+        let alt_hash = sha256_hex(&alt_bytes);
+        let alt_path = temp_font_path("alt");
+        std::fs::write(&alt_path, &alt_bytes).unwrap();
+        let mut document = test_document("HWP Missing Primary");
+        document.header.fonts[0][0].alt_name = Some("HWP Alt Face".to_string());
+        let mut store = FontStore::new_isolated();
+        store.load_file(&alt_path).unwrap();
+        store.resolve(&document, 0, 0).unwrap();
+        assert_eq!(store.resolutions.len(), 1);
+        assert_eq!(
+            store.resolutions[0].outcome,
+            FontResolutionOutcome::Substituted
+        );
+        assert_eq!(
+            store.resolutions[0].resolved_sha256.as_deref(),
+            Some(alt_hash.as_str())
+        );
+
+        // A class fallback-list entry is likewise a typed substitution.
+        let fallback_bytes = weight_font("함초롬돋움", 400);
+        let fallback_hash = sha256_hex(&fallback_bytes);
+        let fallback_path = temp_font_path("fallback");
+        std::fs::write(&fallback_path, &fallback_bytes).unwrap();
+        let document = test_document("미지정 고딕체");
+        let mut store = FontStore::new_isolated();
+        store.load_file(&fallback_path).unwrap();
+        store.resolve(&document, 0, 0).unwrap();
+        assert_eq!(store.resolutions.len(), 1);
+        assert_eq!(
+            store.resolutions[0].outcome,
+            FontResolutionOutcome::Substituted
+        );
+        assert_eq!(
+            store.resolutions[0].resolved_sha256.as_deref(),
+            Some(fallback_hash.as_str())
+        );
+
+        let _ = std::fs::remove_file(alt_path);
+        let _ = std::fs::remove_file(fallback_path);
     }
 }

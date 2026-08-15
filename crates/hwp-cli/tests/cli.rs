@@ -99,6 +99,88 @@ fn render_report_is_closed_hashed_and_schema_validated() {
 }
 
 #[test]
+fn render_report_fonts_are_hashed_deterministic_records() {
+    let input = tmp("hwp_cli_render_report_fonts_input.hwpx");
+    let output = tmp("hwp_cli_render_report_fonts_output.pdf");
+    let report_a = tmp("hwp_cli_render_report_fonts_a.json");
+    let report_b = tmp("hwp_cli_render_report_fonts_b.json");
+    for path in [&input, &output, &report_a, &report_b] {
+        let _ = std::fs::remove_file(path);
+    }
+    let created = hwp().args(["new", "-o"]).arg(&input).output().unwrap();
+    assert!(created.status.success());
+
+    let mut reports = Vec::new();
+    for report_path in [&report_a, &report_b] {
+        let rendered = hwp()
+            .args(["render", "--format", "pdf", "--report"])
+            .arg(report_path)
+            .args(["-o"])
+            .arg(&output)
+            .arg(&input)
+            .output()
+            .expect("hwp render");
+        assert!(
+            rendered.status.success(),
+            "hwp render: {}",
+            String::from_utf8_lossy(&rendered.stderr)
+        );
+        reports.push(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(report_path).unwrap())
+                .unwrap(),
+        );
+    }
+
+    let fonts_a = reports[0]["fonts"].as_array().expect("fonts array");
+    assert_eq!(
+        reports[0]["fonts"], reports[1]["fonts"],
+        "font identity records must be deterministic across runs"
+    );
+    assert_eq!(
+        reports[0]["font_resolution_complete"], true,
+        "a bounded render reports complete font resolution"
+    );
+    let hex64 = |value: &serde_json::Value| {
+        value.as_str().is_some_and(|text| {
+            text.len() == 64
+                && text
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+    };
+    let serialized = reports[0]["fonts"].to_string();
+    assert!(
+        !serialized.contains("함초롬") && !serialized.contains('/'),
+        "font records carry only hashed identities: {serialized}"
+    );
+    for entry in fonts_a {
+        assert!(hex64(&entry["requested_sha256"]), "entry: {entry}");
+        assert!(entry["requested_bold"].is_boolean(), "entry: {entry}");
+        assert!(
+            entry["resolved_family_sha256"].is_null() || hex64(&entry["resolved_family_sha256"]),
+            "entry: {entry}"
+        );
+        assert!(
+            entry["resolved_sha256"].is_null() || hex64(&entry["resolved_sha256"]),
+            "entry: {entry}"
+        );
+        assert!(
+            entry["resolved_face_index"].is_null() || entry["resolved_face_index"].is_u64(),
+            "entry: {entry}"
+        );
+        assert!(
+            ["matched", "substituted", "missing", "coverage_substituted"]
+                .contains(&entry["outcome"].as_str().unwrap_or("")),
+            "entry: {entry}"
+        );
+    }
+
+    for path in [&input, &output, &report_a, &report_b] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
 fn render_report_alias_does_not_clobber_render_output() {
     let input = tmp("hwp_cli_render_report_alias_input.hwpx");
     let output = tmp("hwp_cli_render_report_alias_output.svg");
