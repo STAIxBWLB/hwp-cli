@@ -26,6 +26,8 @@
     "determinism"
   ],
   "failed_gates": [],
+  "excluded_gates": [],
+  "blocking_failed_gates": [],
   "cases": [
     {
       "name": "public-rfp-hwp",
@@ -42,6 +44,8 @@
         "determinism"
       ],
       "failed_gates": [],
+      "excluded_gates": [],
+      "blocking_failed_gates": [],
       "eligible": true,
       "pages_delta": 0,
       "media_box_max_delta_pt": 0.2799999999999727,
@@ -76,6 +80,8 @@
         "determinism"
       ],
       "failed_gates": [],
+      "excluded_gates": [],
+      "blocking_failed_gates": [],
       "eligible": true,
       "pages_delta": 0,
       "media_box_max_delta_pt": 0.2799999999999727,

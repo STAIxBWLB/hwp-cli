@@ -33,6 +33,8 @@
     "determinism"
   ],
   "failed_gates": [],
+  "excluded_gates": [],
+  "blocking_failed_gates": [],
   "eligible": true,
   "pages": {
     "ours": 1,

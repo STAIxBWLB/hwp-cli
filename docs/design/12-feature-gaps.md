@@ -144,6 +144,41 @@ is itself knowledge).
   typed events. And content.hpf regeneration keeps only modeled manifest items/metadata,
   so unmodeled manifest items survive as orphan package entries (raw-copied but unlisted).
 
+- **2026-08-15 (issue #90 PR 7a — over-height CELL row pagination)**: the renderer now
+  paginates a CELL-policy table row taller than the remaining page capacity instead of
+  clipping it. An unflagged `v_pos` reset packs softly into the remaining CELL fragment
+  capacity, declared row height beyond the cached content is preserved as row-level blank
+  continuation fragments, row spans pack span-aware (a span that can move as a unit stays
+  together on a fresh page; one intersecting an internally fragmented row or too tall for a
+  fresh page surfaces as typed `table_cell_fragmentation_incomplete`), and page-bottom
+  slivers are contained. The full behavior contract is in
+  [21-pdf-parity §6](21-pdf-parity.md).
+
+- **2026-08-15 (issue #90 PR 7b — font identity gate)**: the render report now carries
+  hash-only per-font requested/resolved identities, requested weight state, face index and
+  `font_resolution_complete`. The v2 parity `fonts` gate hardens accordingly: substitution-free
+  rendering, complete resolution, and every resolved face's byte hash pinned by the manifest —
+  missing identity evidence fails closed. Certification deduplicates visible duplicate font
+  rows. This closes the font half of the remaining PR 7 delta noted in the PR 6 entry; the
+  pagination half is PR 7a above.
+
+- **2026-08-16 (issue #90 PR 8a — certification evidence checks)**: certification gained two
+  optional, fail-closed evidence checks, additive to the closed schemas. `preservation`
+  ingests a `hwp-preservation-report-v1` artifact and enforces a zero-loss budget;
+  `hancom_open` ingests a `hancom-verification-receipt-v1` attestation (new schema) that the
+  edited outputs opened in Hancom without corruption or repair. Failed or malformed evidence
+  forces `overall=failed`; absent checks keep the previous verdict shape.
+
+- **2026-08-16 (issue #90 PR 8b, in flight — manifest-declared parity gate exclusions)**:
+  the v2 parity manifest accepts an optional `gate_exclusions` array (unique gate names, at
+  most eight) so a local private profile can declare a gate measured-but-not-blocking.
+  Measurement and `passed_gates`/`failed_gates` reporting are untouched; eligibility is
+  computed over `blocking_failed_gates` (failed minus excluded), and each scorecard and the
+  scoreboard echo `excluded_gates` + `blocking_failed_gates` as required fields — no hidden
+  relaxation. With no exclusion declared the schemas keep the legacy strict rule, so the
+  public CI profile is unchanged. Contract details in
+  [21-pdf-parity §4.3](21-pdf-parity.md).
+
 - **2026-08-14 (issue #77 positioned, counted row/column insertion)**: `--add-row` grew
   from append-only to `TABLE[:AT[:COUNT[:TEMPLATE_ROW]]]` and `--add-col` to
   `TABLE[:AT[:COUNT]]` (`AT` omitted or `end` appends; MCP `add_row`/`add_col` gained the

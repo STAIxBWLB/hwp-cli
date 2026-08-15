@@ -213,6 +213,54 @@ It does not currently rasterize PDF and PNG output against each other. Therefore
 `ink_ratio`, `bad_pixel_pct`, and MAE are not structured-corpus thresholds; they are enforced by
 the pinned public Hancom-oracle gate in §4.1.
 
+### 4.3 Manifest-declared gate exclusions (v2)
+
+The v2 manifest accepts an optional `gate_exclusions` array: unique names drawn from the eight
+v2 gates (`page_count`, `media_box`, `text`, `fonts`, `render_issues`, `raster`, `roi`,
+`determinism`), at most eight entries. A local private profile uses it to declare a gate
+measured-but-not-blocking — for example `fonts` when the approved font faces are not yet
+available on the measurement host. Unknown gate names, duplicates, or a non-list value fail the
+run before any case is measured.
+
+Exclusions relax eligibility only, never measurement:
+
+- Every gate is still measured and reported; `passed_gates`/`failed_gates` are unchanged.
+- A case is eligible when it has no `blocking_failed_gates` — the failed gates minus the
+  excluded set. Scoreboard eligibility and the runner's exit code follow the same rule.
+- Each scorecard and the scoreboard echo `excluded_gates` (sorted) and `blocking_failed_gates`
+  as required fields, so an exclusion-assisted pass cannot be mistaken for a full pass.
+- When `excluded_gates` is empty the schemas keep the legacy strict rule (eligible if and only
+  if no gate failed and all eight gates passed), so the public CI profile — which declares no
+  exclusions — is validated exactly as before.
+
+**Status (2026-08-16, epic #90 PR 8b, in flight):** contract and runner implemented; the public
+manifest declares no exclusions. Any exclusion used by a private profile must be listed and
+justified in the release notes (see [release-readiness](../release-readiness.md)).
+
+### 4.4 Residual private-profile gaps (2026-08-15 run)
+
+A fresh private composite run on merged main (post PR 7a/7b) passes `page_count` (13 == 13),
+`media_box`, `render_issues`, and `determinism`, and declares `gate_exclusions: ["fonts"]`. The
+blocking residual gates are `text`, `raster`, and `roi`; their measured shape is (content-free
+aggregates only):
+
+- `text`: 1/13 pages exactly equal, but per-page character multisets are 99.17% identical
+  overall (141 of 17,093 characters differ) and no Hangul syllable differs at all — the deltas
+  are a small fixed set of symbol/ASCII characters plus extraction-order differences (sequence
+  similarity 0.63–0.99 per page). So the gap is ordering and a handful of symbol mappings, not
+  content loss.
+- `raster`: bad-pixel ratios 0.145–0.234 (threshold 0.05) and MAE 19–28 (threshold 5) are
+  distributed uniformly across all 13 pages with ink ratio ≈ 1.0 on 11 of them — consistent
+  with the 8 known font substitutions altering glyph shapes everywhere, rather than missing
+  content. Two pages deviate in ink ratio (1.42 / 0.86), indicating layout-level shifts on
+  those pages.
+- `roi`: 3 of 4 ROIs pass; only the page-2 diagram region fails (precision 0.849, recall 0.887
+  vs the 0.95 threshold), correlating with the same page's ink-ratio shift — a structural
+  layout difference on the diagram page, not a global regression.
+
+Fixes for these three gates are deferred; the font-face supply that would lift the `fonts`
+exclusion is expected to shrink the uniform raster component first.
+
 ## 5. The font gate (F1)
 
 Hancom embeds 함초롬바탕/함초롬돋움; we resolve through fontdb and can fall back to a generic

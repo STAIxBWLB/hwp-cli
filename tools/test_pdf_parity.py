@@ -420,6 +420,8 @@ class V2ContractTests(unittest.TestCase):
             "oracle": {"sha256": "b" * 64},
             "passed_gates": ["page_count"],
             "failed_gates": ["roi"],
+            "excluded_gates": [],
+            "blocking_failed_gates": ["roi"],
             "eligible": False,
             "pages": {"delta": 0},
             "media_box": {"max_delta_pt": 0.0},
@@ -435,6 +437,8 @@ class V2ContractTests(unittest.TestCase):
         row = parity.summarize_v2(card)
         self.assertNotIn("/", json.dumps(row))
         self.assertEqual(row["failed_gates"], ["roi"])
+        self.assertEqual(row["excluded_gates"], [])
+        self.assertEqual(row["blocking_failed_gates"], ["roi"])
 
     def test_committed_history_is_monotonic_and_path_free(self) -> None:
         history_path = (
@@ -533,7 +537,7 @@ class V2FontGateTests(unittest.TestCase):
         self.assertEqual(report["incomplete"], 1)
         self.assertIn("font_resolution_incomplete", report["issue_codes"])
 
-    def score_with_report(self, report: dict, pinned) -> dict:
+    def score_with_report(self, report: dict, pinned, rois=None, excluded=None) -> dict:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "case.hwpx"
@@ -566,6 +570,8 @@ class V2FontGateTests(unittest.TestCase):
             ), mock.patch.object(
                 parity, "rasterize", return_value=root / "missing.png"
             ), mock.patch.object(
+                parity, "roi_ink_precision_recall", return_value=(1.0, 1.0)
+            ), mock.patch.object(
                 parity, "raster_diff", return_value={
                     "dx": 0,
                     "dy": 0,
@@ -576,7 +582,8 @@ class V2FontGateTests(unittest.TestCase):
             ):
                 return parity.score_case_v2(
                     "case", source, oracle, root / "hwp", 150, root,
-                    rois=[], pinned_font_hashes=pinned,
+                    rois=rois or [], pinned_font_hashes=pinned,
+                    excluded_gates=excluded,
                 )
 
     def clean_report(self, fonts, complete=True) -> dict:
@@ -672,6 +679,65 @@ class V2FontGateTests(unittest.TestCase):
         self.assertTrue(card["fonts"]["pinned_faces"])
         self.assertTrue(card["fonts"]["resolution_complete"])
         self.assertEqual(card["fonts"]["outside_manifest_faces"], 0)
+
+
+class V2GateExclusionTests(unittest.TestCase):
+    """Manifest-declared gate exclusions relax eligibility only, never measurement."""
+
+    ROI = {"name": "header", "page": 1, "x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}
+
+    def test_manifest_gate_exclusions_are_validated(self) -> None:
+        self.assertEqual(parity._v2_gate_exclusions({}), frozenset())
+        self.assertEqual(
+            parity._v2_gate_exclusions({"gate_exclusions": ["fonts"]}),
+            frozenset({"fonts"}),
+        )
+        with self.assertRaises(SystemExit):
+            parity._v2_gate_exclusions({"gate_exclusions": ["bogus"]})
+        with self.assertRaises(SystemExit):
+            parity._v2_gate_exclusions({"gate_exclusions": ["fonts", "fonts"]})
+        with self.assertRaises(SystemExit):
+            parity._v2_gate_exclusions({"gate_exclusions": "fonts"})
+
+    def fonts_failing_card(self, excluded):
+        gate_tests = V2FontGateTests()
+        report = gate_tests.clean_report(
+            [{"outcome": "matched", "resolved_sha256": "9" * 64}]
+        )
+        return gate_tests.score_with_report(
+            report, frozenset({"c" * 64}), rois=[self.ROI], excluded=excluded
+        )
+
+    def test_excluded_fonts_failure_is_reported_but_not_blocking(self) -> None:
+        card = self.fonts_failing_card(excluded={"fonts"})
+        # Measurement is untouched: the failure is still reported in full.
+        self.assertIn("fonts", card["failed_gates"])
+        self.assertFalse(card["fonts"]["pinned_faces"])
+        # Eligibility is decided by blocking_failed_gates alone.
+        self.assertEqual(card["excluded_gates"], ["fonts"])
+        self.assertEqual(card["blocking_failed_gates"], [])
+        self.assertTrue(card["eligible"])
+
+    def test_no_exclusion_keeps_fonts_failure_blocking(self) -> None:
+        card = self.fonts_failing_card(excluded=None)
+        self.assertIn("fonts", card["failed_gates"])
+        self.assertEqual(card["excluded_gates"], [])
+        self.assertEqual(card["blocking_failed_gates"], ["fonts"])
+        self.assertFalse(card["eligible"])
+
+    def test_excluding_a_passing_gate_is_a_no_op(self) -> None:
+        gate_tests = V2FontGateTests()
+        report = gate_tests.clean_report(
+            [{"outcome": "matched", "resolved_sha256": "c" * 64}]
+        )
+        card = gate_tests.score_with_report(
+            report, frozenset({"c" * 64}), rois=[self.ROI], excluded={"fonts"}
+        )
+        self.assertIn("fonts", card["passed_gates"])
+        self.assertEqual(card["failed_gates"], [])
+        self.assertEqual(card["excluded_gates"], ["fonts"])
+        self.assertEqual(card["blocking_failed_gates"], [])
+        self.assertTrue(card["eligible"])
 
 
 if __name__ == "__main__":

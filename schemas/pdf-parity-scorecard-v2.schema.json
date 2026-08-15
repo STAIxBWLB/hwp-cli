@@ -13,6 +13,8 @@
     "thresholds",
     "passed_gates",
     "failed_gates",
+    "excluded_gates",
+    "blocking_failed_gates",
     "eligible",
     "pages",
     "media_box",
@@ -36,6 +38,17 @@
       "items": { "$ref": "#/$defs/gate" }
     },
     "failed_gates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "excluded_gates": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "blocking_failed_gates": {
       "type": "array",
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/gate" }
@@ -246,31 +259,54 @@
       }
     }
   },
-  "oneOf": [
+  "allOf": [
     {
-      "properties": {
-        "eligible": { "const": true },
-        "failed_gates": { "maxItems": 0 },
-        "passed_gates": {
-          "minItems": 8,
-          "maxItems": 8,
-          "contains": { "const": "page_count" },
-          "allOf": [
-            { "contains": { "const": "media_box" } },
-            { "contains": { "const": "text" } },
-            { "contains": { "const": "fonts" } },
-            { "contains": { "const": "render_issues" } },
-            { "contains": { "const": "raster" } },
-            { "contains": { "const": "roi" } },
-            { "contains": { "const": "determinism" } }
-          ]
+      "oneOf": [
+        {
+          "properties": {
+            "eligible": { "const": true },
+            "blocking_failed_gates": { "maxItems": 0 }
+          }
+        },
+        {
+          "properties": {
+            "eligible": { "const": false },
+            "blocking_failed_gates": { "minItems": 1 }
+          }
         }
-      }
+      ]
     },
     {
-      "properties": {
-        "eligible": { "const": false },
-        "failed_gates": { "minItems": 1 }
+      "if": { "properties": { "excluded_gates": { "maxItems": 0 } } },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "eligible": { "const": true },
+              "failed_gates": { "maxItems": 0 },
+              "passed_gates": {
+                "minItems": 8,
+                "maxItems": 8,
+                "contains": { "const": "page_count" },
+                "allOf": [
+                  { "contains": { "const": "media_box" } },
+                  { "contains": { "const": "text" } },
+                  { "contains": { "const": "fonts" } },
+                  { "contains": { "const": "render_issues" } },
+                  { "contains": { "const": "raster" } },
+                  { "contains": { "const": "roi" } },
+                  { "contains": { "const": "determinism" } }
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "eligible": { "const": false },
+              "failed_gates": { "minItems": 1 }
+            }
+          }
+        ]
       }
     }
   ]
