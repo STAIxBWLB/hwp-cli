@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.8.5]
+
 **Added**
 
 - Bounded WMF vector image rendering
