@@ -120,6 +120,9 @@ pub struct SvgOutput {
     /// 페이지별 SVG 문서
     pub pages: Vec<String>,
     pub report: RenderIssueReport,
+    /// 렌더 중 관측한 글꼴 해석 결과 (폰트 게이트용). PNG `diagnostics.fonts`와 동일 출처.
+    pub fonts: Vec<FontResolution>,
+    pub font_resolution_complete: bool,
 }
 
 fn build_display_list(
@@ -286,10 +289,12 @@ pub fn load_png(path: &std::path::Path) -> Result<tiny_skia::Pixmap, RenderError
 
 /// 문서 전체를 SVG로 렌더링한다.
 pub fn render_document_svg(doc: &Document, opts: &RenderOptions) -> SvgOutput {
-    let (list, report, _, _) = build_display_list(doc, opts);
+    let (list, report, fonts, font_resolution_complete) = build_display_list(doc, opts);
     SvgOutput {
         pages: svg::render_svg(&list),
         report: report.finish(),
+        fonts,
+        font_resolution_complete,
     }
 }
 
@@ -298,6 +303,9 @@ pub struct PdfOutput {
     pub data: Vec<u8>,
     /// 경고 + 폰트 해석 리포트
     pub report: RenderIssueReport,
+    /// 렌더 중 관측한 글꼴 해석 결과 (폰트 게이트용). PNG `diagnostics.fonts`와 동일 출처.
+    pub fonts: Vec<FontResolution>,
+    pub font_resolution_complete: bool,
 }
 
 /// PDF output plus the pre-serialization text sequence used by corpus
@@ -316,8 +324,15 @@ pub fn render_document_pdf(
     opts: &RenderOptions,
     pages: Option<&[usize]>,
 ) -> Result<PdfOutput, RenderError> {
-    let (list, report, _, _) = build_display_list(doc, opts);
-    finish_pdf(list, report, pages, &doc.metadata)
+    let (list, report, fonts, font_resolution_complete) = build_display_list(doc, opts);
+    finish_pdf(
+        list,
+        report,
+        fonts,
+        font_resolution_complete,
+        pages,
+        &doc.metadata,
+    )
 }
 
 /// Isolated PDF render for certification. It searches only `font_files`, not
@@ -329,8 +344,16 @@ pub fn render_document_pdf_isolated(
     pages: Option<&[usize]>,
     font_files: &[std::path::PathBuf],
 ) -> Result<PdfOutput, RenderError> {
-    let (list, report, _, _) = build_display_list_with_font_scope(doc, opts, false, font_files);
-    finish_pdf(list, report, pages, &doc.metadata)
+    let (list, report, fonts, font_resolution_complete) =
+        build_display_list_with_font_scope(doc, opts, false, font_files);
+    finish_pdf(
+        list,
+        report,
+        fonts,
+        font_resolution_complete,
+        pages,
+        &doc.metadata,
+    )
 }
 
 /// Isolated PDF render with a pre-serialization text trace for corpus
@@ -349,6 +372,8 @@ pub fn render_document_pdf_isolated_with_text_trace(
 fn finish_pdf(
     mut list: display::DisplayList,
     mut report: RenderIssueAccumulator,
+    fonts: Vec<FontResolution>,
+    font_resolution_complete: bool,
     pages: Option<&[usize]>,
     meta: &Metadata,
 ) -> Result<PdfOutput, RenderError> {
@@ -357,6 +382,8 @@ fn finish_pdf(
     Ok(PdfOutput {
         data,
         report: report.finish(),
+        fonts,
+        font_resolution_complete,
     })
 }
 

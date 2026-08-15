@@ -414,7 +414,7 @@ pub struct RenderIssueReportEntry {
     pub samples_complete: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FontReport {
     pub requested_name_sha256: String,
     pub resolved_family_sha256: Option<String>,
@@ -2177,6 +2177,10 @@ fn run_render(
                 right.outcome,
             ))
     });
+    // Certification v1 has no requested-weight field.  Keep render resolutions
+    // weight-aware internally, but collapse report rows that differ only by
+    // that omitted dimension.
+    fonts.dedup();
     let mut report = RenderReport {
         profile: "hwp-cli-native-certification-render-v1",
         dpi: policy.render.dpi,

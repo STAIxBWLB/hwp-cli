@@ -363,6 +363,29 @@ def _iter_issue_mappings(value: object):
             yield from _iter_issue_mappings(entry)
 
 
+def _normalize_font_records(value: object) -> list | None:
+    """Normalize per-font identity records to outcome + byte hash only.
+
+    Accepts the render report's ``resolved_sha256`` and the certification
+    report's ``font_file_sha256``.  Records are already hash-only in the
+    source documents, so normalization never retains names or paths.
+    """
+    if not isinstance(value, list):
+        return None
+    records = []
+    for entry in value[:512]:
+        if not isinstance(entry, dict):
+            continue
+        outcome = str(entry.get("outcome", "")).lower()
+        if outcome not in {"matched", "substituted", "missing", "coverage_substituted"}:
+            continue
+        resolved = entry.get("resolved_sha256", entry.get("font_file_sha256"))
+        if not (isinstance(resolved, str) and SHA256_RE.fullmatch(resolved)):
+            resolved = None
+        records.append({"outcome": outcome, "resolved_sha256": resolved})
+    return records
+
+
 def normalize_render_report(payload: object) -> dict:
     """Normalize a JSON render report to counts only; never publish its paths/details."""
     if isinstance(payload, dict) and isinstance(payload.get("render"), dict):
@@ -499,6 +522,19 @@ def normalize_render_report(payload: object) -> dict:
     complete = bool(render_payload.get("complete", render_payload.get("issue_log_complete", True)))
     if render_payload.get("status") in {"failed", "partial", "skipped"}:
         complete = False
+
+    # Per-font identity records and the resolution completeness flag.  An
+    # explicitly incomplete resolution is incomplete render evidence even
+    # when the typed issue channel stayed within its budget.
+    font_records = _normalize_font_records(render_payload.get("fonts"))
+    font_resolution_complete = render_payload.get("font_resolution_complete")
+    if font_resolution_complete is False:
+        incomplete += 1
+        issue_summaries.append(
+            {"code": "font_resolution_incomplete", "severity": "incomplete", "count": 1}
+        )
+    elif font_resolution_complete is not True:
+        font_resolution_complete = None
     return {
         "coverage": coverage,
         "complete": complete,
@@ -507,6 +543,8 @@ def normalize_render_report(payload: object) -> dict:
         "fatal": fatal,
         "issue_codes": sorted({issue["code"] for issue in issue_summaries}),
         "report_available": bool(payload),
+        "fonts": font_records,
+        "font_resolution_complete": font_resolution_complete,
     }
 
 
@@ -546,6 +584,8 @@ def parse_render_stderr(stderr: str) -> dict:
         "fatal": fatal,
         "issue_codes": sorted({issue["code"] for issue in issues}),
         "report_available": bool(stderr),
+        "fonts": None,
+        "font_resolution_complete": None,
     }
 
 
@@ -575,6 +615,8 @@ def merge_render_reports(reports: list[tuple[str, dict]]) -> dict:
             "issue_codes": [],
             "report_available": False,
             "report_source": "none",
+            "fonts": None,
+            "font_resolution_complete": None,
         }
     coverages = [report["coverage"] for _, report in reports if report.get("coverage") is not None]
     coverage = None
@@ -588,6 +630,28 @@ def merge_render_reports(reports: list[tuple[str, dict]]) -> dict:
             and coverage["missing"] == 0
             and coverage["subset_fallback"] == 0
         )
+    # Per-font identity evidence merges only when every run produced it;
+    # otherwise the pinned-face check cannot be proven and must fail closed.
+    record_lists = [report.get("fonts") for _, report in reports]
+    if all(isinstance(records, list) for records in record_lists):
+        fonts = sorted(
+            {
+                (record["outcome"], record["resolved_sha256"])
+                for records in record_lists
+                for record in records
+            },
+            key=lambda item: (item[0], item[1] or ""),
+        )
+        fonts = [{"outcome": outcome, "resolved_sha256": resolved} for outcome, resolved in fonts]
+    else:
+        fonts = None
+    completeness = [report.get("font_resolution_complete") for _, report in reports]
+    if all(value is True for value in completeness):
+        font_resolution_complete: bool | None = True
+    elif any(value is False for value in completeness):
+        font_resolution_complete = False
+    else:
+        font_resolution_complete = None
     sources = {source for source, _ in reports}
     return {
         "coverage": coverage,
@@ -598,6 +662,8 @@ def merge_render_reports(reports: list[tuple[str, dict]]) -> dict:
         "issue_codes": sorted({code for _, report in reports for code in report.get("issue_codes", [])}),
         "report_available": any(report.get("report_available", False) for _, report in reports),
         "report_source": next(iter(sources)) if len(sources) == 1 else "mixed",
+        "fonts": fonts,
+        "font_resolution_complete": font_resolution_complete,
     }
 
 
@@ -1026,6 +1092,7 @@ def score_case_v2(
     thresholds: dict | None = None,
     rois: list | None = None,
     report_path: Path | None = None,
+    pinned_font_hashes: "frozenset | set | None" = None,
 ) -> dict:
     """Score all Issue #79 v2 gates for one source/oracle pair."""
     thresholds = {**V2_THRESHOLDS, **(thresholds or {})}
@@ -1083,8 +1150,57 @@ def score_case_v2(
         candidate_fonts_ok = oracle_fonts_ok = True
     # The normative F1 gate is about the candidate PDF.  Oracle font rows are
     # retained for diagnostics, but an unusual oracle producer must not turn a
-    # candidate that satisfies F1 into an ineligible result.
-    fonts_passed = fonts_parse_ok and candidate_fonts_ok
+    # candidate that satisfies F1 into an ineligible result.  The v2 fonts
+    # gate additionally folds in the render-side font evidence: no typed
+    # substitution, complete resolution, and every resolved face pinned by the
+    # manifest.  Without per-font records the pinned-face check cannot be
+    # proven and fails closed whenever the manifest pins fonts.
+    report = render["report"]
+    coverage = report.get("coverage")
+    font_records = report.get("fonts")
+    resolution_complete = report.get("font_resolution_complete")
+    if coverage is not None:
+        substitution_free = bool(coverage["substitution_free"])
+    elif font_records is not None:
+        substitution_free = all(record["outcome"] == "matched" for record in font_records)
+    else:
+        substitution_free = False
+    if font_records is not None:
+        # A clean aggregate never overrides per-font evidence: any recorded
+        # substitution (including glyph-level coverage fallback) or missing
+        # font fails the gate even when the aggregate claims otherwise.
+        substitution_free = substitution_free and all(
+            record["outcome"] == "matched" for record in font_records
+        )
+    if font_records is not None and pinned_font_hashes is not None:
+        # A resolved record without a valid byte hash is failed identity
+        # evidence: it cannot be proven pinned, so it counts as outside the
+        # manifest.  `missing` records legitimately carry no hash.
+        outside_manifest = sum(
+            1
+            for record in font_records
+            if record["outcome"] != "missing"
+            and (
+                record["resolved_sha256"] is None
+                or record["resolved_sha256"] not in pinned_font_hashes
+            )
+        )
+    else:
+        outside_manifest = 0
+    if pinned_font_hashes is None:
+        # Direct harness use without a manifest keeps the pre-gate behavior.
+        pinned_faces_ok = True
+        resolution_ok = resolution_complete is not False
+    else:
+        pinned_faces_ok = font_records is not None and outside_manifest == 0
+        resolution_ok = resolution_complete is True
+    fonts_passed = (
+        fonts_parse_ok
+        and candidate_fonts_ok
+        and substitution_free
+        and pinned_faces_ok
+        and resolution_ok
+    )
 
     compared = min(ours_pages, oracle_pages)
     equal = 0
@@ -1150,15 +1266,13 @@ def score_case_v2(
         result["passed"] for result in roi_results
     )
 
-    report = render["report"]
-    coverage = report.get("coverage")
     substitutions = 0 if coverage is None else (
         coverage["substituted"] + coverage["missing"] + coverage["subset_fallback"]
     )
+    # render_issues stays the general incomplete/fatal gate; the font-specific
+    # substitution/completeness/pinned-face checks live in the fonts gate.
     render_passed = (
-        coverage is not None
-        and coverage.get("substitution_free", False)
-        and report.get("complete", False)
+        report.get("complete", False)
         and report.get("unsupported", 0) == 0
         and report.get("incomplete", 0) == 0
         and report.get("fatal", 0) == 0
@@ -1198,6 +1312,10 @@ def score_case_v2(
             "oracle": oracle_fonts,
             "candidate_all_embedded_subset_unicode": candidate_fonts_ok,
             "oracle_all_embedded_subset_unicode": oracle_fonts_ok,
+            "substitution_free": substitution_free,
+            "resolution_complete": resolution_complete is True,
+            "pinned_faces": pinned_faces_ok,
+            "outside_manifest_faces": outside_manifest,
             "passed": fonts_passed,
         },
         "render": {
@@ -1495,6 +1613,8 @@ def cmd_run_v2(args) -> int:
     actual_poppler = verify_manifest_pins_v2(manifest)
     cases = prepare_cases(manifest, manifest_path, oracle_dir)
     thresholds = _v2_thresholds(manifest)
+    # Every resolved candidate face must come from the manifest-pinned set.
+    pinned_font_hashes = frozenset(manifest["pins"]["fonts"].values())
 
     forbidden = [
         str(oracle_dir.resolve()),
@@ -1521,6 +1641,7 @@ def cmd_run_v2(args) -> int:
                 thresholds,
                 case.get("rois", []),
                 report_path,
+                pinned_font_hashes,
             )
         if card["source"]["sha256"] != case["source_sha256"]:
             raise die(f"케이스 {case['name']}: 측정 중 source 파일 변경 감지")

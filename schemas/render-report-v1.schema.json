@@ -56,6 +56,12 @@
         "substitution_free": { "type": "boolean" }
       }
     },
+    "font_resolution_complete": { "type": "boolean" },
+    "fonts": {
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/renderFontRecord" }
+    },
     "issues": {
       "type": "array",
       "maxItems": 32,
@@ -76,6 +82,34 @@
   },
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "renderFontRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_sha256",
+        "requested_bold",
+        "resolved_family_sha256",
+        "resolved_sha256",
+        "resolved_face_index",
+        "outcome"
+      ],
+      "properties": {
+        "requested_sha256": { "$ref": "#/$defs/sha256" },
+        "requested_bold": { "type": "boolean" },
+        "resolved_family_sha256": {
+          "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+        },
+        "resolved_sha256": {
+          "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+        },
+        "resolved_face_index": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "outcome": {
+          "enum": ["matched", "substituted", "missing", "coverage_substituted"]
+        }
+      }
+    },
     "renderIssue": {
       "type": "object",
       "additionalProperties": false,
