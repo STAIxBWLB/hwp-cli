@@ -1556,23 +1556,42 @@ struct CellSplitPlan {
 
 impl CellSplitPlan {
     fn is_usable(&self) -> bool {
-        self.groups.len() > 1 && self.groups.iter().all(|group| group.has_content)
+        // Trailing blank groups carry declared row-height remainder only, so
+        // they need no cached text.  Every fragment up to the last content
+        // run must own cached geometry — a split required for text can never
+        // be satisfied by a blank page.
+        let Some(last_content) = self.groups.iter().rposition(|group| group.has_content) else {
+            return false;
+        };
+        self.groups.len() > 1
+            && self.groups[..=last_content]
+                .iter()
+                .all(|group| group.has_content)
     }
 }
 
 /// Build Regime-A cell fragments from the line layout saved by Hancom.
 ///
 /// A CELL table is only safely splittable at a cached line boundary. Explicit
-/// cached page starts (`flags & 1` or a vertical-position reset) are preserved;
-/// otherwise a boundary is selected immediately before the first cached line
-/// that would exceed the remaining page capacity. A paragraph without line
-/// segments is not guessed into a page: callers must surface an incomplete
-/// render when that paragraph is part of a required split.
+/// cached page starts (`flags & 1`) are preserved as hard page breaks.  A
+/// vertical-position reset without that flag is a soft boundary: Hancom also
+/// restarts `v_pos` for reasons other than a page break, so the run after the
+/// reset is packed into the page capacity left by the previous fragment
+/// whenever a complete cached line still fits there.  Otherwise a boundary is
+/// selected immediately before the first cached line that would exceed the
+/// remaining page capacity. A paragraph without line segments is not guessed
+/// into a page: callers must surface an incomplete render when that paragraph
+/// is part of a required split.
+///
+/// `fragment_margin_v` is the vertical cell margin each emitted fragment
+/// spends on the page; it keeps the simulated capacity in step with the
+/// emitter's greedy fragment packing.
 fn cached_cell_split_plan(
     cell: &hwp_model::Cell,
     measured_content_h: f32,
     first_capacity_pt: f32,
     following_capacity_pt: f32,
+    fragment_margin_v: f32,
 ) -> Option<CellSplitPlan> {
     let para_count = cell.paragraphs.len();
     let mut first_v = vec![0i32];
@@ -1584,6 +1603,9 @@ fn cached_cell_split_plan(
     let mut saw_line = false;
     let mut current_capacity = first_capacity_pt.max(0.0);
     let following_capacity = following_capacity_pt.max(1.0);
+    // Simulated content-space capacity left on the current page.  Closing a
+    // fragment spends its height plus one vertical cell margin.
+    let mut capacity_left = current_capacity;
 
     for (para_index, para) in cell.paragraphs.iter().enumerate() {
         if para.line_segs.is_empty() {
@@ -1621,21 +1643,43 @@ fn cached_cell_split_plan(
                 // Size the first group for the fresh-page capacity; the
                 // emitter will move it before drawing.
                 current_capacity = following_capacity;
+                capacity_left = following_capacity;
             }
-            let explicit_boundary = saw_line
-                && (seg.flags & 0x1 != 0
-                    || previous_v.is_some_and(|previous| seg.v_pos < previous));
+            let explicit_boundary = saw_line && seg.flags & 0x1 != 0;
+            let reset_boundary = saw_line
+                && !explicit_boundary
+                && previous_v.is_some_and(|previous| seg.v_pos < previous);
             let capacity_boundary = saw_line
                 && !explicit_boundary
+                && !reset_boundary
                 && has_content[current]
                 && (end - first_v[current]) as f32 / 100.0 > current_capacity + 0.5;
-            if explicit_boundary || capacity_boundary {
+            if explicit_boundary || reset_boundary || capacity_boundary {
+                let closed_height = (max_end[current] - first_v[current]).max(0) as f32 / 100.0;
+                capacity_left = (capacity_left - closed_height - fragment_margin_v).max(0.0);
+                if explicit_boundary || capacity_boundary {
+                    // A hard page break or a filled page starts the next
+                    // fragment on a fresh page.
+                    capacity_left = following_capacity;
+                    current_capacity = following_capacity;
+                } else {
+                    // Soft reset: keep the following run on the current page
+                    // when its first complete cached line fits the remaining
+                    // capacity.  A fragment that may be moved by the emitter
+                    // is never sized beyond a fresh page.
+                    let soft = capacity_left.min(following_capacity);
+                    if (end - seg.v_pos) as f32 / 100.0 > soft + 0.5 {
+                        capacity_left = following_capacity;
+                        current_capacity = following_capacity;
+                    } else {
+                        current_capacity = soft;
+                    }
+                }
                 boundaries.insert((para_index, seg_index));
                 current += 1;
                 first_v.push(seg.v_pos);
                 max_end.push(seg.v_pos);
                 has_content.push(false);
-                current_capacity = following_capacity;
             }
             if !has_content[current] {
                 first_v[current] = seg.v_pos;
@@ -3184,6 +3228,21 @@ fn layout_table(
     (end_y, page_advanced, final_fragment_top)
 }
 
+/// Maximum full vertical extent of cells starting at `row`.  A row-spanning
+/// cell is drawn once with its whole span height, so fragment packing must
+/// keep that extent on a single page.
+fn row_span_extent(table: &Table, row: usize, rows: usize, row_h: &[f32]) -> f32 {
+    table
+        .cells
+        .iter()
+        .filter(|cell| cell.row as usize == row)
+        .map(|cell| {
+            let end = (row + usize::from(cell.row_span.max(1))).min(rows);
+            row_h[row..end].iter().sum()
+        })
+        .fold(row_h[row], f32::max)
+}
+
 /// CELL-policy table emitter.  It is intentionally separate from the row
 /// planner above: a row fragment has a different border contract and its
 /// content must be selected from the cached line ranges rather than replaying
@@ -3227,7 +3286,10 @@ fn layout_table_cell_fragments(
     let mut cell_plans: Vec<Option<CellSplitPlan>> = vec![None; table.cells.len()];
     let mut row_group_counts = vec![1usize; rows];
     let mut found_cached_split = false;
-    let has_any_row_span = table.cells.iter().any(|cell| cell.row_span.max(1) > 1);
+    // Page index each row starts on in the planned fragment sequence.  A row
+    // span is unsafe only when it crosses one of these planned transitions.
+    let mut row_start_page = vec![0usize; rows];
+    let mut planned_page = 0usize;
     let mut planned_cursor = y;
     let mut planned_bottom = first_body_bottom;
     let mut planned_emitted_parts = 0usize;
@@ -3251,7 +3313,41 @@ fn layout_table_cell_fragments(
 
         let row_crosses_page = planned_cursor + row_h[row] > planned_bottom + 0.5;
         if !row_crosses_page {
-            planned_cursor += row_h[row];
+            // A row-spanning cell starting here is drawn once with its full
+            // span height, so the row may stay on this page only when the
+            // whole span extent fits the remaining capacity.
+            let span_extent = row_span_extent(table, row, rows, row_h);
+            if planned_cursor + span_extent <= planned_bottom + 0.5 {
+                row_start_page[row] = planned_page;
+                planned_cursor += row_h[row];
+                planned_emitted_parts += 1;
+                continue;
+            }
+            let continuation_top = body_top
+                + if planned_emitted_parts == 0 {
+                    top_caption_extent
+                } else if header_rows > 0 && row >= header_rows {
+                    header_height
+                } else {
+                    0.0
+                };
+            // The emitter cannot break before the very first fragment when
+            // the table still sits at the page top, so that case cannot move.
+            let can_move =
+                planned_emitted_parts > 0 || planned_cursor > body_top + top_caption_extent + 0.5;
+            if !can_move || span_extent > body_bottom - continuation_top + 0.5 {
+                // The span fits nowhere this row can be placed: keep the
+                // fail-closed contract instead of clipping or splitting it.
+                warnings.push(
+                    RenderIssueCode::TableCellFragmentationIncomplete,
+                    format!("row={row}:row-span-height"),
+                );
+                return None;
+            }
+            planned_page += 1;
+            row_start_page[row] = planned_page;
+            planned_cursor = continuation_top + row_h[row];
+            planned_bottom = body_bottom;
             planned_emitted_parts += 1;
             continue;
         }
@@ -3266,8 +3362,17 @@ fn layout_table_cell_fragments(
                 0.0
             };
         let continuation_height = (body_bottom - continuation_top).max(1.0);
+        // The blank-remainder contract is the declared row height, decided
+        // once per row after all cell plans are known.
+        let declared_h: f32 = table
+            .cells
+            .iter()
+            .filter(|cell| cell.row as usize == row && cell.row_span.max(1) == 1)
+            .map(|cell| cell.height.to_pt() as f32)
+            .fold(0.0, f32::max);
         let mut row_groups = 1usize;
         let mut cells_requiring_boundary = Vec::new();
+        let mut row_plan_candidates: Vec<(usize, CellSplitPlan, f32)> = Vec::new();
         for &(cell_index, cell) in &row_cells {
             if cell.row as usize != row || cell.row_span.max(1) != 1 {
                 continue;
@@ -3291,52 +3396,125 @@ fn layout_table_cell_fragments(
                 measured,
                 remaining_height - mt - mb,
                 continuation_height - mt - mb,
+                mt + mb,
             ) else {
                 continue;
             };
-            if !plan.is_usable() {
-                continue;
-            }
             for group in &mut plan.groups {
                 group.height += mt + mb;
             }
             let cached_height: f32 = plan.groups.iter().map(|group| group.height).sum();
-            if row_h[row] > cached_height {
+            row_plan_candidates.push((cell_index, plan, cached_height));
+        }
+
+        // Pad the declared row-height remainder into at most one plan: the
+        // row-height owner with the largest cached fragment sum (first maximum
+        // wins ties).  Cached content taller than declared is trusted as-is,
+        // and our own re-measured cell height must not manufacture blank
+        // continuation area.  Other cells keep their cached content groups and
+        // emit Empty selections on continuation fragments, so they never
+        // manufacture independent blank pages.
+        let mut owner = None;
+        for (index, (_, _, cached_height)) in row_plan_candidates.iter().enumerate() {
+            if owner.is_none_or(|o: usize| *cached_height > row_plan_candidates[o].2) {
+                owner = Some(index);
+            }
+        }
+        if let Some(o) = owner {
+            let (cell_index, plan, cached_height) = &mut row_plan_candidates[o];
+            let target_h = if declared_h > 0.0 {
+                declared_h
+            } else {
+                row_h[row]
+            };
+            if target_h > *cached_height {
                 // Preserve the declared row height as blank continuation
-                // area.  It does not need a text boundary, but must not push
-                // a cached line outside the cell's visual fragment.
-                if let Some(group) = plan.groups.last_mut() {
-                    group.height += row_h[row] - cached_height;
+                // area.  Grow each cached fragment only up to its page
+                // capacity; the overflow becomes trailing blank-only
+                // fragments that draw background and borders but replay no
+                // text or nested objects.
+                let mut remainder = target_h - *cached_height;
+                for (index, group) in plan.groups.iter_mut().enumerate() {
+                    if remainder <= 0.0 {
+                        break;
+                    }
+                    let capacity = if index == 0 {
+                        remaining_height
+                    } else {
+                        continuation_height
+                    };
+                    let grow = remainder.min((capacity - group.height).max(0.0));
+                    group.height += grow;
+                    remainder -= grow;
                 }
+                let para_count = table.cells[*cell_index].paragraphs.len();
+                let last_v_pos = plan.groups.last().map_or(0, |group| group.first_v_pos);
+                while remainder > 0.0 {
+                    let height = remainder.min(continuation_height);
+                    plan.groups.push(CellFragmentGroup {
+                        selections: vec![BoxParaSelection::Empty; para_count],
+                        first_v_pos: last_v_pos,
+                        height,
+                        has_content: false,
+                    });
+                    remainder -= height;
+                }
+            }
+        }
+        for (cell_index, plan, _) in row_plan_candidates {
+            if !plan.is_usable() {
+                continue;
             }
             row_groups = row_groups.max(plan.groups.len());
             cell_plans[cell_index] = Some(plan);
         }
 
-        if row_groups > 1
-            && cells_requiring_boundary.iter().any(|cell_index| {
-                cell_plans[*cell_index]
+        if row_groups > 1 {
+            // A cell that needs a boundary but has no usable multi-fragment
+            // plan is drawn whole into fragment 0 (All selections).  That is
+            // safe only while its measured content is contained by the
+            // planned first fragment; otherwise the required split has no
+            // cached geometry and the render is incomplete.
+            let first_part_height = cell_plans
+                .iter()
+                .filter_map(|plan| plan.as_ref().and_then(|plan| plan.groups.first()))
+                .map(|group| group.height)
+                .fold(0.0f32, f32::max)
+                .max(1.0);
+            let uncontained = cells_requiring_boundary.iter().any(|&cell_index| {
+                if cell_plans[cell_index]
                     .as_ref()
-                    .is_none_or(|plan| !plan.is_usable())
-            })
-        {
-            warnings.push(
-                RenderIssueCode::TableCellFragmentationIncomplete,
-                format!("row={row}:cache"),
-            );
-            return None;
+                    .is_some_and(|plan| plan.is_usable())
+                {
+                    return false;
+                }
+                let cell = &table.cells[cell_index];
+                let (_, _, mt, mb) = cell_margins(table, cell);
+                let measured = content_h_by_cell.get(cell_index).copied().unwrap_or(0.0);
+                measured + mt + mb > first_part_height + 0.5
+            });
+            if uncontained {
+                warnings.push(
+                    RenderIssueCode::TableCellFragmentationIncomplete,
+                    format!("row={row}:cache"),
+                );
+                return None;
+            }
         }
 
         if row_groups == 1 {
             // No cached content needs to use the current-page remainder. Let
-            // the existing row-boundary planner move this row as a unit.
-            if row_h[row] > continuation_height + 0.5 {
+            // the existing row-boundary planner move this row as a unit.  A
+            // span starting here must fit a fresh page as a whole.
+            if row_span_extent(table, row, rows, row_h) > continuation_height + 0.5 {
                 warnings.push(
                     RenderIssueCode::TableCellFragmentationIncomplete,
                     format!("row={row}:boundary"),
                 );
                 return None;
             }
+            planned_page += 1;
+            row_start_page[row] = planned_page;
             planned_cursor = continuation_top + row_h[row];
             planned_bottom = body_bottom;
             planned_emitted_parts += 1;
@@ -3345,6 +3523,7 @@ fn layout_table_cell_fragments(
 
         found_cached_split = true;
         row_group_counts[row] = row_groups;
+        row_start_page[row] = planned_page;
         for group_index in 0..row_groups {
             let part_height = table
                 .cells
@@ -3360,6 +3539,7 @@ fn layout_table_cell_fragments(
                 .fold(0.0f32, f32::max)
                 .max(1.0);
             if planned_cursor + part_height > planned_bottom + 0.5 {
+                planned_page += 1;
                 planned_cursor = body_top
                     + if planned_emitted_parts == 0 {
                         top_caption_extent
@@ -3387,7 +3567,21 @@ fn layout_table_cell_fragments(
     if !found_cached_split {
         return None;
     }
-    if has_any_row_span {
+    // A row span is unsafe only where it intersects an internally fragmented
+    // row or crosses a planned page transition — the fragment emitter draws a
+    // spanning cell once, on the page where its first row starts.  Spans that
+    // live entirely on one page keep the CELL fragmenting path.
+    let unsafe_row_span = table.cells.iter().any(|cell| {
+        let start = cell.row as usize;
+        let span = usize::from(cell.row_span.max(1));
+        if start >= rows || span <= 1 {
+            return false;
+        }
+        let end = (start + span).min(rows);
+        row_group_counts[start..end].iter().any(|&count| count > 1)
+            || row_start_page[start] != row_start_page[end - 1]
+    });
+    if unsafe_row_span {
         warnings.push(
             RenderIssueCode::TableCellFragmentationIncomplete,
             b"row-span-with-cell-fragment",
@@ -3425,7 +3619,15 @@ fn layout_table_cell_fragments(
                     .max(1.0)
             };
             let mut replay_header = false;
-            if cursor + part_height > current_bottom + 0.5 {
+            // The page-break decision for an unfragmented row must cover the
+            // full extent of any span starting here; the planner already
+            // guaranteed that extent fits a fresh page.
+            let fit_extent = if group_count == 1 {
+                row_span_extent(table, row, rows, row_h)
+            } else {
+                part_height
+            };
+            if cursor + fit_extent > current_bottom + 0.5 {
                 let ctx = split.as_deref_mut()?;
                 if emitted_parts == 0 && cursor <= body_top + top_caption_extent + 0.5 {
                     warnings.push(
@@ -3494,6 +3696,15 @@ fn layout_table_cell_fragments(
                     vec![BoxParaSelection::Empty; cell.paragraphs.len()]
                 };
                 let v_origin = group.map_or(0, |fragment| fragment.first_v_pos);
+                // A spanning cell is drawn once with its full span height.
+                // The planner's row-span safety check guarantees the whole
+                // span stays on this page.
+                let span_end = (row + usize::from(cell.row_span.max(1))).min(rows);
+                let cell_height = if span_end > row + 1 {
+                    row_h[row..span_end].iter().sum()
+                } else {
+                    part_height
+                };
                 draw_table_cell_fragment(
                     doc,
                     store,
@@ -3504,7 +3715,7 @@ fn layout_table_cell_fragments(
                     col_x,
                     col_w,
                     cursor,
-                    part_height,
+                    cell_height,
                     content_h_by_cell.get(cell_index).copied().unwrap_or(0.0),
                     selections,
                     v_origin,

@@ -1825,6 +1825,639 @@ fn cell_split_without_cached_boundary_is_incomplete() {
     assert_eq!(issue.stage, hwp_render::RenderIssueStage::Layout);
 }
 
+/// A cell paragraph whose cached line layout places one character per 10 pt
+/// line.  All assertions stay structural so a font substitution cannot
+/// change the expected geometry.
+fn cached_cell_paragraph(lines: usize) -> hwp_model::Paragraph {
+    let mut para = hwp_convert::from_markdown("x")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    para.chars = (0..lines)
+        .map(|index| hwp_model::HwpChar::Text(char::from(b'a' + (index % 26) as u8)))
+        .collect();
+    para.line_segs = (0..lines as u32)
+        .map(|index| hwp_model::LineSeg {
+            text_start: index,
+            v_pos: index as i32 * 1000,
+            line_height: 1000,
+            text_height: 900,
+            baseline_gap: 800,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 50000,
+            flags: 0x0006_0000,
+        })
+        .collect();
+    para.controls.clear();
+    para
+}
+
+fn outer_table(doc: &mut hwp_model::Document) -> &mut hwp_model::Table {
+    doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|paragraph| &mut paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("outer table")
+}
+
+fn assert_no_fragment_issues(report: &hwp_render::RenderIssueReport) {
+    assert!(
+        report.issues.iter().all(|issue| {
+            !matches!(
+                issue.code,
+                hwp_render::RenderIssueCode::TableCellFragmentationIncomplete
+                    | hwp_render::RenderIssueCode::TableRowTooTallClipped
+            )
+        }),
+        "over-height CELL row must split cleanly: {:?}",
+        report.issues
+    );
+}
+
+/// An over-height CELL row with cached line boundaries must paginate: the
+/// text run splits at a cached boundary and the declared row-height remainder
+/// becomes page-capacity continuation fragments.
+#[test]
+fn cached_cell_row_taller_than_body_splits_cleanly() {
+    let mut doc = 표_분할_문서(2, 1, 900, 0, false, 0);
+    let table = outer_table(&mut doc);
+    table.cells[0].height = hwp_model::HwpUnit(90000);
+    table.cells[0].paragraphs = vec![cached_cell_paragraph(80)];
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert_eq!(
+        list.pages.len(),
+        2,
+        "900 pt row over a smaller body paginates"
+    );
+    for page in &list.pages {
+        let rects = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Rect { y, h, .. } => Some((*y, *h)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rects
+                .iter()
+                .all(|(y, h)| *y >= 0.0 && *y + *h <= page.height_pt + 0.6),
+            "fragment bounds exceed page: {rects:?}"
+        );
+    }
+    let all_text =
+        list.pages
+            .iter()
+            .flat_map(page_texts)
+            .fold(String::new(), |mut text, fragment| {
+                text.push_str(fragment);
+                text
+            });
+    if all_text.is_empty() {
+        eprintln!("skip text assertion: no usable font");
+    } else {
+        assert_eq!(
+            all_text.chars().count(),
+            80,
+            "each cached line is emitted exactly once: {all_text:?}"
+        );
+    }
+    assert!(
+        report
+            .info
+            .iter()
+            .any(|issue| { issue.code == hwp_render::RenderIssueCode::TableSplitAcrossPages })
+    );
+}
+
+/// Declared row height beyond the cached content height is preserved as
+/// page-capacity blank continuation fragments instead of inflating the last
+/// text fragment past the page.
+#[test]
+fn declared_row_height_remainder_becomes_blank_continuation_fragments() {
+    let mut doc = 표_분할_문서(2, 1, 900, 0, false, 0);
+    let table = outer_table(&mut doc);
+    table.cells[0].height = hwp_model::HwpUnit(90000);
+    table.cells[0].paragraphs = vec![cached_cell_paragraph(5)];
+    let (_, body_bottom) = 본문_기하(&doc);
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert_eq!(
+        list.pages.len(),
+        2,
+        "declared remainder continues on page 2"
+    );
+    let data_rects = |page: usize| -> Vec<(f32, f32)> {
+        채움_사각형(&list, page)
+            .into_iter()
+            .filter(|&(_, _, fill)| fill == 0x00C8_C8C8)
+            .map(|(y, h, _)| (y, h))
+            .collect()
+    };
+    let first = data_rects(0);
+    let second = data_rects(1);
+    assert_eq!(first.len(), 1, "one text fragment on page 1: {first:?}");
+    assert_eq!(second.len(), 1, "one blank fragment on page 2: {second:?}");
+    assert!(
+        (first[0].0 + first[0].1 - body_bottom).abs() <= 0.6,
+        "text fragment fills the remaining page capacity: {first:?} bottom={body_bottom}"
+    );
+    let declared: f32 = first[0].1 + second[0].1;
+    assert!(
+        (declared - 900.0).abs() <= 0.6,
+        "fragments preserve the declared row height: {declared}"
+    );
+    let second_page_text = page_texts(&list.pages[1]);
+    if second_page_text.is_empty() && page_texts(&list.pages[0]).is_empty() {
+        eprintln!("skip text assertion: no usable font");
+    } else {
+        assert!(
+            second_page_text.is_empty(),
+            "blank continuation replays no text: {second_page_text:?}"
+        );
+    }
+}
+
+/// A v_pos reset without an explicit page flag is a soft boundary: the run
+/// after the reset is packed into the remaining page capacity at complete
+/// cached line boundaries instead of forcing a fresh page.
+#[test]
+fn cached_cell_soft_v_pos_reset_packs_into_remaining_capacity() {
+    // Three cached 10 pt line runs ('a' x50, 'b' x50, 'c' x20) with a v_pos
+    // reset — and no page flag — before the 'b' and 'c' runs.  Declared row
+    // height equals the cached content height, so no blank remainder applies.
+    let mut doc = 표_분할_문서(2, 1, 1200, 0, false, 0);
+    let mut para = hwp_convert::from_markdown("x")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    para.chars = Vec::new();
+    para.line_segs = Vec::new();
+    for (ch, lines) in [('a', 50usize), ('b', 50), ('c', 20)] {
+        for index in 0..lines {
+            para.chars.push(hwp_model::HwpChar::Text(ch));
+            para.line_segs.push(hwp_model::LineSeg {
+                text_start: (para.chars.len() - 1) as u32,
+                v_pos: index as i32 * 1000,
+                line_height: 1000,
+                text_height: 900,
+                baseline_gap: 800,
+                line_spacing: 0,
+                col_start: 0,
+                seg_width: 50000,
+                flags: 0x0006_0000,
+            });
+        }
+    }
+    para.controls.clear();
+    let table = outer_table(&mut doc);
+    table.cells[0].height = hwp_model::HwpUnit(120000);
+    table.cells[0].paragraphs = vec![para];
+    let (_, body_bottom) = 본문_기하(&doc);
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert_eq!(
+        list.pages.len(),
+        2,
+        "soft resets pack 1200 pt of cached runs into two pages"
+    );
+    for page in &list.pages {
+        let rects = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Rect { y, h, .. } => Some((*y, *h)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rects
+                .iter()
+                .all(|(y, h)| *y >= 0.0 && *y + *h <= page.height_pt + 0.6),
+            "fragment bounds exceed page: {rects:?}"
+        );
+    }
+    // Page 1 is filled to its capacity: complete lines from the run after the
+    // reset moved up instead of the run forcing a new page.  A hard reset
+    // would leave page 1 ending after the 500 pt 'a' run.
+    let page1_bottom = 채움_사각형(&list, 0)
+        .into_iter()
+        .filter(|&(_, _, fill)| fill == 0x00C8_C8C8)
+        .map(|(y, h, _)| y + h)
+        .fold(0.0f32, f32::max);
+    assert!(
+        page1_bottom > body_bottom - 10.6 && page1_bottom <= body_bottom + 0.6,
+        "page 1 filled to capacity by soft-reset packing: bottom={page1_bottom} body={body_bottom}"
+    );
+    let page_text = |page: usize| -> String {
+        page_texts(&list.pages[page])
+            .into_iter()
+            .fold(String::new(), |mut text, fragment| {
+                text.push_str(fragment);
+                text
+            })
+    };
+    let all_text: String = (0..list.pages.len()).map(page_text).collect();
+    if all_text.is_empty() {
+        eprintln!("skip text assertion: no usable font");
+    } else {
+        let page1 = page_text(0);
+        assert!(
+            page1.contains('b') && !page1.contains('c'),
+            "page 1 packs complete 'b' lines after the reset: {page1:?}"
+        );
+        assert_eq!(all_text.matches('a').count(), 50);
+        assert_eq!(all_text.matches('b').count(), 50);
+        assert_eq!(all_text.matches('c').count(), 20);
+    }
+}
+
+/// Builds a two-column CELL table document so row-span interaction with cell
+/// fragmenting can be exercised.  Returns the doc and the data/span fill ids.
+fn 이열_셀_표_문서() -> (hwp_model::Document, u16, u16) {
+    let mut doc = 표_분할_문서(2, 1, 900, 0, false, 0);
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x00AA_AAAA),
+        ..Default::default()
+    });
+    let data_fill = doc.header.border_fills.len() as u16;
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        bg_color: Some(0x0033_7777),
+        ..Default::default()
+    });
+    let span_fill = doc.header.border_fills.len() as u16;
+    (doc, data_fill, span_fill)
+}
+
+fn 이열_셀(row: u16, col: u16, row_span: u16, height_pt: i32, fill: u16) -> hwp_model::Cell {
+    hwp_model::Cell {
+        list_attr: 0,
+        col,
+        row,
+        col_span: 1,
+        row_span,
+        width: hwp_model::HwpUnit(2500),
+        height: hwp_model::HwpUnit(height_pt * 100),
+        margins: [0; 4],
+        border_fill: hwp_model::BorderFillId(fill),
+        header_tail: Vec::new(),
+        paragraphs: Vec::new(),
+    }
+}
+
+/// A row-spanned cell that lives entirely after the fragmented row (and on a
+/// single page) must not disable CELL fragmenting.
+#[test]
+fn row_span_outside_fragmented_row_keeps_cell_fragmenting() {
+    let (mut doc, data_fill, span_fill) = 이열_셀_표_문서();
+    let mut tall = 이열_셀(1, 0, 1, 900, data_fill);
+    tall.paragraphs = vec![cached_cell_paragraph(5)];
+    let table = outer_table(&mut doc);
+    table.cols = 2;
+    table.rows = 4;
+    table.row_cell_counts = vec![2, 2, 2, 1];
+    table.cells = vec![
+        이열_셀(0, 0, 1, 20, data_fill),
+        이열_셀(0, 1, 1, 20, data_fill),
+        tall,
+        이열_셀(1, 1, 1, 900, data_fill),
+        이열_셀(2, 0, 2, 20, span_fill),
+        이열_셀(2, 1, 1, 20, data_fill),
+        이열_셀(3, 1, 1, 20, data_fill),
+    ];
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert_eq!(list.pages.len(), 2, "only the over-height row paginates");
+    let span_rects: Vec<(f32, f32)> = 채움_사각형(&list, 1)
+        .into_iter()
+        .filter(|&(_, _, fill)| fill == 0x0033_7777)
+        .map(|(y, h, _)| (y, h))
+        .collect();
+    assert_eq!(
+        span_rects.len(),
+        1,
+        "span cell emitted once: {span_rects:?}"
+    );
+    assert!(
+        (span_rects[0].1 - 40.0).abs() <= 0.6,
+        "span cell covers both spanned rows: {span_rects:?}"
+    );
+}
+
+/// A row-spanned cell intersecting the internally fragmented row stays
+/// fail-closed: the CELL fragment path reports incomplete and yields to the
+/// row-boundary planner.
+#[test]
+fn row_span_intersecting_fragmented_row_remains_fail_closed() {
+    let (mut doc, data_fill, span_fill) = 이열_셀_표_문서();
+    let mut tall = 이열_셀(1, 1, 1, 900, data_fill);
+    tall.paragraphs = vec![cached_cell_paragraph(5)];
+    let table = outer_table(&mut doc);
+    table.cols = 2;
+    table.rows = 3;
+    table.row_cell_counts = vec![2, 2, 1];
+    table.cells = vec![
+        이열_셀(0, 0, 1, 20, data_fill),
+        이열_셀(0, 1, 1, 20, data_fill),
+        이열_셀(1, 0, 2, 20, span_fill),
+        tall,
+        이열_셀(2, 1, 1, 20, data_fill),
+    ];
+
+    let (_list, report) = 표_레이아웃(&doc);
+    let issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.code == hwp_render::RenderIssueCode::TableCellFragmentationIncomplete)
+        .expect("row span crossing a cell fragment must stay fail-closed");
+    assert_eq!(issue.severity, hwp_render::RenderIssueSeverity::Incomplete);
+    assert_eq!(issue.stage, hwp_render::RenderIssueStage::Layout);
+}
+
+/// The declared row-height remainder is a row-level contract: only the plan
+/// that owns the row height (largest cached fragment sum) is padded.  A short
+/// cell in the same fragmented row must not manufacture its own blank
+/// continuation fragments — that would misalign the per-fragment part heights
+/// and create an extra nearly blank page.
+#[test]
+fn declared_remainder_pads_only_the_row_height_owner() {
+    let (mut doc, data_fill, owner_fill) = 이열_셀_표_문서();
+    // Short left cell: 3 cached lines (30 pt).  Tall right cell: two cached
+    // 10 pt runs ('a' x50, soft v_pos reset, 'b' x60) = 1100 pt.  Both row-1
+    // cells declare 1200 pt.
+    let mut short_para = hwp_convert::from_markdown("x")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    short_para.chars = (0..3).map(|_| hwp_model::HwpChar::Text('L')).collect();
+    short_para.line_segs = (0..3u32)
+        .map(|index| hwp_model::LineSeg {
+            text_start: index,
+            v_pos: index as i32 * 1000,
+            line_height: 1000,
+            text_height: 900,
+            baseline_gap: 800,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 50000,
+            flags: 0x0006_0000,
+        })
+        .collect();
+    short_para.controls.clear();
+    let mut tall_para = hwp_convert::from_markdown("x")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    tall_para.chars = Vec::new();
+    tall_para.line_segs = Vec::new();
+    for (ch, lines) in [('a', 50usize), ('b', 60)] {
+        for index in 0..lines {
+            tall_para.chars.push(hwp_model::HwpChar::Text(ch));
+            tall_para.line_segs.push(hwp_model::LineSeg {
+                text_start: (tall_para.chars.len() - 1) as u32,
+                v_pos: index as i32 * 1000,
+                line_height: 1000,
+                text_height: 900,
+                baseline_gap: 800,
+                line_spacing: 0,
+                col_start: 0,
+                seg_width: 50000,
+                flags: 0x0006_0000,
+            });
+        }
+    }
+    tall_para.controls.clear();
+    let mut short = 이열_셀(1, 0, 1, 1200, data_fill);
+    short.paragraphs = vec![short_para];
+    let mut tall = 이열_셀(1, 1, 1, 1200, owner_fill);
+    tall.paragraphs = vec![tall_para];
+    let table = outer_table(&mut doc);
+    table.cols = 2;
+    table.rows = 2;
+    table.row_cell_counts = vec![2, 2];
+    table.cells = vec![
+        이열_셀(0, 0, 1, 20, data_fill),
+        이열_셀(0, 1, 1, 20, data_fill),
+        short,
+        tall,
+    ];
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert_eq!(
+        list.pages.len(),
+        2,
+        "short cell must not add an independent blank page"
+    );
+    // The row-level declared contract still holds: the owner cell's fragment
+    // heights sum to the declared 1200 pt.
+    let owner_h: f32 = (0..list.pages.len())
+        .flat_map(|page| 채움_사각형(&list, page))
+        .filter(|&(_, _, fill)| fill == 0x0033_7777)
+        .map(|(_, h, _)| h)
+        .sum();
+    assert!(
+        (owner_h - 1200.0).abs() <= 0.6,
+        "owner fragments preserve the declared row height: {owner_h}"
+    );
+    for page in &list.pages {
+        let rects = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Rect { y, h, .. } => Some((*y, *h)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rects
+                .iter()
+                .all(|(y, h)| *y >= 0.0 && *y + *h <= page.height_pt + 0.6),
+            "fragment bounds exceed page: {rects:?}"
+        );
+    }
+    let page_text = |page: usize| -> String {
+        page_texts(&list.pages[page])
+            .into_iter()
+            .fold(String::new(), |mut text, fragment| {
+                text.push_str(fragment);
+                text
+            })
+    };
+    let all_text: String = (0..list.pages.len()).map(page_text).collect();
+    if all_text.is_empty() {
+        eprintln!("skip text assertion: no usable font");
+    } else {
+        assert!(
+            page_text(0).contains('L'),
+            "short cell text is drawn in the first fragment"
+        );
+        assert_eq!(all_text.matches('a').count(), 50);
+        assert_eq!(all_text.matches('b').count(), 60);
+        assert_eq!(all_text.matches('L').count(), 3);
+    }
+}
+
+/// A row-spanned block following an over-height fragmented row: the span
+/// fits a fresh page but not the current-page remainder.  The row must move
+/// to a fresh page instead of tripping the row-span safety bail.
+#[test]
+fn row_span_after_fragmented_row_moves_to_fresh_page() {
+    let (mut doc, data_fill, span_fill) = 이열_셀_표_문서();
+    // Row 0 fragments across pages 1-2 (900 pt declared/cached).  Rows 1-2
+    // form a 400 pt span block: it fits a fresh page but not the ~385 pt
+    // remainder below the second fragment.
+    let mut short = 이열_셀(0, 0, 1, 900, data_fill);
+    short.paragraphs = vec![cached_cell_paragraph(3)];
+    let mut tall = 이열_셀(0, 1, 1, 900, data_fill);
+    tall.paragraphs = vec![cached_cell_paragraph(90)];
+    let table = outer_table(&mut doc);
+    table.cols = 2;
+    table.rows = 3;
+    table.row_cell_counts = vec![2, 2, 1];
+    table.cells = vec![
+        short,
+        tall,
+        이열_셀(1, 0, 2, 200, span_fill),
+        이열_셀(1, 1, 1, 200, data_fill),
+        이열_셀(2, 1, 1, 200, data_fill),
+    ];
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert_eq!(
+        list.pages.len(),
+        3,
+        "fragmented row uses pages 1-2, span block moves to page 3"
+    );
+    let span_rects: Vec<(f32, f32)> = 채움_사각형(&list, 2)
+        .into_iter()
+        .filter(|&(_, _, fill)| fill == 0x0033_7777)
+        .map(|(y, h, _)| (y, h))
+        .collect();
+    assert_eq!(
+        span_rects.len(),
+        1,
+        "span cell emitted once on the fresh page: {span_rects:?}"
+    );
+    assert!(
+        (span_rects[0].1 - 400.0).abs() <= 0.6,
+        "span cell covers both spanned rows: {span_rects:?}"
+    );
+    for page in &list.pages {
+        let rects = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Rect { y, h, .. } => Some((*y, *h)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rects
+                .iter()
+                .all(|(y, h)| *y >= 0.0 && *y + *h <= page.height_pt + 0.6),
+            "fragment bounds exceed page: {rects:?}"
+        );
+    }
+    let all_text: String = (0..list.pages.len())
+        .flat_map(|page| page_texts(&list.pages[page]))
+        .fold(String::new(), |mut text, fragment| {
+            text.push_str(fragment);
+            text
+        });
+    if all_text.is_empty() {
+        eprintln!("skip text assertion: no usable font");
+    } else {
+        assert_eq!(
+            all_text.chars().count(),
+            93,
+            "each cached line is emitted exactly once"
+        );
+    }
+}
+
+/// A cell whose content fits one page must not force an incomplete render
+/// merely because the fragmented row starts on a page-bottom sliver: with no
+/// complete cached line fitting the sliver, the first fragment moves to a
+/// fresh page where the whole-cell draw is contained.
+#[test]
+fn cell_needing_boundary_only_for_page_sliver_is_contained_in_first_fragment() {
+    let (mut doc, data_fill, _span_fill) = 이열_셀_표_문서();
+    // Row 0 (640 pt) leaves a ~1.6 pt sliver on page 1.  Row 1: a short
+    // cached cell (3 lines) and a tall cached cell (90 lines = 900 pt).
+    let mut short = 이열_셀(1, 0, 1, 900, data_fill);
+    short.paragraphs = vec![cached_cell_paragraph(3)];
+    let mut tall = 이열_셀(1, 1, 1, 900, data_fill);
+    tall.paragraphs = vec![cached_cell_paragraph(90)];
+    let table = outer_table(&mut doc);
+    table.cols = 2;
+    table.rows = 2;
+    table.row_cell_counts = vec![2, 2];
+    table.cells = vec![
+        이열_셀(0, 0, 1, 640, data_fill),
+        이열_셀(0, 1, 1, 640, data_fill),
+        short,
+        tall,
+    ];
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert_eq!(
+        list.pages.len(),
+        3,
+        "row 0 fills page 1; both fragments land on fresh pages"
+    );
+    for page in &list.pages {
+        let rects = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hwp_render::display::Item::Rect { y, h, .. } => Some((*y, *h)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            rects
+                .iter()
+                .all(|(y, h)| *y >= 0.0 && *y + *h <= page.height_pt + 0.6),
+            "fragment bounds exceed page: {rects:?}"
+        );
+    }
+    let page_text = |page: usize| -> String {
+        page_texts(&list.pages[page])
+            .into_iter()
+            .fold(String::new(), |mut text, fragment| {
+                text.push_str(fragment);
+                text
+            })
+    };
+    let all_text: String = (0..list.pages.len()).map(page_text).collect();
+    if all_text.is_empty() {
+        eprintln!("skip text assertion: no usable font");
+    } else {
+        assert_eq!(all_text.chars().count(), 93);
+        assert!(
+            page_text(1).chars().count() > 63,
+            "short cell content travels with the moved first fragment"
+        );
+    }
+}
+
 /// GB-13: a bottom table caption is placed below cell text with its gap.
 #[test]
 fn 캡션_표_아래_배치() {

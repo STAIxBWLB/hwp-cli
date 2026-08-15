@@ -230,18 +230,20 @@ so **a parity number measured under substituted fonts is meaningless**.
 
 Hancom already tells us where its page breaks are: `LineSeg.flags` bit0 (페이지 첫 줄) and bit1
 (단 첫 줄) are parsed into the IR. The renderer reads these bits as the first-class page/column
-break signal and falls back to the `v_pos` reset heuristic only for synthesized linesegs (flags
-`0x0006_0000`). Page-indexed comparison is meaningless while a table clips across pages, so
+break signal. An unflagged `v_pos` reset is only a soft boundary and may pack into remaining CELL
+fragment capacity; the reset heuristic for synthesized linesegs (flags `0x0006_0000`) stays
+subordinate to explicit flags. Page-indexed comparison is meaningless while a table clips across pages, so
 pagination correctness (including table splitting, PR 2) is a **precondition** for measurement,
 not a consumer of it. **Implementation status 2026-08-13: PR #81** splits tables at legal row
 boundaries per `Table.attr` pageBreak policy, preserves row-spanning cells, and supports repeated
 header rows. **PR #89 follow-up:** `CELL` policy can also continue a single row at an existing
 cached line boundary, including the last line that fits the current-page remainder when the cache
-has no explicit page-reset flag. Fragment content is emitted once with continuation borders; an
-unsafe cache or a row-span/cell-fragment combination is surfaced as typed
-`table_cell_fragmentation_incomplete` instead of being silently clipped. The one-page public
-profile is now compared in CI; broader Hancom corpus coverage remains pending, so this is not a
-universal parity certification.
+has no explicit page-reset flag. Fragment content is emitted once with continuation borders, and
+declared row height beyond the cached content is preserved as page-capacity blank continuation
+fragments. A row span that can move as a unit is kept together on a fresh page. An unsafe cache,
+a row span that intersects an internally fragmented row, or a span too tall for a fresh page is
+surfaced as typed `table_cell_fragmentation_incomplete` instead of being silently clipped. The one-page public profile is now compared in CI; broader Hancom corpus
+coverage remains pending, so this is not a universal parity certification.
 
 ## 7. Data policy
 
