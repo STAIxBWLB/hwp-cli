@@ -3729,10 +3729,11 @@ fn layout_table_cell_fragments(
     let mut final_fragment_top = y;
     for row in 0..rows {
         let group_count = row_group_counts[row];
+        // A soft cached reset opens another fragment on the *same* page, so the
+        // closing edge must follow the real page crossings, not the group index.
+        let mut opened_page = true;
         for group_index in 0..group_count {
-            let part_height = if group_count == 1 {
-                row_h[row]
-            } else {
+            let group_height = |index: usize| {
                 table
                     .cells
                     .iter()
@@ -3741,11 +3742,21 @@ fn layout_table_cell_fragments(
                     .filter_map(|(cell_index, _)| {
                         cell_plans[cell_index]
                             .as_ref()
-                            .and_then(|plan| plan.groups.get(group_index))
+                            .and_then(|plan| plan.groups.get(index))
                             .map(|group| group.height)
                     })
                     .fold(0.0f32, f32::max)
                     .max(1.0)
+            };
+            let part_height = if group_count == 1 {
+                row_h[row]
+            } else {
+                group_height(group_index)
+            };
+            let next_part_height = if group_index + 1 < group_count {
+                group_height(group_index + 1)
+            } else {
+                0.0
             };
             let mut replay_header = false;
             // The page-break decision for an unfragmented row must cover the
@@ -3767,6 +3778,7 @@ fn layout_table_cell_fragments(
                     return Some((cursor, page_advanced, final_fragment_top));
                 } else {
                     page_advanced = true;
+                    opened_page = true;
                     cursor = body_top
                         + if emitted_parts == 0 {
                             top_caption_extent
@@ -3834,6 +3846,10 @@ fn layout_table_cell_fragments(
                 } else {
                     part_height
                 };
+                // The next fragment breaks the page when it no longer fits, so
+                // this one ends at a page boundary. Mirrors the break test above.
+                let closes_page = group_index + 1 == group_count
+                    || cursor + part_height + next_part_height > current_bottom + 0.5;
                 draw_table_cell_fragment(
                     doc,
                     store,
@@ -3850,10 +3866,13 @@ fn layout_table_cell_fragments(
                     v_origin,
                     group_count == 1 || group_index == 0,
                     group_count == 1 || group_index + 1 == group_count,
+                    opened_page,
+                    closes_page,
                     &mut cell_ls,
                     warnings,
                 );
             }
+            opened_page = false;
             cursor += part_height;
             final_fragment_top = cursor - part_height;
             emitted_parts += 1;
@@ -3889,6 +3908,8 @@ fn draw_table_cell_fragment(
     v_origin: i32,
     first_fragment: bool,
     last_fragment: bool,
+    opened_page: bool,
+    closes_page: bool,
     cell_ls: &mut crate::list::ListState,
     warnings: &mut RenderIssueAccumulator,
 ) {
@@ -3951,15 +3972,21 @@ fn draw_table_cell_fragment(
         // Hangul closes every page's fragment with its own horizontal edge, so a
         // split row reads as a complete box on each page (measured: the oracle
         // draws a full-width rule at both the page-bottom and the continuation
-        // top of a split row, where we drew none). The four-sided frame is
-        // therefore emitted on every fragment.
+        // top of a split row, where we drew none). Only real page crossings get
+        // that edge: a soft cached reset opens another fragment on the same
+        // page, and closing it there would rule through the middle of the cell.
         let items = crate::border::border_rectangle_items(
             cx,
             cy,
             cx + cw,
             cy + ch,
             &bf.sides,
-            [true, true, true, true],
+            [
+                true,
+                true,
+                first_fragment || opened_page,
+                last_fragment || closes_page,
+            ],
         );
         if warnings.charge_display_items(items.len()) {
             page.items.extend(items);
