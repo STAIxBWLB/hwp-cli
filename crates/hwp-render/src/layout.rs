@@ -568,11 +568,44 @@ impl PageNumberState {
     /// Page-level controls in a paragraph apply to the page containing that
     /// paragraph. `pgnp` remains active until another placement replaces it;
     /// `pghd` is reset after the current page is finalized.
+    ///
+    /// Hangul inserts these controls wherever the caret was, so they routinely sit
+    /// in a nested paragraph list (a text box, a shape, a table cell) rather than in
+    /// the body flow — genuine corpus documents place `pgnp`/`nwno` inside a
+    /// `subList`. They still apply to the containing page, so nested lists are
+    /// scanned to a bounded depth.
     fn apply_controls(&mut self, para: &Paragraph, warnings: &mut RenderIssueAccumulator) {
+        self.apply_controls_depth(para, 0, warnings);
+    }
+
+    fn apply_controls_depth(
+        &mut self,
+        para: &Paragraph,
+        depth: u8,
+        warnings: &mut RenderIssueAccumulator,
+    ) {
+        /// Nesting beyond this is a malformed document, not a page-control carrier.
+        const MAX_NESTING: u8 = 8;
         for (control_index, control) in para.controls.iter().enumerate() {
             let Control::Generic(control) = control else {
+                if let Control::Table(table) = control
+                    && depth < MAX_NESTING
+                {
+                    for cell in &table.cells {
+                        for nested in &cell.paragraphs {
+                            self.apply_controls_depth(nested, depth + 1, warnings);
+                        }
+                    }
+                }
                 continue;
             };
+            if depth < MAX_NESTING {
+                for list in &control.paragraph_lists {
+                    for nested in &list.paragraphs {
+                        self.apply_controls_depth(nested, depth + 1, warnings);
+                    }
+                }
+            }
             match &control.ctrl_id {
                 b"pgnp" => match crate::page_number::parse_pgnp(&control.data) {
                     Some(placement) => {
@@ -725,12 +758,19 @@ fn render_positioned_page_number(
         furniture.body_left + (furniture.body_width - run.width_pt) * 0.5
     }
     .clamp(0.0, (page.width_pt - run.width_pt).max(0.0));
+    // The number belongs to the header/footer band, not to the paper margin:
+    // the header band starts at margin_top and the footer band ends at
+    // page_height - margin_bottom, matching `Furniture::render`. Inside the band
+    // it hugs the outer edge — measured against the oracle for the footer
+    // (text bottom on the bottom-margin line, within 0.3pt); the header follows
+    // the same rule mirrored, which no oracle covers yet. Ascent/descent are
+    // approximated from the run size rather than the face metrics.
     let y = if top {
         let margin = furniture.page_def.margin_top.to_pt() as f32;
-        (margin * 0.5 + run.size_pt * 0.35).clamp(run.size_pt, margin.max(run.size_pt))
+        (margin + run.size_pt * 0.8).min(page.height_pt)
     } else {
         let margin = furniture.page_def.margin_bottom.to_pt() as f32;
-        page.height_pt - (margin * 0.5 - run.size_pt * 0.35).max(run.size_pt * 0.2)
+        (page.height_pt - margin - run.size_pt * 0.2).max(run.size_pt)
     };
     push_run(page, x, y, run, &doc.header.border_fills, warnings);
 }
@@ -5050,8 +5090,9 @@ fn place_wrapped(
 
 #[cfg(test)]
 mod page_number_layout_tests {
-    use super::{control_char_shape, page_number_alignment};
-    use hwp_model::{CharShapeId, HwpChar, Paragraph};
+    use super::{PageNumberState, control_char_shape, page_number_alignment};
+    use crate::issues::RenderIssueAccumulator;
+    use hwp_model::{CharShapeId, Control, GenericControl, HwpChar, Paragraph, ParagraphList};
 
     #[test]
     fn 고정_위치_정렬() {
@@ -5092,6 +5133,67 @@ mod page_number_layout_tests {
         };
 
         assert_eq!(control_char_shape(&para, 1), Some(CharShapeId(7)));
+    }
+
+    fn generic(ctrl_id: [u8; 4], data: Vec<u8>, paragraphs: Vec<Paragraph>) -> Control {
+        Control::Generic(GenericControl {
+            ctrl_id,
+            data,
+            paragraph_lists: if paragraphs.is_empty() {
+                Vec::new()
+            } else {
+                vec![ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs,
+                }]
+            },
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// Hangul inserts 쪽 번호 매기기 wherever the caret was, so genuine documents
+    /// carry `pgnp`/`nwno` inside a text box's paragraph list rather than in the
+    /// body flow. The page-level state must still pick them up.
+    #[test]
+    fn 중첩_문단_리스트의_쪽번호_컨트롤도_적용된다() {
+        let mut pgnp = vec![0u8; 12];
+        pgnp[..4].copy_from_slice(&(5u32 << 8).to_le_bytes()); // 아래 가운데
+        pgnp[10..12].copy_from_slice(&(u16::from(b'-')).to_le_bytes());
+        let mut nwno = vec![0u8; 8];
+        nwno[4..6].copy_from_slice(&7u16.to_le_bytes());
+
+        let inner = Paragraph {
+            controls: vec![
+                generic(*b"pgnp", pgnp, Vec::new()),
+                generic(*b"nwno", nwno, Vec::new()),
+            ],
+            ..Paragraph::default()
+        };
+        let outer = Paragraph {
+            controls: vec![generic(*b"gso ", Vec::new(), vec![inner])],
+            ..Paragraph::default()
+        };
+
+        let mut warnings = RenderIssueAccumulator::new();
+        let mut state = PageNumberState::new(1);
+        state.apply_controls(&outer, &mut warnings);
+        assert_eq!(
+            state.placement.map(|p| p.position),
+            Some(5),
+            "중첩 문단의 pgnp도 쪽번호를 배치해야"
+        );
+        assert_eq!(
+            state.visible_number(),
+            Some(7),
+            "중첩 nwno도 번호를 재시작해야"
+        );
     }
 }
 
