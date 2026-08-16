@@ -10,6 +10,72 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.8.6]
+
+**Changed**
+
+- **Text metrics now follow Hancom's own rules, so rendered geometry changes for every
+  document.** Three shaping rules were wrong at once, all of them invisible on full-width
+  Hangul because a 1.0 em advance makes the competing readings identical
+  ([#108](https://github.com/STAIxBWLB/hwp-cli/pull/108), rule B9 in
+  `docs/design/07-hangul-compat-rules.md`):
+  자간 (letter spacing) scales each glyph's own advance — `advance * (100 + pct) / 100` —
+  instead of adding a fixed fraction of the font size; a clear `글꼴에 어울리는 빈칸`
+  (CHAR_SHAPE bit 25) means a space takes a fixed half em rather than the font's space glyph;
+  and `useKerning` off now disables the `kern` feature, which the shaper enabled by default.
+  Latin text is what separates the readings: an 11pt 자간 -10% word measures 32.07pt in the
+  Hancom oracle, 31.99 under the new rules and 29.52 under the old. On the public one-page
+  Hancom oracle the raster distance drops from `bad_pixel_pct` 0.01792 / MAE 2.87 to
+  **0.00569 / 0.75**.
+- Table rows keep the height the document stores when their cells carry a cached line layout;
+  our own measurement no longer grows them, because growing one row moves every row below it
+  and the page fragments after it ([#109](https://github.com/STAIxBWLB/hwp-cli/pull/109)).
+  Cells without a cached layout — documents this tool authors — keep the measurement pass.
+  A cell whose content exceeds its stored row is reported as the new typed warning
+  `table_cell_content_overflow`; the content is still drawn.
+- A table row split across pages is now closed with its own horizontal edge on each page, the
+  way Hangul draws it, at real page crossings only ([#109](https://github.com/STAIxBWLB/hwp-cli/pull/109)).
+
+**Fixed**
+
+- The hanging indent (내어쓰기) is placed **inside** the text area
+  ([#106](https://github.com/STAIxBWLB/hwp-cli/pull/106)). A genuine `line_seg` stores only the
+  paragraph's left margin in `horzpos`, never the first-line indent, so every list paragraph was
+  drawn one hanging width (14–18pt in the measured corpus) left of Hangul's position, with the
+  marker a further marker width to the left. Alignment and wrap widths are now measured against
+  the width left after the indent, and the lineseg synthesizer breaks lines against the same
+  width.
+- Page numbers render again where documents carry the control in a nested paragraph list — a
+  text box or shape rather than the body flow — and the number is placed in the header/footer
+  band instead of over the paper margin
+  ([#107](https://github.com/STAIxBWLB/hwp-cli/pull/107)).
+
+**Added**
+
+- Over-height CELL table rows paginate at cached line boundaries
+  ([#102](https://github.com/STAIxBWLB/hwp-cli/pull/102)).
+- A privacy-safe font identity gate: the render report publishes hash-only requested/resolved
+  font identities, weight state, face index and resolution completeness
+  ([#103](https://github.com/STAIxBWLB/hwp-cli/pull/103)).
+- Certification gained preservation and Hancom-open evidence checks, including the closed
+  `hancom-verification-receipt-v1` schema
+  ([#104](https://github.com/STAIxBWLB/hwp-cli/pull/104)).
+- A PDF-parity manifest may declare `gate_exclusions`: every gate is still measured and echoed,
+  and only eligibility is relaxed ([#105](https://github.com/STAIxBWLB/hwp-cli/pull/105)).
+
+**Parity status**
+
+Epic [#90](https://github.com/STAIxBWLB/hwp-cli/issues/90) closed with this release. The private
+composite profile passes `page_count`, `media_box`, `render_issues` and `determinism`. Four gates
+are declared exclusions in that private manifest and are **not** claimed by this release:
+`fonts` (the oracle itself substitutes, following the document's own `substFont`, so
+"substitution-free" is unreachable for that case), and `text`, `raster`, `roi` — measured at
+1/13 pages byte-equal (the differences are pagination, not characters), `bad_pixel_pct`
+0.1418–0.2332, and 3 of 4 ROIs passing. The distance and its known causes are recorded in
+`docs/design/21-pdf-parity.md` §4.6 and tracked in
+[#110](https://github.com/STAIxBWLB/hwp-cli/issues/110). This release makes no Hancom pixel
+parity claim.
+
 ## [0.8.5]
 
 **Added**
