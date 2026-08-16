@@ -4613,6 +4613,10 @@ mod tests {
             hwp_render::RenderIssueCode::TableRowTooTallClipped,
             b"oversized",
         );
+        accumulator.push_once(
+            hwp_render::RenderIssueCode::TableCellContentOverflow,
+            b"overflow",
+        );
         let mut report = empty_render_report(96.0);
         apply_render_issue_report(&mut report, accumulator.finish());
 
