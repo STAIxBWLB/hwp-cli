@@ -217,6 +217,18 @@ impl CharShape {
     pub fn char_offset(&self, lang: usize) -> i8 {
         self.offsets.get(lang).copied().unwrap_or(0)
     }
+
+    /// 글꼴에 어울리는 빈칸 (bit 25). 꺼져 있으면 한글은 글꼴의 space 글리프 대신
+    /// 고정 1/2 em 빈칸을 쓴다 — hwpx `useFontSpace` 속성과 같은 비트다.
+    pub fn uses_font_space(&self) -> bool {
+        self.attr & (1 << 25) != 0
+    }
+
+    /// 커닝 (bit 30). 꺼져 있으면 글꼴의 커닝 쌍을 적용하지 않는다 —
+    /// hwpx `useKerning` 속성과 같은 비트다.
+    pub fn uses_kerning(&self) -> bool {
+        self.attr & (1 << 30) != 0
+    }
 }
 
 /// PARA_SHAPE — 문단 모양. 알려진 prefix + tail 보존.

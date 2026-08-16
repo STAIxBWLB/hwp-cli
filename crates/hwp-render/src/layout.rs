@@ -1303,9 +1303,14 @@ pub fn layout_document(
                     i == last_content,
                 );
                 let x = box_x + indent + shift;
-                // 문단에 lineseg가 1개뿐인데 텍스트가 폭을 넘으면 불완전한
-                // lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰.
-                let wrap_width = if para.line_segs.len() == 1 {
+                // 문단에 lineseg가 1개뿐인데 텍스트가 **한 글자 이상** 폭을 넘으면
+                // 불완전한 lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰한다.
+                // 한 글자 여유가 필요한 이유: 우리 advance가 한글과 맞아떨어지면서
+                // 정품 줄이 seg 폭을 꽉 채우는 경우 반올림 수준(<1pt) 초과만으로도
+                // 재줄바꿈이 발동해 쪽이 늘어난다(실측: 13쪽 문서가 15쪽).
+                let wrap_width = if para.line_segs.len() == 1
+                    && natural_width > text_width + items_max_size(&items).unwrap_or(10.0)
+                {
                     text_width.max(10.0)
                 } else {
                     f32::INFINITY
@@ -4289,7 +4294,10 @@ fn layout_box_para_iter<'a>(
                     i == last_content,
                 );
                 let x = box_x + indent + shift;
-                let wrap_width = if para.line_segs.len() == 1 {
+                // 본문 경로와 같은 규칙: 한 글자 이상 넘칠 때만 불완전 캐시로 본다.
+                let wrap_width = if para.line_segs.len() == 1
+                    && natural_width > text_width + items_max_size(&items).unwrap_or(8.0)
+                {
                     text_width.max(4.0)
                 } else {
                     f32::INFINITY
