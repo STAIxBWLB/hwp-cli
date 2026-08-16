@@ -1018,35 +1018,12 @@ pub fn layout_document(
                     // 문단 들여쓰기/여백/위 간격(폴백 전용 — 캐시는 col_start에 반영됨).
                     let left = body_left + geom.left;
                     let avail = (body_width - geom.left - geom.right).max(4.0);
-                    // 첫 줄 들여쓰기/내어쓰기(음수 허용): 첫 줄 x = 좌여백 + indent를
-                    // 페이지 좌변(body_left) 밖으로 안 나가게 클램프한 뒤 그 오프셋만
-                    // 첫 줄에 준다(wrap 폭 미차감 — 좁은 셀 폭주 방지). 비정상 큰 양수는 캡.
-                    let indent = geom.first_indent.min(avail * 0.8);
-                    let first_x = (left + indent).max(body_left);
                     let baseline_y = content_bottom + geom.spacing_top + max_size * 1.2;
                     para_top = Some(content_bottom + geom.spacing_top);
-                    // 한 줄에 들어가는 가운데/오른쪽 정렬은 폴백에서도 보정한다.
-                    let natural = items_width(&items, &tabs);
-                    let align = doc
-                        .header
-                        .para_shapes
-                        .get(para.para_shape.0 as usize)
-                        .map_or(1, |p| p.alignment());
-                    // 정렬(가운데/오른쪽) 한 줄은 들여쓰기 무시; 그 외엔 x0=좌여백 + 첫 줄 오프셋.
-                    let (x0, first_delta) = if natural <= avail && (align == 2 || align == 3) {
-                        (
-                            left + (avail - natural) * if align == 3 { 0.5 } else { 1.0 },
-                            0.0,
-                        )
-                    } else if marker.is_some() && geom.first_indent < 0.0 {
-                        // 목록 문단의 내어쓰기 구간은 마커 자리다(한글 실기와 동일).
-                        // 첫 줄 텍스트를 left로 되돌리지 않으면 마커가 글자 밑에 깔린다.
-                        (left, 0.0)
-                    } else {
-                        (left, first_x - left)
-                    };
+                    // 마커는 줄상자 왼쪽에 놓고, 그 폭만큼 첫 줄 글자를 밀어낸다.
+                    let mut marker_advance = 0.0;
                     if let Some(m) = &marker {
-                        render_list_marker(
+                        marker_advance = render_list_marker(
                             &mut page,
                             store,
                             doc,
@@ -1055,12 +1032,36 @@ pub fn layout_document(
                             warnings,
                         );
                     }
+                    // 첫 줄 들여쓰기/내어쓰기: 비정상 큰 양수는 방어 캡
+                    // (wrap 폭 미차감 — 좁은 셀 폭주 방지).
+                    let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
+                    let first_indent = first_indent.min(avail * 0.8);
+                    let rest_indent = rest_indent.min(avail * 0.8);
+                    // 한 줄에 들어가는 가운데/오른쪽 정렬은 폴백에서도 보정한다.
+                    let natural = items_width(&items, &tabs);
+                    let align = doc
+                        .header
+                        .para_shapes
+                        .get(para.para_shape.0 as usize)
+                        .map_or(1, |p| p.alignment());
+                    // 정렬(가운데/오른쪽) 한 줄은 들여쓰기 무시; 그 외엔 x0=좌여백 + 이후 줄 오프셋.
+                    let (x0, first_delta) = if natural <= avail && (align == 2 || align == 3) {
+                        (
+                            left + (avail - natural) * if align == 3 { 0.5 } else { 1.0 },
+                            0.0,
+                        )
+                    } else {
+                        (left + rest_indent, first_indent - rest_indent)
+                    };
+                    // place_wrapped의 우변은 x0 + max_width라, 들여쓴 만큼 폭을 줄여야
+                    // 문단 원래 오른쪽 끝(left + avail)이 유지된다.
+                    let wrap_width = (left + avail - x0).max(1.0);
                     let last_y = place_wrapped(
                         &mut page,
                         items,
                         x0,
                         baseline_y,
-                        avail,
+                        wrap_width,
                         max_size * 1.6,
                         &tabs,
                         first_delta,
@@ -1211,20 +1212,13 @@ pub fn layout_document(
                 crate::shape::apply_link_style(&mut items, &links);
                 let natural_width: f32 = items_width(&items, &tabs);
 
-                // 정렬 보정 (가운데/오른쪽 + 양쪽정렬은 마지막 줄 빼고 글자 사이로 잉여 분배).
+                // 정렬 보정은 들여쓰기를 뺀 실제 글자 폭 기준이라 아래(indent 확정 후)에서 한다.
                 let seg_width_pt = seg.seg_width as f32 / 100.0;
                 let align = doc
                     .header
                     .para_shapes
                     .get(para.para_shape.0 as usize)
                     .map_or(0, |ps| ps.alignment());
-                let shift = align_line(
-                    &mut items,
-                    align,
-                    seg_width_pt,
-                    natural_width,
-                    i == last_content,
-                );
 
                 let baseline_gap_pt = seg.baseline_gap as f32 / 100.0;
                 let line_height_pt = seg.line_height as f32 / 100.0;
@@ -1233,38 +1227,52 @@ pub fn layout_document(
                 // 베이스라인을 (콘텐츠 하단 + 이 줄의 ascent) 아래로 밀어낸다
                 let baseline_y = stored_baseline.max(content_bottom + baseline_gap_pt);
 
-                // 문단에 lineseg가 1개뿐인데 텍스트가 폭을 넘으면 불완전한
-                // lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰.
-                let wrap_width = if para.line_segs.len() == 1 {
-                    seg_width_pt.max(10.0)
-                } else {
-                    f32::INFINITY
-                };
                 let line_advance =
                     (seg.line_height + seg.line_spacing).max(seg.line_height) as f32 / 100.0;
 
                 // 다단: 현재 밴드의 단 x-오프셋(col_start는 단 상대라 0). 단일 단이면 0.
                 let col_x = (col_band % col_count) as f32 * (col_width + col_gap);
-                let x = body_left + col_x + seg.col_start as f32 / 100.0 + shift;
+                let box_x = body_left + col_x + seg.col_start as f32 / 100.0;
                 // 배경 조각 상단: 이 페이지/단에서 처음 놓이는 줄의 윗변에서 잡는다(GC-9).
                 if bg_slice_top.is_none() {
                     bg_slice_top = Some(baseline_y - baseline_gap_pt);
                     bg_slice_col_x = col_x;
                 }
+                let mut marker_advance = 0.0;
                 if i == 0 {
                     para_top = Some(baseline_y - baseline_gap_pt);
                     if let Some(m) = &marker {
                         let size = items_max_size(&items).unwrap_or(line_height_pt.max(8.0));
-                        render_list_marker(
+                        marker_advance = render_list_marker(
                             &mut page,
                             store,
                             doc,
                             m,
-                            (x, baseline_y, size),
+                            (box_x, baseline_y, size),
                             warnings,
                         );
                     }
                 }
+                // col_start는 좌여백만 담으므로 들여쓰기/내어쓰기는 여기서 준다.
+                let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
+                let indent = if i == 0 { first_indent } else { rest_indent };
+                // 정렬·줄바꿈은 들여쓰기를 뺀 남은 폭 기준이어야 오른쪽 끝이 밀리지 않는다.
+                let text_width = (seg_width_pt - indent).max(1.0);
+                let shift = align_line(
+                    &mut items,
+                    align,
+                    text_width,
+                    natural_width,
+                    i == last_content,
+                );
+                let x = box_x + indent + shift;
+                // 문단에 lineseg가 1개뿐인데 텍스트가 폭을 넘으면 불완전한
+                // lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰.
+                let wrap_width = if para.line_segs.len() == 1 {
+                    text_width.max(10.0)
+                } else {
+                    f32::INFINITY
+                };
                 let last_y = place_wrapped(
                     &mut page,
                     items,
@@ -1273,7 +1281,7 @@ pub fn layout_document(
                     wrap_width,
                     line_advance,
                     &tabs,
-                    0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    0.0, // 줄 오프셋은 x에 이미 반영됨.
                     &doc.header.border_fills,
                     warnings,
                 );
@@ -2024,13 +2032,39 @@ fn render_list_marker(
     marker: &str,
     placement: (f32, f32, f32),
     warnings: &mut RenderIssueAccumulator,
-) {
-    let (text_left, baseline, size) = placement;
-    if let Some(run) = crate::shape::shape_plain(store, doc, marker, size, 0, false) {
-        let w = run.width_pt;
-        let x = (text_left - w - size * 0.3).max(0.0);
-        push_run(page, x, baseline, run, &doc.header.border_fills, warnings);
-    }
+) -> f32 {
+    let (box_left, baseline, size) = placement;
+    let Some(run) = crate::shape::shape_plain(store, doc, marker, size, 0, false) else {
+        return 0.0;
+    };
+    let advance = run.width_pt + size * 0.3;
+    push_run(
+        page,
+        box_left,
+        baseline,
+        run,
+        &doc.header.border_fills,
+        warnings,
+    );
+    advance
+}
+
+/// Text offsets (first line, following lines) from the left edge of the line box.
+///
+/// Ground truth: a genuine Hangul `line_seg` stores only the paragraph's left
+/// margin in `horzpos` — never the first-line indent, not even for a hanging
+/// indent. The hanging space belongs to the list marker and lives *inside* the
+/// text area, so the marker sits at the box edge, the first line clears it, and
+/// every following line is indented by the hanging width. A positive indent
+/// (들여쓰기) applies to the first line only.
+fn line_indents(geom: &ParaGeom, marker_advance: f32) -> (f32, f32) {
+    let hang = (-geom.first_indent).max(0.0);
+    let first = if marker_advance > 0.0 {
+        marker_advance.max(hang)
+    } else {
+        geom.first_indent.max(0.0)
+    };
+    (first, hang)
 }
 
 /// Converts a `BorderFill` background into a display item (GG-7).
@@ -4090,15 +4124,24 @@ fn layout_box_para_iter<'a>(
                 let geom = para_geometry(doc, para);
                 let left = origin_x + geom.left;
                 let avail = (width - geom.left - geom.right).max(4.0);
-                // 첫 줄 들여쓰기/내어쓰기(음수 허용): 셀 좌변(origin_x) 밖 클램프, 첫 줄에만
-                // (wrap 폭 미차감 — 좁은 셀 폭주 방지). 비정상 큰 양수는 방어 캡.
-                let indent = geom.first_indent.min(avail * 0.8);
-                let first_x = (left + indent).max(origin_x);
                 let baseline_y = content_bottom + geom.spacing_top + max_size * 1.2;
                 para_top = Some(content_bottom + geom.spacing_top);
+                let mut marker_advance = 0.0;
                 if let Some(m) = &marker {
-                    render_list_marker(page, store, doc, m, (left, baseline_y, max_size), warnings);
+                    marker_advance = render_list_marker(
+                        page,
+                        store,
+                        doc,
+                        m,
+                        (left, baseline_y, max_size),
+                        warnings,
+                    );
                 }
+                // 첫 줄 들여쓰기/내어쓰기 — 본문 폴백 경로와 같은 규칙
+                // (wrap 폭 미차감 — 좁은 셀 폭주 방지). 비정상 큰 양수는 방어 캡.
+                let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
+                let first_indent = first_indent.min(avail * 0.8);
+                let rest_indent = rest_indent.min(avail * 0.8);
                 let natural = items_width(&items, &tabs);
                 let align = doc
                     .header
@@ -4110,18 +4153,17 @@ fn layout_box_para_iter<'a>(
                         left + (avail - natural) * if align == 3 { 0.5 } else { 1.0 },
                         0.0,
                     )
-                } else if marker.is_some() && geom.first_indent < 0.0 {
-                    // 내어쓰기 구간은 마커 자리 — 본문 폴백 경로와 같은 규칙.
-                    (left, 0.0)
                 } else {
-                    (left, first_x - left)
+                    (left + rest_indent, first_indent - rest_indent)
                 };
+                // 들여쓴 만큼 폭을 줄여 셀의 원래 오른쪽 끝(left + avail)을 유지한다.
+                let wrap_width = (left + avail - x0).max(1.0);
                 let last_y = place_wrapped(
                     page,
                     items,
                     x0,
                     baseline_y,
-                    avail,
+                    wrap_width,
                     max_size * 1.6,
                     &tabs,
                     first_delta,
@@ -4162,19 +4204,13 @@ fn layout_box_para_iter<'a>(
                 );
                 let natural_width = items_width(&items, &tabs);
 
+                // 정렬 보정은 들여쓰기를 뺀 실제 글자 폭 기준이라 아래(indent 확정 후)에서 한다.
                 let seg_width_pt = (seg.seg_width as f32 / 100.0).min(width);
                 let align = doc
                     .header
                     .para_shapes
                     .get(para.para_shape.0 as usize)
                     .map_or(0, |ps| ps.alignment());
-                let shift = align_line(
-                    &mut items,
-                    align,
-                    seg_width_pt,
-                    natural_width,
-                    i == last_content,
-                );
 
                 let gap_pt = seg.baseline_gap as f32 / 100.0;
                 let v_pos = seg.v_pos.saturating_sub(v_origin);
@@ -4186,26 +4222,38 @@ fn layout_box_para_iter<'a>(
                     BoxParaSelection::Segments(range) => i == range.start,
                     BoxParaSelection::Empty => false,
                 };
+                let box_x = origin_x + seg.col_start as f32 / 100.0;
+                let mut marker_advance = 0.0;
                 if first_selected {
                     para_top = Some(baseline_y - gap_pt);
                     if let Some(m) = &marker {
                         let size = items_max_size(&items).unwrap_or(8.0);
-                        render_list_marker(
+                        marker_advance = render_list_marker(
                             page,
                             store,
                             doc,
                             m,
-                            (
-                                origin_x + seg.col_start as f32 / 100.0 + shift,
-                                baseline_y,
-                                size,
-                            ),
+                            (box_x, baseline_y, size),
                             warnings,
                         );
                     }
                 }
+                // col_start는 좌여백만 담으므로 들여쓰기/내어쓰기는 여기서 준다.
+                let geom = para_geometry(doc, para);
+                let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
+                let indent = if i == 0 { first_indent } else { rest_indent };
+                // 정렬·줄바꿈은 들여쓰기를 뺀 남은 폭 기준이어야 오른쪽 끝이 밀리지 않는다.
+                let text_width = (seg_width_pt - indent).max(1.0);
+                let shift = align_line(
+                    &mut items,
+                    align,
+                    text_width,
+                    natural_width,
+                    i == last_content,
+                );
+                let x = box_x + indent + shift;
                 let wrap_width = if para.line_segs.len() == 1 {
-                    seg_width_pt.max(4.0)
+                    text_width.max(4.0)
                 } else {
                     f32::INFINITY
                 };
@@ -4215,12 +4263,12 @@ fn layout_box_para_iter<'a>(
                 let last_y = place_wrapped(
                     page,
                     items,
-                    origin_x + seg.col_start as f32 / 100.0 + shift,
+                    x,
                     baseline_y,
                     wrap_width,
                     line_advance,
                     &tabs,
-                    0.0, // 캐시 줄은 col_start에 들여쓰기가 이미 반영됨.
+                    0.0, // 줄 오프셋은 x에 이미 반영됨.
                     &doc.header.border_fills,
                     warnings,
                 );
@@ -5049,7 +5097,7 @@ mod page_number_layout_tests {
 
 #[cfg(test)]
 mod para_geom_tests {
-    use super::para_geometry;
+    use super::{ParaGeom, line_indents, para_geometry};
     use hwp_model::{Document, ParaShape, ParaShapeId, Paragraph};
 
     #[test]
@@ -5084,6 +5132,27 @@ mod para_geom_tests {
             ..Paragraph::default()
         };
         assert_eq!(para_geometry(&doc, &p2).left, 0.0);
+    }
+
+    #[test]
+    fn 줄_들여쓰기는_내어쓰기_구간을_텍스트_영역_안에_둔다() {
+        // 들여쓰기(양수): 첫 줄만 밀고 이후 줄은 줄상자 왼쪽.
+        let indent = ParaGeom {
+            first_indent: 15.0,
+            ..ParaGeom::default()
+        };
+        assert_eq!(line_indents(&indent, 0.0), (15.0, 0.0));
+        // 내어쓰기(음수, 마커 없음): 첫 줄은 줄상자 왼쪽, 이후 줄만 내어쓰기 폭만큼.
+        let hanging = ParaGeom {
+            first_indent: -14.0,
+            ..ParaGeom::default()
+        };
+        assert_eq!(line_indents(&hanging, 0.0), (0.0, 14.0));
+        // 마커가 있으면 첫 줄 글자는 마커를 비켜간다(최소 내어쓰기 폭).
+        assert_eq!(line_indents(&hanging, 9.0), (14.0, 14.0));
+        assert_eq!(line_indents(&hanging, 20.0), (20.0, 14.0));
+        // 내어쓰기 없는 목록도 마커와 겹치지 않는다.
+        assert_eq!(line_indents(&ParaGeom::default(), 9.0), (9.0, 0.0));
     }
 }
 

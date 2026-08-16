@@ -159,7 +159,7 @@ baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
 ```
 
-셰이핑(`shape_range`)으로 글리프 x_advance를 pt로 재고 `limit_pt = seg_width/100` 기준 그리디 줄바꿈. NB_SPACE 양옆은 줄바꿈 금지. 줄 시작점은 glyph index가 아니라 shaping-cluster source의 UTF-16 길이로 계산해 보조평면 문자·합자·결합문자의 WCHAR offset 보존. 각 줄 방출은 클로저 `place`:
+셰이핑(`shape_range`)으로 글리프 x_advance를 pt로 재고 `seg_width/100`에서 렌더러가 줄상자 안에서 줄 들여쓰기(`layout::line_indents`)를 뺀 폭 기준 그리디 줄바꿈: 들여쓰기(양수)는 첫 줄, 내어쓰기는 둘째 줄부터 좁힌다. 이를 빼지 않으면 합성한 줄이 렌더 시 문단 우변을 넘는다. 목록 마커 폭은 셰이핑이 필요해 반영하지 않으므로, 마커가 내어쓰기 폭보다 넓은 문단의 첫 줄은 그만큼 길 수 있다. NB_SPACE 양옆은 줄바꿈 금지. 줄 시작점은 glyph index가 아니라 shaping-cluster source의 UTF-16 길이로 계산해 보조평면 문자·합자·결합문자의 WCHAR offset 보존. 각 줄 방출은 클로저 `place`:
 ```
 if v_pos>0 && v_pos + base > content_h { v_pos = 0 }   // 페이지 리셋(셀은 content_h=MAX라 무발동)
 segs.push(LineSeg{ text_start, v_pos, line_height:base, text_height:base,

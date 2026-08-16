@@ -287,7 +287,12 @@ seg_width     = max(body_width, 1)
 ```
 
 Shaping (`shape_range`) measures glyph x_advance in pt and breaks lines greedily against
-`limit_pt = seg_width/100`. Breaks on either side of NB_SPACE are suppressed. Line starts use the
+`seg_width/100` less the indent the renderer will apply inside the line box
+(`layout::line_indents`): a positive indent narrows the first line, a hanging indent every line
+after it. Without that subtraction a synthesized line overruns the paragraph's right edge once it
+is drawn. The list-marker advance needs shaping and is not accounted for, so the first line of a
+paragraph whose marker is wider than its hanging indent can still be that much too long.
+Breaks on either side of NB_SPACE are suppressed. Line starts use the
 UTF-16 length of each shaping-cluster source, rather than the glyph index, so surrogate pairs,
 ligatures and combining text retain correct WCHAR offsets. Each line is emitted by `place`:
 

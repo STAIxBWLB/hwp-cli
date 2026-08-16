@@ -1259,9 +1259,11 @@ fn 쪽_테두리_렌더() {
     }
 }
 
-/// 목록(불릿) 문단: 마커는 내어쓰기 구간에, 첫 줄 텍스트는 좌여백(left)에 온다.
-/// 과거엔 첫 줄 텍스트가 left+indent(마커 자리)까지 당겨져 마커가 글자 밑에 깔렸다.
-/// 글리프 유무는 폰트 가용성에 좌우되므로(CLAUDE.md CI 규칙) 글리프가 없으면 스킵.
+/// List (bullet) paragraph: the hanging-indent space belongs to the marker and
+/// lives inside the text area, so the marker sits at the paragraph's left edge
+/// and the first line's text clears it. Hangul places the marker at `left`, never
+/// left of the paragraph, which is what the oracle raster shows.
+/// Glyph presence depends on font availability (CLAUDE.md CI rule) — skip if none.
 #[test]
 fn 목록_마커_내어쓰기_배치() {
     use hwp_render::display::Item;
@@ -1291,17 +1293,67 @@ fn 목록_마커_내어쓰기_배치() {
         .find(|(_, t)| t.contains('항'))
         .map(|(x, _)| *x)
         .expect("본문 첫 글자 글리프가 있어야");
-    // 문단모양: margin_left=2000(10pt), indent=-2000. 본문 좌변 = 페이지 여백
-    // 8504HU(from_markdown 기본) = 85.04pt, left = 그 + 10pt.
+    // ParaShape: margin_left=2000 (10pt), indent=-2000 (10pt hanging). Body left =
+    // the from_markdown default page margin 8504HU = 85.04pt, so left = that + 10pt.
     let body_left = 85.04_f32;
     let left = body_left + 10.0;
+    let hang = 10.0_f32;
     assert!(
-        (text_x - left).abs() < 0.5,
-        "첫 줄 텍스트는 left({left})에 와야: {text_x}"
+        (marker_x - left).abs() < 0.5,
+        "marker belongs at the paragraph left edge ({left}): {marker_x}"
     );
     assert!(
-        marker_x < text_x && marker_x >= body_left - 0.5,
-        "마커는 내어쓰기 구간([{body_left}, {text_x}))에 와야: {marker_x}"
+        text_x >= left + hang - 0.5,
+        "first-line text must clear the hanging space ({}): {text_x}",
+        left + hang
+    );
+}
+
+/// A hanging indent shifts a cached line's text right, so the alignment shift and
+/// the wrap width must be measured against the width left after the indent. Doing
+/// it against the full segment pushed right-aligned and wrapped lines one hanging
+/// width past the paragraph's right edge.
+/// Glyph presence depends on font availability (CLAUDE.md CI rule) — skip if none.
+#[test]
+fn 내어쓰기_문단의_줄은_우변을_넘지_않는다() {
+    use hwp_model::{ParaShape, ParaShapeId};
+    use hwp_render::display::Item;
+
+    let body: String = "내어쓰기 문단의 오른쪽 끝을 확인하기 위한 긴 본문입니다. ".repeat(6);
+    let mut doc = hwp_convert::from_markdown(&format!("{body}\n"));
+    doc.header.para_shapes.push(ParaShape {
+        attr1: 2 << 2, // 오른쪽 정렬
+        indent: -2000, // 10pt 내어쓰기
+        ..ParaShape::default()
+    });
+    let shape = ParaShapeId((doc.header.para_shapes.len() - 1) as u16);
+    for para in &mut doc.sections[0].paragraphs {
+        para.para_shape = shape;
+    }
+
+    let page = doc.sections[0].section_def().unwrap().page.unwrap();
+    let right_edge = (page.width.0 - page.margin_right.0) as f32 / 100.0;
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    let mut lines = 0usize;
+    let mut worst = f32::NEG_INFINITY;
+    for item in &list.pages[0].items {
+        if let Item::Glyphs { x, run, .. } = item {
+            lines += 1;
+            worst = worst.max(x + run.width_pt);
+        }
+    }
+    if lines == 0 {
+        eprintln!("스킵: 사용 가능한 폰트 없음 — 글리프 미생성");
+        return;
+    }
+    assert!(
+        worst <= right_edge + 0.5,
+        "내어쓰기 줄이 본문 우변({right_edge})을 넘었다: {worst}"
     );
 }
 

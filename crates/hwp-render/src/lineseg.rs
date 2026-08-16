@@ -299,7 +299,21 @@ fn compute_linesegs(
     };
     let baseline_gap = (i64::from(base) * 85 / 100).clamp(0, i64::from(i32::MAX)) as i32;
     let seg_width = body_width.max(1);
-    let limit_pt = seg_width as f32 / 100.0;
+    // 줄 폭은 렌더러가 줄 안에서 주는 들여쓰기(layout::line_indents)만큼 좁다:
+    // 들여쓰기(양수)는 첫 줄, 내어쓰기(음수)는 둘째 줄부터. 여기서 빼지 않으면
+    // 합성한 줄이 렌더 시 문단 우변을 넘는다. 목록 마커 폭은 셰이핑이 필요해
+    // 반영하지 않으므로, 마커가 내어쓰기 폭보다 넓은 문단의 첫 줄은 그만큼 길 수 있다.
+    let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
+    let first_indent_hu = ps.map_or(0, |p| p.indent.max(0) / 2);
+    let rest_indent_hu = ps.map_or(0, |p| (-p.indent).max(0) / 2);
+    let line_limit_pt = |committed: usize| {
+        let indent = if committed == 0 {
+            first_indent_hu
+        } else {
+            rest_indent_hu
+        };
+        ((seg_width - indent).max(1)) as f32 / 100.0
+    };
     let total = para.wchar_len();
 
     let make = |start: u32, v: i32| LineSeg {
@@ -343,7 +357,7 @@ fn compute_linesegs(
                 for (g, source) in run.glyphs.iter().zip(&sources) {
                     let current_no_break = source_has_no_break_space(source);
                     let break_allowed = !previous_no_break && !current_no_break;
-                    if content && acc + g.x_advance > limit_pt && break_allowed {
+                    if content && acc + g.x_advance > line_limit_pt(segs.len()) && break_allowed {
                         place(&mut segs, v_pos, line_start);
                         line_start = run.start_wchar.saturating_add(wchar_offset);
                         acc = 0.0;
@@ -372,17 +386,14 @@ fn compute_linesegs(
     // Commit the final line, which is also the only line for an empty paragraph.
     place(&mut segs, v_pos, line_start);
 
-    // 문단 좌여백/첫 줄 들여쓰기(내어쓰기 음수 허용)를 col_start(HWPUNIT)로 인코딩한다.
-    // 정품 line_seg는 horzpos에 (좌여백 + 첫 줄 indent)를 담는다: 첫 줄 = 좌여백+indent,
-    // 이후 줄(줄바꿈 포함) = 좌여백. IR 여백류는 2×HWPUNIT라 ÷2. 텍스트 영역 좌변 밖으론
-    // 안 나가게 0으로 클램프. 좌여백·들여쓰기가 0이면 col_start=0으로 종전과 바이트 동일.
+    // 문단 좌여백을 col_start(HWPUNIT)로 인코딩한다. 정품 line_seg는 horzpos에 좌여백만
+    // 담고 첫 줄 들여쓰기/내어쓰기는 담지 않는다(정품 실측: 내어쓰기 문단도
+    // horzpos = margin_left). 들여쓰기는 렌더러가 줄상자 안에서 준다 —
+    // `layout::line_indents`. IR 여백류는 2×HWPUNIT라 ÷2. 좌여백이 0이면 col_start=0으로
+    // 종전과 바이트 동일.
     let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
     let ml_hu = ps.map_or(0, |p| p.margin_left / 2).max(0);
-    let first_hu = ps.map_or(0, |p| (p.margin_left + p.indent) / 2).max(0);
-    if let Some(seg0) = segs.first_mut() {
-        seg0.col_start = first_hu;
-    }
-    for seg in segs.iter_mut().skip(1) {
+    for seg in segs.iter_mut() {
         seg.col_start = ml_hu;
     }
     segs
