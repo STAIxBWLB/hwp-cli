@@ -231,6 +231,20 @@ a new page cannot pollute the previous page.
 - `pghd`: on a page where bit5 is set, both positional page numbers and PAGE `atno` are hidden. The
   hidden state resets after the next page is completed.
 
+Hangul inserts these controls wherever the caret was, so a genuine document routinely carries them
+inside a nested paragraph list — a text box or a shape — rather than in the body flow. Such a list is
+anchored to its paragraph and therefore lands on that paragraph's page, so nested lists are scanned
+to a bounded depth (8) alongside the paragraph's own controls. Table cells are deliberately excluded:
+a table can split across pages, so a control in a later row belongs to a later page and applying it
+at anchor time would restart `nwno` or clear `pghd` on the wrong one. Honoring a cell control needs
+the scan to follow fragment layout, which no observed document requires yet.
+
+A positioned number is drawn in the header or footer band, the same band `Furniture::render` uses:
+the header band starts at `margin_top`, the footer band ends at `page_height - margin_bottom`. Inside
+its band the number hugs the outer edge — the footer's text bottom sits on the bottom-margin line,
+measured against the Hancom oracle to within 0.3pt, and the header mirrors that rule (no oracle covers
+the header yet). Ascent and descent are approximated from the run size rather than read from the face.
+
 The number formats rendered are those the IR can express: DIGIT, CIRCLED_DIGIT, ROMAN upper and lower,
 LATIN upper and lower, HANGUL_SYLLABLE and HANGUL_JAMO. Any other format falls back to decimal so the
 number does not vanish, warning once. That is render behavior; GE-4, where HWPX conversion fixes
