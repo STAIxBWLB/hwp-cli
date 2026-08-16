@@ -630,15 +630,22 @@ fn fw_space_run(
     Some(run)
 }
 
-/// Computes letter spacing in the HWPUNIT integer domain with half-up rounding
-/// (ties toward positive infinity, including negative values), then converts to points.
-/// Whether Hancom includes trailing tracking after the last glyph still needs measurement.
-fn letter_spacing_pt(base_hu: i32, rel: u8, script: bool, pct: i8) -> f32 {
-    let mut size_hu = i64::from(base_hu) * i64::from(rel) / 100;
-    if script {
-        size_hu = size_hu * 65 / 100;
-    }
-    ((size_hu * i64::from(pct) + 50).div_euclid(100)) as f32 / 100.0
+/// 자간(letter spacing) 배율. 한글은 자간 %를 **글자 자신의 advance**에 곱한다
+/// (`advance × (100 + pct) / 100`), 글꼴 크기의 고정 비율을 더하지 않는다.
+///
+/// 전각 한글(1.0 em)에서는 두 해석이 같아 구분되지 않지만, 라틴에서 갈린다 —
+/// 오라클 실측(11pt·자간 -10%·함초롬돋움, `Career` 6글자): 곱셈 31.99pt vs 실측
+/// 32.07pt, 덧셈 29.52pt. 첨자·상대크기는 이미 `size_pt`에 반영돼 있어 배율만으로
+/// 함께 처리된다. 상세는 07-hangul-compat-rules B9.
+fn letter_spacing_ratio(pct: i8) -> f32 {
+    (100.0 + f32::from(pct)) / 100.0
+}
+
+/// 빈칸 폭(pt). `글꼴에 어울리는 빈칸`(CHAR_SHAPE bit25)이 꺼져 있으면 한글은 글꼴의
+/// space 글리프 대신 **고정 1/2 em**을 쓴다. 오라클 실측: 11pt·자간 0 줄의 빈칸이
+/// 5.49pt(0.499 em)이고, 같은 글꼴의 space 글리프는 0.3 em(3.30pt)이다.
+fn fixed_space_pt(cs: &CharShape, size_pt: f32, x_scale: f32) -> Option<f32> {
+    (!cs.uses_font_space()).then_some(size_pt * 0.5 * x_scale)
 }
 
 /// Shapes text with one resolved font into a [`ShapedRun`], applying script,
@@ -678,18 +685,12 @@ fn shape_with_font(
         r
     };
 
-    // Compute letter spacing in the HWPUNIT integer domain before converting to
-    // points (GG-4), avoiding the previous floating-point rounding drift.
-    let spacing_pt = letter_spacing_pt(
-        base,
-        rel,
-        sup || sub,
-        cs.spacings.get(lang).copied().unwrap_or(0),
-    );
+    let spacing_ratio = letter_spacing_ratio(cs.spacings.get(lang).copied().unwrap_or(0));
     let x_scale = cs.ratios.get(lang).copied().unwrap_or(100).max(1) as f32 / 100.0;
+    let space_pt = fixed_space_pt(cs, size_pt, x_scale);
 
     // Keep U+00A0 in the run source for wrap semantics while shaping it as an
-    // ordinary space so NB_SPACE retains the active font's regular space advance.
+    // ordinary space, so NB_SPACE takes the same width as a regular one.
     let shaping_text = if text.contains('\u{00a0}') {
         Cow::Owned(text.replace('\u{00a0}', " "))
     } else {
@@ -697,12 +698,27 @@ fn shape_with_font(
     };
     let mut buffer = rustybuzz::UnicodeBuffer::new();
     buffer.push_str(&shaping_text);
-    let output = rustybuzz::shape(&face, &[], buffer);
+    // 커닝(bit30)이 꺼진 문자모양은 글꼴의 커닝 쌍을 쓰지 않는다. rustybuzz는 기본으로
+    // `kern`을 켜므로 명시적으로 꺼야 한글과 라틴 단어 폭이 맞는다(실측: 함초롬돋움
+    // `Career` 11pt에서 0.35pt 차이).
+    let kern_off = [rustybuzz::Feature::new(
+        rustybuzz::ttf_parser::Tag::from_bytes(b"kern"),
+        0,
+        ..,
+    )];
+    let features: &[rustybuzz::Feature] = if cs.uses_kerning() { &[] } else { &kern_off };
+    let output = rustybuzz::shape(&face, features, buffer);
 
     let mut glyphs = Vec::with_capacity(output.len());
     let mut width = 0.0f32;
     for (info, gpos) in output.glyph_infos().iter().zip(output.glyph_positions()) {
-        let advance = gpos.x_advance as f32 * scale * x_scale + spacing_pt;
+        // A space never joins a shaping cluster, so its cluster byte identifies it.
+        let is_space = shaping_text.as_bytes().get(info.cluster as usize) == Some(&b' ');
+        let natural = match space_pt {
+            Some(fixed) if is_space => fixed,
+            _ => gpos.x_advance as f32 * scale * x_scale,
+        };
+        let advance = natural * spacing_ratio;
         glyphs.push(Glyph {
             id: info.glyph_id as u16,
             x_advance: advance,
@@ -1199,17 +1215,29 @@ mod link_tests {
     }
 
     #[test]
-    fn letter_spacing_uses_hwpunit_half_up_rounding_gg4() {
-        // 10pt (1000 HWPUNIT), -7% -> -70 HWPUNIT -> -0.7pt.
-        assert!((letter_spacing_pt(1000, 100, false, -7) + 0.7).abs() < 1e-6);
-        // Half-up ties move toward positive infinity: 100.5 -> 101, -100.5 -> -100.
-        assert!((letter_spacing_pt(1005, 100, false, 10) - 1.01).abs() < 1e-6);
-        assert!((letter_spacing_pt(1005, 100, false, -10) + 1.0).abs() < 1e-6);
-        // Relative size and the 65% script reduction are applied before rounding.
-        assert!((letter_spacing_pt(1000, 50, false, 10) - 0.5).abs() < 1e-6);
-        assert!((letter_spacing_pt(1000, 100, true, 10) - 0.65).abs() < 1e-6);
-        // Malicious or damaged input must not overflow the integer-domain calculation.
-        assert!(letter_spacing_pt(i32::MAX, u8::MAX, false, i8::MAX).is_finite());
+    fn letter_spacing_scales_each_glyph_advance_b9() {
+        // 자간은 글자 자신의 advance에 곱한다 — 크기·첨자는 이미 size_pt에 반영된다.
+        assert!((letter_spacing_ratio(0) - 1.0).abs() < 1e-6);
+        assert!((letter_spacing_ratio(-10) - 0.9).abs() < 1e-6);
+        assert!((letter_spacing_ratio(50) - 1.5).abs() < 1e-6);
+        // 손상된 값도 유한해야 한다(자간은 -50..50이지만 파일은 무엇이든 담을 수 있다).
+        assert!(letter_spacing_ratio(i8::MAX).is_finite());
+        assert!(letter_spacing_ratio(i8::MIN).is_finite());
+    }
+
+    #[test]
+    fn fixed_space_follows_use_font_space_bit_b9() {
+        // bit25가 꺼져 있으면 고정 1/2 em, 켜져 있으면 글꼴 space 글리프를 쓴다.
+        let mut cs = CharShape {
+            base_size: 1100,
+            ..CharShape::default()
+        };
+        assert_eq!(fixed_space_pt(&cs, 11.0, 1.0), Some(5.5));
+        // 장평은 빈칸에도 적용된다.
+        assert_eq!(fixed_space_pt(&cs, 11.0, 0.5), Some(2.75));
+        cs.attr |= 1 << 25;
+        assert!(cs.uses_font_space());
+        assert_eq!(fixed_space_pt(&cs, 11.0, 1.0), None);
     }
 
     #[test]
