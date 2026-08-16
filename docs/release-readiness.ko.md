@@ -19,9 +19,11 @@
 - [ ] 비공개 한글 열기 검증 receipt를 `hancom-verification-receipt-v1` 스키마로 기록
       (인증 `hancom_open` 증거)
 - [ ] 비공개 PDF parity run 적격; 매니페스트에 선언한 `gate_exclusions` 전 항목을 릴리스
-      노트에 열거하고 사유 기재 (현재: `fonts` 제외 — 승인 face 미고정)
-- [ ] 잔여 실패 parity 게이트(`text`, `raster`, `roi`)를 문서화하고 해소 전까지 릴리스
-      차단으로 취급
+      노트에 열거하고 사유 기재. 현재 4개: `fonts`(오라클 자신이 문서의 `substFont` 선언대로
+      대체하므로 해당 케이스에서 `substitution_free`는 도달 불가 — 21-pdf-parity §4.5),
+      그리고 `text`·`raster`·`roi`(측정·보고는 유지, 격차는 21-pdf-parity §4.6에 기록)
+- [ ] 릴리스 카피에 제외 게이트와 측정된 격차를 명시. 제외가 있는 프로파일에 대해
+      "한컴 동등성" 주장 금지
 - [ ] `git status --short --untracked-files=all` 검토, 무관한 사용자 변경 제외
 - [ ] 준비 점검 실행 자체가 커밋·푸시·태그·패키지 업로드·릴리스를 수행하지 않음
 - [ ] 다운스트림 `STAIxBWLB/skills`의 `skills/hwpx`가 CLI 표면 변화에 맞는지 확인 (그쪽
