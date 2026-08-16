@@ -1259,9 +1259,11 @@ fn 쪽_테두리_렌더() {
     }
 }
 
-/// 목록(불릿) 문단: 마커는 내어쓰기 구간에, 첫 줄 텍스트는 좌여백(left)에 온다.
-/// 과거엔 첫 줄 텍스트가 left+indent(마커 자리)까지 당겨져 마커가 글자 밑에 깔렸다.
-/// 글리프 유무는 폰트 가용성에 좌우되므로(CLAUDE.md CI 규칙) 글리프가 없으면 스킵.
+/// List (bullet) paragraph: the hanging-indent space belongs to the marker and
+/// lives inside the text area, so the marker sits at the paragraph's left edge
+/// and the first line's text clears it. Hangul places the marker at `left`, never
+/// left of the paragraph, which is what the oracle raster shows.
+/// Glyph presence depends on font availability (CLAUDE.md CI rule) — skip if none.
 #[test]
 fn 목록_마커_내어쓰기_배치() {
     use hwp_render::display::Item;
@@ -1291,17 +1293,19 @@ fn 목록_마커_내어쓰기_배치() {
         .find(|(_, t)| t.contains('항'))
         .map(|(x, _)| *x)
         .expect("본문 첫 글자 글리프가 있어야");
-    // 문단모양: margin_left=2000(10pt), indent=-2000. 본문 좌변 = 페이지 여백
-    // 8504HU(from_markdown 기본) = 85.04pt, left = 그 + 10pt.
+    // ParaShape: margin_left=2000 (10pt), indent=-2000 (10pt hanging). Body left =
+    // the from_markdown default page margin 8504HU = 85.04pt, so left = that + 10pt.
     let body_left = 85.04_f32;
     let left = body_left + 10.0;
+    let hang = 10.0_f32;
     assert!(
-        (text_x - left).abs() < 0.5,
-        "첫 줄 텍스트는 left({left})에 와야: {text_x}"
+        (marker_x - left).abs() < 0.5,
+        "marker belongs at the paragraph left edge ({left}): {marker_x}"
     );
     assert!(
-        marker_x < text_x && marker_x >= body_left - 0.5,
-        "마커는 내어쓰기 구간([{body_left}, {text_x}))에 와야: {marker_x}"
+        text_x >= left + hang - 0.5,
+        "first-line text must clear the hanging space ({}): {text_x}",
+        left + hang
     );
 }
 

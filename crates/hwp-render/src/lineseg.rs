@@ -372,17 +372,14 @@ fn compute_linesegs(
     // Commit the final line, which is also the only line for an empty paragraph.
     place(&mut segs, v_pos, line_start);
 
-    // 문단 좌여백/첫 줄 들여쓰기(내어쓰기 음수 허용)를 col_start(HWPUNIT)로 인코딩한다.
-    // 정품 line_seg는 horzpos에 (좌여백 + 첫 줄 indent)를 담는다: 첫 줄 = 좌여백+indent,
-    // 이후 줄(줄바꿈 포함) = 좌여백. IR 여백류는 2×HWPUNIT라 ÷2. 텍스트 영역 좌변 밖으론
-    // 안 나가게 0으로 클램프. 좌여백·들여쓰기가 0이면 col_start=0으로 종전과 바이트 동일.
+    // 문단 좌여백을 col_start(HWPUNIT)로 인코딩한다. 정품 line_seg는 horzpos에 좌여백만
+    // 담고 첫 줄 들여쓰기/내어쓰기는 담지 않는다(정품 실측: 내어쓰기 문단도
+    // horzpos = margin_left). 들여쓰기는 렌더러가 줄상자 안에서 준다 —
+    // `layout::line_indents`. IR 여백류는 2×HWPUNIT라 ÷2. 좌여백이 0이면 col_start=0으로
+    // 종전과 바이트 동일.
     let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
     let ml_hu = ps.map_or(0, |p| p.margin_left / 2).max(0);
-    let first_hu = ps.map_or(0, |p| (p.margin_left + p.indent) / 2).max(0);
-    if let Some(seg0) = segs.first_mut() {
-        seg0.col_start = first_hu;
-    }
-    for seg in segs.iter_mut().skip(1) {
+    for seg in segs.iter_mut() {
         seg.col_start = ml_hu;
     }
     segs

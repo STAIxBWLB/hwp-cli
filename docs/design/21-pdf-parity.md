@@ -250,16 +250,43 @@ aggregates only):
   similarity 0.63–0.99 per page). So the gap is ordering and a handful of symbol mappings, not
   content loss.
 - `raster`: bad-pixel ratios 0.145–0.234 (threshold 0.05) and MAE 19–28 (threshold 5) are
-  distributed uniformly across all 13 pages with ink ratio ≈ 1.0 on 11 of them — consistent
-  with the 8 known font substitutions altering glyph shapes everywhere, rather than missing
-  content. Two pages deviate in ink ratio (1.42 / 0.86), indicating layout-level shifts on
-  those pages.
+  distributed uniformly across all 13 pages with ink ratio ≈ 1.0 on 11 of them, rather than
+  missing content. Two pages deviate in ink ratio (1.42 / 0.86), indicating layout-level
+  shifts on those pages. (The earlier reading — that the 8 substitutions alter glyph shapes
+  everywhere — is disproven in §4.5.)
 - `roi`: 3 of 4 ROIs pass; only the page-2 diagram region fails (precision 0.849, recall 0.887
   vs the 0.95 threshold), correlating with the same page's ink-ratio shift — a structural
   layout difference on the diagram page, not a global regression.
 
-Fixes for these three gates are deferred; the font-face supply that would lift the `fonts`
-exclusion is expected to shrink the uniform raster component first.
+### 4.5 Root causes behind the residual gaps (2026-08-16 diagnosis)
+
+A per-page overlay run (candidate vs oracle rasters through `hwp diff`, private-only outputs)
+plus a byte-level comparison of the oracle's embedded font subsets replaced the §4.4
+hypothesis with measured causes:
+
+- **The substitutions are oracle-equivalent, not a defect.** Every face the oracle embeds
+  except `ArialMT` is present in the pinned font directory with an identical `fontRevision`,
+  `unitsPerEm`, and hhea metrics. The document's dominant body face is declared with a
+  `substFont`, the oracle host did not have that face either, and Hancom followed the same
+  declaration — so our substitutions resolve to the same faces the oracle embedded. The
+  `fonts` gate's `substitution_free` criterion is therefore unreachable for this case by
+  construction, and the criterion (not the render) is what has to change. Installing the
+  missing originals would move our render *away* from the oracle.
+- **First-line indent was applied outside the text area (fixed).** A genuine `line_seg` stores
+  only the paragraph's left margin in `horzpos` — never the first-line indent, not even for a
+  hanging indent (verified across paragraphs with and without a left margin). The renderer
+  treated the hanging space as living to the left of the line box, so every list paragraph —
+  most of the document's body — was drawn one hanging width (14–18pt) left of Hangul's
+  position, and the list marker one marker width further left still. The hanging space is
+  Hangul's marker slot *inside* the text area: marker at the box edge, first line clearing it,
+  following lines indented by the hanging width. After the fix every page's leftmost ink lands
+  within 1px of the oracle's (was up to 29px off).
+- **Remaining, still open:** line advances diverge along a line (ours runs both narrow and
+  wide depending on the character shape, overflowing some table cells), the page-number footer
+  is not rendered at all, some vector-image text lands at the page origin, and image bullets
+  (`useImage`) fall back to the declared character. These are the next targets; the raster
+  metrics are computed without alignment, so each of them inflates `bad_pixel_pct`/`mae`
+  across the whole page.
 
 ## 5. The font gate (F1)
 
