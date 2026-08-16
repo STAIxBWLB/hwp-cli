@@ -85,6 +85,11 @@ pub enum RenderIssueCode {
     /// A CELL-policy row needed an internal page boundary, but the source did
     /// not provide a usable cached line layout to locate one.
     TableCellFragmentationIncomplete,
+    /// Measured cell content is taller than the row height the document stores.
+    /// The row keeps Hancom's stored height so the grid below it does not move,
+    /// and the content is still drawn, so this is a geometry deviation rather
+    /// than lost content.
+    TableCellContentOverflow,
     TextBoxGeometryInvalidOmitted,
     ShapeDepthLimitOmitted,
     ShapeStyleInvalidOmitted,
@@ -126,6 +131,7 @@ impl RenderIssueCode {
             Self::TableSplitAcrossPages => "table_split_across_pages",
             Self::TableRowTooTallClipped => "table_row_too_tall_clipped",
             Self::TableCellFragmentationIncomplete => "table_cell_fragmentation_incomplete",
+            Self::TableCellContentOverflow => "table_cell_content_overflow",
             Self::TextBoxGeometryInvalidOmitted => "text_box_geometry_invalid_omitted",
             Self::ShapeDepthLimitOmitted => "shape_depth_limit_omitted",
             Self::ShapeStyleInvalidOmitted => "shape_style_invalid_omitted",
@@ -141,9 +147,10 @@ impl RenderIssueCode {
     pub const fn severity(self) -> RenderIssueSeverity {
         match self {
             Self::FontMatched | Self::TableSplitAcrossPages => RenderIssueSeverity::Info,
-            Self::FontSubstituted | Self::FontSubsetFallback | Self::PictureEffectsUnsupported => {
-                RenderIssueSeverity::Warning
-            }
+            Self::FontSubstituted
+            | Self::FontSubsetFallback
+            | Self::PictureEffectsUnsupported
+            | Self::TableCellContentOverflow => RenderIssueSeverity::Warning,
             Self::ParseBudgetExceeded
             | Self::RenderExecutionFailed
             | Self::PaginationDriftDetected

@@ -1704,6 +1704,68 @@ fn 표_레이아웃(
     (list, warns.finish())
 }
 
+/// A row whose cells carry a cached line layout was sized by Hancom, so a cell
+/// whose measured content is taller must not grow it: growing moves every row
+/// below it and the fragment grid on the following pages with it. The overflow
+/// is reported as a typed warning instead. Cells without a cache keep the
+/// measurement pass, which the corpus documents rely on.
+#[test]
+fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
+    use hwp_render::display::Item;
+
+    let mut doc = 표_분할_문서(0, 1, 20, 0, false, 0);
+    // Fill the single cell with four cached text paragraphs; their measured
+    // height is far past the 20pt the row stores.
+    let mut filler = hwp_convert::from_markdown("셀 안의 본문입니다")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    filler.controls.clear();
+    filler.line_segs = vec![hwp_model::LineSeg {
+        text_start: 0,
+        v_pos: 0,
+        line_height: 1000,
+        text_height: 900,
+        baseline_gap: 800,
+        line_spacing: 0,
+        col_start: 0,
+        seg_width: 20000,
+        flags: 0x0006_0000,
+    }];
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("표 앵커가 있어야");
+    table.cells[0].paragraphs = vec![filler; 4];
+    let fill = table.cells[0].border_fill;
+
+    let (list, report) = 표_레이아웃(&doc);
+    let heights: Vec<f32> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Rect { h, .. } => Some(*h),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        heights.iter().any(|h| (h - 20.0).abs() < 0.5),
+        "셀 배경은 저장 높이 20pt를 유지해야: {heights:?} (fill {fill:?})"
+    );
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
+        "넘친 사실은 typed 이슈로 보고돼야"
+    );
+}
+
 /// Regime-A CELL tables use the cached line layout as the only trustworthy
 /// internal page boundary.  This fixture keeps all assertions structural so
 /// a font substitution cannot change the expected geometry.

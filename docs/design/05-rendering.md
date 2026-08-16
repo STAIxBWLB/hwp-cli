@@ -117,8 +117,14 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
    an average, then scales by `table_true_width` (the maximum of the per-row cell width sums). When
    the real table width exceeds the available width it shrinks proportionally to fit.
 3. **Measurement pass**: each cell is drawn into a scratch `PageList` with `layout_box_paragraphs` to
-   measure its real content height, giving `row_h[r] = max(row_h[r], content_h + mt + mb)`. For
-   `row_span>1`, any shortfall against the spanned sum is added to the last spanned row.
+   measure its real content height. That measurement fills in **rows the document does not size**;
+   a row whose height the document stores keeps it, because a stored height is Hancom's own final
+   layout and growing it moves every row below plus the fragment grid on the following pages
+   (measured: one cell holding an object grew its row by 190pt and displaced a whole page's
+   fragment). When the measured content exceeds a stored row, the content is still drawn and the
+   deviation is reported as the typed warning `table_cell_content_overflow`. For `row_span>1`,
+   any shortfall against the spanned sum is added to the last spanned row — again only when the
+   spanned rows carry no stored height.
 4. Cumulative offsets `col_x = prefix_sums(col_w, x)` and `row_prefix = prefix_sums(row_h, 0)` (per
    fragment a base y is added, so the same prefix serves every page fragment).
 5. Per cell: **a background Rect**, then **the content** (margins plus the vertical alignment `voff`
@@ -141,7 +147,12 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
    bit18) are redrawn at `body_top` of every continuation page. Candidate boundaries crossed by a
    `row_span` are excluded, so a merged cell moves as one indivisible row band instead of being
    truncated. An indivisible band taller than the usable page is reported as
-   `TableRowTooTallClipped`.
+   `TableRowTooTallClipped`. Every emitted fragment carries the cell's complete four-sided frame:
+   Hangul closes each page's fragment with its own horizontal edge, so a split row reads as a
+   closed box on both sides of the break (measured against the oracle, which draws a full-width
+   rule at the page-bottom and the continuation top where we drew none). Vertical alignment and
+   the cell diagonals still belong to the complete cell and are applied only when the fragment is
+   the whole cell, or on its first fragment respectively.
 
 `cell_margins`: the cell's own, then the table's `inner_margins`, then the default
 `DEFAULT_CELL_MARGINS=[510,510,141,141]` HWPUNIT. The return value is /100 pt.

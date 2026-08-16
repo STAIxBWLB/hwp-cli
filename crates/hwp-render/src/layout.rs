@@ -341,6 +341,10 @@ pub(crate) const TAB_INTERVAL_PT: f32 = 40.0;
 /// 연결 글상자 후보가 없을 때의 단 사이 가로 간격 근사값(pt).
 const COL_GAP_PT: f32 = 14.0;
 
+/// 저장 높이가 있는 행에서 실측 내용이 넘쳤다고 보고하는 최소 초과(pt).
+/// 반올림·잔여 advance 오차(줄당 0.1pt 수준)로 매 표마다 경고가 뜨지 않게 한다.
+const CELL_CONTENT_OVERFLOW_EPSILON_PT: f32 = 1.0;
+
 /// lineseg가 1개뿐인 문단을 "불완전한 캐시"로 판정하는 초과 배율.
 ///
 /// 정품 줄은 seg 폭을 꽉 채우고, 우리 advance에는 한글과의 잔여 오차가 남아 조금 넘칠 수
@@ -2931,6 +2935,9 @@ fn layout_table(
     let mut col_w = vec![0.0f32; cols];
     let mut row_h = vec![0.0f32; rows];
     let mut row_covered = vec![false; rows];
+    // 저장된 행 높이가 실제 값인 행. 여기 해당하면 한글이 계산해 둔 최종 높이이므로
+    // 그대로 신뢰하고, 아니면(미기재 행) 측정 패스가 채운다.
+    let mut row_stored = vec![false; rows];
     for cell in &table.cells {
         let (c, r) = (cell.col as usize, cell.row as usize);
         if cell.col_span == 1 && c < cols {
@@ -2938,6 +2945,7 @@ fn layout_table(
         }
         if cell.row_span == 1 && r < rows {
             row_h[r] = row_h[r].max(cell.height.to_pt() as f32);
+            row_stored[r] = true;
         }
         if c < cols && r < rows {
             let span_end = (r + (cell.row_span as usize).max(1)).min(rows);
@@ -3000,6 +3008,27 @@ fn layout_table(
         content_h_by_cell.push(content_h);
         let needed = content_h + mt + mb;
         let span = (cell.row_span as usize).max(1);
+        let end = (r + span).min(rows);
+        // 줄 배치 캐시가 있는 셀의 행 높이는 한글이 계산해 둔 최종 값이다. 우리 실측이
+        // 더 크더라도 늘리지 않는다 — 늘리면 아래 모든 행이 밀려 정품 격자와 어긋난다
+        // (실측: 개체를 담은 셀 하나가 행을 190pt 늘려 다음 쪽 조각을 통째로 이동).
+        // 대신 넘친다는 사실을 typed 이슈로 보고해 원인이 묻히지 않게 한다. 캐시가 없는
+        // 셀(우리가 만든 문서 등)은 저장 높이도 레이아웃 산출물이 아니므로 실측이
+        // 유일한 근거다 — 종전대로 행을 늘린다.
+        let cell_cached = cell
+            .paragraphs
+            .iter()
+            .any(|para| !para.line_segs.is_empty());
+        if cell_cached && (r..end).all(|i| row_stored.get(i).copied().unwrap_or(false)) {
+            let stored: f32 = row_h[r..end].iter().sum();
+            if needed > stored + CELL_CONTENT_OVERFLOW_EPSILON_PT {
+                warnings.push_once(
+                    RenderIssueCode::TableCellContentOverflow,
+                    format!("{:.0}", needed - stored),
+                );
+            }
+            continue;
+        }
         if span == 1 {
             row_h[r] = row_h[r].max(needed);
         } else {
@@ -3858,8 +3887,8 @@ fn draw_table_cell_fragment(
     measured_content_h: f32,
     selections: Vec<BoxParaSelection>,
     v_origin: i32,
-    draw_top: bool,
-    draw_bottom: bool,
+    first_fragment: bool,
+    last_fragment: bool,
     cell_ls: &mut crate::list::ListState,
     warnings: &mut RenderIssueAccumulator,
 ) {
@@ -3889,7 +3918,7 @@ fn draw_table_cell_fragment(
     // Vertical alignment applies to the complete cell, not independently to
     // each continuation fragment. Re-centering every fragment creates a large
     // blank band and can push selected cached lines under the next row.
-    let voff = if draw_top && draw_bottom {
+    let voff = if first_fragment && last_fragment {
         let spare = (available_h - measured_content_h).max(0.0);
         match cell.vert_align() {
             1 => spare * 0.5,
@@ -3919,20 +3948,25 @@ fn draw_table_cell_fragment(
     }
 
     if let Some(bf) = border_fill {
+        // Hangul closes every page's fragment with its own horizontal edge, so a
+        // split row reads as a complete box on each page (measured: the oracle
+        // draws a full-width rule at both the page-bottom and the continuation
+        // top of a split row, where we drew none). The four-sided frame is
+        // therefore emitted on every fragment.
         let items = crate::border::border_rectangle_items(
             cx,
             cy,
             cx + cw,
             cy + ch,
             &bf.sides,
-            [true, true, draw_top, draw_bottom],
+            [true, true, true, true],
         );
         if warnings.charge_display_items(items.len()) {
             page.items.extend(items);
         }
         // Diagonals describe the complete cell, so emit them only on the
         // first fragment; continuation fragments carry the four-sided frame.
-        if draw_top {
+        if first_fragment {
             let (slash, backslash) = diagonal_dirs(bf.attr);
             if (slash || backslash) && bf.diagonal.is_visible() {
                 let mut dirs = Vec::with_capacity(2);
