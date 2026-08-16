@@ -232,9 +232,12 @@ a new page cannot pollute the previous page.
   hidden state resets after the next page is completed.
 
 Hangul inserts these controls wherever the caret was, so a genuine document routinely carries them
-inside a nested paragraph list — a text box, a shape or a table cell — rather than in the body flow.
-They still belong to the page that contains the anchoring paragraph, so nested lists and table cells
-are scanned to a bounded depth (8) alongside the paragraph's own controls.
+inside a nested paragraph list — a text box or a shape — rather than in the body flow. Such a list is
+anchored to its paragraph and therefore lands on that paragraph's page, so nested lists are scanned
+to a bounded depth (8) alongside the paragraph's own controls. Table cells are deliberately excluded:
+a table can split across pages, so a control in a later row belongs to a later page and applying it
+at anchor time would restart `nwno` or clear `pghd` on the wrong one. Honoring a cell control needs
+the scan to follow fragment layout, which no observed document requires yet.
 
 A positioned number is drawn in the header or footer band, the same band `Furniture::render` uses:
 the header band starts at `margin_top`, the footer band ends at `page_height - margin_bottom`. Inside

@@ -570,10 +570,16 @@ impl PageNumberState {
     /// `pghd` is reset after the current page is finalized.
     ///
     /// Hangul inserts these controls wherever the caret was, so they routinely sit
-    /// in a nested paragraph list (a text box, a shape, a table cell) rather than in
-    /// the body flow — genuine corpus documents place `pgnp`/`nwno` inside a
-    /// `subList`. They still apply to the containing page, so nested lists are
-    /// scanned to a bounded depth.
+    /// in a nested paragraph list — a text box or a shape — rather than in the body
+    /// flow; genuine corpus documents place `pgnp`/`nwno` inside a `subList`. Such a
+    /// list is anchored to this paragraph and therefore lands on this page, so it is
+    /// scanned here to a bounded depth.
+    ///
+    /// Table cells are deliberately **not** scanned. A table can split across pages,
+    /// so a control in a later row belongs to a later page; applying it here would
+    /// restart `nwno` or clear `pghd` on the wrong one. Honoring it correctly means
+    /// scanning cell controls as their fragment is laid out, which no observed
+    /// document needs yet.
     fn apply_controls(&mut self, para: &Paragraph, warnings: &mut RenderIssueAccumulator) {
         self.apply_controls_depth(para, 0, warnings);
     }
@@ -588,15 +594,6 @@ impl PageNumberState {
         const MAX_NESTING: u8 = 8;
         for (control_index, control) in para.controls.iter().enumerate() {
             let Control::Generic(control) = control else {
-                if let Control::Table(table) = control
-                    && depth < MAX_NESTING
-                {
-                    for cell in &table.cells {
-                        for nested in &cell.paragraphs {
-                            self.apply_controls_depth(nested, depth + 1, warnings);
-                        }
-                    }
-                }
                 continue;
             };
             if depth < MAX_NESTING {
