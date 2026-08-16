@@ -341,6 +341,15 @@ pub(crate) const TAB_INTERVAL_PT: f32 = 40.0;
 /// 연결 글상자 후보가 없을 때의 단 사이 가로 간격 근사값(pt).
 const COL_GAP_PT: f32 = 14.0;
 
+/// lineseg가 1개뿐인 문단을 "불완전한 캐시"로 판정하는 초과 배율.
+///
+/// 정품 줄은 seg 폭을 꽉 채우고, 우리 advance에는 한글과의 잔여 오차가 남아 조금 넘칠 수
+/// 있다(비공개 13쪽 실측: 초과 문단 2개, 463.3pt 폭에 각각 0.72%·1.52%). 이 정도로
+/// 재줄바꿈하면 줄이 늘어 쪽이 밀린다(13쪽 문서가 15쪽). 반대로 진짜 stub 캐시는 문단
+/// 전체가 한 줄에 들어 있어 수십 %~수백 % 넘치므로 여유를 둬도 걸린다. 글꼴 크기가 아니라
+/// 비율로 두어 좁은 셀에서 큰 글꼴이 과도한 여유를 얻지 않게 한다.
+const CACHE_OVERFLOW_TOLERANCE: f32 = 1.05;
+
 /// 글상자 내부 문단을 단(컬럼)별 범위로 나눈다. 한 줄의 v_pos가 직전 줄보다 작아지면
 /// (한컴이 단 나누기로 흘린 것) 새 단으로 본다. 줄 배치 없는 문단은 현재 단에 둔다.
 fn split_columns(paras: &[&Paragraph]) -> Vec<std::ops::Range<usize>> {
@@ -1303,13 +1312,11 @@ pub fn layout_document(
                     i == last_content,
                 );
                 let x = box_x + indent + shift;
-                // 문단에 lineseg가 1개뿐인데 텍스트가 **한 글자 이상** 폭을 넘으면
-                // 불완전한 lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰한다.
-                // 한 글자 여유가 필요한 이유: 우리 advance가 한글과 맞아떨어지면서
-                // 정품 줄이 seg 폭을 꽉 채우는 경우 반올림 수준(<1pt) 초과만으로도
-                // 재줄바꿈이 발동해 쪽이 늘어난다(실측: 13쪽 문서가 15쪽).
+                // 문단에 lineseg가 1개뿐인데 텍스트가 seg 폭을 크게 넘으면 불완전한
+                // lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰한다
+                // (`CACHE_OVERFLOW_TOLERANCE`).
                 let wrap_width = if para.line_segs.len() == 1
-                    && natural_width > text_width + items_max_size(&items).unwrap_or(10.0)
+                    && natural_width > text_width * CACHE_OVERFLOW_TOLERANCE
                 {
                     text_width.max(10.0)
                 } else {
@@ -4294,9 +4301,9 @@ fn layout_box_para_iter<'a>(
                     i == last_content,
                 );
                 let x = box_x + indent + shift;
-                // 본문 경로와 같은 규칙: 한 글자 이상 넘칠 때만 불완전 캐시로 본다.
+                // 본문 경로와 같은 규칙 (`CACHE_OVERFLOW_TOLERANCE`).
                 let wrap_width = if para.line_segs.len() == 1
-                    && natural_width > text_width + items_max_size(&items).unwrap_or(8.0)
+                    && natural_width > text_width * CACHE_OVERFLOW_TOLERANCE
                 {
                     text_width.max(4.0)
                 } else {
