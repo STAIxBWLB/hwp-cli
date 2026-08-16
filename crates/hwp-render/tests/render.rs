@@ -1309,6 +1309,54 @@ fn 목록_마커_내어쓰기_배치() {
     );
 }
 
+/// A hanging indent shifts a cached line's text right, so the alignment shift and
+/// the wrap width must be measured against the width left after the indent. Doing
+/// it against the full segment pushed right-aligned and wrapped lines one hanging
+/// width past the paragraph's right edge.
+/// Glyph presence depends on font availability (CLAUDE.md CI rule) — skip if none.
+#[test]
+fn 내어쓰기_문단의_줄은_우변을_넘지_않는다() {
+    use hwp_model::{ParaShape, ParaShapeId};
+    use hwp_render::display::Item;
+
+    let body: String = "내어쓰기 문단의 오른쪽 끝을 확인하기 위한 긴 본문입니다. ".repeat(6);
+    let mut doc = hwp_convert::from_markdown(&format!("{body}\n"));
+    doc.header.para_shapes.push(ParaShape {
+        attr1: 2 << 2, // 오른쪽 정렬
+        indent: -2000, // 10pt 내어쓰기
+        ..ParaShape::default()
+    });
+    let shape = ParaShapeId((doc.header.para_shapes.len() - 1) as u16);
+    for para in &mut doc.sections[0].paragraphs {
+        para.para_shape = shape;
+    }
+
+    let page = doc.sections[0].section_def().unwrap().page.unwrap();
+    let right_edge = (page.width.0 - page.margin_right.0) as f32 / 100.0;
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    let mut lines = 0usize;
+    let mut worst = f32::NEG_INFINITY;
+    for item in &list.pages[0].items {
+        if let Item::Glyphs { x, run, .. } = item {
+            lines += 1;
+            worst = worst.max(x + run.width_pt);
+        }
+    }
+    if lines == 0 {
+        eprintln!("스킵: 사용 가능한 폰트 없음 — 글리프 미생성");
+        return;
+    }
+    assert!(
+        worst <= right_edge + 0.5,
+        "내어쓰기 줄이 본문 우변({right_edge})을 넘었다: {worst}"
+    );
+}
+
 #[test]
 fn 개요_번호_마커_렌더() {
     use hwp_model::{ParaShape, ParaShapeId, Paragraph};

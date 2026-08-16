@@ -1053,12 +1053,15 @@ pub fn layout_document(
                     } else {
                         (left + rest_indent, first_indent - rest_indent)
                     };
+                    // place_wrapped의 우변은 x0 + max_width라, 들여쓴 만큼 폭을 줄여야
+                    // 문단 원래 오른쪽 끝(left + avail)이 유지된다.
+                    let wrap_width = (left + avail - x0).max(1.0);
                     let last_y = place_wrapped(
                         &mut page,
                         items,
                         x0,
                         baseline_y,
-                        avail,
+                        wrap_width,
                         max_size * 1.6,
                         &tabs,
                         first_delta,
@@ -1209,20 +1212,13 @@ pub fn layout_document(
                 crate::shape::apply_link_style(&mut items, &links);
                 let natural_width: f32 = items_width(&items, &tabs);
 
-                // 정렬 보정 (가운데/오른쪽 + 양쪽정렬은 마지막 줄 빼고 글자 사이로 잉여 분배).
+                // 정렬 보정은 들여쓰기를 뺀 실제 글자 폭 기준이라 아래(indent 확정 후)에서 한다.
                 let seg_width_pt = seg.seg_width as f32 / 100.0;
                 let align = doc
                     .header
                     .para_shapes
                     .get(para.para_shape.0 as usize)
                     .map_or(0, |ps| ps.alignment());
-                let shift = align_line(
-                    &mut items,
-                    align,
-                    seg_width_pt,
-                    natural_width,
-                    i == last_content,
-                );
 
                 let baseline_gap_pt = seg.baseline_gap as f32 / 100.0;
                 let line_height_pt = seg.line_height as f32 / 100.0;
@@ -1236,7 +1232,7 @@ pub fn layout_document(
 
                 // 다단: 현재 밴드의 단 x-오프셋(col_start는 단 상대라 0). 단일 단이면 0.
                 let col_x = (col_band % col_count) as f32 * (col_width + col_gap);
-                let box_x = body_left + col_x + seg.col_start as f32 / 100.0 + shift;
+                let box_x = body_left + col_x + seg.col_start as f32 / 100.0;
                 // 배경 조각 상단: 이 페이지/단에서 처음 놓이는 줄의 윗변에서 잡는다(GC-9).
                 if bg_slice_top.is_none() {
                     bg_slice_top = Some(baseline_y - baseline_gap_pt);
@@ -1260,11 +1256,20 @@ pub fn layout_document(
                 // col_start는 좌여백만 담으므로 들여쓰기/내어쓰기는 여기서 준다.
                 let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
                 let indent = if i == 0 { first_indent } else { rest_indent };
-                let x = box_x + indent;
+                // 정렬·줄바꿈은 들여쓰기를 뺀 남은 폭 기준이어야 오른쪽 끝이 밀리지 않는다.
+                let text_width = (seg_width_pt - indent).max(1.0);
+                let shift = align_line(
+                    &mut items,
+                    align,
+                    text_width,
+                    natural_width,
+                    i == last_content,
+                );
+                let x = box_x + indent + shift;
                 // 문단에 lineseg가 1개뿐인데 텍스트가 폭을 넘으면 불완전한
                 // lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰.
                 let wrap_width = if para.line_segs.len() == 1 {
-                    (seg_width_pt - indent).max(10.0)
+                    text_width.max(10.0)
                 } else {
                     f32::INFINITY
                 };
@@ -4151,12 +4156,14 @@ fn layout_box_para_iter<'a>(
                 } else {
                     (left + rest_indent, first_indent - rest_indent)
                 };
+                // 들여쓴 만큼 폭을 줄여 셀의 원래 오른쪽 끝(left + avail)을 유지한다.
+                let wrap_width = (left + avail - x0).max(1.0);
                 let last_y = place_wrapped(
                     page,
                     items,
                     x0,
                     baseline_y,
-                    avail,
+                    wrap_width,
                     max_size * 1.6,
                     &tabs,
                     first_delta,
@@ -4197,19 +4204,13 @@ fn layout_box_para_iter<'a>(
                 );
                 let natural_width = items_width(&items, &tabs);
 
+                // 정렬 보정은 들여쓰기를 뺀 실제 글자 폭 기준이라 아래(indent 확정 후)에서 한다.
                 let seg_width_pt = (seg.seg_width as f32 / 100.0).min(width);
                 let align = doc
                     .header
                     .para_shapes
                     .get(para.para_shape.0 as usize)
                     .map_or(0, |ps| ps.alignment());
-                let shift = align_line(
-                    &mut items,
-                    align,
-                    seg_width_pt,
-                    natural_width,
-                    i == last_content,
-                );
 
                 let gap_pt = seg.baseline_gap as f32 / 100.0;
                 let v_pos = seg.v_pos.saturating_sub(v_origin);
@@ -4221,7 +4222,7 @@ fn layout_box_para_iter<'a>(
                     BoxParaSelection::Segments(range) => i == range.start,
                     BoxParaSelection::Empty => false,
                 };
-                let box_x = origin_x + seg.col_start as f32 / 100.0 + shift;
+                let box_x = origin_x + seg.col_start as f32 / 100.0;
                 let mut marker_advance = 0.0;
                 if first_selected {
                     para_top = Some(baseline_y - gap_pt);
@@ -4241,9 +4242,18 @@ fn layout_box_para_iter<'a>(
                 let geom = para_geometry(doc, para);
                 let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
                 let indent = if i == 0 { first_indent } else { rest_indent };
-                let x = box_x + indent;
+                // 정렬·줄바꿈은 들여쓰기를 뺀 남은 폭 기준이어야 오른쪽 끝이 밀리지 않는다.
+                let text_width = (seg_width_pt - indent).max(1.0);
+                let shift = align_line(
+                    &mut items,
+                    align,
+                    text_width,
+                    natural_width,
+                    i == last_content,
+                );
+                let x = box_x + indent + shift;
                 let wrap_width = if para.line_segs.len() == 1 {
-                    (seg_width_pt - indent).max(4.0)
+                    text_width.max(4.0)
                 } else {
                     f32::INFINITY
                 };
