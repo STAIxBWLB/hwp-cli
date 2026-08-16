@@ -19,10 +19,12 @@ package upload or release publication.
 - [ ] private Hancom-open verification receipt recorded against the
       `hancom-verification-receipt-v1` schema (certification `hancom_open` evidence)
 - [ ] private PDF parity run eligible; every manifest-declared `gate_exclusions` entry listed
-      and justified in the release notes (currently: `fonts` excluded — approved faces not yet
-      pinned)
-- [ ] residual failing parity gates (`text`, `raster`, `roi`) documented and treated as
-      release-blocking until resolved
+      and justified in the release notes. Currently four: `fonts` (the oracle itself substitutes
+      through the document's own `substFont`, so `substitution_free` is unreachable for that
+      case — 21-pdf-parity §4.5), and `text`/`raster`/`roi` (measured and echoed, distance
+      recorded in 21-pdf-parity §4.6)
+- [ ] release copy states the excluded gates and their measured distance; no "Hancom parity"
+      claim is made for a profile with exclusions
 - [ ] `git status --short --untracked-files=all` reviewed; unrelated user changes excluded
 - [ ] no commit, push, tag, package upload or release performed by the readiness run
 - [ ] downstream `STAIxBWLB/skills` `skills/hwpx` reviewed for CLI-surface drift (that repo's

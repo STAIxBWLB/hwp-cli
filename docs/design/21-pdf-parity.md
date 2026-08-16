@@ -281,12 +281,34 @@ hypothesis with measured causes:
   Hangul's marker slot *inside* the text area: marker at the box edge, first line clearing it,
   following lines indented by the hanging width. After the fix every page's leftmost ink lands
   within 1px of the oracle's (was up to 29px off).
-- **Remaining, still open:** line advances diverge along a line (ours runs both narrow and
-  wide depending on the character shape, overflowing some table cells), the page-number footer
-  is not rendered at all, some vector-image text lands at the page origin, and image bullets
-  (`useImage`) fall back to the declared character. These are the next targets; the raster
-  metrics are computed without alignment, so each of them inflates `bad_pixel_pct`/`mae`
-  across the whole page.
+- **Fixed since:** the line-advance divergence (rule B9 in
+  [07-hangul-compat-rules](07-hangul-compat-rules.md): 자간 scales each glyph's own advance, a
+  clear `useFontSpace` bit means a fixed half-em space, and `useKerning` off disables `kern`),
+  the missing page-number footer (page controls also live in nested paragraph lists, and the
+  number belongs in the header/footer band), and the table grid (a stored row height is
+  Hancom's own layout and is no longer grown by our measurement; split fragments are closed at
+  real page crossings).
+
+### 4.6 Closing state of epic #90 (2026-08-16 run)
+
+The final private run on merged main passes `page_count` (13 == 13), `media_box`,
+`render_issues` and `determinism`. `text`, `raster` and `roi` are declared in
+`gate_exclusions`, so they are still measured and echoed but no longer block eligibility;
+`fonts` remains excluded for the reason in §4.5. Measured shape at close (content-free):
+
+| gate | measurement |
+|---|---|
+| `text` | 1/13 pages byte-equal; the differences are pagination, not characters — page 4's only diff is one line that crosses a page boundary |
+| `raster` | `bad_pixel_pct` 0.1418–0.2332, MAE 18.5–27.9, ink ratio 0.854–1.435, max abs dx/dy 40px |
+| `roi` | 3 of 4 pass; only the page-2 diagram region fails (precision 0.848, recall 0.892) |
+
+The metrics are computed without alignment, so the residual per-page offsets keep whole-page
+figures far from the 0.05/5 thresholds even where the grid now matches. The known remainder,
+carried to the follow-up issue: CELL fragment packing leaves about 50pt of usable page unused
+(our page-2 fragment closes at 1515px where the oracle closes at 1620px), which offsets the
+following fragments; vector-image text lands at the page origin on two pages; image bullets
+(`useImage`) fall back to the declared character; and the page-2 diagram drives both the ink
+ratio and the failing ROI.
 
 ## 5. The font gate (F1)
 
