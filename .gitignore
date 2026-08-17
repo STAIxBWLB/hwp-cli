@@ -54,3 +54,6 @@
 target/diagnostic-corpus/
 tools/__pycache__/
 docs/spec/
+
+# GSD planning workspace is local-only agent working context, not a repo artifact.
+/.planning/
