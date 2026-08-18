@@ -777,6 +777,42 @@ fn 테두리채움_대각선_방향_파싱() {
     assert_ne!(bfs[2].attr & 0x20, 0, "backSlash on");
 }
 
+/// FIDL-01: a `<hc:gradation>` inside a `<hh:borderFill>` with explicit
+/// centerX/centerY/step attributes parses into a `BorderFill` whose
+/// `gradient` carries those three values; a gradation with no such
+/// attributes falls back to the documented default (0, 0, 255).
+#[test]
+fn border_fill_gradation_center_and_step() {
+    let xml = r##"<?xml version="1.0"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:refList>
+    <hh:borderFills itemCnt="2">
+      <hh:borderFill id="1" threeD="0" shadow="0">
+        <hc:fillBrush><hc:gradation type="LINEAR" angle="90" centerX="30" centerY="70" step="120" colorNum="2" stepCenter="50" alpha="0">
+          <hc:color value="#FF0000"/><hc:color value="#0000FF"/>
+        </hc:gradation></hc:fillBrush>
+      </hh:borderFill>
+      <hh:borderFill id="2" threeD="0" shadow="0">
+        <hc:fillBrush><hc:gradation type="LINEAR" angle="0" colorNum="2" stepCenter="50" alpha="0">
+          <hc:color value="#FF0000"/><hc:color value="#0000FF"/>
+        </hc:gradation></hc:fillBrush>
+      </hh:borderFill>
+    </hh:borderFills>
+  </hh:refList>
+</hh:head>"##;
+    let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
+    let bfs = &header.border_fills;
+    assert_eq!(bfs.len(), 2);
+    let g1 = bfs[0].gradient.as_ref().expect("id=1 has a gradient");
+    assert_eq!(g1.center_x, 30);
+    assert_eq!(g1.center_y, 70);
+    assert_eq!(g1.step, 120);
+    let g2 = bfs[1].gradient.as_ref().expect("id=2 has a gradient");
+    assert_eq!(g2.center_x, 0);
+    assert_eq!(g2.center_y, 0);
+    assert_eq!(g2.step, 255);
+}
+
 /// GG-17 parses a `<hp:colLine>` child into `ColumnDef.divider`.
 #[test]
 fn parses_colpr_divider() {
