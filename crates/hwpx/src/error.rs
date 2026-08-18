@@ -24,6 +24,13 @@ pub enum HwpxError {
 
     #[error("XML 파싱 오류 ({entry}): {message}")]
     Xml { entry: String, message: String },
+
+    // Same opening sentence as `hwp5::Hwp5Error::Encrypted` — it states the same
+    // user-facing fact about a sibling format. Independent variant on purpose:
+    // the hub-and-spoke invariant forbids hwpx from depending on hwp5, so this
+    // is a sibling implementation, not a shared type (D-08: no typed error code).
+    #[error("암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.")]
+    Encrypted,
 }
 
 pub type Result<T> = std::result::Result<T, HwpxError>;
