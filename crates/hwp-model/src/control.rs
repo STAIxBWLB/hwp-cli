@@ -590,12 +590,19 @@ impl GradientSpec {
         }
         cur += num * 4;
         stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // Preserve the established shape renderer mapping where type 1 is radial.
-        // Table 30 can be read as type 2 being radial; changing this requires
-        // comparison against a genuine Hangul-authored file.
+        // Gradation type 1 is LINEAR, not radial. Established by comparing a
+        // Hancom-saved reference document against our conversion of it: the
+        // reference renders a clean left-to-right fade in Hancom and its type
+        // byte is 1, while treating that as radial made the converted shape
+        // render as a corner-weighted blob. The same record also carries a
+        // meaningful `angle`, which only a linear gradient uses.
+        //
+        // Type 2 as radial follows the Table 30 reading and is NOT yet confirmed
+        // against a genuine file - no radial reference document exists in the
+        // fixture set. Any other type falls back to linear rather than guessing.
         Some((
             GradientSpec {
-                radial: gtype == 1,
+                radial: gtype == 2,
                 angle_deg: angle,
                 center_x,
                 center_y,
@@ -655,6 +662,8 @@ mod gradient_spec_tests {
         assert_eq!(gr.center_y, 85);
         assert_eq!(gr.step, 200);
         assert_eq!(gr.stops.len(), 2);
+        // Type byte is 1 in the reference document and Hancom renders it linear.
+        assert!(!gr.radial, "genuine type 1 must be linear, not radial");
     }
 
     #[test]

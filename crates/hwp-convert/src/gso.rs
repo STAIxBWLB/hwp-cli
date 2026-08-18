@@ -229,7 +229,11 @@ fn parse_gradient(d: &[u8], fo: usize) -> Option<GradientSpec> {
     }
     stops.sort_by(|a, b| a.0.total_cmp(&b.0));
     Some(GradientSpec {
-        radial: gtype == 1,
+        // Type 1 is LINEAR - see the rationale on
+        // `hwp_model::GradientSpec::parse_hwp5`, established against a
+        // Hancom-saved reference document. Type 2 as radial is spec-derived and
+        // still unverified against a genuine file.
+        radial: gtype == 2,
         angle_deg: angle,
         center_x,
         center_y,
@@ -449,5 +453,7 @@ mod tests {
         assert_eq!(gr.center_x, 15);
         assert_eq!(gr.center_y, 85);
         assert_eq!(gr.step, 200);
+        // Type byte is 1 in the reference document and Hancom renders it linear.
+        assert!(!gr.radial, "genuine type 1 must be linear, not radial");
     }
 }
