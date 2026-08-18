@@ -52,8 +52,8 @@ raw DEFLATE(zlib 헤더/Adler32 없음)를 뜻한다.
 ├── BodyText/                      스토리지
 │   ├── Section0                   본문 구역 0 레코드 스트림 (압축)
 │   ├── Section1 … SectionN
-├── ViewText/                      배포용 본문 (미지원 — 읽기 시 에러)
-│   └── Section0 …
+├── ViewText/                      배포용 본문 (배포용문서 — cat/convert/render가
+│   └── Section0 …              읽기 시 투명하게 복호화, GATE-01)
 ├── BinData/                       스토리지
 │   ├── BIN0001.png                첨부 바이너리 (헤더 플래그 따름)
 │   └── …
@@ -77,7 +77,7 @@ raw DEFLATE(zlib 헤더/Adler32 없음)를 뜻한다.
 | `/FileHeader` | 3.2.1 | 의미파싱 | 방출 | 아니오 | `file_header.rs:91`, `container.rs:35` |
 | `/DocInfo` | 3.2.2 | 의미파싱 | 방출 | 예 | `doc_info.rs:18`, `write.rs:170` |
 | `/BodyText/SectionN` | 3.2.3 | 의미파싱 | 방출 | 예 | `body_text.rs:23`, `write.rs:173` |
-| `/ViewText/SectionN` | 3.2.3 | 미지원(에러) | — | 예 | `container.rs:101` (배포 가드) |
+| `/ViewText/SectionN` | 3.2.3 | 의미파싱, 복호화 경유 (`cat`/`convert`/`render`); `hwp dump`·인증 bounded-read 경로는 여전히 거부 | — | 예(복호화 후) | `distdoc.rs`, `read.rs` (GATE-01) |
 | `/BinData/*` | 3.2.5 | 시도-폴백 | 참조분만 동봉 | 헤더 플래그 | `read.rs`, `write.rs:190` |
 | `/\x05HwpSummaryInformation` | 3.2.4 | 부분파싱+raw | 합성 | 아니오 | `summary.rs`, `write.rs:223` |
 | `/PrvText` | 3.2.6 | 미해석 | 본문 발췌 생성 | 아니오 | `write.rs:225` |
@@ -101,6 +101,17 @@ raw DEFLATE(zlib 헤더/Adler32 없음)를 뜻한다.
 
 **본문 구역 열거** `body_sections()` (`container.rs:62`): `/BodyText/Section` 접미 숫자를
 정수 정렬한다(`Section10`이 `Section2` 뒤에 오도록 `parse::<u32>()` 필수).
+
+**ViewText 배포 레코드** (`/ViewText/SectionN`, GATE-01): 각 스트림의 원본(압축 해제 전)
+바이트는 `DISTRIBUTE_DOC_DATA` 레코드(태그 `0x1C`, level 0, 고정 256바이트 페이로드)로
+시작하며, 이후 이어지는 바이트를 복호화할 AES-128 키를 난독화해 담고 있다. 이 레코드는
+`/DocInfo` 레코드가 **아니다** — 스펙 표는 다른 DocInfo 항목들과 함께 묶지만(§3, 표 A),
+정품 파일은 결코 그곳에 두지 않는다. 진품 11개 배포용문서 코퍼스 표본 전체를 직접 조사해
+확립한 사실: `crates/hwp5/tests/distdoc_corpus.rs`의
+`distribute_doc_data_lives_at_the_head_of_view_text_not_doc_info` 테스트가 각 코퍼스 파일의
+`/ViewText/SectionN` 스트림 선행 레코드를 디코드하고, `/DocInfo`에는 그 태그를 가진 레코드가
+없음을 별도로 확인한다. 디코드와 복호화는 `doc_info.rs`가 아닌 `distdoc.rs`에 있다. 이 레코드는
+읽기 중 소비되고 버려질 뿐 재방출되지 않으므로 위 4가지 상태 라벨 어디에도 속하지 않는다.
 
 ---
 
@@ -151,7 +162,6 @@ size 비트필드 == 0xFFF 이면 다음 u32 LE가 실제 크기 (헤더 8바이
 | 0x19 | PARA_SHAPE | +9 | 4.2.10 | 42B prefix(attr1·여백·들여쓰기·간격·탭/번호/테두리 ID·오프셋×4) + tail(줄간격) | 부분파싱+raw | `doc_info.rs:260` |
 | 0x1A | STYLE | +10 | 4.2.11 | 이름·영문명 + attr u8 + 다음스타일 u8 + 언어 i16 + 문단/글자모양 u16 + tail | 부분파싱+raw | `doc_info.rs:302` |
 | 0x1B | DOC_DATA | +11 | 4.2.12 | 문서 임의 데이터 — 루트, 미해석 | Opaque | `doc_info.rs:57` |
-| 0x1C | DISTRIBUTE_DOC_DATA | +12 | 4.2.13 | 배포용 문서 데이터 — 루트, 미해석 | Opaque | `doc_info.rs:57` |
 | 0x1D | *(RESERVED)* | +13 | 4.2 표13 | 예약 — `tag.rs` 상수 없음 | 상수 미정의(Opaque 경유 보존) | `tag.rs`(미정의) |
 | 0x1E | COMPATIBLE_DOCUMENT | +14 | 4.2.14 | 호환 문서 — 루트, 미해석(writer는 별도 합성) | Opaque | `doc_info.rs:57` |
 | 0x1F | LAYOUT_COMPATIBILITY | +15 | 4.2.15 | 레이아웃 호환성 — 루트, 미해석 | Opaque | `doc_info.rs:57` |
@@ -160,6 +170,10 @@ size 비트필드 == 0xFFF 이면 다음 u32 LE가 실제 크기 (헤더 8바이
 | 0x5E | FORBIDDEN_CHAR | +78 | 4.2 표13 | 금칙처리 문자 — 미해석 | Opaque | `doc_info.rs:57`/`:148` |
 | 0x60 | TRACK_CHANGE | +80 | 4.2 표13 | 변경 추적 내용/모양 — ID_MAPPINGS 자식, 미해석 | Opaque | `doc_info.rs:148` |
 | 0x61 | TRACK_CHANGE_AUTHOR | +81 | 4.2 표13 | 변경 추적 작성자 — ID_MAPPINGS 자식, 미해석 | Opaque | `doc_info.rs:148` |
+
+> ⚠️ **0x1C DISTRIBUTE_DOC_DATA는 `/DocInfo` 레코드가 아니다.** 스펙 §4.2.13은 위 DocInfo
+> 항목들과 함께 묶지만, 정품 파일은 이를 각 `/ViewText/SectionN` 스트림의 첫 레코드로 둔다.
+> `/DocInfo`에는 두지 않는다. §1의 "ViewText 배포 레코드" 항목 참고.
 
 ### 3.1 ID_MAPPINGS 카운트 배열과 언어 슬롯 배정
 
@@ -396,7 +410,7 @@ payload에 역순 ctrl_id 3B(`%` 제외)를 담아야 짝이 맺힌다(`field.rs
 
 **표 A/B에서 `Opaque`인 행** (해석 소비단 없음, 왕복 보존만):
 
-- DocInfo: `DOC_DATA`, `DISTRIBUTE_DOC_DATA`, `COMPATIBLE_DOCUMENT`, `LAYOUT_COMPATIBILITY`,
+- DocInfo: `DOC_DATA`, `COMPATIBLE_DOCUMENT`, `LAYOUT_COMPATIBILITY`,
   `TRACKCHANGE`, `MEMO_SHAPE`, `FORBIDDEN_CHAR`, `TRACK_CHANGE`, `TRACK_CHANGE_AUTHOR`
 - 본문: `PARA_RANGE_TAG`, `FOOTNOTE_SHAPE`, `PAGE_BORDER_FILL`, `SHAPE_COMPONENT_OLE`,
   `SHAPE_COMPONENT_TEXTART`, `FORM_OBJECT`, `MEMO_LIST`, `CHART_DATA`, `VIDEO_DATA`,
