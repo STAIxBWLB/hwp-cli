@@ -4710,12 +4710,34 @@ fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
 
 fn items_width(items: &[InlineItem], tabs: &[TabStop]) -> f32 {
     let mut x = 0.0f32;
-    for item in items {
-        match item {
+    let mut idx = 0usize;
+    while idx < items.len() {
+        match &items[idx] {
             InlineItem::Run(run) => x += run.width_pt,
-            InlineItem::Tab => x = crate::tab::next_tab(tabs, x, TAB_INTERVAL_PT),
+            InlineItem::Tab => {
+                let (position, stop) = crate::tab::next_tab_at(tabs, x, TAB_INTERVAL_PT);
+                x = match stop {
+                    // Same kind-aware offset rule as place_wrapped, so estimation and
+                    // placement always agree (explicit_tab_stops_match_width_estimation_and_placement).
+                    Some(stop) => {
+                        let segment_width = tab_segment_width(items, idx + 1);
+                        let decimal_offset = (stop.kind == 3)
+                            .then(|| first_run_decimal_offset(items, idx + 1))
+                            .flatten();
+                        crate::tab::tab_segment_offset(
+                            stop.kind,
+                            stop.pos_pt,
+                            segment_width,
+                            decimal_offset,
+                        )
+                        .max(x)
+                    }
+                    None => position,
+                };
+            }
             InlineItem::LineBreak(_) => x = 0.0, // 새 줄 시작
         }
+        idx += 1;
     }
     x
 }
@@ -5074,7 +5096,7 @@ fn emphasis_mark(kind: u8, cx: f32, cy: f32, em: f32, color: u32) -> Vec<Item> {
 #[allow(clippy::too_many_arguments)]
 fn place_wrapped(
     page: &mut PageList,
-    items: Vec<InlineItem>,
+    mut items: Vec<InlineItem>,
     x0: f32,
     first_baseline_y: f32,
     max_width: f32,
@@ -5104,7 +5126,13 @@ fn place_wrapped(
         eprintln!("TRACE y={first_baseline_y:.1} x={x0:.1} wrap={max_width:.0} [{preview}]");
     }
 
-    for item in items {
+    // Index-based walk (rather than `for item in items`) so the tab arm can look ahead at
+    // the following segment via `tab_segment_width`/`first_run_decimal_offset`. Each slot is
+    // taken by value via `mem::replace`; the placeholder left behind is never read again since
+    // look-ahead only ever reads forward from `idx + 1`.
+    let mut idx = 0usize;
+    while idx < items.len() {
+        let item = std::mem::replace(&mut items[idx], InlineItem::Tab);
         match item {
             InlineItem::Run(run) => {
                 let sources = crate::shape::glyph_source_sequences(&run);
@@ -5115,6 +5143,7 @@ fn place_wrapped(
                         .is_some_and(|source| crate::shape::source_has_no_break_space(source));
                     push_run(page, x, y, run, border_fills, warnings);
                     x += w;
+                    idx += 1;
                     continue;
                 }
                 // CJK can wrap between glyph clusters except on either side of NB_SPACE.
@@ -5147,13 +5176,34 @@ fn place_wrapped(
                 } else {
                     x = piece_x;
                 }
+                idx += 1;
             }
             InlineItem::Tab => {
                 let (position, stop) = crate::tab::next_tab_at(tabs, x - x0, TAB_INTERVAL_PT);
-                let next_x = x0 + position;
+                let next_x = match stop {
+                    Some(stop) => {
+                        let segment_width = tab_segment_width(&items, idx + 1);
+                        let decimal_offset = (stop.kind == 3)
+                            .then(|| first_run_decimal_offset(&items, idx + 1))
+                            .flatten();
+                        // Clamp so a crafted stop position or an oversized segment can never
+                        // push text backwards — never before the current x (T-1-08).
+                        (x0 + crate::tab::tab_segment_offset(
+                            stop.kind,
+                            stop.pos_pt,
+                            segment_width,
+                            decimal_offset,
+                        ))
+                        .max(x)
+                    }
+                    // Default grid: no kind-aware placement, unchanged from before this plan.
+                    None => x0 + position,
+                };
                 // Leader line: only when the landed stop declares one (fill != 0). The fill
                 // code is HWPX leader numbering, not dash_pattern's — hwp5_line_style bridges
-                // the two families (see shape_draw.rs's own cross-reference comment).
+                // the two families (see shape_draw.rs's own cross-reference comment). The
+                // leader spans to `next_x`, the point where the following text actually
+                // begins — not to the raw stop position.
                 if let Some(stop) = stop
                     && stop.fill != 0
                     && warnings.charge_display_items(1)
@@ -5174,15 +5224,47 @@ fn place_wrapped(
                 }
                 x = next_x;
                 previous_no_break = false;
+                idx += 1;
             }
             InlineItem::LineBreak(_) => {
                 y += line_advance;
                 x = x0;
                 previous_no_break = false;
+                idx += 1;
             }
         }
     }
     y
+}
+
+/// Natural width of the inline items following a tab, up to but excluding the next
+/// `InlineItem::Tab` or `InlineItem::LineBreak` (or the end of `items`). Used so right,
+/// center and decimal placement can look ahead at the segment before it is placed. Zero when
+/// the segment is empty.
+fn tab_segment_width(items: &[InlineItem], from: usize) -> f32 {
+    items
+        .get(from..)
+        .unwrap_or(&[])
+        .iter()
+        .take_while(|item| !matches!(item, InlineItem::Tab | InlineItem::LineBreak(_)))
+        .map(|item| match item {
+            InlineItem::Run(run) => run.width_pt,
+            InlineItem::Tab | InlineItem::LineBreak(_) => 0.0,
+        })
+        .sum()
+}
+
+/// The accumulated `x_advance` up to (not including) the first glyph whose source contains a
+/// decimal separator (`.`), in the first run of the segment starting at `from`. `None` when
+/// that run has no separator, or the segment doesn't start with a run at all — the tab arm
+/// then falls back to right-tab placement, per a decimal tab with no decimal value.
+fn first_run_decimal_offset(items: &[InlineItem], from: usize) -> Option<f32> {
+    let InlineItem::Run(run) = items.get(from)? else {
+        return None;
+    };
+    let sources = crate::shape::glyph_source_sequences(run);
+    let dot_idx = sources.iter().position(|source| source.contains('.'))?;
+    Some(run.glyphs[..dot_idx].iter().map(|g| g.x_advance).sum())
 }
 
 #[cfg(test)]
@@ -6029,6 +6111,61 @@ mod tab_width_tests {
         item
     }
 
+    /// A glyph run with one glyph per `char` of `text`, each carrying the matching entry of
+    /// `glyph_widths` as its `x_advance` — for tests that need to know exactly where a
+    /// specific character (e.g. a decimal separator) starts. Font data stays empty so
+    /// `glyph_source_sequences`'s rustybuzz path fails closed to its byte-count fallback,
+    /// keeping the character-to-glyph mapping font-independent (see `distribute_source`).
+    fn dummy_glyph_run_with_widths(text: &str, glyph_widths: &[f32]) -> InlineItem {
+        let mut item = dummy_run(glyph_widths.iter().sum());
+        let InlineItem::Run(run) = &mut item else {
+            unreachable!();
+        };
+        run.text = text.to_string();
+        run.glyphs = glyph_widths
+            .iter()
+            .map(|&x_advance| Glyph {
+                id: 1,
+                x_advance,
+                x_offset: 0.0,
+                y_offset: 0.0,
+            })
+            .collect();
+        item
+    }
+
+    /// Places `items` at `x0 = 0.0`, `tabs`, and returns the x of each placed `Item::Glyphs`
+    /// entry in order, plus the page for further (e.g. leader-path) inspection.
+    fn place_at_origin(items: Vec<InlineItem>, tabs: &[TabStop]) -> (Vec<f32>, PageList) {
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            items,
+            0.0,
+            100.0,
+            f32::INFINITY,
+            16.0,
+            tabs,
+            0.0,
+            &[],
+            &mut warns,
+        );
+        let xs = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Glyphs { x, .. } => Some(*x),
+                _ => None,
+            })
+            .collect();
+        (xs, page)
+    }
+
     /// Explicit tab stops must advance to the same x position in width
     /// estimation and final placement.
     #[test]
@@ -6214,6 +6351,145 @@ mod tab_width_tests {
             .filter(|it| matches!(it, Item::Path { .. }))
             .count();
         assert_eq!(path_count, 0, "an unleadered tab must emit no path");
+    }
+
+    /// A right tab (kind 1) ends the following segment at the stop rather than starting
+    /// there. The leader (fill != 0) spans from the pre-tab x to where the text actually
+    /// begins — not to the raw stop position.
+    #[test]
+    fn right_tab_ends_the_segment_at_the_stop() {
+        let tabs = [TabStop {
+            pos_pt: 100.0,
+            kind: 1,
+            fill: 1,
+        }];
+        let items = vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
+        let (xs, page) = place_at_origin(items, &tabs);
+
+        assert_eq!(xs.len(), 2);
+        assert!((xs[1] - 80.0).abs() < 0.01, "segment start={}", xs[1]);
+
+        let leaders: Vec<(f32, f32)> = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path { commands, .. } => match commands.as_slice() {
+                    [PathCmd::MoveTo(x0, _), PathCmd::LineTo(x1, _)] => Some((*x0, *x1)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(leaders.len(), 1, "expected one leader path: {leaders:?}");
+        assert!(
+            (leaders[0].0 - 10.0).abs() < 0.01,
+            "leader start={:?}",
+            leaders[0]
+        );
+        assert!(
+            (leaders[0].1 - 80.0).abs() < 0.01,
+            "leader must stop where the text begins (80.0), not at the stop (100.0): {:?}",
+            leaders[0]
+        );
+    }
+
+    /// A center tab (kind 2) centers the following segment on the stop, so it can extend
+    /// past the stop on the right just as far as it starts before it on the left.
+    #[test]
+    fn center_tab_centers_the_segment_on_the_stop() {
+        let tabs = [TabStop {
+            pos_pt: 100.0,
+            kind: 2,
+            fill: 0,
+        }];
+        let items = vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
+        let (xs, _page) = place_at_origin(items, &tabs);
+
+        assert_eq!(xs.len(), 2);
+        assert!((xs[1] - 90.0).abs() < 0.01, "segment start={}", xs[1]);
+    }
+
+    /// A decimal tab (kind 3) aligns the segment so its first decimal separator sits on the
+    /// stop, not the segment's start or end.
+    #[test]
+    fn decimal_tab_aligns_the_separator_on_the_stop() {
+        let tabs = [TabStop {
+            pos_pt: 100.0,
+            kind: 3,
+            fill: 0,
+        }];
+        let items = vec![
+            dummy_run(10.0),
+            InlineItem::Tab,
+            dummy_glyph_run_with_widths("12.5", &[5.0, 5.0, 5.0, 5.0]),
+        ];
+        let (xs, _page) = place_at_origin(items, &tabs);
+
+        assert_eq!(xs.len(), 2);
+        // The "." is the third character (glyph index 2); 5.0 + 5.0 = 10.0 of width precedes
+        // it, so the segment must start at 100.0 - 10.0 = 90.0 for the "." to land at 100.0.
+        assert!((xs[1] - 90.0).abs() < 0.01, "segment start={}", xs[1]);
+        assert!(
+            (xs[1] + 10.0 - 100.0).abs() < 0.01,
+            "the '.' glyph must sit on the stop"
+        );
+    }
+
+    /// A decimal tab whose segment carries no decimal separator behaves exactly like a right
+    /// tab — the whole segment ends at the stop.
+    #[test]
+    fn decimal_tab_without_a_separator_behaves_as_right_tab() {
+        let tabs = [TabStop {
+            pos_pt: 100.0,
+            kind: 3,
+            fill: 0,
+        }];
+        let items = vec![
+            dummy_run(10.0),
+            InlineItem::Tab,
+            dummy_glyph_run_with_widths("125", &[5.0, 5.0, 5.0]),
+        ];
+        let (xs, _page) = place_at_origin(items, &tabs);
+
+        assert_eq!(xs.len(), 2);
+        assert!((xs[1] - 85.0).abs() < 0.01, "segment start={}", xs[1]);
+    }
+
+    /// A left tab (kind 0) places the following segment starting at the stop, exactly as it
+    /// did before kind-aware placement existed.
+    #[test]
+    fn left_tab_placement_is_unchanged() {
+        let tabs = [TabStop {
+            pos_pt: 100.0,
+            kind: 0,
+            fill: 0,
+        }];
+        let items = vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
+        let (xs, _page) = place_at_origin(items, &tabs);
+
+        assert_eq!(xs.len(), 2);
+        assert!((xs[1] - 100.0).abs() < 0.01, "segment start={}", xs[1]);
+    }
+
+    /// A segment wider than the distance back to the stop cannot push text to a negative x
+    /// or behind the paragraph's left edge (T-1-08) — it falls back to the current x.
+    #[test]
+    fn oversized_segment_does_not_move_text_left_of_the_current_x() {
+        let tabs = [TabStop {
+            pos_pt: 100.0,
+            kind: 1,
+            fill: 0,
+        }];
+        let items = vec![dummy_run(10.0), InlineItem::Tab, dummy_run(200.0)];
+        let (xs, _page) = place_at_origin(items, &tabs);
+
+        assert_eq!(xs.len(), 2);
+        assert!(
+            (xs[1] - 10.0).abs() < 0.01,
+            "oversized segment must stay at the current x, got {}",
+            xs[1]
+        );
+        assert!(xs[1] >= 0.0);
     }
 }
 

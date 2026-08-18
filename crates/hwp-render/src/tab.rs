@@ -107,6 +107,29 @@ pub fn next_tab(tabs: &[TabStop], rel: f32, default_interval: f32) -> f32 {
     next_tab_at(tabs, rel, default_interval).0
 }
 
+/// The x (relative to the same origin as `stop_pt`) at which a tab-following segment must
+/// start so it lands on `stop_pt` according to `kind`.
+///
+/// - kind 0 (left): the segment starts at the stop, unchanged from before kind-aware placement.
+/// - kind 1 (right): the segment ends at the stop.
+/// - kind 2 (center): the segment is centered on the stop.
+/// - kind 3 (decimal): `decimal_offset` (the width up to the first decimal separator) lands on
+///   the stop; with no separator (`None`) this behaves like a right tab.
+/// - any other kind: treated as left rather than dropping the tab.
+pub fn tab_segment_offset(
+    kind: u8,
+    stop_pt: f32,
+    segment_width: f32,
+    decimal_offset: Option<f32>,
+) -> f32 {
+    match kind {
+        1 => stop_pt - segment_width,
+        2 => stop_pt - segment_width / 2.0,
+        3 => stop_pt - decimal_offset.unwrap_or(segment_width),
+        _ => stop_pt,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
