@@ -346,6 +346,24 @@ const COL_GAP_PT: f32 = 14.0;
 /// 반올림·잔여 advance 오차(줄당 0.1pt 수준)로 매 표마다 경고가 뜨지 않게 한다.
 const CELL_CONTENT_OVERFLOW_EPSILON_PT: f32 = 1.0;
 
+/// Pattern scale for tab-leader dashes, in pt.
+///
+/// `dash_pattern` scales its on/off run lengths by the stroke width, which is right for
+/// border lines (a thicker border wants proportionally longer dashes) but wrong for a tab
+/// leader: leader pitch is a typographic convention independent of how thin the mark is.
+/// Passing the 0.5pt stroke width produced a 1.5pt pitch - dense enough to read as a solid
+/// rule.
+///
+/// Measured against a Hancom-exported PDF of a dotted-leader table of contents (rasterised at
+/// 300dpi, long leader runs of 135-139 marks): mark 1.20pt, gap 1.92pt, pitch 3.12pt. The
+/// mark-to-gap ratio there is ~1:1.6, which `dash_pattern`'s `[1u, 2u]` dot style already
+/// matches; only the scale was wrong. `u = 1.04` reproduces that 3.12pt pitch.
+///
+/// Note this still differs from Hancom structurally: Hancom draws leaders as repeated glyph
+/// characters (a `TJ` run of the leader char), not as a stroked dash pattern. This constant
+/// matches the resulting rhythm, not the mechanism.
+const LEADER_DASH_SCALE: f32 = 1.04;
+
 /// lineseg가 1개뿐인 문단을 "불완전한 캐시"로 판정하는 초과 배율.
 ///
 /// 정품 줄은 seg 폭을 꽉 채우고, 우리 advance에는 한글과의 잔여 오차가 남아 조금 넘칠 수
@@ -5216,7 +5234,7 @@ fn place_wrapped(
                             width: 0.5,
                             dash: crate::shape_draw::dash_pattern(
                                 crate::shape_draw::hwp5_line_style(stop.fill),
-                                0.5,
+                                LEADER_DASH_SCALE,
                             ),
                         }),
                         rule: FillRule::NonZero,
@@ -6056,7 +6074,7 @@ mod certification_budget_tests {
 mod tab_width_tests {
     use std::sync::Arc;
 
-    use super::{items_width, place_wrapped};
+    use super::{LEADER_DASH_SCALE, items_width, place_wrapped};
     use crate::display::{Item, PageList, PathCmd};
     use crate::fonts::LoadedFont;
     use crate::issues::RenderIssueAccumulator;
@@ -6312,8 +6330,18 @@ mod tab_width_tests {
             other => panic!("unexpected leader path commands: {other:?}"),
         }
         assert!((width - 0.5).abs() < 0.01);
-        // hwp5_line_style(2) = 1 (dash) -> dash_pattern(1, 0.5) = [1.5, 1.0].
-        assert_eq!(dash, &vec![1.5, 1.0]);
+        // The mark stays a 0.5pt stroke, but the pattern is scaled by
+        // LEADER_DASH_SCALE (leader pitch is typographic, not stroke-proportional):
+        // hwp5_line_style(2) = 1 (dash) -> dash_pattern(1, 1.04) = [3.12, 2.08].
+        assert_eq!(dash.len(), 2);
+        assert!(
+            (dash[0] - 3.0 * LEADER_DASH_SCALE).abs() < 0.001,
+            "on={dash:?}"
+        );
+        assert!(
+            (dash[1] - 2.0 * LEADER_DASH_SCALE).abs() < 0.001,
+            "off={dash:?}"
+        );
     }
 
     /// A tab landing on a stop with fill=0 (NONE) emits no `Item::Path` at all.

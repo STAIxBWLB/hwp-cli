@@ -936,12 +936,13 @@ mod tests {
 
     #[test]
     fn 그러데이션_2색_파싱() {
-        // fo=0: gtype=0(선형) angle=90 num=2, color0=red color1=blue.
-        let mut d = vec![0u8; 20];
-        d[2..4].copy_from_slice(&90u16.to_le_bytes());
-        d[10..12].copy_from_slice(&2u16.to_le_bytes());
-        d[12..16].copy_from_slice(&0x0000_00FFu32.to_le_bytes()); // R=FF
-        d[16..20].copy_from_slice(&0x00FF_0000u32.to_le_bytes()); // B=FF
+        // fo=0, genuine field widths: type(u8)=0(선형) angle(i32)=90 num(i32)=2,
+        // color0=red color1=blue.
+        let mut d = vec![0u8; 29];
+        d[1..5].copy_from_slice(&90i32.to_le_bytes());
+        d[17..21].copy_from_slice(&2i32.to_le_bytes());
+        d[21..25].copy_from_slice(&0x0000_00FFu32.to_le_bytes()); // R=FF
+        d[25..29].copy_from_slice(&0x00FF_0000u32.to_le_bytes()); // B=FF
         let g = parse_gradient(&d, 0).unwrap();
         assert!(!g.radial);
         assert_eq!(g.angle_deg, 90.0);
