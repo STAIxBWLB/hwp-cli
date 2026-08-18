@@ -721,6 +721,11 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         bf.gradient = Some(hwp_model::GradientSpec {
                             radial,
                             angle_deg,
+                            // TODO(Task 2 of this plan): thread centerX/centerY/step through
+                            // `current_gradation`'s stashed tuple instead of these placeholders.
+                            center_x: 0,
+                            center_y: 0,
+                            step: 255,
                             stops,
                         });
                     }

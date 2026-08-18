@@ -1042,6 +1042,9 @@ mod tests {
             fill_gradient: Some(GradientSpec {
                 radial: false,
                 angle_deg: 90.0,
+                center_x: 0,
+                center_y: 0,
+                step: 255,
                 stops: vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)],
             }),
             border_color: 0xFFFF_FFFF,
