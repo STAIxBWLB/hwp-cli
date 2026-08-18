@@ -49,7 +49,9 @@ pub enum Hwp5Error {
     #[error("암호화된 문서는 지원하지 않습니다")]
     Encrypted,
 
-    #[error("배포용 문서(ViewText)는 지원하지 않습니다")]
+    #[error(
+        "배포용 문서(ViewText)의 원본 구조는 지원하지 않습니다. hwp cat/convert/render는 배포용 문서를 읽을 수 있습니다"
+    )]
     DistributionDoc,
 
     #[error("HWP 원본 snapshot이 편집 기준 문서와 일치하지 않습니다")]

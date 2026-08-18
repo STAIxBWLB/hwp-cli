@@ -55,6 +55,13 @@ impl BoundedReadSnapshot {
     pub fn open(path: &Path, limits: BoundedReadLimits) -> Result<Self> {
         let mut container = Hwp5Container::open(path)?;
         container.check_body_readable()?;
+        // This is a certification-oriented raw-stream cache, not the main read
+        // path (GATE-01's ViewText decrypt lives in `read_document` only).
+        // Without this guard a distribution document would fall through and
+        // get snapshotted with its `/ViewText/` bytes still encrypted.
+        if container.file_header().is_distribution() {
+            return Err(Hwp5Error::DistributionDoc);
+        }
         let header = container.file_header().clone();
         let compressed = header.is_compressed();
         let mut streams = BTreeMap::new();
