@@ -193,19 +193,24 @@ fn hwp5_line_style(lt: u8) -> u8 {
     }
 }
 
-/// 그러데이션(Table 28): type(i16) 각(i16) cx cy spread num(i16),
-/// num>2면 INT32[num] 위치, 이어서 COLORREF[num].
+/// Gradation block: 1-byte type, then INT32 angle / centre-x / centre-y / spread /
+/// colour count; `INT32[num]` positions when `num > 2`; then `COLORREF[num]`.
+///
+/// Field widths verified against a genuine Hancom-saved HWP 5.1.1.0 file. Keep this
+/// in step with [`hwp_model::GradientSpec::parse_hwp5`], which parses the same block
+/// from the `BorderFill` side.
 fn parse_gradient(d: &[u8], fo: usize) -> Option<GradientSpec> {
-    let gtype = rd_u16(d, fo)? as i16;
-    let angle = rd_u16(d, fo + 2)? as i16 as f32;
-    let center_x = rd_u16(d, fo + 4)? as i16 as i32;
-    let center_y = rd_u16(d, fo + 6)? as i16 as i32;
-    let step = rd_u16(d, fo + 8)? as i16 as i32;
-    let num = rd_u16(d, fo + 10)? as usize;
+    let gtype = d.get(fo).copied()? as i16;
+    let angle = rd_i32(d, fo + 1)? as f32;
+    let center_x = rd_i32(d, fo + 5)?;
+    let center_y = rd_i32(d, fo + 9)?;
+    let step = rd_i32(d, fo + 13)?;
+    let num = rd_i32(d, fo + 17)?;
     if !(2..=16).contains(&num) {
         return None;
     }
-    let mut off = fo + 12;
+    let num = num as usize;
+    let mut off = fo + 21;
     let positions: Vec<f32> = if num > 2 {
         let mut v = Vec::with_capacity(num);
         for i in 0..num {
@@ -407,14 +412,14 @@ mod tests {
     /// Builds a minimal table-28 gradient block: type, angle, center_x,
     /// center_y, spread, num=2, then 2 COLORREFs (no position array since
     /// num <= 2).
-    fn table28_block(gtype: i16, angle: i16, cx: i16, cy: i16, spread: i16) -> Vec<u8> {
+    fn gradation_block(gtype: u8, angle: i32, cx: i32, cy: i32, spread: i32) -> Vec<u8> {
         let mut d = Vec::new();
-        d.extend_from_slice(&gtype.to_le_bytes());
+        d.push(gtype);
         d.extend_from_slice(&angle.to_le_bytes());
         d.extend_from_slice(&cx.to_le_bytes());
         d.extend_from_slice(&cy.to_le_bytes());
         d.extend_from_slice(&spread.to_le_bytes());
-        d.extend_from_slice(&2i16.to_le_bytes()); // num
+        d.extend_from_slice(&2i32.to_le_bytes()); // num
         d.extend_from_slice(&0xFF0000u32.to_le_bytes());
         d.extend_from_slice(&0x0000FFu32.to_le_bytes());
         d
@@ -422,10 +427,27 @@ mod tests {
 
     #[test]
     fn gradient_center_and_step_from_table28() {
-        let d = table28_block(0, 45, 30, 70, 120);
+        let d = gradation_block(0, 45, 30, 70, 120);
         let gr = parse_gradient(&d, 0).unwrap();
         assert_eq!(gr.center_x, 30);
         assert_eq!(gr.center_y, 70);
         assert_eq!(gr.step, 120);
+        assert_eq!(gr.angle_deg, 45.0);
+    }
+
+    /// The exact 35-byte gradation tail of a genuine Hancom-saved HWP 5.1.1.0
+    /// document. Before the layout was corrected this returned `None`.
+    #[test]
+    fn gradient_reads_a_genuine_hancom_block() {
+        let d: [u8; 35] = [
+            0x01, 0x5a, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0xc8,
+            0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x32, 0x00,
+        ];
+        let gr = parse_gradient(&d, 0).expect("genuine gradation must parse");
+        assert_eq!(gr.angle_deg, 90.0);
+        assert_eq!(gr.center_x, 15);
+        assert_eq!(gr.center_y, 85);
+        assert_eq!(gr.step, 200);
     }
 }

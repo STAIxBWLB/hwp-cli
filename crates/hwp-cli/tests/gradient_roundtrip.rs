@@ -18,19 +18,23 @@ fn temp(name: &str) -> PathBuf {
     dir.join(name)
 }
 
-/// Raw HWP5 table-28 gradient block bytes matching the `GradientSpec` below:
-/// type(i16)=0 (linear), angle(i16)=90, centerX(i16)=25, centerY(i16)=75,
-/// spread(i16)=120, num(i16)=2, then two COLORREF u32 stops. This is exactly
-/// the byte shape a genuine Hangul-authored gradient BorderFill carries
-/// (`crates/hwp5/src/doc_info.rs::border_fill_tests::그러데이션_채움_파싱`).
+/// Raw HWP5 gradation block bytes matching the `GradientSpec` below, in the field
+/// widths a genuine Hancom-saved file uses: type(u8)=0 (linear), angle(i32)=90,
+/// centerX(i32)=25, centerY(i32)=75, spread(i32)=120, num(i32)=2, then two COLORREF
+/// u32 stops.
+///
+/// The earlier version of this helper used i16 fields throughout and claimed to match
+/// a genuine file; it did not. A Hancom-saved HWP 5.1.1.0 reference document showed the
+/// real layout, and its exact bytes are now pinned by
+/// `hwp_model::control::gradient_spec_tests::gradient_spec_parse_hwp5_reads_a_genuine_hancom_block`.
 fn gradient_tail_bytes() -> Vec<u8> {
     let mut d = Vec::new();
-    d.extend_from_slice(&0i16.to_le_bytes()); // type: LINEAR
-    d.extend_from_slice(&90i16.to_le_bytes()); // angle
-    d.extend_from_slice(&25i16.to_le_bytes()); // centerX
-    d.extend_from_slice(&75i16.to_le_bytes()); // centerY
-    d.extend_from_slice(&120i16.to_le_bytes()); // spread/step
-    d.extend_from_slice(&2i16.to_le_bytes()); // num
+    d.push(0u8); // type: LINEAR
+    d.extend_from_slice(&90i32.to_le_bytes()); // angle
+    d.extend_from_slice(&25i32.to_le_bytes()); // centerX
+    d.extend_from_slice(&75i32.to_le_bytes()); // centerY
+    d.extend_from_slice(&120i32.to_le_bytes()); // spread/step
+    d.extend_from_slice(&2i32.to_le_bytes()); // num
     d.extend_from_slice(&0x0000_00FFu32.to_le_bytes());
     d.extend_from_slice(&0x00FF_0000u32.to_le_bytes());
     d

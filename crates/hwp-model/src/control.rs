@@ -543,12 +543,10 @@ fn default_gradient_step() -> i32 {
 
 impl GradientSpec {
     /// Parses an HWP5 table 28 gradient block: type, angle, horizontal center,
-    /// vertical center, spread, and color count as `i16`; positions as
-    /// `INT32[num]` when `num > 2`; then `COLORREF[num]`. Returns the parsed
-    /// specification and consumed byte count.
+    /// vertical center, spread, and color count; positions as `INT32[num]`
+    /// when `num > 2`; then `COLORREF[num]`. Returns the parsed specification
+    /// and consumed byte count.
     pub fn parse_hwp5(d: &[u8], off: usize) -> Option<(Self, usize)> {
-        let rd_u16 =
-            |o: usize| -> Option<u16> { d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
         let rd_i32 = |o: usize| -> Option<i32> {
             d.get(o..o + 4)
                 .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -557,16 +555,21 @@ impl GradientSpec {
             d.get(o..o + 4)
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         };
-        let gtype = rd_u16(off)? as i16;
-        let angle = rd_u16(off + 2)? as i16 as f32;
-        let center_x = rd_u16(off + 4)? as i16 as i32;
-        let center_y = rd_u16(off + 6)? as i16 as i32;
-        let step = rd_u16(off + 8)? as i16 as i32;
-        let num = rd_u16(off + 10)? as usize;
+        // Field widths verified against a genuine Hancom-saved HWP 5.1.1.0 file: a 1-byte
+        // gradation type followed by INT32 angle / centre-x / centre-y / step / colour count.
+        // The record is self-describing: for the reference file the 35-byte block decodes as
+        // 1 + 4*4 + 4 + 2*4 + 4 + 2, which is exactly its length.
+        let gtype = d.get(off).copied()? as i16;
+        let angle = rd_i32(off + 1)? as f32;
+        let center_x = rd_i32(off + 5)?;
+        let center_y = rd_i32(off + 9)?;
+        let step = rd_i32(off + 13)?;
+        let num = rd_i32(off + 17)?;
         if !(1..=16).contains(&num) {
             return None;
         }
-        let mut cur = off + 12;
+        let num = num as usize;
+        let mut cur = off + 21;
         let positions: Vec<f32> = if num > 2 {
             let mut v = Vec::with_capacity(num);
             for i in 0..num {
@@ -608,17 +611,17 @@ impl GradientSpec {
 mod gradient_spec_tests {
     use super::GradientSpec;
 
-    /// Builds a minimal table-28 gradient block: type, angle, center_x,
-    /// center_y, spread, num=2, then 2 COLORREFs (no position array since
-    /// num <= 2).
-    fn table28_block(gtype: i16, angle: i16, cx: i16, cy: i16, spread: i16) -> Vec<u8> {
+    /// Builds a gradation block in the layout a genuine Hancom-saved file uses:
+    /// 1-byte type, then INT32 angle / center_x / center_y / spread / num, then
+    /// `COLORREF[num]` (no position array since num <= 2).
+    fn gradation_block(gtype: u8, angle: i32, cx: i32, cy: i32, spread: i32) -> Vec<u8> {
         let mut d = Vec::new();
-        d.extend_from_slice(&gtype.to_le_bytes());
+        d.push(gtype);
         d.extend_from_slice(&angle.to_le_bytes());
         d.extend_from_slice(&cx.to_le_bytes());
         d.extend_from_slice(&cy.to_le_bytes());
         d.extend_from_slice(&spread.to_le_bytes());
-        d.extend_from_slice(&2i16.to_le_bytes()); // num
+        d.extend_from_slice(&2i32.to_le_bytes()); // num
         d.extend_from_slice(&0xFF0000u32.to_le_bytes());
         d.extend_from_slice(&0x0000FFu32.to_le_bytes());
         d
@@ -626,19 +629,39 @@ mod gradient_spec_tests {
 
     #[test]
     fn gradient_spec_parse_hwp5_reads_center_and_step() {
-        let d = table28_block(0, 45, 30, 70, 120);
+        let d = gradation_block(0, 45, 30, 70, 120);
         let (gr, consumed) = GradientSpec::parse_hwp5(&d, 0).unwrap();
         assert_eq!(gr.center_x, 30);
         assert_eq!(gr.center_y, 70);
         assert_eq!(gr.step, 120);
+        assert_eq!(gr.angle_deg, 45.0);
         assert_eq!(consumed, d.len());
+    }
+
+    /// The exact 35-byte gradation tail of a genuine Hancom-saved HWP 5.1.1.0
+    /// document (linear, 90 degrees, centre 15/85, spread 200, two colours).
+    /// Before this layout was corrected the parser read `num` as 0 here and
+    /// bailed, so every real gradient was silently dropped.
+    #[test]
+    fn gradient_spec_parse_hwp5_reads_a_genuine_hancom_block() {
+        let d: [u8; 35] = [
+            0x01, 0x5a, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0xc8,
+            0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x32, 0x00,
+        ];
+        let (gr, _) = GradientSpec::parse_hwp5(&d, 0).expect("genuine gradation must parse");
+        assert_eq!(gr.angle_deg, 90.0);
+        assert_eq!(gr.center_x, 15);
+        assert_eq!(gr.center_y, 85);
+        assert_eq!(gr.step, 200);
+        assert_eq!(gr.stops.len(), 2);
     }
 
     #[test]
     fn gradient_spec_parse_hwp5_truncated_returns_none() {
-        let full = table28_block(0, 45, 30, 70, 120);
-        // Truncate inside the new center/spread region (after angle, before spread finishes).
-        let truncated = &full[..7];
+        let full = gradation_block(0, 45, 30, 70, 120);
+        // Truncate inside the centre/spread region (past angle, before spread finishes).
+        let truncated = &full[..11];
         assert!(GradientSpec::parse_hwp5(truncated, 0).is_none());
     }
 }
