@@ -522,13 +522,13 @@ fn is_false(v: &bool) -> bool {
 pub struct GradientSpec {
     pub radial: bool,
     pub angle_deg: f32,
-    /// HWP5 table-28 horizontal center (`cx`, `i16`) / OWPML `hc:gradation@centerX`.
+    /// HWP5 gradation horizontal center (`cx`, `INT32`) / OWPML `hc:gradation@centerX`.
     #[serde(default)]
     pub center_x: i32,
-    /// HWP5 table-28 vertical center (`cy`, `i16`) / OWPML `hc:gradation@centerY`.
+    /// HWP5 gradation vertical center (`cy`, `INT32`) / OWPML `hc:gradation@centerY`.
     #[serde(default)]
     pub center_y: i32,
-    /// HWP5 table-28 spread (`i16`) / OWPML `hc:gradation@step`.
+    /// HWP5 gradation spread (`INT32`) / OWPML `hc:gradation@step`.
     #[serde(default = "default_gradient_step")]
     pub step: i32,
     /// (위치 0..1, COLORREF). 위치 오름차순.
