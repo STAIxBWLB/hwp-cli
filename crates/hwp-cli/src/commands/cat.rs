@@ -31,6 +31,9 @@ pub fn load_document(path: &Path) -> anyhow::Result<Document> {
             for w in &result.warnings {
                 eprintln!("경고: {w}");
             }
+            if result.unwrapped_distribution {
+                eprintln!("정보: 배포용 문서를 해제했습니다");
+            }
             Ok(result.document)
         }
         FileFormat::Hwpx => {

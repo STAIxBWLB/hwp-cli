@@ -33,6 +33,10 @@ zip = "8"
 # Checksum verification for self-update (hwp update) release archives — already
 # pulled in via zip, so the dependency graph does not grow.
 sha2 = "0.11"
+# AES-128-ECB decryption for Hancom distribution documents (배포용문서/ViewText,
+# GATE-01) — already pulled in via zip's AES-encrypted-archive support, so the
+# dependency graph does not grow.
+aes = "0.9.1"
 getrandom = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 
