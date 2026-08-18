@@ -155,8 +155,9 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
     let mut numbering_ids: HashMap<u16, u16> = HashMap::new();
     let mut bullet_ids: HashMap<u16, u16> = HashMap::new();
     let mut current_tab: Option<hwp_model::TabDef> = None;
-    // Active hc:gradation state inside borderFill: radial flag, angle, colors.
-    let mut current_gradation: Option<(bool, f32, Vec<u32>)> = None;
+    // Active hc:gradation state inside borderFill: radial flag, angle,
+    // center_x, center_y, step, colors.
+    let mut current_gradation: Option<(bool, f32, i32, i32, i32, Vec<u32>)> = None;
     // 정품 tabItem은 hp:switch로 감싸 case(HwpUnitChar, unit=HWPUNIT, pos=X)와
     // default(unit 없음, pos=2X)를 함께 낸다. case만 취하고 default는 버리기 위해
     // hp:default 안에 있는 동안 tabItem 수집을 막는다(중복 방지). switch 없는 naked
@@ -665,11 +666,14 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         current_gradation = Some((
                             !gtype.eq_ignore_ascii_case("LINEAR"),
                             attr_i32(e, "angle").unwrap_or(0) as f32,
+                            attr_i32(e, "centerX").unwrap_or(0),
+                            attr_i32(e, "centerY").unwrap_or(0),
+                            attr_i32(e, "step").unwrap_or(255),
                             Vec::new(),
                         ));
                     }
                     b"color" => {
-                        if let Some((_, _, colors)) = &mut current_gradation
+                        if let Some((_, _, _, _, _, colors)) = &mut current_gradation
                             && let Some(v) = attr(e, "value")
                         {
                             colors.push(parse_color(&v));
@@ -707,7 +711,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                     }
                 }
                 b"gradation" => {
-                    if let (Some(bf), Some((radial, angle_deg, colors))) =
+                    if let (Some(bf), Some((radial, angle_deg, center_x, center_y, step, colors))) =
                         (&mut current_border, current_gradation.take())
                         && colors.len() >= 2
                     {
@@ -721,11 +725,9 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         bf.gradient = Some(hwp_model::GradientSpec {
                             radial,
                             angle_deg,
-                            // TODO(Task 2 of this plan): thread centerX/centerY/step through
-                            // `current_gradation`'s stashed tuple instead of these placeholders.
-                            center_x: 0,
-                            center_y: 0,
-                            step: 255,
+                            center_x,
+                            center_y,
+                            step,
                             stops,
                         });
                     }
