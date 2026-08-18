@@ -28,6 +28,7 @@ use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
 use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
 use crate::shape::{InlineItem, shape_range_page};
+use crate::tab::TabStop;
 
 /// 인증 렌더가 레이아웃 생성 전에 적용하는 작업/메모리 예산.
 pub const CERTIFICATION_MAX_PAGES: usize = 4_096;
@@ -4707,7 +4708,7 @@ fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
     }
 }
 
-fn items_width(items: &[InlineItem], tabs: &[f32]) -> f32 {
+fn items_width(items: &[InlineItem], tabs: &[TabStop]) -> f32 {
     let mut x = 0.0f32;
     for item in items {
         match item {
@@ -5078,7 +5079,7 @@ fn place_wrapped(
     first_baseline_y: f32,
     max_width: f32,
     line_advance: f32,
-    tabs: &[f32],
+    tabs: &[TabStop],
     first_indent: f32,
     border_fills: &[BorderFill],
     warnings: &mut RenderIssueAccumulator,
@@ -5148,7 +5149,30 @@ fn place_wrapped(
                 }
             }
             InlineItem::Tab => {
-                x = x0 + crate::tab::next_tab(tabs, x - x0, TAB_INTERVAL_PT);
+                let (position, stop) = crate::tab::next_tab_at(tabs, x - x0, TAB_INTERVAL_PT);
+                let next_x = x0 + position;
+                // Leader line: only when the landed stop declares one (fill != 0). The fill
+                // code is HWPX leader numbering, not dash_pattern's — hwp5_line_style bridges
+                // the two families (see shape_draw.rs's own cross-reference comment).
+                if let Some(stop) = stop
+                    && stop.fill != 0
+                    && warnings.charge_display_items(1)
+                {
+                    page.items.push(Item::Path {
+                        commands: vec![PathCmd::MoveTo(x, y), PathCmd::LineTo(next_x, y)],
+                        fill: None,
+                        stroke: Some(Stroke {
+                            color: 0x0000_0000,
+                            width: 0.5,
+                            dash: crate::shape_draw::dash_pattern(
+                                crate::shape_draw::hwp5_line_style(stop.fill),
+                                0.5,
+                            ),
+                        }),
+                        rule: FillRule::NonZero,
+                    });
+                }
+                x = next_x;
                 previous_no_break = false;
             }
             InlineItem::LineBreak(_) => {
@@ -5951,10 +5975,11 @@ mod tab_width_tests {
     use std::sync::Arc;
 
     use super::{items_width, place_wrapped};
-    use crate::display::{Item, PageList};
+    use crate::display::{Item, PageList, PathCmd};
     use crate::fonts::LoadedFont;
     use crate::issues::RenderIssueAccumulator;
     use crate::shape::{Glyph, InlineItem, ShapedRun};
+    use crate::tab::TabStop;
 
     /// Creates a font-independent dummy run whose only meaningful field is width.
     fn dummy_run(width_pt: f32) -> InlineItem {
@@ -6008,7 +6033,11 @@ mod tab_width_tests {
     /// estimation and final placement.
     #[test]
     fn explicit_tab_stops_match_width_estimation_and_placement() {
-        let tabs = [150.0f32];
+        let tabs = [TabStop {
+            pos_pt: 150.0,
+            kind: 0,
+            fill: 0,
+        }];
         let make_items = || vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
 
         // Width estimate: 10 + tab to 150 + 20 = 170.
@@ -6086,6 +6115,105 @@ mod tab_width_tests {
             })
             .collect();
         assert_eq!(baselines, [100.0, 100.0, 100.0]);
+    }
+
+    /// A tab landing on a leadered stop emits exactly one dashed `Item::Path` between the
+    /// pre-tab and post-tab x positions at the run baseline. The leader style code passes
+    /// through `hwp5_line_style` before `dash_pattern` (fill=2 is HWPX DASH, which
+    /// `hwp5_line_style` maps to dash_pattern style 1).
+    #[test]
+    fn leadered_tab_emits_a_dashed_path_between_the_two_x_positions() {
+        let tabs = [TabStop {
+            pos_pt: 150.0,
+            kind: 0,
+            fill: 2,
+        }];
+        let items = vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
+
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            items,
+            0.0,
+            100.0,
+            f32::INFINITY,
+            16.0,
+            &tabs,
+            0.0,
+            &[],
+            &mut warns,
+        );
+
+        let paths: Vec<(Vec<PathCmd>, f32, Vec<f32>)> = page
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Path {
+                    commands,
+                    stroke: Some(stroke),
+                    ..
+                } => Some((commands.clone(), stroke.width, stroke.dash.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            paths.len(),
+            1,
+            "expected exactly one leader path: {paths:?}"
+        );
+        let (commands, width, dash) = &paths[0];
+        match commands.as_slice() {
+            [PathCmd::MoveTo(x0, _), PathCmd::LineTo(x1, _)] => {
+                assert!((x0 - 10.0).abs() < 0.01, "pre-tab x={x0}");
+                assert!((x1 - 150.0).abs() < 0.01, "post-tab x={x1}");
+            }
+            other => panic!("unexpected leader path commands: {other:?}"),
+        }
+        assert!((width - 0.5).abs() < 0.01);
+        // hwp5_line_style(2) = 1 (dash) -> dash_pattern(1, 0.5) = [1.5, 1.0].
+        assert_eq!(dash, &vec![1.5, 1.0]);
+    }
+
+    /// A tab landing on a stop with fill=0 (NONE) emits no `Item::Path` at all.
+    #[test]
+    fn tab_with_no_leader_emits_no_path() {
+        let tabs = [TabStop {
+            pos_pt: 150.0,
+            kind: 0,
+            fill: 0,
+        }];
+        let items = vec![dummy_run(10.0), InlineItem::Tab, dummy_run(20.0)];
+
+        let mut page = PageList {
+            width_pt: 600.0,
+            height_pt: 800.0,
+            items: Vec::new(),
+        };
+        let mut warns = RenderIssueAccumulator::new();
+        place_wrapped(
+            &mut page,
+            items,
+            0.0,
+            100.0,
+            f32::INFINITY,
+            16.0,
+            &tabs,
+            0.0,
+            &[],
+            &mut warns,
+        );
+
+        let path_count = page
+            .items
+            .iter()
+            .filter(|it| matches!(it, Item::Path { .. }))
+            .count();
+        assert_eq!(path_count, 0, "an unleadered tab must emit no path");
     }
 }
 

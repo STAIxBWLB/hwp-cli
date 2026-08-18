@@ -99,7 +99,7 @@ pub fn draw_ir_shapes(
 }
 
 /// 선 종류 → 점선 패턴(on, off, …) pt. 0/그 외=실선(빈 벡터). 굵기 비례.
-fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
+pub(crate) fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
     let u = width.max(0.5);
     match style {
         1 => vec![3.0 * u, 2.0 * u],                                     // 파선
@@ -114,7 +114,7 @@ fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
 /// Maps HWP5 border line types to `dash_pattern` style codes.
 ///
 /// Keep this mapping synchronized with `hwp-convert/src/gso.rs`.
-fn hwp5_line_style(lt: u8) -> u8 {
+pub(crate) fn hwp5_line_style(lt: u8) -> u8 {
     match lt {
         2 => 1,
         3 => 2,
