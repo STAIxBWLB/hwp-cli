@@ -198,6 +198,9 @@ fn hwp5_line_style(lt: u8) -> u8 {
 fn parse_gradient(d: &[u8], fo: usize) -> Option<GradientSpec> {
     let gtype = rd_u16(d, fo)? as i16;
     let angle = rd_u16(d, fo + 2)? as i16 as f32;
+    let center_x = rd_u16(d, fo + 4)? as i16 as i32;
+    let center_y = rd_u16(d, fo + 6)? as i16 as i32;
+    let step = rd_u16(d, fo + 8)? as i16 as i32;
     let num = rd_u16(d, fo + 10)? as usize;
     if !(2..=16).contains(&num) {
         return None;
@@ -223,6 +226,9 @@ fn parse_gradient(d: &[u8], fo: usize) -> Option<GradientSpec> {
     Some(GradientSpec {
         radial: gtype == 1,
         angle_deg: angle,
+        center_x,
+        center_y,
+        step,
         stops,
     })
 }
@@ -396,5 +402,30 @@ mod tests {
             children: Vec::new(),
         }];
         assert!(shapes_from_raw(&raw).is_empty());
+    }
+
+    /// Builds a minimal table-28 gradient block: type, angle, center_x,
+    /// center_y, spread, num=2, then 2 COLORREFs (no position array since
+    /// num <= 2).
+    fn table28_block(gtype: i16, angle: i16, cx: i16, cy: i16, spread: i16) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&gtype.to_le_bytes());
+        d.extend_from_slice(&angle.to_le_bytes());
+        d.extend_from_slice(&cx.to_le_bytes());
+        d.extend_from_slice(&cy.to_le_bytes());
+        d.extend_from_slice(&spread.to_le_bytes());
+        d.extend_from_slice(&2i16.to_le_bytes()); // num
+        d.extend_from_slice(&0xFF0000u32.to_le_bytes());
+        d.extend_from_slice(&0x0000FFu32.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn gradient_center_and_step_from_table28() {
+        let d = table28_block(0, 45, 30, 70, 120);
+        let gr = parse_gradient(&d, 0).unwrap();
+        assert_eq!(gr.center_x, 30);
+        assert_eq!(gr.center_y, 70);
+        assert_eq!(gr.step, 120);
     }
 }

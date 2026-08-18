@@ -1756,6 +1756,9 @@ fn parse_gradation(
     // LINEAR=선형, 그 외(RADIAL/CIRCLE/CONICAL/SQUARE)는 방사형 근사.
     let radial = !gtype.eq_ignore_ascii_case("LINEAR");
     let angle_deg = attr_i32(start, "angle").unwrap_or(0) as f32;
+    let center_x = attr_i32(start, "centerX").unwrap_or(0);
+    let center_y = attr_i32(start, "centerY").unwrap_or(0);
+    let step = attr_i32(start, "step").unwrap_or(255);
     let mut colors: Vec<u32> = Vec::new();
     loop {
         match next_event(reader)? {
@@ -1781,6 +1784,9 @@ fn parse_gradation(
     Ok(Some(GradientSpec {
         radial,
         angle_deg,
+        center_x,
+        center_y,
+        step,
         stops,
     }))
 }
@@ -1940,6 +1946,35 @@ mod page_ctrl_tests {
             1 + 8 + 1 + 1,
             "앞(1)+탭(8)+뒤(1)+끝(1) WCHAR"
         );
+    }
+
+    /// centerX/centerY/step round-trip: parse an `<hp:gradation>` carrying
+    /// explicit values, then re-emit via the same `hc:gradation` attribute
+    /// shape the section writer uses and confirm the values survive.
+    #[test]
+    fn gradation_center_and_step_round_trip() {
+        let g = run_gradation(
+            r##"<hp:gradation type="LINEAR" angle="90" centerX="30" centerY="70" step="120"><hp:color value="#FF0000"/><hp:color value="#0000FF"/></hp:gradation>"##,
+        )
+        .unwrap();
+        assert_eq!(g.center_x, 30);
+        assert_eq!(g.center_y, 70);
+        assert_eq!(g.step, 120);
+
+        // Re-emit with the writer's exact `hc:gradation` attribute shape and
+        // re-parse it to confirm the values survive the round trip.
+        let reemitted = format!(
+            r##"<hp:gradation type="{}" angle="{}" centerX="{}" centerY="{}" step="{}"><hp:color value="#FF0000"/><hp:color value="#0000FF"/></hp:gradation>"##,
+            if g.radial { "RADIAL" } else { "LINEAR" },
+            g.angle_deg.round() as i32,
+            g.center_x,
+            g.center_y,
+            g.step,
+        );
+        let g2 = run_gradation(&reemitted).unwrap();
+        assert_eq!(g2.center_x, g.center_x);
+        assert_eq!(g2.center_y, g.center_y);
+        assert_eq!(g2.step, g.step);
     }
 
     /// 색이 1개 이하면 그러데이션 없음(None).

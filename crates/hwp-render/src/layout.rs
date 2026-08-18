@@ -5900,6 +5900,9 @@ mod certification_budget_tests {
         gradient_shape.fill_gradient = Some(GradientSpec {
             radial: false,
             angle_deg: 0.0,
+            center_x: 0,
+            center_y: 0,
+            step: 255,
             stops: vec![(0.5, 0); 101],
         });
         stops_document.sections[0].paragraphs[0].controls =

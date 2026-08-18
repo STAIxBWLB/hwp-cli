@@ -522,8 +522,23 @@ fn is_false(v: &bool) -> bool {
 pub struct GradientSpec {
     pub radial: bool,
     pub angle_deg: f32,
+    /// HWP5 table-28 horizontal center (`cx`, `i16`) / OWPML `hc:gradation@centerX`.
+    #[serde(default)]
+    pub center_x: i32,
+    /// HWP5 table-28 vertical center (`cy`, `i16`) / OWPML `hc:gradation@centerY`.
+    #[serde(default)]
+    pub center_y: i32,
+    /// HWP5 table-28 spread (`i16`) / OWPML `hc:gradation@step`.
+    #[serde(default = "default_gradient_step")]
+    pub step: i32,
     /// (위치 0..1, COLORREF). 위치 오름차순.
     pub stops: Vec<(f32, u32)>,
+}
+
+/// Default `GradientSpec::step` (OWPML `hc:gradation@step`) when the source
+/// document genuinely carries no value for it.
+fn default_gradient_step() -> i32 {
+    255
 }
 
 impl GradientSpec {
@@ -544,6 +559,9 @@ impl GradientSpec {
         };
         let gtype = rd_u16(off)? as i16;
         let angle = rd_u16(off + 2)? as i16 as f32;
+        let center_x = rd_u16(off + 4)? as i16 as i32;
+        let center_y = rd_u16(off + 6)? as i16 as i32;
+        let step = rd_u16(off + 8)? as i16 as i32;
         let num = rd_u16(off + 10)? as usize;
         if !(1..=16).contains(&num) {
             return None;
@@ -576,10 +594,52 @@ impl GradientSpec {
             GradientSpec {
                 radial: gtype == 1,
                 angle_deg: angle,
+                center_x,
+                center_y,
+                step,
                 stops,
             },
             cur - off,
         ))
+    }
+}
+
+#[cfg(test)]
+mod gradient_spec_tests {
+    use super::GradientSpec;
+
+    /// Builds a minimal table-28 gradient block: type, angle, center_x,
+    /// center_y, spread, num=2, then 2 COLORREFs (no position array since
+    /// num <= 2).
+    fn table28_block(gtype: i16, angle: i16, cx: i16, cy: i16, spread: i16) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&gtype.to_le_bytes());
+        d.extend_from_slice(&angle.to_le_bytes());
+        d.extend_from_slice(&cx.to_le_bytes());
+        d.extend_from_slice(&cy.to_le_bytes());
+        d.extend_from_slice(&spread.to_le_bytes());
+        d.extend_from_slice(&2i16.to_le_bytes()); // num
+        d.extend_from_slice(&0xFF0000u32.to_le_bytes());
+        d.extend_from_slice(&0x0000FFu32.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn gradient_spec_parse_hwp5_reads_center_and_step() {
+        let d = table28_block(0, 45, 30, 70, 120);
+        let (gr, consumed) = GradientSpec::parse_hwp5(&d, 0).unwrap();
+        assert_eq!(gr.center_x, 30);
+        assert_eq!(gr.center_y, 70);
+        assert_eq!(gr.step, 120);
+        assert_eq!(consumed, d.len());
+    }
+
+    #[test]
+    fn gradient_spec_parse_hwp5_truncated_returns_none() {
+        let full = table28_block(0, 45, 30, 70, 120);
+        // Truncate inside the new center/spread region (after angle, before spread finishes).
+        let truncated = &full[..7];
+        assert!(GradientSpec::parse_hwp5(truncated, 0).is_none());
     }
 }
 
