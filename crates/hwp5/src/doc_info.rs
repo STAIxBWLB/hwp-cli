@@ -648,11 +648,12 @@ mod border_fill_tests {
     #[test]
     fn 그러데이션_채움_파싱() {
         let mut d = prefix(0x4);
-        // Linear gradient at 90 degrees with two colors.
-        d.extend_from_slice(&0i16.to_le_bytes());
-        d.extend_from_slice(&90i16.to_le_bytes());
-        d.extend_from_slice(&[0u8; 6]); // cx cy spread
-        d.extend_from_slice(&2i16.to_le_bytes()); // num=2
+        // Linear gradient at 90 degrees with two colors, in the field widths a
+        // genuine Hancom-saved file uses: 1-byte type then INT32 fields.
+        d.push(0u8); // type
+        d.extend_from_slice(&90i32.to_le_bytes()); // angle
+        d.extend_from_slice(&[0u8; 12]); // cx cy spread
+        d.extend_from_slice(&2i32.to_le_bytes()); // num=2
         d.extend_from_slice(&0x0000_00FFu32.to_le_bytes()); // R=FF
         d.extend_from_slice(&0x00FF_0000u32.to_le_bytes()); // B=FF
         let bf = parse_border_fill(&d).unwrap();

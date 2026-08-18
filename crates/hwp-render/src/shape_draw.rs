@@ -99,7 +99,7 @@ pub fn draw_ir_shapes(
 }
 
 /// 선 종류 → 점선 패턴(on, off, …) pt. 0/그 외=실선(빈 벡터). 굵기 비례.
-fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
+pub(crate) fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
     let u = width.max(0.5);
     match style {
         1 => vec![3.0 * u, 2.0 * u],                                     // 파선
@@ -114,7 +114,7 @@ fn dash_pattern(style: u8, width: f32) -> Vec<f32> {
 /// Maps HWP5 border line types to `dash_pattern` style codes.
 ///
 /// Keep this mapping synchronized with `hwp-convert/src/gso.rs`.
-fn hwp5_line_style(lt: u8) -> u8 {
+pub(crate) fn hwp5_line_style(lt: u8) -> u8 {
     match lt {
         2 => 1,
         3 => 2,
@@ -936,12 +936,13 @@ mod tests {
 
     #[test]
     fn 그러데이션_2색_파싱() {
-        // fo=0: gtype=0(선형) angle=90 num=2, color0=red color1=blue.
-        let mut d = vec![0u8; 20];
-        d[2..4].copy_from_slice(&90u16.to_le_bytes());
-        d[10..12].copy_from_slice(&2u16.to_le_bytes());
-        d[12..16].copy_from_slice(&0x0000_00FFu32.to_le_bytes()); // R=FF
-        d[16..20].copy_from_slice(&0x00FF_0000u32.to_le_bytes()); // B=FF
+        // fo=0, genuine field widths: type(u8)=0(선형) angle(i32)=90 num(i32)=2,
+        // color0=red color1=blue.
+        let mut d = vec![0u8; 29];
+        d[1..5].copy_from_slice(&90i32.to_le_bytes());
+        d[17..21].copy_from_slice(&2i32.to_le_bytes());
+        d[21..25].copy_from_slice(&0x0000_00FFu32.to_le_bytes()); // R=FF
+        d[25..29].copy_from_slice(&0x00FF_0000u32.to_le_bytes()); // B=FF
         let g = parse_gradient(&d, 0).unwrap();
         assert!(!g.radial);
         assert_eq!(g.angle_deg, 90.0);
@@ -1042,6 +1043,9 @@ mod tests {
             fill_gradient: Some(GradientSpec {
                 radial: false,
                 angle_deg: 90.0,
+                center_x: 0,
+                center_y: 0,
+                step: 255,
                 stops: vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)],
             }),
             border_color: 0xFFFF_FFFF,

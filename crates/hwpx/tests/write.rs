@@ -2940,6 +2940,9 @@ fn 셀배경_그러데이션_hwpx_왕복() {
         gradient: Some(hwp_model::GradientSpec {
             radial: false,
             angle_deg: 90.0,
+            center_x: 0,
+            center_y: 0,
+            step: 255,
             stops: vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)],
         }),
         ..hwp_model::BorderFill::default()

@@ -1438,12 +1438,51 @@ fn has_synthesizable_picture(doc: &Document) -> bool {
     doc.sections.iter().flat_map(|s| &s.paragraphs).any(in_para)
 }
 
+/// Resolves a `BinRef` to the index into `bin_names` (and the parallel `bin_streams`) it
+/// actually names. `BinRef::Id` mirrors `Document::resolve_bin`'s naming rule
+/// (`BIN{storage_id:04X}.{ext}` from `bin_data[id-1]`) and matches it against each name's
+/// trailing path component case-insensitively, since a stream name may or may not carry a
+/// `BinData/` prefix. `BinRef::ItemRef` first tries the same exact trailing-component match,
+/// then falls back to the substring match hwpx-origin documents rely on today. There is no
+/// index-0 fallback: an unresolvable reference returns `None`, which the caller reports as a
+/// typed loss instead of silently substituting an unrelated stream.
+fn bin_stream_index(
+    bin_names: &[String],
+    bin_data: &[hwp_model::BinDataItem],
+    bin_ref: &hwp_model::BinRef,
+) -> Option<usize> {
+    fn trailing(name: &str) -> &str {
+        name.rsplit('/').next().unwrap_or(name)
+    }
+    match bin_ref {
+        hwp_model::BinRef::Id(id) => {
+            let item = bin_data.get((id.0 as usize).checked_sub(1)?)?;
+            let storage_id = item.storage_id?;
+            let ext = item.extension.as_deref().unwrap_or("");
+            let name = format!("BIN{storage_id:04X}.{ext}");
+            bin_names
+                .iter()
+                .position(|n| trailing(n).eq_ignore_ascii_case(&name))
+        }
+        hwp_model::BinRef::ItemRef(s) if !s.is_empty() => bin_names
+            .iter()
+            .position(|n| trailing(n).eq_ignore_ascii_case(s))
+            .or_else(|| bin_names.iter().position(|n| n.contains(s.as_str()))),
+        _ => None,
+    }
+}
+
 /// 합성 문서의 hwpx 출신 이미지에 도형 레코드 + BIN_DATA 항목을 채운다.
 fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     let bin_names: Vec<String> = doc.bin_streams.iter().map(|b| b.name.clone()).collect();
     if bin_names.is_empty() {
         return;
     }
+    // Snapshot header.bin_data before the mutable section walk below, so each
+    // picture's BinRef can be resolved against the BIN_DATA table it actually
+    // named without borrowing `doc` immutably and mutably at once.
+    let bin_data_snapshot = doc.header.bin_data.clone();
+    let bin_index = |r: &hwp_model::BinRef| bin_stream_index(&bin_names, &bin_data_snapshot, r);
     // 각 이미지의 원본 픽셀 크기(자르기·picture_effect의 자연 크기 산출용).
     let bin_dims: Vec<Option<(u32, u32)>> = doc
         .bin_streams
@@ -1490,6 +1529,7 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
                 para,
                 &bin_names,
                 &bin_dims,
+                &bin_index,
                 &mut assigned,
                 &mut next_id,
                 &mut inst,
@@ -1554,6 +1594,7 @@ fn synth_pictures_para(
     para: &mut Paragraph,
     bin_names: &[String],
     bin_dims: &[Option<(u32, u32)>],
+    bin_index: &dyn Fn(&hwp_model::BinRef) -> Option<usize>,
     assigned: &mut [Option<u16>],
     next_id: &mut u16,
     inst: &mut u32,
@@ -1564,16 +1605,12 @@ fn synth_pictures_para(
     for control in &mut para.controls {
         match control {
             Control::Picture(p) if p.extras.is_empty() => {
-                let item_ref = match &p.bin_ref {
-                    hwp_model::BinRef::ItemRef(s) => s.clone(),
-                    hwp_model::BinRef::Id(_) => String::new(),
-                };
-                // ItemRef가 파일명에 들어 있는 스트림, 없으면 첫 스트림. 같은
-                // 이미지를 여러 그림이 참조할 수 있으므로 배타 사용하지 않는다.
-                let pick = bin_names
-                    .iter()
-                    .position(|n| !item_ref.is_empty() && n.contains(&item_ref))
-                    .or(if bin_names.is_empty() { None } else { Some(0) });
+                // Resolve the stream this picture actually references: BinRef::Id
+                // through header.bin_data's storage_id naming, BinRef::ItemRef by
+                // exact name then substring. No index-0 fallback - an unresolvable
+                // reference is a reported loss below, never a silently substituted
+                // image (a different logo, seal, signature or photograph).
+                let pick = bin_index(&p.bin_ref);
                 let Some(idx) = pick else {
                     warnings.loss(
                         PreservationCode::BinaryAssetRemoved,
@@ -1675,8 +1712,8 @@ fn synth_pictures_para(
                 for cell in &mut t.cells {
                     for cp in &mut cell.paragraphs {
                         synth_pictures_para(
-                            cp, bin_names, bin_dims, assigned, next_id, inst, new_items, renames,
-                            warnings,
+                            cp, bin_names, bin_dims, bin_index, assigned, next_id, inst, new_items,
+                            renames, warnings,
                         );
                     }
                 }
@@ -1715,8 +1752,8 @@ fn synth_pictures_para(
                 for list in &mut g.paragraph_lists {
                     for lp in &mut list.paragraphs {
                         synth_pictures_para(
-                            lp, bin_names, bin_dims, assigned, next_id, inst, new_items, renames,
-                            warnings,
+                            lp, bin_names, bin_dims, bin_index, assigned, next_id, inst, new_items,
+                            renames, warnings,
                         );
                     }
                 }
@@ -3948,6 +3985,165 @@ mod tests {
                 && event.disposition == PreservationDisposition::Removed
                 && event.count == 1
         }));
+        std::fs::remove_file(output).unwrap();
+    }
+
+    // --- FIDL-02 reproduction: bin_stream_index resolution (01-02-PLAN.md Task 1) ---
+    //
+    // All three scenarios below share a non-empty `bin_streams`/`header.bin_data` (two
+    // distinguishable streams, storage_id 1 and 2) - this is what distinguishes them from
+    // `typed_write_report_accounts_for_missing_picture_payload` above, which covers the
+    // genuinely-empty-payload case and must keep passing unchanged.
+
+    fn picture_report_path(label: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("hwp5-{label}-{}-{unique}.hwp", std::process::id()))
+    }
+
+    /// Two bin streams with distinguishable payloads and two matching `BinDataItem`
+    /// entries (storage_id 1 and 2), so which stream the writer actually consumes for a
+    /// given `BinRef` is directly observable in the produced container.
+    fn picture_binref_repro_doc(bin_ref: hwp_model::BinRef) -> Document {
+        let mut doc = hwp_convert::from_markdown("picture report");
+        doc.bin_streams = vec![
+            hwp_model::BinStream {
+                name: "BIN0001.png".to_string(),
+                data: vec![1, 2, 3],
+            },
+            hwp_model::BinStream {
+                name: "BIN0002.png".to_string(),
+                data: vec![4, 5, 6],
+            },
+        ];
+        doc.header.bin_data = vec![
+            hwp_model::BinDataItem {
+                attr: 1,
+                storage_id: Some(1),
+                extension: Some("png".to_string()),
+                ..Default::default()
+            },
+            hwp_model::BinDataItem {
+                attr: 1,
+                storage_id: Some(2),
+                extension: Some("png".to_string()),
+                ..Default::default()
+            },
+        ];
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Picture(Picture {
+                common_data: Vec::new(),
+                width: hwp_model::HwpUnit(1000),
+                height: hwp_model::HwpUnit(500),
+                treat_as_char: true,
+                z_order: 0,
+                vert_offset: 0,
+                horz_offset: 0,
+                description: None,
+                crop: None,
+                flip: 0,
+                rotation: None,
+                brightness: 0,
+                contrast: 0,
+                effect_flags: 0,
+                effects_raw: Vec::new(),
+                caption: None,
+                bin_ref,
+                extras: Vec::new(),
+            }));
+        doc
+    }
+
+    /// The writer mints a fresh `storage_id` for a synthesized picture (`next_id` starts
+    /// one past the highest existing `storage_id`, here 2), so a resolved picture's bytes
+    /// always land at this fixed path regardless of which input stream fed it. `None`
+    /// means no synthesized stream was embedded at all.
+    fn synthesized_bin_stream_bytes(path: &Path) -> Option<Vec<u8>> {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        let raw = container.read_stream_raw("/BinData/BIN0003.png").ok()?;
+        Some(decompress(&raw, "/BinData/BIN0003.png").unwrap())
+    }
+
+    #[test]
+    fn picture_binref_id_resolves_to_its_own_stream() {
+        // S1: BinRef::Id(2) names bin_streams[1] (storage_id 2) through header.bin_data,
+        // not bin_streams[0].
+        let doc = picture_binref_repro_doc(hwp_model::BinRef::Id(hwp_model::BinDataId(2)));
+        let output = picture_report_path("picture-binref-id");
+
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+
+        let bytes = synthesized_bin_stream_bytes(&output)
+            .expect("a resolvable BinRef::Id must still synthesize a picture stream");
+        assert_eq!(
+            bytes,
+            vec![4, 5, 6],
+            "BinRef::Id(2) names bin_streams[1] (storage_id 2); the writer must not fall \
+             back to bin_streams[0]. Preservation events: {:?}",
+            report.preservation.events
+        );
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn picture_itemref_resolves_to_the_named_stream() {
+        // S3: BinRef::ItemRef("BIN0002.png") already matches the existing substring
+        // heuristic today - a regression guard, not a red-before-fix case.
+        let doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef("BIN0002.png".to_string()));
+        let output = picture_report_path("picture-itemref");
+
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+
+        let bytes = synthesized_bin_stream_bytes(&output)
+            .expect("a resolvable ItemRef must synthesize a picture stream");
+        assert_eq!(
+            bytes,
+            vec![4, 5, 6],
+            "ItemRef(\"BIN0002.png\") must consume bin_streams[1]. Preservation events: {:?}",
+            report.preservation.events
+        );
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn picture_with_unresolvable_reference_reports_binary_asset_removed() {
+        // S2: BinRef::ItemRef names no existing stream. Today this silently falls back to
+        // bin_streams[0] instead of reporting a loss - the tangled defect this plan closes.
+        let doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef(
+            "not-in-this-document.png".to_string(),
+        ));
+        let output = picture_report_path("picture-unresolvable");
+
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+
+        assert!(
+            report.preservation.events.iter().any(|event| {
+                event.code == PreservationCode::BinaryAssetRemoved
+                    && event.resource == PreservationResourceKind::BinaryAsset
+                    && event.disposition == PreservationDisposition::Removed
+                    && event.count == 1
+            }),
+            "an unresolvable reference must be reported, not silently backfilled with \
+             bin_streams[0]: {:?}",
+            report.preservation.events
+        );
+        assert!(
+            report
+                .preservation
+                .events
+                .iter()
+                .any(|event| event.code == PreservationCode::PictureControlRemoved),
+            "the picture control itself still has no payload to write once its bin \
+             reference does not resolve: {:?}",
+            report.preservation.events
+        );
+        assert!(
+            synthesized_bin_stream_bytes(&output).is_none(),
+            "no picture stream should be synthesized for an unresolvable reference"
+        );
         std::fs::remove_file(output).unwrap();
     }
 

@@ -197,9 +197,12 @@ fn write_border_fills(out: &mut String, header: &DocHeader) {
             // GG-7 gradient fill in the same form emitted for shapes.
             let _ = write!(
                 out,
-                r##"<hc:fillBrush><hc:gradation type="{}" angle="{}" centerX="0" centerY="0" step="255" colorNum="{}" stepCenter="50" alpha="0">"##,
+                r##"<hc:fillBrush><hc:gradation type="{}" angle="{}" centerX="{}" centerY="{}" step="{}" colorNum="{}" stepCenter="50" alpha="0">"##,
                 if g.radial { "RADIAL" } else { "LINEAR" },
                 g.angle_deg.round() as i32,
+                g.center_x,
+                g.center_y,
+                g.step,
                 g.stops.len(),
             );
             for (_, c) in &g.stops {

@@ -1,24 +1,60 @@
-//! 탭 스톱 — TAB_DEF raw 바이트를 렌더 시점에 파싱한다(shape_draw가 도형 raw를
-//! 파싱하듯). v1은 왼쪽 탭 위치만 사용하고, 명시 스톱이 없으면 기본 간격으로 둔다.
+//! Tab stops — the semantic model (`DocHeader::tab_stops`) is the source of truth for a
+//! paragraph's explicit tab stops, since both the hwp5 and hwpx readers populate it. The raw
+//! `TAB_DEF` bytes (`DocHeader::tab_defs`, hwp5-only) are a fallback, used only when the semantic
+//! definition for the same `tab_def_id` is empty — the case where an hwp5 document's semantic
+//! parse (`hwp5::doc_info::parse_tab_def`) failed but the raw record still carries the data. Each
+//! stop carries its kind and leader (fill) code alongside its position.
 
 use hwp_model::{Document, Paragraph};
 
-/// 문단의 명시 탭 스톱 위치(pt, 오름차순). 정의가 없으면 빈 벡터(기본 간격 사용).
-pub fn tab_stops(doc: &Document, para: &Paragraph) -> Vec<f32> {
+/// One tab stop: position in points, tab kind, and leader (fill) code.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabStop {
+    /// Tab position in points.
+    pub pos_pt: f32,
+    /// Tab kind: 0 left, 1 right, 2 center, 3 decimal.
+    pub kind: u8,
+    /// Leader/fill line-type code (border-line-style family). 0 means no leader.
+    pub fill: u8,
+}
+
+/// A paragraph's explicit tab stops (pt, ascending). Empty means "use the default interval".
+pub fn tab_stops(doc: &Document, para: &Paragraph) -> Vec<TabStop> {
     let pid = doc
         .header
         .para_shapes
         .get(para.para_shape.0 as usize)
         .map_or(0, |p| p.tab_def_id);
-    match doc.header.tab_defs.get(pid as usize) {
-        Some(entry) => parse_tab_stops(&entry.data),
-        None => Vec::new(),
-    }
+    let mut stops: Vec<TabStop> = match doc.header.tab_stops.get(pid as usize) {
+        Some(def) if !def.items.is_empty() => def
+            .items
+            .iter()
+            .filter(|item| item.pos > 0)
+            .map(|item| TabStop {
+                pos_pt: item.pos as f32 / 100.0,
+                kind: item.kind,
+                fill: item.fill,
+            })
+            .collect(),
+        // Semantic definition missing or empty: fall back to the raw hwp5 bytes for the same
+        // tab_def_id (covers an hwp5 document whose semantic parse produced an empty TabDef while
+        // tab_defs still carries the original bytes).
+        _ => match doc.header.tab_defs.get(pid as usize) {
+            Some(entry) => parse_tab_stops(&entry.data),
+            None => Vec::new(),
+        },
+    };
+    stops.sort_by(|a, b| {
+        a.pos_pt
+            .partial_cmp(&b.pos_pt)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    stops
 }
 
 /// TAB_DEF raw: `u32 attr, i32 count, count×(i32 pos HWPUNIT, u8 type, u8 fill, u16 resv)`.
-/// 왼쪽 탭(type 무관, v1) 위치만 pt로 모아 오름차순 정렬한다.
-fn parse_tab_stops(raw: &[u8]) -> Vec<f32> {
+/// Used only as the hwp5-origin fallback when the semantic parse produced an empty definition.
+fn parse_tab_stops(raw: &[u8]) -> Vec<TabStop> {
     if raw.len() < 8 {
         return Vec::new();
     }
@@ -30,20 +66,67 @@ fn parse_tab_stops(raw: &[u8]) -> Vec<f32> {
             break;
         }
         let pos = i32::from_le_bytes([raw[base], raw[base + 1], raw[base + 2], raw[base + 3]]);
-        if pos > 0 {
-            out.push(pos as f32 / 100.0);
+        if pos <= 0 {
+            continue;
         }
+        // The type/fill bytes are bounds-checked separately from the position; a truncated
+        // entry that has a valid position but no room for them just falls back to 0/0.
+        let (kind, fill) = if base + 6 <= raw.len() {
+            (raw[base + 4], raw[base + 5])
+        } else {
+            (0, 0)
+        };
+        out.push(TabStop {
+            pos_pt: pos as f32 / 100.0,
+            kind,
+            fill,
+        });
     }
-    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
-/// 현재 위치 rel(줄 시작 기준 pt)에서 다음 탭 위치. 명시 스톱 우선, 없으면 기본 간격.
-pub fn next_tab(tabs: &[f32], rel: f32, default_interval: f32) -> f32 {
-    if let Some(&t) = tabs.iter().find(|&&t| t > rel + 0.01) {
-        t
+/// Current position `rel` (pt, relative to line start) -> next tab position, plus the stop
+/// landed on when it was an explicit one (`None` when the default grid interval was used).
+///
+/// Explicit stops win: the first stop strictly greater than `rel` (with the existing epsilon) is
+/// selected, so a tab landing exactly on a stop advances past it rather than standing still.
+pub fn next_tab_at(tabs: &[TabStop], rel: f32, default_interval: f32) -> (f32, Option<TabStop>) {
+    if let Some(&stop) = tabs.iter().find(|t| t.pos_pt > rel + 0.01) {
+        (stop.pos_pt, Some(stop))
     } else {
-        (rel / default_interval).floor() * default_interval + default_interval
+        (
+            (rel / default_interval).floor() * default_interval + default_interval,
+            None,
+        )
+    }
+}
+
+/// Current position `rel` (pt, relative to line start) -> next tab position. Explicit stops win,
+/// falling back to the default grid interval.
+pub fn next_tab(tabs: &[TabStop], rel: f32, default_interval: f32) -> f32 {
+    next_tab_at(tabs, rel, default_interval).0
+}
+
+/// The x (relative to the same origin as `stop_pt`) at which a tab-following segment must
+/// start so it lands on `stop_pt` according to `kind`.
+///
+/// - kind 0 (left): the segment starts at the stop, unchanged from before kind-aware placement.
+/// - kind 1 (right): the segment ends at the stop.
+/// - kind 2 (center): the segment is centered on the stop.
+/// - kind 3 (decimal): `decimal_offset` (the width up to the first decimal separator) lands on
+///   the stop; with no separator (`None`) this behaves like a right tab.
+/// - any other kind: treated as left rather than dropping the tab.
+pub fn tab_segment_offset(
+    kind: u8,
+    stop_pt: f32,
+    segment_width: f32,
+    decimal_offset: Option<f32>,
+) -> f32 {
+    match kind {
+        1 => stop_pt - segment_width,
+        2 => stop_pt - segment_width / 2.0,
+        3 => stop_pt - decimal_offset.unwrap_or(segment_width),
+        _ => stop_pt,
     }
 }
 
@@ -51,7 +134,7 @@ pub fn next_tab(tabs: &[f32], rel: f32, default_interval: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// attr(4) + count=2 + (5000pt? no, HWPUNIT) 두 탭(100pt, 200pt).
+    /// attr(4) + count=2, two tabs (100pt left, 200pt center).
     #[test]
     fn 탭_파싱() {
         let mut raw = Vec::new();
@@ -64,23 +147,236 @@ mod tests {
             raw.extend_from_slice(&0u16.to_le_bytes()); // reserved
         }
         let stops = parse_tab_stops(&raw);
-        assert_eq!(stops, vec![100.0, 200.0]); // HWPUNIT/100 = pt
+        assert_eq!(
+            stops,
+            vec![
+                TabStop {
+                    pos_pt: 100.0,
+                    kind: 0,
+                    fill: 0
+                },
+                TabStop {
+                    pos_pt: 200.0,
+                    kind: 2,
+                    fill: 0
+                },
+            ]
+        ); // HWPUNIT/100 = pt
     }
 
     #[test]
     fn 빈_정의는_빈_스톱() {
         assert!(parse_tab_stops(&[]).is_empty());
-        assert!(parse_tab_stops(&0u32.to_le_bytes()).is_empty()); // 8바이트 미만
+        assert!(parse_tab_stops(&0u32.to_le_bytes()).is_empty()); // fewer than 8 bytes
     }
 
     #[test]
     fn next_tab_명시_우선_기본_폴백() {
-        let tabs = [100.0, 200.0];
-        assert_eq!(next_tab(&tabs, 50.0, 40.0), 100.0); // 다음 명시 스톱
+        let tabs = [
+            TabStop {
+                pos_pt: 100.0,
+                kind: 0,
+                fill: 0,
+            },
+            TabStop {
+                pos_pt: 200.0,
+                kind: 0,
+                fill: 0,
+            },
+        ];
+        assert_eq!(next_tab(&tabs, 50.0, 40.0), 100.0); // next explicit stop
         assert_eq!(next_tab(&tabs, 150.0, 40.0), 200.0);
-        // 마지막 스톱 너머 → 기본 간격.
+        // Past the last stop -> default interval.
         assert_eq!(next_tab(&tabs, 250.0, 40.0), 280.0); // floor(250/40)*40+40
-        // 명시 없음 → 전부 기본 간격.
+        // No explicit stops -> default interval throughout.
         assert_eq!(next_tab(&[], 10.0, 40.0), 40.0);
+    }
+
+    /// An HWPX-origin document (semantic tab_stops populated, tab_defs never touched) yields
+    /// its stops, kind and fill straight from the semantic model.
+    #[test]
+    fn hwpx_origin_tab_stops_are_read_from_the_semantic_model() {
+        let mut doc = Document::default();
+        doc.header.para_shapes.push(hwp_model::ParaShape::default());
+        doc.header.tab_stops.push(hwp_model::TabDef {
+            attr: 0,
+            items: vec![
+                hwp_model::TabItem {
+                    pos: 10000,
+                    kind: 1,
+                    fill: 2,
+                },
+                hwp_model::TabItem {
+                    pos: 20000,
+                    kind: 0,
+                    fill: 0,
+                },
+            ],
+        });
+        // tab_defs (hwp5-only raw) stays empty - the hwpx reader never populates it.
+        let para = Paragraph::default();
+
+        assert_eq!(
+            tab_stops(&doc, &para),
+            vec![
+                TabStop {
+                    pos_pt: 100.0,
+                    kind: 1,
+                    fill: 2
+                },
+                TabStop {
+                    pos_pt: 200.0,
+                    kind: 0,
+                    fill: 0
+                },
+            ]
+        );
+    }
+
+    /// An hwp5-origin document whose semantic parse failed (empty TabDef pushed to keep
+    /// tab_stops/tab_defs aligned) still yields its stops from the raw tab_defs bytes. Also
+    /// pins the DoS bound (T-1-06): a declared count wildly exceeding the actual data yields
+    /// only the entries the bytes actually contain, never panicking or over-allocating.
+    #[test]
+    fn hwp5_origin_falls_back_to_raw_tab_defs_when_semantic_is_empty() {
+        let mut doc = Document::default();
+        doc.header.para_shapes.push(hwp_model::ParaShape::default());
+        doc.header.tab_stops.push(hwp_model::TabDef::default());
+
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&0u32.to_le_bytes()); // attr
+        raw.extend_from_slice(&1_000_000i32.to_le_bytes()); // count far exceeds the real data
+        for (pos, kind, fill) in [(5000i32, 0u8, 0u8), (15000, 1, 3)] {
+            raw.extend_from_slice(&pos.to_le_bytes());
+            raw.push(kind);
+            raw.push(fill);
+            raw.extend_from_slice(&0u16.to_le_bytes());
+        }
+        doc.header.tab_defs.push(hwp_model::RawEntry {
+            data: raw,
+            children: Vec::new(),
+        });
+        let para = Paragraph::default();
+
+        assert_eq!(
+            tab_stops(&doc, &para),
+            vec![
+                TabStop {
+                    pos_pt: 50.0,
+                    kind: 0,
+                    fill: 0
+                },
+                TabStop {
+                    pos_pt: 150.0,
+                    kind: 1,
+                    fill: 3
+                },
+            ]
+        );
+    }
+
+    /// Landing exactly on a stop does not select it - the next stop strictly greater wins,
+    /// falling back to the next stop or the default grid.
+    #[test]
+    fn tab_stop_exactly_at_current_x_is_not_selected() {
+        let stops = [
+            TabStop {
+                pos_pt: 100.0,
+                kind: 0,
+                fill: 0,
+            },
+            TabStop {
+                pos_pt: 150.0,
+                kind: 1,
+                fill: 2,
+            },
+        ];
+        let (position, stop) = next_tab_at(&stops, 100.0, 40.0);
+        assert_eq!(position, 150.0);
+        assert_eq!(
+            stop,
+            Some(TabStop {
+                pos_pt: 150.0,
+                kind: 1,
+                fill: 2
+            })
+        );
+
+        // With no further stop past it, falls through to the default grid.
+        let (position, stop) = next_tab_at(&stops[..1], 100.0, 40.0);
+        assert_eq!(position, 120.0); // floor(100/40)*40+40
+        assert!(stop.is_none());
+    }
+
+    /// A paragraph whose tab_def_id names no definition (in either tab_stops or tab_defs)
+    /// returns no explicit stops, so every tab falls back to the default grid.
+    #[test]
+    fn empty_tab_definition_uses_the_default_interval() {
+        let mut doc = Document::default();
+        doc.header.para_shapes.push(hwp_model::ParaShape {
+            tab_def_id: 5, // no definition at index 5 in either table
+            ..Default::default()
+        });
+        let para = Paragraph::default();
+
+        let stops = tab_stops(&doc, &para);
+        assert!(stops.is_empty());
+
+        let (position, stop) = next_tab_at(&stops, 10.0, 40.0);
+        assert_eq!(position, 40.0);
+        assert!(stop.is_none());
+    }
+
+    /// Two stops declared at the same position keep document order (stable sort, not
+    /// sort_unstable), and the one landed on is the first-declared.
+    #[test]
+    fn equal_position_tab_stops_keep_document_order() {
+        let mut doc = Document::default();
+        doc.header.para_shapes.push(hwp_model::ParaShape::default());
+        doc.header.tab_stops.push(hwp_model::TabDef {
+            attr: 0,
+            items: vec![
+                hwp_model::TabItem {
+                    pos: 10000,
+                    kind: 0,
+                    fill: 0,
+                },
+                hwp_model::TabItem {
+                    pos: 10000,
+                    kind: 2,
+                    fill: 2,
+                },
+            ],
+        });
+        let para = Paragraph::default();
+
+        let stops = tab_stops(&doc, &para);
+        assert_eq!(
+            stops,
+            vec![
+                TabStop {
+                    pos_pt: 100.0,
+                    kind: 0,
+                    fill: 0
+                },
+                TabStop {
+                    pos_pt: 100.0,
+                    kind: 2,
+                    fill: 2
+                },
+            ]
+        );
+
+        // Landing before the shared position selects the first-declared stop.
+        let (position, stop) = next_tab_at(&stops, 50.0, 40.0);
+        assert_eq!(position, 100.0);
+        assert_eq!(
+            stop,
+            Some(TabStop {
+                pos_pt: 100.0,
+                kind: 0,
+                fill: 0
+            })
+        );
     }
 }

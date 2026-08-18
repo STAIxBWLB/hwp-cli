@@ -1431,9 +1431,12 @@ fn write_shape_element(
         // reader parse_gradation의 역: type/angle 속성 + color 자식들.
         let _ = write!(
             out,
-            r##"<hc:fillBrush><hc:gradation type="{}" angle="{}" centerX="0" centerY="0" step="255" colorNum="{}" stepCenter="50" alpha="0">"##,
+            r##"<hc:fillBrush><hc:gradation type="{}" angle="{}" centerX="{}" centerY="{}" step="{}" colorNum="{}" stepCenter="50" alpha="0">"##,
             if gr.radial { "RADIAL" } else { "LINEAR" },
             gr.angle_deg.round() as i32,
+            gr.center_x,
+            gr.center_y,
+            gr.step,
             gr.stops.len(),
         );
         for (_, c) in &gr.stops {

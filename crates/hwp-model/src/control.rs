@@ -522,18 +522,31 @@ fn is_false(v: &bool) -> bool {
 pub struct GradientSpec {
     pub radial: bool,
     pub angle_deg: f32,
+    /// HWP5 gradation horizontal center (`cx`, `INT32`) / OWPML `hc:gradation@centerX`.
+    #[serde(default)]
+    pub center_x: i32,
+    /// HWP5 gradation vertical center (`cy`, `INT32`) / OWPML `hc:gradation@centerY`.
+    #[serde(default)]
+    pub center_y: i32,
+    /// HWP5 gradation spread (`INT32`) / OWPML `hc:gradation@step`.
+    #[serde(default = "default_gradient_step")]
+    pub step: i32,
     /// (위치 0..1, COLORREF). 위치 오름차순.
     pub stops: Vec<(f32, u32)>,
 }
 
+/// Default `GradientSpec::step` (OWPML `hc:gradation@step`) when the source
+/// document genuinely carries no value for it.
+fn default_gradient_step() -> i32 {
+    255
+}
+
 impl GradientSpec {
     /// Parses an HWP5 table 28 gradient block: type, angle, horizontal center,
-    /// vertical center, spread, and color count as `i16`; positions as
-    /// `INT32[num]` when `num > 2`; then `COLORREF[num]`. Returns the parsed
-    /// specification and consumed byte count.
+    /// vertical center, spread, and color count; positions as `INT32[num]`
+    /// when `num > 2`; then `COLORREF[num]`. Returns the parsed specification
+    /// and consumed byte count.
     pub fn parse_hwp5(d: &[u8], off: usize) -> Option<(Self, usize)> {
-        let rd_u16 =
-            |o: usize| -> Option<u16> { d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]])) };
         let rd_i32 = |o: usize| -> Option<i32> {
             d.get(o..o + 4)
                 .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -542,13 +555,21 @@ impl GradientSpec {
             d.get(o..o + 4)
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         };
-        let gtype = rd_u16(off)? as i16;
-        let angle = rd_u16(off + 2)? as i16 as f32;
-        let num = rd_u16(off + 10)? as usize;
+        // Field widths verified against a genuine Hancom-saved HWP 5.1.1.0 file: a 1-byte
+        // gradation type followed by INT32 angle / centre-x / centre-y / step / colour count.
+        // The record is self-describing: for the reference file the 35-byte block decodes as
+        // 1 + 4*4 + 4 + 2*4 + 4 + 2, which is exactly its length.
+        let gtype = d.get(off).copied()? as i16;
+        let angle = rd_i32(off + 1)? as f32;
+        let center_x = rd_i32(off + 5)?;
+        let center_y = rd_i32(off + 9)?;
+        let step = rd_i32(off + 13)?;
+        let num = rd_i32(off + 17)?;
         if !(1..=16).contains(&num) {
             return None;
         }
-        let mut cur = off + 12;
+        let num = num as usize;
+        let mut cur = off + 21;
         let positions: Vec<f32> = if num > 2 {
             let mut v = Vec::with_capacity(num);
             for i in 0..num {
@@ -569,17 +590,88 @@ impl GradientSpec {
         }
         cur += num * 4;
         stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // Preserve the established shape renderer mapping where type 1 is radial.
-        // Table 30 can be read as type 2 being radial; changing this requires
-        // comparison against a genuine Hangul-authored file.
+        // Gradation type 1 is LINEAR, not radial. Established by comparing a
+        // Hancom-saved reference document against our conversion of it: the
+        // reference renders a clean left-to-right fade in Hancom and its type
+        // byte is 1, while treating that as radial made the converted shape
+        // render as a corner-weighted blob. The same record also carries a
+        // meaningful `angle`, which only a linear gradient uses.
+        //
+        // Type 2 as radial follows the Table 30 reading and is NOT yet confirmed
+        // against a genuine file - no radial reference document exists in the
+        // fixture set. Any other type falls back to linear rather than guessing.
         Some((
             GradientSpec {
-                radial: gtype == 1,
+                radial: gtype == 2,
                 angle_deg: angle,
+                center_x,
+                center_y,
+                step,
                 stops,
             },
             cur - off,
         ))
+    }
+}
+
+#[cfg(test)]
+mod gradient_spec_tests {
+    use super::GradientSpec;
+
+    /// Builds a gradation block in the layout a genuine Hancom-saved file uses:
+    /// 1-byte type, then INT32 angle / center_x / center_y / spread / num, then
+    /// `COLORREF[num]` (no position array since num <= 2).
+    fn gradation_block(gtype: u8, angle: i32, cx: i32, cy: i32, spread: i32) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.push(gtype);
+        d.extend_from_slice(&angle.to_le_bytes());
+        d.extend_from_slice(&cx.to_le_bytes());
+        d.extend_from_slice(&cy.to_le_bytes());
+        d.extend_from_slice(&spread.to_le_bytes());
+        d.extend_from_slice(&2i32.to_le_bytes()); // num
+        d.extend_from_slice(&0xFF0000u32.to_le_bytes());
+        d.extend_from_slice(&0x0000FFu32.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn gradient_spec_parse_hwp5_reads_center_and_step() {
+        let d = gradation_block(0, 45, 30, 70, 120);
+        let (gr, consumed) = GradientSpec::parse_hwp5(&d, 0).unwrap();
+        assert_eq!(gr.center_x, 30);
+        assert_eq!(gr.center_y, 70);
+        assert_eq!(gr.step, 120);
+        assert_eq!(gr.angle_deg, 45.0);
+        assert_eq!(consumed, d.len());
+    }
+
+    /// The exact 35-byte gradation tail of a genuine Hancom-saved HWP 5.1.1.0
+    /// document (linear, 90 degrees, centre 15/85, spread 200, two colours).
+    /// Before this layout was corrected the parser read `num` as 0 here and
+    /// bailed, so every real gradient was silently dropped.
+    #[test]
+    fn gradient_spec_parse_hwp5_reads_a_genuine_hancom_block() {
+        let d: [u8; 35] = [
+            0x01, 0x5a, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x55, 0x00, 0x00, 0x00, 0xc8,
+            0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x32, 0x00,
+        ];
+        let (gr, _) = GradientSpec::parse_hwp5(&d, 0).expect("genuine gradation must parse");
+        assert_eq!(gr.angle_deg, 90.0);
+        assert_eq!(gr.center_x, 15);
+        assert_eq!(gr.center_y, 85);
+        assert_eq!(gr.step, 200);
+        assert_eq!(gr.stops.len(), 2);
+        // Type byte is 1 in the reference document and Hancom renders it linear.
+        assert!(!gr.radial, "genuine type 1 must be linear, not radial");
+    }
+
+    #[test]
+    fn gradient_spec_parse_hwp5_truncated_returns_none() {
+        let full = gradation_block(0, 45, 30, 70, 120);
+        // Truncate inside the centre/spread region (past angle, before spread finishes).
+        let truncated = &full[..11];
+        assert!(GradientSpec::parse_hwp5(truncated, 0).is_none());
     }
 }
 
