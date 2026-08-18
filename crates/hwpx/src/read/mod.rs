@@ -36,6 +36,10 @@ pub fn read_structure(path: &Path) -> Result<ReadResult> {
 
 fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult> {
     let mut pkg = HwpxPackage::open(path)?;
+    // GATE-02: refuse an encrypted package before the integrity sweep or any content
+    // part is read. An encrypted package can fail integrity for reasons unrelated to
+    // the user's actual problem; the typed encryption message is the one that helps.
+    pkg.check_body_readable()?;
     // 파서가 직접 사용하지 않는 Preview/BinData/확장 파트도 손상 여부를 놓치지
     // 않는다. 실제 바이트는 보관하지 않으며, 이후 필요한 파트만 다시 읽는다.
     pkg.verify_integrity()?;

@@ -269,9 +269,29 @@ impl HwpxPackage {
     /// heuristic on a non-essential entry must not block one that is otherwise fine
     /// (T-2-13, deliberate fail-open, recorded here per the plan's own requirement).
     pub fn check_body_readable(&mut self) -> Result<()> {
-        // RED stub for the TDD gate — replaced by the real detection walk below
-        // once the tests in `mod tests` are confirmed to fail for the right reason.
-        Ok(())
+        let xml = match self.read_entry_string("META-INF/manifest.xml") {
+            Ok(xml) => xml,
+            Err(HwpxError::EntryNotFound(_)) => return Ok(()),
+            // Any other error (a limit violation, an archive error) surfaces as itself.
+            Err(other) => return Err(other),
+        };
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    // Match the element's local name, not a substring of the raw text,
+                    // so a namespace prefix change does not defeat detection and a
+                    // comment/text mention of the word does not trigger a false refusal.
+                    if e.local_name().as_ref() == b"encryption-data" {
+                        return Err(HwpxError::Encrypted);
+                    }
+                }
+                Ok(Event::Eof) => return Ok(()),
+                Ok(_) => {}
+                // Fail-open on a malformed manifest: see the doc comment above (T-2-13).
+                Err(_) => return Ok(()),
+            }
+        }
     }
 
     /// `version.xml` 루트 요소의 속성들을 (이름, 값) 쌍으로 반환한다.
@@ -847,7 +867,8 @@ mod tests {
         let file = std::fs::File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         for (name, data) in entries {
-            let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
             zip.start_file(*name, options).unwrap();
             zip.write_all(data).unwrap();
         }
@@ -875,10 +896,7 @@ mod tests {
 
     #[test]
     fn manifest_with_an_encryption_element_refuses() {
-        let result = open_and_check(
-            "encrypted",
-            Some(ENCRYPTED_MANIFEST.as_bytes()),
-        );
+        let result = open_and_check("encrypted", Some(ENCRYPTED_MANIFEST.as_bytes()));
         assert!(matches!(result, Err(HwpxError::Encrypted)), "{result:?}");
     }
 
