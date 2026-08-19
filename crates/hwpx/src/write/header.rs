@@ -567,9 +567,25 @@ fn write_para_properties(out: &mut String, header: &DocHeader) {
         } else {
             r##"<hh:heading type="NONE" idRef="0" level="0"/>"##.to_string()
         };
+        // 줄나눔 설정: read/header.rs의 비트 매핑의 역방향(§1013 breakSetting).
+        // bit7 clear가 정상값(BREAK_WORD)이라 unwritten ParaShape도 왕복이 맞는다.
+        let break_non_latin_word = if ps.break_non_latin_keep_word() {
+            "KEEP_WORD"
+        } else {
+            "BREAK_WORD"
+        };
+        let break_latin_word = match ps.break_latin_word() {
+            2 => "BREAK_WORD",
+            1 => "HYPHENATION",
+            _ => "KEEP_WORD",
+        };
+        let widow_orphan = u8::from(ps.widow_orphan());
+        let keep_with_next = u8::from(ps.keep_with_next());
+        let keep_lines = u8::from(ps.keep_lines());
+        let page_break_before = u8::from(ps.page_break_before());
         let _ = write!(
             out,
-            r##"<hh:paraPr id="{i}" tabPrIDRef="{tab_ref}" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0" textDir="LTR"><hh:align horizontal="{align}" vertical="BASELINE"/>{heading}<hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="BREAK_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/><hh:autoSpacing eAsianEng="0" eAsianNum="0"/><hh:margin><hc:intent value="{}" unit="HWPUNIT"/><hc:left value="{}" unit="HWPUNIT"/><hc:right value="{}" unit="HWPUNIT"/><hc:prev value="{}" unit="HWPUNIT"/><hc:next value="{}" unit="HWPUNIT"/></hh:margin><hh:lineSpacing type="{ls_type}" value="{ls_value}" unit="HWPUNIT"/><hh:border borderFillIDRef="{border_ref}" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/></hh:paraPr>"##,
+            r##"<hh:paraPr id="{i}" tabPrIDRef="{tab_ref}" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0" textDir="LTR"><hh:align horizontal="{align}" vertical="BASELINE"/>{heading}<hh:breakSetting breakLatinWord="{break_latin_word}" breakNonLatinWord="{break_non_latin_word}" widowOrphan="{widow_orphan}" keepWithNext="{keep_with_next}" keepLines="{keep_lines}" pageBreakBefore="{page_break_before}" lineWrap="BREAK"/><hh:autoSpacing eAsianEng="0" eAsianNum="0"/><hh:margin><hc:intent value="{}" unit="HWPUNIT"/><hc:left value="{}" unit="HWPUNIT"/><hc:right value="{}" unit="HWPUNIT"/><hc:prev value="{}" unit="HWPUNIT"/><hc:next value="{}" unit="HWPUNIT"/></hh:margin><hh:lineSpacing type="{ls_type}" value="{ls_value}" unit="HWPUNIT"/><hh:border borderFillIDRef="{border_ref}" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/></hh:paraPr>"##,
             ps.indent / 2,
             ps.margin_left / 2,
             ps.margin_right / 2,

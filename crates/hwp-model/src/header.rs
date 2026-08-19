@@ -280,6 +280,36 @@ impl ParaShape {
     pub fn head_level(&self) -> u8 {
         (((self.attr1 >> 25) & 0x7) as u8).clamp(1, 7)
     }
+
+    /// 한글 줄나눔 (bit7): true=KEEP_WORD(어절 단위), false=BREAK_WORD(글자 단위).
+    pub fn break_non_latin_keep_word(&self) -> bool {
+        (self.attr1 >> 7) & 1 != 0
+    }
+
+    /// 영어 줄나눔 (bit5~6): 0=KEEP_WORD, 1=HYPHENATION, 2=BREAK_WORD.
+    pub fn break_latin_word(&self) -> u8 {
+        ((self.attr1 >> 5) & 0x3) as u8
+    }
+
+    /// 고아/미망인 줄 보호 (bit16).
+    pub fn widow_orphan(&self) -> bool {
+        (self.attr1 >> 16) & 1 != 0
+    }
+
+    /// 다음 문단과 함께 (bit17).
+    pub fn keep_with_next(&self) -> bool {
+        (self.attr1 >> 17) & 1 != 0
+    }
+
+    /// 문단 보호 (bit18).
+    pub fn keep_lines(&self) -> bool {
+        (self.attr1 >> 18) & 1 != 0
+    }
+
+    /// 문단 앞에서 쪽 나눔 (bit19).
+    pub fn page_break_before(&self) -> bool {
+        (self.attr1 >> 19) & 1 != 0
+    }
 }
 
 /// 번호 매기기 한 수준의 형식.
