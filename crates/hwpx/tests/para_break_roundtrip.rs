@@ -11,6 +11,12 @@
 //!
 //! `crates/hwpx/src/read/header.rs` is the contract this test writes
 //! against; it is not modified by this plan.
+//!
+//! The corpus-gated proof against the genuine document that exposed the
+//! defect lives in `crates/hwp-cli/tests/para_break_corpus.rs` instead of
+//! here: it needs `hwp5::read_document` to parse a real `.hwp` file, and the
+//! `hwpx` crate does not depend on `hwp5` (hub-and-spoke, CLAUDE.md
+//! Invariant 1) - only `hwp-cli` legitimately depends on both.
 
 use std::path::PathBuf;
 
@@ -47,7 +53,11 @@ fn break_setting_survives_hwp5_to_hwpx_round_trip() {
 
     let shapes = &read.document.header.para_shapes;
     let paras = &read.document.sections[0].paragraphs;
-    assert_eq!(paras.len(), 2, "round trip must not drop or merge paragraphs");
+    assert_eq!(
+        paras.len(),
+        2,
+        "round trip must not drop or merge paragraphs"
+    );
 
     let bit7_set = |idx: usize| -> bool {
         shapes[paras[idx].para_shape.0 as usize].break_non_latin_keep_word()
