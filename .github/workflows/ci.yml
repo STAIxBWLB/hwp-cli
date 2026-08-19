@@ -82,13 +82,27 @@ jobs:
       # reporting "cancelled" without the oracle having run at all.
       - name: Install pinned Poppler tools
         shell: bash
-        # Worst case is 3 x (90s update + 90s install) + 2 x 10s sleep, ~9.5 min.
-        timeout-minutes: 12
+        # Worst case is 3 x (120s update + 120s install) + 2 x 10s sleep, ~12.3 min;
+        # with the mirror pinned and apt-level timeouts the normal case is seconds.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
+          # The runner's azure.archive.ubuntu.com mirror intermittently accepts the
+          # connection and then stalls: on #119 three 90s-bounded attempts each died
+          # inside the mirror's Ign/retry loop while apt's own fallback to
+          # archive.ubuntu.com was still in progress. Hosted 24.04 runners select
+          # repositories through mirror+file:/etc/apt/apt-mirrors.txt with the azure
+          # mirror first, so pin the official archive THERE (the .sources/sed line
+          # below is belt-and-braces for runners without the mirrorlist); apt's short
+          # per-request timeouts make any remaining dead mirror cost seconds, and the
+          # retry loop stays as backstop.
+          echo "https://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo sed -i 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          apt_get="sudo apt-get -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=1"
           installed=0
           for attempt in 1 2 3; do
-            if timeout 90 sudo apt-get update && timeout 90 sudo apt-get install --no-install-recommends -y poppler-utils; then
+            if timeout 120 $apt_get update && timeout 120 $apt_get install --no-install-recommends -y poppler-utils; then
               installed=1
               break
             fi
@@ -151,16 +165,26 @@ jobs:
       # cannot be installed (the render smoke tests need them).
       - name: Install Korean fonts (for rendering tests)
         if: runner.os == 'Linux'
-        # Must exceed the retry loop's worst case (3 x (90s update + 90s install)
-        # + 2 x 10s sleep, ~9.5 min); a smaller budget can cut the last retry short.
-        timeout-minutes: 12
+        # Must exceed the retry loop's worst case (3 x (120s update + 120s install)
+        # + 2 x 10s sleep, ~12.3 min); a smaller budget can cut the last retry short.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           # Per-attempt `timeout` matters: the failure mode seen twice was a HANG,
           # not a non-zero exit. Without it the first attempt never returns, the
           # step-level timeout kills the whole step, and the retries never run.
+          # The runner's azure.archive.ubuntu.com mirror intermittently accepts and
+          # then stalls (#119). Hosted 24.04 runners select repositories through
+          # mirror+file:/etc/apt/apt-mirrors.txt with the azure mirror first, so pin
+          # the official archive THERE (the .sources sed is belt-and-braces for
+          # runners without the mirrorlist), and cap apt's own per-request waits so
+          # any remaining dead mirror costs seconds, not the attempt.
+          echo "https://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo sed -i 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          apt_get="sudo apt-get -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=1"
           for attempt in 1 2 3; do
-            if timeout 90 sudo apt-get update && timeout 90 sudo apt-get install -y fonts-nanum; then
+            if timeout 120 $apt_get update && timeout 120 $apt_get install -y fonts-nanum; then
               exit 0
             fi
             echo "font install attempt ${attempt} failed or timed out; retrying" >&2
