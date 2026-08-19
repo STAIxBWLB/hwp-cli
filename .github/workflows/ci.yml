@@ -90,9 +90,13 @@ jobs:
           # The runner's azure.archive.ubuntu.com mirror intermittently accepts the
           # connection and then stalls: on #119 three 90s-bounded attempts each died
           # inside the mirror's Ign/retry loop while apt's own fallback to
-          # archive.ubuntu.com was still in progress. Pin the official archive and
-          # give apt short per-request timeouts so a dead mirror costs seconds
-          # instead of the whole attempt budget; the retry loop stays as backstop.
+          # archive.ubuntu.com was still in progress. Hosted 24.04 runners select
+          # repositories through mirror+file:/etc/apt/apt-mirrors.txt with the azure
+          # mirror first, so pin the official archive THERE (the .sources/sed line
+          # below is belt-and-braces for runners without the mirrorlist); apt's short
+          # per-request timeouts make any remaining dead mirror cost seconds, and the
+          # retry loop stays as backstop.
+          echo "https://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           sudo sed -i 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
             /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           apt_get="sudo apt-get -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=1"
@@ -170,8 +174,12 @@ jobs:
           # not a non-zero exit. Without it the first attempt never returns, the
           # step-level timeout kills the whole step, and the retries never run.
           # The runner's azure.archive.ubuntu.com mirror intermittently accepts and
-          # then stalls (#119), so pin the official archive and cap apt's own
-          # per-request waits; a dead mirror then costs seconds, not the attempt.
+          # then stalls (#119). Hosted 24.04 runners select repositories through
+          # mirror+file:/etc/apt/apt-mirrors.txt with the azure mirror first, so pin
+          # the official archive THERE (the .sources sed is belt-and-braces for
+          # runners without the mirrorlist), and cap apt's own per-request waits so
+          # any remaining dead mirror costs seconds, not the attempt.
+          echo "https://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           sudo sed -i 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
             /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           apt_get="sudo apt-get -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=1"
