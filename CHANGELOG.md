@@ -10,6 +10,39 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Hancom distribution documents (배포용문서) are now read: `hwp cat`, `hwp convert` and
+  `hwp render` accept them, decrypting the ViewText streams and feeding the result through
+  the normal read path, with the unwrap announced on stderr
+  ([#116](https://github.com/STAIxBWLB/hwp-cli/pull/116)). Verified against 11 genuine
+  corpus documents at HWP 5.1.0.1 and 5.1.1.0. The source-preserving edit path
+  (`hwp edit`, `hwp fill`) still refuses these documents — their content lives in ViewText
+  streams rather than BodyText, so there is no source structure to rewrite against; convert
+  to an ordinary format first to edit.
+- Protected documents are refused by name instead of failing downstream
+  ([#116](https://github.com/STAIxBWLB/hwp-cli/pull/116)): password-encrypted,
+  certificate-encrypted, certificate-DRM, DRM-protected and digitally signed HWP5 documents,
+  and password-encrypted HWPX packages (which previously surfaced as an XML parse error),
+  each with a message naming the condition and suggesting a remedy. The certificate, DRM and
+  signature branches are **unverified against a genuine file** — no such document was
+  obtainable, so what is established is that the header bits are parsed and branched on, not
+  that Hancom sets them in the situations their labels name.
+
+**Changed**
+
+- Writing a formerly-distribution document out to a different format produces an
+  unprotected output, because the writer synthesizes a fixed attribute value for every
+  output; the tool now warns about this on stderr at read time
+  ([#116](https://github.com/STAIxBWLB/hwp-cli/pull/116)). A same-format
+  `hwp convert --to hwp` remains a byte-identical copy and keeps the protection bit.
+
+**Fixed**
+
+- Paragraph line-break settings (`breakSetting`) now survive hwp5 → hwpx conversion: the
+  hwpx writer derives them from the paragraph shape instead of emitting a fixed literal
+  ([#116](https://github.com/STAIxBWLB/hwp-cli/pull/116)).
+
 ## [0.8.6]
 
 **Changed**

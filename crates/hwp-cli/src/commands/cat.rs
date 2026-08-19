@@ -32,7 +32,22 @@ pub fn load_document(path: &Path) -> anyhow::Result<Document> {
                 eprintln!("경고: {w}");
             }
             if result.unwrapped_distribution {
-                eprintln!("정보: 배포용 문서를 해제했습니다");
+                // The hwp5 writer synthesizes a fixed attribute DWORD (0x1,
+                // compression only) for every IR-built output, so the
+                // distribution bit never survives a cross-format write. This is
+                // pre-existing writer behaviour GATE-01 made newly reachable,
+                // not a regression. Measured on a genuine dist-*.hwp
+                // (2026-08-20, plan 02-04 Task 0): full synthesis strips the
+                // bit; `convert --to hwp` is a pure byte copy that keeps it;
+                // the source-preserving edit path fails closed on a
+                // /ViewText-only document instead of writing anything. Hence
+                // the caveat names conversion only, and lives folded into this
+                // ONE line (D-10a) at load - the single choke point every
+                // command shares - because the write paths are many.
+                eprintln!(
+                    "정보: 배포용 문서를 해제했습니다 \
+                     (다른 형식으로 변환해 저장하면 배포용 보호는 유지되지 않습니다)"
+                );
             }
             Ok(result.document)
         }
