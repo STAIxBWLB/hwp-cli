@@ -254,6 +254,46 @@ impl HwpxPackage {
         verify_archive_integrity(&mut self.zip, &self.entries, &self.limits)
     }
 
+    /// Refuses an encrypted package before any content part is read (GATE-02, D-04/D-05).
+    ///
+    /// `META-INF/manifest.xml` stays plaintext even when every content part is
+    /// AES-encrypted (ODF packaging convention), so detection needs no decryption: an
+    /// `odf:file-entry` carrying a child `odf:encryption-data` element marks encryption.
+    /// A normal package's manifest is the empty self-closing element the writer's own
+    /// `write::templates::MANIFEST_XML` emits.
+    ///
+    /// Read through the existing bounded `read_entry_string`, so this entry is bounded
+    /// exactly like every other (T-2-10). A missing manifest, an unparseable manifest, or
+    /// the marker appearing only in a comment or as element text all leave reading
+    /// unaffected — a manifest is not needed to read a document, and a detection
+    /// heuristic on a non-essential entry must not block one that is otherwise fine
+    /// (T-2-13, deliberate fail-open, recorded here per the plan's own requirement).
+    pub fn check_body_readable(&mut self) -> Result<()> {
+        let xml = match self.read_entry_string("META-INF/manifest.xml") {
+            Ok(xml) => xml,
+            Err(HwpxError::EntryNotFound(_)) => return Ok(()),
+            // Any other error (a limit violation, an archive error) surfaces as itself.
+            Err(other) => return Err(other),
+        };
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    // Match the element's local name, not a substring of the raw text,
+                    // so a namespace prefix change does not defeat detection and a
+                    // comment/text mention of the word does not trigger a false refusal.
+                    if e.local_name().as_ref() == b"encryption-data" {
+                        return Err(HwpxError::Encrypted);
+                    }
+                }
+                Ok(Event::Eof) => return Ok(()),
+                Ok(_) => {}
+                // Fail-open on a malformed manifest: see the doc comment above (T-2-13).
+                Err(_) => return Ok(()),
+            }
+        }
+    }
+
     /// `version.xml` 루트 요소의 속성들을 (이름, 값) 쌍으로 반환한다.
     /// (스키마에 의존하지 않는 관용적 추출 — `hwp info` 표시용)
     pub fn version_info(&mut self) -> Result<Vec<(String, String)>> {
@@ -797,4 +837,97 @@ fn le_u64(bytes: &[u8], offset: usize) -> u64 {
         bytes[offset + 6],
         bytes[offset + 7],
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    //! CI-safe: synthetic in-memory-built ZIPs only, no corpus, no committed fixture.
+
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use zip::CompressionMethod;
+    use zip::write::SimpleFileOptions;
+
+    use super::*;
+
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_file(label: &str) -> PathBuf {
+        let id = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "hwpx_encrypted_gate_{label}_{}_{}.hwpx",
+            std::process::id(),
+            id
+        ))
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, data) in entries {
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// Opens a package built from `mimetype` plus an optional `META-INF/manifest.xml`
+    /// body, asserting `check_body_readable()`'s outcome.
+    fn open_and_check(label: &str, manifest: Option<&[u8]>) -> Result<()> {
+        let path = temp_file(label);
+        let mut entries: Vec<(&str, &[u8])> = vec![(MIMETYPE_ENTRY, MIMETYPE.as_bytes())];
+        if let Some(body) = manifest {
+            entries.push(("META-INF/manifest.xml", body));
+        }
+        write_zip(&path, &entries);
+        let mut pkg = HwpxPackage::open(&path).unwrap();
+        let result = pkg.check_body_readable();
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    const MIMETYPE_ENTRY: &str = "mimetype";
+
+    const ENCRYPTED_MANIFEST: &str = r##"<?xml version="1.0" encoding="UTF-8"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><odf:file-entry full-path="Contents/header.xml" media-type="application/xml" size="1"><odf:encryption-data checksum-type="...sha256-1k" checksum="..."><odf:algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc"/></odf:encryption-data></odf:file-entry></odf:manifest>"##;
+
+    #[test]
+    fn manifest_with_an_encryption_element_refuses() {
+        let result = open_and_check("encrypted", Some(ENCRYPTED_MANIFEST.as_bytes()));
+        assert!(matches!(result, Err(HwpxError::Encrypted)), "{result:?}");
+    }
+
+    #[test]
+    fn the_writers_own_empty_manifest_is_readable() {
+        let result = open_and_check(
+            "empty_manifest",
+            Some(crate::write::templates::MANIFEST_XML.as_bytes()),
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn a_package_without_a_manifest_entry_is_readable() {
+        let result = open_and_check("no_manifest", None);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn an_unparseable_manifest_does_not_block_reading() {
+        let result = open_and_check(
+            "unparseable",
+            Some(b"<odf:manifest><odf:file-entry not closed"),
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn the_marker_word_in_a_comment_is_not_a_refusal() {
+        let manifest = br##"<?xml version="1.0" encoding="UTF-8"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><!-- encryption-data is mentioned here only as a comment --><odf:file-entry full-path="Contents/header.xml" media-type="application/xml" size="1"><odf:comment>encryption-data</odf:comment></odf:file-entry></odf:manifest>"##;
+        let result = open_and_check("comment_marker", Some(manifest));
+        assert!(result.is_ok(), "{result:?}");
+    }
 }

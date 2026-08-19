@@ -16,6 +16,11 @@ pub struct ReadResult {
     pub document: Document,
     /// 파싱 중 발생한 비치명 경고 (손상/미지원 구조)
     pub warnings: Vec<String>,
+    /// Whether this read decrypted a Hancom distribution document (배포용문서)
+    /// on the way in. A transient read-time signal for the CLI (D-02/D-03) —
+    /// deliberately not part of the serialized IR, since it has no reason to
+    /// survive past the caller's stderr notice.
+    pub unwrapped_distribution: bool,
 }
 
 /// Limits used by certification before any compressed HWP5 stream is exposed
@@ -50,6 +55,13 @@ impl BoundedReadSnapshot {
     pub fn open(path: &Path, limits: BoundedReadLimits) -> Result<Self> {
         let mut container = Hwp5Container::open(path)?;
         container.check_body_readable()?;
+        // This is a certification-oriented raw-stream cache, not the main read
+        // path (GATE-01's ViewText decrypt lives in `read_document` only).
+        // Without this guard a distribution document would fall through and
+        // get snapshotted with its `/ViewText/` bytes still encrypted.
+        if container.file_header().is_distribution() {
+            return Err(Hwp5Error::DistributionDoc);
+        }
         let header = container.file_header().clone();
         let compressed = header.is_compressed();
         let mut streams = BTreeMap::new();
@@ -311,7 +323,14 @@ fn read_document_from_streams(
         hwpx_opf_extra_items: Vec::new(),
         hwpx_section_xmlns: Vec::new(),
     };
-    Ok(ReadResult { document, warnings })
+    Ok(ReadResult {
+        document,
+        warnings,
+        // The bounded-read snapshot path does not decrypt ViewText (Task 2 adds
+        // an explicit DistributionDoc refusal to BoundedReadSnapshot::open), so
+        // a distribution document never reaches this construction site.
+        unwrapped_distribution: false,
+    })
 }
 
 /// HWP 5.0 파일을 IR로 읽는다. 야생 파일 대응을 위해 관용 모드로 스캔한다.
@@ -320,6 +339,12 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
     container.check_body_readable()?;
 
     let mut warnings = Vec::new();
+    // Distribution documents (배포용문서) keep their body under `/ViewText/`
+    // instead of `/BodyText/`; a near-empty `/BodyText/Section0` stub still
+    // exists and still parses, but it is a decoy (GATE-01, PATTERNS.md
+    // Pitfall 3) — the branch must be on the header bit, never stream presence.
+    let is_distribution = container.file_header().is_distribution();
+    let compressed = container.file_header().is_compressed();
 
     // DocInfo
     let doc_info_data = container.read_record_stream("/DocInfo")?;
@@ -328,10 +353,24 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
     let (header, doc_warnings) = parse_doc_info(&scan.roots);
     warnings.extend(doc_warnings.iter().map(|w| format!("[DocInfo] {w}")));
 
-    // 본문 섹션들
+    // 본문 섹션들 (배포용 문서는 /ViewText/, 그 외엔 /BodyText/)
+    let section_paths = if is_distribution {
+        let paths = container.view_text_sections();
+        if paths.is_empty() {
+            return Err(Hwp5Error::StreamNotFound("/ViewText/Section0".to_string()));
+        }
+        paths
+    } else {
+        container.body_sections()
+    };
     let mut sections = Vec::new();
-    for stream_path in container.body_sections() {
-        let data = container.read_record_stream(&stream_path)?;
+    for stream_path in section_paths {
+        let data = if is_distribution {
+            let raw = container.read_stream_raw(&stream_path)?;
+            crate::distdoc::decrypt_view_text_section(&raw, compressed)?
+        } else {
+            container.read_record_stream(&stream_path)?
+        };
         let scan = scan_stream(&data, ScanMode::Tolerant)?;
         warnings.extend(scan.warnings.iter().map(|w| format!("[{stream_path}] {w}")));
         let (section, sec_warnings) = parse_section(&scan.roots);
@@ -401,7 +440,11 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
         hwpx_opf_extra_items: Vec::new(),
         hwpx_section_xmlns: Vec::new(),
     };
-    Ok(ReadResult { document, warnings })
+    Ok(ReadResult {
+        document,
+        warnings,
+        unwrapped_distribution: is_distribution,
+    })
 }
 
 #[cfg(test)]

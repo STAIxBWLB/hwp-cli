@@ -22,6 +22,13 @@ pub fn run(path: &Path, stream: Option<&str>, raw: bool, as_json: bool) -> anyho
 fn dump_hwp5(path: &Path, stream: Option<&str>, raw: bool, as_json: bool) -> anyhow::Result<()> {
     let mut container = hwp5::Hwp5Container::open(path)?;
     container.check_body_readable()?;
+    // `dump`'s purpose is showing the *raw* record tree; the decrypted
+    // ViewText bytes are a derived artifact, not the stream's literal
+    // content, so this command keeps refusing distribution documents even
+    // though GATE-01 makes `cat`/`convert`/`render` read them.
+    if container.file_header().is_distribution() {
+        return Err(hwp5::Hwp5Error::DistributionDoc.into());
+    }
 
     // 대상 스트림 결정: 지정이 없으면 DocInfo + 모든 본문 섹션
     let targets: Vec<String> = match stream {

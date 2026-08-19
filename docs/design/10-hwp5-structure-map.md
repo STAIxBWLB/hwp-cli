@@ -54,8 +54,8 @@ the read/write support matrix. "Compressed" means raw DEFLATE (no zlib header, n
 ├── BodyText/                      storage
 │   ├── Section0                   body section 0 record stream (compressed)
 │   ├── Section1 ... SectionN
-├── ViewText/                      distribution body (unsupported; read errors)
-│   └── Section0 ...
+├── ViewText/                      distribution body (배포용문서; decrypted transparently
+│   └── Section0 ...              on read by cat/convert/render, GATE-01)
 ├── BinData/                       storage
 │   ├── BIN0001.png                attached binary (follows the header flag)
 │   └── ...
@@ -79,7 +79,7 @@ the read/write support matrix. "Compressed" means raw DEFLATE (no zlib header, n
 | `/FileHeader` | 3.2.1 | semantic | emitted | no | `file_header.rs:91`, `container.rs:35` |
 | `/DocInfo` | 3.2.2 | semantic | emitted | yes | `doc_info.rs:18`, `write.rs:170` |
 | `/BodyText/SectionN` | 3.2.3 | semantic | emitted | yes | `body_text.rs:23`, `write.rs:173` |
-| `/ViewText/SectionN` | 3.2.3 | unsupported (error) | - | yes | `container.rs:101` (distribution guard) |
+| `/ViewText/SectionN` | 3.2.3 | semantic, via decrypt (`cat`/`convert`/`render`); `hwp dump` and the certification bounded-read path still refuse | - | yes (post-decrypt) | `distdoc.rs`, `read.rs` (GATE-01) |
 | `/BinData/*` | 3.2.5 | try and fall back | only referenced items included | per header flag | `read.rs`, `write.rs:190` |
 | `/\x05HwpSummaryInformation` | 3.2.4 | partial + raw | synthesized | no | `summary.rs`, `write.rs:223` |
 | `/PrvText` | 3.2.6 | unparsed | generated from the body | no | `write.rs:225` |
@@ -105,6 +105,17 @@ because Hancom may judge their absence as corruption (`write.rs:207`). The CFB m
 **Enumerating body sections** `body_sections()` (`container.rs:62`) sorts the numeric suffix of
 `/BodyText/Section` as an integer (`parse::<u32>()` is required so that `Section10` follows
 `Section2`).
+
+**ViewText distribution records** (`/ViewText/SectionN`, GATE-01): each stream's raw
+(pre-decompression) bytes begin with a `DISTRIBUTE_DOC_DATA` record (tag `0x1C`, level 0, a fixed
+256-byte payload) that obfuscates the AES-128 key used to decrypt everything that follows. This is
+**not** a `/DocInfo` record — the specification's table groups it with the other DocInfo entries
+(§3, table A), but genuine files never place it there. Established by direct inspection of all 11
+genuine 배포용문서 corpus fixtures: `crates/hwp5/tests/distdoc_corpus.rs`'s
+`distribute_doc_data_lives_at_the_head_of_view_text_not_doc_info` test decodes the leading record of
+every corpus file's `/ViewText/SectionN` stream and separately confirms no `/DocInfo` record carries
+the tag. Decode and decrypt live in `distdoc.rs`, not `doc_info.rs`; the record is consumed and
+discarded during read, never re-emitted, so it does not fit any of the four status labels above.
 
 ---
 
@@ -162,7 +173,6 @@ Opaque-preserved in `header.extras`, and unknown ID_MAPPINGS children in `header
 | 0x19 | PARA_SHAPE | +9 | 4.2.10 | a 42B prefix (attr1, margins, indentation, spacing, tab/numbering/border ids, offsets ×4) + tail (line spacing) | partial + raw | `doc_info.rs:260` |
 | 0x1A | STYLE | +10 | 4.2.11 | name and English name + attr u8 + next style u8 + language i16 + paragraph and character shape u16 + tail | partial + raw | `doc_info.rs:302` |
 | 0x1B | DOC_DATA | +11 | 4.2.12 | arbitrary document data; a root, unparsed | Opaque | `doc_info.rs:57` |
-| 0x1C | DISTRIBUTE_DOC_DATA | +12 | 4.2.13 | distribution document data; a root, unparsed | Opaque | `doc_info.rs:57` |
 | 0x1D | *(RESERVED)* | +13 | 4.2 table 13 | reserved; no constant in `tag.rs` | constant undefined (preserved through Opaque) | `tag.rs` (undefined) |
 | 0x1E | COMPATIBLE_DOCUMENT | +14 | 4.2.14 | compatible document; a root, unparsed (the writer synthesizes it separately) | Opaque | `doc_info.rs:57` |
 | 0x1F | LAYOUT_COMPATIBILITY | +15 | 4.2.15 | layout compatibility; a root, unparsed | Opaque | `doc_info.rs:57` |
@@ -171,6 +181,10 @@ Opaque-preserved in `header.extras`, and unknown ID_MAPPINGS children in `header
 | 0x5E | FORBIDDEN_CHAR | +78 | 4.2 table 13 | forbidden characters; unparsed | Opaque | `doc_info.rs:57`/`:148` |
 | 0x60 | TRACK_CHANGE | +80 | 4.2 table 13 | change tracking content and shape; an ID_MAPPINGS child, unparsed | Opaque | `doc_info.rs:148` |
 | 0x61 | TRACK_CHANGE_AUTHOR | +81 | 4.2 table 13 | change tracking author; an ID_MAPPINGS child, unparsed | Opaque | `doc_info.rs:148` |
+
+> ⚠️ **0x1C DISTRIBUTE_DOC_DATA is not a `/DocInfo` record.** Spec §4.2.13 groups it with the other
+> DocInfo entries above, but genuine files place it as the first record of each `/ViewText/SectionN`
+> stream's stored bytes, not in `/DocInfo`. See §1's "ViewText distribution records" note.
 
 ### 3.1 The ID_MAPPINGS count array and language slot assignment
 
@@ -424,7 +438,7 @@ Cross-references by major topic. "Responsible code" is the entry function for th
 
 **Rows marked `Opaque` in tables A and B** (no interpreting consumer; round-trip preservation only):
 
-- DocInfo: `DOC_DATA`, `DISTRIBUTE_DOC_DATA`, `COMPATIBLE_DOCUMENT`, `LAYOUT_COMPATIBILITY`,
+- DocInfo: `DOC_DATA`, `COMPATIBLE_DOCUMENT`, `LAYOUT_COMPATIBILITY`,
   `TRACKCHANGE`, `MEMO_SHAPE`, `FORBIDDEN_CHAR`, `TRACK_CHANGE`, `TRACK_CHANGE_AUTHOR`
 - Body: `PARA_RANGE_TAG`, `FOOTNOTE_SHAPE`, `PAGE_BORDER_FILL`, `SHAPE_COMPONENT_OLE`,
   `SHAPE_COMPONENT_TEXTART`, `FORM_OBJECT`, `MEMO_LIST`, `CHART_DATA`, `VIDEO_DATA`,

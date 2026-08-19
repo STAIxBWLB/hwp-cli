@@ -135,6 +135,25 @@ impl Hwp5Container {
         v
     }
 
+    /// Distribution document body-section stream paths (`/ViewText/Section0`,
+    /// `/ViewText/Section1`, …), the ViewText counterpart to [`body_sections`](Self::body_sections)
+    /// used when the DISTRIBUTION attribute bit is set (GATE-01).
+    pub fn view_text_sections(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .list_streams()
+            .into_iter()
+            .map(|s| s.path)
+            .filter(|p| p.starts_with("/ViewText/Section"))
+            .collect();
+        // Keep Section10 after Section2 by sorting on the numeric suffix.
+        v.sort_by_key(|p| {
+            p.trim_start_matches("/ViewText/Section")
+                .parse::<u32>()
+                .unwrap_or(u32::MAX)
+        });
+        v
+    }
+
     /// 스트림 원본 바이트를 그대로 읽는다 (압축 해제 없음).
     pub fn read_stream_raw(&mut self, path: &str) -> Result<Vec<u8>> {
         let mut stream = self
@@ -184,16 +203,16 @@ impl Hwp5Container {
         }
     }
 
-    /// 미지원 버전/배포용/암호화 문서면 본문 접근 전에 명확한 에러를 낸다.
+    /// Body access is refused before parsing when the header reports an
+    /// unsupported version, password encryption, certificate encryption,
+    /// certificate DRM, DRM or a digital signature (GATE-02). Distribution
+    /// documents (DISTRIBUTION attribute bit) are body-readable:
+    /// `read_document` decrypts `/ViewText/` before parsing instead of
+    /// refusing here (GATE-01). The ordered chain lives on
+    /// `FileHeader::check_body_readable` so it can be unit-tested against a
+    /// synthetic header, without a CFB container.
     pub fn check_body_readable(&self) -> Result<()> {
-        self.header.check_version()?;
-        if self.header.is_encrypted() {
-            return Err(Hwp5Error::Encrypted);
-        }
-        if self.header.is_distribution() {
-            return Err(Hwp5Error::DistributionDoc);
-        }
-        Ok(())
+        self.header.check_body_readable()
     }
 }
 

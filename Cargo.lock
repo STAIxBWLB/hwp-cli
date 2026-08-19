@@ -750,6 +750,7 @@ dependencies = [
 name = "hwp5"
 version = "0.8.6"
 dependencies = [
+ "aes",
  "cfb",
  "flate2",
  "hwp-convert",

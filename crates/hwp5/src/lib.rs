@@ -20,6 +20,7 @@
 pub mod body_text;
 pub mod codec;
 pub mod container;
+pub mod distdoc;
 pub mod doc_info;
 pub mod error;
 pub mod file_header;
