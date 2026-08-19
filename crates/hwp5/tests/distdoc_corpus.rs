@@ -40,6 +40,25 @@ fn skip_if_no_corpus() -> Option<PathBuf> {
     }
 }
 
+/// `crates/hwp5/tests/identity.rs`'s committed-fixture directory
+/// (`fixtures/hwp5/`, gitignored — local only).
+fn fixtures_hwp5_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/hwp5")
+}
+
+/// Every `.hwp` file directly inside `dir`, sorted for a stable scan order.
+fn all_hwp_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "hwp"))
+        .collect();
+    files.sort();
+    files
+}
+
 /// `dist-*.hwp` 파일을 안정적인 순서로 나열한다.
 fn dist_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -176,4 +195,75 @@ fn distribute_doc_data_lives_at_the_head_of_view_text_not_doc_info() {
             tag::DISTRIBUTE_DOC_DATA
         );
     }
+}
+
+/// GATE-02: scans every HWP5 document reachable here — the ground-truth
+/// corpus (when `HWP_CORPUS_DIR` is set) and the committed `fixtures/hwp5/`
+/// set — and proves none of them carries a bit this phase starts refusing on
+/// (certificate encryption, certificate DRM, DRM, digital signature).
+///
+/// A clean scan is evidence about the documents reachable in this
+/// environment, not proof that the bits mean what their labels say — that
+/// would need a genuine certificate-secured or signed document, which is not
+/// obtainable here (`02-CONTEXT.md` D-06/D-07).
+#[test]
+fn no_corpus_document_carries_a_protection_bit_this_phase_starts_refusing() {
+    let corpus = skip_if_no_corpus();
+
+    let mut scanned: Vec<PathBuf> = corpus.as_deref().map(all_hwp_files).unwrap_or_default();
+
+    let fixtures_dir = fixtures_hwp5_dir();
+    if fixtures_dir.is_dir() {
+        scanned.extend(all_hwp_files(&fixtures_dir));
+    }
+
+    if scanned.is_empty() {
+        return;
+    }
+
+    for path in &scanned {
+        let name = path.display().to_string();
+        let container = hwp5::Hwp5Container::open(path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let flagged: Vec<&'static str> = container
+            .file_header()
+            .attribute_names()
+            .into_iter()
+            .filter(|label| {
+                matches!(
+                    *label,
+                    "DRM 보안" | "전자 서명 정보" | "공인 인증서 암호화" | "공인 인증서 DRM 보안"
+                )
+            })
+            .collect();
+        assert!(
+            flagged.is_empty(),
+            "{name}: carries a bit this phase starts refusing on: {flagged:?}"
+        );
+    }
+
+    eprintln!(
+        "no_corpus_document_carries_a_protection_bit_this_phase_starts_refusing: {} files scanned",
+        scanned.len()
+    );
+
+    // Regression: the password-encryption branch already behaved correctly
+    // before this phase — pin it here so it stays that way rather than being
+    // assumed.
+    let Some(dir) = corpus else {
+        return;
+    };
+    let enc_path = dir.join("enc-02-hwp5-pw123456.hwp");
+    if !enc_path.is_file() {
+        eprintln!("스킵: enc-02-hwp5-pw123456.hwp 없음 — 암호화 회귀 확인 생략");
+        return;
+    }
+    let container = hwp5::Hwp5Container::open(&enc_path)
+        .unwrap_or_else(|e| panic!("{}: {e}", enc_path.display()));
+    let err = container
+        .check_body_readable()
+        .expect_err("enc-02-hwp5-pw123456.hwp must still be refused as encrypted");
+    assert!(
+        err.to_string().contains("암호화된 문서는 지원하지 않습니다"),
+        "unexpected message for enc-02-hwp5-pw123456.hwp: {err}"
+    );
 }
