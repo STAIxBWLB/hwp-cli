@@ -45,3 +45,7 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 zip = { workspace = true }
 jsonschema = { workspace = true }
+# 보호 비트 픽스처 합성 전용 (테스트에서 FileHeader 속성 DWORD를 패치). 이미
+# 워크스페이스 의존성이자 hwp5의 직접 의존성이라 트리에 새 코드가 추가되지 않고,
+# dev 전용이라 출시 바이너리에는 들어가지 않는다.
+cfb = { workspace = true }

@@ -681,6 +681,7 @@ name = "hwp-cli"
 version = "0.8.6"
 dependencies = [
  "anyhow",
+ "cfb",
  "clap",
  "flate2",
  "getrandom 0.3.4",

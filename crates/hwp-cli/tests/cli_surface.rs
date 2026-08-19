@@ -13,7 +13,7 @@
 //! page counts) here.
 
 use std::io::{BufRead, BufReader, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn hwp() -> Command {
@@ -367,5 +367,201 @@ fn hwp5_synthetic_identity_gate() {
         let ra = ca.read_stream_raw(name).unwrap();
         let rb = cb.read_stream_raw(name).unwrap();
         assert_eq!(ra, rb, "스트림 바이트 동일: {name}");
+    }
+}
+
+// --- GATE-02: 보호 문서 거부를 출시 바이너 end-to-end로 고정한다. ---
+
+/// hwp5 FileHeader 속성 비트 (36..40 DWORD) — crates/hwp5/src/file_header.rs의
+/// 비공개 `attr` 모듈과 동기화 유지. 라이브러리 쪽이 바뀌면 이 상수들도 바뀌어야
+/// 하는 게 맞다(테스트가 게이트의 실제 전선을 미러링).
+mod gate_bits {
+    pub const ENCRYPTED: u32 = 1 << 1;
+    pub const DRM: u32 = 1 << 4;
+    pub const HAS_SIGNATURE: u32 = 1 << 7;
+    pub const CERT_ENCRYPTED: u32 = 1 << 8;
+    pub const CERT_DRM: u32 = 1 << 10;
+}
+
+/// 보호 비트 픽스처 합성: 커밋된 hwpx 샘플을 hwp5로 변환한 뒤 FileHeader 스트림의
+/// 속성 DWORD(36..40, LE)에 `bits`를 OR해 다시 쓴다. 라이터가 항상 세우는 압축
+/// 비트는 보존된다. 새 거부 브랜치 추가 시 이 함수 한 번 호출로 픽스처 하나.
+fn protected_hwp5_fixture(dir: &Path, name: &str, bits: u32) -> PathBuf {
+    let base = dir.join(format!("{name}.hwp"));
+    let r = hwp()
+        .arg("convert")
+        .arg(fixture())
+        .arg("-o")
+        .arg(&base)
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "기반 hwp5 합성: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let mut cfb = cfb::open_rw(&base).unwrap();
+    let mut header = Vec::new();
+    {
+        let mut stream = cfb.open_stream("/FileHeader").unwrap();
+        std::io::Read::read_to_end(&mut stream, &mut header).unwrap();
+    }
+    let attrs = u32::from_le_bytes(header[36..40].try_into().unwrap());
+    header[36..40].copy_from_slice(&(attrs | bits).to_le_bytes());
+    cfb.create_stream("/FileHeader")
+        .unwrap()
+        .write_all(&header)
+        .unwrap();
+    drop(cfb);
+    base
+}
+
+/// `hwp cat`이 거부로 실패하고, stderr가 그 조건을 이름 붙인 정확한 한국어 문장을
+/// 담는지 단언한다. 전체 문장(조건+해결 힌트)을 단언해 형제 변형과 구분되게 한다
+/// (D-06). stderr 전문을 반환해 호출자가 추가 단언을 얹을 수 있게 한다.
+fn assert_refusal_names_condition(file: &Path, sentence: &str) -> String {
+    let r = hwp().arg("cat").arg(file).output().unwrap();
+    assert!(!r.status.success(), "거부 기대: {}", file.display());
+    let stderr = String::from_utf8_lossy(&r.stderr).into_owned();
+    assert!(
+        stderr.contains(sentence),
+        "문장 {sentence:?} 부재. stderr: {stderr}"
+    );
+    stderr
+}
+
+#[test]
+fn password_encrypted_document_refuses_by_name() {
+    let dir = tmp_dir("refuse_password");
+    let f = protected_hwp5_fixture(&dir, "pw", gate_bits::ENCRYPTED);
+    assert_refusal_names_condition(
+        &f,
+        "암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.",
+    );
+}
+
+#[test]
+fn certificate_encrypted_document_refuses_by_name() {
+    let dir = tmp_dir("refuse_cert_enc");
+    let f = protected_hwp5_fixture(&dir, "cert_enc", gate_bits::CERT_ENCRYPTED);
+    assert_refusal_names_condition(
+        &f,
+        "공인 인증서로 암호화된 문서는 지원하지 않습니다. 한글에서 인증서 암호화를 해제한 뒤 다시 저장하세요.",
+    );
+}
+
+#[test]
+fn certificate_drm_document_refuses_by_name() {
+    let dir = tmp_dir("refuse_cert_drm");
+    let f = protected_hwp5_fixture(&dir, "cert_drm", gate_bits::CERT_DRM);
+    assert_refusal_names_condition(
+        &f,
+        "공인 인증서 DRM으로 보호된 문서는 지원하지 않습니다. 한글에서 인증서 DRM 보안을 해제한 뒤 다시 저장하세요.",
+    );
+}
+
+#[test]
+fn drm_document_refuses_by_name() {
+    let dir = tmp_dir("refuse_drm");
+    let f = protected_hwp5_fixture(&dir, "drm", gate_bits::DRM);
+    assert_refusal_names_condition(
+        &f,
+        "DRM으로 보호된 문서는 지원하지 않습니다. 한글에서 DRM 보안을 해제한 뒤 다시 저장하세요.",
+    );
+}
+
+#[test]
+fn signed_document_refuses_by_name() {
+    let dir = tmp_dir("refuse_signed");
+    let f = protected_hwp5_fixture(&dir, "signed", gate_bits::HAS_SIGNATURE);
+    assert_refusal_names_condition(
+        &f,
+        "서명된 문서는 지원하지 않습니다. 한글에서 서명을 제거한 뒤 다시 저장하세요.",
+    );
+}
+
+/// hwpx 쪽 게이트: 커밋된 샘플의 매니페스트를 encryption-data를 담은 것으로
+/// 다시 써서 재포장(mimetype은 첫 엔트리·무압축 — OPC 규약)하면 암호화 거부가
+/// 뜨고, GATE-02 이전의 하류 XML 파싱 오류는 뜨지 않는다.
+#[test]
+fn encrypted_package_refuses_by_name() {
+    let dir = tmp_dir("refuse_encrypted_package");
+    let repacked = dir.join("encrypted.hwpx");
+
+    const ENCRYPTED_MANIFEST: &[u8] = br##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><odf:file-entry full-path="Contents/header.xml" media-type="application/xml" size="1"><odf:encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="AAAA"><odf:algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="AAAA"/><odf:key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="AAAA"/><odf:start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256" key-size="32"/></odf:encryption-data></odf:file-entry></odf:manifest>"##;
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(fixture()).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&repacked).unwrap());
+    let mimetype_options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    writer.start_file("mimetype", mimetype_options).unwrap();
+    writer
+        .write_all(hwpx::package::MIMETYPE.as_bytes())
+        .unwrap();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        let name = entry.name().to_string();
+        if name == "mimetype" {
+            continue;
+        }
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
+        if name == "META-INF/manifest.xml" {
+            data = ENCRYPTED_MANIFEST.to_vec();
+        }
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file(&name, options).unwrap();
+        writer.write_all(&data).unwrap();
+    }
+    writer.finish().unwrap();
+
+    let stderr = assert_refusal_names_condition(
+        &repacked,
+        "암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.",
+    );
+    assert!(
+        !stderr.contains("XML 파싱 오류"),
+        "하류 XML 파싱 오류로 떨어지면 안 됨: {stderr}"
+    );
+    assert!(
+        !stderr.contains("header.xml"),
+        "헤더 콘텐츠 파트 이름을 노출하면 안 됨: {stderr}"
+    );
+}
+
+/// 여섯 거부 모두 조건 문장 뒤에 해결 힌트 문장이 따라오는지(D-08) 구조로 단언한다
+/// — 힌트의 정확한 문구가 아니라 "둘째 문장이 존재한다"는 사실만 고정해, 문구 수정은
+/// 허용하되 힌트 삭제는 깨지게 한다.
+#[test]
+fn every_refusal_carries_a_remedy_hint() {
+    let dir = tmp_dir("refusal_hints");
+    let cases: Vec<(PathBuf, &str)> = [
+        ("pw", gate_bits::ENCRYPTED, "암호화된 문서는"),
+        (
+            "cert_enc",
+            gate_bits::CERT_ENCRYPTED,
+            "공인 인증서로 암호화된 문서는",
+        ),
+        (
+            "cert_drm",
+            gate_bits::CERT_DRM,
+            "공인 인증서 DRM으로 보호된 문서는",
+        ),
+        ("drm", gate_bits::DRM, "DRM으로 보호된 문서는"),
+        ("signed", gate_bits::HAS_SIGNATURE, "서명된 문서는"),
+    ]
+    .into_iter()
+    .map(|(name, bits, prefix)| (protected_hwp5_fixture(&dir, name, bits), prefix))
+    .collect();
+
+    for (file, prefix) in cases {
+        let stderr = assert_refusal_names_condition(&file, prefix);
+        let after_condition = stderr
+            .split_once("지원하지 않습니다. ")
+            .map(|(_, rest)| rest.trim())
+            .unwrap_or_else(|| panic!("조건 문장 종결 부재: {stderr}"));
+        assert!(!after_condition.is_empty(), "해결 힌트 문장 부재: {stderr}");
     }
 }
