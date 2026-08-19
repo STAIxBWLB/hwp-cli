@@ -155,6 +155,65 @@ impl FileHeader {
         self.attributes & attr::DISTRIBUTION != 0
     }
 
+    pub fn is_drm(&self) -> bool {
+        self.attributes & attr::DRM != 0
+    }
+
+    pub fn has_signature(&self) -> bool {
+        self.attributes & attr::HAS_SIGNATURE != 0
+    }
+
+    pub fn is_cert_encrypted(&self) -> bool {
+        self.attributes & attr::CERT_ENCRYPTED != 0
+    }
+
+    pub fn is_cert_drm(&self) -> bool {
+        self.attributes & attr::CERT_DRM != 0
+    }
+
+    // Ordered refusal chain (GATE-02). The rule that decides the order: the
+    // condition that blocks the body most completely comes first, and a
+    // certificate-scoped condition is more specific than the general one it
+    // implies — so password encryption, then certificate encryption, then
+    // certificate DRM, then plain DRM, then a digital signature.
+    //
+    // The certificate, DRM and signature branches are unverified against a
+    // genuine file: no certificate-secured or signed document was obtainable
+    // here. What is established is only that `file_header.rs` parses these
+    // bits and that `hwp info` displays them, not that they are set in the
+    // situations their labels name (CONTEXT.md D-06/D-07).
+    //
+    // The SIGNATURE_SPARE bit (9) is deliberately not wired to a refusal: it
+    // is not one of the three conditions GATE-02 names, its label describes
+    // reserve storage rather than a protection state, and its meaning was
+    // never checked against a real document.
+
+    /// Refuses body access for an unsupported version or a protected document
+    /// (password encryption, certificate encryption, certificate DRM, DRM or
+    /// a digital signature), before any of the ordered branches above are
+    /// consulted for a version this crate does not support. Distribution
+    /// documents are body-readable — GATE-01 decrypts `/ViewText/` in
+    /// `read_document` rather than refusing here.
+    pub fn check_body_readable(&self) -> Result<()> {
+        self.check_version()?;
+        if self.is_encrypted() {
+            return Err(Hwp5Error::Encrypted);
+        }
+        if self.is_cert_encrypted() {
+            return Err(Hwp5Error::CertEncrypted);
+        }
+        if self.is_cert_drm() {
+            return Err(Hwp5Error::CertDrm);
+        }
+        if self.is_drm() {
+            return Err(Hwp5Error::Drm);
+        }
+        if self.has_signature() {
+            return Err(Hwp5Error::Signed);
+        }
+        Ok(())
+    }
+
     /// 사람이 읽을 수 있는 속성 플래그 이름 목록 (`hwp info`용).
     pub fn attribute_names(&self) -> Vec<&'static str> {
         const TABLE: &[(u32, &str)] = &[
@@ -194,6 +253,15 @@ mod tests {
         data[..SIGNATURE.len()].copy_from_slice(SIGNATURE);
         data[32..36].copy_from_slice(&0x05000300u32.to_le_bytes()); // 5.0.3.0
         data[36..40].copy_from_slice(&0b0000_0001u32.to_le_bytes()); // 압축
+        data
+    }
+
+    /// `표본_헤더()`와 동일하지만 속성 DWORD를 인자로 받아 원하는 비트만
+    /// 정확히 설정한다 — GATE-02 분기 테스트가 컨테이너·픽스처·코퍼스 없이
+    /// 값 하나만 바꿔 각 케이스를 표현할 수 있도록.
+    fn 표본_헤더_속성(attributes: u32) -> Vec<u8> {
+        let mut data = 표본_헤더();
+        data[36..40].copy_from_slice(&attributes.to_le_bytes());
         data
     }
 
@@ -242,6 +310,96 @@ mod tests {
         assert!(matches!(
             FileHeader::parse(&data),
             Err(Hwp5Error::BadSignature)
+        ));
+    }
+
+    // GATE-02: the ordered refusal chain on `check_body_readable`. These run
+    // against a synthetic 256-byte header only — no CFB container, no
+    // fixture, no corpus — so they run anywhere, including CI.
+
+    #[test]
+    fn certificate_encryption_bit_refuses() {
+        let h = FileHeader::parse(&표본_헤더_속성(attr::CERT_ENCRYPTED)).unwrap();
+        assert!(matches!(
+            h.check_body_readable(),
+            Err(Hwp5Error::CertEncrypted)
+        ));
+    }
+
+    #[test]
+    fn certificate_drm_bit_refuses() {
+        let h = FileHeader::parse(&표본_헤더_속성(attr::CERT_DRM)).unwrap();
+        assert!(matches!(h.check_body_readable(), Err(Hwp5Error::CertDrm)));
+    }
+
+    #[test]
+    fn drm_bit_refuses() {
+        let h = FileHeader::parse(&표본_헤더_속성(attr::DRM)).unwrap();
+        assert!(matches!(h.check_body_readable(), Err(Hwp5Error::Drm)));
+    }
+
+    #[test]
+    fn signature_bit_refuses() {
+        let h = FileHeader::parse(&표본_헤더_속성(attr::HAS_SIGNATURE)).unwrap();
+        assert!(matches!(h.check_body_readable(), Err(Hwp5Error::Signed)));
+    }
+
+    #[test]
+    fn signature_spare_bit_does_not_refuse() {
+        // Deliberately not wired to a refusal — see the comment above
+        // `check_body_readable`.
+        let h = FileHeader::parse(&표본_헤더_속성(attr::SIGNATURE_SPARE)).unwrap();
+        assert!(h.check_body_readable().is_ok());
+    }
+
+    #[test]
+    fn an_ordinary_header_is_body_readable() {
+        // Compression alone.
+        let h = FileHeader::parse(&표본_헤더_속성(attr::COMPRESSED)).unwrap();
+        assert!(h.check_body_readable().is_ok());
+
+        // Distribution alone stays readable — GATE-01 made distribution
+        // documents body-readable; `read_document` decrypts `/ViewText/`
+        // separately rather than refusing here.
+        let h = FileHeader::parse(&표본_헤더_속성(attr::DISTRIBUTION)).unwrap();
+        assert!(h.check_body_readable().is_ok());
+
+        // No attributes set at all.
+        let h = FileHeader::parse(&표본_헤더_속성(0)).unwrap();
+        assert!(h.check_body_readable().is_ok());
+    }
+
+    #[test]
+    fn several_protection_bits_refuse_in_a_fixed_order() {
+        // Password encryption alone still refuses, and its rendered message
+        // still contains the sentence it printed before this phase — pinned
+        // as a regression, not a rewrite, now with a remedy hint appended.
+        let h = FileHeader::parse(&표본_헤더_속성(attr::ENCRYPTED)).unwrap();
+        let err = h.check_body_readable().unwrap_err();
+        assert!(matches!(err, Hwp5Error::Encrypted));
+        assert!(err.to_string().contains("암호화된 문서는 지원하지 않습니다"));
+
+        // Password encryption + DRM: encryption is checked first.
+        let h = FileHeader::parse(&표본_헤더_속성(attr::ENCRYPTED | attr::DRM)).unwrap();
+        assert!(matches!(h.check_body_readable(), Err(Hwp5Error::Encrypted)));
+
+        // DRM + certificate DRM: the certificate-scoped condition is more
+        // specific than the general one it implies.
+        let h = FileHeader::parse(&표본_헤더_속성(attr::DRM | attr::CERT_DRM)).unwrap();
+        assert!(matches!(h.check_body_readable(), Err(Hwp5Error::CertDrm)));
+
+        // DRM + signature: the signature check is last.
+        let h = FileHeader::parse(&표본_헤더_속성(attr::DRM | attr::HAS_SIGNATURE)).unwrap();
+        assert!(matches!(h.check_body_readable(), Err(Hwp5Error::Drm)));
+
+        // An unsupported major version is refused before any protection bit
+        // is consulted, even when protection bits are also set.
+        let mut data = 표본_헤더_속성(attr::ENCRYPTED | attr::HAS_SIGNATURE);
+        data[32..36].copy_from_slice(&0x06000000u32.to_le_bytes()); // 6.0.0.0
+        let h = FileHeader::parse(&data).unwrap();
+        assert!(matches!(
+            h.check_body_readable(),
+            Err(Hwp5Error::UnsupportedVersion(v)) if v == "6.0.0.0"
         ));
     }
 }

@@ -46,8 +46,28 @@ pub enum Hwp5Error {
     #[error("지원하지 않는 HWP 버전입니다: {0} (HWP 5.x만 지원)")]
     UnsupportedVersion(String),
 
-    #[error("암호화된 문서는 지원하지 않습니다")]
+    #[error("암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.")]
     Encrypted,
+
+    // GATE-02: certificate encryption, certificate DRM, DRM and digital
+    // signature. The bits are parsed by `file_header.rs`; whether they are
+    // set in the situations their labels name is unverified against a
+    // genuine file — see the comment above `FileHeader::check_body_readable`.
+    #[error(
+        "공인 인증서로 암호화된 문서는 지원하지 않습니다. 한글에서 인증서 암호화를 해제한 뒤 다시 저장하세요."
+    )]
+    CertEncrypted,
+
+    #[error(
+        "공인 인증서 DRM으로 보호된 문서는 지원하지 않습니다. 한글에서 인증서 DRM 보안을 해제한 뒤 다시 저장하세요."
+    )]
+    CertDrm,
+
+    #[error("DRM으로 보호된 문서는 지원하지 않습니다. 한글에서 DRM 보안을 해제한 뒤 다시 저장하세요.")]
+    Drm,
+
+    #[error("서명된 문서는 지원하지 않습니다. 한글에서 서명을 제거한 뒤 다시 저장하세요.")]
+    Signed,
 
     #[error(
         "배포용 문서(ViewText)의 원본 구조는 지원하지 않습니다. hwp cat/convert/render는 배포용 문서를 읽을 수 있습니다"

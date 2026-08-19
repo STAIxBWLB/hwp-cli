@@ -203,16 +203,16 @@ impl Hwp5Container {
         }
     }
 
-    /// Body access is refused before parsing for an unsupported version or an
-    /// encrypted document. Distribution documents (DISTRIBUTION attribute bit)
-    /// are body-readable: `read_document` decrypts `/ViewText/` before parsing
-    /// instead of refusing here (GATE-01).
+    /// Body access is refused before parsing when the header reports an
+    /// unsupported version, password encryption, certificate encryption,
+    /// certificate DRM, DRM or a digital signature (GATE-02). Distribution
+    /// documents (DISTRIBUTION attribute bit) are body-readable:
+    /// `read_document` decrypts `/ViewText/` before parsing instead of
+    /// refusing here (GATE-01). The ordered chain lives on
+    /// `FileHeader::check_body_readable` so it can be unit-tested against a
+    /// synthetic header, without a CFB container.
     pub fn check_body_readable(&self) -> Result<()> {
-        self.header.check_version()?;
-        if self.header.is_encrypted() {
-            return Err(Hwp5Error::Encrypted);
-        }
-        Ok(())
+        self.header.check_body_readable()
     }
 }
 
