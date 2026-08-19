@@ -126,9 +126,30 @@ jobs:
       # Render smoke tests need a system Korean font. fonts-nanum ships glyf-outline TTFs;
       # the CFF-based fonts-noto-cjk made debug-build outline extraction ~100x slower
       # (that alone was a 15-minute ubuntu test step).
+      # Bounded and retried: a hung apt mirror used to consume the job's whole
+      # 30-minute budget in this one step, which cancelled the job before the
+      # toolchain, the cache and the Test step had run at all - so ubuntu reported
+      # a failure without a single test having executed. A normal install takes
+      # well under a minute; three bounded attempts fail fast and recover from a
+      # transient mirror, and the step still fails loudly if fonts genuinely
+      # cannot be installed (the render smoke tests need them).
       - name: Install Korean fonts (for rendering tests)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fonts-nanum
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # Per-attempt `timeout` matters: the failure mode seen twice was a HANG,
+          # not a non-zero exit. Without it the first attempt never returns, the
+          # step-level timeout kills the whole step, and the retries never run.
+          for attempt in 1 2 3; do
+            if timeout 90 sudo apt-get update && timeout 90 sudo apt-get install -y fonts-nanum; then
+              exit 0
+            fi
+            echo "font install attempt ${attempt} failed or timed out; retrying" >&2
+            sleep 10
+          done
+          echo "fonts-nanum could not be installed after 3 attempts" >&2
+          exit 1
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - name: Test
