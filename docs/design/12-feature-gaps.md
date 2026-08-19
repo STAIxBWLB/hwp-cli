@@ -17,7 +17,7 @@ difficulty, a value and dependencies to each gap so that restoration can be prio
 | [00-overview](00-overview.md) §5 | A **summary snapshot** of the current state | 12 expands that snapshot item by item |
 | [10-hwp5-structure-map](10-hwp5-structure-map.md) §8 | The list of hwp5 records that are **unparsed (Opaque) or raw-preserved** | The **underlying data** for 12 §2 and §3 (what lossless preservation actually loses) |
 | [11-hwpx-structure-map](11-hwpx-structure-map.md) §5 | The hwpx read/write **symmetry matrix** (unimplemented, information loss, round-trip asymmetry) | The **underlying data** for 12 §2, §4 and §5 |
-| [08-external-research](08-external-research.md) | External evidence: standards, open source and an **ecosystem feature comparison** | The demand and precedent evidence behind §10 GJ and the §14 roadmap |
+| [08-external-research](08-external-research.md) | External evidence: standards, open source and an **ecosystem feature comparison** | The demand and precedent evidence behind §10 GJ and the §15 roadmap |
 | **12 (this document)** | **The single catalog of every feature gap, plus the roadmap** | - |
 
 The status labels (Opaque, raw-preserved, skip and so on) are defined authoritatively in **10 and
@@ -80,7 +80,9 @@ The `crates/` prefix is omitted (`hwp5/src/write.rs` means `crates/hwp5/src/writ
 > the reconstructed specification markdown §3, §4.2, §4.3 and §4.4 against the code and this catalog;
 > TODO.md Phase 2.1), which added GB-13 to 15, GD-4, GE-9 to 13, GE-α9, GE-β7 to β8, GF-4 to 5 and
 > GG-21 to 24, strengthened the write-side evidence for GE-4/5/6, widened the scope of GG-15 and
-> GG-19, and sharpened the wording of GB-8 and GF-2.
+> GG-19, and sharpened the wording of GB-8 and GF-2 → the **2026-08-20 kordoc comparison**, which
+> added the GN series (official-document authoring layer) and GM-10 (PII redaction) and recorded
+> the disposition of GJ-1 import.
 
 ### 0.5 Resolution history
 
@@ -526,7 +528,7 @@ time and is therefore not a stale gap; the gaps are the items below.
 is therefore L. By contrast **the whole GE-α series is low-cost and solvable with data structures
 alone**, without ground truth: read already interprets them, so write only needs to emit the
 corresponding element. They are local edits to `write/header.rs`, independent of anything in GA to GD
-or GG (an "immediately actionable" node in the §14 dependency graph). Note that **GE-β already has a
+or GG (an "immediately actionable" node in the §15 dependency graph). Note that **GE-β already has a
 bypass in the "fidelity-preserving fill" (`patch.rs`)**: for hwpx it preserves the whole package and
 replaces only text, so GE-β matters only on the IR path needed for structural editing. The root fix
 is to add "ancillary stream pass-through" slots to the IR (mostly S).
@@ -697,28 +699,56 @@ comparison in [08](08-external-research.md).
 | GM-7 | **Automatic seal and signature stamping**: `edit --seal "anchor=>image@size"` implemented (a floating Picture in front of text, keeping the anchor text, default 20mm) | `hwp-convert/src/image.rs insert_seal` | ✅ **confirmed in Hancom (2026-07-16, D1 and D2 passed)**: settled after three rounds of testing, hwpx uses `IN_FRONT_OF_TEXT` plus `allowOverlap=1` plus an offset, and hwp5 uses attr `0x04aa4310` (in front of text, PARA-relative, body restriction lifted; compared against the §4.3.9.1 bit table) |
 | GM-8 | **No document content comparison**: `diff` is render-pixel only, with no text or structure comparison | kordoc compare_documents precedent | M |
 | GM-9 | **AI integration differs by client environment**: Amazon Quick Desktop can install the publish-safe skill into the active profile and run the local stdio connector, but Quick Web cannot launch `hwp mcp` or share desktop paths. A hosted, authenticated Streamable HTTP service with tenant-isolated artifacts remains unimplemented | Desktop profile discovery and installation are ✅ **resolved (2026-08-09)** by `skill export --install amazon-quick`; Web remains open in [20-remote-mcp](20-remote-mcp.md) and [issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52) | Desktop S / Web L |
+| GM-10 | **No PII redaction**: Korean official documents routinely carry resident registration numbers, phone numbers, account and card numbers, but there is no command that detects and masks them; the editing pipeline can only replace strings it is given literally | kordoc `src/redact.ts` precedent (seven detectors, format-preserving masking that keeps digit count and separators, a hit report that never contains raw PII). Decision 2026-08-20: a core `hwp redact` command on the source-preserving edit pipeline, not an external concern; candidate, not scheduled | M |
 
-## 14. Roadmap: difficulty × value plus the dependency graph
+## 14. GN: official-document authoring layer (added in the 2026-08-20 kordoc comparison)
 
-### 14.1 The difficulty × value matrix
+Korean official documents (공문서) have a statutory form: an eight-level item-mark sequence,
+notation rules for dates, times, money and attachments, and fixed document frames. hwp-cli today
+carries only `OfficialPreset::{Gian, Report}`, which sets fonts, margins, four-level numbering and a
+page number (`hwp-convert/src/from_markdown.rs:348-386`); the regulation layer lived in a
+workspace-local Python skill (`hwpx`) that drove this binary from outside. The decision of
+2026-08-20 is to **absorb that layer natively** — the skill's prose, regulation reference and
+templates ship inside the binary and its capabilities become hwp commands and flags. The comparison
+that produced this series is kordoc v4.9.0 (MIT), see [08](08-external-research.md); the spec and
+phase breakdown are [issue #121](https://github.com/STAIxBWLB/hwp-cli/issues/121).
+
+| ID | Symptom | Notes and precedent | Difficulty |
+|---|---|---|---|
+| GN-1 | **Item marks stop at four levels**: the official preset fills every numbering level with a repeating `1. / 가. / 1) / 가)` cycle, so levels five to eight never render the statutory `(1) / (가) / ① / ㉮` | `from_markdown.rs:372-384` (`i % 4`); the renderer already knows the seven-level default (`hwp-model/src/list.rs:75-92`). Needs a circled-hangul `NumFmt` in the IR plus the hwp5 and hwpx mappings, taken from the specification numbering table (genuine bytes preferred; oracle-pending otherwise). Statute: the marks and their code points (`①` U+2460, `㉮` U+326E, `(1)` as three characters) with 단모음 continuation after 하 | M |
+| GN-2 | **Only two official presets**: 기안문 and 보고서. 계획서, 공고문, 회의록 and 보도자료 have distinct body sizes, bullet conventions, margins and frames | Preset family plus Korean aliases; kordoc ships seven presets with measured defaults (`src/hwpx/gongmun.ts:172-197`) | S |
+| GN-3 | **No notation check**: `hwp validate` is structural (mimetype, entries, XML) and has no ruleset for the regulation's notation — `2026.8.20` instead of `2026. 8. 20.`, `오후 2시` instead of `14:00`, `345천원`, `붙임:` with a colon, a missing `끝.` | An advisory `hwp lint` (rule table, `--strict`, markdown or document input) plus an MCP tool; kordoc `src/hwpx/gongmun-lint.ts` is the precedent (fifteen rules, itself descended from `jkf87/hwpx-skill`) | S |
+| GN-4 | **No document frames**: 기안문 두문 (기관명, 수신, 경유, 제목) and 결문 (발신명의, 결재/협조, 시행/접수, contact block), the 공고문 head and foot, and the 보도자료 머리박스 must be typed by hand into the markdown | `hwp new` flags carrying the fields; kordoc `src/hwpx/gen-docframe.ts`, `gen-gongmun-extra.ts`. Writer-visible output, so it needs the Hancom acceptance procedure (07 PROC) | M |
+| GN-5 | **No document templates**: creating a 기안문 or a 회의록 means writing the whole skeleton from scratch, and the 회의록 form does not reflect the nine statutory elements (공공기록물 관리에 관한 법률 시행령 제18조) | Embedded markdown skeletons with `{{slot}}` anchors and a listing command, feeding the existing `hwp fill` path | S |
+| GN-6 | **Generated tables are unstyled**: markdown import emits uniform column widths and no header-row emphasis, unlike the official-document convention (header shading, bold, centring; content-proportional widths) | Table styling under the presets plus a flag for existing files; the workspace skill's `style_pass.py` and its corpus evidence are the source | S |
+| GN-7 | **The regulation layer is not shipped**: the rules, the markdown contract and the templates live outside this repository, so an agent driving the binary has to be told them | Ship them in the bundled skill (`hwp skill export`) as a directory: the official-document guide, the regulation reference and the templates, English canonical with Korean mirrors, guarded by drift tests | S |
+| GN-8 | **Editing parity with the retired skill unproven**: the workspace skill filled slots that span runs, cleared line-layout caches and filled label/value forms; the equivalent native paths are not yet demonstrated on those templates | Prove `fill`/`edit` equivalence and add what is missing (label-addressed cell fill at minimum) before the old skill is retired ([skills#35](https://github.com/STAIxBWLB/skills/issues/35)) | S |
+
+All eight are scheduled as inserted phases 2.1 to 2.5 (see the spec issue). None is resolved yet.
+
+## 15. Roadmap: difficulty × value plus the dependency graph
+
+### 15.1 The difficulty × value matrix
 
 **Value** is based on frequency in real documents plus practical demand (the ecosystem comparison in
 [08](08-external-research.md)).
 
 | | **Difficulty S** (data structures only) | **Difficulty M** (needs ground truth) | **Difficulty L** (repeated Hancom testing) |
 |---|---|---|---|
-| **High value** (frequent) | GC-4 and GC-5 (tabs, section properties), GC-8 and GC-9 (hanging indent, paragraph background). ✅ resolved 2026-07-15: ~~GE-α1 to α5 and α7, GH-1 and GH-2, GL-1, GA-5, GE-β4~~ / ✅ resolved 2026-07-18 (markdown): ~~GH-3, GH-4, GH-5, GH-6, GH-8~~ | GG-3 and GG-4 (justify, letter spacing), GF-2 (index marks, overlap), **GA-2 ★** (reading distribution documents; the specification is public), ~~GJ-1 output~~ (DOCX export resolved 2026-08-01), **GK-1** (cell merge), **GK-2** (column deletion; addition resolved on 07-19). ✅ GC-2 and GC-3 resolved on 07-19 (J1 awaiting Hancom) | GG-1 and GG-2 (text box drop, overflow) |
-| **Medium value** | GC-6 (multi-column text boxes), GE-2 to GE-6 (picture drop, columns, number synthesis), GF-1 (%unk), **GB-12** (bibliography), **GE-β1, β2, β5** (preview, scripts, settings), ~~GG-16~~ (local rendering, resolved in PR 9 alongside GG-5, GG-6, GG-8 to GG-11, GG-17, GG-20, GG-21, GG-22 from 2026-08-13/14), **GH-3, GH-4, GH-5** (html/odt footnote markers, merged cells, in-cell blocks; markdown resolved 2026-07-18), ~~GJ-5 and GJ-6~~ (csv, txt, resolved 08-01). ✅ the whole GI series and GE-7 resolved on 07-19. ~~GK-3, GK-4, GK-6, GK-8~~, ~~GM-1, GM-2, GM-5~~, **GM-6** (corrected to already-covered), GM-7 (sealing, resolved 07-16) — ✅ resolved in the 2026-08-01 batch | GB-4 to GB-7 and GB-10 (word art, forms, grouping, memos, master pages), GC-1 (vertical writing), GD-1 to GD-3 (equations; rhwp precedent), GE-α6 (gradients), GF-3 (field creation), **GB-1 hwpx chart generation ★** (chartSpace; kordoc precedent), **GJ-2 and GJ-3** (hml, HWP 3.x; specifications public), **GG-7, GG-12 to GG-15, GG-18, GG-19** (render pixel comparison), **GE-β3 and β6** (DocOptions, embedded fonts), **GH-7** (ODT layout), **GK-5 and GK-7** (header editing, styles), **GM-3, GM-4, GM-8** (merge, split, compare) | GB-2 and GB-3 (OLE, video), **GJ-1 full round-trip** (if DOCX import is included), **GM-9 Web** (authenticated hosted MCP, tenant isolation and operations; Desktop is resolved) |
+| **High value** (frequent) | **GN-2, GN-3, GN-5, GN-6, GN-7, GN-8** (official presets, notation lint, document templates, table styling, bundled regulation layer, editing parity — the 2026-08-20 official-document series), GC-4 and GC-5 (tabs, section properties), GC-8 and GC-9 (hanging indent, paragraph background). ✅ resolved 2026-07-15: ~~GE-α1 to α5 and α7, GH-1 and GH-2, GL-1, GA-5, GE-β4~~ / ✅ resolved 2026-07-18 (markdown): ~~GH-3, GH-4, GH-5, GH-6, GH-8~~ | **GN-1, GN-4** (statutory eight-level marks, document frames — writer-visible, Hancom acceptance), GG-3 and GG-4 (justify, letter spacing), GF-2 (index marks, overlap), **GA-2 ★** (reading distribution documents; the specification is public), ~~GJ-1 output~~ (DOCX export resolved 2026-08-01), **GK-1** (cell merge), **GK-2** (column deletion; addition resolved on 07-19). ✅ GC-2 and GC-3 resolved on 07-19 (J1 awaiting Hancom) | GG-1 and GG-2 (text box drop, overflow) |
+| **Medium value** | GC-6 (multi-column text boxes), GE-2 to GE-6 (picture drop, columns, number synthesis), GF-1 (%unk), **GB-12** (bibliography), **GE-β1, β2, β5** (preview, scripts, settings), ~~GG-16~~ (local rendering, resolved in PR 9 alongside GG-5, GG-6, GG-8 to GG-11, GG-17, GG-20, GG-21, GG-22 from 2026-08-13/14), **GH-3, GH-4, GH-5** (html/odt footnote markers, merged cells, in-cell blocks; markdown resolved 2026-07-18), ~~GJ-5 and GJ-6~~ (csv, txt, resolved 08-01). ✅ the whole GI series and GE-7 resolved on 07-19. ~~GK-3, GK-4, GK-6, GK-8~~, ~~GM-1, GM-2, GM-5~~, **GM-6** (corrected to already-covered), GM-7 (sealing, resolved 07-16) — ✅ resolved in the 2026-08-01 batch | GB-4 to GB-7 and GB-10 (word art, forms, grouping, memos, master pages), GC-1 (vertical writing), GD-1 to GD-3 (equations; rhwp precedent), GE-α6 (gradients), GF-3 (field creation), **GB-1 hwpx chart generation ★** (chartSpace; kordoc precedent), **GJ-2 and GJ-3** (hml, HWP 3.x; specifications public), **GG-7, GG-12 to GG-15, GG-18, GG-19** (render pixel comparison), **GE-β3 and β6** (DocOptions, embedded fonts), **GH-7** (ODT layout), **GK-5 and GK-7** (header editing, styles), **GM-3, GM-4, GM-8** (merge, split, compare), **GM-10** (PII redaction; kordoc precedent) | GB-2 and GB-3 (OLE, video), **GJ-1 full round-trip** (DOCX import; 2026-08-20 disposition: stays out of scope and is revisited only after every other roadmap item is complete — the same call covers PDF, XLS and XLSX import, with kordoc as the covering tool meanwhile), **GM-9 Web** (authenticated hosted MCP, tenant isolation and operations; Desktop is resolved) |
 | **Low value** (rare) | GA-3 and GA-4 (refusal messages), **GI-5** (embed-bin), **GL-2 and GL-3** (extraction granularity) | **GJ-4** (rtf) | GA-1 (encryption), GB-8, GB-9, GB-11 (change tracking and so on), **GJ-7** (reverse input), **GJ-8** (HWPX distribution) |
 
 **How to read it:** the top left (S, high) has **the best return**. Beyond GE-α (character effect
 round-trips), **GH-1 and GH-2** (markdown/HTML links and images, reusing the ODT embedding pattern)
 and **GL-1** (just a clap flag) were the new entry points. ★ marks the 2026-07-08 re-evaluation:
 **GA-2 (distribution) dropped from L to M because the decryption specification is public**, and
-**the hwpx path of GB-1 (charts) dropped from L to M because it is an OOXML chartSpace**. The bottom
-right (L, low) is the lowest priority.
+**the hwpx path of GB-1 (charts) dropped from L to M because it is an OOXML chartSpace**. The 2026-08-20 addition is the **GN official-document series**: six of its eight items are S, because
+the regulation layer is mostly presets, text rules and shipped documents rather than format work; only
+GN-1 (a new numbering format in the IR and both formats) and GN-4 (frames the writer emits) need ground
+truth and Hancom acceptance. The bottom right (L, low) is the lowest priority.
 
-### 14.2 The dependency graph
+### 15.2 The dependency graph
 
 ```
 [obtain ground truth]  ──precedes──▶  GB-1 to 7 (object rendering)  ──needs──▶  10/11 record structure interpretation
@@ -742,6 +772,12 @@ right (L, low) is the lowest priority.
    │
 [concrete web consumer] ──▶ GM-9 Web ──precedes──▶ protocol-core extraction + artifact model
                                       ──then──▶ OAuth resource server + Streamable HTTP + tenant operations
+   │
+[regulation layer, mostly independent] ──▶ GN-7 (ship the rules, the contract and the templates)
+                    ──precedes──▶ GN-1/GN-2 (marks and presets)  ──precedes──▶ GN-4/GN-5/GN-6
+                                        │                                        (frames, templates, table styling)
+                                        └──▶ GN-3 (notation lint; needs the rules, not the engine)
+                    ──finally──▶ GN-8 (editing parity, then the old skill is retired)
 ```
 
 **Dependency rules in brief:**
@@ -756,8 +792,12 @@ right (L, low) is the lowest priority.
   interprets it; the shortest path is adding the corresponding emission on write.
 - **GG-1 and GG-2** share a root with the unresolved items in 07 §F (property fidelity), so
   **repeated Hancom testing plus ground truth** are jointly prerequisite.
+- **The GN series** depends on the engine only through GN-1 (a numbering format the IR and both
+  formats must carry) and GN-4 (paragraphs and tables the writer emits). GN-7 comes first because
+  the rules it ships are the specification the rest is checked against, and GN-8 comes last because
+  it is the proof that nothing the retired skill did was lost.
 
-### 14.3 Items gated on ground truth (needing genuine files and Hancom testing)
+### 15.3 Items gated on ground truth (needing genuine files and Hancom testing)
 
 The following can only start once **a genuine Hancom file is available**, per the ground-truth
 methodology in [00](00-overview.md) §4 (no guessed typesetting). The rest (especially GE-α, GH, GL,
@@ -782,6 +822,14 @@ local GC and local rendering) can proceed with data structures and rendering alo
   ParaShape line spacing kind only from the legacy attr1 bits 0-1 (`doc_info.rs:297`) versus table 46
   attr3 (5.0.2.5+, which includes "minimum"), needing a genuine file with "minimum" line spacing to
   check whether Hancom also writes attr1 in sync on newer versions
+
+Two pieces of verification infrastructure would lower the cost of this whole section, both surfaced by
+the 2026-08-20 comparison ([08](08-external-research.md)) and neither scheduled: a **Hancom COM
+automation harness** on Windows that renders and re-extracts through real Hancom (kordoc
+`bench/hangul-com-pdf.ps1`), which would make the acceptance procedure repeatable instead of manual;
+and a **public-corpus collector** for in-the-wild government documents feeding the existing
+`HWP_CORPUS_DIR` soak tests (kordoc `bench/collect-korea-kr.mjs`). The collector is compatible with
+the data policy — the corpus is fetched locally and never committed.
 
 ---
 

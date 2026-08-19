@@ -100,7 +100,7 @@ owpml-model은 전부 **파서/객체모델**(layout/draw/paint 패키지 없음
 
 > hwp-cli에 없는, 실사용자가 필요로 하는 기능을 타 구현체·수요 근거로 발굴. 91개 주장 추출 →
 > 25개 적대 검증 → **21 확정(전부 3-0)·4 반증**. [12-feature-gaps.ko.md](12-feature-gaps.ko.md) §10 GJ와
-> §14 로드맵 재평가(GA-2·GB-1★)의 근거가 이 절이다.
+> §15 로드맵 재평가(GA-2·GB-1★)의 근거가 이 절이다.
 
 ## (a) 타 구현체가 이미 지원 — 구현 선례 존재
 
@@ -131,6 +131,27 @@ owpml-model은 전부 **파서/객체모델**(layout/draw/paint 패키지 없음
 - **hwp.js 미해결 이슈 3건은 정합 테스트 소재**: 한글 2018산 5.1.0.1.1 파싱(#59), 첨자(#55),
   단 정의 스펙 14B vs 실파일 16B 불일치(#58 — ★스펙-실파일 불일치의 실증 사례).
 
+## 2026-08-20 재조사 — kordoc의 공문서 엔진
+
+kordoc v4.9.0(TypeScript, MIT)을 hwp-cli와 전면 재대조했다. 위 생태계 결론은 그대로 유효하고, 새로
+드러난 것은 이 조사가 보지 않았던 계층이다 — 포맷 기능이 아니라 **규정** 기능이기 때문이다. 작업
+트리에서 코드 수준으로 확인했다.
+
+| 발견 (kordoc 경로) | hwp-cli 함의 |
+|---|---|
+| 수준별 카운터와 단모음 연속을 갖춘 법정 8단계 항목 부호 체계(`src/hwpx/gongmun.ts`, `src/shared/numbering.ts`), 그리고 각 부호의 실제 렌더 폭에서 내어쓰기를 계산하는 문단 기하 | **GN-1**. 우리 프리셋은 4단계에서 멈추고 내어쓰기가 고정값 |
+| 자체 SSOT로 쓰는 법령 정리 문서(`docs/gongmunseo-reference.md`, 453줄) — 주장마다 `confirmed`/`refuted` 판정이 붙고, 널리 퍼진 "위 여백 30mm" 수치를 반증까지 함 | 이 저장소가 **GN-7**으로 출하할 참고문서도 같은 법령을 인용한다. kordoc은 2차 출처, 법령이 1차 |
+| 7종 문서 프리셋과 한국어 알리아스(`src/hwpx/gongmun.ts:172-197`), 기안문 두문/결문·공고문·보도자료 머리박스 문서 틀(`src/hwpx/gen-docframe.ts`, `gen-gongmun-extra.ts`) | **GN-2**, **GN-4**, **GN-5** |
+| 마크다운 원본에 대한 15개 조언용 표기법 lint(`src/hwpx/gongmun-lint.ts` — 그 자체가 `jkf87/hwpx-skill` 파생) — 날짜·시각·금액·붙임·끝.·쌍점 띄어쓰기 위반 검출 | **GN-3**. `hwp validate`는 구조 검증뿐이고 이런 룰셋이 없다 |
+| 원문 PII를 담지 않는 적출 보고서를 곁들인 형식 유지 마스킹(`src/redact.ts`) | **GM-10** |
+| Windows에서 실제 한글로 렌더하고 재추출하는 한컴 COM 자동화(`bench/hangul-com-pdf.ps1`) — 추론으로는 틀리게 나오는 제약들을 이 방식으로 확정 | 검수 절차용 인프라 후보([12](12-feature-gaps.ko.md) §15.3). 미편성 |
+| 실환경 정부 문서 공개 코퍼스 수집기(`bench/collect-korea-kr.mjs`, `collect-opengov.mjs`) — gitignore된 회귀 코퍼스에 공급 | `HWP_CORPUS_DIR` 공급원 후보. 데이터 정책과 양립 |
+| 우리가 의도적으로 갖지 않은 입력 폭 — PDF(OCR 포함)·XLSX·XLS BIFF8·DOCX 들여오기 | 2026-08-20 처분은 **GJ-1**과 나머지 비-HWP 들여오기를 다른 로드맵 항목이 모두 끝날 때까지 범위 밖으로 두고, 그동안의 커버 도구로 kordoc을 명시한다 |
+
+**신뢰도:** 코드 수준 발견은 높음(v4.9.0 작업 트리에서 직접 확인). 법령 관련 주장은 kordoc 자체
+판정이며, **GN-7** 참고문서를 쓸 때 법령 원문과 재대조한다. kordoc은 MIT이므로 출처 표기와 함께
+동작을 재현할 수 있고, 규정 자체는 법령이라 복사가 아니라 1차 원문에서 다시 서술한다.
+
 ## 한계
 
 - 접근성(alt text)·전자서명·PDF/A **규제 수요는 검증 통과 근거 없음**(수요 부재가 아니라 근거 미생존).
@@ -144,6 +165,7 @@ owpml-model은 전부 **파서/객체모델**(layout/draw/paint 패키지 없음
 
 - pypi.org/project/pyhwp, pyhwp.readthedocs.io(converters), github.com/mete0r/pyhwp#135
 - github.com/ebandal/H2Orestart(#42), extensions.libreoffice.org/27504, freedomofpress/dangerzone
-- github.com/edwardkim/rhwp, github.com/chrisryugj/kordoc, github.com/neolord0/hwplib
+- github.com/edwardkim/rhwp, github.com/chrisryugj/kordoc(v4.9.0, MIT — `docs/gongmunseo-reference.md`,
+  `src/hwpx/gongmun*.ts`, `src/redact.ts`, `bench/`), github.com/neolord0/hwplib
 - github.com/hahnlee/hwp.js(#55·#58·#59), microsoft.com HwpConverter(id=36772·49153)
 - store.hancom.com/etc/hwpDownload.do(배포용문서 rev1.2·3.0/HWPML rev1.2), wikidocs.net/book/8956
