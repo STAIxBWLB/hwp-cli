@@ -121,7 +121,7 @@ layout, typesetting and drawing algorithm must therefore be ours; only parser ev
 
 > Finding features that hwp-cli lacks but real users need, evidenced by other implementations and by
 > demand. 91 claims extracted, 25 adversarially verified: **21 confirmed (all 3-0), 4 refuted**. This
-> section is the evidence behind [12-feature-gaps](12-feature-gaps.md) §10 GJ and the §14 roadmap
+> section is the evidence behind [12-feature-gaps](12-feature-gaps.md) §10 GJ and the §15 roadmap
 > re-evaluation (GA-2 and GB-1 ★).
 
 ## (a) Already supported elsewhere, so precedent exists
@@ -156,6 +156,28 @@ layout, typesetting and drawing algorithm must therefore be ours; only parser ev
   2018 (#59), subscripts (#55), and column definitions being 14B in the specification versus 16B in
   real files (#58, a documented case of specification-versus-reality mismatch).
 
+## 2026-08-20 re-survey: kordoc's official-document engine
+
+kordoc v4.9.0 (TypeScript, MIT) was re-read in full against hwp-cli. The ecosystem findings above
+still hold; what is new is a layer this survey had not looked at, because it is not a format feature
+but a **regulation** feature. Verified at code level in the working tree.
+
+| Finding (kordoc path) | Implication for hwp-cli |
+|---|---|
+| The statutory eight-level item-mark sequence with per-level counters and 단모음 continuation (`src/hwpx/gongmun.ts`, `src/shared/numbering.ts`), and paragraph geometry where the hanging indent is computed from the rendered width of each mark | **GN-1**. Our preset stops at four levels and uses a fixed hanging indent |
+| A statute compilation used as its own source of truth (`docs/gongmunseo-reference.md`, 453 lines), with per-claim `confirmed` / `refuted` verdicts — including a refutation of the widely repeated "top margin 30 mm" figure | The reference this repository ships with **GN-7** cites the same statutes; treat kordoc as a secondary source and the statutes as primary |
+| Seven document presets plus Korean aliases (`src/hwpx/gongmun.ts:172-197`), document frames for 기안문 두문/결문, 공고문 and the 보도자료 head box (`src/hwpx/gen-docframe.ts`, `gen-gongmun-extra.ts`) | **GN-2**, **GN-4**, **GN-5** |
+| A fifteen-rule advisory notation lint over the markdown source (`src/hwpx/gongmun-lint.ts`, itself descended from `jkf87/hwpx-skill`), catching date, time, money, 붙임, 끝. and colon-spacing violations | **GN-3**. `hwp validate` is structural and has no such ruleset |
+| Format-preserving PII masking with a hit report that never contains raw PII (`src/redact.ts`) | **GM-10** |
+| Hancom COM automation that renders and re-extracts through real Hancom on Windows (`bench/hangul-com-pdf.ps1`), used to establish constraints that inference gets wrong | Candidate infrastructure for the acceptance procedure (§15.3 of [12](12-feature-gaps.md)); not scheduled |
+| Public-corpus collectors for in-the-wild government documents (`bench/collect-korea-kr.mjs`, `collect-opengov.mjs`) feeding a gitignored regression corpus | Candidate feeder for `HWP_CORPUS_DIR`; compatible with the data policy |
+| Input breadth we deliberately do not have: PDF (with OCR), XLSX, XLS BIFF8 and DOCX import | The 2026-08-20 disposition keeps **GJ-1** and the other non-HWP imports out of scope until every other roadmap item is complete, with kordoc named as the covering tool |
+
+**Confidence:** high for the code-level findings (read in the working tree at v4.9.0); the statutory
+claims are kordoc's own verdicts and are re-checked against the statutes when the reference in
+**GN-7** is written. kordoc is MIT-licensed, so behaviour may be reproduced with attribution; the
+regulation itself is law and is restated from the primary text rather than copied.
+
 ## Limitations
 
 - Accessibility (alt text), digital signatures and PDF/A **have no evidence that survived
@@ -172,6 +194,7 @@ layout, typesetting and drawing algorithm must therefore be ours; only parser ev
 
 - pypi.org/project/pyhwp, pyhwp.readthedocs.io (converters), github.com/mete0r/pyhwp#135
 - github.com/ebandal/H2Orestart (#42), extensions.libreoffice.org/27504, freedomofpress/dangerzone
-- github.com/edwardkim/rhwp, github.com/chrisryugj/kordoc, github.com/neolord0/hwplib
+- github.com/edwardkim/rhwp, github.com/chrisryugj/kordoc (v4.9.0, MIT — `docs/gongmunseo-reference.md`,
+  `src/hwpx/gongmun*.ts`, `src/redact.ts`, `bench/`), github.com/neolord0/hwplib
 - github.com/hahnlee/hwp.js (#55, #58, #59), microsoft.com HwpConverter (id=36772, id=49153)
 - store.hancom.com/etc/hwpDownload.do (배포용문서 rev1.2, 3.0/HWPML rev1.2), wikidocs.net/book/8956

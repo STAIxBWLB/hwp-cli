@@ -86,6 +86,11 @@ unimplemented features is [docs/design/12-feature-gaps.md](docs/design/12-featur
 4. **Windows** The compile and publish paths are stable as of v0.5.0; ubuntu, macOS, and Windows are
    all required CI gates.
 5. **Distribution (DRM) documents** A candidate to start once the specification is available.
+6. **Official-document authoring layer (공문서)** Absorb the workspace-local authoring skill into
+   this binary: the statutory eight-level item marks, a notation lint, 기안문/공고문/보도자료 frames,
+   document templates and the regulation reference shipped with `hwp skill export`. Catalogued as the
+   GN series in [docs/design/12-feature-gaps.md](docs/design/12-feature-gaps.md) §14; spec in
+   [issue #121](https://github.com/STAIxBWLB/hwp-cli/issues/121).
 
 ## Installation
 

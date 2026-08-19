@@ -75,6 +75,10 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 4. **Windows** v0.5.0부터 컴파일·게시 경로가 안정화됐다. CI에서 ubuntu·macOS·Windows 모두
    필수 게이트다.
 5. **배포용(DRM) 문서** 스펙 확보를 전제로 착수 후보다.
+6. **공문서 저작 계층** 워크스페이스 로컬 저작 스킬을 이 바이너리로 흡수한다 — 법정 8단계 항목
+   부호, 표기법 lint, 기안문·공고문·보도자료 문서 틀, 문서 템플릿, 그리고 `hwp skill export`로 함께
+   출하되는 규정 참고문서. [docs/design/12-feature-gaps.ko.md](docs/design/12-feature-gaps.ko.md)
+   §14의 GN 계열로 등재했고, 스펙은 [이슈 #121](https://github.com/STAIxBWLB/hwp-cli/issues/121)이다.
 
 ## 설치
 

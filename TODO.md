@@ -99,7 +99,7 @@
       re-verified against the code). Result: 17 new gaps registered (see the §0.4 registration history
       in document 12: GB-13~15, GD-4, GE-9~13, GE-α9, GE-β7~β8, GF-4~5, GG-21~24), 6 existing entries
       strengthened, 3 corrections to documents 10/11 (cell 34B, border 13B, a missing (c) table), and
-      3 verdicts deferred (document 12 §14.3, pending genuine-file measurement). The four
+      3 verdicts deferred (document 12 §15.3, pending genuine-file measurement). The four
       content-loss items (GF-4 22 field kinds, GF-5 hidden comments, GE-β7/β8 storages) are the first
       to fix.
 - [ ] Parser (`hwp5/doc_info.rs`, `body_text.rs`): compare record layouts and bit interpretation
