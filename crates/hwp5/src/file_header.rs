@@ -377,7 +377,10 @@ mod tests {
         let h = FileHeader::parse(&표본_헤더_속성(attr::ENCRYPTED)).unwrap();
         let err = h.check_body_readable().unwrap_err();
         assert!(matches!(err, Hwp5Error::Encrypted));
-        assert!(err.to_string().contains("암호화된 문서는 지원하지 않습니다"));
+        assert!(
+            err.to_string()
+                .contains("암호화된 문서는 지원하지 않습니다")
+        );
 
         // Password encryption + DRM: encryption is checked first.
         let h = FileHeader::parse(&표본_헤더_속성(attr::ENCRYPTED | attr::DRM)).unwrap();
