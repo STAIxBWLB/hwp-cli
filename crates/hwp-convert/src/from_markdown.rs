@@ -345,7 +345,7 @@ pub fn default_header() -> hwp_model::DocHeader {
 
 /// Applies the official-document preset to the header — fonts/sizes and the 4-level ordered
 /// numbering scheme. (Margins and page numbers are handled by inject_section_controls.)
-fn apply_official_preset(header: &mut hwp_model::DocHeader, preset: OfficialPreset) {
+pub(crate) fn apply_official_preset(header: &mut hwp_model::DocHeader, preset: OfficialPreset) {
     // Body/heading sizes (HWPUNIT/100pt): draft 11.5pt·heading 15pt / report 15pt·heading 18pt.
     let (body, headings) = match preset {
         OfficialPreset::Gian => (1150, [1500, 1400, 1300, 1200, 1150, 1150]),
