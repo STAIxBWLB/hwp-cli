@@ -973,11 +973,17 @@ mod tests {
                 .strip_suffix(".md")
                 .expect(".md suffix");
             assert!(
-                en.lines().next().unwrap_or_default().contains(&format!("]({stem}.ko.md)")),
+                en.lines()
+                    .next()
+                    .unwrap_or_default()
+                    .contains(&format!("]({stem}.ko.md)")),
                 "\n{rel} 첫 줄에 한국어 미러 링크가 필요: [한국어]({stem}.ko.md)"
             );
             assert!(
-                ko.lines().next().unwrap_or_default().contains(&format!("]({stem}.md)")),
+                ko.lines()
+                    .next()
+                    .unwrap_or_default()
+                    .contains(&format!("]({stem}.md)")),
                 "\n{ko_rel} 첫 줄에 영어 원문 링크가 필요: [English]({stem}.md)"
             );
         }
