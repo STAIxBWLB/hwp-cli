@@ -314,3 +314,150 @@ Confidence: practice (the document-type ↔ ending mapping has no single authori
 punctuation mark, 붙임 adjacent to a heading), each rule is stated separately above and no
 combined behavior is defined — no specification exists to resolve such merges; flagged for
 verify-work.
+
+## 7. 회의록 — the 9 statutory elements · confirmed
+
+Source: 「공공기록물 관리에 관한 법률 시행령」 **제18조** — note the source is the 공공기록물
+시행령, NOT the 행정업무규정. Confidence: confirmed (법령).
+
+Minutes of a meeting (회의록) must record these 9 statutory elements:
+
+1. 회의 명칭
+2. 개최기관
+3. 일시·장소
+4. 참석자·배석자 명단
+5. 진행 순서
+6. 상정 안건
+7. 발언 요지
+8. 결정 사항
+9. 표결 내용
+
+For 지정회의 (designated meetings), a 속기록 (stenographic record) or 녹음기록 (audio
+recording) accompanies the minutes — with a 녹취록 when recorded.
+
+## 8. 공고문 — public notices · confirmed / practice
+
+Source: 규정 제6조제3항 (효력) — confirmed; 번호 형식 — practice. Confidence: confirmed
+(5일 효력, 법령) / practice (numbering format).
+
+- 고시 and 공고 are both 공고문서: 고시 carries continuing force and binding effect; 공고 is
+  one-off and non-binding.
+- **Effect (5일 효력):** when the effective date is not stated, a 고시·공고 takes effect
+  **5 days after its publication date** (규정 제6조제3항).
+- **Numbering:** year-prefixed serial number with a hyphen — `제2025-282호`.
+- Structure: header (기관 + 번호) → 제목 → 본문 (법령 근거) → 발신 (기관장) · 시행일.
+
+## 9. 보도자료 — press releases · practice
+
+Source: 국립국어원 「보도자료 작성 길잡이」 (an authoritative guideline, not a statute).
+Confidence: practice.
+
+A 보도자료 is built in three parts:
+
+1. **머리** — 기관, 보도/배포 일시, 작성자·연락처.
+2. **내용** — 표제 + 부제, 리드문, 본문:
+   - 표제: 종결어미형 (for vividness) or 명사문형 (for compression).
+   - 부제: noun phrase in dashes `- … -`, at most two.
+   - 리드문: 육하원칙 — 누가·언제·무엇 are mandatory.
+   - 본문: 두괄식 역피라미드 (conclusion first), items on the `□`(대) `ㅇ`(중) `-`(소) ladder.
+3. **부가** — 붙임, 공공누리 license note.
+
+## 10. Report and plan skeletons — 보고서·사업계획서 · practice
+
+Source: 관행 골격 (no statutory form; restated from the field-standard structures).
+Confidence: practice (medium).
+
+### 보고서 skeleton
+
+- Short status report — 4 sections:
+  1. 추진 배경
+  2. 주요 내용
+  3. 향후 계획
+  4. 행정 사항
+- Longer reports extend the middle: 추진배경 → 현황 → 문제점 → 개선방안 → 기대효과 →
+  추진계획 → [행정사항]. Title shows the direction (`○○ 개선방안 보고`, `○○ 검토보고`,
+  `○○ 개최결과 보고`); **1건 1매** (one topic per page) is the field principle.
+- Endings: 개조식 (see §6 어투).
+
+### 사업계획서 skeleton
+
+The common 9-section backbone (individual 사업단 forms vary):
+
+```
+Ⅰ.   사업 개요          — 사업명, 기간, 총사업비, 주관·참여기관
+Ⅱ.   추진 배경 및 필요성 — 대내외 환경, 정책·기술 트렌드
+Ⅲ.   추진 목표 및 전략   — 최종목표, 연차별 목표, 추진전략
+Ⅳ.   세부 추진 내용      — 세부과제 1/2/3 …
+Ⅴ.   추진 일정          — 연차별·월별 일정
+Ⅵ.   소요 예산          — 인건비/사업비/관리비 내역
+Ⅶ.   기대 효과          — 정량/정성 효과
+Ⅷ.   성과 지표          — KPI, 측정 방법
+Ⅸ.   붙임              — 참여진 이력, 예산 상세, 추진 체계도
+```
+
+A shorter field sequence shares the report skeleton: 추진배경/목적 → 추진방향 →
+추진계획(일시·장소·대상·내용·방법) → 소요예산 → 추진일정 → 행정사항 → [기대효과].
+
+## 11. Margins and fonts — engine behavior, not regulation · practice / unverified
+
+Source: [docs/design/23-hwpx-skill-absorption.md](23-hwpx-skill-absorption.md) §3 (Margin
+check, D-14) and docs/design/12-feature-gaps.md GN-9; 2020 편람 서식 설계기준. Confidence:
+unverified (top 30 mm) / practice (fonts and line spacing).
+
+### Margins (여백)
+
+**These are current engine behavior — never cite them as regulation.** The `gian|report`
+preset bakes **top 30 / bottom 15 / left 20 / right 15 mm (30/15/20/15)**, a value set
+inherited from the old skill's uncited prose. The primary-source check (D-14, recorded in
+doc 23 §3, owner-approved 2026-08-21) found **no authoritative source for top 30 mm** —
+confidence unverified — while the 2020 편람 서식 기준 is **top 20 / bottom 10 / left 20 /
+right 20 mm**. GN-9 stays open; any preset correction is Phase 2.2 scope (a writer change
+needs the Hancom acceptance procedure). Until then the reference states the preset values as
+practice/unverified, never as regulation or as 편람 official.
+
+### Fonts and line spacing (글꼴·줄간격)
+
+**No statute fixes the body font, size, or line spacing of a general 기안문** — only 서식
+(별지·민원 서식) typography is statutory. Everything below is 관행 (practice):
+
+- **맑은고딕 11.5pt** — 전자결재 시스템 (온나라, K-에듀파인 등) default; the 현행 기안문
+  convention.
+- **명조 계열 (휴먼명조/함초롬바탕) 14-15pt** — the traditional 보고서 convention.
+- Line spacing: **123%** (한글 기본값) / **160%** (보고서 가독성 관행) / **130% 이상**
+  (큰글자 서식 — the only statutory value, 시행규칙 별표5, and it applies to 큰글자 서식
+  only).
+- 자간 0 / 장평 100 are the field defaults.
+
+## 12. Sources and the pre-send checklist
+
+### Sources (D-13)
+
+- **kordoc** (`~/workspace/references/ai-tools/kordoc`, **MIT**) — credited as the **secondary
+  source** for the statute compilation this reference's section map follows
+  (`docs/gongmunseo-reference.md`: §1 marks/indent/단모음, §4 문서 구조, §5 표기법, §6.4
+  회의록, §6.5 보도자료, §6.6 공고문, §3.2 margin refutation, §2 typography). Rules are
+  restated from the statutes, not copied.
+- **jkf87/hwpx-skill** — rule ancestry of parts of the old skill's rule set is acknowledged
+  by name. The repository carries **no license** (verified 2026-08-20 via the GitHub API), so
+  **no rule text is copied** from it; this acknowledgment is the full extent of the reuse.
+- **Primary basis** — 「행정업무의 운영 및 혁신에 관한 규정」 및 동 시행규칙, 「공공기록물
+  관리에 관한 법률 시행령」 제18조, 2020 행정업무운영 편람 (p.43 for 단모음).
+- **Old `hwpx` skill** (STAIxBWLB/skills, read-only) — the 기안문 10-part box, document
+  classes and skeleton content were rewritten from it.
+
+### Pre-send checklist
+
+Before dispatching an official document:
+
+- [ ] A4 portrait; item marks follow the §1 sequence (engine-assigned, never hand-typed)
+- [ ] Indent ladder and single-item rule per §2; `□ ○ - ㆍ` used consistently per §3
+- [ ] 날짜 `YYYY. M. D.`, 시각 `HH:MM`, 금액 `금NNN,NNN원(금…원)` per §6
+- [ ] 붙임 without a colon, closed by `끝.` per §6
+- [ ] 수신, 시행번호·시행일자, 공개구분 filled (기안문)
+- [ ] 회의록 carries all 9 statutory elements (§7)
+- [ ] Sections tagged practice above are conventions — check the agency's own convention
+- [ ] `hwp validate` passes
+- [ ] Opened once in Hancom Office with no layout breakage (manual — cannot be automated)
+
+Phase 2.3 adds **`hwp lint`**, which automates the mechanical half of this checklist —
+until it lands, run the checklist by hand.

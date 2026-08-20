@@ -68,6 +68,14 @@ pub const SKILL_FILES: &[EmbeddedFile] = &[
         rel: "references/style-patterns.ko.md",
         contents: include_str!("../../../../skills/hwp/references/style-patterns.ko.md"),
     },
+    EmbeddedFile {
+        rel: "references/korean-official-format.md",
+        contents: include_str!("../../../../skills/hwp/references/korean-official-format.md"),
+    },
+    EmbeddedFile {
+        rel: "references/korean-official-format.ko.md",
+        contents: include_str!("../../../../skills/hwp/references/korean-official-format.ko.md"),
+    },
 ];
 
 pub fn run(
