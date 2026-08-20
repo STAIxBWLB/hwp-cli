@@ -1,12 +1,20 @@
 //! `hwp skill` — manages the bundled agent skill.
 //!
-//! The repository source of truth `skills/hwp/SKILL.md` is embedded into the
-//! binary with `include_str!`, and `hwp skill export` writes it out verbatim
-//! (a generated artifact, so an existing file is silently overwritten).
+//! The repository source of truth under `skills/hwp/` is embedded into the
+//! binary as a hand-maintained `include_str!` table (`SKILL_FILES`), and
+//! `hwp skill export` writes the whole tree out verbatim (generated
+//! artifacts, so existing table-listed files are silently overwritten;
+//! anything else in the target directory is left untouched).
 //! `--install claude-code|codex|amazon-quick` selects the conventional skill
-//! directory for that client. Amazon Quick profiles are resolved through
+//! directory for that client. Amazon Quick keeps the single-file contract
+//! (only `SKILL.md` is written) and its profiles are resolved through
 //! `~/.quickwork/profiles.json` unless `--quick-profile` supplies an ID or an
 //! absolute profile directory.
+//!
+//! Two drift gates keep the table honest: a test that fails when a file
+//! under `skills/hwp/` is missing from `SKILL_FILES` or differs in bytes,
+//! and a test that enforces H2/H3 structure parity plus the line-1 language
+//! link for every `*.md`/`*.ko.md` pair in the tree.
 //!
 //! Home-directory and profile selection are split into pure helpers for unit
 //! testing. Tests use temporary directories and never touch the real `$HOME`.
@@ -23,16 +31,51 @@ use hwp_cli::cli::InstallTarget;
 /// Embedded skill source of truth. Byte-identical to `skills/hwp/SKILL.md` in the repository.
 pub const SKILL_MD: &str = include_str!("../../../../skills/hwp/SKILL.md");
 
+/// One file of the embedded skill tree: path relative to `skills/hwp/` plus
+/// its byte-exact contents. Entries are compile-time constants, so no runtime
+/// path input ever reaches the table.
+pub struct EmbeddedFile {
+    pub rel: &'static str,
+    pub contents: &'static str,
+}
+
+/// The embedded skill tree (D-06/D-16), hand-maintained. The
+/// `embedded_table_matches_skill_tree_on_disk` test fails when a file under
+/// `skills/hwp/` (excluding `claude-web/`) is missing here or differs in
+/// bytes, so every added tree file must gain an entry in the same commit.
+pub const SKILL_FILES: &[EmbeddedFile] = &[
+    EmbeddedFile {
+        rel: "SKILL.md",
+        contents: include_str!("../../../../skills/hwp/SKILL.md"),
+    },
+    EmbeddedFile {
+        rel: "references/style-patterns.md",
+        contents: include_str!("../../../../skills/hwp/references/style-patterns.md"),
+    },
+    EmbeddedFile {
+        rel: "references/style-patterns.ko.md",
+        contents: include_str!("../../../../skills/hwp/references/style-patterns.ko.md"),
+    },
+];
+
 pub fn run(
     output: Option<PathBuf>,
     install: Option<InstallTarget>,
     quick_profile: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let written = match resolve_target(output, install, quick_profile.as_deref())? {
-        ExportTarget::Plain(dir) => export(&dir)?,
-        ExportTarget::QuickProfile(profile) => export_quick(&profile)?,
-    };
-    println!("{}", written.display());
+    match resolve_target(output, install, quick_profile.as_deref())? {
+        ExportTarget::Plain(dir) => {
+            let written = export(&dir)?;
+            println!("{}", written.display());
+        }
+        ExportTarget::QuickProfile(profile) => {
+            let written = export_quick(&profile)?;
+            println!("{}", written.display());
+            println!(
+                "참고: 공문서 안내·참고 문서·템플릿 등 공문서 관련 파일은 Amazon Quick에 설치되지 않았습니다 (SKILL.md만 설치됨)."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -280,14 +323,23 @@ fn home_dir() -> anyhow::Result<PathBuf> {
         .with_context(|| format!("홈 디렉터리 환경변수 ${VAR} 가 설정되어 있지 않습니다"))
 }
 
-/// Writes the embedded content to `dir/SKILL.md` (creating the directory if needed).
+/// Writes the embedded skill tree under `dir` (creating parent directories
+/// as needed) and returns `dir`. Files in `dir` that are not listed in
+/// `SKILL_FILES` are left untouched — export never deletes.
 fn export(dir: &Path) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dir)
         .with_context(|| format!("스킬 디렉터리를 만들 수 없습니다: {}", dir.display()))?;
-    let path = dir.join("SKILL.md");
-    fs::write(&path, SKILL_MD)
-        .with_context(|| format!("SKILL.md를 쓸 수 없습니다: {}", path.display()))?;
-    Ok(path)
+    for file in SKILL_FILES {
+        let path = dir.join(file.rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("스킬 디렉터리를 만들 수 없습니다: {}", parent.display())
+            })?;
+        }
+        fs::write(&path, file.contents)
+            .with_context(|| format!("{}를 쓸 수 없습니다: {}", file.rel, path.display()))?;
+    }
+    Ok(dir.to_path_buf())
 }
 
 /// Writes `skills/hwp/SKILL.md` under an already-resolved canonical Quick
@@ -447,15 +499,70 @@ mod tests {
     }
 
     #[test]
-    fn exported_bytes_match_embedded_source() {
+    fn exported_tree_matches_embedded_table() {
         let dir = temp_dir("skill-export");
         let written = export(&dir).expect("export");
+        assert_eq!(written, dir, "export reports the directory it wrote");
+        for file in SKILL_FILES {
+            assert_eq!(
+                fs::read(dir.join(file.rel)).expect("read back"),
+                file.contents.as_bytes(),
+                "exported {} must byte-match the embedded source",
+                file.rel
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_never_touches_files_outside_the_table() {
+        let dir = temp_dir("skill-export-merge");
+        fs::create_dir_all(dir.join("references")).expect("pre-create");
+        fs::write(dir.join("keep.txt"), b"keep").expect("seed stray file");
+        fs::write(dir.join("references/keep.md"), b"keep").expect("seed stray nested file");
+        fs::write(dir.join("SKILL.md"), b"stale").expect("seed stale table file");
+
+        export(&dir).expect("export");
         assert_eq!(
-            fs::read(&written).expect("read back"),
+            fs::read(dir.join("SKILL.md")).expect("read back"),
             SKILL_MD.as_bytes(),
-            "exported file must byte-match the embedded source"
+            "table-listed files are overwritten"
+        );
+        assert_eq!(
+            fs::read(dir.join("keep.txt")).expect("stray file"),
+            b"keep",
+            "non-table files must survive an export"
+        );
+        assert_eq!(
+            fs::read(dir.join("references/keep.md")).expect("stray nested file"),
+            b"keep",
+            "non-table files in table subdirectories must survive an export"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_targets_receive_the_full_tree() {
+        for target in [InstallTarget::ClaudeCode, InstallTarget::Codex] {
+            let home = temp_dir("skill-install-tree");
+            let dir = match install_target_under(target, &home, None).expect("resolve target") {
+                ExportTarget::Plain(dir) => dir,
+                ExportTarget::QuickProfile(_) => {
+                    panic!("claude-code/codex resolve to a plain directory")
+                }
+            };
+            let written = export(&dir).expect("export");
+            assert_eq!(written, dir);
+            for file in SKILL_FILES {
+                assert_eq!(
+                    fs::read(dir.join(file.rel)).expect("read back"),
+                    file.contents.as_bytes(),
+                    "installed {} must byte-match the embedded source",
+                    file.rel
+                );
+            }
+            let _ = fs::remove_dir_all(&home);
+        }
     }
 
     #[test]
