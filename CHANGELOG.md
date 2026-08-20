@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.8.7]
+
 **Added**
 
 - Hancom distribution documents (배포용문서) are now read: `hwp cat`, `hwp convert` and
