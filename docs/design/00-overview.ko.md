@@ -84,6 +84,7 @@
 | 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.ko.md) | **HWP 5.0 명세 보완 색인** — 정오표·버전-레이아웃 매트릭스·적합성 체크리스트·소비 의미론 (07·03·05·10·08이 근거 데이터) |
 | 20 | [remote-mcp](20-remote-mcp.ko.md) | **Remote MCP transport 설계** - Web client용 향후 Streamable HTTP, OAuth resource server, tenant 격리, artifact 전송, limit 및 security gate |
 | 21 | [pdf-parity](21-pdf-parity.ko.md) | **PDF 동등성 계약 (한컴오피스 2024)** — parity 하네스가 읽는 오라클, 다섯 지표 집합, 임계값, 글꼴 게이트, 데이터 정책, 비목표 (issue #79) |
+| 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.ko.md) | **hwpx 스킬 흡수** — 서브커맨드 단위 패리티 매트릭스(구 서브커맨드 28개 + 스크립트 수준 보장, verified/inferred 표기), D-14 여백 기록, Phase 2.2~2.5가 제자리에서 갱신하는 살아있는 체크리스트 (issue #121, skills#35) |
 
 ---
 

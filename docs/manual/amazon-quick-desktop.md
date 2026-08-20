@@ -108,7 +108,9 @@ Run the current binary:
 ```
 
 The command reads `%USERPROFILE%\.quickwork\profiles.json`, selects its valid `last_active` profile
-or the only valid profile, and writes only `skills\hwp\SKILL.md` inside it. It does not copy
+or the only valid profile, and writes only `skills\hwp\SKILL.md` inside it. The official-document
+files (`SKILL.ko.md`, `official-documents(.ko).md`, `references/`, `templates/`) are **not**
+installed on the Quick path; the command prints a note saying so. It does not copy
 `hwp.exe`, register the MCP connector, create an agent, or publish anything.
 
 If Quick has several profiles or automatic selection is ambiguous, pass the profile ID or absolute
