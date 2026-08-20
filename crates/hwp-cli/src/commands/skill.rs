@@ -864,4 +864,122 @@ mod tests {
         assert_eq!(fs::read(&outside_file).unwrap(), b"keep");
         let _ = fs::remove_dir_all(root);
     }
+
+    /// Repository root of the bundled skill tree (`crates/hwp-cli/` → repo root).
+    fn skill_tree_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills/hwp")
+    }
+
+    /// Recursive walk collecting skill-relative file paths (forward-slash
+    /// separated) under `root`, skipping the `claude-web/` subtree.
+    fn walk_skill_tree(root: &Path) -> std::collections::BTreeSet<String> {
+        let mut files = std::collections::BTreeSet::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).expect("read skill tree directory") {
+                let path = entry.expect("directory entry").path();
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("entry under the walked root")
+                    .to_path_buf();
+                // claude-web/ is a repo/release artifact (web bundle
+                // installer), not skill content shipped by `hwp skill export`.
+                if rel.starts_with("claude-web") {
+                    continue;
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        files
+    }
+
+    /// Heading level (2 or 3) for every line starting with "## " or "### ",
+    /// in document order. Plain line scan — no markdown parser.
+    fn heading_levels(markdown: &str) -> Vec<u8> {
+        markdown
+            .lines()
+            .filter_map(|line| {
+                if line.starts_with("### ") {
+                    Some(3)
+                } else if line.starts_with("## ") {
+                    Some(2)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// D-16 drift gate: the hand-maintained `SKILL_FILES` table must match the
+    /// committed `skills/hwp/` tree exactly — set equality (a new tree file
+    /// without a table entry fails here) plus byte equality per entry.
+    /// `claude-web/` is excluded from both sides: it is a release/web-bundle
+    /// artifact, not exported skill content (research Open Question Q2).
+    #[test]
+    fn embedded_table_matches_skill_tree_on_disk() {
+        let root = skill_tree_root();
+        let on_disk = walk_skill_tree(&root);
+        let in_table: std::collections::BTreeSet<String> =
+            SKILL_FILES.iter().map(|file| file.rel.to_owned()).collect();
+        assert_eq!(
+            on_disk, in_table,
+            "\nSKILL_FILES 테이블이 skills/hwp/ 트리와 어긋남 — \
+             빠진 파일은 SKILL_FILES에 항목을 추가하고, 없어진 파일은 항목을 제거하라 \
+             (위 diff에 드리프트 경로가 표시됨)."
+        );
+        for file in SKILL_FILES {
+            assert_eq!(
+                fs::read(root.join(file.rel)).expect("read repo skill file"),
+                file.contents.as_bytes(),
+                "임베드된 {} 내용이 커밋된 파일과 다름 — include_str! 테이블 항목을 갱신하라",
+                file.rel
+            );
+        }
+    }
+
+    /// D-17 parity gate: for every English `X.md` under `skills/hwp/` that has
+    /// a Korean mirror `X.ko.md`, both files must have the identical heading
+    /// structure — same H2/H3 count and order — and carry the language link on
+    /// line 1. `templates/` is excluded: template bodies are Korean-only files
+    /// with no mirrors by design (D-11, research Open Question Q1). Files
+    /// without a mirror yet are skipped — only existing pairs are gated.
+    #[test]
+    fn en_ko_pairs_have_identical_structure() {
+        let root = skill_tree_root();
+        let files = walk_skill_tree(&root);
+        for rel in files.iter().filter(|rel| {
+            rel.ends_with(".md") && !rel.ends_with(".ko.md") && !rel.starts_with("templates/")
+        }) {
+            let ko_rel = format!("{}.ko.md", rel.strip_suffix(".md").expect(".md suffix"));
+            if !root.join(&ko_rel).is_file() {
+                continue;
+            }
+            let en = fs::read_to_string(root.join(rel)).expect("read EN file");
+            let ko = fs::read_to_string(root.join(&ko_rel)).expect("read KO mirror");
+            assert_eq!(
+                heading_levels(&en),
+                heading_levels(&ko),
+                "\n{rel} 과 {ko_rel} 의 H2/H3 구조가 어긋남 — \
+                 '## '/'### ' 헤딩의 개수와 순서가 같아야 함 (D-17)."
+            );
+            let stem = rel
+                .rsplit('/')
+                .next()
+                .expect("file name")
+                .strip_suffix(".md")
+                .expect(".md suffix");
+            assert!(
+                en.lines().next().unwrap_or_default().contains(&format!("]({stem}.ko.md)")),
+                "\n{rel} 첫 줄에 한국어 미러 링크가 필요: [한국어]({stem}.ko.md)"
+            );
+            assert!(
+                ko.lines().next().unwrap_or_default().contains(&format!("]({stem}.md)")),
+                "\n{ko_rel} 첫 줄에 영어 원문 링크가 필요: [English]({stem}.md)"
+            );
+        }
+    }
 }
