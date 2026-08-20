@@ -49,6 +49,10 @@ pub const SKILL_FILES: &[EmbeddedFile] = &[
         contents: include_str!("../../../../skills/hwp/SKILL.md"),
     },
     EmbeddedFile {
+        rel: "SKILL.ko.md",
+        contents: include_str!("../../../../skills/hwp/SKILL.ko.md"),
+    },
+    EmbeddedFile {
         rel: "references/style-patterns.md",
         contents: include_str!("../../../../skills/hwp/references/style-patterns.md"),
     },
@@ -490,7 +494,14 @@ mod tests {
 
     #[test]
     fn embedded_skill_is_quick_publish_safe() {
-        assert!(SKILL_MD.starts_with("---\nname: hwp\n"));
+        // D-08: line 1 is the EN/KO language link; the frontmatter block
+        // follows it. (Unverified assumption: Amazon Quick tolerates the
+        // leading link line — if not, a later phase strips it on the Quick
+        // path.)
+        assert!(
+            SKILL_MD.starts_with("[한국어](SKILL.ko.md) · [English](SKILL.md)\n---\nname: hwp\n"),
+            "SKILL.md must open with the line-1 language link followed by the ---/name: hwp frontmatter"
+        );
         assert!(SKILL_MD.contains("hwp {command} --help"));
         assert!(
             !SKILL_MD.contains('<'),

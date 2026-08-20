@@ -1,6 +1,7 @@
+[한국어](SKILL.ko.md) · [English](SKILL.md)
 ---
 name: hwp
-description: Read, create, edit, convert, render and validate Hancom HWP 5.0 / HWPX documents with the hwp CLI or its MCP stdio server. Use whenever a task touches .hwp or .hwpx files — extracting text, searching, filling templates, editing content, converting to docx/pdf/html/md/json/odt/txt/csv, or rendering pages to images.
+description: Read, create, edit, convert, render and validate Hancom HWP 5.0 / HWPX documents with the hwp CLI or its MCP stdio server. Use whenever a task touches .hwp or .hwpx files — extracting text, searching, filling templates, editing content, converting to docx/pdf/html/md/json/odt/txt/csv, or rendering pages to images. Also use for Korean official documents (공문) — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — their markdown contract, templates and 표기법 (notation rules) are covered by the official-documents sub-guide.
 ---
 
 # hwp — HWP/HWPX document toolkit
@@ -9,8 +10,8 @@ description: Read, create, edit, convert, render and validate Hancom HWP 5.0 / H
 HWP 5.0 format and the XML-based HWPX format, and exports to docx, pdf, html, markdown, json,
 odt, txt and csv. No Hancom Office installation is required.
 
-This file is English-only by design: it is consumed by agents, and one canonical language
-avoids bilingual double-maintenance.
+English is canonical; `SKILL.ko.md` is the full Korean mirror and both are always exported
+together.
 
 Install: `brew install staixbwlb/hwp/hwp`, or
 `curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh`.
@@ -86,6 +87,33 @@ syntax (used by `fill`, `slots` and the template tools).
   report directory atomically.
 - `hwp diff {input} --ref {hancom.png} [--page N] [--dpi N] [--tolerance N] [-o diff.png]` —
   compare a render against a Hancom reference PNG (offset, pixel difference).
+
+## Official documents
+
+`hwp` ships the Korean official-document (공문) surface natively. Six document types are
+covered — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — authored as markdown skeletons,
+created with `hwp new --from ... --preset gian|report` and filled with `hwp fill`.
+
+Item marks come from nested-list depth: ordered lists render as `1.` → `가.` → `1)` → `가)`
+by depth (the statutory 8-level sequence through `(1)` `(가)` `①` `㉮` arrives in Phase 2.2;
+today the preset numbering repeats every 4 levels).
+
+The □ ○ ladder is literal: type `□ ` and `○ ` as paragraph-leading symbols and the engine
+indents them — never substitute ASCII lookalikes. `- ` list bullets render as `-` at depth 1
+and `·` below.
+
+Heading numbers are literal: type `Ⅰ. 1.` (Ⅰ = U+2160 full-width; ASCII `I.` is forbidden)
+in the heading text — headings carry no automatic numbering.
+
+A single item is a plain paragraph: when a list would contain exactly one item, write it as
+an unmarked paragraph instead.
+
+Never hand-type marks on the numbered path: write plain nested lists and let the engine
+assign marks; a hand-typed `가.` inside an ordered list double-numbers.
+
+Per-document recipes, slot tables, the Korean alias table, fill/validate workflows and the
+Hancom final check live in `official-documents.md` (exported next to this file); regulation
+background lives in `references/korean-official-format.md`.
 
 ## MCP server
 
