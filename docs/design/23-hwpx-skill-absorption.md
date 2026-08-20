@@ -102,8 +102,10 @@ preset's values trace to.
 [12-feature-gaps.md](12-feature-gaps.md) §14 (GN-9, cross-linked). **No preset change in this
 phase** — a margin change is a writer change and therefore needs the Hancom acceptance procedure
 (07 PROC), so any correction belongs to Phase 2.2. Reading the 2020 편람 primary source is a
-manual-only step (VALIDATION.md): the verdict is confirmed by the human checkpoint in plan
-02.1-03, and is amended to "resolved" with a citation if a primary source for 30 mm is produced.
+manual-only step (VALIDATION.md): the verdict was **confirmed by the owner at the human
+checkpoint in plan 02.1-03 (approved 2026-08-21)** — no primary source for 30 mm was produced,
+so the record stands as written; GN-9 stays open and any preset correction remains Phase 2.2
+scope.
 
 ## 4. Decisions recorded
 
