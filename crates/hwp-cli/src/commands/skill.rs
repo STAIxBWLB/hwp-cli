@@ -76,6 +76,38 @@ pub const SKILL_FILES: &[EmbeddedFile] = &[
         rel: "references/korean-official-format.ko.md",
         contents: include_str!("../../../../skills/hwp/references/korean-official-format.ko.md"),
     },
+    EmbeddedFile {
+        rel: "templates/gian-internal.md",
+        contents: include_str!("../../../../skills/hwp/templates/gian-internal.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/gian-external.md",
+        contents: include_str!("../../../../skills/hwp/templates/gian-external.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/gongmun-basic.md",
+        contents: include_str!("../../../../skills/hwp/templates/gongmun-basic.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/report.md",
+        contents: include_str!("../../../../skills/hwp/templates/report.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/plan.md",
+        contents: include_str!("../../../../skills/hwp/templates/plan.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/minutes.md",
+        contents: include_str!("../../../../skills/hwp/templates/minutes.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/notice.md",
+        contents: include_str!("../../../../skills/hwp/templates/notice.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/press.md",
+        contents: include_str!("../../../../skills/hwp/templates/press.md"),
+    },
 ];
 
 pub fn run(
