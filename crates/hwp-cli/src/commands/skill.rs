@@ -53,6 +53,14 @@ pub const SKILL_FILES: &[EmbeddedFile] = &[
         contents: include_str!("../../../../skills/hwp/SKILL.ko.md"),
     },
     EmbeddedFile {
+        rel: "official-documents.md",
+        contents: include_str!("../../../../skills/hwp/official-documents.md"),
+    },
+    EmbeddedFile {
+        rel: "official-documents.ko.md",
+        contents: include_str!("../../../../skills/hwp/official-documents.ko.md"),
+    },
+    EmbeddedFile {
         rel: "references/style-patterns.md",
         contents: include_str!("../../../../skills/hwp/references/style-patterns.md"),
     },
