@@ -326,13 +326,13 @@ _인자·플래그 없음_
 
 ## `hwp skill export`
 
-임베드된 SKILL.md를 디렉터리에 기록 (기본 ./hwp; 파일은 <DIR>/SKILL.md에 생성)
+임베드된 스킬 트리(SKILL.md, SKILL.ko.md, 공문서 안내, references/, templates/)를 디렉터리에 기록 (기본 ./hwp)
 
 **사용법:** `hwp skill export [OPTIONS]`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `-o, --output` | `<OUTPUT>` |  | 출력 디렉터리 (--install과 동시 사용 불가) |
+| `-o, --output` | `<OUTPUT>` |  | 스킬 트리 출력 디렉터리 (--install과 동시 사용 불가) |
 | `--install` | `claude-code` \| `codex` \| `amazon-quick` |  | 대신 알려진 에이전트 스킬 디렉터리에 설치 |
 | `--quick-profile` | `<ID_OR_ABSOLUTE_PATH>` |  | Amazon Quick 프로필 ID 또는 절대 프로필 디렉터리 (Amazon Quick 설치 전용) |
 

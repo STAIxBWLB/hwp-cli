@@ -492,9 +492,9 @@ pub struct EditArgs {
 /// `hwp skill` subcommand.
 #[derive(Subcommand)]
 pub enum SkillCmd {
-    /// Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
+    /// Write the embedded skill tree (SKILL.md, SKILL.ko.md, the official-documents guide, references/ and templates/) into a directory (default ./hwp)
     Export {
-        /// Output directory (mutually exclusive with --install)
+        /// Output directory for the skill tree (mutually exclusive with --install)
         #[arg(short, long, conflicts_with = "install")]
         output: Option<PathBuf>,
         /// Install into a known agent skills directory instead

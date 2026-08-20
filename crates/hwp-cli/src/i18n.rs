@@ -611,12 +611,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "export",
         "",
-        "임베드된 SKILL.md를 디렉터리에 기록 (기본 ./hwp; 파일은 <DIR>/SKILL.md에 생성)",
+        "임베드된 스킬 트리(SKILL.md, SKILL.ko.md, 공문서 안내, references/, templates/)를 디렉터리에 기록 (기본 ./hwp)",
     ),
     (
         "export",
         "output",
-        "출력 디렉터리 (--install과 동시 사용 불가)",
+        "스킬 트리 출력 디렉터리 (--install과 동시 사용 불가)",
     ),
     (
         "export",

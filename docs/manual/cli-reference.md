@@ -326,13 +326,13 @@ _No arguments or flags_
 
 ## `hwp skill export`
 
-Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
+Write the embedded skill tree (SKILL.md, SKILL.ko.md, the official-documents guide, references/ and templates/) into a directory (default ./hwp)
 
 **Usage:** `hwp skill export [OPTIONS]`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `-o, --output` | `<OUTPUT>` |  | Output directory (mutually exclusive with --install) |
+| `-o, --output` | `<OUTPUT>` |  | Output directory for the skill tree (mutually exclusive with --install) |
 | `--install` | `claude-code` \| `codex` \| `amazon-quick` |  | Install into a known agent skills directory instead |
 | `--quick-profile` | `<ID_OR_ABSOLUTE_PATH>` |  | Amazon Quick profile ID or absolute profile directory (Amazon Quick installs only) |
 
