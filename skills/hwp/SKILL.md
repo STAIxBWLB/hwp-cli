@@ -1,8 +1,9 @@
-[한국어](SKILL.ko.md) · [English](SKILL.md)
 ---
 name: hwp
 description: Read, create, edit, convert, render and validate Hancom HWP 5.0 / HWPX documents with the hwp CLI or its MCP stdio server. Use whenever a task touches .hwp or .hwpx files — extracting text, searching, filling templates, editing content, converting to docx/pdf/html/md/json/odt/txt/csv, or rendering pages to images. Also use for Korean official documents (공문) — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — their markdown contract, templates and 표기법 (notation rules) are covered by the official-documents sub-guide.
 ---
+
+[한국어](SKILL.ko.md) · [English](SKILL.md)
 
 # hwp — HWP/HWPX document toolkit
 

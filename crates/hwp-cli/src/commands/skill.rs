@@ -13,8 +13,9 @@
 //!
 //! Two drift gates keep the table honest: a test that fails when a file
 //! under `skills/hwp/` is missing from `SKILL_FILES` or differs in bytes,
-//! and a test that enforces H2/H3 structure parity plus the line-1 language
-//! link for every `*.md`/`*.ko.md` pair in the tree.
+//! and a test that enforces H2/H3 structure parity plus the leading language
+//! link (first content line, after any frontmatter) for every
+//! `*.md`/`*.ko.md` pair in the tree.
 //!
 //! Home-directory and profile selection are split into pure helpers for unit
 //! testing. Tests use temporary directories and never touch the real `$HOME`.
@@ -542,13 +543,16 @@ mod tests {
 
     #[test]
     fn embedded_skill_is_quick_publish_safe() {
-        // D-08: line 1 is the EN/KO language link; the frontmatter block
-        // follows it. (Unverified assumption: Amazon Quick tolerates the
-        // leading link line — if not, a later phase strips it on the Quick
-        // path.)
+        // D-08 (revised): the YAML frontmatter opens the file at byte 0 so
+        // strict skill loaders (Claude Code, Codex, Amazon Quick) register it;
+        // the EN/KO language link is the first line after the frontmatter.
         assert!(
-            SKILL_MD.starts_with("[한국어](SKILL.ko.md) · [English](SKILL.md)\n---\nname: hwp\n"),
-            "SKILL.md must open with the line-1 language link followed by the ---/name: hwp frontmatter"
+            SKILL_MD.starts_with("---\nname: hwp\n"),
+            "SKILL.md must open with the ---/name: hwp frontmatter at byte 0"
+        );
+        assert!(
+            link_line(SKILL_MD).contains("](SKILL.ko.md)"),
+            "SKILL.md must carry the EN/KO language link on the first line after the frontmatter"
         );
         assert!(SKILL_MD.contains("hwp {command} --help"));
         assert!(
@@ -973,6 +977,24 @@ mod tests {
             .collect()
     }
 
+    /// First content line of a skill document, skipping an optional leading
+    /// YAML frontmatter block (`---\n...\n---`). Files with frontmatter
+    /// (SKILL.md pair) carry their language link right after it; plain
+    /// markdown files carry it on line 1.
+    fn link_line(markdown: &str) -> &str {
+        let body = if let Some(rest) = markdown.strip_prefix("---\n") {
+            match rest.find("\n---\n") {
+                Some(end) => &rest[end + 5..],
+                None => markdown,
+            }
+        } else {
+            markdown
+        };
+        body.lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+    }
+
     /// D-16 drift gate: the hand-maintained `SKILL_FILES` table must match the
     /// committed `skills/hwp/` tree exactly — set equality (a new tree file
     /// without a table entry fails here) plus byte equality per entry.
@@ -1002,8 +1024,9 @@ mod tests {
 
     /// D-17 parity gate: for every English `X.md` under `skills/hwp/` that has
     /// a Korean mirror `X.ko.md`, both files must have the identical heading
-    /// structure — same H2/H3 count and order — and carry the language link on
-    /// line 1. `templates/` is excluded: template bodies are Korean-only files
+    /// structure — same H2/H3 count and order — and carry the language link as
+    /// their first content line (after the YAML frontmatter when present).
+    /// `templates/` is excluded: template bodies are Korean-only files
     /// with no mirrors by design (D-11, research Open Question Q1). Files
     /// without a mirror yet are skipped — only existing pairs are gated.
     #[test]
@@ -1032,18 +1055,14 @@ mod tests {
                 .strip_suffix(".md")
                 .expect(".md suffix");
             assert!(
-                en.lines()
-                    .next()
-                    .unwrap_or_default()
-                    .contains(&format!("]({stem}.ko.md)")),
-                "\n{rel} 첫 줄에 한국어 미러 링크가 필요: [한국어]({stem}.ko.md)"
+                link_line(&en).contains(&format!("]({stem}.ko.md)")),
+                "\n{rel} 첫 내용 줄에 한국어 미러 링크가 필요: [한국어]({stem}.ko.md) \
+                 (frontmatter가 있으면 그 직후 줄)"
             );
             assert!(
-                ko.lines()
-                    .next()
-                    .unwrap_or_default()
-                    .contains(&format!("]({stem}.md)")),
-                "\n{ko_rel} 첫 줄에 영어 원문 링크가 필요: [English]({stem}.md)"
+                link_line(&ko).contains(&format!("]({stem}.md)")),
+                "\n{ko_rel} 첫 내용 줄에 영어 원문 링크가 필요: [English]({stem}.md) \
+                 (frontmatter가 있으면 그 직후 줄)"
             );
         }
     }

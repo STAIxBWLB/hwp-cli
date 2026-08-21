@@ -1,8 +1,9 @@
-[한국어](SKILL.ko.md) · [English](SKILL.md)
 ---
 name: hwp
 description: hwp CLI 또는 MCP stdio 서버로 한컴 HWP 5.0 / HWPX 문서를 읽고, 만들고, 편집하고, 변환하고, 렌더링하고, 검증합니다. .hwp 또는 .hwpx 파일을 다루는 모든 작업 — 텍스트 추출, 검색, 템플릿 채우기, 내용 편집, docx/pdf/html/md/json/odt/txt/csv 변환, 페이지 이미지 렌더링 — 에 사용하세요. 한국 공문서(공문) — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — 작업에도 사용하세요. 마크다운 계약, 템플릿, 표기법은 official-documents 하위 안내서가 다룹니다.
 ---
+
+[한국어](SKILL.ko.md) · [English](SKILL.md)
 
 # hwp — HWP/HWPX 문서 도구 모음
 
