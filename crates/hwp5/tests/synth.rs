@@ -1182,11 +1182,42 @@ fn official_hwp5_rejects_sixteenth_level_two_item_in_writer_visible_subtrees() {
             }],
         }));
 
-    let (mut control_doc, level_two) = direct_document();
-    control_doc.sections[0].paragraphs[0]
+    let output = tmp("official-continuation-table.hwp");
+    let _ = std::fs::remove_file(&output);
+    let error =
+        hwp5::write_document(&table_doc, &output, &hwp5::WriteOptions::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(
+        !output.exists(),
+        "the sixteenth level-two item in a table must not publish an HWP"
+    );
+}
+
+#[test]
+fn official_hwp5_rejects_sixteenth_level_two_item_in_materializable_control_list() {
+    let markdown = "1. level 1\n   1. level 2\n";
+    let options = hwp_convert::MarkdownImportOptions {
+        preset: Some(hwp_convert::OfficialPreset::Gian),
+        ..Default::default()
+    };
+    let mut doc = hwp_convert::from_markdown_with(markdown, &options);
+    let level_two = doc.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| doc.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == 2)
+        .unwrap()
+        .clone();
+
+    // `fn  ` is intentionally used instead of a synthetic `gso ` wrapper:
+    // the HWP5 writer materializes its paragraph list (whereas an empty GSO
+    // wrapper is deliberately dropped as opaque/unrepresentable).
+    doc.sections[0].paragraphs[0]
         .controls
         .push(hwp_model::Control::Generic(hwp_model::GenericControl {
-            ctrl_id: *b"gso ",
+            ctrl_id: *b"fn  ",
             data: Vec::new(),
             paragraph_lists: vec![hwp_model::ParagraphList {
                 header_data: Vec::new(),
@@ -1202,20 +1233,17 @@ fn official_hwp5_rejects_sixteenth_level_two_item_in_writer_visible_subtrees() {
             container_box: None,
         }));
 
-    for (label, doc) in [("table", table_doc), ("control", control_doc)] {
-        let output = tmp(&format!("official-continuation-{label}.hwp"));
-        let _ = std::fs::remove_file(&output);
-        let error =
-            hwp5::write_document(&doc, &output, &hwp5::WriteOptions::default()).unwrap_err();
-        assert!(matches!(
-            error,
-            hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
-        ));
-        assert!(
-            !output.exists(),
-            "the sixteenth level-two item in {label} must not publish an HWP"
-        );
-    }
+    let output = tmp("official-continuation-control.hwp");
+    let _ = std::fs::remove_file(&output);
+    let error = hwp5::write_document(&doc, &output, &hwp5::WriteOptions::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(
+        !output.exists(),
+        "the sixteenth level-two item in a materializable control list must not publish an HWP"
+    );
 }
 
 /// 스트림 경로 구분자 회귀: cfb 열거가 플랫폼 구분자(Windows `\`)를 섞어도
