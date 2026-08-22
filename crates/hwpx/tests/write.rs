@@ -2534,8 +2534,10 @@ fn official_eight_level_hwpx_round_trip() {
 
 #[test]
 fn existing_seven_level_hwpx_does_not_gain_a_synthetic_eighth_definition() {
-    let mut header = hwp_model::DocHeader::default();
-    header.numbering_levels = vec![vec![hwp_model::NumLevel::default(); 7]];
+    let header = hwp_model::DocHeader {
+        numbering_levels: vec![vec![hwp_model::NumLevel::default(); 7]],
+        ..Default::default()
+    };
 
     let out = hwpx::write::header::write_header(&header, 1);
     assert!(
