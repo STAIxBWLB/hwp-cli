@@ -1496,7 +1496,7 @@ fn 쪽번호_시작_재시작_숨김() {
         "첫 쪽\n\n둘째 쪽\n\n셋째 쪽\n",
         &hwp_convert::MarkdownImportOptions {
             base_dir: None,
-            preset: Some(hwp_convert::OfficialPreset::Gian),
+            preset: Some(hwp_convert::OfficialPreset::Report),
             ..Default::default()
         },
     );
