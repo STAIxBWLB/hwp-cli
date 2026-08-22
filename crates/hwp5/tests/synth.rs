@@ -989,6 +989,36 @@ fn official_eight_level_hwp5_matches_evidence_contract() {
 }
 
 #[test]
+fn official_hwp5_direct_contract_handles_sentinel_before_numbering() {
+    let doc = hwp_convert::from_markdown_with(
+        "source first\n\n1. numbered item\n   1. nested item\n\nsource last\n",
+        &hwp_convert::MarkdownImportOptions {
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
+        },
+    );
+    let out = tmp("official-sentinel-before-numbering.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert_eq!(
+        numberings.len(),
+        8,
+        "official output materializes all levels"
+    );
+    assert!(
+        numberings.iter().all(|data| data.len() == 230),
+        "the direct evidence record must be used even with two source definitions"
+    );
+
+    let reread = hwp5::read_document(&out).unwrap().document;
+    assert_eq!(reread.header.numbering_levels[0].len(), 8);
+    assert_eq!(reread.header.numbering_levels[1].len(), 8);
+}
+
+#[test]
 fn official_hwp5_continuation_14_to_15_matches_evidence() {
     use hwp_model::list::ListState;
 

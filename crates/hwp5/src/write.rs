@@ -1032,7 +1032,6 @@ fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
     }
 
     let is_direct_contract = doc.header.numberings.is_empty()
-        && doc.header.numbering_levels.len() == 8
         && crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels);
     if !is_direct_contract {
         // HWPX carries semantic numbering but no raw HWP5 NUMBERING record.
