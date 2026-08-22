@@ -2655,6 +2655,111 @@ mod tests {
     }
 
     #[test]
+    fn hwp_new_preset_and_margin_parity() {
+        let mcp_output = temp_file("hwp-new-mcp-profile.hwpx");
+        let cli_output = temp_file("hwp-new-cli-profile.hwpx");
+        for path in [&mcp_output, &cli_output] {
+            let _ = std::fs::remove_file(path);
+        }
+        let mcp = tool_new(
+            &json!({
+                "output": mcp_output,
+                "markdown": "1. item\n",
+                "preset": "gongmun",
+                "margin_top_mm": 25.0,
+                "margin_right_mm": 30.0,
+            }),
+            &ctx(),
+        )
+        .expect("MCP hwp_new");
+        assert!(!mcp.is_empty());
+        let options = crate::commands::new::NewOptions::from_millimetres(
+            Some(hwp_convert::OfficialPreset::Official),
+            Some(25.0),
+            None,
+            None,
+            Some(30.0),
+            false,
+        )
+        .unwrap();
+        crate::commands::new::execute(
+            &cli_output,
+            crate::commands::new::NewInput::Markdown {
+                text: "1. item\n",
+                base_dir: None,
+                roots: &[],
+            },
+            &[],
+            &options,
+        )
+        .expect("CLI new path");
+        let mcp_document = hwpx::read_document(&mcp_output).unwrap().document;
+        let cli_document = hwpx::read_document(&cli_output).unwrap().document;
+        assert_eq!(mcp_document.header, cli_document.header);
+        assert_eq!(mcp_document.sections, cli_document.sections);
+
+        let schema = tool_defs()
+            .into_iter()
+            .find(|tool| tool["name"] == "hwp_new")
+            .unwrap();
+        assert_eq!(schema["inputSchema"]["additionalProperties"], false);
+        for key in [
+            "output",
+            "markdown",
+            "json",
+            "set_meta",
+            "preset",
+            "margin_top_mm",
+            "margin_bottom_mm",
+            "margin_left_mm",
+            "margin_right_mm",
+        ] {
+            assert!(
+                schema["inputSchema"]["properties"].get(key).is_some(),
+                "{key}"
+            );
+        }
+
+        for path in [&mcp_output, &cli_output] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn hwp_new_runtime_rejects_unknown_key() {
+        let output = temp_file("hwp-new-runtime-unknown.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let error = tool_new(&json!({"output": output, "unknown": true}), &ctx()).unwrap_err();
+        assert!(error.contains("알 수 없는 hwp_new 인자"), "{error}");
+        assert!(!output.exists(), "unknown input must not publish output");
+    }
+
+    #[test]
+    fn tools_call_hwp_new_rejects_unknown_key() {
+        let output = temp_file("hwp-new-dispatch-unknown.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "hwp_new",
+                "arguments": {"output": output, "unknown": true}
+            }
+        });
+        let response = handle_request(&request.to_string(), &ctx()).unwrap();
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("알 수 없는 hwp_new 인자")
+        );
+        assert!(!output.exists(), "unknown input must not publish output");
+    }
+
+    #[test]
     fn mcp_mutations_share_cli_atomic_and_noop_contracts() {
         let source = temp_file("mutation-source.hwpx");
         let edit_destination = temp_file("mutation-edit.hwpx");
