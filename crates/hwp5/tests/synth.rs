@@ -858,6 +858,115 @@ fn 스타일_사다리_hwp5_정의_왕복() {
     assert!(!text.contains("❍"), "리터럴 마커는 더 쓰지 않는다: {text}");
 }
 
+#[test]
+fn official_eight_level_hwp5_matches_evidence_contract() {
+    let doc = hwp_convert::from_markdown_with(
+        "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n",
+        &hwp_convert::MarkdownImportOptions {
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
+        },
+    );
+    let out = tmp("official-eight-level-evidence-contract.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert_eq!(numberings.len(), 8, "eight 1-based NUMBERING definitions");
+    assert!(
+        numberings.iter().all(|data| data.len() == 230),
+        "the direct contract has ten slots and ten persisted starts"
+    );
+    for data in &numberings {
+        assert_eq!(
+            u32::from_le_bytes(data[170..174].try_into().unwrap()),
+            0x12c,
+            "slot 8 uses the proven circled-Hangul selector"
+        );
+        assert_eq!(&data[184..188], &[b'^', 0, b'8', 0], "slot 8 template");
+        assert!(
+            (216..230)
+                .step_by(4)
+                .all(|offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) == 1),
+            "extension start values"
+        );
+    }
+
+    let numbered_shapes: Vec<_> = all_records(&doc_info, 0x19)
+        .into_iter()
+        .filter(|data| ((u32::from_le_bytes(data[0..4].try_into().unwrap()) >> 23) & 0x3) == 2)
+        .collect();
+    assert_eq!(numbered_shapes.len(), 8);
+    for (index, data) in numbered_shapes.iter().enumerate() {
+        let attr = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let raw_level = (attr >> 25) & 0x7;
+        assert_eq!(raw_level, u32::try_from(index.min(6)).unwrap());
+        assert_eq!(u16::from_le_bytes(data[34..36].try_into().unwrap()), index as u16 + 1);
+        assert_eq!(i32::from_le_bytes(data[4..8].try_into().unwrap()), (index as i32 + 1) * 2000);
+        assert_eq!(i32::from_le_bytes(data[12..16].try_into().unwrap()), -2000);
+        assert_eq!(u16::from_le_bytes(data[36..38].try_into().unwrap()), 1);
+    }
+
+    let reread = hwp5::read_document(&out).unwrap().document;
+    let level8 = reread.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| paragraph.plain_text() == "level 8")
+        .expect("level 8 paragraph");
+    let shape = &reread.header.para_shapes[level8.para_shape.0 as usize];
+    assert_eq!(shape.head_level(), 8, "reread retains the semantic level-8 link");
+    assert_eq!(shape.numbering_id, 7, "disk ref 8 normalizes to IR ref 7");
+}
+
+#[test]
+fn official_hwp5_continuation_14_to_15_matches_evidence() {
+    use hwp_model::list::ListState;
+
+    let mut doc = hwp_convert::from_markdown_with(
+        "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n",
+        &hwp_convert::MarkdownImportOptions {
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
+        },
+    );
+    let prototypes: Vec<_> = [2, 6, 8]
+        .into_iter()
+        .map(|level| {
+            doc.sections[0]
+                .paragraphs
+                .iter()
+                .find(|paragraph| {
+                    doc.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == level
+                })
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    doc.sections[0].paragraphs.clear();
+    for prototype in prototypes {
+        doc.sections[0]
+            .paragraphs
+            .extend(std::iter::repeat_n(prototype, 15));
+    }
+
+    let out = tmp("official-evidence-continuation.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+    let reread = hwp5::read_document(&out).unwrap().document;
+    let mut state = ListState::default();
+    let markers: Vec<_> = reread.sections[0]
+        .paragraphs
+        .iter()
+        .filter_map(|paragraph| state.marker(&reread, paragraph))
+        .collect();
+    assert_eq!(markers[13], "하.");
+    assert_eq!(markers[14], "거.");
+    assert_eq!(markers[28], "(하)");
+    assert_eq!(markers[29], "(거)");
+    assert_eq!(markers[43], "㉻");
+    assert_eq!(markers[44], "㉿");
+}
+
 /// 스트림 경로 구분자 회귀: cfb 열거가 플랫폼 구분자(Windows `\`)를 섞어도
 /// list_streams/body_sections는 항상 `/` 정규 경로를 돌려줘야 한다 — 아니면
 /// Windows에서 `/BodyText/Section` 필터가 전부 빗나가 본문이 빈 문서로 읽힌다
