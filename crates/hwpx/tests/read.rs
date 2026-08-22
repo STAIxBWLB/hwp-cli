@@ -112,6 +112,29 @@ fn 정품_shapecomment_설명_승격() {
 }
 
 #[test]
+fn committed_hancom_numbering_fixture_exposes_level8_circled_hangul() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx");
+    let doc = hwpx::read_document(&path).unwrap().document;
+
+    let level8 = doc
+        .header
+        .numbering_levels
+        .iter()
+        .flat_map(|levels| levels.iter())
+        .find(|level| level.template == "^8")
+        .expect("committed Hancom fixture must expose a level-8 definition");
+    assert_eq!(format!("{:?}", level8.fmt), "CircledHangulSyllable");
+    assert!(
+        doc.header
+            .para_shapes
+            .iter()
+            .any(|shape| shape.head_level() == 8),
+        "fixture must preserve a paragraph link at level 8"
+    );
+}
+
+#[test]
 fn 합성_헤더_굵게_기울임() {
     let xml = r##"<?xml version="1.0"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">

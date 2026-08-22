@@ -2439,6 +2439,63 @@ fn ge_a8_기본문단_heading_none_유지() {
     );
 }
 
+#[test]
+fn official_eight_level_hwpx_round_trip() {
+    let markdown = "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n";
+    let doc = hwp_convert::from_markdown_with(
+        markdown,
+        &hwp_convert::MarkdownImportOptions {
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
+        },
+    );
+    let out = tmp("official-eight-level.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+    let mut header_xml = String::new();
+    archive
+        .by_name("Contents/header.xml")
+        .unwrap()
+        .read_to_string(&mut header_xml)
+        .unwrap();
+    for (level, format, template) in [
+        (1, "DIGIT", "^1."),
+        (2, "HANGUL_SYLLABLE", "^2."),
+        (3, "DIGIT", "^3)"),
+        (4, "HANGUL_SYLLABLE", "^4)"),
+        (5, "DIGIT", "(^5)"),
+        (6, "HANGUL_SYLLABLE", "(^6)"),
+        (7, "CIRCLED_DIGIT", "^7"),
+        (8, "CIRCLED_HANGUL_SYLLABLE", "^8"),
+    ] {
+        assert!(
+            header_xml.contains(&format!(
+                r#"level="{level}" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="{format}" charPrIDRef="4294967295" checkable="0">{template}</hh:paraHead>"#
+            )),
+            "missing level {level}: {header_xml}"
+        );
+    }
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    assert!(
+        reread
+            .header
+            .para_shapes
+            .iter()
+            .any(|shape| shape.head_level() == 8),
+        "generated HWPX must retain its level-8 paragraph link"
+    );
+    let level8 = reread
+        .header
+        .numbering_levels
+        .iter()
+        .flat_map(|levels| levels.iter())
+        .find(|level| level.template == "^8")
+        .expect("generated HWPX must retain a level-8 definition");
+    assert_eq!(format!("{:?}", level8.fmt), "CircledHangulSyllable");
+}
+
 /// GC-4 탭 정의: tabPr/tabItem(위치·종류·채움)이 hwpx read→write→re-read 왕복에서
 /// 보존된다(이전엔 read가 tabPrIDRef만 읽고 tabItem을 버렸으며 write는 빈 상수만 냈다).
 #[test]
