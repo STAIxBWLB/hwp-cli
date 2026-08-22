@@ -319,6 +319,84 @@ fn tmp(name: &str) -> PathBuf {
     dir.join(name)
 }
 
+#[test]
+fn official_preset_aliases_and_margin_overrides() {
+    let markdown = tmp("official-preset-aliases.md");
+    std::fs::write(&markdown, "1. first\n   1. second\n").unwrap();
+    let official = tmp("official-preset-official.hwpx");
+    let gian = tmp("official-preset-gian.hwpx");
+    let gongmun = tmp("official-preset-gongmun.hwpx");
+    let overridden = tmp("official-preset-margin.hwpx");
+    let rejected = tmp("official-preset-invalid-margin.hwpx");
+    for path in [&official, &gian, &gongmun, &overridden, &rejected] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    for (preset, output) in [
+        ("official", &official),
+        ("gian", &gian),
+        ("gongmun", &gongmun),
+        ("기안문", &gongmun),
+    ] {
+        let result = hwp()
+            .args(["new", "--from"])
+            .arg(&markdown)
+            .args(["--preset", preset, "--output"])
+            .arg(output)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{preset}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    let result = hwp()
+        .args(["new", "--from"])
+        .arg(&markdown)
+        .args([
+            "--preset",
+            "official",
+            "--margin-top",
+            "25",
+            "--margin-right",
+            "30",
+            "--output",
+        ])
+        .arg(&overridden)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "margin override: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(overridden.exists());
+
+    let result = hwp()
+        .args(["new", "--from"])
+        .arg(&markdown)
+        .args([
+            "--preset",
+            "official",
+            "--margin-left",
+            "200",
+            "--margin-right",
+            "200",
+            "--output",
+        ])
+        .arg(&rejected)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(!rejected.exists(), "invalid margins must not publish output");
+
+    for path in [&markdown, &official, &gian, &gongmun, &overridden, &rejected] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn replace_zip_entry(path: &Path, target: &str, replacement: &[u8]) {
     let rewritten = path.with_extension("rewrite.hwpx");
     let input = std::fs::File::open(path).unwrap();
