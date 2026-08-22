@@ -100,7 +100,7 @@ owpml-model은 전부 **파서/객체모델**(layout/draw/paint 패키지 없음
 
 > hwp-cli에 없는, 실사용자가 필요로 하는 기능을 타 구현체·수요 근거로 발굴. 91개 주장 추출 →
 > 25개 적대 검증 → **21 확정(전부 3-0)·4 반증**. [12-feature-gaps.ko.md](12-feature-gaps.ko.md) §10 GJ와
-> §15 로드맵 재평가(GA-2·GB-1★)의 근거가 이 절이다.
+> §16 로드맵 재평가(GA-2·GB-1★)의 근거가 이 절이다.
 
 ## (a) 타 구현체가 이미 지원 — 구현 선례 존재
 
@@ -144,7 +144,7 @@ kordoc v4.9.0(TypeScript, MIT)을 hwp-cli와 전면 재대조했다. 위 생태�
 | 7종 문서 프리셋과 한국어 알리아스(`src/hwpx/gongmun.ts:172-197`), 기안문 두문/결문·공고문·보도자료 머리박스 문서 틀(`src/hwpx/gen-docframe.ts`, `gen-gongmun-extra.ts`) | **GN-2**, **GN-4**, **GN-5** |
 | 마크다운 원본에 대한 15개 조언용 표기법 lint(`src/hwpx/gongmun-lint.ts` — 그 자체가 `jkf87/hwpx-skill` 파생) — 날짜·시각·금액·붙임·끝.·쌍점 띄어쓰기 위반 검출 | **GN-3**. `hwp validate`는 구조 검증뿐이고 이런 룰셋이 없다 |
 | 원문 PII를 담지 않는 적출 보고서를 곁들인 형식 유지 마스킹(`src/redact.ts`) | **GM-10** |
-| Windows에서 실제 한글로 렌더하고 재추출하는 한컴 COM 자동화(`bench/hangul-com-pdf.ps1`) — 추론으로는 틀리게 나오는 제약들을 이 방식으로 확정 | 검수 절차용 인프라 후보([12](12-feature-gaps.ko.md) §15.3). 미편성 |
+| Windows에서 실제 한글로 렌더하고 재추출하는 한컴 COM 자동화(`bench/hangul-com-pdf.ps1`) — 추론으로는 틀리게 나오는 제약들을 이 방식으로 확정 | 검수 절차용 인프라 후보([12](12-feature-gaps.ko.md) §16.3). 미편성 |
 | 실환경 정부 문서 공개 코퍼스 수집기(`bench/collect-korea-kr.mjs`, `collect-opengov.mjs`) — gitignore된 회귀 코퍼스에 공급 | `HWP_CORPUS_DIR` 공급원 후보. 데이터 정책과 양립 |
 | 우리가 의도적으로 갖지 않은 입력 폭 — PDF(OCR 포함)·XLSX·XLS BIFF8·DOCX 들여오기 | 2026-08-20 처분은 **GJ-1**과 나머지 비-HWP 들여오기를 다른 로드맵 항목이 모두 끝날 때까지 범위 밖으로 두고, 그동안의 커버 도구로 kordoc을 명시한다 |
 
