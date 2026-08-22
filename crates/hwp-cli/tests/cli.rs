@@ -351,6 +351,24 @@ fn official_preset_aliases_and_margin_overrides() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
+    let semantic_json = |path: &Path| {
+        let result = hwp()
+            .args(["cat", "--format", "json"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        let mut value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        if let Some(meta) = value
+            .get_mut("meta")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            meta.remove("source_version");
+        }
+        value
+    };
+    assert_eq!(semantic_json(&official), semantic_json(&gian));
+    assert_eq!(semantic_json(&official), semantic_json(&gongmun));
 
     let result = hwp()
         .args(["new", "--from"])
@@ -373,6 +391,19 @@ fn official_preset_aliases_and_margin_overrides() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(overridden.exists());
+    let overridden_doc = hwpx::read_document(&overridden).unwrap().document;
+    let page = overridden_doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            hwp_model::Control::SectionDef(section) => section.page,
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(page.margin_top.0, 7087);
+    assert_eq!(page.margin_right.0, 8504);
+    assert_eq!(page.margin_bottom.0, 2834);
+    assert_eq!(page.margin_left.0, 5668);
 
     let result = hwp()
         .args(["new", "--from"])
@@ -390,9 +421,19 @@ fn official_preset_aliases_and_margin_overrides() {
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(!rejected.exists(), "invalid margins must not publish output");
+    assert!(
+        !rejected.exists(),
+        "invalid margins must not publish output"
+    );
 
-    for path in [&markdown, &official, &gian, &gongmun, &overridden, &rejected] {
+    for path in [
+        &markdown,
+        &official,
+        &gian,
+        &gongmun,
+        &overridden,
+        &rejected,
+    ] {
         let _ = std::fs::remove_file(path);
     }
 }

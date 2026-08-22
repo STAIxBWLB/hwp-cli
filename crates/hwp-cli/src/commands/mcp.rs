@@ -1490,8 +1490,13 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let report = crate::commands::new::execute(&output, input, &metadata, None, false)
-        .map_err(|error| format!("{error:#}"))?;
+    let report = crate::commands::new::execute(
+        &output,
+        input,
+        &metadata,
+        &crate::commands::new::NewOptions::default(),
+    )
+    .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
             "output": report.output,
@@ -2644,8 +2649,7 @@ mod tests {
                 roots: &[],
             },
             &[],
-            None,
-            false,
+            &crate::commands::new::NewOptions::default(),
         )
         .unwrap();
     }
