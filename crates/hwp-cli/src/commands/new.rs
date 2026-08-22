@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use hwp_cli::cli::PresetArg;
-
 /// Shared new-document inputs after CLI/MCP profile and margin normalization.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NewOptions {
@@ -78,12 +76,7 @@ pub fn run(
     output: &Path,
     from: Option<&Path>,
     set_meta: &[String],
-    preset: Option<PresetArg>,
-    margin_top: Option<f64>,
-    margin_bottom: Option<f64>,
-    margin_left: Option<f64>,
-    margin_right: Option<f64>,
-    strict: bool,
+    options: &NewOptions,
 ) -> anyhow::Result<()> {
     let owned;
     let input = match from {
@@ -105,15 +98,7 @@ pub fn run(
         }
         None => NewInput::Empty,
     };
-    let options = NewOptions::from_millimetres(
-        preset.map(PresetArg::canonical),
-        margin_top,
-        margin_bottom,
-        margin_left,
-        margin_right,
-        strict,
-    )?;
-    let report = execute(output, input, set_meta, &options)?;
+    let report = execute(output, input, set_meta, options)?;
     crate::commands::convert::print_warnings(&report.warnings);
     crate::commands::preservation::print_report(&report.preservation);
     eprintln!("생성 완료: {}", output.display());
