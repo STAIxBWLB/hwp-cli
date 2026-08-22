@@ -43,7 +43,7 @@ syntax (used by `fill`, `slots` and the template tools).
   `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json).
 - `hwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports
   markdown or a JSON IR (empty document when omitted); `--set-meta key=value` (title/author/
-  subject/keywords, repeatable); `--preset official|report|plan|notice|minutes|gaejosik|press`
+  subject/keywords, repeatable); `--preset official|report|plan|notice|minutes|press`
   (Korean official-document profiles, markdown input only); `gian` and other documented
   compatibility aliases normalize to a canonical profile. Per-side overrides are
   `--margin-top`, `--margin-bottom`, `--margin-left` and `--margin-right` in millimetres.
@@ -94,20 +94,24 @@ syntax (used by `fill`, `slots` and the template tools).
 
 ## Official documents
 
-`hwp` ships the Korean official-document (공문) surface natively. Seven profiles are available:
-`official`, `report`, `plan`, `notice`, `minutes`, `gaejosik` and `press`. The canonical
-official profile accepts `gian` and `gongmun` as semantic compatibility aliases; aliases select
-the same profile, not a raw-byte identity promise. Korean aliases are also accepted. The six
-document types — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — are authored as markdown
-skeletons, created with `hwp new --from ... --preset official` (or their matching profile), and
+`hwp` ships the Korean official-document (공문) surface natively. Six profiles are available,
+one per document type: `official` (기안문), `report` (보고서), `plan` (계획서), `notice`
+(공고문), `minutes` (회의록) and `press` (보도자료). The canonical official profile accepts
+`gian` and `gongmun` as semantic compatibility aliases; aliases select the same profile, not a
+raw-byte identity promise. Korean aliases are also accepted. Each type is authored as a markdown
+skeleton, created with `hwp new --from ... --preset official` (or its matching profile), and
 filled with `hwp fill`.
+
+개조식 is a writing style, not a profile: it is the noun-form sentence ending used inside
+보고서·계획서 and 내부결재 bodies. Choose the profile by document type and apply the style in the
+body text — see `references/korean-official-format.md` §6 어투.
 
 Every profile uses top/bottom/left/right margins of 20/10/20/20 mm before an explicit per-side
 override. Body defaults are: official Malgun Gothic 12pt/160%; report and plan HCR Batang
-15pt/160%; notice Malgun Gothic 15pt/160%; minutes HCR Batang 14pt/130%; gaejosik Malgun Gothic
-15pt/160% (a practice assumption); and press HCR Batang 14pt/160%. Report, plan and gaejosik use
-15 mm header/footer margins; notice and press use 10 mm; official and minutes use 0 mm. Report,
-plan, notice, gaejosik and press include `- N -` page numbers; official and minutes do not.
+15pt/160%; notice Malgun Gothic 15pt/160%; minutes HCR Batang 14pt/130%; and press HCR Batang
+14pt/160%. Report and plan use 15 mm header/footer margins; notice and press use 10 mm; official
+and minutes use 0 mm. Report, plan, notice and press include `- N -` page numbers; official and
+minutes do not.
 
 Item marks come from nested-list depth: ordered lists render as `1.` → `가.` → `1)` → `가)` →
 `(1)` → `(가)` → `①` → `㉮`. All eight depths are supported; depth 9 or deeper is rejected

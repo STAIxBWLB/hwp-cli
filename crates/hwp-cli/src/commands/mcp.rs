@@ -1977,7 +1977,7 @@ fn tool_defs() -> Vec<Value> {
                 "set_meta": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
                     "required": ["key", "value"]}},
-                "preset": {"type": "string", "description": "official/report/plan/notice/minutes/gaejosik/press 또는 지원 별칭"},
+                "preset": {"type": "string", "description": "official/report/plan/notice/minutes/press 또는 지원 별칭"},
                 "margin_top_mm": {"type": "number", "minimum": 0, "maximum": 200},
                 "margin_bottom_mm": {"type": "number", "minimum": 0, "maximum": 200},
                 "margin_left_mm": {"type": "number", "minimum": 0, "maximum": 200},

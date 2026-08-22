@@ -254,7 +254,7 @@ C 시리즈가 통과하면 [12](design/12-feature-gaps.ko.md) §0.5의 2026-07-
 ## O. Phase 2.2 공문서 프로필과 8단계 번호 (미검증)
 
 `tools/gen_verification_set.sh /private/directory`를 실행하면 범위가 고정된 Phase 2.2 세트를
-만든다. 정식 프로필마다 HWP와 HWPX를 하나씩, 총 14개 표기 문서와 내용 비포함
+만든다. 정식 프로필마다 HWP와 HWPX를 하나씩, 총 12개 표기 문서와 내용 비포함
 `phase-02.2-index.tsv`를 만든다. 생성기는 내부 재읽기와 구조 검증만 증명하며, Hancom 통과
 영수증을 만들지 않고 Hancom 수용 주장도 하지 않는다.
 
@@ -282,7 +282,6 @@ C 시리즈가 통과하면 [12](design/12-feature-gaps.ko.md) §0.5의 2026-07-
 | plan | 함초롬바탕 | 15 pt | 160% | 15 mm | 켜짐, `- N -` |
 | notice | 맑은 고딕 | 15 pt | 160% | 10 mm | 켜짐, `- N -` |
 | minutes | 함초롬바탕 | 14 pt | 130% | 0 mm | 꺼짐 |
-| gaejosik | 맑은 고딕 | 15 pt | 160% | 15 mm | 켜짐, `- N -` |
 | press | 함초롬바탕 | 14 pt | 160% | 10 mm | 켜짐, `- N -` |
 
 실제 관찰을 마친 뒤에만 실제 결과, application, timestamp, verifier, `artifact_sha256`를 담은

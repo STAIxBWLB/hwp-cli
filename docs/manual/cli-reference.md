@@ -117,7 +117,7 @@ Create a new document
 | `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX path |
 | `--from` | `<FROM>` |  | Input markdown or JSON file (empty document when omitted) |
 | `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
-| `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, gaejosik, or press. Legacy and Korean aliases normalize to one profile |
+| `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, or press. Legacy and Korean aliases normalize to one profile |
 | `--margin-top` | `<MARGIN_TOP>` |  | Top page margin in millimetres (0..=200) |
 | `--margin-bottom` | `<MARGIN_BOTTOM>` |  | Bottom page margin in millimetres (0..=200) |
 | `--margin-left` | `<MARGIN_LEFT>` |  | Left page margin in millimetres (0..=200) |

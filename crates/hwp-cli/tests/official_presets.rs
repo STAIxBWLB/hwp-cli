@@ -131,7 +131,6 @@ fn canonical_profiles_round_trip_in_hwp_and_hwpx() {
         ("plan", "함초롬바탕", 1500, 160, 4252, true),
         ("notice", "맑은 고딕", 1500, 160, 2834, true),
         ("minutes", "함초롬바탕", 1400, 130, 0, false),
-        ("gaejosik", "맑은 고딕", 1500, 160, 4252, true),
         ("press", "함초롬바탕", 1400, 160, 2834, true),
     ];
 
@@ -470,7 +469,6 @@ fn aliases_margins_and_input_failures_are_shipped_binary_gates() {
         ),
         ("notice", ["notice", "공고", "공고문", "고시", "", "", ""]),
         ("minutes", ["minutes", "회의록", "회의기록", "", "", "", ""]),
-        ("gaejosik", ["gaejosik", "개조식", "", "", "", "", ""]),
         ("press", ["press", "보도", "보도자료", "", "", "", ""]),
     ];
     for (canonical, names) in aliases {

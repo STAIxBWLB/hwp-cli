@@ -58,6 +58,12 @@ Generators must emit levels 5-6 as the 3-character parenthesis combinations and 
 the single Unicode code points above — mixing the two forms (e.g. a single ⑴ at level 5) is a
 format error.
 
+**Conflicting secondary source, superseded.** 한국공공언어진흥원's 「공문서 작성법 길라잡이」
+(2025-01-08) prints levels 5-6 as the precomposed `⑴ ⑵ ⑶ ⑷` and `㈎ ㈏ ㈐ ㈑`. 시행규칙
+제2조제1항 is the higher authority and gives the parenthesis combinations, which is also what
+14/14 genuine Hancom artifacts showed under GN-9's verification pass. The engine emits the
+3-character form; do not file this as a defect.
+
 ## 2. Indent ladder and the single-item rule · confirmed
 
 Source: 2020 행정업무운영 편람 (항목 정렬); 시행규칙 제2조. Confidence: confirmed.
@@ -110,13 +116,17 @@ Source: 시행규칙 제2조제1항 단서 (special symbols permitted when neede
 
 - The proviso of 제2조제1항 permits special symbols such as `□ ○ - ㆍ` instead of the regular
   8-level marks "필요한 경우" (exceptional, optional).
-- **No statute and no 편람 page fixes a per-level mapping of these symbols.** The de-facto
-  ladder `□`(대) → `○`(중) → `-`(소) → `ㆍ`(세) is field convention (실무 관행), common in
-  보고서 — it is not a 법정 순서.
+- **No statute and no 편람 page fixes a per-level mapping of these symbols**, so the ladder
+  `□`(대) → `○`(중) → `-`(소) → `ㆍ`(세) is field convention (실무 관행), common in 보고서 —
+  not a 법정 순서. It does have a published source: 한국공공언어진흥원's 「공문서 작성법
+  길라잡이」(2025-01-08) fixes the same four rungs twice, as `□ ○ - •` in its 8-level 원칙
+  table (제1장 다) and as `□>○>->∙` in its 유의 사항 table (제1장 2). Cite that for the order;
+  it raises the convention above hearsay without making it statutory.
 - Code point of the fourth symbol: the 시행규칙 정본 encodes it as **ㆍ (U+318D, HANGUL LETTER
-  ARAEA, 아래아)**. Other materials render the same slot as `·` (U+00B7) or `∙` (U+2219). All
-  three encode the same 가운뎇점 (middle dot) intent; use U+318D for 정본 fidelity, U+00B7
-  when readability comes first.
+  ARAEA, 아래아)**. Other materials render the same slot as `·` (U+00B7), `∙` (U+2219) or
+  `•` (U+2022) — the 길라잡이 uses the last two in its two tables. All four encode the same
+  가운뎇점 (middle dot) intent; use U+318D for 정본 fidelity, U+00B7 when readability comes
+  first. The engine emits U+00B7.
 - 편람: do not use special symbols that risk breaking in electronic input/processing.
 - Cross-reference: `official-documents.md`'s markdown contract maps literal `□ `/`○ ` runs and
   `-`/`·` bullets to this ladder — the two files must agree exactly.
@@ -398,12 +408,12 @@ The common 9-section backbone (individual 사업단 forms vary):
 A shorter field sequence shares the report skeleton: 추진배경/목적 → 추진방향 →
 추진계획(일시·장소·대상·내용·방법) → 소요예산 → 추진일정 → 행정사항 → [기대효과].
 
-## 11. Margins and fonts — verified engine behavior, not regulation · practice / assumption
+## 11. Margins and fonts — verified engine behavior, not regulation · practice
 
 Source: [docs/design/23-hwpx-skill-absorption.md](../../../docs/design/23-hwpx-skill-absorption.md)
 §3 (margin check, D-14) and [docs/design/12-feature-gaps.md](../../../docs/design/12-feature-gaps.md)
 GN-9; 2020 편람 서식 설계기준. Confidence: verified implementation behavior (margins and
-profiles) / practice (fonts and line spacing) / assumption (gaejosik font).
+profiles) / practice (fonts and line spacing).
 
 ### Margins (여백)
 
@@ -420,11 +430,13 @@ override one side explicitly with `--margin-top`, `--margin-bottom`, `--margin-l
 | `plan` | HCR Batang 15pt / 160% | 15 mm | `- N -` |
 | `notice` | Malgun Gothic 15pt / 160% | 10 mm | `- N -` |
 | `minutes` | HCR Batang 14pt / 130% | 0 mm | none |
-| `gaejosik` | Malgun Gothic 15pt / 160% (assumption) | 15 mm | `- N -` |
 | `press` | HCR Batang 14pt / 160% | 10 mm | `- N -` |
 
 `official` is canonical; `gian` and `gongmun` are semantic compatibility aliases, not raw-byte
-promises. Korean aliases normalize to the same seven profiles. The verified HWPX path writes the
+promises. Korean aliases normalize to the same six profiles. There is exactly one profile per
+document type. 개조식 is a writing style (§6 어투), not a document class, so it names no profile;
+the `gaejosik` profile was retired in 0.8.9 and `--preset gaejosik` now fails with a message
+pointing here. The verified HWPX path writes the
 eight-level definition directly, and the HWP5 path uses the safe, direct encoding observed in
 Hancom Office. At levels 2, 6 and 8, the count continues after `하` as observed; no approximation
 is used or implied.
@@ -439,7 +451,7 @@ is used or implied.
 - **명조 계열 (휴먼명조/함초롬바탕) 14-15pt** — the traditional 보고서 convention.
 - Line spacing: **123%** (한글 기본값) / **160%** (보고서 가독성 관행) / **130% 이상**
   (큰글자 서식 — the only statutory value, 시행규칙 별표5, and it applies to 큰글자 서식
-  only). `gaejosik`'s Malgun Gothic default is explicitly an implementation assumption.
+  only).
 - 자간 0 / 장평 100 are the field defaults.
 
 ## 12. Sources and the pre-send checklist
@@ -456,6 +468,12 @@ is used or implied.
   **no rule text is copied** from it; this acknowledgment is the full extent of the reuse.
 - **Primary basis** — 「행정업무의 운영 및 혁신에 관한 규정」 및 동 시행규칙, 「공공기록물
   관리에 관한 법률 시행령」 제18조, 2020 행정업무운영 편람 (p.43 for 단모음).
+- **한국공공언어진흥원, 「공문서 작성법 길라잡이」 (2025-01-08)** — secondary source, read
+  2026-08-22. Cited in §1 for a recorded conflict on levels 5-6 and in §3 for the `□ ○ - ㆍ`
+  rung order. Its 제2장-제5장 ○/× notation tables are the labelled corpus behind the `hwp lint`
+  rule set (GN-3). It ranks below 시행규칙 and the 편람 and
+  above field convention; where it conflicts with either, the conflict is recorded, not resolved
+  in its favour. Not committed to this repository — cited by 장·절 only.
 - **Old `hwpx` skill** (STAIxBWLB/skills, read-only) — the 기안문 10-part box, document
   classes and skeleton content were rewritten from it.
 
