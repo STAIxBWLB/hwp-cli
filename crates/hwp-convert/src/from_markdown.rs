@@ -2242,7 +2242,8 @@ mod tests {
         );
     }
 
-    /// Official preset: regulation margins, fonts/sizes, 4-level numbering, and page number (pgnp)
+    /// Official preset: regulation margins, fonts/sizes, eight-level numbering, and page number
+    /// (pgnp)
     /// are applied, and the default path without a preset must keep the existing values.
     #[test]
     fn 공문서_프리셋() {
@@ -2312,17 +2313,25 @@ mod tests {
         assert_eq!(gian.header.char_shapes[0].base_size, 1150);
         assert_eq!(gian.header.char_shapes[4].base_size, 1500);
 
-        // 4-level numbering ladder: ^1. / ^2.(Hangul syllables) / ^3) / ^4)(Hangul syllables), repeating from level 5.
+        // Statutory eight-level numbering ladder, including the two circled levels.
         let levels = &report.header.numbering_levels[0];
         let fmt_tpl: Vec<(NumFmt, &str)> = levels
             .iter()
             .map(|l| (l.fmt, l.template.as_str()))
             .collect();
-        assert_eq!(fmt_tpl[0], (NumFmt::Digit, "^1."));
-        assert_eq!(fmt_tpl[1], (NumFmt::HangulSyllable, "^2."));
-        assert_eq!(fmt_tpl[2], (NumFmt::Digit, "^3)"));
-        assert_eq!(fmt_tpl[3], (NumFmt::HangulSyllable, "^4)"));
-        assert_eq!(fmt_tpl[4], (NumFmt::Digit, "^5."));
+        assert_eq!(
+            fmt_tpl,
+            vec![
+                (NumFmt::Digit, "^1."),
+                (NumFmt::HangulSyllable, "^2."),
+                (NumFmt::Digit, "^3)"),
+                (NumFmt::HangulSyllable, "^4)"),
+                (NumFmt::Digit, "(^5)"),
+                (NumFmt::HangulSyllable, "(^6)"),
+                (NumFmt::CircledDigit, "^7"),
+                (NumFmt::CircledHangulSyllable, "^8"),
+            ]
+        );
 
         // Page number: pgnp (bottom center + sideChar '-') control and ExtCtrl anchor.
         let first = &report.sections[0].paragraphs[0];
