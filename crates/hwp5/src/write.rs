@@ -566,6 +566,7 @@ fn materialize_document(
             // (synthesize=false)은 거치지 않으므로 바이트 동일 게이트 무영향.
             if !source_preserving {
                 ensure_para_shape_defaults(&mut d.header);
+                materialize_evidenced_official_numbering(&mut d)?;
             }
             for section in &mut d.sections {
                 if let Some(p) = section.paragraphs.first_mut() {
@@ -1019,6 +1020,83 @@ fn ensure_para_shape_defaults(header: &mut hwp_model::DocHeader) {
             ps.border_fill_id = 2;
         }
     }
+}
+
+/// Materializes only the complete direct NUMBERING contract observed in the
+/// private Hancom-saved source. Other semantic circled-Hangul lists fail before
+/// publication instead of falling back to an unproven HWP5 encoding.
+fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
+    if doc.meta.source_format == "hwp5" {
+        return Ok(());
+    }
+
+    let contains_circled_hangul = doc
+        .header
+        .numbering_levels
+        .iter()
+        .flatten()
+        .any(|level| level.fmt == hwp_model::NumFmt::CircledHangulSyllable);
+    if !contains_circled_hangul {
+        return Ok(());
+    }
+
+    if !doc.header.numberings.is_empty()
+        || doc.header.numbering_levels.len() != 8
+        || !crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels)
+    {
+        return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
+            "the direct HWP5 contract requires exactly eight source-free official definitions"
+                .to_string(),
+        ));
+    }
+
+    for para_shape in &mut doc.header.para_shapes {
+        if para_shape.head_type() != 2 {
+            continue;
+        }
+        let semantic_level = para_shape.head_level();
+        if semantic_level > 8 {
+            return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
+                "levels above eight are not part of the direct HWP5 contract".to_string(),
+            ));
+        }
+        if semantic_level == 0 || para_shape.numbering_id as usize != semantic_level as usize - 1 {
+            return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
+                "each direct numbering definition must link to its observed semantic level"
+                    .to_string(),
+            ));
+        }
+        let raw_level = u32::from(semantic_level.saturating_sub(1).min(6));
+        para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (raw_level << 25);
+        para_shape.border_fill_id = 1;
+    }
+    let mut counters = [0usize; 8];
+    for section in &doc.sections {
+        for paragraph in &section.paragraphs {
+            let Some(para_shape) = doc.header.para_shapes.get(paragraph.para_shape.0 as usize)
+            else {
+                continue;
+            };
+            if para_shape.head_type() == 2 && para_shape.numbering_id < 8 {
+                counters[para_shape.numbering_id as usize] += 1;
+            }
+        }
+    }
+    for level in [2usize, 6, 8] {
+        if counters[level - 1] > 15 {
+            return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
+                format!("level {level} exceeds the evidenced continuation range of 15 items"),
+            ));
+        }
+    }
+
+    doc.header.numberings = (0..8)
+        .map(|_| RawEntry {
+            data: crate::numbering::official_eight_level_data(),
+            children: Vec::new(),
+        })
+        .collect();
+    Ok(())
 }
 
 /// hwp5로 쓸 수 없는 그림(SHAPE_COMPONENT 레코드 부재)이 있는지.

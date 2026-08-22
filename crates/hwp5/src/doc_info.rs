@@ -58,6 +58,26 @@ pub fn parse_doc_info(roots: &[RecordNode]) -> (DocHeader, Vec<String>) {
         }
     }
 
+    // The direct eight-level contract is intentionally narrower than generic
+    // NUMBERING parsing. Only eight complete observed records may restore the
+    // semantic level carried by the level-8 definition reference.
+    if header.numberings.len() == 8
+        && header
+            .numberings
+            .iter()
+            .all(|entry| crate::numbering::is_official_eight_level_data(&entry.data))
+    {
+        for para_shape in &mut header.para_shapes {
+            let raw_level = ((para_shape.attr1 >> 25) & 0x7) as u16;
+            if para_shape.head_type() == 2
+                && para_shape.numbering_id < 8
+                && raw_level == para_shape.numbering_id.min(6)
+            {
+                para_shape.list_level = Some((para_shape.numbering_id + 1) as u8);
+            }
+        }
+    }
+
     (header, warnings)
 }
 
@@ -480,6 +500,10 @@ fn parse_tab_def(data: &[u8]) -> hwp_model::TabDef {
 /// 구조가 어긋나면 그 수준부터 기본값(빈 템플릿)으로 폴백한다(회귀 없음). 시작번호(대개 1)는
 /// 템플릿 뒤 오프셋이 유동적이라 v1은 start=1 유지(문서화).
 fn parse_numbering_levels(data: &[u8]) -> Vec<hwp_model::NumLevel> {
+    if let Some(levels) = crate::numbering::parse_official_eight_level_data(data) {
+        return levels;
+    }
+
     fn read_level(r: &mut ByteReader) -> Option<String> {
         let _attr = r.read_u32().ok()?;
         let _width = r.read_u16().ok()?; // 너비 보정

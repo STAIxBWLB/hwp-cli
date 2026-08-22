@@ -880,15 +880,15 @@ fn official_eight_level_hwp5_matches_evidence_contract() {
     );
     for data in &numberings {
         assert_eq!(
-            u32::from_le_bytes(data[170..174].try_into().unwrap()),
+            u32::from_le_bytes(data[172..176].try_into().unwrap()),
             0x12c,
             "slot 8 uses the proven circled-Hangul selector"
         );
-        assert_eq!(&data[184..188], &[b'^', 0, b'8', 0], "slot 8 template");
+        assert_eq!(&data[186..190], &[b'^', 0, b'8', 0], "slot 8 template");
         assert!(
-            (216..230)
-                .step_by(4)
-                .all(|offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) == 1),
+            (218..230).step_by(4).all(|offset| u32::from_le_bytes(
+                data[offset..offset + 4].try_into().unwrap()
+            ) == 1),
             "extension start values"
         );
     }
@@ -902,10 +902,16 @@ fn official_eight_level_hwp5_matches_evidence_contract() {
         let attr = u32::from_le_bytes(data[0..4].try_into().unwrap());
         let raw_level = (attr >> 25) & 0x7;
         assert_eq!(raw_level, u32::try_from(index.min(6)).unwrap());
-        assert_eq!(u16::from_le_bytes(data[34..36].try_into().unwrap()), index as u16 + 1);
-        assert_eq!(i32::from_le_bytes(data[4..8].try_into().unwrap()), (index as i32 + 1) * 2000);
+        assert_eq!(
+            u16::from_le_bytes(data[30..32].try_into().unwrap()),
+            index as u16 + 1
+        );
+        assert_eq!(
+            i32::from_le_bytes(data[4..8].try_into().unwrap()),
+            (index as i32 + 1) * 2000
+        );
         assert_eq!(i32::from_le_bytes(data[12..16].try_into().unwrap()), -2000);
-        assert_eq!(u16::from_le_bytes(data[36..38].try_into().unwrap()), 1);
+        assert_eq!(u16::from_le_bytes(data[32..34].try_into().unwrap()), 1);
     }
 
     let reread = hwp5::read_document(&out).unwrap().document;
@@ -915,7 +921,11 @@ fn official_eight_level_hwp5_matches_evidence_contract() {
         .find(|paragraph| paragraph.plain_text() == "level 8")
         .expect("level 8 paragraph");
     let shape = &reread.header.para_shapes[level8.para_shape.0 as usize];
-    assert_eq!(shape.head_level(), 8, "reread retains the semantic level-8 link");
+    assert_eq!(
+        shape.head_level(),
+        8,
+        "reread retains the semantic level-8 link"
+    );
     assert_eq!(shape.numbering_id, 7, "disk ref 8 normalizes to IR ref 7");
 }
 
@@ -964,7 +974,62 @@ fn official_hwp5_continuation_14_to_15_matches_evidence() {
     assert_eq!(markers[28], "(하)");
     assert_eq!(markers[29], "(거)");
     assert_eq!(markers[43], "㉻");
-    assert_eq!(markers[44], "㉿");
+    assert_eq!(markers[44], "거", "native HWP supplies the proven circle");
+}
+
+#[test]
+fn official_hwp5_rejects_unproven_level_or_continuation_before_publication() {
+    let markdown = "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n";
+    let options = hwp_convert::MarkdownImportOptions {
+        preset: Some(hwp_convert::OfficialPreset::Gian),
+        ..Default::default()
+    };
+
+    let mut unsupported_level = hwp_convert::from_markdown_with(markdown, &options);
+    let level8_shape = unsupported_level
+        .header
+        .para_shapes
+        .iter_mut()
+        .find(|shape| shape.head_level() == 8)
+        .unwrap();
+    level8_shape.list_level = Some(9);
+    let level_out = tmp("official-unproven-level.hwp");
+    let _ = std::fs::remove_file(&level_out);
+    let error = hwp5::write_document(
+        &unsupported_level,
+        &level_out,
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(!level_out.exists(), "failure must precede file publication");
+
+    let mut unsupported_count = hwp_convert::from_markdown_with(markdown, &options);
+    let prototype = unsupported_count.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| {
+            unsupported_count.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == 8
+        })
+        .unwrap()
+        .clone();
+    unsupported_count.sections[0].paragraphs = std::iter::repeat_n(prototype, 16).collect();
+    let count_out = tmp("official-unproven-continuation.hwp");
+    let _ = std::fs::remove_file(&count_out);
+    let error = hwp5::write_document(
+        &unsupported_count,
+        &count_out,
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(!count_out.exists(), "failure must precede file publication");
 }
 
 /// 스트림 경로 구분자 회귀: cfb 열거가 플랫폼 구분자(Windows `\`)를 섞어도

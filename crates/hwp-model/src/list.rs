@@ -128,7 +128,7 @@ fn numbering_levels(doc: &Document, id: usize) -> Option<&[crate::NumLevel]> {
 pub fn format_number(n: u32, fmt: NumFmt) -> String {
     match fmt {
         NumFmt::Digit => n.to_string(),
-        NumFmt::HangulSyllable => cycle("가나다라마바사아자차카타파하", n),
+        NumFmt::HangulSyllable => hangul_syllable(n),
         NumFmt::HangulJamo => cycle("ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ", n),
         NumFmt::CircledDigit => {
             if (1..=20).contains(&n) {
@@ -141,7 +141,11 @@ pub fn format_number(n: u32, fmt: NumFmt) -> String {
             if (1..=14).contains(&n) {
                 char::from_u32(0x326D + n).map_or_else(|| n.to_string(), |c| c.to_string())
             } else {
-                n.to_string()
+                // Unicode has precomposed circled Hangul syllables only through
+                // ㉻. Native HWP counter rendering supplies the circle for later
+                // values, so the IR deliberately keeps the underlying syllable
+                // instead of inventing a combining enclosure or lookalike text.
+                hangul_syllable(n)
             }
         }
         NumFmt::LatinUpper => latin(n, b'A'),
@@ -156,6 +160,22 @@ fn cycle(set: &str, n: u32) -> String {
     let chars: Vec<char> = set.chars().collect();
     let i = (n.max(1) - 1) as usize % chars.len();
     chars[i].to_string()
+}
+
+/// Korean official-list syllables continue by the single-vowel sequence after
+/// 하: 가...하, 거...허, 고...호, 구...후, 그...흐, 기...히.
+fn hangul_syllable(n: u32) -> String {
+    const INITIALS: [u32; 14] = [0, 2, 3, 5, 6, 7, 9, 11, 12, 14, 15, 16, 17, 18];
+    const VOWELS: [u32; 6] = [0, 4, 8, 13, 18, 20];
+    let index = n.saturating_sub(1) as usize;
+    let Some(&initial) = INITIALS.get(index % INITIALS.len()) else {
+        return n.to_string();
+    };
+    let Some(&vowel) = VOWELS.get(index / INITIALS.len()) else {
+        return n.to_string();
+    };
+    char::from_u32(0xAC00 + initial * 588 + vowel * 28)
+        .map_or_else(|| n.to_string(), |character| character.to_string())
 }
 
 /// A, B, … Z, AA, AB … (1부터).
@@ -335,8 +355,12 @@ mod tests {
         assert_eq!(format_number(3, NumFmt::Digit), "3");
         assert_eq!(format_number(1, NumFmt::HangulSyllable), "가");
         assert_eq!(format_number(3, NumFmt::HangulSyllable), "다");
+        assert_eq!(format_number(14, NumFmt::HangulSyllable), "하");
+        assert_eq!(format_number(15, NumFmt::HangulSyllable), "거");
         assert_eq!(format_number(1, NumFmt::CircledDigit), "①");
         assert_eq!(format_number(1, NumFmt::CircledHangulSyllable), "㉮");
+        assert_eq!(format_number(14, NumFmt::CircledHangulSyllable), "㉻");
+        assert_eq!(format_number(15, NumFmt::CircledHangulSyllable), "거");
         assert_eq!(format_number(1, NumFmt::LatinUpper), "A");
         assert_eq!(format_number(27, NumFmt::LatinUpper), "AA");
         assert_eq!(format_number(4, NumFmt::RomanUpper), "IV");
