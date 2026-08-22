@@ -251,6 +251,12 @@ pub struct ParaShape {
     /// hwpx는 idRef=numbering_id+1로 방출하고 read가 다시 0-기반으로 정규화한다.
     /// (head_type 0 없음·1 개요는 다른 참조 체계라 변환하지 않는다.)
     pub numbering_id: u16,
+    /// OWPML heading level when it exceeds the HWP5 attr1 three-bit range (1..=7).
+    ///
+    /// `None` preserves the native HWP5 interpretation. HWPX levels 8..=10 use this
+    /// semantic field so level 8 is never aliased to a genuine level 1 bit pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_level: Option<u8>,
     pub border_fill_id: u16,
     /// 테두리 여백 (좌/우/위/아래)
     pub border_offsets: [i16; 4],
@@ -276,9 +282,14 @@ impl ParaShape {
         ((self.attr1 >> 23) & 0x3) as u8
     }
 
-    /// 문단 수준 (bit25~27): 1~7.
+    /// Document paragraph-heading level.
+    ///
+    /// HWP5 stores levels 1..=7 in attr1 bits 25..=27. HWPX additionally has
+    /// explicit levels 8..=10, represented by `list_level`.
     pub fn head_level(&self) -> u8 {
-        (((self.attr1 >> 25) & 0x7) as u8).clamp(1, 7)
+        self.list_level
+            .unwrap_or_else(|| ((self.attr1 >> 25) & 0x7) as u8)
+            .clamp(1, 10)
     }
 
     /// 한글 줄나눔 (bit7): true=KEEP_WORD(어절 단위), false=BREAK_WORD(글자 단위).
@@ -344,6 +355,8 @@ pub enum NumFmt {
     HangulJamo,
     /// ①, ②, ③
     CircledDigit,
+    /// ㉮, ㉯, ㉰
+    CircledHangulSyllable,
     /// A, B, C
     LatinUpper,
     /// a, b, c

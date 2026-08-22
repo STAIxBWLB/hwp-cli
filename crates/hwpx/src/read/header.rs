@@ -108,6 +108,7 @@ fn num_fmt(s: &str) -> hwp_model::NumFmt {
         "HANGUL_SYLLABLE" => NumFmt::HangulSyllable,
         "HANGUL_JAMO" => NumFmt::HangulJamo,
         "CIRCLED_DIGIT" => NumFmt::CircledDigit,
+        "CIRCLED_HANGUL_SYLLABLE" => NumFmt::CircledHangulSyllable,
         "LATIN_CAPITAL" | "LATIN_UPPER" => NumFmt::LatinUpper,
         "LATIN_SMALL" | "LATIN_LOWER" => NumFmt::LatinLower,
         "ROMAN_CAPITAL" | "ROMAN_UPPER" => NumFmt::RomanUpper,
@@ -412,8 +413,9 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             };
                             ps.attr1 |= ty << 23;
                             if ty != 0 {
-                                let level = attr_u32(e, "level").unwrap_or(1).clamp(1, 7);
-                                ps.attr1 |= level << 25;
+                                let level = attr_u32(e, "level").unwrap_or(1).clamp(1, 10);
+                                ps.attr1 |= level.min(7) << 25;
+                                ps.list_level = (level > 7).then_some(level as u8);
                                 ps.numbering_id = attr_u16(e, "idRef").unwrap_or(0);
                             }
                         }

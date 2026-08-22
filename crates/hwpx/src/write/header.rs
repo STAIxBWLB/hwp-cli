@@ -449,6 +449,7 @@ fn num_format_name(fmt: hwp_model::NumFmt) -> &'static str {
         NumFmt::HangulSyllable => "HANGUL_SYLLABLE",
         NumFmt::HangulJamo => "HANGUL_JAMO",
         NumFmt::CircledDigit => "CIRCLED_DIGIT",
+        NumFmt::CircledHangulSyllable => "CIRCLED_HANGUL_SYLLABLE",
         NumFmt::LatinUpper => "LATIN_CAPITAL",
         NumFmt::LatinLower => "LATIN_SMALL",
         NumFmt::RomanUpper => "ROMAN_CAPITAL",
@@ -470,7 +471,8 @@ fn write_numberings(out: &mut String, header: &DocHeader) {
     for i in 0..count {
         let _ = write!(out, r##"<hh:numbering id="{}" start="0">"##, i + 1);
         let levels = header.numbering_levels.get(i);
-        for level in 1..=7usize {
+        let level_count = levels.map_or(7, |levels| levels.len().min(10));
+        for level in 1..=level_count {
             // 보존된 수준 형식이 있으면 그 시작/형식/템플릿을, 없으면 기존 상수 기본.
             let nl = levels.and_then(|v| v.get(level - 1));
             let start = nl.map_or(1, |n| n.start);

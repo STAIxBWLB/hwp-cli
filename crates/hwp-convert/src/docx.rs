@@ -932,6 +932,9 @@ fn num_fmt(level: &hwp_model::NumLevel) -> (&'static str, String) {
         NumFmt::HangulSyllable => "koreanCounting",
         NumFmt::HangulJamo => "koreanDigital",
         NumFmt::CircledDigit => "decimalEnclosedCircle",
+        // OOXML has no circled-Hangul-syllable numFmt. Keep the syllable family
+        // rather than silently substituting circled decimal glyphs.
+        NumFmt::CircledHangulSyllable => "koreanCounting",
         NumFmt::LatinUpper => "upperLetter",
         NumFmt::LatinLower => "lowerLetter",
         NumFmt::RomanUpper => "upperRoman",
@@ -942,8 +945,8 @@ fn num_fmt(level: &hwp_model::NumLevel) -> (&'static str, String) {
     } else {
         level.template.clone()
     };
-    // `^N` placeholders to OOXML `%N` — replaces ^1..^7 of the template in order.
-    for n in 1..=7u8 {
+    // `^N` placeholders to OOXML `%N` — replaces the HWPX-supported levels in order.
+    for n in 1..=10u8 {
         text = text.replace(&format!("^{n}"), &format!("%{n}"));
     }
     (fmt, escape(&text))

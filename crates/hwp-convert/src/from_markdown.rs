@@ -43,8 +43,8 @@ pub struct MarkdownImportOptions<'a> {
 }
 
 /// Korean official-document drafting regulation preset. Common: A4 margins
-/// top30/bottom15/left20/right15mm, line spacing 160%, 4-level ordered-list numbering
-/// (1. → hangul. → 1) → hangul)), page number bottom center (pgnp, genuine-measured sideChar '-').
+/// top30/bottom15/left20/right15mm, line spacing 160%, 8-level ordered-list numbering,
+/// and page number bottom center (pgnp, genuine-measured sideChar '-').
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OfficialPreset {
     /// Draft/official document: Malgun Gothic 11.5pt (e-approval system standard).
@@ -343,7 +343,7 @@ pub fn default_header() -> hwp_model::DocHeader {
     header
 }
 
-/// Applies the official-document preset to the header — fonts/sizes and the 4-level ordered
+/// Applies the official-document preset to the header — fonts/sizes and the eight-level ordered
 /// numbering scheme. (Margins and page numbers are handled by inject_section_controls.)
 pub(crate) fn apply_official_preset(header: &mut hwp_model::DocHeader, preset: OfficialPreset) {
     // Body/heading sizes (HWPUNIT/100pt): draft 11.5pt·heading 15pt / report 15pt·heading 18pt.
@@ -369,17 +369,22 @@ pub(crate) fn apply_official_preset(header: &mut hwp_model::DocHeader, preset: O
             _ => body,
         };
     }
-    // Ordered list 4-level numbering (regulation §5): 1. → HangulSyllable. → 1) → HangulSyllable), repeating from level 5.
+    // Ordered list numbering: 1. → 가. → 1) → 가) → (1) → (가) → ① → ㉮.
     for levels in &mut header.numbering_levels {
         for (i, nl) in levels.iter_mut().enumerate() {
-            let (fmt, suffix) = match i % 4 {
-                0 => (NumFmt::Digit, "."),
-                1 => (NumFmt::HangulSyllable, "."),
-                2 => (NumFmt::Digit, ")"),
-                _ => (NumFmt::HangulSyllable, ")"),
+            let (fmt, template) = match i {
+                0 => (NumFmt::Digit, "^1."),
+                1 => (NumFmt::HangulSyllable, "^2."),
+                2 => (NumFmt::Digit, "^3)"),
+                3 => (NumFmt::HangulSyllable, "^4)"),
+                4 => (NumFmt::Digit, "(^5)"),
+                5 => (NumFmt::HangulSyllable, "(^6)"),
+                6 => (NumFmt::CircledDigit, "^7"),
+                7 => (NumFmt::CircledHangulSyllable, "^8"),
+                _ => break,
             };
             nl.fmt = fmt;
-            nl.template = format!("^{}{suffix}", i + 1);
+            nl.template = template.to_string();
         }
     }
 }
@@ -909,14 +914,14 @@ impl Builder {
     fn start_list(&mut self, start: Option<u64>) {
         // Close the parent item's paragraph first (e.g. "second" before a nested list).
         self.flush_paragraph();
-        let level = (self.list_stack.len() as u16 + 1).min(7);
+        let level = (self.list_stack.len() as u16 + 1).min(8);
         let para_shape_id = match start {
             // Ordered list: numbering definition (the exporter draws markers from numbering_levels) + NUMBER head.
             Some(s) => {
                 let def_id = self.numbering_levels.len() as u16;
-                let mut levels = vec![NumLevel::default(); 7];
+                let mut levels = vec![NumLevel::default(); 8];
                 // Preserves this list level's start number (the exporter reflects start).
-                levels[(level as usize - 1).min(6)].start = s.max(1) as u32;
+                levels[level as usize - 1].start = s.max(1) as u32;
                 self.numbering_levels.push(levels);
                 self.push_list_para_shape(2, level, def_id)
             }
@@ -1039,7 +1044,7 @@ impl Builder {
     }
 
     /// Creates a para shape for list items and returns its index.
-    /// head_type: 2=number, 3=bullet. level 1~7 → head level (used by the exporter for nesting detection).
+    /// head_type: 2=number, 3=bullet. HWPX list levels 1..=8 are retained semantically.
     fn push_list_para_shape(&mut self, head_type: u32, level: u16, def_id: u16) -> u16 {
         let idx = BASE_PARA_SHAPES + self.extra_para_shapes.len() as u16;
         // Indent per level (HWPUNIT) — makes nesting visible in Hancom. The exporter's nesting
@@ -1047,13 +1052,14 @@ impl Builder {
         let step = 2000i32;
         self.extra_para_shapes.push(ParaShape {
             // Healthy body para shape (0x180: Hangul line-break + line grid) + left align + head type/level.
-            attr1: 0x180 | (1 << 2) | (head_type << 23) | (u32::from(level) << 25),
+            attr1: 0x180 | (1 << 2) | (head_type << 23) | (u32::from(level.min(7)) << 25),
             margin_left: i32::from(level) * step,
             indent: -step, // outdent: aligns marker and body text
             line_spacing_old: 160,
             line_spacing: 160,
             border_fill_id: 2,
             numbering_id: def_id,
+            list_level: (level > 7).then_some(level as u8),
             ..ParaShape::default()
         });
         idx

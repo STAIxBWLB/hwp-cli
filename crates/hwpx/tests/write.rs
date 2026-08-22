@@ -2476,8 +2476,13 @@ fn official_eight_level_hwpx_round_trip() {
             "missing level {level}: {header_xml}"
         );
     }
+    assert!(
+        !header_xml.contains(r#"level="9""#),
+        "an official definition must stop at level 8: {header_xml}"
+    );
 
     let reread = hwpx::read_document(&out).unwrap().document;
+    assert_eq!(reread.plain_text(), doc.plain_text(), "paragraph order");
     assert!(
         reread
             .header
@@ -2494,6 +2499,36 @@ fn official_eight_level_hwpx_round_trip() {
         .find(|level| level.template == "^8")
         .expect("generated HWPX must retain a level-8 definition");
     assert_eq!(format!("{:?}", level8.fmt), "CircledHangulSyllable");
+    assert!(
+        reread.header.numbering_levels.iter().all(|levels| {
+            levels.len() == 8
+                && levels[0].template == "^1."
+                && levels[1].template == "^2."
+                && levels[2].template == "^3)"
+                && levels[3].template == "^4)"
+                && levels[4].template == "(^5)"
+                && levels[5].template == "(^6)"
+                && levels[6].template == "^7"
+                && levels[7].template == "^8"
+        }),
+        "reread must preserve all eight definitions"
+    );
+}
+
+#[test]
+fn existing_seven_level_hwpx_does_not_gain_a_synthetic_eighth_definition() {
+    let mut header = hwp_model::DocHeader::default();
+    header.numbering_levels = vec![vec![hwp_model::NumLevel::default(); 7]];
+
+    let out = hwpx::write::header::write_header(&header, 1);
+    assert!(
+        out.contains(r#"level="7""#),
+        "seven levels must be emitted: {out}"
+    );
+    assert!(
+        !out.contains(r#"level="8""#),
+        "existing seven-level definitions must not gain level 8: {out}"
+    );
 }
 
 /// GC-4 탭 정의: tabPr/tabItem(위치·종류·채움)이 hwpx read→write→re-read 왕복에서

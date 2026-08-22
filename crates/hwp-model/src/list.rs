@@ -8,14 +8,14 @@ use std::collections::HashMap;
 
 use crate::{Document, NumFmt, Paragraph};
 
-/// 구역 단위 목록 카운터(번호 정의별, 수준 1~7 사용).
+/// Section list counters (per numbering definition, levels 1 through 10).
 #[derive(Default, Clone)]
 pub struct ListState {
-    counters: HashMap<u16, [u32; 8]>,
+    counters: HashMap<u16, [u32; 11]>,
     /// Counter family dedicated to outline paragraphs (`head_type == 1`). Outline
     /// `numbering_id` values are unnormalized raw references (zero in genuine samples), so they do
     /// not select entries from the normal numbering-definition counter map.
-    outline_counters: [u32; 8],
+    outline_counters: [u32; 11],
 }
 
 impl ListState {
@@ -33,7 +33,7 @@ impl ListState {
             return Some(bullet_char(doc, id).to_string()); // 불릿
         }
         // 번호: 수준 카운터 증가 + 더 깊은 수준 리셋.
-        let level = ps.head_level() as usize; // 1..=7
+        let level = ps.head_level() as usize; // 1..=10
         let counters = self.counters.entry(ps.numbering_id).or_default();
         counters[level] += 1;
         for c in &mut counters[level + 1..] {
@@ -63,7 +63,7 @@ impl ListState {
     }
 
     /// Renderer marker including the default per-level outline (`head_type == 1`) formats.
-    /// The seven levels are `1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`.
+    /// The eight official levels are `1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①` / `㉮`.
     pub fn marker_for_render(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
         let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
         if ps.head_type() == 1 {
@@ -74,7 +74,7 @@ impl ListState {
 
     /// Advance one outline level, reset deeper levels, and apply the level's default format.
     fn outline_marker(&mut self, level: u8) -> String {
-        let level = level.clamp(1, 7) as usize;
+        let level = level.clamp(1, 8) as usize;
         self.outline_counters[level] += 1;
         for c in &mut self.outline_counters[level + 1..] {
             *c = 0;
@@ -87,19 +87,20 @@ impl ListState {
             4 => format!("{})", format_number(n, NumFmt::HangulSyllable)),
             5 => format!("({})", format_number(n, NumFmt::Digit)),
             6 => format!("({})", format_number(n, NumFmt::HangulSyllable)),
-            _ => format_number(n, NumFmt::CircledDigit),
+            7 => format_number(n, NumFmt::CircledDigit),
+            _ => format_number(n, NumFmt::CircledHangulSyllable),
         }
     }
 }
 
-/// 템플릿의 각 `^K`(K=1~7)를 K수준 번호로 치환한다. `^` 뒤 비숫자·범위 밖은 그대로.
-fn apply_template(tmpl: &str, levels: Option<&[crate::NumLevel]>, counters: &[u32; 8]) -> String {
+/// Replaces each `^K` (K=1..=10) in a template with its level counter.
+fn apply_template(tmpl: &str, levels: Option<&[crate::NumLevel]>, counters: &[u32; 11]) -> String {
     let mut out = String::new();
     let mut chars = tmpl.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '^'
             && let Some(k) = chars.peek().and_then(|d| d.to_digit(10))
-            && (1..=7).contains(&k)
+            && (1..=10).contains(&k)
         {
             chars.next(); // 숫자 소비
             let k = k as usize;
@@ -132,6 +133,13 @@ pub fn format_number(n: u32, fmt: NumFmt) -> String {
         NumFmt::CircledDigit => {
             if (1..=20).contains(&n) {
                 char::from_u32(0x245F + n).map_or_else(|| n.to_string(), |c| c.to_string())
+            } else {
+                n.to_string()
+            }
+        }
+        NumFmt::CircledHangulSyllable => {
+            if (1..=14).contains(&n) {
+                char::from_u32(0x326D + n).map_or_else(|| n.to_string(), |c| c.to_string())
             } else {
                 n.to_string()
             }
@@ -328,6 +336,7 @@ mod tests {
         assert_eq!(format_number(1, NumFmt::HangulSyllable), "가");
         assert_eq!(format_number(3, NumFmt::HangulSyllable), "다");
         assert_eq!(format_number(1, NumFmt::CircledDigit), "①");
+        assert_eq!(format_number(1, NumFmt::CircledHangulSyllable), "㉮");
         assert_eq!(format_number(1, NumFmt::LatinUpper), "A");
         assert_eq!(format_number(27, NumFmt::LatinUpper), "AA");
         assert_eq!(format_number(4, NumFmt::RomanUpper), "IV");
