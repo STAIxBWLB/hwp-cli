@@ -2482,6 +2482,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn official_profile_matrix() {
+        let matrix = [
+            ("official", "맑은 고딕", 1200, 160, 0, false),
+            ("report", "함초롬바탕", 1500, 160, 4252, true),
+            ("plan", "함초롬바탕", 1500, 160, 4252, true),
+            ("notice", "맑은 고딕", 1500, 160, 2834, true),
+            ("minutes", "함초롬바탕", 1400, 130, 0, false),
+            ("gaejosik", "맑은 고딕", 1500, 160, 4252, true),
+            ("press", "함초롬바탕", 1400, 160, 2834, true),
+        ];
+
+        for (name, font, body, spacing, header_footer, page_number) in matrix {
+            let preset = OfficialPreset::parse(name).expect("canonical preset");
+            let doc = from_markdown_with(
+                "1. item\n",
+                &MarkdownImportOptions {
+                    preset: Some(preset),
+                    ..Default::default()
+                },
+            );
+            let page = doc.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .find_map(|control| match control {
+                    Control::SectionDef(section) => section.page,
+                    _ => None,
+                })
+                .expect("page definition");
+            assert_eq!(doc.header.fonts[0][0].name, font, "{name}");
+            assert_eq!(doc.header.char_shapes[0].base_size, body, "{name}");
+            assert!(doc
+                .header
+                .para_shapes
+                .iter()
+                .all(|shape| shape.line_spacing == spacing), "{name}");
+            assert_eq!(page.margin_top.0, 5668, "{name}");
+            assert_eq!(page.margin_bottom.0, 2834, "{name}");
+            assert_eq!(page.margin_left.0, 5668, "{name}");
+            assert_eq!(page.margin_right.0, 5668, "{name}");
+            assert_eq!(page.margin_header.0, header_footer, "{name}");
+            assert_eq!(page.margin_footer.0, header_footer, "{name}");
+            assert_eq!(
+                doc.sections[0].paragraphs[0]
+                    .controls
+                    .iter()
+                    .filter(|control| matches!(control, Control::Generic(g) if g.ctrl_id == *b"pgnp"))
+                    .count(),
+                usize::from(page_number),
+                "{name}"
+            );
+            assert_eq!(doc.header.numbering_levels[0].len(), 8, "{name}");
+        }
+    }
+
     // ── md + HTML mixing (contract docs/design/18) ──
 
     #[test]
