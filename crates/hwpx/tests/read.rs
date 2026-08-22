@@ -125,13 +125,6 @@ fn committed_hancom_numbering_fixture_exposes_level8_circled_hangul() {
         .find(|level| level.template == "^8")
         .expect("committed Hancom fixture must expose a level-8 definition");
     assert_eq!(format!("{:?}", level8.fmt), "CircledHangulSyllable");
-    assert!(
-        doc.header
-            .para_shapes
-            .iter()
-            .any(|shape| shape.head_level() == 8),
-        "fixture must preserve a paragraph link at level 8"
-    );
 }
 
 #[test]

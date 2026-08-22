@@ -2378,7 +2378,7 @@ fn ge_a7_번호_형식_왕복() {
 /// write가 역방출하는지 단정한다.
 #[test]
 fn ge_a8_문단머리_heading_왕복() {
-    let xml = r#"<hh:head><hh:numberings itemCnt="2"><hh:numbering id="7" start="0"><hh:paraHead start="1" level="1" numFormat="ROMAN_CAPITAL">^1.</hh:paraHead></hh:numbering><hh:numbering id="42" start="0"><hh:paraHead start="1" level="1" numFormat="DIGIT">^1.</hh:paraHead></hh:numbering></hh:numberings><hh:paraProperties itemCnt="1"><hh:paraPr id="0" tabPrIDRef="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/><hh:heading type="NUMBER" idRef="42" level="3"/></hh:paraPr></hh:paraProperties></hh:head>"#;
+    let xml = r#"<hh:head><hh:numberings itemCnt="2"><hh:numbering id="7" start="0"><hh:paraHead start="1" level="1" numFormat="ROMAN_CAPITAL">^1.</hh:paraHead></hh:numbering><hh:numbering id="42" start="0"><hh:paraHead start="1" level="1" numFormat="DIGIT">^1.</hh:paraHead></hh:numbering></hh:numberings><hh:paraProperties itemCnt="1"><hh:paraPr id="0" tabPrIDRef="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/><hh:heading type="NUMBER" idRef="42" level="2"/></hh:paraPr></hh:paraProperties></hh:head>"#;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
 
     // 외부 idRef=42는 두 번째 정의인 IR index 1로 정규화된다.
@@ -2390,7 +2390,7 @@ fn ge_a8_문단머리_heading_왕복() {
     // write → re-read.
     let out = hwpx::write::header::write_header(&h1, 1);
     assert!(
-        out.contains(r#"<hh:heading type="NUMBER" idRef="2" level="3"/>"#),
+        out.contains(r#"<hh:heading type="NUMBER" idRef="2" level="2"/>"#),
         "write가 heading을 역방출해야 함: {out}"
     );
     let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
@@ -2407,7 +2407,7 @@ fn ge_a8_문단머리_heading_왕복() {
 
 #[test]
 fn 글머리표_definition_id_왕복() {
-    let xml = r#"<hh:head><hh:bullets itemCnt="1"><hh:bullet id="9" char="■" useImage="0"/></hh:bullets><hh:paraProperties itemCnt="1"><hh:paraPr id="0"><hh:heading type="BULLET" idRef="9" level="1"/></hh:paraPr></hh:paraProperties></hh:head>"#;
+    let xml = r#"<hh:head><hh:bullets itemCnt="1"><hh:bullet id="9" char="■" useImage="0"/></hh:bullets><hh:paraProperties itemCnt="1"><hh:paraPr id="0"><hh:heading type="BULLET" idRef="9" level="0"/></hh:paraPr></hh:paraProperties></hh:head>"#;
     let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
     assert_eq!(header.para_shapes[0].numbering_id, 0);
     assert_eq!(header.bullet_chars, vec!['■']);
@@ -2418,7 +2418,7 @@ fn 글머리표_definition_id_왕복() {
         "글머리표 정의 방출: {out}"
     );
     assert!(
-        out.contains(r#"<hh:heading type="BULLET" idRef="1" level="1"/>"#),
+        out.contains(r#"<hh:heading type="BULLET" idRef="1" level="0"/>"#),
         "글머리표 참조 방출: {out}"
     );
     let (reread, _) = hwpx::read::header::parse_header(&out).unwrap();
@@ -2480,16 +2480,33 @@ fn official_eight_level_hwpx_round_trip() {
         !header_xml.contains(r#"level="9""#),
         "an official definition must stop at level 8: {header_xml}"
     );
+    for (id_ref, level) in (1..=8).zip(0..=7) {
+        assert!(
+            header_xml.contains(&format!(
+                r#"<hh:heading type="NUMBER" idRef="{id_ref}" level="{level}"/>"#
+            )),
+            "missing zero-based heading level {level}: {header_xml}"
+        );
+    }
+    assert!(
+        !header_xml.contains(r#"<hh:heading type="NUMBER" idRef="8" level="8"/>"#),
+        "the eighth heading must use Hancom level 7: {header_xml}"
+    );
 
     let reread = hwpx::read_document(&out).unwrap().document;
     assert_eq!(reread.plain_text(), doc.plain_text(), "paragraph order");
-    assert!(
-        reread
-            .header
-            .para_shapes
-            .iter()
-            .any(|shape| shape.head_level() == 8),
-        "generated HWPX must retain its level-8 paragraph link"
+    let level8_paragraph = reread
+        .sections
+        .iter()
+        .flat_map(|section| section.paragraphs.iter())
+        .find(|paragraph| paragraph.plain_text() == "level 8")
+        .expect("generated HWPX must retain the level 8 paragraph");
+    let level8_shape = &reread.header.para_shapes[level8_paragraph.para_shape.0 as usize];
+    assert_eq!(level8_shape.head_type(), 2, "level 8 is a NUMBER paragraph");
+    assert_eq!(
+        level8_shape.head_level(),
+        8,
+        "generated HWPX must retain its internal level-8 paragraph link"
     );
     let level8 = reread
         .header
