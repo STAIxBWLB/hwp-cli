@@ -971,6 +971,11 @@ fn official_eight_level_hwp5_matches_evidence_contract() {
         );
         assert_eq!(i32::from_le_bytes(data[12..16].try_into().unwrap()), -2000);
         assert_eq!(u16::from_le_bytes(data[32..34].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_le_bytes(data[54..58].try_into().unwrap()),
+            index as u32,
+            "native PARA_SHAPE tail binds the paragraph to its zero-based list level"
+        );
     }
 
     let reread = hwp5::read_document(&out).unwrap().document;
@@ -986,6 +991,11 @@ fn official_eight_level_hwp5_matches_evidence_contract() {
         "reread retains the semantic level-8 link"
     );
     assert_eq!(shape.numbering_id, 7, "disk ref 8 normalizes to IR ref 7");
+    assert_eq!(
+        u32::from_le_bytes(shape.tail[12..16].try_into().unwrap()),
+        7,
+        "reread retains the native HWP5 level-8 paragraph binding"
+    );
 }
 
 #[test]

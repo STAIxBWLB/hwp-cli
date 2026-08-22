@@ -189,6 +189,36 @@ fn canonical_profiles_round_trip_in_hwp_and_hwpx() {
                 "{profile}/{extension}"
             );
 
+            if extension == "hwp" {
+                for paragraph in &document.sections[0].paragraphs {
+                    let Some(shape) = document
+                        .header
+                        .para_shapes
+                        .get(paragraph.para_shape.0 as usize)
+                    else {
+                        continue;
+                    };
+                    if shape.head_type() != 2 {
+                        continue;
+                    }
+                    assert_eq!(
+                        shape.tail.len(),
+                        16,
+                        "{profile}/{extension}: official HWP5 list shape tail"
+                    );
+                    assert_eq!(
+                        u32::from_le_bytes(shape.tail[12..16].try_into().unwrap()),
+                        u32::from(shape.head_level() - 1),
+                        "{profile}/{extension}: reread paragraph retains native list-level binding"
+                    );
+                    assert_eq!(
+                        u32::from_le_bytes(shape.tail[8..12].try_into().unwrap()),
+                        u32::try_from(line_spacing).unwrap(),
+                        "{profile}/{extension}: native list shape retains profile line spacing"
+                    );
+                }
+            }
+
             let pgnp = page_number(&document);
             assert_eq!(pgnp.is_some(), has_page_number, "{profile}/{extension}");
             if let Some(pgnp) = pgnp {

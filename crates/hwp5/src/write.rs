@@ -1059,6 +1059,23 @@ fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
         let raw_level = u32::from(semantic_level.saturating_sub(1).min(6));
         para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (raw_level << 25);
         para_shape.border_fill_id = 1;
+        // The native HWP5 contract repeats the list level in the final u32 of
+        // PARA_SHAPE.  The attr1 bits are enough for our semantic reader, but
+        // Hancom uses this persisted binding to select the matching
+        // NUMBERING slot.  A zero here makes every generated paragraph use
+        // level one while all definitions still look valid to an internal
+        // reread.  Keep the observed 16-byte tail (attr2, attr3, line spacing,
+        // zero-based list level) so the HWP5 writer emits the direct evidence
+        // rather than a guessed alternate encoding.
+        let mut tail = vec![0; 16];
+        let line_spacing = if para_shape.line_spacing > 0 {
+            para_shape.line_spacing
+        } else {
+            160
+        };
+        tail[8..12].copy_from_slice(&u32::try_from(line_spacing).unwrap_or(160).to_le_bytes());
+        tail[12..16].copy_from_slice(&u32::from(semantic_level - 1).to_le_bytes());
+        para_shape.tail = tail;
     }
     let mut counters = [0usize; 8];
     for section in &doc.sections {
