@@ -18,3 +18,4 @@ aes = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }
 hwp-convert = { workspace = true }
+hwpx = { workspace = true }

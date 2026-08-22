@@ -8,14 +8,36 @@ use std::collections::HashMap;
 
 use crate::{Document, NumFmt, Paragraph};
 
-/// 구역 단위 목록 카운터(번호 정의별, 수준 1~7 사용).
+/// Section list counters (per numbering definition, levels 1 through 10).
 #[derive(Default, Clone)]
 pub struct ListState {
-    counters: HashMap<u16, [u32; 8]>,
+    counters: HashMap<u16, [u32; 11]>,
     /// Counter family dedicated to outline paragraphs (`head_type == 1`). Outline
     /// `numbering_id` values are unnormalized raw references (zero in genuine samples), so they do
     /// not select entries from the normal numbering-definition counter map.
-    outline_counters: [u32; 8],
+    outline_counters: [u32; 11],
+}
+
+#[cfg(test)]
+mod official_counter_continuation_tests {
+    use super::format_number;
+    use crate::NumFmt;
+
+    #[test]
+    fn hangul_single_vowel_continuation() {
+        assert_eq!(format_number(1, NumFmt::HangulSyllable), "가");
+        assert_eq!(format_number(14, NumFmt::HangulSyllable), "하");
+        assert_eq!(format_number(15, NumFmt::HangulSyllable), "거");
+        assert_eq!(format_number(28, NumFmt::HangulSyllable), "허");
+        assert_eq!(format_number(29, NumFmt::HangulSyllable), "고");
+    }
+
+    #[test]
+    fn circled_hangul_evidence_boundary() {
+        assert_eq!(format_number(1, NumFmt::CircledHangulSyllable), "㉮");
+        assert_eq!(format_number(14, NumFmt::CircledHangulSyllable), "㉻");
+        assert_eq!(format_number(15, NumFmt::CircledHangulSyllable), "거");
+    }
 }
 
 impl ListState {
@@ -33,9 +55,9 @@ impl ListState {
             return Some(bullet_char(doc, id).to_string()); // 불릿
         }
         // 번호: 수준 카운터 증가 + 더 깊은 수준 리셋.
-        let level = ps.head_level() as usize; // 1..=7
+        let level = ps.head_level() as usize; // 1..=10
         let counters = self.counters.entry(ps.numbering_id).or_default();
-        counters[level] += 1;
+        counters[level] = counters[level].saturating_add(1);
         for c in &mut counters[level + 1..] {
             *c = 0;
         }
@@ -55,15 +77,15 @@ impl ListState {
                     .and_then(|l| l.get(lv - 1))
                     .map_or(NumFmt::Digit, |nl| nl.fmt);
                 let start = levels.and_then(|l| l.get(lv - 1)).map_or(1, |nl| nl.start);
-                let n = counters[lv].max(1) + start.saturating_sub(1);
-                format_number(n, fmt)
+                let n = u64::from(counters[lv].max(1)) + u64::from(start.saturating_sub(1));
+                format_number_wide(n, fmt)
             })
             .collect();
         Some(format!("{}.", parts.join(".")))
     }
 
     /// Renderer marker including the default per-level outline (`head_type == 1`) formats.
-    /// The seven levels are `1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①`.
+    /// The eight official levels are `1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①` / `㉮`.
     pub fn marker_for_render(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
         let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
         if ps.head_type() == 1 {
@@ -74,8 +96,8 @@ impl ListState {
 
     /// Advance one outline level, reset deeper levels, and apply the level's default format.
     fn outline_marker(&mut self, level: u8) -> String {
-        let level = level.clamp(1, 7) as usize;
-        self.outline_counters[level] += 1;
+        let level = level.clamp(1, 8) as usize;
+        self.outline_counters[level] = self.outline_counters[level].saturating_add(1);
         for c in &mut self.outline_counters[level + 1..] {
             *c = 0;
         }
@@ -87,27 +109,28 @@ impl ListState {
             4 => format!("{})", format_number(n, NumFmt::HangulSyllable)),
             5 => format!("({})", format_number(n, NumFmt::Digit)),
             6 => format!("({})", format_number(n, NumFmt::HangulSyllable)),
-            _ => format_number(n, NumFmt::CircledDigit),
+            7 => format_number(n, NumFmt::CircledDigit),
+            _ => format_number(n, NumFmt::CircledHangulSyllable),
         }
     }
 }
 
-/// 템플릿의 각 `^K`(K=1~7)를 K수준 번호로 치환한다. `^` 뒤 비숫자·범위 밖은 그대로.
-fn apply_template(tmpl: &str, levels: Option<&[crate::NumLevel]>, counters: &[u32; 8]) -> String {
+/// Replaces each `^K` (K=1..=10) in a template with its level counter.
+fn apply_template(tmpl: &str, levels: Option<&[crate::NumLevel]>, counters: &[u32; 11]) -> String {
     let mut out = String::new();
     let mut chars = tmpl.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '^'
             && let Some(k) = chars.peek().and_then(|d| d.to_digit(10))
-            && (1..=7).contains(&k)
+            && (1..=10).contains(&k)
         {
             chars.next(); // 숫자 소비
             let k = k as usize;
             let nl = levels.and_then(|l| l.get(k - 1));
             let fmt = nl.map_or(NumFmt::Digit, |n| n.fmt);
             let start = nl.map_or(1, |n| n.start);
-            let n = counters[k].max(1) + start.saturating_sub(1);
-            out.push_str(&format_number(n, fmt));
+            let n = u64::from(counters[k].max(1)) + u64::from(start.saturating_sub(1));
+            out.push_str(&format_number_wide(n, fmt));
         } else {
             out.push(c);
         }
@@ -127,13 +150,24 @@ fn numbering_levels(doc: &Document, id: usize) -> Option<&[crate::NumLevel]> {
 pub fn format_number(n: u32, fmt: NumFmt) -> String {
     match fmt {
         NumFmt::Digit => n.to_string(),
-        NumFmt::HangulSyllable => cycle("가나다라마바사아자차카타파하", n),
+        NumFmt::HangulSyllable => hangul_syllable(n),
         NumFmt::HangulJamo => cycle("ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ", n),
         NumFmt::CircledDigit => {
             if (1..=20).contains(&n) {
                 char::from_u32(0x245F + n).map_or_else(|| n.to_string(), |c| c.to_string())
             } else {
                 n.to_string()
+            }
+        }
+        NumFmt::CircledHangulSyllable => {
+            if (1..=14).contains(&n) {
+                char::from_u32(0x326D + n).map_or_else(|| n.to_string(), |c| c.to_string())
+            } else {
+                // Unicode has precomposed circled Hangul syllables only through
+                // ㉻. Native HWP counter rendering supplies the circle for later
+                // values, so the IR deliberately keeps the underlying syllable
+                // instead of inventing a combining enclosure or lookalike text.
+                hangul_syllable(n)
             }
         }
         NumFmt::LatinUpper => latin(n, b'A'),
@@ -143,11 +177,38 @@ pub fn format_number(n: u32, fmt: NumFmt) -> String {
     }
 }
 
+/// Formats the complete mathematical list marker without narrowing. Numbering
+/// schemes without an unbounded Unicode representation fall back to decimal
+/// text above `u32::MAX`, which keeps malformed/read documents printable
+/// instead of panicking or wrapping their marker.
+fn format_number_wide(n: u64, fmt: NumFmt) -> String {
+    match u32::try_from(n) {
+        Ok(n) => format_number(n, fmt),
+        Err(_) => n.to_string(),
+    }
+}
+
 /// 문자열에서 (n-1)%len 위치 글자(반복). 큰 n은 순환.
 fn cycle(set: &str, n: u32) -> String {
     let chars: Vec<char> = set.chars().collect();
     let i = (n.max(1) - 1) as usize % chars.len();
     chars[i].to_string()
+}
+
+/// Korean official-list syllables continue by the single-vowel sequence after
+/// 하: 가...하, 거...허, 고...호, 구...후, 그...흐, 기...히.
+fn hangul_syllable(n: u32) -> String {
+    const INITIALS: [u32; 14] = [0, 2, 3, 5, 6, 7, 9, 11, 12, 14, 15, 16, 17, 18];
+    const VOWELS: [u32; 6] = [0, 4, 8, 13, 18, 20];
+    let index = n.saturating_sub(1) as usize;
+    let Some(&initial) = INITIALS.get(index % INITIALS.len()) else {
+        return n.to_string();
+    };
+    let Some(&vowel) = VOWELS.get(index / INITIALS.len()) else {
+        return n.to_string();
+    };
+    char::from_u32(0xAC00 + initial * 588 + vowel * 28)
+        .map_or_else(|| n.to_string(), |character| character.to_string())
 }
 
 /// A, B, … Z, AA, AB … (1부터).
@@ -278,6 +339,35 @@ mod tests {
     }
 
     #[test]
+    fn 최대_시작값_뒤의_마커는_패닉하지_않는다() {
+        use crate::{NumLevel, ParaShape, ParaShapeId};
+        let mut doc = Document::default();
+        doc.header.para_shapes = vec![ParaShape {
+            attr1: (2 << 23) | (1 << 25),
+            numbering_id: 0,
+            ..ParaShape::default()
+        }];
+        doc.header.numbering_levels = vec![vec![NumLevel {
+            start: u32::MAX,
+            fmt: NumFmt::Digit,
+            template: "^1.".to_string(),
+        }]];
+        let paragraph = Paragraph {
+            para_shape: ParaShapeId(0),
+            ..Paragraph::default()
+        };
+        let mut state = ListState::default();
+        assert_eq!(
+            state.marker(&doc, &paragraph).as_deref(),
+            Some("4294967295.")
+        );
+        assert_eq!(
+            state.marker(&doc, &paragraph).as_deref(),
+            Some("4294967296.")
+        );
+    }
+
+    #[test]
     fn 개요_마커() {
         use crate::{ParaShape, ParaShapeId};
         let mut doc = Document::default();
@@ -327,7 +417,12 @@ mod tests {
         assert_eq!(format_number(3, NumFmt::Digit), "3");
         assert_eq!(format_number(1, NumFmt::HangulSyllable), "가");
         assert_eq!(format_number(3, NumFmt::HangulSyllable), "다");
+        assert_eq!(format_number(14, NumFmt::HangulSyllable), "하");
+        assert_eq!(format_number(15, NumFmt::HangulSyllable), "거");
         assert_eq!(format_number(1, NumFmt::CircledDigit), "①");
+        assert_eq!(format_number(1, NumFmt::CircledHangulSyllable), "㉮");
+        assert_eq!(format_number(14, NumFmt::CircledHangulSyllable), "㉻");
+        assert_eq!(format_number(15, NumFmt::CircledHangulSyllable), "거");
         assert_eq!(format_number(1, NumFmt::LatinUpper), "A");
         assert_eq!(format_number(27, NumFmt::LatinUpper), "AA");
         assert_eq!(format_number(4, NumFmt::RomanUpper), "IV");

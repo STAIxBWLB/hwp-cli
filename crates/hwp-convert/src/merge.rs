@@ -17,6 +17,7 @@ use hwp_model::{BinStream, Control, DocHeader, Document, Paragraph};
 
 use crate::from_html::PALETTE_LEN;
 use crate::from_markdown::{self, BASE_PARA_SHAPES};
+use crate::official;
 
 /// Whether two headers are compatible as hwp-cli default-palette family members — the condition
 /// for using the part's palette ids in the template as-is. The hwpx save/read round-trip
@@ -29,7 +30,27 @@ pub fn palette_compatible(a: &DocHeader, b: &DocHeader) -> bool {
 
 /// default_header family structural signature — the condition for palette ids to mean the same as in default_header.
 fn default_family(h: &DocHeader) -> bool {
-    let d = from_markdown::default_header();
+    family_headers().iter().any(|d| signature_matches(h, d))
+}
+
+/// The default_header family: the plain default plus each official-document
+/// preset variant (merge.rs module docs — "presets included"). A preset only
+/// re-sizes char shapes, swaps the slot-0 font (gian → 맑은 고딕) and rewrites
+/// numbering formats, so a preset document's palette ids still point at the
+/// same slots; the font-name check below must therefore accept each variant's
+/// names, not just the plain default's.
+fn family_headers() -> Vec<hwp_model::DocHeader> {
+    let mut headers = Vec::with_capacity(official::profiles().len() + 1);
+    headers.push(from_markdown::default_header());
+    for profile in official::profiles() {
+        let mut header = from_markdown::default_header();
+        official::apply_profile(&mut header, profile.preset);
+        headers.push(header);
+    }
+    headers
+}
+
+fn signature_matches(h: &DocHeader, d: &DocHeader) -> bool {
     h.char_shapes.len() >= d.char_shapes.len()
         && h.para_shapes.len() >= d.para_shapes.len()
         && h.border_fills.len() == d.border_fills.len()
@@ -184,7 +205,10 @@ fn remap_paragraph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::from_markdown::{MarkdownImportOptions, from_markdown, from_markdown_blocks};
+    use crate::from_markdown::{
+        MarkdownImportOptions, from_markdown, from_markdown_blocks, from_markdown_with,
+    };
+    use crate::official::OfficialPreset;
 
     fn para_text(p: &Paragraph) -> String {
         p.chars
@@ -236,6 +260,51 @@ mod tests {
         target.header.styles.clear(); // mimics an arbitrary document — style signature mismatch
         let part = from_markdown_blocks("부분\n", &MarkdownImportOptions::default());
         assert!(part_paragraphs(&mut target, &part).is_err());
+    }
+
+    #[test]
+    fn 프리셋_템플릿도_같은_팔레트_계열() {
+        // Every canonical profile remains a default-header family member, including Malgun Gothic
+        // profiles whose slot-0 font differs from the plain document.
+        for preset in [
+            OfficialPreset::Official,
+            OfficialPreset::Report,
+            OfficialPreset::Plan,
+            OfficialPreset::Notice,
+            OfficialPreset::Minutes,
+            OfficialPreset::Gaejosik,
+            OfficialPreset::Press,
+        ] {
+            let mut target = from_markdown_with(
+                "{{본문}}\n",
+                &MarkdownImportOptions {
+                    preset: Some(preset),
+                    ..Default::default()
+                },
+            );
+            let part =
+                from_markdown_blocks("부분 본문입니다.\n", &MarkdownImportOptions::default());
+            let blocks = part_paragraphs(&mut target, &part).unwrap();
+            assert_eq!(para_text(&blocks[0]), "부분 본문입니다.");
+        }
+    }
+
+    #[test]
+    fn all_official_profiles_are_default_palette_family() {
+        for profile in official::profiles() {
+            let doc = from_markdown_with(
+                "본문\n",
+                &MarkdownImportOptions {
+                    preset: Some(profile.preset),
+                    ..Default::default()
+                },
+            );
+            assert!(
+                palette_compatible(&doc.header, &doc.header),
+                "{}",
+                profile.name
+            );
+        }
     }
 
     #[test]

@@ -421,6 +421,16 @@ fn arg_f64(args: &Value, key: &str, default: f64) -> Result<f64, String> {
     }
 }
 
+fn arg_f64_opt(args: &Value, key: &str) -> Result<Option<f64>, String> {
+    args.get(key)
+        .map(|value| {
+            value
+                .as_f64()
+                .ok_or_else(|| format!("{key}는 숫자여야 합니다"))
+        })
+        .transpose()
+}
+
 fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
     match args.get(key) {
         None => Ok(default),
@@ -1468,6 +1478,23 @@ fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
 }
 
 fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "hwp_new 인자는 객체여야 합니다".to_string())?;
+    const ALLOWED: &[&str] = &[
+        "output",
+        "markdown",
+        "json",
+        "set_meta",
+        "preset",
+        "margin_top_mm",
+        "margin_bottom_mm",
+        "margin_left_mm",
+        "margin_right_mm",
+    ];
+    if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
+        return Err(format!("알 수 없는 hwp_new 인자: {unknown}"));
+    }
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     let input = match (arg_str_opt(args, "markdown")?, arg_str_opt(args, "json")?) {
         (Some(_), Some(_)) => return Err("markdown과 json은 동시에 지정할 수 없습니다".into()),
@@ -1490,7 +1517,19 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let report = crate::commands::new::execute(&output, input, &metadata, None, false)
+    let preset = arg_str_opt(args, "preset")?
+        .map(hwp_convert::OfficialPreset::parse)
+        .transpose()?;
+    let options = crate::commands::new::NewOptions::from_millimetres(
+        preset,
+        arg_f64_opt(args, "margin_top_mm")?,
+        arg_f64_opt(args, "margin_bottom_mm")?,
+        arg_f64_opt(args, "margin_left_mm")?,
+        arg_f64_opt(args, "margin_right_mm")?,
+        false,
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    let report = crate::commands::new::execute(&output, input, &metadata, &options)
         .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
@@ -1931,13 +1970,18 @@ fn tool_defs() -> Vec<Value> {
         json!({
             "name": "hwp_new",
             "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 .hwp/.hwpx 새 문서를 생성.",
-            "inputSchema": {"type": "object", "properties": {
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "output": {"type": "string"},
                 "markdown": {"type": "string", "description": "markdown 본문(선택)"},
                 "json": {"type": "string", "description": "IR JSON 본문(선택)"},
                 "set_meta": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
-                    "required": ["key", "value"]}}
+                    "required": ["key", "value"]}},
+                "preset": {"type": "string", "description": "official/report/plan/notice/minutes/gaejosik/press 또는 지원 별칭"},
+                "margin_top_mm": {"type": "number", "minimum": 0, "maximum": 200},
+                "margin_bottom_mm": {"type": "number", "minimum": 0, "maximum": 200},
+                "margin_left_mm": {"type": "number", "minimum": 0, "maximum": 200},
+                "margin_right_mm": {"type": "number", "minimum": 0, "maximum": 200}
             }, "required": ["output"]}
         }),
         json!({
@@ -2644,10 +2688,114 @@ mod tests {
                 roots: &[],
             },
             &[],
+            &crate::commands::new::NewOptions::default(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn hwp_new_preset_and_margin_parity() {
+        let mcp_output = temp_file("hwp-new-mcp-profile.hwpx");
+        let cli_output = temp_file("hwp-new-cli-profile.hwpx");
+        for path in [&mcp_output, &cli_output] {
+            let _ = std::fs::remove_file(path);
+        }
+        let mcp = tool_new(
+            &json!({
+                "output": mcp_output,
+                "markdown": "1. item\n",
+                "preset": "gongmun",
+                "margin_top_mm": 25.0,
+                "margin_right_mm": 30.0,
+            }),
+            &ctx(),
+        )
+        .expect("MCP hwp_new");
+        assert!(!mcp.is_empty());
+        let options = crate::commands::new::NewOptions::from_millimetres(
+            Some(hwp_convert::OfficialPreset::Official),
+            Some(25.0),
             None,
+            None,
+            Some(30.0),
             false,
         )
         .unwrap();
+        crate::commands::new::execute(
+            &cli_output,
+            crate::commands::new::NewInput::Markdown {
+                text: "1. item\n",
+                base_dir: None,
+                roots: &[],
+            },
+            &[],
+            &options,
+        )
+        .expect("CLI new path");
+        let mcp_document = hwpx::read_document(&mcp_output).unwrap().document;
+        let cli_document = hwpx::read_document(&cli_output).unwrap().document;
+        assert_eq!(mcp_document.header, cli_document.header);
+        assert_eq!(mcp_document.sections, cli_document.sections);
+
+        let schema = tool_defs()
+            .into_iter()
+            .find(|tool| tool["name"] == "hwp_new")
+            .unwrap();
+        assert_eq!(schema["inputSchema"]["additionalProperties"], false);
+        for key in [
+            "output",
+            "markdown",
+            "json",
+            "set_meta",
+            "preset",
+            "margin_top_mm",
+            "margin_bottom_mm",
+            "margin_left_mm",
+            "margin_right_mm",
+        ] {
+            assert!(
+                schema["inputSchema"]["properties"].get(key).is_some(),
+                "{key}"
+            );
+        }
+
+        for path in [&mcp_output, &cli_output] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn hwp_new_runtime_rejects_unknown_key() {
+        let output = temp_file("hwp-new-runtime-unknown.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let error = tool_new(&json!({"output": output, "unknown": true}), &ctx()).unwrap_err();
+        assert!(error.contains("알 수 없는 hwp_new 인자"), "{error}");
+        assert!(!output.exists(), "unknown input must not publish output");
+    }
+
+    #[test]
+    fn tools_call_hwp_new_rejects_unknown_key() {
+        let output = temp_file("hwp-new-dispatch-unknown.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "hwp_new",
+                "arguments": {"output": output, "unknown": true}
+            }
+        });
+        let response = handle_request(&request.to_string(), &ctx()).unwrap();
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("알 수 없는 hwp_new 인자")
+        );
+        assert!(!output.exists(), "unknown input must not publish output");
     }
 
     #[test]

@@ -81,6 +81,12 @@ pub enum Hwp5Error {
 
     #[error("HWP 원본 보존 재작성 실패: {0}")]
     SourceRewrite(String),
+
+    #[error("증거로 확인되지 않은 공식 번호 체계 범위: {0}")]
+    UnsupportedOfficialNumberingRange(String),
+
+    #[error("증거로 확인되지 않은 직접 HWP5 공식 번호 체계 구조: {0}")]
+    UnsupportedOfficialNumberingTopology(String),
 }
 
 pub type Result<T> = std::result::Result<T, Hwp5Error>;

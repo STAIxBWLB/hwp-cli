@@ -858,6 +858,394 @@ fn 스타일_사다리_hwp5_정의_왕복() {
     assert!(!text.contains("❍"), "리터럴 마커는 더 쓰지 않는다: {text}");
 }
 
+#[test]
+fn default_source_free_numbering_stays_on_the_seven_level_hwp5_path() {
+    let doc = hwp_convert::from_markdown("1. ordinary item\n");
+    let out = tmp("default-source-free-numbering.hwp");
+
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert_eq!(
+        numberings.len(),
+        1,
+        "the default definition remains singular"
+    );
+    assert_eq!(
+        numberings[0].len(),
+        226,
+        "the default definition remains seven-level"
+    );
+
+    let reread = hwp5::read_document(&out).unwrap().document;
+    assert_eq!(reread.header.numbering_levels.len(), 1);
+    assert_eq!(reread.header.numbering_levels[0].len(), 7);
+}
+
+#[test]
+fn nonofficial_hwpx_numbering_with_level_eight_uses_the_default_hwp5_path() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx");
+    let doc = hwpx::read_document(&fixture).unwrap().document;
+    assert!(
+        doc.header
+            .numbering_levels
+            .iter()
+            .flatten()
+            .any(|level| level.fmt == hwp_model::NumFmt::CircledHangulSyllable),
+        "fixture exercises the pre-regression level-eight branch"
+    );
+    assert!(
+        doc.header
+            .numbering_levels
+            .iter()
+            .any(|levels| levels.len() != 8),
+        "fixture is not the complete direct eight-level contract"
+    );
+
+    let out = tmp("nonofficial-hwpx-default-numbering.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert!(
+        numberings.iter().all(|data| data.len() == 226),
+        "non-official HWPX definitions must remain on the default HWP5 serializer"
+    );
+}
+
+#[test]
+fn official_eight_level_hwp5_matches_evidence_contract() {
+    let doc = hwp_convert::from_markdown_with(
+        "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n",
+        &hwp_convert::MarkdownImportOptions {
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
+        },
+    );
+    let out = tmp("official-eight-level-evidence-contract.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert_eq!(numberings.len(), 8, "eight 1-based NUMBERING definitions");
+    assert!(
+        numberings.iter().all(|data| data.len() == 230),
+        "the direct contract has ten slots and ten persisted starts"
+    );
+    for data in &numberings {
+        assert_eq!(
+            u32::from_le_bytes(data[172..176].try_into().unwrap()),
+            0x12c,
+            "slot 8 uses the proven circled-Hangul selector"
+        );
+        assert_eq!(&data[186..190], &[b'^', 0, b'8', 0], "slot 8 template");
+        assert!(
+            (218..230).step_by(4).all(|offset| u32::from_le_bytes(
+                data[offset..offset + 4].try_into().unwrap()
+            ) == 1),
+            "extension start values"
+        );
+    }
+
+    let numbered_shapes: Vec<_> = all_records(&doc_info, 0x19)
+        .into_iter()
+        .filter(|data| ((u32::from_le_bytes(data[0..4].try_into().unwrap()) >> 23) & 0x3) == 2)
+        .collect();
+    assert_eq!(numbered_shapes.len(), 8);
+    for (index, data) in numbered_shapes.iter().enumerate() {
+        let attr = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let raw_level = (attr >> 25) & 0x7;
+        assert_eq!(raw_level, u32::try_from(index.min(6)).unwrap());
+        assert_eq!(
+            u16::from_le_bytes(data[30..32].try_into().unwrap()),
+            index as u16 + 1
+        );
+        assert_eq!(
+            i32::from_le_bytes(data[4..8].try_into().unwrap()),
+            (index as i32 + 1) * 2000
+        );
+        assert_eq!(i32::from_le_bytes(data[12..16].try_into().unwrap()), -2000);
+        assert_eq!(u16::from_le_bytes(data[32..34].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_le_bytes(data[54..58].try_into().unwrap()),
+            index as u32,
+            "native PARA_SHAPE tail binds the paragraph to its zero-based list level"
+        );
+    }
+
+    let reread = hwp5::read_document(&out).unwrap().document;
+    let level8 = reread.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| paragraph.plain_text() == "level 8")
+        .expect("level 8 paragraph");
+    let shape = &reread.header.para_shapes[level8.para_shape.0 as usize];
+    assert_eq!(
+        shape.head_level(),
+        8,
+        "reread retains the semantic level-8 link"
+    );
+    assert_eq!(shape.numbering_id, 7, "disk ref 8 normalizes to IR ref 7");
+    assert_eq!(
+        u32::from_le_bytes(shape.tail[12..16].try_into().unwrap()),
+        7,
+        "reread retains the native HWP5 level-8 paragraph binding"
+    );
+}
+
+#[test]
+fn official_hwp5_direct_contract_handles_sentinel_before_numbering() {
+    let doc = hwp_convert::from_markdown_with(
+        "source first\n\n1. numbered item\n   1. nested item\n\nsource last\n",
+        &hwp_convert::MarkdownImportOptions {
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
+        },
+    );
+    let out = tmp("official-sentinel-before-numbering.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert_eq!(
+        numberings.len(),
+        8,
+        "official output materializes all levels"
+    );
+    assert!(
+        numberings.iter().all(|data| data.len() == 230),
+        "the direct evidence record must be used even with two source definitions"
+    );
+
+    let reread = hwp5::read_document(&out).unwrap().document;
+    assert_eq!(reread.header.numbering_levels[0].len(), 8);
+    assert_eq!(reread.header.numbering_levels[1].len(), 8);
+}
+
+#[test]
+fn official_hwp5_continuation_14_to_15_matches_evidence() {
+    use hwp_model::list::ListState;
+
+    let mut doc = hwp_convert::from_markdown_with(
+        "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n",
+        &hwp_convert::MarkdownImportOptions {
+            preset: Some(hwp_convert::OfficialPreset::Gian),
+            ..Default::default()
+        },
+    );
+    let prototypes: Vec<_> = [2, 6, 8]
+        .into_iter()
+        .map(|level| {
+            doc.sections[0]
+                .paragraphs
+                .iter()
+                .find(|paragraph| {
+                    doc.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == level
+                })
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    doc.sections[0].paragraphs.clear();
+    for prototype in prototypes {
+        doc.sections[0]
+            .paragraphs
+            .extend(std::iter::repeat_n(prototype, 15));
+    }
+
+    let out = tmp("official-evidence-continuation.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+    let reread = hwp5::read_document(&out).unwrap().document;
+    let mut state = ListState::default();
+    let markers: Vec<_> = reread.sections[0]
+        .paragraphs
+        .iter()
+        .filter_map(|paragraph| state.marker(&reread, paragraph))
+        .collect();
+    assert_eq!(markers[13], "하.");
+    assert_eq!(markers[14], "거.");
+    assert_eq!(markers[28], "(하)");
+    assert_eq!(markers[29], "(거)");
+    assert_eq!(markers[43], "㉻");
+    assert_eq!(markers[44], "거", "native HWP supplies the proven circle");
+}
+
+#[test]
+fn official_hwp5_rejects_unproven_level_or_continuation_before_publication() {
+    let markdown = "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n";
+    let options = hwp_convert::MarkdownImportOptions {
+        preset: Some(hwp_convert::OfficialPreset::Gian),
+        ..Default::default()
+    };
+
+    let mut unsupported_level = hwp_convert::from_markdown_with(markdown, &options);
+    let level8_shape = unsupported_level
+        .header
+        .para_shapes
+        .iter_mut()
+        .find(|shape| shape.head_level() == 8)
+        .unwrap();
+    level8_shape.list_level = Some(9);
+    let level_out = tmp("official-unproven-level.hwp");
+    let _ = std::fs::remove_file(&level_out);
+    let error = hwp5::write_document(
+        &unsupported_level,
+        &level_out,
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(!level_out.exists(), "failure must precede file publication");
+
+    let mut unsupported_count = hwp_convert::from_markdown_with(markdown, &options);
+    let prototype = unsupported_count.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| {
+            unsupported_count.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == 8
+        })
+        .unwrap()
+        .clone();
+    unsupported_count.sections[0].paragraphs = std::iter::repeat_n(prototype, 16).collect();
+    let count_out = tmp("official-unproven-continuation.hwp");
+    let _ = std::fs::remove_file(&count_out);
+    let error = hwp5::write_document(
+        &unsupported_count,
+        &count_out,
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(!count_out.exists(), "failure must precede file publication");
+}
+
+#[test]
+fn official_hwp5_rejects_sixteenth_level_two_item_in_writer_visible_subtrees() {
+    let markdown = "1. level 1\n   1. level 2\n";
+    let options = hwp_convert::MarkdownImportOptions {
+        preset: Some(hwp_convert::OfficialPreset::Gian),
+        ..Default::default()
+    };
+    let direct_document = || {
+        let doc = hwp_convert::from_markdown_with(markdown, &options);
+        let level_two = doc.sections[0]
+            .paragraphs
+            .iter()
+            .find(|paragraph| {
+                doc.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == 2
+            })
+            .unwrap()
+            .clone();
+        (doc, level_two)
+    };
+
+    let (mut table_doc, level_two) = direct_document();
+    table_doc.sections[0].paragraphs[0]
+        .controls
+        .push(hwp_model::Control::Table(hwp_model::Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: Default::default(),
+            table_tail: Vec::new(),
+            caption: None,
+            extras: Vec::new(),
+            cells: vec![hwp_model::Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: hwp_model::HwpUnit(1),
+                height: hwp_model::HwpUnit(1),
+                margins: [0; 4],
+                border_fill: Default::default(),
+                header_tail: Vec::new(),
+                paragraphs: std::iter::repeat_n(level_two, 15).collect(),
+            }],
+        }));
+
+    let output = tmp("official-continuation-table.hwp");
+    let _ = std::fs::remove_file(&output);
+    let error =
+        hwp5::write_document(&table_doc, &output, &hwp5::WriteOptions::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(
+        !output.exists(),
+        "the sixteenth level-two item in a table must not publish an HWP"
+    );
+}
+
+#[test]
+fn official_hwp5_rejects_sixteenth_level_two_item_in_materializable_control_list() {
+    let markdown = "1. level 1\n   1. level 2\n";
+    let options = hwp_convert::MarkdownImportOptions {
+        preset: Some(hwp_convert::OfficialPreset::Gian),
+        ..Default::default()
+    };
+    let mut doc = hwp_convert::from_markdown_with(markdown, &options);
+    let level_two = doc.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| doc.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == 2)
+        .unwrap()
+        .clone();
+
+    // `fn  ` is intentionally used instead of a synthetic `gso ` wrapper:
+    // the HWP5 writer materializes its paragraph list (whereas an empty GSO
+    // wrapper is deliberately dropped as opaque/unrepresentable).
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"fn  ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: std::iter::repeat_n(level_two, 15).collect(),
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }));
+
+    let output = tmp("official-continuation-control.hwp");
+    let _ = std::fs::remove_file(&output);
+    let error = hwp5::write_document(&doc, &output, &hwp5::WriteOptions::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+    ));
+    assert!(
+        !output.exists(),
+        "the sixteenth level-two item in a materializable control list must not publish an HWP"
+    );
+}
+
 /// 스트림 경로 구분자 회귀: cfb 열거가 플랫폼 구분자(Windows `\`)를 섞어도
 /// list_streams/body_sections는 항상 `/` 정규 경로를 돌려줘야 한다 — 아니면
 /// Windows에서 `/BodyText/Section` 필터가 전부 빗나가 본문이 빈 문서로 읽힌다

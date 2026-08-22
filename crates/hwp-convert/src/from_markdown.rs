@@ -16,15 +16,74 @@ use std::path::{Path, PathBuf};
 
 use hwp_model::{
     BinRef, BinStream, BorderFill, BorderFillId, BorderLine, Cell, CharShape, CharShapeId, Control,
-    DocMeta, Document, FaceName, GenericControl, HwpChar, HwpUnit, LANG_COUNT, NumFmt, NumLevel,
-    ParaShape, ParaShapeId, Paragraph, ParagraphList, Picture, Section, Style, StyleId, Table,
-    ctrl_char,
+    DocMeta, Document, FaceName, GenericControl, HwpChar, HwpUnit, LANG_COUNT, NumLevel, ParaShape,
+    ParaShapeId, Paragraph, ParagraphList, Picture, Section, Style, StyleId, Table, ctrl_char,
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+use crate::official::{self, OfficialPreset, PageMarginOverrides};
 
 /// Number of base para shapes (indexes 0~4) created by default_header. List para shapes are
 /// appended after these (5~). from_html's list para shapes use the same basis.
 pub(crate) const BASE_PARA_SHAPES: u16 = 5;
+
+/// Maximum authored list depth for official-document profiles.
+pub(crate) const MAX_OFFICIAL_LIST_DEPTH: u16 = 8;
+
+/// A rejected authored-list depth, shared by Markdown and embedded HTML importers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AuthoredListDepthError {
+    pub observed: u16,
+    pub maximum: u16,
+}
+
+impl std::fmt::Display for AuthoredListDepthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "authored list depth {} exceeds maximum {}",
+            self.observed, self.maximum
+        )
+    }
+}
+
+/// Reject unsupported authored-list depth before creating shapes or definitions.
+pub(crate) fn validate_official_list_depth(depth: usize) -> Result<u16, AuthoredListDepthError> {
+    let observed = u16::try_from(depth).unwrap_or(u16::MAX);
+    if observed > MAX_OFFICIAL_LIST_DEPTH {
+        return Err(AuthoredListDepthError {
+            observed,
+            maximum: MAX_OFFICIAL_LIST_DEPTH,
+        });
+    }
+    Ok(observed)
+}
+
+/// Normalizes an authored ordered-list start to the IR's persisted u32 range.
+/// HTML and Markdown share this boundary so neither parser can silently narrow
+/// a requested marker value.
+pub(crate) fn normalize_authored_list_start(start: u64) -> Result<u32, String> {
+    let start = start.max(1);
+    u32::try_from(start).map_err(|_| {
+        format!(
+            "authored ordered-list start {start} exceeds maximum {}",
+            u32::MAX
+        )
+    })
+}
+
+/// Rejects a list whose later item would require a marker outside the IR's
+/// u32 number domain. The visible count is one-based.
+pub(crate) fn validate_authored_list_item(start: u32, item: u32) -> Result<(), String> {
+    let offset = item.saturating_sub(1);
+    if start.checked_add(offset).is_none() {
+        return Err(format!(
+            "authored ordered-list start {start} with item {item} exceeds maximum {}",
+            u32::MAX
+        ));
+    }
+    Ok(())
+}
 
 /// Markdown import options.
 #[derive(Default)]
@@ -40,17 +99,95 @@ pub struct MarkdownImportOptions<'a> {
     /// Official-document preset — if set, adjusts page margins, fonts, numbering scheme, and
     /// page numbers to the regulation. `None` keeps the existing defaults (no change).
     pub preset: Option<OfficialPreset>,
+    /// Side-specific page margins resolved after profile/plain defaults.
+    pub page_margins: PageMarginOverrides,
 }
 
-/// Korean official-document drafting regulation preset. Common: A4 margins
-/// top30/bottom15/left20/right15mm, line spacing 160%, 4-level ordered-list numbering
-/// (1. → hangul. → 1) → hangul)), page number bottom center (pgnp, genuine-measured sideChar '-').
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum OfficialPreset {
-    /// Draft/official document: Malgun Gothic 11.5pt (e-approval system standard).
-    Gian,
-    /// Report/project plan: HCR Batang 15pt (traditional practice).
-    Report,
+#[cfg(test)]
+mod official_depth_limit_tests {
+    use super::{
+        MarkdownImportOptions, OfficialPreset, from_markdown_report, normalize_authored_list_start,
+        validate_authored_list_item,
+    };
+
+    fn nested_markdown(depth: usize) -> String {
+        (0..depth)
+            .map(|level| format!("{}1. level {}", "   ".repeat(level), level + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn nested_html(depth: usize) -> String {
+        let mut html = String::new();
+        for level in 1..=depth {
+            html.push_str(&format!("<ol><li>level {level}"));
+        }
+        for _ in 0..depth {
+            html.push_str("</li></ol>");
+        }
+        html
+    }
+
+    fn official_options() -> MarkdownImportOptions<'static> {
+        MarkdownImportOptions {
+            preset: Some(OfficialPreset::Gian),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn official_depth_limit() {
+        assert!(from_markdown_report(&nested_markdown(8), &official_options()).is_ok());
+        assert_eq!(
+            from_markdown_report(&nested_markdown(9), &official_options()).unwrap_err(),
+            "authored list depth 9 exceeds maximum 8"
+        );
+    }
+
+    #[test]
+    fn embedded_html_official_depth_limit() {
+        assert!(from_markdown_report(&nested_html(8), &official_options()).is_ok());
+        assert_eq!(
+            from_markdown_report(&nested_html(9), &official_options()).unwrap_err(),
+            "authored list depth 9 exceeds maximum 8"
+        );
+    }
+
+    #[test]
+    fn ordered_list_start_outside_u32_is_hard_error() {
+        assert_eq!(
+            normalize_authored_list_start(u64::from(u32::MAX)).unwrap(),
+            u32::MAX
+        );
+        let error = normalize_authored_list_start(u64::from(u32::MAX) + 1)
+            .expect_err("ordered-list start above u32 must fail");
+        assert!(error.contains("exceeds maximum"), "{error}");
+        assert!(validate_authored_list_item(u32::MAX, 1).is_ok());
+        assert!(validate_authored_list_item(u32::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn empty_markdown_and_mixed_html_order_remain_valid() {
+        let (empty, _) = from_markdown_report("", &official_options()).unwrap();
+        assert_eq!(empty.sections[0].paragraphs.len(), 1);
+
+        let input = "before\n\n<ol><li>inside</li></ol>\n\nafter\n";
+        let (document, _) = from_markdown_report(input, &official_options()).unwrap();
+        let text: String = document.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| paragraph.chars.iter())
+            .filter_map(|character| match character {
+                hwp_model::HwpChar::Text(value) => Some(*value),
+                _ => None,
+            })
+            .collect();
+        let before = text.find("before").unwrap();
+        let inside = text.find("inside").unwrap();
+        let after = text.find("after").unwrap();
+        assert!(before < inside && inside < after, "text order: {text}");
+    }
 }
 
 /// Char shape ID layout (must match default_header). from_html uses the same palette.
@@ -343,47 +480,6 @@ pub fn default_header() -> hwp_model::DocHeader {
     header
 }
 
-/// Applies the official-document preset to the header — fonts/sizes and the 4-level ordered
-/// numbering scheme. (Margins and page numbers are handled by inject_section_controls.)
-fn apply_official_preset(header: &mut hwp_model::DocHeader, preset: OfficialPreset) {
-    // Body/heading sizes (HWPUNIT/100pt): draft 11.5pt·heading 15pt / report 15pt·heading 18pt.
-    let (body, headings) = match preset {
-        OfficialPreset::Gian => (1150, [1500, 1400, 1300, 1200, 1150, 1150]),
-        OfficialPreset::Report => (1500, [1800, 1700, 1600, 1550, 1500, 1500]),
-    };
-    if preset == OfficialPreset::Gian {
-        // Replace only slot 0 (body font) with Malgun Gothic — keep 1 (HCR Dotum, inline code).
-        for slot in 0..LANG_COUNT {
-            header.fonts[slot][0] = FaceName {
-                name: "맑은 고딕".to_string(),
-                attr: 0x01,
-                default_name: Some("Malgun Gothic".to_string()),
-                ..FaceName::default()
-            };
-        }
-    }
-    // Size reassignment: 4~9 = H1~H6; the rest (body/emphasis/link/strike/code) get the body size.
-    for (i, cs) in header.char_shapes.iter_mut().enumerate() {
-        cs.base_size = match i.checked_sub(shapes::HEADING_BASE as usize) {
-            Some(h) if h < headings.len() => headings[h],
-            _ => body,
-        };
-    }
-    // Ordered list 4-level numbering (regulation §5): 1. → HangulSyllable. → 1) → HangulSyllable), repeating from level 5.
-    for levels in &mut header.numbering_levels {
-        for (i, nl) in levels.iter_mut().enumerate() {
-            let (fmt, suffix) = match i % 4 {
-                0 => (NumFmt::Digit, "."),
-                1 => (NumFmt::HangulSyllable, "."),
-                2 => (NumFmt::Digit, ")"),
-                _ => (NumFmt::HangulSyllable, ")"),
-            };
-            nl.fmt = fmt;
-            nl.template = format!("^{}{suffix}", i + 1);
-        }
-    }
-}
-
 /// Converts markdown text into a document (existing signature — relative-path images keep alt after a warning).
 pub fn from_markdown(md: &str) -> Document {
     from_markdown_with(md, &MarkdownImportOptions::default())
@@ -489,7 +585,7 @@ fn from_markdown_inner(
     }
     if inject {
         // Inject section/column definitions into the first paragraph — prerequisite for hwp5/Hancom compatibility
-        inject_section_controls(&mut b.paragraphs[0], opts.preset);
+        inject_section_controls(&mut b.paragraphs[0], opts.preset, opts.page_margins);
     }
 
     // Merges the para shapes and numbering/bullet definitions created for lists into the header.
@@ -502,7 +598,7 @@ fn from_markdown_inner(
     header.numbering_levels = b.numbering_levels;
     header.bullet_chars = b.bullet_chars;
     if let Some(preset) = opts.preset {
-        apply_official_preset(&mut header, preset);
+        official::apply_profile(&mut header, preset);
     }
 
     (
@@ -674,6 +770,7 @@ struct Builder {
     table: Option<TableBuilder>,
     // list state — per-level frame stack (nested); item paragraphs get the head para shape.
     list_stack: Vec<ListFrame>,
+    rejected_list_depths: usize,
     // para shapes created for lists (header index BASE_PARA_SHAPES~) and numbering/bullet definitions (0~).
     extra_para_shapes: Vec<ParaShape>,
     numbering_levels: Vec<Vec<NumLevel>>,
@@ -706,6 +803,11 @@ struct ListFrame {
     para_shape_id: u16,
     /// Whether an item at this level is currently open (whether to grant the head on paragraph flush).
     item_open: bool,
+    /// `Some` for ordered lists; bullets have no numeric range to validate.
+    ordered_start: Option<u32>,
+    /// Number of observed items, used to reject starts whose subsequent
+    /// markers would exceed the representable u32 domain.
+    item_count: u32,
 }
 
 #[derive(Default)]
@@ -906,17 +1008,19 @@ impl Builder {
     }
 
     /// List entry — closes the parent item paragraph and creates this level's head para shape/definition.
-    fn start_list(&mut self, start: Option<u64>) {
+    fn start_list(&mut self, start: Option<u64>) -> Result<(), String> {
         // Close the parent item's paragraph first (e.g. "second" before a nested list).
         self.flush_paragraph();
-        let level = (self.list_stack.len() as u16 + 1).min(7);
+        let level = validate_official_list_depth(self.list_stack.len() + 1)
+            .map_err(|error| error.to_string())?;
         let para_shape_id = match start {
             // Ordered list: numbering definition (the exporter draws markers from numbering_levels) + NUMBER head.
             Some(s) => {
+                let start = normalize_authored_list_start(s)?;
                 let def_id = self.numbering_levels.len() as u16;
-                let mut levels = vec![NumLevel::default(); 7];
+                let mut levels = vec![NumLevel::default(); 8];
                 // Preserves this list level's start number (the exporter reflects start).
-                levels[(level as usize - 1).min(6)].start = s.max(1) as u32;
+                levels[level as usize - 1].start = start;
                 self.numbering_levels.push(levels);
                 self.push_list_para_shape(2, level, def_id)
             }
@@ -932,7 +1036,10 @@ impl Builder {
         self.list_stack.push(ListFrame {
             para_shape_id,
             item_open: false,
+            ordered_start: start.map(normalize_authored_list_start).transpose()?,
+            item_count: 0,
         });
+        Ok(())
     }
 
     fn end_list(&mut self) {
@@ -991,6 +1098,9 @@ impl Builder {
             Err(crate::from_html::FragmentError::Sandbox(e)) => {
                 self.hard_error.get_or_insert(e);
             }
+            Err(crate::from_html::FragmentError::AuthoredList(error)) => {
+                self.hard_error.get_or_insert(error);
+            }
             Err(crate::from_html::FragmentError::Contract(e)) => self
                 .warnings
                 .push(format!("HTML 블록을 무시합니다(계약 위반): {e}")),
@@ -1039,7 +1149,7 @@ impl Builder {
     }
 
     /// Creates a para shape for list items and returns its index.
-    /// head_type: 2=number, 3=bullet. level 1~7 → head level (used by the exporter for nesting detection).
+    /// head_type: 2=number, 3=bullet. HWPX list levels 1..=8 are retained semantically.
     fn push_list_para_shape(&mut self, head_type: u32, level: u16, def_id: u16) -> u16 {
         let idx = BASE_PARA_SHAPES + self.extra_para_shapes.len() as u16;
         // Indent per level (HWPUNIT) — makes nesting visible in Hancom. The exporter's nesting
@@ -1047,13 +1157,19 @@ impl Builder {
         let step = 2000i32;
         self.extra_para_shapes.push(ParaShape {
             // Healthy body para shape (0x180: Hangul line-break + line grid) + left align + head type/level.
-            attr1: 0x180 | (1 << 2) | (head_type << 23) | (u32::from(level) << 25),
+            // HWP5 has only three persisted level bits. HWPX level 8 stays semantic through
+            // `list_level`, while the direct HWP5 writer uses its separately evidenced path.
+            attr1: 0x180
+                | (1 << 2)
+                | (head_type << 23)
+                | (u32::from(if level > 7 { 7 } else { level }) << 25),
             margin_left: i32::from(level) * step,
             indent: -step, // outdent: aligns marker and body text
             line_spacing_old: 160,
             line_spacing: 160,
             border_fill_id: 2,
             numbering_id: def_id,
+            list_level: (level > 7).then_some(level as u8),
             ..ParaShape::default()
         });
         idx
@@ -1363,10 +1479,35 @@ impl Builder {
                 self.in_codeblock = false;
             }
             // ── Ordered/bullet lists → head (NUMBER/BULLET) paragraphs, nesting by level ──
-            Event::Start(Tag::List(start)) => self.start_list(start),
-            Event::End(TagEnd::List(_)) => self.end_list(),
+            Event::Start(Tag::List(start)) => match self.start_list(start) {
+                Ok(()) => {}
+                Err(error) => {
+                    self.hard_error.get_or_insert(error.to_string());
+                    self.rejected_list_depths += 1;
+                }
+            },
+            Event::End(TagEnd::List(_)) => {
+                if self.rejected_list_depths > 0 {
+                    self.rejected_list_depths -= 1;
+                } else {
+                    self.end_list();
+                }
+            }
             Event::Start(Tag::Item) => {
                 if let Some(f) = self.list_stack.last_mut() {
+                    if let Some(start) = f.ordered_start {
+                        let Some(next_item) = f.item_count.checked_add(1) else {
+                            self.hard_error.get_or_insert_with(|| {
+                                "authored ordered-list item count exceeds u32 maximum".to_string()
+                            });
+                            return;
+                        };
+                        if let Err(error) = validate_authored_list_item(start, next_item) {
+                            self.hard_error.get_or_insert(error);
+                        } else {
+                            f.item_count = next_item;
+                        }
+                    }
                     f.item_open = true;
                 }
             }
@@ -1494,8 +1635,12 @@ fn heading_level(level: HeadingLevel) -> u16 {
 
 /// Inserts secd/cold extended controls (+ pgnp with a preset) before the first paragraph
 /// (including the 8-WCHAR shift per control).
-pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<OfficialPreset>) {
-    use hwp_model::{Control, GenericControl, HwpUnit, PageDef, SectionDef};
+pub(crate) fn inject_section_controls(
+    para: &mut Paragraph,
+    preset: Option<OfficialPreset>,
+    margins: PageMarginOverrides,
+) {
+    use hwp_model::{Control, GenericControl, SectionDef};
     if para
         .controls
         .iter()
@@ -1503,8 +1648,9 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
     {
         return;
     }
-    // Number of extended controls to insert: secd + cold (+ preset page number pgnp).
-    let n_ctrl = if preset.is_some() { 3 } else { 2 };
+    // Number of extended controls to insert: secd + cold (+ profile page number pgnp).
+    let has_page_number = official::has_page_number(preset);
+    let n_ctrl = if has_page_number { 3 } else { 2 };
     // Shift existing references
     for ch in &mut para.chars {
         if let HwpChar::ExtCtrl {
@@ -1531,25 +1677,8 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
     // Merging consecutive same-id runs (e.g. the [(0,0),(16,0)] duplication created by secd/cold
     // insertion) is applied by the writer across the whole synthesis path.
 
-    // Margins: default is Hancom new document (left/right 30, top 20, bottom 15mm); the official
-    // preset uses the drafting regulation (top 30, bottom 15, left 20, right 15mm). Header/footer 15mm is common.
-    let (ml, mr, mt, mb) = if preset.is_some() {
-        (5668, 4252, 8504, 4252)
-    } else {
-        (8504, 8504, 5668, 4252)
-    };
-    let page = PageDef {
-        width: HwpUnit(59528),
-        height: HwpUnit(84186),
-        margin_left: HwpUnit(ml),
-        margin_right: HwpUnit(mr),
-        margin_top: HwpUnit(mt),
-        margin_bottom: HwpUnit(mb),
-        margin_header: HwpUnit(4252),
-        margin_footer: HwpUnit(4252),
-        gutter: HwpUnit(0),
-        attr: 0,
-    };
+    let mut page = official::page_def(preset);
+    margins.apply(&mut page);
     para.controls.insert(
         0,
         Control::SectionDef(SectionDef {
@@ -1592,7 +1721,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
     };
     para.chars.insert(0, ext(2, *b"secd", 0));
     para.chars.insert(1, ext(2, *b"cold", 1));
-    if preset.is_some() {
+    if has_page_number {
         // Page number bottom center (pgnp, regulation §10). 12B: props (u32: format DIGIT=0 |
         // position BOTTOM_CENTER=5 <<8) + reserved 6B + sideChar WCHAR — genuine measurement
         // (same layout as hwpx read build_pgnp) has sideChar '-' ("- 1 -" notation).
@@ -1941,6 +2070,7 @@ mod tests {
                 base_dir,
                 roots,
                 preset: None,
+                ..Default::default()
             }
         }
 
@@ -2025,6 +2155,7 @@ mod tests {
                 base_dir: Some(&root),
                 roots: &roots,
                 preset: None,
+                ..Default::default()
             },
         )
         .expect_err("루트 밖을 가리키는 심링크는 하드 에러");
@@ -2037,6 +2168,7 @@ mod tests {
                 base_dir: Some(&root),
                 roots: &roots,
                 preset: None,
+                ..Default::default()
             },
         )
         .expect("루트 안 심링크는 임베드");
@@ -2236,8 +2368,7 @@ mod tests {
         );
     }
 
-    /// Official preset: regulation margins, fonts/sizes, 4-level numbering, and page number (pgnp)
-    /// are applied, and the default path without a preset must keep the existing values.
+    /// Official profiles apply their locked typography, margins, numbering, and page-number policy.
     #[test]
     fn 공문서_프리셋() {
         use hwp_model::{Control, NumFmt};
@@ -2279,7 +2410,7 @@ mod tests {
                 .any(|c| matches!(c, Control::Generic(g) if g.ctrl_id == *b"pgnp"))
         );
 
-        // report: margins top30/bottom15/left20/right15mm, HCR Batang 15pt, H1 18pt.
+        // report: margins top20/bottom10/left20/right20mm, HCR Batang 15pt, H1 18pt.
         let report = from_markdown_with(md, &opts(Some(OfficialPreset::Report)));
         let p = page_of(&report);
         assert_eq!(
@@ -2289,34 +2420,42 @@ mod tests {
                 p.margin_right.0,
                 p.margin_bottom.0
             ),
-            (5668, 8504, 4252, 4252)
+            (5668, 5668, 5668, 2834)
         );
         assert_eq!(report.header.fonts[0][0].name, "함초롬바탕");
         assert_eq!(report.header.char_shapes[0].base_size, 1500);
         assert_eq!(report.header.char_shapes[4].base_size, 1800); // H1
         assert_eq!(report.header.char_shapes[15].base_size, 1500); // inline code gets the body size too
 
-        // gian: Malgun Gothic 11.5pt, H1 15pt.
-        let gian = from_markdown_with(md, &opts(Some(OfficialPreset::Gian)));
-        assert_eq!(gian.header.fonts[0][0].name, "맑은 고딕");
+        // official: Malgun Gothic 12pt, H1 15pt.
+        let official = from_markdown_with(md, &opts(Some(OfficialPreset::Official)));
+        assert_eq!(official.header.fonts[0][0].name, "맑은 고딕");
         assert_eq!(
-            gian.header.fonts[0][1].name, "함초롬돋움",
+            official.header.fonts[0][1].name, "함초롬돋움",
             "인라인 코드 글꼴 유지"
         );
-        assert_eq!(gian.header.char_shapes[0].base_size, 1150);
-        assert_eq!(gian.header.char_shapes[4].base_size, 1500);
+        assert_eq!(official.header.char_shapes[0].base_size, 1200);
+        assert_eq!(official.header.char_shapes[4].base_size, 1500);
 
-        // 4-level numbering ladder: ^1. / ^2.(Hangul syllables) / ^3) / ^4)(Hangul syllables), repeating from level 5.
+        // Statutory eight-level numbering ladder, including the two circled levels.
         let levels = &report.header.numbering_levels[0];
         let fmt_tpl: Vec<(NumFmt, &str)> = levels
             .iter()
             .map(|l| (l.fmt, l.template.as_str()))
             .collect();
-        assert_eq!(fmt_tpl[0], (NumFmt::Digit, "^1."));
-        assert_eq!(fmt_tpl[1], (NumFmt::HangulSyllable, "^2."));
-        assert_eq!(fmt_tpl[2], (NumFmt::Digit, "^3)"));
-        assert_eq!(fmt_tpl[3], (NumFmt::HangulSyllable, "^4)"));
-        assert_eq!(fmt_tpl[4], (NumFmt::Digit, "^5."));
+        assert_eq!(
+            fmt_tpl,
+            vec![
+                (NumFmt::Digit, "^1."),
+                (NumFmt::HangulSyllable, "^2."),
+                (NumFmt::Digit, "^3)"),
+                (NumFmt::HangulSyllable, "^4)"),
+                (NumFmt::Digit, "(^5)"),
+                (NumFmt::HangulSyllable, "(^6)"),
+                (NumFmt::CircledDigit, "^7"),
+                (NumFmt::CircledHangulSyllable, "^8"),
+            ]
+        );
 
         // Page number: pgnp (bottom center + sideChar '-') control and ExtCtrl anchor.
         let first = &report.sections[0].paragraphs[0];
@@ -2340,6 +2479,65 @@ mod tests {
                 .iter()
                 .any(|ch| matches!(ch, HwpChar::ExtCtrl { ctrl_id, .. } if ctrl_id == b"pgnp"))
         );
+    }
+
+    #[test]
+    fn official_profile_matrix() {
+        let matrix = [
+            ("official", "맑은 고딕", 1200, 160, 0, false),
+            ("report", "함초롬바탕", 1500, 160, 4252, true),
+            ("plan", "함초롬바탕", 1500, 160, 4252, true),
+            ("notice", "맑은 고딕", 1500, 160, 2834, true),
+            ("minutes", "함초롬바탕", 1400, 130, 0, false),
+            ("gaejosik", "맑은 고딕", 1500, 160, 4252, true),
+            ("press", "함초롬바탕", 1400, 160, 2834, true),
+        ];
+
+        for (name, font, body, spacing, header_footer, page_number) in matrix {
+            let preset = OfficialPreset::parse(name).expect("canonical preset");
+            let doc = from_markdown_with(
+                "1. item\n",
+                &MarkdownImportOptions {
+                    preset: Some(preset),
+                    ..Default::default()
+                },
+            );
+            let page = doc.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .find_map(|control| match control {
+                    Control::SectionDef(section) => section.page,
+                    _ => None,
+                })
+                .expect("page definition");
+            assert_eq!(doc.header.fonts[0][0].name, font, "{name}");
+            assert_eq!(doc.header.char_shapes[0].base_size, body, "{name}");
+            assert!(
+                doc.header
+                    .para_shapes
+                    .iter()
+                    .all(|shape| shape.line_spacing == spacing),
+                "{name}"
+            );
+            assert_eq!(page.margin_top.0, 5668, "{name}");
+            assert_eq!(page.margin_bottom.0, 2834, "{name}");
+            assert_eq!(page.margin_left.0, 5668, "{name}");
+            assert_eq!(page.margin_right.0, 5668, "{name}");
+            assert_eq!(page.margin_header.0, header_footer, "{name}");
+            assert_eq!(page.margin_footer.0, header_footer, "{name}");
+            assert_eq!(
+                doc.sections[0].paragraphs[0]
+                    .controls
+                    .iter()
+                    .filter(
+                        |control| matches!(control, Control::Generic(g) if g.ctrl_id == *b"pgnp")
+                    )
+                    .count(),
+                usize::from(page_number),
+                "{name}"
+            );
+            assert_eq!(doc.header.numbering_levels[0].len(), 8, "{name}");
+        }
     }
 
     // ── md + HTML mixing (contract docs/design/18) ──

@@ -15,6 +15,7 @@ pub mod image;
 pub mod markdown;
 pub mod merge;
 pub mod odt;
+pub mod official;
 pub mod structure;
 pub mod svg;
 
@@ -39,7 +40,7 @@ pub use format::{
 };
 pub use from_html::{HtmlImportOptions, from_html, from_html_with};
 pub use from_markdown::{
-    MarkdownImportOptions, OfficialPreset, default_header, from_markdown, from_markdown_blocks,
+    MarkdownImportOptions, default_header, from_markdown, from_markdown_blocks,
     from_markdown_blocks_report, from_markdown_report, from_markdown_with,
 };
 pub use html::{to_html, to_html_fragment};
@@ -48,6 +49,9 @@ pub use markdown::{
     MarkdownOptions, MarkdownSegment, to_markdown, to_markdown_with, to_markdown_with_segments,
 };
 pub use odt::to_odt;
+pub use official::{
+    OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides, profile, profiles,
+};
 pub use structure::{delete_paragraph, insert_paragraph};
 
 /// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).

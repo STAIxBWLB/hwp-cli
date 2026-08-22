@@ -27,6 +27,16 @@ fn parse_dpi(value: &str) -> Result<f64, String> {
     Ok(dpi)
 }
 
+fn parse_margin_mm(value: &str) -> Result<f64, String> {
+    let margin = value
+        .parse::<f64>()
+        .map_err(|_| format!("여백은 숫자여야 합니다: {value}"))?;
+    if !margin.is_finite() || !(0.0..=200.0).contains(&margin) {
+        return Err(format!("여백은 유한한 0..=200mm 범위여야 합니다: {value}"));
+    }
+    Ok(margin)
+}
+
 #[derive(Parser)]
 #[command(name = "hwp", version, about = "HWP/HWPX document toolkit")]
 pub struct Cli {
@@ -172,11 +182,22 @@ pub enum Cmd {
         /// Set metadata "key=value" (keys: title|author|subject|keywords; repeatable)
         #[arg(long = "set-meta")]
         set_meta: Vec<String>,
-        /// Official-document preset (markdown input only): gian for an approval draft
-        /// (Malgun Gothic 11.5pt), report for a report (HCR Batang 15pt). Includes margins,
-        /// four-level numbering and page numbers
-        #[arg(long, value_enum)]
+        /// Official-document profile (markdown input only): official, report, plan, notice,
+        /// minutes, gaejosik, or press. Legacy and Korean aliases normalize to one profile.
+        #[arg(long, value_parser = parse_preset_arg)]
         preset: Option<PresetArg>,
+        /// Top page margin in millimetres (0..=200)
+        #[arg(long, value_parser = parse_margin_mm)]
+        margin_top: Option<f64>,
+        /// Bottom page margin in millimetres (0..=200)
+        #[arg(long, value_parser = parse_margin_mm)]
+        margin_bottom: Option<f64>,
+        /// Left page margin in millimetres (0..=200)
+        #[arg(long, value_parser = parse_margin_mm)]
+        margin_left: Option<f64>,
+        /// Right page margin in millimetres (0..=200)
+        #[arg(long, value_parser = parse_margin_mm)]
+        margin_right: Option<f64>,
         /// Fail (non-zero exit) when markdown import drops content, e.g. an HTML block that
         /// violates the import contract. Default: warn and continue (exit 0)
         #[arg(long)]
@@ -492,9 +513,9 @@ pub struct EditArgs {
 /// `hwp skill` subcommand.
 #[derive(Subcommand)]
 pub enum SkillCmd {
-    /// Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
+    /// Write the embedded skill tree (SKILL.md, SKILL.ko.md, the official-documents guide, references/ and templates/) into a directory (default ./hwp)
     Export {
-        /// Output directory (mutually exclusive with --install)
+        /// Output directory for the skill tree (mutually exclusive with --install)
         #[arg(short, long, conflicts_with = "install")]
         output: Option<PathBuf>,
         /// Install into a known agent skills directory instead
@@ -545,11 +566,18 @@ pub enum ConvertFormat {
     Docx,
 }
 
-/// Official-document preset (`hwp new --preset`).
-#[derive(Clone, Copy, ValueEnum)]
-pub enum PresetArg {
-    Gian,
-    Report,
+/// Canonical official-document profile parsed by the converter's shared alias registry.
+#[derive(Clone, Copy, Debug)]
+pub struct PresetArg(hwp_convert::OfficialPreset);
+
+impl PresetArg {
+    pub const fn canonical(self) -> hwp_convert::OfficialPreset {
+        self.0
+    }
+}
+
+fn parse_preset_arg(value: &str) -> Result<PresetArg, String> {
+    hwp_convert::OfficialPreset::parse(value).map(PresetArg)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -646,6 +674,53 @@ mod tests {
                     "{command} accepted dpi={dpi}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn official_preset_parser_normalizes_every_alias() {
+        use hwp_convert::OfficialPreset;
+
+        for (alias, expected) in [
+            ("official", OfficialPreset::Official),
+            ("OFFICIAL", OfficialPreset::Official),
+            ("gian", OfficialPreset::Official),
+            ("gongmun", OfficialPreset::Official),
+            ("기안", OfficialPreset::Official),
+            ("기안문", OfficialPreset::Official),
+            ("공문", OfficialPreset::Official),
+            ("공문서", OfficialPreset::Official),
+            ("report", OfficialPreset::Report),
+            ("bogoseo", OfficialPreset::Report),
+            ("보고", OfficialPreset::Report),
+            ("보고서", OfficialPreset::Report),
+            ("plan", OfficialPreset::Plan),
+            ("계획", OfficialPreset::Plan),
+            ("계획서", OfficialPreset::Plan),
+            ("사업계획", OfficialPreset::Plan),
+            ("사업계획서", OfficialPreset::Plan),
+            ("notice", OfficialPreset::Notice),
+            ("공고", OfficialPreset::Notice),
+            ("공고문", OfficialPreset::Notice),
+            ("고시", OfficialPreset::Notice),
+            ("minutes", OfficialPreset::Minutes),
+            ("회의록", OfficialPreset::Minutes),
+            ("회의기록", OfficialPreset::Minutes),
+            ("gaejosik", OfficialPreset::Gaejosik),
+            ("개조식", OfficialPreset::Gaejosik),
+            ("press", OfficialPreset::Press),
+            ("보도", OfficialPreset::Press),
+            ("보도자료", OfficialPreset::Press),
+        ] {
+            assert_eq!(
+                parse_preset_arg(alias).unwrap().canonical(),
+                expected,
+                "{alias}"
+            );
+        }
+        assert!(parse_preset_arg("unknown").is_err());
+        for value in ["-1", "NaN", "inf", "201"] {
+            assert!(parse_margin_mm(value).is_err(), "{value}");
         }
     }
 }

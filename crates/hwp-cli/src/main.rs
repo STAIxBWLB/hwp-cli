@@ -144,8 +144,22 @@ fn real_main() -> anyhow::Result<()> {
             from,
             set_meta,
             preset,
+            margin_top,
+            margin_bottom,
+            margin_left,
+            margin_right,
             strict,
-        } => commands::new::run(&output, from.as_deref(), &set_meta, preset, strict),
+        } => {
+            let options = commands::new::NewOptions::from_millimetres(
+                preset.map(hwp_cli::cli::PresetArg::canonical),
+                margin_top,
+                margin_bottom,
+                margin_left,
+                margin_right,
+                strict,
+            )?;
+            commands::new::run(&output, from.as_deref(), &set_meta, &options)
+        }
         Cmd::Compose {
             spec,
             output,

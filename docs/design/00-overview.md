@@ -88,6 +88,7 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 | 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.md) | **HWP 5.0 spec supplement index** — errata, version-layout matrix, conformance checklist, consumption semantics (07·03·05·10·08 are the underlying data) |
 | 20 | [remote-mcp](20-remote-mcp.md) | **Remote MCP transport design** - future Streamable HTTP, OAuth resource-server, tenant isolation, artifact transfer, limits and security gates for web clients |
 | 21 | [pdf-parity](21-pdf-parity.md) | **PDF parity contract (Hancom Office 2024)** — oracle, five-metric set, thresholds, font gate, data policy and non-goals the parity harness reads (issue #79) |
+| 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.md) | **hwpx skill absorption** — subcommand-grain parity matrix (28 old subcommands + script-level guarantees, verified/inferred marked), the D-14 margin record, the living checklist phases 2.2-2.5 update in place (issue #121, skills#35) |
 
 ---
 

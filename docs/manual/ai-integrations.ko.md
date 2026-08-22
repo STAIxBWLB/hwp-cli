@@ -5,8 +5,10 @@
 `hwp`는 AI 클라이언트용 연동 표면을 두 가지 제공한다.
 
 - MCP를 구사하는 클라이언트용 **MCP stdio 서버**(`hwp mcp`, 16개 도구)
-- CLI와 MCP 사용법을 에이전트에게 가르치는 **에이전트 스킬**(이 저장소의
-  `skills/hwp/SKILL.md`). 바이너리에 임베드되어 있으며 `hwp skill export`로 풀어낼 수 있다.
+- CLI와 MCP 사용법을 에이전트에게 가르치는 **에이전트 스킬**(이 저장소의 `skills/hwp/` 트리).
+  바이너리에 임베드되어 있으며 `hwp skill export`로 디렉터리 형태로 풀어낼 수 있다:
+  `SKILL.md`, `SKILL.ko.md`, 공문서 가이드(`official-documents(.ko).md`), `references/`,
+  `templates/`.
 
 어느 표면을 쓰든 `hwp mcp --root {dir}`로 도구가 만지는 파일 경로를 지정 디렉터리 아래로
 제한하고, 에이전트가 쓴 파일은 `hwp validate`로 검증하는 것을 권장한다.
@@ -33,7 +35,7 @@ MCP 서버를 등록한다(Claude Code: `.mcp.json` 또는 `claude mcp add`; Cla
 Claude Code는 에이전트 스킬을 바로 소비할 수도 있다.
 
 ```sh
-hwp skill export --install claude-code   # ~/.claude/skills/hwp/SKILL.md에 기록
+hwp skill export --install claude-code   # ~/.claude/skills/hwp/ 아래에 스킬 트리 설치
 ```
 
 ## Codex CLI
@@ -49,7 +51,7 @@ args = ["mcp", "--root", "/path/to/workspace"]
 에이전트 스킬 설치:
 
 ```sh
-hwp skill export --install codex         # ~/.codex/skills/hwp/SKILL.md에 기록
+hwp skill export --install codex         # ~/.codex/skills/hwp/ 아래에 스킬 트리 설치
 ```
 
 ## Codex cloud
@@ -79,8 +81,9 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 ```
 
 각 클라이언트의 MCP 설정에 넣는다(Kiro: `.kiro/settings/mcp.json`; Kimi: 자체 설정의 MCP 섹션).
-스킬 디렉터리 관례는 클라이언트마다 다르므로 `hwp skill export -o {dir}`로 원하는 위치에
-풀어내고 클라이언트가 그 경로를 가리키게 한다.
+스킬 디렉터리 관례는 클라이언트마다 다르므로 `hwp skill export -o {dir}`로 트리를 원하는 위치에
+풀어내고 클라이언트가 그 경로를 가리키게 한다(이 명령은 `{dir}` 아래에 `SKILL.md`,
+`SKILL.ko.md`, `official-documents(.ko).md`, `references/`, `templates/`를 쓴다).
 
 ## claude.ai (웹)
 
@@ -212,8 +215,10 @@ hwp skill export --install amazon-quick
 ```
 
 명령은 `~/.quickwork/profiles.json`을 읽어 유효한 `last_active` 프로필을 우선 선택하고, 유효한
-프로필이 하나뿐이면 그것을 사용한다. 해당 프로필 안의 `skills/hwp/SKILL.md`만 쓴다. 에이전트나
-커넥터를 생성하거나 publish하지 않는다.
+프로필이 하나뿐이면 그것을 사용한다. 해당 프로필 안의 `skills/hwp/SKILL.md`만 쓴다 — 공문서
+파일(`SKILL.ko.md`, `official-documents(.ko).md`, `references/`, `templates/`)은 Quick
+경로에 설치되지 **않으며**, 명령이 그 사실을 알리는 문구를 출력한다. 에이전트나 커넥터를
+생성하거나 publish하지 않는다.
 
 프로필이 여러 개이거나 자동 선택이 불가능하면 프로필 ID 또는 절대 프로필 디렉터리를 지정한다.
 
@@ -273,12 +278,15 @@ Web 네이티브 연동에는 인증된 Streamable HTTP MCP 서비스, tenant별
 [Remote MCP transport](../design/20-remote-mcp.ko.md)에 정리했고
 [issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52)에서 추적한다.
 
-## 업스트림 스킬 vs 다운스트림 `hwpx` 스킬
+## `hwpx` 스킬 흡수 진행 중
 
-이 저장소는 **범용** 스킬 [`skills/hwp/SKILL.md`](../../skills/hwp/SKILL.md)를 제공한다.
-바이너리 빠른 참조, MCP 사용법, 안전 규칙이 들어 있다. 소비자가 에이전트이므로 영문 단일 정본을
-유지해 이중 유지보수를 피한다.
+이 저장소는 **단일 번들** 스킬 [`skills/hwp/`](../../skills/hwp/SKILL.md)를 제공한다.
+바이너리 빠른 참조, MCP 사용법, 안전 규칙에 공문서 표면 — 마크다운 계약, 문서별
+레시피, 규정 참고문서, 마크다운 템플릿 — 을 더했다.
 
-별도 `STAIxBWLB/skills` 저장소의 한국 공문서 스킬 `skills/hwpx`는 **다운스트림**이다. 이 범용
-스킬을 감싸 워크스페이스 특화 템플릿(기안문/보고서 preset과 문서 관례)을 얹는다. 이 저장소는
-포맷/도구킷 계층으로 유지하고 사이트 특화 문서 정책은 다운스트림 계층에서 다룬다.
+별도 `STAIxBWLB/skills` 저장소의 기존 사용자 범위 스킬 `skills/hwpx`는 이 번들 스킬로
+**흡수되는 중**이며, 더 이상 업스트림/다운스트림 구분은 없다. 퇴역 전까지
+([skills#35](https://github.com/STAIxBWLB/skills/issues/35)에서 추적) 기존 `./hwpx`
+서브커맨드와 네이티브 커맨드의 패리티는
+[23-hwpx-skill-absorption](../design/23-hwpx-skill-absorption.ko.md)의 살아있는 매트릭스에서
+추적한다.

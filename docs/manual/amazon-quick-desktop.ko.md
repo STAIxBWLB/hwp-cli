@@ -101,7 +101,9 @@ Markdown, JSON, 이미지, 템플릿을 교환 root로 복사한다. 모든 MCP 
 ```
 
 이 명령은 `%USERPROFILE%\.quickwork\profiles.json`을 읽어 유효한 `last_active` 프로필 또는 유일한
-유효 프로필을 고르고, 그 안의 `skills\hwp\SKILL.md`만 쓴다. `hwp.exe`를 복사하거나 MCP 커넥터·
+유효 프로필을 고르고, 그 안의 `skills\hwp\SKILL.md`만 쓴다. 공문서 파일(`SKILL.ko.md`,
+`official-documents(.ko).md`, `references/`, `templates/`)은 Quick 경로에 설치되지
+**않으며**, 명령이 그 사실을 알리는 문구를 출력한다. `hwp.exe`를 복사하거나 MCP 커넥터·
 에이전트를 만들거나 publish하지 않는다.
 
 Quick 프로필이 여러 개이거나 자동 선택이 모호하면 프로필 ID 또는 절대 프로필 디렉터리를 지정한다.

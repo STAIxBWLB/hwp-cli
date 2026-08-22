@@ -756,6 +756,7 @@ dependencies = [
  "flate2",
  "hwp-convert",
  "hwp-model",
+ "hwpx",
  "insta",
  "proptest",
  "serde",

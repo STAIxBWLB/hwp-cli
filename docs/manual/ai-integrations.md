@@ -6,8 +6,10 @@
 
 - an **MCP stdio server** (`hwp mcp`, 16 tools) for clients that speak the Model Context
   Protocol, and
-- an **agent skill** (`skills/hwp/SKILL.md` in this repo) that teaches an agent the CLI and
-  MCP usage. It is embedded in the binary, and `hwp skill export` materializes it.
+- an **agent skill** (the `skills/hwp/` tree in this repo) that teaches an agent the CLI and
+  MCP usage. It is embedded in the binary, and `hwp skill export` materializes it as a
+  directory: `SKILL.md`, `SKILL.ko.md`, the official-document guide
+  (`official-documents(.ko).md`), `references/` and `templates/`.
 
 Whichever surface you use, prefer `hwp mcp --root {dir}` so every file path the tools touch
 stays under the given directories, and run `hwp validate` on any file the agent writes.
@@ -34,7 +36,7 @@ unrestricted and prints a one-line warning to stderr at startup.
 Claude Code additionally consumes the agent skill directly:
 
 ```sh
-hwp skill export --install claude-code   # writes ~/.claude/skills/hwp/SKILL.md
+hwp skill export --install claude-code   # installs the skill tree under ~/.claude/skills/hwp/
 ```
 
 ## Codex CLI
@@ -50,7 +52,7 @@ args = ["mcp", "--root", "/path/to/workspace"]
 And install the agent skill:
 
 ```sh
-hwp skill export --install codex         # writes ~/.codex/skills/hwp/SKILL.md
+hwp skill export --install codex         # installs the skill tree under ~/.codex/skills/hwp/
 ```
 
 ## Codex cloud
@@ -80,8 +82,9 @@ Both accept a standard stdio MCP server registration, with the same shape as Cla
 ```
 
 Put it in the client's MCP config (Kiro: `.kiro/settings/mcp.json`; Kimi: the MCP section of
-its config). The skill directory conventions differ per client, so export it anywhere and point
-the client at it with `hwp skill export -o {dir}`.
+its config). The skill directory conventions differ per client, so export the tree anywhere and
+point the client at it with `hwp skill export -o {dir}` (the command writes `SKILL.md`,
+`SKILL.ko.md`, `official-documents(.ko).md`, `references/` and `templates/` under `{dir}`).
 
 ## claude.ai (web)
 
@@ -215,8 +218,10 @@ hwp skill export --install amazon-quick
 ```
 
 The command reads `~/.quickwork/profiles.json`, prefers its valid `last_active` profile, and falls
-back to the only valid profile. It writes only `skills/hwp/SKILL.md` inside that profile. It does
-not create agents, connectors, or publish anything.
+back to the only valid profile. It writes only `skills/hwp/SKILL.md` inside that profile — the
+official-document files (`SKILL.ko.md`, `official-documents(.ko).md`, `references/`,
+`templates/`) are **not** installed on the Quick path, and the command prints a note saying so.
+It does not create agents, connectors, or publish anything.
 
 For multiple or ambiguous profiles, provide a profile ID or an absolute profile directory:
 
@@ -279,13 +284,15 @@ in this release. The implementation contract is documented in
 [Remote MCP transport](../design/20-remote-mcp.md) and tracked in
 [issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52).
 
-## Upstream skill vs downstream `hwpx` skill
+## The `hwpx` skill is being absorbed
 
-This repo ships the **generic** skill at [`skills/hwp/SKILL.md`](../../skills/hwp/SKILL.md):
-binary quick reference, MCP usage and safety rules. It is English-only by design (agents consume
-it, and one canonical language avoids bilingual double-maintenance).
+This repo ships the **single bundled** skill under
+[`skills/hwp/`](../../skills/hwp/SKILL.md): the binary quick reference, MCP usage and safety
+rules, plus the Korean official-document (공문서) surface — the markdown contract, per-document
+recipes, the regulation reference and the markdown templates.
 
-The Korean official-document (공문서) skill `skills/hwpx` in the separate `STAIxBWLB/skills`
-repository is **downstream**. It wraps this generic skill with workspace-specific templates
-(기안문/보고서 presets and document conventions). It is intentionally not merged here: this repo
-stays the format/toolkit layer, and downstream layers carry site-specific document policy.
+The old user-scope skill `skills/hwpx` in the separate `STAIxBWLB/skills` repository is being
+**absorbed** into this bundled skill; there is no upstream/downstream split any more. Until its
+retirement (tracked in [skills#35](https://github.com/STAIxBWLB/skills/issues/35)), parity
+between the old `./hwpx` subcommands and the native commands is tracked in the living matrix in
+[23-hwpx-skill-absorption](../design/23-hwpx-skill-absorption.md).

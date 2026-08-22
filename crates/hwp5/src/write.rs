@@ -566,6 +566,7 @@ fn materialize_document(
             // (synthesize=false)은 거치지 않으므로 바이트 동일 게이트 무영향.
             if !source_preserving {
                 ensure_para_shape_defaults(&mut d.header);
+                materialize_evidenced_official_numbering(&mut d)?;
             }
             for section in &mut d.sections {
                 if let Some(p) = section.paragraphs.first_mut() {
@@ -1019,6 +1020,191 @@ fn ensure_para_shape_defaults(header: &mut hwp_model::DocHeader) {
             ps.border_fill_id = 2;
         }
     }
+}
+
+/// Rejects direct HWP5 official-numbering layouts that were not established by
+/// the Hancom evidence bundle. In particular, one direct definition is proven
+/// for each semantic level, not for independently restarted ordered lists.
+///
+/// This is public so command entry points can reject the input before they
+/// allocate a staged output path. The writer calls it again as a defence in
+/// depth for library users.
+pub fn validate_evidenced_official_numbering(doc: &Document) -> Result<()> {
+    collect_evidenced_official_numbering_counts(doc).map(|_| ())
+}
+
+/// Validates an official-profile HWP request before output staging. Unlike the
+/// generic writer path, the profile contract cannot silently fall back to the
+/// default seven-level HWP5 NUMBERING record: all authored ordered-list
+/// definitions must match the proven direct record, including `start = 1`.
+pub fn validate_official_hwp_numbering(doc: &Document) -> Result<()> {
+    if doc.meta.source_format == "hwp5" || !doc.header.numberings.is_empty() {
+        return Ok(());
+    }
+
+    if doc.header.numbering_levels.is_empty() {
+        return Ok(());
+    }
+
+    if !crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels) {
+        return Err(
+            crate::error::Hwp5Error::UnsupportedOfficialNumberingTopology(
+                "official HWP supports only the evidenced ordered-list definition with start = 1"
+                    .to_string(),
+            ),
+        );
+    }
+
+    validate_evidenced_official_numbering(doc)
+}
+
+/// Counts all numbered paragraphs that the synthetic writer will emit, while
+/// also enforcing the direct-record topology. Keeping the traversal beside the
+/// writer avoids silently treating text-only control mirrors as output.
+fn collect_evidenced_official_numbering_counts(doc: &Document) -> Result<[usize; 8]> {
+    if doc.meta.source_format == "hwp5" {
+        return Ok([0; 8]);
+    }
+
+    let is_direct_contract = doc.header.numberings.is_empty()
+        && crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels);
+    if !is_direct_contract {
+        // HWPX carries semantic numbering but no raw HWP5 NUMBERING record.
+        // Non-official definitions must keep the prior default serializer;
+        // reinterpreting them as the private direct contract would be a guess.
+        return Ok([0; 8]);
+    }
+
+    fn visit_paragraphs(
+        paragraphs: &[Paragraph],
+        header: &hwp_model::DocHeader,
+        counters: &mut [usize; 8],
+    ) -> Result<()> {
+        for paragraph in paragraphs {
+            if let Some(para_shape) = header.para_shapes.get(paragraph.para_shape.0 as usize)
+                && para_shape.head_type() == 2
+            {
+                let semantic_level = para_shape.head_level();
+                if semantic_level == 0 || semantic_level > 8 {
+                    return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
+                        "levels outside one through eight are not part of the direct HWP5 contract"
+                            .to_string(),
+                    ));
+                }
+                if para_shape.numbering_id as usize != semantic_level as usize - 1 {
+                    return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingTopology(
+                        "independent ordered-list definitions at the same semantic level are not proven"
+                            .to_string(),
+                    ));
+                }
+                counters[semantic_level as usize - 1] += 1;
+            }
+            visit_controls(&paragraph.controls, header, counters)?;
+        }
+        Ok(())
+    }
+
+    fn visit_controls(
+        controls: &[Control],
+        header: &hwp_model::DocHeader,
+        counters: &mut [usize; 8],
+    ) -> Result<()> {
+        for control in controls {
+            match control {
+                Control::Table(table) => {
+                    if let Some(caption) = &table.caption {
+                        visit_paragraphs(&caption.paragraphs, header, counters)?;
+                    }
+                    for cell in &table.cells {
+                        visit_paragraphs(&cell.paragraphs, header, counters)?;
+                    }
+                }
+                Control::Picture(picture) => {
+                    if let Some(caption) = &picture.caption {
+                        visit_paragraphs(&caption.paragraphs, header, counters)?;
+                    }
+                }
+                Control::Generic(generic) if generic.raw_children.is_empty() => {
+                    if let Some(caption) = &generic.caption {
+                        visit_paragraphs(&caption.paragraphs, header, counters)?;
+                    }
+                    for list in &generic.paragraph_lists {
+                        visit_paragraphs(&list.paragraphs, header, counters)?;
+                    }
+                }
+                Control::SectionDef(_) | Control::Generic(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    let mut counters = [0; 8];
+    for section in &doc.sections {
+        visit_paragraphs(&section.paragraphs, &doc.header, &mut counters)?;
+    }
+    for level in [2usize, 6, 8] {
+        if counters[level - 1] > 15 {
+            return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
+                format!("level {level} exceeds the evidenced continuation range of 15 items"),
+            ));
+        }
+    }
+    Ok(counters)
+}
+
+/// Materializes only the complete direct NUMBERING contract observed in the
+/// private Hancom-saved source. A source-free document that merely contains a
+/// circled-Hangul level remains on the established default serializer unless
+/// every definition carries the exact eight-level official signature.
+fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
+    if doc.meta.source_format == "hwp5" {
+        return Ok(());
+    }
+
+    let is_direct_contract = doc.header.numberings.is_empty()
+        && crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels);
+    if !is_direct_contract {
+        // HWPX carries semantic numbering but no raw HWP5 NUMBERING record.
+        // Non-official definitions must keep the prior default serializer;
+        // reinterpreting them as the private direct contract would be a guess.
+        return Ok(());
+    }
+
+    collect_evidenced_official_numbering_counts(doc)?;
+
+    for para_shape in &mut doc.header.para_shapes {
+        if para_shape.head_type() != 2 {
+            continue;
+        }
+        let semantic_level = para_shape.head_level();
+        let raw_level = u32::from(semantic_level.saturating_sub(1).min(6));
+        para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (raw_level << 25);
+        para_shape.border_fill_id = 1;
+        // The native HWP5 contract repeats the list level in the final u32 of
+        // PARA_SHAPE.  The attr1 bits are enough for our semantic reader, but
+        // Hancom uses this persisted binding to select the matching
+        // NUMBERING slot.  A zero here makes every generated paragraph use
+        // level one while all definitions still look valid to an internal
+        // reread.  Keep the observed 16-byte tail (attr2, attr3, line spacing,
+        // zero-based list level) so the HWP5 writer emits the direct evidence
+        // rather than a guessed alternate encoding.
+        let mut tail = vec![0; 16];
+        let line_spacing = if para_shape.line_spacing > 0 {
+            para_shape.line_spacing
+        } else {
+            160
+        };
+        tail[8..12].copy_from_slice(&u32::try_from(line_spacing).unwrap_or(160).to_le_bytes());
+        tail[12..16].copy_from_slice(&u32::from(semantic_level - 1).to_le_bytes());
+        para_shape.tail = tail;
+    }
+    doc.header.numberings = (0..8)
+        .map(|_| RawEntry {
+            data: crate::numbering::official_eight_level_data(),
+            children: Vec::new(),
+        })
+        .collect();
+    Ok(())
 }
 
 /// hwp5로 쓸 수 없는 그림(SHAPE_COMPONENT 레코드 부재)이 있는지.

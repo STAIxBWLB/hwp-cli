@@ -1,18 +1,43 @@
 #!/usr/bin/env bash
-# 한글 실기 검증 세트 생성기 (⑬~㉓ 쓰기 경로 + 글자효과·요약정보).
+# Hancom verification-set generator.
 #
-# ~/Documents/hwp-verification/(또는 $1)에 검증 파일을 생성한다: A(실무 파이프라인)·
-# B(책갈피/하이퍼링크)·C(글자효과·요약정보, JSON IR 경유). 각 파일은 우리 리더로
-# 자체 재검증(재읽기 무경고 + C는 효과 보존 단언)한 뒤에만 통과 표시된다 — 깨진
-# 파일을 넘기지 않기 위함. 실제 한글 수용 여부는 사용자가 한컴오피스에서 열어
-# 확인(docs/hancom-verification-checklist.ko.md).
+# The default Phase 2.2 set creates exactly fourteen private documents: one HWP and one
+# HWPX for every canonical official-document profile. It self-rereads, validates, and
+# hash-indexes each artifact, but never creates a Hancom pass receipt. Genuine Hancom
+# observations stay a separate human step; see docs/hancom-verification-checklist.md.
 #
-# 사용: tools/gen_verification_set.sh [대상디렉터리]
+# The historical rounds 13-23 generator remains available as --legacy so its existing
+# investigation workflow is not silently discarded.
+#
+# Usage:
+#   tools/gen_verification_set.sh [destination]
+#   tools/gen_verification_set.sh --legacy [destination]
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+MODE="phase-02.2"
+if [[ "${1:-}" == "--legacy" ]]; then
+  MODE="legacy"
+  shift
+fi
 DEST="${1:-$HOME/Documents/hwp-verification}"
 export HWP_FONT_DIR="$REPO/fonts"   # hwp5 합성 lineseg 계산에 필수(5.1.x)
+
+# Phase 2.2 verification bundles are private evidence. Resolve both paths
+# before creating the destination so repository paths and symlink aliases are
+# rejected before any artifact can be deleted or written there.
+command -v python3 >/dev/null 2>&1 || {
+  echo "python3 is required to resolve a private verification destination" >&2
+  exit 1
+}
+REPO_REAL="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve(strict=False))' "$REPO")"
+DEST_REAL="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=False))' "$DEST")"
+if [[ "$DEST_REAL" == "$REPO_REAL" || "$DEST_REAL" == "$REPO_REAL/"* ]]; then
+  echo "verification destination must be outside the repository: $DEST_REAL" >&2
+  exit 1
+fi
+DEST="$DEST_REAL"
+mkdir -p "$DEST"
 
 # 바이너리: debug가 있으면 재사용, 없으면 release 빌드.
 HWP="$REPO/target/debug/hwp"
@@ -22,7 +47,131 @@ if [[ ! -x "$HWP" ]]; then
 fi
 [[ -x "$HWP" ]] || { echo "hwp 바이너리 없음"; exit 1; }
 
-mkdir -p "$DEST"
+if [[ "$MODE" == "phase-02.2" ]]; then
+  # Legacy mode reports individual failures. The Phase 2.2 bundle must stop
+  # on the first one and preserve the previously published index.
+  set -e
+  WORK="$(mktemp -d)"
+  STAGE="$(mktemp -d "$DEST/.phase-02.2-stage.XXXXXX")"
+  trap 'rm -rf "$WORK" "$STAGE"' EXIT
+  INDEX="$DEST/phase-02.2-index.tsv"
+  STAGED_INDEX="$STAGE/phase-02.2-index.tsv"
+  MARKS='1. | 가. | 1) | 가) | (1) | (가) | ① | ㉮'
+
+  make_source() {
+    local output="$1"
+    {
+      printf '%s\n\n' 'Phase 2.2 official profile verification'
+      printf '%s\n\n' 'SENTINEL BEFORE LIST: preserve this paragraph before every numbered level.'
+      printf '%s\n' '1. Level 1 marker'
+      for level2 in $(seq 1 15); do
+        printf '   1. Level 2 sibling %s\n' "$level2"
+        if [[ "$level2" -eq 1 ]]; then
+          printf '%s\n' '      1. Level 3 marker'
+          printf '%s\n' '         1. Level 4 marker'
+          printf '%s\n' '            1. Level 5 marker'
+          for level6 in $(seq 1 15); do
+            printf '               1. Level 6 sibling %s\n' "$level6"
+            if [[ "$level6" -eq 1 ]]; then
+              printf '%s\n' '                  1. Level 7 marker'
+              for level8 in $(seq 1 15); do
+                printf '                     1. Level 8 sibling %s\n' "$level8"
+              done
+            fi
+          done
+        fi
+      done
+      printf '\n%s\n\n' 'SENTINEL AFTER LIST: preserve this paragraph after every numbered level.'
+      for filler in $(seq 1 90); do
+        printf 'Body continuity paragraph %s for page-number and layout observation.\n\n' "$filler"
+      done
+    } > "$output"
+  }
+
+  reread_and_validate() {
+    local artifact="$1"
+    local reread_stderr validate_json
+    if ! reread_stderr="$("$HWP" cat "$artifact" 2>&1 >/dev/null)"; then
+      echo "self-reread failed: $(basename "$artifact")" >&2
+      return 1
+    fi
+    if [[ -n "$reread_stderr" ]] && grep -qiE 'warning|warn|error|오류|경고|손상' <<<"$reread_stderr"; then
+      echo "self-reread warning: $(basename "$artifact"): $reread_stderr" >&2
+      return 1
+    fi
+    if ! validate_json="$("$HWP" validate --json "$artifact")"; then
+      echo "structure validation failed: $(basename "$artifact")" >&2
+      return 1
+    fi
+    python3 -c '
+import json
+import sys
+result = json.load(sys.stdin)
+if not result.get("valid") or result.get("warnings"):
+    raise SystemExit(1)
+' <<<"$validate_json" || return 1
+  }
+
+  profile_metadata() {
+    case "$1" in
+      official) printf '%s\t%s\t%s\t%s\t%s\n' 'Malgun Gothic' '12' '160' '0' 'off' ;;
+      report|plan) printf '%s\t%s\t%s\t%s\t%s\n' 'HCR Batang' '15' '160' '15' 'on (- N -)' ;;
+      notice) printf '%s\t%s\t%s\t%s\t%s\n' 'Malgun Gothic' '15' '160' '10' 'on (- N -)' ;;
+      minutes) printf '%s\t%s\t%s\t%s\t%s\n' 'HCR Batang' '14' '130' '0' 'off' ;;
+      gaejosik) printf '%s\t%s\t%s\t%s\t%s\n' 'Malgun Gothic' '15' '160' '15' 'on (- N -)' ;;
+      press) printf '%s\t%s\t%s\t%s\t%s\n' 'HCR Batang' '14' '160' '10' 'on (- N -)' ;;
+    esac
+  }
+
+  SOURCE="$WORK/phase-02.2-official-numbering.md"
+  make_source "$SOURCE"
+  printf '%s\n' $'profile\tformat\tartifact_sha256\texpected_font\tbody_pt\tline_spacing_percent\tmargins_mm\theader_footer_mm\tpage_number\tnumbering\thwp5_encoding\tinternal_reread\tinternal_validate' > "$STAGED_INDEX"
+
+  for profile in official report plan notice minutes gaejosik press; do
+    IFS=$'\t' read -r font body_pt line_spacing header_footer page_number <<<"$(profile_metadata "$profile")"
+    for format in hwp hwpx; do
+      artifact="$STAGE/phase-02.2-${profile}.${format}"
+      if ! "$HWP" new --from "$SOURCE" --preset "$profile" --output "$artifact" >/dev/null; then
+        echo "generation failed: $(basename "$artifact")" >&2
+        exit 1
+      fi
+      if ! reread_and_validate "$artifact"; then
+        exit 1
+      fi
+      if ! hash="$(shasum -a 256 "$artifact" | awk '{print $1}')"; then
+        echo "hash failed: $(basename "$artifact")" >&2
+        exit 1
+      fi
+      [[ -n "$hash" ]] || { echo "empty hash: $(basename "$artifact")" >&2; exit 1; }
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$profile" "$format" "$hash" "$font" "$body_pt" "$line_spacing" \
+        'top=20,bottom=10,left=20,right=20' "$header_footer" "$page_number" \
+        "$MARKS; continuation: 하 -> 거 at levels 2, 6, and 8" \
+        "$([[ "$format" == hwp ]] && printf 'safe/direct' || printf 'n/a (HWPX)')" \
+        'pass' 'pass' >> "$STAGED_INDEX"
+    done
+  done
+
+  artifact_count="$(find "$STAGE" -maxdepth 1 -type f \( -name 'phase-02.2-*.hwp' -o -name 'phase-02.2-*.hwpx' \) | wc -l | tr -d ' ')"
+  [[ "$artifact_count" == '14' ]] || { echo "expected 14 artifacts, found $artifact_count" >&2; exit 1; }
+  [[ -s "$STAGED_INDEX" ]] || { echo 'content-free index missing or empty' >&2; exit 1; }
+
+  # The index is the completion receipt. Publish it only after every staged
+  # artifact passed self-reread and structure validation.
+  for profile in official report plan notice minutes gaejosik press; do
+    for format in hwp hwpx; do
+      artifact="phase-02.2-${profile}.${format}"
+      mv -f "$STAGE/$artifact" "$DEST/$artifact"
+    done
+  done
+  mv -f "$STAGED_INDEX" "$INDEX"
+  echo "Phase 2.2 private verification set ready: $DEST"
+  echo "Artifacts: 14 (all self-reread and structurally validated)"
+  echo "Index: $INDEX"
+  echo 'No Hancom observation or pass receipt has been created.'
+  exit 0
+fi
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 

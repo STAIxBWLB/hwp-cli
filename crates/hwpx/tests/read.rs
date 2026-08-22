@@ -112,6 +112,22 @@ fn 정품_shapecomment_설명_승격() {
 }
 
 #[test]
+fn committed_hancom_numbering_fixture_exposes_level8_circled_hangul() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx");
+    let doc = hwpx::read_document(&path).unwrap().document;
+
+    let level8 = doc
+        .header
+        .numbering_levels
+        .iter()
+        .flat_map(|levels| levels.iter())
+        .find(|level| level.template == "^8")
+        .expect("committed Hancom fixture must expose a level-8 definition");
+    assert_eq!(format!("{:?}", level8.fmt), "CircledHangulSyllable");
+}
+
+#[test]
 fn 합성_헤더_굵게_기울임() {
     let xml = r##"<?xml version="1.0"?>
 <hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
@@ -608,10 +624,10 @@ fn 목록_정의_idref를_0기반_ir로_정규화() {
       </hh:numberings>
       <hh:bullets itemCnt="2"><hh:bullet id="9" char="•"/><hh:bullet id="31" char="■"/></hh:bullets>
       <hh:paraProperties itemCnt="4">
-        <hh:paraPr id="0"><hh:heading type="NUMBER" idRef="7" level="1"/></hh:paraPr>
-        <hh:paraPr id="1"><hh:heading type="NUMBER" idRef="42" level="1"/></hh:paraPr>
-        <hh:paraPr id="2"><hh:heading type="BULLET" idRef="9" level="1"/></hh:paraPr>
-        <hh:paraPr id="3"><hh:heading type="BULLET" idRef="31" level="1"/></hh:paraPr>
+        <hh:paraPr id="0"><hh:heading type="NUMBER" idRef="7" level="0"/></hh:paraPr>
+        <hh:paraPr id="1"><hh:heading type="NUMBER" idRef="42" level="0"/></hh:paraPr>
+        <hh:paraPr id="2"><hh:heading type="BULLET" idRef="9" level="0"/></hh:paraPr>
+        <hh:paraPr id="3"><hh:heading type="BULLET" idRef="31" level="0"/></hh:paraPr>
       </hh:paraProperties>
     </hh:refList></hh:head>"#;
     let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
@@ -633,7 +649,7 @@ fn 목록_정의_idref를_0기반_ir로_정규화() {
 /// 미정의 idRef는 야생 파일 관용 — 읽기를 막지 않고 경고 + 첫 정의(0) 폴백.
 #[test]
 fn 정의되지_않은_목록_idref는_경고_후_폴백() {
-    let xml = r#"<hh:head><hh:refList><hh:numberings><hh:numbering id="7"/></hh:numberings><hh:paraProperties><hh:paraPr id="0"><hh:heading type="NUMBER" idRef="42" level="1"/></hh:paraPr></hh:paraProperties></hh:refList></hh:head>"#;
+    let xml = r#"<hh:head><hh:refList><hh:numberings><hh:numbering id="7"/></hh:numberings><hh:paraProperties><hh:paraPr id="0"><hh:heading type="NUMBER" idRef="42" level="0"/></hh:paraPr></hh:paraProperties></hh:refList></hh:head>"#;
     let (header, warnings) = hwpx::read::header::parse_header(xml).unwrap();
     assert_eq!(header.para_shapes[0].numbering_id, 0, "기본 정의로 폴백");
     assert!(
@@ -645,14 +661,14 @@ fn 정의되지_않은_목록_idref는_경고_후_폴백() {
 /// 개요(OUTLINE) heading은 정규화 없이 원시 idRef를 왕복 보존한다(정품 표본은 idRef=0).
 #[test]
 fn 개요_heading_idref_왕복_보존() {
-    let xml = r#"<hh:head><hh:refList><hh:paraProperties itemCnt="1"><hh:paraPr id="0"><hh:heading type="OUTLINE" idRef="0" level="1"/></hh:paraPr></hh:paraProperties></hh:refList></hh:head>"#;
+    let xml = r#"<hh:head><hh:refList><hh:paraProperties itemCnt="1"><hh:paraPr id="0"><hh:heading type="OUTLINE" idRef="0" level="0"/></hh:paraPr></hh:paraProperties></hh:refList></hh:head>"#;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
     assert_eq!(h1.para_shapes[0].head_type(), 1, "개요형 머리");
     assert_eq!(h1.para_shapes[0].numbering_id, 0, "원시 idRef 유지");
 
     let out = hwpx::write::header::write_header(&h1, 1);
     assert!(
-        out.contains(r#"<hh:heading type="OUTLINE" idRef="0" level="1"/>"#),
+        out.contains(r#"<hh:heading type="OUTLINE" idRef="0" level="0"/>"#),
         "개요 idRef 원시값 재방출: {out}"
     );
     let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();

@@ -26,9 +26,11 @@
       "한컴 동등성" 주장 금지
 - [ ] `git status --short --untracked-files=all` 검토, 무관한 사용자 변경 제외
 - [ ] 준비 점검 실행 자체가 커밋·푸시·태그·패키지 업로드·릴리스를 수행하지 않음
-- [ ] 다운스트림 `STAIxBWLB/skills`의 `skills/hwpx`가 CLI 표면 변화에 맞는지 확인 (그쪽
-      `upstream-hwp-cli` 워크플로가 하루 안에 이슈를 열지만, CLI 표면이 바뀐 릴리스는 cron을
-      기다리지 않는다)
+- [ ] 다운스트림 `STAIxBWLB/skills`의 `skills/hwpx`를
+      [design/23-hwpx-skill-absorption](design/23-hwpx-skill-absorption.ko.md)의 패리티
+      매트릭스 — 구 스킬 퇴역(RET-01) 전까지의 패리티 기준 문서 — 와 대조해 CLI 표면 변화에
+      맞는지 확인 (그쪽 `upstream-hwp-cli` 워크플로가 하루 안에 이슈를 열지만, CLI 표면이 바뀐
+      릴리스는 cron을 기다리지 않는다)
 
 릴리스는 7종 스모크 픽스처가 모든 실제 문서 형태를 커버한다거나, 한컴 픽셀 동등성을 제공한다거나,
 플랫폼 간 래스터 바이트가 동일함을 증명한다고 주장해서는 안 된다.

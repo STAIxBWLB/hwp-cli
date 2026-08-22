@@ -228,8 +228,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "new",
         "preset",
-        "공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt), report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함",
+        "공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/gaejosik/press. 기존·한국어 별칭은 하나의 프로필로 정규화",
     ),
+    ("new", "margin_top", "위쪽 페이지 여백(mm, 0..=200)"),
+    ("new", "margin_bottom", "아래쪽 페이지 여백(mm, 0..=200)"),
+    ("new", "margin_left", "왼쪽 페이지 여백(mm, 0..=200)"),
+    ("new", "margin_right", "오른쪽 페이지 여백(mm, 0..=200)"),
     (
         "new",
         "strict",
@@ -611,12 +615,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "export",
         "",
-        "임베드된 SKILL.md를 디렉터리에 기록 (기본 ./hwp; 파일은 <DIR>/SKILL.md에 생성)",
+        "임베드된 스킬 트리(SKILL.md, SKILL.ko.md, 공문서 안내, references/, templates/)를 디렉터리에 기록 (기본 ./hwp)",
     ),
     (
         "export",
         "output",
-        "출력 디렉터리 (--install과 동시 사용 불가)",
+        "스킬 트리 출력 디렉터리 (--install과 동시 사용 불가)",
     ),
     (
         "export",

@@ -289,3 +289,43 @@ Tell us pass or fail per file and, on failure, the popup message and symptom; we
 failing items using genuine comparison patterns (measured on 가나다 and 다문단). Passing items move
 from unverified to confirmed in Hancom. When the C series passes, the items resolved on 2026-07-15 in
 [12](design/12-feature-gaps.md) §0.5 become confirmed in Hancom.
+
+## O. Phase 2.2 official profiles and eight-level numbering (unverified)
+
+Run `tools/gen_verification_set.sh /private/directory` to create the bounded Phase 2.2 set. It
+creates exactly fourteen labelled documents, one HWP and one HWPX for each canonical profile, plus
+the content-free `phase-02.2-index.tsv`. The generator only proves internal reread and structural
+validation; it creates no Hancom pass receipt and makes no Hancom acceptance claim.
+
+For every generated HWP and HWPX, perform all seven observations below. Record the actual result
+against the matching SHA-256 in the private index. A skipped, unavailable, or failed observation is
+not a pass and blocks this phase.
+
+1. **Open without warning:** Open in genuine Hancom Office. Confirm there is no corruption, repair,
+   tampering, or security-lowering warning.
+2. **Eight visible marks:** Confirm the ordered list marks are `1.`, `가.`, `1)`, `가)`, `(1)`,
+   `(가)`, `①`, and `㉮`.
+3. **Evidenced continuation:** At levels 2, 6, and 8, inspect sibling items 14 and 15. Confirm the
+   post-`하` continuation is `거` (including the native circled form at level 8).
+4. **Source order:** Confirm `SENTINEL BEFORE LIST`, the complete list, and `SENTINEL AFTER LIST`
+   remain in that order.
+5. **Profile layout:** Check the profile row below for body font, size, line spacing, A4 margins
+   (top 20, bottom 10, left 20, right 20 mm), and header/footer area.
+6. **Page number:** Confirm the stated off state, or that bottom-center page numbers use `- N -`.
+7. **Record actual native behavior:** Record format, SHA-256, indentation, and the actual HWP5
+   encoding behavior. The expected HWP5 contract is `safe/direct`; do not substitute an inferred
+   or literal result.
+
+| Profile | Body font | Body size | Line spacing | Header/footer | Page number |
+|---|---|---:|---:|---:|---|
+| official | Malgun Gothic | 12 pt | 160% | 0 mm | off |
+| report | HCR Batang | 15 pt | 160% | 15 mm | on, `- N -` |
+| plan | HCR Batang | 15 pt | 160% | 15 mm | on, `- N -` |
+| notice | Malgun Gothic | 15 pt | 160% | 10 mm | on, `- N -` |
+| minutes | HCR Batang | 14 pt | 130% | 0 mm | off |
+| gaejosik | Malgun Gothic | 15 pt | 160% | 15 mm | on, `- N -` |
+| press | HCR Batang | 14 pt | 160% | 10 mm | on, `- N -` |
+
+After each actual observation, create a private `hancom-verification-receipt-v1` with the observed
+result, application, timestamp, verifier, and `artifact_sha256`, then validate it through the
+private certification policy that requires `document.hancom_open`. Never prefill a pass receipt.

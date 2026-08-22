@@ -27,7 +27,9 @@ package upload or release publication.
       claim is made for a profile with exclusions
 - [ ] `git status --short --untracked-files=all` reviewed; unrelated user changes excluded
 - [ ] no commit, push, tag, package upload or release performed by the readiness run
-- [ ] downstream `STAIxBWLB/skills` `skills/hwpx` reviewed for CLI-surface drift (that repo's
+- [ ] downstream `STAIxBWLB/skills` `skills/hwpx` reviewed against the parity matrix in
+      [design/23-hwpx-skill-absorption](design/23-hwpx-skill-absorption.md) — the parity source of
+      truth until the old skill retires (RET-01) — for CLI-surface drift (that repo's
       `upstream-hwp-cli` workflow files an issue within a day, but a release that changes the CLI
       surface should not wait for the cron)
 

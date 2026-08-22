@@ -1,12 +1,21 @@
 //! `hwp skill` — manages the bundled agent skill.
 //!
-//! The repository source of truth `skills/hwp/SKILL.md` is embedded into the
-//! binary with `include_str!`, and `hwp skill export` writes it out verbatim
-//! (a generated artifact, so an existing file is silently overwritten).
+//! The repository source of truth under `skills/hwp/` is embedded into the
+//! binary as a hand-maintained `include_str!` table (`SKILL_FILES`), and
+//! `hwp skill export` writes the whole tree out verbatim (generated
+//! artifacts, so existing table-listed files are silently overwritten;
+//! anything else in the target directory is left untouched).
 //! `--install claude-code|codex|amazon-quick` selects the conventional skill
-//! directory for that client. Amazon Quick profiles are resolved through
+//! directory for that client. Amazon Quick keeps the single-file contract
+//! (only `SKILL.md` is written) and its profiles are resolved through
 //! `~/.quickwork/profiles.json` unless `--quick-profile` supplies an ID or an
 //! absolute profile directory.
+//!
+//! Two drift gates keep the table honest: a test that fails when a file
+//! under `skills/hwp/` is missing from `SKILL_FILES` or differs in bytes,
+//! and a test that enforces H2/H3 structure parity plus the leading language
+//! link (first content line, after any frontmatter) for every
+//! `*.md`/`*.ko.md` pair in the tree.
 //!
 //! Home-directory and profile selection are split into pure helpers for unit
 //! testing. Tests use temporary directories and never touch the real `$HOME`.
@@ -23,16 +32,103 @@ use hwp_cli::cli::InstallTarget;
 /// Embedded skill source of truth. Byte-identical to `skills/hwp/SKILL.md` in the repository.
 pub const SKILL_MD: &str = include_str!("../../../../skills/hwp/SKILL.md");
 
+/// One file of the embedded skill tree: path relative to `skills/hwp/` plus
+/// its byte-exact contents. Entries are compile-time constants, so no runtime
+/// path input ever reaches the table.
+pub struct EmbeddedFile {
+    pub rel: &'static str,
+    pub contents: &'static str,
+}
+
+/// The embedded skill tree (D-06/D-16), hand-maintained. The
+/// `embedded_table_matches_skill_tree_on_disk` test fails when a file under
+/// `skills/hwp/` (excluding `claude-web/`) is missing here or differs in
+/// bytes, so every added tree file must gain an entry in the same commit.
+pub const SKILL_FILES: &[EmbeddedFile] = &[
+    EmbeddedFile {
+        rel: "SKILL.md",
+        contents: include_str!("../../../../skills/hwp/SKILL.md"),
+    },
+    EmbeddedFile {
+        rel: "SKILL.ko.md",
+        contents: include_str!("../../../../skills/hwp/SKILL.ko.md"),
+    },
+    EmbeddedFile {
+        rel: "official-documents.md",
+        contents: include_str!("../../../../skills/hwp/official-documents.md"),
+    },
+    EmbeddedFile {
+        rel: "official-documents.ko.md",
+        contents: include_str!("../../../../skills/hwp/official-documents.ko.md"),
+    },
+    EmbeddedFile {
+        rel: "references/style-patterns.md",
+        contents: include_str!("../../../../skills/hwp/references/style-patterns.md"),
+    },
+    EmbeddedFile {
+        rel: "references/style-patterns.ko.md",
+        contents: include_str!("../../../../skills/hwp/references/style-patterns.ko.md"),
+    },
+    EmbeddedFile {
+        rel: "references/korean-official-format.md",
+        contents: include_str!("../../../../skills/hwp/references/korean-official-format.md"),
+    },
+    EmbeddedFile {
+        rel: "references/korean-official-format.ko.md",
+        contents: include_str!("../../../../skills/hwp/references/korean-official-format.ko.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/gian-internal.md",
+        contents: include_str!("../../../../skills/hwp/templates/gian-internal.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/gian-external.md",
+        contents: include_str!("../../../../skills/hwp/templates/gian-external.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/gongmun-basic.md",
+        contents: include_str!("../../../../skills/hwp/templates/gongmun-basic.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/report.md",
+        contents: include_str!("../../../../skills/hwp/templates/report.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/plan.md",
+        contents: include_str!("../../../../skills/hwp/templates/plan.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/minutes.md",
+        contents: include_str!("../../../../skills/hwp/templates/minutes.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/notice.md",
+        contents: include_str!("../../../../skills/hwp/templates/notice.md"),
+    },
+    EmbeddedFile {
+        rel: "templates/press.md",
+        contents: include_str!("../../../../skills/hwp/templates/press.md"),
+    },
+];
+
 pub fn run(
     output: Option<PathBuf>,
     install: Option<InstallTarget>,
     quick_profile: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let written = match resolve_target(output, install, quick_profile.as_deref())? {
-        ExportTarget::Plain(dir) => export(&dir)?,
-        ExportTarget::QuickProfile(profile) => export_quick(&profile)?,
-    };
-    println!("{}", written.display());
+    match resolve_target(output, install, quick_profile.as_deref())? {
+        ExportTarget::Plain(dir) => {
+            let written = export(&dir)?;
+            println!("{}", written.display());
+        }
+        ExportTarget::QuickProfile(profile) => {
+            let written = export_quick(&profile)?;
+            println!("{}", written.display());
+            println!(
+                "참고: 공문서 안내·참고 문서·템플릿 등 공문서 관련 파일은 Amazon Quick에 설치되지 않았습니다 (SKILL.md만 설치됨)."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -280,14 +376,23 @@ fn home_dir() -> anyhow::Result<PathBuf> {
         .with_context(|| format!("홈 디렉터리 환경변수 ${VAR} 가 설정되어 있지 않습니다"))
 }
 
-/// Writes the embedded content to `dir/SKILL.md` (creating the directory if needed).
+/// Writes the embedded skill tree under `dir` (creating parent directories
+/// as needed) and returns `dir`. Files in `dir` that are not listed in
+/// `SKILL_FILES` are left untouched — export never deletes.
 fn export(dir: &Path) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dir)
         .with_context(|| format!("스킬 디렉터리를 만들 수 없습니다: {}", dir.display()))?;
-    let path = dir.join("SKILL.md");
-    fs::write(&path, SKILL_MD)
-        .with_context(|| format!("SKILL.md를 쓸 수 없습니다: {}", path.display()))?;
-    Ok(path)
+    for file in SKILL_FILES {
+        let path = dir.join(file.rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("스킬 디렉터리를 만들 수 없습니다: {}", parent.display())
+            })?;
+        }
+        fs::write(&path, file.contents)
+            .with_context(|| format!("{}를 쓸 수 없습니다: {}", file.rel, path.display()))?;
+    }
+    Ok(dir.to_path_buf())
 }
 
 /// Writes `skills/hwp/SKILL.md` under an already-resolved canonical Quick
@@ -438,7 +543,17 @@ mod tests {
 
     #[test]
     fn embedded_skill_is_quick_publish_safe() {
-        assert!(SKILL_MD.starts_with("---\nname: hwp\n"));
+        // D-08 (revised): the YAML frontmatter opens the file at byte 0 so
+        // strict skill loaders (Claude Code, Codex, Amazon Quick) register it;
+        // the EN/KO language link is the first line after the frontmatter.
+        assert!(
+            SKILL_MD.starts_with("---\nname: hwp\n"),
+            "SKILL.md must open with the ---/name: hwp frontmatter at byte 0"
+        );
+        assert!(
+            link_line(SKILL_MD).contains("](SKILL.ko.md)"),
+            "SKILL.md must carry the EN/KO language link on the first line after the frontmatter"
+        );
         assert!(SKILL_MD.contains("hwp {command} --help"));
         assert!(
             !SKILL_MD.contains('<'),
@@ -447,15 +562,70 @@ mod tests {
     }
 
     #[test]
-    fn exported_bytes_match_embedded_source() {
+    fn exported_tree_matches_embedded_table() {
         let dir = temp_dir("skill-export");
         let written = export(&dir).expect("export");
+        assert_eq!(written, dir, "export reports the directory it wrote");
+        for file in SKILL_FILES {
+            assert_eq!(
+                fs::read(dir.join(file.rel)).expect("read back"),
+                file.contents.as_bytes(),
+                "exported {} must byte-match the embedded source",
+                file.rel
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_never_touches_files_outside_the_table() {
+        let dir = temp_dir("skill-export-merge");
+        fs::create_dir_all(dir.join("references")).expect("pre-create");
+        fs::write(dir.join("keep.txt"), b"keep").expect("seed stray file");
+        fs::write(dir.join("references/keep.md"), b"keep").expect("seed stray nested file");
+        fs::write(dir.join("SKILL.md"), b"stale").expect("seed stale table file");
+
+        export(&dir).expect("export");
         assert_eq!(
-            fs::read(&written).expect("read back"),
+            fs::read(dir.join("SKILL.md")).expect("read back"),
             SKILL_MD.as_bytes(),
-            "exported file must byte-match the embedded source"
+            "table-listed files are overwritten"
+        );
+        assert_eq!(
+            fs::read(dir.join("keep.txt")).expect("stray file"),
+            b"keep",
+            "non-table files must survive an export"
+        );
+        assert_eq!(
+            fs::read(dir.join("references/keep.md")).expect("stray nested file"),
+            b"keep",
+            "non-table files in table subdirectories must survive an export"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_targets_receive_the_full_tree() {
+        for target in [InstallTarget::ClaudeCode, InstallTarget::Codex] {
+            let home = temp_dir("skill-install-tree");
+            let dir = match install_target_under(target, &home, None).expect("resolve target") {
+                ExportTarget::Plain(dir) => dir,
+                ExportTarget::QuickProfile(_) => {
+                    panic!("claude-code/codex resolve to a plain directory")
+                }
+            };
+            let written = export(&dir).expect("export");
+            assert_eq!(written, dir);
+            for file in SKILL_FILES {
+                assert_eq!(
+                    fs::read(dir.join(file.rel)).expect("read back"),
+                    file.contents.as_bytes(),
+                    "installed {} must byte-match the embedded source",
+                    file.rel
+                );
+            }
+            let _ = fs::remove_dir_all(&home);
+        }
     }
 
     #[test]
@@ -756,5 +926,144 @@ mod tests {
         assert!(export_quick(&canonical_profile).is_err());
         assert_eq!(fs::read(&outside_file).unwrap(), b"keep");
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Repository root of the bundled skill tree (`crates/hwp-cli/` → repo root).
+    fn skill_tree_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills/hwp")
+    }
+
+    /// Recursive walk collecting skill-relative file paths (forward-slash
+    /// separated) under `root`, skipping the `claude-web/` subtree.
+    fn walk_skill_tree(root: &Path) -> std::collections::BTreeSet<String> {
+        let mut files = std::collections::BTreeSet::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).expect("read skill tree directory") {
+                let path = entry.expect("directory entry").path();
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("entry under the walked root")
+                    .to_path_buf();
+                // claude-web/ is a repo/release artifact (web bundle
+                // installer), not skill content shipped by `hwp skill export`.
+                if rel.starts_with("claude-web") {
+                    continue;
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        files
+    }
+
+    /// Heading level (2 or 3) for every line starting with "## " or "### ",
+    /// in document order. Plain line scan — no markdown parser.
+    fn heading_levels(markdown: &str) -> Vec<u8> {
+        markdown
+            .lines()
+            .filter_map(|line| {
+                if line.starts_with("### ") {
+                    Some(3)
+                } else if line.starts_with("## ") {
+                    Some(2)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// First content line of a skill document, skipping an optional leading
+    /// YAML frontmatter block (`---\n...\n---`). Files with frontmatter
+    /// (SKILL.md pair) carry their language link right after it; plain
+    /// markdown files carry it on line 1.
+    fn link_line(markdown: &str) -> &str {
+        let body = if let Some(rest) = markdown.strip_prefix("---\n") {
+            match rest.find("\n---\n") {
+                Some(end) => &rest[end + 5..],
+                None => markdown,
+            }
+        } else {
+            markdown
+        };
+        body.lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+    }
+
+    /// D-16 drift gate: the hand-maintained `SKILL_FILES` table must match the
+    /// committed `skills/hwp/` tree exactly — set equality (a new tree file
+    /// without a table entry fails here) plus byte equality per entry.
+    /// `claude-web/` is excluded from both sides: it is a release/web-bundle
+    /// artifact, not exported skill content (research Open Question Q2).
+    #[test]
+    fn embedded_table_matches_skill_tree_on_disk() {
+        let root = skill_tree_root();
+        let on_disk = walk_skill_tree(&root);
+        let in_table: std::collections::BTreeSet<String> =
+            SKILL_FILES.iter().map(|file| file.rel.to_owned()).collect();
+        assert_eq!(
+            on_disk, in_table,
+            "\nSKILL_FILES 테이블이 skills/hwp/ 트리와 어긋남 — \
+             빠진 파일은 SKILL_FILES에 항목을 추가하고, 없어진 파일은 항목을 제거하라 \
+             (위 diff에 드리프트 경로가 표시됨)."
+        );
+        for file in SKILL_FILES {
+            assert_eq!(
+                fs::read(root.join(file.rel)).expect("read repo skill file"),
+                file.contents.as_bytes(),
+                "임베드된 {} 내용이 커밋된 파일과 다름 — include_str! 테이블 항목을 갱신하라",
+                file.rel
+            );
+        }
+    }
+
+    /// D-17 parity gate: for every English `X.md` under `skills/hwp/` that has
+    /// a Korean mirror `X.ko.md`, both files must have the identical heading
+    /// structure — same H2/H3 count and order — and carry the language link as
+    /// their first content line (after the YAML frontmatter when present).
+    /// `templates/` is excluded: template bodies are Korean-only files
+    /// with no mirrors by design (D-11, research Open Question Q1). Files
+    /// without a mirror yet are skipped — only existing pairs are gated.
+    #[test]
+    fn en_ko_pairs_have_identical_structure() {
+        let root = skill_tree_root();
+        let files = walk_skill_tree(&root);
+        for rel in files.iter().filter(|rel| {
+            rel.ends_with(".md") && !rel.ends_with(".ko.md") && !rel.starts_with("templates/")
+        }) {
+            let ko_rel = format!("{}.ko.md", rel.strip_suffix(".md").expect(".md suffix"));
+            if !root.join(&ko_rel).is_file() {
+                continue;
+            }
+            let en = fs::read_to_string(root.join(rel)).expect("read EN file");
+            let ko = fs::read_to_string(root.join(&ko_rel)).expect("read KO mirror");
+            assert_eq!(
+                heading_levels(&en),
+                heading_levels(&ko),
+                "\n{rel} 과 {ko_rel} 의 H2/H3 구조가 어긋남 — \
+                 '## '/'### ' 헤딩의 개수와 순서가 같아야 함 (D-17)."
+            );
+            let stem = rel
+                .rsplit('/')
+                .next()
+                .expect("file name")
+                .strip_suffix(".md")
+                .expect(".md suffix");
+            assert!(
+                link_line(&en).contains(&format!("]({stem}.ko.md)")),
+                "\n{rel} 첫 내용 줄에 한국어 미러 링크가 필요: [한국어]({stem}.ko.md) \
+                 (frontmatter가 있으면 그 직후 줄)"
+            );
+            assert!(
+                link_line(&ko).contains(&format!("]({stem}.md)")),
+                "\n{ko_rel} 첫 내용 줄에 영어 원문 링크가 필요: [English]({stem}.md) \
+                 (frontmatter가 있으면 그 직후 줄)"
+            );
+        }
     }
 }

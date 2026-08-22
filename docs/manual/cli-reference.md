@@ -117,7 +117,11 @@ Create a new document
 | `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX path |
 | `--from` | `<FROM>` |  | Input markdown or JSON file (empty document when omitted) |
 | `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
-| `--preset` | `gian` \| `report` |  | Official-document preset (markdown input only): gian for an approval draft (Malgun Gothic 11.5pt), report for a report (HCR Batang 15pt). Includes margins, four-level numbering and page numbers |
+| `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, gaejosik, or press. Legacy and Korean aliases normalize to one profile |
+| `--margin-top` | `<MARGIN_TOP>` |  | Top page margin in millimetres (0..=200) |
+| `--margin-bottom` | `<MARGIN_BOTTOM>` |  | Bottom page margin in millimetres (0..=200) |
+| `--margin-left` | `<MARGIN_LEFT>` |  | Left page margin in millimetres (0..=200) |
+| `--margin-right` | `<MARGIN_RIGHT>` |  | Right page margin in millimetres (0..=200) |
 | `--strict` |  |  | Fail (non-zero exit) when markdown import drops content, e.g. an HTML block that violates the import contract. Default: warn and continue (exit 0) |
 
 ## `hwp compose`
@@ -326,13 +330,13 @@ _No arguments or flags_
 
 ## `hwp skill export`
 
-Write the embedded SKILL.md into a directory (default ./hwp; the file lands at <DIR>/SKILL.md)
+Write the embedded skill tree (SKILL.md, SKILL.ko.md, the official-documents guide, references/ and templates/) into a directory (default ./hwp)
 
 **Usage:** `hwp skill export [OPTIONS]`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `-o, --output` | `<OUTPUT>` |  | Output directory (mutually exclusive with --install) |
+| `-o, --output` | `<OUTPUT>` |  | Output directory for the skill tree (mutually exclusive with --install) |
 | `--install` | `claude-code` \| `codex` \| `amazon-quick` |  | Install into a known agent skills directory instead |
 | `--quick-profile` | `<ID_OR_ABSOLUTE_PATH>` |  | Amazon Quick profile ID or absolute profile directory (Amazon Quick installs only) |
 

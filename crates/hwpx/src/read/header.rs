@@ -108,6 +108,7 @@ fn num_fmt(s: &str) -> hwp_model::NumFmt {
         "HANGUL_SYLLABLE" => NumFmt::HangulSyllable,
         "HANGUL_JAMO" => NumFmt::HangulJamo,
         "CIRCLED_DIGIT" => NumFmt::CircledDigit,
+        "CIRCLED_HANGUL_SYLLABLE" => NumFmt::CircledHangulSyllable,
         "LATIN_CAPITAL" | "LATIN_UPPER" => NumFmt::LatinUpper,
         "LATIN_SMALL" | "LATIN_LOWER" => NumFmt::LatinLower,
         "ROMAN_CAPITAL" | "ROMAN_UPPER" => NumFmt::RomanUpper,
@@ -401,7 +402,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             ps.attr1 |= alignment_code(&h) << 2;
                         }
                     }
-                    // 문단 머리(목록): type→attr1 bit23~24, level→bit25~27, idRef→numbering_id.
+                    // Paragraph headings use zero-based HWPX levels, while the IR is one-based.
                     b"heading" => {
                         if let Some(ps) = &mut current_para {
                             let ty = match attr(e, "type").as_deref() {
@@ -412,8 +413,9 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             };
                             ps.attr1 |= ty << 23;
                             if ty != 0 {
-                                let level = attr_u32(e, "level").unwrap_or(1).clamp(1, 7);
-                                ps.attr1 |= level << 25;
+                                let hwp_level = attr_u32(e, "level").unwrap_or(0).min(9) + 1;
+                                ps.attr1 |= hwp_level.min(7) << 25;
+                                ps.list_level = (hwp_level > 7).then_some(hwp_level as u8);
                                 ps.numbering_id = attr_u16(e, "idRef").unwrap_or(0);
                             }
                         }

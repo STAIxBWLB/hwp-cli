@@ -2,7 +2,56 @@
 
 use std::path::{Path, PathBuf};
 
-use hwp_cli::cli::PresetArg;
+/// Shared new-document inputs after CLI/MCP profile and margin normalization.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NewOptions {
+    pub preset: Option<hwp_convert::OfficialPreset>,
+    pub margins: hwp_convert::PageMarginOverrides,
+    pub strict: bool,
+}
+
+impl NewOptions {
+    /// Validate millimetre inputs once for both public entry points, then store writer units.
+    pub fn from_millimetres(
+        preset: Option<hwp_convert::OfficialPreset>,
+        top: Option<f64>,
+        bottom: Option<f64>,
+        left: Option<f64>,
+        right: Option<f64>,
+        strict: bool,
+    ) -> anyhow::Result<Self> {
+        let mm_to_unit = |name: &str, value: Option<f64>| -> anyhow::Result<_> {
+            value
+                .map(|millimetres| {
+                    if !millimetres.is_finite() || !(0.0..=200.0).contains(&millimetres) {
+                        anyhow::bail!("{name}은 유한한 0..=200mm 범위여야 합니다");
+                    }
+                    Ok(hwp_model::HwpUnit(
+                        (millimetres * 7200.0 / 25.4).round() as i32
+                    ))
+                })
+                .transpose()
+        };
+        let margins = hwp_convert::PageMarginOverrides {
+            top: mm_to_unit("margin_top_mm", top)?,
+            bottom: mm_to_unit("margin_bottom_mm", bottom)?,
+            left: mm_to_unit("margin_left_mm", left)?,
+            right: mm_to_unit("margin_right_mm", right)?,
+        };
+        let mut page = hwp_convert::official::page_def(preset);
+        margins.apply(&mut page);
+        if page.margin_left.0 + page.margin_right.0 >= page.width.0
+            || page.margin_top.0 + page.margin_bottom.0 >= page.height.0
+        {
+            anyhow::bail!("페이지 여백 합계는 A4 본문 영역을 남겨야 합니다");
+        }
+        Ok(Self {
+            preset,
+            margins,
+            strict,
+        })
+    }
+}
 
 pub enum NewInput<'a> {
     Markdown {
@@ -27,8 +76,7 @@ pub fn run(
     output: &Path,
     from: Option<&Path>,
     set_meta: &[String],
-    preset: Option<PresetArg>,
-    strict: bool,
+    options: &NewOptions,
 ) -> anyhow::Result<()> {
     let owned;
     let input = match from {
@@ -50,7 +98,7 @@ pub fn run(
         }
         None => NewInput::Empty,
     };
-    let report = execute(output, input, set_meta, preset, strict)?;
+    let report = execute(output, input, set_meta, options)?;
     crate::commands::convert::print_warnings(&report.warnings);
     crate::commands::preservation::print_report(&report.preservation);
     eprintln!("생성 완료: {}", output.display());
@@ -61,8 +109,7 @@ pub fn execute(
     output: &Path,
     input: NewInput<'_>,
     set_meta: &[String],
-    preset: Option<PresetArg>,
-    strict: bool,
+    options: &NewOptions,
 ) -> anyhow::Result<NewReport> {
     let ext = output
         .extension()
@@ -79,15 +126,14 @@ pub fn execute(
             output.display()
         ),
     };
-    let preset = preset.map(|p| match p {
-        PresetArg::Gian => hwp_convert::OfficialPreset::Gian,
-        PresetArg::Report => hwp_convert::OfficialPreset::Report,
-    });
+    let preset = options.preset;
     let mut import_warnings = Vec::new();
     let mut doc = match input {
         NewInput::Json(text) => {
-            if preset.is_some() {
-                anyhow::bail!("--preset은 markdown 입력 전용입니다 (JSON IR은 헤더 포함)");
+            if preset.is_some() || options.margins != hwp_convert::PageMarginOverrides::default() {
+                anyhow::bail!(
+                    "--preset 및 --margin-*은 markdown 입력 전용입니다 (JSON IR은 헤더 포함)"
+                );
             }
             hwp_convert::from_json(text).map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?
         }
@@ -102,6 +148,7 @@ pub fn execute(
                     base_dir,
                     roots,
                     preset,
+                    page_margins: options.margins,
                 },
             )
             .map_err(|e| anyhow::anyhow!("markdown 가져오기 실패: {e}"))?;
@@ -114,12 +161,13 @@ pub fn execute(
                 base_dir: None,
                 roots: &[],
                 preset,
+                page_margins: options.margins,
             },
         ),
     };
 
     // --strict: markdown import가 내용을 드롭했으면(HTML 블록 계약 위반) 실패 처리한다.
-    if strict {
+    if options.strict {
         let drops: Vec<&str> = import_warnings
             .iter()
             .filter(|w| w.contains("계약 위반"))
@@ -132,6 +180,14 @@ pub fn execute(
                 drops.join("\n")
             );
         }
+    }
+
+    // The direct HWP5 official-numbering record has evidence for one
+    // definition per semantic level only. Reject independently restarted
+    // ordered lists before opening the transactional staging path; HWPX
+    // remains available for that topology.
+    if write_hwp && preset.is_some() {
+        hwp5::validate_official_hwp_numbering(&doc).map_err(|error| anyhow::anyhow!(error))?;
     }
 
     // 메타데이터 지정("키=값")을 덮어쓴다(JSON IR에 있던 값보다 우선).
