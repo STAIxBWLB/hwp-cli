@@ -26,6 +26,38 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 /// appended after these (5~). from_html's list para shapes use the same basis.
 pub(crate) const BASE_PARA_SHAPES: u16 = 5;
 
+/// Maximum authored list depth for official-document profiles.
+pub(crate) const MAX_OFFICIAL_LIST_DEPTH: u16 = 8;
+
+/// A rejected authored-list depth, shared by Markdown and embedded HTML importers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AuthoredListDepthError {
+    pub observed: u16,
+    pub maximum: u16,
+}
+
+impl std::fmt::Display for AuthoredListDepthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "authored list depth {} exceeds maximum {}",
+            self.observed, self.maximum
+        )
+    }
+}
+
+/// Reject unsupported authored-list depth before creating shapes or definitions.
+pub(crate) fn validate_official_list_depth(depth: usize) -> Result<u16, AuthoredListDepthError> {
+    let observed = u16::try_from(depth).unwrap_or(u16::MAX);
+    if observed > MAX_OFFICIAL_LIST_DEPTH {
+        return Err(AuthoredListDepthError {
+            observed,
+            maximum: MAX_OFFICIAL_LIST_DEPTH,
+        });
+    }
+    Ok(observed)
+}
+
 /// Markdown import options.
 #[derive(Default)]
 pub struct MarkdownImportOptions<'a> {
@@ -44,7 +76,7 @@ pub struct MarkdownImportOptions<'a> {
 
 #[cfg(test)]
 mod official_depth_limit_tests {
-    use super::{from_markdown_report, MarkdownImportOptions, OfficialPreset};
+    use super::{MarkdownImportOptions, OfficialPreset, from_markdown_report};
 
     fn nested_markdown(depth: usize) -> String {
         (0..depth)
@@ -88,6 +120,28 @@ mod official_depth_limit_tests {
             from_markdown_report(&nested_html(9), &official_options()).unwrap_err(),
             "authored list depth 9 exceeds maximum 8"
         );
+    }
+
+    #[test]
+    fn empty_markdown_and_mixed_html_order_remain_valid() {
+        let (empty, _) = from_markdown_report("", &official_options()).unwrap();
+        assert_eq!(empty.sections[0].paragraphs.len(), 1);
+
+        let input = "before\n\n<ol><li>inside</li></ol>\n\nafter\n";
+        let (document, _) = from_markdown_report(input, &official_options()).unwrap();
+        let text: String = document.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| paragraph.chars.iter())
+            .filter_map(|character| match character {
+                hwp_model::HwpChar::Text(value) => Some(*value),
+                _ => None,
+            })
+            .collect();
+        let before = text.find("before").unwrap();
+        let inside = text.find("inside").unwrap();
+        let after = text.find("after").unwrap();
+        assert!(before < inside && inside < after, "text order: {text}");
     }
 }
 
@@ -728,6 +782,7 @@ struct Builder {
     table: Option<TableBuilder>,
     // list state — per-level frame stack (nested); item paragraphs get the head para shape.
     list_stack: Vec<ListFrame>,
+    rejected_list_depths: usize,
     // para shapes created for lists (header index BASE_PARA_SHAPES~) and numbering/bullet definitions (0~).
     extra_para_shapes: Vec<ParaShape>,
     numbering_levels: Vec<Vec<NumLevel>>,
@@ -960,10 +1015,10 @@ impl Builder {
     }
 
     /// List entry — closes the parent item paragraph and creates this level's head para shape/definition.
-    fn start_list(&mut self, start: Option<u64>) {
+    fn start_list(&mut self, start: Option<u64>) -> Result<(), AuthoredListDepthError> {
         // Close the parent item's paragraph first (e.g. "second" before a nested list).
         self.flush_paragraph();
-        let level = (self.list_stack.len() as u16 + 1).min(8);
+        let level = validate_official_list_depth(self.list_stack.len() + 1)?;
         let para_shape_id = match start {
             // Ordered list: numbering definition (the exporter draws markers from numbering_levels) + NUMBER head.
             Some(s) => {
@@ -987,6 +1042,7 @@ impl Builder {
             para_shape_id,
             item_open: false,
         });
+        Ok(())
     }
 
     fn end_list(&mut self) {
@@ -1045,6 +1101,9 @@ impl Builder {
             Err(crate::from_html::FragmentError::Sandbox(e)) => {
                 self.hard_error.get_or_insert(e);
             }
+            Err(crate::from_html::FragmentError::AuthoredListDepth(error)) => {
+                self.hard_error.get_or_insert(error.to_string());
+            }
             Err(crate::from_html::FragmentError::Contract(e)) => self
                 .warnings
                 .push(format!("HTML 블록을 무시합니다(계약 위반): {e}")),
@@ -1101,7 +1160,12 @@ impl Builder {
         let step = 2000i32;
         self.extra_para_shapes.push(ParaShape {
             // Healthy body para shape (0x180: Hangul line-break + line grid) + left align + head type/level.
-            attr1: 0x180 | (1 << 2) | (head_type << 23) | (u32::from(level.min(7)) << 25),
+            // HWP5 has only three persisted level bits. HWPX level 8 stays semantic through
+            // `list_level`, while the direct HWP5 writer uses its separately evidenced path.
+            attr1: 0x180
+                | (1 << 2)
+                | (head_type << 23)
+                | (u32::from(if level > 7 { 7 } else { level }) << 25),
             margin_left: i32::from(level) * step,
             indent: -step, // outdent: aligns marker and body text
             line_spacing_old: 160,
@@ -1418,8 +1482,20 @@ impl Builder {
                 self.in_codeblock = false;
             }
             // ── Ordered/bullet lists → head (NUMBER/BULLET) paragraphs, nesting by level ──
-            Event::Start(Tag::List(start)) => self.start_list(start),
-            Event::End(TagEnd::List(_)) => self.end_list(),
+            Event::Start(Tag::List(start)) => match self.start_list(start) {
+                Ok(()) => {}
+                Err(error) => {
+                    self.hard_error.get_or_insert(error.to_string());
+                    self.rejected_list_depths += 1;
+                }
+            },
+            Event::End(TagEnd::List(_)) => {
+                if self.rejected_list_depths > 0 {
+                    self.rejected_list_depths -= 1;
+                } else {
+                    self.end_list();
+                }
+            }
             Event::Start(Tag::Item) => {
                 if let Some(f) = self.list_stack.last_mut() {
                     f.item_open = true;

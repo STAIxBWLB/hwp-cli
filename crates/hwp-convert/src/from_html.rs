@@ -54,12 +54,14 @@ pub struct HtmlImportOptions<'a> {
 pub(crate) enum FragmentError {
     Contract(String),
     Sandbox(String),
+    AuthoredListDepth(from_markdown::AuthoredListDepthError),
 }
 
 impl FragmentError {
     fn into_message(self) -> String {
         match self {
             Self::Contract(message) | Self::Sandbox(message) => message,
+            Self::AuthoredListDepth(error) => error.to_string(),
         }
     }
 }
@@ -160,6 +162,7 @@ pub(crate) fn parse_fragment(
         base_dir: opts.base_dir.map(Path::to_path_buf),
         roots: opts.roots,
         sandbox_error: None,
+        depth_error: None,
         note_bodies: opts.note_bodies,
         warnings: Vec::new(),
         in_cell_depth: 0,
@@ -181,7 +184,10 @@ pub(crate) fn parse_fragment(
         // the parse immediately), so the variant switch cannot mislabel a contract violation.
         return Err(match p.sandbox_error {
             Some(message) => FragmentError::Sandbox(message),
-            None => FragmentError::Contract(e),
+            None => match p.depth_error {
+                Some(error) => FragmentError::AuthoredListDepth(error),
+                None => FragmentError::Contract(e),
+            },
         });
     }
     let top = p.ctx_stack.pop().expect("최상위 컨텍스트 1개");
@@ -253,6 +259,7 @@ struct Parser<'a> {
     /// Set when the parse aborts on a sandbox violation — parse_fragment re-labels the error
     /// as FragmentError::Sandbox so the md-mixed path keeps it a hard error (#56).
     sandbox_error: Option<String>,
+    depth_error: Option<from_markdown::AuthoredListDepthError>,
     /// GFM footnote definition bodies for fnref marker reattachment (None on the standalone path).
     note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
     warnings: Vec<String>,
@@ -311,7 +318,10 @@ impl Parser<'_> {
                             } else {
                                 None
                             };
-                            self.start_list(start);
+                            self.start_list(start).map_err(|error| {
+                                self.depth_error = Some(error);
+                                error.to_string()
+                            })?;
                             self.blocks(r, Some(&name))?;
                             self.end_list();
                         }
@@ -949,14 +959,18 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn start_list(&mut self, start: Option<u64>) {
+    fn start_list(
+        &mut self,
+        start: Option<u64>,
+    ) -> Result<(), from_markdown::AuthoredListDepthError> {
         self.flush_paragraph(false);
-        let level = (self.list_stack.len() as u16 + 1).min(7);
+        let level = from_markdown::validate_official_list_depth(self.list_stack.len() + 1)?;
         let para_shape_id = match start {
             Some(s) => {
                 let def_id = self.numbering_levels.len() as u16;
-                let mut levels = vec![NumLevel::default(); 7];
-                levels[(level as usize - 1).min(6)].start = s.max(1) as u32;
+                let mut levels =
+                    vec![NumLevel::default(); from_markdown::MAX_OFFICIAL_LIST_DEPTH as usize];
+                levels[level as usize - 1].start = s.max(1) as u32;
                 self.numbering_levels.push(levels);
                 self.push_list_para_shape(2, level, def_id)
             }
@@ -970,6 +984,7 @@ impl Parser<'_> {
             para_shape_id,
             item_open: false,
         });
+        Ok(())
     }
 
     fn end_list(&mut self) {
@@ -982,13 +997,17 @@ impl Parser<'_> {
         let idx = BASE_PARA_SHAPES + self.extra_para_shapes.len() as u16;
         let step = 2000i32;
         self.extra_para_shapes.push(ParaShape {
-            attr1: 0x180 | (1 << 2) | (head_type << 23) | (u32::from(level) << 25),
+            attr1: 0x180
+                | (1 << 2)
+                | (head_type << 23)
+                | (u32::from(if level > 7 { 7 } else { level }) << 25),
             margin_left: i32::from(level) * step,
             indent: -step,
             line_spacing_old: 160,
             line_spacing: 160,
             border_fill_id: 2,
             numbering_id: def_id,
+            list_level: (level > 7).then_some(level as u8),
             ..ParaShape::default()
         });
         idx
