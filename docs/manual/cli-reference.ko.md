@@ -117,7 +117,11 @@
 | `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX 경로 |
 | `--from` | `<FROM>` |  | 입력 markdown/JSON 파일 (생략 시 빈 문서) |
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
-| `--preset` | `gian` \| `report` |  | 공문서 프리셋 (markdown 입력 전용): gian=기안문(맑은 고딕 11.5pt), report=보고서(함초롬바탕 15pt). 여백·4단계 번호·쪽번호 포함 |
+| `--preset` | `<PRESET>` |  | 공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/gaejosik/press. 기존·한국어 별칭은 하나의 프로필로 정규화 |
+| `--margin-top` | `<MARGIN_TOP>` |  | 위쪽 페이지 여백(mm, 0..=200) |
+| `--margin-bottom` | `<MARGIN_BOTTOM>` |  | 아래쪽 페이지 여백(mm, 0..=200) |
+| `--margin-left` | `<MARGIN_LEFT>` |  | 왼쪽 페이지 여백(mm, 0..=200) |
+| `--margin-right` | `<MARGIN_RIGHT>` |  | 오른쪽 페이지 여백(mm, 0..=200) |
 | `--strict` |  |  | markdown import가 내용을 드롭하면(HTML 블록 계약 위반) 실패 처리. 기본: 경고 후 진행 (종료 코드 0) |
 
 ## `hwp compose`
