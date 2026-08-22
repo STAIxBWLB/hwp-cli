@@ -334,9 +334,8 @@ impl Parser<'_> {
                             } else {
                                 None
                             };
-                            self.start_list(start).map_err(|error| {
+                            self.start_list(start).inspect_err(|error| {
                                 self.list_error = Some(error.clone());
-                                error
                             })?;
                             self.blocks(r, Some(&name))?;
                             self.end_list();

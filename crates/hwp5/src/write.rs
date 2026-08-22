@@ -1081,23 +1081,23 @@ fn collect_evidenced_official_numbering_counts(doc: &Document) -> Result<[usize;
         counters: &mut [usize; 8],
     ) -> Result<()> {
         for paragraph in paragraphs {
-            if let Some(para_shape) = header.para_shapes.get(paragraph.para_shape.0 as usize) {
-                if para_shape.head_type() == 2 {
-                    let semantic_level = para_shape.head_level();
-                    if semantic_level == 0 || semantic_level > 8 {
-                        return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
-                            "levels outside one through eight are not part of the direct HWP5 contract"
-                                .to_string(),
-                        ));
-                    }
-                    if para_shape.numbering_id as usize != semantic_level as usize - 1 {
-                        return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingTopology(
-                            "independent ordered-list definitions at the same semantic level are not proven"
-                                .to_string(),
-                        ));
-                    }
-                    counters[semantic_level as usize - 1] += 1;
+            if let Some(para_shape) = header.para_shapes.get(paragraph.para_shape.0 as usize)
+                && para_shape.head_type() == 2
+            {
+                let semantic_level = para_shape.head_level();
+                if semantic_level == 0 || semantic_level > 8 {
+                    return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
+                        "levels outside one through eight are not part of the direct HWP5 contract"
+                            .to_string(),
+                    ));
                 }
+                if para_shape.numbering_id as usize != semantic_level as usize - 1 {
+                    return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingTopology(
+                        "independent ordered-list definitions at the same semantic level are not proven"
+                            .to_string(),
+                    ));
+                }
+                counters[semantic_level as usize - 1] += 1;
             }
             visit_controls(&paragraph.controls, header, counters)?;
         }
