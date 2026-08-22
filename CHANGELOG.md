@@ -10,6 +10,50 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.8.8]
+
+**Added**
+
+- A bundled bilingual Korean official-document skill tree with an authoring guide,
+  regulation reference, and eight Markdown templates
+  ([#126](https://github.com/STAIxBWLB/hwp-cli/pull/126)).
+- Evidence-backed eight-level official numbering for HWPX and native HWP5:
+  `1.`, `가.`, `1)`, `가)`, `(1)`, `(가)`, `①`, and `㉮`, including the
+  verified post-`하` continuation. Seven canonical profiles are available:
+  `official`, `report`, `plan`, `notice`, `minutes`, `gaejosik`, and
+  `press`.
+- Per-side `hwp new` margin overrides and matching `hwp_new` MCP fields. CLI and
+  MCP share canonical preset aliases, range/content-area validation, and atomic
+  no-publication behavior.
+
+**Changed**
+
+- Official authoring now fails closed before publication when native HWP5 input
+  requests an unproven list topology, non-default start, continuation range, or
+  depth. HWPX keeps its broader supported list-start semantics.
+- Official profile defaults now use A4 top/bottom/left/right margins of
+  20/10/20/20 mm, with profile-specific typography, header/footer bands, and
+  bottom-center `- N -` page numbering where enabled.
+
+**Fixed**
+
+- Native HWP5 paragraphs now persist the observed zero-based list-level binding
+  in `PARA_SHAPE`; without it Hancom displayed every nested level as decimal
+  level one despite valid numbering definitions.
+- Ordered-list start parsing no longer narrows values above `u32::MAX` or
+  overflows while formatting later markers. Nested table and materializable
+  control lists now share the same evidence-bound continuation checks.
+- The private Hancom verification-set generator is fail-fast, publishes its index
+  only after all fourteen documents validate, and rejects repository or
+  symlink-resolved repository destinations.
+
+**Verification**
+
+- The seven-profile HWP/HWPX matrix, code review, security audit, and CI passed.
+  Fourteen private artifacts were opened in genuine Hancom Office and passed
+  hash-bound certification. This is a bounded structural and application-
+  acceptance claim, not a pixel-parity claim.
+
 ## [0.8.7]
 
 **Added**
