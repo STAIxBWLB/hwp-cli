@@ -86,7 +86,8 @@ names normalize to one of them.
 Conventions every recipe shares:
 
 - **`끝.` ending.** Official documents close the body with `끝.` after the last item (and
-  after the `붙임  1. … 1부.` attachment list when one exists).
+  after the `붙임  … 1부.` attachment list when one exists; a single attachment carries no
+  item number, two or more are numbered `1.`, `2.` — §6 of the regulation reference).
 - **발신명의 until Phase 2.4.** There is no frame/header machinery yet, so the centered
   22pt bold 발신명의 line (e.g. `예시대학교총장`) is produced by splicing an HTML-fragment
   part file that uses the block-level alignment contract (design doc 18 §8). Put this in
