@@ -155,6 +155,12 @@ if not result.get("valid") or result.get("warnings"):
   [[ "$artifact_count" == '12' ]] || { echo "expected 12 artifacts, found $artifact_count" >&2; exit 1; }
   [[ -s "$STAGED_INDEX" ]] || { echo 'content-free index missing or empty' >&2; exit 1; }
 
+  # A destination that still holds an older bundle (the retired seven-profile set
+  # published fourteen artifacts) would keep its retired files alongside the new
+  # ones while the index and the count below claim twelve. Clear the whole
+  # generation before publishing so glob-based consumers see exactly the indexed set.
+  rm -f "$DEST"/phase-02.2-*.hwp "$DEST"/phase-02.2-*.hwpx
+
   # The index is the completion receipt. Publish it only after every staged
   # artifact passed self-reread and structure validation.
   for profile in official report plan notice minutes press; do
