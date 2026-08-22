@@ -121,7 +121,7 @@ layout, typesetting and drawing algorithm must therefore be ours; only parser ev
 
 > Finding features that hwp-cli lacks but real users need, evidenced by other implementations and by
 > demand. 91 claims extracted, 25 adversarially verified: **21 confirmed (all 3-0), 4 refuted**. This
-> section is the evidence behind [12-feature-gaps](12-feature-gaps.md) §10 GJ and the §15 roadmap
+> section is the evidence behind [12-feature-gaps](12-feature-gaps.md) §10 GJ and the §16 roadmap
 > re-evaluation (GA-2 and GB-1 ★).
 
 ## (a) Already supported elsewhere, so precedent exists
@@ -169,7 +169,7 @@ but a **regulation** feature. Verified at code level in the working tree.
 | Seven document presets plus Korean aliases (`src/hwpx/gongmun.ts:172-197`), document frames for 기안문 두문/결문, 공고문 and the 보도자료 head box (`src/hwpx/gen-docframe.ts`, `gen-gongmun-extra.ts`) | **GN-2**, **GN-4**, **GN-5** |
 | A fifteen-rule advisory notation lint over the markdown source (`src/hwpx/gongmun-lint.ts`, itself descended from `jkf87/hwpx-skill`), catching date, time, money, 붙임, 끝. and colon-spacing violations | **GN-3**. `hwp validate` is structural and has no such ruleset |
 | Format-preserving PII masking with a hit report that never contains raw PII (`src/redact.ts`) | **GM-10** |
-| Hancom COM automation that renders and re-extracts through real Hancom on Windows (`bench/hangul-com-pdf.ps1`), used to establish constraints that inference gets wrong | Candidate infrastructure for the acceptance procedure (§15.3 of [12](12-feature-gaps.md)); not scheduled |
+| Hancom COM automation that renders and re-extracts through real Hancom on Windows (`bench/hangul-com-pdf.ps1`), used to establish constraints that inference gets wrong | Candidate infrastructure for the acceptance procedure (§16.3 of [12](12-feature-gaps.md)); not scheduled |
 | Public-corpus collectors for in-the-wild government documents (`bench/collect-korea-kr.mjs`, `collect-opengov.mjs`) feeding a gitignored regression corpus | Candidate feeder for `HWP_CORPUS_DIR`; compatible with the data policy |
 | Input breadth we deliberately do not have: PDF (with OCR), XLSX, XLS BIFF8 and DOCX import | The 2026-08-20 disposition keeps **GJ-1** and the other non-HWP imports out of scope until every other roadmap item is complete, with kordoc named as the covering tool |
 

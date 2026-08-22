@@ -17,7 +17,7 @@ difficulty, a value and dependencies to each gap so that restoration can be prio
 | [00-overview](00-overview.md) §5 | A **summary snapshot** of the current state | 12 expands that snapshot item by item |
 | [10-hwp5-structure-map](10-hwp5-structure-map.md) §8 | The list of hwp5 records that are **unparsed (Opaque) or raw-preserved** | The **underlying data** for 12 §2 and §3 (what lossless preservation actually loses) |
 | [11-hwpx-structure-map](11-hwpx-structure-map.md) §5 | The hwpx read/write **symmetry matrix** (unimplemented, information loss, round-trip asymmetry) | The **underlying data** for 12 §2, §4 and §5 |
-| [08-external-research](08-external-research.md) | External evidence: standards, open source and an **ecosystem feature comparison** | The demand and precedent evidence behind §10 GJ and the §15 roadmap |
+| [08-external-research](08-external-research.md) | External evidence: standards, open source and an **ecosystem feature comparison** | The demand and precedent evidence behind §10 GJ and the §16 roadmap |
 | **12 (this document)** | **The single catalog of every feature gap, plus the roadmap** | - |
 
 The status labels (Opaque, raw-preserved, skip and so on) are defined authoritatively in **10 and
@@ -31,6 +31,8 @@ cited as facts; wording is never reproduced (see the [README](../README.md)).
     the conversion matrix / fields and forms / render precision
   - **GH to GM** (added in the 2026-07-08 re-sweep): export loss / import limits / unsupported
     formats and legacy / editing primitives / text extraction options / CLI commands and workflows
+  - **GN** (added in the 2026-08-20 kordoc comparison): the official-document authoring layer
+  - **GO** (added in the 2026-08-22 hwp-editor comparison): the GUI-editor engine surface
 - Items inherited from 07 §F carry their original number as well: `GG-1 (=07§F1)`.
 - Within GE, the special class that loses information **only in an hwpx → hwpx round-trip** is split
   out as `GE-α` (§5.2), and the class where **ancillary data is replaced by constants or regenerated
@@ -313,7 +315,7 @@ they appear in real documents, so they are recorded as gaps.
 
 | ID | Symptom | Code evidence | Spec/format | Current behavior | Paths | Difficulty |
 |---|---|---|---|---|---|---|
-| GA-1 | An encrypted HWP5 document is refused immediately with `Hwp5Error::Encrypted` | `hwp5/src/file_header.rs:60,136` (ENCRYPTED bit1, `is_encrypted`), `container.rs:102` (`check_body_readable`), `error.rs:40` | §3.2.1 FileHeader attribute bit1 | refused | read | L |
+| GA-1 | An encrypted HWP5 document is refused immediately with `Hwp5Error::Encrypted` — **scheduled 2026-08-22**: password-supplied decryption lands in milestone 2 (Phase 8, GATE-03); references kordoc `src/hwp5/crypto.ts`, rhwp `src/password_crypto.rs` | `hwp5/src/file_header.rs:60,136` (ENCRYPTED bit1, `is_encrypted`), `container.rs:102` (`check_body_readable`), `error.rs:40` | §3.2.1 FileHeader attribute bit1 | refused | read | L |
 | GA-2 | Distribution (ViewText) documents are refused; even with body content in `/ViewText/Section*`, access is blocked beforehand | `hwp5/src/file_header.rs:61,140` (DISTRIBUTION bit2, `is_distribution`), `container.rs:105`, `error.rs:43` | §3.2.1 bit2, §3.2.3 ViewText | refused | read | **M** ★ |
 | GA-3 | DRM and certificate-secured documents have **no dedicated refusal path**: the flags are recognized (shown by `info`) but the gate only checks `is_encrypted` (bit1). A document with only a DRM flag can fall into a downstream parse failure instead of a clear refusal | `hwp5/src/file_header.rs:63,67,69` (DRM, CERT_ENCRYPTED, CERT_DRM flags), `:151` (consumed only by `attribute_names`), `container.rs:101` (the gate covers only bit1 and bit2) | §3.2.1 bit4, bit8, bit10 | refused (incompletely) | read | L |
 | GA-4 | **Digitally signed documents are unhandled**: FileHeader bit7 (signature) and bit9 (reserved) are recognized by name only, and the `DigitalSignature` and `PublicKeyInfo` streams have neither a gate nor a catalog entry, so they can fall into a downstream parse failure | `hwp5/src/file_header.rs:66,68` (HAS_SIGNATURE, SIGNATURE_SPARE by name only), `container.rs:101`, [10](10-hwp5-structure-map.md) §1 | §3.2.1 bit7, bit9; §3.2.8 signature streams | silent (no gate) | read | L |
@@ -528,7 +530,7 @@ time and is therefore not a stale gap; the gaps are the items below.
 is therefore L. By contrast **the whole GE-α series is low-cost and solvable with data structures
 alone**, without ground truth: read already interprets them, so write only needs to emit the
 corresponding element. They are local edits to `write/header.rs`, independent of anything in GA to GD
-or GG (an "immediately actionable" node in the §15 dependency graph). Note that **GE-β already has a
+or GG (an "immediately actionable" node in the §16 dependency graph). Note that **GE-β already has a
 bypass in the "fidelity-preserving fill" (`patch.rs`)**: for hwpx it preserves the whole package and
 replaces only text, so GE-β matters only on the IR path needed for structural editing. The root fix
 is to add "ancillary stream pass-through" slots to the IR (mostly S).
@@ -727,9 +729,36 @@ GN-1, GN-2 and GN-9 are resolved in phase 2.2; GN-7 was resolved in phase 2.1. G
 GN-4 (frames), GN-5 (template shortcut), GN-6 (table styling) and GN-8 (editing parity) remain
 open in their scheduled phases.
 
-## 15. Roadmap: difficulty × value plus the dependency graph
+## 15. GO: the GUI-editor engine surface (added in the 2026-08-22 hwp-editor comparison)
 
-### 15.1 The difficulty × value matrix
+The embeddable GUI editor lives in a separate repository (`hwp-editor`, UI and thin adapters
+only) and delegates every document operation to the `hwp` binary. The 2026-08-22 repo-collection
+comparison (`refs/hwp/.planning/codebase/HWPCLI-COMPARISON.md` §6 — private working notes, not
+tracked here) plus an audit of that repo's
+engine adapter (pinned to hwp-cli v0.8.7) surfaced the engine-surface gaps below; all six are
+scheduled in milestone 2 (Phases 5-7 and 9, requirement ids EDT-01..07). The same triage excluded
+OCR (ONNX runtime vs. the single-binary constraint), an LLM layer (lives in MCP clients), COM
+automation (intentional exclusion) and capsule provenance (rhwp-specific; `certify` covers the
+quality-policy niche) — reasons recorded in the milestone's `.planning/REQUIREMENTS.md`, which is
+local planning state rather than tracked documentation. Chart/OLE read+render
+joins the milestone-4 catalog (with GB-1); GA-1 was pulled into milestone 2 (Phase 8).
+
+| ID | Symptom | Notes and precedent | Difficulty |
+|---|---|---|---|
+| GO-1 | **Segment envelope is paragraph-only**: `hwp cat --with-segments` emits `kind: "para"` segments with section/para indices and nothing else — no run/table/cell/image/field kinds, no stable ids, no style summary, no schema | hwp-editor `packages/core/src/segments.ts` parses exactly this shape; a versioned v2 envelope (`schemas/segment-envelope-v2.schema.json`, flag-gated) keeps v0.8.x output as default for one release | S |
+| GO-2 | **No render-side geometry**: the renderer emits pixels/SVG/PDF but no machine-readable bounding boxes, so an editor cannot map a click to a segment (hit-testing), draw a selection overlay or scroll-sync | `hwp render --layout-json <path>` writing per-page boxes keyed by segment id (`schemas/render-layout-v1.schema.json`); boxes come from the existing display-list/layout pass | M |
+| GO-3 | **Raster formats are PNG/SVG only**: hwp-editor's `PageImageFormat` includes jpeg/webp and its server rejects them at `cli-engine.ts:366` | `--format jpeg|webp` on the existing raster path | S |
+| GO-4 | **Edit ops are separator-delimited argv**: values containing `=>`, `=` or `:` are ambiguous (hwp-editor `ops.ts` documents the caveat), and free-text anchors collide on duplicated text | `hwp edit --ops <file.json>` applying a typed ops array (`schemas/edit-ops-v1.schema.json`) covering the 28 existing op kinds | S |
+| GO-5 | **No paragraph/run addressing**: table ops already address by numeric `table:row:col` coordinates, but everything outside a table targets text anchors only, so run-range character formatting, paragraph move, list indent/outdent and paragraph style cannot be expressed | Segment-id / `section:para` / run-range addressing on the GO-4 channel; proven on documents where the same text appears twice | M |
+| GO-6 | **No structured edit feedback**: `hwp edit` reports applied counts and names unapplied requests on stderr and fails closed without `--allow-partial`, but there is no machine-readable report, no changed-segment ids and no way to preview an edit without writing | `hwp edit --report <path>` (applied/failed ops + changed segment ids) and `--dry-run` | S |
+
+GO-2 and GO-5 are M because layout coordinates and run addressing must be checked against genuine
+files; the rest are data-structure work on existing paths. Writer-touching items (GO-4..GO-6
+output paths) end with the Hancom acceptance procedure (07 PROC) per the milestone-2 phases.
+
+## 16. Roadmap: difficulty × value plus the dependency graph
+
+### 16.1 The difficulty × value matrix
 
 **Value** is based on frequency in real documents plus practical demand (the ecosystem comparison in
 [08](08-external-research.md)).
@@ -738,7 +767,12 @@ open in their scheduled phases.
 |---|---|---|---|
 | **High value** (frequent) | **GN-2, GN-3, GN-5, GN-6, GN-8** (official presets, notation lint, document templates, table styling, editing parity — the 2026-08-20 official-document series). ✅ resolved 2026-08-20 (phase 2.1): ~~GN-7~~ (bundled regulation layer shipped). GC-4 and GC-5 (tabs, section properties), GC-8 and GC-9 (hanging indent, paragraph background). ✅ resolved 2026-07-15: ~~GE-α1 to α5 and α7, GH-1 and GH-2, GL-1, GA-5, GE-β4~~ / ✅ resolved 2026-07-18 (markdown): ~~GH-3, GH-4, GH-5, GH-6, GH-8~~ | **GN-1, GN-4** (statutory eight-level marks, document frames — writer-visible, Hancom acceptance), GG-3 and GG-4 (justify, letter spacing), GF-2 (index marks, overlap), **GA-2 ★** (reading distribution documents; the specification is public), ~~GJ-1 output~~ (DOCX export resolved 2026-08-01), **GK-1** (cell merge), **GK-2** (column deletion; addition resolved on 07-19). ✅ GC-2 and GC-3 resolved on 07-19 (J1 awaiting Hancom) | GG-1 and GG-2 (text box drop, overflow) |
 | **Medium value** | GC-6 (multi-column text boxes), GE-2 to GE-6 (picture drop, columns, number synthesis), GF-1 (%unk), **GB-12** (bibliography), **GE-β1, β2, β5** (preview, scripts, settings), ~~GG-16~~ (local rendering, resolved in PR 9 alongside GG-5, GG-6, GG-8 to GG-11, GG-17, GG-20, GG-21, GG-22 from 2026-08-13/14), **GH-3, GH-4, GH-5** (html/odt footnote markers, merged cells, in-cell blocks; markdown resolved 2026-07-18), ~~GJ-5 and GJ-6~~ (csv, txt, resolved 08-01). ✅ the whole GI series and GE-7 resolved on 07-19. ~~GK-3, GK-4, GK-6, GK-8~~, ~~GM-1, GM-2, GM-5~~, **GM-6** (corrected to already-covered), GM-7 (sealing, resolved 07-16) — ✅ resolved in the 2026-08-01 batch | GB-4 to GB-7 and GB-10 (word art, forms, grouping, memos, master pages), GC-1 (vertical writing), GD-1 to GD-3 (equations; rhwp precedent), GE-α6 (gradients), GF-3 (field creation), **GB-1 hwpx chart generation ★** (chartSpace; kordoc precedent), **GJ-2 and GJ-3** (hml, HWP 3.x; specifications public), **GG-7, GG-12 to GG-15, GG-18, GG-19** (render pixel comparison), **GE-β3 and β6** (DocOptions, embedded fonts), **GH-7** (ODT layout), **GK-5 and GK-7** (header editing, styles), **GM-3, GM-4, GM-8** (merge, split, compare), **GM-10** (PII redaction; kordoc precedent) | GB-2 and GB-3 (OLE, video), **GJ-1 full round-trip** (DOCX import; 2026-08-20 disposition: stays out of scope and is revisited only after every other roadmap item is complete — the same call covers PDF, XLS and XLSX import, with kordoc as the covering tool meanwhile), **GM-9 Web** (authenticated hosted MCP, tenant isolation and operations; Desktop is resolved) |
-| **Low value** (rare) | GA-3 and GA-4 (refusal messages), **GI-5** (embed-bin), **GL-2 and GL-3** (extraction granularity) | **GJ-4** (rtf) | GA-1 (encryption), GB-8, GB-9, GB-11 (change tracking and so on), **GJ-7** (reverse input), **GJ-8** (HWPX distribution) |
+| **Low value** (rare) | GA-3 and GA-4 (refusal messages), **GI-5** (embed-bin), **GL-2 and GL-3** (extraction granularity) | **GJ-4** (rtf) | GA-1 (encryption — **re-rated and scheduled 2026-08-22**: milestone 2 Phase 8 / GATE-03, password-supplied decryption; the concrete hwp-editor consumer moved it out of this cell), GB-8, GB-9, GB-11 (change tracking and so on), **GJ-7** (reverse input), **GJ-8** (HWPX distribution) |
+
+**The 2026-08-22 GO editor series** sits at **GO-1, GO-3, GO-4, GO-6 = S, GO-2 and GO-5 = M**, all
+with a concrete consumer (the separate hwp-editor repo), and is scheduled as milestone 2
+(Phases 5-9). It is listed here rather than in the cells because the cells predate the series;
+the same decision pulled GA-1 into milestone 2.
 
 **How to read it:** the top left (S, high) has **the best return**. Beyond GE-α (character effect
 round-trips), **GH-1 and GH-2** (markdown/HTML links and images, reusing the ODT embedding pattern)
@@ -749,7 +783,7 @@ the regulation layer is mostly presets, text rules and shipped documents rather 
 GN-1 (a new numbering format in the IR and both formats) and GN-4 (frames the writer emits) need ground
 truth and Hancom acceptance. The bottom right (L, low) is the lowest priority.
 
-### 15.2 The dependency graph
+### 16.2 The dependency graph
 
 ```
 [obtain ground truth]  ──precedes──▶  GB-1 to 7 (object rendering)  ──needs──▶  10/11 record structure interpretation
@@ -798,7 +832,7 @@ truth and Hancom acceptance. The bottom right (L, low) is the lowest priority.
   the rules it ships are the specification the rest is checked against, and GN-8 comes last because
   it is the proof that nothing the retired skill did was lost.
 
-### 15.3 Items gated on ground truth (needing genuine files and Hancom testing)
+### 16.3 Items gated on ground truth (needing genuine files and Hancom testing)
 
 The following can only start once **a genuine Hancom file is available**, per the ground-truth
 methodology in [00](00-overview.md) §4 (no guessed typesetting). The rest (especially GE-α, GH, GL,
