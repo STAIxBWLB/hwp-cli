@@ -564,7 +564,7 @@ fn write_para_properties(out: &mut String, header: &DocHeader) {
             };
             format!(
                 r##"<hh:heading type="{hty}" idRef="{id_ref}" level="{}"/>"##,
-                ps.head_level(),
+                ps.head_level().saturating_sub(1),
             )
         } else {
             r##"<hh:heading type="NONE" idRef="0" level="0"/>"##.to_string()
