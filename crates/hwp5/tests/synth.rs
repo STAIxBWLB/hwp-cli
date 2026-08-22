@@ -859,6 +859,65 @@ fn 스타일_사다리_hwp5_정의_왕복() {
 }
 
 #[test]
+fn default_source_free_numbering_stays_on_the_seven_level_hwp5_path() {
+    let doc = hwp_convert::from_markdown("1. ordinary item\n");
+    let out = tmp("default-source-free-numbering.hwp");
+
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert_eq!(
+        numberings.len(),
+        1,
+        "the default definition remains singular"
+    );
+    assert_eq!(
+        numberings[0].len(),
+        226,
+        "the default definition remains seven-level"
+    );
+
+    let reread = hwp5::read_document(&out).unwrap().document;
+    assert_eq!(reread.header.numbering_levels.len(), 1);
+    assert_eq!(reread.header.numbering_levels[0].len(), 7);
+}
+
+#[test]
+fn nonofficial_hwpx_numbering_with_level_eight_uses_the_default_hwp5_path() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx");
+    let doc = hwpx::read_document(&fixture).unwrap().document;
+    assert!(
+        doc.header
+            .numbering_levels
+            .iter()
+            .flatten()
+            .any(|level| level.fmt == hwp_model::NumFmt::CircledHangulSyllable),
+        "fixture exercises the pre-regression level-eight branch"
+    );
+    assert!(
+        doc.header
+            .numbering_levels
+            .iter()
+            .any(|levels| levels.len() != 8),
+        "fixture is not the complete direct eight-level contract"
+    );
+
+    let out = tmp("nonofficial-hwpx-default-numbering.hwp");
+    hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
+
+    let mut container = hwp5::Hwp5Container::open(&out).unwrap();
+    let doc_info = container.read_record_stream("/DocInfo").unwrap();
+    let numberings = all_records(&doc_info, 0x17);
+    assert!(
+        numberings.iter().all(|data| data.len() == 226),
+        "non-official HWPX definitions must remain on the default HWP5 serializer"
+    );
+}
+
+#[test]
 fn official_eight_level_hwp5_matches_evidence_contract() {
     let doc = hwp_convert::from_markdown_with(
         "1. level 1\n   1. level 2\n      1. level 3\n         1. level 4\n            1. level 5\n               1. level 6\n                  1. level 7\n                     1. level 8\n",
