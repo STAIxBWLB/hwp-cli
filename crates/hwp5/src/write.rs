@@ -1145,7 +1145,7 @@ fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
         return Ok(());
     }
 
-    let counters = collect_evidenced_official_numbering_counts(doc)?;
+    collect_evidenced_official_numbering_counts(doc)?;
 
     for para_shape in &mut doc.header.para_shapes {
         if para_shape.head_type() != 2 {
