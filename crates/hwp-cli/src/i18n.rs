@@ -228,7 +228,7 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "new",
         "preset",
-        "공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/gaejosik/press. 기존·한국어 별칭은 하나의 프로필로 정규화",
+        "공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/press. 기존·한국어 별칭은 하나의 프로필로 정규화",
     ),
     ("new", "margin_top", "위쪽 페이지 여백(mm, 0..=200)"),
     ("new", "margin_bottom", "아래쪽 페이지 여백(mm, 0..=200)"),

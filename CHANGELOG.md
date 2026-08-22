@@ -10,6 +10,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Removed**
+
+- The `gaejosik` official-document profile and its `개조식` alias. 개조식 is a writing style —
+  the noun-form sentence ending used inside 보고서·계획서 and 내부결재 bodies — not a document
+  class, and the profile's five typography fields could not express it. Its emitted document
+  header was identical to `notice`; the two differed only by a header/footer margin with no
+  cited source. The canonical set is now the six document types: `official`, `report`, `plan`,
+  `notice`, `minutes`, and `press`. `--preset gaejosik` and the MCP equivalent now fail with a
+  message pointing at the profile to use instead. Choose the profile by document type and apply
+  the style in the body text.
+
 ## [0.8.8]
 
 **Added**

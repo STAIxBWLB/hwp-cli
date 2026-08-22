@@ -12,10 +12,11 @@ pub enum OfficialPreset {
     Plan,
     Notice,
     Minutes,
-    /// Practice assumption: Malgun Gothic matches the profile's intended compact official style.
-    Gaejosik,
     Press,
 }
+
+/// Retired in 0.8.9: `gaejosik` named a writing style, not a document class.
+const GAEJOSIK_IS_NOT_A_PROFILE: &str = "개조식은 문체이며 공문서 프로필이 아닙니다. 보고서·계획서는 --preset report|plan을 쓰고, 명사형 종결은 본문에서 적용하세요.";
 
 impl OfficialPreset {
     /// Source-compatible legacy spelling; new callers should use [`Self::Official`].
@@ -31,7 +32,6 @@ impl OfficialPreset {
             "plan" => Ok(Self::Plan),
             "notice" => Ok(Self::Notice),
             "minutes" => Ok(Self::Minutes),
-            "gaejosik" => Ok(Self::Gaejosik),
             "press" => Ok(Self::Press),
             _ => match value {
                 "기안" | "기안문" | "공문" | "공문서" => Ok(Self::Official),
@@ -39,8 +39,11 @@ impl OfficialPreset {
                 "계획" | "계획서" | "사업계획" | "사업계획서" => Ok(Self::Plan),
                 "공고" | "공고문" | "고시" => Ok(Self::Notice),
                 "회의록" | "회의기록" => Ok(Self::Minutes),
-                "개조식" => Ok(Self::Gaejosik),
                 "보도" | "보도자료" => Ok(Self::Press),
+                // 개조식 is a sentence-ending style, not a document class, so it has no
+                // profile row. Name it explicitly instead of leaving it to the catch-all.
+                "개조식" => Err(GAEJOSIK_IS_NOT_A_PROFILE.to_string()),
+                _ if ascii == "gaejosik" => Err(GAEJOSIK_IS_NOT_A_PROFILE.to_string()),
                 _ => Err(format!("알 수 없는 공문서 프리셋: {value}")),
             },
         }
@@ -77,7 +80,7 @@ const MM_10: i32 = 2834;
 const MM_15: i32 = 4252;
 const MM_20: i32 = 5668;
 
-const PROFILES: [OfficialProfile; 7] = [
+const PROFILES: [OfficialProfile; 6] = [
     OfficialProfile {
         preset: OfficialPreset::Official,
         name: "official",
@@ -124,15 +127,6 @@ const PROFILES: [OfficialProfile; 7] = [
         page_number: false,
     },
     OfficialProfile {
-        preset: OfficialPreset::Gaejosik,
-        name: "gaejosik",
-        body_font: OfficialBodyFont::MalgunGothic,
-        body_size: 1500,
-        line_spacing: 160,
-        header_footer: MM_15,
-        page_number: true,
-    },
-    OfficialProfile {
         preset: OfficialPreset::Press,
         name: "press",
         body_font: OfficialBodyFont::HcrBatang,
@@ -144,7 +138,7 @@ const PROFILES: [OfficialProfile; 7] = [
 ];
 
 /// Return the complete immutable profile registry.
-pub const fn profiles() -> &'static [OfficialProfile; 7] {
+pub const fn profiles() -> &'static [OfficialProfile; 6] {
     &PROFILES
 }
 
@@ -156,8 +150,7 @@ pub const fn profile(preset: OfficialPreset) -> &'static OfficialProfile {
         OfficialPreset::Plan => &PROFILES[2],
         OfficialPreset::Notice => &PROFILES[3],
         OfficialPreset::Minutes => &PROFILES[4],
-        OfficialPreset::Gaejosik => &PROFILES[5],
-        OfficialPreset::Press => &PROFILES[6],
+        OfficialPreset::Press => &PROFILES[5],
     }
 }
 

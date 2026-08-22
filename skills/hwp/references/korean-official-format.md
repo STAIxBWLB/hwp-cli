@@ -398,12 +398,12 @@ The common 9-section backbone (individual 사업단 forms vary):
 A shorter field sequence shares the report skeleton: 추진배경/목적 → 추진방향 →
 추진계획(일시·장소·대상·내용·방법) → 소요예산 → 추진일정 → 행정사항 → [기대효과].
 
-## 11. Margins and fonts — verified engine behavior, not regulation · practice / assumption
+## 11. Margins and fonts — verified engine behavior, not regulation · practice
 
 Source: [docs/design/23-hwpx-skill-absorption.md](../../../docs/design/23-hwpx-skill-absorption.md)
 §3 (margin check, D-14) and [docs/design/12-feature-gaps.md](../../../docs/design/12-feature-gaps.md)
 GN-9; 2020 편람 서식 설계기준. Confidence: verified implementation behavior (margins and
-profiles) / practice (fonts and line spacing) / assumption (gaejosik font).
+profiles) / practice (fonts and line spacing).
 
 ### Margins (여백)
 
@@ -420,11 +420,13 @@ override one side explicitly with `--margin-top`, `--margin-bottom`, `--margin-l
 | `plan` | HCR Batang 15pt / 160% | 15 mm | `- N -` |
 | `notice` | Malgun Gothic 15pt / 160% | 10 mm | `- N -` |
 | `minutes` | HCR Batang 14pt / 130% | 0 mm | none |
-| `gaejosik` | Malgun Gothic 15pt / 160% (assumption) | 15 mm | `- N -` |
 | `press` | HCR Batang 14pt / 160% | 10 mm | `- N -` |
 
 `official` is canonical; `gian` and `gongmun` are semantic compatibility aliases, not raw-byte
-promises. Korean aliases normalize to the same seven profiles. The verified HWPX path writes the
+promises. Korean aliases normalize to the same six profiles. There is exactly one profile per
+document type. 개조식 is a writing style (§6 어투), not a document class, so it names no profile;
+the `gaejosik` profile was retired in 0.8.9 and `--preset gaejosik` now fails with a message
+pointing here. The verified HWPX path writes the
 eight-level definition directly, and the HWP5 path uses the safe, direct encoding observed in
 Hancom Office. At levels 2, 6 and 8, the count continues after `하` as observed; no approximation
 is used or implied.
@@ -439,7 +441,7 @@ is used or implied.
 - **명조 계열 (휴먼명조/함초롬바탕) 14-15pt** — the traditional 보고서 convention.
 - Line spacing: **123%** (한글 기본값) / **160%** (보고서 가독성 관행) / **130% 이상**
   (큰글자 서식 — the only statutory value, 시행규칙 별표5, and it applies to 큰글자 서식
-  only). `gaejosik`'s Malgun Gothic default is explicitly an implementation assumption.
+  only).
 - 자간 0 / 장평 100 are the field defaults.
 
 ## 12. Sources and the pre-send checklist

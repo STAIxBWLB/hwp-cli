@@ -117,7 +117,7 @@
 | `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX 경로 |
 | `--from` | `<FROM>` |  | 입력 markdown/JSON 파일 (생략 시 빈 문서) |
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
-| `--preset` | `<PRESET>` |  | 공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/gaejosik/press. 기존·한국어 별칭은 하나의 프로필로 정규화 |
+| `--preset` | `<PRESET>` |  | 공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/press. 기존·한국어 별칭은 하나의 프로필로 정규화 |
 | `--margin-top` | `<MARGIN_TOP>` |  | 위쪽 페이지 여백(mm, 0..=200) |
 | `--margin-bottom` | `<MARGIN_BOTTOM>` |  | 아래쪽 페이지 여백(mm, 0..=200) |
 | `--margin-left` | `<MARGIN_LEFT>` |  | 왼쪽 페이지 여백(mm, 0..=200) |

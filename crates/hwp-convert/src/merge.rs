@@ -272,7 +272,6 @@ mod tests {
             OfficialPreset::Plan,
             OfficialPreset::Notice,
             OfficialPreset::Minutes,
-            OfficialPreset::Gaejosik,
             OfficialPreset::Press,
         ] {
             let mut target = from_markdown_with(

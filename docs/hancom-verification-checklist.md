@@ -293,7 +293,7 @@ from unverified to confirmed in Hancom. When the C series passes, the items reso
 ## O. Phase 2.2 official profiles and eight-level numbering (unverified)
 
 Run `tools/gen_verification_set.sh /private/directory` to create the bounded Phase 2.2 set. It
-creates exactly fourteen labelled documents, one HWP and one HWPX for each canonical profile, plus
+creates exactly twelve labelled documents, one HWP and one HWPX for each canonical profile, plus
 the content-free `phase-02.2-index.tsv`. The generator only proves internal reread and structural
 validation; it creates no Hancom pass receipt and makes no Hancom acceptance claim.
 
@@ -323,7 +323,6 @@ not a pass and blocks this phase.
 | plan | HCR Batang | 15 pt | 160% | 15 mm | on, `- N -` |
 | notice | Malgun Gothic | 15 pt | 160% | 10 mm | on, `- N -` |
 | minutes | HCR Batang | 14 pt | 130% | 0 mm | off |
-| gaejosik | Malgun Gothic | 15 pt | 160% | 15 mm | on, `- N -` |
 | press | HCR Batang | 14 pt | 160% | 10 mm | on, `- N -` |
 
 After each actual observation, create a private `hancom-verification-receipt-v1` with the observed

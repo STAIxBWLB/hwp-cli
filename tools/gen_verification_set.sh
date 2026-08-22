@@ -118,7 +118,6 @@ if not result.get("valid") or result.get("warnings"):
       report|plan) printf '%s\t%s\t%s\t%s\t%s\n' 'HCR Batang' '15' '160' '15' 'on (- N -)' ;;
       notice) printf '%s\t%s\t%s\t%s\t%s\n' 'Malgun Gothic' '15' '160' '10' 'on (- N -)' ;;
       minutes) printf '%s\t%s\t%s\t%s\t%s\n' 'HCR Batang' '14' '130' '0' 'off' ;;
-      gaejosik) printf '%s\t%s\t%s\t%s\t%s\n' 'Malgun Gothic' '15' '160' '15' 'on (- N -)' ;;
       press) printf '%s\t%s\t%s\t%s\t%s\n' 'HCR Batang' '14' '160' '10' 'on (- N -)' ;;
     esac
   }
@@ -127,7 +126,7 @@ if not result.get("valid") or result.get("warnings"):
   make_source "$SOURCE"
   printf '%s\n' $'profile\tformat\tartifact_sha256\texpected_font\tbody_pt\tline_spacing_percent\tmargins_mm\theader_footer_mm\tpage_number\tnumbering\thwp5_encoding\tinternal_reread\tinternal_validate' > "$STAGED_INDEX"
 
-  for profile in official report plan notice minutes gaejosik press; do
+  for profile in official report plan notice minutes press; do
     IFS=$'\t' read -r font body_pt line_spacing header_footer page_number <<<"$(profile_metadata "$profile")"
     for format in hwp hwpx; do
       artifact="$STAGE/phase-02.2-${profile}.${format}"
@@ -153,12 +152,12 @@ if not result.get("valid") or result.get("warnings"):
   done
 
   artifact_count="$(find "$STAGE" -maxdepth 1 -type f \( -name 'phase-02.2-*.hwp' -o -name 'phase-02.2-*.hwpx' \) | wc -l | tr -d ' ')"
-  [[ "$artifact_count" == '14' ]] || { echo "expected 14 artifacts, found $artifact_count" >&2; exit 1; }
+  [[ "$artifact_count" == '12' ]] || { echo "expected 12 artifacts, found $artifact_count" >&2; exit 1; }
   [[ -s "$STAGED_INDEX" ]] || { echo 'content-free index missing or empty' >&2; exit 1; }
 
   # The index is the completion receipt. Publish it only after every staged
   # artifact passed self-reread and structure validation.
-  for profile in official report plan notice minutes gaejosik press; do
+  for profile in official report plan notice minutes press; do
     for format in hwp hwpx; do
       artifact="phase-02.2-${profile}.${format}"
       mv -f "$STAGE/$artifact" "$DEST/$artifact"
@@ -166,7 +165,7 @@ if not result.get("valid") or result.get("warnings"):
   done
   mv -f "$STAGED_INDEX" "$INDEX"
   echo "Phase 2.2 private verification set ready: $DEST"
-  echo "Artifacts: 14 (all self-reread and structurally validated)"
+  echo "Artifacts: 12 (all self-reread and structurally validated)"
   echo "Index: $INDEX"
   echo 'No Hancom observation or pass receipt has been created.'
   exit 0
