@@ -310,6 +310,9 @@ fn parse_para_shape(data: &[u8]) -> Result<ParaShape> {
         line_spacing_old,
         tab_def_id,
         numbering_id,
+        // HWP5 stores only levels 1 through 7 in attr1; HWPX-only semantic levels
+        // must never be inferred while parsing original binary documents.
+        list_level: None,
         border_fill_id,
         border_offsets,
         line_spacing_type,
