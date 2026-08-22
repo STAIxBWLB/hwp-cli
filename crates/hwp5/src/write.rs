@@ -1023,31 +1023,22 @@ fn ensure_para_shape_defaults(header: &mut hwp_model::DocHeader) {
 }
 
 /// Materializes only the complete direct NUMBERING contract observed in the
-/// private Hancom-saved source. Other semantic circled-Hangul lists fail before
-/// publication instead of falling back to an unproven HWP5 encoding.
+/// private Hancom-saved source. A source-free document that merely contains a
+/// circled-Hangul level remains on the established default serializer unless
+/// every definition carries the exact eight-level official signature.
 fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
     if doc.meta.source_format == "hwp5" {
         return Ok(());
     }
 
-    let contains_circled_hangul = doc
-        .header
-        .numbering_levels
-        .iter()
-        .flatten()
-        .any(|level| level.fmt == hwp_model::NumFmt::CircledHangulSyllable);
-    if !contains_circled_hangul {
+    let is_direct_contract = doc.header.numberings.is_empty()
+        && doc.header.numbering_levels.len() == 8
+        && crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels);
+    if !is_direct_contract {
+        // HWPX carries semantic numbering but no raw HWP5 NUMBERING record.
+        // Non-official definitions must keep the prior default serializer;
+        // reinterpreting them as the private direct contract would be a guess.
         return Ok(());
-    }
-
-    if !doc.header.numberings.is_empty()
-        || doc.header.numbering_levels.len() != 8
-        || !crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels)
-    {
-        return Err(crate::error::Hwp5Error::UnsupportedOfficialNumberingRange(
-            "the direct HWP5 contract requires exactly eight source-free official definitions"
-                .to_string(),
-        ));
     }
 
     for para_shape in &mut doc.header.para_shapes {
