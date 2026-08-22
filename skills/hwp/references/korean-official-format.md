@@ -398,34 +398,48 @@ The common 9-section backbone (individual 사업단 forms vary):
 A shorter field sequence shares the report skeleton: 추진배경/목적 → 추진방향 →
 추진계획(일시·장소·대상·내용·방법) → 소요예산 → 추진일정 → 행정사항 → [기대효과].
 
-## 11. Margins and fonts — engine behavior, not regulation · practice / unverified
+## 11. Margins and fonts — verified engine behavior, not regulation · practice / assumption
 
-Source: [docs/design/23-hwpx-skill-absorption.md](23-hwpx-skill-absorption.md) §3 (Margin
-check, D-14) and docs/design/12-feature-gaps.md GN-9; 2020 편람 서식 설계기준. Confidence:
-unverified (top 30 mm) / practice (fonts and line spacing).
+Source: [docs/design/23-hwpx-skill-absorption.md](../../../docs/design/23-hwpx-skill-absorption.md)
+§3 (margin check, D-14) and [docs/design/12-feature-gaps.md](../../../docs/design/12-feature-gaps.md)
+GN-9; 2020 편람 서식 설계기준. Confidence: verified implementation behavior (margins and
+profiles) / practice (fonts and line spacing) / assumption (gaejosik font).
 
 ### Margins (여백)
 
-**These are current engine behavior — never cite them as regulation.** The `gian|report`
-preset bakes **top 30 / bottom 15 / left 20 / right 15 mm (30/15/20/15)**, a value set
-inherited from the old skill's uncited prose. The primary-source check (D-14, recorded in
-doc 23 §3, owner-approved 2026-08-21) found **no authoritative source for top 30 mm** —
-confidence unverified — while the 2020 편람 서식 기준 is **top 20 / bottom 10 / left 20 /
-right 20 mm**. GN-9 stays open; any preset correction is Phase 2.2 scope (a writer change
-needs the Hancom acceptance procedure). Until then the reference states the preset values as
-practice/unverified, never as regulation or as 편람 official.
+**These are verified engine behavior — never cite them as regulation.** Every canonical profile
+starts with **top 20 / bottom 10 / left 20 / right 20 mm (20/10/20/20)**. The old top-30 mm value
+had no authoritative source; the current tuple agrees with the 2020 편람 reference. A caller may
+override one side explicitly with `--margin-top`, `--margin-bottom`, `--margin-left` or
+`--margin-right`; that override is a caller choice, not a statutory claim.
+
+| Canonical profile | Body default | Header/footer | Page number |
+|---|---|---|---|
+| `official` | Malgun Gothic 12pt / 160% | 0 mm | none |
+| `report` | HCR Batang 15pt / 160% | 15 mm | `- N -` |
+| `plan` | HCR Batang 15pt / 160% | 15 mm | `- N -` |
+| `notice` | Malgun Gothic 15pt / 160% | 10 mm | `- N -` |
+| `minutes` | HCR Batang 14pt / 130% | 0 mm | none |
+| `gaejosik` | Malgun Gothic 15pt / 160% (assumption) | 15 mm | `- N -` |
+| `press` | HCR Batang 14pt / 160% | 10 mm | `- N -` |
+
+`official` is canonical; `gian` and `gongmun` are semantic compatibility aliases, not raw-byte
+promises. Korean aliases normalize to the same seven profiles. The verified HWPX path writes the
+eight-level definition directly, and the HWP5 path uses the safe, direct encoding observed in
+Hancom Office. At levels 2, 6 and 8, the count continues after `하` as observed; no approximation
+is used or implied.
 
 ### Fonts and line spacing (글꼴·줄간격)
 
 **No statute fixes the body font, size, or line spacing of a general 기안문** — only 서식
 (별지·민원 서식) typography is statutory. Everything below is 관행 (practice):
 
-- **맑은고딕 11.5pt** — 전자결재 시스템 (온나라, K-에듀파인 등) default; the 현행 기안문
-  convention.
+- **맑은고딕 12pt** — `official` profile default; a current official-document practice,
+  not a statutory body-style requirement.
 - **명조 계열 (휴먼명조/함초롬바탕) 14-15pt** — the traditional 보고서 convention.
 - Line spacing: **123%** (한글 기본값) / **160%** (보고서 가독성 관행) / **130% 이상**
   (큰글자 서식 — the only statutory value, 시행규칙 별표5, and it applies to 큰글자 서식
-  only).
+  only). `gaejosik`'s Malgun Gothic default is explicitly an implementation assumption.
 - 자간 0 / 장평 100 are the field defaults.
 
 ## 12. Sources and the pre-send checklist
