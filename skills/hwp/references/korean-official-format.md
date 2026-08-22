@@ -58,6 +58,12 @@ Generators must emit levels 5-6 as the 3-character parenthesis combinations and 
 the single Unicode code points above — mixing the two forms (e.g. a single ⑴ at level 5) is a
 format error.
 
+**Conflicting secondary source, superseded.** 한국공공언어진흥원's 「공문서 작성법 길라잡이」
+(2025-01-08) prints levels 5-6 as the precomposed `⑴ ⑵ ⑶ ⑷` and `㈎ ㈏ ㈐ ㈑`. 시행규칙
+제2조제1항 is the higher authority and gives the parenthesis combinations, which is also what
+14/14 genuine Hancom artifacts showed under GN-9's verification pass. The engine emits the
+3-character form; do not file this as a defect.
+
 ## 2. Indent ladder and the single-item rule · confirmed
 
 Source: 2020 행정업무운영 편람 (항목 정렬); 시행규칙 제2조. Confidence: confirmed.
@@ -110,13 +116,17 @@ Source: 시행규칙 제2조제1항 단서 (special symbols permitted when neede
 
 - The proviso of 제2조제1항 permits special symbols such as `□ ○ - ㆍ` instead of the regular
   8-level marks "필요한 경우" (exceptional, optional).
-- **No statute and no 편람 page fixes a per-level mapping of these symbols.** The de-facto
-  ladder `□`(대) → `○`(중) → `-`(소) → `ㆍ`(세) is field convention (실무 관행), common in
-  보고서 — it is not a 법정 순서.
+- **No statute and no 편람 page fixes a per-level mapping of these symbols**, so the ladder
+  `□`(대) → `○`(중) → `-`(소) → `ㆍ`(세) is field convention (실무 관행), common in 보고서 —
+  not a 법정 순서. It does have a published source: 한국공공언어진흥원's 「공문서 작성법
+  길라잡이」(2025-01-08) fixes the same four rungs twice, as `□ ○ - •` in its 8-level 원칙
+  table (제1장 다) and as `□>○>->∙` in its 유의 사항 table (제1장 2). Cite that for the order;
+  it raises the convention above hearsay without making it statutory.
 - Code point of the fourth symbol: the 시행규칙 정본 encodes it as **ㆍ (U+318D, HANGUL LETTER
-  ARAEA, 아래아)**. Other materials render the same slot as `·` (U+00B7) or `∙` (U+2219). All
-  three encode the same 가운뎇점 (middle dot) intent; use U+318D for 정본 fidelity, U+00B7
-  when readability comes first.
+  ARAEA, 아래아)**. Other materials render the same slot as `·` (U+00B7), `∙` (U+2219) or
+  `•` (U+2022) — the 길라잡이 uses the last two in its two tables. All four encode the same
+  가운뎇점 (middle dot) intent; use U+318D for 정본 fidelity, U+00B7 when readability comes
+  first. The engine emits U+00B7.
 - 편람: do not use special symbols that risk breaking in electronic input/processing.
 - Cross-reference: `official-documents.md`'s markdown contract maps literal `□ `/`○ ` runs and
   `-`/`·` bullets to this ladder — the two files must agree exactly.
@@ -458,6 +468,12 @@ is used or implied.
   **no rule text is copied** from it; this acknowledgment is the full extent of the reuse.
 - **Primary basis** — 「행정업무의 운영 및 혁신에 관한 규정」 및 동 시행규칙, 「공공기록물
   관리에 관한 법률 시행령」 제18조, 2020 행정업무운영 편람 (p.43 for 단모음).
+- **한국공공언어진흥원, 「공문서 작성법 길라잡이」 (2025-01-08)** — secondary source, read
+  2026-08-22. Cited in §1 for a recorded conflict on levels 5-6 and in §3 for the `□ ○ - ㆍ`
+  rung order. Its 제2장-제5장 ○/× notation tables are the labelled corpus behind the `hwp lint`
+  rule set (GN-3). It ranks below 시행규칙 and the 편람 and
+  above field convention; where it conflicts with either, the conflict is recorded, not resolved
+  in its favour. Not committed to this repository — cited by 장·절 only.
 - **Old `hwpx` skill** (STAIxBWLB/skills, read-only) — the 기안문 10-part box, document
   classes and skeleton content were rewritten from it.
 
