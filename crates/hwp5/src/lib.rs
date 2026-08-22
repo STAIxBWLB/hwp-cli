@@ -37,5 +37,5 @@ pub use read::{BoundedReadLimits, BoundedReadSnapshot, ReadResult, ScriptPresenc
 pub use summary::parse_summary;
 pub use write::{
     WriteOptions, rewrite_document_with_report, validate_evidenced_official_numbering,
-    write_document, write_document_with_report,
+    validate_official_hwp_numbering, write_document, write_document_with_report,
 };

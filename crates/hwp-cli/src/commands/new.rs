@@ -186,9 +186,8 @@ pub fn execute(
     // definition per semantic level only. Reject independently restarted
     // ordered lists before opening the transactional staging path; HWPX
     // remains available for that topology.
-    if write_hwp {
-        hwp5::validate_evidenced_official_numbering(&doc)
-            .map_err(|error| anyhow::anyhow!(error))?;
+    if write_hwp && preset.is_some() {
+        hwp5::validate_official_hwp_numbering(&doc).map_err(|error| anyhow::anyhow!(error))?;
     }
 
     // 메타데이터 지정("키=값")을 덮어쓴다(JSON IR에 있던 값보다 우선).

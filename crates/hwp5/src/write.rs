@@ -1033,6 +1033,31 @@ pub fn validate_evidenced_official_numbering(doc: &Document) -> Result<()> {
     collect_evidenced_official_numbering_counts(doc).map(|_| ())
 }
 
+/// Validates an official-profile HWP request before output staging. Unlike the
+/// generic writer path, the profile contract cannot silently fall back to the
+/// default seven-level HWP5 NUMBERING record: all authored ordered-list
+/// definitions must match the proven direct record, including `start = 1`.
+pub fn validate_official_hwp_numbering(doc: &Document) -> Result<()> {
+    if doc.meta.source_format == "hwp5" || !doc.header.numberings.is_empty() {
+        return Ok(());
+    }
+
+    if doc.header.numbering_levels.is_empty() {
+        return Ok(());
+    }
+
+    if !crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels) {
+        return Err(
+            crate::error::Hwp5Error::UnsupportedOfficialNumberingTopology(
+                "official HWP supports only the evidenced ordered-list definition with start = 1"
+                    .to_string(),
+            ),
+        );
+    }
+
+    validate_evidenced_official_numbering(doc)
+}
+
 /// Counts all numbered paragraphs that the synthetic writer will emit, while
 /// also enforcing the direct-record topology. Keeping the traversal beside the
 /// writer avoids silently treating text-only control mirrors as output.

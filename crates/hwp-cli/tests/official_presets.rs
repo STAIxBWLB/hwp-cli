@@ -303,6 +303,51 @@ fn official_hwp_rejects_independent_ordered_lists_before_publication() {
 }
 
 #[test]
+fn official_hwp_rejects_explicit_ordered_list_start_but_hwpx_preserves_it() {
+    let root = temp_dir("explicit-official-list-start");
+    let input = root.join("input.md");
+    let hwp_output = root.join("explicit-start.hwp");
+    let hwpx_output = root.join("explicit-start.hwpx");
+    fs::write(&input, "3. explicit start\n").unwrap();
+
+    let hwp_result = command_output(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&input)
+            .args(["--preset", "official", "--output"])
+            .arg(&hwp_output),
+        "explicit official HWP list start",
+    );
+    assert!(
+        !hwp_result.status.success(),
+        "unproven explicit start must fail closed for HWP"
+    );
+    assert!(
+        String::from_utf8_lossy(&hwp_result.stderr).contains("직접 HWP5 공식 번호 체계 구조"),
+        "stderr: {}",
+        String::from_utf8_lossy(&hwp_result.stderr)
+    );
+    assert!(
+        !hwp_output.exists(),
+        "rejected explicit start must not publish an HWP"
+    );
+
+    let hwpx_result = command_output(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&input)
+            .args(["--preset", "official", "--output"])
+            .arg(&hwpx_output),
+        "explicit official HWPX list start",
+    );
+    assert_success(&hwpx_result, "explicit official HWPX list start");
+    let document = reread(&hwpx_output);
+    assert_eq!(document.header.numbering_levels[0][0].start, 3);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn aliases_margins_and_input_failures_are_shipped_binary_gates() {
     let root = temp_dir("edge-matrix");
     let input = root.join("input.md");
