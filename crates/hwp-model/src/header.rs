@@ -288,7 +288,7 @@ impl ParaShape {
     /// explicit levels 8..=10, represented by `list_level`.
     pub fn head_level(&self) -> u8 {
         self.list_level
-            .unwrap_or_else(|| ((self.attr1 >> 25) & 0x7) as u8)
+            .unwrap_or(((self.attr1 >> 25) & 0x7) as u8)
             .clamp(1, 10)
     }
 
