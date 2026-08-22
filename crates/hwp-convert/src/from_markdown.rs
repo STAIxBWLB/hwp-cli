@@ -16,11 +16,12 @@ use std::path::{Path, PathBuf};
 
 use hwp_model::{
     BinRef, BinStream, BorderFill, BorderFillId, BorderLine, Cell, CharShape, CharShapeId, Control,
-    DocMeta, Document, FaceName, GenericControl, HwpChar, HwpUnit, LANG_COUNT, NumFmt, NumLevel,
-    ParaShape, ParaShapeId, Paragraph, ParagraphList, Picture, Section, Style, StyleId, Table,
-    ctrl_char,
+    DocMeta, Document, FaceName, GenericControl, HwpChar, HwpUnit, LANG_COUNT, NumLevel, ParaShape,
+    ParaShapeId, Paragraph, ParagraphList, Picture, Section, Style, StyleId, Table, ctrl_char,
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+use crate::official::{self, OfficialPreset, PageMarginOverrides};
 
 /// Number of base para shapes (indexes 0~4) created by default_header. List para shapes are
 /// appended after these (5~). from_html's list para shapes use the same basis.
@@ -72,6 +73,8 @@ pub struct MarkdownImportOptions<'a> {
     /// Official-document preset — if set, adjusts page margins, fonts, numbering scheme, and
     /// page numbers to the regulation. `None` keeps the existing defaults (no change).
     pub preset: Option<OfficialPreset>,
+    /// Side-specific page margins resolved after profile/plain defaults.
+    pub page_margins: PageMarginOverrides,
 }
 
 #[cfg(test)]
@@ -143,17 +146,6 @@ mod official_depth_limit_tests {
         let after = text.find("after").unwrap();
         assert!(before < inside && inside < after, "text order: {text}");
     }
-}
-
-/// Korean official-document drafting regulation preset. Common: A4 margins
-/// top30/bottom15/left20/right15mm, line spacing 160%, 8-level ordered-list numbering,
-/// and page number bottom center (pgnp, genuine-measured sideChar '-').
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum OfficialPreset {
-    /// Draft/official document: Malgun Gothic 11.5pt (e-approval system standard).
-    Gian,
-    /// Report/project plan: HCR Batang 15pt (traditional practice).
-    Report,
 }
 
 /// Char shape ID layout (must match default_header). from_html uses the same palette.
@@ -446,52 +438,6 @@ pub fn default_header() -> hwp_model::DocHeader {
     header
 }
 
-/// Applies the official-document preset to the header — fonts/sizes and the eight-level ordered
-/// numbering scheme. (Margins and page numbers are handled by inject_section_controls.)
-pub(crate) fn apply_official_preset(header: &mut hwp_model::DocHeader, preset: OfficialPreset) {
-    // Body/heading sizes (HWPUNIT/100pt): draft 11.5pt·heading 15pt / report 15pt·heading 18pt.
-    let (body, headings) = match preset {
-        OfficialPreset::Gian => (1150, [1500, 1400, 1300, 1200, 1150, 1150]),
-        OfficialPreset::Report => (1500, [1800, 1700, 1600, 1550, 1500, 1500]),
-    };
-    if preset == OfficialPreset::Gian {
-        // Replace only slot 0 (body font) with Malgun Gothic — keep 1 (HCR Dotum, inline code).
-        for slot in 0..LANG_COUNT {
-            header.fonts[slot][0] = FaceName {
-                name: "맑은 고딕".to_string(),
-                attr: 0x01,
-                default_name: Some("Malgun Gothic".to_string()),
-                ..FaceName::default()
-            };
-        }
-    }
-    // Size reassignment: 4~9 = H1~H6; the rest (body/emphasis/link/strike/code) get the body size.
-    for (i, cs) in header.char_shapes.iter_mut().enumerate() {
-        cs.base_size = match i.checked_sub(shapes::HEADING_BASE as usize) {
-            Some(h) if h < headings.len() => headings[h],
-            _ => body,
-        };
-    }
-    // Ordered list numbering: 1. → 가. → 1) → 가) → (1) → (가) → ① → ㉮.
-    for levels in &mut header.numbering_levels {
-        for (i, nl) in levels.iter_mut().enumerate() {
-            let (fmt, template) = match i {
-                0 => (NumFmt::Digit, "^1."),
-                1 => (NumFmt::HangulSyllable, "^2."),
-                2 => (NumFmt::Digit, "^3)"),
-                3 => (NumFmt::HangulSyllable, "^4)"),
-                4 => (NumFmt::Digit, "(^5)"),
-                5 => (NumFmt::HangulSyllable, "(^6)"),
-                6 => (NumFmt::CircledDigit, "^7"),
-                7 => (NumFmt::CircledHangulSyllable, "^8"),
-                _ => break,
-            };
-            nl.fmt = fmt;
-            nl.template = template.to_string();
-        }
-    }
-}
-
 /// Converts markdown text into a document (existing signature — relative-path images keep alt after a warning).
 pub fn from_markdown(md: &str) -> Document {
     from_markdown_with(md, &MarkdownImportOptions::default())
@@ -597,7 +543,7 @@ fn from_markdown_inner(
     }
     if inject {
         // Inject section/column definitions into the first paragraph — prerequisite for hwp5/Hancom compatibility
-        inject_section_controls(&mut b.paragraphs[0], opts.preset);
+        inject_section_controls(&mut b.paragraphs[0], opts.preset, opts.page_margins);
     }
 
     // Merges the para shapes and numbering/bullet definitions created for lists into the header.
@@ -610,7 +556,7 @@ fn from_markdown_inner(
     header.numbering_levels = b.numbering_levels;
     header.bullet_chars = b.bullet_chars;
     if let Some(preset) = opts.preset {
-        apply_official_preset(&mut header, preset);
+        official::apply_profile(&mut header, preset);
     }
 
     (
@@ -1625,8 +1571,12 @@ fn heading_level(level: HeadingLevel) -> u16 {
 
 /// Inserts secd/cold extended controls (+ pgnp with a preset) before the first paragraph
 /// (including the 8-WCHAR shift per control).
-pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<OfficialPreset>) {
-    use hwp_model::{Control, GenericControl, HwpUnit, PageDef, SectionDef};
+pub(crate) fn inject_section_controls(
+    para: &mut Paragraph,
+    preset: Option<OfficialPreset>,
+    margins: PageMarginOverrides,
+) {
+    use hwp_model::{Control, GenericControl, SectionDef};
     if para
         .controls
         .iter()
@@ -1634,8 +1584,9 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
     {
         return;
     }
-    // Number of extended controls to insert: secd + cold (+ preset page number pgnp).
-    let n_ctrl = if preset.is_some() { 3 } else { 2 };
+    // Number of extended controls to insert: secd + cold (+ profile page number pgnp).
+    let has_page_number = official::has_page_number(preset);
+    let n_ctrl = if has_page_number { 3 } else { 2 };
     // Shift existing references
     for ch in &mut para.chars {
         if let HwpChar::ExtCtrl {
@@ -1662,25 +1613,8 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
     // Merging consecutive same-id runs (e.g. the [(0,0),(16,0)] duplication created by secd/cold
     // insertion) is applied by the writer across the whole synthesis path.
 
-    // Margins: default is Hancom new document (left/right 30, top 20, bottom 15mm); the official
-    // preset uses the drafting regulation (top 30, bottom 15, left 20, right 15mm). Header/footer 15mm is common.
-    let (ml, mr, mt, mb) = if preset.is_some() {
-        (5668, 4252, 8504, 4252)
-    } else {
-        (8504, 8504, 5668, 4252)
-    };
-    let page = PageDef {
-        width: HwpUnit(59528),
-        height: HwpUnit(84186),
-        margin_left: HwpUnit(ml),
-        margin_right: HwpUnit(mr),
-        margin_top: HwpUnit(mt),
-        margin_bottom: HwpUnit(mb),
-        margin_header: HwpUnit(4252),
-        margin_footer: HwpUnit(4252),
-        gutter: HwpUnit(0),
-        attr: 0,
-    };
+    let mut page = official::page_def(preset);
+    margins.apply(&mut page);
     para.controls.insert(
         0,
         Control::SectionDef(SectionDef {
@@ -1723,7 +1657,7 @@ pub(crate) fn inject_section_controls(para: &mut Paragraph, preset: Option<Offic
     };
     para.chars.insert(0, ext(2, *b"secd", 0));
     para.chars.insert(1, ext(2, *b"cold", 1));
-    if preset.is_some() {
+    if has_page_number {
         // Page number bottom center (pgnp, regulation §10). 12B: props (u32: format DIGIT=0 |
         // position BOTTOM_CENTER=5 <<8) + reserved 6B + sideChar WCHAR — genuine measurement
         // (same layout as hwpx read build_pgnp) has sideChar '-' ("- 1 -" notation).
@@ -2072,6 +2006,7 @@ mod tests {
                 base_dir,
                 roots,
                 preset: None,
+                ..Default::default()
             }
         }
 
@@ -2156,6 +2091,7 @@ mod tests {
                 base_dir: Some(&root),
                 roots: &roots,
                 preset: None,
+                ..Default::default()
             },
         )
         .expect_err("루트 밖을 가리키는 심링크는 하드 에러");
@@ -2168,6 +2104,7 @@ mod tests {
                 base_dir: Some(&root),
                 roots: &roots,
                 preset: None,
+                ..Default::default()
             },
         )
         .expect("루트 안 심링크는 임베드");
@@ -2367,9 +2304,7 @@ mod tests {
         );
     }
 
-    /// Official preset: regulation margins, fonts/sizes, eight-level numbering, and page number
-    /// (pgnp)
-    /// are applied, and the default path without a preset must keep the existing values.
+    /// Official profiles apply their locked typography, margins, numbering, and page-number policy.
     #[test]
     fn 공문서_프리셋() {
         use hwp_model::{Control, NumFmt};
@@ -2411,7 +2346,7 @@ mod tests {
                 .any(|c| matches!(c, Control::Generic(g) if g.ctrl_id == *b"pgnp"))
         );
 
-        // report: margins top30/bottom15/left20/right15mm, HCR Batang 15pt, H1 18pt.
+        // report: margins top20/bottom10/left20/right20mm, HCR Batang 15pt, H1 18pt.
         let report = from_markdown_with(md, &opts(Some(OfficialPreset::Report)));
         let p = page_of(&report);
         assert_eq!(
@@ -2421,22 +2356,22 @@ mod tests {
                 p.margin_right.0,
                 p.margin_bottom.0
             ),
-            (5668, 8504, 4252, 4252)
+            (5668, 5668, 5668, 2834)
         );
         assert_eq!(report.header.fonts[0][0].name, "함초롬바탕");
         assert_eq!(report.header.char_shapes[0].base_size, 1500);
         assert_eq!(report.header.char_shapes[4].base_size, 1800); // H1
         assert_eq!(report.header.char_shapes[15].base_size, 1500); // inline code gets the body size too
 
-        // gian: Malgun Gothic 11.5pt, H1 15pt.
-        let gian = from_markdown_with(md, &opts(Some(OfficialPreset::Gian)));
-        assert_eq!(gian.header.fonts[0][0].name, "맑은 고딕");
+        // official: Malgun Gothic 12pt, H1 15pt.
+        let official = from_markdown_with(md, &opts(Some(OfficialPreset::Official)));
+        assert_eq!(official.header.fonts[0][0].name, "맑은 고딕");
         assert_eq!(
-            gian.header.fonts[0][1].name, "함초롬돋움",
+            official.header.fonts[0][1].name, "함초롬돋움",
             "인라인 코드 글꼴 유지"
         );
-        assert_eq!(gian.header.char_shapes[0].base_size, 1150);
-        assert_eq!(gian.header.char_shapes[4].base_size, 1500);
+        assert_eq!(official.header.char_shapes[0].base_size, 1200);
+        assert_eq!(official.header.char_shapes[4].base_size, 1500);
 
         // Statutory eight-level numbering ladder, including the two circled levels.
         let levels = &report.header.numbering_levels[0];
@@ -2513,11 +2448,13 @@ mod tests {
                 .expect("page definition");
             assert_eq!(doc.header.fonts[0][0].name, font, "{name}");
             assert_eq!(doc.header.char_shapes[0].base_size, body, "{name}");
-            assert!(doc
-                .header
-                .para_shapes
-                .iter()
-                .all(|shape| shape.line_spacing == spacing), "{name}");
+            assert!(
+                doc.header
+                    .para_shapes
+                    .iter()
+                    .all(|shape| shape.line_spacing == spacing),
+                "{name}"
+            );
             assert_eq!(page.margin_top.0, 5668, "{name}");
             assert_eq!(page.margin_bottom.0, 2834, "{name}");
             assert_eq!(page.margin_left.0, 5668, "{name}");
@@ -2528,7 +2465,9 @@ mod tests {
                 doc.sections[0].paragraphs[0]
                     .controls
                     .iter()
-                    .filter(|control| matches!(control, Control::Generic(g) if g.ctrl_id == *b"pgnp"))
+                    .filter(
+                        |control| matches!(control, Control::Generic(g) if g.ctrl_id == *b"pgnp")
+                    )
                     .count(),
                 usize::from(page_number),
                 "{name}"

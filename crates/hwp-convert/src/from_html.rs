@@ -102,7 +102,11 @@ pub fn from_html_with(html: &str, opts: &HtmlImportOptions) -> Result<Document, 
     }
     // Inject section/column definitions into the first paragraph — prerequisite for hwp5/Hancom
     // compatibility (same as from_markdown).
-    from_markdown::inject_section_controls(&mut paragraphs[0], None);
+    from_markdown::inject_section_controls(
+        &mut paragraphs[0],
+        None,
+        crate::official::PageMarginOverrides::default(),
+    );
 
     let mut header = from_markdown::default_header();
     header.char_shapes.extend(blocks.extra_char_shapes);
