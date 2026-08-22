@@ -43,8 +43,10 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   플래그: `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json).
 - `hwp new -o {out.hwpx|out.hwp}` — 문서 생성. `--from {file.md|file.json}`은 마크다운
   또는 JSON IR을 가져옵니다 (생략 시 빈 문서); `--set-meta key=value` (title/author/
-  subject/keywords, 반복 가능); `--preset gian|report` (한국 공문서 프리셋, 마크다운
-  입력 전용); `--strict`는 마크다운 가져오기가 내용을 유실하면 실패합니다.
+  subject/keywords, 반복 가능); `--preset official|report|plan|notice|minutes|gaejosik|press`
+  (한국 공문서 프로필, 마크다운 입력 전용); `gian`과 문서화된 호환 별칭은 표준 프로필로
+  정규화합니다. 변별 여백은 mm 단위 `--margin-top`, `--margin-bottom`, `--margin-left`,
+  `--margin-right`로 지정합니다. `--strict`는 마크다운 가져오기가 내용을 유실하면 실패합니다.
 - `hwp edit {input} -o {output} [flags...]` — 기존 문서 편집; 이미지, 서식, 미파싱
   레코드는 보존합니다. 문자열 플래그 (모두 반복 가능): `--replace "find=>repl"`,
   `--set-cell "t:r:c=value"` (0-기반), `--set-field "name=value"`, `--set-meta "k=v"`,
@@ -91,13 +93,25 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 
 ## Official documents (공문서)
 
-`hwp`는 한국 공문서(공문) 작성 표면을 네이티브로 제공합니다. 여섯 가지 문서 유형 —
-기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — 을 마크다운 골격으로 작성하고,
-`hwp new --from ... --preset gian|report`로 생성한 뒤 `hwp fill`로 채웁니다.
+`hwp`는 한국 공문서(공문) 작성 표면을 네이티브로 제공합니다. 표준 프로필은 `official`,
+`report`, `plan`, `notice`, `minutes`, `gaejosik`, `press` 일곱 가지입니다. 표준 공문서
+프로필은 `gian`, `gongmun`을 의미상 호환 별칭으로 받습니다. 별칭은 같은 프로필을
+선택할 뿐 raw-byte 동일성을 약속하지 않습니다. 한국어 별칭도 사용할 수 있습니다. 기안문,
+보고서, 계획서, 회의록, 공고문, 보도자료 여섯 문서 유형을 마크다운 골격으로 작성하고,
+`hwp new --from ... --preset official`(또는 맞는 프로필)로 생성한 뒤 `hwp fill`로 채웁니다.
 
-항목 기호는 중첩 리스트 깊이에서 나옵니다: 순서 리스트는 깊이에 따라 `1.` → `가.` →
-`1)` → `가)`로 렌더링됩니다 (법정 8단계 시퀀스 `(1)` `(가)` `①` `㉮`는 2.2 단계에서
-도입; 현재 프리셋 번호는 4단계마다 반복됩니다).
+모든 프로필의 기본 여백은 명시적인 변별 override 전 위/아래/왼쪽/오른쪽 20/10/20/20 mm입니다.
+본문 기본값은 official 맑은 고딕 12pt/160%, report·plan HCR 바탕 15pt/160%, notice 맑은
+고딕 15pt/160%, minutes HCR 바탕 14pt/130%, gaejosik 맑은 고딕 15pt/160%(실무상 가정),
+press HCR 바탕 14pt/160%입니다. report·plan·gaejosik의 머리말/꼬리말 여백은 15 mm,
+notice·press는 10 mm, official·minutes는 0 mm입니다. report·plan·notice·gaejosik·press에는
+`- N -` 쪽 번호를 넣고 official·minutes에는 넣지 않습니다.
+
+항목 기호는 중첩 리스트 깊이에서 나옵니다. 순서 리스트는 깊이에 따라
+`1.` → `가.` → `1)` → `가)` → `(1)` → `(가)` → `①` → `㉮`로 렌더링됩니다. 8단계까지
+지원하며 9단계 이상은 파일을 발행하지 않고 오류로 거절합니다. HWPX는 해당 번호 정의를
+직접 방출합니다. HWP5는 `하` 이후의 확인된 이어쓰기까지 포함하는 검증된 safe/direct
+인코딩 경로를 사용합니다.
 
 □ ○ 사다리는 리터럴입니다: `□ `와 `○ `를 문단 선두 기호로 입력하면 엔진이 들여쓰기를
 적용합니다 — ASCII 유사 문자로 대체하지 마세요. `- ` 리스트 불릿은 깊이 1에서 `-`,
@@ -182,7 +196,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_render` | `path` | 페이지 렌더링 (`format`: png/svg/pdf, `pages` 범위); 단일 페이지 PNG는 base64 반환, 더 큰 결과는 `output_path`로 파일 기록 |
 | `hwp_edit` | `input`, `output` | 타입화된 JSON 연산을 통한 엄격한 원자적 편집 (모든 `hwp edit` 플래그 미러, `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*` 포함) |
 | `hwp_convert` | `input`, `output` | 형식 변환 (MCP에서는 `strict` 기본값 true) |
-| `hwp_new` | `output` | 마크다운 또는 JSON IR과 메타데이터로 문서 생성 |
+| `hwp_new` | `output` | 마크다운 또는 JSON IR과 메타데이터, 공문서 프로필, `margin_top`/`margin_bottom`/`margin_left`/`margin_right` override로 문서 생성 |
 | `hwp_compose` | `output`, `spec`/`spec_path` | CLI와 동일한 경로로 DocumentSpec v1/v2 조립 |
 | `hwp_template` | `output`, `template` (+`data`) | TemplateSpec/Data v1의 한정된 확장 |
 | `hwp_fill` | `input`, `output`, `values` | hwpx 템플릿의 `{{name}}` 채우기 (패키지 보존) |

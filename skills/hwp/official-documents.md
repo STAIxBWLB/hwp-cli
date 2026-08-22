@@ -17,25 +17,26 @@ Body item marks come from **nested-list depth**, not from typed characters. Writ
 nested markdown ordered lists (`1.` at every depth, indented two or more spaces per level)
 and the engine assigns the mark for that depth:
 
-| List depth | Statutory mark | What the gian/report presets render today |
+| List depth | Statutory mark | What every official profile renders |
 |---|---|---|
 | 1 | `1.` | `1.` |
 | 2 | `가.` | `가.` |
 | 3 | `1)` | `1)` |
 | 4 | `가)` | `가)` |
-| 5 | `(1)` | repeats the level-1 format — statutory marks from Phase 2.2 (GONG-01) |
-| 6 | `(가)` | repeats the level-2 format — from Phase 2.2 (GONG-01) |
-| 7 | `①` (U+2460) | repeats the level-3 format — from Phase 2.2 (GONG-01) |
-| 8 | `㉮` (U+326E) | repeats the level-4 format — from Phase 2.2 (GONG-01) |
+| 5 | `(1)` | `(1)` |
+| 6 | `(가)` | `(가)` |
+| 7 | `①` (U+2460) | `①` |
+| 8 | `㉮` (U+326E) | `㉮` |
 
-Honest limits, verified against the engine source:
+Verified implementation boundary:
 
-- The preset numbering cycle is 4 levels long (`from_markdown.rs`: `1.` → `가.` → `1)` →
-  `가)`, then repeats from level 5). The statutory `(1)` `(가)` `①` `㉮` marks for depths
-  5-8 arrive in Phase 2.2. The hwpx writer does emit a per-level `numFormat`, so numbering
-  definitions round-trip — the repetition above is only about which formats the presets
-  assign to levels 5-8 today.
-- List depth is capped at 7 levels today; deeper nesting collapses into level 7.
+- Every official profile assigns the statutory eight-level ladder. HWPX writes its matching
+  `CircledHangul` numbering definition directly. HWP5 uses the verified safe, direct encoding
+  path for the same visible ladder; this is an encoding result, not a raw-byte equivalence claim
+  for aliases or source documents.
+- List depth 8 succeeds. Depth 9 or deeper, including embedded HTML lists, fails closed and
+  publishes no output. At levels 2, 6 and 8, counting continues after `하` as observed in
+  Hancom Office.
 - **Never hand-type marks on the numbered path.** A typed `가.` inside an ordered list
   renders next to the engine-assigned mark and double-numbers.
 
@@ -66,12 +67,19 @@ present-day path.
 
 | Document type | Preset today | Template skeleton | Notes |
 |---|---|---|---|
-| 기안문 (draft) | `gian` (맑은 고딕 11.5pt body) | `gian-internal.md` (내부결재), `gian-external.md` (대외시행) | `gongmun-basic.md` covers the plain external official letter (no 접수번호/접수일자) |
-| 보고서 (report) | `report` (명조 계열 15pt body) | `report.md` | 배경 → 내용 → 계획 → 행정사항 section skeleton |
-| 계획서 (plan) | `report` | `plan.md` | 9-section 사업계획서 skeleton |
-| 회의록 (minutes) | `report` | `minutes.md` | Restructured to the 9 statutory elements of 공공기록물 관리에 관한 법률 시행령 제18조 (D-19) |
-| 공고문 (public notice) | `gian` | `notice.md` | 공고번호 in the `제2025-282호` (연도표시 일련번호) form |
-| 보도자료 (press release) | `report` | `press.md` | 보도시점/배포일 slots; inverted-pyramid body (리드문 육하원칙) |
+| 기안문 (draft) | `official` (Malgun Gothic 12pt/160%; `gian` compatibility alias) | `gian-internal.md` (내부결재), `gian-external.md` (대외시행) | `gongmun-basic.md` covers the plain external official letter (no 접수번호/접수일자) |
+| 보고서 (report) | `report` (HCR Batang 15pt/160%) | `report.md` | 15 mm header/footer, `- N -` page number; 배경 → 내용 → 계획 → 행정사항 skeleton |
+| 계획서 (plan) | `plan` (HCR Batang 15pt/160%) | `plan.md` | 15 mm header/footer, `- N -` page number; 9-section 사업계획서 skeleton |
+| 회의록 (minutes) | `minutes` (HCR Batang 14pt/130%) | `minutes.md` | No header/footer margin or page number; 9 statutory elements of 공공기록물 관리에 관한 법률 시행령 제18조 (D-19) |
+| 공고문 (public notice) | `notice` (Malgun Gothic 15pt/160%) | `notice.md` | 10 mm header/footer, `- N -` page number; 공고번호 `제2025-282호` form |
+| 보도자료 (press release) | `press` (HCR Batang 14pt/160%) | `press.md` | 10 mm header/footer, `- N -` page number; 보도시점/배포일 slots and inverted-pyramid body |
+
+`gaejosik` is also available for bullet-style official prose (Malgun Gothic 15pt/160%, a practice
+assumption), with 15 mm header/footer margins and a `- N -` page number. All seven profiles start
+with top/bottom/left/right margins of 20/10/20/20 mm; use `--margin-top`, `--margin-bottom`,
+`--margin-left` or `--margin-right` only for an explicit per-side override. Canonical names are
+`official`, `report`, `plan`, `notice`, `minutes`, `gaejosik` and `press`; `gian`, `gongmun` and
+the documented Korean names normalize to one of them.
 
 Conventions every recipe shares:
 
@@ -150,7 +158,7 @@ needed):
 
 ```bash
 # 1. Create the document from a template skeleton
-hwp new --from templates/gian-internal.md --preset gian -o draft.hwpx
+hwp new --from templates/gian-internal.md --preset official -o draft.hwpx
 
 # 2. List the slots the document actually contains
 hwp slots draft.hwpx

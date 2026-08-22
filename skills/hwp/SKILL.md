@@ -43,8 +43,11 @@ syntax (used by `fill`, `slots` and the template tools).
   `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json).
 - `hwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports
   markdown or a JSON IR (empty document when omitted); `--set-meta key=value` (title/author/
-  subject/keywords, repeatable); `--preset gian|report` (Korean official-document presets,
-  markdown input only); `--strict` fails when markdown import drops content.
+  subject/keywords, repeatable); `--preset official|report|plan|notice|minutes|gaejosik|press`
+  (Korean official-document profiles, markdown input only); `gian` and other documented
+  compatibility aliases normalize to a canonical profile. Per-side overrides are
+  `--margin-top`, `--margin-bottom`, `--margin-left` and `--margin-right` in millimetres.
+  `--strict` fails when markdown import drops content.
 - `hwp edit {input} -o {output} [flags...]` — edit an existing document; images, formatting
   and unparsed records are preserved. String flags (all repeatable): `--replace "find=>repl"`,
   `--set-cell "t:r:c=value"` (0-based), `--set-field "name=value"`, `--set-meta "k=v"`,
@@ -91,13 +94,25 @@ syntax (used by `fill`, `slots` and the template tools).
 
 ## Official documents
 
-`hwp` ships the Korean official-document (공문) surface natively. Six document types are
-covered — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — authored as markdown skeletons,
-created with `hwp new --from ... --preset gian|report` and filled with `hwp fill`.
+`hwp` ships the Korean official-document (공문) surface natively. Seven profiles are available:
+`official`, `report`, `plan`, `notice`, `minutes`, `gaejosik` and `press`. The canonical
+official profile accepts `gian` and `gongmun` as semantic compatibility aliases; aliases select
+the same profile, not a raw-byte identity promise. Korean aliases are also accepted. The six
+document types — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — are authored as markdown
+skeletons, created with `hwp new --from ... --preset official` (or their matching profile), and
+filled with `hwp fill`.
 
-Item marks come from nested-list depth: ordered lists render as `1.` → `가.` → `1)` → `가)`
-by depth (the statutory 8-level sequence through `(1)` `(가)` `①` `㉮` arrives in Phase 2.2;
-today the preset numbering repeats every 4 levels).
+Every profile uses top/bottom/left/right margins of 20/10/20/20 mm before an explicit per-side
+override. Body defaults are: official Malgun Gothic 12pt/160%; report and plan HCR Batang
+15pt/160%; notice Malgun Gothic 15pt/160%; minutes HCR Batang 14pt/130%; gaejosik Malgun Gothic
+15pt/160% (a practice assumption); and press HCR Batang 14pt/160%. Report, plan and gaejosik use
+15 mm header/footer margins; notice and press use 10 mm; official and minutes use 0 mm. Report,
+plan, notice, gaejosik and press include `- N -` page numbers; official and minutes do not.
+
+Item marks come from nested-list depth: ordered lists render as `1.` → `가.` → `1)` → `가)` →
+`(1)` → `(가)` → `①` → `㉮`. All eight depths are supported; depth 9 or deeper is rejected
+without publishing. HWPX emits the matching numbering directly. HWP5 uses the verified safe,
+direct encoding path for this official ladder, including the evidenced post-`하` continuation.
 
 The □ ○ ladder is literal: type `□ ` and `○ ` as paragraph-leading symbols and the engine
 indents them — never substitute ASCII lookalikes. `- ` list bullets render as `-` at depth 1
@@ -181,7 +196,7 @@ Tools (16):
 | `hwp_render` | `path` | Render pages (`format`: png/svg/pdf, `pages` range); single-page PNG returns base64, larger results write files via `output_path` |
 | `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations (mirrors every `hwp edit` flag, incl. `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*`) |
 | `hwp_convert` | `input`, `output` | Format conversion (`strict` defaults to true over MCP) |
-| `hwp_new` | `output` | Create a document from markdown or JSON IR plus metadata |
+| `hwp_new` | `output` | Create a document from markdown or JSON IR plus metadata, official profile and `margin_top`/`margin_bottom`/`margin_left`/`margin_right` overrides |
 | `hwp_compose` | `output`, `spec`/`spec_path` | Compose DocumentSpec v1/v2 through the same path as the CLI |
 | `hwp_template` | `output`, `template` (+`data`) | Bounded expansion of TemplateSpec/Data v1 |
 | `hwp_fill` | `input`, `output`, `values` | Fill `{{name}}` in an hwpx template (package preserved) |
