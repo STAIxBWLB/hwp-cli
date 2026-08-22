@@ -733,12 +733,14 @@ open in their scheduled phases.
 
 The embeddable GUI editor lives in a separate repository (`hwp-editor`, UI and thin adapters
 only) and delegates every document operation to the `hwp` binary. The 2026-08-22 repo-collection
-comparison (`refs/hwp/.planning/codebase/HWPCLI-COMPARISON.md` §6) plus an audit of that repo's
+comparison (`refs/hwp/.planning/codebase/HWPCLI-COMPARISON.md` §6 — private working notes, not
+tracked here) plus an audit of that repo's
 engine adapter (pinned to hwp-cli v0.8.7) surfaced the engine-surface gaps below; all six are
 scheduled in milestone 2 (Phases 5-7 and 9, requirement ids EDT-01..07). The same triage excluded
 OCR (ONNX runtime vs. the single-binary constraint), an LLM layer (lives in MCP clients), COM
 automation (intentional exclusion) and capsule provenance (rhwp-specific; `certify` covers the
-quality-policy niche) — reasons recorded in `.planning/REQUIREMENTS.md`. Chart/OLE read+render
+quality-policy niche) — reasons recorded in the milestone's `.planning/REQUIREMENTS.md`, which is
+local planning state rather than tracked documentation. Chart/OLE read+render
 joins the milestone-4 catalog (with GB-1); GA-1 was pulled into milestone 2 (Phase 8).
 
 | ID | Symptom | Notes and precedent | Difficulty |
@@ -747,8 +749,8 @@ joins the milestone-4 catalog (with GB-1); GA-1 was pulled into milestone 2 (Pha
 | GO-2 | **No render-side geometry**: the renderer emits pixels/SVG/PDF but no machine-readable bounding boxes, so an editor cannot map a click to a segment (hit-testing), draw a selection overlay or scroll-sync | `hwp render --layout-json <path>` writing per-page boxes keyed by segment id (`schemas/render-layout-v1.schema.json`); boxes come from the existing display-list/layout pass | M |
 | GO-3 | **Raster formats are PNG/SVG only**: hwp-editor's `PageImageFormat` includes jpeg/webp and its server rejects them at `cli-engine.ts:366` | `--format jpeg|webp` on the existing raster path | S |
 | GO-4 | **Edit ops are separator-delimited argv**: values containing `=>`, `=` or `:` are ambiguous (hwp-editor `ops.ts` documents the caveat), and free-text anchors collide on duplicated text | `hwp edit --ops <file.json>` applying a typed ops array (`schemas/edit-ops-v1.schema.json`) covering the 28 existing op kinds | S |
-| GO-5 | **No addressed editing**: ops target text anchors, not document positions; run-range character formatting, paragraph move, list indent/outdent and paragraph style cannot be expressed | Segment-id / `section:para` / run-range addressing on the GO-4 channel; proven on documents where the same text appears twice | M |
-| GO-6 | **No edit feedback**: the caller cannot learn which ops applied, which segments changed, or preview an edit without writing | `hwp edit --report <path>` (applied/failed ops + changed segment ids) and `--dry-run` | S |
+| GO-5 | **No paragraph/run addressing**: table ops already address by numeric `table:row:col` coordinates, but everything outside a table targets text anchors only, so run-range character formatting, paragraph move, list indent/outdent and paragraph style cannot be expressed | Segment-id / `section:para` / run-range addressing on the GO-4 channel; proven on documents where the same text appears twice | M |
+| GO-6 | **No structured edit feedback**: `hwp edit` reports applied counts and names unapplied requests on stderr and fails closed without `--allow-partial`, but there is no machine-readable report, no changed-segment ids and no way to preview an edit without writing | `hwp edit --report <path>` (applied/failed ops + changed segment ids) and `--dry-run` | S |
 
 GO-2 and GO-5 are M because layout coordinates and run addressing must be checked against genuine
 files; the rest are data-structure work on existing paths. Writer-touching items (GO-4..GO-6

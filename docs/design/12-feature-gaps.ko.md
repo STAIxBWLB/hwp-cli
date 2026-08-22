@@ -651,11 +651,13 @@ GN-4(프레임), GN-5(템플릿 지름길), GN-6(표 스타일링), GN-8(편집 
 
 임베더블 GUI 에디터는 별도 리포(`hwp-editor`, UI와 얇은 어댑터만)에 있고 모든 문서 동작을
 `hwp` 바이너리에 위임한다. 2026-08-22 리포 컬렉션 대조
-(`refs/hwp/.planning/codebase/HWPCLI-COMPARISON.md` §6)와 그 리포의 엔진 어댑터 감사
+(`refs/hwp/.planning/codebase/HWPCLI-COMPARISON.md` §6 — 이 저장소에 추적되지 않는 비공개
+작업 노트)와 그 리포의 엔진 어댑터 감사
 (hwp-cli v0.8.7 핀)가 아래 엔진 표면 갭을 드러냈으며, 6개 모두 마일스톤 2(Phase 5-7, 9,
 요구사항 ID EDT-01..07)에 편성됐다. 같은 선별에서 OCR(ONNX 런타임 vs 단일 바이너리 제약),
 LLM 계층(MCP 클라이언트 소관), COM 자동화(의도적 제외), 캡슐 프로비넌스(rhwp 고유 — 품질
-정책 틈새는 `certify`가 커버)는 제외됐고 사유는 `.planning/REQUIREMENTS.md`에 기록했다.
+정책 틈새는 `certify`가 커버)는 제외됐고 사유는 해당 마일스톤의 `.planning/REQUIREMENTS.md`에
+기록했다. 이 파일은 추적되는 문서가 아니라 로컬 계획 상태다.
 차트/OLE 읽기·렌더는 마일스톤 4 카탈로그(GB-1과 함께)로, GA-1은 마일스톤 2(Phase 8)로
 당겨졌다.
 
@@ -665,8 +667,8 @@ LLM 계층(MCP 클라이언트 소관), COM 자동화(의도적 제외), 캡슐 
 | GO-2 | **렌더 측 기하 정보 없음** — 렌더러는 픽셀/SVG/PDF만 방출하고 기계판독 가능한 바울딩 박스가 없어, 에디터가 클릭을 세그먼트에 매핑(히트 테스트)·선택 오버레이·스크롤 동기화를 할 수 없음 | `hwp render --layout-json <path>`가 세그먼트 ID 키의 페이지별 박스를 기록(`schemas/render-layout-v1.schema.json`). 박스는 기존 display-list/레이아웃 패스에서 나온다 | M |
 | GO-3 | **래스터 포맷이 PNG/SVG뿐** — hwp-editor의 `PageImageFormat`은 jpeg/webp를 포함하나 서버가 `cli-engine.ts:366`에서 거부 | 기존 래스터 경로에 `--format jpeg|webp` 추가 | S |
 | GO-4 | **편집 op가 구분자 결합 argv** — `=>`·`=`·`:`를 포함하는 값은 모호(hwp-editor `ops.ts`가 스스로 경고를 명시), 자유 텍스트 앵커는 중복 텍스트에서 충돌 | `hwp edit --ops <file.json>`가 기존 28종 op를 포함하는 타입드 op 배열(`schemas/edit-ops-v1.schema.json`)을 적용 | S |
-| GO-5 | **주소 지정 편집 부재** — op가 문서 위치가 아니라 텍스트 앵커를 겨냥. run 범위 문자 속성, 문단 이동, 리스트 들여/내어쓰기, 문단 스타일을 표현 불가 | GO-4 채널 위의 세그먼트 ID / `section:para` / run 범위 주소 지정. 같은 텍스트가 두 번 나오는 문서에서 실증 | M |
-| GO-6 | **편집 피드백 없음** — 호출자가 어떤 op가 적용됐는지, 어떤 세그먼트가 바뀌었는지, 쓰기 없이 미리보기를 할 수 없음 | `hwp edit --report <path>`(적용/실패 op + 변경 세그먼트 ID)와 `--dry-run` | S |
+| GO-5 | **문단·run 주소 지정 부재** — 표 op는 이미 `table:row:col` 숫자 좌표로 주소를 지정하지만 표 밖의 op는 텍스트 앵커만 겨냥하므로, run 범위 문자 속성, 문단 이동, 리스트 들여/내어쓰기, 문단 스타일을 표현하지 못한다 | GO-4 채널 위의 세그먼트 ID / `section:para` / run 범위 주소 지정. 같은 텍스트가 두 번 나오는 문서에서 실증 | M |
+| GO-6 | **구조화된 편집 피드백 부재** — `hwp edit`는 적용 개수와 미적용 요청을 stderr에 보고하고 `--allow-partial` 없이는 실패-폐쇄적으로 동작하지만, 기계가 읽는 리포트도 변경 세그먼트 ID도 없고 쓰기 없이 미리보기를 할 수도 없다 | `hwp edit --report <path>`(적용/실패 op + 변경 세그먼트 ID)와 `--dry-run` | S |
 
 GO-2와 GO-5는 레이아웃 좌표와 run 주소 지정을 정품 파일로 확인해야 하므로 M이고, 나머지는
 기존 경로 위의 자료구조 작업이다. writer를 건드리는 항목(GO-4..GO-6 산출 경로)은 마일스톤 2
