@@ -42,6 +42,55 @@ pub struct MarkdownImportOptions<'a> {
     pub preset: Option<OfficialPreset>,
 }
 
+#[cfg(test)]
+mod official_depth_limit_tests {
+    use super::{from_markdown_report, MarkdownImportOptions, OfficialPreset};
+
+    fn nested_markdown(depth: usize) -> String {
+        (0..depth)
+            .map(|level| format!("{}1. level {}", "   ".repeat(level), level + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn nested_html(depth: usize) -> String {
+        let mut html = String::new();
+        for level in 1..=depth {
+            html.push_str(&format!("<ol><li>level {level}"));
+        }
+        for _ in 0..depth {
+            html.push_str("</li></ol>");
+        }
+        html
+    }
+
+    fn official_options() -> MarkdownImportOptions<'static> {
+        MarkdownImportOptions {
+            preset: Some(OfficialPreset::Gian),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn official_depth_limit() {
+        assert!(from_markdown_report(&nested_markdown(8), &official_options()).is_ok());
+        assert_eq!(
+            from_markdown_report(&nested_markdown(9), &official_options()).unwrap_err(),
+            "authored list depth 9 exceeds maximum 8"
+        );
+    }
+
+    #[test]
+    fn embedded_html_official_depth_limit() {
+        assert!(from_markdown_report(&nested_html(8), &official_options()).is_ok());
+        assert_eq!(
+            from_markdown_report(&nested_html(9), &official_options()).unwrap_err(),
+            "authored list depth 9 exceeds maximum 8"
+        );
+    }
+}
+
 /// Korean official-document drafting regulation preset. Common: A4 margins
 /// top30/bottom15/left20/right15mm, line spacing 160%, 8-level ordered-list numbering,
 /// and page number bottom center (pgnp, genuine-measured sideChar '-').
