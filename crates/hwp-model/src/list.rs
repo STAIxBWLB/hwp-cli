@@ -57,7 +57,7 @@ impl ListState {
         // 번호: 수준 카운터 증가 + 더 깊은 수준 리셋.
         let level = ps.head_level() as usize; // 1..=10
         let counters = self.counters.entry(ps.numbering_id).or_default();
-        counters[level] += 1;
+        counters[level] = counters[level].saturating_add(1);
         for c in &mut counters[level + 1..] {
             *c = 0;
         }
@@ -77,8 +77,8 @@ impl ListState {
                     .and_then(|l| l.get(lv - 1))
                     .map_or(NumFmt::Digit, |nl| nl.fmt);
                 let start = levels.and_then(|l| l.get(lv - 1)).map_or(1, |nl| nl.start);
-                let n = counters[lv].max(1) + start.saturating_sub(1);
-                format_number(n, fmt)
+                let n = u64::from(counters[lv].max(1)) + u64::from(start.saturating_sub(1));
+                format_number_wide(n, fmt)
             })
             .collect();
         Some(format!("{}.", parts.join(".")))
@@ -97,7 +97,7 @@ impl ListState {
     /// Advance one outline level, reset deeper levels, and apply the level's default format.
     fn outline_marker(&mut self, level: u8) -> String {
         let level = level.clamp(1, 8) as usize;
-        self.outline_counters[level] += 1;
+        self.outline_counters[level] = self.outline_counters[level].saturating_add(1);
         for c in &mut self.outline_counters[level + 1..] {
             *c = 0;
         }
@@ -129,8 +129,8 @@ fn apply_template(tmpl: &str, levels: Option<&[crate::NumLevel]>, counters: &[u3
             let nl = levels.and_then(|l| l.get(k - 1));
             let fmt = nl.map_or(NumFmt::Digit, |n| n.fmt);
             let start = nl.map_or(1, |n| n.start);
-            let n = counters[k].max(1) + start.saturating_sub(1);
-            out.push_str(&format_number(n, fmt));
+            let n = u64::from(counters[k].max(1)) + u64::from(start.saturating_sub(1));
+            out.push_str(&format_number_wide(n, fmt));
         } else {
             out.push(c);
         }
@@ -174,6 +174,17 @@ pub fn format_number(n: u32, fmt: NumFmt) -> String {
         NumFmt::LatinLower => latin(n, b'a'),
         NumFmt::RomanUpper => roman(n).to_uppercase(),
         NumFmt::RomanLower => roman(n),
+    }
+}
+
+/// Formats the complete mathematical list marker without narrowing. Numbering
+/// schemes without an unbounded Unicode representation fall back to decimal
+/// text above `u32::MAX`, which keeps malformed/read documents printable
+/// instead of panicking or wrapping their marker.
+fn format_number_wide(n: u64, fmt: NumFmt) -> String {
+    match u32::try_from(n) {
+        Ok(n) => format_number(n, fmt),
+        Err(_) => n.to_string(),
     }
 }
 
@@ -325,6 +336,35 @@ mod tests {
         assert_eq!(st.marker(&doc, &p(0)).as_deref(), Some("1."));
         assert_eq!(st.marker(&doc, &p(1)).as_deref(), Some("1."));
         assert_eq!(st.marker(&doc, &p(0)).as_deref(), Some("2."));
+    }
+
+    #[test]
+    fn 최대_시작값_뒤의_마커는_패닉하지_않는다() {
+        use crate::{NumLevel, ParaShape, ParaShapeId};
+        let mut doc = Document::default();
+        doc.header.para_shapes = vec![ParaShape {
+            attr1: (2 << 23) | (1 << 25),
+            numbering_id: 0,
+            ..ParaShape::default()
+        }];
+        doc.header.numbering_levels = vec![vec![NumLevel {
+            start: u32::MAX,
+            fmt: NumFmt::Digit,
+            template: "^1.".to_string(),
+        }]];
+        let paragraph = Paragraph {
+            para_shape: ParaShapeId(0),
+            ..Paragraph::default()
+        };
+        let mut state = ListState::default();
+        assert_eq!(
+            state.marker(&doc, &paragraph).as_deref(),
+            Some("4294967295.")
+        );
+        assert_eq!(
+            state.marker(&doc, &paragraph).as_deref(),
+            Some("4294967296.")
+        );
     }
 
     #[test]

@@ -54,14 +54,14 @@ pub struct HtmlImportOptions<'a> {
 pub(crate) enum FragmentError {
     Contract(String),
     Sandbox(String),
-    AuthoredListDepth(from_markdown::AuthoredListDepthError),
+    AuthoredList(String),
 }
 
 impl FragmentError {
     fn into_message(self) -> String {
         match self {
             Self::Contract(message) | Self::Sandbox(message) => message,
-            Self::AuthoredListDepth(error) => error.to_string(),
+            Self::AuthoredList(error) => error,
         }
     }
 }
@@ -166,7 +166,7 @@ pub(crate) fn parse_fragment(
         base_dir: opts.base_dir.map(Path::to_path_buf),
         roots: opts.roots,
         sandbox_error: None,
-        depth_error: None,
+        list_error: None,
         note_bodies: opts.note_bodies,
         warnings: Vec::new(),
         in_cell_depth: 0,
@@ -188,8 +188,8 @@ pub(crate) fn parse_fragment(
         // the parse immediately), so the variant switch cannot mislabel a contract violation.
         return Err(match p.sandbox_error {
             Some(message) => FragmentError::Sandbox(message),
-            None => match p.depth_error {
-                Some(error) => FragmentError::AuthoredListDepth(error),
+            None => match p.list_error {
+                Some(error) => FragmentError::AuthoredList(error),
                 None => FragmentError::Contract(e),
             },
         });
@@ -233,6 +233,8 @@ struct BlockCtx {
 struct ListFrame {
     para_shape_id: u16,
     item_open: bool,
+    ordered_start: Option<u32>,
+    item_count: u32,
 }
 
 /// Cell spec — position (finalized after occupancy-grid placement) and content.
@@ -263,7 +265,7 @@ struct Parser<'a> {
     /// Set when the parse aborts on a sandbox violation — parse_fragment re-labels the error
     /// as FragmentError::Sandbox so the md-mixed path keeps it a hard error (#56).
     sandbox_error: Option<String>,
-    depth_error: Option<from_markdown::AuthoredListDepthError>,
+    list_error: Option<String>,
     /// GFM footnote definition bodies for fnref marker reattachment (None on the standalone path).
     note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
     warnings: Vec<String>,
@@ -316,23 +318,34 @@ impl Parser<'_> {
                         }
                         "ul" | "ol" => {
                             let start = if name == "ol" {
-                                attr(&e, "start")
-                                    .and_then(|s| s.parse::<u64>().ok())
-                                    .or(Some(1))
+                                match attr(&e, "start") {
+                                    Some(value) => match value.parse::<u64>() {
+                                        Ok(start) => Some(start),
+                                        Err(_) => {
+                                            let error = format!(
+                                                "invalid ordered-list start value: {value}"
+                                            );
+                                            self.list_error = Some(error.clone());
+                                            return Err(error);
+                                        }
+                                    },
+                                    None => Some(1),
+                                }
                             } else {
                                 None
                             };
                             self.start_list(start).map_err(|error| {
-                                self.depth_error = Some(error);
-                                error.to_string()
+                                self.list_error = Some(error.clone());
+                                error
                             })?;
                             self.blocks(r, Some(&name))?;
                             self.end_list();
                         }
                         "li" => {
                             self.flush_paragraph(false);
-                            if let Some(frame) = self.list_stack.last_mut() {
-                                frame.item_open = true;
+                            if let Err(error) = self.start_list_item() {
+                                self.list_error = Some(error.clone());
+                                return Err(error);
                             }
                             self.blocks(r, Some("li"))?;
                             self.flush_paragraph(false);
@@ -963,18 +976,17 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn start_list(
-        &mut self,
-        start: Option<u64>,
-    ) -> Result<(), from_markdown::AuthoredListDepthError> {
+    fn start_list(&mut self, start: Option<u64>) -> Result<(), String> {
         self.flush_paragraph(false);
-        let level = from_markdown::validate_official_list_depth(self.list_stack.len() + 1)?;
+        let level = from_markdown::validate_official_list_depth(self.list_stack.len() + 1)
+            .map_err(|error| error.to_string())?;
         let para_shape_id = match start {
             Some(s) => {
+                let start = from_markdown::normalize_authored_list_start(s)?;
                 let def_id = self.numbering_levels.len() as u16;
                 let mut levels =
                     vec![NumLevel::default(); from_markdown::MAX_OFFICIAL_LIST_DEPTH as usize];
-                levels[level as usize - 1].start = s.max(1) as u32;
+                levels[level as usize - 1].start = start;
                 self.numbering_levels.push(levels);
                 self.push_list_para_shape(2, level, def_id)
             }
@@ -987,7 +999,26 @@ impl Parser<'_> {
         self.list_stack.push(ListFrame {
             para_shape_id,
             item_open: false,
+            ordered_start: start
+                .map(from_markdown::normalize_authored_list_start)
+                .transpose()?,
+            item_count: 0,
         });
+        Ok(())
+    }
+
+    fn start_list_item(&mut self) -> Result<(), String> {
+        let Some(frame) = self.list_stack.last_mut() else {
+            return Ok(());
+        };
+        if let Some(start) = frame.ordered_start {
+            let next_item = frame.item_count.checked_add(1).ok_or_else(|| {
+                "authored ordered-list item count exceeds u32 maximum".to_string()
+            })?;
+            from_markdown::validate_authored_list_item(start, next_item)?;
+            frame.item_count = next_item;
+        }
+        frame.item_open = true;
         Ok(())
     }
 

@@ -59,6 +59,32 @@ pub(crate) fn validate_official_list_depth(depth: usize) -> Result<u16, Authored
     Ok(observed)
 }
 
+/// Normalizes an authored ordered-list start to the IR's persisted u32 range.
+/// HTML and Markdown share this boundary so neither parser can silently narrow
+/// a requested marker value.
+pub(crate) fn normalize_authored_list_start(start: u64) -> Result<u32, String> {
+    let start = start.max(1);
+    u32::try_from(start).map_err(|_| {
+        format!(
+            "authored ordered-list start {start} exceeds maximum {}",
+            u32::MAX
+        )
+    })
+}
+
+/// Rejects a list whose later item would require a marker outside the IR's
+/// u32 number domain. The visible count is one-based.
+pub(crate) fn validate_authored_list_item(start: u32, item: u32) -> Result<(), String> {
+    let offset = item.saturating_sub(1);
+    if start.checked_add(offset).is_none() {
+        return Err(format!(
+            "authored ordered-list start {start} with item {item} exceeds maximum {}",
+            u32::MAX
+        ));
+    }
+    Ok(())
+}
+
 /// Markdown import options.
 #[derive(Default)]
 pub struct MarkdownImportOptions<'a> {
@@ -79,7 +105,10 @@ pub struct MarkdownImportOptions<'a> {
 
 #[cfg(test)]
 mod official_depth_limit_tests {
-    use super::{MarkdownImportOptions, OfficialPreset, from_markdown_report};
+    use super::{
+        MarkdownImportOptions, OfficialPreset, from_markdown_report, normalize_authored_list_start,
+        validate_authored_list_item,
+    };
 
     fn nested_markdown(depth: usize) -> String {
         (0..depth)
@@ -123,6 +152,19 @@ mod official_depth_limit_tests {
             from_markdown_report(&nested_html(9), &official_options()).unwrap_err(),
             "authored list depth 9 exceeds maximum 8"
         );
+    }
+
+    #[test]
+    fn ordered_list_start_outside_u32_is_hard_error() {
+        assert_eq!(
+            normalize_authored_list_start(u64::from(u32::MAX)).unwrap(),
+            u32::MAX
+        );
+        let error = normalize_authored_list_start(u64::from(u32::MAX) + 1)
+            .expect_err("ordered-list start above u32 must fail");
+        assert!(error.contains("exceeds maximum"), "{error}");
+        assert!(validate_authored_list_item(u32::MAX, 1).is_ok());
+        assert!(validate_authored_list_item(u32::MAX, 2).is_err());
     }
 
     #[test]
@@ -761,6 +803,11 @@ struct ListFrame {
     para_shape_id: u16,
     /// Whether an item at this level is currently open (whether to grant the head on paragraph flush).
     item_open: bool,
+    /// `Some` for ordered lists; bullets have no numeric range to validate.
+    ordered_start: Option<u32>,
+    /// Number of observed items, used to reject starts whose subsequent
+    /// markers would exceed the representable u32 domain.
+    item_count: u32,
 }
 
 #[derive(Default)]
@@ -961,17 +1008,19 @@ impl Builder {
     }
 
     /// List entry — closes the parent item paragraph and creates this level's head para shape/definition.
-    fn start_list(&mut self, start: Option<u64>) -> Result<(), AuthoredListDepthError> {
+    fn start_list(&mut self, start: Option<u64>) -> Result<(), String> {
         // Close the parent item's paragraph first (e.g. "second" before a nested list).
         self.flush_paragraph();
-        let level = validate_official_list_depth(self.list_stack.len() + 1)?;
+        let level = validate_official_list_depth(self.list_stack.len() + 1)
+            .map_err(|error| error.to_string())?;
         let para_shape_id = match start {
             // Ordered list: numbering definition (the exporter draws markers from numbering_levels) + NUMBER head.
             Some(s) => {
+                let start = normalize_authored_list_start(s)?;
                 let def_id = self.numbering_levels.len() as u16;
                 let mut levels = vec![NumLevel::default(); 8];
                 // Preserves this list level's start number (the exporter reflects start).
-                levels[level as usize - 1].start = s.max(1) as u32;
+                levels[level as usize - 1].start = start;
                 self.numbering_levels.push(levels);
                 self.push_list_para_shape(2, level, def_id)
             }
@@ -987,6 +1036,8 @@ impl Builder {
         self.list_stack.push(ListFrame {
             para_shape_id,
             item_open: false,
+            ordered_start: start.map(normalize_authored_list_start).transpose()?,
+            item_count: 0,
         });
         Ok(())
     }
@@ -1047,8 +1098,8 @@ impl Builder {
             Err(crate::from_html::FragmentError::Sandbox(e)) => {
                 self.hard_error.get_or_insert(e);
             }
-            Err(crate::from_html::FragmentError::AuthoredListDepth(error)) => {
-                self.hard_error.get_or_insert(error.to_string());
+            Err(crate::from_html::FragmentError::AuthoredList(error)) => {
+                self.hard_error.get_or_insert(error);
             }
             Err(crate::from_html::FragmentError::Contract(e)) => self
                 .warnings
@@ -1444,6 +1495,19 @@ impl Builder {
             }
             Event::Start(Tag::Item) => {
                 if let Some(f) = self.list_stack.last_mut() {
+                    if let Some(start) = f.ordered_start {
+                        let Some(next_item) = f.item_count.checked_add(1) else {
+                            self.hard_error.get_or_insert_with(|| {
+                                "authored ordered-list item count exceeds u32 maximum".to_string()
+                            });
+                            return;
+                        };
+                        if let Err(error) = validate_authored_list_item(start, next_item) {
+                            self.hard_error.get_or_insert(error);
+                        } else {
+                            f.item_count = next_item;
+                        }
+                    }
                     f.item_open = true;
                 }
             }

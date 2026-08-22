@@ -348,6 +348,100 @@ fn official_hwp_rejects_explicit_ordered_list_start_but_hwpx_preserves_it() {
 }
 
 #[test]
+fn ordered_list_start_boundaries_fail_closed_without_marker_overflow() {
+    let root = temp_dir("ordered-list-start-boundaries");
+    let maximum_input = root.join("maximum.html.md");
+    let maximum_output = root.join("maximum.hwpx");
+    let overflowing_input = root.join("overflowing.html.md");
+    let overflowing_output = root.join("overflowing.hwpx");
+    let out_of_range_input = root.join("out-of-range.html.md");
+    let out_of_range_output = root.join("out-of-range.hwpx");
+
+    fs::write(
+        &maximum_input,
+        "<ol start=\"4294967295\"><li>first</li></ol>\n",
+    )
+    .unwrap();
+    let maximum = command_output(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&maximum_input)
+            .args(["--preset", "official", "--output"])
+            .arg(&maximum_output),
+        "maximum ordered-list start",
+    );
+    assert_success(&maximum, "maximum ordered-list start");
+    let maximum_cat = command_output(
+        hwp()
+            .args(["cat", "--format", "markdown"])
+            .arg(&maximum_output),
+        "maximum ordered-list start cat",
+    );
+    assert_success(&maximum_cat, "maximum ordered-list start cat");
+    assert!(
+        String::from_utf8_lossy(&maximum_cat.stdout).contains("4294967295. first"),
+        "markdown: {}",
+        String::from_utf8_lossy(&maximum_cat.stdout)
+    );
+
+    fs::write(
+        &overflowing_input,
+        "<ol start=\"4294967295\"><li>first</li><li>second</li></ol>\n",
+    )
+    .unwrap();
+    let overflowing = command_output(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&overflowing_input)
+            .args(["--preset", "official", "--output"])
+            .arg(&overflowing_output),
+        "overflowing ordered-list start",
+    );
+    assert!(
+        !overflowing.status.success(),
+        "a second item beyond u32::MAX must fail during import"
+    );
+    assert!(
+        String::from_utf8_lossy(&overflowing.stderr).contains("exceeds maximum"),
+        "stderr: {}",
+        String::from_utf8_lossy(&overflowing.stderr)
+    );
+    assert!(
+        !overflowing_output.exists(),
+        "overflowing list must not publish an HWPX"
+    );
+
+    fs::write(
+        &out_of_range_input,
+        "<ol start=\"4294967296\"><li>overflow</li></ol>\n",
+    )
+    .unwrap();
+    let out_of_range = command_output(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&out_of_range_input)
+            .args(["--preset", "official", "--output"])
+            .arg(&out_of_range_output),
+        "out-of-range ordered-list start",
+    );
+    assert!(
+        !out_of_range.status.success(),
+        "out-of-range start must fail during import"
+    );
+    assert!(
+        String::from_utf8_lossy(&out_of_range.stderr).contains("exceeds maximum"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out_of_range.stderr)
+    );
+    assert!(
+        !out_of_range_output.exists(),
+        "out-of-range start must not publish an HWPX"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn aliases_margins_and_input_failures_are_shipped_binary_gates() {
     let root = temp_dir("edge-matrix");
     let input = root.join("input.md");
