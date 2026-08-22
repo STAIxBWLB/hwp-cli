@@ -18,6 +18,28 @@ pub struct ListState {
     outline_counters: [u32; 11],
 }
 
+#[cfg(test)]
+mod official_counter_continuation_tests {
+    use super::format_number;
+    use crate::NumFmt;
+
+    #[test]
+    fn hangul_single_vowel_continuation() {
+        assert_eq!(format_number(1, NumFmt::HangulSyllable), "가");
+        assert_eq!(format_number(14, NumFmt::HangulSyllable), "하");
+        assert_eq!(format_number(15, NumFmt::HangulSyllable), "거");
+        assert_eq!(format_number(28, NumFmt::HangulSyllable), "허");
+        assert_eq!(format_number(29, NumFmt::HangulSyllable), "고");
+    }
+
+    #[test]
+    fn circled_hangul_evidence_boundary() {
+        assert_eq!(format_number(1, NumFmt::CircledHangulSyllable), "㉮");
+        assert_eq!(format_number(14, NumFmt::CircledHangulSyllable), "㉻");
+        assert_eq!(format_number(15, NumFmt::CircledHangulSyllable), "거");
+    }
+}
+
 impl ListState {
     /// 이 문단의 머리 마커 문자열(불릿 문자 또는 "1.", "1.1."). 목록이 아니면 None.
     pub fn marker(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
