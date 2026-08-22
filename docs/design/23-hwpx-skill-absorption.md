@@ -18,11 +18,11 @@ two things that must not be silently lost or silently claimed:
 
 1. **Parity** — every old `./hwpx` subcommand and every script-level engine guarantee mapped to a
    native command, a named gap, or an explicit drop (§2).
-2. **The margin question** — whether the official preset's top-30 mm margin has a regulatory
-   source (§3).
+2. **The margin record** — the verified official-profile defaults and their regulatory boundary
+   (§3).
 
-Phase map: **2.1** (this phase) scaffold + this matrix; **2.2** statutory 8-level numbering,
-preset family, any margin correction (GONG-01/02); **2.3** `hwp lint` (GONG-03's notation half);
+Phase map: **2.1** scaffold + this matrix; **2.2** statutory 8-level numbering, preset family and
+verified margin correction (GONG-01/02); **2.3** `hwp lint` (GONG-03's notation half);
 **2.4** document frames, `--template`, table styling (GN-4, GN-5, GN-6); **2.5** editing parity
 proof + old-skill retirement (EDIT-01, RET-01).
 
@@ -53,7 +53,7 @@ the concern disappears because the skill now ships inside the binary.
 | add-col | `hwp edit --add-col` | 2.1 | verified |
 | fill-table | `hwp fill --data tables.json` | 2.1 | verified (data-driven row fill exists) |
 | create | `hwp new --from` | 2.1 | verified |
-| styled | `hwp new --preset` only; style pass absent | 2.4 | partial → GONG-03 (inferred) |
+| styled | `hwp new --preset official|report|plan|notice|minutes|gaejosik|press` | 2.2 | verified for profiles, numbering and layout; style pass remains absent |
 | beautify | none | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
 | analyze | none | 2.5 | gap → EDIT-01 documented recipe (inferred) |
@@ -82,30 +82,28 @@ the concern disappears because the skill now ships inside the binary.
 | page_guard structural drift checks | none | 2.5 | gap → EDIT-01 documented recipes (inferred) — **not verified parity** |
 | binary discovery (`$HWP_CLI`, highest-version selection) | obsolete — the skill ships inside the binary it drives | 2.1 | resolved by absorption |
 
-## 3. Margin check (D-14)
+## 3. Margin record (D-14)
 
-**Question:** does the `gian|report` official preset's margin set have a regulatory source?
+**Question:** does the official-profile margin set have a regulatory source?
 
-**Current engine behavior (verified):** the preset bakes **top 30 / bottom 15 / left 20 / right
-15 mm** — `crates/hwp-convert/src/from_markdown.rs:45-47` (enum doc: "A4 margins
-top30/bottom15/left20/right15mm") and `:1534-1540` (the preset tuple `(5668, 4252, 8504, 4252)`
-in HWP units = left 20 / right 15 / top 30 / bottom 15 mm; header/footer 15 mm).
+**Current engine behavior (verified):** each canonical profile starts with **top 20 / bottom 10 /
+left 20 / right 20 mm**. `official` has no header/footer margin or page number; `report`, `plan`
+and `gaejosik` use 15 mm header/footer margins and `- N -`; `notice` and `press` use 10 mm and
+`- N -`; `minutes` has neither. A caller may override one side through the four `hwp new`
+`--margin-*` flags or the matching MCP `margin_*_mm` inputs.
 
-**Evidence (secondary source):** kordoc's statute compilation refutes the top value —
+**Evidence (secondary source):** kordoc's statute compilation refutes the retired top-30 value —
 `gongmunseo-reference.md` §3.2: *"'위 30mm' 같은 수치는 어느 권위 출처에도 없음"* (no
 authoritative source carries "top 30 mm"; marked refuted), and records the 2020 행정업무운영
 편람 official set as **top 20 / bottom 10 / left 20 / right 20 mm** (header/footer/gutter 0).
 The old `hwpx` skill's reference asserted 30/15/20/15 without a citation, which is where the
 preset's values trace to.
 
-**Verdict (recorded 2026-08-20):** the top **30 mm is unsourced** → a gap row is opened in
-[12-feature-gaps.md](12-feature-gaps.md) §14 (GN-9, cross-linked). **No preset change in this
-phase** — a margin change is a writer change and therefore needs the Hancom acceptance procedure
-(07 PROC), so any correction belongs to Phase 2.2. Reading the 2020 편람 primary source is a
-manual-only step (VALIDATION.md): the verdict was **confirmed by the owner at the human
-checkpoint in plan 02.1-03 (approved 2026-08-21)** — no primary source for 30 mm was produced,
-so the record stands as written; GN-9 stays open and any preset correction remains Phase 2.2
-scope.
+**Verdict (closed 2026-08-22):** top 30 mm was unsourced; Phase 2.2 changed every canonical
+profile to 20/10/20/20 and verified the resulting profile layout in 14 of 14 genuine Hancom
+HWP/HWPX observations. GN-9 is resolved at that verified boundary. This closes only profile
+margins and numbering/layout behavior; `hwp lint`, document frames, `--template`, table styling
+and editing parity remain deferred to their named phases.
 
 ## 4. Decisions recorded
 

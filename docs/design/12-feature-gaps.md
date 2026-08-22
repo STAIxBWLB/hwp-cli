@@ -704,30 +704,28 @@ comparison in [08](08-external-research.md).
 ## 14. GN: official-document authoring layer (added in the 2026-08-20 kordoc comparison)
 
 Korean official documents (공문서) have a statutory form: an eight-level item-mark sequence,
-notation rules for dates, times, money and attachments, and fixed document frames. hwp-cli today
-carries only `OfficialPreset::{Gian, Report}`, which sets fonts, margins, four-level numbering and a
-page number (`hwp-convert/src/from_markdown.rs:348-386`); the regulation layer lived in a
-workspace-local Python skill (`hwpx`) that drove this binary from outside. The decision of
-2026-08-20 is to **absorb that layer natively** — the skill's prose, regulation reference and
-templates ship inside the binary and its capabilities become hwp commands and flags. The comparison
+notation rules for dates, times, money and attachments, and fixed document frames. Phase 2.2 now
+ships seven canonical profiles, verified eight-level numbering and the documented margin family;
+the regulation layer continues to ship inside the binary as a bundled skill. The remaining gaps are
+notation lint, document frames, template shortcuts, table styling and editing parity. The comparison
 that produced this series is kordoc v4.9.0 (MIT), see [08](08-external-research.md); the spec and
 phase breakdown are [issue #121](https://github.com/STAIxBWLB/hwp-cli/issues/121).
 
 | ID | Symptom | Notes and precedent | Difficulty |
 |---|---|---|---|
-| GN-1 | **Item marks stop at four levels**: the official preset fills every numbering level with a repeating `1. / 가. / 1) / 가)` cycle, so levels five to eight never render the statutory `(1) / (가) / ① / ㉮` | `from_markdown.rs:372-384` (`i % 4`); the renderer already knows the seven-level default (`hwp-model/src/list.rs:75-92`). Needs a circled-hangul `NumFmt` in the IR plus the hwp5 and hwpx mappings, taken from the specification numbering table (genuine bytes preferred; oracle-pending otherwise). Statute: the marks and their code points (`①` U+2460, `㉮` U+326E, `(1)` as three characters) with 단모음 continuation after 하 | M |
-| GN-2 | **Only two official presets**: 기안문 and 보고서. 계획서, 공고문, 회의록 and 보도자료 have distinct body sizes, bullet conventions, margins and frames | Preset family plus Korean aliases; kordoc ships seven presets with measured defaults (`src/hwpx/gongmun.ts:172-197`) | S |
+| GN-1 | ✅ **resolved 2026-08-22 (phase 2.2)** — all canonical profiles render the statutory `1. / 가. / 1) / 가) / (1) / (가) / ① / ㉮` ladder through visible depth 8; authored depth 9+ fails closed | HWPX writes the `CircledHangul` mapping directly. HWP5 uses the safe, direct encoding observed in genuine Hancom Office, not an unsupported literal/raw-byte claim. Hancom observations confirmed post-`하` continuation at levels 2, 6 and 8, source order and visible marks in 14/14 HWP/HWPX profile artifacts | M |
+| GN-2 | ✅ **resolved 2026-08-22 (phase 2.2)** — seven canonical official profiles: `official`, `report`, `plan`, `notice`, `minutes`, `gaejosik`, `press` | Canonical aliases and Korean names normalize before writer selection. All profiles use 20/10/20/20 page margins; body, header/footer and page-number defaults were observed in genuine Hancom Office. `gaejosik`'s Malgun Gothic choice remains a practice assumption | S |
 | GN-3 | **No notation check**: `hwp validate` is structural (mimetype, entries, XML) and has no ruleset for the regulation's notation — `2026.8.20` instead of `2026. 8. 20.`, `오후 2시` instead of `14:00`, `345천원`, `붙임:` with a colon, a missing `끝.` | An advisory `hwp lint` (rule table, `--strict`, markdown or document input) plus an MCP tool; kordoc `src/hwpx/gongmun-lint.ts` is the precedent (fifteen rules, itself descended from `jkf87/hwpx-skill`) | S |
 | GN-4 | **No document frames**: 기안문 두문 (기관명, 수신, 경유, 제목) and 결문 (발신명의, 결재/협조, 시행/접수, contact block), the 공고문 head and foot, and the 보도자료 머리박스 must be typed by hand into the markdown | `hwp new` flags carrying the fields; kordoc `src/hwpx/gen-docframe.ts`, `gen-gongmun-extra.ts`. Writer-visible output, so it needs the Hancom acceptance procedure (07 PROC) | M |
 | GN-5 | **No document templates**: creating a 기안문 or a 회의록 means writing the whole skeleton from scratch, and the 회의록 form does not reflect the nine statutory elements (공공기록물 관리에 관한 법률 시행령 제18조) | Embedded markdown skeletons with `{{slot}}` anchors and a listing command, feeding the existing `hwp fill` path | S |
 | GN-6 | **Generated tables are unstyled**: markdown import emits uniform column widths and no header-row emphasis, unlike the official-document convention (header shading, bold, centring; content-proportional widths) | Table styling under the presets plus a flag for existing files; the workspace skill's `style_pass.py` and its corpus evidence are the source | S |
 | GN-7 | ✅ **resolved 2026-08-20 (phase 2.1)** — ~~**The regulation layer is not shipped**~~: the official-document guide, the regulation reference and the templates now ship in the bundled skill (`hwp skill export`) as a directory tree, English canonical with Korean mirrors, guarded by the drift and EN/KO parity gates | Living checklist and subcommand-grain parity matrix in [23-hwpx-skill-absorption](23-hwpx-skill-absorption.md) (issue #121); capabilities still native-side land as GN-1 to GN-6 and GN-8 in phases 2.2-2.5 | S |
 | GN-8 | **Editing parity with the retired skill unproven**: the workspace skill filled slots that span runs, cleared line-layout caches and filled label/value forms; the equivalent native paths are not yet demonstrated on those templates | Prove `fill`/`edit` equivalence and add what is missing (label-addressed cell fill at minimum) before the old skill is retired ([skills#35](https://github.com/STAIxBWLB/skills/issues/35)) | S |
-| GN-9 | **Preset top margin 30mm unsourced vs 편람 20/10/20/20**: the `gian`/`report` preset bakes top 30 / bottom 15 / left 20 / right 15 mm, but kordoc's statute compilation (`gongmunseo-reference.md` §3.2) refutes "위 30mm" as present in no authoritative source; the 2020 행정업무운영 편람 official set is top 20 / bottom 10 / left 20 / right 20 | Recorded in [23-hwpx-skill-absorption](23-hwpx-skill-absorption.md) §margin check (D-14); the preset tuple is `from_markdown.rs:1534-1540`. Verdict 2026-08-20: unsourced → this row opened; **no preset change in 2.1** — any correction is Phase 2.2 (writer change ⇒ Hancom acceptance, 07 PROC). Status: open — primary-source checkpoint approved 2026-08-21 (verdict stands; no citation for 30mm produced), correction deferred to Phase 2.2 | S |
+| GN-9 | ✅ **resolved 2026-08-22 (phase 2.2)** — the unsourced 30/15/20/15 preset tuple was replaced with top/bottom/left/right 20/10/20/20 mm for every canonical profile | [23-hwpx-skill-absorption](23-hwpx-skill-absorption.md) §3 records the D-14 source boundary. 14/14 genuine Hancom HWP/HWPX observations verified the profile layouts. Per-side CLI/MCP margin overrides remain caller-controlled, not statutory claims | S |
 
-GN-1 to GN-8 are scheduled as inserted phases 2.1 to 2.5 (see the spec issue); GN-9 was added
-2026-08-20 from the D-14 margin check and is open for phase 2.2. ✅ GN-7 is resolved (2026-08-20,
-phase 2.1); the rest are open.
+GN-1, GN-2 and GN-9 are resolved in phase 2.2; GN-7 was resolved in phase 2.1. GN-3 (lint),
+GN-4 (frames), GN-5 (template shortcut), GN-6 (table styling) and GN-8 (editing parity) remain
+open in their scheduled phases.
 
 ## 15. Roadmap: difficulty × value plus the dependency graph
 

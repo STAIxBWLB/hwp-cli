@@ -18,10 +18,10 @@
 
 1. **패리티** — 기존 `./hwpx` 서브커맨드 전부와 스크립트 수준 엔진 보장 전부를 네이티브
    커맨드, 명명된 갭, 또는 명시적 폐기로 매핑(§2).
-2. **여백 문제** — 공문서 프리셋의 위 30mm 여백에 규정상 근거가 있는지 여부(§3).
+2. **여백 기록** — 검증된 공문서 프로필 기본값과 그 규정상 경계(§3).
 
-Phase 지도: **2.1**(이번 phase) 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 번호 매기기,
-프리셋 패밀리, 여백 교정(GONG-01/02). **2.3** `hwp lint`(GONG-03의 표기법 절반). **2.4**
+Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 번호 매기기, 프리셋 패밀리,
+검증된 여백 교정(GONG-01/02). **2.3** `hwp lint`(GONG-03의 표기법 절반). **2.4**
 문서 프레임, `--template`, 표 스타일링(GN-4, GN-5, GN-6). **2.5** 편집 패리티 증명 + 구
 스킬 폐기(EDIT-01, RET-01).
 
@@ -52,7 +52,7 @@ Phase 지도: **2.1**(이번 phase) 스캐폴드 + 이 매트릭스. **2.2** 법
 | add-col | `hwp edit --add-col` | 2.1 | verified |
 | fill-table | `hwp fill --data tables.json` | 2.1 | verified (데이터 구동 행 채우기 존재) |
 | create | `hwp new --from` | 2.1 | verified |
-| styled | `hwp new --preset`뿐, 스타일 후처리 없음 | 2.4 | partial → GONG-03 (inferred) |
+| styled | `hwp new --preset official|report|plan|notice|minutes|gaejosik|press` | 2.2 | 프로필·번호·레이아웃은 verified, style pass는 계속 없음 |
 | beautify | 없음 | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
 | analyze | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) |
@@ -81,28 +81,26 @@ Phase 지도: **2.1**(이번 phase) 스캐폴드 + 이 매트릭스. **2.2** 법
 | page_guard 구조 드리프트 검사 | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) — **verified 패리티 아님** |
 | 바이너리 탐색 (`$HWP_CLI`, 최고 버전 선택) | 폐기 — 스킬이 자신이 구동하는 바이너리 안에 들어감 | 2.1 | resolved by absorption |
 
-## 3. 여백 점검 (D-14)
+## 3. 여백 기록 (D-14)
 
-**질문:** `gian|report` 공문서 프리셋의 여백 조합에 규정상 근거가 있는가?
+**질문:** 공문서 프로필 여백 조합에 규정상 근거가 있는가?
 
-**현재 엔진 동작 (verified):** 프리셋은 **위 30 / 아래 15 / 왼쪽 20 / 오른쪽 15 mm**를
-고정한다 — `crates/hwp-convert/src/from_markdown.rs:45-47`(enum 문서: "A4 margins
-top30/bottom15/left20/right15mm") 및 `:1534-1540`(프리셋 튜플 `(5668, 4252, 8504, 4252)`,
-HWP 단위 = 왼쪽 20 / 오른쪽 15 / 위 30 / 아래 15 mm. 머리말·꼬리말 15 mm).
+**현재 엔진 동작 (verified):** 모든 표준 프로필은 **위 20 / 아래 10 / 왼쪽 20 / 오른쪽
+20 mm**로 시작한다. `official`은 머리말/꼬리말 여백과 쪽 번호가 없고, `report`, `plan`,
+`gaejosik`은 머리말/꼬리말 15 mm와 `- N -`, `notice`, `press`는 10 mm와 `- N -`를 쓴다.
+`minutes`는 둘 다 없다. 호출자는 네 개의 `hwp new` `--margin-*` 플래그 또는 대응 MCP
+`margin_*_mm` 입력으로 한 변만 override할 수 있다.
 
-**근거 (2차 출처):** kordoc의 법규 편집본은 위쪽 값을 반증한다 —
+**근거 (2차 출처):** kordoc의 법규 편집본은 폐기된 위 30 mm 값을 반증한다 —
 `gongmunseo-reference.md` §3.2: *"'위 30mm' 같은 수치는 어느 권위 출처에도 없음"*
 (refuted로 표기)이며, 2020 행정업무운영 편람의 공식 조합은 **위 20 / 아래 10 / 좌 20 /
 우 20 mm**(머리말·꼬리말·제본 0)로 기록한다. 구 `hwpx` 스킬의 레퍼런스는 30/15/20/15를
 출처 없이 주장했고, 프리셋 값의 기원이 바로 그것이다.
 
-**판정 (2026-08-20 기록):** 위 **30mm는 근거 없음(unsourced)** → [12-feature-gaps.ko.md](12-feature-gaps.ko.md)
-§14에 갭 행을 연다(GN-9, 상호 링크). **이번 phase에서 프리셋 변경 없음** — 여백 변경은
-writer 변경이므로 한컴 수락 절차(07 PROC)가 필요하며, 교정은 Phase 2.2 소관이다. 2020
-편람 1차 원문을 읽는 것은 수동 전용 단계(VALIDATION.md)다. 이 판정은 02.1-03 계획의 사람
-체크포인트에서 **소유자 승인으로 확정됐다(2026-08-21)** — 30mm의 1차 출처는 제시되지
-않았으므로 기록된 판정이 그대로 유지된다. GN-9는 open 상태를 유지하며, 프리셋 교정은
-계속 Phase 2.2 소관이다.
+**판정 (2026-08-22 해소):** 위 30 mm는 근거가 없었고, Phase 2.2는 모든 표준 프로필을
+20/10/20/20으로 바꾼 뒤 정품 한컴 HWP/HWPX 14건 관찰에서 프로필 레이아웃을 검증했다.
+GN-9는 이 검증 경계에서 해소된다. 이 해소는 프로필 여백과 번호/레이아웃 동작만 닫는다.
+`hwp lint`, 문서 프레임, `--template`, 표 스타일링, 편집 패리티는 각 배정 phase에 계속 이연된다.
 
 ## 4. 기록된 결정
 
