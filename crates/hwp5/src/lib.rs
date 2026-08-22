@@ -36,5 +36,6 @@ pub use file_header::FileHeader;
 pub use read::{BoundedReadLimits, BoundedReadSnapshot, ReadResult, ScriptPresence, read_document};
 pub use summary::parse_summary;
 pub use write::{
-    WriteOptions, rewrite_document_with_report, write_document, write_document_with_report,
+    WriteOptions, rewrite_document_with_report, validate_evidenced_official_numbering,
+    write_document, write_document_with_report,
 };

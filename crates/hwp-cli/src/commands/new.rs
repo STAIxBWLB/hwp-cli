@@ -182,6 +182,15 @@ pub fn execute(
         }
     }
 
+    // The direct HWP5 official-numbering record has evidence for one
+    // definition per semantic level only. Reject independently restarted
+    // ordered lists before opening the transactional staging path; HWPX
+    // remains available for that topology.
+    if write_hwp {
+        hwp5::validate_evidenced_official_numbering(&doc)
+            .map_err(|error| anyhow::anyhow!(error))?;
+    }
+
     // 메타데이터 지정("키=값")을 덮어쓴다(JSON IR에 있던 값보다 우선).
     for spec in set_meta {
         hwp_convert::apply_meta(&mut doc, spec).map_err(|e| anyhow::anyhow!(e))?;

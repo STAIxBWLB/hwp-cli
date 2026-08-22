@@ -270,6 +270,39 @@ fn canonical_profiles_round_trip_in_hwp_and_hwpx() {
 }
 
 #[test]
+fn official_hwp_rejects_independent_ordered_lists_before_publication() {
+    let root = temp_dir("independent-official-lists");
+    let input = root.join("input.md");
+    let output = root.join("independent.hwp");
+    fs::write(&input, "1. first list\n\nplain gap\n\n1. second list\n").unwrap();
+
+    let result = command_output(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&input)
+            .args(["--preset", "official", "--output"])
+            .arg(&output),
+        "independent official ordered lists",
+    );
+
+    assert!(
+        !result.status.success(),
+        "unproven topology must fail closed"
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("직접 HWP5 공식 번호 체계 구조"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        !output.exists(),
+        "rejected topology must not publish an HWP"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn aliases_margins_and_input_failures_are_shipped_binary_gates() {
     let root = temp_dir("edge-matrix");
     let input = root.join("input.md");

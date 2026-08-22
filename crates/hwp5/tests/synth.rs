@@ -1131,6 +1131,93 @@ fn official_hwp5_rejects_unproven_level_or_continuation_before_publication() {
     assert!(!count_out.exists(), "failure must precede file publication");
 }
 
+#[test]
+fn official_hwp5_rejects_sixteenth_level_two_item_in_writer_visible_subtrees() {
+    let markdown = "1. level 1\n   1. level 2\n";
+    let options = hwp_convert::MarkdownImportOptions {
+        preset: Some(hwp_convert::OfficialPreset::Gian),
+        ..Default::default()
+    };
+    let direct_document = || {
+        let doc = hwp_convert::from_markdown_with(markdown, &options);
+        let level_two = doc.sections[0]
+            .paragraphs
+            .iter()
+            .find(|paragraph| {
+                doc.header.para_shapes[paragraph.para_shape.0 as usize].head_level() == 2
+            })
+            .unwrap()
+            .clone();
+        (doc, level_two)
+    };
+
+    let (mut table_doc, level_two) = direct_document();
+    table_doc.sections[0].paragraphs[0]
+        .controls
+        .push(hwp_model::Control::Table(hwp_model::Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: Default::default(),
+            table_tail: Vec::new(),
+            caption: None,
+            extras: Vec::new(),
+            cells: vec![hwp_model::Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: hwp_model::HwpUnit(1),
+                height: hwp_model::HwpUnit(1),
+                margins: [0; 4],
+                border_fill: Default::default(),
+                header_tail: Vec::new(),
+                paragraphs: std::iter::repeat_n(level_two, 15).collect(),
+            }],
+        }));
+
+    let (mut control_doc, level_two) = direct_document();
+    control_doc.sections[0].paragraphs[0]
+        .controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: std::iter::repeat_n(level_two, 15).collect(),
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }));
+
+    for (label, doc) in [("table", table_doc), ("control", control_doc)] {
+        let output = tmp(&format!("official-continuation-{label}.hwp"));
+        let _ = std::fs::remove_file(&output);
+        let error =
+            hwp5::write_document(&doc, &output, &hwp5::WriteOptions::default()).unwrap_err();
+        assert!(matches!(
+            error,
+            hwp5::Hwp5Error::UnsupportedOfficialNumberingRange(_)
+        ));
+        assert!(
+            !output.exists(),
+            "the sixteenth level-two item in {label} must not publish an HWP"
+        );
+    }
+}
+
 /// 스트림 경로 구분자 회귀: cfb 열거가 플랫폼 구분자(Windows `\`)를 섞어도
 /// list_streams/body_sections는 항상 `/` 정규 경로를 돌려줘야 한다 — 아니면
 /// Windows에서 `/BodyText/Section` 필터가 전부 빗나가 본문이 빈 문서로 읽힌다
