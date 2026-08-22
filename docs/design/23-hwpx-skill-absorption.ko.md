@@ -52,7 +52,7 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 | add-col | `hwp edit --add-col` | 2.1 | verified |
 | fill-table | `hwp fill --data tables.json` | 2.1 | verified (데이터 구동 행 채우기 존재) |
 | create | `hwp new --from` | 2.1 | verified |
-| styled | `hwp new --preset official|report|plan|notice|minutes|gaejosik|press` | 2.2 | 프로필·번호·레이아웃은 verified, style pass는 계속 없음 |
+| styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | 프로필·번호·레이아웃은 verified, style pass는 계속 없음 |
 | beautify | 없음 | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
 | analyze | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) |
@@ -86,8 +86,8 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 **질문:** 공문서 프로필 여백 조합에 규정상 근거가 있는가?
 
 **현재 엔진 동작 (verified):** 모든 표준 프로필은 **위 20 / 아래 10 / 왼쪽 20 / 오른쪽
-20 mm**로 시작한다. `official`은 머리말/꼬리말 여백과 쪽 번호가 없고, `report`, `plan`,
-`gaejosik`은 머리말/꼬리말 15 mm와 `- N -`, `notice`, `press`는 10 mm와 `- N -`를 쓴다.
+20 mm**로 시작한다. `official`은 머리말/꼬리말 여백과 쪽 번호가 없고, `report`, `plan`은
+머리말/꼬리말 15 mm와 `- N -`, `notice`, `press`는 10 mm와 `- N -`를 쓴다.
 `minutes`는 둘 다 없다. 호출자는 네 개의 `hwp new` `--margin-*` 플래그 또는 대응 MCP
 `margin_*_mm` 입력으로 한 변만 override할 수 있다.
 

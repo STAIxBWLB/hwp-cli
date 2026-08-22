@@ -70,12 +70,13 @@
 | 공고문 | `notice` (맑은 고딕 15pt/160%) | `notice.md` | 머리말/꼬리말 10 mm, `- N -` 쪽 번호; 공고번호 `제2025-282호` 형식 |
 | 보도자료 | `press` (HCR 바탕 14pt/160%) | `press.md` | 머리말/꼬리말 10 mm, `- N -` 쪽 번호; 보도시점/배포일 슬롯과 역피라미드 본문 |
 
-`gaejosik`도 개조식 공문 본문에 사용할 수 있습니다(맑은 고딕 15pt/160%, 실무상 가정).
-머리말/꼬리말 15 mm와 `- N -` 쪽 번호를 사용합니다. 일곱 프로필 모두 시작 여백은
-위/아래/왼쪽/오른쪽 20/10/20/20 mm입니다. 변별 여백은 `--margin-top`, `--margin-bottom`,
-`--margin-left`, `--margin-right`로만 명시합니다. 표준 이름은 `official`, `report`, `plan`,
-`notice`, `minutes`, `gaejosik`, `press`이며, `gian`, `gongmun`과 문서화된 한국어 이름은
-하나의 표준 프로필로 정규화됩니다.
+프로필은 문서 유형마다 하나씩만 있습니다. 개조식은 보고서·계획서와 내부결재 문서의 본문에서
+쓰는 명사형 종결 방식, 곧 문체이므로(`references/korean-official-format.ko.md` §6 어투)
+프로필을 선택하지 않습니다. 프로필은 문서 유형으로 고르고 문체는 본문에서 적용하십시오.
+여섯 프로필 모두 시작 여백은 위/아래/왼쪽/오른쪽 20/10/20/20 mm입니다. 변별 여백은
+`--margin-top`, `--margin-bottom`, `--margin-left`, `--margin-right`로만 명시합니다. 표준
+이름은 `official`, `report`, `plan`, `notice`, `minutes`, `press`이며, `gian`, `gongmun`과
+문서화된 한국어 이름은 하나의 표준 프로필로 정규화됩니다.
 
 모든 레시피가 공유하는 관례:
 

@@ -53,7 +53,7 @@ the concern disappears because the skill now ships inside the binary.
 | add-col | `hwp edit --add-col` | 2.1 | verified |
 | fill-table | `hwp fill --data tables.json` | 2.1 | verified (data-driven row fill exists) |
 | create | `hwp new --from` | 2.1 | verified |
-| styled | `hwp new --preset official|report|plan|notice|minutes|gaejosik|press` | 2.2 | verified for profiles, numbering and layout; style pass remains absent |
+| styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | verified for profiles, numbering and layout; style pass remains absent |
 | beautify | none | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
 | analyze | none | 2.5 | gap → EDIT-01 documented recipe (inferred) |
@@ -87,8 +87,8 @@ the concern disappears because the skill now ships inside the binary.
 **Question:** does the official-profile margin set have a regulatory source?
 
 **Current engine behavior (verified):** each canonical profile starts with **top 20 / bottom 10 /
-left 20 / right 20 mm**. `official` has no header/footer margin or page number; `report`, `plan`
-and `gaejosik` use 15 mm header/footer margins and `- N -`; `notice` and `press` use 10 mm and
+left 20 / right 20 mm**. `official` has no header/footer margin or page number; `report` and `plan`
+use 15 mm header/footer margins and `- N -`; `notice` and `press` use 10 mm and
 `- N -`; `minutes` has neither. A caller may override one side through the four `hwp new`
 `--margin-*` flags or the matching MCP `margin_*_mm` inputs.
 

@@ -183,7 +183,7 @@ pub enum Cmd {
         #[arg(long = "set-meta")]
         set_meta: Vec<String>,
         /// Official-document profile (markdown input only): official, report, plan, notice,
-        /// minutes, gaejosik, or press. Legacy and Korean aliases normalize to one profile.
+        /// minutes, or press. Legacy and Korean aliases normalize to one profile.
         #[arg(long, value_parser = parse_preset_arg)]
         preset: Option<PresetArg>,
         /// Top page margin in millimetres (0..=200)
@@ -706,8 +706,6 @@ mod tests {
             ("minutes", OfficialPreset::Minutes),
             ("회의록", OfficialPreset::Minutes),
             ("회의기록", OfficialPreset::Minutes),
-            ("gaejosik", OfficialPreset::Gaejosik),
-            ("개조식", OfficialPreset::Gaejosik),
             ("press", OfficialPreset::Press),
             ("보도", OfficialPreset::Press),
             ("보도자료", OfficialPreset::Press),

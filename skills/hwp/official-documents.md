@@ -74,12 +74,14 @@ present-day path.
 | 공고문 (public notice) | `notice` (Malgun Gothic 15pt/160%) | `notice.md` | 10 mm header/footer, `- N -` page number; 공고번호 `제2025-282호` form |
 | 보도자료 (press release) | `press` (HCR Batang 14pt/160%) | `press.md` | 10 mm header/footer, `- N -` page number; 보도시점/배포일 slots and inverted-pyramid body |
 
-`gaejosik` is also available for bullet-style official prose (Malgun Gothic 15pt/160%, a practice
-assumption), with 15 mm header/footer margins and a `- N -` page number. All seven profiles start
-with top/bottom/left/right margins of 20/10/20/20 mm; use `--margin-top`, `--margin-bottom`,
-`--margin-left` or `--margin-right` only for an explicit per-side override. Canonical names are
-`official`, `report`, `plan`, `notice`, `minutes`, `gaejosik` and `press`; `gian`, `gongmun` and
-the documented Korean names normalize to one of them.
+There is one profile per document type and no more. 개조식 is a writing style — the noun-form
+sentence ending used inside 보고서·계획서 and 내부결재 bodies (§6 어투 of
+`references/korean-official-format.md`) — so it selects no profile; pick the profile by document
+type and apply the style in the body text. All six profiles start with top/bottom/left/right
+margins of 20/10/20/20 mm; use `--margin-top`, `--margin-bottom`, `--margin-left` or
+`--margin-right` only for an explicit per-side override. Canonical names are `official`,
+`report`, `plan`, `notice`, `minutes` and `press`; `gian`, `gongmun` and the documented Korean
+names normalize to one of them.
 
 Conventions every recipe shares:
 
