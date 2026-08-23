@@ -275,6 +275,7 @@ fn mcp_stdio_session() {
         "hwp_fill",
         "hwp_grep",
         "hwp_info",
+        "hwp_lint",
         "hwp_list_bookmarks",
         "hwp_list_fields",
         "hwp_new",
@@ -287,7 +288,7 @@ fn mcp_stdio_session() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    assert_eq!(names, expect, "도구 16종");
+    assert_eq!(names, expect, "도구 17종");
 
     send(
         serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
@@ -299,7 +300,123 @@ fn mcp_stdio_session() {
     let v: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(v["valid"], true, "hwp_validate 결과: {text}");
 
+    // hwp_lint: 루트 안 위반 markdown → findings 비어있지 않고 rule_id/line/message 보유.
+    let dir = tmp_dir("mcp_lint_call");
+    let violating = dir.join("violating.md");
+    std::fs::write(&violating, "시행일: 2020.7.8\n").unwrap();
+    send(
+        serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+        "name":"hwp_lint","arguments":{"path": violating.to_string_lossy()}}}),
+    );
+    let call = recv("tools/call");
+    assert_eq!(call["id"], 4);
+    assert_eq!(call["result"]["isError"], false, "hwp_lint 응답: {call}");
+    let text = call["result"]["content"][0]["text"].as_str().unwrap();
+    let report: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(report["contract"], "hwp-lint-report-v1", "계약: {text}");
+    let findings = report["findings"].as_array().unwrap();
+    assert!(!findings.is_empty(), "위반 파일에 findings 없음: {text}");
+    for f in findings {
+        assert!(f["rule_id"].is_string(), "rule_id 누락: {f}");
+        assert!(f["line"].is_number(), "line 누락: {f}");
+        assert!(f["message"].is_string(), "message 누락: {f}");
+    }
+
     // stdin EOF = 종료 신호. try_wait 루프(최대 30s) 후 kill.
+    drop(stdin);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            assert!(status.success(), "MCP 종료 코드: {status}");
+            break;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("MCP가 stdin EOF 후 30s 내 종료하지 않음");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// hwp_lint 샌드박스: --root 안의 파일은 검사되고, 루트 밖 경로는
+/// checked_read_path가 거부한다(isError=true). D-09/T-02.3-01 고정.
+#[test]
+fn mcp_hwp_lint_root_sandbox() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let dir = tmp_dir("mcp_lint_sandbox");
+    let in_root = dir.join("violating.md");
+    std::fs::write(&in_root, "시행일: 2020.7.8\n").unwrap();
+
+    let mut child = hwp()
+        .arg("mcp")
+        .arg("--root")
+        .arg(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("hwp mcp spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let recv = |what: &str| -> serde_json::Value {
+        let line = rx
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|_| panic!("MCP 응답 타임아웃: {what}"));
+        serde_json::from_str(&line).unwrap_or_else(|_| panic!("JSON 파싱: {line}"))
+    };
+    let mut send = |v: serde_json::Value| {
+        stdin
+            .write_all(serde_json::to_string(&v).unwrap().as_bytes())
+            .unwrap();
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+    };
+
+    send(
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "protocolVersion":"2024-11-05","capabilities":{},
+        "clientInfo":{"name":"cli_surface","version":"0"}}}),
+    );
+    recv("initialize");
+    send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+
+    // 루트 안: findings가 돌아와야 한다.
+    send(
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"hwp_lint","arguments":{"path": in_root.to_string_lossy()}}}),
+    );
+    let call = recv("tools/call in-root");
+    assert_eq!(call["result"]["isError"], false, "in-root: {call}");
+    let text = call["result"]["content"][0]["text"].as_str().unwrap();
+    let report: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(
+        !report["findings"].as_array().unwrap().is_empty(),
+        "in-root 위반 파일에 findings 없음: {text}"
+    );
+
+    // 루트 밖: checked_read_path 거부(isError=true).
+    send(
+        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+        "name":"hwp_lint","arguments":{"path": fixture().to_string_lossy()}}}),
+    );
+    let call = recv("tools/call out-of-root");
+    assert_eq!(
+        call["result"]["isError"], true,
+        "루트 밖 경로가 거부되지 않음: {call}"
+    );
+
     drop(stdin);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

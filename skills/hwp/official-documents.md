@@ -67,7 +67,7 @@ present-day path.
 
 | Document type | Preset today | Template skeleton | Notes |
 |---|---|---|---|
-| 기안문 (draft) | `official` (Malgun Gothic 12pt/160%; `gian` compatibility alias) | `gian-internal.md` (내부결재), `gian-external.md` (대외시행) | `gongmun-basic.md` covers the plain external official letter (no 접수번호/접수일자) |
+| 기안문 (draft) | `official` (Malgun Gothic 12pt/160%; `gian` compatibility alias — still works, prints a one-time deprecation note) | `gian-internal.md` (내부결재), `gian-external.md` (대외시행) | `gongmun-basic.md` covers the plain external official letter (no 접수번호/접수일자) |
 | 보고서 (report) | `report` (HCR Batang 15pt/160%) | `report.md` | 15 mm header/footer, `- N -` page number; 배경 → 내용 → 계획 → 행정사항 skeleton |
 | 계획서 (plan) | `plan` (HCR Batang 15pt/160%) | `plan.md` | 15 mm header/footer, `- N -` page number; 9-section 사업계획서 skeleton |
 | 회의록 (minutes) | `minutes` (HCR Batang 14pt/130%) | `minutes.md` | No header/footer margin or page number; 9 statutory elements of 공공기록물 관리에 관한 법률 시행령 제18조 (D-19) |
@@ -81,7 +81,8 @@ type and apply the style in the body text. All six profiles start with top/botto
 margins of 20/10/20/20 mm; use `--margin-top`, `--margin-bottom`, `--margin-left` or
 `--margin-right` only for an explicit per-side override. Canonical names are `official`,
 `report`, `plan`, `notice`, `minutes` and `press`; `gian`, `gongmun` and the documented Korean
-names normalize to one of them.
+names normalize to one of them. The `gian` alias still works but prints a one-time deprecation
+note.
 
 Conventions every recipe shares:
 
@@ -196,9 +197,21 @@ so the recipe above is unaffected.
 
 Every recipe above maps one-to-one onto the MCP tools when `hwp` runs as an MCP stdio
 server: `hwp new` → `hwp_new`, `hwp fill` → `hwp_fill`, `hwp render` → `hwp_render`,
-`hwp validate` → `hwp_validate`. A regulation linter (`hwp_lint`) arrives in Phase 2.3.
-Always start the server with at least one `--root` so the tools can only touch the sandboxed
-workspace; tool details, sandbox semantics and client setup stay in SKILL.md's MCP section.
+`hwp validate` → `hwp_validate`, and `hwp lint` → `hwp_lint`. Always start the server
+with at least one `--root` so the tools can only touch the sandboxed workspace; tool
+details, sandbox semantics and client setup stay in SKILL.md's MCP section.
+
+### Lint before you generate
+
+`hwp_lint` takes a markdown file `path` only (no inline text), honors the server's
+`--root` sandbox, and returns the advisory hwp-lint-report-v1 findings JSON —
+`rule_id`/`severity`/`line`/`col`/`message` per finding, with no source-text excerpts.
+The CLI twin is `hwp lint <file.md> [--profile gongmun|report] [--json] [--strict]`.
+
+Lint the markdown skeleton before `hwp new --from`. Fix error-severity structure
+findings (`struct-item-mark`, `struct-roman-heading`) first — under `--strict` they
+fail the command — and treat the notation warnings as advisory guidance to apply by
+hand; lint never rewrites the file.
 
 ## 7. Final check in Hancom Office
 

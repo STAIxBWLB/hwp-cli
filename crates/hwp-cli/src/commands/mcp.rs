@@ -368,6 +368,7 @@ fn call_tool(name: &str, args: &Value, ctx: &Ctx) -> Value {
         "hwp_slots" => tool_slots(args, ctx),
         "hwp_fill" => tool_fill(args, ctx),
         "hwp_validate" => tool_validate(args, ctx),
+        "hwp_lint" => tool_lint(args, ctx),
         "hwp_certify" => tool_certify(args, ctx),
         other => Err(format!("알 수 없는 도구: {other}")),
     };
@@ -837,6 +838,20 @@ fn tool_validate(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let v = crate::commands::validate::validate_json(&path);
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&v).unwrap_or_default(),
+    )])
+}
+
+/// `hwp_lint` — path-only (D-09): no inline text, no profile argument in v1.
+/// The path goes through the same canonicalize + root-containment sandbox as
+/// every other read tool (`checked_read_path`), then the shared lint entry —
+/// findings carry rule_id/severity/line/col/message only, no source excerpts
+/// (T-02.3-04).
+fn tool_lint(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let report =
+        crate::commands::lint::lint_path_json(&path, hwp_convert::lint::LintProfile::Gongmun);
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&report).unwrap_or_default(),
     )])
 }
 
@@ -2078,6 +2093,13 @@ fn tool_defs() -> Vec<Value> {
             "description": "구조 검증(mimetype·필수 엔트리·XML 파싱). {valid, errors, warnings} 반환.",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"}
+            }, "required": ["path"]}
+        }),
+        json!({
+            "name": "hwp_lint",
+            "description": "공문서 표기법·구조 규칙 검사(markdown). 권고성 — hwp-lint-report-v1 형태의 findings JSON(rule_id·severity·line·col·message)을 반환하며 원문 발췌는 포함하지 않는다.",
+            "inputSchema": {"type": "object", "properties": {
+                "path": {"type": "string", "description": "검사할 markdown 파일 경로(--root 샌드박스 안)"}
             }, "required": ["path"]}
         }),
         json!({

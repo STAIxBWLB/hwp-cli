@@ -63,7 +63,7 @@
 
 | 문서 유형 | 오늘의 프리셋 | 템플릿 골격 | 비고 |
 |---|---|---|---|
-| 기안문 | `official` (맑은 고딕 12pt/160%; `gian` 호환 별칭) | `gian-internal.md` (내부결재), `gian-external.md` (대외시행) | `gongmun-basic.md`는 순수 대외 공문 기본형 (접수번호/접수일자 없음) |
+| 기안문 | `official` (맑은 고딕 12pt/160%; `gian` 호환 별칭 — 계속 동작하며 한 번의 지원 중단 안내 출력) | `gian-internal.md` (내부결재), `gian-external.md` (대외시행) | `gongmun-basic.md`는 순수 대외 공문 기본형 (접수번호/접수일자 없음) |
 | 보고서 | `report` (HCR 바탕 15pt/160%) | `report.md` | 머리말/꼬리말 15 mm, `- N -` 쪽 번호; 배경 → 내용 → 계획 → 행정사항 골격 |
 | 계획서 | `plan` (HCR 바탕 15pt/160%) | `plan.md` | 머리말/꼬리말 15 mm, `- N -` 쪽 번호; 9개 절 사업계획서 골격 |
 | 회의록 | `minutes` (HCR 바탕 14pt/130%) | `minutes.md` | 머리말/꼬리말 여백과 쪽 번호 없음; 공공기록물 관리에 관한 법률 시행령 제18조의 9가지 법정 요소 (D-19) |
@@ -76,7 +76,8 @@
 여섯 프로필 모두 시작 여백은 위/아래/왼쪽/오른쪽 20/10/20/20 mm입니다. 변별 여백은
 `--margin-top`, `--margin-bottom`, `--margin-left`, `--margin-right`로만 명시합니다. 표준
 이름은 `official`, `report`, `plan`, `notice`, `minutes`, `press`이며, `gian`, `gongmun`과
-문서화된 한국어 이름은 하나의 표준 프로필로 정규화됩니다.
+문서화된 한국어 이름은 하나의 표준 프로필로 정규화됩니다. `gian` 별칭은 계속 동작하지만
+한 번의 지원 중단 안내를 출력합니다.
 
 모든 레시피가 공유하는 관례:
 
@@ -189,9 +190,21 @@ hwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
 
 위의 모든 레시피는 `hwp`가 MCP stdio 서버로 실행될 때 MCP 도구와 일대일로 대응됩니다:
 `hwp new` → `hwp_new`, `hwp fill` → `hwp_fill`, `hwp render` → `hwp_render`,
-`hwp validate` → `hwp_validate`. 규정 린터 (`hwp_lint`)는 2.3 단계에서 도입됩니다.
-서버는 항상 최소 하나의 `--root`를 지정해 시작해 도구가 샌드박스 작업 공간만 접근하게
-하세요. 도구 상세, 샌드박스 의미, 클라이언트 설정은 SKILL.md의 MCP 절에 있습니다.
+`hwp validate` → `hwp_validate`, 그리고 `hwp lint` → `hwp_lint`. 서버는 항상 최소
+하나의 `--root`를 지정해 시작해 도구가 샌드박스 작업 공간만 접근하게 하세요. 도구
+상세, 샌드박스 의미, 클라이언트 설정은 SKILL.md의 MCP 절에 있습니다.
+
+### 생성 전 린트
+
+`hwp_lint`는 마크다운 파일 `path` 하나만 받고(인라인 텍스트 없음) 서버의 `--root`
+샌드박스를 따릅니다. 반환값은 권고성 hwp-lint-report-v1 findings JSON — finding마다
+`rule_id`/`severity`/`line`/`col`/`message`, 원문 발췌 없음 — 입니다. CLI 쌍은
+`hwp lint <file.md> [--profile gongmun|report] [--json] [--strict]`입니다.
+
+`hwp new --from` 전에 마크다운 골격을 린트하세요. 오류 심각도 구조 finding
+(`struct-item-mark`, `struct-roman-heading`)을 먼저 고치세요 — `--strict`에서는 이들이
+명령을 실패시킵니다. 표기법 경고는 수동으로 적용하는 권고로 다루세요. 린트는 파일을
+다시 쓰지 않습니다.
 
 ## 7. 한컴 오피스 최종 확인
 

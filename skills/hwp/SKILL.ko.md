@@ -45,7 +45,7 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   또는 JSON IR을 가져옵니다 (생략 시 빈 문서); `--set-meta key=value` (title/author/
   subject/keywords, 반복 가능); `--preset official|report|plan|notice|minutes|press`
   (한국 공문서 프로필, 마크다운 입력 전용); `gian`과 문서화된 호환 별칭은 표준 프로필로
-  정규화합니다. 변별 여백은 mm 단위 `--margin-top`, `--margin-bottom`, `--margin-left`,
+  정규화합니다 — `gian` 별칭은 계속 동작하지만 한 번의 지원 중단 안내를 출력합니다. 변별 여백은 mm 단위 `--margin-top`, `--margin-bottom`, `--margin-left`,
   `--margin-right`로 지정합니다. `--strict`는 마크다운 가져오기가 내용을 유실하면 실패합니다.
 - `hwp edit {input} -o {output} [flags...]` — 기존 문서 편집; 이미지, 서식, 미파싱
   레코드는 보존합니다. 문자열 플래그 (모두 반복 가능): `--replace "find=>repl"`,
@@ -97,7 +97,8 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 하나씩 `official`(기안문), `report`(보고서), `plan`(계획서), `notice`(공고문),
 `minutes`(회의록), `press`(보도자료) 여섯 가지입니다. 표준 공문서 프로필은 `gian`,
 `gongmun`을 의미상 호환 별칭으로 받습니다. 별칭은 같은 프로필을 선택할 뿐 raw-byte
-동일성을 약속하지 않습니다. 한국어 별칭도 사용할 수 있습니다. 각 유형을 마크다운 골격으로
+동일성을 약속하지 않으며, `gian` 별칭은 계속 동작하지만 한 번의 지원 중단 안내를
+출력합니다. 한국어 별칭도 사용할 수 있습니다. 각 유형을 마크다운 골격으로
 작성하고, `hwp new --from ... --preset official`(또는 맞는 프로필)로 생성한 뒤 `hwp fill`로
 채웁니다.
 
@@ -178,7 +179,7 @@ Quick의 로컬 폴터 권한에 추가된 폴터는 내장 읽기/검색 도구
 
 Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 셸 인용 문자를 넣지 마세요.
 세 계층을 순서대로 검증하세요: 정확한 절대 경로 바이너리가 버전을 반환하는지; Quick이
-16개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
+17개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
 `hwp_validate`가 설정된 LocalLow 루트 아래 절대 경로에서 성공하는지 (예:
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`).
 디스커버리만으로 파일 접근이 증명된다고 주장하지 마세요.
@@ -187,7 +188,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 복사-붙여넣기 운영자 및 AI 런북:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-도구 (16):
+도구 (17):
 
 | 도구 | 필수 인수 | 용도 |
 |---|---|---|
@@ -205,6 +206,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_template` | `output`, `template` (+`data`) | TemplateSpec/Data v1의 한정된 확장 |
 | `hwp_fill` | `input`, `output`, `values` | hwpx 템플릿의 `{{name}}` 채우기 (패키지 보존) |
 | `hwp_validate` | `path` | 구조 검증, `{valid, errors, warnings}` |
+| `hwp_lint` | `path` | 마크다운 파일의 공문서 표기법·구조 규칙 검사 (권고성; 경로만, `--root` 샌드박스 적용); hwp-lint-report-v1 findings JSON (`rule_id`/`severity`/`line`/`col`/`message`) 반환 |
 | `hwp_certify` | `input`, `policy`, `report` | 인증 실행 후 보고서를 원자적으로 발행 |
 | `hwp_diff` | `input`, `ref` | 한 페이지를 렌더링해 참조 PNG와 비교 |
 

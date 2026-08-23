@@ -208,6 +208,18 @@ fn real_main() -> anyhow::Result<()> {
             allow_partial,
         } => commands::fill::run(&input, &output, &set, data.as_deref(), json, allow_partial),
         Cmd::Validate { file, json } => commands::validate::run(&file, json),
+        Cmd::Lint {
+            file,
+            profile,
+            json,
+            strict,
+        } => {
+            let profile = match profile {
+                hwp_cli::cli::LintProfileArg::Gongmun => hwp_convert::lint::LintProfile::Gongmun,
+                hwp_cli::cli::LintProfileArg::Report => hwp_convert::lint::LintProfile::Report,
+            };
+            commands::lint::run(&file, profile, json, strict)
+        }
         Cmd::Certify {
             input,
             policy,

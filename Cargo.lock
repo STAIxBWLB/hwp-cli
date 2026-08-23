@@ -714,6 +714,7 @@ dependencies = [
  "libc",
  "pulldown-cmark",
  "quick-xml",
+ "regex",
  "resvg",
  "serde_json",
  "windows-sys",

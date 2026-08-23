@@ -13,7 +13,7 @@
 
 ### 1.1 범위
 
-- `hwp mcp` stdio를 기본 local transport로 유지하고 16개 tool 동작의 호환성을 보존.
+- `hwp mcp` stdio를 기본 local transport로 유지하고 17개 tool 동작의 호환성을 보존.
 - hosted deployment용 Streamable HTTP mode를 명시적 별도 설정으로 추가.
 - 두 adapter가 하나의 transport-independent JSON-RPC/tool dispatch core를 공유.
 - 모든 remote request 인증 및 tenant, principal, session별 workspace 격리.
@@ -225,13 +225,13 @@ maintained protocol/HTTP primitive를 우선한다. no tokio/no SDK 유지는 un
 
 ## 9. 단계별 follow-up backlog
 
-1. **Core extraction:** typed JSON-RPC value와 authority context 도입. stdio output과 16개 tool의
+1. **Core extraction:** typed JSON-RPC value와 authority context 도입. stdio output과 17개 tool의
    byte/behavior compatibility 유지.
 2. **Artifact model:** network listener 없이 tenant-owned upload, immutable output, remote-safe
    schema, quota, cleanup 구현.
 3. **Transport/auth:** 선택한 HTTP adapter, protocol header, SSE/session lifecycle, OAuth resource
    server validation, proxy boundary, audit event를 명시적 build/deployment mode 뒤에 추가.
-4. **Quick Web pilot:** non-production connector 등록. 16개 tool의 remote-safe parity, upload,
+4. **Quick Web pilot:** non-production connector 등록. 17개 tool의 remote-safe parity, upload,
    edit, render, convert, download, expiry, reconnect 검증.
 5. **Security gate:** cross-tenant, rebinding, proxy bypass, archive bomb, race, timeout,
    cancellation, load test 완료. General availability 전 independent review.
@@ -242,7 +242,7 @@ maintained protocol/HTTP primitive를 우선한다. no tokio/no SDK 유지는 un
 
 Remote MCP 구현은 다음을 모두 입증해야 통과한다.
 
-- stdio가 기본값으로 남고 기존 process test가 정확히 16개 tool을 계속 노출;
+- stdio가 기본값으로 남고 기존 process test가 정확히 17개 tool을 계속 노출;
 - HTTP conformance가 `POST`, `GET`, `DELETE`, 두 response media type, version negotiation,
   notification, session 생성/종료, reconnect, disconnect를 검증;
 - invalid origin, host, content type, protocol version, token, scope, session, artifact ownership이
@@ -254,7 +254,7 @@ Remote MCP 구현은 다음을 모두 입증해야 통과한다.
 - worker termination 뒤 published partial artifact나 reusable authority가 남지 않음;
 - log/error에 token, document content, client-local path, server filesystem path가 없음;
 - TLS/trusted proxy/host-origin check/OAuth validation을 우회해 application backend에 접근 불가;
-- tenant-isolated test environment에서 Quick Web이 initialize, 의도한 16개 remote-safe tool list,
+- tenant-isolated test environment에서 Quick Web이 initialize, 의도한 17개 remote-safe tool list,
   upload-to-download edit workflow를 완료.
 
 어느 기준이든 미검증이면 release gate 실패다. HTTP가 unrestricted `hwp mcp`를 단순 shell-out하거나,
