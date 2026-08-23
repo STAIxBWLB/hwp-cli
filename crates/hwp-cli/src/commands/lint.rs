@@ -71,9 +71,6 @@ fn report_json(file: &str, profile: LintProfile, findings: &[Finding]) -> Value 
 /// Lint result as a JSON object (shared CLI/MCP entry — no `process::exit`, no
 /// stdout). An unreadable or unsupported input is reported in the `error` field
 /// instead of panicking or exiting.
-// Wired up when the `hwp_lint` MCP tool lands (next plan); kept dead-code-allowed
-// until then so the shared entry ships with the tracer it belongs to.
-#[allow(dead_code)]
 pub fn lint_path_json(path: &Path, profile: LintProfile) -> Value {
     match read_markdown_input(path) {
         Ok(markdown) => {
