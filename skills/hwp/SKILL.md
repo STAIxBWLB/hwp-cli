@@ -45,7 +45,8 @@ syntax (used by `fill`, `slots` and the template tools).
   markdown or a JSON IR (empty document when omitted); `--set-meta key=value` (title/author/
   subject/keywords, repeatable); `--preset official|report|plan|notice|minutes|press`
   (Korean official-document profiles, markdown input only); `gian` and other documented
-  compatibility aliases normalize to a canonical profile. Per-side overrides are
+  compatibility aliases normalize to a canonical profile — the `gian` alias still works but
+  prints a one-time deprecation note. Per-side overrides are
   `--margin-top`, `--margin-bottom`, `--margin-left` and `--margin-right` in millimetres.
   `--strict` fails when markdown import drops content.
 - `hwp edit {input} -o {output} [flags...]` — edit an existing document; images, formatting
@@ -98,7 +99,8 @@ syntax (used by `fill`, `slots` and the template tools).
 one per document type: `official` (기안문), `report` (보고서), `plan` (계획서), `notice`
 (공고문), `minutes` (회의록) and `press` (보도자료). The canonical official profile accepts
 `gian` and `gongmun` as semantic compatibility aliases; aliases select the same profile, not a
-raw-byte identity promise. Korean aliases are also accepted. Each type is authored as a markdown
+raw-byte identity promise, and the `gian` alias still works but prints a one-time deprecation
+note. Korean aliases are also accepted. Each type is authored as a markdown
 skeleton, created with `hwp new --from ... --preset official` (or its matching profile), and
 filled with `hwp fill`.
 
@@ -179,7 +181,7 @@ of it, and re-enable the connector if repeated startup failures caused Quick to 
 
 When helping someone configure Quick, prefer JSON import and never put shell quote characters
 inside an argument. Verify three layers in order: the exact absolute binary returns a version;
-Quick reports 16 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
+Quick reports 17 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
 succeeds on an absolute path under the configured LocalLow root (for example
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`). Do not claim
 that discovery alone proves file access.
@@ -187,7 +189,7 @@ After a connector edit, refresh or start a new chat instead of reusing an old ge
 The copy-paste operator and AI runbook is:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-Tools (16):
+Tools (17):
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -205,6 +207,7 @@ Tools (16):
 | `hwp_template` | `output`, `template` (+`data`) | Bounded expansion of TemplateSpec/Data v1 |
 | `hwp_fill` | `input`, `output`, `values` | Fill `{{name}}` in an hwpx template (package preserved) |
 | `hwp_validate` | `path` | Structural validation, `{valid, errors, warnings}` |
+| `hwp_lint` | `path` | Advisory official-document notation/structure lint on a markdown file (path only, `--root` sandboxed); returns the hwp-lint-report-v1 findings JSON (`rule_id`/`severity`/`line`/`col`/`message`) |
 | `hwp_certify` | `input`, `policy`, `report` | Run certification and publish the report atomically |
 | `hwp_diff` | `input`, `ref` | Render one page and compare it to a reference PNG |
 
