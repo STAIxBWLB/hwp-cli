@@ -1049,4 +1049,119 @@ mod tests {
             assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
         }
     }
+
+    // ---- Task 2: error-severity structure rules + the five FP-guard pins ----
+
+    #[test]
+    fn struct_item_mark_fires_on_typed_ladder_marks() {
+        for md in [
+            "가. 항목입니다\n",
+            "1) 항목입니다\n",
+            "가) 항목입니다\n",
+            "(1) 항목입니다\n",
+            "(가) 항목입니다\n",
+            "① 항목입니다\n",
+            "㉮ 항목입니다\n",
+            "· 항목입니다\n",
+            "ㆍ 항목입니다\n",
+            "\\- 항목입니다\n",
+        ] {
+            let findings = only_rule(md, "struct-item-mark");
+            assert_eq!(findings.len(), 1, "{md:?} -> {findings:?}");
+            assert_eq!(findings[0].severity, Severity::Error);
+        }
+    }
+
+    #[test]
+    fn struct_item_mark_silent_on_sanctioned_forms() {
+        // The literal □/○ ladder is the sanctioned authoring form (markdown
+        // contract §1); minutes.md uses it and must stay silent (SC1). Nested
+        // list markup carries the numbered path.
+        let minutes_style = "{{회의명}} 회의록\n\n작성: {{작성자}}\n\n□ 회의 명칭\n\n○○ 회의\n\n□ 상정 안건\n\n1. 첫째 안건\n2. 둘째 안건\n\n□ 결정 사항\n\n○ 결정 1\n";
+        assert!(lint(minutes_style).is_empty(), "{:?}", lint(minutes_style));
+        for md in ["□ 회의 명칭\n", "○ 안건\n", "- 목록 항목\n"] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn struct_item_mark_fires_on_double_mark_in_list_item() {
+        // A rung mark at the start of a list item's own text double-numbers
+        // next to the engine-assigned mark.
+        for md in ["- 가. 항목입니다\n", "1. (1) 항목입니다\n", "- · 항목입니다\n"] {
+            let findings = only_rule(md, "struct-item-mark");
+            assert_eq!(findings.len(), 1, "{md:?} -> {findings:?}");
+            assert_eq!(findings[0].severity, Severity::Error);
+        }
+    }
+
+    #[test]
+    fn struct_roman_heading_fires_on_ascii_numerals() {
+        for md in ["# I. 사업 개요\n", "## III. 추진 계획\n", "I. 사업 개요\n"] {
+            let findings = only_rule(md, "struct-roman-heading");
+            assert_eq!(findings.len(), 1, "{md:?} -> {findings:?}");
+            assert_eq!(findings[0].severity, Severity::Error);
+        }
+    }
+
+    #[test]
+    fn struct_roman_heading_silent_on_fullwidth_and_english() {
+        for md in ["## Ⅰ. 사업 개요\n", "Ⅻ. 기타 사항\n", "I. Introduction\n"] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn fp_guard_ho_citation() {
+        let md = "제3.01.호를 참조하시기 바랍니다.\n";
+        assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+    }
+
+    #[test]
+    fn fp_guard_version_string() {
+        let md = "버전 v2.05.1 기준으로 작성\n";
+        assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+    }
+
+    #[test]
+    fn fp_guard_table_rule_row() {
+        let md = "| 구분 | 내용 |\n| --- | --- |\n| 날짜 | 2020.7.8 |\n";
+        assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+    }
+
+    #[test]
+    fn fp_guard_bold_wrapped_mark() {
+        // Adopted research A3 (bold-x2 guard): a Strong-wrapped hand-typed
+        // mark yields exactly one finding — not zero and not two.
+        let findings = only_rule("**가. 항목입니다**\n", "struct-item-mark");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn skips_code_and_tables() {
+        let md = "```\n가. 항목\n오후 3시 20분\n345천원\n붙임: 계획서 1부\n2020.7.8\nI. 사업 개요\n■ 참고\n```\n\n| 규칙 |\n| --- |\n| 가. 항목 |\n\n평범한 문단입니다.\n";
+        assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+    }
+
+    #[test]
+    fn severity_split_matches_d05() {
+        // D-05: exactly the two structure rules are error-severity; every
+        // notation rule and ai-style-marks is a warning.
+        let md = "시행: 2020.7.8\n\n일시: 오후 3시 20분\n\n비용: 345천원\n\n붙임: 계획서 1부.  끝.\n\n원장:김갑동\n\n기간: 10~20\n\n■ 참고\n\n가. 항목입니다\n\n# I. 개요\n\n붙임  1. 계획서 1부.  끝.\n\n끝\n";
+        let findings = lint(md);
+        let mut seen = std::collections::HashMap::new();
+        for f in &findings {
+            seen.insert(f.rule_id, f.severity);
+        }
+        assert_eq!(seen.len(), 10, "{findings:?}");
+        for (rule, severity) in &seen {
+            let expected = if matches!(*rule, "struct-item-mark" | "struct-roman-heading") {
+                Severity::Error
+            } else {
+                Severity::Warning
+            };
+            assert_eq!(*severity, expected, "{rule}");
+        }
+    }
 }
