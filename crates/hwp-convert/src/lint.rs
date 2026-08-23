@@ -315,6 +315,11 @@ pub fn lint_markdown(markdown: &str, profile: LintProfile) -> Vec<Finding> {
     // number the rule forbids for a lone attachment.
     for idx in single_attach_lists {
         let para = &paras[idx];
+        if para.text.is_empty() {
+            // An empty first block (e.g. an image-only paragraph) carries no
+            // typed `1.` text position — skip it like the main rule loop does.
+            continue;
+        }
         push(
             &mut findings,
             RULE_NOTATION_ATTACH_NUMBER,
@@ -1065,6 +1070,22 @@ mod tests {
         // Quantity missing the final period.
         let findings = only_rule("붙임  계획서 1부\n", "notation-attach-number");
         assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn single_attach_list_with_empty_first_paragraph_does_not_panic() {
+        // CR-1 regression: a loose single-item ordered list after a 붙임
+        // paragraph whose first block carries no Text events (an image-only
+        // paragraph) used to underflow `Para::source_offset` (exit 101). The
+        // empty block carries no typed `1.` position, so it is skipped.
+        let md = "붙임\n\n1. ![](x.png)\n\n   추가 설명 문단\n";
+        let findings = lint(md);
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.rule_id != "notation-attach-number"),
+            "{findings:?}"
+        );
     }
 
     #[test]
