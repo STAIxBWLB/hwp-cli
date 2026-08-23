@@ -438,6 +438,71 @@ fn official_preset_aliases_and_margin_overrides() {
     }
 }
 
+#[test]
+fn gian_deprecation_note() {
+    const NOTE: &str = "gian은 gongmun의 별칭입니다";
+    let markdown = tmp("gian-deprecation.md");
+    std::fs::write(&markdown, "1. 항목\n").unwrap();
+    let gian_out = tmp("gian-deprecation-gian.hwpx");
+    let gian_upper_out = tmp("gian-deprecation-gian-upper.hwpx");
+    let silent_out = tmp("gian-deprecation-silent.hwpx");
+    for path in [&gian_out, &gian_upper_out, &silent_out] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    // D-03: the deprecated Latin alias keeps working but prints the note to
+    // stderr exactly once — case-insensitively, because OfficialPreset::parse
+    // lowercases before matching, so `--preset GIAN` must take the same
+    // deprecation branch as `--preset gian`.
+    for (preset, output) in [("gian", &gian_out), ("GIAN", &gian_upper_out)] {
+        let result = hwp()
+            .args(["new", "--from"])
+            .arg(&markdown)
+            .args(["--preset", preset, "--output"])
+            .arg(output)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{preset}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(
+            stderr.matches(NOTE).count(),
+            1,
+            "{preset}: the deprecation note must print exactly once, got: {stderr}"
+        );
+    }
+
+    // The canonical name and the non-deprecated aliases stay silent.
+    for preset in ["official", "gongmun", "기안문"] {
+        let result = hwp()
+            .args(["new", "--from"])
+            .arg(&markdown)
+            .args(["--preset", preset, "--output"])
+            .arg(&silent_out)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{preset}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            !stderr.contains(NOTE),
+            "{preset}: must not print the gian deprecation note, got: {stderr}"
+        );
+        let _ = std::fs::remove_file(&silent_out);
+    }
+
+    let _ = std::fs::remove_file(&markdown);
+    let _ = std::fs::remove_file(&gian_out);
+    let _ = std::fs::remove_file(&gian_upper_out);
+    let _ = std::fs::remove_file(&silent_out);
+}
+
 fn replace_zip_entry(path: &Path, target: &str, replacement: &[u8]) {
     let rewritten = path.with_extension("rewrite.hwpx");
     let input = std::fs::File::open(path).unwrap();
