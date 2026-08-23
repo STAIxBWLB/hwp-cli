@@ -28,11 +28,11 @@ pub struct FrameFields {
     /// `--doc-foot` (결문): 발신명의, 기안자, 검토자, 결재자, 협조자, 시행번호, 시행일자,
     /// 접수번호, 접수일자, 주소, 홈페이지, 전화, 팩스, 이메일, 공개구분.
     pub doc_foot: BTreeMap<String, String>,
-    /// `--notice-head` (공고문 머리). Key set wired in a later plan.
+    /// `--notice-head` (공고문 머리): 기관명, 공고번호.
     pub notice_head: BTreeMap<String, String>,
-    /// `--notice-foot` (공고문 꼬리). Key set wired in a later plan.
+    /// `--notice-foot` (공고문 꼬리): 공고일자, 발신명의.
     pub notice_foot: BTreeMap<String, String>,
-    /// `--press-head` (보도자료 머리). Key set wired in a later plan.
+    /// `--press-head` (보도자료 머리): 기관명, 보도시점, 배포일, 담당부서, 담당자, 연락처.
     pub press_head: BTreeMap<String, String>,
 }
 
@@ -47,18 +47,43 @@ impl FrameFields {
     }
 }
 
-/// Locked Korean slot names per frame (`skills/hwp/templates/`). An empty slice means the frame's
-/// key set is not wired yet (`notice_head`/`notice_foot`/`press_head`, plan 02) — every key is
-/// refused until then rather than silently accepted (deviation would be an accept-and-ignore bug).
+/// Locked Korean slot names per frame (`skills/hwp/templates/`). An unknown key for a known frame
+/// is refused rather than silently accepted (deviation would be an accept-and-ignore bug).
 fn allowed_keys(frame: &str) -> &'static [&'static str] {
     const DOC_HEAD: &[&str] = &["기관명", "수신", "경유"];
     const DOC_FOOT: &[&str] = &[
-        "발신명의", "기안자", "검토자", "결재자", "협조자", "시행번호", "시행일자", "접수번호",
-        "접수일자", "주소", "홈페이지", "전화", "팩스", "이메일", "공개구분",
+        "발신명의",
+        "기안자",
+        "검토자",
+        "결재자",
+        "협조자",
+        "시행번호",
+        "시행일자",
+        "접수번호",
+        "접수일자",
+        "주소",
+        "홈페이지",
+        "전화",
+        "팩스",
+        "이메일",
+        "공개구분",
+    ];
+    const NOTICE_HEAD: &[&str] = &["기관명", "공고번호"];
+    const NOTICE_FOOT: &[&str] = &["공고일자", "발신명의"];
+    const PRESS_HEAD: &[&str] = &[
+        "기관명",
+        "보도시점",
+        "배포일",
+        "담당부서",
+        "담당자",
+        "연락처",
     ];
     match frame {
         "doc_head" => DOC_HEAD,
         "doc_foot" => DOC_FOOT,
+        "notice_head" => NOTICE_HEAD,
+        "notice_foot" => NOTICE_FOOT,
+        "press_head" => PRESS_HEAD,
         _ => &[],
     }
 }
@@ -90,7 +115,11 @@ pub fn parse_frame_fields(
     notice_foot: &[String],
     press_head: &[String],
 ) -> Result<FrameFields, String> {
-    fn fill(frame: &str, specs: &[String], out: &mut BTreeMap<String, String>) -> Result<(), String> {
+    fn fill(
+        frame: &str,
+        specs: &[String],
+        out: &mut BTreeMap<String, String>,
+    ) -> Result<(), String> {
         for spec in specs {
             let (key, value) = parse_field(frame, spec)?;
             out.insert(key, value);
@@ -193,25 +222,84 @@ pub(crate) fn frame_table(rows: &[FrameRow]) -> Paragraph {
     }
 }
 
-/// Builds the 두문 (document letterhead) block from `--doc-head` fields, when supplied.
-///
-/// Row order, each emitted only when its key is present: 기관명 → 수신 → (경유). Returns an empty
-/// vec when `doc_head` carries no fields — callers must not splice an empty result.
-pub fn leading_frames(fields: &FrameFields) -> Vec<Paragraph> {
-    if fields.doc_head.is_empty() {
-        return Vec::new();
+/// Wraps a 공고번호 value in the `제`/`호` form unless the supplied value already carries both,
+/// so a caller who passes the full `제2025-282호` form gets it through verbatim.
+fn wrap_notice_number(value: &str) -> String {
+    if value.starts_with('제') && value.ends_with('호') {
+        value.to_string()
+    } else {
+        format!("제{value}호")
     }
+}
+
+/// Builds the 공고문 head rows: `{기관명} 공고` then `제{공고번호}호`, each emitted only when its
+/// key is present.
+fn notice_head_rows(fields: &BTreeMap<String, String>) -> Vec<FrameRow> {
     let mut rows = Vec::new();
-    if let Some(agency) = fields.doc_head.get("기관명") {
+    if let Some(agency) = fields.get("기관명") {
+        rows.push(FrameRow::plain(format!("{agency} 공고")));
+    }
+    if let Some(number) = fields.get("공고번호") {
+        rows.push(FrameRow::plain(wrap_notice_number(number)));
+    }
+    rows
+}
+
+/// Builds the 보도자료 head box rows: `보도자료` (always, once the flag is used at all), then
+/// `{기관명}`, the 보도시점/배포일 line and the 담당 contact line, each emitted only when its
+/// underlying key(s) are present.
+fn press_head_rows(fields: &BTreeMap<String, String>) -> Vec<FrameRow> {
+    let mut rows = vec![FrameRow::plain("보도자료")];
+    if let Some(agency) = fields.get("기관명") {
         rows.push(FrameRow::plain(agency.clone()));
     }
-    if let Some(recipient) = fields.doc_head.get("수신") {
-        rows.push(FrameRow::plain(format!("수신  {recipient}")));
+    if fields.contains_key("보도시점") || fields.contains_key("배포일") {
+        rows.push(FrameRow::plain(format!(
+            "보도시점  {}    배포일  {}",
+            fields.get("보도시점").map_or("", String::as_str),
+            fields.get("배포일").map_or("", String::as_str),
+        )));
     }
-    if let Some(via) = fields.doc_head.get("경유") {
-        rows.push(FrameRow::plain(format!("(경유)  {via}")));
+    if fields.contains_key("담당부서")
+        || fields.contains_key("담당자")
+        || fields.contains_key("연락처")
+    {
+        rows.push(FrameRow::plain(format!(
+            "담당  {} {} ({})",
+            fields.get("담당부서").map_or("", String::as_str),
+            fields.get("담당자").map_or("", String::as_str),
+            fields.get("연락처").map_or("", String::as_str),
+        )));
     }
-    vec![frame_table(&rows)]
+    rows
+}
+
+/// Builds the leading frame blocks — 두문 (`--doc-head`), 공고문 head (`--notice-head`) and/or
+/// 보도자료 head box (`--press-head`) — from whichever fields were supplied. Each populated frame
+/// contributes its own table, in that fixed order. Returns an empty vec when no leading frame
+/// field was supplied at all — callers must not splice an empty result.
+pub fn leading_frames(fields: &FrameFields) -> Vec<Paragraph> {
+    let mut out = Vec::new();
+    if !fields.doc_head.is_empty() {
+        let mut rows = Vec::new();
+        if let Some(agency) = fields.doc_head.get("기관명") {
+            rows.push(FrameRow::plain(agency.clone()));
+        }
+        if let Some(recipient) = fields.doc_head.get("수신") {
+            rows.push(FrameRow::plain(format!("수신  {recipient}")));
+        }
+        if let Some(via) = fields.doc_head.get("경유") {
+            rows.push(FrameRow::plain(format!("(경유)  {via}")));
+        }
+        out.push(frame_table(&rows));
+    }
+    if !fields.notice_head.is_empty() {
+        out.push(frame_table(&notice_head_rows(&fields.notice_head)));
+    }
+    if !fields.press_head.is_empty() {
+        out.push(frame_table(&press_head_rows(&fields.press_head)));
+    }
+    out
 }
 
 /// Own text of a paragraph's characters only (no recursion into any controls it carries) — used
@@ -276,67 +364,93 @@ fn labeled(label: &str, value: Option<&String>) -> String {
 }
 
 /// Builds the optional `끝.` guard paragraph followed by the 결문 (document footer) block from
-/// `--doc-foot` fields, when supplied. `body` is the paragraph sequence assembled so far (the
-/// 두문 table, if any, plus the parsed body) — inspected only for the `끝.` guard.
+/// `--doc-foot` fields, plus the 공고문 foot block from `--notice-foot` fields, whichever were
+/// supplied. `body` is the paragraph sequence assembled so far (the 두문 table, if any, plus the
+/// parsed body) — inspected only for the `끝.` guard, which applies to `doc_foot` alone (the
+/// shipped `notice.md` template carries no `끝.` line after 발신명의).
 ///
-/// Row order (always emitted once `doc_foot` carries any field, except 발신명의 which needs its
-/// own key): 발신명의 → 결재 → 협조 → 시행/접수 → 주소/홈페이지 → 연락처 (D-03/D-04). The
+/// 결문 row order (always emitted once `doc_foot` carries any field, except 발신명의 which needs
+/// its own key): 발신명의 → 결재 → 협조 → 시행/접수 → 주소/홈페이지 → 연락처 (D-03/D-04). The
 /// 결재/협조 rows are placeholder rows, never a filled multi-column approval grid (D-04).
+///
+/// 공고 foot row order (each emitted only when its key is present): 공고일자 → 발신명의, the
+/// latter reusing the same centered/22pt/bold shape as 결문's 발신명의 (value-deduped, so the
+/// same name never grows either shape table).
 pub fn trailing_frames(
     fields: &FrameFields,
     body: &[Paragraph],
     para_shapes: &mut Vec<ParaShape>,
     char_shapes: &mut Vec<CharShape>,
 ) -> Vec<Paragraph> {
-    if fields.doc_foot.is_empty() {
-        return Vec::new();
-    }
-    let f = &fields.doc_foot;
     let mut out = Vec::new();
-    if !ends_with_kkeut(body) {
-        out.push(text_paragraph("끝.", ParaShapeId(0), CharShapeId(0)));
+
+    if !fields.doc_foot.is_empty() {
+        let f = &fields.doc_foot;
+        if !ends_with_kkeut(body) {
+            out.push(text_paragraph("끝.", ParaShapeId(0), CharShapeId(0)));
+        }
+
+        let mut rows: Vec<FrameRow> = Vec::new();
+        if let Some(name) = f.get("발신명의") {
+            let (para_shape, char_shape) = centered_bold_22pt(para_shapes, char_shapes);
+            rows.push(FrameRow {
+                text: name.clone(),
+                para_shape,
+                char_shape,
+            });
+        }
+        rows.push(FrameRow::plain(format!(
+            "결재  {}    {}    {}",
+            labeled("기안자", f.get("기안자")),
+            labeled("검토자", f.get("검토자")),
+            labeled("결재자", f.get("결재자")),
+        )));
+        rows.push(FrameRow::plain(match f.get("협조자") {
+            Some(v) if !v.is_empty() => format!("협조  {v}"),
+            _ => "협조".to_string(),
+        }));
+        rows.push(FrameRow::plain(format!(
+            "시행  {}({})    접수  {}({})",
+            f.get("시행번호").map_or("", String::as_str),
+            f.get("시행일자").map_or("", String::as_str),
+            f.get("접수번호").map_or("", String::as_str),
+            f.get("접수일자").map_or("", String::as_str),
+        )));
+        rows.push(FrameRow::plain(format!(
+            "우{}  /  {}",
+            f.get("주소").map_or("", String::as_str),
+            f.get("홈페이지").map_or("", String::as_str),
+        )));
+        rows.push(FrameRow::plain(format!(
+            "전화 {}  /  팩스 {}  /  {}  /  공개구분 {}",
+            f.get("전화").map_or("", String::as_str),
+            f.get("팩스").map_or("", String::as_str),
+            f.get("이메일").map_or("", String::as_str),
+            f.get("공개구분").map_or("", String::as_str),
+        )));
+
+        out.push(frame_table(&rows));
     }
 
-    let mut rows: Vec<FrameRow> = Vec::new();
-    if let Some(name) = f.get("발신명의") {
-        let (para_shape, char_shape) = centered_bold_22pt(para_shapes, char_shapes);
-        rows.push(FrameRow {
-            text: name.clone(),
-            para_shape,
-            char_shape,
-        });
+    if !fields.notice_foot.is_empty() {
+        let f = &fields.notice_foot;
+        let mut rows: Vec<FrameRow> = Vec::new();
+        if let Some(date) = f.get("공고일자") {
+            rows.push(FrameRow::plain(date.clone()));
+        }
+        if let Some(name) = f.get("발신명의") {
+            let (para_shape, char_shape) = centered_bold_22pt(para_shapes, char_shapes);
+            rows.push(FrameRow {
+                text: name.clone(),
+                para_shape,
+                char_shape,
+            });
+        }
+        if !rows.is_empty() {
+            out.push(frame_table(&rows));
+        }
     }
-    rows.push(FrameRow::plain(format!(
-        "결재  {}    {}    {}",
-        labeled("기안자", f.get("기안자")),
-        labeled("검토자", f.get("검토자")),
-        labeled("결재자", f.get("결재자")),
-    )));
-    rows.push(FrameRow::plain(match f.get("협조자") {
-        Some(v) if !v.is_empty() => format!("협조  {v}"),
-        _ => "협조".to_string(),
-    }));
-    rows.push(FrameRow::plain(format!(
-        "시행  {}({})    접수  {}({})",
-        f.get("시행번호").map_or("", String::as_str),
-        f.get("시행일자").map_or("", String::as_str),
-        f.get("접수번호").map_or("", String::as_str),
-        f.get("접수일자").map_or("", String::as_str),
-    )));
-    rows.push(FrameRow::plain(format!(
-        "우{}  /  {}",
-        f.get("주소").map_or("", String::as_str),
-        f.get("홈페이지").map_or("", String::as_str),
-    )));
-    rows.push(FrameRow::plain(format!(
-        "전화 {}  /  팩스 {}  /  {}  /  공개구분 {}",
-        f.get("전화").map_or("", String::as_str),
-        f.get("팩스").map_or("", String::as_str),
-        f.get("이메일").map_or("", String::as_str),
-        f.get("공개구분").map_or("", String::as_str),
-    )));
 
-    out.push(frame_table(&rows));
     out
 }
 
@@ -365,7 +479,7 @@ mod tests {
 
     #[test]
     fn parse_field_rejects_unwired_frame_keys() {
-        // notice_head/notice_foot/press_head land in a later plan; any key must still refuse
+        // notice_head has a real key set (기관명, 공고번호); an unrelated key must still refuse
         // rather than silently accept-and-ignore.
         let err = parse_field("notice_head", "아무값=x").unwrap_err();
         assert!(err.contains("notice_head"), "{err}");
@@ -379,9 +493,15 @@ mod tests {
     #[test]
     fn leading_frames_orders_기관명_수신_경유() {
         let mut fields = FrameFields::default();
-        fields.doc_head.insert("경유".to_string(), "총무과".to_string());
-        fields.doc_head.insert("수신".to_string(), "총장".to_string());
-        fields.doc_head.insert("기관명".to_string(), "예시대학교".to_string());
+        fields
+            .doc_head
+            .insert("경유".to_string(), "총무과".to_string());
+        fields
+            .doc_head
+            .insert("수신".to_string(), "총장".to_string());
+        fields
+            .doc_head
+            .insert("기관명".to_string(), "예시대학교".to_string());
         let paragraphs = leading_frames(&fields);
         assert_eq!(paragraphs.len(), 1);
         let Control::Table(table) = &paragraphs[0].controls[0] else {
@@ -504,5 +624,97 @@ mod tests {
             len_after_first,
             "re-applying the same --doc-foot must not grow either shape table"
         );
+    }
+
+    #[test]
+    fn leading_frames_builds_notice_head_wrapping_the_number() {
+        let mut fields = FrameFields::default();
+        fields
+            .notice_head
+            .insert("기관명".to_string(), "예시대학교".to_string());
+        fields
+            .notice_head
+            .insert("공고번호".to_string(), "2025-282".to_string());
+        let paragraphs = leading_frames(&fields);
+        assert_eq!(paragraphs.len(), 1);
+        let Control::Table(table) = &paragraphs[0].controls[0] else {
+            panic!("expected a table control");
+        };
+        assert_eq!(cell_text(&table.cells[0]), "예시대학교 공고");
+        assert_eq!(cell_text(&table.cells[1]), "제2025-282호");
+    }
+
+    #[test]
+    fn leading_frames_notice_head_number_not_double_wrapped() {
+        let mut fields = FrameFields::default();
+        fields
+            .notice_head
+            .insert("공고번호".to_string(), "제2025-282호".to_string());
+        let paragraphs = leading_frames(&fields);
+        let Control::Table(table) = &paragraphs[0].controls[0] else {
+            panic!("expected a table control");
+        };
+        assert_eq!(cell_text(&table.cells[0]), "제2025-282호");
+    }
+
+    #[test]
+    fn leading_frames_builds_press_head_box() {
+        let mut fields = FrameFields::default();
+        for (k, v) in [
+            ("기관명", "예시대학교"),
+            ("보도시점", "즉시"),
+            ("배포일", "2026.8.23."),
+            ("담당부서", "홍보실"),
+            ("담당자", "홍길동"),
+            ("연락처", "02-000-0000"),
+        ] {
+            fields.press_head.insert(k.to_string(), v.to_string());
+        }
+        let paragraphs = leading_frames(&fields);
+        assert_eq!(paragraphs.len(), 1);
+        let Control::Table(table) = &paragraphs[0].controls[0] else {
+            panic!("expected a table control");
+        };
+        let rows: Vec<String> = table.cells.iter().map(cell_text).collect();
+        assert_eq!(rows[0], "보도자료");
+        assert_eq!(rows[1], "예시대학교");
+        assert_eq!(rows[2], "보도시점  즉시    배포일  2026.8.23.");
+        assert_eq!(rows[3], "담당  홍보실 홍길동 (02-000-0000)");
+    }
+
+    #[test]
+    fn trailing_frames_builds_notice_foot_without_공고일자() {
+        let (mut para_shapes, mut char_shapes) = default_header_shapes();
+        let mut fields = FrameFields::default();
+        fields
+            .notice_foot
+            .insert("발신명의".to_string(), "예시대학교총장".to_string());
+        let paragraphs = trailing_frames(&fields, &[], &mut para_shapes, &mut char_shapes);
+        assert_eq!(paragraphs.len(), 1, "no 끝. guard for notice_foot");
+        let Control::Table(table) = &paragraphs[0].controls[0] else {
+            panic!("expected a table control");
+        };
+        assert_eq!(table.cells.len(), 1);
+        assert_eq!(cell_text(&table.cells[0]), "예시대학교총장");
+        let para_shape = &para_shapes[table.cells[0].paragraphs[0].para_shape.0 as usize];
+        assert_eq!(para_shape.alignment(), 3, "발신명의 row must be centered");
+    }
+
+    #[test]
+    fn trailing_frames_notice_foot_orders_공고일자_then_발신명의() {
+        let (mut para_shapes, mut char_shapes) = default_header_shapes();
+        let mut fields = FrameFields::default();
+        fields
+            .notice_foot
+            .insert("공고일자".to_string(), "2026. 8. 23.".to_string());
+        fields
+            .notice_foot
+            .insert("발신명의".to_string(), "예시대학교총장".to_string());
+        let paragraphs = trailing_frames(&fields, &[], &mut para_shapes, &mut char_shapes);
+        let Control::Table(table) = &paragraphs[0].controls[0] else {
+            panic!("expected a table control");
+        };
+        assert_eq!(cell_text(&table.cells[0]), "2026. 8. 23.");
+        assert_eq!(cell_text(&table.cells[1]), "예시대학교총장");
     }
 }

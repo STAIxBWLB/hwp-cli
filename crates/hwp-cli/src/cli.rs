@@ -216,14 +216,14 @@ pub enum Cmd {
         /// 시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분; repeatable)
         #[arg(long = "doc-foot")]
         doc_foot: Vec<String>,
-        /// Notice (공고문) header block "key=value" (repeatable; key set wired in a later plan)
+        /// Notice (공고문) header block "key=value" (keys: 기관명|공고번호; repeatable)
         #[arg(long = "notice-head")]
         notice_head: Vec<String>,
-        /// Notice (공고문) footer block "key=value" (repeatable; key set wired in a later plan)
+        /// Notice (공고문) footer block "key=value" (keys: 공고일자|발신명의; repeatable)
         #[arg(long = "notice-foot")]
         notice_foot: Vec<String>,
-        /// Press release (보도자료) header block "key=value" (repeatable; key set wired in a
-        /// later plan)
+        /// Press release (보도자료) header block "key=value" (keys: 기관명|보도시점|배포일|
+        /// 담당부서|담당자|연락처; repeatable)
         #[arg(long = "press-head")]
         press_head: Vec<String>,
     },

@@ -115,17 +115,13 @@ fn tracer_doc_head_becomes_paragraph_zero_and_reopens() {
     let out = dir.join("out.hwpx");
 
     let output = command_output(
-        hwp().args([
-            "new",
-            "--preset",
-            "official",
-            "--from",
-        ])
-        .arg(&body)
-        .args(["--doc-head", "기관명=예시대학교"])
-        .args(["--doc-head", "수신=총장"])
-        .args(["-o"])
-        .arg(&out),
+        hwp()
+            .args(["new", "--preset", "official", "--from"])
+            .arg(&body)
+            .args(["--doc-head", "기관명=예시대학교"])
+            .args(["--doc-head", "수신=총장"])
+            .args(["-o"])
+            .arg(&out),
         "hwp new --doc-head",
     );
     assert_success(&output, "hwp new --doc-head");
@@ -509,6 +505,199 @@ fn criterion_1_full_block_order_두문_to_연락처() {
 
     let validate = command_output(hwp().arg("validate").arg(&out), "hwp validate");
     assert_success(&validate, "hwp validate");
+}
+
+#[test]
+fn notice_head_produces_agency_and_wrapped_number() {
+    let dir = temp_dir("notice-head");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "notice"])
+            .args(["--notice-head", "기관명=예시대학교"])
+            .args(["--notice-head", "공고번호=2025-282"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --notice-head",
+    );
+    assert_success(&output, "hwp new --notice-head");
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+    let agency = index_of(&blocks, "예시대학교 공고");
+    let number = index_of(&blocks, "제2025-282호");
+    assert!(agency < number, "blocks: {blocks:?}");
+
+    let paragraph_zero = &document.sections[0].paragraphs[0];
+    assert!(
+        paragraph_zero
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::Table(_))),
+        "공고문 head must be a table control (D-02)"
+    );
+
+    let lint = command_output(hwp().arg("lint").arg(&out), "hwp lint (notice head)");
+    assert_success(&lint, "hwp lint (notice head)");
+    assert!(
+        String::from_utf8_lossy(&lint.stdout).trim().is_empty(),
+        "hwp lint must report zero findings, got:\n{}",
+        String::from_utf8_lossy(&lint.stdout)
+    );
+    let validate = command_output(hwp().arg("validate").arg(&out), "hwp validate");
+    assert_success(&validate, "hwp validate");
+}
+
+#[test]
+fn notice_head_number_already_wrapped_is_not_double_wrapped() {
+    let dir = temp_dir("notice-head-wrapped");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "notice"])
+            .args(["--notice-head", "공고번호=제2025-282호"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --notice-head (already wrapped)",
+    );
+    assert_success(&output, "hwp new --notice-head (already wrapped)");
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+    assert!(
+        blocks.iter().any(|block| block == "제2025-282호"),
+        "blocks: {blocks:?}"
+    );
+    assert!(
+        !blocks.iter().any(|block| block.contains("제제")),
+        "number must not be double-wrapped: {blocks:?}"
+    );
+}
+
+#[test]
+fn notice_foot_produces_date_then_sender_centered_bold() {
+    let dir = temp_dir("notice-foot");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "notice"])
+            .args(["--notice-foot", "공고일자=2026. 8. 23."])
+            .args(["--notice-foot", "발신명의=예시대학교총장"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --notice-foot",
+    );
+    assert_success(&output, "hwp new --notice-foot");
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+    let date_idx = index_of(&blocks, "2026. 8. 23.");
+    let sender_idx = index_of(&blocks, "예시대학교총장");
+    assert!(date_idx < sender_idx, "blocks: {blocks:?}");
+
+    let table = table_of(last_paragraph(&document));
+    let sender_cell = table
+        .cells
+        .iter()
+        .find(|cell| paragraph_text(&cell.paragraphs[0]) == "예시대학교총장")
+        .expect("sender row must exist");
+    let para_shape = &document.header.para_shapes[sender_cell.paragraphs[0].para_shape.0 as usize];
+    assert_eq!(para_shape.alignment(), 3, "발신명의 must be centered");
+    let (_, char_shape_id) = sender_cell.paragraphs[0].char_shape_runs[0];
+    let char_shape = &document.header.char_shapes[char_shape_id.0 as usize];
+    assert_eq!(char_shape.base_size, 2200, "발신명의 must be 22pt");
+    assert_eq!(char_shape.attr & (1 << 1), 1 << 1, "발신명의 must be bold");
+}
+
+#[test]
+fn notice_foot_with_no_공고일자_still_writes_document() {
+    let dir = temp_dir("notice-foot-no-date");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "notice"])
+            .args(["--notice-foot", "발신명의=예시대학교총장"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --notice-foot (no 공고일자)",
+    );
+    assert_success(&output, "hwp new --notice-foot (no 공고일자)");
+    assert!(out.exists());
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+    assert!(
+        blocks.iter().any(|block| block == "예시대학교총장"),
+        "blocks: {blocks:?}"
+    );
+}
+
+#[test]
+fn press_head_produces_title_agency_time_and_contact_rows() {
+    let dir = temp_dir("press-head");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "press"])
+            .args(["--press-head", "기관명=예시대학교"])
+            .args(["--press-head", "보도시점=즉시"])
+            .args(["--press-head", "배포일=2026.8.23."])
+            .args(["--press-head", "담당부서=홍보실"])
+            .args(["--press-head", "담당자=홍길동"])
+            .args(["--press-head", "연락처=02-000-0000"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --press-head",
+    );
+    assert_success(&output, "hwp new --press-head");
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+    let title = index_of(&blocks, "보도자료");
+    let agency = index_of(&blocks, "예시대학교");
+    let time_line = index_of(&blocks, "보도시점  즉시    배포일  2026.8.23.");
+    let contact_line = index_of(&blocks, "담당  홍보실 홍길동 (02-000-0000)");
+    assert!(
+        title < agency && agency < time_line && time_line < contact_line,
+        "blocks: {blocks:?}"
+    );
+
+    let lint = command_output(hwp().arg("lint").arg(&out), "hwp lint (press head)");
+    assert_success(&lint, "hwp lint (press head)");
+    assert!(
+        String::from_utf8_lossy(&lint.stdout).trim().is_empty(),
+        "hwp lint must report zero findings, got:\n{}",
+        String::from_utf8_lossy(&lint.stdout)
+    );
+    let validate = command_output(hwp().arg("validate").arg(&out), "hwp validate");
+    assert_success(&validate, "hwp validate");
+}
+
+#[test]
+fn unknown_notice_and_press_keys_fail_closed() {
+    for (flag, spec) in [
+        ("--notice-head", "없는키=x"),
+        ("--notice-foot", "없는키=x"),
+        ("--press-head", "없는키=x"),
+    ] {
+        let dir = temp_dir("unknown-key-notice-press");
+        let out = dir.join("out.hwpx");
+        let output = command_output(
+            hwp()
+                .args(["new", "--preset", "notice"])
+                .args([flag, spec])
+                .args(["-o"])
+                .arg(&out),
+            &format!("hwp new {flag} with unknown key"),
+        );
+        assert!(
+            !output.status.success(),
+            "{flag} unknown key must fail closed"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("없는키=x"), "stderr: {stderr}");
+        assert!(!out.exists());
+    }
 }
 
 #[test]

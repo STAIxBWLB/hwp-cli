@@ -163,7 +163,13 @@ fn real_main() -> anyhow::Result<()> {
                 margin_right,
                 strict,
             )?
-            .with_frames(&doc_head, &doc_foot, &notice_head, &notice_foot, &press_head)?;
+            .with_frames(
+                &doc_head,
+                &doc_foot,
+                &notice_head,
+                &notice_foot,
+                &press_head,
+            )?;
             commands::new::run(&output, from.as_deref(), &set_meta, &options)
         }
         Cmd::Compose {

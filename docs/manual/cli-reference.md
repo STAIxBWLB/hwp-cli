@@ -126,9 +126,9 @@ Create a new document
 | `--strict` |  |  | Fail (non-zero exit) when markdown import drops content, e.g. an HTML block that violates the import contract. Default: warn and continue (exit 0) |
 | `--doc-head` | `<DOC_HEAD>` |  | Document header block (두문) "key=value" (keys: 기관명\|수신\|경유; repeatable) |
 | `--doc-foot` | `<DOC_FOOT>` |  | Document footer block (결문) "key=value" (keys: 발신명의\|기안자\|검토자\|결재자\|협조자\| 시행번호\|시행일자\|접수번호\|접수일자\|주소\|홈페이지\|전화\|팩스\|이메일\|공개구분; repeatable) |
-| `--notice-head` | `<NOTICE_HEAD>` |  | Notice (공고문) header block "key=value" (repeatable; key set wired in a later plan) |
-| `--notice-foot` | `<NOTICE_FOOT>` |  | Notice (공고문) footer block "key=value" (repeatable; key set wired in a later plan) |
-| `--press-head` | `<PRESS_HEAD>` |  | Press release (보도자료) header block "key=value" (repeatable; key set wired in a later plan) |
+| `--notice-head` | `<NOTICE_HEAD>` |  | Notice (공고문) header block "key=value" (keys: 기관명\|공고번호; repeatable) |
+| `--notice-foot` | `<NOTICE_FOOT>` |  | Notice (공고문) footer block "key=value" (keys: 공고일자\|발신명의; repeatable) |
+| `--press-head` | `<PRESS_HEAD>` |  | Press release (보도자료) header block "key=value" (keys: 기관명\|보도시점\|배포일\| 담당부서\|담당자\|연락처; repeatable) |
 
 ## `hwp compose`
 
