@@ -199,6 +199,10 @@ pub fn execute(
         ),
     };
 
+    // Frame/preset compatibility warning (T-02.4-05): advisory only, the document is still
+    // written. Never contains "계약 위반" (Pitfall 7), so it cannot trip the --strict filter below.
+    import_warnings.extend(hwp_convert::compatibility_warnings(&options.frames, preset));
+
     // --strict: markdown import가 내용을 드롭했으면(HTML 블록 계약 위반) 실패 처리한다.
     if options.strict {
         let drops: Vec<&str> = import_warnings

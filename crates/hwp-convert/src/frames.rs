@@ -19,6 +19,7 @@ use hwp_model::{
 
 use crate::format::{find_or_insert, find_or_insert_para};
 use crate::from_markdown::{BODY_WIDTH, CELL_VALIGN_CENTER, TABLE_BORDER_FILL};
+use crate::official::OfficialPreset;
 
 /// Per-frame `key=value` fields collected from repeatable CLI/MCP flags (D-01).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -454,6 +455,65 @@ pub fn trailing_frames(
     out
 }
 
+/// The one-line advisory message for a single frame flag when `preset` does not belong to the
+/// flag's document class, or no `--preset` was given at all (T-02.4-05). The document is still
+/// written either way — this is advisory, not a hard error — and the text must never contain the
+/// `계약 위반` substring the `--strict` HTML-contract filter selects on (Pitfall 7).
+fn frame_flag_warning(
+    flag: &str,
+    preset: Option<OfficialPreset>,
+    belongs_to: &[OfficialPreset],
+) -> Option<String> {
+    match preset {
+        None => Some(format!(
+            "{flag}이(가) --preset 없이 기본 서식으로 적용되었습니다 (공문서 타이포그래피가 적용되지 않습니다)"
+        )),
+        Some(p) if !belongs_to.contains(&p) => Some(format!(
+            "{flag}이(가) --preset {}과(와) 어울리지 않습니다 (해당 프레임에 맞는 프리셋을 사용하세요)",
+            p.name()
+        )),
+        _ => None,
+    }
+}
+
+/// Warns when a supplied frame flag does not match the document class its resolved `--preset`
+/// belongs to (or no `--preset` was given at all). One warning per offending flag, not per
+/// `k=v` pair supplied on that flag (T-02.4-05). The document is still written; these are
+/// advisory only, surfaced through the same `import_warnings` channel as any other markdown
+/// import warning.
+pub fn compatibility_warnings(fields: &FrameFields, preset: Option<OfficialPreset>) -> Vec<String> {
+    use OfficialPreset::{Minutes, Notice, Official, Plan, Press, Report};
+    let mut warnings = Vec::new();
+    if !fields.doc_head.is_empty()
+        && let Some(w) =
+            frame_flag_warning("--doc-head", preset, &[Official, Report, Plan, Minutes])
+    {
+        warnings.push(w);
+    }
+    if !fields.doc_foot.is_empty()
+        && let Some(w) =
+            frame_flag_warning("--doc-foot", preset, &[Official, Report, Plan, Minutes])
+    {
+        warnings.push(w);
+    }
+    if !fields.notice_head.is_empty()
+        && let Some(w) = frame_flag_warning("--notice-head", preset, &[Notice])
+    {
+        warnings.push(w);
+    }
+    if !fields.notice_foot.is_empty()
+        && let Some(w) = frame_flag_warning("--notice-foot", preset, &[Notice])
+    {
+        warnings.push(w);
+    }
+    if !fields.press_head.is_empty()
+        && let Some(w) = frame_flag_warning("--press-head", preset, &[Press])
+    {
+        warnings.push(w);
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,5 +776,57 @@ mod tests {
         };
         assert_eq!(cell_text(&table.cells[0]), "2026. 8. 23.");
         assert_eq!(cell_text(&table.cells[1]), "예시대학교총장");
+    }
+
+    #[test]
+    fn compatibility_warnings_silent_on_matched_preset() {
+        let mut fields = FrameFields::default();
+        fields
+            .doc_head
+            .insert("기관명".to_string(), "예시대학교".to_string());
+        assert!(compatibility_warnings(&fields, Some(OfficialPreset::Official)).is_empty());
+    }
+
+    #[test]
+    fn compatibility_warnings_warns_on_mismatched_preset() {
+        let mut fields = FrameFields::default();
+        fields
+            .notice_head
+            .insert("기관명".to_string(), "예시대학교".to_string());
+        let warnings = compatibility_warnings(&fields, Some(OfficialPreset::Official));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("--notice-head"), "{warnings:?}");
+        assert!(warnings[0].contains("official"), "{warnings:?}");
+        assert!(
+            !warnings[0].contains("계약 위반"),
+            "must not trip the --strict HTML-contract filter: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn compatibility_warnings_warns_once_per_flag_regardless_of_field_count() {
+        let mut fields = FrameFields::default();
+        fields
+            .press_head
+            .insert("기관명".to_string(), "예시대학교".to_string());
+        fields
+            .press_head
+            .insert("보도시점".to_string(), "즉시".to_string());
+        fields
+            .press_head
+            .insert("배포일".to_string(), "2026.8.23.".to_string());
+        let warnings = compatibility_warnings(&fields, Some(OfficialPreset::Notice));
+        assert_eq!(warnings.len(), 1, "one warning per flag, not per k=v pair");
+    }
+
+    #[test]
+    fn compatibility_warnings_warns_when_no_preset_at_all() {
+        let mut fields = FrameFields::default();
+        fields
+            .doc_head
+            .insert("기관명".to_string(), "예시대학교".to_string());
+        let warnings = compatibility_warnings(&fields, None);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("--doc-head"), "{warnings:?}");
     }
 }

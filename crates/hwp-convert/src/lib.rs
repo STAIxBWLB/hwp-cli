@@ -40,7 +40,9 @@ pub use field::{
 pub use format::{
     CharFormat, PageProps, ParaProps, set_char_format, set_page_def, set_para_align, set_para_props,
 };
-pub use frames::{FrameFields, leading_frames, parse_field, parse_frame_fields};
+pub use frames::{
+    FrameFields, compatibility_warnings, leading_frames, parse_field, parse_frame_fields,
+};
 pub use from_html::{HtmlImportOptions, from_html, from_html_with};
 pub use from_markdown::{
     MarkdownImportOptions, default_header, from_markdown, from_markdown_blocks,

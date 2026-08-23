@@ -701,6 +701,67 @@ fn unknown_notice_and_press_keys_fail_closed() {
 }
 
 #[test]
+fn compatibility_warning_fires_on_mismatched_preset_and_document_still_writes() {
+    let dir = temp_dir("compat-warning-mismatch");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "official"])
+            .args(["--notice-head", "기관명=예시대학교"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --notice-head against --preset official",
+    );
+    assert_success(&output, "hwp new --notice-head against --preset official");
+    assert!(
+        out.exists(),
+        "mismatched combination must still write the document"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--notice-head"), "stderr: {stderr}");
+    assert!(stderr.contains("official"), "stderr: {stderr}");
+}
+
+#[test]
+fn compatibility_warning_silent_on_matched_preset() {
+    let dir = temp_dir("compat-warning-matched");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "notice"])
+            .args(["--notice-head", "기관명=예시대학교"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --notice-head against --preset notice",
+    );
+    assert_success(&output, "hwp new --notice-head against --preset notice");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("--notice-head"),
+        "matched combination must not warn: stderr: {stderr}"
+    );
+}
+
+#[test]
+fn compatibility_warning_does_not_trip_the_strict_html_contract_gate() {
+    let dir = temp_dir("compat-warning-strict");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "official", "--strict"])
+            .args(["--notice-head", "기관명=예시대학교"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --strict with mismatched frame/preset",
+    );
+    assert_success(
+        &output,
+        "--strict must exit 0 on a mismatched frame/preset combination (Pitfall 7)",
+    );
+    assert!(out.exists());
+}
+
+#[test]
 fn all_five_frame_flags_appear_in_help() {
     let output = command_output(hwp().args(["new", "--help"]), "hwp new --help");
     assert_success(&output, "hwp new --help");
