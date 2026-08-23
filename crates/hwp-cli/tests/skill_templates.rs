@@ -51,19 +51,19 @@ struct Case {
 const CASES: &[Case] = &[
     Case {
         slug: "gian-internal",
-        preset: "gian",
+        preset: "official",
         scalar_slot: "기관명",
         has_body_part: true,
     },
     Case {
         slug: "gian-external",
-        preset: "gian",
+        preset: "official",
         scalar_slot: "기관명",
         has_body_part: true,
     },
     Case {
         slug: "gongmun-basic",
-        preset: "gian",
+        preset: "official",
         scalar_slot: "기관명",
         has_body_part: true,
     },
@@ -75,25 +75,25 @@ const CASES: &[Case] = &[
     },
     Case {
         slug: "plan",
-        preset: "report",
+        preset: "plan",
         scalar_slot: "사업명",
         has_body_part: false,
     },
     Case {
         slug: "minutes",
-        preset: "report",
+        preset: "minutes",
         scalar_slot: "회의명",
         has_body_part: false,
     },
     Case {
         slug: "notice",
-        preset: "gian",
+        preset: "notice",
         scalar_slot: "기관명",
         has_body_part: true,
     },
     Case {
         slug: "press",
-        preset: "gian",
+        preset: "press",
         scalar_slot: "기관명",
         has_body_part: true,
     },
@@ -150,12 +150,12 @@ fn skill_templates_are_usable_today() {
             case.slug
         );
 
-        // 1. new --from
+        // 1. new --template (D-06: drives the flag this phase ships, not a disk path)
         let created = dir.join(format!("{}.hwpx", case.slug));
         let output = hwp()
             .arg("new")
-            .arg("--from")
-            .arg(&template)
+            .arg("--template")
+            .arg(case.slug)
             .arg("--preset")
             .arg(case.preset)
             .arg("-o")
@@ -164,7 +164,7 @@ fn skill_templates_are_usable_today() {
             .unwrap();
         assert!(
             output.status.success(),
-            "{}: new --from 단계 실패\nstdout: {}\nstderr: {}",
+            "{}: new --template 단계 실패\nstdout: {}\nstderr: {}",
             case.slug,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
