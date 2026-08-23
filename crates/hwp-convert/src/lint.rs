@@ -348,6 +348,10 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
     // text; that text is never prose, so it is skipped structurally.
     let mut autolink_depth: u32 = 0;
     let mut link_stack: Vec<bool> = Vec::new();
+    // Image alt text is an attribute of an embedded resource, not document
+    // prose (D-01); it arrives as ordinary Text inside the Image span and is
+    // skipped structurally like autolink text.
+    let mut image_depth: u32 = 0;
     // Strong-span depth — records whether a block's first text is bold-wrapped
     // (the A3 bold-x2 guard; detection itself stays paragraph-level).
     let mut strong_depth: u32 = 0;
@@ -475,8 +479,14 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
                     autolink_depth = autolink_depth.saturating_sub(1);
                 }
             }
+            Event::Start(Tag::Image { .. }) => {
+                image_depth += 1;
+            }
+            Event::End(TagEnd::Image) => {
+                image_depth = image_depth.saturating_sub(1);
+            }
             Event::Text(text) => {
-                if skip_depth == 0 && autolink_depth == 0 {
+                if skip_depth == 0 && autolink_depth == 0 && image_depth == 0 {
                     // Tight list items carry their Text directly under the Item
                     // (no Paragraph wrapper) — collect it in an implicit block.
                     if cur.is_none() && item_depth > 0 && implicit.is_none() {
@@ -1177,6 +1187,15 @@ mod tests {
         ] {
             assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
         }
+    }
+
+    #[test]
+    fn fp_guard_image_alt_text() {
+        // WR-2: image alt text is an attribute of an embedded resource, not
+        // document prose — a date-like string in the alt produces no finding
+        // (D-01 structural skip, consistent with autolink text).
+        let md = "참고 ![2020.7.8 캡처](x.png) 입니다\n";
+        assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
     }
 
     // ---- Task 2: error-severity structure rules + the five FP-guard pins ----
