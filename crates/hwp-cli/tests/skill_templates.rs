@@ -1,6 +1,7 @@
 //! Skill template smoke gate (D-19 "usable today"): for every committed
 //! `skills/hwp/templates/*.md` skeleton, drive the real binary through
-//! `hwp new --from` → `hwp slots` → `hwp fill` → `hwp validate` and assert
+//! `hwp new --template` → `hwp slots` → `hwp fill` → `hwp validate` and assert
+//! success criterion 3 in full (GONG-03/TMPL-01, D-06):
 //!
 //! - every `{{slot}}` in the template source survives import intact and is
 //!   reported by `hwp slots` (set equality — a slot split across runs would
@@ -9,14 +10,22 @@
 //!   fail-closed, so exit 0 already proves every `--set` scalar matched, and
 //!   for part-spliced `{{본문}}` templates the JSON report's per-part count
 //!   must be >= 1,
-//! - `hwp validate` exits 0 on the filled document.
+//! - `hwp validate` exits 0 on the filled document,
+//! - `hwp new --list-templates` names all eight slugs, no more, no fewer,
+//! - a roman numeral in the template source survives as U+2160, never an
+//!   ASCII `I.` substitute,
+//! - `minutes` carries all nine 공공기록물 관리에 관한 법률 시행령 제18조
+//!   statutory elements,
+//! - `hwp lint` reports zero findings on every `--template` output.
 //!
 //! CI-safe by construction: committed templates + temp dirs only, no
 //! fixtures, no fonts, no network.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use hwp_model::{Control, Document, HwpChar, Paragraph};
 
 fn hwp() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hwp"))
@@ -99,6 +108,19 @@ const CASES: &[Case] = &[
     },
 ];
 
+/// The nine statutory elements of `minutes` (공공기록물 관리에 관한 법률 시행령 제18조, D-19).
+const MINUTES_STATUTORY_ELEMENTS: &[&str] = &[
+    "회의 명칭",
+    "개최기관",
+    "일시·장소",
+    "참석자·배석자 명단",
+    "진행 순서",
+    "상정 안건",
+    "발언 요지",
+    "결정 사항",
+    "표결 내용",
+];
+
 /// `{{name}}` tokens in the template source, in first-seen order (set
 /// semantics — duplicates across paragraphs fill together).
 fn source_slots(markdown: &str) -> BTreeSet<String> {
@@ -120,6 +142,58 @@ fn reported_slots(stdout: &[u8]) -> BTreeSet<String> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| line.split('\t').next().unwrap_or(line).to_owned())
         .collect()
+}
+
+fn reread(path: &Path) -> Document {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("hwp") => hwp5::read_document(path).unwrap().document,
+        Some("hwpx") => hwpx::read_document(path).unwrap().document,
+        other => panic!("unsupported test extension: {other:?}"),
+    }
+}
+
+/// Text of a paragraph's own characters only (no recursion).
+fn paragraph_text(paragraph: &Paragraph) -> String {
+    paragraph
+        .chars
+        .iter()
+        .filter_map(|c| match c {
+            HwpChar::Text(ch) => Some(*ch),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Recurses into `Control::Table` cells and `Control::Generic` paragraph lists, appending every
+/// paragraph's text (mirrors `tests/frames.rs`'s `collect_blocks`).
+fn collect_text(paragraphs: &[Paragraph], out: &mut String) {
+    for paragraph in paragraphs {
+        out.push_str(&paragraph_text(paragraph));
+        for control in &paragraph.controls {
+            match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        collect_text(&cell.paragraphs, out);
+                    }
+                }
+                Control::Generic(generic) => {
+                    for list in &generic.paragraph_lists {
+                        collect_text(&list.paragraphs, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The whole document's text, paragraphs and table cells alike, concatenated in document order.
+fn full_document_text(document: &Document) -> String {
+    let mut out = String::new();
+    for section in &document.sections {
+        collect_text(&section.paragraphs, &mut out);
+    }
+    out
 }
 
 #[test]
@@ -233,7 +307,80 @@ fn skill_templates_are_usable_today() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+
+        // 5. roman numerals survive as U+2160, never an ASCII "I." substitute.
+        if source.contains('\u{2160}') {
+            let full_text = full_document_text(&reread(&filled));
+            assert!(
+                full_text.contains('\u{2160}'),
+                "{}: 로마 숫자 Ⅰ.(U+2160)이 생성 문서에서 사라짐",
+                case.slug
+            );
+            assert!(
+                !full_text.contains("I."),
+                "{}: 로마 숫자 자리에 ASCII 'I.'가 남아있음 (U+2160이어야 함)",
+                case.slug
+            );
+        }
+
+        // 6. minutes carries all nine statutory elements (공공기록물 관리에 관한 법률 시행령
+        // 제18조, D-19).
+        if case.slug == "minutes" {
+            let full_text = full_document_text(&reread(&filled));
+            for element in MINUTES_STATUTORY_ELEMENTS {
+                assert!(
+                    full_text.contains(element),
+                    "{}: 회의록 필수 요소 누락: {element}",
+                    case.slug
+                );
+            }
+        }
+
+        // 7. hwp lint stays silent on every embedded template source that --template resolves
+        // to (regression guard carried in from Phase 2.3, `tests/lint.rs::silent_on_embedded_templates`).
+        let lint_output = hwp().arg("lint").arg(&template).output().unwrap();
+        assert!(
+            lint_output.status.success(),
+            "{}: hwp lint 실행 실패\nstderr: {}",
+            case.slug,
+            String::from_utf8_lossy(&lint_output.stderr)
+        );
+        assert!(
+            lint_output.stdout.is_empty(),
+            "{}: hwp lint가 --template 소스에서 findings를 냄(0건이어야 함):\n{}",
+            case.slug,
+            String::from_utf8_lossy(&lint_output.stdout)
+        );
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn list_templates_names_all_eight_slugs() {
+    let output = hwp().args(["new", "--list-templates"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "hwp new --list-templates 실패\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        8,
+        "--list-templates must name exactly eight templates:\n{stdout}"
+    );
+    let listed_slugs: BTreeSet<&str> = lines
+        .iter()
+        .map(|line| line.split('\t').next().unwrap_or(line))
+        .collect();
+    let expected_slugs: BTreeSet<&str> = CASES.iter().map(|case| case.slug).collect();
+    assert_eq!(
+        listed_slugs, expected_slugs,
+        "--list-templates slugs must match the smoke table's eight slugs"
+    );
 }
