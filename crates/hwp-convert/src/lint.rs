@@ -97,9 +97,13 @@ fn severity_of(rule_id: &str) -> Severity {
 /// period. The canonical form is `YYYY. M. D.` (space after each period, mandatory
 /// final period, no leading zeros) per the 2020 행정업무운영 편람 표기법
 /// (skills/hwp/references/korean-official-format.md §6 날짜). A 4-digit year is
-/// required so `제3.01.호` and `v2.05.1` can never match.
+/// required so `제3.01.호` and `v2.05.1` can never match. Digit classes are ASCII
+/// (`[0-9]`, never `\d`): the regex crate's `\d` is Unicode-aware and would match
+/// full-width `２０２６`, which then fails `parse::<u32>()` and panics the whole
+/// lint run. Every notation rule here concerns 아라비아 숫자 (편람 §6 표기법), so
+/// ASCII is also the semantically correct class.
 static DATE_CANDIDATE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d{4})\. ?(\d{1,2})\. ?(\d{1,2})\.?").unwrap());
+    LazyLock::new(|| Regex::new(r"([0-9]{4})\. ?([0-9]{1,2})\. ?([0-9]{1,2})\.?").unwrap());
 
 /// Bounded bare-URL mask — the single sanctioned textual exception to D-01's
 /// structural-only framing (adopted research Open Question 5). pulldown-cmark
@@ -112,17 +116,18 @@ static URL_MASK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:https?://|ww
 
 /// `오전/오후 N시( N분)?` — the meridiem form must be rewritten as 24-hour
 /// `HH:MM` (§6 시각).
-static TIME_MERIDIEM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:오전|오후)\s*\d{1,2}\s*시(?:\s*\d{1,2}\s*분)?").unwrap());
+static TIME_MERIDIEM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:오전|오후)\s*[0-9]{1,2}\s*시(?:\s*[0-9]{1,2}\s*분)?").unwrap()
+});
 /// `H:MM` candidate; the leading zero is mandatory (`08:09`), so only a bare
 /// single-digit hour fires. Two-digit hours are filtered after the match.
-static TIME_HM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{1,2}):(\d{2})").unwrap());
+static TIME_HM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([0-9]{1,2}):([0-9]{2})").unwrap());
 
 /// `345천원`-style abstract thousand-units (§6 금액).
-static MONEY_ABBR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+천원").unwrap());
+static MONEY_ABBR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9]+천원").unwrap());
 /// `금NNN,NNN원` candidate; silent only when the alteration-proof Korean reading
 /// `(금…원)` follows immediately (§6 금액).
-static MONEY_GEUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"금\d[\d,]*원").unwrap());
+static MONEY_GEUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"금[0-9][0-9,]*원").unwrap());
 
 /// Line whose first token is `붙임` followed by a colon (must be `붙임∨∨`, §6
 /// 붙임). Anchored at line starts so prose mentions of 붙임 never fire.
@@ -130,7 +135,11 @@ static ATTACH_COLON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^붙임
 /// Paragraph opening an attachment block: first token `붙임` with no colon.
 static ATTACH_START: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^붙임(?:\s|$)").unwrap());
 /// Attachment quantity candidate; silent only when closed by a period (`1부.`).
-static ATTACH_QUANTITY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+부").unwrap());
+static ATTACH_QUANTITY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9]+부").unwrap());
+
+/// A complete parenthetical Korean amount reading, anchored at the position just
+/// after `금NNN,NNN원`: `(금` … `원)` on one line (§6 금액).
+static MONEY_READING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\(금[^)\n]*원\)").unwrap());
 /// The `끝` end-mark candidate; followed by `.` it is the canonical `끝.`.
 static END_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new("끝").unwrap());
 /// 공문서 markers that scope notation-end-dot (adopted research A5): a 붙임 line
@@ -671,8 +680,10 @@ fn lint_notation_money(
         if para.masked_overlap(m.start(), m.end()) {
             continue;
         }
-        // Silent only when the Korean reading follows immediately.
-        if text[m.end()..].starts_with("(금") {
+        // Silent only when a *complete* Korean reading follows immediately.
+        // A prefix test would accept the truncated `금113,560원(금` and a reading
+        // that never closes; §6 requires the whole `(금…원)` parenthetical.
+        if MONEY_READING.is_match(&text[m.end()..]) {
             continue;
         }
         push(
@@ -1317,5 +1328,44 @@ mod tests {
             };
             assert_eq!(*severity, expected, "{rule}");
         }
+    }
+
+    #[test]
+    fn full_width_digits_do_not_panic() {
+        // Regression: the regex crate's `\d` is Unicode-aware, so full-width
+        // digits matched the date candidate and then panicked in
+        // `parse::<u32>()`, killing the CLI and the MCP server on user input.
+        // ASCII digit classes keep them out of the span entirely.
+        for md in [
+            "２０２６. ８. ２０.\n",
+            "일시: 오후 ３시\n",
+            "비용: ３４５천원\n",
+        ] {
+            let _ = lint(md);
+        }
+    }
+
+    #[test]
+    fn money_reading_must_close() {
+        // A prefix-only `(금` test accepted a truncated or unterminated reading;
+        // §6 requires the whole `(금…원)` parenthetical.
+        let money = |md: &str| {
+            lint(md)
+                .into_iter()
+                .filter(|f| f.rule_id == "notation-money")
+                .count()
+        };
+        assert_eq!(
+            money("금13,500원(금일만삼천오백원)\n"),
+            0,
+            "complete reading is silent"
+        );
+        assert_eq!(money("금113,560원(금\n"), 1, "truncated reading fires");
+        assert_eq!(
+            money("금113,560원(금일십일만\n"),
+            1,
+            "unterminated reading fires"
+        );
+        assert_eq!(money("금99,000원\n"), 1, "missing reading fires");
     }
 }
