@@ -19,6 +19,7 @@ pub mod merge;
 pub mod odt;
 pub mod official;
 pub mod structure;
+pub mod style;
 pub mod svg;
 
 use hwp_model::Document;
@@ -58,6 +59,7 @@ pub use official::{
     OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides, profile, profiles,
 };
 pub use structure::{delete_paragraph, insert_paragraph};
+pub use style::display_width;
 
 /// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).
 ///
