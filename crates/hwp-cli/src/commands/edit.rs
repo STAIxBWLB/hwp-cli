@@ -46,6 +46,7 @@ enum EditOperation {
     DeleteTable(Vec<String>),
     DeleteField(Vec<String>),
     DeleteBookmark(Vec<String>),
+    StyleTables(hwp_convert::OfficialPreset),
 }
 
 /// MCP처럼 이미 구조화된 호출자가 CLI mini-language를 거치지 않고 전달하는 편집.
@@ -175,6 +176,13 @@ pub(crate) enum TypedEditOperation {
     DeleteBookmark {
         name: String,
     },
+    /// Only constructed via the CLI path today (`EditOperation::StyleTables`); the MCP
+    /// `tool_edit` allowlist/schema wiring (D-09) is deferred to a later change, same as the
+    /// frame flags in plan 02 (02.4-02-SUMMARY.md "Next Phase Readiness").
+    #[allow(dead_code)]
+    StyleTables {
+        preset: hwp_convert::OfficialPreset,
+    },
 }
 
 impl TypedEditOperation {
@@ -233,7 +241,8 @@ impl EditOperation {
             | Self::SetFormat(_)
             | Self::SetAlign(_)
             | Self::SetPara(_)
-            | Self::SetPage(_) => false,
+            | Self::SetPage(_)
+            | Self::StyleTables(_) => false,
         }
     }
 }
@@ -319,6 +328,7 @@ impl EditPlan {
             delete_table,
             delete_field,
             delete_bookmark,
+            style_tables,
             verify,
             allow_partial,
         } = args;
@@ -359,6 +369,9 @@ impl EditPlan {
         add!(DeleteTable, delete_table);
         add!(DeleteField, delete_field);
         add!(DeleteBookmark, delete_bookmark);
+        if let Some(preset) = style_tables {
+            operations.push(EditOperation::StyleTables(preset.canonical()));
+        }
 
         (
             input,
@@ -583,6 +596,19 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             .typed_operations
             .iter()
             .any(TypedEditOperation::is_structural);
+    // D-08: re-styling an already-correctly-styled document (every GFM table is styled at
+    // import time regardless of preset, per plan 03) is a legitimate no-op, not a failure — its
+    // output is EXPECTED to equal its input byte-for-byte. The generic "no visible effect"
+    // publish guard below must not treat that as an error the way it does for a --replace/
+    // --set-* request that silently matched nothing.
+    let requested_style_tables = plan
+        .operations
+        .iter()
+        .any(|op| matches!(op, EditOperation::StyleTables(_)))
+        || plan
+            .typed_operations
+            .iter()
+            .any(|op| matches!(op, TypedEditOperation::StyleTables { .. }));
 
     for operation in &plan.operations {
         match operation {
@@ -1065,6 +1091,18 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     }
                 }
             }
+            // `preset` does not yet select divergent values (D-07's values are uniform across
+            // all six profiles today) - it validates and records intent for a future divergence.
+            EditOperation::StyleTables(_preset) => {
+                let n = hwp_convert::style_tables(&mut doc);
+                if n == 0 {
+                    eprintln!("경고: 스타일링 대상 표를 찾지 못했습니다(1열 표는 건너뜀)");
+                    unapplied.push("--style-tables".to_string());
+                } else {
+                    eprintln!("표 스타일링: {n}개");
+                    edits += n;
+                }
+            }
         }
     }
     for operation in &plan.typed_operations {
@@ -1077,7 +1115,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             unapplied.join(", ")
         );
     }
-    if edits == 0 || doc == original_doc {
+    if edits == 0 || (doc == original_doc && !requested_style_tables) {
         anyhow::bail!(
             "적용 가능한 편집이 없어 출력을 게시하지 않습니다 \
              (--replace/--set-cell/--set-field/--set-meta 등 요청 확인)"
@@ -1573,6 +1611,15 @@ fn apply_typed_operation(
                 unapplied.push(format!("delete_bookmark name={name:?}"));
             } else {
                 eprintln!("책갈피 삭제: {name:?} ({count}건)");
+                *edits += count;
+            }
+        }
+        TypedEditOperation::StyleTables { preset: _ } => {
+            let count = hwp_convert::style_tables(doc);
+            if count == 0 {
+                unapplied.push("style_tables".to_string());
+            } else {
+                eprintln!("표 스타일링: {count}개");
                 *edits += count;
             }
         }

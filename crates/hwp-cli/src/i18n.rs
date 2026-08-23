@@ -512,6 +512,11 @@ pub const KO: &[(&str, &str, &str)] = &[
         "delete_bookmark",
         "책갈피 삭제 \"이름\" (반복 가능; 이름은 hwp bookmarks로 확인)",
     ),
+    (
+        "edit",
+        "style_tables",
+        "공문서 프리셋으로 모든 적용 대상 표 스타일링(헤더 셰이딩·굵게·가운데 정렬, 내용비례 폭) — official|report|plan|notice|minutes|press. 1열 표(테두리 블록)는 건너뜀. 두 번 적용해도 바이트 동일",
+    ),
     ("edit", "verify", "쓰기 후 재읽기로 검증"),
     (
         "edit",

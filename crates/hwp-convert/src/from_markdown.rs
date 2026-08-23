@@ -1602,6 +1602,7 @@ impl Builder {
                         tb,
                         &mut self.extra_para_shapes,
                         &mut self.extra_border_fills,
+                        &mut self.extra_char_shapes,
                     ));
                 }
             }
@@ -1810,10 +1811,16 @@ pub(crate) fn inject_section_controls(
 /// merged into `header.para_shapes`/`header.border_fills` after `BASE_PARA_SHAPES`/
 /// `BASE_BORDER_FILLS` base entries, which is why those two constants are passed as the offset
 /// `style::style_table` needs to compute the final, correct shape/fill ids up front (D-07/D-08).
+/// `char_shapes` is the Builder's `extra_char_shapes` staging vector; unlike the para-shape/
+/// border-fill offset scheme, `style::style_table` addresses `CharShapeId` with no base offset,
+/// so the fixed `PALETTE_LEN`-entry base palette is materialized in front of it before the call
+/// and split back off afterward (Pitfall 5: the base palette is always the same fixed entries,
+/// so this never duplicates or renumbers anything already relied on elsewhere).
 fn table_paragraph(
     tb: TableBuilder,
     para_shapes: &mut Vec<ParaShape>,
     border_fills: &mut Vec<BorderFill>,
+    char_shapes: &mut Vec<CharShape>,
 ) -> Paragraph {
     let rows = tb.rows.len().max(1);
     let cols = tb.rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
@@ -1870,6 +1877,8 @@ fn table_paragraph(
 
     // D-07: every GFM table gets header shading/centering + content-proportional widths. A GFM
     // table always has exactly one header row (row 0), so header detection is free.
+    let mut full_char_shapes = default_header().char_shapes;
+    full_char_shapes.extend(char_shapes.iter().cloned());
     crate::style::style_table(
         &mut table,
         1,
@@ -1878,7 +1887,9 @@ fn table_paragraph(
         BASE_PARA_SHAPES,
         border_fills,
         BASE_BORDER_FILLS,
+        &mut full_char_shapes,
     );
+    *char_shapes = full_char_shapes.split_off(crate::from_html::PALETTE_LEN as usize);
 
     let mut payload = vec![0u8; 12];
     payload[..4].copy_from_slice(b" lbt"); // reversed ctrl_id

@@ -542,6 +542,11 @@ pub struct EditArgs {
     /// Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks)
     #[arg(long = "delete-bookmark")]
     pub delete_bookmark: Vec<String>,
+    /// Style every eligible table (header shade/bold/center, content-proportional widths) under
+    /// an official-document preset: official, report, plan, notice, minutes, or press. Skips
+    /// single-column tables (frame blocks); byte-stable when applied twice
+    #[arg(long = "style-tables", value_parser = parse_preset_arg)]
+    pub style_tables: Option<PresetArg>,
     /// Verify by re-reading after writing
     #[arg(long)]
     pub verify: bool,

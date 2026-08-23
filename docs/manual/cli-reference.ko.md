@@ -217,6 +217,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--delete-table` | `<DELETE_TABLE>` |  | 표 삭제 "n"(0-기반 인덱스) 또는 "앵커"(앵커 문단의 표) (반복 가능) |
 | `--delete-field` | `<DELETE_FIELD>` |  | 필드 삭제 "이름" (반복 가능; 이름은 hwp fields로 확인) |
 | `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | 책갈피 삭제 "이름" (반복 가능; 이름은 hwp bookmarks로 확인) |
+| `--style-tables` | `<STYLE_TABLES>` |  | 공문서 프리셋으로 모든 적용 대상 표 스타일링(헤더 셰이딩·굵게·가운데 정렬, 내용비례 폭) — official\|report\|plan\|notice\|minutes\|press. 1열 표(테두리 블록)는 건너뜀. 두 번 적용해도 바이트 동일 |
 | `--verify` |  |  | 쓰기 후 재읽기로 검증 |
 | `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
 

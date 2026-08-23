@@ -1,14 +1,19 @@
-//! Table styling engine (GONG-03, STYL-01): the display-width primitive and `style_table`, the
-//! pure function that turns a table's own content into header shading, alignment and
-//! content-proportional column widths (D-07). Wired into markdown import from
-//! `from_markdown.rs::table_paragraph`, and reused unchanged by the `hwp edit --style-tables`
-//! walker (a later phase) so the two call sites cannot drift.
+//! Table styling engine (GONG-03, STYL-01): the display-width primitive, `style_table` and
+//! `style_tables`. `style_table` is the pure function that turns a table's own content into
+//! header shading, alignment and content-proportional column widths (D-07). Wired into markdown
+//! import from `from_markdown.rs::table_paragraph`, and reused unchanged by `style_tables`, the
+//! `hwp edit --style-tables` document walker, so the two call sites cannot drift (one styling
+//! implementation only).
 //!
 //! D-08 (byte-stable idempotence) is a purity constraint on `style_table`: every value it
 //! computes comes from the table's own cells, its header-row count and its total width — nothing
 //! else. No marker, no probe of "already styled", no external state. Re-running it on unchanged
 //! content must recompute the identical values and, through value-deduped shape allocation
 //! (`find_or_insert`/`find_or_insert_para`), append nothing on the second call.
+//!
+//! D-11: `style_tables` skips single-column tables (every frame block plan 01/02 emits is one
+//! column) so a frame's row 0 is never mistaken for a header row. Column count is part of the
+//! table's own content, so the skip costs no marker and D-08's purity survives.
 
 /// Whether `ch` counts as 2 half-width columns (a "wide" character) rather than 1.
 ///
@@ -42,7 +47,10 @@ pub fn display_width(text: &str) -> usize {
     text.chars().map(|c| if is_wide(c) { 2 } else { 1 }).sum()
 }
 
-use hwp_model::{BorderFill, BorderFillId, BorderLine, ParaShape, ParaShapeId, Table};
+use hwp_model::{
+    BorderFill, BorderFillId, BorderLine, CharShape, CharShapeId, Control, Document, HwpUnit,
+    ParaShape, ParaShapeId, Paragraph, Table,
+};
 
 /// Narrow-column threshold (D-07 rule 6): a column whose widest cell measures this many columns
 /// or fewer gets its cells centered rather than left/justified.
@@ -72,12 +80,69 @@ fn header_shade_fill() -> BorderFill {
 /// Value-dedup append-only allocator for `BorderFill`, mirroring `format::find_or_insert`'s
 /// contract for `CharShape` (Pitfall 5: append-only, never insert in the middle). Returns the
 /// 0-based position of `bf` within `fills`.
+///
+/// Matches ignoring `tail`: a hwp5 round trip fills an originally-empty `tail` with a
+/// deterministic writer-generated payload (`hwp5::write::is_materialized_generated_*_tail`,
+/// invisible from here — `hwp-convert` depends on no format crate, hub-and-spoke). `bf` is always
+/// freshly built with an EMPTY tail, so matching on every OTHER field means a fresh candidate
+/// still recognizes an already-styled entry loaded from a previous write (whose tail was filled
+/// in by the writer), instead of seeing the filled tail as a difference and appending a
+/// duplicate on every re-application (D-08). The matched, PRE-EXISTING entry (tail and all) is
+/// returned untouched — nothing is normalized or overwritten as a side effect.
 fn find_or_insert_border_fill(fills: &mut Vec<BorderFill>, bf: BorderFill) -> usize {
-    if let Some(i) = fills.iter().position(|f| *f == bf) {
+    if let Some(i) = fills
+        .iter()
+        .position(|f| border_fill_eq_ignoring_tail(f, &bf))
+    {
         return i;
     }
     fills.push(bf);
     fills.len() - 1
+}
+
+fn border_fill_eq_ignoring_tail(a: &BorderFill, b: &BorderFill) -> bool {
+    a.attr == b.attr
+        && a.sides == b.sides
+        && a.diagonal == b.diagonal
+        && a.fill_type == b.fill_type
+        && a.bg_color == b.bg_color
+        && a.hatch == b.hatch
+        && a.gradient == b.gradient
+}
+
+/// Same D-08 tail-tolerance as [`find_or_insert_border_fill`], for `ParaShape`. Deliberately a
+/// local helper rather than reusing `format::find_or_insert_para` (strict equality): that shared
+/// helper's other callers (`set_para_align`) always clone an EXISTING run's shape before
+/// modifying it, so their candidate's tail is never a fresh empty one and strict equality never
+/// mismatches for them — `style_table`'s centered-shape candidate is the one case built from a
+/// hardcoded base ([`crate::from_markdown::table_cell_para_shape`]), so it is the one that needs
+/// tolerance.
+fn find_or_insert_para_ignoring_tail(shapes: &mut Vec<ParaShape>, ps: ParaShape) -> ParaShapeId {
+    if let Some(i) = shapes
+        .iter()
+        .position(|s| para_shape_eq_ignoring_tail(s, &ps))
+    {
+        return ParaShapeId(i as u16);
+    }
+    shapes.push(ps);
+    ParaShapeId((shapes.len() - 1) as u16)
+}
+
+fn para_shape_eq_ignoring_tail(a: &ParaShape, b: &ParaShape) -> bool {
+    a.attr1 == b.attr1
+        && a.indent == b.indent
+        && a.margin_left == b.margin_left
+        && a.margin_right == b.margin_right
+        && a.spacing_top == b.spacing_top
+        && a.spacing_bottom == b.spacing_bottom
+        && a.line_spacing_old == b.line_spacing_old
+        && a.tab_def_id == b.tab_def_id
+        && a.numbering_id == b.numbering_id
+        && a.list_level == b.list_level
+        && a.border_fill_id == b.border_fill_id
+        && a.border_offsets == b.border_offsets
+        && a.line_spacing_type == b.line_spacing_type
+        && a.line_spacing == b.line_spacing
 }
 
 /// Rule 1/2/3/4 — per-column widths from per-column content weight, integer arithmetic only (no
@@ -136,7 +201,9 @@ fn column_widths(weights: &[usize], total_width: i32, cols: usize) -> Vec<i32> {
 /// the final, complete header tables — the common case in tests and in `hwp edit --style-tables`;
 /// nonzero when the caller is still assembling staging vectors, as `from_markdown.rs` does while
 /// the header does not exist yet). `ParaShapeId` is 0-based; `BorderFillId` is the on-disk
-/// 1-based reference id (Pitfall 1).
+/// 1-based reference id (Pitfall 1). `char_shapes` is the FULL char shape table addressed directly
+/// by every run's `CharShapeId` (no base offset — callers that stage char shapes separately from
+/// the fixed base palette, as `from_markdown.rs` does, must materialize a full vector first).
 ///
 /// Returns `false` only for a degenerate 0-column table (nothing to style); `true` otherwise.
 #[allow(clippy::too_many_arguments)]
@@ -148,6 +215,7 @@ pub fn style_table(
     para_shape_base: u16,
     border_fills: &mut Vec<BorderFill>,
     border_fill_base: u16,
+    char_shapes: &mut Vec<CharShape>,
 ) -> bool {
     let cols = table.cols as usize;
     if cols == 0 {
@@ -180,7 +248,7 @@ pub fn style_table(
         attr1: (base_para.attr1 & !(0x7 << 2)) | (3 << 2),
         ..base_para
     };
-    let centered_local = crate::format::find_or_insert_para(para_shapes, centered);
+    let centered_local = find_or_insert_para_ignoring_tail(para_shapes, centered);
     let centered_id = ParaShapeId(para_shape_base + centered_local.0);
 
     let shade_local = find_or_insert_border_fill(border_fills, header_shade_fill());
@@ -199,9 +267,160 @@ pub fn style_table(
                 p.para_shape = centered_id;
             }
         }
+        if is_header {
+            // Rule 5 (bold): each header run becomes the bold variant of its OWN current
+            // CharShape (color/size/etc. preserved), not a hardcoded default — an existing
+            // document's header runs may carry anything. On the import path the run is already
+            // bold (`tb.in_head`), so the "bold variant" is itself; `find_or_insert` finds the
+            // same entry and appends nothing (D-08).
+            for p in &mut cell.paragraphs {
+                for (_, run_id) in &mut p.char_shape_runs {
+                    let current = char_shapes
+                        .get(run_id.0 as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let bold = CharShape {
+                        attr: current.attr | (1 << 1),
+                        ..current
+                    };
+                    *run_id = crate::format::find_or_insert(char_shapes, bold);
+                }
+            }
+        }
     }
 
     true
+}
+
+/// `hwp edit --style-tables <preset>`: styles every eligible table already in `doc` through the
+/// SAME `style_table` markdown import calls (one styling implementation only, D-08). Returns the
+/// number of tables actually styled.
+///
+/// Copies `format.rs::restyle_para`'s recursion shape: walks every section paragraph, recursing
+/// into `Control::Table` cells and `Control::Generic` paragraph lists, clearing stale cached
+/// layout (`line_segs`) on every styled cell paragraph and stale cached XML
+/// (`Generic.hwpx_raw_xml`) on any generic control whose nested content changed.
+///
+/// D-11: a table fixed at exactly one column (every frame block plans 01/02 emit) is skipped —
+/// treating its row 0 as a header row would shade 발신명의/기관명 on top of the shape they already
+/// carry. Column count is part of the table's own content, so this costs no marker and D-08's
+/// purity survives.
+pub fn style_tables(doc: &mut Document) -> usize {
+    let Document {
+        header, sections, ..
+    } = doc;
+    let mut styled = 0;
+    for section in sections.iter_mut() {
+        for para in &mut section.paragraphs {
+            styled += style_tables_in_para(
+                para,
+                &mut header.para_shapes,
+                &mut header.border_fills,
+                &mut header.char_shapes,
+            );
+        }
+    }
+    styled
+}
+
+/// The subset of a `Cell`'s state `style_table` can change — used only to detect whether a table
+/// cell actually changed, so `style_tables` clears cached layout (`line_segs`) exclusively on
+/// cells whose styled value moved. Deliberately excludes `line_segs` itself (the thing being
+/// invalidated) and unrelated fields (`chars`, `controls`, ...) that `style_table` never touches.
+#[derive(PartialEq)]
+struct CellStyleSnapshot {
+    width: HwpUnit,
+    border_fill: BorderFillId,
+    paragraph_shapes: Vec<(ParaShapeId, Vec<(u32, CharShapeId)>)>,
+}
+
+impl CellStyleSnapshot {
+    fn of(cell: &hwp_model::Cell) -> Self {
+        Self {
+            width: cell.width,
+            border_fill: cell.border_fill,
+            paragraph_shapes: cell
+                .paragraphs
+                .iter()
+                .map(|p| (p.para_shape, p.char_shape_runs.clone()))
+                .collect(),
+        }
+    }
+}
+
+fn style_tables_in_para(
+    para: &mut Paragraph,
+    para_shapes: &mut Vec<ParaShape>,
+    border_fills: &mut Vec<BorderFill>,
+    char_shapes: &mut Vec<CharShape>,
+) -> usize {
+    let mut styled = 0;
+    for ctrl in &mut para.controls {
+        match ctrl {
+            Control::Table(t) => {
+                // D-11: single-column tables (frame blocks) are never treated as styleable.
+                if t.cols > 1 {
+                    let total_width: i32 = t
+                        .cells
+                        .iter()
+                        .filter(|c| c.row == 0)
+                        .map(|c| c.width.0)
+                        .sum();
+                    // Snapshot the fields `style_table` can touch, per cell, BEFORE the call.
+                    // Re-styling an already-correctly-styled table (D-08) must leave every one
+                    // of these values unchanged; only clear cached layout where a value actually
+                    // moved. An unconditional clear would make BodyText/Section look "changed"
+                    // to the hwp5 writer on EVERY reapplication (populated line_segs -> empty),
+                    // forcing a stream rewrite that churns the CFB container's sector layout
+                    // even when nothing visible moved — breaking byte-stability on the second
+                    // application even though the styled VALUES are already stable.
+                    let before: Vec<CellStyleSnapshot> =
+                        t.cells.iter().map(CellStyleSnapshot::of).collect();
+                    let processed = style_table(
+                        t,
+                        1,
+                        total_width,
+                        para_shapes,
+                        0,
+                        border_fills,
+                        0,
+                        char_shapes,
+                    );
+                    if processed {
+                        styled += 1;
+                        for (cell, before_cell) in t.cells.iter_mut().zip(before.iter()) {
+                            if CellStyleSnapshot::of(cell) != *before_cell {
+                                for p in &mut cell.paragraphs {
+                                    p.line_segs.clear();
+                                }
+                            }
+                        }
+                    }
+                }
+                // Recurse into nested tables (a table inside a table cell) regardless of
+                // whether this table itself was eligible.
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        styled += style_tables_in_para(p, para_shapes, border_fills, char_shapes);
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                let before = styled;
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        styled += style_tables_in_para(p, para_shapes, border_fills, char_shapes);
+                    }
+                }
+                if styled > before {
+                    // A nested table changed — the original XML is stale, do not re-emit it.
+                    g.hwpx_raw_xml = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    styled
 }
 
 #[cfg(test)]
@@ -343,6 +562,7 @@ mod tests {
         ]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
         assert!(style_table(
             &mut table,
             1,
@@ -351,6 +571,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         ));
 
         for cell in &table.cells {
@@ -381,12 +602,73 @@ mod tests {
     }
 
     #[test]
+    fn style_table_header_bold_from_current_shape_preserves_color_and_is_idempotent() {
+        // Header run starts on a NON-bold custom CharShape (a red 12pt shape at id 0) — an
+        // arbitrary existing document's header run is "whatever it is", not a hardcoded default.
+        let red_12pt = CharShape {
+            base_size: 1200,
+            text_color: 0x0000_00FF,
+            ..CharShape::default()
+        };
+        let mut table = make_table(&[&["헤더가나다라마바사아자차카"]]);
+        for cell in &mut table.cells {
+            for p in &mut cell.paragraphs {
+                p.char_shape_runs = vec![(0, hwp_model::CharShapeId(0))];
+            }
+        }
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        let mut char_shapes = vec![red_12pt.clone()];
+
+        style_table(
+            &mut table,
+            1,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+            &mut char_shapes,
+        );
+        let run_id_1 = table.cells[0].paragraphs[0].char_shape_runs[0].1;
+        let shape_1 = char_shapes[run_id_1.0 as usize].clone();
+        assert!(shape_1.is_bold(), "헤더 글자는 굵게 처리된다");
+        assert_eq!(
+            shape_1.text_color, 0x0000_00FF,
+            "색상 등 기존 속성은 보존된다"
+        );
+        assert_eq!(shape_1.base_size, 1200, "크기 등 기존 속성은 보존된다");
+        let len_after_first = char_shapes.len();
+
+        // Second application: the run already points at the bold shape, so "the bold variant of
+        // a bold shape is itself" — find_or_insert finds it and appends nothing (D-08).
+        style_table(
+            &mut table,
+            1,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+            &mut char_shapes,
+        );
+        let run_id_2 = table.cells[0].paragraphs[0].char_shape_runs[0].1;
+        assert_eq!(run_id_2, run_id_1, "재적용해도 같은 글자모양을 가리킨다");
+        assert_eq!(
+            char_shapes.len(),
+            len_after_first,
+            "재적용해도 글자모양 테이블이 자라지 않는다 (D-08)"
+        );
+    }
+
+    #[test]
     fn style_table_widths_proportional_to_column_weight() {
         // weight[0]=10, weight[1]=15 (10*3=30 > 15, so the 2-col label:value special case does
         // not trigger — the plain proportional branch is exercised).
         let mut table = make_table(&[&["AAAAAAAAAA", "AAAAAAAAAAAAAAA"]]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
         style_table(
             &mut table,
             0,
@@ -395,6 +677,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
 
         let width_of = |c: u16| {
@@ -417,6 +700,7 @@ mod tests {
         let mut table = make_table(&[&["A", "AAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAA"]]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
         style_table(
             &mut table,
             0,
@@ -425,6 +709,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
 
         let width_of = |c: u16| {
@@ -452,6 +737,7 @@ mod tests {
         let mut table = make_table(&[&["AAAAA", "AAAAA", "AAAAA"]]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
         style_table(
             &mut table,
             0,
@@ -460,6 +746,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
 
         let width_of = |c: u16| {
@@ -483,6 +770,7 @@ mod tests {
         let mut table = make_table(&[&["A", "AAAAAAAAAAAAAAAAAAAA"]]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
         style_table(
             &mut table,
             0,
@@ -491,6 +779,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
 
         let width_of = |c: u16| {
@@ -517,6 +806,7 @@ mod tests {
         let mut table = make_table(&[&["12345678", "123456789"]]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
         style_table(
             &mut table,
             0,
@@ -525,6 +815,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
 
         let para_shape_of = |c: u16| {
@@ -553,6 +844,7 @@ mod tests {
         let mut table = make_table(&[&["AAAA", "AAAA", "AAAA", "AAAA"]]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
         style_table(
             &mut table,
             0,
@@ -561,6 +853,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
 
         let widths: Vec<i32> = (0..4)
@@ -585,6 +878,7 @@ mod tests {
         ]);
         let mut para_shapes = Vec::new();
         let mut border_fills = Vec::new();
+        let mut char_shapes: Vec<CharShape> = Vec::new();
 
         style_table(
             &mut table,
@@ -594,6 +888,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
         let widths_1: Vec<i32> = table.cells.iter().map(|c| c.width.0).collect();
         let borders_1: Vec<BorderFillId> = table.cells.iter().map(|c| c.border_fill).collect();
@@ -612,6 +907,7 @@ mod tests {
             0,
             &mut border_fills,
             0,
+            &mut char_shapes,
         );
         let widths_2: Vec<i32> = table.cells.iter().map(|c| c.width.0).collect();
         let borders_2: Vec<BorderFillId> = table.cells.iter().map(|c| c.border_fill).collect();

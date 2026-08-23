@@ -217,6 +217,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--delete-table` | `<DELETE_TABLE>` |  | Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable) |
 | `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with hwp fields) |
 | `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks) |
+| `--style-tables` | `<STYLE_TABLES>` |  | Style every eligible table (header shade/bold/center, content-proportional widths) under an official-document preset: official, report, plan, notice, minutes, or press. Skips single-column tables (frame blocks); byte-stable when applied twice |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
 
