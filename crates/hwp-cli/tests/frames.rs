@@ -423,6 +423,94 @@ fn doc_foot_two_runs_produce_byte_identical_output() {
     );
 }
 
+/// Success criterion 1, pinned whole: `hwp new` with a full `--doc-head`/`--doc-foot` field set
+/// yields the block sequence 두문(기관명, 수신, 경유) → 본문 → `끝.` → 발신명의 → 결재 → 협조 →
+/// 시행/접수 → 연락처 (D-03: block order over paragraphs and table controls together — every
+/// marker's first index must be strictly increasing, not adjacent, and not paragraph-only, since
+/// under D-02 the frames are table controls).
+#[test]
+fn criterion_1_full_block_order_두문_to_연락처() {
+    let dir = temp_dir("criterion-1");
+    let body = dir.join("body.md");
+    std::fs::write(&body, "본문 마지막 줄\n").unwrap();
+    let out = dir.join("out.hwpx");
+
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "official", "--from"])
+            .arg(&body)
+            .args(["--doc-head", "기관명=예시대학교"])
+            .args(["--doc-head", "수신=총장"])
+            .args(["--doc-head", "경유=총무과"])
+            .args(["--doc-foot", "발신명의=예시대학교총장"])
+            .args(["--doc-foot", "기안자=홍길동"])
+            .args(["--doc-foot", "검토자=김철수"])
+            .args(["--doc-foot", "결재자=박영희"])
+            .args(["--doc-foot", "협조자=이몽룡"])
+            .args(["--doc-foot", "시행번호=가나1234"])
+            .args(["--doc-foot", "시행일자=2026.8.23."])
+            .args(["--doc-foot", "접수번호=나다5678"])
+            .args(["--doc-foot", "접수일자=2026.8.24."])
+            .args(["--doc-foot", "주소=예시로 1"])
+            .args(["--doc-foot", "홈페이지=example.go.kr"])
+            .args(["--doc-foot", "전화=02-000-0000"])
+            .args(["--doc-foot", "팩스=02-111-1111"])
+            .args(["--doc-foot", "이메일=test@example.go.kr"])
+            .args(["--doc-foot", "공개구분=공개"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new (criterion 1, full doc-head/doc-foot)",
+    );
+    assert_success(&output, "hwp new (criterion 1, full doc-head/doc-foot)");
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+
+    let agency = index_of(&blocks, "예시대학교"); // 기관명 (두문)
+    let recipient = index_of(&blocks, "수신  총장"); // 수신 (두문)
+    let via = index_of(&blocks, "(경유)  총무과"); // 경유 (두문)
+    let body_idx = index_of(&blocks, "본문 마지막 줄"); // 본문
+    let kkeut = index_of(&blocks, "끝."); // 끝.
+    let signoff = index_of(&blocks, "예시대학교총장"); // 발신명의
+    let approval = index_of(&blocks, "결재  기안자 홍길동"); // 결재
+    let cooperation = index_of(&blocks, "협조  이몽룡"); // 협조
+    let dispatch = index_of(&blocks, "시행  가나1234"); // 시행/접수
+    let contact = index_of(&blocks, "전화 02-000-0000"); // 연락처
+
+    let sequence = [
+        ("기관명", agency),
+        ("수신", recipient),
+        ("경유", via),
+        ("본문", body_idx),
+        ("끝.", kkeut),
+        ("발신명의", signoff),
+        ("결재", approval),
+        ("협조", cooperation),
+        ("시행/접수", dispatch),
+        ("연락처", contact),
+    ];
+    for window in sequence.windows(2) {
+        let (name_a, idx_a) = window[0];
+        let (name_b, idx_b) = window[1];
+        assert!(
+            idx_a < idx_b,
+            "expected {name_a} (block {idx_a}) before {name_b} (block {idx_b}); full sequence: {sequence:?}\nblocks: {blocks:?}"
+        );
+    }
+
+    // Regression guard (Phase 2.3): `hwp lint` must stay silent on the framed document.
+    let lint = command_output(hwp().arg("lint").arg(&out), "hwp lint (framed document)");
+    assert_success(&lint, "hwp lint (framed document)");
+    assert!(
+        String::from_utf8_lossy(&lint.stdout).trim().is_empty(),
+        "hwp lint must report zero findings on the framed document, got:\n{}",
+        String::from_utf8_lossy(&lint.stdout)
+    );
+
+    let validate = command_output(hwp().arg("validate").arg(&out), "hwp validate");
+    assert_success(&validate, "hwp validate");
+}
+
 #[test]
 fn all_five_frame_flags_appear_in_help() {
     let output = command_output(hwp().args(["new", "--help"]), "hwp new --help");
