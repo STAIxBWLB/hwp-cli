@@ -60,10 +60,12 @@ it as an unmarked paragraph instead.
 
 ## 2. Per-document recipes
 
-All six types are authored the same way today: a markdown skeleton under `templates/`
-(exported next to this file), `hwp new --from <skeleton> --preset <preset>`, then `hwp fill`.
-Phase 2.4 adds the `hwp new --template <alias>` shortcut; the recipes below are the
-present-day path.
+All six types share the same markdown skeleton under `templates/` (exported next to this
+file). Two authoring paths reach it: `hwp new --template <slug-or-alias> -o out.hwpx` loads
+the skeleton directly (§4 has the full alias table), or `hwp new --from <skeleton> --preset
+<preset>` followed by `hwp fill` fills in slots one at a time. The recipes below use the
+`--from` + `hwp fill` path since that is what needs the per-document notes; `--template` is
+the shortcut when the defaults suit.
 
 | Document type | Preset today | Template skeleton | Notes |
 |---|---|---|---|
@@ -89,25 +91,20 @@ Conventions every recipe shares:
 - **`끝.` ending.** Official documents close the body with `끝.` after the last item (and
   after the `붙임  … 1부.` attachment list when one exists; a single attachment carries no
   item number, two or more are numbered `1.`, `2.` — §6 of the regulation reference).
-- **발신명의 until Phase 2.4.** There is no frame/header machinery yet, so the centered
-  22pt bold 발신명의 line (e.g. `예시대학교총장`) is produced by splicing an HTML-fragment
-  part file that uses the block-level alignment contract (design doc 18 §8). Put this in
-  the part file you pass to `hwp fill --set "발신명의=@sender.html"` or splice it into the
-  body part:
+- **발신명의 via `--doc-foot`.** The centered 22pt bold 발신명의 line (e.g. `예시대학교총장`)
+  is a native document-footer frame, built by `hwp new` itself — no HTML-fragment splicing
+  needed. Pass it as a repeatable `key=value` frame argument at generation time:
 
-  ```html
-  <style>
-  .cs0 { font-size: 22pt; }
-  .ps0 { text-align: center; }
-  </style>
-  <p class="ps0"><span class="cs0"><strong>예시대학교총장</strong></span></p>
+  ```bash
+  hwp new --from templates/gian-external.md --preset official \
+    --doc-foot "발신명의=예시대학교총장" -o draft.hwpx
   ```
 
-  Fragments carry a leading `<style>` element; import reads only the `.csN`/`.psN` rules,
-  class numbers are producer-local (consumers reconstruct shapes by property values, never
-  by name), `text-align` on `.psN` sets paragraph alignment, and marks such as bold come
-  from the tags (`<strong>`), not the classes. This recipe lives only in this sub-guide and
-  in part files — never in SKILL.md.
+  `--doc-foot` also carries 기안자/검토자/결재자/협조자/시행번호/시행일자/접수번호/접수일자/
+  주소/홈페이지/전화/팩스/이메일/공개구분 (repeat the flag once per key); `--doc-head` carries
+  기관명/수신/경유 the same way. `--notice-head`/`--notice-foot`/`--press-head` are the
+  matching frames for 공고문/보도자료. Every frame is a table, wired directly into the
+  document — nothing to splice, no HTML block-level alignment workaround.
 - **관인(직인) is not stamped.** The e-approval system (온나라/K-Office) inserts the seal at
   dispatch; do not try to generate one.
 
@@ -140,9 +137,11 @@ Authoring rules that keep slots fillable:
 
 ## 4. Korean alias table
 
-Template files use English slugs; the Korean aliases below are what the Phase 2.4
-`hwp new --template` flag will accept (D-11). Until then, reference the skeleton file
-directly with `--from templates/<slug>.md`.
+Template files use English slugs; `hwp new --template` accepts either the slug or the
+Korean alias below (D-11), e.g. `hwp new --template 기안문-내부결재 -o draft.hwpx` or
+`hwp new --template gian-internal -o draft.hwpx`. `--template` and `--from` are mutually
+exclusive (D-05): a template already carries its own 두문/결문, so combining it with
+`--from` or with any frame flag is refused.
 
 | Korean alias | Template slug |
 |---|---|
