@@ -228,4 +228,169 @@ mod tests {
             lint_markdown(md, LintProfile::Report)
         );
     }
+
+    // ---- Task 1: notation families + ai-style-marks + bare-URL mask ----
+
+    fn only_rule(md: &str, rule_id: &str) -> Vec<Finding> {
+        let findings = lint(md);
+        for f in &findings {
+            assert_eq!(f.rule_id, rule_id, "unexpected rule in {md:?}: {findings:?}");
+        }
+        findings
+    }
+
+    #[test]
+    fn notation_time_fires_on_meridiem_and_single_digit_hour() {
+        let findings = only_rule("일시: 오후 3시 20분\n", "notation-time");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Warning);
+        let findings = only_rule("회의는 8:09에 시작합니다\n", "notation-time");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn notation_time_silent_on_canonical_24h_forms() {
+        for md in ["일시: 15:20\n", "일시: 08:09\n", "15:20∼17:00\n"] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn notation_money_fires_on_abstract_thousand_and_missing_reading() {
+        let findings = only_rule("비용: 345천원\n", "notation-money");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let findings = only_rule("금액은 금113,560원이다\n", "notation-money");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn notation_money_silent_on_canonical_amounts() {
+        for md in [
+            "금113,560원(금일십일만삼천오백육십원)\n",
+            "참석 50여 명\n",
+            "34만 5천 원\n",
+        ] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn notation_attach_colon_fires_on_line_initial_colon() {
+        let findings = only_rule("붙임: 계획서 1부.  끝.\n", "notation-attach-colon");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].line, 1);
+        assert_eq!(findings[0].col, 1);
+    }
+
+    #[test]
+    fn notation_attach_colon_silent_in_prose() {
+        for md in [
+            "자세한 내용은 붙임 파일을 참고하시기 바랍니다.\n",
+            "붙임  계획서 1부.  끝.\n",
+        ] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn notation_attach_number_fires_on_single_number_and_missing_period() {
+        // One attachment must not carry the `1.` number (inline form).
+        let findings = only_rule("붙임  1. 계획서 1부.  끝.\n", "notation-attach-number");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        // One attachment in list form: the single-item ordered list is the
+        // typed `1.` number.
+        let findings = only_rule("붙임\n\n1. 계획서 1부.\n", "notation-attach-number");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        // Quantity missing the final period.
+        let findings = only_rule("붙임  계획서 1부\n", "notation-attach-number");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn notation_attach_number_silent_on_ladder_and_canonical_single() {
+        for md in [
+            // Two or more attachments keep the 1. 2. ladder.
+            "붙임  1. 계획서 1부.\n      2. 서류 1부.  끝.\n",
+            "붙임\n\n1. 계획서 1부.\n2. 서류 1부.\n",
+            // One attachment, unnumbered, quantity closed by a period.
+            "붙임  계획서 1부.  끝.\n",
+        ] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn notation_end_dot_fires_when_gongmun_marker_present() {
+        let findings = only_rule("붙임  계획서 1부.  끝\n", "notation-end-dot");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let findings = only_rule("수신  교육부장관\n\n협조하여 주시기 바랍니다.  끝\n", "notation-end-dot");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn notation_end_dot_silent_without_markers() {
+        for md in [
+            "메모: 오늘 회의 끝\n",
+            "붙임  계획서 1부.  끝.\n",
+            "회의가 끝나는 대로 공유\n",
+        ] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn notation_punctuation_fires_on_keyboard_tilde_and_tight_colon() {
+        let findings = only_rule("기간: 2026. 4. 23.~2026. 6. 15.\n", "notation-punctuation");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let findings = only_rule("원장:김갑동\n", "notation-punctuation");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn notation_punctuation_silent_on_canonical_forms() {
+        for md in ["기간: 2026. 4. 23.∼2026. 6. 15.\n", "원장: 김갑동\n"] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn ai_style_marks_fires_on_decorative_leading_symbols() {
+        for md in ["■ 사업 개요\n", "▶ 추진 방향\n", "※ 참고 사항\n"] {
+            let findings = only_rule(md, "ai-style-marks");
+            assert_eq!(findings.len(), 1, "{md:?} -> {findings:?}");
+            assert_eq!(findings[0].severity, Severity::Warning);
+        }
+    }
+
+    #[test]
+    fn ai_style_marks_silent_on_sanctioned_marks() {
+        for md in [
+            "□ 회의 명칭\n\n○ 안건\n",
+            "★ 발의자 홍길동\n",
+            "- 목록 항목\n",
+        ] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
+
+    #[test]
+    fn fp_guard_url_bare() {
+        // A bare URL is plain Text (pulldown-cmark 0.13.4 has no GFM
+        // autolinking); the bounded mask keeps every rule silent on it.
+        let md = "참고: https://example.go.kr/2026.8.20/notice 입니다\n";
+        assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        let md = "https://example.go.kr/2026.8.20/notice\n";
+        assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+    }
+
+    #[test]
+    fn fp_guard_url_inline() {
+        // Inline-link destinations and `<…>` autolinks are structurally safe.
+        for md in [
+            "[공고문](https://example.go.kr/2026.8.20/notice)\n",
+            "<https://example.go.kr/2026.8.20/notice>\n",
+        ] {
+            assert!(lint(md).is_empty(), "{md:?} -> {:?}", lint(md));
+        }
+    }
 }
