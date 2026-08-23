@@ -11,6 +11,7 @@ hwp-model = { workspace = true }
 serde_json = { workspace = true }
 pulldown-cmark = { workspace = true }
 quick-xml = { workspace = true }
+regex = { workspace = true }
 resvg = { workspace = true }
 image = { workspace = true }
 zip = { workspace = true }

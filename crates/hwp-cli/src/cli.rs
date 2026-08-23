@@ -54,6 +54,13 @@ pub enum LangArg {
     Ko,
 }
 
+/// `hwp lint --profile` 값. `hwp_convert::lint::LintProfile`의 clap 미러.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum LintProfileArg {
+    Gongmun,
+    Report,
+}
+
 #[derive(Subcommand)]
 // Edit 변형이 편집 플래그(Vec<String> 다수)로 커서 다른 변형과 크기차가 크다.
 // CLI 명령 enum은 시작 시 한 번만 파싱되므로 크기차는 무의미 — 박싱 대신 허용.
@@ -338,6 +345,22 @@ pub enum Cmd {
         /// Print as JSON
         #[arg(long)]
         json: bool,
+    },
+
+    /// Lint official-document notation and structure rules; advisory by default
+    /// (always exit 0) — --strict exits 1 only when an error-severity finding exists
+    Lint {
+        /// Target .md/.hwp/.hwpx file ("-" reads stdin as markdown)
+        file: PathBuf,
+        /// Lint profile: gongmun (default) or report; both run the same rule table in v1
+        #[arg(long, value_enum, default_value = "gongmun")]
+        profile: LintProfileArg,
+        /// Print the hwp-lint-report-v1 JSON report
+        #[arg(long)]
+        json: bool,
+        /// Exit 1 when an error-severity finding exists (default: always exit 0)
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Certify package, semantics, native render and independent import under a versioned policy

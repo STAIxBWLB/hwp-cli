@@ -12,6 +12,7 @@ pub mod from_markdown;
 pub mod gso;
 pub mod html;
 pub mod image;
+pub mod lint;
 pub mod markdown;
 pub mod merge;
 pub mod odt;

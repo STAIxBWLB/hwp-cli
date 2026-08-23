@@ -11,6 +11,7 @@ pub mod fields;
 pub mod fill;
 pub mod grep;
 pub mod info;
+pub mod lint;
 pub mod mcp;
 pub mod new;
 pub(crate) mod output;
