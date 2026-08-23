@@ -609,7 +609,7 @@ impl PresetArg {
 /// and deliberately stays silent: its stdout is a protocol channel.
 fn parse_preset_arg(value: &str) -> Result<PresetArg, String> {
     let preset = hwp_convert::OfficialPreset::parse(value).map(PresetArg)?;
-    if value.to_ascii_lowercase() == "gian" {
+    if value.eq_ignore_ascii_case("gian") {
         eprintln!("gian은 gongmun의 별칭입니다");
     }
     Ok(preset)
