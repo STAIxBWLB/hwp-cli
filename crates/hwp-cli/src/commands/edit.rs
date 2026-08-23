@@ -176,11 +176,12 @@ pub(crate) enum TypedEditOperation {
     DeleteBookmark {
         name: String,
     },
-    /// Only constructed via the CLI path today (`EditOperation::StyleTables`); the MCP
-    /// `tool_edit` allowlist/schema wiring (D-09) is deferred to a later change, same as the
-    /// frame flags in plan 02 (02.4-02-SUMMARY.md "Next Phase Readiness").
-    #[allow(dead_code)]
+    /// Constructed via both the CLI path (`EditOperation::StyleTables`) and the MCP `tool_edit`
+    /// `style_tables` argument (D-09, plan 06). `preset` is accepted (and parsed) at both
+    /// boundaries for symmetry with `hwp new --preset`, but `hwp_convert::style_tables` itself
+    /// is purely content-driven (D-07/D-08) and never reads it.
     StyleTables {
+        #[allow(dead_code)]
         preset: hwp_convert::OfficialPreset,
     },
 }

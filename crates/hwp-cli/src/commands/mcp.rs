@@ -1383,6 +1383,14 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             name: required_item_str(item, "delete_bookmark", "name")?.to_string(),
         });
     }
+    // A single preset name, parsed through the same `OfficialPreset::parse` the CLI
+    // `--style-tables` flag uses (D-07/D-09). Stays silent on stdout like every other preset
+    // path here — stdout is the protocol channel.
+    if let Some(preset) = arg_str_opt(args, "style_tables")? {
+        operations.push(Op::StyleTables {
+            preset: hwp_convert::OfficialPreset::parse(preset)?,
+        });
+    }
 
     let plan = crate::commands::edit::EditPlan::from_typed(
         operations,
@@ -1506,21 +1514,107 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         "margin_bottom_mm",
         "margin_left_mm",
         "margin_right_mm",
+        "doc_head",
+        "doc_foot",
+        "notice_head",
+        "notice_foot",
+        "press_head",
+        "template",
     ];
     if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
         return Err(format!("알 수 없는 hwp_new 인자: {unknown}"));
     }
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
-    let input = match (arg_str_opt(args, "markdown")?, arg_str_opt(args, "json")?) {
-        (Some(_), Some(_)) => return Err("markdown과 json은 동시에 지정할 수 없습니다".into()),
-        (Some(markdown), None) => crate::commands::new::NewInput::Markdown {
+    let markdown = arg_str_opt(args, "markdown")?;
+    let json_input = arg_str_opt(args, "json")?;
+    if markdown.is_some() && json_input.is_some() {
+        return Err("markdown과 json은 동시에 지정할 수 없습니다".into());
+    }
+
+    // Frame arguments arrive as arrays of {key, value} objects (a structured boundary does not
+    // re-encode into the CLI's "k=v" mini-language). Reassemble "k=v" here so the SAME
+    // `parse_frame_fields` validator the CLI uses produces identical Korean errors (D-01, D-09).
+    let frame_field_specs = |frame: &str| -> Result<Vec<String>, String> {
+        arg_array(args, frame)?
+            .iter()
+            .map(|item| {
+                Ok(format!(
+                    "{}={}",
+                    required_item_str(item, frame, "key")?,
+                    required_item_str(item, frame, "value")?
+                ))
+            })
+            .collect()
+    };
+    let doc_head = frame_field_specs("doc_head")?;
+    let doc_foot = frame_field_specs("doc_foot")?;
+    let notice_head = frame_field_specs("notice_head")?;
+    let notice_foot = frame_field_specs("notice_foot")?;
+    let press_head = frame_field_specs("press_head")?;
+    let any_frame_flag = !doc_head.is_empty()
+        || !doc_foot.is_empty()
+        || !notice_head.is_empty()
+        || !notice_foot.is_empty()
+        || !press_head.is_empty();
+
+    // D-05: `template` is refused together with `markdown`/`json` (both are the "document
+    // content" argument, same as `--template`/`--from` on the CLI) and with any frame argument
+    // (templates already carry their own 두문/결문). Resolved through the same fixed in-binary
+    // lookup `--list-templates` reads (T-02.4-13) — never a filesystem path built from the name.
+    let template = arg_str_opt(args, "template")?;
+    let embedded_text = template
+        .map(|name| -> Result<&'static str, String> {
+            if markdown.is_some() {
+                return Err(
+                    "template과 markdown은 함께 지정할 수 없습니다: 템플릿은 이미 markdown 본문을 \
+                     포함합니다"
+                        .into(),
+                );
+            }
+            if json_input.is_some() {
+                return Err(
+                    "template과 json은 함께 지정할 수 없습니다: 템플릿은 이미 markdown 본문을 \
+                     포함합니다"
+                        .into(),
+                );
+            }
+            if any_frame_flag {
+                return Err(format!(
+                    "template {name}은(는) 프레임 인자(doc_head/doc_foot/notice_head/notice_foot/\
+                     press_head)와 함께 지정할 수 없습니다: 템플릿은 두문/결문을 이미 포함하므로 \
+                     함께 지정하면 프레임이 중복됩니다."
+                ));
+            }
+            crate::commands::skill::template_file(name)
+                .map(|file| file.contents)
+                .ok_or_else(|| {
+                    let accepted: Vec<&str> = crate::commands::skill::template_names()
+                        .map(|(slug, _)| slug)
+                        .collect();
+                    format!(
+                        "알 수 없는 template 이름: {name} (사용 가능: {})",
+                        accepted.join(", ")
+                    )
+                })
+        })
+        .transpose()?;
+
+    let input = match (embedded_text, markdown, json_input) {
+        (Some(text), _, _) => crate::commands::new::NewInput::Markdown {
+            text,
+            base_dir: None,
+            roots: &ctx.roots,
+        },
+        (None, Some(markdown), None) => crate::commands::new::NewInput::Markdown {
             text: markdown,
             base_dir: None,
             // Bind image references inside the markdown to the sandbox roots (#56).
             roots: &ctx.roots,
         },
-        (None, Some(document_json)) => crate::commands::new::NewInput::Json(document_json),
-        (None, None) => crate::commands::new::NewInput::Empty,
+        (None, None, Some(document_json)) => crate::commands::new::NewInput::Json(document_json),
+        (None, None, None) => crate::commands::new::NewInput::Empty,
+        // Ruled out above: markdown and json together return before this match is reached.
+        (None, Some(_), Some(_)) => unreachable!("markdown/json exclusivity checked above"),
     };
     let metadata = arg_array(args, "set_meta")?
         .iter()
@@ -1542,6 +1636,14 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         arg_f64_opt(args, "margin_left_mm")?,
         arg_f64_opt(args, "margin_right_mm")?,
         false,
+    )
+    .map_err(|error| format!("{error:#}"))?
+    .with_frames(
+        &doc_head,
+        &doc_foot,
+        &notice_head,
+        &notice_foot,
+        &press_head,
     )
     .map_err(|error| format!("{error:#}"))?;
     let report = crate::commands::new::execute(&output, input, &metadata, &options)
@@ -1965,6 +2067,7 @@ fn tool_defs() -> Vec<Value> {
                 "delete_bookmark": {"type": "array", "items": {"type": "object", "properties": {
                     "name": {"type": "string"}}, "required": ["name"]},
                     "description": "이름으로 책갈피 삭제(hwp_list_bookmarks로 이름 확인)"},
+                "style_tables": {"type": "string", "description": "official/report/plan/notice/minutes/press 또는 지원 별칭 — 문서의 모든 표에 헤더 행 강조·내용 비례 열너비 스타일 적용(D-07/D-08)"},
                 "allow_partial": {"type": "boolean", "description": "true면 일치한 요청만 게시; 기본 false"}
             }, "required": ["input", "output"]}
         }),
@@ -1996,7 +2099,23 @@ fn tool_defs() -> Vec<Value> {
                 "margin_top_mm": {"type": "number", "minimum": 0, "maximum": 200},
                 "margin_bottom_mm": {"type": "number", "minimum": 0, "maximum": 200},
                 "margin_left_mm": {"type": "number", "minimum": 0, "maximum": 200},
-                "margin_right_mm": {"type": "number", "minimum": 0, "maximum": 200}
+                "margin_right_mm": {"type": "number", "minimum": 0, "maximum": 200},
+                "doc_head": {"type": "array", "items": {"type": "object", "properties": {
+                    "key": {"type": "string"}, "value": {"type": "string"}},
+                    "required": ["key", "value"]}, "description": "두문(기관명|수신|경유); markdown 전용, template과 상호 배타적"},
+                "doc_foot": {"type": "array", "items": {"type": "object", "properties": {
+                    "key": {"type": "string"}, "value": {"type": "string"}},
+                    "required": ["key", "value"]}, "description": "결문(발신명의|기안자|검토자|결재자|협조자|시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분); markdown 전용, template과 상호 배타적"},
+                "notice_head": {"type": "array", "items": {"type": "object", "properties": {
+                    "key": {"type": "string"}, "value": {"type": "string"}},
+                    "required": ["key", "value"]}, "description": "공고문 머리(기관명|공고번호); markdown 전용, template과 상호 배타적"},
+                "notice_foot": {"type": "array", "items": {"type": "object", "properties": {
+                    "key": {"type": "string"}, "value": {"type": "string"}},
+                    "required": ["key", "value"]}, "description": "공고문 꼬리(공고일자|발신명의); markdown 전용, template과 상호 배타적"},
+                "press_head": {"type": "array", "items": {"type": "object", "properties": {
+                    "key": {"type": "string"}, "value": {"type": "string"}},
+                    "required": ["key", "value"]}, "description": "보도자료 머리(기관명|보도시점|배포일|담당부서|담당자|연락처); markdown 전용, template과 상호 배타적"},
+                "template": {"type": "string", "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json 및 모든 프레임 인자와 상호 배타적(D-05)"}
             }, "required": ["output"]}
         }),
         json!({
@@ -2774,6 +2893,12 @@ mod tests {
             "margin_bottom_mm",
             "margin_left_mm",
             "margin_right_mm",
+            "doc_head",
+            "doc_foot",
+            "notice_head",
+            "notice_foot",
+            "press_head",
+            "template",
         ] {
             assert!(
                 schema["inputSchema"]["properties"].get(key).is_some(),
@@ -2784,6 +2909,228 @@ mod tests {
         for path in [&mcp_output, &cli_output] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// D-09: the five frame arguments and `style_tables` are published in `tools/list`, so an
+    /// agent can discover them without reading source.
+    #[test]
+    fn hwp_new_and_hwp_edit_schemas_publish_gong03_arguments() {
+        let tools = tool_defs();
+        let new_schema = tools.iter().find(|tool| tool["name"] == "hwp_new").unwrap();
+        for key in [
+            "doc_head",
+            "doc_foot",
+            "notice_head",
+            "notice_foot",
+            "press_head",
+        ] {
+            let property = &new_schema["inputSchema"]["properties"][key];
+            assert_eq!(property["type"], "array", "{key}");
+            assert_eq!(
+                property["items"]["properties"]["key"]["type"], "string",
+                "{key}"
+            );
+            assert_eq!(
+                property["items"]["properties"]["value"]["type"], "string",
+                "{key}"
+            );
+            assert_eq!(
+                property["items"]["required"],
+                json!(["key", "value"]),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            new_schema["inputSchema"]["properties"]["template"]["type"],
+            "string"
+        );
+
+        let edit_schema = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_edit")
+            .unwrap();
+        assert_eq!(
+            edit_schema["inputSchema"]["properties"]["style_tables"]["type"],
+            "string"
+        );
+    }
+
+    /// Frame arguments over MCP go through the SAME `parse_frame_fields` validator the CLI uses
+    /// (`unknown_doc_head_key_fails_closed` in `tests/frames.rs` pins the CLI-side message).
+    #[test]
+    fn hwp_new_frame_argument_shares_cli_validator_and_error() {
+        let output = temp_file("hwp-new-frame-unknown-key.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let error = tool_new(
+            &json!({
+                "output": output,
+                "markdown": "본문",
+                "doc_head": [{"key": "없는키", "value": "x"}],
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("doc_head에 알 수 없는 키입니다: 없는키=x"),
+            "{error}"
+        );
+        assert!(!output.exists());
+    }
+
+    /// D-05: `template` is refused together with any frame argument, over MCP as on the CLI.
+    #[test]
+    fn hwp_new_template_and_frame_argument_refused() {
+        let output = temp_file("hwp-new-template-frame-conflict.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let error = tool_new(
+            &json!({
+                "output": output,
+                "template": "official",
+                "doc_head": [{"key": "기관명", "value": "테스트기관"}],
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(error.contains("프레임 인자"), "{error}");
+        assert!(!output.exists());
+    }
+
+    /// D-05: `template` is also refused together with `markdown`/`json` (the MCP-side equivalent
+    /// of the CLI's `--template`/`--from` exclusivity).
+    #[test]
+    fn hwp_new_template_and_markdown_refused() {
+        let output = temp_file("hwp-new-template-markdown-conflict.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let error = tool_new(
+            &json!({
+                "output": output,
+                "template": "official",
+                "markdown": "본문",
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(error.contains("template과 markdown"), "{error}");
+        assert!(!output.exists());
+    }
+
+    /// Frame construction over MCP produces the byte-identical document the CLI `--doc-head`/
+    /// `--doc-foot` flags produce (D-09 parity, same shape as `hwp_new_preset_and_margin_parity`).
+    #[test]
+    fn hwp_new_frame_arguments_parity_with_cli() {
+        let mcp_output = temp_file("hwp-new-mcp-frames.hwpx");
+        let cli_output = temp_file("hwp-new-cli-frames.hwpx");
+        for path in [&mcp_output, &cli_output] {
+            let _ = std::fs::remove_file(path);
+        }
+        tool_new(
+            &json!({
+                "output": mcp_output,
+                "markdown": "본문",
+                "preset": "official",
+                "doc_head": [{"key": "기관명", "value": "테스트기관"}],
+                "doc_foot": [{"key": "발신명의", "value": "테스트기관장"}],
+            }),
+            &ctx(),
+        )
+        .expect("MCP hwp_new with frames");
+        let options = crate::commands::new::NewOptions::from_millimetres(
+            Some(hwp_convert::OfficialPreset::Official),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .with_frames(
+            &["기관명=테스트기관".to_string()],
+            &["발신명의=테스트기관장".to_string()],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        crate::commands::new::execute(
+            &cli_output,
+            crate::commands::new::NewInput::Markdown {
+                text: "본문",
+                base_dir: None,
+                roots: &[],
+            },
+            &[],
+            &options,
+        )
+        .expect("CLI new path with frames");
+        let mcp_document = hwpx::read_document(&mcp_output).unwrap().document;
+        let cli_document = hwpx::read_document(&cli_output).unwrap().document;
+        assert_eq!(mcp_document.header, cli_document.header);
+        assert_eq!(mcp_document.sections, cli_document.sections);
+
+        for path in [&mcp_output, &cli_output] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// `hwp_edit`'s `style_tables` creates the same `TypedEditOperation::StyleTables` operation
+    /// the CLI `--style-tables` flag routes to (D-09), so it produces the same shading/width
+    /// styling `style_table_edit.rs`-shaped tests already pin for the CLI path.
+    #[test]
+    fn hwp_edit_style_tables_shares_cli_operation() {
+        let source = temp_file("style-tables-mcp-source.hwpx");
+        let mcp_output = temp_file("style-tables-mcp-out.hwpx");
+        // A raw-HTML table (not a GFM markdown table) imports through `from_html`, which never
+        // calls `style_table` at import time, so this table starts genuinely unstyled — the
+        // same fixture shape `tests/style_tables_idempotence.rs` uses for a real (not
+        // already-idempotent) styling target.
+        create_hwpx(
+            &source,
+            "<table>\n<tr><th>이름</th><th>값</th></tr>\n<tr><td>항목1</td><td>1</td></tr>\n</table>\n",
+        );
+        let _ = std::fs::remove_file(&mcp_output);
+        let result = tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_output,
+                "style_tables": "official",
+            }),
+            &ctx(),
+        )
+        .expect("MCP hwp_edit style_tables");
+        assert!(!result.is_empty());
+        let styled = hwpx::read_document(&mcp_output).unwrap().document;
+        let before = hwpx::read_document(&source).unwrap().document;
+        assert_ne!(
+            styled.sections, before.sections,
+            "styling must change the tables"
+        );
+
+        for path in [&source, &mcp_output] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// `style_tables` rejects an unknown preset name through the same `OfficialPreset::parse`
+    /// error the CLI `--style-tables` flag produces.
+    #[test]
+    fn hwp_edit_style_tables_rejects_unknown_preset() {
+        let source = temp_file("style-tables-unknown-preset-source.hwpx");
+        create_hwpx(&source, "본문");
+        let output = temp_file("style-tables-unknown-preset-out.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": output,
+                "style_tables": "no-such-preset",
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(!error.is_empty());
+        assert!(!output.exists());
+
+        let _ = std::fs::remove_file(&source);
     }
 
     #[test]
