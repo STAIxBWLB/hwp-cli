@@ -145,6 +145,22 @@ static PUNCT_COLON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[가-힣]:")
 /// skills/hwp/templates/minutes.md) and `★` is statutory before 직위
 /// (시행규칙 제6조제1항), so neither is in the set.
 static AI_STYLE_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^[■▶▲◆●※]").unwrap());
+/// Hand-typed item marks at a line start (adopted research A2): statutory
+/// ladder marks (`가.`, `1)`, `가)`, `(1)`, `(가)`, circled digits/letters) that
+/// must come from nested-list depth, and the `-`/`·`/`ㆍ` rung symbols. The
+/// Hangul class is the exact 14-letter ladder so prose like `밥. 먹자` stays
+/// silent. Literal `□ `/`○ ` is the sanctioned ladder and is never in the set.
+static ITEM_MARK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^(?:[가나다라마바사아자차카타파하][.)]|\d{1,2}\)|\(\d{1,2}\)|\([가나다라마바사아자차카타파하]\)|[①-⑳㉑-㉟㉮-㉻]|[-·ㆍ])(?:\s|$)",
+    )
+    .unwrap()
+});
+/// ASCII roman-numeral heading start (`I.`, `II.`, … `XII.`). The full-width
+/// forms `Ⅰ`-`Ⅻ` (U+2160…) are the correct form and never match. Longer
+/// numerals come first so alternation preference cannot truncate a match.
+static ROMAN_START: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:VIII|XII|VII|III|XI|IX|VI|IV|II|X|V|I)\.").unwrap());
 
 /// Advisory messages — cite the rule source with its confidence tag, never
 /// statutory-violation wording beyond the tag and never a source-text excerpt
@@ -167,6 +183,10 @@ const NOTATION_PUNCT_COLON_MESSAGE: &str =
     "쌍점(:)은 앞말에 붙이고 뒤에 한 칸을 띄웁니다 (`원장: 김갑동`) — 행정업무운영 편람 표기법";
 const AI_STYLE_MARKS_MESSAGE: &str =
     "장식 기호(■ ▶ ▲ ◆ ● ※)로 항목을 시작하지 말고 공문서 항목 기호(□ ○)나 중첩 목록을 사용합니다";
+const STRUCT_ITEM_MARK_MESSAGE: &str = "항목 부호(`가.`, `(1)`, `①` 등)는 직접 입력하지 말고 중첩 목록 들여쓰기로 표현합니다 — 공문서 마크다운 계약";
+const STRUCT_ITEM_MARK_DOUBLE_MESSAGE: &str = "목록 항목 앞에 부호를 직접 입력하면 엔진이 부여하는 부호와 겹칩니다 (직접 입력한 부호를 지웁니다) — 공문서 마크다운 계약";
+const STRUCT_ROMAN_HEADING_MESSAGE: &str =
+    "머리글 로마 숫자는 ASCII `I.` 대신 전각 `Ⅰ.`(U+2160)을 사용합니다 — 공문서 마크다운 계약";
 
 /// One linted text block: a paragraph or heading at structural depth 0, with
 /// its Text events concatenated (`text`), a per-segment source-offset map
@@ -177,25 +197,36 @@ struct Para {
     segs: Vec<(usize, usize)>,
     masked: Vec<Range<usize>>,
     in_heading: bool,
+    /// Inside a list item — drives the double-mark guard's message.
+    in_item: bool,
+    /// The block's first Text event arrived inside a Strong span — records the
+    /// bold-wrapped case behind the A3 exactly-one-finding guard (see
+    /// `lint_struct_item_mark`).
+    first_text_in_strong: bool,
     /// Inside a 붙임 block: the 붙임 paragraph itself or an item of the
     /// attachment list that immediately follows it.
     attach_entry: bool,
 }
 
 impl Para {
-    fn new(in_heading: bool) -> Self {
+    fn new(in_heading: bool, in_item: bool) -> Self {
         Self {
             text: String::new(),
             segs: Vec::new(),
             masked: Vec::new(),
             in_heading,
+            in_item,
+            first_text_in_strong: false,
             attach_entry: false,
         }
     }
 
     /// Append one Text event, masking bare-URL spans (the bounded D-01
     /// exception — see `URL_MASK`).
-    fn push_text(&mut self, text: &str, source_start: usize) {
+    fn push_text(&mut self, text: &str, source_start: usize, in_strong: bool) {
+        if self.segs.is_empty() {
+            self.first_text_in_strong = in_strong;
+        }
         let base = self.text.len();
         for m in URL_MASK.find_iter(text) {
             self.masked.push((base + m.start())..(base + m.end()));
@@ -273,7 +304,9 @@ pub fn lint_markdown(markdown: &str, profile: LintProfile) -> Vec<Finding> {
             lint_notation_attach_colon(para, &locate, &mut findings);
             lint_notation_attach_number(para, &locate, &mut findings);
             lint_ai_style_marks(para, &locate, &mut findings);
+            lint_struct_item_mark(para, &locate, &mut findings);
         }
+        lint_struct_roman_heading(para, &locate, &mut findings);
         if para.attach_entry {
             lint_attach_quantity(para, &locate, &mut findings);
         }
@@ -310,6 +343,9 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
     // text; that text is never prose, so it is skipped structurally.
     let mut autolink_depth: u32 = 0;
     let mut link_stack: Vec<bool> = Vec::new();
+    // Strong-span depth — records whether a block's first text is bold-wrapped
+    // (the A3 bold-x2 guard; detection itself stays paragraph-level).
+    let mut strong_depth: u32 = 0;
     let mut cur: Option<Para> = None;
     // 붙임 block tracking: a paragraph opening with the `붙임` token starts an
     // attachment block; a list immediately following it is the attachment
@@ -346,7 +382,7 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
                 flush_implicit(&mut implicit, &mut paras, &mut pending_attach);
                 pending_attach = false;
                 if skip_depth == 0 {
-                    cur = Some(Para::new(true));
+                    cur = Some(Para::new(true, item_depth > 0));
                 }
             }
             Event::End(TagEnd::Heading(_)) => {
@@ -396,7 +432,7 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
                 // A non-list block after the 붙임 paragraph closes the block.
                 pending_attach = false;
                 if skip_depth == 0 {
-                    let mut para = Para::new(false);
+                    let mut para = Para::new(false, item_depth > 0);
                     if attach_list && item_depth == attach_item_level {
                         para.attach_entry = true;
                         if expect_first_attach_para {
@@ -416,6 +452,12 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
                     paras.push(para);
                 }
             }
+            Event::Start(Tag::Strong) => {
+                strong_depth += 1;
+            }
+            Event::End(TagEnd::Strong) => {
+                strong_depth = strong_depth.saturating_sub(1);
+            }
             Event::Start(Tag::Link { link_type, .. }) => {
                 let autolink = matches!(link_type, LinkType::Autolink | LinkType::Email);
                 if autolink {
@@ -433,7 +475,7 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
                     // Tight list items carry their Text directly under the Item
                     // (no Paragraph wrapper) — collect it in an implicit block.
                     if cur.is_none() && item_depth > 0 && implicit.is_none() {
-                        let mut para = Para::new(false);
+                        let mut para = Para::new(false, true);
                         if attach_list && item_depth == attach_item_level {
                             para.attach_entry = true;
                             if expect_first_attach_para {
@@ -444,7 +486,7 @@ fn collect_paras(markdown: &str, options: Options) -> (Vec<Para>, Vec<usize>) {
                         implicit = Some(para);
                     }
                     if let Some(para) = cur.as_mut().or(implicit.as_mut()) {
-                        para.push_text(&text, range.start);
+                        para.push_text(&text, range.start, strong_depth > 0);
                     }
                 }
             }
@@ -805,6 +847,72 @@ fn lint_ai_style_marks(
     }
 }
 
+/// `struct-item-mark` (error, D-05): hand-typed item marks where the markdown
+/// contract requires nested-list depth — statutory ladder marks (`가.`, `1)`,
+/// `가)`, `(1)`, `(가)`, circled digits/letters) and the `-`/`·`/`ㆍ` rung
+/// symbols at a line start, plus any rung mark at the start of a list item's
+/// own text (the double-mark case). Paragraph-initial literal `□ `/`○ ` is the
+/// sanctioned ladder (contract §1, minutes.md) and is never flagged.
+fn lint_struct_item_mark(
+    para: &Para,
+    locate: &impl Fn(usize) -> (u32, u32),
+    findings: &mut Vec<Finding>,
+) {
+    // Adopted research A3 (the SC1 bold-x2 guard): detection is anchored at
+    // line starts and emits once per position, so a Strong-wrapped mark
+    // (`**가. 항목**`) yields exactly one finding — never zero (the bold span
+    // is not a skip) and never two (no per-span re-emission).
+    let _strong_wrapped = para.first_text_in_strong;
+    for m in ITEM_MARK.find_iter(&para.text) {
+        let message = if para.in_item {
+            STRUCT_ITEM_MARK_DOUBLE_MESSAGE
+        } else {
+            STRUCT_ITEM_MARK_MESSAGE
+        };
+        push(
+            findings,
+            RULE_STRUCT_ITEM_MARK,
+            locate,
+            para.source_offset(m.start()),
+            message,
+        );
+    }
+}
+
+/// `struct-roman-heading` (error, D-05): ASCII roman numerals (`I.`, `II.`, …)
+/// where the contract requires the full-width forms (`Ⅰ.` U+2160). Inside a
+/// `#` heading the numeral alone fires; in a paragraph the numeral must be
+/// followed by `. ` + Hangul content so ordinary English sentences
+/// ("I. Introduction") stay silent.
+fn lint_struct_roman_heading(
+    para: &Para,
+    locate: &impl Fn(usize) -> (u32, u32),
+    findings: &mut Vec<Finding>,
+) {
+    let Some(m) = ROMAN_START.find(&para.text) else {
+        return;
+    };
+    let after = &para.text[m.end()..];
+    let fires = if para.in_heading {
+        after.chars().next().is_none_or(|c| c.is_whitespace())
+    } else {
+        after
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(is_hangul_syllable)
+    };
+    if fires {
+        push(
+            findings,
+            RULE_STRUCT_ROMAN_HEADING,
+            locate,
+            para.source_offset(m.start()),
+            STRUCT_ROMAN_HEADING_MESSAGE,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,7 +1164,9 @@ mod tests {
     fn struct_item_mark_fires_on_typed_ladder_marks() {
         for md in [
             "가. 항목입니다\n",
-            "1) 항목입니다\n",
+            // `1)` at line start is an ordered-list marker in CommonMark;
+            // the literal mark only reaches text when escaped.
+            "1\\) 항목입니다\n",
             "가) 항목입니다\n",
             "(1) 항목입니다\n",
             "(가) 항목입니다\n",
@@ -1088,7 +1198,11 @@ mod tests {
     fn struct_item_mark_fires_on_double_mark_in_list_item() {
         // A rung mark at the start of a list item's own text double-numbers
         // next to the engine-assigned mark.
-        for md in ["- 가. 항목입니다\n", "1. (1) 항목입니다\n", "- · 항목입니다\n"] {
+        for md in [
+            "- 가. 항목입니다\n",
+            "1. (1) 항목입니다\n",
+            "- · 항목입니다\n",
+        ] {
             let findings = only_rule(md, "struct-item-mark");
             assert_eq!(findings.len(), 1, "{md:?} -> {findings:?}");
             assert_eq!(findings[0].severity, Severity::Error);
