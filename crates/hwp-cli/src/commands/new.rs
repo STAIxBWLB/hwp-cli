@@ -3,11 +3,14 @@
 use std::path::{Path, PathBuf};
 
 /// Shared new-document inputs after CLI/MCP profile and margin normalization.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct NewOptions {
     pub preset: Option<hwp_convert::OfficialPreset>,
     pub margins: hwp_convert::PageMarginOverrides,
     pub strict: bool,
+    /// Document frames (`--doc-head`/`--doc-foot`/...), parsed via [`Self::with_frames`]
+    /// (GONG-03, D-01).
+    pub frames: hwp_convert::FrameFields,
 }
 
 impl NewOptions {
@@ -49,7 +52,30 @@ impl NewOptions {
             preset,
             margins,
             strict,
+            frames: hwp_convert::FrameFields::default(),
         })
+    }
+
+    /// Parses the five repeatable frame-flag lists (`--doc-head`, `--doc-foot`, `--notice-head`,
+    /// `--notice-foot`, `--press-head`) into `frames`, sharing one validator between the CLI and
+    /// MCP surfaces (D-01).
+    pub fn with_frames(
+        mut self,
+        doc_head: &[String],
+        doc_foot: &[String],
+        notice_head: &[String],
+        notice_foot: &[String],
+        press_head: &[String],
+    ) -> anyhow::Result<Self> {
+        self.frames = hwp_convert::parse_frame_fields(
+            doc_head,
+            doc_foot,
+            notice_head,
+            notice_foot,
+            press_head,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(self)
     }
 }
 
@@ -135,6 +161,11 @@ pub fn execute(
                     "--preset 및 --margin-*은 markdown 입력 전용입니다 (JSON IR은 헤더 포함)"
                 );
             }
+            if !options.frames.is_empty() {
+                anyhow::bail!(
+                    "--doc-head/--doc-foot 등 프레임 플래그는 markdown 입력 전용입니다 (JSON IR은 헤더 포함)"
+                );
+            }
             hwp_convert::from_json(text).map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?
         }
         NewInput::Markdown {
@@ -149,6 +180,7 @@ pub fn execute(
                     roots,
                     preset,
                     page_margins: options.margins,
+                    frames: Some(&options.frames),
                 },
             )
             .map_err(|e| anyhow::anyhow!("markdown 가져오기 실패: {e}"))?;
@@ -162,6 +194,7 @@ pub fn execute(
                 roots: &[],
                 preset,
                 page_margins: options.margins,
+                frames: Some(&options.frames),
             },
         ),
     };

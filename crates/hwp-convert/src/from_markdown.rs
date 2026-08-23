@@ -21,6 +21,7 @@ use hwp_model::{
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use crate::frames::FrameFields;
 use crate::official::{self, OfficialPreset, PageMarginOverrides};
 
 /// Number of base para shapes (indexes 0~4) created by default_header. List para shapes are
@@ -101,6 +102,9 @@ pub struct MarkdownImportOptions<'a> {
     pub preset: Option<OfficialPreset>,
     /// Side-specific page margins resolved after profile/plain defaults.
     pub page_margins: PageMarginOverrides,
+    /// Document frames (`--doc-head`/`--doc-foot`/...), if any were supplied (GONG-03, D-01).
+    /// `None`/empty keeps today's output unchanged.
+    pub frames: Option<&'a FrameFields>,
 }
 
 #[cfg(test)]
@@ -582,6 +586,15 @@ fn from_markdown_inner(
     if b.paragraphs.is_empty() {
         // Close even an empty document with one paragraph. The writer guarantees the paragraph-end char.
         b.paragraphs.push(Paragraph::default());
+    }
+    // Splice leading frames (두문) in front of the body BEFORE section-control injection, so the
+    // 두문 table becomes paragraph 0 and receives secd/cold/pgnp (D-02/D-03; Pattern 5 —
+    // inject_section_controls does not inspect the paragraph it decorates).
+    if let Some(fields) = opts.frames {
+        let leading = crate::frames::leading_frames(fields);
+        if !leading.is_empty() {
+            b.paragraphs.splice(0..0, leading);
+        }
     }
     if inject {
         // Inject section/column definitions into the first paragraph — prerequisite for hwp5/Hancom compatibility

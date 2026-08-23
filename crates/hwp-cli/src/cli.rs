@@ -209,6 +209,23 @@ pub enum Cmd {
         /// violates the import contract. Default: warn and continue (exit 0)
         #[arg(long)]
         strict: bool,
+        /// Document header block (두문) "key=value" (keys: 기관명|수신|경유; repeatable)
+        #[arg(long = "doc-head")]
+        doc_head: Vec<String>,
+        /// Document footer block (결문) "key=value" (keys: 발신명의|기안자|검토자|결재자|협조자|
+        /// 시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분; repeatable)
+        #[arg(long = "doc-foot")]
+        doc_foot: Vec<String>,
+        /// Notice (공고문) header block "key=value" (repeatable; key set wired in a later plan)
+        #[arg(long = "notice-head")]
+        notice_head: Vec<String>,
+        /// Notice (공고문) footer block "key=value" (repeatable; key set wired in a later plan)
+        #[arg(long = "notice-foot")]
+        notice_foot: Vec<String>,
+        /// Press release (보도자료) header block "key=value" (repeatable; key set wired in a
+        /// later plan)
+        #[arg(long = "press-head")]
+        press_head: Vec<String>,
     },
 
     /// Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)

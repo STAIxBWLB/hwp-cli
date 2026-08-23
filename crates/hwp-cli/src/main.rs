@@ -149,6 +149,11 @@ fn real_main() -> anyhow::Result<()> {
             margin_left,
             margin_right,
             strict,
+            doc_head,
+            doc_foot,
+            notice_head,
+            notice_foot,
+            press_head,
         } => {
             let options = commands::new::NewOptions::from_millimetres(
                 preset.map(hwp_cli::cli::PresetArg::canonical),
@@ -157,7 +162,8 @@ fn real_main() -> anyhow::Result<()> {
                 margin_left,
                 margin_right,
                 strict,
-            )?;
+            )?
+            .with_frames(&doc_head, &doc_foot, &notice_head, &notice_foot, &press_head)?;
             commands::new::run(&output, from.as_deref(), &set_meta, &options)
         }
         Cmd::Compose {
