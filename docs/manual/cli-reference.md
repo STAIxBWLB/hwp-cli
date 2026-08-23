@@ -23,6 +23,7 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 - [`hwp slots`](#hwp-slots)
 - [`hwp fill`](#hwp-fill)
 - [`hwp validate`](#hwp-validate)
+- [`hwp lint`](#hwp-lint)
 - [`hwp certify`](#hwp-certify)
 - [`hwp corpus`](#hwp-corpus)
 - [`hwp mcp`](#hwp-mcp)
@@ -272,6 +273,19 @@ Structural validation (mimetype, required entries, XML parsing); exit code 0 whe
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
+
+## `hwp lint`
+
+Lint official-document notation and structure rules; advisory by default (always exit 0) — --strict exits 1 only when an error-severity finding exists
+
+**Usage:** `hwp lint [OPTIONS] <FILE>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<FILE>` |  |  | Target .md/.hwp/.hwpx file ("-" reads stdin as markdown) |
+| `--profile` | `gongmun` \| `report` | `gongmun` | Lint profile: gongmun (default) or report; both run the same rule table in v1 |
+| `--json` |  |  | Print the hwp-lint-report-v1 JSON report |
+| `--strict` |  |  | Exit 1 when an error-severity finding exists (default: always exit 0) |
 
 ## `hwp certify`
 

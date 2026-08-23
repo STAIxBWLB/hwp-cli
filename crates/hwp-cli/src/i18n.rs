@@ -543,6 +543,28 @@ pub const KO: &[(&str, &str, &str)] = &[
     ),
     ("validate", "file", "대상 HWP/HWPX 파일"),
     ("validate", "json", "JSON으로 출력"),
+    // lint
+    (
+        "lint",
+        "",
+        "공문서 표기법·구조 규칙 검사 — 기본은 권고(advisory)이며 항상 종료코드 0. --strict는 오류 심각도 지적이 있을 때만 종료코드 1",
+    ),
+    (
+        "lint",
+        "file",
+        "검사 대상 .md/.hwp/.hwpx 파일 (\"-\"는 stdin을 markdown으로 읽음)",
+    ),
+    (
+        "lint",
+        "profile",
+        "린트 프로필: gongmun(기본) 또는 report — v1에서는 같은 규칙 표 사용",
+    ),
+    ("lint", "json", "hwp-lint-report-v1 JSON 리포트로 출력"),
+    (
+        "lint",
+        "strict",
+        "오류 심각도 지적이 있으면 종료 코드 1 (기본: 항상 종료 코드 0)",
+    ),
     // certify
     (
         "certify",
