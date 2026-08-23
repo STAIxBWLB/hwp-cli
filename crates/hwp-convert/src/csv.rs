@@ -61,7 +61,7 @@ fn write_table(table: &Table, out: &mut String, first: &mut bool) {
     }
 }
 
-fn cell_text(cell: &hwp_model::Cell) -> String {
+pub(crate) fn cell_text(cell: &hwp_model::Cell) -> String {
     let mut text = String::new();
     for p in &cell.paragraphs {
         for ch in &p.chars {
