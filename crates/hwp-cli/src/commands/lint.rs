@@ -188,4 +188,31 @@ mod tests {
             "error must name the limit: {message}"
         );
     }
+
+    #[test]
+    fn error_variant_report_matches_schema_v1() {
+        // WR-1: the MCP-facing failure report is a deliberate lint-report-v1
+        // variant (same contract, empty findings, optional `error` string) and
+        // must validate against the published schema.
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../schemas/lint-report-v1.schema.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap();
+        let report = lint_path_json(
+            Path::new("/nonexistent/hwp-lint-wr1-does-not-exist.md"),
+            LintProfile::Gongmun,
+        );
+        assert!(
+            report.get("error").is_some(),
+            "unreadable input reports the error field: {report}"
+        );
+        assert!(
+            validator.is_valid(&report),
+            "schema rejected the error-variant report: {report}"
+        );
+    }
 }
