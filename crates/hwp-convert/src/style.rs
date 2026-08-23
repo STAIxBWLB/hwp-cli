@@ -278,4 +278,406 @@ mod tests {
             let _ = display_width(&c.to_string());
         }
     }
+
+    // ── style_table ──
+
+    use hwp_model::{Cell, HwpChar, HwpUnit, Paragraph};
+
+    /// A cell holding `text` as its only paragraph's own text. `border_fill`/`para_shape` start at
+    /// sentinel values (99) distinguishable from anything `style_table` assigns (`BorderFillId(1)`/
+    /// `ParaShapeId(0)` for `border_fill_base`/`para_shape_base` of 0), so tests can tell "touched"
+    /// from "untouched" cells apart from an accidental match with a default value.
+    fn cell_with_text(text: &str, col: u16, row: u16) -> Cell {
+        Cell {
+            list_attr: 0,
+            col,
+            row,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(0),
+            height: HwpUnit(1700),
+            margins: [0; 4],
+            border_fill: BorderFillId(99),
+            header_tail: Vec::new(),
+            paragraphs: vec![Paragraph {
+                chars: text.chars().map(HwpChar::Text).collect(),
+                para_shape: ParaShapeId(99),
+                ..Paragraph::default()
+            }],
+        }
+    }
+
+    fn make_table(rows: &[&[&str]]) -> Table {
+        let row_count = rows.len();
+        let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let mut cells = Vec::new();
+        for (r, row) in rows.iter().enumerate() {
+            for (c, text) in row.iter().enumerate() {
+                cells.push(cell_with_text(text, c as u16, r as u16));
+            }
+        }
+        Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: row_count as u16,
+            cols: col_count as u16,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![col_count as u16; row_count],
+            border_fill: BorderFillId(99),
+            table_tail: Vec::new(),
+            caption: None,
+            cells,
+            extras: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn style_table_header_row_shaded_and_centered_body_row_untouched() {
+        // Both columns are wide (weight > 8) in every row, so rule 6 (narrow-column centering)
+        // cannot contaminate this test — only the header rule (row 0) should touch anything.
+        let mut table = make_table(&[
+            &["헤더가나다라마바사아자차카", "헤더의두번째칸입니다길게씀"],
+            &["본문가나다라마바사아자차카", "본문의두번째칸입니다길게씀"],
+        ]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        assert!(style_table(
+            &mut table,
+            1,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        ));
+
+        for cell in &table.cells {
+            if cell.row == 0 {
+                assert_eq!(
+                    cell.border_fill,
+                    BorderFillId(1),
+                    "헤더 셀은 셰이딩을 받는다"
+                );
+                assert_eq!(
+                    cell.paragraphs[0].para_shape,
+                    ParaShapeId(0),
+                    "헤더 셀은 가운데 정렬을 받는다"
+                );
+            } else {
+                assert_eq!(
+                    cell.border_fill,
+                    BorderFillId(99),
+                    "본문 셀은 헤더 셰이딩을 받지 않는다"
+                );
+                assert_eq!(
+                    cell.paragraphs[0].para_shape,
+                    ParaShapeId(99),
+                    "넓은 칸의 본문 셀은 가운데 정렬 대상이 아니다"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn style_table_widths_proportional_to_column_weight() {
+        // weight[0]=10, weight[1]=15 (10*3=30 > 15, so the 2-col label:value special case does
+        // not trigger — the plain proportional branch is exercised).
+        let mut table = make_table(&[&["AAAAAAAAAA", "AAAAAAAAAAAAAAA"]]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        style_table(
+            &mut table,
+            0,
+            50000,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+
+        let width_of = |c: u16| {
+            table
+                .cells
+                .iter()
+                .find(|cell| cell.col == c)
+                .unwrap()
+                .width
+                .0
+        };
+        assert_eq!(width_of(0), 20000);
+        assert_eq!(width_of(1), 30000);
+    }
+
+    #[test]
+    fn style_table_min_column_width_floor() {
+        // Column 0 is a single character — its raw proportional share is well under the 3400
+        // HWPUNIT floor and must be clamped up to it.
+        let mut table = make_table(&[&["A", "AAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAA"]]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        style_table(
+            &mut table,
+            0,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+
+        let width_of = |c: u16| {
+            table
+                .cells
+                .iter()
+                .find(|cell| cell.col == c)
+                .unwrap()
+                .width
+                .0
+        };
+        assert_eq!(
+            width_of(0),
+            MIN_COL_WIDTH,
+            "1글자 칸도 최소 3400 hwpu 미만으로 내려가지 않는다"
+        );
+        let total: i32 = (0..3).map(width_of).sum();
+        assert_eq!(total, 42520, "클램프 후에도 전체 폭 합은 그대로다");
+    }
+
+    #[test]
+    fn style_table_widths_sum_exactly_with_rounding_remainder() {
+        // Equal weights, but total_width is not evenly divisible by the column count — the
+        // rounding remainder must land on the last column so the sum stays exact.
+        let mut table = make_table(&[&["AAAAA", "AAAAA", "AAAAA"]]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        style_table(
+            &mut table,
+            0,
+            42521,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+
+        let width_of = |c: u16| {
+            table
+                .cells
+                .iter()
+                .find(|cell| cell.col == c)
+                .unwrap()
+                .width
+                .0
+        };
+        let (w0, w1, w2) = (width_of(0), width_of(1), width_of(2));
+        assert_eq!(w0, w1, "나머지를 받지 않는 두 칸은 동일하다");
+        assert_eq!(w2, w0 + 2, "반올림 나머지는 마지막 칸으로 간다");
+        assert_eq!(w0 + w1 + w2, 42521, "합은 정확히 total_width와 같다");
+    }
+
+    #[test]
+    fn style_table_two_column_label_value_ratio() {
+        // weight[0]=1, weight[1]=20 (1*3=3 <= 20 triggers the special case): fixed 1:4 ratio.
+        let mut table = make_table(&[&["A", "AAAAAAAAAAAAAAAAAAAA"]]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        style_table(
+            &mut table,
+            0,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+
+        let width_of = |c: u16| {
+            table
+                .cells
+                .iter()
+                .find(|cell| cell.col == c)
+                .unwrap()
+                .width
+                .0
+        };
+        let (label, value) = (width_of(0), width_of(1));
+        assert_eq!(label, 8504);
+        assert_eq!(value, 34016);
+        assert_eq!(label + value, 42520);
+        // Inside the observed 1:3-1:5 band.
+        assert!((3.0..=5.0).contains(&(value as f64 / label as f64)));
+    }
+
+    #[test]
+    fn style_table_narrow_column_centered_wide_column_not() {
+        // No header row (header_rows=0) isolates rule 6 from rule 5. Column 0's widest cell
+        // measures exactly 8 (the centering threshold); column 1's measures exactly 9 (just over).
+        let mut table = make_table(&[&["12345678", "123456789"]]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        style_table(
+            &mut table,
+            0,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+
+        let para_shape_of = |c: u16| {
+            table
+                .cells
+                .iter()
+                .find(|cell| cell.col == c)
+                .unwrap()
+                .paragraphs[0]
+                .para_shape
+        };
+        assert_eq!(
+            para_shape_of(0),
+            ParaShapeId(0),
+            "폭 8 이하 칸은 가운데 정렬된다"
+        );
+        assert_eq!(
+            para_shape_of(1),
+            ParaShapeId(99),
+            "폭 9 이상 칸은 가운데 정렬되지 않는다"
+        );
+    }
+
+    #[test]
+    fn style_table_equal_weights_stay_even_split() {
+        let mut table = make_table(&[&["AAAA", "AAAA", "AAAA", "AAAA"]]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+        style_table(
+            &mut table,
+            0,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+
+        let widths: Vec<i32> = (0..4)
+            .map(|c| {
+                table
+                    .cells
+                    .iter()
+                    .find(|cell| cell.col == c)
+                    .unwrap()
+                    .width
+                    .0
+            })
+            .collect();
+        assert_eq!(widths, vec![10630; 4]);
+    }
+
+    #[test]
+    fn style_table_idempotent_on_second_call() {
+        let mut table = make_table(&[
+            &["헤더1", "헤더2매우길게작성합니다예시본문"],
+            &["본문1", "본문2매우길게작성합니다예시본문"],
+        ]);
+        let mut para_shapes = Vec::new();
+        let mut border_fills = Vec::new();
+
+        style_table(
+            &mut table,
+            1,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+        let widths_1: Vec<i32> = table.cells.iter().map(|c| c.width.0).collect();
+        let borders_1: Vec<BorderFillId> = table.cells.iter().map(|c| c.border_fill).collect();
+        let paras_1: Vec<ParaShapeId> = table
+            .cells
+            .iter()
+            .map(|c| c.paragraphs[0].para_shape)
+            .collect();
+        let (para_len_1, border_len_1) = (para_shapes.len(), border_fills.len());
+
+        style_table(
+            &mut table,
+            1,
+            42520,
+            &mut para_shapes,
+            0,
+            &mut border_fills,
+            0,
+        );
+        let widths_2: Vec<i32> = table.cells.iter().map(|c| c.width.0).collect();
+        let borders_2: Vec<BorderFillId> = table.cells.iter().map(|c| c.border_fill).collect();
+        let paras_2: Vec<ParaShapeId> = table
+            .cells
+            .iter()
+            .map(|c| c.paragraphs[0].para_shape)
+            .collect();
+
+        assert_eq!(widths_1, widths_2, "재적용해도 열 폭은 그대로다");
+        assert_eq!(borders_1, borders_2, "재적용해도 테두리 참조는 그대로다");
+        assert_eq!(paras_1, paras_2, "재적용해도 문단모양 참조는 그대로다");
+        assert_eq!(
+            para_shapes.len(),
+            para_len_1,
+            "재적용해도 문단모양 테이블이 자라지 않는다 (D-08)"
+        );
+        assert_eq!(
+            border_fills.len(),
+            border_len_1,
+            "재적용해도 테두리 테이블이 자라지 않는다 (D-08)"
+        );
+    }
+
+    #[test]
+    fn style_table_every_preset_styles_header_row() {
+        use crate::from_markdown::{
+            MarkdownImportOptions, TABLE_BORDER_FILL, from_markdown_report,
+        };
+        use crate::official::OfficialPreset;
+        use hwp_model::Control;
+
+        let md = "| 가나다라마바사아자차카타파하 | 값 |\n|---|---|\n| 1 | 2 |\n";
+        for preset in [
+            OfficialPreset::Official,
+            OfficialPreset::Report,
+            OfficialPreset::Plan,
+            OfficialPreset::Notice,
+            OfficialPreset::Minutes,
+            OfficialPreset::Press,
+        ] {
+            let opts = MarkdownImportOptions {
+                preset: Some(preset),
+                ..Default::default()
+            };
+            let (doc, warnings) = from_markdown_report(md, &opts).expect("import ok");
+            assert!(warnings.is_empty(), "{preset:?}: {warnings:?}");
+            let table = doc.sections[0]
+                .paragraphs
+                .iter()
+                .flat_map(|p| &p.controls)
+                .find_map(|c| match c {
+                    Control::Table(t) => Some(t),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("표 없음: {preset:?}"));
+            let header_cell = table
+                .cells
+                .iter()
+                .find(|c| c.row == 0)
+                .unwrap_or_else(|| panic!("헤더 행 없음: {preset:?}"));
+            assert_ne!(
+                header_cell.border_fill,
+                BorderFillId(TABLE_BORDER_FILL),
+                "헤더 셰이딩 미적용: {preset:?}"
+            );
+        }
+    }
 }
