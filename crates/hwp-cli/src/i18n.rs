@@ -222,6 +222,16 @@ pub const KO: &[(&str, &str, &str)] = &[
     ("new", "from", "입력 markdown/JSON 파일 (생략 시 빈 문서)"),
     (
         "new",
+        "template",
+        "내장 문서 템플릿을 영문 슬러그 또는 한국어 별칭으로 사용 (--list-templates 참고). --from 및 모든 프레임 플래그와 함께 쓸 수 없음(D-05): 템플릿은 두문/결문을 이미 포함",
+    ),
+    (
+        "new",
+        "list_templates",
+        "내장 문서 템플릿(슬러그·한국어 별칭)을 모두 나열하고 종료; -o 불필요",
+    ),
+    (
+        "new",
         "set_meta",
         "메타데이터 설정 \"키=값\" (키: title|author|subject|keywords, 반복 가능)",
     ),

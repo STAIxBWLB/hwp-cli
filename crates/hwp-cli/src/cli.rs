@@ -180,12 +180,20 @@ pub enum Cmd {
 
     /// Create a new document
     New {
-        /// Output HWP/HWPX path
-        #[arg(short, long)]
-        output: PathBuf,
+        /// Output HWP/HWPX path (not required with --list-templates)
+        #[arg(short, long, required_unless_present = "list_templates")]
+        output: Option<PathBuf>,
         /// Input markdown or JSON file (empty document when omitted)
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Use an embedded document-template skeleton by English slug or Korean alias (see
+        /// --list-templates). Mutually exclusive with --from and with every frame flag (D-05):
+        /// templates already carry their own 두문/결문
+        #[arg(long)]
+        template: Option<String>,
+        /// List all embedded document templates (slug and Korean alias) and exit; needs no -o
+        #[arg(long = "list-templates")]
+        list_templates: bool,
         /// Set metadata "key=value" (keys: title|author|subject|keywords; repeatable)
         #[arg(long = "set-meta")]
         set_meta: Vec<String>,

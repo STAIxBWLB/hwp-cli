@@ -111,6 +111,46 @@ pub const SKILL_FILES: &[EmbeddedFile] = &[
     },
 ];
 
+/// (Korean alias, English slug) pairs from `skills/hwp/official-documents.md` §4 (D-11). The
+/// alias is the accepted user-facing key; the slug is what actually selects a `SKILL_FILES`
+/// entry under `templates/`.
+const TEMPLATE_ALIASES: &[(&str, &str)] = &[
+    ("기안문-내부결재", "gian-internal"),
+    ("기안문-대외시행", "gian-external"),
+    ("공문서-기본", "gongmun-basic"),
+    ("보고서", "report"),
+    ("사업계획서", "plan"),
+    ("회의록", "minutes"),
+    ("공고문", "notice"),
+    ("보도자료", "press"),
+];
+
+/// Resolves a `--template` name (English slug or Korean alias) against the embedded
+/// `SKILL_FILES` table. Matches only the fixed `TEMPLATE_ALIASES` slice or a slug already in
+/// that table; a filesystem path is never constructed from `name` (T-02.4-13).
+pub fn template_file(name: &str) -> Option<&'static EmbeddedFile> {
+    let slug = TEMPLATE_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map_or(name, |(_, slug)| *slug);
+    let rel = format!("templates/{slug}.md");
+    SKILL_FILES.iter().find(|file| file.rel == rel)
+}
+
+/// Yields (slug, Korean alias) for all eight templates in `TEMPLATE_ALIASES` order, for
+/// `--list-templates` and for unknown-name error messages.
+pub fn template_names() -> impl Iterator<Item = (&'static str, &'static str)> {
+    TEMPLATE_ALIASES.iter().map(|(alias, slug)| (*slug, *alias))
+}
+
+/// `hwp new --list-templates`: one `slug<TAB>alias` line per embedded template, no filesystem
+/// access, no `-o` required.
+pub fn print_template_list() {
+    for (slug, alias) in template_names() {
+        println!("{slug}\t{alias}");
+    }
+}
+
 pub fn run(
     output: Option<PathBuf>,
     install: Option<InstallTarget>,
