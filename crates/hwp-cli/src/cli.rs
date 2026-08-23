@@ -599,8 +599,20 @@ impl PresetArg {
     }
 }
 
+/// Parse a `--preset` value through the shared alias registry. The deprecated
+/// Latin alias `gian` still resolves to the official preset but prints a
+/// one-time stderr deprecation note (D-03). The trigger compare lowercases
+/// first because `OfficialPreset::parse` lowercases before matching — without
+/// it, `--preset GIAN` would resolve silently and the note would never fire.
+/// Stderr only, never stdout (stdout carries command output). The MCP server's
+/// preset path (commands/mcp.rs) parses via `OfficialPreset::parse` directly
+/// and deliberately stays silent: its stdout is a protocol channel.
 fn parse_preset_arg(value: &str) -> Result<PresetArg, String> {
-    hwp_convert::OfficialPreset::parse(value).map(PresetArg)
+    let preset = hwp_convert::OfficialPreset::parse(value).map(PresetArg)?;
+    if value.to_ascii_lowercase() == "gian" {
+        eprintln!("gian은 gongmun의 별칭입니다");
+    }
+    Ok(preset)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -742,6 +754,23 @@ mod tests {
         assert!(parse_preset_arg("unknown").is_err());
         for value in ["-1", "NaN", "inf", "201"] {
             assert!(parse_margin_mm(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn gian_alias_still_resolves_official_case_insensitively() {
+        use hwp_convert::OfficialPreset;
+
+        // D-03: the deprecated `gian` alias keeps resolving to the official
+        // canonical preset in any case — the deprecation note fires for each
+        // of these, so both the lowercase and uppercase forms take the same
+        // deprecation branch in parse_preset_arg (stderr pinned in tests/cli.rs).
+        for alias in ["gian", "GIAN", "Gian"] {
+            assert_eq!(
+                parse_preset_arg(alias).unwrap().canonical(),
+                OfficialPreset::Official,
+                "{alias} must keep resolving to the official preset"
+            );
         }
     }
 }
