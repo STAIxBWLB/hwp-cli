@@ -203,7 +203,7 @@ fn toggle(attr: &mut u32, bit: u32, on: bool) {
     }
 }
 
-fn find_or_insert(shapes: &mut Vec<CharShape>, cs: CharShape) -> CharShapeId {
+pub(crate) fn find_or_insert(shapes: &mut Vec<CharShape>, cs: CharShape) -> CharShapeId {
     if let Some(i) = shapes.iter().position(|s| *s == cs) {
         return CharShapeId(i as u16);
     }
@@ -275,7 +275,7 @@ fn align_para(
     n
 }
 
-fn find_or_insert_para(pshapes: &mut Vec<ParaShape>, ps: ParaShape) -> ParaShapeId {
+pub(crate) fn find_or_insert_para(pshapes: &mut Vec<ParaShape>, ps: ParaShape) -> ParaShapeId {
     if let Some(i) = pshapes.iter().position(|s| *s == ps) {
         return ParaShapeId(i as u16);
     }

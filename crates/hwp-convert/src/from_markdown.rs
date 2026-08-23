@@ -613,6 +613,20 @@ fn from_markdown_inner(
     if let Some(preset) = opts.preset {
         official::apply_profile(&mut header, preset);
     }
+    // Splice trailing frames (결문) after the body AND after `apply_profile` — `apply_profile`
+    // overwrites every existing char shape's `base_size` by table position (official.rs), so a
+    // 22pt bold shape allocated before it would be immediately clobbered back to the profile's
+    // body size. Allocating (value-deduped) after profile sizing keeps the frame's own typography
+    // (D-02/D-03/D-04). The `끝.` guard inspects `b.paragraphs` as assembled so far.
+    if let Some(fields) = opts.frames {
+        let trailing = crate::frames::trailing_frames(
+            fields,
+            &b.paragraphs,
+            &mut header.para_shapes,
+            &mut header.char_shapes,
+        );
+        b.paragraphs.extend(trailing);
+    }
 
     (
         Document {

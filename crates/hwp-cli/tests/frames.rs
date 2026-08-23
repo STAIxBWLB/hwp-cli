@@ -248,6 +248,181 @@ fn no_frame_flag_leaves_paragraph_zero_untouched() {
     );
 }
 
+/// The document's single section's last paragraph — where the 결문 table lands (D-03: 결문 is
+/// the last block once `--doc-foot` is supplied).
+fn last_paragraph(document: &Document) -> &Paragraph {
+    document.sections[0]
+        .paragraphs
+        .last()
+        .expect("document must have at least one paragraph")
+}
+
+fn table_of(paragraph: &Paragraph) -> &hwp_model::Table {
+    paragraph
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("paragraph must carry a table control")
+}
+
+#[test]
+fn doc_foot_last_block_is_table_with_centered_bold_발신명의() {
+    let dir = temp_dir("doc-foot-typography");
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "official"])
+            .args(["--doc-foot", "발신명의=예시대학교총장"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --doc-foot",
+    );
+    assert_success(&output, "hwp new --doc-foot");
+
+    let document = reread(&out);
+    let table = table_of(last_paragraph(&document));
+    let first_cell_paragraph = &table.cells[0].paragraphs[0];
+    assert_eq!(paragraph_text(first_cell_paragraph), "예시대학교총장");
+
+    let para_shape = &document.header.para_shapes[first_cell_paragraph.para_shape.0 as usize];
+    assert_eq!(para_shape.alignment(), 3, "발신명의 row must be centered");
+
+    let (_, char_shape_id) = first_cell_paragraph.char_shape_runs[0];
+    let char_shape = &document.header.char_shapes[char_shape_id.0 as usize];
+    assert_eq!(char_shape.base_size, 2200, "발신명의 row must be 22pt");
+    assert_eq!(
+        char_shape.attr & (1 << 1),
+        1 << 1,
+        "발신명의 row must be bold"
+    );
+
+    let validate = command_output(hwp().arg("validate").arg(&out), "hwp validate");
+    assert_success(&validate, "hwp validate");
+}
+
+#[test]
+fn doc_foot_결재_and_협조_are_separate_placeholder_rows() {
+    let dir = temp_dir("doc-foot-placeholders");
+    let out = dir.join("out.hwpx");
+    // No 기안자/검토자/결재자/협조자 supplied — the placeholder rows must still appear (D-04).
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "official"])
+            .args(["--doc-foot", "발신명의=예시대학교총장"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --doc-foot (placeholders only)",
+    );
+    assert_success(&output, "hwp new --doc-foot (placeholders only)");
+
+    let document = reread(&out);
+    let table = table_of(last_paragraph(&document));
+    let cell_text: Vec<String> = table
+        .cells
+        .iter()
+        .map(|cell| paragraph_text(&cell.paragraphs[0]))
+        .collect();
+    let approval_row = index_of(&cell_text, "결재");
+    let cooperation_row = index_of(&cell_text, "협조");
+    assert!(
+        approval_row < cooperation_row,
+        "결재 must precede 협조: {cell_text:?}"
+    );
+    // 협조 must never be folded into the 결재 row (D-04).
+    assert_ne!(cell_text[approval_row], cell_text[cooperation_row]);
+    assert!(
+        !cell_text[approval_row].contains("협조"),
+        "결재 row must not fold in 협조: {cell_text:?}"
+    );
+}
+
+#[test]
+fn doc_foot_끝_guard_between_body_and_결문() {
+    let dir = temp_dir("kkeut-guard");
+    let body = dir.join("body.md");
+    std::fs::write(&body, "본문 마지막 줄\n").unwrap();
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "official", "--from"])
+            .arg(&body)
+            .args(["--doc-foot", "발신명의=예시대학교총장"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --doc-foot (끝. guard)",
+    );
+    assert_success(&output, "hwp new --doc-foot (끝. guard)");
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+    let body_idx = index_of(&blocks, "본문 마지막 줄");
+    let kkeut_idx = index_of(&blocks, "끝.");
+    let signoff_idx = index_of(&blocks, "예시대학교총장");
+    assert!(
+        body_idx < kkeut_idx && kkeut_idx < signoff_idx,
+        "blocks: {blocks:?}"
+    );
+    assert_eq!(
+        blocks.iter().filter(|b| b.as_str() == "끝.").count(),
+        1,
+        "exactly one 끝. paragraph: {blocks:?}"
+    );
+}
+
+#[test]
+fn doc_foot_끝_guard_is_idempotent_when_body_already_ends_with_끝() {
+    let dir = temp_dir("kkeut-idempotent");
+    let body = dir.join("body.md");
+    std::fs::write(&body, "본문 마지막 줄 끝.\n").unwrap();
+    let out = dir.join("out.hwpx");
+    let output = command_output(
+        hwp()
+            .args(["new", "--preset", "official", "--from"])
+            .arg(&body)
+            .args(["--doc-foot", "발신명의=예시대학교총장"])
+            .args(["-o"])
+            .arg(&out),
+        "hwp new --doc-foot (already ends with 끝.)",
+    );
+    assert_success(&output, "hwp new --doc-foot (already ends with 끝.)");
+
+    let document = reread(&out);
+    let blocks = block_text_sequence(&document);
+    assert_eq!(
+        blocks.iter().filter(|b| b.ends_with("끝.")).count(),
+        1,
+        "applying the 끝. rule twice must add nothing: {blocks:?}"
+    );
+}
+
+#[test]
+fn doc_foot_two_runs_produce_byte_identical_output() {
+    let dir = temp_dir("byte-stable");
+    let first = dir.join("first.hwpx");
+    let second = dir.join("second.hwpx");
+    for out in [&first, &second] {
+        let output = command_output(
+            hwp()
+                .args(["new", "--preset", "official"])
+                .args(["--doc-head", "기관명=예시대학교"])
+                .args(["--doc-foot", "발신명의=예시대학교총장"])
+                .args(["-o"])
+                .arg(out),
+            "hwp new --doc-head --doc-foot (byte stability)",
+        );
+        assert_success(&output, "hwp new --doc-head --doc-foot (byte stability)");
+    }
+    let first_bytes = std::fs::read(&first).unwrap();
+    let second_bytes = std::fs::read(&second).unwrap();
+    assert_eq!(
+        first_bytes, second_bytes,
+        "two runs of the same frame flags must produce byte-identical output"
+    );
+}
+
 #[test]
 fn all_five_frame_flags_appear_in_help() {
     let output = command_output(hwp().args(["new", "--help"]), "hwp new --help");
