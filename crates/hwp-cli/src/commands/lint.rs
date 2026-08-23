@@ -2,9 +2,9 @@
 //!
 //! Advisory by default: findings never affect the exit code unless `--strict` is
 //! given AND at least one error-severity finding exists (D-05). The JSON report
-//! follows the hwp-lint-report-v1 field set (D-06; the schema file itself lands
-//! with the contract-lock plan). Lint is read-only — the input file is never
-//! modified, created or deleted.
+//! follows the hwp-lint-report-v1 contract (D-06, published at
+//! `schemas/lint-report-v1.schema.json` — additive-only thereafter). Lint is
+//! read-only — the input file is never modified, created or deleted.
 
 use std::io::Read as _;
 use std::path::Path;
@@ -15,32 +15,72 @@ use serde_json::{Value, json};
 /// stdin read cap, mirroring the MCP `MAX_READ_BYTES` convention.
 const MAX_STDIN_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Reads the lint input as markdown. `"-"` reads stdin (bounded, D-08); binary
-/// `.hwp`/`.hwpx` feeding is planned but not available yet — named explicitly.
-fn read_markdown_input(path: &Path) -> anyhow::Result<String> {
+/// D-02 note carried in every finding's `context` when the input reached the
+/// engine via markdown conversion from a binary .hwp/.hwpx. A fixed string,
+/// never content (T-02.3-04); it names the conversion path and the merged-cell
+/// HTML-block blind spot (RESEARCH Pitfall 3) so a conversion artifact is never
+/// mistaken for a source-document defect.
+const VIA_CONVERSION_NOTE: &str =
+    "markdown 변환 경유 입력입니다 — 병합 셀 표(HTML 블록) 안의 내용은 검사하지 않습니다";
+
+/// The lint input: markdown text plus whether it arrived via binary→markdown
+/// conversion (drives the D-02 `context` note in the JSON report).
+struct LintInput {
+    markdown: String,
+    via_conversion: bool,
+}
+
+/// Bounded UTF-8 read (D-08 / T-02.3-02): input beyond `cap` bytes is a Korean
+/// error naming the limit — never a silent truncation.
+fn read_bounded(reader: impl std::io::Read, cap: u64) -> anyhow::Result<String> {
+    let mut buf = String::new();
+    reader.take(cap + 1).read_to_string(&mut buf)?;
+    if buf.len() as u64 > cap {
+        anyhow::bail!("입력이 크기 제한({cap}바이트)을 초과했습니다");
+    }
+    Ok(buf)
+}
+
+/// Reads the lint input as markdown. `"-"` reads stdin (bounded, D-08 — never
+/// staged to a temp file, RESEARCH Pitfall 6); binary `.hwp`/`.hwpx` flows
+/// through the shared read path (`load_document` → `to_markdown_with`) into the
+/// SAME engine — one engine, two feeders (D-01). Read-only throughout: no
+/// writer is ever invoked on the input.
+fn read_lint_input(path: &Path) -> anyhow::Result<LintInput> {
     if path.as_os_str() == "-" {
-        let mut buf = String::new();
-        std::io::stdin()
-            .take(MAX_STDIN_BYTES)
-            .read_to_string(&mut buf)?;
-        return Ok(buf);
+        return Ok(LintInput {
+            markdown: read_bounded(std::io::stdin(), MAX_STDIN_BYTES)?,
+            via_conversion: false,
+        });
     }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
     if matches!(ext.as_deref(), Some("hwp" | "hwpx")) {
-        anyhow::bail!(
-            "아직 지원하지 않는 입력입니다: {} — 바이너리(.hwp/.hwpx) 린트는 추후 지원 예정이며, 지금은 markdown(.md) 파일을 사용하세요",
-            path.display()
-        );
+        let doc = crate::commands::cat::load_document(path)?;
+        let markdown =
+            hwp_convert::to_markdown_with(&doc, &hwp_convert::MarkdownOptions::default())?;
+        return Ok(LintInput {
+            markdown,
+            via_conversion: true,
+        });
     }
-    Ok(std::fs::read_to_string(path)?)
+    Ok(LintInput {
+        markdown: std::fs::read_to_string(path)?,
+        via_conversion: false,
+    })
 }
 
 /// Builds the hwp-lint-report-v1 JSON object for already-computed findings (D-06
-/// field set; the profile is echoed per D-04).
-fn report_json(file: &str, profile: LintProfile, findings: &[Finding]) -> Value {
+/// field set; the profile is echoed per D-04). When the input arrived via
+/// binary→markdown conversion, every finding carries the D-02 `context` note.
+fn report_json(
+    file: &str,
+    profile: LintProfile,
+    findings: &[Finding],
+    via_conversion: bool,
+) -> Value {
     let error_count = findings
         .iter()
         .filter(|f| f.severity == Severity::Error)
@@ -53,13 +93,19 @@ fn report_json(file: &str, profile: LintProfile, findings: &[Finding]) -> Value 
         "profile": profile.name(),
         "findings": findings
             .iter()
-            .map(|f| json!({
-                "rule_id": f.rule_id,
-                "severity": f.severity.name(),
-                "line": f.line,
-                "col": f.col,
-                "message": f.message,
-            }))
+            .map(|f| {
+                let mut finding = json!({
+                    "rule_id": f.rule_id,
+                    "severity": f.severity.name(),
+                    "line": f.line,
+                    "col": f.col,
+                    "message": f.message,
+                });
+                if via_conversion {
+                    finding["context"] = json!(VIA_CONVERSION_NOTE);
+                }
+                finding
+            })
             .collect::<Vec<_>>(),
         "summary": {
             "error_count": error_count,
@@ -72,10 +118,15 @@ fn report_json(file: &str, profile: LintProfile, findings: &[Finding]) -> Value 
 /// stdout). An unreadable or unsupported input is reported in the `error` field
 /// instead of panicking or exiting.
 pub fn lint_path_json(path: &Path, profile: LintProfile) -> Value {
-    match read_markdown_input(path) {
-        Ok(markdown) => {
-            let findings = lint_markdown(&markdown, profile);
-            report_json(&path.display().to_string(), profile, &findings)
+    match read_lint_input(path) {
+        Ok(input) => {
+            let findings = lint_markdown(&input.markdown, profile);
+            report_json(
+                &path.display().to_string(),
+                profile,
+                &findings,
+                input.via_conversion,
+            )
         }
         Err(error) => json!({
             "schema_version": "1.0",
@@ -90,11 +141,16 @@ pub fn lint_path_json(path: &Path, profile: LintProfile) -> Value {
 }
 
 pub fn run(file: &Path, profile: LintProfile, json: bool, strict: bool) -> anyhow::Result<()> {
-    let markdown = read_markdown_input(file)?;
-    let findings = lint_markdown(&markdown, profile);
+    let input = read_lint_input(file)?;
+    let findings = lint_markdown(&input.markdown, profile);
 
     if json {
-        let report = report_json(&file.display().to_string(), profile, &findings);
+        let report = report_json(
+            &file.display().to_string(),
+            profile,
+            &findings,
+            input.via_conversion,
+        );
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         // D-07: one `{line}: {rule_id} — {message}` line per finding, ascending
@@ -110,4 +166,26 @@ pub fn run(file: &Path, profile: LintProfile, json: bool, strict: bool) -> anyho
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_read_accepts_input_within_the_cap() {
+        let text = read_bounded(std::io::Cursor::new("시행: 2020.7.8\n"), MAX_STDIN_BYTES).unwrap();
+        assert_eq!(text, "시행: 2020.7.8\n");
+    }
+
+    #[test]
+    fn bounded_read_rejects_over_cap_naming_the_limit() {
+        // A small stand-in cap keeps the test fast; the message must name it.
+        let err = read_bounded(std::io::Cursor::new(vec![b'a'; 65]), 64).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("64바이트"),
+            "error must name the limit: {message}"
+        );
+    }
 }

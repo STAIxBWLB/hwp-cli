@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/lint-report-v1.schema.json",
+  "title": "hwp-lint-report-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract", "file", "profile", "findings", "summary"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "contract": { "const": "hwp-lint-report-v1" },
+    "file": { "type": "string" },
+    "profile": { "enum": ["gongmun", "report"] },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/lintFinding" }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error_count", "warning_count"],
+      "properties": {
+        "error_count": { "type": "integer", "minimum": 0 },
+        "warning_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "lintFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "severity", "line", "col", "message"],
+      "properties": {
+        "rule_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "severity": { "enum": ["error", "warning"] },
+        "line": { "type": "integer", "minimum": 1 },
+        "col": { "type": "integer", "minimum": 1 },
+        "message": { "type": "string" },
+        "context": { "type": "string" }
+      }
+    }
+  }
+}
