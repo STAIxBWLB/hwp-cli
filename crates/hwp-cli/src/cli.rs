@@ -631,7 +631,11 @@ impl PresetArg {
 
 /// Parse a `--preset` value through the shared alias registry. The deprecated
 /// Latin alias `gian` still resolves to the official preset but prints a
-/// one-time stderr deprecation note (D-03). The trigger compare lowercases
+/// one-time stderr deprecation note (D-03). The note names `official`, the
+/// canonical key: `OfficialPreset::name()` returns it, and it is what the
+/// `--preset` help and `docs/manual/cli-reference{,.ko}.md` advertise. Phase
+/// 2.3 D-03 assumed `gongmun` was the preset's name while the same decision
+/// declined the rename, so the original wording pointed one alias at another. The trigger compare lowercases
 /// first because `OfficialPreset::parse` lowercases before matching — without
 /// it, `--preset GIAN` would resolve silently and the note would never fire.
 /// Stderr only, never stdout (stdout carries command output). The MCP server's
@@ -640,7 +644,7 @@ impl PresetArg {
 fn parse_preset_arg(value: &str) -> Result<PresetArg, String> {
     let preset = hwp_convert::OfficialPreset::parse(value).map(PresetArg)?;
     if value.eq_ignore_ascii_case("gian") {
-        eprintln!("gian은 gongmun의 별칭입니다");
+        eprintln!("gian은 official의 별칭입니다");
     }
     Ok(preset)
 }
