@@ -468,18 +468,11 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
 /// already-styled document produced zero edits, which the publish gate could not tell apart from
 /// "no table matched", so the second of two identical runs failed outright.
 ///
-/// **This asserts extracted-content equality, not byte equality.** On this fixture the HWPX
-/// writer is not byte-deterministic even for two runs over the *same* input: the two packages
-/// differ in ZIP container metadata while every extracted entry is identical (#136). Byte
-/// equality across re-application is still asserted for generated documents by
-/// `style_tables_byte_stable_on_second_application_both_writers`, where the writer *is*
-/// deterministic; here the meaningful claim is that re-applying changes no document content.
-///
 /// `--verify` is deliberately omitted: this fixture fails the edit/re-read semantic-hash
 /// comparison for a reason unrelated to styling (#135) — its ten `hp:container` elements hold no
 /// tables at all — and gating this regression on that defect would couple the two.
 #[test]
-fn style_tables_leaves_an_opaque_container_document_unchanged_on_reapplication() {
+fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
     let source = Path::new(
         "../../fixtures/pdf-parity/private/complex-proposal-body-v2/source/complex-proposal-body-v2.hwpx",
     );
@@ -497,46 +490,12 @@ fn style_tables_leaves_an_opaque_container_document_unchanged_on_reapplication()
     style_tables_no_verify(&first, &second);
     style_tables_no_verify(&second, &third);
 
-    assert_entries_eq(
+    assert_bytes_eq(
+        &first,
         &second,
-        &third,
-        "opaque container: re-applying must change no content",
+        "opaque container: re-applying must change nothing",
     );
+    assert_bytes_eq(&second, &third, "opaque container: and stay a fixed point");
     validate_ok(&second);
     validate_ok(&third);
-}
-
-/// Compare two zip packages entry by entry (name -> uncompressed bytes), ignoring container
-/// metadata. Used where the writer is not byte-deterministic (#136) but the content must still
-/// be identical.
-fn assert_entries_eq(a_path: &Path, b_path: &Path, context: &str) {
-    let read_entries = |p: &Path| -> Vec<(String, Vec<u8>)> {
-        let file = std::fs::File::open(p).unwrap();
-        let mut zip = zip::ZipArchive::new(file).unwrap();
-        let mut out = Vec::new();
-        for i in 0..zip.len() {
-            let mut e = zip.by_index(i).unwrap();
-            let name = e.name().to_string();
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut e, &mut buf).unwrap();
-            out.push((name, buf));
-        }
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        out
-    };
-    let a = read_entries(a_path);
-    let b = read_entries(b_path);
-    assert_eq!(
-        a.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        b.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        "{context}: entry names differ"
-    );
-    for ((name, ab), (_, bb)) in a.iter().zip(b.iter()) {
-        assert!(
-            ab == bb,
-            "{context}: entry {name:?} differs ({} vs {} bytes)",
-            ab.len(),
-            bb.len()
-        );
-    }
 }

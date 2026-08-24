@@ -915,8 +915,15 @@ fn process_package_with_appends(
                 limits.check_entry(&info.name, new_data.len() as u64, None)?;
                 output_total =
                     limits.add_uncompressed_total(output_total, new_data.len() as u64)?;
+                // A rewritten entry must not carry the wall clock. Untouched entries are
+                // raw-copied and keep the source package's timestamps, but a transformed one is
+                // written fresh, and `zip`'s default options stamp "now" — so two identical
+                // edits seconds apart produced different bytes. `hwp edit --style-tables`
+                // promises byte stability across re-application (D-08), which that defeats.
+                // Same DOS ZIP epoch the compose writer pins (see write/mod.rs).
                 let opts = zip::write::SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Deflated);
+                    .compression_method(zip::CompressionMethod::Deflated)
+                    .last_modified_time(zip::DateTime::default());
                 zip.start_file(&info.name, opts)?;
                 zip.write_all(&new_data)?;
             } else {
