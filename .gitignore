@@ -57,3 +57,5 @@ docs/spec/
 
 # GSD planning workspace is local-only agent working context, not a repo artifact.
 /.planning/
+# GSD dispatch sentinel, written per run by the executor harness.
+/.gsd/
