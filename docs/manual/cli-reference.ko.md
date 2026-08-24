@@ -111,12 +111,14 @@
 
 새 문서 생성
 
-**사용법:** `hwp new [OPTIONS] --output <OUTPUT>`
+**사용법:** `hwp new [OPTIONS]`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX 경로 |
 | `--from` | `<FROM>` |  | 입력 markdown/JSON 파일 (생략 시 빈 문서) |
+| `--template` | `<TEMPLATE>` |  | 내장 문서 템플릿을 영문 슬러그 또는 한국어 별칭으로 사용 (--list-templates 참고). --from 및 모든 프레임 플래그와 함께 쓸 수 없음(D-05): 템플릿은 두문/결문을 이미 포함 |
+| `--list-templates` |  |  | 내장 문서 템플릿(슬러그·한국어 별칭)을 모두 나열하고 종료; -o 불필요 |
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
 | `--preset` | `<PRESET>` |  | 공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/press. 기존·한국어 별칭은 하나의 프로필로 정규화 |
 | `--margin-top` | `<MARGIN_TOP>` |  | 위쪽 페이지 여백(mm, 0..=200) |
@@ -124,6 +126,11 @@
 | `--margin-left` | `<MARGIN_LEFT>` |  | 왼쪽 페이지 여백(mm, 0..=200) |
 | `--margin-right` | `<MARGIN_RIGHT>` |  | 오른쪽 페이지 여백(mm, 0..=200) |
 | `--strict` |  |  | markdown import가 내용을 드롭하면(HTML 블록 계약 위반) 실패 처리. 기본: 경고 후 진행 (종료 코드 0) |
+| `--doc-head` | `<DOC_HEAD>` |  | 공문서 두문 블록 "키=값" (키: 기관명\|수신\|경유, 반복 가능) |
+| `--doc-foot` | `<DOC_FOOT>` |  | 공문서 결문 블록 "키=값" (키: 발신명의\|기안자\|검토자\|결재자\|협조자\|시행번호\|시행일자\|접수번호\|접수일자\|주소\|홈페이지\|전화\|팩스\|이메일\|공개구분, 반복 가능) |
+| `--notice-head` | `<NOTICE_HEAD>` |  | 공고문 머리 블록 "키=값" (키: 기관명\|공고번호, 반복 가능) |
+| `--notice-foot` | `<NOTICE_FOOT>` |  | 공고문 꼬리 블록 "키=값" (키: 공고일자\|발신명의, 반복 가능) |
+| `--press-head` | `<PRESS_HEAD>` |  | 보도자료 머리 블록 "키=값" (키: 기관명\|보도시점\|배포일\|담당부서\|담당자\|연락처, 반복 가능) |
 
 ## `hwp compose`
 
@@ -212,6 +219,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--delete-table` | `<DELETE_TABLE>` |  | 표 삭제 "n"(0-기반 인덱스) 또는 "앵커"(앵커 문단의 표) (반복 가능) |
 | `--delete-field` | `<DELETE_FIELD>` |  | 필드 삭제 "이름" (반복 가능; 이름은 hwp fields로 확인) |
 | `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | 책갈피 삭제 "이름" (반복 가능; 이름은 hwp bookmarks로 확인) |
+| `--style-tables` | `<STYLE_TABLES>` |  | 공문서 프리셋으로 모든 적용 대상 표 스타일링(헤더 셰이딩·굵게·가운데 정렬, 내용비례 폭) — official\|report\|plan\|notice\|minutes\|press. 1열 표(테두리 블록)는 건너뜀. 두 번 적용해도 바이트 동일 |
 | `--verify` |  |  | 쓰기 후 재읽기로 검증 |
 | `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
 

@@ -111,12 +111,14 @@ Render pages
 
 Create a new document
 
-**Usage:** `hwp new [OPTIONS] --output <OUTPUT>`
+**Usage:** `hwp new [OPTIONS]`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX path |
+| `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX path (not required with --list-templates) |
 | `--from` | `<FROM>` |  | Input markdown or JSON file (empty document when omitted) |
+| `--template` | `<TEMPLATE>` |  | Use an embedded document-template skeleton by English slug or Korean alias (see --list-templates). Mutually exclusive with --from and with every frame flag (D-05): templates already carry their own 두문/결문 |
+| `--list-templates` |  |  | List all embedded document templates (slug and Korean alias) and exit; needs no -o |
 | `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
 | `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, or press. Legacy and Korean aliases normalize to one profile |
 | `--margin-top` | `<MARGIN_TOP>` |  | Top page margin in millimetres (0..=200) |
@@ -124,6 +126,11 @@ Create a new document
 | `--margin-left` | `<MARGIN_LEFT>` |  | Left page margin in millimetres (0..=200) |
 | `--margin-right` | `<MARGIN_RIGHT>` |  | Right page margin in millimetres (0..=200) |
 | `--strict` |  |  | Fail (non-zero exit) when markdown import drops content, e.g. an HTML block that violates the import contract. Default: warn and continue (exit 0) |
+| `--doc-head` | `<DOC_HEAD>` |  | Document header block (두문) "key=value" (keys: 기관명\|수신\|경유; repeatable) |
+| `--doc-foot` | `<DOC_FOOT>` |  | Document footer block (결문) "key=value" (keys: 발신명의\|기안자\|검토자\|결재자\|협조자\| 시행번호\|시행일자\|접수번호\|접수일자\|주소\|홈페이지\|전화\|팩스\|이메일\|공개구분; repeatable) |
+| `--notice-head` | `<NOTICE_HEAD>` |  | Notice (공고문) header block "key=value" (keys: 기관명\|공고번호; repeatable) |
+| `--notice-foot` | `<NOTICE_FOOT>` |  | Notice (공고문) footer block "key=value" (keys: 공고일자\|발신명의; repeatable) |
+| `--press-head` | `<PRESS_HEAD>` |  | Press release (보도자료) header block "key=value" (keys: 기관명\|보도시점\|배포일\| 담당부서\|담당자\|연락처; repeatable) |
 
 ## `hwp compose`
 
@@ -212,6 +219,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--delete-table` | `<DELETE_TABLE>` |  | Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable) |
 | `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with hwp fields) |
 | `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks) |
+| `--style-tables` | `<STYLE_TABLES>` |  | Style every eligible table (header shade/bold/center, content-proportional widths) under an official-document preset: official, report, plan, notice, minutes, or press. Skips single-column tables (frame blocks); byte-stable when applied twice |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
 

@@ -440,7 +440,11 @@ fn official_preset_aliases_and_margin_overrides() {
 
 #[test]
 fn gian_deprecation_note() {
-    const NOTE: &str = "gian은 gongmun의 별칭입니다";
+    // The note must name the CANONICAL key. `official` is what
+    // `OfficialPreset::name()` returns and what the help and the generated
+    // manual advertise; `gongmun` is a second alias, so the original wording
+    // steered a caller off one alias and onto another.
+    const NOTE: &str = "gian은 official의 별칭입니다";
     let markdown = tmp("gian-deprecation.md");
     std::fs::write(&markdown, "1. 항목\n").unwrap();
     let gian_out = tmp("gian-deprecation-gian.hwpx");

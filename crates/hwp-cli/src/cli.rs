@@ -180,12 +180,20 @@ pub enum Cmd {
 
     /// Create a new document
     New {
-        /// Output HWP/HWPX path
-        #[arg(short, long)]
-        output: PathBuf,
+        /// Output HWP/HWPX path (not required with --list-templates)
+        #[arg(short, long, required_unless_present = "list_templates")]
+        output: Option<PathBuf>,
         /// Input markdown or JSON file (empty document when omitted)
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Use an embedded document-template skeleton by English slug or Korean alias (see
+        /// --list-templates). Mutually exclusive with --from and with every frame flag (D-05):
+        /// templates already carry their own 두문/결문
+        #[arg(long)]
+        template: Option<String>,
+        /// List all embedded document templates (slug and Korean alias) and exit; needs no -o
+        #[arg(long = "list-templates")]
+        list_templates: bool,
         /// Set metadata "key=value" (keys: title|author|subject|keywords; repeatable)
         #[arg(long = "set-meta")]
         set_meta: Vec<String>,
@@ -209,6 +217,23 @@ pub enum Cmd {
         /// violates the import contract. Default: warn and continue (exit 0)
         #[arg(long)]
         strict: bool,
+        /// Document header block (두문) "key=value" (keys: 기관명|수신|경유; repeatable)
+        #[arg(long = "doc-head")]
+        doc_head: Vec<String>,
+        /// Document footer block (결문) "key=value" (keys: 발신명의|기안자|검토자|결재자|협조자|
+        /// 시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분; repeatable)
+        #[arg(long = "doc-foot")]
+        doc_foot: Vec<String>,
+        /// Notice (공고문) header block "key=value" (keys: 기관명|공고번호; repeatable)
+        #[arg(long = "notice-head")]
+        notice_head: Vec<String>,
+        /// Notice (공고문) footer block "key=value" (keys: 공고일자|발신명의; repeatable)
+        #[arg(long = "notice-foot")]
+        notice_foot: Vec<String>,
+        /// Press release (보도자료) header block "key=value" (keys: 기관명|보도시점|배포일|
+        /// 담당부서|담당자|연락처; repeatable)
+        #[arg(long = "press-head")]
+        press_head: Vec<String>,
     },
 
     /// Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)
@@ -525,6 +550,11 @@ pub struct EditArgs {
     /// Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks)
     #[arg(long = "delete-bookmark")]
     pub delete_bookmark: Vec<String>,
+    /// Style every eligible table (header shade/bold/center, content-proportional widths) under
+    /// an official-document preset: official, report, plan, notice, minutes, or press. Skips
+    /// single-column tables (frame blocks); byte-stable when applied twice
+    #[arg(long = "style-tables", value_parser = parse_preset_arg)]
+    pub style_tables: Option<PresetArg>,
     /// Verify by re-reading after writing
     #[arg(long)]
     pub verify: bool,
@@ -601,7 +631,11 @@ impl PresetArg {
 
 /// Parse a `--preset` value through the shared alias registry. The deprecated
 /// Latin alias `gian` still resolves to the official preset but prints a
-/// one-time stderr deprecation note (D-03). The trigger compare lowercases
+/// one-time stderr deprecation note (D-03). The note names `official`, the
+/// canonical key: `OfficialPreset::name()` returns it, and it is what the
+/// `--preset` help and `docs/manual/cli-reference{,.ko}.md` advertise. Phase
+/// 2.3 D-03 assumed `gongmun` was the preset's name while the same decision
+/// declined the rename, so the original wording pointed one alias at another. The trigger compare lowercases
 /// first because `OfficialPreset::parse` lowercases before matching — without
 /// it, `--preset GIAN` would resolve silently and the note would never fire.
 /// Stderr only, never stdout (stdout carries command output). The MCP server's
@@ -610,7 +644,7 @@ impl PresetArg {
 fn parse_preset_arg(value: &str) -> Result<PresetArg, String> {
     let preset = hwp_convert::OfficialPreset::parse(value).map(PresetArg)?;
     if value.eq_ignore_ascii_case("gian") {
-        eprintln!("gian은 gongmun의 별칭입니다");
+        eprintln!("gian은 official의 별칭입니다");
     }
     Ok(preset)
 }

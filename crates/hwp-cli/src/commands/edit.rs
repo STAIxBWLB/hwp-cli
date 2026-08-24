@@ -46,6 +46,7 @@ enum EditOperation {
     DeleteTable(Vec<String>),
     DeleteField(Vec<String>),
     DeleteBookmark(Vec<String>),
+    StyleTables(hwp_convert::OfficialPreset),
 }
 
 /// MCP처럼 이미 구조화된 호출자가 CLI mini-language를 거치지 않고 전달하는 편집.
@@ -175,6 +176,14 @@ pub(crate) enum TypedEditOperation {
     DeleteBookmark {
         name: String,
     },
+    /// Constructed via both the CLI path (`EditOperation::StyleTables`) and the MCP `tool_edit`
+    /// `style_tables` argument (D-09, plan 06). `preset` is accepted (and parsed) at both
+    /// boundaries for symmetry with `hwp new --preset`, but `hwp_convert::style_tables` itself
+    /// is purely content-driven (D-07/D-08) and never reads it.
+    StyleTables {
+        #[allow(dead_code)]
+        preset: hwp_convert::OfficialPreset,
+    },
 }
 
 impl TypedEditOperation {
@@ -233,7 +242,8 @@ impl EditOperation {
             | Self::SetFormat(_)
             | Self::SetAlign(_)
             | Self::SetPara(_)
-            | Self::SetPage(_) => false,
+            | Self::SetPage(_)
+            | Self::StyleTables(_) => false,
         }
     }
 }
@@ -319,6 +329,7 @@ impl EditPlan {
             delete_table,
             delete_field,
             delete_bookmark,
+            style_tables,
             verify,
             allow_partial,
         } = args;
@@ -359,6 +370,9 @@ impl EditPlan {
         add!(DeleteTable, delete_table);
         add!(DeleteField, delete_field);
         add!(DeleteBookmark, delete_bookmark);
+        if let Some(preset) = style_tables {
+            operations.push(EditOperation::StyleTables(preset.canonical()));
+        }
 
         (
             input,
@@ -583,6 +597,19 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             .typed_operations
             .iter()
             .any(TypedEditOperation::is_structural);
+    // D-08: re-styling an already-correctly-styled document (every GFM table is styled at
+    // import time regardless of preset, per plan 03) is a legitimate no-op, not a failure — its
+    // output is EXPECTED to equal its input byte-for-byte. The generic "no visible effect"
+    // publish guard below must not treat that as an error the way it does for a --replace/
+    // --set-* request that silently matched nothing.
+    let requested_style_tables = plan
+        .operations
+        .iter()
+        .any(|op| matches!(op, EditOperation::StyleTables(_)))
+        || plan
+            .typed_operations
+            .iter()
+            .any(|op| matches!(op, TypedEditOperation::StyleTables { .. }));
 
     for operation in &plan.operations {
         match operation {
@@ -1065,6 +1092,23 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     }
                 }
             }
+            // `preset` does not yet select divergent values (D-07's values are uniform across
+            // all six profiles today) - it validates and records intent for a future divergence.
+            EditOperation::StyleTables(_preset) => {
+                // (eligible, changed). Only "no styleable table at all" is an unapplied edit;
+                // "every table is already styled" is a successful no-op, which is exactly what
+                // D-08's byte-stability promises on a second run.
+                let (eligible, changed) = hwp_convert::style_tables(&mut doc);
+                if eligible == 0 {
+                    eprintln!("경고: 스타일링 대상 표를 찾지 못했습니다(1열 표는 건너뜀)");
+                    unapplied.push("--style-tables".to_string());
+                } else if changed == 0 {
+                    eprintln!("표 스타일링: 이미 적용되어 있습니다({eligible}개 확인)");
+                } else {
+                    eprintln!("표 스타일링: {changed}개");
+                    edits += changed;
+                }
+            }
         }
     }
     for operation in &plan.typed_operations {
@@ -1077,7 +1121,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             unapplied.join(", ")
         );
     }
-    if edits == 0 || doc == original_doc {
+    // `--style-tables` on an already-styled document legitimately produces zero edits and a
+    // document equal to the original: that IS D-08's guarantee, and refusing to publish would
+    // make the second of two identical runs fail. Every other operation still has to change
+    // something to earn an output.
+    if !requested_style_tables && (edits == 0 || doc == original_doc) {
         anyhow::bail!(
             "적용 가능한 편집이 없어 출력을 게시하지 않습니다 \
              (--replace/--set-cell/--set-field/--set-meta 등 요청 확인)"
@@ -1574,6 +1622,18 @@ fn apply_typed_operation(
             } else {
                 eprintln!("책갈피 삭제: {name:?} ({count}건)");
                 *edits += count;
+            }
+        }
+        TypedEditOperation::StyleTables { preset: _ } => {
+            // See the CLI arm: an already-styled document is a no-op, not an unapplied request.
+            let (eligible, changed) = hwp_convert::style_tables(doc);
+            if eligible == 0 {
+                unapplied.push("style_tables".to_string());
+            } else if changed == 0 {
+                eprintln!("표 스타일링: 이미 적용되어 있습니다({eligible}개 확인)");
+            } else {
+                eprintln!("표 스타일링: {changed}개");
+                *edits += changed;
             }
         }
     }

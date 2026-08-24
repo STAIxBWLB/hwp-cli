@@ -142,6 +142,8 @@ fn real_main() -> anyhow::Result<()> {
         Cmd::New {
             output,
             from,
+            template,
+            list_templates,
             set_meta,
             preset,
             margin_top,
@@ -149,7 +151,28 @@ fn real_main() -> anyhow::Result<()> {
             margin_left,
             margin_right,
             strict,
+            doc_head,
+            doc_foot,
+            notice_head,
+            notice_foot,
+            press_head,
         } => {
+            if list_templates {
+                commands::skill::print_template_list();
+                return Ok(());
+            }
+            // clap's `required_unless_present = "list_templates"` guarantees `output` is `Some`
+            // on every path that reaches here.
+            let output = output.expect("clap requires --output unless --list-templates");
+            let any_frame_flag = !doc_head.is_empty()
+                || !doc_foot.is_empty()
+                || !notice_head.is_empty()
+                || !notice_foot.is_empty()
+                || !press_head.is_empty();
+            let embedded = template
+                .as_deref()
+                .map(|name| commands::new::resolve_template(name, from.is_some(), any_frame_flag))
+                .transpose()?;
             let options = commands::new::NewOptions::from_millimetres(
                 preset.map(hwp_cli::cli::PresetArg::canonical),
                 margin_top,
@@ -157,8 +180,18 @@ fn real_main() -> anyhow::Result<()> {
                 margin_left,
                 margin_right,
                 strict,
+            )?
+            .with_frames(
+                &doc_head,
+                &doc_foot,
+                &notice_head,
+                &notice_foot,
+                &press_head,
             )?;
-            commands::new::run(&output, from.as_deref(), &set_meta, &options)
+            match embedded {
+                Some(text) => commands::new::run_embedded(&output, text, &set_meta, &options),
+                None => commands::new::run(&output, from.as_deref(), &set_meta, &options),
+            }
         }
         Cmd::Compose {
             spec,

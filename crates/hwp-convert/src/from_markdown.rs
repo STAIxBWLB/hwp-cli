@@ -21,6 +21,7 @@ use hwp_model::{
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use crate::frames::FrameFields;
 use crate::official::{self, OfficialPreset, PageMarginOverrides};
 
 /// Number of base para shapes (indexes 0~4) created by default_header. List para shapes are
@@ -101,6 +102,9 @@ pub struct MarkdownImportOptions<'a> {
     pub preset: Option<OfficialPreset>,
     /// Side-specific page margins resolved after profile/plain defaults.
     pub page_margins: PageMarginOverrides,
+    /// Document frames (`--doc-head`/`--doc-foot`/...), if any were supplied (GONG-03, D-01).
+    /// `None`/empty keeps today's output unchanged.
+    pub frames: Option<&'a FrameFields>,
 }
 
 #[cfg(test)]
@@ -223,6 +227,26 @@ pub(crate) const CELL_VALIGN_CENTER: u32 = 0x20;
 
 /// Body area width (A4 default margins, HWPUNIT). from_html's table width calculation uses the same basis.
 pub(crate) const BODY_WIDTH: i32 = 42520;
+
+/// Number of border/fill entries `default_header()` creates (`none, none, solid, blockquote,
+/// code-block`). A new entry appended after `default_header()` returns is referenced as this
+/// count's 1-based successor (Pitfall 1) — mirrors `BASE_PARA_SHAPES` for `header.border_fills`.
+pub(crate) const BASE_BORDER_FILLS: u16 = 5;
+
+/// The base "no spacing" table-cell `ParaShape` (index 0 of `default_header()`'s `para_shapes`,
+/// shared by the default paragraph and every table cell). Extracted so `style::style_table` can
+/// clone it as the base for centered header/narrow-column `ParaShape`s without needing the
+/// fully-assembled document header, which does not exist yet while a table is being built during
+/// markdown import.
+pub(crate) fn table_cell_para_shape() -> ParaShape {
+    ParaShape {
+        attr1: 0x180,
+        line_spacing_old: 160,
+        border_fill_id: 2,
+        line_spacing: 160,
+        ..ParaShape::default()
+    }
+}
 
 /// Default document header for `hwp new` — minimal configuration comparable to a blank Hancom document.
 pub fn default_header() -> hwp_model::DocHeader {
@@ -370,13 +394,7 @@ pub fn default_header() -> hwp_model::DocHeader {
     // samples. The direct cause of the black bar is the char_shape shade color, but we match the
     // healthy sample bytes so Hancom stays safe when it re-lays out lines. (BodyText's
     // PARA_LINE_SEG cache is filled by the synthesizer.)
-    let base_para = ParaShape {
-        attr1: 0x180,
-        line_spacing_old: 160,
-        border_fill_id: 2,
-        line_spacing: 160,
-        ..ParaShape::default()
-    };
+    let base_para = table_cell_para_shape();
     header.para_shapes = vec![
         base_para.clone(),
         ParaShape {
@@ -583,6 +601,15 @@ fn from_markdown_inner(
         // Close even an empty document with one paragraph. The writer guarantees the paragraph-end char.
         b.paragraphs.push(Paragraph::default());
     }
+    // Splice leading frames (두문) in front of the body BEFORE section-control injection, so the
+    // 두문 table becomes paragraph 0 and receives secd/cold/pgnp (D-02/D-03; Pattern 5 —
+    // inject_section_controls does not inspect the paragraph it decorates).
+    if let Some(fields) = opts.frames {
+        let leading = crate::frames::leading_frames(fields);
+        if !leading.is_empty() {
+            b.paragraphs.splice(0..0, leading);
+        }
+    }
     if inject {
         // Inject section/column definitions into the first paragraph — prerequisite for hwp5/Hancom compatibility
         inject_section_controls(&mut b.paragraphs[0], opts.preset, opts.page_margins);
@@ -592,6 +619,7 @@ fn from_markdown_inner(
     let mut header = default_header();
     header.char_shapes.extend(b.extra_char_shapes);
     header.para_shapes.extend(b.extra_para_shapes);
+    header.border_fills.extend(b.extra_border_fills);
     for slot in &mut header.fonts {
         slot.extend(b.extra_fonts.iter().cloned());
     }
@@ -599,6 +627,20 @@ fn from_markdown_inner(
     header.bullet_chars = b.bullet_chars;
     if let Some(preset) = opts.preset {
         official::apply_profile(&mut header, preset);
+    }
+    // Splice trailing frames (결문) after the body AND after `apply_profile` — `apply_profile`
+    // overwrites every existing char shape's `base_size` by table position (official.rs), so a
+    // 22pt bold shape allocated before it would be immediately clobbered back to the profile's
+    // body size. Allocating (value-deduped) after profile sizing keeps the frame's own typography
+    // (D-02/D-03/D-04). The `끝.` guard inspects `b.paragraphs` as assembled so far.
+    if let Some(fields) = opts.frames {
+        let trailing = crate::frames::trailing_frames(
+            fields,
+            &b.paragraphs,
+            &mut header.para_shapes,
+            &mut header.char_shapes,
+        );
+        b.paragraphs.extend(trailing);
     }
 
     (
@@ -773,6 +815,10 @@ struct Builder {
     rejected_list_depths: usize,
     // para shapes created for lists (header index BASE_PARA_SHAPES~) and numbering/bullet definitions (0~).
     extra_para_shapes: Vec<ParaShape>,
+    // border/fill entries created for table header shading (header index BASE_BORDER_FILLS+1~,
+    // 1-based on-disk id — Pitfall 1). Merged into header.border_fills the same way
+    // extra_para_shapes merges into header.para_shapes (D-07/D-08).
+    extra_border_fills: Vec<BorderFill>,
     numbering_levels: Vec<Vec<NumLevel>>,
     bullet_chars: Vec<char>,
     // footnotes/endnotes: pre-collected definition bodies (label→paragraphs) + definition block skip depth.
@@ -1552,7 +1598,12 @@ impl Builder {
             }
             Event::End(TagEnd::Table) => {
                 if let Some(tb) = self.table.take() {
-                    self.paragraphs.push(table_paragraph(tb));
+                    self.paragraphs.push(table_paragraph(
+                        tb,
+                        &mut self.extra_para_shapes,
+                        &mut self.extra_border_fills,
+                        &mut self.extra_char_shapes,
+                    ));
                 }
             }
             // ── Block HTML (tables/images — contract docs/design/18): collect consecutive events in the buffer ──
@@ -1755,11 +1806,24 @@ pub(crate) fn inject_section_controls(
     para.header.break_type = 0x03;
 }
 
-/// Turns the collected table into an anchor paragraph (one extended control).
-fn table_paragraph(tb: TableBuilder) -> Paragraph {
+/// Turns the collected table into an anchor paragraph (one extended control). `para_shapes`/
+/// `border_fills` are the Builder's staging vectors (`extra_para_shapes`/`extra_border_fills`) —
+/// merged into `header.para_shapes`/`header.border_fills` after `BASE_PARA_SHAPES`/
+/// `BASE_BORDER_FILLS` base entries, which is why those two constants are passed as the offset
+/// `style::style_table` needs to compute the final, correct shape/fill ids up front (D-07/D-08).
+/// `char_shapes` is the Builder's `extra_char_shapes` staging vector; unlike the para-shape/
+/// border-fill offset scheme, `style::style_table` addresses `CharShapeId` with no base offset,
+/// so the fixed `PALETTE_LEN`-entry base palette is materialized in front of it before the call
+/// and split back off afterward (Pitfall 5: the base palette is always the same fixed entries,
+/// so this never duplicates or renumbers anything already relied on elsewhere).
+fn table_paragraph(
+    tb: TableBuilder,
+    para_shapes: &mut Vec<ParaShape>,
+    border_fills: &mut Vec<BorderFill>,
+    char_shapes: &mut Vec<CharShape>,
+) -> Paragraph {
     let rows = tb.rows.len().max(1);
     let cols = tb.rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
-    let col_w = BODY_WIDTH / cols as i32;
     let row_h = 1700i32; // 10pt text + cell top/bottom margins
 
     let mut cells = Vec::new();
@@ -1771,7 +1835,10 @@ fn table_paragraph(tb: TableBuilder) -> Paragraph {
                 row: r as u16,
                 col_span: 1,
                 row_span: 1,
-                width: HwpUnit(col_w),
+                // Placeholder — style::style_table below overwrites every cell's width with the
+                // content-proportional value (D-07 rule 2). table_paragraph itself no longer
+                // divides BODY_WIDTH evenly across columns.
+                width: HwpUnit(0),
                 height: HwpUnit(row_h),
                 margins: [510, 510, 141, 141],
                 border_fill: BorderFillId(TABLE_BORDER_FILL),
@@ -1792,7 +1859,7 @@ fn table_paragraph(tb: TableBuilder) -> Paragraph {
             });
         }
     }
-    let table = Table {
+    let mut table = Table {
         common_data: Vec::new(),
         placement: None,
         attr: 0,
@@ -1807,6 +1874,22 @@ fn table_paragraph(tb: TableBuilder) -> Paragraph {
         cells,
         extras: Vec::new(),
     };
+
+    // D-07: every GFM table gets header shading/centering + content-proportional widths. A GFM
+    // table always has exactly one header row (row 0), so header detection is free.
+    let mut full_char_shapes = default_header().char_shapes;
+    full_char_shapes.extend(char_shapes.iter().cloned());
+    crate::style::style_table(
+        &mut table,
+        1,
+        BODY_WIDTH,
+        para_shapes,
+        BASE_PARA_SHAPES,
+        border_fills,
+        BASE_BORDER_FILLS,
+        &mut full_char_shapes,
+    );
+    *char_shapes = full_char_shapes.split_off(crate::from_html::PALETTE_LEN as usize);
 
     let mut payload = vec![0u8; 12];
     payload[..4].copy_from_slice(b" lbt"); // reversed ctrl_id
@@ -2354,7 +2437,15 @@ mod tests {
             })
             .expect("표 없음");
         for cell in &table.cells {
-            assert_eq!(cell.paragraphs[0].para_shape.0, 0, "표 셀은 셀 문단모양");
+            // D-07 table styling now centers this narrow single-column table's cells (a distinct,
+            // intentional para shape) — the property this test actually guards is that cells
+            // never pick up the □/○ body-paragraph OUTDENT shape (margin_left/indent != 0).
+            let shape = &doc.header.para_shapes[cell.paragraphs[0].para_shape.0 as usize];
+            assert_eq!(
+                (shape.margin_left, shape.indent),
+                (0, 0),
+                "표 셀은 □/○ 내어쓰기 문단모양을 쓰지 않음"
+            );
         }
         let item = doc.sections[0]
             .paragraphs

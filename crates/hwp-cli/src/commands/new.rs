@@ -3,11 +3,14 @@
 use std::path::{Path, PathBuf};
 
 /// Shared new-document inputs after CLI/MCP profile and margin normalization.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct NewOptions {
     pub preset: Option<hwp_convert::OfficialPreset>,
     pub margins: hwp_convert::PageMarginOverrides,
     pub strict: bool,
+    /// Document frames (`--doc-head`/`--doc-foot`/...), parsed via [`Self::with_frames`]
+    /// (GONG-03, D-01).
+    pub frames: hwp_convert::FrameFields,
 }
 
 impl NewOptions {
@@ -49,7 +52,30 @@ impl NewOptions {
             preset,
             margins,
             strict,
+            frames: hwp_convert::FrameFields::default(),
         })
+    }
+
+    /// Parses the five repeatable frame-flag lists (`--doc-head`, `--doc-foot`, `--notice-head`,
+    /// `--notice-foot`, `--press-head`) into `frames`, sharing one validator between the CLI and
+    /// MCP surfaces (D-01).
+    pub fn with_frames(
+        mut self,
+        doc_head: &[String],
+        doc_foot: &[String],
+        notice_head: &[String],
+        notice_foot: &[String],
+        press_head: &[String],
+    ) -> anyhow::Result<Self> {
+        self.frames = hwp_convert::parse_frame_fields(
+            doc_head,
+            doc_foot,
+            notice_head,
+            notice_foot,
+            press_head,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(self)
     }
 }
 
@@ -98,6 +124,75 @@ pub fn run(
         }
         None => NewInput::Empty,
     };
+    finish(output, input, set_meta, options)
+}
+
+/// Same as [`run`] but sources markdown text from an embedded `--template` skeleton
+/// (`commands::skill::template_file`) instead of reading `--from` off disk. `base_dir: None`
+/// and empty `roots` because embedded template text carries no filesystem-relative image
+/// references (GONG-03, TMPL-01).
+pub fn run_embedded(
+    output: &Path,
+    text: &str,
+    set_meta: &[String],
+    options: &NewOptions,
+) -> anyhow::Result<()> {
+    finish(
+        output,
+        NewInput::Markdown {
+            text,
+            base_dir: None,
+            roots: &[],
+        },
+        set_meta,
+        options,
+    )
+}
+
+/// Resolves `--template <name>` and enforces D-05: `--template` is refused together with
+/// `--from` and with any frame flag (`--doc-head`/`--doc-foot`/`--notice-head`/`--notice-foot`/
+/// `--press-head`), because templates already carry their own 두문/결문 (Phase 2.1 D-19) and
+/// combining them with frame flags would double the frames. Resolution goes through
+/// `commands::skill::template_file`, the same embedded table `--list-templates` reads — never a
+/// second embedded copy, never a filesystem path built from `name` (T-02.4-13).
+pub fn resolve_template(
+    name: &str,
+    from_given: bool,
+    any_frame_flag: bool,
+) -> anyhow::Result<&'static str> {
+    if from_given {
+        anyhow::bail!(
+            "--template과 --from은 함께 쓸 수 없습니다: 둘 다 문서 내용을 지정하는 경로입니다. \
+             --template {name} 또는 --from 중 하나만 쓰세요."
+        );
+    }
+    if any_frame_flag {
+        anyhow::bail!(
+            "--template {name}은(는) 프레임 플래그(--doc-head/--doc-foot/--notice-head/\
+             --notice-foot/--press-head)와 함께 쓸 수 없습니다: 템플릿은 두문/결문을 이미 \
+             포함하므로 함께 지정하면 프레임이 중복됩니다. 프레임을 직접 구성하려면 --template \
+             없이 프레임 플래그만 쓰세요."
+        );
+    }
+    crate::commands::skill::template_file(name)
+        .map(|file| file.contents)
+        .ok_or_else(|| {
+            let accepted: Vec<&str> = crate::commands::skill::template_names()
+                .map(|(slug, _)| slug)
+                .collect();
+            anyhow::anyhow!(
+                "알 수 없는 템플릿 이름: {name} (사용 가능: {})",
+                accepted.join(", ")
+            )
+        })
+}
+
+fn finish(
+    output: &Path,
+    input: NewInput<'_>,
+    set_meta: &[String],
+    options: &NewOptions,
+) -> anyhow::Result<()> {
     let report = execute(output, input, set_meta, options)?;
     crate::commands::convert::print_warnings(&report.warnings);
     crate::commands::preservation::print_report(&report.preservation);
@@ -135,6 +230,11 @@ pub fn execute(
                     "--preset 및 --margin-*은 markdown 입력 전용입니다 (JSON IR은 헤더 포함)"
                 );
             }
+            if !options.frames.is_empty() {
+                anyhow::bail!(
+                    "--doc-head/--doc-foot 등 프레임 플래그는 markdown 입력 전용입니다 (JSON IR은 헤더 포함)"
+                );
+            }
             hwp_convert::from_json(text).map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?
         }
         NewInput::Markdown {
@@ -149,6 +249,7 @@ pub fn execute(
                     roots,
                     preset,
                     page_margins: options.margins,
+                    frames: Some(&options.frames),
                 },
             )
             .map_err(|e| anyhow::anyhow!("markdown 가져오기 실패: {e}"))?;
@@ -162,9 +263,14 @@ pub fn execute(
                 roots: &[],
                 preset,
                 page_margins: options.margins,
+                frames: Some(&options.frames),
             },
         ),
     };
+
+    // Frame/preset compatibility warning (T-02.4-05): advisory only, the document is still
+    // written. Never contains "계약 위반" (Pitfall 7), so it cannot trip the --strict filter below.
+    import_warnings.extend(hwp_convert::compatibility_warnings(&options.frames, preset));
 
     // --strict: markdown import가 내용을 드롭했으면(HTML 블록 계약 위반) 실패 처리한다.
     if options.strict {

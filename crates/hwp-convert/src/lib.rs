@@ -7,6 +7,7 @@ pub mod docx;
 pub mod edit;
 pub mod field;
 pub mod format;
+pub mod frames;
 pub mod from_html;
 pub mod from_markdown;
 pub mod gso;
@@ -18,6 +19,7 @@ pub mod merge;
 pub mod odt;
 pub mod official;
 pub mod structure;
+pub mod style;
 pub mod svg;
 
 use hwp_model::Document;
@@ -39,6 +41,9 @@ pub use field::{
 pub use format::{
     CharFormat, PageProps, ParaProps, set_char_format, set_page_def, set_para_align, set_para_props,
 };
+pub use frames::{
+    FrameFields, compatibility_warnings, leading_frames, parse_field, parse_frame_fields,
+};
 pub use from_html::{HtmlImportOptions, from_html, from_html_with};
 pub use from_markdown::{
     MarkdownImportOptions, default_header, from_markdown, from_markdown_blocks,
@@ -54,6 +59,7 @@ pub use official::{
     OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides, profile, profiles,
 };
 pub use structure::{delete_paragraph, insert_paragraph};
+pub use style::{display_width, style_table, style_tables};
 
 /// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).
 ///
