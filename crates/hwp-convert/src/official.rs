@@ -15,7 +15,7 @@ pub enum OfficialPreset {
     Press,
 }
 
-/// Retired in 0.8.9: `gaejosik` named a writing style, not a document class.
+/// Retired in 0.9.0: `gaejosik` named a writing style, not a document class.
 const GAEJOSIK_IS_NOT_A_PROFILE: &str = "개조식은 문체이며 공문서 프로필이 아닙니다. 보고서·계획서는 --preset report|plan을 쓰고, 명사형 종결은 본문에서 적용하세요.";
 
 impl OfficialPreset {

@@ -435,7 +435,7 @@ override one side explicitly with `--margin-top`, `--margin-bottom`, `--margin-l
 `official` is canonical; `gian` and `gongmun` are semantic compatibility aliases, not raw-byte
 promises. Korean aliases normalize to the same six profiles. There is exactly one profile per
 document type. 개조식 is a writing style (§6 어투), not a document class, so it names no profile;
-the `gaejosik` profile was retired in 0.8.9 and `--preset gaejosik` now fails with a message
+the `gaejosik` profile was retired in 0.9.0 and `--preset gaejosik` now fails with a message
 pointing here. The verified HWPX path writes the
 eight-level definition directly, and the HWP5 path uses the safe, direct encoding observed in
 Hancom Office. At levels 2, 6 and 8, the count continues after `하` as observed; no approximation

@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "hwp-cli"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "cfb",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "hwp-convert"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "hwp-model",
  "image",
@@ -723,14 +723,14 @@ dependencies = [
 
 [[package]]
 name = "hwp-model"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "hwp-render"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "hwp5"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "aes",
  "cfb",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "hwpx"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "hwp-convert",
  "hwp-model",
