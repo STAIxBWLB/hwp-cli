@@ -10,16 +10,84 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.9.0]
+
+**Added**
+
+- `hwp lint <file>` checks Korean official-document notation and structure on markdown, HWP, HWPX
+  or stdin ([#132](https://github.com/STAIxBWLB/hwp-cli/pull/132)). Ten rules across three
+  families: `notation-date`, `notation-time`, `notation-money`, `notation-punctuation`,
+  `notation-attach-colon`, `notation-attach-number`, `notation-end-dot`, `struct-item-mark`,
+  `struct-roman-heading`, `ai-style-marks`. `--profile gongmun|report`, `--json` emitting the new
+  `hwp-lint-report-v1` contract, and `--strict` to exit 1 on an error-severity finding. Advisory
+  by default: it always exits 0 unless `--strict` is given. Exposed as the MCP tool `hwp_lint`,
+  taking the tool count from sixteen to seventeen.
+- `hwp new` builds official-document frames from repeatable `key=value` flags
+  ([#133](https://github.com/STAIxBWLB/hwp-cli/pull/133)): `--doc-head` and `--doc-foot` for the
+  기안문 두문/결문, `--notice-head`/`--notice-foot` for 공고문, and `--press-head` for 보도자료.
+  Every frame block is emitted as a table. The 결재란 is not rendered — the approval system owns
+  it — so 결재 and 협조 are emitted as placeholder rows, 협조 always on its own row.
+- `hwp new --template <slug|한국어 별칭>` creates a document from one of the eight embedded
+  skeletons (기안문 내부결재·대외시행, 공문서, 보고서, 사업계획서, 회의록, 공고문, 보도자료), and
+  `--list-templates` lists them. Templates and frame flags are mutually exclusive: a template
+  already carries its own 두문/결문.
+- Tables generated under any official preset now carry a shaded, bold, centered header row and
+  content-proportional column widths. `hwp edit --style-tables <preset>` applies the same to an
+  existing document and is byte-stable when re-applied.
+- `hwp_new` and `hwp_edit` MCP input schemas cover the new frame, template and table-styling
+  arguments.
+
+**Changed**
+
+- The `gian` deprecation note now names `official`, the canonical preset key, instead of pointing
+  at the second alias `gongmun`.
+
 **Removed**
 
-- The `gaejosik` official-document profile and its `개조식` alias. 개조식 is a writing style —
-  the noun-form sentence ending used inside 보고서·계획서 and 내부결재 bodies — not a document
-  class, and the profile's five typography fields could not express it. Its emitted document
-  header was identical to `notice`; the two differed only by a header/footer margin with no
-  cited source. The canonical set is now the six document types: `official`, `report`, `plan`,
-  `notice`, `minutes`, and `press`. `--preset gaejosik` and the MCP equivalent now fail with a
-  message pointing at the profile to use instead. Choose the profile by document type and apply
-  the style in the body text.
+- The `gaejosik` official-document profile and its `개조식` alias
+  ([#131](https://github.com/STAIxBWLB/hwp-cli/pull/131)). 개조식 is a writing style — the
+  noun-form sentence ending used inside 보고서·계획서 and 내부결재 bodies — not a document class,
+  and the profile's five typography fields could not express it. Its emitted document header was
+  identical to `notice`; the two differed only by a header/footer margin with no cited source. The
+  canonical set is now the six document types: `official`, `report`, `plan`, `notice`, `minutes`
+  and `press`. `--preset gaejosik` and the MCP equivalent fail with a message naming the profile
+  to use instead.
+
+**Fixed**
+
+- `hwp lint` no longer aborts the process on non-ASCII digits. The regex crate's `\d` is
+  Unicode-aware, so a full-width `２０２６. ８. ２０.` matched the date candidate and then panicked
+  in `parse::<u32>()`, taking down the CLI and the MCP server on a single line of user markdown.
+  All six digit classes are pinned to ASCII, which is also what 편람 §6 requires.
+- `hwp lint` no longer accepts a truncated Korean amount reading. `금113,560원(금` suppressed
+  `notation-money` because the check was a prefix test; §6 requires the complete `(금…원)`
+  parenthetical.
+- `hwp edit --style-tables` on an already-styled document publishes an unmodified file instead of
+  failing. Zero edits was indistinguishable from "no table matched", so the second of two
+  identical runs errored.
+- A horizontally merged cell is given the summed width of every column it spans, not just its
+  starting column's.
+- The HWPX patch writer no longer stamps the wall clock onto entries it rewrites. Two identical
+  edits a second apart produced different bytes, which broke byte-stability guarantees and made
+  the same input look non-deterministic across runs.
+
+**Verification**
+
+- CI green on ubuntu, macOS and Windows for every merged PR, plus the pinned-toolchain lint,
+  PDF-parity runner and structured-corpus gates.
+- Twenty artifacts covering frames, both writers, all six presets, the styled/unstyled pair and
+  all eight templates were opened in genuine Hancom Office 12.30.0 build 6446 on macOS 26.6.2:
+  twenty windows, no repair or damage dialog. Twenty content-free
+  `hancom-verification-receipt-v1` receipts were recorded privately and schema-validated. This is
+  a bounded structural and application-acceptance claim, not a pixel-parity claim.
+
+**Known issues**
+
+- `hwp cat --format markdown` writes a level-2 item as `- 가. 대상`, a bullet plus the
+  engine-assigned mark as literal text, so a markdown round trip hardens the mark into the body
+  ([#134](https://github.com/STAIxBWLB/hwp-cli/issues/134)).
+- `hwp edit --verify` can fail an edit/re-read semantic-hash comparison on some Hancom-authored
+  HWPX documents ([#135](https://github.com/STAIxBWLB/hwp-cli/issues/135)).
 
 ## [0.8.8]
 
