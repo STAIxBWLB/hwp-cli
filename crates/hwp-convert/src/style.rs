@@ -221,6 +221,12 @@ pub fn style_table(
     if cols == 0 {
         return false;
     }
+    // The return value drives the walker's cache invalidation, including clearing a raw-backed
+    // generic's `hwpx_raw_xml` — which the HWPX writer cannot reconstruct. Reporting "I ran"
+    // instead of "I changed something" made every re-application destroy that XML, so a document
+    // carrying an `hp:container` grew on each pass instead of converging. Snapshot first, compare
+    // at the end, and report the truth.
+    let before: Vec<CellStyleSnapshot> = table.cells.iter().map(CellStyleSnapshot::of).collect();
 
     // Rule 1: per-column weight = max display_width over every cell's own text in that column,
     // header included.
@@ -233,8 +239,15 @@ pub fn style_table(
 
     let widths = column_widths(&weights, total_width, cols);
     for cell in &mut table.cells {
-        if let Some(&w) = widths.get(cell.col as usize) {
-            cell.width = hwp_model::HwpUnit(w);
+        // A horizontally merged cell owns every column it spans, so its width is the SUM over
+        // `col..col + col_span`. Assigning only `widths[col]` shrank a spanning header to its
+        // first column's width while the unmerged body row still occupied all of them, leaving
+        // the table geometry inconsistent after `--style-tables`.
+        let start = cell.col as usize;
+        let span = (cell.col_span as usize).max(1);
+        let total: i32 = widths.iter().skip(start).take(span).copied().sum();
+        if total > 0 {
+            cell.width = hwp_model::HwpUnit(total);
         }
     }
 
@@ -289,12 +302,15 @@ pub fn style_table(
         }
     }
 
-    true
+    table.cells.iter().map(CellStyleSnapshot::of).ne(before)
 }
 
 /// `hwp edit --style-tables <preset>`: styles every eligible table already in `doc` through the
-/// SAME `style_table` markdown import calls (one styling implementation only, D-08). Returns the
-/// number of tables actually styled.
+/// SAME `style_table` markdown import calls (one styling implementation only, D-08). Returns
+/// `(eligible, changed)`: how many multi-column tables the walk visited, and how many of them
+/// actually moved. A caller needs both, because "this document has no styleable table" is an
+/// unapplied edit while "every table is already styled" is a successful no-op (D-08). Collapsing
+/// them into one count made a correct second application fail the fail-closed publish gate.
 ///
 /// Copies `format.rs::restyle_para`'s recursion shape: walks every section paragraph, recursing
 /// into `Control::Table` cells and `Control::Generic` paragraph lists, clearing stale cached
@@ -305,22 +321,25 @@ pub fn style_table(
 /// treating its row 0 as a header row would shade 발신명의/기관명 on top of the shape they already
 /// carry. Column count is part of the table's own content, so this costs no marker and D-08's
 /// purity survives.
-pub fn style_tables(doc: &mut Document) -> usize {
+pub fn style_tables(doc: &mut Document) -> (usize, usize) {
     let Document {
         header, sections, ..
     } = doc;
+    let mut eligible = 0;
     let mut styled = 0;
     for section in sections.iter_mut() {
         for para in &mut section.paragraphs {
-            styled += style_tables_in_para(
+            let (e, c) = style_tables_in_para(
                 para,
                 &mut header.para_shapes,
                 &mut header.border_fills,
                 &mut header.char_shapes,
             );
+            eligible += e;
+            styled += c;
         }
     }
-    styled
+    (eligible, styled)
 }
 
 /// The subset of a `Cell`'s state `style_table` can change — used only to detect whether a table
@@ -353,13 +372,15 @@ fn style_tables_in_para(
     para_shapes: &mut Vec<ParaShape>,
     border_fills: &mut Vec<BorderFill>,
     char_shapes: &mut Vec<CharShape>,
-) -> usize {
+) -> (usize, usize) {
+    let mut eligible = 0;
     let mut styled = 0;
     for ctrl in &mut para.controls {
         match ctrl {
             Control::Table(t) => {
                 // D-11: single-column tables (frame blocks) are never treated as styleable.
                 if t.cols > 1 {
+                    eligible += 1;
                     let total_width: i32 = t
                         .cells
                         .iter()
@@ -401,7 +422,10 @@ fn style_tables_in_para(
                 // whether this table itself was eligible.
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        styled += style_tables_in_para(p, para_shapes, border_fills, char_shapes);
+                        let (e, c) =
+                            style_tables_in_para(p, para_shapes, border_fills, char_shapes);
+                        eligible += e;
+                        styled += c;
                     }
                 }
             }
@@ -409,18 +433,26 @@ fn style_tables_in_para(
                 let before = styled;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        styled += style_tables_in_para(p, para_shapes, border_fills, char_shapes);
+                        let (e, c) =
+                            style_tables_in_para(p, para_shapes, border_fills, char_shapes);
+                        eligible += e;
+                        styled += c;
                     }
                 }
                 if styled > before {
-                    // A nested table changed — the original XML is stale, do not re-emit it.
+                    // A nested table ACTUALLY changed, so the captured XML is stale. Gate on the
+                    // changed count, never on the eligible count: `hwpx_raw_xml` is the only
+                    // lossless serialization source for a raw-backed generic (the HWPX writer
+                    // reports `OpaqueControlUnrepresentable` without it), so clearing it on a
+                    // no-op re-application destroyed the container and made the file grow on
+                    // every pass instead of converging.
                     g.hwpx_raw_xml = None;
                 }
             }
             _ => {}
         }
     }
-    styled
+    (eligible, styled)
 }
 
 #[cfg(test)]
@@ -975,5 +1007,56 @@ mod tests {
                 "헤더 셰이딩 미적용: {preset:?}"
             );
         }
+    }
+
+    // ── #133 review regressions ──
+
+    /// A horizontally merged cell owns every column it spans, so its width is the SUM over
+    /// `col..col + col_span`. Assigning only `widths[col]` shrank a spanning header to its first
+    /// column's width while the unmerged body row still occupied all of them.
+    #[test]
+    fn merged_cell_width_is_the_sum_of_the_columns_it_spans() {
+        let mut table = make_table(&[&["머리", ""], &["짧", "아주 긴 본문 내용입니다"]]);
+        // Turn row 0 into one cell spanning both columns.
+        table.cells.retain(|c| !(c.row == 0 && c.col == 1));
+        table.row_cell_counts[0] = 1;
+        for cell in &mut table.cells {
+            if cell.row == 0 {
+                cell.col_span = 2;
+            }
+        }
+
+        let (mut ps, mut bf, mut cs) = (Vec::new(), Vec::new(), Vec::new());
+        style_table(&mut table, 1, 40000, &mut ps, 0, &mut bf, 0, &mut cs);
+
+        let spanning = table.cells.iter().find(|c| c.row == 0).unwrap().width.0;
+        let body: i32 = table
+            .cells
+            .iter()
+            .filter(|c| c.row == 1)
+            .map(|c| c.width.0)
+            .sum();
+        assert_eq!(
+            spanning, body,
+            "a cell spanning both columns must be as wide as both body cells together"
+        );
+    }
+
+    /// `style_table`'s return value drives the walker's cache invalidation, including clearing a
+    /// raw-backed generic's `hwpx_raw_xml` — which the HWPX writer cannot reconstruct. It must
+    /// report "I changed something", never merely "I ran".
+    #[test]
+    fn style_table_reports_change_not_mere_processing() {
+        let mut table = make_table(&[&["이름", "소속"], &["홍길동", "총무처"]]);
+        let (mut ps, mut bf, mut cs) = (Vec::new(), Vec::new(), Vec::new());
+
+        assert!(
+            style_table(&mut table, 1, 40000, &mut ps, 0, &mut bf, 0, &mut cs),
+            "first application changes the table"
+        );
+        assert!(
+            !style_table(&mut table, 1, 40000, &mut ps, 0, &mut bf, 0, &mut cs),
+            "re-styling an already-styled table changes nothing and must say so"
+        );
     }
 }

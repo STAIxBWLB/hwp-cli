@@ -65,6 +65,27 @@ fn new_from(md: &Path, out: &Path, extra_args: &[&str]) {
     assert!(status.success(), "hwp new --from {md:?} -o {out:?} failed");
 }
 
+/// Same as [`style_tables`] but without `--verify`. Used only by the opaque-container
+/// regression, whose fixture trips a separate HWPX round-trip defect (#135) unrelated to
+/// styling: `--verify` compares the semantic hash of the edit result against the same document
+/// re-read from disk, and this file does not survive that comparison even though its containers
+/// hold no tables at all. Byte stability across re-application is still asserted in full.
+fn style_tables_no_verify(input: &Path, output: &Path) {
+    let r = hwp()
+        .arg("edit")
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .args(["--style-tables", "official"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "hwp edit {input:?} -o {output:?} --style-tables official failed: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+}
+
 fn style_tables(input: &Path, output: &Path) {
     let r = hwp()
         .arg("edit")
@@ -433,4 +454,89 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
         })
         .collect();
     Some(TableRecord { cols, cells })
+}
+
+/// Regression for the two defects Codex found on #133.
+///
+/// A real HWPX carrying an `hp:container` (an opaque run-level object whose captured XML is the
+/// ONLY lossless serialization source) is the case the earlier tests missed: they covered
+/// generated documents and a table nested in a table cell, never a raw-backed generic. Two bugs
+/// compounded there. `style_table` returned `true` for every table with at least one column
+/// rather than only for tables it changed, so the walker's `Control::Generic` arm cleared
+/// `hwpx_raw_xml` on a pure no-op re-application; and once cleared, the HWPX writer cannot
+/// reconstruct the container and reports `OpaqueControlUnrepresentable`. Separately, an
+/// already-styled document produced zero edits, which the publish gate could not tell apart from
+/// "no table matched", so the second of two identical runs failed outright.
+///
+/// **This asserts extracted-content equality, not byte equality.** On this fixture the HWPX
+/// writer is not byte-deterministic even for two runs over the *same* input: the two packages
+/// differ in ZIP container metadata while every extracted entry is identical (#136). Byte
+/// equality across re-application is still asserted for generated documents by
+/// `style_tables_byte_stable_on_second_application_both_writers`, where the writer *is*
+/// deterministic; here the meaningful claim is that re-applying changes no document content.
+///
+/// `--verify` is deliberately omitted: this fixture fails the edit/re-read semantic-hash
+/// comparison for a reason unrelated to styling (#135) — its ten `hp:container` elements hold no
+/// tables at all — and gating this regression on that defect would couple the two.
+#[test]
+fn style_tables_leaves_an_opaque_container_document_unchanged_on_reapplication() {
+    let source = Path::new(
+        "../../fixtures/pdf-parity/private/complex-proposal-body-v2/source/complex-proposal-body-v2.hwpx",
+    );
+    if !source.exists() {
+        eprintln!("skip: private parity fixture absent (gitignored corpus)");
+        return;
+    }
+    let dir = test_dir("opaque-container");
+    let first = dir.join("s1.hwpx");
+    let second = dir.join("s2.hwpx");
+    let third = dir.join("s3.hwpx");
+
+    // Each pass must PUBLISH. Before the fix the second one failed the publish gate outright.
+    style_tables_no_verify(source, &first);
+    style_tables_no_verify(&first, &second);
+    style_tables_no_verify(&second, &third);
+
+    assert_entries_eq(
+        &second,
+        &third,
+        "opaque container: re-applying must change no content",
+    );
+    validate_ok(&second);
+    validate_ok(&third);
+}
+
+/// Compare two zip packages entry by entry (name -> uncompressed bytes), ignoring container
+/// metadata. Used where the writer is not byte-deterministic (#136) but the content must still
+/// be identical.
+fn assert_entries_eq(a_path: &Path, b_path: &Path, context: &str) {
+    let read_entries = |p: &Path| -> Vec<(String, Vec<u8>)> {
+        let file = std::fs::File::open(p).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let mut out = Vec::new();
+        for i in 0..zip.len() {
+            let mut e = zip.by_index(i).unwrap();
+            let name = e.name().to_string();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut e, &mut buf).unwrap();
+            out.push((name, buf));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+    let a = read_entries(a_path);
+    let b = read_entries(b_path);
+    assert_eq!(
+        a.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        b.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        "{context}: entry names differ"
+    );
+    for ((name, ab), (_, bb)) in a.iter().zip(b.iter()) {
+        assert!(
+            ab == bb,
+            "{context}: entry {name:?} differs ({} vs {} bytes)",
+            ab.len(),
+            bb.len()
+        );
+    }
 }

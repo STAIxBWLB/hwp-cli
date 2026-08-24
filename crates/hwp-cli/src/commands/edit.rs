@@ -1095,13 +1095,18 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             // `preset` does not yet select divergent values (D-07's values are uniform across
             // all six profiles today) - it validates and records intent for a future divergence.
             EditOperation::StyleTables(_preset) => {
-                let n = hwp_convert::style_tables(&mut doc);
-                if n == 0 {
+                // (eligible, changed). Only "no styleable table at all" is an unapplied edit;
+                // "every table is already styled" is a successful no-op, which is exactly what
+                // D-08's byte-stability promises on a second run.
+                let (eligible, changed) = hwp_convert::style_tables(&mut doc);
+                if eligible == 0 {
                     eprintln!("경고: 스타일링 대상 표를 찾지 못했습니다(1열 표는 건너뜀)");
                     unapplied.push("--style-tables".to_string());
+                } else if changed == 0 {
+                    eprintln!("표 스타일링: 이미 적용되어 있습니다({eligible}개 확인)");
                 } else {
-                    eprintln!("표 스타일링: {n}개");
-                    edits += n;
+                    eprintln!("표 스타일링: {changed}개");
+                    edits += changed;
                 }
             }
         }
@@ -1116,7 +1121,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             unapplied.join(", ")
         );
     }
-    if edits == 0 || (doc == original_doc && !requested_style_tables) {
+    // `--style-tables` on an already-styled document legitimately produces zero edits and a
+    // document equal to the original: that IS D-08's guarantee, and refusing to publish would
+    // make the second of two identical runs fail. Every other operation still has to change
+    // something to earn an output.
+    if !requested_style_tables && (edits == 0 || doc == original_doc) {
         anyhow::bail!(
             "적용 가능한 편집이 없어 출력을 게시하지 않습니다 \
              (--replace/--set-cell/--set-field/--set-meta 등 요청 확인)"
@@ -1616,12 +1625,15 @@ fn apply_typed_operation(
             }
         }
         TypedEditOperation::StyleTables { preset: _ } => {
-            let count = hwp_convert::style_tables(doc);
-            if count == 0 {
+            // See the CLI arm: an already-styled document is a no-op, not an unapplied request.
+            let (eligible, changed) = hwp_convert::style_tables(doc);
+            if eligible == 0 {
                 unapplied.push("style_tables".to_string());
+            } else if changed == 0 {
+                eprintln!("표 스타일링: 이미 적용되어 있습니다({eligible}개 확인)");
             } else {
-                eprintln!("표 스타일링: {count}개");
-                *edits += count;
+                eprintln!("표 스타일링: {changed}개");
+                *edits += changed;
             }
         }
     }
