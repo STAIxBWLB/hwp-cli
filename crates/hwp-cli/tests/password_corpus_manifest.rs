@@ -19,6 +19,12 @@ fn manifest_contract_accepts_a_redacted_synthetic_matrix() {
     .expect("the synthetic manifest should satisfy the closed contract");
 
     assert_eq!(descriptors.len(), 3);
+    assert!(descriptors.iter().any(|entry| {
+        entry.fixture_id == "opaque-hwp5-baseline"
+            && entry.format == "hwp5"
+            && entry.role == "baseline"
+            && entry.credential_charset == "ascii"
+    }));
     assert!(descriptors.iter().all(|entry| entry.source_path.is_none()));
     assert!(descriptors.iter().all(|entry| entry.credential.is_some()));
 }
