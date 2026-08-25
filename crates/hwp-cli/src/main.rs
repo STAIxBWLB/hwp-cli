@@ -164,17 +164,19 @@ fn real_main() -> anyhow::Result<()> {
             // clap's `required_unless_present = "list_templates"` guarantees `output` is `Some`
             // on every path that reaches here.
             let output = output.expect("clap requires --output unless --list-templates");
-            let any_frame_flag = !doc_head.is_empty()
-                || !doc_foot.is_empty()
-                || !notice_head.is_empty()
-                || !notice_foot.is_empty()
-                || !press_head.is_empty();
             let embedded = template
                 .as_deref()
-                .map(|name| commands::new::resolve_template(name, from.is_some(), any_frame_flag))
+                .map(|name| commands::new::resolve_template(name, from.is_some()))
                 .transpose()?;
+            // A template names the profile it was written for and the frames it needs; both are
+            // defaults an explicit flag overrides.
+            let template_defaults = template
+                .as_deref()
+                .and_then(commands::skill::template_defaults);
             let options = commands::new::NewOptions::from_millimetres(
-                preset.map(hwp_cli::cli::PresetArg::canonical),
+                preset
+                    .map(hwp_cli::cli::PresetArg::canonical)
+                    .or(template_defaults.as_ref().map(|d| d.preset)),
                 margin_top,
                 margin_bottom,
                 margin_left,
@@ -187,7 +189,8 @@ fn real_main() -> anyhow::Result<()> {
                 &notice_head,
                 &notice_foot,
                 &press_head,
-            )?;
+            )?
+            .with_template_frames(template_defaults.as_ref());
             match embedded {
                 Some(text) => commands::new::run_embedded(&output, text, &set_meta, &options),
                 None => commands::new::run(&output, from.as_deref(), &set_meta, &options),

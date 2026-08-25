@@ -1551,16 +1551,13 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let notice_head = frame_field_specs("notice_head")?;
     let notice_foot = frame_field_specs("notice_foot")?;
     let press_head = frame_field_specs("press_head")?;
-    let any_frame_flag = !doc_head.is_empty()
-        || !doc_foot.is_empty()
-        || !notice_head.is_empty()
-        || !notice_foot.is_empty()
-        || !press_head.is_empty();
 
-    // D-05: `template` is refused together with `markdown`/`json` (both are the "document
-    // content" argument, same as `--template`/`--from` on the CLI) and with any frame argument
-    // (templates already carry their own 두문/결문). Resolved through the same fixed in-binary
-    // lookup `--list-templates` reads (T-02.4-13) — never a filesystem path built from the name.
+    // `template` is refused together with `markdown`/`json` (both are the "document content"
+    // argument, same as `--template`/`--from` on the CLI). Frame arguments do combine with it:
+    // the skeleton carries no native 두문/결문 table, so the frame arguments supply them (the
+    // D-05 exclusion was reverted once verification falsified its premise). Resolved through the
+    // same fixed in-binary lookup `--list-templates` reads (T-02.4-13) — never a filesystem path
+    // built from the name.
     let template = arg_str_opt(args, "template")?;
     let embedded_text = template
         .map(|name| -> Result<&'static str, String> {
@@ -1577,13 +1574,6 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
                      포함합니다"
                         .into(),
                 );
-            }
-            if any_frame_flag {
-                return Err(format!(
-                    "template {name}은(는) 프레임 인자(doc_head/doc_foot/notice_head/notice_foot/\
-                     press_head)와 함께 지정할 수 없습니다: 템플릿은 두문/결문을 이미 포함하므로 \
-                     함께 지정하면 프레임이 중복됩니다."
-                ));
             }
             crate::commands::skill::template_file(name)
                 .map(|file| file.contents)
@@ -1629,8 +1619,11 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let preset = arg_str_opt(args, "preset")?
         .map(hwp_convert::OfficialPreset::parse)
         .transpose()?;
+    // A template names the profile it was written for and the frames it needs; both are defaults
+    // an explicit argument overrides, exactly as on the CLI (D-01: one behavior, two surfaces).
+    let template_defaults = template.and_then(crate::commands::skill::template_defaults);
     let options = crate::commands::new::NewOptions::from_millimetres(
-        preset,
+        preset.or(template_defaults.as_ref().map(|d| d.preset)),
         arg_f64_opt(args, "margin_top_mm")?,
         arg_f64_opt(args, "margin_bottom_mm")?,
         arg_f64_opt(args, "margin_left_mm")?,
@@ -1645,7 +1638,8 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         &notice_foot,
         &press_head,
     )
-    .map_err(|error| format!("{error:#}"))?;
+    .map_err(|error| format!("{error:#}"))?
+    .with_template_frames(template_defaults.as_ref());
     let report = crate::commands::new::execute(&output, input, &metadata, &options)
         .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
@@ -2102,20 +2096,20 @@ fn tool_defs() -> Vec<Value> {
                 "margin_right_mm": {"type": "number", "minimum": 0, "maximum": 200},
                 "doc_head": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
-                    "required": ["key", "value"]}, "description": "두문(기관명|수신|경유); markdown 전용, template과 상호 배타적"},
+                    "required": ["key", "value"]}, "description": "두문(기관명|수신|경유); markdown·template과 함께 사용 가능"},
                 "doc_foot": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
-                    "required": ["key", "value"]}, "description": "결문(발신명의|기안자|검토자|결재자|협조자|시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분); markdown 전용, template과 상호 배타적"},
+                    "required": ["key", "value"]}, "description": "결문(발신명의|기안자|검토자|결재자|협조자|시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분); markdown·template과 함께 사용 가능"},
                 "notice_head": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
-                    "required": ["key", "value"]}, "description": "공고문 머리(기관명|공고번호); markdown 전용, template과 상호 배타적"},
+                    "required": ["key", "value"]}, "description": "공고문 머리(기관명|공고번호); markdown·template과 함께 사용 가능"},
                 "notice_foot": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
-                    "required": ["key", "value"]}, "description": "공고문 꼬리(공고일자|발신명의); markdown 전용, template과 상호 배타적"},
+                    "required": ["key", "value"]}, "description": "공고문 꼬리(공고일자|발신명의); markdown·template과 함께 사용 가능"},
                 "press_head": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
-                    "required": ["key", "value"]}, "description": "보도자료 머리(기관명|보도시점|배포일|담당부서|담당자|연락처); markdown 전용, template과 상호 배타적"},
-                "template": {"type": "string", "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json 및 모든 프레임 인자와 상호 배타적(D-05)"}
+                    "required": ["key", "value"]}, "description": "보도자료 머리(기관명|보도시점|배포일|담당부서|담당자|연락처); markdown·template과 함께 사용 가능"},
+                "template": {"type": "string", "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능"}
             }, "required": ["output"]}
         }),
         json!({
@@ -2977,22 +2971,61 @@ mod tests {
         assert!(!output.exists());
     }
 
-    /// D-05: `template` is refused together with any frame argument, over MCP as on the CLI.
+    /// Every paragraph's text, table cells included — frame values live inside table cells.
+    fn frame_text(paragraphs: &[hwp_model::Paragraph], out: &mut String) {
+        for paragraph in paragraphs {
+            for ch in &paragraph.chars {
+                if let hwp_model::HwpChar::Text(c) = ch {
+                    out.push(*c);
+                }
+            }
+            out.push('\n');
+            for control in &paragraph.controls {
+                if let hwp_model::Control::Table(table) = control {
+                    for cell in &table.cells {
+                        frame_text(&cell.paragraphs, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A `template` brings its own native frames over MCP as on the CLI, and a frame argument
+    /// overrides one key of them instead of adding a second row.
     #[test]
-    fn hwp_new_template_and_frame_argument_refused() {
-        let output = temp_file("hwp-new-template-frame-conflict.hwpx");
+    fn hwp_new_template_frames_are_native_and_arguments_override_them() {
+        let output = temp_file("hwp-new-template-with-frames.hwpx");
         let _ = std::fs::remove_file(&output);
-        let error = tool_new(
+        tool_new(
             &json!({
                 "output": output,
-                "template": "official",
+                "template": "gian-external",
                 "doc_head": [{"key": "기관명", "value": "테스트기관"}],
             }),
             &ctx(),
         )
-        .unwrap_err();
-        assert!(error.contains("프레임 인자"), "{error}");
-        assert!(!output.exists());
+        .expect("MCP hwp_new with a template and a frame argument");
+        let document = hwpx::read_document(&output).unwrap().document;
+        let tables = document
+            .sections
+            .iter()
+            .flat_map(|section| section.paragraphs.iter())
+            .flat_map(|paragraph| paragraph.controls.iter())
+            .filter(|control| matches!(control, hwp_model::Control::Table(_)))
+            .count();
+        assert_eq!(tables, 2, "the template's 두문/결문 must be native tables");
+        let mut text = String::new();
+        frame_text(&document.sections[0].paragraphs, &mut text);
+        assert!(text.contains("테스트기관"), "the argument value is missing");
+        assert!(
+            !text.contains("{{기관명}}"),
+            "the slot default survived alongside the argument — the row is duplicated"
+        );
+        assert!(
+            text.contains("{{수신}}"),
+            "a key the caller did not supply must keep its slot default"
+        );
+        let _ = std::fs::remove_file(&output);
     }
 
     /// D-05: `template` is also refused together with `markdown`/`json` (the MCP-side equivalent

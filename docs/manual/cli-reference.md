@@ -117,7 +117,7 @@ Create a new document
 |---|---|---|---|
 | `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX path (not required with --list-templates) |
 | `--from` | `<FROM>` |  | Input markdown or JSON file (empty document when omitted) |
-| `--template` | `<TEMPLATE>` |  | Use an embedded document-template skeleton by English slug or Korean alias (see --list-templates). Mutually exclusive with --from and with every frame flag (D-05): templates already carry their own 두문/결문 |
+| `--template` | `<TEMPLATE>` |  | Use an embedded document template by English slug or Korean alias (see --list-templates). Brings its own profile and native 두문/결문 frames, whose values default to the template's own {{slots}}. Mutually exclusive with --from; --preset and the frame flags override one template default each |
 | `--list-templates` |  |  | List all embedded document templates (slug and Korean alias) and exit; needs no -o |
 | `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
 | `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, or press. Legacy and Korean aliases normalize to one profile |
