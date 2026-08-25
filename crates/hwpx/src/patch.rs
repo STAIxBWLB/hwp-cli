@@ -71,47 +71,88 @@ pub fn fill_placeholders_with_limits(
     Ok(counts)
 }
 
-/// One `<hp:t>` element's text content, as a byte range into the section XML.
+/// One text element's content, as a byte range into the section XML.
 struct TextSpan {
     content: Range<usize>,
 }
 
-/// Collect every `<hp:t …>…</hp:t>` content range in document order.
+/// Match an element tag by XML **local name**, the way `read::section` does, so a package that
+/// binds the paragraph namespace to a prefix other than `hp` — or writes a tab or newline before
+/// the attributes — is recognised here too. Otherwise `hwp slots` would report a split
+/// placeholder that this pass could not see, which is the very disagreement #145 closes.
+///
+/// `tail` starts at `<` (open tag) or at `</` (close tag).
+fn tag_local_name(tail: &str) -> Option<(&str, usize)> {
+    let after_bracket = if let Some(rest) = tail.strip_prefix("</") {
+        rest
+    } else {
+        tail.strip_prefix('<')?
+    };
+    let name_len = after_bracket
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(after_bracket.len());
+    let qname = &after_bracket[..name_len];
+    if qname.is_empty() || qname.starts_with('?') || qname.starts_with('!') {
+        return None;
+    }
+    let local = qname.rsplit(':').next().unwrap_or(qname);
+    let consumed = tail.len() - after_bracket.len() + name_len;
+    Some((local, consumed))
+}
+
+/// Collect every text element's content range in document order.
 fn text_spans(xml: &str) -> Vec<TextSpan> {
     let bytes = xml.as_bytes();
     let mut spans = Vec::new();
     let mut at = 0usize;
-    while let Some(open) = xml[at..].find("<hp:t") {
+    while let Some(open) = xml[at..].find('<') {
         let tag_start = at + open;
-        // `<hp:tbl`, `<hp:tc` … all share the prefix; only `<hp:t` followed by `>` or a
-        // space starts a text element.
-        let after = tag_start + "<hp:t".len();
-        match bytes.get(after) {
-            Some(b'>') | Some(b' ') => {}
-            _ => {
-                at = after;
-                continue;
-            }
+        let Some((local, consumed)) = tag_local_name(&xml[tag_start..]) else {
+            at = tag_start + 1;
+            continue;
+        };
+        // Only an OPEN `<…:t>` starts a span; a close tag would otherwise be read as one and
+        // swallow every run boundary up to the next text element.
+        if local != "t" || xml[tag_start..].starts_with("</") {
+            at = tag_start + consumed;
+            continue;
         }
-        let Some(gt) = xml[after..].find('>') else {
+        let Some(gt) = xml[tag_start..].find('>') else {
             break;
         };
-        let content_start = after + gt + 1;
+        let content_start = tag_start + gt + 1;
         // A self-closing `<hp:t/>` holds no text.
         if bytes.get(content_start - 2) == Some(&b'/') {
             at = content_start;
             continue;
         }
-        let Some(close) = xml[content_start..].find("</hp:t>") else {
+        let Some(close) = find_close_tag(xml, content_start, "t") else {
             break;
         };
-        let content_end = content_start + close;
         spans.push(TextSpan {
-            content: content_start..content_end,
+            content: content_start..close,
         });
-        at = content_end + "</hp:t>".len();
+        at = close;
     }
     spans
+}
+
+/// Byte offset of the `<` starting the next close tag whose local name is `local`.
+fn find_close_tag(xml: &str, from: usize, local: &str) -> Option<usize> {
+    let mut at = from;
+    while let Some(open) = xml[at..].find("</") {
+        let tag_start = at + open;
+        match tag_local_name(&xml[tag_start..]) {
+            Some((name, consumed)) => {
+                if name == local {
+                    return Some(tag_start);
+                }
+                at = tag_start + consumed;
+            }
+            None => at = tag_start + 2,
+        }
+    }
+    None
 }
 
 /// True when nothing but run boundaries separates two text elements, i.e. they belong to the
@@ -122,13 +163,10 @@ fn only_run_boundaries(gap: &str) -> bool {
     let mut rest = gap;
     while let Some(open) = rest.find('<') {
         let tail = &rest[open..];
-        let is_boundary = tail.starts_with("</hp:t>")
-            || tail.starts_with("</hp:run>")
-            || tail.starts_with("<hp:run>")
-            || tail.starts_with("<hp:run ")
-            || tail.starts_with("<hp:t>")
-            || tail.starts_with("<hp:t ");
-        if !is_boundary {
+        let Some((local, _)) = tag_local_name(tail) else {
+            return false;
+        };
+        if local != "t" && local != "run" {
             return false;
         }
         let Some(gt) = tail.find('>') else {
@@ -154,7 +192,7 @@ fn only_run_boundaries(gap: &str) -> bool {
 /// Only requested names are touched, so a document with no split placeholder among them keeps
 /// every byte it had.
 fn coalesce_split_placeholders(xml: &mut String, names: &[&str]) {
-    if names.is_empty() {
+    if names.is_empty() || !xml.contains("{{") {
         return;
     }
     let spans = text_spans(xml);
@@ -180,19 +218,23 @@ fn coalesce_split_placeholders(xml: &mut String, names: &[&str]) {
             continue;
         }
 
-        // Joined text of the group, with each byte's owning span recorded.
+        // Joined text of the group, plus where each span starts inside it. Recording the span
+        // boundaries rather than one entry per byte keeps this O(runs), not O(text length):
+        // package policy allows a 64 MiB section, and a per-byte map of it would be gigabytes.
         let mut joined = String::new();
-        let mut owner: Vec<(usize, usize)> = Vec::new(); // joined byte -> (span index, local offset)
-        for (index, span) in group.iter().enumerate() {
-            let text = &xml[span.content.clone()];
-            for (local, _) in text.char_indices() {
-                let width = text[local..].chars().next().unwrap().len_utf8();
-                for _ in 0..width {
-                    owner.push((index, local));
-                }
-            }
-            joined.push_str(text);
+        let mut span_starts: Vec<usize> = Vec::with_capacity(group.len());
+        for span in group {
+            span_starts.push(joined.len());
+            joined.push_str(&xml[span.content.clone()]);
         }
+        if !joined.contains("{{") {
+            continue;
+        }
+        // joined offset -> (index into `group`, offset inside that span's text)
+        let locate = |offset: usize| -> (usize, usize) {
+            let index = span_starts.partition_point(|start| *start <= offset) - 1;
+            (index, offset - span_starts[index])
+        };
 
         for name in names {
             let needle = format!("{{{{{name}}}}}");
@@ -201,8 +243,8 @@ fn coalesce_split_placeholders(xml: &mut String, names: &[&str]) {
                 let start = from + hit;
                 let end = start + needle.len();
                 from = end;
-                let (first_span, first_local) = owner[start];
-                let (last_span, last_local) = owner[end - 1];
+                let (first_span, first_local) = locate(start);
+                let (last_span, last_local) = locate(end - 1);
                 if first_span == last_span {
                     continue; // already whole in one run — the plain replace handles it
                 }
@@ -2031,6 +2073,40 @@ mod coalesce_tests {
         coalesce_split_placeholders(&mut xml, &["기관명"]);
         assert!(xml.contains("{{기관명}}"), "not coalesced:\n{xml}");
         assert!(xml.contains(" 귀하"), "trailing text lost:\n{xml}");
+    }
+
+    /// A package may bind the paragraph namespace to any prefix, and may put a newline or tab
+    /// before a tag's attributes. `read::section` matches XML local names, so `hwp slots` sees
+    /// such a document; this pass has to agree or the disagreement #145 closes just moves.
+    #[test]
+    fn recognises_text_elements_under_another_prefix() {
+        const OTHER: &str = "<p:p id=\"1\"><p:run charPrIDRef=\"0\"><p:t\n  xml:space=\"preserve\">이름: {{이</p:t></p:run><p:run charPrIDRef=\"2\"><p:t xml:space=\"preserve\">름</p:t></p:run><p:run charPrIDRef=\"0\"><p:t xml:space=\"preserve\">}} 입니다.</p:t></p:run></p:p>";
+        let mut xml = OTHER.to_string();
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        assert!(
+            xml.contains("{{이름}}"),
+            "prefix-independent match failed:\n{xml}"
+        );
+        assert!(xml.contains(" 입니다."), "trailing text lost:\n{xml}");
+    }
+
+    /// A megabyte-scale paragraph still coalesces correctly.
+    ///
+    /// This is a smoke test, not a memory bound: the O(runs) property comes from recording span
+    /// starts instead of a per-byte position map, which no assertion here can observe. The first
+    /// draft of this pass did keep a `(usize, usize)` per byte, and against the 64 MiB section
+    /// the package policy allows that would have reached gigabytes — a real way to end the
+    /// process the CLI and the MCP server share. What this test does catch is an offset bug that
+    /// only shows up once a span is longer than the text around it.
+    #[test]
+    fn a_megabyte_paragraph_still_coalesces() {
+        let filler = "가".repeat(400_000); // ~1.2 MB of UTF-8 in one run
+        let xml_source = format!(
+            "<hp:p id=\"1\"><hp:run charPrIDRef=\"0\"><hp:t xml:space=\"preserve\">{filler}{{{{이</hp:t></hp:run><hp:run charPrIDRef=\"1\"><hp:t xml:space=\"preserve\">름}}}} {filler}</hp:t></hp:run></hp:p>"
+        );
+        let mut xml = xml_source;
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        assert!(xml.contains("{{이름}}"), "large paragraph not coalesced");
     }
 
     /// Two split placeholders in one paragraph, so the edits must not disturb each other.
