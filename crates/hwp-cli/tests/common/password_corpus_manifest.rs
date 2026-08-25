@@ -264,8 +264,10 @@ enum ProfileObservation {
     Hwpx {
         algorithm_id: String,
         kdf_id: String,
+        pbkdf2_prf: &'static str,
         start_key_id: String,
         checksum_id: String,
+        cbc_padding: &'static str,
         protected_entry_count: usize,
         validated_entry_count: usize,
         protected_entry_bytes: u64,
@@ -351,15 +353,7 @@ where
             "hwpx" => {
                 let observation =
                     probe_hwpx_password_profile(&fixture.source_path, &fixture.credential)?;
-                ProfileObservation::Hwpx {
-                    algorithm_id: observation.algorithm_id,
-                    kdf_id: observation.kdf_id,
-                    start_key_id: observation.start_key_id,
-                    checksum_id: observation.checksum_id,
-                    protected_entry_count: observation.protected_entry_count,
-                    validated_entry_count: observation.validated_entry_count,
-                    protected_entry_bytes: observation.protected_entry_bytes,
-                }
+                profile_observation_hwpx(observation)
             }
             _ => return Err("owner password corpus format is unsupported".to_owned()),
         };
@@ -586,9 +580,13 @@ pub struct HwpxProfile {
 
 const HWPX_ALGORITHM: &str = "http://www.w3.org/2001/04/xmlenc#aes256-cbc";
 const HWPX_KDF: &str = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2";
+const HWPX_PBKDF2_PRF: &str = "hmac-sha1";
 const HWPX_START_KEY: &str = "http://www.w3.org/2000/09/xmldsig#sha256";
-const HWPX_CHECKSUM_SUFFIX: &str = "#sha256-1k";
+const HWPX_CHECKSUM: &str = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k";
+const HWPX_CBC_PADDING: &str = "zero-to-aes-block";
 const HWPX_MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
+const HWPX_INTEGRITY_ERROR: &str = "HWPX credential or integrity validation failed";
+const HWPX_UNSUPPORTED_PROFILE_ERROR: &str = "HWPX protected profile is unsupported";
 
 /// Parses only the non-secret identifiers needed to decide whether a private
 /// HWPX package can enter the subsequent owner-controlled probe. The schema
@@ -719,10 +717,7 @@ pub fn parse_hwpx_profile(manifest: &str) -> Result<HwpxProfile, String> {
         if entry.algorithm_id.as_deref() != Some(HWPX_ALGORITHM)
             || entry.kdf_id.as_deref() != Some(HWPX_KDF)
             || entry.start_key_id.as_deref() != Some(HWPX_START_KEY)
-            || !entry
-                .checksum_id
-                .as_deref()
-                .is_some_and(|value| value.ends_with(HWPX_CHECKSUM_SUFFIX))
+            || entry.checksum_id.as_deref() != Some(HWPX_CHECKSUM)
             || entry.checksum_len != Some(32)
             || entry.iv_len != Some(16)
             || entry
@@ -989,6 +984,33 @@ pub struct HwpxProbeObservation {
     pub protected_entry_bytes: u64,
 }
 
+fn profile_observation_hwpx(observation: HwpxProbeObservation) -> ProfileObservation {
+    ProfileObservation::Hwpx {
+        algorithm_id: observation.algorithm_id,
+        kdf_id: observation.kdf_id,
+        pbkdf2_prf: HWPX_PBKDF2_PRF,
+        start_key_id: observation.start_key_id,
+        checksum_id: observation.checksum_id,
+        cbc_padding: HWPX_CBC_PADDING,
+        protected_entry_count: observation.protected_entry_count,
+        validated_entry_count: observation.validated_entry_count,
+        protected_entry_bytes: observation.protected_entry_bytes,
+    }
+}
+
+pub fn serialize_hwpx_profile_observation(observation: HwpxProbeObservation) -> Value {
+    serde_json::to_value(profile_observation_hwpx(observation))
+        .expect("closed HWPX profile evidence is serializable")
+}
+
+pub fn hwpx_integrity_error() -> &'static str {
+    HWPX_INTEGRITY_ERROR
+}
+
+pub fn hwpx_unsupported_profile_error() -> &'static str {
+    HWPX_UNSUPPORTED_PROFILE_ERROR
+}
+
 struct HwpxEncryptedEntry {
     name: String,
     declared_plaintext_bytes: u64,
@@ -1012,19 +1034,19 @@ pub fn probe_hwpx_password_profile(
     password: &str,
 ) -> Result<HwpxProbeObservation, String> {
     use aes::Aes256;
-    use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
-    use flate2::{Decompress, FlushDecompress, Status};
+    use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::NoPadding};
     use pbkdf2::pbkdf2_hmac;
 
-    let mut package = hwpx::HwpxPackage::open(path)
-        .map_err(|_| "HWPX package cannot be opened for profile discovery".to_owned())?;
+    let mut package = hwpx::HwpxPackage::open(path).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
     let manifest = package
         .read_entry_string("META-INF/manifest.xml")
-        .map_err(|_| "HWPX encryption manifest is unavailable".to_owned())?;
-    let profile = parse_hwpx_profile(&manifest)?;
-    let protected = parse_hwpx_encrypted_entries(&manifest)?;
+        .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+    let profile =
+        parse_hwpx_profile(&manifest).map_err(|_| HWPX_UNSUPPORTED_PROFILE_ERROR.to_owned())?;
+    let protected =
+        parse_hwpx_encrypted_entries(&manifest).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
     if protected.is_empty() {
-        return Err("HWPX encryption manifest has no protected entries".to_owned());
+        return Err(HWPX_INTEGRITY_ERROR.to_owned());
     }
     if protected.iter().any(|entry| {
         entry.algorithm_id != profile.algorithm_id
@@ -1039,12 +1061,14 @@ pub fn probe_hwpx_password_profile(
             || entry.iterations > HWPX_MAX_PBKDF2_ITERATIONS
             || entry.checksum.len() != 32
     }) {
-        return Err("HWPX profile is unsupported or incomplete".to_owned());
+        return Err(HWPX_UNSUPPORTED_PROFILE_ERROR.to_owned());
     }
 
     let entries = package
         .entries()
-        .map_err(|_| "HWPX package entries cannot be inspected".to_owned())?;
+        .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+    let file = fs::File::open(path).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+    let mut raw_zip = zip::ZipArchive::new(file).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
     let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
     let mut validated_entry_count = 0usize;
     let mut protected_entry_bytes = 0u64;
@@ -1053,7 +1077,7 @@ pub fn probe_hwpx_password_profile(
         let zip_entry = entries
             .iter()
             .find(|candidate| candidate.name == entry.name)
-            .ok_or_else(|| "HWPX protected entry is unavailable".to_owned())?;
+            .ok_or_else(|| HWPX_INTEGRITY_ERROR.to_owned())?;
         check_hwpx_budget(
             &entry.name,
             HwpxBufferSizes {
@@ -1062,47 +1086,60 @@ pub fn probe_hwpx_password_profile(
                 inflated: entry.declared_plaintext_bytes,
                 parser_owned: 0,
             },
-        )?;
-        let mut ciphertext = Zeroizing::new(
-            package
-                .read_entry(&entry.name)
-                .map_err(|_| "HWPX protected entry cannot be read".to_owned())?,
-        );
+        )
+        .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+        let mut raw_entry = raw_zip
+            .by_name(&entry.name)
+            .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+        if raw_entry.compression() != zip::CompressionMethod::Stored
+            || raw_entry.size() != zip_entry.size
+            || raw_entry.compressed_size() != zip_entry.size
+            || zip_entry.size == 0
+            || zip_entry.size % 16 != 0
+        {
+            return Err(HWPX_INTEGRITY_ERROR.to_owned());
+        }
+        let ciphertext_capacity =
+            usize::try_from(zip_entry.size).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+        let mut ciphertext = Zeroizing::new(Vec::new());
+        ciphertext
+            .try_reserve_exact(ciphertext_capacity)
+            .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+        raw_entry
+            .read_to_end(&mut ciphertext)
+            .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
         if ciphertext.len() as u64 != zip_entry.size {
-            return Err("HWPX protected entry size is inconsistent".to_owned());
+            return Err(HWPX_INTEGRITY_ERROR.to_owned());
         }
         let mut key = Zeroizing::new([0u8; 32]);
         pbkdf2_hmac::<sha1::Sha1>(&start_key, &entry.salt, entry.iterations, &mut *key);
         let decryptor = cbc::Decryptor::<Aes256>::new_from_slices(&*key, &entry.iv)
-            .map_err(|_| "HWPX cipher setup failed".to_owned())?;
+            .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
         let compressed = decryptor
-            .decrypt_padded::<Pkcs7>(&mut ciphertext)
-            .map_err(|_| "HWPX protected entry did not decrypt".to_owned())?;
-        let checksum_bytes = Sha256::digest(&compressed[..compressed.len().min(1024)]);
-        if checksum_bytes.as_slice() != entry.checksum.as_slice() {
-            return Err("HWPX protected entry checksum did not validate".to_owned());
+            .decrypt_padded::<NoPadding>(&mut ciphertext)
+            .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+        let (plaintext, compressed_end) =
+            inflate_raw_bounded(compressed, entry.declared_plaintext_bytes, &entry.name)
+                .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+        let suffix = &compressed[compressed_end..];
+        if suffix.len() > 15 || suffix.iter().any(|byte| *byte != 0) {
+            return Err(HWPX_INTEGRITY_ERROR.to_owned());
         }
-        let output_capacity = usize::try_from(entry.declared_plaintext_bytes)
-            .map_err(|_| "HWPX protected entry exceeds platform bounds".to_owned())?;
-        let mut plaintext = Zeroizing::new(Vec::with_capacity(output_capacity));
-        let mut decompressor = Decompress::new(false);
-        let status = decompressor
-            .decompress_vec(compressed, &mut plaintext, FlushDecompress::Finish)
-            .map_err(|_| "HWPX protected entry did not inflate".to_owned())?;
-        if status != Status::StreamEnd
-            || decompressor.total_in() != compressed.len() as u64
-            || plaintext.len() as u64 != entry.declared_plaintext_bytes
-        {
-            return Err("HWPX protected entry structure is inconsistent".to_owned());
+        let checksum_bytes = Sha256::digest(&compressed[..compressed_end.min(1024)]);
+        if checksum_bytes.as_slice() != entry.checksum.as_slice() {
+            return Err(HWPX_INTEGRITY_ERROR.to_owned());
+        }
+        if plaintext.len() as u64 != entry.declared_plaintext_bytes {
+            return Err(HWPX_INTEGRITY_ERROR.to_owned());
         }
         if entry.name.to_ascii_lowercase().ends_with(".xml") {
-            validate_xml_structure(&plaintext)?;
+            validate_xml_structure(&plaintext).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
         }
         protected_entry_bytes = protected_entry_bytes
             .checked_add(entry.declared_plaintext_bytes)
-            .ok_or_else(|| "HWPX protected entry accounting overflowed".to_owned())?;
+            .ok_or_else(|| HWPX_INTEGRITY_ERROR.to_owned())?;
         if protected_entry_bytes > HWPX_LIVE_BYTES {
-            return Err("HWPX protected entries exceed the aggregate budget".to_owned());
+            return Err(HWPX_INTEGRITY_ERROR.to_owned());
         }
         validated_entry_count += 1;
     }
@@ -1110,7 +1147,7 @@ pub fn probe_hwpx_password_profile(
     start_key.zeroize();
     package
         .verify_integrity()
-        .map_err(|_| "HWPX package integrity did not validate".to_owned())?;
+        .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
     Ok(HwpxProbeObservation {
         algorithm_id: profile.algorithm_id,
         kdf_id: profile.kdf_id,
@@ -1120,6 +1157,60 @@ pub fn probe_hwpx_password_profile(
         validated_entry_count,
         protected_entry_bytes,
     })
+}
+
+fn inflate_raw_bounded(
+    compressed: &[u8],
+    declared_plaintext_bytes: u64,
+    entry_name: &str,
+) -> Result<(Zeroizing<Vec<u8>>, usize), ()> {
+    use flate2::{Decompress, FlushDecompress, Status};
+
+    let entry_limit = if entry_name.to_ascii_lowercase().ends_with(".xml") {
+        HWPX_XML_BYTES
+    } else {
+        HWPX_ENTRY_BYTES
+    };
+    let maximum = declared_plaintext_bytes.min(entry_limit);
+    let mut plaintext = Zeroizing::new(Vec::new());
+    let mut decompressor = Decompress::new(false);
+    let mut output = [0u8; 8 * 1024];
+
+    loop {
+        let input_offset = usize::try_from(decompressor.total_in()).map_err(|_| ())?;
+        if input_offset > compressed.len() {
+            return Err(());
+        }
+        let output_before = decompressor.total_out();
+        let status = decompressor
+            .decompress(
+                &compressed[input_offset..],
+                &mut output,
+                FlushDecompress::None,
+            )
+            .map_err(|_| ())?;
+        let produced = decompressor
+            .total_out()
+            .checked_sub(output_before)
+            .ok_or(())?;
+        let next_len = (plaintext.len() as u64).checked_add(produced).ok_or(())?;
+        if next_len > maximum {
+            return Err(());
+        }
+        let produced = usize::try_from(produced).map_err(|_| ())?;
+        plaintext.try_reserve(produced).map_err(|_| ())?;
+        plaintext.extend_from_slice(&output[..produced]);
+
+        if status == Status::StreamEnd {
+            let compressed_end = usize::try_from(decompressor.total_in()).map_err(|_| ())?;
+            return Ok((plaintext, compressed_end));
+        }
+        if status != Status::Ok
+            || (produced == 0 && input_offset == decompressor.total_in() as usize)
+        {
+            return Err(());
+        }
+    }
 }
 
 fn parse_hwpx_encrypted_entries(manifest: &str) -> Result<Vec<HwpxEncryptedEntry>, String> {
@@ -1269,9 +1360,23 @@ fn validate_xml_structure(bytes: &[u8]) -> Result<(), String> {
     use quick_xml::events::Event;
 
     let mut reader = Reader::from_reader(bytes);
+    let mut depth = 0usize;
     loop {
         match reader.read_event() {
-            Ok(Event::Eof) => return Ok(()),
+            Ok(Event::Start(_)) => {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| "HWPX protected XML structure did not validate".to_owned())?;
+            }
+            Ok(Event::End(_)) => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| "HWPX protected XML structure did not validate".to_owned())?;
+            }
+            Ok(Event::Eof) if depth == 0 => return Ok(()),
+            Ok(Event::Eof) => {
+                return Err("HWPX protected XML structure did not validate".to_owned());
+            }
             Ok(_) => {}
             Err(_) => return Err("HWPX protected XML structure did not validate".to_owned()),
         }

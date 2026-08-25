@@ -9,11 +9,133 @@ mod password_corpus_manifest;
 use password_corpus_manifest::{
     Hwp5ProbeObservation, Hwp5ValidatedStream, HwpxBufferSizes, after_hwp5_discovery_gate,
     check_hwp5_budget, check_hwp5_discovery_eligibility, check_hwpx_budget,
-    discovery_would_write_evidence, load_manifest_for_test, manifest_fixture, owner_manifest_path,
-    parse_hwpx_profile, probe_hwp5_encrypt_version_4, repo_root, run_owner_discovery,
+    discovery_would_write_evidence, hwpx_integrity_error, hwpx_unsupported_profile_error,
+    load_manifest_for_test, manifest_fixture, owner_manifest_path, parse_hwpx_profile,
+    probe_hwp5_encrypt_version_4, probe_hwpx_password_profile, repo_root, run_owner_discovery,
     run_owner_discovery_from_env, serialize_hwp5_profile_observation,
-    transform_hwp5_encrypt_version_4_in_place, validate_hwp5_record_identity,
+    serialize_hwpx_profile_observation, transform_hwp5_encrypt_version_4_in_place,
+    validate_hwp5_record_identity,
 };
+
+struct SyntheticHwpxOptions {
+    raw_deflate: Vec<u8>,
+    padding: Vec<u8>,
+    declared_plaintext_bytes: u64,
+    stored: bool,
+    corrupt_checksum: bool,
+    truncate_ciphertext: bool,
+    kdf_id: &'static str,
+}
+
+fn raw_deflate(plaintext: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::none());
+    encoder
+        .write_all(plaintext)
+        .expect("synthetic deflate input writes");
+    encoder.finish().expect("synthetic deflate completes")
+}
+
+fn synthetic_deflate_with_padding(target_padding: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    for payload_len in 1..4096 {
+        let plaintext = format!("<doc>{}</doc>", "x".repeat(payload_len)).into_bytes();
+        let compressed = raw_deflate(&plaintext);
+        let padding_len = (16 - compressed.len() % 16) % 16;
+        if padding_len == target_padding {
+            return (plaintext, compressed, vec![0; padding_len]);
+        }
+    }
+    panic!("uncompressed synthetic payloads cover every AES padding residue")
+}
+
+fn synthetic_hwpx_path(label: &str, options: SyntheticHwpxOptions) -> std::path::PathBuf {
+    use aes::Aes256;
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    use std::io::Write as _;
+
+    const PASSWORD: &str = "synthetic-password";
+    const SALT: [u8; 16] = [7; 16];
+    const IV: [u8; 16] = [9; 16];
+    let nonce = format!("{}-{}", std::process::id(), label);
+    let path = std::env::temp_dir().join(format!("hwp-cli-hwpx-{nonce}.hwpx"));
+    let _ = std::fs::remove_file(&path);
+
+    let mut start_key = sha2::Sha256::digest(PASSWORD.as_bytes()).to_vec();
+    let mut key = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&start_key, &SALT, 1024, &mut key);
+    start_key.fill(0);
+
+    let mut padded = options.raw_deflate.clone();
+    padded.extend_from_slice(&options.padding);
+    assert!(!padded.is_empty() && padded.len().is_multiple_of(16));
+    let padded_len = padded.len();
+    let ciphertext = cbc::Encryptor::<Aes256>::new_from_slices(&key, &IV)
+        .expect("synthetic AES setup")
+        .encrypt_padded::<NoPadding>(&mut padded, padded_len)
+        .expect("synthetic no-padding encryption")
+        .to_vec();
+    key.fill(0);
+    let ciphertext = if options.truncate_ciphertext {
+        ciphertext[..ciphertext.len() - 1].to_vec()
+    } else {
+        ciphertext
+    };
+    let mut checksum = sha2::Sha256::digest(&options.raw_deflate).to_vec();
+    if options.corrupt_checksum {
+        checksum[0] ^= 0xff;
+    }
+    let manifest = format!(
+        r#"<?xml version="1.0"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><odf:file-entry full-path="Contents/section0.xml" size="{}"><odf:encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="{}"><odf:algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="{}"/><odf:key-derivation key-derivation-name="{}" key-size="32" iteration-count="1024" salt="{}"/><odf:start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/></odf:encryption-data></odf:file-entry></odf:manifest>"#,
+        options.declared_plaintext_bytes,
+        base64::engine::general_purpose::STANDARD.encode(checksum),
+        base64::engine::general_purpose::STANDARD.encode(IV),
+        options.kdf_id,
+        base64::engine::general_purpose::STANDARD.encode(SALT),
+    );
+
+    let file = std::fs::File::create(&path).expect("synthetic HWPX is writable");
+    let mut zip = zip::ZipWriter::new(file);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("mimetype", stored)
+        .expect("mimetype entry starts");
+    zip.write_all(b"application/hwp+zip")
+        .expect("mimetype entry writes");
+    zip.start_file("META-INF/manifest.xml", stored)
+        .expect("manifest entry starts");
+    zip.write_all(manifest.as_bytes())
+        .expect("manifest entry writes");
+    let entry_options =
+        zip::write::SimpleFileOptions::default().compression_method(if options.stored {
+            zip::CompressionMethod::Stored
+        } else {
+            zip::CompressionMethod::Deflated
+        });
+    zip.start_file("Contents/section0.xml", entry_options)
+        .expect("protected entry starts");
+    zip.write_all(&ciphertext).expect("protected entry writes");
+    zip.finish().expect("synthetic HWPX finalizes");
+    path
+}
+
+fn supported_options(
+    raw_deflate: Vec<u8>,
+    padding: Vec<u8>,
+    declared_plaintext_bytes: u64,
+) -> SyntheticHwpxOptions {
+    SyntheticHwpxOptions {
+        raw_deflate,
+        padding,
+        declared_plaintext_bytes,
+        stored: true,
+        corrupt_checksum: false,
+        truncate_ciphertext: false,
+        kdf_id: "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2",
+    }
+}
 
 fn synthetic_hwp5_header(attributes: u32, encrypt_version: u32) -> hwp5::FileHeader {
     let mut bytes = vec![0u8; hwp5::file_header::FILE_HEADER_SIZE];
@@ -299,6 +421,219 @@ fn owner_discovery_without_manifest_fails_closed_without_evidence() {
         !evidence.exists(),
         "missing owner setup must leave no evidence artifact"
     );
+}
+
+#[test]
+fn hwpx_discovery_accepts_only_no_padding_zero_to_block_profiles() {
+    for padding_len in 1..=15 {
+        let (plaintext, compressed, padding) = synthetic_deflate_with_padding(padding_len);
+        let path = synthetic_hwpx_path(
+            &format!("zero-padding-{padding_len}"),
+            supported_options(compressed, padding, plaintext.len() as u64),
+        );
+        let observation = probe_hwpx_password_profile(&path, "synthetic-password")
+            .expect("a 1-15 byte zero suffix must validate");
+        assert_eq!(observation.validated_entry_count, 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(0);
+    let path = synthetic_hwpx_path(
+        "exact-aes-block",
+        supported_options(compressed, padding, plaintext.len() as u64),
+    );
+    probe_hwpx_password_profile(&path, "synthetic-password")
+        .expect("an exact AES block requires no zero suffix");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn hwpx_discovery_collapses_credential_and_integrity_failures() {
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let (block_plaintext, block_compressed, _) = synthetic_deflate_with_padding(0);
+    let invalid_deflate = vec![0x07, 0x55, 0xaa];
+    let invalid_padding = vec![0; 16 - invalid_deflate.len()];
+    let invalid_xml = b"<doc>";
+    let invalid_xml_compressed = raw_deflate(invalid_xml);
+    let invalid_xml_padding = vec![0; (16 - invalid_xml_compressed.len() % 16) % 16];
+    let cases = [
+        (
+            "nonzero-suffix",
+            SyntheticHwpxOptions {
+                padding: vec![1],
+                ..supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64)
+            },
+            "synthetic-password",
+        ),
+        (
+            "sixteen-zero-suffix",
+            SyntheticHwpxOptions {
+                padding: vec![0; 16],
+                raw_deflate: block_compressed,
+                ..supported_options(Vec::new(), Vec::new(), block_plaintext.len() as u64)
+            },
+            "synthetic-password",
+        ),
+        (
+            "invalid-deflate",
+            supported_options(invalid_deflate, invalid_padding, plaintext.len() as u64),
+            "synthetic-password",
+        ),
+        (
+            "invalid-xml",
+            supported_options(
+                invalid_xml_compressed,
+                invalid_xml_padding,
+                invalid_xml.len() as u64,
+            ),
+            "synthetic-password",
+        ),
+        (
+            "truncated-ciphertext",
+            SyntheticHwpxOptions {
+                truncate_ciphertext: true,
+                ..supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64)
+            },
+            "synthetic-password",
+        ),
+        (
+            "corrupt-checksum",
+            SyntheticHwpxOptions {
+                corrupt_checksum: true,
+                ..supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64)
+            },
+            "synthetic-password",
+        ),
+        (
+            "wrong-password",
+            supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64),
+            "not-the-password",
+        ),
+    ];
+
+    for (label, options, password) in cases {
+        let path = synthetic_hwpx_path(label, options);
+        assert_eq!(
+            probe_hwpx_password_profile(&path, password).unwrap_err(),
+            hwpx_integrity_error(),
+            "{label} must not expose its failure stage"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn hwpx_discovery_rejects_unsupported_profiles_before_credential_work() {
+    let hmac_sha256 = password_corpus_manifest::supported_hwpx_manifest()
+        .replace("#pbkdf2\"", "#pbkdf2-hmac-sha256\"");
+    assert_eq!(
+        parse_hwpx_profile(&hmac_sha256).unwrap_err(),
+        "HWPX profile is unsupported or incomplete"
+    );
+
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let path = synthetic_hwpx_path(
+        "unsupported-hmac-sha256",
+        SyntheticHwpxOptions {
+            kdf_id: "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2-hmac-sha256",
+            ..supported_options(compressed, padding, plaintext.len() as u64)
+        },
+    );
+    assert_eq!(
+        probe_hwpx_password_profile(&path, "synthetic-password").unwrap_err(),
+        hwpx_unsupported_profile_error()
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn hwpx_discovery_rejects_zip_compression_and_declared_size_before_allocation() {
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let stored_path = synthetic_hwpx_path(
+        "zip-deflated-entry",
+        SyntheticHwpxOptions {
+            stored: false,
+            ..supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64)
+        },
+    );
+    assert_eq!(
+        probe_hwpx_password_profile(&stored_path, "synthetic-password").unwrap_err(),
+        hwpx_integrity_error()
+    );
+    let _ = std::fs::remove_file(stored_path);
+
+    for (label, declared_plaintext_bytes) in [
+        ("xml-bound", 64 * 1024 * 1024 + 1),
+        ("ratio-bound", 1_000_000),
+        ("declared-size-stream", plaintext.len() as u64 - 1),
+    ] {
+        let path = synthetic_hwpx_path(
+            label,
+            supported_options(
+                compressed.clone(),
+                padding.clone(),
+                declared_plaintext_bytes,
+            ),
+        );
+        assert_eq!(
+            probe_hwpx_password_profile(&path, "synthetic-password").unwrap_err(),
+            hwpx_integrity_error(),
+            "{label} must be rejected before output allocation"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn hwpx_profile_evidence_is_limited_to_selected_content_free_facts() {
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let path = synthetic_hwpx_path(
+        "redacted-evidence",
+        supported_options(compressed, padding, plaintext.len() as u64),
+    );
+    let observation = probe_hwpx_password_profile(&path, "synthetic-password")
+        .expect("selected profile validates before it is serializable");
+    let evidence = serialize_hwpx_profile_observation(observation);
+    let keys = evidence
+        .as_object()
+        .expect("profile evidence is an object")
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        keys,
+        [
+            "algorithm_id",
+            "cbc_padding",
+            "checksum_id",
+            "format",
+            "kdf_id",
+            "pbkdf2_prf",
+            "protected_entry_bytes",
+            "protected_entry_count",
+            "start_key_id",
+            "validated_entry_count",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+    assert_eq!(evidence["pbkdf2_prf"], "hmac-sha1");
+    assert_eq!(evidence["cbc_padding"], "zero-to-aes-block");
+    let encoded = evidence.to_string();
+    for forbidden in [
+        "password",
+        "private",
+        "plaintext",
+        "ciphertext",
+        "synthetic-password",
+    ] {
+        assert!(
+            !encoded.contains(forbidden),
+            "evidence must not contain {forbidden}"
+        );
+    }
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
