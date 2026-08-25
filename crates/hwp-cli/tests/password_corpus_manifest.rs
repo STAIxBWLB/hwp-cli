@@ -7,8 +7,9 @@
 mod password_corpus_manifest;
 
 use password_corpus_manifest::{
-    check_hwp5_budget, check_hwpx_budget, discovery_would_write_evidence, load_manifest_for_test,
-    manifest_fixture, parse_hwpx_profile, repo_root, HwpxBufferSizes,
+    Hwp5ProbeObservation, HwpxBufferSizes, check_hwp5_budget, check_hwpx_budget,
+    discovery_would_write_evidence, load_manifest_for_test, manifest_fixture, parse_hwpx_profile,
+    probe_hwp5_encrypt_version_4, repo_root, transform_hwp5_encrypt_version_4_in_place,
 };
 
 #[test]
@@ -108,12 +109,26 @@ fn budget_boundaries_accept_exact_limits_and_reject_overflow_before_allocation()
 
 #[test]
 fn budget_boundaries_recognize_only_the_evidenced_hwpx_profile() {
-    let profile = parse_hwpx_profile(password_corpus_manifest::supported_hwpx_manifest())
+    let profile = parse_hwpx_profile(&password_corpus_manifest::supported_hwpx_manifest())
         .expect("the synthetic supported profile should parse");
-    assert_eq!(profile.algorithm_id, "http://www.w3.org/2001/04/xmlenc#aes256-cbc");
+    assert_eq!(
+        profile.algorithm_id,
+        "http://www.w3.org/2001/04/xmlenc#aes256-cbc"
+    );
     assert_eq!(
         profile.kdf_id,
         "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2"
     );
-    assert!(parse_hwpx_profile(password_corpus_manifest::unsupported_hwpx_manifest()).is_err());
+    assert!(parse_hwpx_profile(&password_corpus_manifest::unsupported_hwpx_manifest()).is_err());
+}
+
+#[test]
+fn budget_boundaries_keep_the_hwp5_candidate_transform_in_memory() {
+    let _: fn(&std::path::Path, &str) -> Result<Hwp5ProbeObservation, String> =
+        probe_hwp5_encrypt_version_4;
+    let mut ciphertext = [0x5au8; 31];
+    let original = ciphertext;
+    transform_hwp5_encrypt_version_4_in_place(&mut ciphertext, "synthetic-password")
+        .expect("candidate transform should accept a bounded synthetic stream");
+    assert_ne!(ciphertext, original);
 }
