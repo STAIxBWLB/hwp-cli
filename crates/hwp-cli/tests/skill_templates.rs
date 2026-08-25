@@ -49,13 +49,43 @@ fn test_dir(name: &str) -> PathBuf {
 
 /// One row of the smoke table: template slug, the preset the recipe uses
 /// today, a scalar slot to fill (기관명 where present, else the template's
-/// first slot), and whether the template carries a `{{본문}}` part anchor.
+/// first slot), whether the template carries a `{{본문}}` part anchor, and the
+/// slots the template's native 두문/결문 frames contribute on top of the
+/// markdown source.
+///
+/// `frame_slots` mirrors `commands::skill::defaults_for` — an integration test
+/// drives the binary from outside, so the table cannot read that constant and
+/// states it instead. That is the point: a slot silently added to or dropped
+/// from a frame default shows up here as a set mismatch.
 struct Case {
     slug: &'static str,
     preset: &'static str,
     scalar_slot: &'static str,
     has_body_part: bool,
+    frame_slots: &'static [&'static str],
 }
+
+/// 두문 + 결문 for the two templates that carry the full external-dispatch frame set.
+const GIAN_FULL_SLOTS: &[&str] = &[
+    "기관명",
+    "수신",
+    "경유",
+    "발신명의",
+    "기안자",
+    "검토자",
+    "결재자",
+    "협조자",
+    "시행번호",
+    "시행일자",
+    "접수번호",
+    "접수일자",
+    "주소",
+    "홈페이지",
+    "전화",
+    "팩스",
+    "이메일",
+    "공개구분",
+];
 
 const CASES: &[Case] = &[
     Case {
@@ -63,48 +93,71 @@ const CASES: &[Case] = &[
         preset: "official",
         scalar_slot: "기관명",
         has_body_part: true,
+        frame_slots: &[
+            "기관명",
+            "발신명의",
+            "기안자",
+            "기안자직위",
+            "협조자",
+            "시행번호",
+            "시행일자",
+        ],
     },
     Case {
         slug: "gian-external",
         preset: "official",
         scalar_slot: "기관명",
         has_body_part: true,
+        frame_slots: GIAN_FULL_SLOTS,
     },
     Case {
         slug: "gongmun-basic",
         preset: "official",
         scalar_slot: "기관명",
         has_body_part: true,
+        frame_slots: GIAN_FULL_SLOTS,
     },
     Case {
         slug: "report",
         preset: "report",
         scalar_slot: "제목",
         has_body_part: false,
+        frame_slots: &[],
     },
     Case {
         slug: "plan",
         preset: "plan",
         scalar_slot: "사업명",
         has_body_part: false,
+        frame_slots: &[],
     },
     Case {
         slug: "minutes",
         preset: "minutes",
         scalar_slot: "회의명",
         has_body_part: false,
+        frame_slots: &[],
     },
     Case {
         slug: "notice",
         preset: "notice",
         scalar_slot: "기관명",
         has_body_part: true,
+        frame_slots: &["기관명", "공고번호", "공고일자", "발신명의"],
     },
     Case {
         slug: "press",
         preset: "press",
         scalar_slot: "기관명",
         has_body_part: true,
+        frame_slots: &[
+            "기관명",
+            "보도시점",
+            "배포일",
+            "담당부서",
+            "담당자",
+            "연락처",
+        ],
     },
 ];
 
@@ -210,7 +263,10 @@ fn skill_templates_are_usable_today() {
         let template = repo(&format!("skills/hwp/templates/{}.md", case.slug));
         let source = std::fs::read_to_string(&template)
             .unwrap_or_else(|e| panic!("{}: 템플릿 원문 읽기 실패: {e}", case.slug));
-        let expected = source_slots(&source);
+        let mut expected = source_slots(&source);
+        for slot in case.frame_slots {
+            expected.insert((*slot).to_string());
+        }
         assert!(
             expected.contains(case.scalar_slot),
             "{}: 스모크 표의 스칼라 슬롯 {}이(가) 템플릿에 없음",
@@ -385,21 +441,46 @@ fn list_templates_names_all_eight_slugs() {
     );
 }
 
-/// The template skeletons are plain markdown: they carry no native 두문/결문 table of their own,
-/// so `--template` has to combine with the frame flags for a one-command official document.
-/// Phase 2.4 verification falsified the D-05 premise that the two paths were redundant, and this
-/// test pins the combination that replaced the refusal.
+/// A template carries its own native 두문/결문 frames, whose values default to its `{{slot}}`
+/// tokens, and a frame flag overrides one key rather than adding a second row. Phase 2.4
+/// verification found the opposite on both counts: `--template` emitted zero table controls and
+/// refused every frame flag.
 #[test]
-fn template_combines_with_frame_flags() {
+fn template_frames_are_native_and_flags_override_them() {
     let dir = test_dir("template-frames");
-    let output = dir.join("gian-external.hwpx");
+
+    // 1. The bare template already produces the two frame tables, with slots left fillable.
+    let plain = dir.join("plain.hwpx");
+    let run = hwp()
+        .args(["new", "--template", "gian-external"])
+        .arg("-o")
+        .arg(&plain)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "bare --template must succeed\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        table_count(&reread(&plain)),
+        2,
+        "a bare --template must carry the 두문 and 결문 tables, not loose paragraphs"
+    );
+    assert!(
+        full_document_text(&reread(&plain)).contains("{{기관명}}"),
+        "the frame default must stay a fillable slot"
+    );
+
+    // 2. A frame flag replaces that one key. Two tables still, and no leftover slot for the
+    //    key the caller supplied — that leftover is exactly what a duplicated row would look like.
+    let overridden = dir.join("overridden.hwpx");
     let run = hwp()
         .args(["new", "--template", "gian-external"])
         .args(["--doc-head", "기관명=테스트대학교"])
-        .args(["--doc-head", "수신=총장"])
         .args(["--doc-foot", "발신명의=테스트대학교총장"])
         .arg("-o")
-        .arg(&output)
+        .arg(&overridden)
         .output()
         .unwrap();
     assert!(
@@ -407,28 +488,49 @@ fn template_combines_with_frame_flags() {
         "--template with frame flags must succeed\nstderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
+    let document = reread(&overridden);
+    assert_eq!(
+        table_count(&document),
+        2,
+        "an overriding flag must not add a third frame table"
+    );
+    let text = full_document_text(&document);
+    for supplied in ["테스트대학교", "테스트대학교총장"] {
+        assert!(
+            text.contains(supplied),
+            "flag value {supplied:?} missing:\n{text}"
+        );
+    }
+    for replaced in ["{{기관명}}", "{{발신명의}}"] {
+        assert!(
+            !text.contains(replaced),
+            "slot {replaced:?} survived alongside the flag value — the row is duplicated:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("{{수신}}"),
+        "a key the caller did not supply must keep its slot default"
+    );
 
-    let document = reread(&output);
-    let tables = document
+    // 3. The template also implies its profile, so no frame/preset mismatch warning is emitted.
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        !stderr.contains("--preset"),
+        "a template names its own profile; frames must not warn about a missing --preset:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Table controls anywhere in the document, frames included.
+fn table_count(document: &Document) -> usize {
+    document
         .sections
         .iter()
         .flat_map(|section| section.paragraphs.iter())
         .flat_map(|paragraph| paragraph.controls.iter())
         .filter(|control| matches!(control, Control::Table(_)))
-        .count();
-    assert_eq!(
-        tables, 2,
-        "the frame flags must add the 두문 and 결문 tables the skeleton lacks"
-    );
-    let text = full_document_text(&document);
-    for expected in ["테스트대학교", "총장", "테스트대학교총장"] {
-        assert!(
-            text.contains(expected),
-            "frame value {expected:?} missing from the template output:\n{text}"
-        );
-    }
-
-    let _ = std::fs::remove_dir_all(&dir);
+        .count()
 }
 
 /// Documentation regression guard (Phase 2.4 verification gap 2): the two claims the guides once

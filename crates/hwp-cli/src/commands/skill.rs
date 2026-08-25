@@ -129,12 +129,138 @@ const TEMPLATE_ALIASES: &[(&str, &str)] = &[
 /// `SKILL_FILES` table. Matches only the fixed `TEMPLATE_ALIASES` slice or a slug already in
 /// that table; a filesystem path is never constructed from `name` (T-02.4-13).
 pub fn template_file(name: &str) -> Option<&'static EmbeddedFile> {
-    let slug = TEMPLATE_ALIASES
+    let rel = format!("templates/{}.md", canonical_slug(name));
+    SKILL_FILES.iter().find(|file| file.rel == rel)
+}
+
+/// What a template contributes besides its body markdown: the canonical profile it is written
+/// for, and the native 두문/결문 frames whose values default to the template's own `{{slot}}`
+/// tokens.
+///
+/// Phase 2.4 first shipped these fields as loose paragraphs inside the skeleton, so a template
+/// output carried zero table controls while a real 기안문 renders 두문 and 결문 as tables. Moving
+/// them into the frame builder costs nothing on the fill path: `hwp fill` substitutes by raw-XML
+/// string match, which reaches inside table cells, so `{{기관명}}` in a 두문 cell is still
+/// reported by `hwp slots` and still filled by `--set`. A caller-supplied frame flag overrides the
+/// default for that one key instead of adding a second row.
+pub struct TemplateDefaults {
+    /// Applied only when the caller passed no `--preset`; a template is written for one profile.
+    pub preset: hwp_convert::OfficialPreset,
+    pub doc_head: &'static [(&'static str, &'static str)],
+    pub doc_foot: &'static [(&'static str, &'static str)],
+    pub notice_head: &'static [(&'static str, &'static str)],
+    pub notice_foot: &'static [(&'static str, &'static str)],
+    pub press_head: &'static [(&'static str, &'static str)],
+}
+
+impl TemplateDefaults {
+    const fn body_only(preset: hwp_convert::OfficialPreset) -> Self {
+        Self {
+            preset,
+            doc_head: &[],
+            doc_foot: &[],
+            notice_head: &[],
+            notice_foot: &[],
+            press_head: &[],
+        }
+    }
+}
+
+/// The 결문 every 기안문/공문서 template shares: all fifteen locked keys, each defaulting to its
+/// own slot so `hwp fill` can reach them.
+const GIAN_FOOT: &[(&str, &str)] = &[
+    ("발신명의", "{{발신명의}}"),
+    ("기안자", "{{기안자}}"),
+    ("검토자", "{{검토자}}"),
+    ("결재자", "{{결재자}}"),
+    ("협조자", "{{협조자}}"),
+    ("시행번호", "{{시행번호}}"),
+    ("시행일자", "{{시행일자}}"),
+    ("접수번호", "{{접수번호}}"),
+    ("접수일자", "{{접수일자}}"),
+    ("주소", "{{주소}}"),
+    ("홈페이지", "{{홈페이지}}"),
+    ("전화", "{{전화}}"),
+    ("팩스", "{{팩스}}"),
+    ("이메일", "{{이메일}}"),
+    ("공개구분", "{{공개구분}}"),
+];
+
+/// Per-slug defaults. `report`/`plan`/`minutes` are body documents with no 두문/결문 of their
+/// own, so they carry a profile and no frames.
+fn defaults_for(slug: &str) -> Option<TemplateDefaults> {
+    use hwp_convert::OfficialPreset as P;
+    Some(match slug {
+        "gian-external" => TemplateDefaults {
+            doc_head: &[
+                ("기관명", "{{기관명}}"),
+                ("수신", "{{수신}}"),
+                ("경유", "{{경유}}"),
+            ],
+            doc_foot: GIAN_FOOT,
+            ..TemplateDefaults::body_only(P::Official)
+        },
+        // 내부결재 fixes 수신 to the literal 내부결재 (한국공공언어진흥원 공문서 작성법
+        // 길라잡이 제1장 가) — the recipient is not a variable here. Its 결문 stays narrow:
+        // 시행·접수·주소·전화 belong to a document that leaves the building, and the skeleton
+        // never carried them. `기안자` keeps 기안자직위 inside its value so the slot D-18 locked
+        // survives the move into the frame.
+        "gian-internal" => TemplateDefaults {
+            doc_head: &[("기관명", "{{기관명}}"), ("수신", "내부결재")],
+            doc_foot: &[
+                ("발신명의", "{{발신명의}}"),
+                ("기안자", "{{기안자}} ({{기안자직위}})"),
+                ("협조자", "{{협조자}}"),
+                ("시행번호", "{{시행번호}}"),
+                ("시행일자", "{{시행일자}}"),
+            ],
+            ..TemplateDefaults::body_only(P::Official)
+        },
+        "gongmun-basic" => TemplateDefaults {
+            doc_head: &[
+                ("기관명", "{{기관명}}"),
+                ("수신", "{{수신}}"),
+                ("경유", "{{경유}}"),
+            ],
+            doc_foot: GIAN_FOOT,
+            ..TemplateDefaults::body_only(P::Official)
+        },
+        "notice" => TemplateDefaults {
+            notice_head: &[("기관명", "{{기관명}}"), ("공고번호", "{{공고번호}}")],
+            notice_foot: &[("공고일자", "{{공고일자}}"), ("발신명의", "{{발신명의}}")],
+            ..TemplateDefaults::body_only(P::Notice)
+        },
+        "press" => TemplateDefaults {
+            press_head: &[
+                ("기관명", "{{기관명}}"),
+                ("보도시점", "{{보도시점}}"),
+                ("배포일", "{{배포일}}"),
+                ("담당부서", "{{담당부서}}"),
+                ("담당자", "{{담당자}}"),
+                ("연락처", "{{연락처}}"),
+            ],
+            ..TemplateDefaults::body_only(P::Press)
+        },
+        "report" => TemplateDefaults::body_only(P::Report),
+        "plan" => TemplateDefaults::body_only(P::Plan),
+        "minutes" => TemplateDefaults::body_only(P::Minutes),
+        _ => return None,
+    })
+}
+
+/// Resolves a `--template` name (slug or Korean alias) to its defaults, through the same fixed
+/// alias table `template_file` uses.
+pub fn template_defaults(name: &str) -> Option<TemplateDefaults> {
+    defaults_for(canonical_slug(name))
+}
+
+/// English slug for a `--template` name, resolving the Korean alias; an unknown name passes
+/// through unchanged so the caller's own lookup reports it.
+fn canonical_slug(name: &str) -> &str {
+    TEMPLATE_ALIASES
         .iter()
         .find(|(alias, _)| *alias == name)
-        .map_or(name, |(_, slug)| *slug);
-    let rel = format!("templates/{slug}.md");
-    SKILL_FILES.iter().find(|file| file.rel == rel)
+        .map_or(name, |(_, slug)| *slug)
 }
 
 /// Yields (slug, Korean alias) for all eight templates in `TEMPLATE_ALIASES` order, for

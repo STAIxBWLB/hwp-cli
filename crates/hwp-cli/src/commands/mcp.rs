@@ -1619,8 +1619,11 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let preset = arg_str_opt(args, "preset")?
         .map(hwp_convert::OfficialPreset::parse)
         .transpose()?;
+    // A template names the profile it was written for and the frames it needs; both are defaults
+    // an explicit argument overrides, exactly as on the CLI (D-01: one behavior, two surfaces).
+    let template_defaults = template.and_then(crate::commands::skill::template_defaults);
     let options = crate::commands::new::NewOptions::from_millimetres(
-        preset,
+        preset.or(template_defaults.as_ref().map(|d| d.preset)),
         arg_f64_opt(args, "margin_top_mm")?,
         arg_f64_opt(args, "margin_bottom_mm")?,
         arg_f64_opt(args, "margin_left_mm")?,
@@ -1635,7 +1638,8 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         &notice_foot,
         &press_head,
     )
-    .map_err(|error| format!("{error:#}"))?;
+    .map_err(|error| format!("{error:#}"))?
+    .with_template_frames(template_defaults.as_ref());
     let report = crate::commands::new::execute(&output, input, &metadata, &options)
         .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
@@ -2967,10 +2971,29 @@ mod tests {
         assert!(!output.exists());
     }
 
-    /// `template` combines with the frame arguments over MCP as on the CLI: the skeleton has no
-    /// native 두문/결문 table of its own, so the frame arguments are what add them.
+    /// Every paragraph's text, table cells included — frame values live inside table cells.
+    fn frame_text(paragraphs: &[hwp_model::Paragraph], out: &mut String) {
+        for paragraph in paragraphs {
+            for ch in &paragraph.chars {
+                if let hwp_model::HwpChar::Text(c) = ch {
+                    out.push(*c);
+                }
+            }
+            out.push('\n');
+            for control in &paragraph.controls {
+                if let hwp_model::Control::Table(table) = control {
+                    for cell in &table.cells {
+                        frame_text(&cell.paragraphs, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A `template` brings its own native frames over MCP as on the CLI, and a frame argument
+    /// overrides one key of them instead of adding a second row.
     #[test]
-    fn hwp_new_template_combines_with_frame_arguments() {
+    fn hwp_new_template_frames_are_native_and_arguments_override_them() {
         let output = temp_file("hwp-new-template-with-frames.hwpx");
         let _ = std::fs::remove_file(&output);
         tool_new(
@@ -2978,11 +3001,10 @@ mod tests {
                 "output": output,
                 "template": "gian-external",
                 "doc_head": [{"key": "기관명", "value": "테스트기관"}],
-                "doc_foot": [{"key": "발신명의", "value": "테스트기관장"}],
             }),
             &ctx(),
         )
-        .expect("MCP hwp_new with a template and frame arguments");
+        .expect("MCP hwp_new with a template and a frame argument");
         let document = hwpx::read_document(&output).unwrap().document;
         let tables = document
             .sections
@@ -2991,7 +3013,18 @@ mod tests {
             .flat_map(|paragraph| paragraph.controls.iter())
             .filter(|control| matches!(control, hwp_model::Control::Table(_)))
             .count();
-        assert_eq!(tables, 2, "the two frame arguments must each add one table");
+        assert_eq!(tables, 2, "the template's 두문/결문 must be native tables");
+        let mut text = String::new();
+        frame_text(&document.sections[0].paragraphs, &mut text);
+        assert!(text.contains("테스트기관"), "the argument value is missing");
+        assert!(
+            !text.contains("{{기관명}}"),
+            "the slot default survived alongside the argument — the row is duplicated"
+        );
+        assert!(
+            text.contains("{{수신}}"),
+            "a key the caller did not supply must keep its slot default"
+        );
         let _ = std::fs::remove_file(&output);
     }
 

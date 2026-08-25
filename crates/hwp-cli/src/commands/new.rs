@@ -77,6 +77,32 @@ impl NewOptions {
         .map_err(|e| anyhow::anyhow!(e))?;
         Ok(self)
     }
+
+    /// Fills in an embedded template's own frame defaults for every key the caller did not
+    /// supply. Call after [`Self::with_frames`] so a `--doc-head 기관명=…` wins over the
+    /// template's `{{기관명}}` default instead of doubling the row (D-05, reversed).
+    pub fn with_template_frames(
+        mut self,
+        defaults: Option<&crate::commands::skill::TemplateDefaults>,
+    ) -> Self {
+        let Some(defaults) = defaults else {
+            return self;
+        };
+        for (family, entries) in [
+            (&mut self.frames.doc_head, defaults.doc_head),
+            (&mut self.frames.doc_foot, defaults.doc_foot),
+            (&mut self.frames.notice_head, defaults.notice_head),
+            (&mut self.frames.notice_foot, defaults.notice_foot),
+            (&mut self.frames.press_head, defaults.press_head),
+        ] {
+            for (key, value) in entries {
+                family
+                    .entry((*key).to_string())
+                    .or_insert_with(|| (*value).to_string());
+            }
+        }
+        self
+    }
 }
 
 pub enum NewInput<'a> {
@@ -152,12 +178,12 @@ pub fn run_embedded(
 /// Resolves `--template <name>`. Refused together with `--from`: both name the document's
 /// content, so accepting them at once would silently pick one.
 ///
-/// Frame flags ARE accepted alongside a template. Phase 2.4 D-05 refused them on the premise that
-/// a template already carries its own 두문/결문 and the two would double up. Verification showed
-/// the premise false: an embedded skeleton holds `수신  {{수신}}` as literal text and its output
-/// carries zero table controls, while D-02's frames are tables. The two supply different things —
-/// the template the body skeleton, the flags the native frames — so refusing the combination only
-/// meant that choosing one path locked the other out for good.
+/// Frame flags ARE accepted alongside a template, as overrides rather than additions. Phase 2.4
+/// D-05 refused them because a template's 두문/결문 would double up — true of the skeleton as it
+/// then stood, which held `수신  {{수신}}` as loose text and emitted zero table controls. The fix
+/// was not to keep the refusal but to move those fields into the frame builder
+/// (`commands::skill::TemplateDefaults`), where they become real tables whose values default to
+/// the template's own slots. A frame flag now replaces one such default; nothing doubles.
 ///
 /// Resolution goes through `commands::skill::template_file`, the same embedded table
 /// `--list-templates` reads — never a second embedded copy, never a filesystem path built from

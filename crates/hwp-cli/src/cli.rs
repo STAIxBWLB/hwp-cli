@@ -186,9 +186,10 @@ pub enum Cmd {
         /// Input markdown or JSON file (empty document when omitted)
         #[arg(long)]
         from: Option<PathBuf>,
-        /// Use an embedded document-template skeleton by English slug or Korean alias (see
-        /// --list-templates). Mutually exclusive with --from; combines with the frame flags,
-        /// which add the native 두문/결문 tables the skeleton itself does not carry
+        /// Use an embedded document template by English slug or Korean alias (see
+        /// --list-templates). Brings its own profile and native 두문/결문 frames, whose values
+        /// default to the template's own {{slots}}. Mutually exclusive with --from; --preset and
+        /// the frame flags override one template default each
         #[arg(long)]
         template: Option<String>,
         /// List all embedded document templates (slug and Korean alias) and exit; needs no -o

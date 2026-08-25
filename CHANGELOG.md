@@ -10,14 +10,24 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- `hwp new --template <slug>` now produces a fully framed document on its own. A template carries
+  the canonical profile it is written for and its native 두문/결문 frames, whose values default to
+  the template's own `{{slot}}` tokens — so the one-command form yields real 두문/결문 **tables**
+  instead of loose paragraphs, and every field stays fillable (`hwp fill` substitutes inside table
+  cells). `--preset` and the frame flags (`--doc-head`, `--doc-foot`, `--notice-head`,
+  `--notice-foot`, `--press-head`) now **override** one template default each instead of being
+  refused; `--template` and `--from` stay mutually exclusive. Same behavior over MCP `hwp_new`.
+
+  Every slot name the templates previously documented still resolves. `gian-external` and
+  `gongmun-basic` additionally gain `{{협조자}}`, and `gongmun-basic` gains `{{접수번호}}`
+  `{{접수일자}}`. The `[관인 — 전자문서시스템이 삽입]` and `[결재란 영역 …]` notes are gone from
+  the skeletons: the 결재/협조 placeholder rows the 결문 frame renders (D-04) say the same thing
+  structurally.
+
 **Fixed**
 
-- `hwp new --template <slug>` now combines with the frame flags (`--doc-head`, `--doc-foot`,
-  `--notice-head`, `--notice-foot`, `--press-head`) instead of refusing them, on the CLI and over
-  MCP alike. The refusal assumed a template already carried its own 두문/결문 table; the skeletons
-  are plain markdown, so the refusal blocked the only path that could give a template its native
-  frames. `--template` and `--from` stay mutually exclusive. The bundled skill guide and the CLI
-  help no longer claim otherwise.
 - The bundled skill guide said an unmatched `hwp fill --set` slot is ignored. It is an error:
   `hwp fill` fails closed and publishes nothing unless `--allow-partial` is given. The guide now
   matches the shipped behavior.
