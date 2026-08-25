@@ -164,14 +164,9 @@ fn real_main() -> anyhow::Result<()> {
             // clap's `required_unless_present = "list_templates"` guarantees `output` is `Some`
             // on every path that reaches here.
             let output = output.expect("clap requires --output unless --list-templates");
-            let any_frame_flag = !doc_head.is_empty()
-                || !doc_foot.is_empty()
-                || !notice_head.is_empty()
-                || !notice_foot.is_empty()
-                || !press_head.is_empty();
             let embedded = template
                 .as_deref()
-                .map(|name| commands::new::resolve_template(name, from.is_some(), any_frame_flag))
+                .map(|name| commands::new::resolve_template(name, from.is_some()))
                 .transpose()?;
             let options = commands::new::NewOptions::from_millimetres(
                 preset.map(hwp_cli::cli::PresetArg::canonical),

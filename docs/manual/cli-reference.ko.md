@@ -117,7 +117,7 @@
 |---|---|---|---|
 | `-o, --output` | `<OUTPUT>` |  | 출력 HWP/HWPX 경로 |
 | `--from` | `<FROM>` |  | 입력 markdown/JSON 파일 (생략 시 빈 문서) |
-| `--template` | `<TEMPLATE>` |  | 내장 문서 템플릿을 영문 슬러그 또는 한국어 별칭으로 사용 (--list-templates 참고). --from 및 모든 프레임 플래그와 함께 쓸 수 없음(D-05): 템플릿은 두문/결문을 이미 포함 |
+| `--template` | `<TEMPLATE>` |  | 내장 문서 템플릿을 영문 슬러그 또는 한국어 별칭으로 사용 (--list-templates 참고). --from과는 함께 쓸 수 없음. 프레임 플래그와는 함께 쓸 수 있으며, 골격이 담지 않는 두문/결문 표를 플래그가 더한다 |
 | `--list-templates` |  |  | 내장 문서 템플릿(슬러그·한국어 별칭)을 모두 나열하고 종료; -o 불필요 |
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
 | `--preset` | `<PRESET>` |  | 공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/press. 기존·한국어 별칭은 하나의 프로필로 정규화 |

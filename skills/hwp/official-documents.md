@@ -111,8 +111,10 @@ Conventions every recipe shares:
 ## 3. Slot tables
 
 Slot lists per template skeleton (verbatim from `hwp slots` run on the old `.hwpx`
-templates — do not re-derive). **Slots a template does not contain are ignored**, so a
-shared `--set` list is safe to reuse across templates.
+templates — do not re-derive). **A slot the template does not contain is an error**: `hwp fill`
+fails closed and publishes nothing unless `--allow-partial` is given, so a shared `--set` list
+needs `--allow-partial` to be reused across templates. Failing closed is deliberate — a typo'd
+slot name that was silently ignored would dispatch a document with an empty field.
 
 | Template | Slots |
 |---|---|
@@ -140,8 +142,9 @@ Authoring rules that keep slots fillable:
 Template files use English slugs; `hwp new --template` accepts either the slug or the
 Korean alias below (D-11), e.g. `hwp new --template 기안문-내부결재 -o draft.hwpx` or
 `hwp new --template gian-internal -o draft.hwpx`. `--template` and `--from` are mutually
-exclusive (D-05): a template already carries its own 두문/결문, so combining it with
-`--from` or with any frame flag is refused.
+exclusive because both name the document content. The frame flags are a different axis and
+do combine with `--template`: a skeleton is plain markdown carrying no native 두문/결문
+table, so `--doc-head`/`--doc-foot` are what add them.
 
 | Korean alias | Template slug |
 |---|---|

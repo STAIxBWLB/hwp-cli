@@ -10,6 +10,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp new --template <slug>` now combines with the frame flags (`--doc-head`, `--doc-foot`,
+  `--notice-head`, `--notice-foot`, `--press-head`) instead of refusing them, on the CLI and over
+  MCP alike. The refusal assumed a template already carried its own 두문/결문 table; the skeletons
+  are plain markdown, so the refusal blocked the only path that could give a template its native
+  frames. `--template` and `--from` stay mutually exclusive. The bundled skill guide and the CLI
+  help no longer claim otherwise.
+- The bundled skill guide said an unmatched `hwp fill --set` slot is ignored. It is an error:
+  `hwp fill` fails closed and publishes nothing unless `--allow-partial` is given. The guide now
+  matches the shipped behavior.
+
 ## [0.9.0]
 
 **Added**

@@ -149,29 +149,24 @@ pub fn run_embedded(
     )
 }
 
-/// Resolves `--template <name>` and enforces D-05: `--template` is refused together with
-/// `--from` and with any frame flag (`--doc-head`/`--doc-foot`/`--notice-head`/`--notice-foot`/
-/// `--press-head`), because templates already carry their own 두문/결문 (Phase 2.1 D-19) and
-/// combining them with frame flags would double the frames. Resolution goes through
-/// `commands::skill::template_file`, the same embedded table `--list-templates` reads — never a
-/// second embedded copy, never a filesystem path built from `name` (T-02.4-13).
-pub fn resolve_template(
-    name: &str,
-    from_given: bool,
-    any_frame_flag: bool,
-) -> anyhow::Result<&'static str> {
+/// Resolves `--template <name>`. Refused together with `--from`: both name the document's
+/// content, so accepting them at once would silently pick one.
+///
+/// Frame flags ARE accepted alongside a template. Phase 2.4 D-05 refused them on the premise that
+/// a template already carries its own 두문/결문 and the two would double up. Verification showed
+/// the premise false: an embedded skeleton holds `수신  {{수신}}` as literal text and its output
+/// carries zero table controls, while D-02's frames are tables. The two supply different things —
+/// the template the body skeleton, the flags the native frames — so refusing the combination only
+/// meant that choosing one path locked the other out for good.
+///
+/// Resolution goes through `commands::skill::template_file`, the same embedded table
+/// `--list-templates` reads — never a second embedded copy, never a filesystem path built from
+/// `name` (T-02.4-13).
+pub fn resolve_template(name: &str, from_given: bool) -> anyhow::Result<&'static str> {
     if from_given {
         anyhow::bail!(
             "--template과 --from은 함께 쓸 수 없습니다: 둘 다 문서 내용을 지정하는 경로입니다. \
              --template {name} 또는 --from 중 하나만 쓰세요."
-        );
-    }
-    if any_frame_flag {
-        anyhow::bail!(
-            "--template {name}은(는) 프레임 플래그(--doc-head/--doc-foot/--notice-head/\
-             --notice-foot/--press-head)와 함께 쓸 수 없습니다: 템플릿은 두문/결문을 이미 \
-             포함하므로 함께 지정하면 프레임이 중복됩니다. 프레임을 직접 구성하려면 --template \
-             없이 프레임 플래그만 쓰세요."
         );
     }
     crate::commands::skill::template_file(name)

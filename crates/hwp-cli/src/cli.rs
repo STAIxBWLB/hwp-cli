@@ -187,8 +187,8 @@ pub enum Cmd {
         #[arg(long)]
         from: Option<PathBuf>,
         /// Use an embedded document-template skeleton by English slug or Korean alias (see
-        /// --list-templates). Mutually exclusive with --from and with every frame flag (D-05):
-        /// templates already carry their own 두문/결문
+        /// --list-templates). Mutually exclusive with --from; combines with the frame flags,
+        /// which add the native 두문/결문 tables the skeleton itself does not carry
         #[arg(long)]
         template: Option<String>,
         /// List all embedded document templates (slug and Korean alias) and exit; needs no -o

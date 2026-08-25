@@ -384,3 +384,73 @@ fn list_templates_names_all_eight_slugs() {
         "--list-templates slugs must match the smoke table's eight slugs"
     );
 }
+
+/// The template skeletons are plain markdown: they carry no native 두문/결문 table of their own,
+/// so `--template` has to combine with the frame flags for a one-command official document.
+/// Phase 2.4 verification falsified the D-05 premise that the two paths were redundant, and this
+/// test pins the combination that replaced the refusal.
+#[test]
+fn template_combines_with_frame_flags() {
+    let dir = test_dir("template-frames");
+    let output = dir.join("gian-external.hwpx");
+    let run = hwp()
+        .args(["new", "--template", "gian-external"])
+        .args(["--doc-head", "기관명=테스트대학교"])
+        .args(["--doc-head", "수신=총장"])
+        .args(["--doc-foot", "발신명의=테스트대학교총장"])
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "--template with frame flags must succeed\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let document = reread(&output);
+    let tables = document
+        .sections
+        .iter()
+        .flat_map(|section| section.paragraphs.iter())
+        .flat_map(|paragraph| paragraph.controls.iter())
+        .filter(|control| matches!(control, Control::Table(_)))
+        .count();
+    assert_eq!(
+        tables, 2,
+        "the frame flags must add the 두문 and 결문 tables the skeleton lacks"
+    );
+    let text = full_document_text(&document);
+    for expected in ["테스트대학교", "총장", "테스트대학교총장"] {
+        assert!(
+            text.contains(expected),
+            "frame value {expected:?} missing from the template output:\n{text}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Documentation regression guard (Phase 2.4 verification gap 2): the two claims the guides once
+/// made are both false against the shipped binary, and a doc-only edit is exactly the kind of
+/// change no other test notices. Assert the retracted wording stays gone from the embedded copies
+/// — those are what `hwp skill` hands a caller.
+#[test]
+fn embedded_guides_do_not_restate_retracted_claims() {
+    for rel in ["official-documents.md", "official-documents.ko.md"] {
+        let text = std::fs::read_to_string(repo(&format!("skills/hwp/{rel}"))).unwrap();
+        for retracted in [
+            // The template path needs the frame flags; it does not refuse them.
+            "any frame flag is refused",
+            "프레임 플래그와 함께 쓸 수 없",
+            // `hwp fill` fails closed on an unmatched slot.
+            "Slots a template does not contain are ignored",
+            "템플릿에 없는 슬롯은 무시",
+        ] {
+            assert!(
+                !text.contains(retracted),
+                "{rel} restates a claim verification falsified: {retracted:?}"
+            );
+        }
+    }
+}
