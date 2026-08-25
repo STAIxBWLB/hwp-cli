@@ -101,7 +101,9 @@ Conventions every recipe shares:
   ```
 
   `--doc-foot` also carries 기안자/검토자/결재자/협조자/시행번호/시행일자/접수번호/접수일자/
-  주소/홈페이지/전화/팩스/이메일/공개구분 (repeat the flag once per key); `--doc-head` carries
+  주소/홈페이지/전화/팩스/이메일/공개구분/수신자 (repeat the flag once per key). 수신자 is the
+  recipient list of a document whose 두문 reads `수신자 참조`, and is the one 결문 row emitted
+  only when supplied. `--doc-head` carries
   기관명/수신/경유 the same way. `--notice-head`/`--notice-foot`/`--press-head` are the
   matching frames for 공고문/보도자료. Every frame is a table, wired directly into the
   document — nothing to splice, no HTML block-level alignment workaround.
@@ -121,7 +123,7 @@ slot name that was silently ignored would dispatch a document with an empty fiel
 |---|---|
 | `gian-internal.md` | `{{기관명}}` `{{제목}}` `{{본문}}` `{{붙임}}` `{{발신명의}}` `{{기안자}}` `{{기안자직위}}` `{{협조자}}` `{{시행번호}}` `{{시행일자}}` |
 | `gian-external.md` | `{{기관명}}` `{{수신}}` `{{경유}}` `{{제목}}` `{{본문}}` `{{붙임}}` `{{발신명의}}` `{{기안자}}` `{{검토자}}` `{{결재자}}` `{{협조자}}` `{{시행번호}}` `{{시행일자}}` `{{접수번호}}` `{{접수일자}}` `{{주소}}` `{{홈페이지}}` `{{전화}}` `{{팩스}}` `{{이메일}}` `{{공개구분}}` |
-| `gongmun-basic.md` | same as `gian-external.md` |
+| `gongmun-basic.md` | the multi-recipient form: same as `gian-external.md` but with no `{{수신}}` (두문 reads the fixed `수신자 참조`) and a `{{수신자}}` list in 결문 |
 | `report.md` | `{{제목}}` `{{작성자}}` `{{작성부서}}` `{{작성일자}}` `{{배경1}}` `{{배경2}}` `{{내용1}}` `{{내용2}}` `{{내용3}}` `{{계획1}}` `{{계획2}}` `{{행정사항}}` `{{붙임}}` |
 | `plan.md` | `{{사업명}}` `{{주관기관}}` `{{책임자}}` `{{사업기간}}` `{{총사업비}}` `{{참여기관}}` `{{배경1}}` `{{배경2}}` `{{필요성1}}` `{{필요성2}}` `{{최종목표}}` `{{연차목표}}` `{{추진전략}}` `{{세부과제1}}` `{{세부과제2}}` `{{세부과제3}}` `{{추진일정}}` `{{예산내역}}` `{{정량효과}}` `{{정성효과}}` `{{성과지표}}` `{{붙임1}}` `{{붙임2}}` |
 | `minutes.md` | 9 statutory elements: `{{회의명}}` `{{작성자}}` `{{주관}}` `{{일시}}` `{{장소}}` `{{참석자}}` `{{진행순서}}` `{{안건1}}` `{{안건2}}` `{{논의1}}` `{{논의2}}` `{{결정1}}` `{{결정2}}` `{{표결내용}}` |
