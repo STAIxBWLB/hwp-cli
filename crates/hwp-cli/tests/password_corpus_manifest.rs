@@ -7,11 +7,28 @@
 mod password_corpus_manifest;
 
 use password_corpus_manifest::{
-    Hwp5ProbeObservation, HwpxBufferSizes, check_hwp5_budget, check_hwpx_budget,
+    Hwp5ProbeObservation, Hwp5ValidatedStream, HwpxBufferSizes, after_hwp5_discovery_gate,
+    check_hwp5_budget, check_hwp5_discovery_eligibility, check_hwpx_budget,
     discovery_would_write_evidence, load_manifest_for_test, manifest_fixture, owner_manifest_path,
     parse_hwpx_profile, probe_hwp5_encrypt_version_4, repo_root, run_owner_discovery,
-    run_owner_discovery_from_env, transform_hwp5_encrypt_version_4_in_place,
+    run_owner_discovery_from_env, serialize_hwp5_profile_observation,
+    transform_hwp5_encrypt_version_4_in_place, validate_hwp5_record_identity,
 };
+
+fn synthetic_hwp5_header(attributes: u32, encrypt_version: u32) -> hwp5::FileHeader {
+    let mut bytes = vec![0u8; hwp5::file_header::FILE_HEADER_SIZE];
+    bytes[..hwp5::file_header::SIGNATURE.len()].copy_from_slice(hwp5::file_header::SIGNATURE);
+    bytes[32..36].copy_from_slice(&0x05000300u32.to_le_bytes());
+    bytes[36..40].copy_from_slice(&attributes.to_le_bytes());
+    bytes[44..48].copy_from_slice(&encrypt_version.to_le_bytes());
+    hwp5::FileHeader::parse(&bytes).expect("synthetic HWP5 header is valid")
+}
+
+fn synthetic_record_stream(tag: u16) -> hwp5::record::ScanResult {
+    let bytes = u32::from(tag).to_le_bytes();
+    hwp5::record::scan_stream(&bytes, hwp5::record::ScanMode::Strict)
+        .expect("single zero-length record is structurally valid")
+}
 
 #[test]
 fn manifest_contract_accepts_a_redacted_synthetic_matrix() {
@@ -132,6 +149,123 @@ fn budget_boundaries_keep_the_hwp5_candidate_transform_in_memory() {
     transform_hwp5_encrypt_version_4_in_place(&mut ciphertext, "synthetic-password")
         .expect("candidate transform should accept a bounded synthetic stream");
     assert_ne!(ciphertext, original);
+}
+
+#[test]
+fn hwp5_discovery_rejects_unmarked_inconsistent_and_unsupported_profiles_before_access() {
+    const ENCRYPTED: u32 = 1 << 1;
+    const COMPRESSED: u32 = 1 << 0;
+    let unmarked = synthetic_hwp5_header(COMPRESSED, 4);
+    assert_eq!(
+        check_hwp5_discovery_eligibility(&unmarked).unwrap_err(),
+        "HWP5 is not marked encrypted"
+    );
+
+    let inconsistent = synthetic_hwp5_header(COMPRESSED | ENCRYPTED, 0);
+    assert_eq!(
+        check_hwp5_discovery_eligibility(&inconsistent).unwrap_err(),
+        "HWP5 encrypted bit + EncryptVersion=0 is internally inconsistent"
+    );
+    let mut accessed = false;
+    assert!(
+        after_hwp5_discovery_gate(&inconsistent, || {
+            accessed = true;
+            transform_hwp5_encrypt_version_4_in_place(&mut [0u8; 16], "synthetic")
+        })
+        .is_err()
+    );
+    assert!(
+        !accessed,
+        "EncryptVersion=0 must be rejected before stream reads or transform access"
+    );
+
+    for version in [1, 5] {
+        let header = synthetic_hwp5_header(COMPRESSED | ENCRYPTED, version);
+        assert_eq!(
+            check_hwp5_discovery_eligibility(&header).unwrap_err(),
+            format!("HWP5 EncryptVersion={version} is unsupported")
+        );
+    }
+
+    let candidate = synthetic_hwp5_header(COMPRESSED | ENCRYPTED, 4);
+    let mut candidate_accessed = false;
+    after_hwp5_discovery_gate(&candidate, || {
+        candidate_accessed = true;
+        Ok(())
+    })
+    .expect("EncryptVersion 4 remains the only candidate");
+    assert!(candidate_accessed);
+}
+
+#[test]
+fn hwp5_discovery_refuses_non_password_protection_before_password_probing() {
+    const ENCRYPTED: u32 = 1 << 1;
+    const DISTRIBUTION: u32 = 1 << 2;
+    const DRM: u32 = 1 << 4;
+    const SIGNED: u32 = 1 << 7;
+    const CERT_ENCRYPTED: u32 = 1 << 8;
+    const CERT_DRM: u32 = 1 << 10;
+    for (flag, message) in [
+        (
+            CERT_ENCRYPTED,
+            "HWP5 certificate encryption must not enter password discovery",
+        ),
+        (
+            CERT_DRM,
+            "HWP5 certificate DRM must not enter password discovery",
+        ),
+        (DRM, "HWP5 DRM must not enter password discovery"),
+        (
+            SIGNED,
+            "HWP5 digital signature must not enter password discovery",
+        ),
+        (
+            DISTRIBUTION,
+            "HWP5 distribution document must not enter password discovery",
+        ),
+    ] {
+        let header = synthetic_hwp5_header(ENCRYPTED | flag, 4);
+        assert_eq!(
+            check_hwp5_discovery_eligibility(&header).unwrap_err(),
+            message
+        );
+    }
+}
+
+#[test]
+fn hwp5_discovery_requires_record_identity_and_serializes_only_cfb_evidence() {
+    let doc_info = synthetic_record_stream(hwp5::record::tag::DOCUMENT_PROPERTIES);
+    validate_hwp5_record_identity("/DocInfo", &doc_info)
+        .expect("DocInfo must identify itself with DOCUMENT_PROPERTIES");
+    let body = synthetic_record_stream(hwp5::record::tag::PARA_HEADER);
+    validate_hwp5_record_identity("/BodyText/Section0", &body)
+        .expect("BodyText must identify itself with PARA_HEADER");
+    let generic = synthetic_record_stream(hwp5::record::tag::FACE_NAME);
+    assert!(
+        validate_hwp5_record_identity("/DocInfo", &generic).is_err(),
+        "a structurally valid but generic record stream must not validate"
+    );
+
+    let evidence = serialize_hwp5_profile_observation(&Hwp5ProbeObservation {
+        encrypt_version: 4,
+        cfb_stream_count: 3,
+        cfb_stream_bytes: 32,
+        validated_record_stream_count: 2,
+        validated_record_streams: vec![
+            Hwp5ValidatedStream {
+                path: "/DocInfo".to_owned(),
+                size: 8,
+            },
+            Hwp5ValidatedStream {
+                path: "/BodyText/Section0".to_owned(),
+                size: 24,
+            },
+        ],
+    });
+    assert_eq!(evidence["validated_record_streams"][0]["path"], "/DocInfo");
+    assert_eq!(evidence["validated_record_streams"][1]["size"], 24);
+    let encoded = evidence.to_string();
+    assert!(!encoded.contains("/private/") && !encoded.contains("synthetic-password"));
 }
 
 #[test]

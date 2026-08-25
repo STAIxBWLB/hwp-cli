@@ -259,6 +259,7 @@ enum ProfileObservation {
         cfb_stream_count: usize,
         cfb_stream_bytes: u64,
         validated_record_stream_count: usize,
+        validated_record_streams: Vec<Hwp5ValidatedStream>,
     },
     Hwpx {
         algorithm_id: String,
@@ -344,6 +345,7 @@ where
                     cfb_stream_count: observation.cfb_stream_count,
                     cfb_stream_bytes: observation.cfb_stream_bytes,
                     validated_record_stream_count: observation.validated_record_stream_count,
+                    validated_record_streams: observation.validated_record_streams,
                 }
             }
             "hwpx" => {
@@ -799,12 +801,109 @@ pub fn transform_hwp5_encrypt_version_4_in_place(
 
 /// A content-free observation from a private HWP5 file. Stream bytes never
 /// cross this return boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Hwp5ValidatedStream {
+    /// A bounded CFB identifier, never a source filesystem path.
+    pub path: String,
+    pub size: u64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Hwp5ProbeObservation {
     pub encrypt_version: u32,
     pub cfb_stream_count: usize,
     pub cfb_stream_bytes: u64,
     pub validated_record_stream_count: usize,
+    pub validated_record_streams: Vec<Hwp5ValidatedStream>,
+}
+
+/// Returns the only content-free HWP5 profile fragment that can be persisted
+/// in Phase 8 evidence. In particular, it carries bounded CFB identifiers,
+/// never an owner source path or transformed bytes.
+pub fn serialize_hwp5_profile_observation(observation: &Hwp5ProbeObservation) -> Value {
+    serde_json::to_value(ProfileObservation::Hwp5 {
+        encrypt_version: observation.encrypt_version,
+        cfb_stream_count: observation.cfb_stream_count,
+        cfb_stream_bytes: observation.cfb_stream_bytes,
+        validated_record_stream_count: observation.validated_record_stream_count,
+        validated_record_streams: observation.validated_record_streams.clone(),
+    })
+    .expect("HWP5 profile observation is serializable")
+}
+
+/// Fail-closed, content-free classifier for the HWP5 discovery entry point.
+/// It deliberately recognizes only the reference candidate, EncryptVersion 4.
+pub fn check_hwp5_discovery_eligibility(header: &hwp5::FileHeader) -> Result<(), String> {
+    // These are not password-encryption profiles. Refuse them before any CFB
+    // stream materialization or candidate transform so they cannot become
+    // password evidence by accident.
+    if header.is_cert_encrypted() {
+        return Err("HWP5 certificate encryption must not enter password discovery".to_owned());
+    }
+    if header.is_cert_drm() {
+        return Err("HWP5 certificate DRM must not enter password discovery".to_owned());
+    }
+    if header.is_drm() {
+        return Err("HWP5 DRM must not enter password discovery".to_owned());
+    }
+    if header.has_signature() {
+        return Err("HWP5 digital signature must not enter password discovery".to_owned());
+    }
+    if header.is_distribution() {
+        return Err("HWP5 distribution document must not enter password discovery".to_owned());
+    }
+    if !header.is_encrypted() {
+        return Err("HWP5 is not marked encrypted".to_owned());
+    }
+    match header.encrypt_version {
+        0 => Err("HWP5 encrypted bit + EncryptVersion=0 is internally inconsistent".to_owned()),
+        4 => Ok(()),
+        version => Err(format!("HWP5 EncryptVersion={version} is unsupported")),
+    }
+}
+
+/// Makes the header gate mechanically precede stream access. Keeping this
+/// small seam separate lets synthetic tests prove a rejected header cannot
+/// reach CFB reads or the candidate transform.
+pub fn after_hwp5_discovery_gate<T>(
+    header: &hwp5::FileHeader,
+    access_streams: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    check_hwp5_discovery_eligibility(header)?;
+    access_streams()
+}
+
+fn expected_hwp5_record_tag(path: &str) -> Option<u16> {
+    if path == "/DocInfo" {
+        Some(hwp5::record::tag::DOCUMENT_PROPERTIES)
+    } else if path.starts_with("/BodyText/Section") {
+        Some(hwp5::record::tag::PARA_HEADER)
+    } else if path.starts_with("/ViewText/Section") {
+        Some(hwp5::record::tag::DISTRIBUTE_DOC_DATA)
+    } else {
+        None
+    }
+}
+
+fn record_tree_contains_tag(nodes: &[hwp5::record::RecordNode], expected: u16) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.tag == expected || record_tree_contains_tag(&node.children, expected))
+}
+
+/// A strict scan alone is intentionally insufficient: a transformed stream
+/// must also identify itself as the kind of record stream its CFB name claims.
+pub fn validate_hwp5_record_identity(
+    path: &str,
+    scan: &hwp5::record::ScanResult,
+) -> Result<(), String> {
+    let expected = expected_hwp5_record_tag(path)
+        .ok_or_else(|| "HWP5 CFB stream is not eligible for password discovery".to_owned())?;
+    if record_tree_contains_tag(&scan.roots, expected) {
+        Ok(())
+    } else {
+        Err("HWP5 candidate record identity did not validate".to_owned())
+    }
 }
 
 pub fn probe_hwp5_encrypt_version_4(
@@ -814,21 +913,27 @@ pub fn probe_hwp5_encrypt_version_4(
     let mut container = hwp5::Hwp5Container::open(path)
         .map_err(|_| "HWP5 container cannot be opened for profile discovery".to_owned())?;
     let header = container.file_header().clone();
-    if !header.is_encrypted() || header.encrypt_version != 4 {
-        return Err("HWP5 EncryptVersion is unsupported or not password-protected".to_owned());
-    }
+    after_hwp5_discovery_gate(&header, || {
+        probe_hwp5_candidate_streams(&mut container, &header, password)
+    })
+}
+
+fn probe_hwp5_candidate_streams(
+    container: &mut hwp5::Hwp5Container,
+    header: &hwp5::FileHeader,
+    password: &str,
+) -> Result<Hwp5ProbeObservation, String> {
     let streams = container.list_streams();
     let cfb_stream_bytes = streams.iter().try_fold(0u64, |total, stream| {
         total
             .checked_add(stream.size)
             .ok_or_else(|| "HWP5 CFB stream accounting overflowed".to_owned())
     })?;
-    let mut validated_record_stream_count = 0usize;
+    let mut validated_record_streams = Vec::new();
     for stream in streams.iter().filter(|stream| {
         stream.path == "/DocInfo"
             || stream.path.starts_with("/BodyText/")
             || stream.path.starts_with("/ViewText/")
-            || stream.path.starts_with("/Scripts/")
     }) {
         check_hwp5_budget(
             stream.size,
@@ -855,16 +960,21 @@ pub fn probe_hwp5_encrypt_version_4(
         if scan.record_count == 0 {
             return Err("HWP5 candidate record stream is empty".to_owned());
         }
-        validated_record_stream_count += 1;
+        validate_hwp5_record_identity(&stream.path, &scan)?;
+        validated_record_streams.push(Hwp5ValidatedStream {
+            path: stream.path.clone(),
+            size: stream.size,
+        });
     }
-    if validated_record_stream_count == 0 {
+    if validated_record_streams.is_empty() {
         return Err("HWP5 stream behavior is ambiguous".to_owned());
     }
     Ok(Hwp5ProbeObservation {
         encrypt_version: header.encrypt_version,
         cfb_stream_count: streams.len(),
         cfb_stream_bytes,
-        validated_record_stream_count,
+        validated_record_stream_count: validated_record_streams.len(),
+        validated_record_streams,
     })
 }
 
