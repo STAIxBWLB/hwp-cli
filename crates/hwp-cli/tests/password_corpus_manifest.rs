@@ -8,8 +8,9 @@ mod password_corpus_manifest;
 
 use password_corpus_manifest::{
     Hwp5ProbeObservation, HwpxBufferSizes, check_hwp5_budget, check_hwpx_budget,
-    discovery_would_write_evidence, load_manifest_for_test, manifest_fixture, parse_hwpx_profile,
-    probe_hwp5_encrypt_version_4, repo_root, transform_hwp5_encrypt_version_4_in_place,
+    discovery_would_write_evidence, load_manifest_for_test, manifest_fixture, owner_manifest_path,
+    parse_hwpx_profile, probe_hwp5_encrypt_version_4, repo_root, run_owner_discovery,
+    run_owner_discovery_from_env, transform_hwp5_encrypt_version_4_in_place,
 };
 
 #[test]
@@ -131,4 +132,44 @@ fn budget_boundaries_keep_the_hwp5_candidate_transform_in_memory() {
     transform_hwp5_encrypt_version_4_in_place(&mut ciphertext, "synthetic-password")
         .expect("candidate transform should accept a bounded synthetic stream");
     assert_ne!(ciphertext, original);
+}
+
+#[test]
+fn owner_discovery_entrypoint_is_present_and_ignored() {
+    let source = include_str!("password_corpus_manifest.rs");
+    assert!(source.contains("fn discover_owner_profiles"));
+    assert!(source.contains("#[ignore = \"requires owner-controlled password corpus\"]"));
+}
+
+#[test]
+fn owner_discovery_without_manifest_fails_closed_without_evidence() {
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    );
+    let absent_manifest =
+        std::env::temp_dir().join(format!("hwp-cli-missing-manifest-{nonce}.json"));
+    let evidence = std::env::temp_dir().join(format!("hwp-cli-missing-evidence-{nonce}.json"));
+    let _ = std::fs::remove_file(&evidence);
+
+    assert!(
+        owner_manifest_path(None).is_err(),
+        "missing environment must stop discovery"
+    );
+    assert!(
+        run_owner_discovery(&absent_manifest, &evidence, |_| None).is_err(),
+        "missing owner setup must stop before publication"
+    );
+    assert!(
+        !evidence.exists(),
+        "missing owner setup must leave no evidence artifact"
+    );
+}
+
+#[test]
+#[ignore = "requires owner-controlled password corpus"]
+fn discover_owner_profiles() {
+    run_owner_discovery_from_env()
+        .expect("owner discovery must publish only after all profile probes validate");
 }

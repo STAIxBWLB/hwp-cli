@@ -4,9 +4,14 @@
 //! source path or serializes the resolved `Zeroizing<String>` credential.
 
 use std::collections::BTreeSet;
+use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 const MANIFEST_SCHEMA: &str =
@@ -217,6 +222,278 @@ where
 
 pub fn discovery_would_write_evidence(manifest_path: Option<&Path>) -> bool {
     manifest_path.is_some_and(Path::is_file)
+}
+
+#[derive(Serialize)]
+struct ProfileEvidence {
+    version: &'static str,
+    budget_profile: BudgetProfile,
+    fixtures: Vec<FixtureEvidence>,
+}
+
+#[derive(Serialize)]
+struct BudgetProfile {
+    hwp5_stream_bytes: u64,
+    hwp5_live_bytes: u64,
+    hwpx_entry_bytes: u64,
+    hwpx_xml_bytes: u64,
+    hwpx_live_bytes: u64,
+    hwpx_compression_ratio: u64,
+}
+
+#[derive(Serialize)]
+struct FixtureEvidence {
+    fixture_id: String,
+    format: String,
+    role: String,
+    credential_charset: String,
+    source_sha256: String,
+    profile: ProfileObservation,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "format", rename_all = "snake_case")]
+enum ProfileObservation {
+    Hwp5 {
+        encrypt_version: u32,
+        cfb_stream_count: usize,
+        cfb_stream_bytes: u64,
+        validated_record_stream_count: usize,
+    },
+    Hwpx {
+        algorithm_id: String,
+        kdf_id: String,
+        start_key_id: String,
+        checksum_id: String,
+        protected_entry_count: usize,
+        validated_entry_count: usize,
+        protected_entry_bytes: u64,
+    },
+}
+
+struct OwnerFixture {
+    fixture_id: String,
+    source_path: PathBuf,
+    format: String,
+    role: String,
+    credential_charset: String,
+    credential: Zeroizing<String>,
+}
+
+/// Runs the genuine owner-controlled discovery gate. The returned evidence is
+/// deliberately serializable only through the closed types above: private
+/// paths, credential references and credentials never cross this boundary.
+pub fn run_owner_discovery_from_env() -> Result<(), String> {
+    let manifest_path = owner_manifest_path(std::env::var_os("HWP_PASSWORD_CORPUS_MANIFEST"))?;
+    let evidence_path = evidence_destination_from_env()?;
+    run_owner_discovery(&manifest_path, &evidence_path, |reference| {
+        std::env::var(reference).ok()
+    })
+}
+
+pub fn owner_manifest_path(value: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    value
+        .map(PathBuf::from)
+        .ok_or_else(|| "owner password corpus manifest is not configured".to_owned())
+}
+
+/// The parameterized form keeps the fail-closed path testable without reading
+/// process secrets or changing the test process environment.
+pub fn run_owner_discovery<F>(
+    manifest_path: &Path,
+    evidence_path: &Path,
+    resolve_credential: F,
+) -> Result<(), String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !manifest_path.is_absolute() || !manifest_path.is_file() {
+        return Err("owner password corpus manifest is unavailable".to_owned());
+    }
+    if !evidence_path.is_absolute() {
+        return Err("profile evidence destination must be absolute".to_owned());
+    }
+
+    // Remove a potentially stale receipt before inspecting mutable owner input.
+    // Failure at any later gate therefore cannot leave a complete artifact that
+    // a subsequent plan could mistake for current evidence.
+    remove_existing_evidence(evidence_path)?;
+
+    let manifest_bytes = fs::read(manifest_path)
+        .map_err(|_| "owner password corpus manifest cannot be read".to_owned())?;
+    let manifest: Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|_| "owner password corpus manifest is invalid".to_owned())?;
+    // Reuse the closed-schema and role validator before retaining private paths.
+    load_manifest_for_test(&manifest, &repo_root(), |reference| {
+        resolve_credential(reference)
+    })?;
+    let fixtures = owner_fixtures(&manifest, resolve_credential)?;
+
+    let mut evidence = Vec::with_capacity(fixtures.len());
+    for fixture in &fixtures {
+        if !fixture.source_path.is_file() {
+            return Err("owner password corpus source is unavailable".to_owned());
+        }
+        let source_sha256 = source_sha256(&fixture.source_path)?;
+        let profile = match fixture.format.as_str() {
+            "hwp5" => {
+                let observation =
+                    probe_hwp5_encrypt_version_4(&fixture.source_path, &fixture.credential)?;
+                ProfileObservation::Hwp5 {
+                    encrypt_version: observation.encrypt_version,
+                    cfb_stream_count: observation.cfb_stream_count,
+                    cfb_stream_bytes: observation.cfb_stream_bytes,
+                    validated_record_stream_count: observation.validated_record_stream_count,
+                }
+            }
+            "hwpx" => {
+                let observation =
+                    probe_hwpx_password_profile(&fixture.source_path, &fixture.credential)?;
+                ProfileObservation::Hwpx {
+                    algorithm_id: observation.algorithm_id,
+                    kdf_id: observation.kdf_id,
+                    start_key_id: observation.start_key_id,
+                    checksum_id: observation.checksum_id,
+                    protected_entry_count: observation.protected_entry_count,
+                    validated_entry_count: observation.validated_entry_count,
+                    protected_entry_bytes: observation.protected_entry_bytes,
+                }
+            }
+            _ => return Err("owner password corpus format is unsupported".to_owned()),
+        };
+        evidence.push(FixtureEvidence {
+            fixture_id: fixture.fixture_id.clone(),
+            format: fixture.format.clone(),
+            role: fixture.role.clone(),
+            credential_charset: fixture.credential_charset.clone(),
+            source_sha256,
+            profile,
+        });
+    }
+
+    write_evidence_atomically(
+        evidence_path,
+        &ProfileEvidence {
+            version: "password-profile-evidence-v1",
+            budget_profile: BudgetProfile {
+                hwp5_stream_bytes: HWP5_STREAM_BYTES,
+                hwp5_live_bytes: HWP5_LIVE_BYTES,
+                hwpx_entry_bytes: HWPX_ENTRY_BYTES,
+                hwpx_xml_bytes: HWPX_XML_BYTES,
+                hwpx_live_bytes: HWPX_LIVE_BYTES,
+                hwpx_compression_ratio: HWPX_COMPRESSION_RATIO,
+            },
+            fixtures: evidence,
+        },
+    )
+}
+
+fn evidence_destination_from_env() -> Result<PathBuf, String> {
+    match std::env::var_os("HWP_PASSWORD_PROFILE_EVIDENCE") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err("profile evidence destination must be absolute".to_owned());
+            }
+            Ok(path)
+        }
+        None => Ok(repo_root()
+            .join(".planning/phases/08-password-protected-input/08-PROFILE-EVIDENCE.json")),
+    }
+}
+
+fn remove_existing_evidence(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("existing profile evidence cannot be cleared".to_owned()),
+    }
+}
+
+fn owner_fixtures<F>(manifest: &Value, resolve_credential: F) -> Result<Vec<OwnerFixture>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    manifest["fixtures"]
+        .as_array()
+        .ok_or_else(|| "owner password corpus fixtures are unavailable".to_owned())?
+        .iter()
+        .map(|fixture| {
+            let value = |name| {
+                fixture[name]
+                    .as_str()
+                    .ok_or_else(|| "owner password corpus fixture is invalid".to_owned())
+            };
+            let credential_ref = value("credential_ref")?;
+            Ok(OwnerFixture {
+                fixture_id: value("fixture_id")?.to_owned(),
+                source_path: PathBuf::from(value("source_path")?),
+                format: value("format")?.to_owned(),
+                role: value("role")?.to_owned(),
+                credential_charset: value("credential_charset")?.to_owned(),
+                credential: Zeroizing::new(
+                    resolve_credential(credential_ref)
+                        .ok_or_else(|| "owner password credential is unavailable".to_owned())?,
+                ),
+            })
+        })
+        .collect()
+}
+
+fn source_sha256(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|_| "owner password corpus source cannot be read".to_owned())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|_| "owner password corpus source cannot be hashed".to_owned())?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn write_evidence_atomically(path: &Path, evidence: &ProfileEvidence) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|parent| parent.is_dir())
+        .ok_or_else(|| "profile evidence directory is unavailable".to_owned())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "profile evidence clock is unavailable".to_owned())?
+        .as_nanos();
+    let temporary = parent.join(format!(
+        ".password-profile-evidence-{}-{nonce}.tmp",
+        std::process::id()
+    ));
+    let encoded = serde_json::to_vec_pretty(evidence)
+        .map_err(|_| "profile evidence cannot be encoded".to_owned())?;
+    let result = (|| -> Result<(), String> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|_| "profile evidence temporary file cannot be created".to_owned())?;
+        file.write_all(&encoded)
+            .map_err(|_| "profile evidence cannot be written".to_owned())?;
+        file.write_all(b"\n")
+            .map_err(|_| "profile evidence cannot be written".to_owned())?;
+        file.sync_all()
+            .map_err(|_| "profile evidence cannot be synchronized".to_owned())?;
+        fs::rename(&temporary, path).map_err(|_| "profile evidence cannot be published".to_owned())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 pub const HWP5_STREAM_BYTES: u64 = 64 * 1024 * 1024;
@@ -589,4 +866,304 @@ pub fn probe_hwp5_encrypt_version_4(
         cfb_stream_bytes,
         validated_record_stream_count,
     })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct HwpxProbeObservation {
+    pub algorithm_id: String,
+    pub kdf_id: String,
+    pub start_key_id: String,
+    pub checksum_id: String,
+    pub protected_entry_count: usize,
+    pub validated_entry_count: usize,
+    pub protected_entry_bytes: u64,
+}
+
+struct HwpxEncryptedEntry {
+    name: String,
+    declared_plaintext_bytes: u64,
+    algorithm_id: String,
+    iv: Vec<u8>,
+    kdf_id: String,
+    salt: Vec<u8>,
+    iterations: u32,
+    key_size: usize,
+    start_key_id: String,
+    checksum_id: String,
+    checksum: Vec<u8>,
+}
+
+/// Probes the narrowly admitted ODF profile without retaining decrypted
+/// material. Each protected entry must decrypt, pass the declared checksum,
+/// raw-inflate inside the fixed bounds and have valid XML when it declares an
+/// XML name. Any deviation is deliberately reported as one content-free error.
+pub fn probe_hwpx_password_profile(
+    path: &Path,
+    password: &str,
+) -> Result<HwpxProbeObservation, String> {
+    use aes::Aes256;
+    use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
+    use flate2::{Decompress, FlushDecompress, Status};
+    use pbkdf2::pbkdf2_hmac;
+
+    let mut package = hwpx::HwpxPackage::open(path)
+        .map_err(|_| "HWPX package cannot be opened for profile discovery".to_owned())?;
+    let manifest = package
+        .read_entry_string("META-INF/manifest.xml")
+        .map_err(|_| "HWPX encryption manifest is unavailable".to_owned())?;
+    let profile = parse_hwpx_profile(&manifest)?;
+    let protected = parse_hwpx_encrypted_entries(&manifest)?;
+    if protected.is_empty() {
+        return Err("HWPX encryption manifest has no protected entries".to_owned());
+    }
+    if protected.iter().any(|entry| {
+        entry.algorithm_id != profile.algorithm_id
+            || entry.kdf_id != profile.kdf_id
+            || entry.start_key_id != profile.start_key_id
+            || entry.checksum_id != profile.checksum_id
+            || entry.iv.len() != 16
+            || entry.salt.is_empty()
+            || entry.salt.len() > 1024
+            || entry.key_size != 32
+            || entry.iterations == 0
+            || entry.iterations > HWPX_MAX_PBKDF2_ITERATIONS
+            || entry.checksum.len() != 32
+    }) {
+        return Err("HWPX profile is unsupported or incomplete".to_owned());
+    }
+
+    let entries = package
+        .entries()
+        .map_err(|_| "HWPX package entries cannot be inspected".to_owned())?;
+    let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
+    let mut validated_entry_count = 0usize;
+    let mut protected_entry_bytes = 0u64;
+
+    for entry in &protected {
+        let zip_entry = entries
+            .iter()
+            .find(|candidate| candidate.name == entry.name)
+            .ok_or_else(|| "HWPX protected entry is unavailable".to_owned())?;
+        check_hwpx_budget(
+            &entry.name,
+            HwpxBufferSizes {
+                ciphertext: zip_entry.size,
+                decrypted_compressed: zip_entry.size,
+                inflated: entry.declared_plaintext_bytes,
+                parser_owned: 0,
+            },
+        )?;
+        let mut ciphertext = Zeroizing::new(
+            package
+                .read_entry(&entry.name)
+                .map_err(|_| "HWPX protected entry cannot be read".to_owned())?,
+        );
+        if ciphertext.len() as u64 != zip_entry.size {
+            return Err("HWPX protected entry size is inconsistent".to_owned());
+        }
+        let mut key = Zeroizing::new([0u8; 32]);
+        pbkdf2_hmac::<sha1::Sha1>(&start_key, &entry.salt, entry.iterations, &mut *key);
+        let mut decryptor = cbc::Decryptor::<Aes256>::new_from_slices(&*key, &entry.iv)
+            .map_err(|_| "HWPX cipher setup failed".to_owned())?;
+        let compressed = decryptor
+            .decrypt_padded::<Pkcs7>(&mut ciphertext)
+            .map_err(|_| "HWPX protected entry did not decrypt".to_owned())?;
+        let checksum_bytes = Sha256::digest(&compressed[..compressed.len().min(1024)]);
+        if checksum_bytes.as_slice() != entry.checksum.as_slice() {
+            return Err("HWPX protected entry checksum did not validate".to_owned());
+        }
+        let output_capacity = usize::try_from(entry.declared_plaintext_bytes)
+            .map_err(|_| "HWPX protected entry exceeds platform bounds".to_owned())?;
+        let mut plaintext = Zeroizing::new(Vec::with_capacity(output_capacity));
+        let mut decompressor = Decompress::new(false);
+        let status = decompressor
+            .decompress_vec(compressed, &mut plaintext, FlushDecompress::Finish)
+            .map_err(|_| "HWPX protected entry did not inflate".to_owned())?;
+        if status != Status::StreamEnd
+            || decompressor.total_in() != compressed.len() as u64
+            || plaintext.len() as u64 != entry.declared_plaintext_bytes
+        {
+            return Err("HWPX protected entry structure is inconsistent".to_owned());
+        }
+        if entry.name.to_ascii_lowercase().ends_with(".xml") {
+            validate_xml_structure(&plaintext)?;
+        }
+        protected_entry_bytes = protected_entry_bytes
+            .checked_add(entry.declared_plaintext_bytes)
+            .ok_or_else(|| "HWPX protected entry accounting overflowed".to_owned())?;
+        if protected_entry_bytes > HWPX_LIVE_BYTES {
+            return Err("HWPX protected entries exceed the aggregate budget".to_owned());
+        }
+        validated_entry_count += 1;
+    }
+    use zeroize::Zeroize as _;
+    start_key.zeroize();
+    package
+        .verify_integrity()
+        .map_err(|_| "HWPX package integrity did not validate".to_owned())?;
+    Ok(HwpxProbeObservation {
+        algorithm_id: profile.algorithm_id,
+        kdf_id: profile.kdf_id,
+        start_key_id: profile.start_key_id,
+        checksum_id: profile.checksum_id,
+        protected_entry_count: protected.len(),
+        validated_entry_count,
+        protected_entry_bytes,
+    })
+}
+
+fn parse_hwpx_encrypted_entries(manifest: &str) -> Result<Vec<HwpxEncryptedEntry>, String> {
+    use base64::Engine as _;
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    #[derive(Default)]
+    struct CurrentEntry {
+        name: Option<String>,
+        size: Option<u64>,
+        protected: bool,
+        algorithm_id: Option<String>,
+        iv: Option<Vec<u8>>,
+        kdf_id: Option<String>,
+        salt: Option<Vec<u8>>,
+        iterations: Option<u32>,
+        key_size: Option<usize>,
+        start_key_id: Option<String>,
+        checksum_id: Option<String>,
+        checksum: Option<Vec<u8>>,
+    }
+
+    fn local_name(name: &[u8]) -> &[u8] {
+        name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+    }
+    fn attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Option<String> {
+        event
+            .attributes()
+            .flatten()
+            .find(|attribute| local_name(attribute.key.as_ref()) == key)
+            .and_then(|attribute| String::from_utf8(attribute.value.into_owned()).ok())
+    }
+    fn base64(value: Option<String>) -> Result<Vec<u8>, String> {
+        base64::engine::general_purpose::STANDARD
+            .decode(value.ok_or_else(|| "HWPX profile metadata is incomplete".to_owned())?)
+            .map_err(|_| "HWPX profile metadata is invalid".to_owned())
+    }
+
+    let mut reader = Reader::from_str(manifest);
+    let mut current: Option<CurrentEntry> = None;
+    let mut protected = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
+                match local_name(event.name().as_ref()) {
+                    b"file-entry" => {
+                        if current.is_some() {
+                            return Err("HWPX protected entry structure is ambiguous".to_owned());
+                        }
+                        current = Some(CurrentEntry {
+                            name: attr(&event, b"full-path"),
+                            size: attr(&event, b"size").and_then(|value| value.parse().ok()),
+                            ..CurrentEntry::default()
+                        });
+                    }
+                    b"encryption-data" => {
+                        let entry = current
+                            .as_mut()
+                            .ok_or_else(|| "HWPX encryption metadata has no entry".to_owned())?;
+                        entry.protected = true;
+                        entry.checksum_id = attr(&event, b"checksum-type");
+                        entry.checksum = Some(base64(attr(&event, b"checksum"))?);
+                    }
+                    b"algorithm" => {
+                        let entry = current
+                            .as_mut()
+                            .ok_or_else(|| "HWPX algorithm metadata has no entry".to_owned())?;
+                        entry.algorithm_id = attr(&event, b"algorithm-name");
+                        entry.iv = Some(base64(attr(&event, b"initialisation-vector"))?);
+                    }
+                    b"key-derivation" => {
+                        let entry = current
+                            .as_mut()
+                            .ok_or_else(|| "HWPX KDF metadata has no entry".to_owned())?;
+                        entry.kdf_id = attr(&event, b"key-derivation-name");
+                        entry.salt = Some(base64(attr(&event, b"salt"))?);
+                        entry.iterations =
+                            attr(&event, b"iteration-count").and_then(|value| value.parse().ok());
+                        entry.key_size =
+                            attr(&event, b"key-size").and_then(|value| value.parse().ok());
+                    }
+                    b"start-key-generation" => {
+                        let entry = current
+                            .as_mut()
+                            .ok_or_else(|| "HWPX start-key metadata has no entry".to_owned())?;
+                        entry.start_key_id = attr(&event, b"start-key-generation-name");
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"file-entry" => {
+                let entry = current
+                    .take()
+                    .ok_or_else(|| "HWPX protected entry structure is ambiguous".to_owned())?;
+                if entry.protected {
+                    protected.push(HwpxEncryptedEntry {
+                        name: entry
+                            .name
+                            .ok_or_else(|| "HWPX protected entry name is unavailable".to_owned())?,
+                        declared_plaintext_bytes: entry
+                            .size
+                            .ok_or_else(|| "HWPX protected entry size is unavailable".to_owned())?,
+                        algorithm_id: entry
+                            .algorithm_id
+                            .ok_or_else(|| "HWPX algorithm identifier is unavailable".to_owned())?,
+                        iv: entry.iv.ok_or_else(|| {
+                            "HWPX initialization vector is unavailable".to_owned()
+                        })?,
+                        kdf_id: entry
+                            .kdf_id
+                            .ok_or_else(|| "HWPX KDF identifier is unavailable".to_owned())?,
+                        salt: entry
+                            .salt
+                            .ok_or_else(|| "HWPX salt is unavailable".to_owned())?,
+                        iterations: entry
+                            .iterations
+                            .ok_or_else(|| "HWPX iteration count is unavailable".to_owned())?,
+                        key_size: entry
+                            .key_size
+                            .ok_or_else(|| "HWPX key size is unavailable".to_owned())?,
+                        start_key_id: entry
+                            .start_key_id
+                            .ok_or_else(|| "HWPX start-key identifier is unavailable".to_owned())?,
+                        checksum_id: entry
+                            .checksum_id
+                            .ok_or_else(|| "HWPX checksum identifier is unavailable".to_owned())?,
+                        checksum: entry
+                            .checksum
+                            .ok_or_else(|| "HWPX checksum is unavailable".to_owned())?,
+                    });
+                }
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(_) => return Err("HWPX manifest XML is malformed".to_owned()),
+        }
+    }
+    if current.is_some() {
+        return Err("HWPX protected entry structure is ambiguous".to_owned());
+    }
+    Ok(protected)
+}
+
+fn validate_xml_structure(bytes: &[u8]) -> Result<(), String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_reader(bytes);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => return Ok(()),
+            Ok(_) => {}
+            Err(_) => return Err("HWPX protected XML structure did not validate".to_owned()),
+        }
+    }
 }
