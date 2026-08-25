@@ -523,6 +523,234 @@ fn hwpx_discovery_collapses_credential_and_integrity_failures() {
 }
 
 #[test]
+fn owner_discovery_redacts_probe_failures_to_fixture_and_format() {
+    use serde_json::json;
+
+    let nonce = format!("{}-owner-error", std::process::id());
+    let hwp5_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}-baseline.hwp"));
+    let hwpx_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}-baseline.hwpx"));
+    let unicode_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}-unicode.hwpx"));
+    let manifest_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}.json"));
+    let evidence_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}-evidence.json"));
+
+    std::fs::write(&hwp5_path, b"not a protected HWP5 document")
+        .expect("synthetic HWP5 source is writable");
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let corrupt_hwpx_path = synthetic_hwpx_path(
+        "owner-corrupt-integrity",
+        SyntheticHwpxOptions {
+            corrupt_checksum: true,
+            ..supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64)
+        },
+    );
+    let valid_hwpx_path = synthetic_hwpx_path(
+        "owner-wrong-password",
+        supported_options(compressed, padding, plaintext.len() as u64),
+    );
+    let (unsupported_plaintext, unsupported_compressed, unsupported_padding) =
+        synthetic_deflate_with_padding(1);
+    let unsupported_hwpx_path = synthetic_hwpx_path(
+        "owner-unsupported-profile",
+        SyntheticHwpxOptions {
+            kdf_id: "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2-hmac-sha256",
+            ..supported_options(
+                unsupported_compressed,
+                unsupported_padding,
+                unsupported_plaintext.len() as u64,
+            )
+        },
+    );
+    std::fs::write(&hwpx_path, b"unreached placeholder").expect("placeholder source is writable");
+    std::fs::write(&unicode_path, b"unreached placeholder")
+        .expect("placeholder source is writable");
+    let private_paths = [
+        hwp5_path.to_string_lossy().into_owned(),
+        hwpx_path.to_string_lossy().into_owned(),
+        unicode_path.to_string_lossy().into_owned(),
+        corrupt_hwpx_path.to_string_lossy().into_owned(),
+        valid_hwpx_path.to_string_lossy().into_owned(),
+        unsupported_hwpx_path.to_string_lossy().into_owned(),
+    ];
+
+    let manifest_for = |first: serde_json::Value| {
+        json!({
+            "version": "password-corpus-manifest-v1",
+            "fixtures": [
+                first,
+                {
+                    "fixture_id": "opaque-hwp5-baseline",
+                    "source_path": hwp5_path,
+                    "format": "hwp5",
+                    "role": "baseline",
+                    "credential_charset": "ascii",
+                    "credential_ref": "PRIVATE_HWP5_REF"
+                },
+                {
+                    "fixture_id": "opaque-non-ascii-success",
+                    "source_path": unicode_path,
+                    "format": "hwpx",
+                    "role": "non_ascii_success",
+                    "credential_charset": "non_ascii",
+                    "credential_ref": "PRIVATE_UNICODE_REF"
+                }
+            ]
+        })
+    };
+    let run = |manifest: serde_json::Value, expected: &str, password: &str| {
+        std::fs::write(&manifest_path, manifest.to_string()).expect("manifest is writable");
+        let error = run_owner_discovery(&manifest_path, &evidence_path, |_| {
+            Some(password.to_owned())
+        })
+        .expect_err("the selected fixture must fail before evidence publication");
+        assert_eq!(error, expected);
+        for forbidden in [
+            "/tmp/",
+            "PRIVATE_",
+            "synthetic-password",
+            "not-the-password",
+            "checksum",
+            "inflate",
+            "ciphertext",
+            "plaintext",
+            "padding",
+            "container",
+            "record",
+            "stream",
+            "not a protected HWP5 document",
+        ] {
+            assert!(
+                !error.contains(forbidden),
+                "owner diagnostic must not expose {forbidden}"
+            );
+        }
+        for private_path in &private_paths {
+            assert!(
+                !error.contains(private_path),
+                "owner diagnostic must not expose a private source path"
+            );
+        }
+        assert!(
+            !evidence_path.exists(),
+            "failed discovery must not publish evidence"
+        );
+    };
+
+    let baseline = |source_path: &std::path::Path| {
+        json!({
+            "fixture_id": "opaque-hwpx-baseline",
+            "source_path": source_path,
+            "format": "hwpx",
+            "role": "baseline",
+            "credential_charset": "ascii",
+            "credential_ref": "PRIVATE_HWPX_REF"
+        })
+    };
+    let expected_baseline =
+        "fixture opaque-hwpx-baseline (hwpx): credential or integrity validation failed";
+    run(
+        manifest_for(baseline(&corrupt_hwpx_path)),
+        expected_baseline,
+        "synthetic-password",
+    );
+    run(
+        manifest_for(baseline(&valid_hwpx_path)),
+        expected_baseline,
+        "not-the-password",
+    );
+    run(
+        manifest_for(baseline(&unsupported_hwpx_path)),
+        "fixture opaque-hwpx-baseline (hwpx): protected profile is unsupported",
+        "synthetic-password",
+    );
+
+    let unicode_first = json!({
+        "fixture_id": "opaque-non-ascii-success",
+        "source_path": corrupt_hwpx_path,
+        "format": "hwpx",
+        "role": "non_ascii_success",
+        "credential_charset": "non_ascii",
+        "credential_ref": "PRIVATE_UNICODE_REF"
+    });
+    let unicode_manifest = json!({
+        "version": "password-corpus-manifest-v1",
+        "fixtures": [
+            unicode_first,
+            {
+                "fixture_id": "opaque-hwp5-baseline",
+                "source_path": hwp5_path,
+                "format": "hwp5",
+                "role": "baseline",
+                "credential_charset": "ascii",
+                "credential_ref": "PRIVATE_HWP5_REF"
+            },
+            {
+                "fixture_id": "opaque-hwpx-baseline",
+                "source_path": hwpx_path,
+                "format": "hwpx",
+                "role": "baseline",
+                "credential_charset": "ascii",
+                "credential_ref": "PRIVATE_HWPX_REF"
+            }
+        ]
+    });
+    let expected_unicode =
+        "fixture opaque-non-ascii-success (hwpx): credential or integrity validation failed";
+    run(unicode_manifest, expected_unicode, "synthetic-password");
+    assert_ne!(
+        expected_baseline, expected_unicode,
+        "fixture IDs must distinguish roles"
+    );
+
+    let hwp5_manifest = json!({
+        "version": "password-corpus-manifest-v1",
+        "fixtures": [
+            {
+                "fixture_id": "opaque-hwp5-baseline",
+                "source_path": hwp5_path,
+                "format": "hwp5",
+                "role": "baseline",
+                "credential_charset": "ascii",
+                "credential_ref": "PRIVATE_HWP5_REF"
+            },
+            {
+                "fixture_id": "opaque-hwpx-baseline",
+                "source_path": hwpx_path,
+                "format": "hwpx",
+                "role": "baseline",
+                "credential_charset": "ascii",
+                "credential_ref": "PRIVATE_HWPX_REF"
+            },
+            {
+                "fixture_id": "opaque-non-ascii-success",
+                "source_path": unicode_path,
+                "format": "hwpx",
+                "role": "non_ascii_success",
+                "credential_charset": "non_ascii",
+                "credential_ref": "PRIVATE_UNICODE_REF"
+            }
+        ]
+    });
+    run(
+        hwp5_manifest,
+        "fixture opaque-hwp5-baseline (hwp5): credential or integrity validation failed",
+        "synthetic-password",
+    );
+
+    for path in [
+        hwp5_path,
+        hwpx_path,
+        unicode_path,
+        manifest_path,
+        evidence_path,
+        corrupt_hwpx_path,
+        valid_hwpx_path,
+        unsupported_hwpx_path,
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
 fn hwpx_discovery_rejects_unsupported_profiles_before_credential_work() {
     let hmac_sha256 = password_corpus_manifest::supported_hwpx_manifest()
         .replace("#pbkdf2\"", "#pbkdf2-hmac-sha256\"");

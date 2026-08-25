@@ -335,13 +335,15 @@ where
     let mut evidence = Vec::with_capacity(fixtures.len());
     for fixture in &fixtures {
         if !fixture.source_path.is_file() {
-            return Err("owner password corpus source is unavailable".to_owned());
+            return Err(owner_fixture_error(fixture, "source is unavailable"));
         }
-        let source_sha256 = source_sha256(&fixture.source_path)?;
+        let source_sha256 = source_sha256(&fixture.source_path)
+            .map_err(|_| owner_fixture_error(fixture, "source cannot be read"))?;
         let profile = match fixture.format.as_str() {
             "hwp5" => {
                 let observation =
-                    probe_hwp5_encrypt_version_4(&fixture.source_path, &fixture.credential)?;
+                    probe_hwp5_encrypt_version_4(&fixture.source_path, &fixture.credential)
+                        .map_err(|_| owner_hwp5_probe_error(fixture))?;
                 ProfileObservation::Hwp5 {
                     encrypt_version: observation.encrypt_version,
                     cfb_stream_count: observation.cfb_stream_count,
@@ -352,10 +354,11 @@ where
             }
             "hwpx" => {
                 let observation =
-                    probe_hwpx_password_profile(&fixture.source_path, &fixture.credential)?;
+                    probe_hwpx_password_profile(&fixture.source_path, &fixture.credential)
+                        .map_err(|error| owner_hwpx_probe_error(fixture, &error))?;
                 profile_observation_hwpx(observation)
             }
-            _ => return Err("owner password corpus format is unsupported".to_owned()),
+            _ => return Err(owner_fixture_error(fixture, "format is unsupported")),
         };
         evidence.push(FixtureEvidence {
             fixture_id: fixture.fixture_id.clone(),
@@ -587,6 +590,29 @@ const HWPX_CBC_PADDING: &str = "zero-to-aes-block";
 const HWPX_MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
 const HWPX_INTEGRITY_ERROR: &str = "HWPX credential or integrity validation failed";
 const HWPX_UNSUPPORTED_PROFILE_ERROR: &str = "HWPX protected profile is unsupported";
+const OWNER_FIXTURE_CREDENTIAL_OR_INTEGRITY_ERROR: &str =
+    "credential or integrity validation failed";
+const OWNER_FIXTURE_UNSUPPORTED_PROFILE_ERROR: &str = "protected profile is unsupported";
+
+fn owner_fixture_error(fixture: &OwnerFixture, reason: &str) -> String {
+    format!(
+        "fixture {} ({}): {reason}",
+        fixture.fixture_id, fixture.format
+    )
+}
+
+fn owner_hwp5_probe_error(fixture: &OwnerFixture) -> String {
+    owner_fixture_error(fixture, OWNER_FIXTURE_CREDENTIAL_OR_INTEGRITY_ERROR)
+}
+
+fn owner_hwpx_probe_error(fixture: &OwnerFixture, error: &str) -> String {
+    let reason = if error == HWPX_UNSUPPORTED_PROFILE_ERROR {
+        OWNER_FIXTURE_UNSUPPORTED_PROFILE_ERROR
+    } else {
+        OWNER_FIXTURE_CREDENTIAL_OR_INTEGRITY_ERROR
+    };
+    owner_fixture_error(fixture, reason)
+}
 
 /// Parses only the non-secret identifiers needed to decide whether a private
 /// HWPX package can enter the subsequent owner-controlled probe. The schema
