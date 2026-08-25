@@ -216,10 +216,14 @@ fn defaults_for(slug: &str) -> Option<TemplateDefaults> {
             ],
             ..TemplateDefaults::body_only(P::Official)
         },
+        // `(수신처참조)` is what separates the generic 공문서 from a single-recipient 기안문:
+        // it marks a dispatch whose recipients are listed at the foot. The skeleton carried it
+        // before the fields moved into the frame, and without it this template and
+        // `gian-external` would generate byte-identical documents.
         "gongmun-basic" => TemplateDefaults {
             doc_head: &[
                 ("기관명", "{{기관명}}"),
-                ("수신", "{{수신}}"),
+                ("수신", "{{수신}} (수신처참조)"),
                 ("경유", "{{경유}}"),
             ],
             doc_foot: GIAN_FOOT,

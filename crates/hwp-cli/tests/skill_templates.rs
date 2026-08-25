@@ -556,3 +556,37 @@ fn embedded_guides_do_not_restate_retracted_claims() {
         }
     }
 }
+
+/// No two templates may generate the same document. Moving the 두문/결문 fields into the frame
+/// builder collapsed `gongmun-basic` onto `gian-external` once, because their bodies are identical
+/// and the only thing separating them — `(수신처참조)` on the recipient line — lived in the text
+/// that was replaced. Byte equality is the sharpest form of that bug and the cheapest to check.
+#[test]
+fn every_template_generates_a_distinct_document() {
+    let dir = test_dir("template-distinct");
+    let mut seen: std::collections::BTreeMap<Vec<u8>, &str> = std::collections::BTreeMap::new();
+    for case in CASES {
+        let created = dir.join(format!("{}.hwpx", case.slug));
+        let run = hwp()
+            .args(["new", "--template", case.slug])
+            .arg("-o")
+            .arg(&created)
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{}: new --template failed\nstderr: {}",
+            case.slug,
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let bytes = std::fs::read(&created).unwrap();
+        if let Some(other) = seen.insert(bytes, case.slug) {
+            panic!(
+                "{} and {} generate byte-identical documents — one template's distinguishing \
+                 content was lost",
+                other, case.slug
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

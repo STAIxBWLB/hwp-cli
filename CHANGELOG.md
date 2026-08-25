@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp new --template gongmun-basic` lost the `(수신처참조)` marker on its 수신 line when the
+  두문/결문 fields moved into the frame builder, which made it generate a document byte-identical
+  to `gian-external`. The marker is restored, and a new test fails if any two templates ever
+  generate the same bytes again.
+
 **Changed**
 
 - `hwp new --template <slug>` now produces a fully framed document on its own. A template carries
