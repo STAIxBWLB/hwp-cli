@@ -27,7 +27,12 @@ pub struct FrameFields {
     /// `--doc-head` (두문): 기관명, 수신, 경유.
     pub doc_head: BTreeMap<String, String>,
     /// `--doc-foot` (결문): 발신명의, 기안자, 검토자, 결재자, 협조자, 시행번호, 시행일자,
-    /// 접수번호, 접수일자, 주소, 홈페이지, 전화, 팩스, 이메일, 공개구분.
+    /// 접수번호, 접수일자, 주소, 홈페이지, 전화, 팩스, 이메일, 공개구분, 수신자.
+    ///
+    /// 수신자 is the multi-recipient list a document carries when its 두문 reads "수신자 참조"
+    /// (§5 두문 2). It is the one 결문 row emitted only when supplied — every other row is
+    /// unconditional, so a document that never names it keeps the exact bytes it had before the
+    /// key existed.
     pub doc_foot: BTreeMap<String, String>,
     /// `--notice-head` (공고문 머리): 기관명, 공고번호.
     pub notice_head: BTreeMap<String, String>,
@@ -68,6 +73,7 @@ fn allowed_keys(frame: &str) -> &'static [&'static str] {
         "팩스",
         "이메일",
         "공개구분",
+        "수신자",
     ];
     const NOTICE_HEAD: &[&str] = &["기관명", "공고번호"];
     const NOTICE_FOOT: &[&str] = &["공고일자", "발신명의"];
@@ -371,8 +377,9 @@ fn labeled(label: &str, value: Option<&String>) -> String {
 /// shipped `notice.md` template carries no `끝.` line after 발신명의).
 ///
 /// 결문 row order (always emitted once `doc_foot` carries any field, except 발신명의 which needs
-/// its own key): 발신명의 → 결재 → 협조 → 시행/접수 → 주소/홈페이지 → 연락처 (D-03/D-04). The
-/// 결재/협조 rows are placeholder rows, never a filled multi-column approval grid (D-04).
+/// its own key): 발신명의 → 결재 → 협조 → 시행/접수 → 주소/홈페이지 → 연락처 → 수신자
+/// (D-03/D-04). The 결재/협조 rows are placeholder rows, never a filled multi-column approval
+/// grid (D-04). The 수신자 row closes the block and appears only when the key is supplied.
 ///
 /// 공고 foot row order (each emitted only when its key is present): 공고일자 → 발신명의, the
 /// latter reusing the same centered/22pt/bold shape as 결문's 발신명의 (value-deduped, so the
@@ -429,6 +436,9 @@ pub fn trailing_frames(
             f.get("이메일").map_or("", String::as_str),
             f.get("공개구분").map_or("", String::as_str),
         )));
+        if let Some(recipients) = f.get("수신자").filter(|v| !v.is_empty()) {
+            rows.push(FrameRow::plain(format!("수신자  {recipients}")));
+        }
 
         out.push(frame_table(&rows));
     }
@@ -611,6 +621,44 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// 수신자 is the only conditional 결문 row: supplied it closes the block, absent it leaves
+    /// the byte layout every document had before the key existed (§5 두문 2 — the list belongs to
+    /// a document whose 두문 reads "수신자 참조").
+    #[test]
+    fn trailing_frames_emits_수신자_row_only_when_supplied() {
+        let row_count = |recipients: Option<&str>| {
+            let (mut para_shapes, mut char_shapes) = default_header_shapes();
+            let mut fields = FrameFields::default();
+            fields
+                .doc_foot
+                .insert("발신명의".to_string(), "예시대학교총장".to_string());
+            if let Some(value) = recipients {
+                fields
+                    .doc_foot
+                    .insert("수신자".to_string(), value.to_string());
+            }
+            let paragraphs = trailing_frames(&fields, &[], &mut para_shapes, &mut char_shapes);
+            let Control::Table(table) = &paragraphs[1].controls[0] else {
+                panic!("expected a table control");
+            };
+            (
+                table.cells.len(),
+                cell_text(table.cells.last().unwrap()).to_string(),
+            )
+        };
+
+        let (bare, bare_last) = row_count(None);
+        assert!(
+            bare_last.starts_with("전화"),
+            "without 수신자 the contact row must stay last, found {bare_last:?}"
+        );
+        let (empty, _) = row_count(Some(""));
+        assert_eq!(empty, bare, "an empty 수신자 must not add a row");
+        let (listed, listed_last) = row_count(Some("교육부장관, 과학기술정보통신부장관"));
+        assert_eq!(listed, bare + 1);
+        assert_eq!(listed_last, "수신자  교육부장관, 과학기술정보통신부장관");
     }
 
     #[test]

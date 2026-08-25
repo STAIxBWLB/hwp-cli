@@ -10,12 +10,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `--doc-foot 수신자=…` (MCP `doc_foot`) adds the multi-recipient list to the 결문. It is the one
+  결문 row emitted only when supplied, so a document that never names it keeps the exact bytes it
+  had before the key existed.
+
 **Fixed**
 
-- `hwp new --template gongmun-basic` lost the `(수신처참조)` marker on its 수신 line when the
-  두문/결문 fields moved into the frame builder, which made it generate a document byte-identical
-  to `gian-external`. The marker is restored, and a new test fails if any two templates ever
-  generate the same bytes again.
+- `hwp new --template gongmun-basic` generated a document byte-identical to `gian-external`: when
+  the 두문/결문 fields moved into the frame builder, the recipient line lost the marker that was
+  the templates' only difference. `gongmun-basic` is now modelled as what it is — the
+  multi-recipient 공문서, whose 두문 reads the fixed `수신자 참조` and whose 결문 carries the
+  `{{수신자}}` list (§5 두문 2). Its `{{수신}}` slot is replaced by `{{수신자}}` accordingly. A new
+  test fails if any two templates ever generate the same bytes again.
 
 **Changed**
 

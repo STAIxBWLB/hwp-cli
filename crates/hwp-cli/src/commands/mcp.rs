@@ -2099,7 +2099,7 @@ fn tool_defs() -> Vec<Value> {
                     "required": ["key", "value"]}, "description": "두문(기관명|수신|경유); markdown·template과 함께 사용 가능"},
                 "doc_foot": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
-                    "required": ["key", "value"]}, "description": "결문(발신명의|기안자|검토자|결재자|협조자|시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분); markdown·template과 함께 사용 가능"},
+                    "required": ["key", "value"]}, "description": "결문(발신명의|기안자|검토자|결재자|협조자|시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분|수신자); 수신자는 두문이 \"수신자 참조\"인 다수 수신 문서의 수신처 목록으로 지정할 때만 결문에 나옴; markdown·template과 함께 사용 가능"},
                 "notice_head": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
                     "required": ["key", "value"]}, "description": "공고문 머리(기관명|공고번호); markdown·template과 함께 사용 가능"},

@@ -222,7 +222,9 @@ pub enum Cmd {
         #[arg(long = "doc-head")]
         doc_head: Vec<String>,
         /// Document footer block (결문) "key=value" (keys: 발신명의|기안자|검토자|결재자|협조자|
-        /// 시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분; repeatable)
+        /// 시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분|수신자; repeatable.
+        /// 수신자 is the recipient list of a document whose 두문 reads "수신자 참조", and is the
+        /// one 결문 row emitted only when supplied)
         #[arg(long = "doc-foot")]
         doc_foot: Vec<String>,
         /// Notice (공고문) header block "key=value" (keys: 기관명|공고번호; repeatable)

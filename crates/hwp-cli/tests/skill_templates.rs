@@ -65,6 +65,29 @@ struct Case {
     frame_slots: &'static [&'static str],
 }
 
+/// 두문 + 결문 for the multi-recipient 공문서: no {{수신}} (the heading is fixed text), plus
+/// the {{수신자}} list its 결문 carries.
+const GONGMUN_SLOTS: &[&str] = &[
+    "기관명",
+    "경유",
+    "발신명의",
+    "기안자",
+    "검토자",
+    "결재자",
+    "협조자",
+    "시행번호",
+    "시행일자",
+    "접수번호",
+    "접수일자",
+    "주소",
+    "홈페이지",
+    "전화",
+    "팩스",
+    "이메일",
+    "공개구분",
+    "수신자",
+];
+
 /// 두문 + 결문 for the two templates that carry the full external-dispatch frame set.
 const GIAN_FULL_SLOTS: &[&str] = &[
     "기관명",
@@ -115,7 +138,9 @@ const CASES: &[Case] = &[
         preset: "official",
         scalar_slot: "기관명",
         has_body_part: true,
-        frame_slots: GIAN_FULL_SLOTS,
+        // The multi-recipient form: 두문 carries the fixed "수신자 참조" instead of a
+        // {{수신}} slot, and the list lives in 결문 as {{수신자}}.
+        frame_slots: GONGMUN_SLOTS,
     },
     Case {
         slug: "report",

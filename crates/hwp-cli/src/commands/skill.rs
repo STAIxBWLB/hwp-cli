@@ -186,6 +186,26 @@ const GIAN_FOOT: &[(&str, &str)] = &[
     ("공개구분", "{{공개구분}}"),
 ];
 
+/// `GIAN_FOOT` plus the 수신자 list the multi-recipient form carries in its 결문.
+const GONGMUN_FOOT: &[(&str, &str)] = &[
+    ("발신명의", "{{발신명의}}"),
+    ("기안자", "{{기안자}}"),
+    ("검토자", "{{검토자}}"),
+    ("결재자", "{{결재자}}"),
+    ("협조자", "{{협조자}}"),
+    ("시행번호", "{{시행번호}}"),
+    ("시행일자", "{{시행일자}}"),
+    ("접수번호", "{{접수번호}}"),
+    ("접수일자", "{{접수일자}}"),
+    ("주소", "{{주소}}"),
+    ("홈페이지", "{{홈페이지}}"),
+    ("전화", "{{전화}}"),
+    ("팩스", "{{팩스}}"),
+    ("이메일", "{{이메일}}"),
+    ("공개구분", "{{공개구분}}"),
+    ("수신자", "{{수신자}}"),
+];
+
 /// Per-slug defaults. `report`/`plan`/`minutes` are body documents with no 두문/결문 of their
 /// own, so they carry a profile and no frames.
 fn defaults_for(slug: &str) -> Option<TemplateDefaults> {
@@ -216,17 +236,17 @@ fn defaults_for(slug: &str) -> Option<TemplateDefaults> {
             ],
             ..TemplateDefaults::body_only(P::Official)
         },
-        // `(수신처참조)` is what separates the generic 공문서 from a single-recipient 기안문:
-        // it marks a dispatch whose recipients are listed at the foot. The skeleton carried it
-        // before the fields moved into the frame, and without it this template and
-        // `gian-external` would generate byte-identical documents.
+        // The multi-recipient 공문서. Per §5 두문 2 the heading reads the fixed "수신자 참조"
+        // and the actual list moves to 결문, which is what separates this template from
+        // `gian-external`'s single named recipient — and, before that distinction was modelled,
+        // what made the two generate byte-identical documents.
         "gongmun-basic" => TemplateDefaults {
             doc_head: &[
                 ("기관명", "{{기관명}}"),
-                ("수신", "{{수신}} (수신처참조)"),
+                ("수신", "수신자 참조"),
                 ("경유", "{{경유}}"),
             ],
-            doc_foot: GIAN_FOOT,
+            doc_foot: GONGMUN_FOOT,
             ..TemplateDefaults::body_only(P::Official)
         },
         "notice" => TemplateDefaults {
