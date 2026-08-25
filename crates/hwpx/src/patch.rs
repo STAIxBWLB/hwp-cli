@@ -5,9 +5,10 @@
 //! 이 모듈은 본문 `Contents/section*.xml`(과 미리보기 텍스트)의 텍스트만 외과적으로
 //! 치환하고 나머지 엔트리는 ZIP raw 복사로 **바이트 보존**한다(mimetype STORED·순서 포함).
 //!
-//! 한계: 대상 문자열이 `<hp:t>` 런/문단 경계를 가로지류면(예: `<hp:t>{{기</hp:t>
-//! <hp:t>관명}}</hp:t>`) 문자열 치환이 매칭하지 못한다. XML 이벤트 단위 재구성이
-//! 필요한 편집은 IR 경로(`hwp edit`)를 쓴다.
+//! 한계: 일반 문자열 치환은 대상이 `<hp:t>` 런 경계를 가로지르면 매칭하지 못한다.
+//! `{{name}}` 자리표시자는 예외로, [`coalesce_split_placeholders`]가 치환 전에 같은 문단
+//! 안에서 쪼개진 자리표시자를 첫 런으로 모은다(#145). 문단 경계를 넘는 편집이나 XML
+//! 이벤트 단위 재구성이 필요한 편집은 IR 경로(`hwp edit`)를 쓴다.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -49,6 +50,10 @@ pub fn fill_placeholders_with_limits(
     process_package(input, output, limits, is_section_entry, |name, data| {
         let original = data.clone();
         let mut xml = String::from_utf8(data).map_err(invalid_data)?;
+        // Pull any placeholder that formatting split across runs back into one run first, so the
+        // plain replace below sees exactly what `hwp slots` reported (#145).
+        let names: Vec<&str> = values.keys().map(String::as_str).collect();
+        coalesce_split_placeholders(&mut xml, &names);
         for (k, v) in values {
             let needle = format!("{{{{{k}}}}}"); // {{k}}
             let n = xml.matches(needle.as_str()).count();
@@ -64,6 +69,214 @@ pub fn fill_placeholders_with_limits(
         Ok((updated != original).then_some(updated))
     })?;
     Ok(counts)
+}
+
+/// One text element's content, as a byte range into the section XML.
+struct TextSpan {
+    content: Range<usize>,
+}
+
+/// Match an element tag by XML **local name**, the way `read::section` does, so a package that
+/// binds the paragraph namespace to a prefix other than `hp` — or writes a tab or newline before
+/// the attributes — is recognised here too. Otherwise `hwp slots` would report a split
+/// placeholder that this pass could not see, which is the very disagreement #145 closes.
+///
+/// `tail` starts at `<` (open tag) or at `</` (close tag).
+fn tag_local_name(tail: &str) -> Option<(&str, usize)> {
+    let after_bracket = if let Some(rest) = tail.strip_prefix("</") {
+        rest
+    } else {
+        tail.strip_prefix('<')?
+    };
+    let name_len = after_bracket
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(after_bracket.len());
+    let qname = &after_bracket[..name_len];
+    if qname.is_empty() || qname.starts_with('?') || qname.starts_with('!') {
+        return None;
+    }
+    let local = qname.rsplit(':').next().unwrap_or(qname);
+    let consumed = tail.len() - after_bracket.len() + name_len;
+    Some((local, consumed))
+}
+
+/// Collect every text element's content range in document order.
+fn text_spans(xml: &str) -> Vec<TextSpan> {
+    let bytes = xml.as_bytes();
+    let mut spans = Vec::new();
+    let mut at = 0usize;
+    while let Some(open) = xml[at..].find('<') {
+        let tag_start = at + open;
+        let Some((local, consumed)) = tag_local_name(&xml[tag_start..]) else {
+            at = tag_start + 1;
+            continue;
+        };
+        // Only an OPEN `<…:t>` starts a span; a close tag would otherwise be read as one and
+        // swallow every run boundary up to the next text element.
+        if local != "t" || xml[tag_start..].starts_with("</") {
+            at = tag_start + consumed;
+            continue;
+        }
+        let Some(gt) = xml[tag_start..].find('>') else {
+            break;
+        };
+        let content_start = tag_start + gt + 1;
+        // A self-closing `<hp:t/>` holds no text.
+        if bytes.get(content_start - 2) == Some(&b'/') {
+            at = content_start;
+            continue;
+        }
+        let Some(close) = find_close_tag(xml, content_start, "t") else {
+            break;
+        };
+        spans.push(TextSpan {
+            content: content_start..close,
+        });
+        at = close;
+    }
+    spans
+}
+
+/// Byte offset of the `<` starting the next close tag whose local name is `local`.
+fn find_close_tag(xml: &str, from: usize, local: &str) -> Option<usize> {
+    let mut at = from;
+    while let Some(open) = xml[at..].find("</") {
+        let tag_start = at + open;
+        match tag_local_name(&xml[tag_start..]) {
+            Some((name, consumed)) => {
+                if name == local {
+                    return Some(tag_start);
+                }
+                at = tag_start + consumed;
+            }
+            None => at = tag_start + 2,
+        }
+    }
+    None
+}
+
+/// True when nothing but run boundaries separates two text elements, i.e. they belong to the
+/// same paragraph and a placeholder may legitimately span them. Any other element between them
+/// — a paragraph, a table, a line break — ends the group, matching how the IR's placeholder
+/// scanner breaks its segment at every non-text character.
+fn only_run_boundaries(gap: &str) -> bool {
+    let mut rest = gap;
+    while let Some(open) = rest.find('<') {
+        let tail = &rest[open..];
+        let Some((local, _)) = tag_local_name(tail) else {
+            return false;
+        };
+        if local != "t" && local != "run" {
+            return false;
+        }
+        let Some(gt) = tail.find('>') else {
+            return false;
+        };
+        rest = &tail[gt + 1..];
+    }
+    true
+}
+
+/// Rewrite `{{name}}` placeholders that inline formatting split across text runs so the whole
+/// placeholder sits in the first run, where the plain string replace below can see it.
+///
+/// `hwp slots` reads the joined paragraph text, so it has always reported such a placeholder;
+/// the raw-XML replace could not fill it, and the two commands disagreed (#145). Formatting
+/// inside a slot name is the usual cause — `{{이*름*}}` compiles to `{{이` / `름` / `}}` in
+/// three runs.
+///
+/// The coalesced placeholder — and so the value that replaces it — inherits the first run's
+/// character shape. A placeholder split by formatting has no single shape of its own, and the
+/// run its opening `{{` sits in is the only defensible pick.
+///
+/// Only requested names are touched, so a document with no split placeholder among them keeps
+/// every byte it had.
+fn coalesce_split_placeholders(xml: &mut String, names: &[&str]) {
+    if names.is_empty() || !xml.contains("{{") {
+        return;
+    }
+    let spans = text_spans(xml);
+    if spans.len() < 2 {
+        return;
+    }
+
+    // (start, end, replacement) edits, applied back-to-front so earlier offsets stay valid.
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+
+    let mut group_start = 0usize;
+    for boundary in 1..=spans.len() {
+        let ends_group = boundary == spans.len()
+            || !only_run_boundaries(
+                &xml[spans[boundary - 1].content.end..spans[boundary].content.start],
+            );
+        if !ends_group {
+            continue;
+        }
+        let group = &spans[group_start..boundary];
+        group_start = boundary;
+        if group.len() < 2 {
+            continue;
+        }
+
+        // Joined text of the group, plus where each span starts inside it. Recording the span
+        // boundaries rather than one entry per byte keeps this O(runs), not O(text length):
+        // package policy allows a 64 MiB section, and a per-byte map of it would be gigabytes.
+        let mut joined = String::new();
+        let mut span_starts: Vec<usize> = Vec::with_capacity(group.len());
+        for span in group {
+            span_starts.push(joined.len());
+            joined.push_str(&xml[span.content.clone()]);
+        }
+        if !joined.contains("{{") {
+            continue;
+        }
+        // joined offset -> (index into `group`, offset inside that span's text)
+        let locate = |offset: usize| -> (usize, usize) {
+            let index = span_starts.partition_point(|start| *start <= offset) - 1;
+            (index, offset - span_starts[index])
+        };
+
+        for name in names {
+            let needle = format!("{{{{{name}}}}}");
+            let mut from = 0usize;
+            while let Some(hit) = joined[from..].find(&needle) {
+                let start = from + hit;
+                let end = start + needle.len();
+                from = end;
+                let (first_span, first_local) = locate(start);
+                let (last_span, last_local) = locate(end - 1);
+                if first_span == last_span {
+                    continue; // already whole in one run — the plain replace handles it
+                }
+                // First run keeps its prefix and gains the whole placeholder.
+                let first = &group[first_span];
+                edits.push((
+                    first.content.start + first_local,
+                    first.content.end,
+                    needle.clone(),
+                ));
+                // Middle runs contributed nothing but placeholder text.
+                for span in &group[first_span + 1..last_span] {
+                    edits.push((span.content.start, span.content.end, String::new()));
+                }
+                // Last run keeps whatever followed the placeholder.
+                let last = &group[last_span];
+                // `last_local` indexes the last span's own text, not the joined string.
+                let last_text = &xml[last.content.clone()];
+                let last_char_len = last_text[last_local..].chars().next().unwrap().len_utf8();
+                edits.push((
+                    last.content.start,
+                    last.content.start + last_local + last_char_len,
+                    String::new(),
+                ));
+            }
+        }
+    }
+
+    edits.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    for (start, end, replacement) in edits {
+        xml.replace_range(start..end, &replacement);
+    }
 }
 
 /// Package-surgical TemplateSpec fill result.
@@ -1780,5 +1993,133 @@ mod tests {
             .read_to_string(&mut text)
             .unwrap();
         text
+    }
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+
+    const SPLIT: &str = r#"<hp:p id="2"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">이름: {{이</hp:t></hp:run><hp:run charPrIDRef="2"><hp:t xml:space="preserve">름</hp:t></hp:run><hp:run charPrIDRef="0"><hp:t xml:space="preserve">}} 입니다.</hp:t></hp:run></hp:p>"#;
+
+    /// Three runs, the middle one holding the split character.
+    #[test]
+    fn coalesces_a_placeholder_split_by_emphasis() {
+        let mut xml = SPLIT.to_string();
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        assert!(xml.contains("{{이름}}"), "placeholder still split:\n{xml}");
+        assert!(
+            xml.contains("이름: {{이름}}") && xml.contains(" 입니다."),
+            "surrounding text must survive intact:\n{xml}"
+        );
+    }
+
+    /// The placeholder inherits the run its opening `{{` sat in, not the run that split it.
+    #[test]
+    fn coalesced_placeholder_keeps_the_first_run_shape() {
+        let mut xml = SPLIT.to_string();
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        let at = xml.find("{{이름}}").expect("coalesced");
+        let run_open = xml[..at].rfind("<hp:run").expect("enclosing run");
+        assert!(
+            xml[run_open..at].contains(r#"charPrIDRef="0""#),
+            "expected the first run's shape, got:\n{}",
+            &xml[run_open..at]
+        );
+    }
+
+    /// A name nobody asked for is left exactly as it was — the byte-preserving guarantee.
+    #[test]
+    fn leaves_unrequested_placeholders_untouched() {
+        let mut xml = SPLIT.to_string();
+        coalesce_split_placeholders(&mut xml, &["다른이름"]);
+        assert_eq!(xml, SPLIT);
+    }
+
+    /// A placeholder already whole in one run needs no rewriting.
+    #[test]
+    fn leaves_an_unsplit_placeholder_untouched() {
+        const WHOLE: &str = r#"<hp:p id="1"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">제목  {{제목}}</hp:t></hp:run></hp:p>"#;
+        let mut xml = WHOLE.to_string();
+        coalesce_split_placeholders(&mut xml, &["제목"]);
+        assert_eq!(xml, WHOLE);
+    }
+
+    /// `{{` in one paragraph and `}}` in the next is not a placeholder. Joining across the
+    /// paragraph boundary would invent one and corrupt both paragraphs.
+    #[test]
+    fn does_not_join_across_a_paragraph_boundary() {
+        const TWO_PARAS: &str = r#"<hp:p id="1"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">앞 {{이</hp:t></hp:run></hp:p><hp:p id="2"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">름}} 뒤</hp:t></hp:run></hp:p>"#;
+        let mut xml = TWO_PARAS.to_string();
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        assert_eq!(xml, TWO_PARAS);
+    }
+
+    /// A line break inside the paragraph ends the group for the same reason the IR's scanner
+    /// breaks its segment at every non-text character.
+    #[test]
+    fn does_not_join_across_a_line_break() {
+        const BROKEN: &str = r#"<hp:p id="1"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">앞 {{이</hp:t></hp:run><hp:run charPrIDRef="0"><hp:lineBreak/></hp:run><hp:run charPrIDRef="0"><hp:t xml:space="preserve">름}} 뒤</hp:t></hp:run></hp:p>"#;
+        let mut xml = BROKEN.to_string();
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        assert_eq!(xml, BROKEN);
+    }
+
+    /// Four runs, with the name split twice and text following in the last run.
+    #[test]
+    fn coalesces_a_placeholder_split_across_four_runs() {
+        const FOUR: &str = r#"<hp:p id="1"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">{{기</hp:t></hp:run><hp:run charPrIDRef="1"><hp:t xml:space="preserve">관</hp:t></hp:run><hp:run charPrIDRef="2"><hp:t xml:space="preserve">명</hp:t></hp:run><hp:run charPrIDRef="0"><hp:t xml:space="preserve">}} 귀하</hp:t></hp:run></hp:p>"#;
+        let mut xml = FOUR.to_string();
+        coalesce_split_placeholders(&mut xml, &["기관명"]);
+        assert!(xml.contains("{{기관명}}"), "not coalesced:\n{xml}");
+        assert!(xml.contains(" 귀하"), "trailing text lost:\n{xml}");
+    }
+
+    /// A package may bind the paragraph namespace to any prefix, and may put a newline or tab
+    /// before a tag's attributes. `read::section` matches XML local names, so `hwp slots` sees
+    /// such a document; this pass has to agree or the disagreement #145 closes just moves.
+    #[test]
+    fn recognises_text_elements_under_another_prefix() {
+        const OTHER: &str = "<p:p id=\"1\"><p:run charPrIDRef=\"0\"><p:t\n  xml:space=\"preserve\">이름: {{이</p:t></p:run><p:run charPrIDRef=\"2\"><p:t xml:space=\"preserve\">름</p:t></p:run><p:run charPrIDRef=\"0\"><p:t xml:space=\"preserve\">}} 입니다.</p:t></p:run></p:p>";
+        let mut xml = OTHER.to_string();
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        assert!(
+            xml.contains("{{이름}}"),
+            "prefix-independent match failed:\n{xml}"
+        );
+        assert!(xml.contains(" 입니다."), "trailing text lost:\n{xml}");
+    }
+
+    /// A megabyte-scale paragraph still coalesces correctly.
+    ///
+    /// This is a smoke test, not a memory bound: the O(runs) property comes from recording span
+    /// starts instead of a per-byte position map, which no assertion here can observe. The first
+    /// draft of this pass did keep a `(usize, usize)` per byte, and against the 64 MiB section
+    /// the package policy allows that would have reached gigabytes — a real way to end the
+    /// process the CLI and the MCP server share. What this test does catch is an offset bug that
+    /// only shows up once a span is longer than the text around it.
+    #[test]
+    fn a_megabyte_paragraph_still_coalesces() {
+        let filler = "가".repeat(400_000); // ~1.2 MB of UTF-8 in one run
+        let xml_source = format!(
+            "<hp:p id=\"1\"><hp:run charPrIDRef=\"0\"><hp:t xml:space=\"preserve\">{filler}{{{{이</hp:t></hp:run><hp:run charPrIDRef=\"1\"><hp:t xml:space=\"preserve\">름}}}} {filler}</hp:t></hp:run></hp:p>"
+        );
+        let mut xml = xml_source;
+        coalesce_split_placeholders(&mut xml, &["이름"]);
+        assert!(xml.contains("{{이름}}"), "large paragraph not coalesced");
+    }
+
+    /// Two split placeholders in one paragraph, so the edits must not disturb each other.
+    #[test]
+    fn coalesces_two_split_placeholders_in_one_paragraph() {
+        const TWO: &str = r#"<hp:p id="1"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">{{가</hp:t></hp:run><hp:run charPrIDRef="1"><hp:t xml:space="preserve">나}} 그리고 {{다</hp:t></hp:run><hp:run charPrIDRef="0"><hp:t xml:space="preserve">라}} 끝</hp:t></hp:run></hp:p>"#;
+        let mut xml = TWO.to_string();
+        coalesce_split_placeholders(&mut xml, &["가나", "다라"]);
+        assert!(xml.contains("{{가나}}"), "first not coalesced:\n{xml}");
+        assert!(xml.contains("{{다라}}"), "second not coalesced:\n{xml}");
+        assert!(
+            xml.contains(" 그리고 ") && xml.contains(" 끝"),
+            "text lost:\n{xml}"
+        );
     }
 }

@@ -10,6 +10,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
+  everything `hwp slots` reports. The two commands read a document differently — `slots` walks the
+  IR, where a paragraph's characters are already joined, while `fill` rewrites the raw section XML
+  — and a name like `{{이*름*}}`, which compiles to `{{이` / `름` / `}}` in three runs, was listed
+  by one and refused by the other. Such a placeholder is now coalesced into its first run before
+  replacement, so the value inherits that run's character shape.
+
+  A slot still cannot cross a line break or a paragraph boundary: those genuinely end it, and
+  joining across them would invent placeholders that are not there. Names nobody asked to fill are
+  left byte-for-byte alone.
+
 ## [0.10.0]
 
 **Added**

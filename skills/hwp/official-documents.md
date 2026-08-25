@@ -135,10 +135,13 @@ Authoring rules that keep slots fillable:
 - **`{{본문}}` sits alone in its own paragraph.** Part splicing
   (`--set "본문=@body.md"`) block-replaces only when the anchor paragraph contains exactly
   `{{본문}}` and nothing else.
-- **Slots are plain, unformatted, single-run text.** Never place a slot inside bold/italic
-  spans or across a line break: `hwp fill` matches `{{name}}` by raw-XML string replace, so
-  a slot split across text runs does not match. Symptom: `hwp slots` lists the name but
-  `fill --set name=…` reports 0 replacements.
+- **Keep a slot out of bold/italic spans anyway.** Formatting inside a slot name splits it
+  across text runs. `hwp fill` handles that — it pulls the pieces back into the first run
+  before replacing — but the value then inherits that first run's shape, which is rarely the
+  shape you meant. Write `*{{name}}*`, never `{{na*me*}}`.
+- **A slot may not cross a line break or a paragraph boundary.** Those genuinely end it:
+  `{{` on one side and `}}` on the other is not a slot, and neither `hwp slots` nor
+  `hwp fill` treats it as one.
 
 ## 4. Korean alias table
 
@@ -193,10 +196,9 @@ escapes a literal `@` in a value. Bulk filling from one JSON file uses
 fill). Remember: mutations are fail-closed — a `DROP:` warning means nothing is published,
 and an unmatched slot fails the whole command unless `--allow-partial` is given.
 
-One honest gap: fill matches slots by raw-XML string replace, so a `{{slot}}` split across
-text runs is **not** replaced today (run-spanning fill is the EDIT-01 gap, scheduled for
-Phase 2.5). Templates created through `hwp new --from` keep each slot inside a single run,
-so the recipe above is unaffected.
+`hwp slots` and `hwp fill` agree about what a document contains: every name `slots` lists is
+one `fill` can fill, formatting-split names included. A slot split across text runs is
+coalesced into its first run before replacement, so the value takes that run's character shape.
 
 ## 6. MCP
 
