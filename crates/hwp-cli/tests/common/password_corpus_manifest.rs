@@ -963,7 +963,7 @@ pub fn probe_hwpx_password_profile(
         }
         let mut key = Zeroizing::new([0u8; 32]);
         pbkdf2_hmac::<sha1::Sha1>(&start_key, &entry.salt, entry.iterations, &mut *key);
-        let mut decryptor = cbc::Decryptor::<Aes256>::new_from_slices(&*key, &entry.iv)
+        let decryptor = cbc::Decryptor::<Aes256>::new_from_slices(&*key, &entry.iv)
             .map_err(|_| "HWPX cipher setup failed".to_owned())?;
         let compressed = decryptor
             .decrypt_padded::<Pkcs7>(&mut ciphertext)
