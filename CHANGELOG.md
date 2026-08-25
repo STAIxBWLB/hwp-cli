@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.10.0]
+
 **Added**
 
 - `--doc-foot 수신자=…` (MCP `doc_foot`) adds the multi-recipient list to the 결문. It is the one
