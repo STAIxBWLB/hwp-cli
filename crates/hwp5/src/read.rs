@@ -11,7 +11,10 @@ use crate::container::{Hwp5Container, is_record_stream};
 use crate::doc_info::parse_doc_info;
 use crate::error::{Hwp5Error, Result};
 use crate::file_header::FileHeader;
-use crate::record::{RecordHeader, ScanMode, scan_stream};
+use crate::record::{
+    RecordHeader, RecordScanBudget, RecordScanLimits, ScanMode, scan_stream, scan_stream_bounded,
+    walk_stream_strict,
+};
 
 mod password;
 use password::{
@@ -19,6 +22,9 @@ use password::{
     HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES, decrypt_hwp5_encrypt_version_4_in_place,
     validate_live_bytes,
 };
+
+const HWP5_PASSWORD_MAX_RECORDS: usize = 131_072;
+const HWP5_PASSWORD_MAX_RECORD_DEPTH: usize = 128;
 
 /// Per-call options for HWP5 reads. Password bytes are borrowed only for the
 /// active read and are never retained by the reader or returned document.
@@ -249,11 +255,25 @@ fn read_document_from_streams(
     file_header: &FileHeader,
     streams: &BTreeMap<String, Vec<u8>>,
 ) -> Result<ReadResult> {
+    read_document_from_streams_with_budget(file_header, streams, None)
+}
+
+/// Parses a materialized stream map. Password-protected reads provide a
+/// bounded scanner budget so record trees cannot exceed their authenticated
+/// live-buffer reservation; ordinary reads retain the legacy tolerant path.
+fn read_document_from_streams_with_budget(
+    file_header: &FileHeader,
+    streams: &BTreeMap<String, Vec<u8>>,
+    mut record_budget: Option<&mut RecordScanBudget>,
+) -> Result<ReadResult> {
     let mut warnings = Vec::new();
     let doc_info_data = streams
         .get("/DocInfo")
         .ok_or_else(|| Hwp5Error::StreamNotFound("/DocInfo".to_string()))?;
-    let scan = scan_stream(doc_info_data, ScanMode::Tolerant)?;
+    let scan = match record_budget.as_deref_mut() {
+        Some(budget) => scan_stream_bounded(doc_info_data, ScanMode::Tolerant, budget)?,
+        None => scan_stream(doc_info_data, ScanMode::Tolerant)?,
+    };
     warnings.extend(
         scan.warnings
             .iter()
@@ -279,7 +299,10 @@ fn read_document_from_streams(
     let mut sections = Vec::with_capacity(body_sections.len());
     for stream_path in body_sections {
         let data = &streams[stream_path];
-        let scan = scan_stream(data, ScanMode::Tolerant)?;
+        let scan = match record_budget.as_deref_mut() {
+            Some(budget) => scan_stream_bounded(data, ScanMode::Tolerant, budget)?,
+            None => scan_stream(data, ScanMode::Tolerant)?,
+        };
         warnings.extend(
             scan.warnings
                 .iter()
@@ -494,16 +517,16 @@ fn expected_password_record_tag(path: &str) -> Option<u16> {
     }
 }
 
-fn record_tree_contains_tag(nodes: &[crate::record::RecordNode], expected: u16) -> bool {
-    nodes
-        .iter()
-        .any(|node| node.tag == expected || record_tree_contains_tag(&node.children, expected))
-}
-
 fn validate_password_record_identity(path: &str, data: &[u8]) -> Result<()> {
     let expected = expected_password_record_tag(path).ok_or(Hwp5Error::Encrypted)?;
-    let scan = scan_stream(data, ScanMode::Strict).map_err(|_| Hwp5Error::Encrypted)?;
-    if scan.record_count == 0 || !record_tree_contains_tag(&scan.roots, expected) {
+    let found_expected_tag = walk_stream_strict(
+        data,
+        expected,
+        HWP5_PASSWORD_MAX_RECORDS,
+        HWP5_PASSWORD_MAX_RECORD_DEPTH,
+    )
+    .map_err(|_| Hwp5Error::Encrypted)?;
+    if !found_expected_tag {
         return Err(Hwp5Error::Encrypted);
     }
     Ok(())
@@ -515,6 +538,23 @@ fn checked_password_live_bytes(left: u64, right: u64) -> Result<u64> {
             resource: "password-protected HWP5 live buffers".to_string(),
             limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
         })
+}
+
+fn password_record_scan_budget(retained_plaintext: u64) -> Result<RecordScanBudget> {
+    let remaining_live = password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES
+        .checked_sub(retained_plaintext)
+        .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
+            resource: "password-protected HWP5 live buffers".to_string(),
+            limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
+        })?;
+    // The first half is the maximum tree construction allocation. Reserving
+    // the other half for the semantic Document output prevents the temporary
+    // RecordNode tree and the final IR from consuming the same live budget.
+    Ok(RecordScanBudget::new(RecordScanLimits {
+        max_records: HWP5_PASSWORD_MAX_RECORDS,
+        max_depth: HWP5_PASSWORD_MAX_RECORD_DEPTH,
+        max_allocation_bytes: remaining_live / 2,
+    }))
 }
 
 fn read_password_protected_document(
@@ -554,12 +594,15 @@ fn read_password_protected_document(
     {
         validate_live_bytes(stream.size, retained_plaintext)
             .map_err(normalize_password_candidate_error)?;
-        let mut protected = zeroize::Zeroizing::new(container.read_stream_raw(&stream.path)?);
-        if protected.len() as u64 != stream.size {
-            return Err(Hwp5Error::Encrypted);
-        }
-        decrypt_hwp5_encrypt_version_4_in_place(&mut protected, password)?;
         let decrypted = if header.is_compressed() {
+            // Keep ciphertext live only while raw-DEFLATE is expanded. Its
+            // buffer is zeroized and dropped before identity walking or tree
+            // construction, and the expansion reservation includes it.
+            let mut protected = zeroize::Zeroizing::new(container.read_stream_raw(&stream.path)?);
+            if protected.len() as u64 != stream.size {
+                return Err(Hwp5Error::Encrypted);
+            }
+            decrypt_hwp5_encrypt_version_4_in_place(&mut protected, password)?;
             let live_ciphertext = checked_password_live_bytes(retained_plaintext, stream.size)
                 .map_err(normalize_password_candidate_error)?;
             validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES, live_ciphertext)
@@ -572,19 +615,19 @@ fn read_password_protected_document(
             protected.zeroize();
             result.map_err(normalize_password_candidate_error)?
         } else {
+            let mut protected = zeroize::Zeroizing::new(container.read_stream_raw(&stream.path)?);
+            if protected.len() as u64 != stream.size {
+                return Err(Hwp5Error::Encrypted);
+            }
+            decrypt_hwp5_encrypt_version_4_in_place(&mut protected, password)?;
             std::mem::take(&mut *protected)
         };
-        protected.zeroize();
 
         let decrypted_size = decrypted.len() as u64;
         validate_live_bytes(decrypted_size, retained_plaintext)
             .map_err(normalize_password_candidate_error)?;
-        // Strict record identity is the password validation boundary. Reserve
-        // a second copy for the temporary strict scan before invoking it.
-        let scan_live = checked_password_live_bytes(retained_plaintext, decrypted_size)
-            .map_err(normalize_password_candidate_error)?;
-        validate_live_bytes(decrypted_size, scan_live)
-            .map_err(normalize_password_candidate_error)?;
+        // Strict identity validation is a no-allocation header walk. It is the
+        // credential boundary before any RecordNode or payload clone exists.
         validate_password_record_identity(&stream.path, &decrypted)?;
         retained_plaintext = retained_plaintext
             .checked_add(decrypted_size)
@@ -615,8 +658,10 @@ fn read_password_protected_document(
     // still live. Reserve that handoff before parsing, rather than after an
     // allocation has already occurred.
     validate_live_bytes(retained_plaintext, retained_plaintext)?;
+    let mut record_budget = password_record_scan_budget(retained_plaintext)?;
     header.check_body_readable_after_password()?;
-    read_document_from_streams(&header, &streams).map_err(|_| Hwp5Error::Encrypted)
+    read_document_from_streams_with_budget(&header, &streams, Some(&mut record_budget))
+        .map_err(|_| Hwp5Error::Encrypted)
 }
 
 fn normalize_password_candidate_error(_error: Hwp5Error) -> Hwp5Error {
@@ -733,6 +778,9 @@ mod bounded_tests {
                 .unwrap()
                 .read_to_end(&mut raw)
                 .unwrap();
+            if additional_attributes & 1 != 0 {
+                raw = crate::codec::compress(&raw);
+            }
             let encrypted = encrypt_hwp5_stream_for_test(&raw, password);
             let mut stream = cfb.open_stream(path).unwrap();
             stream.set_len(0).unwrap();
@@ -740,6 +788,31 @@ mod bounded_tests {
             stream.write_all(&encrypted).unwrap();
         }
         cfb.flush().unwrap();
+    }
+
+    fn replace_encrypted_stream_for_test(
+        path: &Path,
+        stream_path: &str,
+        protected_bytes: &[u8],
+        password: &str,
+    ) {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut cfb = cfb::CompoundFile::open(file).unwrap();
+        let encrypted = encrypt_hwp5_stream_for_test(protected_bytes, password);
+        let mut stream = cfb.open_stream(stream_path).unwrap();
+        stream.set_len(0).unwrap();
+        stream.seek(SeekFrom::Start(0)).unwrap();
+        stream.write_all(&encrypted).unwrap();
+        drop(stream);
+        cfb.flush().unwrap();
+    }
+
+    fn repeated_empty_records(tag: u16, count: usize) -> Vec<u8> {
+        u32::from(tag).to_le_bytes().repeat(count)
     }
 
     #[test]
@@ -793,6 +866,70 @@ mod bounded_tests {
                 },
             ),
             Err(Hwp5Error::CertEncrypted)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_tiny_records_are_refused_before_unbounded_parser_trees() {
+        let path = base_hwp("password-tiny-records");
+        let password = "correct-password";
+        make_evidenced_password_hwp(&path, password, 0);
+
+        // Each stream is individually below the identity-walk limit, but the
+        // authenticated parser shares one record budget across DocInfo and
+        // BodyText before it can retain both trees.
+        let per_stream = (HWP5_PASSWORD_MAX_RECORDS / 2) + 1;
+        replace_encrypted_stream_for_test(
+            &path,
+            "/DocInfo",
+            &repeated_empty_records(crate::record::tag::DOCUMENT_PROPERTIES, per_stream),
+            password,
+        );
+        replace_encrypted_stream_for_test(
+            &path,
+            "/BodyText/Section0",
+            &repeated_empty_records(crate::record::tag::PARA_HEADER, per_stream),
+            password,
+        );
+
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some(password),
+                },
+            ),
+            Err(Hwp5Error::Encrypted)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn near_limit_compressed_tiny_records_are_refused_by_the_streaming_walk() {
+        let path = base_hwp("password-near-limit-compressed-records");
+        let password = "correct-password";
+        const COMPRESSED: u32 = 1;
+        make_evidenced_password_hwp(&path, password, COMPRESSED);
+
+        // This expands to just under the 64 MiB protected-stream cap but the
+        // encrypted representation remains small. The no-allocation identity
+        // walk must reject the record count before a RecordNode tree exists.
+        let near_limit = repeated_empty_records(
+            crate::record::tag::DOCUMENT_PROPERTIES,
+            (HWP5_PASSWORD_MAX_STREAM_BYTES as usize / 4) - 1,
+        );
+        let compressed = crate::codec::compress(&near_limit);
+        replace_encrypted_stream_for_test(&path, "/DocInfo", &compressed, password);
+
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some(password),
+                },
+            ),
+            Err(Hwp5Error::Encrypted)
         ));
         std::fs::remove_file(path).unwrap();
     }
