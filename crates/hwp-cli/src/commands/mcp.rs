@@ -2747,18 +2747,22 @@ mod tests {
     #[test]
     fn password_read_schema_is_closed_and_scoped() {
         let tools = tool_defs();
-        let read = tools
-            .iter()
-            .find(|tool| tool["name"] == "hwp_read")
-            .unwrap();
-        assert_eq!(read["inputSchema"]["additionalProperties"], false);
-        assert_eq!(
-            read["inputSchema"]["properties"]["password"]["type"],
-            "string"
-        );
-        for name in ["hwp_render", "hwp_convert", "hwp_info"] {
+        for name in ["hwp_read", "hwp_convert", "hwp_render"] {
             let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
-            assert!(tool["inputSchema"]["properties"].get("password").is_none());
+            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+            assert_eq!(
+                tool["inputSchema"]["properties"]["password"]["type"],
+                "string"
+            );
+        }
+        for tool in &tools {
+            let name = tool["name"].as_str().unwrap();
+            if !matches!(name, "hwp_read" | "hwp_convert" | "hwp_render") {
+                assert!(
+                    tool["inputSchema"]["properties"].get("password").is_none(),
+                    "{name} must not accept password"
+                );
+            }
         }
     }
 
