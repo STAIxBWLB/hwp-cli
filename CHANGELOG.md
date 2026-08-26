@@ -56,12 +56,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Password-unlocked HWPX entries remain available for every read during one package invocation,
   including the second `version.xml` access. Rewriting a decrypted document also replaces the
   source encryption manifest with the ordinary plaintext manifest, so HWPX-to-HWPX conversion no
-  longer publishes plaintext entries under stale encryption metadata.
+  longer publishes plaintext entries under stale encryption metadata or compares authenticated
+  opaque plaintext against source ciphertext.
 
 - Password-unlocked HWP5-to-HWP conversion uses the plaintext synthesis path instead of asking the
   source-preserving writer to reopen the encrypted container without a credential. HWPX profile
   validation also caps aggregate PBKDF2 work at eight million iterations before any entry is
   decrypted, preventing a many-entry package from multiplying the per-entry limit into a CPU DoS.
+
+- Compressed `BinData` in password-protected HWP5 now follows the ordinary reader's bounded
+  try-DEFLATE path before entering the IR. Images therefore remain usable in cross-format output,
+  and native HWP synthesis does not double-compress an already-compressed payload.
 
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
   everything `hwp slots` reports. The two commands read a document differently — `slots` walks the

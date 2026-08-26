@@ -200,6 +200,19 @@ fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
             writer.write_all(&data).unwrap();
         }
     }
+    let custom_name = "META-INF/custom.xml";
+    let custom_plaintext = b"<custom>authenticated opaque entry</custom>";
+    let (custom_ciphertext, custom_manifest_entry) =
+        encrypt_hwpx_part(custom_name, custom_plaintext, password);
+    manifest_entries.push(custom_manifest_entry);
+    writer
+        .start_file(
+            custom_name,
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer.write_all(&custom_ciphertext).unwrap();
     writer
         .start_file(
             "mimetype",

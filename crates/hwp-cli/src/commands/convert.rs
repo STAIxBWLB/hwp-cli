@@ -443,10 +443,19 @@ pub fn execute_with_options(
         && hwp5::Hwp5Container::open(input)?
             .file_header()
             .is_encrypted();
-    // A password-unlocked HWP5 cannot copy its encrypted source container into
-    // a plaintext output. Treat this one deliberate same-format transition as
-    // synthesis while keeping source-preserving rewrite for ordinary HWP5.
-    let preserve_same_native_container = same_native_format && !password_unlocked_hwp5;
+    let password_unlocked_hwpx = source_format == crate::format::FileFormat::Hwpx
+        && matches!(target, ConvertFormat::Hwpx)
+        && options.password.is_some()
+        && {
+            let mut package = hwpx::HwpxPackage::open(input)?;
+            package.has_encryption_marker()?
+        };
+    // Password-unlocked native inputs cannot be compared or rewritten against
+    // their ciphertext containers. HWP5 uses plaintext synthesis; HWPX writes
+    // the authenticated in-memory entries and a plaintext manifest. Ordinary
+    // native inputs keep the strict source-preserving container path.
+    let preserve_same_native_container =
+        same_native_format && !password_unlocked_hwp5 && !password_unlocked_hwpx;
     let write_staged = |source: &std::path::Path, staged: &std::path::Path| {
         let mut report = match target {
             ConvertFormat::Md => {

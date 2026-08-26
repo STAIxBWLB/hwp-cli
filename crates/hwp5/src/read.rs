@@ -1043,8 +1043,29 @@ fn read_password_protected_document(
         if raw.len() as u64 != stream.size {
             return Err(Hwp5Error::Encrypted);
         }
-        retained_plaintext = checked_password_live_bytes(retained_plaintext, stream.size)?;
-        streams.insert(stream.path, raw);
+        let data = if header.is_compressed() && stream.path.starts_with("/BinData/") {
+            // Match the ordinary reader's try-DEFLATE contract for BinData,
+            // but reserve the simultaneous raw and expanded owners before
+            // decompression. Malformed data may fall back to its bounded raw
+            // bytes; an expansion-limit failure remains fatal.
+            let live_raw = checked_password_live_bytes(retained_with_paths, stream.size)?;
+            validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES, live_raw)?;
+            match crate::codec::decompress_bounded(
+                &raw,
+                &stream.path,
+                HWP5_PASSWORD_MAX_STREAM_BYTES,
+            ) {
+                Ok(data) => data,
+                Err(Hwp5Error::Decompress { .. }) => raw,
+                Err(error) => return Err(error),
+            }
+        } else {
+            raw
+        };
+        let materialized_size = data.len() as u64;
+        validate_live_bytes(materialized_size, retained_with_paths)?;
+        retained_plaintext = checked_password_live_bytes(retained_plaintext, materialized_size)?;
+        streams.insert(stream.path, data);
     }
 
     // The regular parser owns record data while the decrypted stream map is
@@ -1311,6 +1332,39 @@ mod bounded_tests {
             ),
             Err(Hwp5Error::CertEncrypted)
         ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_compressed_bindata_is_materialized_like_an_ordinary_read() {
+        let path = base_hwp("password-compressed-bindata");
+        let password = "correct-password";
+        make_evidenced_password_hwp(&path, password, 0);
+        let expected = b"synthetic image payload".repeat(64);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            cfb.create_storage("/BinData").unwrap();
+            cfb.create_new_stream("/BinData/BIN0001.bin")
+                .unwrap()
+                .write_all(&crate::codec::compress(&expected))
+                .unwrap();
+            cfb.flush().unwrap();
+        }
+
+        let result = read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(password),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.document.bin_streams.len(), 1);
+        assert_eq!(result.document.bin_streams[0].data, expected);
         std::fs::remove_file(path).unwrap();
     }
 
