@@ -437,6 +437,16 @@ pub fn execute_with_options(
         (crate::format::FileFormat::Hwp5, ConvertFormat::Hwp)
             | (crate::format::FileFormat::Hwpx, ConvertFormat::Hwpx)
     );
+    let password_unlocked_hwp5 = source_format == crate::format::FileFormat::Hwp5
+        && matches!(target, ConvertFormat::Hwp)
+        && options.password.is_some()
+        && hwp5::Hwp5Container::open(input)?
+            .file_header()
+            .is_encrypted();
+    // A password-unlocked HWP5 cannot copy its encrypted source container into
+    // a plaintext output. Treat this one deliberate same-format transition as
+    // synthesis while keeping source-preserving rewrite for ordinary HWP5.
+    let preserve_same_native_container = same_native_format && !password_unlocked_hwp5;
     let write_staged = |source: &std::path::Path, staged: &std::path::Path| {
         let mut report = match target {
             ConvertFormat::Md => {
@@ -482,14 +492,17 @@ pub fn execute_with_options(
                     preserve_linesegs: preserve_layout,
                 },
             )?,
-            ConvertFormat::Hwp if source_format == crate::format::FileFormat::Hwp5 => {
+            ConvertFormat::Hwp
+                if source_format == crate::format::FileFormat::Hwp5
+                    && preserve_same_native_container =>
+            {
                 write_hwp_preserving_source(source, &doc, &doc, staged, preserve_layout, false)?
             }
             ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout)?,
         };
 
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-            if same_native_format {
+            if preserve_same_native_container {
                 report.preservation.extend(
                     crate::commands::preservation::inspect_same_format_container(source, staged)?,
                 );
@@ -522,7 +535,7 @@ pub fn execute_with_options(
             write_loss_report(report_path, &report.preservation)?;
         }
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-            if same_native_format || strict {
+            if preserve_same_native_container || strict {
                 crate::commands::reject_preservation_loss("convert", &report.preservation)?;
             }
             load_document(staged)

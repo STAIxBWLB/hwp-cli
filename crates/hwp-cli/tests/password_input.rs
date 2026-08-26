@@ -647,6 +647,44 @@ fn cli_convert_render_support_password_inputs_before_publication() {
         );
         assert!(converted.exists());
 
+        let native_extension = if label == "hwp5" { "hwp" } else { "hwpx" };
+        let native = dir.join(format!("{label}-decrypted.{native_extension}"));
+        let native_convert = hwp()
+            .arg("convert")
+            .arg(&input)
+            .arg("-o")
+            .arg(&native)
+            .arg("--password")
+            .arg(password)
+            .output()
+            .unwrap();
+        assert!(
+            native_convert.status.success(),
+            "{label} same-format conversion with a password must succeed: {}",
+            refusal(&native_convert.stderr)
+        );
+        let reopened = hwp().arg("cat").arg(&native).output().unwrap();
+        assert!(
+            reopened.status.success(),
+            "{label} same-format output must reopen without a password: {}",
+            refusal(&reopened.stderr)
+        );
+        if label == "hwp5" {
+            assert!(
+                !hwp5::Hwp5Container::open(&native)
+                    .unwrap()
+                    .file_header()
+                    .is_encrypted(),
+                "same-format HWP output must be an ordinary plaintext package"
+            );
+        } else {
+            let mut package = hwpx::HwpxPackage::open(&native).unwrap();
+            assert!(
+                !package.has_encryption_marker().unwrap(),
+                "same-format HWPX output must discard source encryption metadata"
+            );
+        }
+
         let rendered = dir.join(format!("{label}.svg"));
         let render = hwp()
             .arg("render")

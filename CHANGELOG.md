@@ -58,6 +58,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   source encryption manifest with the ordinary plaintext manifest, so HWPX-to-HWPX conversion no
   longer publishes plaintext entries under stale encryption metadata.
 
+- Password-unlocked HWP5-to-HWP conversion uses the plaintext synthesis path instead of asking the
+  source-preserving writer to reopen the encrypted container without a credential. HWPX profile
+  validation also caps aggregate PBKDF2 work at eight million iterations before any entry is
+  decrypted, preventing a many-entry package from multiplying the per-entry limit into a CPU DoS.
+
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
   everything `hwp slots` reports. The two commands read a document differently — `slots` walks the
   IR, where a paragraph's characters are already joined, while `fill` rewrites the raw section XML

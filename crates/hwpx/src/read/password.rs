@@ -24,6 +24,7 @@ const KDF_ID: &str = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2"
 const START_KEY_ID: &str = "http://www.w3.org/2000/09/xmldsig#sha256";
 const CHECKSUM_ID: &str = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k";
 const MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
+const MAX_TOTAL_PBKDF2_ITERATIONS: u64 = 8_000_000;
 
 /// The exact observed HWPX encryption profile and its protected entries.
 #[derive(Debug)]
@@ -113,10 +114,15 @@ pub fn parse_profile(manifest: &str) -> Result<EncryptionProfile> {
         return Err(HwpxError::UnsupportedEncryptionProfile);
     }
     let mut names = BTreeMap::new();
+    let mut total_pbkdf2_iterations = 0u64;
     for entry in &entries {
         if names.insert(&entry.name, ()).is_some() {
             return Err(HwpxError::UnsupportedEncryptionProfile);
         }
+        total_pbkdf2_iterations = total_pbkdf2_iterations
+            .checked_add(u64::from(entry.iterations))
+            .filter(|total| *total <= MAX_TOTAL_PBKDF2_ITERATIONS)
+            .ok_or(HwpxError::UnsupportedEncryptionProfile)?;
     }
     Ok(EncryptionProfile { entries })
 }
@@ -361,6 +367,27 @@ mod tests {
         let manifest = r#"<manifest><file-entry full-path="Contents/header.xml" size="16"><algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="AAAAAAAAAAAAAAAAAAAAAA=="/><key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="AAAAAAAAAAAAAAAAAAAAAA=="/><start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/><encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="/></file-entry></manifest>"#;
         assert!(matches!(
             parse_profile(manifest),
+            Err(HwpxError::UnsupportedEncryptionProfile)
+        ));
+    }
+
+    #[test]
+    fn rejects_aggregate_pbkdf2_work_before_decryption() {
+        let entry = |index: usize| {
+            format!(
+                r#"<file-entry full-path="Contents/entry{index}.xml" size="16"><encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="><algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="AAAAAAAAAAAAAAAAAAAAAA=="/><key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1000000" salt="AAAAAAAAAAAAAAAAAAAAAA=="/><start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/></encryption-data></file-entry>"#
+            )
+        };
+        let manifest = |count: usize| {
+            format!(
+                "<manifest>{}</manifest>",
+                (0..count).map(entry).collect::<String>()
+            )
+        };
+
+        assert!(parse_profile(&manifest(8)).is_ok());
+        assert!(matches!(
+            parse_profile(&manifest(9)),
             Err(HwpxError::UnsupportedEncryptionProfile)
         ));
     }
