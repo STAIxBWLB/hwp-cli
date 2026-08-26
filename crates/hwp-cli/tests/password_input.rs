@@ -439,3 +439,36 @@ fn cli_convert_render_support_password_inputs_before_publication() {
         assert!(!refusal(&wrong.stderr).contains(password));
     }
 }
+
+#[test]
+fn cli_password_scope_and_korean_help_are_exact() {
+    for command in ["cat", "convert", "render"] {
+        let help = hwp()
+            .env("HWP_LANG", "ko")
+            .args([command, "--help"])
+            .output()
+            .unwrap();
+        assert!(help.status.success());
+        let stdout = String::from_utf8_lossy(&help.stdout);
+        assert!(stdout.contains("--password"));
+        assert!(stdout.contains("명령줄에서 직접 입력할 암호"));
+        assert!(stdout.contains("표준 입력에서 UTF-8 암호 한 줄 읽기"));
+    }
+
+    for command in [
+        "info", "grep", "new", "compose", "edit", "validate", "dump", "diff", "skill",
+    ] {
+        let rejected = hwp()
+            .args([command, "--password", "must-not-be-accepted"])
+            .output()
+            .unwrap();
+        assert!(
+            !rejected.status.success(),
+            "{command} must remain outside password scope"
+        );
+        assert!(
+            !refusal(&rejected.stderr).contains("must-not-be-accepted"),
+            "{command} must not echo rejected credentials"
+        );
+    }
+}
