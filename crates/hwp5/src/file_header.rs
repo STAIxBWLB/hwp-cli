@@ -405,4 +405,36 @@ mod tests {
             Err(Hwp5Error::UnsupportedVersion(v)) if v == "6.0.0.0"
         ));
     }
+
+    #[test]
+    fn password_aware_gate_defers_non_password_protections_until_password_success() {
+        let mut data = 표본_헤더_속성(attr::ENCRYPTED | attr::CERT_ENCRYPTED | attr::DRM);
+        data[44..48].copy_from_slice(&4u32.to_le_bytes());
+        let h = FileHeader::parse(&data).unwrap();
+
+        assert!(matches!(
+            h.check_body_readable_with_password(None),
+            Err(Hwp5Error::Encrypted)
+        ));
+        assert!(h.check_body_readable_with_password(Some("exact password")).is_ok());
+        assert!(matches!(
+            h.check_body_readable_after_password(),
+            Err(Hwp5Error::CertEncrypted)
+        ));
+    }
+
+    #[test]
+    fn password_aware_gate_refuses_unsupported_profile_without_secret_detail() {
+        let mut data = 표본_헤더_속성(attr::ENCRYPTED);
+        data[44..48].copy_from_slice(&5u32.to_le_bytes());
+        let h = FileHeader::parse(&data).unwrap();
+        let error = h
+            .check_body_readable_with_password(Some("ignored"))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Hwp5Error::UnsupportedPasswordProfile { encrypt_version: 5 }
+        ));
+        assert!(!error.to_string().contains("ignored"));
+    }
 }
