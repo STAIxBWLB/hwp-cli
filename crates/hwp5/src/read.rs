@@ -520,12 +520,7 @@ fn read_password_protected_document(
     options: &ReadOptions<'_>,
 ) -> Result<ReadResult> {
     let header = container.file_header().clone();
-    header.check_version()?;
-    if header.encrypt_version != 4 {
-        return Err(Hwp5Error::UnsupportedPasswordProfile {
-            encrypt_version: header.encrypt_version,
-        });
-    }
+    header.check_body_readable_with_password(options.password)?;
     let password = options.password.ok_or(Hwp5Error::Encrypted)?;
     let stream_infos = container.list_streams();
     if stream_infos.iter().any(|stream| {
@@ -596,6 +591,7 @@ fn read_password_protected_document(
     // still live. Reserve that handoff before parsing, rather than after an
     // allocation has already occurred.
     validate_live_bytes(retained_plaintext, retained_plaintext)?;
+    header.check_body_readable_after_password()?;
     read_document_from_streams(&header, &streams).map_err(|_| Hwp5Error::Encrypted)
 }
 
@@ -677,7 +673,7 @@ mod bounded_tests {
         encrypted
     }
 
-    fn make_evidenced_password_hwp(path: &Path, password: &str) {
+    fn make_evidenced_password_hwp(path: &Path, password: &str, additional_attributes: u32) {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -689,7 +685,9 @@ mod bounded_tests {
             .unwrap()
             .read_to_end(&mut header)
             .unwrap();
-        let attributes = u32::from_le_bytes(header[36..40].try_into().unwrap()) | (1 << 1);
+        let attributes = u32::from_le_bytes(header[36..40].try_into().unwrap())
+            | (1 << 1)
+            | additional_attributes;
         header[36..40].copy_from_slice(&attributes.to_le_bytes());
         header[44..48].copy_from_slice(&4u32.to_le_bytes());
         let mut header_stream = cfb.open_stream("/FileHeader").unwrap();
@@ -717,7 +715,7 @@ mod bounded_tests {
     fn evidenced_password_profile_reenters_the_normal_reader_with_exact_utf8() {
         let path = base_hwp("password-profile");
         let password = "\u{ac00}";
-        make_evidenced_password_hwp(&path, password);
+        make_evidenced_password_hwp(&path, password, 0);
 
         assert!(matches!(read_document(&path), Err(Hwp5Error::Encrypted)));
         let wrong = read_document_with_options(
@@ -736,6 +734,35 @@ mod bounded_tests {
         .unwrap();
         assert_eq!(result.document.meta.source_format, "hwp5");
         assert_eq!(result.document.sections.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn wrong_password_precedes_certificate_refusal_and_success_resumes_gate_order() {
+        const CERT_ENCRYPTED: u32 = 1 << 8;
+        const DRM: u32 = 1 << 4;
+        let path = base_hwp("password-gate-order");
+        let password = "exact password";
+        make_evidenced_password_hwp(&path, password, CERT_ENCRYPTED | DRM);
+
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some("wrong password"),
+                },
+            ),
+            Err(Hwp5Error::Encrypted)
+        ));
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some(password),
+                },
+            ),
+            Err(Hwp5Error::CertEncrypted)
+        ));
         std::fs::remove_file(path).unwrap();
     }
 

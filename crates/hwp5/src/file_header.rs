@@ -199,6 +199,34 @@ impl FileHeader {
         if self.is_encrypted() {
             return Err(Hwp5Error::Encrypted);
         }
+        self.check_body_readable_after_password()
+    }
+
+    /// Performs the initial GATE-02 header check for a password-aware reader.
+    /// A present password only permits an observed password profile to attempt
+    /// authentication; non-password protections wait until the reader has
+    /// verified that password against the encrypted record streams.
+    pub fn check_body_readable_with_password(&self, password: Option<&str>) -> Result<()> {
+        self.check_version()?;
+        if self.is_encrypted() {
+            if self.encrypt_version != 4 {
+                return Err(Hwp5Error::UnsupportedPasswordProfile {
+                    encrypt_version: self.encrypt_version,
+                });
+            }
+            if password.is_none() {
+                return Err(Hwp5Error::Encrypted);
+            }
+            return Ok(());
+        }
+        self.check_body_readable_after_password()
+    }
+
+    /// Completes GATE-02 once a password-aware reader has authenticated the
+    /// password branch. This intentionally excludes only `ENCRYPTED` and
+    /// preserves the established certificate, DRM, and signature ordering.
+    pub fn check_body_readable_after_password(&self) -> Result<()> {
+        self.check_version()?;
         if self.is_cert_encrypted() {
             return Err(Hwp5Error::CertEncrypted);
         }
@@ -416,7 +444,10 @@ mod tests {
             h.check_body_readable_with_password(None),
             Err(Hwp5Error::Encrypted)
         ));
-        assert!(h.check_body_readable_with_password(Some("exact password")).is_ok());
+        assert!(
+            h.check_body_readable_with_password(Some("exact password"))
+                .is_ok()
+        );
         assert!(matches!(
             h.check_body_readable_after_password(),
             Err(Hwp5Error::CertEncrypted)
