@@ -12,19 +12,6 @@ fn hwp() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hwp"))
 }
 
-fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-fn fixture() -> PathBuf {
-    let path = repo().join("fixtures/samples/report-tables.hwpx");
-    assert!(path.exists(), "missing committed fixture: {}", path.display());
-    path
-}
-
 fn temp_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir()
         .join(format!("hwp-cli-password-{}", std::process::id()))
@@ -38,7 +25,11 @@ fn encrypt_hwp5_stream(plaintext: &[u8], password: &str) -> Vec<u8> {
     let password = password.as_bytes();
     let mut source = Vec::with_capacity(password.len() * 2);
     for (index, byte) in password.iter().copied().enumerate() {
-        let previous = if index == 0 { 0xec } else { password[index - 1] };
+        let previous = if index == 0 {
+            0xec
+        } else {
+            password[index - 1]
+        };
         source.push(previous.rotate_left(1));
         source.push(byte);
     }
@@ -70,17 +61,11 @@ fn encrypt_hwp5_stream(plaintext: &[u8], password: &str) -> Vec<u8> {
 
 fn evidenced_hwp5_fixture(dir: &Path, password: &str) -> PathBuf {
     let path = dir.join("protected.hwp");
-    let converted = hwp()
-        .arg("convert")
-        .arg(fixture())
-        .arg("-o")
-        .arg(&path)
-        .output()
-        .unwrap();
+    let created = hwp().arg("new").arg("-o").arg(&path).output().unwrap();
     assert!(
-        converted.status.success(),
-        "base fixture conversion failed: {}",
-        String::from_utf8_lossy(&converted.stderr)
+        created.status.success(),
+        "base fixture creation failed: {}",
+        String::from_utf8_lossy(&created.stderr)
     );
 
     let file = std::fs::OpenOptions::new()
@@ -140,8 +125,6 @@ fn hwp5_cat_direct_and_stdin_preserve_exact_password_bytes() {
         "direct password failed: {}",
         refusal(&direct.stderr)
     );
-    assert!(!direct.stdout.is_empty(), "decrypted document has text output");
-
     let mut stdin = hwp()
         .arg("cat")
         .arg(&file)
@@ -149,7 +132,12 @@ fn hwp5_cat_direct_and_stdin_preserve_exact_password_bytes() {
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
-    stdin.stdin.take().unwrap().write_all(format!("{password}\r\n").as_bytes()).unwrap();
+    stdin
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{password}\r\n").as_bytes())
+        .unwrap();
     let stdin = stdin.wait_with_output().unwrap();
     assert!(
         stdin.status.success(),

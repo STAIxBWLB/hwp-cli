@@ -96,6 +96,8 @@ pub enum Cmd {
         /// envelope: {"markdown": ..., "segments": [...]}
         #[arg(long = "with-segments")]
         with_segments: bool,
+        #[command(flatten)]
+        password: PasswordArgs,
     },
 
     /// Search paragraph text (grep semantics; non-zero exit when no match)
@@ -459,6 +461,18 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+}
+
+/// Per-command password input. This is deliberately not a global CLI option:
+/// supported commands opt in explicitly as their read paths gain support.
+#[derive(Args, Debug, Default)]
+pub struct PasswordArgs {
+    /// Password supplied directly on the command line
+    #[arg(long, conflicts_with = "password_stdin")]
+    pub password: Option<String>,
+    /// Read one UTF-8 password line from standard input
+    #[arg(long, conflicts_with = "password")]
+    pub password_stdin: bool,
 }
 
 /// `hwp edit` 입력. 편집 실행 전에 `EditPlan`의 타입화된 작업 목록으로 정규화한다.

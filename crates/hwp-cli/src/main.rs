@@ -52,6 +52,7 @@ fn real_main() -> anyhow::Result<()> {
             with_header_footer,
             with_hidden,
             with_segments,
+            password,
         } => commands::cat::run(
             &file,
             format,
@@ -59,6 +60,7 @@ fn real_main() -> anyhow::Result<()> {
             with_header_footer,
             with_hidden,
             with_segments,
+            password,
         ),
         Cmd::Convert {
             inputs,

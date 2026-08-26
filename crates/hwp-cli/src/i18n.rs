@@ -120,6 +120,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     ("cat", "", "텍스트 추출"),
     ("cat", "file", "대상 HWP/HWPX 파일"),
     ("cat", "format", "출력 포맷"),
+    ("cat", "password", "명령줄에서 직접 입력할 암호"),
+    (
+        "cat",
+        "password_stdin",
+        "표준 입력에서 UTF-8 암호 한 줄 읽기",
+    ),
     ("cat", "preview", "본문 파싱 없이 PrvText 미리보기만 출력"),
     (
         "cat",

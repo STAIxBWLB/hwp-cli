@@ -32,6 +32,7 @@ image = { workspace = true }
 quick-xml = { workspace = true }
 libc = { workspace = true }
 resvg = { workspace = true }
+zeroize = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -55,4 +56,3 @@ cbc = { workspace = true }
 hmac = { workspace = true }
 pbkdf2 = { workspace = true }
 sha1 = { workspace = true }
-zeroize = { workspace = true }
