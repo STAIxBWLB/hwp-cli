@@ -294,6 +294,10 @@ pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     let is_notification = id.is_none();
+    if is_notification {
+        scrub_password_values(&mut req);
+        return None;
+    }
 
     match method {
         "initialize" => {
@@ -322,9 +326,6 @@ pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
             json!({ "tools": tool_defs() }),
         )),
         "tools/call" => {
-            if is_notification {
-                return None;
-            }
             let (name, mut args) = req
                 .get_mut("params")
                 .and_then(Value::as_object_mut)
@@ -343,16 +344,11 @@ pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
             scrub_password_values(&mut req);
             Some(result_response(id_or_null(id), result))
         }
-        _ => {
-            if is_notification {
-                return None;
-            }
-            Some(error_response(
-                id_or_null(id),
-                -32601,
-                &format!("method not found: {method}"),
-            ))
-        }
+        _ => Some(error_response(
+            id_or_null(id),
+            -32601,
+            &format!("method not found: {method}"),
+        )),
     }
 }
 
@@ -2668,6 +2664,13 @@ mod tests {
         assert!(
             handle_request(
                 r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                &ctx()
+            )
+            .is_none()
+        );
+        assert!(
+            handle_request(
+                r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"hwp_read","arguments":{"path":"ignored.hwp","password":"notification-secret"}}}"#,
                 &ctx()
             )
             .is_none()
