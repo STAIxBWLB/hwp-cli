@@ -248,14 +248,16 @@ fn run_multi_inner(
                     );
                 }
             }
-            // Validate every source before creating the destination directory or
-            // publishing any batch member. A later bad credential must not leave
-            // earlier converted documents behind.
-            for input in inputs {
-                load_document_with_options(input, options).map_err(anyhow::Error::new)?;
-            }
+            // Validate and retain every source before creating the destination
+            // directory or publishing any batch member. Moving these documents
+            // into the conversion loop keeps the all-or-nothing credential gate
+            // without repeating password KDF/transform work.
+            let documents = inputs
+                .iter()
+                .map(|input| load_document_with_options(input, options).map_err(anyhow::Error::new))
+                .collect::<anyhow::Result<Vec<_>>>()?;
             std::fs::create_dir_all(dir)?;
-            for input in inputs {
+            for (input, document) in inputs.iter().zip(documents) {
                 let stem = input
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -263,7 +265,7 @@ fn run_multi_inner(
                         format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
                     })?;
                 let out = dir.join(format!("{stem}.{}", target_extension(target)));
-                run_with_options(
+                let report = execute_with_preloaded_document(
                     input,
                     &out,
                     Some(target),
@@ -274,7 +276,11 @@ fn run_multi_inner(
                     md_opts,
                     font_dirs.clone(),
                     options,
+                    Some(document),
                 )?;
+                print_warnings(&report.warnings);
+                crate::commands::preservation::print_report(&report.preservation);
+                eprintln!("변환 완료: {} → {}", input.display(), out.display());
             }
             Ok(())
         }
@@ -376,6 +382,35 @@ pub fn execute_with_options(
     font_dirs: Vec<PathBuf>,
     options: &LoadOptions<'_>,
 ) -> anyhow::Result<ConvertReport> {
+    execute_with_preloaded_document(
+        input,
+        output,
+        to,
+        strict,
+        loss_report,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+        options,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_with_preloaded_document(
+    input: &Path,
+    output: &Path,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    loss_report: Option<&Path>,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
+    preloaded: Option<hwp_model::Document>,
+) -> anyhow::Result<ConvertReport> {
     let target = match to {
         Some(t) => t,
         None => infer_format(output)?,
@@ -397,7 +432,10 @@ pub fn execute_with_options(
         }
         crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
-    let doc = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+    let doc = match preloaded {
+        Some(document) => document,
+        None => load_document_with_options(input, options).map_err(anyhow::Error::new)?,
+    };
     if matches!(target, ConvertFormat::Md) {
         let (media_destination, media_prefix) = markdown_media_paths(output, md_opts.media_dir)?;
         let warnings = crate::commands::output::write_validated_with_sidecar(
