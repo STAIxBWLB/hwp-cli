@@ -10,6 +10,29 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- Documentation now matches v0.10.0. The READMEs predated v0.9.0 and v0.10.0 and had become wrong
+  rather than merely incomplete: sixteen MCP tools instead of seventeen, `hwp grep` and `hwp lint`
+  missing from the command reference, three `cat` formats listed where the MCP table one screen
+  below listed five, distribution documents described as refused although they have been read since
+  v0.8.7, and a roadmap three of whose six items had already shipped. The official-document
+  authoring layer and the DOCX and ODT export paths were documented nowhere at all. All of that is
+  corrected, and a new "Official-document authoring" section covers the six profiles, the eight
+  templates, the 두문/결문 frame flags, the slots and fill workflow and the ten lint rules.
+
+- `TODO.md` and `TODO.ko.md` are removed. They froze on 2026-07-19, targeted a gitignored directory
+  that is absent from any checkout, and described a plan the project no longer follows. The half of
+  their content that documents the specification rather than a local transcription became errata
+  E-8 to E-10 in `docs/design/19-hwp5-spec-supplement.md`. The public roadmap is now the README
+  plus `docs/design/12-feature-gaps.md`.
+
+- Four gap-catalog statuses that committed code contradicted are corrected: GA-2 (reading
+  distribution documents, 2026-08-20), GN-3 (`hwp lint`, 2026-08-23), GN-8 (slots spanning runs,
+  2026-08-26), and the summary row that still listed GH-3 to GH-5 as pending on the HTML path. The
+  design overview's document index, language note and status section were likewise brought back in
+  line with the catalog.
+
 **Fixed**
 
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
