@@ -68,12 +68,13 @@ pub fn parse_profile(manifest: &str) -> Result<EncryptionProfile> {
                         return Err(HwpxError::UnsupportedEncryptionProfile);
                     }
                     current = Some(CurrentEntry {
-                        name: attr(&event, b"full-path"),
-                        size: attr(&event, b"size").and_then(|value| value.parse().ok()),
+                        name: attr(&event, b"full-path", reader.decoder()),
+                        size: attr(&event, b"size", reader.decoder())
+                            .and_then(|value| value.parse().ok()),
                         ..CurrentEntry::default()
                     });
                 }
-                name => apply_metadata(current.as_mut(), name, &event)?,
+                name => apply_metadata(current.as_mut(), name, &event, reader.decoder())?,
             },
             Ok(Event::Empty(event)) => match local_name(event.name().as_ref()) {
                 b"file-entry" => {
@@ -82,7 +83,7 @@ pub fn parse_profile(manifest: &str) -> Result<EncryptionProfile> {
                     }
                 }
                 name => {
-                    apply_metadata(current.as_mut(), name, &event)?;
+                    apply_metadata(current.as_mut(), name, &event, reader.decoder())?;
                     if name == b"encryption-data" {
                         current
                             .as_mut()
@@ -131,6 +132,7 @@ fn apply_metadata(
     current: Option<&mut CurrentEntry>,
     name: &[u8],
     event: &quick_xml::events::BytesStart<'_>,
+    decoder: quick_xml::encoding::Decoder,
 ) -> Result<()> {
     let Some(entry) = current else {
         return Ok(());
@@ -142,8 +144,8 @@ fn apply_metadata(
             }
             entry.in_encryption_data = true;
             entry.checksum = Some((
-                required_attr(event, b"checksum-type")?,
-                decode_attr(event, b"checksum")?,
+                required_attr(event, b"checksum-type", decoder)?,
+                decode_attr(event, b"checksum", decoder)?,
             ));
         }
         b"algorithm" => {
@@ -151,8 +153,8 @@ fn apply_metadata(
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
             entry.encryption = Some((
-                required_attr(event, b"algorithm-name")?,
-                decode_attr(event, b"initialisation-vector")?,
+                required_attr(event, b"algorithm-name", decoder)?,
+                decode_attr(event, b"initialisation-vector", decoder)?,
             ));
         }
         b"key-derivation" => {
@@ -160,12 +162,12 @@ fn apply_metadata(
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
             entry.kdf = Some((
-                required_attr(event, b"key-derivation-name")?,
-                decode_attr(event, b"salt")?,
-                required_attr(event, b"iteration-count")?
+                required_attr(event, b"key-derivation-name", decoder)?,
+                decode_attr(event, b"salt", decoder)?,
+                required_attr(event, b"iteration-count", decoder)?
                     .parse()
                     .map_err(|_| HwpxError::UnsupportedEncryptionProfile)?,
-                required_attr(event, b"key-size")?
+                required_attr(event, b"key-size", decoder)?
                     .parse()
                     .map_err(|_| HwpxError::UnsupportedEncryptionProfile)?,
             ));
@@ -174,7 +176,7 @@ fn apply_metadata(
             if !entry.in_encryption_data || entry.start_key.is_some() {
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
-            entry.start_key = Some(required_attr(event, b"start-key-generation-name")?);
+            entry.start_key = Some(required_attr(event, b"start-key-generation-name", decoder)?);
         }
         _ => {}
     }
@@ -339,21 +341,38 @@ fn local_name(name: &[u8]) -> &[u8] {
     name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
-fn attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Option<String> {
+fn attr(
+    event: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+    decoder: quick_xml::encoding::Decoder,
+) -> Option<String> {
     event
         .attributes()
         .flatten()
         .find(|attribute| local_name(attribute.key.as_ref()) == key)
-        .and_then(|attribute| String::from_utf8(attribute.value.into_owned()).ok())
+        .and_then(|attribute| {
+            attribute
+                .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
+                .ok()
+        })
+        .map(|value| value.into_owned())
 }
 
-fn required_attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Result<String> {
-    attr(event, key).ok_or(HwpxError::UnsupportedEncryptionProfile)
+fn required_attr(
+    event: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+    decoder: quick_xml::encoding::Decoder,
+) -> Result<String> {
+    attr(event, key, decoder).ok_or(HwpxError::UnsupportedEncryptionProfile)
 }
 
-fn decode_attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Result<Vec<u8>> {
+fn decode_attr(
+    event: &quick_xml::events::BytesStart<'_>,
+    key: &[u8],
+    decoder: quick_xml::encoding::Decoder,
+) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
-        .decode(required_attr(event, key)?)
+        .decode(required_attr(event, key, decoder)?)
         .map_err(|_| HwpxError::UnsupportedEncryptionProfile)
 }
 
@@ -390,6 +409,13 @@ mod tests {
             parse_profile(&manifest(9)),
             Err(HwpxError::UnsupportedEncryptionProfile)
         ));
+    }
+
+    #[test]
+    fn decodes_xml_entities_in_protected_entry_names() {
+        let manifest = r#"<manifest><file-entry full-path="Extras/A&amp;B.xml" size="16"><encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="><algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="AAAAAAAAAAAAAAAAAAAAAA=="/><key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="AAAAAAAAAAAAAAAAAAAAAA=="/><start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/></encryption-data></file-entry></manifest>"#;
+        let profile = parse_profile(manifest).expect("escaped entry path should parse");
+        assert_eq!(profile.entries()[0].name, "Extras/A&B.xml");
     }
 
     #[test]
