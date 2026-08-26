@@ -18,8 +18,8 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 - **읽기·텍스트 추출** hwp/hwpx에서 plain / markdown / HTML / JSON(전체 IR) / CSV로 추출한다.
   표·이미지·머리말/꼬리말·미해석 레코드까지 보존하며 파싱하고, 한컴 배포용문서도 복호화하여
   일반 문서와 동일하게 읽는다.
-- **포맷 변환** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ JSON(IR). 공용 문서 모델(IR)을 경유한
-  양방향 변환.
+- **포맷 변환** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ HTML, hwp/hwpx ↔ JSON(IR)을 공용 문서
+  모델(IR)을 경유해 양방향으로 변환하며, DOCX·ODT·CSV·평문으로는 단방향 내보내기를 지원한다.
 - **렌더링** hwp/hwpx → PNG / SVG / PDF. 파일에 저장된 줄 배치(PARA_LINE_SEG)를 우선 쓰고, 없으면
   자체 줄바꿈으로 보정한다. PDF는 폰트를 서브셋·임베드한 단일 멀티페이지 문서라 텍스트 선택·검색·복사가
   된다(ToUnicode CMap).
@@ -260,9 +260,9 @@ hwp mcp --font-dir ./fonts
 | `info <file>` | 포맷/버전/속성/스트림 진단 |
 | `cat <file>` | 본문 추출(plain/markdown/json/html/csv). `--with-segments`로 추출 근거 좌표 동반 |
 | `grep <pattern> <file>` | 문단 텍스트를 grep 방식으로 검색(일치하는 것이 없으면 0이 아닌 종료 코드) |
-| `convert <input> -o <output>` | 포맷 변환. 출력이 `.pdf`면 렌더 경로로 위임. `--strict`는 보존 불가 데이터 발견 시 게시하지 않고 실패 |
+| `convert <input> -o <output>` | 포맷 변환. `--to`로 `docx`·`odt`·`csv`·`txt` 출력도 지정할 수 있다. 출력이 `.pdf`면 렌더 경로로 위임. `--strict`는 보존 불가 데이터 발견 시 게시하지 않고 실패 |
 | `render <input> -o <output>` | 페이지를 PNG/SVG(페이지별 파일)·PDF(단일 멀티페이지)로 렌더 |
-| `new -o <output>` | markdown/JSON IR에서 새 문서 생성 |
+| `new -o <output>` | markdown, JSON IR, 또는 내장 공문서 템플릿 8종(`--template`, `--list-templates`)에서 새 문서 생성 |
 | `compose <spec> -o <output>` | DocumentSpec v1/v2를 결정론적으로 합성. `--dry-run`으로 쓰지 않고 검증 |
 | `template <template> --data <data> -o <output>` | TemplateSpec/Data v1의 typed AST를 bounded expansion |
 | `edit <input> -o <output>` | 텍스트·서식·구조 편집(문단, 표 행/열, 셀 병합/분할, 필드, 이미지, 도장) |

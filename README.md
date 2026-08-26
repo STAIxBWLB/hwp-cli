@@ -19,8 +19,8 @@ and in CI.
 - **Reading and text extraction** from hwp/hwpx to plain / markdown / HTML / JSON (full IR) / CSV.
   Tables, images, headers/footers and unparsed records are preserved during parsing, and Hancom
   distribution documents (배포용문서) are decrypted and read like any other file.
-- **Format conversion** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ JSON (IR), all through a shared
-  document model (IR).
+- **Format conversion** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ HTML and hwp/hwpx ↔ JSON (IR),
+  all through a shared document model (IR), plus one-way export to DOCX, ODT, CSV and plain text.
 - **Rendering** hwp/hwpx → PNG / SVG / PDF. Stored line layout (PARA_LINE_SEG) is used when present
   and synthesized otherwise. PDF output is a single multi-page document with subset-embedded fonts,
   so text is selectable, searchable and copyable (ToUnicode CMap).
@@ -278,9 +278,9 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `info <file>` | Format, version, properties and stream diagnostics |
 | `cat <file>` | Extract body text (plain/markdown/json/html/csv). `--with-segments` adds provenance coordinates |
 | `grep <pattern> <file>` | Search paragraph text with grep semantics (non-zero exit when nothing matches) |
-| `convert <input> -o <output>` | Format conversion. A `.pdf` output delegates to the render path. `--strict` fails without publishing when unpreservable data is found |
+| `convert <input> -o <output>` | Format conversion; `--to` also targets `docx`, `odt`, `csv` and `txt`. A `.pdf` output delegates to the render path. `--strict` fails without publishing when unpreservable data is found |
 | `render <input> -o <output>` | Render pages to PNG/SVG (one file per page) or PDF (single multi-page) |
-| `new -o <output>` | Create a document from markdown or JSON IR |
+| `new -o <output>` | Create a document from markdown, from JSON IR, or from one of the eight embedded official-document templates (`--template`, `--list-templates`) |
 | `compose <spec> -o <output>` | Compose DocumentSpec v1/v2 deterministically. `--dry-run` validates without writing |
 | `template <template> --data <data> -o <output>` | Bounded expansion of the TemplateSpec/Data v1 typed AST |
 | `edit <input> -o <output>` | Text, formatting and structural editing (paragraphs, table rows/columns, cell merge/split, fields, images, seals) |
