@@ -32,6 +32,13 @@ pub struct ConvertReport {
 const MAX_PRELOADED_BATCH_BYTES: u64 = 512 * 1024 * 1024;
 
 fn protected_batch_preload_reservation(input: &Path) -> anyhow::Result<Option<u64>> {
+    if input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    {
+        return Ok(None);
+    }
     match crate::format::detect(input)? {
         crate::format::FileFormat::Hwp5 => {
             let container = hwp5::Hwp5Container::open(input)?;

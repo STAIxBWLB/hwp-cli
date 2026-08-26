@@ -1066,6 +1066,33 @@ fn cli_convert_batch_and_document_stdin_keep_password_channels_distinct() {
     assert!(out_dir.join("protected.md").exists());
     assert!(out_dir.join("second.md").exists());
 
+    let json_input = dir.join("plain-ir.json");
+    std::fs::write(
+        &json_input,
+        hwp_convert::to_json(&hwp_convert::from_markdown("JSON IR"), true, false).unwrap(),
+    )
+    .unwrap();
+    let mixed_out_dir = dir.join("mixed-output");
+    let mixed_batch = hwp()
+        .arg("convert")
+        .arg(&first)
+        .arg(&json_input)
+        .arg("--out-dir")
+        .arg(&mixed_out_dir)
+        .arg("--to")
+        .arg("md")
+        .arg("--password")
+        .arg(password)
+        .output()
+        .unwrap();
+    assert!(
+        mixed_batch.status.success(),
+        "protected/native and JSON IR inputs must share a batch: {}",
+        refusal(&mixed_batch.stderr)
+    );
+    assert!(mixed_out_dir.join("protected.md").exists());
+    assert!(mixed_out_dir.join("plain-ir.md").exists());
+
     let hwpx_dir = dir.join("hwpx");
     std::fs::create_dir_all(&hwpx_dir).unwrap();
     let first_hwpx = evidenced_hwpx_fixture(&hwpx_dir, password);
