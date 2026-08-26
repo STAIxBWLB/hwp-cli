@@ -76,7 +76,7 @@ pub fn run_password_corpus(
 
     let receipt_dir =
         receipt_dir.ok_or_else(|| "password receipt directory is not configured".to_owned())?;
-    require_empty_external_receipt_dir(&receipt_dir, &repository_root)?;
+    let receipt_dir = require_empty_external_receipt_dir(&receipt_dir, &repository_root)?;
     let evidence = read_profile_evidence()?;
     let fixtures = select_fixtures(&manifest, &evidence, &repository_root)?;
     let binary_sha256 = sha256_file(Path::new(env!("CARGO_BIN_EXE_hwp")))?;
@@ -126,7 +126,7 @@ pub fn validate_existing_complete_run_from_env() -> Result<(), String> {
         .map(PathBuf::from)
         .ok_or_else(|| "password receipt directory is not configured".to_owned())?;
     let repository_root = repo_root();
-    require_external_receipt_dir(&receipt_dir, &repository_root)?;
+    let receipt_dir = require_external_receipt_dir(&receipt_dir, &repository_root)?;
     let manifest = read_manifest(&manifest_path)?;
     load_manifest_for_test(&manifest, &repository_root, |reference| {
         std::env::var(reference).ok()
@@ -155,26 +155,35 @@ fn read_manifest(path: &Path) -> Result<Value, String> {
 fn require_empty_external_receipt_dir(
     receipt_dir: &Path,
     repository_root: &Path,
-) -> Result<(), String> {
-    require_external_receipt_dir(receipt_dir, repository_root)?;
-    if fs::read_dir(receipt_dir)
+) -> Result<PathBuf, String> {
+    let resolved = require_external_receipt_dir(receipt_dir, repository_root)?;
+    if fs::read_dir(&resolved)
         .map_err(|_| "password receipt directory cannot be inspected".to_owned())?
         .next()
         .is_some()
     {
         return Err("password receipt directory must be an empty external directory".into());
     }
-    Ok(())
+    Ok(resolved)
 }
 
-fn require_external_receipt_dir(receipt_dir: &Path, repository_root: &Path) -> Result<(), String> {
-    if !receipt_dir.is_absolute()
-        || !receipt_dir.is_dir()
-        || receipt_dir.starts_with(repository_root)
-    {
+pub fn require_external_receipt_dir(
+    receipt_dir: &Path,
+    repository_root: &Path,
+) -> Result<PathBuf, String> {
+    if !receipt_dir.is_absolute() || !receipt_dir.is_dir() {
         return Err("password receipt directory must be external".into());
     }
-    Ok(())
+    let resolved = receipt_dir
+        .canonicalize()
+        .map_err(|_| "password receipt directory must be external".to_owned())?;
+    let repository = repository_root
+        .canonicalize()
+        .map_err(|_| "password receipt directory must be external".to_owned())?;
+    if resolved.starts_with(repository) {
+        return Err("password receipt directory must be external".into());
+    }
+    Ok(resolved)
 }
 
 fn read_profile_evidence() -> Result<Value, String> {
