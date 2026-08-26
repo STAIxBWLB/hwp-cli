@@ -989,9 +989,11 @@ fn read_password_protected_document(
     // record-identity boundary below, which is what actually authenticates a
     // key, so trying a second encoding cannot admit a wrong password. Nothing
     // is returned until a candidate has passed that boundary on every stream.
+    let candidates = password_byte_candidates(password);
+    let candidate_count = candidates.len() as u64;
     let mut refusal = Hwp5Error::Encrypted;
-    for candidate in password_byte_candidates(password) {
-        match read_password_protected_document_with_bytes(container, &candidate) {
+    for candidate in candidates {
+        match read_password_protected_document_with_bytes(container, &candidate, candidate_count) {
             Ok(result) => return Ok(result),
             Err(error) => refusal = error,
         }
@@ -1002,6 +1004,7 @@ fn read_password_protected_document(
 fn read_password_protected_document_with_bytes(
     container: &mut Hwp5Container,
     password: &[u8],
+    candidate_count: u64,
 ) -> Result<ReadResult> {
     let header = container.file_header().clone();
     let stream_infos = container
@@ -1038,7 +1041,11 @@ fn read_password_protected_document_with_bytes(
     let transform_bytes = record_infos.iter().try_fold(0u64, |total, stream| {
         total.checked_add(stream.size).ok_or(Hwp5Error::Encrypted)
     })?;
-    validate_transform_bytes(transform_bytes).map_err(normalize_password_candidate_error)?;
+    let request_transform_bytes = transform_bytes
+        .checked_mul(candidate_count)
+        .ok_or(Hwp5Error::Encrypted)?;
+    validate_transform_bytes(request_transform_bytes)
+        .map_err(normalize_password_candidate_error)?;
 
     let mut streams = BTreeMap::new();
     let mut retained_plaintext = 0u64;
@@ -1582,6 +1589,38 @@ mod bounded_tests {
             let mut stream = cfb.open_stream("/DocInfo").unwrap();
             stream
                 .set_len(password::HWP5_PASSWORD_MAX_TRANSFORM_BYTES + 1)
+                .unwrap();
+            drop(stream);
+            cfb.flush().unwrap();
+        }
+
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some(password),
+                },
+            ),
+            Err(Hwp5Error::Encrypted)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn encoding_retries_share_one_aggregate_cfb1_work_budget() {
+        let path = base_hwp("password-transform-retry-budget");
+        let password = "가";
+        make_evidenced_password_hwp(&path, password, 0);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            let mut stream = cfb.open_stream("/DocInfo").unwrap();
+            stream
+                .set_len(password::HWP5_PASSWORD_MAX_TRANSFORM_BYTES / 2 + 1)
                 .unwrap();
             drop(stream);
             cfb.flush().unwrap();
