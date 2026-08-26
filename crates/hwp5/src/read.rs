@@ -25,6 +25,11 @@ use password::{
 
 const HWP5_PASSWORD_MAX_RECORDS: usize = 131_072;
 const HWP5_PASSWORD_MAX_RECORD_DEPTH: usize = 128;
+// A parsed record can be retained both as opaque source bytes and as typed
+// strings/semantic structures. Four output bytes per bounded scanner byte is
+// deliberately conservative: it covers UTF-16 to UTF-8 expansion, raw
+// preservation copies, and collection growth while the scanner tree is live.
+const HWP5_PASSWORD_SEMANTIC_OUTPUT_MULTIPLIER: u64 = 4;
 
 /// Per-call options for HWP5 reads. Password bytes are borrowed only for the
 /// active read and are never retained by the reader or returned document.
@@ -258,14 +263,17 @@ fn read_document_from_streams(
     read_document_from_streams_with_budget(file_header, streams, None)
 }
 
-/// Parses a materialized stream map. Password-protected reads provide a
-/// bounded scanner budget so record trees cannot exceed their authenticated
-/// live-buffer reservation; ordinary reads retain the legacy tolerant path.
-fn read_document_from_streams_with_budget(
-    file_header: &FileHeader,
+struct ParsedDocument {
+    warnings: Vec<String>,
+    metadata: hwp_model::Metadata,
+    header: hwp_model::DocHeader,
+    sections: Vec<hwp_model::Section>,
+}
+
+fn parse_document_streams(
     streams: &BTreeMap<String, Vec<u8>>,
     mut record_budget: Option<&mut RecordScanBudget>,
-) -> Result<ReadResult> {
+) -> Result<ParsedDocument> {
     let mut warnings = Vec::new();
     let doc_info_data = streams
         .get("/DocInfo")
@@ -317,38 +325,33 @@ fn read_document_from_streams_with_budget(
         sections.push(section);
     }
 
-    let bin_streams = streams
-        .iter()
-        .filter_map(|(path, data)| {
-            path.strip_prefix("/BinData/")
-                .map(|name| hwp_model::BinStream {
-                    name: name.to_string(),
-                    data: data.clone(),
-                })
-        })
-        .collect();
     let metadata = streams
         .get("/\u{5}HwpSummaryInformation")
         .map(|raw| crate::summary::parse_summary(raw))
         .unwrap_or_default();
-    let hwp5_xml_template = streams
-        .iter()
-        .filter(|(path, _)| path.starts_with("/XMLTemplate/"))
-        .map(|(path, data)| (path.clone(), data.clone()))
-        .collect();
-    let hwp5_doc_history = streams
-        .iter()
-        .filter(|(path, _)| path.starts_with("/DocHistory/"))
-        .map(|(path, data)| (path.clone(), data.clone()))
-        .collect();
+    Ok(ParsedDocument {
+        warnings,
+        metadata,
+        header,
+        sections,
+    })
+}
+
+fn read_result_from_parsed(
+    file_header: &FileHeader,
+    parsed: ParsedDocument,
+    bin_streams: Vec<hwp_model::BinStream>,
+    hwp5_xml_template: Vec<(String, Vec<u8>)>,
+    hwp5_doc_history: Vec<(String, Vec<u8>)>,
+) -> ReadResult {
     let document = Document {
         meta: DocMeta {
             source_format: "hwp5".to_string(),
             source_version: file_header.version.to_string(),
         },
-        metadata,
-        header,
-        sections,
+        metadata: parsed.metadata,
+        header: parsed.header,
+        sections: parsed.sections,
         bin_streams,
         hwpx_settings_xml: None,
         hwpx_version_xml: None,
@@ -361,14 +364,102 @@ fn read_document_from_streams_with_budget(
         hwpx_opf_extra_items: Vec::new(),
         hwpx_section_xmlns: Vec::new(),
     };
-    Ok(ReadResult {
+    ReadResult {
         document,
-        warnings,
+        warnings: parsed.warnings,
         // The bounded-read snapshot path does not decrypt ViewText (Task 2 adds
         // an explicit DistributionDoc refusal to BoundedReadSnapshot::open), so
         // a distribution document never reaches this construction site.
         unwrapped_distribution: false,
-    })
+    }
+}
+
+/// Parses a materialized stream map. Password-protected reads provide a
+/// bounded scanner budget so record trees cannot exceed their authenticated
+/// live-buffer reservation; ordinary reads retain the legacy tolerant path.
+fn read_document_from_streams_with_budget(
+    file_header: &FileHeader,
+    streams: &BTreeMap<String, Vec<u8>>,
+    record_budget: Option<&mut RecordScanBudget>,
+) -> Result<ReadResult> {
+    let parsed = parse_document_streams(streams, record_budget)?;
+    let bin_streams = streams
+        .iter()
+        .filter_map(|(path, data)| {
+            path.strip_prefix("/BinData/")
+                .map(|name| hwp_model::BinStream {
+                    name: name.to_string(),
+                    data: data.clone(),
+                })
+        })
+        .collect();
+    let hwp5_xml_template = streams
+        .iter()
+        .filter(|(path, _)| path.starts_with("/XMLTemplate/"))
+        .map(|(path, data)| (path.clone(), data.clone()))
+        .collect();
+    let hwp5_doc_history = streams
+        .iter()
+        .filter(|(path, _)| path.starts_with("/DocHistory/"))
+        .map(|(path, data)| (path.clone(), data.clone()))
+        .collect();
+    Ok(read_result_from_parsed(
+        file_header,
+        parsed,
+        bin_streams,
+        hwp5_xml_template,
+        hwp5_doc_history,
+    ))
+}
+
+/// Transfers opaque source streams into the final HWP5 Document. The ordinary
+/// reader deliberately keeps its clone-based behavior above, but a protected
+/// read must not retain the materialized source map *and* an equal preservation
+/// copy while its authenticated parser trees are still live.
+fn take_preserved_streams(
+    streams: &mut BTreeMap<String, Vec<u8>>,
+    prefix: &str,
+) -> Vec<(String, Vec<u8>)> {
+    let paths: Vec<String> = streams
+        .keys()
+        .filter(|path| path.starts_with(prefix))
+        .cloned()
+        .collect();
+    paths
+        .into_iter()
+        .filter_map(|path| streams.remove(&path).map(|data| (path, data)))
+        .collect()
+}
+
+fn read_password_document_from_owned_streams(
+    file_header: &FileHeader,
+    mut streams: BTreeMap<String, Vec<u8>>,
+    record_budget: &mut RecordScanBudget,
+) -> Result<ReadResult> {
+    let parsed = parse_document_streams(&streams, Some(record_budget))?;
+    // Metadata is parsed into owned strings, so its source stream is no longer
+    // needed after semantic parsing. Drop it before moving the opaque owners.
+    // This keeps the pre-reserved metadata/string envelope transient.
+    let _ = streams.remove("/\u{5}HwpSummaryInformation");
+    let bin_streams = take_preserved_streams(&mut streams, "/BinData/")
+        .into_iter()
+        .filter_map(|(path, data)| {
+            path.strip_prefix("/BinData/")
+                .map(|name| hwp_model::BinStream {
+                    name: name.to_string(),
+                    data,
+                })
+        })
+        .collect();
+    let hwp5_xml_template = take_preserved_streams(&mut streams, "/XMLTemplate/");
+    let hwp5_doc_history = take_preserved_streams(&mut streams, "/DocHistory/");
+    Ok(read_result_from_parsed(
+        file_header,
+        parsed,
+        bin_streams,
+        hwp5_xml_template,
+        hwp5_doc_history,
+    ))
 }
 
 /// HWP 5.0 파일을 IR로 읽는다. 야생 파일 대응을 위해 관용 모드로 스캔한다.
@@ -503,6 +594,18 @@ fn is_evidenced_password_record_stream(path: &str) -> bool {
     path == "/DocInfo" || path == "/BodyText/Section0"
 }
 
+/// The protected path materializes only bytes that the final HWP5 Document
+/// actually owns. FileHeader and unrelated opaque streams have no IR owner,
+/// so retaining them would spend the protected live-buffer budget without any
+/// source-preservation benefit.
+fn is_password_document_stream(path: &str) -> bool {
+    is_evidenced_password_record_stream(path)
+        || path == "/\u{5}HwpSummaryInformation"
+        || path.starts_with("/BinData/")
+        || path.starts_with("/XMLTemplate/")
+        || path.starts_with("/DocHistory/")
+}
+
 fn is_password_candidate_record_stream(path: &str) -> bool {
     path == "/DocInfo" || path.starts_with("/BodyText/") || path.starts_with("/ViewText/")
 }
@@ -540,20 +643,45 @@ fn checked_password_live_bytes(left: u64, right: u64) -> Result<u64> {
         })
 }
 
-fn password_record_scan_budget(retained_plaintext: u64) -> Result<RecordScanBudget> {
-    let remaining_live = password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES
-        .checked_sub(retained_plaintext)
+fn password_record_scan_budget(
+    retained_plaintext: u64,
+    summary_information_bytes: u64,
+) -> Result<RecordScanBudget> {
+    // `parse_summary` can hold its UTF-16 scratch vector beside accumulated
+    // UTF-8 Document metadata. Three times the raw stream covers both owners
+    // and UTF-16-to-UTF-8 expansion before the source stream is dropped.
+    const SUMMARY_METADATA_MULTIPLIER: u64 = 3;
+    let metadata_reservation = summary_information_bytes
+        .checked_mul(SUMMARY_METADATA_MULTIPLIER)
         .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
             resource: "password-protected HWP5 live buffers".to_string(),
             limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
         })?;
-    // The first half is the maximum tree construction allocation. Reserving
-    // the other half for the semantic Document output prevents the temporary
-    // RecordNode tree and the final IR from consuming the same live budget.
+    let reserved_before_records = retained_plaintext
+        .checked_add(metadata_reservation)
+        .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
+            resource: "password-protected HWP5 live buffers".to_string(),
+            limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
+        })?;
+    let remaining_live = password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES
+        .checked_sub(reserved_before_records)
+        .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
+            resource: "password-protected HWP5 live buffers".to_string(),
+            limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
+        })?;
+    // Reserve the scanner tree plus a conservative semantic-output envelope
+    // before the first parser allocation. A RecordNode payload can become
+    // opaque preservation bytes, typed strings, and collection growth while
+    // the scanner tree is still live, so final IR receives four times the
+    // scanner allocation. Opaque BinData/XMLTemplate/DocHistory are moved
+    // into the Document and therefore do not consume this copy reservation.
+    let allocation_divisor = HWP5_PASSWORD_SEMANTIC_OUTPUT_MULTIPLIER
+        .checked_add(1)
+        .expect("nonzero fixed reservation divisor");
     Ok(RecordScanBudget::new(RecordScanLimits {
         max_records: HWP5_PASSWORD_MAX_RECORDS,
         max_depth: HWP5_PASSWORD_MAX_RECORD_DEPTH,
-        max_allocation_bytes: remaining_live / 2,
+        max_allocation_bytes: remaining_live / allocation_divisor,
     }))
 }
 
@@ -582,6 +710,11 @@ fn read_password_protected_document(
             encrypt_version: header.encrypt_version,
         });
     }
+    let summary_information_bytes = stream_infos
+        .iter()
+        .find(|stream| stream.path == "/\u{5}HwpSummaryInformation")
+        .map(|stream| stream.size)
+        .unwrap_or(0);
 
     let mut streams = BTreeMap::new();
     let mut retained_plaintext = 0u64;
@@ -641,10 +774,10 @@ fn read_password_protected_document(
     // Every materialized stream, including opaque preservation paths, is
     // bounded before `read_stream_raw` can allocate it. These resource errors
     // are now authenticated structural failures, not credential outcomes.
-    for stream in stream_infos
-        .iter()
-        .filter(|stream| !is_evidenced_password_record_stream(&stream.path))
-    {
+    for stream in stream_infos.iter().filter(|stream| {
+        !is_evidenced_password_record_stream(&stream.path)
+            && is_password_document_stream(&stream.path)
+    }) {
         validate_live_bytes(stream.size, retained_plaintext)?;
         let raw = container.read_stream_raw(&stream.path)?;
         if raw.len() as u64 != stream.size {
@@ -656,11 +789,14 @@ fn read_password_protected_document(
 
     // The regular parser owns record data while the decrypted stream map is
     // still live. Reserve that handoff before parsing, rather than after an
-    // allocation has already occurred.
-    validate_live_bytes(retained_plaintext, retained_plaintext)?;
-    let mut record_budget = password_record_scan_budget(retained_plaintext)?;
+    // allocation has already occurred. The one aggregate calculation covers
+    // source buffers, summary-to-string conversion, scanner trees, and the
+    // conservative semantic IR envelope; preserved opaque buffers are moved
+    // into Document rather than copied.
+    let mut record_budget =
+        password_record_scan_budget(retained_plaintext, summary_information_bytes)?;
     header.check_body_readable_after_password()?;
-    read_document_from_streams_with_budget(&header, &streams, Some(&mut record_budget))
+    read_password_document_from_owned_streams(&header, streams, &mut record_budget)
         .map_err(|_| Hwp5Error::Encrypted)
 }
 
@@ -969,6 +1105,96 @@ mod bounded_tests {
                     && limit == HWP5_PASSWORD_MAX_STREAM_BYTES
         ));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_preservation_streams_at_live_boundary_are_moved_into_document() {
+        let path = base_hwp("password-preservation-live-boundary");
+        let password = "correct-password";
+        let protected_record_bytes = {
+            let mut container = Hwp5Container::open(&path).unwrap();
+            ["/DocInfo", "/BodyText/Section0"]
+                .into_iter()
+                .map(|stream_path| container.read_record_stream(stream_path).unwrap().len() as u64)
+                .sum::<u64>()
+        };
+        make_evidenced_password_hwp(&path, password, 0);
+
+        // Fill the protected materialization allowance exactly. Before this
+        // reader moved source buffers into the final Document, the map and
+        // three preservation copies alone exceeded 128 MiB once record trees
+        // were constructed. These sparse CFB streams exercise BinData,
+        // XMLTemplate, and DocHistory without putting a fixture in git.
+        let non_record_bytes = Hwp5Container::open(&path)
+            .unwrap()
+            .list_streams()
+            .iter()
+            .filter(|stream| {
+                is_password_document_stream(&stream.path)
+                    && !is_evidenced_password_record_stream(&stream.path)
+            })
+            .map(|stream| stream.size)
+            .sum::<u64>();
+        let existing_bytes = protected_record_bytes + non_record_bytes;
+        let allowance = password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES / 2;
+        assert!(existing_bytes < allowance);
+        let opaque_bytes = allowance - existing_bytes;
+        let first = opaque_bytes / 3;
+        let second = opaque_bytes / 3;
+        let third = opaque_bytes - first - second;
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            cfb.create_storage("/BinData").unwrap();
+            cfb.create_storage("/XMLTemplate").unwrap();
+            cfb.create_storage("/DocHistory").unwrap();
+            for (stream_path, size) in [
+                ("/BinData/boundary.bin", first),
+                ("/XMLTemplate/boundary.xml", second),
+                ("/DocHistory/boundary.bin", third),
+            ] {
+                let mut stream = cfb.create_new_stream(stream_path).unwrap();
+                stream.set_len(size).unwrap();
+            }
+            cfb.flush().unwrap();
+        }
+        assert_eq!(
+            protected_record_bytes + non_record_bytes + opaque_bytes,
+            allowance
+        );
+
+        let result = read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(password),
+            },
+        )
+        .expect("the aggregate boundary must not require preservation copies");
+        assert_eq!(result.document.bin_streams.len(), 1);
+        assert_eq!(result.document.bin_streams[0].data.len() as u64, first);
+        assert_eq!(result.document.hwp5_xml_template.len(), 1);
+        assert_eq!(result.document.hwp5_xml_template[0].1.len() as u64, second);
+        assert_eq!(result.document.hwp5_doc_history.len(), 1);
+        assert_eq!(result.document.hwp5_doc_history[0].1.len() as u64, third);
+        drop(result);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_preservation_transfer_reuses_the_source_buffer() {
+        let mut streams = BTreeMap::new();
+        let data = vec![7u8; 1_024];
+        let source_ptr = data.as_ptr();
+        streams.insert("/BinData/source.bin".to_string(), data);
+
+        let moved = take_preserved_streams(&mut streams, "/BinData/");
+        assert!(streams.is_empty());
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].1.as_ptr(), source_ptr);
     }
 
     #[test]
