@@ -41,11 +41,11 @@ field name and command encoding (CTRL_DATA) and the OWPML type mapping from hwp-
 | Crate | Artifact | Responsibility (one sentence) | Internal deps | Main external deps |
 |---|---|---|---|---|
 | **hwp-model** | lib | Defines the shared **semantic IR (L1)** types for HWP and HWPX plus text extraction and unit conversion | none | `serde` (only) |
-| **hwp5** | lib | HWP 5.0 binary (CFB + records) ↔ IR **reader/writer** | hwp-model | `cfb`, `flate2`, `thiserror` |
+| **hwp5** | lib | HWP 5.0 binary (CFB + records) ↔ IR **reader/writer**, including distribution-document (배포용문서) decryption | hwp-model | `cfb`, `flate2`, `thiserror`, `aes` |
 | **hwpx** | lib | HWPX (OWPML, ZIP + XML) ↔ IR **reader/writer** plus `patch` (fidelity-preserving replacement) | hwp-model, hwp-convert | `zip`, `quick-xml`, `thiserror` |
-| **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT conversion plus editing primitives (edit, field, bookmark, gso, image, structure) | hwp-model | `serde_json`, `pulldown-cmark`, `zip` |
-| **hwp-render** | lib | IR → PNG/SVG/PDF page renderer plus pixel diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2` |
-| **hwp-cli** | bin `hwp` | Subcommand dispatch (info, cat, convert, render, new, edit, fields, ..., mcp, dump) | all five above | `anyhow`, `clap`, `serde_json` |
+| **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT/DOCX/CSV conversion, editing primitives (edit, field, bookmark, gso, image, structure) and the official-document layer (official, frames, style, lint) | hwp-model | `serde_json`, `pulldown-cmark`, `quick-xml`, `regex`, `zip`, `resvg`, `image` |
+| **hwp-render** | lib | IR → PNG/SVG/PDF page renderer plus pixel diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2`, `encoding_rs`, `sha2` |
+| **hwp-cli** | bin `hwp` | Subcommand dispatch and the MCP stdio server. The full surface is the generated [cli-reference](../manual/cli-reference.md), so it is not duplicated here | all five above | `anyhow`, `clap`, `serde_json`, `serde_yaml` |
 
 Minimizing dependencies is a design norm: `hwp-model` pulls in only serde, and the other crates only
 what their format or feature strictly needs. `hwp5` and `hwpx` never depend on each other (both go
@@ -60,13 +60,17 @@ outputs" into N+M adapters.
 - `container`: MS CFB wrapping, stream enumeration and reading (`Hwp5Container::open`,
   `read_record_stream`, `body_sections`).
 - `file_header`: parsing and serializing the fixed 256-byte `FileHeader` (signature, version,
-  compression flags).
+  compression flags) and the readability gate over its attribute bits.
+- `distdoc`: decrypts the `/ViewText/SectionN` body of a Hancom distribution document (배포용문서).
+  The 256-byte `DISTRIBUTE_DOC_DATA` record yields an AES-128 key; the plaintext it produces is an
+  ordinary record stream, so everything downstream is the plain path unchanged.
 - `codec`: byte cursors (`ByteReader`/`ByteWriter`) and raw deflate (`compress`/`decompress`).
 - `record`: the layer that **interprets no meaning at all**. `header` (the 4-byte header codec),
   `tag` (tag constants and name lookup, always preserving the raw u16), `scan` (flat stream scanning,
   `ScanMode::Tolerant`), `tree` (level-based forest reconstruction, `RecordNode::build_forest`).
 - `doc_info` / `body_text`: semantically parse that `RecordNode` tree and promote it to the IR
   (`DocHeader`/`Section`).
+- `summary` / `numbering`: `\x05HwpSummaryInformation` metadata and numbering-format synthesis.
 - `read` / `write`: the top level, `read_document(path) -> ReadResult` and
   `write_document(doc, path, opts)`.
 
@@ -488,11 +492,13 @@ only L1.
 
 **hwp5 (`read::read_document`):**
 
-1. `Hwp5Container::open` opens the CFB and runs `check_body_readable`.
+1. `Hwp5Container::open` opens the CFB and runs `check_body_readable`, which refuses password-,
+   certificate- and DRM-protected documents. A distribution document is **not** refused: `distdoc`
+   decrypts its `/ViewText/SectionN` streams first.
 2. The `/DocInfo` stream is read (raw deflate decompressed), then `scan_stream(_, Tolerant)` produces
    a `RecordNode` forest (L0), then `parse_doc_info` produces the `DocHeader`.
-3. Each `/BodyText/SectionN` from `body_sections()` goes through the same scan and then
-   `parse_section` into a `Section`.
+3. Each `/BodyText/SectionN` from `body_sections()` (or each decrypted `/ViewText/SectionN`) goes
+   through the same scan and then `parse_section` into a `Section`.
 4. `/BinData/*` streams (decompressed with a try-and-fall-back when the compression flag is set)
    become `Vec<BinStream>`.
 5. `\x05HwpSummaryInformation` goes through `parse_summary` into `Metadata` (best effort).
