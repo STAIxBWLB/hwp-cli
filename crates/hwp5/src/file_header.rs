@@ -209,13 +209,13 @@ impl FileHeader {
     pub fn check_body_readable_with_password(&self, password: Option<&str>) -> Result<()> {
         self.check_version()?;
         if self.is_encrypted() {
+            if password.is_none() {
+                return Err(Hwp5Error::Encrypted);
+            }
             if self.encrypt_version != 4 {
                 return Err(Hwp5Error::UnsupportedPasswordProfile {
                     encrypt_version: self.encrypt_version,
                 });
-            }
-            if password.is_none() {
-                return Err(Hwp5Error::Encrypted);
             }
             return Ok(());
         }
@@ -459,6 +459,10 @@ mod tests {
         let mut data = 표본_헤더_속성(attr::ENCRYPTED);
         data[44..48].copy_from_slice(&5u32.to_le_bytes());
         let h = FileHeader::parse(&data).unwrap();
+        assert!(matches!(
+            h.check_body_readable_with_password(None),
+            Err(Hwp5Error::Encrypted)
+        ));
         let error = h
             .check_body_readable_with_password(Some("ignored"))
             .unwrap_err();

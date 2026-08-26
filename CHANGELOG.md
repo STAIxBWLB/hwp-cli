@@ -68,6 +68,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   try-DEFLATE path before entering the IR. Images therefore remain usable in cross-format output,
   and native HWP synthesis does not double-compress an already-compressed payload.
 
+- An encrypted HWP5 with no supplied password now returns the same stable credential refusal even
+  when its EncryptVersion is unsupported. The typed unsupported-profile detail is exposed only
+  after a credential is explicitly supplied.
+
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
   everything `hwp slots` reports. The two commands read a document differently — `slots` walks the
   IR, where a paragraph's characters are already joined, while `fill` rewrites the raw section XML
