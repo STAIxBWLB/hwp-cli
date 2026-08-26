@@ -23,7 +23,10 @@ pub use package::{
     NATIVE_PACKAGE_LIMITS_PROFILE_NAME, NATIVE_PACKAGE_LIMITS_RATIONALE, PackageLimits,
     PackageLimitsProfile,
 };
-pub use read::{ReadResult, parse_content_meta, read_document, read_structure};
+pub use read::{
+    ReadOptions, ReadResult, parse_content_meta, read_document, read_document_with_options,
+    read_structure,
+};
 pub use write::{
     DEFAULT_SETTINGS_XML, DEFAULT_VERSION_XML, HwpxWriteOptions, write_document,
     write_document_with, write_document_with_limits, write_document_with_report,

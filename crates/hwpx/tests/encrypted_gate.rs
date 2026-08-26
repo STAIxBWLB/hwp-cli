@@ -8,16 +8,21 @@
 //! corpus lives outside the repository and is never committed). Run it locally with:
 //!
 //! ```text
-//! HWP_CORPUS_DIR=~/Documents/hwp_samples cargo test -p hwpx --test encrypted_gate
+//! HWP_CORPUS_DIR=/path/to/private/corpus cargo test -p hwpx --test encrypted_gate
 //! ```
 //!
 //! The corpus-gated half cannot run in CI; the committed-fixture half always does.
 
-use std::io::Write;
+use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use hwpx::{HwpxError, read_document};
+use aes::Aes256;
+use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+use base64::Engine as _;
+use flate2::{Compression, write::DeflateEncoder};
+use hwpx::{HwpxError, ReadOptions, read_document, read_document_with_options};
+use sha2::Digest as _;
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -96,6 +101,20 @@ fn the_committed_sample_still_reads() {
 }
 
 #[test]
+fn an_unencrypted_package_ignores_a_supplied_password() {
+    let result = read_document_with_options(
+        &fixture(),
+        &ReadOptions {
+            password: Some("ignored-password"),
+        },
+    );
+    assert!(
+        result.is_ok(),
+        "a password must not turn a normal HWPX into an encrypted package"
+    );
+}
+
+#[test]
 fn the_committed_sample_with_an_encrypted_manifest_refuses() {
     let repacked = repack_with_manifest(&fixture(), ENCRYPTED_MANIFEST);
     let result = read_document(&repacked);
@@ -107,6 +126,231 @@ fn the_committed_sample_with_an_encrypted_manifest_refuses() {
             "expected the encryption variant, got: {error}"
         ),
     }
+}
+
+#[test]
+fn correct_password_opens_an_evidenced_profile() {
+    let password = "synthetic-password";
+    let repacked = repack_with_evidenced_password(&fixture(), password);
+    let result = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some(password),
+        },
+    );
+    let _ = std::fs::remove_file(&repacked);
+    assert!(
+        result.is_ok(),
+        "evidenced HWPX profile must be password-aware"
+    );
+}
+
+#[test]
+fn decrypted_entries_remain_available_for_repeated_reads() {
+    let password = "synthetic-password";
+    let original = read_document(&fixture()).expect("plain fixture reads");
+    let expected_version = original.document.hwpx_version_xml;
+    let repacked = repack_with_evidenced_password(&fixture(), password);
+    let decrypted = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some(password),
+        },
+    )
+    .expect("protected fixture reads");
+    let _ = std::fs::remove_file(&repacked);
+
+    assert_eq!(
+        decrypted.document.hwpx_version_xml, expected_version,
+        "the second version.xml read must still use authenticated plaintext"
+    );
+}
+
+#[test]
+fn decrypted_document_rewrites_an_unencrypted_manifest_and_reopens() {
+    let password = "synthetic-password";
+    let repacked = repack_with_evidenced_password(&fixture(), password);
+    let decrypted = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some(password),
+        },
+    )
+    .expect("protected fixture reads");
+    let output = temp_file("decrypted-roundtrip");
+    hwpx::write_document(&decrypted.document, &output).expect("decrypted document rewrites");
+
+    let mut output_package = hwpx::HwpxPackage::open(&output).expect("rewritten package opens");
+    assert!(
+        !output_package
+            .has_encryption_marker()
+            .expect("rewritten manifest parses"),
+        "plaintext output must not retain the source encryption metadata"
+    );
+    read_document(&output).expect("rewritten plaintext package reopens without a password");
+
+    let _ = std::fs::remove_file(repacked);
+    let _ = std::fs::remove_file(output);
+}
+
+#[test]
+fn wrong_and_absent_passwords_share_the_credential_refusal() {
+    let repacked = repack_with_evidenced_password(&fixture(), "synthetic-password");
+    let absent = read_document(&repacked);
+    let wrong = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some("different-password"),
+        },
+    );
+    let _ = std::fs::remove_file(&repacked);
+    assert!(matches!(absent, Err(HwpxError::Encrypted)));
+    assert!(matches!(wrong, Err(HwpxError::Encrypted)));
+}
+
+#[test]
+fn malformed_or_unobserved_profiles_never_enter_crypto() {
+    let repacked = repack_with_manifest(&fixture(), ENCRYPTED_MANIFEST);
+    let result = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some("synthetic-password"),
+        },
+    );
+    let _ = std::fs::remove_file(&repacked);
+    assert!(matches!(
+        result,
+        Err(HwpxError::UnsupportedEncryptionProfile)
+    ));
+}
+
+#[test]
+fn concurrent_password_reads_keep_plaintext_per_package() {
+    let first = repack_with_evidenced_password(&fixture(), "first-password");
+    let second = repack_with_evidenced_password(&fixture(), "second-password");
+    let first_path = first.clone();
+    let second_path = second.clone();
+    let first_handle = std::thread::spawn(move || {
+        read_document_with_options(
+            &first_path,
+            &ReadOptions {
+                password: Some("first-password"),
+            },
+        )
+        .is_ok()
+    });
+    let second_handle = std::thread::spawn(move || {
+        read_document_with_options(
+            &second_path,
+            &ReadOptions {
+                password: Some("second-password"),
+            },
+        )
+        .is_ok()
+    });
+    assert!(first_handle.join().unwrap());
+    assert!(second_handle.join().unwrap());
+    let _ = std::fs::remove_file(first);
+    let _ = std::fs::remove_file(second);
+}
+
+fn repack_with_evidenced_password(source: &Path, password: &str) -> PathBuf {
+    const SALT: [u8; 16] = [7; 16];
+    const IV: [u8; 16] = [9; 16];
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(source).unwrap()).unwrap();
+    let output = temp_file("evidenced");
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&output).unwrap());
+    let mut manifest_entries = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().to_string();
+        if name == "mimetype" || name == "META-INF/manifest.xml" {
+            continue;
+        }
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if name == "version.xml" || name == "Contents/header.xml" || name == "Contents/section0.xml"
+        {
+            let (ciphertext, manifest_entry) =
+                encrypt_evidenced_entry(&name, &data, password, &SALT, &IV);
+            manifest_entries.push(manifest_entry);
+            writer
+                .start_file(
+                    &name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .unwrap();
+            writer.write_all(&ciphertext).unwrap();
+        } else {
+            writer
+                .start_file(
+                    &name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated),
+                )
+                .unwrap();
+            writer.write_all(&data).unwrap();
+        }
+    }
+    writer
+        .start_file(
+            "mimetype",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer
+        .write_all(hwpx::package::MIMETYPE.as_bytes())
+        .unwrap();
+    let manifest = format!(
+        r#"<?xml version="1.0"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">{}</odf:manifest>"#,
+        manifest_entries.join("")
+    );
+    writer
+        .start_file(
+            "META-INF/manifest.xml",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(manifest.as_bytes()).unwrap();
+    writer.finish().unwrap();
+    output
+}
+
+fn encrypt_evidenced_entry(
+    name: &str,
+    plaintext: &[u8],
+    password: &str,
+    salt: &[u8],
+    iv: &[u8],
+) -> (Vec<u8>, String) {
+    let mut compressed = Vec::new();
+    let mut deflater = DeflateEncoder::new(&mut compressed, Compression::default());
+    deflater.write_all(plaintext).unwrap();
+    deflater.finish().unwrap();
+    compressed.extend(std::iter::repeat_n(0, (16 - compressed.len() % 16) % 16));
+    let mut start_key = sha2::Sha256::digest(password.as_bytes()).to_vec();
+    let mut key = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&start_key, salt, 1024, &mut key);
+    start_key.fill(0);
+    let length = compressed.len();
+    let ciphertext = cbc::Encryptor::<Aes256>::new_from_slices(&key, iv)
+        .unwrap()
+        .encrypt_padded::<NoPadding>(&mut compressed, length)
+        .unwrap()
+        .to_vec();
+    key.fill(0);
+    let checksum = sha2::Sha256::digest(&plaintext[..plaintext.len().min(1024)]);
+    let entry = format!(
+        r#"<odf:file-entry full-path="{name}" size="{}"><odf:encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="{}"><odf:algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="{}"/><odf:key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="{}"/><odf:start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/></odf:encryption-data></odf:file-entry>"#,
+        plaintext.len(),
+        base64::engine::general_purpose::STANDARD.encode(checksum),
+        base64::engine::general_purpose::STANDARD.encode(iv),
+        base64::engine::general_purpose::STANDARD.encode(salt),
+    );
+    (ciphertext, entry)
 }
 
 fn corpus_dir() -> Option<PathBuf> {

@@ -80,6 +80,24 @@ fn decode_head(payload: &[u8; 256]) -> Result<[u8; 16]> {
 /// compression bit; when set, the decrypted bytes are raw-inflated with
 /// [`crate::codec::decompress`] exactly as `/BodyText/` streams already are.
 pub fn decrypt_view_text_section(raw: &[u8], compressed: bool) -> Result<Vec<u8>> {
+    decrypt_view_text_section_with_limit(raw, compressed, None)
+}
+
+/// Password-aware variant of [`decrypt_view_text_section`] that limits the
+/// inflated section before the normal record parser receives it.
+pub(crate) fn decrypt_view_text_section_bounded(
+    raw: &[u8],
+    compressed: bool,
+    limit: u64,
+) -> Result<Vec<u8>> {
+    decrypt_view_text_section_with_limit(raw, compressed, Some(limit))
+}
+
+fn decrypt_view_text_section_with_limit(
+    raw: &[u8],
+    compressed: bool,
+    limit: Option<u64>,
+) -> Result<Vec<u8>> {
     let mut reader = ByteReader::new(raw);
     let header = RecordHeader::decode(&mut reader)?;
     if header.tag != tag::DISTRIBUTE_DOC_DATA || header.size != 256 {
@@ -114,10 +132,76 @@ pub fn decrypt_view_text_section(raw: &[u8], compressed: bool) -> Result<Vec<u8>
     }
 
     if compressed {
-        crate::codec::decompress(&plain, "ViewText")
+        match limit {
+            Some(limit) => crate::codec::decompress_bounded(&plain, "ViewText", limit),
+            None => crate::codec::decompress(&plain, "ViewText"),
+        }
     } else {
+        if limit.is_some_and(|limit| plain.len() as u64 > limit) {
+            return Err(Hwp5Error::ResourceLimitExceeded {
+                resource: "ViewText decrypted stream".to_string(),
+                limit: limit.expect("checked Some"),
+            });
+        }
         Ok(plain)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn encrypt_view_text_section_for_test(
+    record_stream: &[u8],
+    compressed: bool,
+) -> Vec<u8> {
+    use aes::cipher::BlockCipherEncrypt;
+
+    let seed = 0x1234_5678u32;
+    let mut key_region = [0u8; 80];
+    for (index, byte) in key_region.iter_mut().enumerate() {
+        *byte = (index as u8).wrapping_mul(7).wrapping_add(3);
+    }
+    let key: [u8; 16] = key_region[..16].try_into().expect("fixed key prefix");
+    let mut payload = [0u8; 256];
+    payload[0..4].copy_from_slice(&seed.to_le_bytes());
+    let offset = 4 + (seed & 0xf) as usize;
+    payload[offset..offset + 80].copy_from_slice(&key_region);
+    let mut rng = MsvcRand(seed);
+    let mut key_byte = 0u32;
+    let mut run = 0u32;
+    for (index, byte) in payload.iter_mut().enumerate() {
+        if run == 0 {
+            key_byte = rng.next() & 0xff;
+            run = (rng.next() & 0xf) + 1;
+        }
+        if index >= 4 {
+            *byte ^= key_byte as u8;
+        }
+        run -= 1;
+    }
+
+    let mut plain = if compressed {
+        crate::codec::compress(record_stream)
+    } else {
+        record_stream.to_vec()
+    };
+    let padded_len = plain.len().div_ceil(16) * 16;
+    plain.resize(padded_len, 0);
+    let cipher = Aes128::new(&Array::from(key));
+    for block in plain.chunks_exact_mut(16) {
+        let mut value = Array::from(<[u8; 16]>::try_from(&*block).expect("16-byte block"));
+        cipher.encrypt_block(&mut value);
+        block.copy_from_slice(&value);
+    }
+
+    let mut writer = crate::codec::ByteWriter::new();
+    RecordHeader {
+        tag: tag::DISTRIBUTE_DOC_DATA,
+        level: 0,
+        size: 256,
+    }
+    .encode(&mut writer);
+    writer.write_bytes(&payload);
+    writer.write_bytes(&plain);
+    writer.into_bytes()
 }
 
 #[cfg(test)]

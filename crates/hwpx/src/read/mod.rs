@@ -5,12 +5,14 @@
 //! 위치 산수와 추출 로직이 같은 코드를 타게 한다.
 
 pub mod header;
+pub(crate) mod password;
 pub mod section;
 mod xml;
 
 use std::path::Path;
 
 use hwp_model::{DocMeta, Document};
+use quick_xml::events::Event;
 
 use crate::error::Result;
 use crate::package::HwpxPackage;
@@ -20,9 +22,21 @@ pub struct ReadResult {
     pub warnings: Vec<String>,
 }
 
+/// Per-call options for the HWPX reader. Password bytes are used exactly as
+/// provided and do not survive the reader invocation.
+#[derive(Clone, Copy, Default)]
+pub struct ReadOptions<'a> {
+    pub password: Option<&'a str>,
+}
+
 /// HWPX 파일을 IR로 읽는다.
 pub fn read_document(path: &Path) -> Result<ReadResult> {
-    read_document_impl(path, true)
+    read_document_with_options(path, &ReadOptions::default())
+}
+
+/// Reads an HWPX document with the explicit per-call password option.
+pub fn read_document_with_options(path: &Path, options: &ReadOptions<'_>) -> Result<ReadResult> {
+    read_document_impl(path, true, options)
 }
 
 /// HWPX의 구조와 XML을 읽되 `BinData/*` 본문은 압축 해제하지 않는다.
@@ -31,15 +45,23 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
 /// 실제 이미지는 IR에 적재하지 않아 큰 정상 문서도 첨부 크기에 비례한 메모리를 쓰지
 /// 않는다.
 pub fn read_structure(path: &Path) -> Result<ReadResult> {
-    read_document_impl(path, false)
+    read_document_impl(path, false, &ReadOptions::default())
 }
 
-fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult> {
+fn read_document_impl(
+    path: &Path,
+    load_binary_data: bool,
+    options: &ReadOptions<'_>,
+) -> Result<ReadResult> {
     let mut pkg = HwpxPackage::open(path)?;
     // GATE-02: refuse an encrypted package before the integrity sweep or any content
     // part is read. An encrypted package can fail integrity for reasons unrelated to
     // the user's actual problem; the typed encryption message is the one that helps.
-    pkg.check_body_readable()?;
+    match options.password {
+        Some(password) if pkg.has_encryption_marker()? => pkg.unlock_with_password(password)?,
+        Some(_) => {}
+        None => pkg.check_body_readable()?,
+    }
     // 파서가 직접 사용하지 않는 Preview/BinData/확장 파트도 손상 여부를 놓치지
     // 않는다. 실제 바이트는 보관하지 않으며, 이후 필요한 파트만 다시 읽는다.
     pkg.verify_integrity()?;
@@ -108,6 +130,7 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
     // Preview 등). "모르는 데이터는 버리지 않는다". BinData/*는 bin_streams가,
     // section/header/settings/version/preview는 기존 슬롯이 담당하므로 제외한다.
     let mut hwpx_extra_entries = Vec::new();
+    let was_unlocked_with_password = pkg.was_unlocked_with_password();
     if load_binary_data {
         const REGENERATED: &[&str] = &[
             "mimetype",
@@ -129,6 +152,11 @@ fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult>
                 continue;
             }
             let data = pkg.read_entry(name)?;
+            let data = if was_unlocked_with_password && name == "META-INF/manifest.xml" {
+                strip_manifest_encryption_data(&data)?
+            } else {
+                data
+            };
             // writer가 기본 템플릿으로 바이트 동일하게 재생성하는 엔트리는 잉여가
             // 아니다(캡처하면 의미 검증이 writer 기본값 슬롯 유무를 차이로 오인한다).
             if is_writer_default_entry(name, &data) {
@@ -207,6 +235,59 @@ fn is_writer_default_entry(name: &str, bytes: &[u8]) -> bool {
         _ => return false,
     };
     bytes == default.as_bytes()
+}
+
+fn strip_manifest_encryption_data(manifest: &[u8]) -> Result<Vec<u8>> {
+    let mut reader = quick_xml::Reader::from_reader(manifest);
+    let mut writer = quick_xml::Writer::new(Vec::with_capacity(manifest.len()));
+    let mut skipped_depth = 0usize;
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|error| crate::error::HwpxError::Xml {
+                entry: "META-INF/manifest.xml".to_string(),
+                message: error.to_string(),
+            })?;
+        match &event {
+            Event::Start(element)
+                if skipped_depth > 0 || element.local_name().as_ref() == b"encryption-data" =>
+            {
+                skipped_depth =
+                    skipped_depth
+                        .checked_add(1)
+                        .ok_or_else(|| crate::error::HwpxError::Xml {
+                            entry: "META-INF/manifest.xml".to_string(),
+                            message: "encryption-data nesting overflow".to_string(),
+                        })?;
+            }
+            Event::Empty(element)
+                if skipped_depth > 0 || element.local_name().as_ref() == b"encryption-data" => {}
+            Event::End(_) if skipped_depth > 0 => skipped_depth -= 1,
+            Event::Eof => {
+                if skipped_depth != 0 {
+                    return Err(crate::error::HwpxError::Xml {
+                        entry: "META-INF/manifest.xml".to_string(),
+                        message: "unclosed encryption-data element".to_string(),
+                    });
+                }
+                writer
+                    .write_event(event)
+                    .map_err(|error| crate::error::HwpxError::Xml {
+                        entry: "META-INF/manifest.xml".to_string(),
+                        message: error.to_string(),
+                    })?;
+                break;
+            }
+            _ if skipped_depth > 0 => {}
+            _ => writer
+                .write_event(event)
+                .map_err(|error| crate::error::HwpxError::Xml {
+                    entry: "META-INF/manifest.xml".to_string(),
+                    message: error.to_string(),
+                })?,
+        }
+    }
+    Ok(writer.into_inner())
 }
 
 /// content.hpf OPF 메타데이터에서 요약정보를 추출한다(최선 노력).

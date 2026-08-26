@@ -33,9 +33,22 @@ pub mod write;
 pub use container::Hwp5Container;
 pub use error::Hwp5Error;
 pub use file_header::FileHeader;
-pub use read::{BoundedReadLimits, BoundedReadSnapshot, ReadResult, ScriptPresence, read_document};
+pub use read::{
+    BoundedReadLimits, BoundedReadSnapshot, ReadOptions, ReadResult, ScriptPresence,
+    authenticate_container_with_options, read_document, read_document_with_options,
+};
 pub use summary::parse_summary;
 pub use write::{
     WriteOptions, rewrite_document_with_report, validate_evidenced_official_numbering,
     validate_official_hwp_numbering, write_document, write_document_with_report,
 };
+
+/// Conservative live-memory reservation for one password-protected HWP5
+/// document. Batch callers reserve this before invoking the reader.
+pub const PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT: u64 =
+    read::PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT;
+
+/// Maximum HWP5 CFB container size accepted by snapshot-based publication.
+/// HWP5 uses CFB major version 3, whose supported file range ends at 2 GiB;
+/// this is intentionally separate from the protected reader's live-memory cap.
+pub const SUPPORTED_CONTAINER_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;

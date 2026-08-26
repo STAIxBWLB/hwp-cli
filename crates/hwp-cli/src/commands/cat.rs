@@ -1,33 +1,206 @@
 //! `hwp cat` — 텍스트 추출.
 //!
 //! 본문 파싱 기반 추출(plain/markdown/json)과 `--preview`(PrvText)를
-//! 지원한다. 미리보기는 컨테이너 계층만 사용하므로 본문 파싱이 실패하는
-//! 파일의 폴백으로도 쓰인다.
+//! 지원한다. 평문 미리보기는 컨테이너 계층만 사용한다. 보호 문서는 preview
+//! 텍스트를 노출하기 전에 bounded reader로 암호를 인증한다.
 
+use std::fmt;
+use std::io::{BufRead as _, Read as _};
 use std::path::Path;
 
 use hwp_model::Document;
+use zeroize::Zeroizing;
 
 use crate::format::{FileFormat, detect};
-use hwp_cli::cli::TextFormat;
+use hwp_cli::cli::{PasswordArgs, TextFormat};
+
+/// Stable public refusal code for absent or invalid password credentials.
+pub const HWP_PASSWORD_REQUIRED_OR_INVALID: &str = "HWP_PASSWORD_REQUIRED_OR_INVALID";
+const MAX_PASSWORD_STDIN_BYTES: usize = 64 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
+
+/// A password whose backing string is zeroed when it leaves the command scope.
+/// It deliberately exposes only an exact borrowed view to the format readers.
+pub struct ResolvedPassword(Zeroizing<String>);
+
+impl ResolvedPassword {
+    fn new(value: String) -> Self {
+        Self::from_scoped_string(value)
+    }
+
+    /// Takes ownership of one caller-scoped password and zeroes it on drop.
+    ///
+    /// MCP uses this constructor after removing `password` from a single
+    /// JSON-RPC argument object; it never creates server or session state.
+    pub fn from_scoped_string(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Per-load input shared by the CLI surfaces as they gain password support.
+#[derive(Clone, Copy, Default)]
+pub struct LoadOptions<'a> {
+    pub password: Option<&'a ResolvedPassword>,
+}
+
+/// Refusal metadata is intentionally bounded to public format/profile stage
+/// information. Its displayed form never includes credential or parser data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasswordRefusal {
+    format: FileFormat,
+    algorithm: &'static str,
+    stage: &'static str,
+}
+
+impl PasswordRefusal {
+    fn hwp5() -> Self {
+        Self {
+            format: FileFormat::Hwp5,
+            algorithm: "HWP5-EncryptVersion4",
+            stage: "credential-validation",
+        }
+    }
+
+    fn hwpx() -> Self {
+        Self {
+            format: FileFormat::Hwpx,
+            algorithm: "AES256-CBC/PBKDF2-HMAC-SHA1",
+            stage: "credential-validation",
+        }
+    }
+}
+
+impl fmt::Display for PasswordRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = (self.format, self.algorithm, self.stage);
+        write!(
+            formatter,
+            "{HWP_PASSWORD_REQUIRED_OR_INVALID}: 암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요."
+        )
+    }
+}
+
+impl std::error::Error for PasswordRefusal {}
+
+/// Shared document-loader failure surface. Password failures are deliberately
+/// separated so callers can preserve one public absent/wrong credential code.
+#[derive(Debug)]
+pub enum LoadDocumentError {
+    Password(PasswordRefusal),
+    Other(anyhow::Error),
+}
+
+impl fmt::Display for LoadDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Password(error) => error.fmt(formatter),
+            Self::Other(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for LoadDocumentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Password(error) => Some(error),
+            Self::Other(error) => Some(error.root_cause()),
+        }
+    }
+}
+
+impl From<anyhow::Error> for LoadDocumentError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
+fn map_hwp5_read_error(error: hwp5::Hwp5Error) -> LoadDocumentError {
+    match error {
+        hwp5::Hwp5Error::Encrypted => LoadDocumentError::Password(PasswordRefusal::hwp5()),
+        other => LoadDocumentError::Other(anyhow::Error::new(other)),
+    }
+}
+
+fn map_hwpx_read_error(error: hwpx::HwpxError) -> LoadDocumentError {
+    match error {
+        hwpx::HwpxError::Encrypted => LoadDocumentError::Password(PasswordRefusal::hwpx()),
+        other => LoadDocumentError::Other(anyhow::Error::new(other)),
+    }
+}
+
+/// Resolves command-local password input before any document read. Only a
+/// final LF or CRLF is removed; all other bytes stay untouched.
+pub fn resolve_password_args(
+    args: PasswordArgs,
+    file: &Path,
+) -> anyhow::Result<Option<ResolvedPassword>> {
+    if args.password.is_some() && args.password_stdin {
+        anyhow::bail!("--password와 --password-stdin은 함께 사용할 수 없습니다");
+    }
+    if args.password_stdin && file == Path::new("-") {
+        anyhow::bail!("문서 입력과 --password-stdin은 모두 표준 입력을 사용할 수 없습니다");
+    }
+    if let Some(password) = args.password {
+        return Ok(Some(ResolvedPassword::new(password)));
+    }
+    if !args.password_stdin {
+        return Ok(None);
+    }
+
+    let mut line = Zeroizing::new(String::new());
+    let stdin = std::io::stdin();
+    stdin
+        .lock()
+        .take((MAX_PASSWORD_STDIN_BYTES + 3) as u64)
+        .read_line(&mut line)?;
+    let line_len = line.len();
+    if line.ends_with("\r\n") {
+        line.truncate(line_len - 2);
+    } else if line.ends_with('\n') {
+        line.truncate(line_len - 1);
+    }
+    if line.len() > MAX_PASSWORD_STDIN_BYTES {
+        anyhow::bail!("--password-stdin 입력이 {MAX_PASSWORD_STDIN_BYTES}바이트 제한을 초과합니다");
+    }
+    Ok(Some(ResolvedPassword(line)))
+}
 
 /// 포맷을 감지해 IR로 읽는다 (cat/convert/render 공용).
 ///
 /// `.json` 입력은 IR 직렬화본으로 보고 역직렬화한다(편집 왕복 경로) — 그 외는
 /// 매직 바이트로 hwp5/hwpx를 판별한다.
 pub fn load_document(path: &Path) -> anyhow::Result<Document> {
+    load_document_with_options(path, &LoadOptions::default()).map_err(anyhow::Error::new)
+}
+
+/// Reads a document through the shared options-aware loader.
+pub fn load_document_with_options(
+    path: &Path,
+    options: &LoadOptions<'_>,
+) -> Result<Document, LoadDocumentError> {
     if path
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("json"))
     {
-        let text = std::fs::read_to_string(path)?;
+        let text = std::fs::read_to_string(path).map_err(anyhow::Error::new)?;
         return hwp_convert::from_json(&text)
-            .map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패 ({}): {e}", path.display()));
+            .map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패 ({}): {e}", path.display()))
+            .map_err(Into::into);
     }
     match detect(path)? {
         FileFormat::Hwp5 => {
-            let result = hwp5::read_document(path)?;
+            let result = hwp5::read_document_with_options(
+                path,
+                &hwp5::ReadOptions {
+                    password: options.password.map(ResolvedPassword::as_str),
+                },
+            )
+            .map_err(map_hwp5_read_error)?;
             for w in &result.warnings {
                 eprintln!("경고: {w}");
             }
@@ -52,7 +225,13 @@ pub fn load_document(path: &Path) -> anyhow::Result<Document> {
             Ok(result.document)
         }
         FileFormat::Hwpx => {
-            let result = hwpx::read_document(path)?;
+            let result = hwpx::read_document_with_options(
+                path,
+                &hwpx::ReadOptions {
+                    password: options.password.map(ResolvedPassword::as_str),
+                },
+            )
+            .map_err(map_hwpx_read_error)?;
             for w in &result.warnings {
                 eprintln!("경고: {w}");
             }
@@ -63,7 +242,8 @@ pub fn load_document(path: &Path) -> anyhow::Result<Document> {
 
 /// 본문 텍스트 추출.
 ///
-/// `preview`면 본문 파싱 없이 PrvText 미리보기만 출력한다. `with_header_footer`/`with_hidden`은
+/// `preview`면 평문은 본문 파싱 없이 PrvText 미리보기만 출력하고, 보호 문서는 먼저 암호를
+/// 인증한다. `with_header_footer`/`with_hidden`은
 /// 머리말·꼬리말/숨은 설명 포함 여부(기본 제외) — plain·markdown 경로에 일관되게 적용된다
 /// (html/json은 옵션 미대상). `with_segments`는 markdown 전용으로, markdown과 함께 각 출력
 /// 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 낸다.
@@ -74,6 +254,7 @@ pub fn run(
     with_header_footer: bool,
     with_hidden: bool,
     with_segments: bool,
+    password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
     if with_segments {
         if preview {
@@ -85,11 +266,24 @@ pub fn run(
             anyhow::bail!("--with-segments는 --format markdown 전용입니다");
         }
     }
+    let password = resolve_password_args(password_args, path)?;
     if preview {
-        return self::preview(path);
+        return self::preview(
+            path,
+            &LoadOptions {
+                password: password.as_ref(),
+            },
+        )
+        .map_err(anyhow::Error::new);
     }
 
-    let doc = load_document(path)?;
+    let doc = load_document_with_options(
+        path,
+        &LoadOptions {
+            password: password.as_ref(),
+        },
+    )
+    .map_err(anyhow::Error::new)?;
     let opts = hwp_model::TextOptions {
         include_header_footer: with_header_footer,
         include_hidden: with_hidden,
@@ -132,16 +326,43 @@ pub fn run(
     Ok(())
 }
 
-pub fn preview(path: &Path) -> anyhow::Result<()> {
+fn preview(path: &Path, options: &LoadOptions<'_>) -> Result<(), LoadDocumentError> {
     let text = match detect(path)? {
         FileFormat::Hwp5 => {
-            let mut container = hwp5::Hwp5Container::open(path)?;
-            let raw = container.read_stream_raw("/PrvText")?;
+            let mut container = hwp5::Hwp5Container::open(path).map_err(map_hwp5_read_error)?;
+            if container.file_header().is_encrypted() {
+                // PrvText itself may be plaintext, so authenticate the supplied
+                // credential through the bounded protected reader before
+                // exposing it. Wrong and absent credentials keep one refusal.
+                hwp5::authenticate_container_with_options(
+                    &mut container,
+                    &hwp5::ReadOptions {
+                        password: options.password.map(ResolvedPassword::as_str),
+                    },
+                )
+                .map_err(map_hwp5_read_error)?;
+            } else {
+                container
+                    .check_body_readable()
+                    .map_err(map_hwp5_read_error)?;
+            }
+            let raw = container
+                .read_stream_raw_bounded("/PrvText", MAX_PREVIEW_BYTES)
+                .map_err(map_hwp5_read_error)?;
             decode_utf16le(&raw)
         }
         FileFormat::Hwpx => {
-            let mut pkg = hwpx::HwpxPackage::open(path)?;
-            let raw = pkg.read_entry("Preview/PrvText.txt")?;
+            let mut pkg = hwpx::HwpxPackage::open(path).map_err(map_hwpx_read_error)?;
+            match options.password {
+                Some(password) if pkg.has_encryption_marker().map_err(map_hwpx_read_error)? => pkg
+                    .unlock_with_password(password.as_str())
+                    .map_err(map_hwpx_read_error)?,
+                Some(_) => {}
+                None => pkg.check_body_readable().map_err(map_hwpx_read_error)?,
+            }
+            let raw = pkg
+                .read_entry_bounded("Preview/PrvText.txt", MAX_PREVIEW_BYTES)
+                .map_err(map_hwpx_read_error)?;
             // HWPX 미리보기는 보통 UTF-8이지만 UTF-16LE인 경우도 방어
             if raw.iter().take(64).any(|&b| b == 0) {
                 decode_utf16le(&raw)

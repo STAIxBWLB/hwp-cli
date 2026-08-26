@@ -154,6 +154,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-padding"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "710f1dd022ef4e93f8a438b4ba958de7f64308434fa6a87104481645cc30068b"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "borrow-or-share"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -204,6 +213,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
 dependencies = [
  "libbz2-rs-sys",
+]
+
+[[package]]
+name = "cbc"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce2dc9ee5f88d11e0beb842c88b33c8a5cf0d1329c4b19494af42b07dbfe8896"
+dependencies = [
+ "cipher",
 ]
 
 [[package]]
@@ -680,11 +698,16 @@ dependencies = [
 name = "hwp-cli"
 version = "0.10.0"
 dependencies = [
+ "aes",
  "anyhow",
+ "base64",
+ "cbc",
  "cfb",
  "clap",
+ "encoding_rs",
  "flate2",
  "getrandom 0.3.4",
+ "hmac",
  "hwp-convert",
  "hwp-model",
  "hwp-render",
@@ -693,15 +716,18 @@ dependencies = [
  "image",
  "jsonschema",
  "libc",
+ "pbkdf2",
  "quick-xml",
  "regex",
  "resvg",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha1",
  "sha2",
  "tiny-skia",
  "windows-sys",
+ "zeroize",
  "zip",
 ]
 
@@ -754,6 +780,7 @@ version = "0.10.0"
 dependencies = [
  "aes",
  "cfb",
+ "encoding_rs",
  "flate2",
  "hwp-convert",
  "hwp-model",
@@ -761,18 +788,29 @@ dependencies = [
  "insta",
  "proptest",
  "serde",
+ "sha1",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
 name = "hwpx"
 version = "0.10.0"
 dependencies = [
+ "aes",
+ "base64",
+ "cbc",
+ "encoding_rs",
+ "flate2",
  "hwp-convert",
  "hwp-model",
+ "pbkdf2",
  "quick-xml",
  "serde",
+ "sha1",
+ "sha2",
  "thiserror",
+ "zeroize",
  "zip",
 ]
 
@@ -935,6 +973,7 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
 dependencies = [
+ "block-padding",
  "hybrid-array",
 ]
 

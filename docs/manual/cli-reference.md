@@ -57,6 +57,8 @@ Extract text
 | `--with-header-footer` |  |  | Also extract header and footer text (default: excluded) |
 | `--with-hidden` |  |  | Also extract hidden comment text (default: excluded) |
 | `--with-segments` |  |  | (markdown only) Emit the markdown together with the source coordinates (section/paragraph) of each output character range, as a one-line JSON envelope: {"markdown": ..., "segments": [...]} |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
 ## `hwp grep`
 
@@ -90,6 +92,8 @@ Convert between formats
 | `--with-header-footer` |  |  | (md) Also include header and footer text (default: excluded) |
 | `--with-hidden` |  |  | (md) Also include hidden comment text (default: excluded) |
 | `--font-dir` | `<FONT_DIR>` |  | (pdf) Additional font directory (repeatable; defaults to HWP_FONT_DIR or fonts/) |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
 ## `hwp render`
 
@@ -106,6 +110,8 @@ Render pages
 | `--format` | `png` \| `svg` \| `pdf` |  | Output format (inferred from the extension when omitted) |
 | `--report` | `<REPORT>` |  | Write a closed machine-readable render report atomically |
 | `--font-dir` | `<FONT_DIR>` |  | Additional font directory (repeatable) |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
 ## `hwp new`
 

@@ -57,6 +57,8 @@
 | `--with-header-footer` |  |  | 머리말/꼬리말 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-hidden` |  |  | 숨은 설명 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-segments` |  |  | (markdown 전용) markdown과 함께 각 출력 문자 범위의 원본 좌표(섹션/문단)를 한 줄 JSON 봉투로 출력 — {"markdown": ..., "segments": [...]} |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
 ## `hwp grep`
 
@@ -90,6 +92,8 @@
 | `--with-header-footer` |  |  | (md) 머리말/꼬리말 텍스트도 포함 (기본: 제외) |
 | `--with-hidden` |  |  | (md) 숨은 설명 텍스트도 포함 (기본: 제외) |
 | `--font-dir` | `<FONT_DIR>` |  | (pdf) 추가 폰트 디렉터리 (반복 가능, 기본: HWP_FONT_DIR 또는 fonts/) |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
 ## `hwp render`
 
@@ -106,6 +110,8 @@
 | `--format` | `png` \| `svg` \| `pdf` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--report` | `<REPORT>` |  | 기계 판독 렌더 보고서(JSON)를 원자적으로 기록 |
 | `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
 ## `hwp new`
 

@@ -10,5 +10,8 @@ pub mod tag;
 pub mod tree;
 
 pub use header::RecordHeader;
-pub use scan::{ScanMode, ScanResult, scan_stream};
+pub use scan::{
+    RecordScanBudget, RecordScanLimits, ScanMode, ScanResult, scan_stream, scan_stream_bounded,
+    walk_stream_strict,
+};
 pub use tree::RecordNode;

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::codec;
 use crate::error::{Hwp5Error, Result};
-use crate::file_header::FileHeader;
+use crate::file_header::{FILE_HEADER_SIZE, FileHeader};
 
 /// 스트림 메타데이터 (`hwp info`용).
 #[derive(Debug, Clone)]
@@ -31,10 +31,29 @@ impl Hwp5Container {
     pub fn open(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
         let mut cfb = cfb::CompoundFile::open(file).map_err(|_| Hwp5Error::NotHwp5)?;
-        let mut raw = Vec::new();
-        cfb.open_stream("/FileHeader")
-            .map_err(|_| Hwp5Error::NotHwp5)?
-            .read_to_end(&mut raw)?;
+        let entry = cfb.entry("/FileHeader").map_err(|_| Hwp5Error::NotHwp5)?;
+        if !entry.is_stream() {
+            return Err(Hwp5Error::NotHwp5);
+        }
+        if entry.len() != FILE_HEADER_SIZE as u64 {
+            return Err(Hwp5Error::BadFileHeaderSize(
+                usize::try_from(entry.len()).unwrap_or(usize::MAX),
+            ));
+        }
+
+        // FileHeader is specified as exactly 256 bytes. Check the directory
+        // length before allocating and use a fixed buffer so malformed CFB
+        // metadata cannot make opening an encrypted file allocate unchecked
+        // memory before its password limits apply.
+        let mut raw = [0u8; FILE_HEADER_SIZE];
+        let mut stream = cfb
+            .open_stream("/FileHeader")
+            .map_err(|_| Hwp5Error::NotHwp5)?;
+        stream.read_exact(&mut raw)?;
+        let mut trailing = [0u8; 1];
+        if stream.read(&mut trailing)? != 0 {
+            return Err(Hwp5Error::BadFileHeaderSize(FILE_HEADER_SIZE + 1));
+        }
         let header = FileHeader::parse(&raw)?;
         Ok(Self { cfb, header })
     }
@@ -165,6 +184,30 @@ impl Hwp5Container {
         Ok(buf)
     }
 
+    /// Reads an uncompressed CFB stream only after its directory-declared size
+    /// fits the caller's allocation budget.
+    pub fn read_stream_raw_bounded(&mut self, path: &str, limit: u64) -> Result<Vec<u8>> {
+        let info = self
+            .list_streams()
+            .into_iter()
+            .find(|info| info.path == path)
+            .ok_or_else(|| Hwp5Error::StreamNotFound(path.to_string()))?;
+        if info.size > limit {
+            return Err(Hwp5Error::ResourceLimitExceeded {
+                resource: format!("{path} stored stream"),
+                limit,
+            });
+        }
+        let raw = self.read_stream_raw(path)?;
+        if raw.len() as u64 > limit {
+            return Err(Hwp5Error::ResourceLimitExceeded {
+                resource: format!("{path} stored stream"),
+                limit,
+            });
+        }
+        Ok(raw)
+    }
+
     /// 레코드 스트림(DocInfo/BodyText/Scripts)을 읽는다.
     /// FileHeader의 압축 플래그가 설정되어 있으면 raw deflate를 해제한다.
     pub fn read_record_stream(&mut self, path: &str) -> Result<Vec<u8>> {
@@ -179,18 +222,7 @@ impl Hwp5Container {
     /// Certification-oriented record read that bounds both the stored stream and
     /// the raw-deflate output before allocating the semantic record tree.
     pub fn read_record_stream_bounded(&mut self, path: &str, limit: u64) -> Result<Vec<u8>> {
-        let info = self
-            .list_streams()
-            .into_iter()
-            .find(|info| info.path == path)
-            .ok_or_else(|| Hwp5Error::StreamNotFound(path.to_string()))?;
-        if info.size > limit {
-            return Err(Hwp5Error::ResourceLimitExceeded {
-                resource: format!("{path} stored stream"),
-                limit,
-            });
-        }
-        let raw = self.read_stream_raw(path)?;
+        let raw = self.read_stream_raw_bounded(path, limit)?;
         if self.header.is_compressed() && is_record_stream(path) {
             codec::decompress_bounded(&raw, path, limit)
         } else if raw.len() as u64 > limit {
@@ -224,4 +256,44 @@ pub fn is_record_stream(path: &str) -> bool {
         || path.starts_with("/ViewText/")
         // Scripts 스트림도 압축 대상(정품 표본 실측 — 문서 10 §1 쓰기 비대칭 참조).
         || path.starts_with("/Scripts/")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn temporary_hwp(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "hwp5-container-{label}-{}-{nonce}.hwp",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn oversized_file_header_is_refused_from_its_directory_length() {
+        let path = temporary_hwp("oversized-file-header");
+        let mut cfb = cfb::create(&path).expect("create test CFB");
+        let mut header = cfb
+            .create_new_stream("/FileHeader")
+            .expect("create FileHeader stream");
+        header
+            .write_all(&[0u8; FILE_HEADER_SIZE + 1])
+            .expect("write oversized FileHeader");
+        drop(header);
+        cfb.flush().expect("flush test CFB");
+        drop(cfb);
+
+        assert!(matches!(
+            Hwp5Container::open(&path),
+            Err(Hwp5Error::BadFileHeaderSize(size)) if size == FILE_HEADER_SIZE + 1
+        ));
+        std::fs::remove_file(path).expect("remove test CFB");
+    }
 }

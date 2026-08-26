@@ -10,6 +10,24 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Password-protected HWP5 and HWPX input now enters the normal read, convert and render paths when
+  the user supplies a password. The CLI supports command-local `--password` and
+  `--password-stdin` on `cat`, `convert` and `render`; MCP supports a per-call password on
+  `hwp_read`, `hwp_convert` and `hwp_render` without caching it in the session.
+
+- The supported profiles are evidence-bound: HWP5 EncryptVersion 4 CFB streams and the observed
+  HWPX ODF AES-256/PBKDF2/checksum profile. Wrong and absent passwords share
+  `HWP_PASSWORD_REQUIRED_OR_INVALID`, and certificate encryption, signatures and DRM keep their
+  existing typed refusals. Credentials, decrypted bytes and parser details do not enter logs,
+  reports or receipts.
+
+- A private-corpus contract, profile-evidence schema and seven-case content-free receipt contract
+  gate the feature. The final release candidate passed genuine ASCII HWP5/HWPX baselines, a
+  distinct non-ASCII password success, wrong/absent cases for both formats, clean-worktree
+  inventories and direct Hancom Office comparison.
+
 **Changed**
 
 - Documentation now matches v0.10.0. The READMEs predated v0.9.0 and v0.10.0 and had become wrong
@@ -34,6 +52,40 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   line with the catalog.
 
 **Fixed**
+
+- Password-unlocked HWPX entries remain available for every read during one package invocation,
+  including the second `version.xml` access. Rewriting a decrypted document also replaces the
+  source encryption manifest with the ordinary plaintext manifest, so HWPX-to-HWPX conversion no
+  longer publishes plaintext entries under stale encryption metadata or compares authenticated
+  opaque plaintext against source ciphertext.
+
+- Password-unlocked HWP5-to-HWP conversion uses the plaintext synthesis path instead of asking the
+  source-preserving writer to reopen the encrypted container without a credential. HWPX profile
+  validation also caps aggregate PBKDF2 work at eight million iterations before any entry is
+  decrypted, preventing a many-entry package from multiplying the per-entry limit into a CPU DoS.
+  Strict HWP5 conversion still reports and refuses opaque source streams that plaintext synthesis
+  cannot preserve; non-strict conversion records the loss and publishes the authenticated content.
+
+- HWP5 EncryptVersion 4 now caps aggregate CFB1 input at 2 MiB before its bit-level transform
+  begins. The genuine baseline uses 1,296 protected bytes, while the new limit bounds a candidate
+  document to 16,777,216 AES block operations instead of allowing the 64 MiB memory cap to imply
+  hundreds of millions of operations.
+
+- Compressed `BinData` in password-protected HWP5 now follows the ordinary reader's bounded
+  try-DEFLATE path before entering the IR. Images therefore remain usable in cross-format output,
+  and native HWP synthesis does not double-compress an already-compressed payload.
+
+- An encrypted HWP5 with no supplied password now returns the same stable credential refusal even
+  when its EncryptVersion is unsupported. The typed unsupported-profile detail is exposed only
+  after a credential is explicitly supplied.
+
+- Owner-corpus validation now checks the resolved credential bytes against the declared ASCII or
+  non-ASCII charset before profile discovery. A mislabeled secret can no longer satisfy the
+  distinct non-ASCII evidence role, and mismatch errors expose neither the value nor its reference.
+
+- `hwp cat --preview` now authenticates protected HWP5/HWPX before exposing preview text, including
+  encrypted HWPX preview entries. `--password-stdin` reads through a 64 KiB cap so an oversized or
+  unterminated credential stream cannot grow process memory without bound.
 
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
   everything `hwp slots` reports. The two commands read a document differently — `slots` walks the

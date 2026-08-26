@@ -6,11 +6,11 @@ use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
 
-use crate::commands::cat::load_document;
+use crate::commands::cat::{LoadOptions, load_document_with_options, resolve_password_args};
 use hwp_cli::certification::{
     RenderIssueReportEntry, canonical_render_issue_sha256, map_render_issue,
 };
-use hwp_cli::cli::RenderFormat;
+use hwp_cli::cli::{PasswordArgs, RenderFormat};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
@@ -66,13 +66,8 @@ struct RenderFontCoverage {
     substitution_free: bool,
 }
 
-/// Render a document and optionally publish a machine-readable report.
-///
-/// The report is built only after the render bytes have been fully encoded and
-/// published. Its own destination is staged and verified through the common
-/// output transaction, so render or report failures never expose a partial JSON
-/// file. The report deliberately contains no input/output paths.
-pub fn run_with_report(
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_password(
     input: &Path,
     output: &Path,
     pages_spec: &str,
@@ -80,11 +75,38 @@ pub fn run_with_report(
     format: Option<RenderFormat>,
     font_dirs: Vec<PathBuf>,
     report_path: Option<&Path>,
+    password_args: PasswordArgs,
+) -> anyhow::Result<()> {
+    let password = resolve_password_args(password_args, input)?;
+    run_with_report_with_options(
+        input,
+        output,
+        pages_spec,
+        dpi,
+        format,
+        font_dirs,
+        report_path,
+        &LoadOptions {
+            password: password.as_ref(),
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_with_report_with_options(
+    input: &Path,
+    output: &Path,
+    pages_spec: &str,
+    dpi: f64,
+    format: Option<RenderFormat>,
+    font_dirs: Vec<PathBuf>,
+    report_path: Option<&Path>,
+    options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
     let dpi = validated_dpi(dpi)?;
     let format = format.unwrap_or_else(|| infer_format(output));
     let input_report = report_path.map(|_| build_input_report(input)).transpose()?;
-    let doc = load_document(input)?;
+    let doc = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
     if let Some(before) = &input_report {
         let after = build_input_report(input)?;
         if before != &after {

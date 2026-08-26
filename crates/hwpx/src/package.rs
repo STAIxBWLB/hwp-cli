@@ -3,7 +3,7 @@
 //! `hwp info`/`hwp dump`가 OWPML 파싱 없이도 동작하도록
 //! 컨테이너 계층만으로 메타데이터를 제공한다.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -12,6 +12,7 @@ use quick_xml::events::Event;
 use serde::Serialize;
 
 use crate::error::{HwpxError, Result};
+use crate::read::password;
 
 pub const MIMETYPE: &str = "application/hwp+zip";
 
@@ -194,6 +195,14 @@ pub struct HwpxPackage {
     zip: zip::ZipArchive<File>,
     entries: Vec<EntryInfo>,
     limits: PackageLimits,
+    decrypted_entries: BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
+    decrypted_plaintext_bytes: u64,
+    password_unlocked: bool,
+    // Parser and document owners outlive the temporary decrypted overlay. This
+    // is deliberately monotonic for one package invocation: it is a
+    // conservative reservation for every returned byte buffer/string rather
+    // than a best-effort estimate that could undercount a retained Document.
+    parser_owned_plaintext_bytes: u64,
 }
 
 impl HwpxPackage {
@@ -213,6 +222,10 @@ impl HwpxPackage {
             zip,
             entries,
             limits: *limits,
+            decrypted_entries: BTreeMap::new(),
+            decrypted_plaintext_bytes: 0,
+            password_unlocked: false,
+            parser_owned_plaintext_bytes: 0,
         };
         let mime = pkg.read_entry_string("mimetype")?;
         if mime.trim() != MIMETYPE {
@@ -227,6 +240,23 @@ impl HwpxPackage {
     }
 
     pub fn read_entry(&mut self, name: &str) -> Result<Vec<u8>> {
+        if let Some(plaintext_bytes) = self
+            .decrypted_entries
+            .get(name)
+            .map(|plaintext| u64::try_from(plaintext.len()))
+            .transpose()
+            .map_err(|_| limit_error("암호화된 엔트리 크기가 정수 범위를 넘었습니다".to_string()))?
+        {
+            self.reserve_parser_owned_bytes(plaintext_bytes)?;
+            // Keep the authenticated overlay available for later reads of the
+            // same package entry. The returned copy is charged to the
+            // monotonic parser/document ownership budget before allocation.
+            return self
+                .decrypted_entries
+                .get(name)
+                .map(|plaintext| plaintext.to_vec())
+                .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()));
+        }
         let info = self
             .entries
             .iter()
@@ -234,6 +264,7 @@ impl HwpxPackage {
             .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()))?;
         let limit = self.limits.entry_uncompressed_limit(name);
         let expected_size = info.size;
+        self.reserve_parser_owned_bytes(expected_size)?;
         let mut e = self
             .zip
             .by_name(name)
@@ -241,8 +272,57 @@ impl HwpxPackage {
         read_bounded(&mut e, name, expected_size, limit)
     }
 
+    /// Reads one entry only after both its authenticated overlay size and ZIP
+    /// directory size fit a caller-specific allocation limit.
+    pub fn read_entry_bounded(&mut self, name: &str, limit: u64) -> Result<Vec<u8>> {
+        let declared = self
+            .decrypted_entries
+            .get(name)
+            .map(|plaintext| plaintext.len() as u64)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .map(|entry| entry.size)
+            })
+            .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()))?;
+        if declared > limit {
+            return Err(limit_error(format!(
+                "'{name}' 엔트리 크기가 호출자 제한을 초과합니다 ({declared} > {limit} 바이트)"
+            )));
+        }
+        let bytes = self.read_entry(name)?;
+        if bytes.len() as u64 > limit {
+            return Err(limit_error(format!(
+                "'{name}' 엔트리 크기가 호출자 제한을 초과합니다 ({} > {limit} 바이트)",
+                bytes.len()
+            )));
+        }
+        Ok(bytes)
+    }
+
     pub fn read_entry_string(&mut self, name: &str) -> Result<String> {
-        Ok(String::from_utf8_lossy(&self.read_entry(name)?).into_owned())
+        let bytes = self.read_entry(name)?;
+        match String::from_utf8(bytes) {
+            // String takes ownership of Vec's allocation, so the reservation
+            // made by read_entry already covers this parser owner.
+            Ok(text) => Ok(text),
+            Err(error) => {
+                let bytes = error.into_bytes();
+                // Lossy UTF-8 conversion can allocate up to three bytes per
+                // invalid input byte for U+FFFD. Reserve that copy before it
+                // exists; keeping the reservation avoids an untracked string
+                // retained by a parser or returned Document.
+                let lossy_copy = u64::try_from(bytes.len())
+                    .ok()
+                    .and_then(|size| size.checked_mul(3))
+                    .ok_or_else(|| {
+                        limit_error("문자열 변환 예약값이 정수 범위를 넘었습니다".to_string())
+                    })?;
+                self.reserve_parser_owned_bytes(lossy_copy)?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            }
+        }
     }
 
     /// 디렉터리를 제외한 모든 엔트리를 제한 안에서 EOF까지 스트리밍한다.
@@ -252,6 +332,134 @@ impl HwpxPackage {
     /// 구조 검증과 보존 patch는 이 메서드를 먼저 통과해야 한다.
     pub fn verify_integrity(&mut self) -> Result<()> {
         verify_archive_integrity(&mut self.zip, &self.entries, &self.limits)
+    }
+
+    /// Unlocks the observed, evidence-bound ODF profile into a per-package
+    /// in-memory overlay. Plaintext never becomes a ZIP or a file on disk.
+    pub fn unlock_with_password(&mut self, password: &str) -> Result<()> {
+        if self.password_unlocked {
+            return Err(HwpxError::Encrypted);
+        }
+        let manifest = self
+            .read_entry_string("META-INF/manifest.xml")
+            .map_err(|_| HwpxError::Encrypted)?;
+        let profile = password::parse_profile(&manifest)?;
+        // Hangul derives the start key from CP949 bytes, not UTF-8, so one
+        // password can have two byte encodings. Each candidate must still
+        // clear the per-entry checksum below, and a wrong key fails on the
+        // first entry before any state is committed, so retrying an encoding
+        // cannot admit a password that would otherwise be refused.
+        let candidates = password::password_byte_candidates(password);
+        profile.validate_candidate_work(candidates.len() as u64)?;
+        let mut refusal = HwpxError::Encrypted;
+        for candidate in candidates {
+            match self.unlock_with_password_bytes(&profile, &candidate) {
+                Ok(()) => return Ok(()),
+                Err(error) => refusal = error,
+            }
+        }
+        Err(refusal)
+    }
+
+    fn unlock_with_password_bytes(
+        &mut self,
+        profile: &password::EncryptionProfile,
+        password: &[u8],
+    ) -> Result<()> {
+        let mut retained_plaintext = self.live_plaintext_bytes()?;
+        let mut overlay = BTreeMap::new();
+        for entry in profile.entries() {
+            let info = self
+                .entries
+                .iter()
+                .find(|candidate| candidate.name == entry.name)
+                .ok_or(HwpxError::Encrypted)?;
+            let stored = {
+                let raw = self
+                    .zip
+                    .by_name(&entry.name)
+                    .map_err(|_| HwpxError::Encrypted)?;
+                raw.compression() == zip::CompressionMethod::Stored
+            };
+            if !stored || info.compressed_size != info.size {
+                return Err(HwpxError::Encrypted);
+            }
+            validate_protected_ciphertext_read(
+                retained_plaintext,
+                info.size,
+                self.limits.max_total_uncompressed_bytes,
+            )?;
+            let ciphertext = self.read_entry_untracked(&entry.name)?;
+            let plaintext = password::decrypt_entry(
+                entry,
+                password,
+                ciphertext,
+                &self.limits,
+                retained_plaintext,
+            )?;
+            retained_plaintext = retained_plaintext
+                .checked_add(plaintext.len() as u64)
+                .filter(|total| *total <= self.limits.max_total_uncompressed_bytes)
+                .ok_or(HwpxError::Encrypted)?;
+            overlay.insert(entry.name.clone(), plaintext);
+        }
+        self.decrypted_entries = overlay;
+        self.decrypted_plaintext_bytes = retained_plaintext
+            .checked_sub(self.parser_owned_plaintext_bytes)
+            .ok_or(HwpxError::Encrypted)?;
+        self.password_unlocked = true;
+        Ok(())
+    }
+
+    /// Whether this package has authenticated a password-protected profile.
+    ///
+    /// Readers use this to avoid preserving source encryption metadata when
+    /// the returned document now owns plaintext entries.
+    pub fn was_unlocked_with_password(&self) -> bool {
+        self.password_unlocked
+    }
+
+    fn read_entry_untracked(&mut self, name: &str) -> Result<Vec<u8>> {
+        let info = self
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()))?;
+        let limit = self.limits.entry_uncompressed_limit(name);
+        let expected_size = info.size;
+        let mut entry = self
+            .zip
+            .by_name(name)
+            .map_err(|_| HwpxError::EntryNotFound(name.to_string()))?;
+        read_bounded(&mut entry, name, expected_size, limit)
+    }
+
+    fn live_plaintext_bytes(&self) -> Result<u64> {
+        self.decrypted_plaintext_bytes
+            .checked_add(self.parser_owned_plaintext_bytes)
+            .ok_or_else(|| limit_error("패키지 메모리 예약값이 정수 범위를 넘었습니다".to_string()))
+    }
+
+    fn reserve_parser_owned_bytes(&mut self, bytes: u64) -> Result<()> {
+        let parser_owned = self
+            .parser_owned_plaintext_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| {
+                limit_error("파서 메모리 예약값이 정수 범위를 넘었습니다".to_string())
+            })?;
+        let live = self
+            .decrypted_plaintext_bytes
+            .checked_add(parser_owned)
+            .ok_or_else(|| {
+                limit_error("패키지 메모리 예약값이 정수 범위를 넘었습니다".to_string())
+            })?;
+        if live > self.limits.max_total_uncompressed_bytes {
+            return Err(limit_error(
+                "암호화된 엔트리의 파서/문서 메모리가 패키지 제한을 초과합니다".to_string(),
+            ));
+        }
+        self.parser_owned_plaintext_bytes = parser_owned;
+        Ok(())
     }
 
     /// Refuses an encrypted package before any content part is read (GATE-02, D-04/D-05).
@@ -268,10 +476,13 @@ impl HwpxPackage {
     /// unaffected — a manifest is not needed to read a document, and a detection
     /// heuristic on a non-essential entry must not block one that is otherwise fine
     /// (T-2-13, deliberate fail-open, recorded here per the plan's own requirement).
-    pub fn check_body_readable(&mut self) -> Result<()> {
+    /// Returns whether the plaintext manifest marks one or more package entries as
+    /// encrypted. Missing or malformed manifests deliberately remain fail-open,
+    /// matching [`Self::check_body_readable`]'s historic behavior.
+    pub fn has_encryption_marker(&mut self) -> Result<bool> {
         let xml = match self.read_entry_string("META-INF/manifest.xml") {
             Ok(xml) => xml,
-            Err(HwpxError::EntryNotFound(_)) => return Ok(()),
+            Err(HwpxError::EntryNotFound(_)) => return Ok(false),
             // Any other error (a limit violation, an archive error) surfaces as itself.
             Err(other) => return Err(other),
         };
@@ -283,14 +494,22 @@ impl HwpxPackage {
                     // so a namespace prefix change does not defeat detection and a
                     // comment/text mention of the word does not trigger a false refusal.
                     if e.local_name().as_ref() == b"encryption-data" {
-                        return Err(HwpxError::Encrypted);
+                        return Ok(true);
                     }
                 }
-                Ok(Event::Eof) => return Ok(()),
+                Ok(Event::Eof) => return Ok(false),
                 Ok(_) => {}
                 // Fail-open on a malformed manifest: see the doc comment above (T-2-13).
-                Err(_) => return Ok(()),
+                Err(_) => return Ok(false),
             }
+        }
+    }
+
+    pub fn check_body_readable(&mut self) -> Result<()> {
+        if self.has_encryption_marker()? {
+            Err(HwpxError::Encrypted)
+        } else {
+            Ok(())
         }
     }
 
@@ -338,6 +557,18 @@ impl HwpxPackage {
         });
         Ok(v)
     }
+}
+
+fn validate_protected_ciphertext_read(
+    retained_plaintext: u64,
+    ciphertext_bytes: u64,
+    live_limit: u64,
+) -> Result<()> {
+    retained_plaintext
+        .checked_add(ciphertext_bytes)
+        .filter(|live| *live <= live_limit)
+        .map(|_| ())
+        .ok_or(HwpxError::Encrypted)
 }
 
 /// zip 크레이트는 중앙 디렉터리를 이름-keyed map으로 만들며 중복 엔트리를 덮어쓴다.
@@ -929,5 +1160,87 @@ mod tests {
         let manifest = br##"<?xml version="1.0" encoding="UTF-8"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><!-- encryption-data is mentioned here only as a comment --><odf:file-entry full-path="Contents/header.xml" media-type="application/xml" size="1"><odf:comment>encryption-data</odf:comment></odf:file-entry></odf:manifest>"##;
         let result = open_and_check("comment_marker", Some(manifest));
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn retained_parser_entries_reject_the_next_lossy_string_before_its_copy() {
+        let path = temp_file("parser-live-budget");
+        write_zip(
+            &path,
+            &[
+                (MIMETYPE_ENTRY, MIMETYPE.as_bytes()),
+                ("Contents/first.bin", b"placeholder-first"),
+                ("Contents/second.bin", b"placeholder-second"),
+            ],
+        );
+        let limits = PackageLimits {
+            // 48 bytes stay in the authenticated overlay. The first returned
+            // copy raises live ownership to 72; the second raw copy raises it
+            // to 96; its 72-byte lossy UTF-8 allocation must fail at 168.
+            max_total_uncompressed_bytes: 120,
+            ..PackageLimits::default()
+        };
+        let mut package = HwpxPackage::open_with_limits(&path, &limits).unwrap();
+        // open() only needs mimetype during construction, so it is no longer a
+        // live parser owner. Inject two equal synthetic protected entries to
+        // exercise the package-local accounting without a corpus fixture.
+        package.parser_owned_plaintext_bytes = 0;
+        package.decrypted_entries.insert(
+            "Contents/first.bin".to_string(),
+            zeroize::Zeroizing::new(vec![b'a'; 24]),
+        );
+        package.decrypted_entries.insert(
+            "Contents/second.bin".to_string(),
+            zeroize::Zeroizing::new(vec![0xff; 24]),
+        );
+        package.decrypted_plaintext_bytes = 48;
+
+        let first = package.read_entry("Contents/first.bin").unwrap();
+        assert_eq!(first.len(), 24);
+        let error = package
+            .read_entry_string("Contents/second.bin")
+            .unwrap_err();
+        assert!(matches!(error, HwpxError::PackageLimit(_)), "{error:?}");
+        assert_eq!(package.decrypted_plaintext_bytes, 48);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_ciphertext_is_reserved_before_its_read_allocation() {
+        assert!(validate_protected_ciphertext_read(80, 40, 120).is_ok());
+        assert!(matches!(
+            validate_protected_ciphertext_read(81, 40, 120),
+            Err(HwpxError::Encrypted)
+        ));
+        assert!(matches!(
+            validate_protected_ciphertext_read(u64::MAX, 1, u64::MAX),
+            Err(HwpxError::Encrypted)
+        ));
+    }
+
+    #[test]
+    fn caller_entry_bound_checks_decrypted_overlay_before_copying() {
+        let path = temp_file("caller-entry-bound");
+        write_zip(
+            &path,
+            &[
+                (MIMETYPE_ENTRY, MIMETYPE.as_bytes()),
+                ("Preview/PrvText.txt", b"stored-placeholder"),
+            ],
+        );
+        let mut package = HwpxPackage::open(&path).unwrap();
+        package.parser_owned_plaintext_bytes = 0;
+        package.decrypted_entries.insert(
+            "Preview/PrvText.txt".to_string(),
+            zeroize::Zeroizing::new(vec![b'a'; 24]),
+        );
+        package.decrypted_plaintext_bytes = 24;
+
+        assert!(matches!(
+            package.read_entry_bounded("Preview/PrvText.txt", 23),
+            Err(HwpxError::PackageLimit(_))
+        ));
+        assert_eq!(package.parser_owned_plaintext_bytes, 0);
+        std::fs::remove_file(path).unwrap();
     }
 }

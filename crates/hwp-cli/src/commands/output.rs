@@ -77,6 +77,31 @@ pub(crate) fn write_with_private_input_snapshot<T>(
     verifier: impl FnOnce(&Path, &T) -> anyhow::Result<()>,
 ) -> anyhow::Result<(String, T)> {
     let mut staged = StagedOutput::new(destination, Some(input))?;
+    let (snapshot_path, hash) = copy_input_snapshot(input, max_bytes, &staged.workspace)?;
+    let value = writer(&snapshot_path, staged.path(), &hash)?;
+    if mode != SnapshotOutputMode::PlanOnly {
+        staged.sync_file()?;
+        verifier(staged.path(), &value).with_context(|| {
+            format!(
+                "snapshot 기반 출력 검증 실패 (대상: {})",
+                destination.display()
+            )
+        })?;
+        staged.sync_file()?;
+    }
+    if mode == SnapshotOutputMode::Publish
+        && let Some(warning) = staged.publish()?
+    {
+        eprintln!("경고: {warning}");
+    }
+    Ok((hash, value))
+}
+
+fn copy_input_snapshot(
+    input: &Path,
+    max_bytes: u64,
+    workspace: &Path,
+) -> anyhow::Result<(PathBuf, String)> {
     let mut source = fs::File::open(input)
         .with_context(|| format!("입력 snapshot을 열 수 없습니다: {}", input.display()))?;
     let opened = source
@@ -115,7 +140,7 @@ pub(crate) fn write_with_private_input_snapshot<T>(
         );
     }
 
-    let snapshot_path = staged.workspace.join("input.snapshot");
+    let snapshot_path = workspace.join("input.snapshot");
     let mut snapshot = fs::OpenOptions::new()
         .create_new(true)
         .read(true)
@@ -178,23 +203,7 @@ pub(crate) fn write_with_private_input_snapshot<T>(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let value = writer(&snapshot_path, staged.path(), &hash)?;
-    if mode != SnapshotOutputMode::PlanOnly {
-        staged.sync_file()?;
-        verifier(staged.path(), &value).with_context(|| {
-            format!(
-                "snapshot 기반 출력 검증 실패 (대상: {})",
-                destination.display()
-            )
-        })?;
-        staged.sync_file()?;
-    }
-    if mode == SnapshotOutputMode::Publish
-        && let Some(warning) = staged.publish()?
-    {
-        eprintln!("경고: {warning}");
-    }
-    Ok((hash, value))
+    Ok((snapshot_path, hash))
 }
 
 /// Reject an output that aliases any immutable command input. Unlike the
@@ -436,6 +445,39 @@ pub(crate) fn write_validated_with_sidecar<T>(
         eprintln!("경고: {warning}");
     }
     Ok(value)
+}
+
+/// Snapshot-bound variant of [`write_validated_with_sidecar`]. The document
+/// body and media directory are generated from the immutable input copy owned
+/// by the same private transaction and are published only after its hash and
+/// both outputs validate.
+pub(crate) fn write_with_private_input_snapshot_and_sidecar<T>(
+    destination: &Path,
+    input: &Path,
+    max_bytes: u64,
+    sidecar_destination: &Path,
+    writer: impl FnOnce(&Path, &Path, &Path, &str) -> anyhow::Result<T>,
+    verifier: impl FnOnce(&Path, &Path, &T) -> anyhow::Result<()>,
+) -> anyhow::Result<(String, T)> {
+    reject_overlapping_outputs(destination, sidecar_destination, Some(input))?;
+    let mut staged = StagedOutputPair::new(destination, Some(input), sidecar_destination)?;
+    let (snapshot_path, hash) = copy_input_snapshot(input, max_bytes, &staged.file.workspace)?;
+    let value = writer(
+        &snapshot_path,
+        staged.file.path(),
+        staged.sidecar.path(),
+        &hash,
+    )?;
+    staged.file.sync_file()?;
+    staged.sidecar.finish_write()?;
+    verifier(staged.file.path(), staged.sidecar.path(), &value)
+        .with_context(|| format!("출력 검증 실패 (대상: {})", destination.display()))?;
+    staged.file.sync_file()?;
+    staged.sidecar.finish_write()?;
+    if let Some(warning) = staged.publish()? {
+        eprintln!("경고: {warning}");
+    }
+    Ok((hash, value))
 }
 
 #[derive(Clone)]

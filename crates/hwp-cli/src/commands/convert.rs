@@ -3,11 +3,15 @@
 //! M2 범위: hwp/hwpx → markdown/JSON. hwpx 쓰기(M4)와 hwp 쓰기(M6)는
 //! 이후 마일스톤.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use crate::commands::cat::load_document;
+use crate::commands::cat::{
+    LoadOptions, load_document, load_document_with_options, resolve_password_args,
+};
 use anyhow::Context as _;
-use hwp_cli::cli::ConvertFormat;
+use hwp_cli::cli::{ConvertFormat, PasswordArgs};
+use sha2::{Digest as _, Sha256};
 
 /// markdown 출력 전용 추가 옵션 (다른 포맷에서는 무시).
 #[derive(Default)]
@@ -27,8 +31,90 @@ pub struct ConvertReport {
     pub preservation: hwp_model::PreservationReport,
 }
 
+const MAX_PRELOADED_BATCH_BYTES: u64 = 512 * 1024 * 1024;
+
+struct PreloadedDocument {
+    document: hwp_model::Document,
+    source_sha256: String,
+}
+
+fn source_sha256(path: &Path) -> anyhow::Result<String> {
+    let mut source = std::fs::File::open(path)
+        .with_context(|| format!("입력 해시를 위해 파일을 열 수 없습니다: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn load_preloaded_document(
+    input: &Path,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<PreloadedDocument> {
+    let before = source_sha256(input)?;
+    let document = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+    let after = source_sha256(input)?;
+    if before != after {
+        anyhow::bail!(
+            "batch 사전 적재 중 입력 내용이 변경되었습니다: {}",
+            input.display()
+        );
+    }
+    Ok(PreloadedDocument {
+        document,
+        source_sha256: after,
+    })
+}
+
+fn protected_batch_preload_reservation(input: &Path) -> anyhow::Result<Option<u64>> {
+    if input
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    {
+        return Ok(None);
+    }
+    match crate::format::detect(input)? {
+        crate::format::FileFormat::Hwp5 => {
+            let container = hwp5::Hwp5Container::open(input)?;
+            Ok(container
+                .file_header()
+                .is_encrypted()
+                .then_some(hwp5::PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT))
+        }
+        crate::format::FileFormat::Hwpx => {
+            let mut package = hwpx::HwpxPackage::open(input)?;
+            Ok(package
+                .has_encryption_marker()?
+                .then_some(MAX_PRELOADED_BATCH_BYTES))
+        }
+    }
+}
+
+fn add_preloaded_batch_reservation(total: u64, document: u64) -> anyhow::Result<u64> {
+    let next = total
+        .checked_add(document)
+        .context("batch document memory reservation overflow")?;
+    if next > MAX_PRELOADED_BATCH_BYTES {
+        anyhow::bail!(
+            "--out-dir 입력의 사전 적재 메모리 한도를 초과했습니다: {next} > {MAX_PRELOADED_BATCH_BYTES} bytes"
+        );
+    }
+    Ok(next)
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn run(
+fn run_with_options(
     input: &Path,
     output: &Path,
     to: Option<ConvertFormat>,
@@ -38,8 +124,9 @@ pub fn run(
     embed_bin: bool,
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
-    let report = execute(
+    let report = execute_with_options(
         input,
         output,
         to,
@@ -49,6 +136,7 @@ pub fn run(
         embed_bin,
         md_opts,
         font_dirs,
+        options,
     )?;
     print_warnings(&report.warnings);
     crate::commands::preservation::print_report(&report.preservation);
@@ -62,7 +150,7 @@ pub fn run(
 /// - Output `-`: emits only text formats (md/json/html/txt/csv) to stdout (`--to` required).
 /// - `--out-dir`: batch-converts multiple inputs to `<stem>.<target extension>` (`--to` required).
 #[allow(clippy::too_many_arguments)]
-pub fn run_multi(
+pub fn run_multi_with_password(
     inputs: &[PathBuf],
     output: Option<&Path>,
     out_dir: Option<&Path>,
@@ -73,6 +161,52 @@ pub fn run_multi(
     embed_bin: bool,
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
+    password_args: PasswordArgs,
+) -> anyhow::Result<()> {
+    // Resolve a password only after every document input has claimed its I/O
+    // channel. In particular, a later `-` must not let --password-stdin read
+    // the document bytes as a password before the collision is reported.
+    if password_args.password_stdin
+        && inputs
+            .iter()
+            .any(|input| input.as_os_str() == std::ffi::OsStr::new("-"))
+    {
+        anyhow::bail!("문서 입력과 --password-stdin은 모두 표준 입력을 사용할 수 없습니다");
+    }
+    let input = inputs
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("변환 입력이 비어 있습니다"))?;
+    let password = resolve_password_args(password_args, input)?;
+    run_multi_with_options(
+        inputs,
+        output,
+        out_dir,
+        to,
+        strict,
+        loss_report,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+        &LoadOptions {
+            password: password.as_ref(),
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_multi_with_options(
+    inputs: &[PathBuf],
+    output: Option<&Path>,
+    out_dir: Option<&Path>,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    loss_report: Option<&Path>,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
     // Input staging (`-` → stdin).
     let mut staged: Option<PathBuf> = None;
@@ -119,6 +253,7 @@ pub fn run_multi(
         embed_bin,
         md_opts,
         font_dirs,
+        options,
     );
     if let Some(path) = staged {
         let _ = std::fs::remove_file(path);
@@ -138,6 +273,7 @@ fn run_multi_inner(
     embed_bin: bool,
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
     match (output, out_dir) {
         (Some(out), None) => {
@@ -151,11 +287,12 @@ fn run_multi_inner(
                 let Some(target) = to else {
                     anyhow::bail!("출력이 `-`(stdout)이면 --to가 필요합니다");
                 };
-                let doc = load_document(&inputs[0])?;
+                let doc =
+                    load_document_with_options(&inputs[0], options).map_err(anyhow::Error::new)?;
                 print_text_output(&doc, target, embed_bin, md_opts)?;
                 return Ok(());
             }
-            run(
+            run_with_options(
                 &inputs[0],
                 out,
                 to,
@@ -165,6 +302,7 @@ fn run_multi_inner(
                 embed_bin,
                 md_opts,
                 font_dirs,
+                options,
             )
         }
         (None, Some(dir)) => {
@@ -194,26 +332,92 @@ fn run_multi_inner(
                     );
                 }
             }
+            let mut documents: Vec<Option<PreloadedDocument>> =
+                (0..inputs.len()).map(|_| None).collect();
+            if options.password.is_none() {
+                // Missing credentials must reach the shared loader before any
+                // profile-specific reservation parser so batch and single-file
+                // commands return the same stable refusal.
+                for input in inputs {
+                    load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+                }
+            } else {
+                // Classify and reserve every protected input before loading any
+                // of them. Plain documents are validated first and dropped;
+                // protected documents are retained within the aggregate
+                // reservation so credential preflight does not repeat crypto.
+                let reservations = inputs
+                    .iter()
+                    .map(|input| protected_batch_preload_reservation(input))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                for (input, reservation) in inputs.iter().zip(&reservations) {
+                    if reservation.is_none() {
+                        load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+                    }
+                }
+                let mut reserved_batch_bytes = 0u64;
+                for (index, (input, reservation)) in inputs.iter().zip(reservations).enumerate() {
+                    if let Some(reservation) = reservation {
+                        reserved_batch_bytes =
+                            add_preloaded_batch_reservation(reserved_batch_bytes, reservation)?;
+                        documents[index] = Some(load_preloaded_document(input, options)?);
+                    }
+                }
+            }
             std::fs::create_dir_all(dir)?;
-            for input in inputs {
-                let stem = input
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .with_context(|| {
-                        format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
-                    })?;
-                let out = dir.join(format!("{stem}.{}", target_extension(target)));
-                run(
-                    input,
-                    &out,
-                    Some(target),
-                    strict,
-                    None,
-                    preserve_layout,
-                    embed_bin,
-                    md_opts,
-                    font_dirs.clone(),
-                )?;
+            let convert_member =
+                |input: &Path, document: Option<PreloadedDocument>| -> anyhow::Result<()> {
+                    let stem = input
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .with_context(|| {
+                            format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
+                        })?;
+                    let out = dir.join(format!("{stem}.{}", target_extension(target)));
+                    let report = match document {
+                        Some(document) => execute_with_preloaded_document(
+                            input,
+                            &out,
+                            Some(target),
+                            strict,
+                            None,
+                            preserve_layout,
+                            embed_bin,
+                            md_opts,
+                            font_dirs.clone(),
+                            options,
+                            Some(document),
+                        )?,
+                        None => execute_with_options(
+                            input,
+                            &out,
+                            Some(target),
+                            strict,
+                            None,
+                            preserve_layout,
+                            embed_bin,
+                            md_opts,
+                            font_dirs.clone(),
+                            options,
+                        )?,
+                    };
+                    print_warnings(&report.warnings);
+                    crate::commands::preservation::print_report(&report.preservation);
+                    eprintln!("변환 완료: {} → {}", input.display(), out.display());
+                    Ok(())
+                };
+            // Consume every retained protected document first. Plain/JSON
+            // reloads cannot then overlap an input-order-later HWPX semantic
+            // tree whose size is deliberately treated as the full batch cap.
+            for (input, document) in inputs.iter().zip(documents.iter_mut()) {
+                if document.is_some() {
+                    convert_member(input, document.take())?;
+                }
+            }
+            for (input, document) in inputs.iter().zip(documents) {
+                if document.is_none() {
+                    convert_member(input, None)?;
+                }
             }
             Ok(())
         }
@@ -288,6 +492,68 @@ pub fn execute(
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
 ) -> anyhow::Result<ConvertReport> {
+    execute_with_options(
+        input,
+        output,
+        to,
+        strict,
+        loss_report,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+        &LoadOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_with_options(
+    input: &Path,
+    output: &Path,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    loss_report: Option<&Path>,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<ConvertReport> {
+    let preloaded =
+        if options.password.is_some() && protected_batch_preload_reservation(input)?.is_some() {
+            Some(load_preloaded_document(input, options)?)
+        } else {
+            None
+        };
+    execute_with_preloaded_document(
+        input,
+        output,
+        to,
+        strict,
+        loss_report,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+        options,
+        preloaded,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_with_preloaded_document(
+    input: &Path,
+    output: &Path,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    loss_report: Option<&Path>,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
+    preloaded: Option<PreloadedDocument>,
+) -> anyhow::Result<ConvertReport> {
     let target = match to {
         Some(t) => t,
         None => infer_format(output)?,
@@ -309,30 +575,72 @@ pub fn execute(
         }
         crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
-    let doc = load_document(input)?;
+    let (doc, preloaded_source_sha256) = match preloaded {
+        Some(preloaded) => (preloaded.document, Some(preloaded.source_sha256)),
+        None => (
+            load_document_with_options(input, options).map_err(anyhow::Error::new)?,
+            None,
+        ),
+    };
+    if let Some(expected) = &preloaded_source_sha256
+        && source_sha256(input)? != *expected
+    {
+        anyhow::bail!(
+            "batch 변환 전에 입력 내용이 변경되었습니다: {}",
+            input.display()
+        );
+    }
     if matches!(target, ConvertFormat::Md) {
         let (media_destination, media_prefix) = markdown_media_paths(output, md_opts.media_dir)?;
-        let warnings = crate::commands::output::write_validated_with_sidecar(
-            output,
-            Some(input),
-            &media_destination,
-            |staged, staged_media| {
-                let md = hwp_convert::to_markdown_with(
-                    &doc,
-                    &hwp_convert::MarkdownOptions {
-                        media_dir: Some(staged_media),
-                        media_prefix: Some(&media_prefix),
-                        text: hwp_model::TextOptions {
-                            include_header_footer: md_opts.with_header_footer,
-                            include_hidden: md_opts.with_hidden,
-                        },
+        let write_markdown = |staged: &Path, staged_media: &Path| {
+            let md = hwp_convert::to_markdown_with(
+                &doc,
+                &hwp_convert::MarkdownOptions {
+                    media_dir: Some(staged_media),
+                    media_prefix: Some(&media_prefix),
+                    text: hwp_model::TextOptions {
+                        include_header_footer: md_opts.with_header_footer,
+                        include_hidden: md_opts.with_hidden,
                     },
+                },
+            )?;
+            std::fs::write(staged, md)?;
+            Ok(Vec::new())
+        };
+        let warnings = if let Some(expected) = preloaded_source_sha256.as_deref() {
+            let snapshot_limit = match crate::format::detect(input)? {
+                crate::format::FileFormat::Hwp5 => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
+                crate::format::FileFormat::Hwpx => {
+                    hwpx::NATIVE_PACKAGE_LIMITS.max_total_uncompressed_bytes
+                }
+            };
+            let (_, warnings) =
+                crate::commands::output::write_with_private_input_snapshot_and_sidecar(
+                    output,
+                    input,
+                    snapshot_limit,
+                    &media_destination,
+                    |_, staged, staged_media, snapshot_sha256| {
+                        if snapshot_sha256 != expected {
+                            anyhow::bail!(
+                                "batch 사전 적재 후 Markdown 입력 내용이 변경되었습니다: {}",
+                                input.display()
+                            );
+                        }
+                        write_markdown(staged, staged_media)
+                    },
+                    |_, _, _| Ok(()),
                 )?;
-                std::fs::write(staged, md)?;
-                Ok(Vec::new())
-            },
-            |_, _, _| Ok(()),
-        )?;
+            warnings
+        } else {
+            crate::commands::output::write_validated_with_sidecar(
+                output,
+                Some(input),
+                &media_destination,
+                write_markdown,
+                |_, _, _| Ok(()),
+            )?
+        };
         let report = ConvertReport {
             warnings,
             preservation: hwp_model::PreservationReport::new(),
@@ -349,6 +657,30 @@ pub fn execute(
         (crate::format::FileFormat::Hwp5, ConvertFormat::Hwp)
             | (crate::format::FileFormat::Hwpx, ConvertFormat::Hwpx)
     );
+    let password_unlocked_hwp5 = source_format == crate::format::FileFormat::Hwp5
+        && matches!(target, ConvertFormat::Hwp)
+        && options.password.is_some()
+        && hwp5::Hwp5Container::open(input)?
+            .file_header()
+            .is_encrypted();
+    let password_unlocked_hwpx = source_format == crate::format::FileFormat::Hwpx
+        && matches!(target, ConvertFormat::Hwpx)
+        && options.password.is_some()
+        && {
+            let mut package = hwpx::HwpxPackage::open(input)?;
+            package.has_encryption_marker()?
+        };
+    // Password-unlocked native inputs cannot be compared or rewritten against
+    // their ciphertext containers. HWP5 uses plaintext synthesis; HWPX writes
+    // the authenticated in-memory entries and a plaintext manifest. Ordinary
+    // native inputs keep the strict source-preserving container path.
+    let preserve_same_native_container =
+        same_native_format && !password_unlocked_hwp5 && !password_unlocked_hwpx;
+    // Decrypted HWP5 still has a readable raw CFB directory, so compare its
+    // removal-only opaque surface with the plaintext synthesis. HWPX cannot
+    // use the same inspector because protected opaque entries are ciphertext
+    // in the source and authenticated plaintext in the output.
+    let inspect_same_native_container = same_native_format && !password_unlocked_hwpx;
     let write_staged = |source: &std::path::Path, staged: &std::path::Path| {
         let mut report = match target {
             ConvertFormat::Md => {
@@ -394,14 +726,17 @@ pub fn execute(
                     preserve_linesegs: preserve_layout,
                 },
             )?,
-            ConvertFormat::Hwp if source_format == crate::format::FileFormat::Hwp5 => {
+            ConvertFormat::Hwp
+                if source_format == crate::format::FileFormat::Hwp5
+                    && preserve_same_native_container =>
+            {
                 write_hwp_preserving_source(source, &doc, &doc, staged, preserve_layout, false)?
             }
             ConvertFormat::Hwp => write_hwp(&doc, staged, preserve_layout)?,
         };
 
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-            if same_native_format {
+            if inspect_same_native_container {
                 report.preservation.extend(
                     crate::commands::preservation::inspect_same_format_container(source, staged)?,
                 );
@@ -434,7 +769,7 @@ pub fn execute(
             write_loss_report(report_path, &report.preservation)?;
         }
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-            if same_native_format || strict {
+            if preserve_same_native_container || strict {
                 crate::commands::reject_preservation_loss("convert", &report.preservation)?;
             }
             load_document(staged)
@@ -442,15 +777,33 @@ pub fn execute(
         }
         Ok(())
     };
-    let write_report = if source_format == crate::format::FileFormat::Hwp5
-        && matches!(target, ConvertFormat::Hwp)
-    {
+    let snapshot_bound = preloaded_source_sha256.is_some()
+        || (source_format == crate::format::FileFormat::Hwp5
+            && matches!(target, ConvertFormat::Hwp));
+    let write_report = if snapshot_bound {
+        let snapshot_limit = match source_format {
+            crate::format::FileFormat::Hwp5 => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
+            crate::format::FileFormat::Hwpx => {
+                hwpx::NATIVE_PACKAGE_LIMITS.max_total_uncompressed_bytes
+            }
+        };
         let (_, report) = crate::commands::output::write_with_private_input_snapshot(
             output,
             input,
-            hwp_cli::certification::MAX_INPUT_BYTES,
+            snapshot_limit,
             crate::commands::output::SnapshotOutputMode::Publish,
-            |snapshot, staged, _| write_staged(snapshot, staged),
+            |snapshot, staged, snapshot_sha256| {
+                if preloaded_source_sha256
+                    .as_deref()
+                    .is_some_and(|expected| expected != snapshot_sha256)
+                {
+                    anyhow::bail!(
+                        "batch 사전 적재 후 HWP 입력 내용이 변경되었습니다: {}",
+                        input.display()
+                    );
+                }
+                write_staged(snapshot, staged)
+            },
             verify_staged,
         )?;
         report
@@ -1010,7 +1363,7 @@ fn clear_linesegs(doc: &mut hwp_model::Document) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -1407,6 +1760,15 @@ mod tests {
         issues.push(hwp_render::RenderIssueCode::FontMatched, b"font");
         let report = issues.finish();
         assert!(render_issue_messages(&report).is_empty());
+    }
+
+    #[test]
+    fn preloaded_batch_memory_reservation_enforces_its_exact_boundary() {
+        assert_eq!(
+            add_preloaded_batch_reservation(MAX_PRELOADED_BATCH_BYTES - 1, 1).unwrap(),
+            MAX_PRELOADED_BATCH_BYTES
+        );
+        assert!(add_preloaded_batch_reservation(MAX_PRELOADED_BATCH_BYTES, 1).is_err());
     }
 
     #[test]

@@ -52,6 +52,7 @@ fn real_main() -> anyhow::Result<()> {
             with_header_footer,
             with_hidden,
             with_segments,
+            password,
         } => commands::cat::run(
             &file,
             format,
@@ -59,6 +60,7 @@ fn real_main() -> anyhow::Result<()> {
             with_header_footer,
             with_hidden,
             with_segments,
+            password,
         ),
         Cmd::Convert {
             inputs,
@@ -73,7 +75,8 @@ fn real_main() -> anyhow::Result<()> {
             with_header_footer,
             with_hidden,
             font_dir,
-        } => commands::convert::run_multi(
+            password,
+        } => commands::convert::run_multi_with_password(
             &inputs,
             output.as_deref(),
             out_dir.as_deref(),
@@ -88,6 +91,7 @@ fn real_main() -> anyhow::Result<()> {
                 with_hidden,
             },
             font_dir,
+            password,
         ),
         Cmd::Grep {
             pattern,
@@ -102,7 +106,8 @@ fn real_main() -> anyhow::Result<()> {
             format,
             report,
             font_dir,
-        } => commands::render::run_with_report(
+            password,
+        } => commands::render::run_with_password(
             &input,
             &output,
             &pages,
@@ -110,6 +115,7 @@ fn real_main() -> anyhow::Result<()> {
             format,
             font_dir,
             report.as_deref(),
+            password,
         ),
         Cmd::Diff {
             input,

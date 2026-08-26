@@ -13,9 +13,10 @@ The six document types in scope: 기안문 (draft), 보고서 (report), 계획�
 
 ## 1. The markdown contract
 
-Body item marks come from **nested-list depth**, not from typed characters. Write plain
-nested markdown ordered lists (`1.` at every depth, indented two or more spaces per level)
-and the engine assigns the mark for that depth:
+Body item marks come from **nested-list depth**, not from typed characters. Write plain nested
+markdown ordered lists (`1.` at every depth) and indent each nested line by at least its marker
+width. Three spaces after `1.` is the canonical form; the engine then assigns the mark for that
+depth:
 
 | List depth | Statutory mark | What every official profile renders |
 |---|---|---|

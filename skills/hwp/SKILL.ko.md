@@ -32,7 +32,9 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 - `hwp cat {file} [--format plain|markdown|json|html|csv]` — 텍스트 추출. 유용한 플래그:
   `--preview` (PrvText만, 본문 파싱 없음), `--with-header-footer`, `--with-hidden`
   (숨은 주석), `--with-segments` (마크다운 + 소스 좌표를 한 줄 JSON 봉투로).
-  `--format json`은 전체 IR(표, 이미지, 서식)을 납출합니다.
+  `--format json`은 전체 IR(표, 이미지, 서식)을 납출합니다. 지원 암호 보호 HWP5/HWPX는
+  `--password-stdin` 사용을 우선하고, 프로세스 인수 노출을 감수할 때만 `--password {value}`를
+  사용하세요.
 - `hwp grep {pattern} {file} [--ignore-case]` — 본문, 표 셀, 텍스트 상자를 대상으로 한
   문단 부분 문자열 검색. grep 관례: 일치 항목이 없으면 종료 코드 1.
 - `hwp convert {inputs...} -o {output}` — 형식 변환 (`--to hwp|hwpx|md|json|html|pdf|
@@ -41,6 +43,7 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   발행하지 않고 실패합니다. PDF 출력은 렌더 경로에 위임되며 CJK 폰트가 필요합니다:
   `--font-dir {dir}` (반복 가능; 기본값 `HWP_FONT_DIR` 또는 `fonts/`). 마크다운 납출
   플래그: `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json).
+  보호 입력은 `cat`과 같은 `--password` / `--password-stdin` 쌍을 받습니다.
 - `hwp new -o {out.hwpx|out.hwp}` — 문서 생성. `--from {file.md|file.json}`은 마크다운
   또는 JSON IR을 가져옵니다 (생략 시 빈 문서); `--set-meta key=value` (title/author/
   subject/keywords, 반복 가능); `--preset official|report|plan|notice|minutes|press`
@@ -81,6 +84,7 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 - `hwp render {input} -o {output.png|svg|pdf}` — 페이지 렌더링. `--pages "1"|"1-3"|"all"`,
   `--dpi 36..=600` (기본 96), `--format png|svg|pdf`, `--font-dir {dir}` (반복 가능).
   PNG/SVG는 페이지당 파일 하나; PDF는 단일 다중 페이지 파일. CJK 폰트 필요.
+  보호 입력은 `--password` 또는 `--password-stdin`을 받습니다.
 - `hwp fields {file} [--json]` / `hwp bookmarks {file} [--json]` / `hwp slots {file} [--json]`
   — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열.
 - `hwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
@@ -193,14 +197,14 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | 도구 | 필수 인수 | 용도 |
 |---|---|---|
 | `hwp_info` | `path` | 형식, 버전, 속성, 스트림 진단 |
-| `hwp_read` | `path` | 텍스트 추출 (`format`: plain/markdown/json/html/csv; `with_header_footer`, `with_hidden`, `with_segments`); UTF-8 바이트 페이지네이션 |
+| `hwp_read` | `path` | 텍스트 추출 (`format`: plain/markdown/json/html/csv; 선택적 호출별 `password`; `with_header_footer`, `with_hidden`, `with_segments`); UTF-8 바이트 페이지네이션 |
 | `hwp_grep` | `path`, `pattern` | 문단 부분 문자열 검색; `{matches, count, truncated}`; 0걻도 정상 결과 |
 | `hwp_list_fields` | `path` | 필드 나열 |
 | `hwp_list_bookmarks` | `path` | 책갈피 (bokm) 나열 |
 | `hwp_slots` | `path` | `{{name}}` 자리 표시자 나열 |
-| `hwp_render` | `path` | 페이지 렌더링 (`format`: png/svg/pdf, `pages` 범위); 단일 페이지 PNG는 base64 반환, 더 큰 결과는 `output_path`로 파일 기록 |
+| `hwp_render` | `path` | 페이지 렌더링 (선택적 호출별 `password`; `format`: png/svg/pdf, `pages` 범위); 단일 페이지 PNG는 base64 반환, 더 큰 결과는 `output_path`로 파일 기록 |
 | `hwp_edit` | `input`, `output` | 타입화된 JSON 연산을 통한 엄격한 원자적 편집 (모든 `hwp edit` 플래그 미러, `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*` 포함) |
-| `hwp_convert` | `input`, `output` | 형식 변환 (MCP에서는 `strict` 기본값 true) |
+| `hwp_convert` | `input`, `output` | 형식 변환 (선택적 호출별 `password`; MCP에서는 `strict` 기본값 true) |
 | `hwp_new` | `output` | 마크다운 또는 JSON IR과 메타데이터, 공문서 프로필, `margin_top`/`margin_bottom`/`margin_left`/`margin_right` override로 문서 생성 |
 | `hwp_compose` | `output`, `spec`/`spec_path` | CLI와 동일한 경로로 DocumentSpec v1/v2 조립 |
 | `hwp_template` | `output`, `template` (+`data`) | TemplateSpec/Data v1의 한정된 확장 |
@@ -227,3 +231,6 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
    의도적으로만 사용하고, 결과를 다시 확인하세요.
 5. **MCP에는 `--root`를 선호하세요.** 제한 없이 실행하는 대신, 도구가 정당하게 접근할
    수 있는 모든 디렉터리에 대해 플래그를 반복해 서버 범위를 작업 디렉터리로 한정하세요.
+6. **암호는 호출 안에서만 유지하세요.** CLI에서는 `--password`보다 `--password-stdin`을
+   우선하고, MCP 암호는 개별 `hwp_read`·`hwp_convert`·`hwp_render` 호출에만 넣으세요.
+   암호를 리포트·영수증·생성 파일·명령 기록·지속 환경변수에 남기지 마세요.

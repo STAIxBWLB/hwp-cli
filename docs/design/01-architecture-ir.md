@@ -479,11 +479,12 @@ omitted from JSON when empty. For example `CharShape::strike` is only a semantic
 ### 5.1 Format detection (the hub entrance)
 
 `hwp-cli/format.rs` decides by **magic bytes, not extension**: CFB `D0CF11E0A1B11AE1` → `Hwp5`,
-ZIP `PK` (504B) → `Hwpx`. `commands::cat::load_document(path)` is the canonical dispatch:
+ZIP `PK` (504B) → `Hwpx`. `commands::cat::load_document_with_options(path, options)` is the
+canonical dispatch; `load_document(path)` supplies default options:
 
 - the extension `.json` → `hwp_convert::from_json` (deserializing L2 JSON into the IR)
-- CFB → `hwp5::read_document`
-- ZIP → `hwpx::read_document`
+- CFB → `hwp5::read_document_with_options`
+- ZIP → `hwpx::read_document_with_options`
 
 All three return a `Document` (L1) and stream warnings to stderr. Every command afterwards consumes
 only L1.
@@ -492,9 +493,10 @@ only L1.
 
 **hwp5 (`read::read_document`):**
 
-1. `Hwp5Container::open` opens the CFB and runs `check_body_readable`, which refuses password-,
-   certificate- and DRM-protected documents. A distribution document is **not** refused: `distdoc`
-   decrypts its `/ViewText/SectionN` streams first.
+1. `Hwp5Container::open` opens the CFB. The password-aware reader authenticates and decrypts the
+   genuine-corpus-evidenced EncryptVersion 4 profile in memory when a password is supplied, then
+   runs the remaining certificate/DRM/signature refusal chain. A distribution document takes the
+   separate `distdoc` path and decrypts its `/ViewText/SectionN` streams first.
 2. The `/DocInfo` stream is read (raw deflate decompressed), then `scan_stream(_, Tolerant)` produces
    a `RecordNode` forest (L0), then `parse_doc_info` produces the `DocHeader`.
 3. Each `/BodyText/SectionN` from `body_sections()` (or each decrypted `/ViewText/SectionN`) goes
@@ -507,7 +509,9 @@ only L1.
 
 **hwpx (`read::read_document`):**
 
-1. `HwpxPackage::open`.
+1. `HwpxPackage::open`; when the manifest carries the evidenced ODF encryption profile, the
+   password-aware reader authenticates a per-package in-memory entry overlay before integrity and
+   semantic parsing. Plain packages ignore a supplied password.
 2. `Contents/header.xml` → `header::parse_header` → `DocHeader`.
 3. `section_entries()` (`Contents/sectionN.xml`) → `section::parse_section` → `Section`, updating
    `properties.section_count`.

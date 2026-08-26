@@ -31,7 +31,9 @@ tiny-skia = { workspace = true }
 image = { workspace = true }
 quick-xml = { workspace = true }
 libc = { workspace = true }
+encoding_rs = { workspace = true }
 resvg = { workspace = true }
+zeroize = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -49,3 +51,9 @@ jsonschema = { workspace = true }
 # 워크스페이스 의존성이자 hwp5의 직접 의존성이라 트리에 새 코드가 추가되지 않고,
 # dev 전용이라 출시 바이너리에는 들어가지 않는다.
 cfb = { workspace = true }
+aes = { workspace = true }
+base64 = { workspace = true }
+cbc = { workspace = true }
+hmac = { workspace = true }
+pbkdf2 = { workspace = true }
+sha1 = { workspace = true }

@@ -352,20 +352,22 @@ pub struct OpaqueRecord {
 
 ### 5.1 포맷 감지 (허브 입구)
 
-`hwp-cli/format.rs`가 **확장자가 아니라 매직 바이트**로 판별: CFB `D0CF11E0A1B11AE1`→`Hwp5`, ZIP `PK`(504B)→`Hwpx`. `commands::cat::load_document(path)`가 디스패치의 정본:
+`hwp-cli/format.rs`가 **확장자가 아니라 매직 바이트**로 판별: CFB `D0CF11E0A1B11AE1`→`Hwp5`,
+ZIP `PK`(504B)→`Hwpx`. `commands::cat::load_document_with_options(path, options)`가 디스패치의
+정본이며, `load_document(path)`는 기본 옵션을 넘긴다.
 
 - 확장자 `.json` → `hwp_convert::from_json` (L2 JSON을 IR로 역직렬화)
-- CFB → `hwp5::read_document`
-- ZIP → `hwpx::read_document`
+- CFB → `hwp5::read_document_with_options`
+- ZIP → `hwpx::read_document_with_options`
 
 세 경로 모두 `Document`(L1)를 돌려주고 경고를 stderr로 흘린다. 이후 모든 명령은 L1만 소비한다.
 
 ### 5.2 read → IR (L0 → L1)
 
 **hwp5 (`read::read_document`):**
-1. `Hwp5Container::open` → CFB 열고 `check_body_readable`. 이 게이트는 암호·인증서·DRM 보호
-   문서를 거부한다. 배포용문서는 거부하지 않으며, `distdoc`이 `/ViewText/SectionN` 스트림을
-   먼저 복호화한다.
+1. `Hwp5Container::open`으로 CFB를 연다. password-aware reader는 암호가 있으면 정품 코퍼스로
+   실증한 EncryptVersion 4 프로파일만 메모리에서 인증·복호화한 뒤 남은 인증서·DRM·서명 거부
+   순서를 적용한다. 배포용문서는 별도 `distdoc` 경로에서 `/ViewText/SectionN`을 먼저 복호화한다.
 2. `/DocInfo` 스트림 읽어(raw deflate 해제) `scan_stream(_, Tolerant)` → `RecordNode` forest(L0) → `parse_doc_info` → `DocHeader`.
 3. `body_sections()`의 각 `/BodyText/SectionN`(또는 복호화한 `/ViewText/SectionN`) → 같은 스캔 → `parse_section` → `Section`.
 4. `/BinData/*` 스트림 → (압축 플래그면 해제 시도-폴백) → `Vec<BinStream>`.
@@ -373,7 +375,9 @@ pub struct OpaqueRecord {
 6. `Document{ meta:{source_format:"hwp5", source_version:버전}, metadata, header, sections, bin_streams }`.
 
 **hwpx (`read::read_document`):**
-1. `HwpxPackage::open`.
+1. `HwpxPackage::open`. manifest에 실증된 ODF 암호 프로파일이 있으면 password-aware reader가
+   패키지별 메모리 entry overlay를 인증한 뒤 무결성·의미 파싱으로 진행한다. 평문 패키지는 공급된
+   암호를 무시한다.
 2. `Contents/header.xml` → `header::parse_header` → `DocHeader`.
 3. `section_entries()`(`Contents/sectionN.xml`) → `section::parse_section` → `Section`. `properties.section_count` 갱신.
 4. `BinData/*` → `BinStream`.
