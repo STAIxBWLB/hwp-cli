@@ -743,13 +743,20 @@ fn execute_with_preloaded_document(
         }
         Ok(())
     };
-    let write_report = if source_format == crate::format::FileFormat::Hwp5
-        && matches!(target, ConvertFormat::Hwp)
-    {
+    let snapshot_bound = preloaded_source_sha256.is_some()
+        || (source_format == crate::format::FileFormat::Hwp5
+            && matches!(target, ConvertFormat::Hwp));
+    let write_report = if snapshot_bound {
+        let snapshot_limit = match source_format {
+            crate::format::FileFormat::Hwp5 => hwp_cli::certification::MAX_INPUT_BYTES,
+            crate::format::FileFormat::Hwpx => {
+                hwpx::NATIVE_PACKAGE_LIMITS.max_total_uncompressed_bytes
+            }
+        };
         let (_, report) = crate::commands::output::write_with_private_input_snapshot(
             output,
             input,
-            hwp_cli::certification::MAX_INPUT_BYTES,
+            snapshot_limit,
             crate::commands::output::SnapshotOutputMode::Publish,
             |snapshot, staged, snapshot_sha256| {
                 if preloaded_source_sha256
