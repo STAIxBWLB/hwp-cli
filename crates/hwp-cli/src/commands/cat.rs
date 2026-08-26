@@ -54,6 +54,14 @@ impl PasswordRefusal {
             stage: "credential-validation",
         }
     }
+
+    fn hwpx() -> Self {
+        Self {
+            format: FileFormat::Hwpx,
+            algorithm: "AES256-CBC/PBKDF2-HMAC-SHA1",
+            stage: "credential-validation",
+        }
+    }
 }
 
 impl fmt::Display for PasswordRefusal {
@@ -189,7 +197,16 @@ pub fn load_document_with_options(
             Ok(result.document)
         }
         FileFormat::Hwpx => {
-            let result = hwpx::read_document(path).map_err(anyhow::Error::new)?;
+            let result = hwpx::read_document_with_options(
+                path,
+                &hwpx::ReadOptions {
+                    password: options.password.map(ResolvedPassword::as_str),
+                },
+            )
+            .map_err(|error| match error {
+                hwpx::HwpxError::Encrypted => LoadDocumentError::Password(PasswordRefusal::hwpx()),
+                other => LoadDocumentError::Other(anyhow::Error::new(other)),
+            })?;
             for w in &result.warnings {
                 eprintln!("경고: {w}");
             }

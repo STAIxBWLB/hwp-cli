@@ -15,6 +15,14 @@ zip = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+aes = { workspace = true }
+base64 = { workspace = true }
+cbc = { workspace = true }
+flate2 = { workspace = true }
+pbkdf2 = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 zip = { workspace = true }

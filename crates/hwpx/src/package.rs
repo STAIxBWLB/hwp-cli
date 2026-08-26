@@ -3,7 +3,7 @@
 //! `hwp info`/`hwp dump`가 OWPML 파싱 없이도 동작하도록
 //! 컨테이너 계층만으로 메타데이터를 제공한다.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -12,6 +12,7 @@ use quick_xml::events::Event;
 use serde::Serialize;
 
 use crate::error::{HwpxError, Result};
+use crate::read::password;
 
 pub const MIMETYPE: &str = "application/hwp+zip";
 
@@ -194,6 +195,7 @@ pub struct HwpxPackage {
     zip: zip::ZipArchive<File>,
     entries: Vec<EntryInfo>,
     limits: PackageLimits,
+    decrypted_entries: BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
 }
 
 impl HwpxPackage {
@@ -213,6 +215,7 @@ impl HwpxPackage {
             zip,
             entries,
             limits: *limits,
+            decrypted_entries: BTreeMap::new(),
         };
         let mime = pkg.read_entry_string("mimetype")?;
         if mime.trim() != MIMETYPE {
@@ -227,6 +230,9 @@ impl HwpxPackage {
     }
 
     pub fn read_entry(&mut self, name: &str) -> Result<Vec<u8>> {
+        if let Some(plaintext) = self.decrypted_entries.get(name) {
+            return Ok(plaintext.to_vec());
+        }
         let info = self
             .entries
             .iter()
@@ -252,6 +258,52 @@ impl HwpxPackage {
     /// 구조 검증과 보존 patch는 이 메서드를 먼저 통과해야 한다.
     pub fn verify_integrity(&mut self) -> Result<()> {
         verify_archive_integrity(&mut self.zip, &self.entries, &self.limits)
+    }
+
+    /// Unlocks the observed, evidence-bound ODF profile into a per-package
+    /// in-memory overlay. Plaintext never becomes a ZIP or a file on disk.
+    pub fn unlock_with_password(&mut self, password: &str) -> Result<()> {
+        if !self.decrypted_entries.is_empty() {
+            return Err(HwpxError::Encrypted);
+        }
+        let manifest = self
+            .read_entry_string("META-INF/manifest.xml")
+            .map_err(|_| HwpxError::Encrypted)?;
+        let profile = password::parse_profile(&manifest)?;
+        let mut retained_plaintext = 0u64;
+        let mut overlay = BTreeMap::new();
+        for entry in profile.entries() {
+            let info = self
+                .entries
+                .iter()
+                .find(|candidate| candidate.name == entry.name)
+                .ok_or(HwpxError::Encrypted)?;
+            let stored = {
+                let raw = self
+                    .zip
+                    .by_name(&entry.name)
+                    .map_err(|_| HwpxError::Encrypted)?;
+                raw.compression() == zip::CompressionMethod::Stored
+            };
+            if !stored || info.compressed_size != info.size {
+                return Err(HwpxError::Encrypted);
+            }
+            let ciphertext = self.read_entry(&entry.name)?;
+            let plaintext = password::decrypt_entry(
+                entry,
+                password,
+                ciphertext,
+                &self.limits,
+                retained_plaintext,
+            )?;
+            retained_plaintext = retained_plaintext
+                .checked_add(plaintext.len() as u64)
+                .filter(|total| *total <= self.limits.max_total_uncompressed_bytes)
+                .ok_or(HwpxError::Encrypted)?;
+            overlay.insert(entry.name.clone(), plaintext);
+        }
+        self.decrypted_entries = overlay;
+        Ok(())
     }
 
     /// Refuses an encrypted package before any content part is read (GATE-02, D-04/D-05).

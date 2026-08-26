@@ -22,6 +22,9 @@ pub enum HwpxError {
     #[error("HWPX 패키지 무결성 오류: {0}")]
     PackageIntegrity(String),
 
+    #[error("HWPX 보호 프로필은 지원하지 않습니다.")]
+    UnsupportedEncryptionProfile,
+
     #[error("XML 파싱 오류 ({entry}): {message}")]
     Xml { entry: String, message: String },
 

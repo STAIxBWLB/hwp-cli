@@ -795,11 +795,19 @@ dependencies = [
 name = "hwpx"
 version = "0.10.0"
 dependencies = [
+ "aes",
+ "base64",
+ "cbc",
+ "flate2",
  "hwp-convert",
  "hwp-model",
+ "pbkdf2",
  "quick-xml",
  "serde",
+ "sha1",
+ "sha2",
  "thiserror",
+ "zeroize",
  "zip",
 ]
 

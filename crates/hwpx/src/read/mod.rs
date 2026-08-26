@@ -5,6 +5,7 @@
 //! 위치 산수와 추출 로직이 같은 코드를 타게 한다.
 
 pub mod header;
+pub(crate) mod password;
 pub mod section;
 mod xml;
 
@@ -20,9 +21,21 @@ pub struct ReadResult {
     pub warnings: Vec<String>,
 }
 
+/// Per-call options for the HWPX reader. Password bytes are used exactly as
+/// provided and do not survive the reader invocation.
+#[derive(Clone, Copy, Default)]
+pub struct ReadOptions<'a> {
+    pub password: Option<&'a str>,
+}
+
 /// HWPX 파일을 IR로 읽는다.
 pub fn read_document(path: &Path) -> Result<ReadResult> {
-    read_document_impl(path, true)
+    read_document_with_options(path, &ReadOptions::default())
+}
+
+/// Reads an HWPX document with the explicit per-call password option.
+pub fn read_document_with_options(path: &Path, options: &ReadOptions<'_>) -> Result<ReadResult> {
+    read_document_impl(path, true, options)
 }
 
 /// HWPX의 구조와 XML을 읽되 `BinData/*` 본문은 압축 해제하지 않는다.
@@ -31,15 +44,22 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
 /// 실제 이미지는 IR에 적재하지 않아 큰 정상 문서도 첨부 크기에 비례한 메모리를 쓰지
 /// 않는다.
 pub fn read_structure(path: &Path) -> Result<ReadResult> {
-    read_document_impl(path, false)
+    read_document_impl(path, false, &ReadOptions::default())
 }
 
-fn read_document_impl(path: &Path, load_binary_data: bool) -> Result<ReadResult> {
+fn read_document_impl(
+    path: &Path,
+    load_binary_data: bool,
+    options: &ReadOptions<'_>,
+) -> Result<ReadResult> {
     let mut pkg = HwpxPackage::open(path)?;
     // GATE-02: refuse an encrypted package before the integrity sweep or any content
     // part is read. An encrypted package can fail integrity for reasons unrelated to
     // the user's actual problem; the typed encryption message is the one that helps.
-    pkg.check_body_readable()?;
+    match options.password {
+        Some(password) => pkg.unlock_with_password(password)?,
+        None => pkg.check_body_readable()?,
+    }
     // 파서가 직접 사용하지 않는 Preview/BinData/확장 파트도 손상 여부를 놓치지
     // 않는다. 실제 바이트는 보관하지 않으며, 이후 필요한 파트만 다시 읽는다.
     pkg.verify_integrity()?;
