@@ -422,6 +422,17 @@ fn load_mcp_document(
     })
 }
 
+fn map_mcp_convert_error(path: &Path, error: anyhow::Error) -> McpToolError {
+    if matches!(
+        error.downcast_ref::<LoadDocumentError>(),
+        Some(LoadDocumentError::Password(_))
+    ) {
+        McpToolError::password(path)
+    } else {
+        McpToolError::from(format!("{error:#}"))
+    }
+}
+
 fn take_scoped_password(
     args: &mut Value,
     allowed: &[&str],
@@ -1654,9 +1665,6 @@ fn tool_convert_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
             "password",
         ],
     )?;
-    // Preload through the typed shared loader before publication so password
-    // refusals stay structured and never create an output or sidecar.
-    let _ = load_mcp_document(&request.input, password.as_ref())?;
     let md_options = crate::commands::convert::MdOpts {
         media_dir: request.media_dir.as_deref(),
         with_header_footer: request.with_header_footer,
@@ -1690,7 +1698,7 @@ fn tool_convert_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
             request.font_dirs,
         )
     }
-    .map_err(|error| format!("{error:#}"))?;
+    .map_err(|error| map_mcp_convert_error(&request.input, error))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
             "input": request.input,
