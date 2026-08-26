@@ -336,10 +336,13 @@ impl HwpxPackage {
     /// unaffected — a manifest is not needed to read a document, and a detection
     /// heuristic on a non-essential entry must not block one that is otherwise fine
     /// (T-2-13, deliberate fail-open, recorded here per the plan's own requirement).
-    pub fn check_body_readable(&mut self) -> Result<()> {
+    /// Returns whether the plaintext manifest marks one or more package entries as
+    /// encrypted. Missing or malformed manifests deliberately remain fail-open,
+    /// matching [`Self::check_body_readable`]'s historic behavior.
+    pub fn has_encryption_marker(&mut self) -> Result<bool> {
         let xml = match self.read_entry_string("META-INF/manifest.xml") {
             Ok(xml) => xml,
-            Err(HwpxError::EntryNotFound(_)) => return Ok(()),
+            Err(HwpxError::EntryNotFound(_)) => return Ok(false),
             // Any other error (a limit violation, an archive error) surfaces as itself.
             Err(other) => return Err(other),
         };
@@ -351,14 +354,22 @@ impl HwpxPackage {
                     // so a namespace prefix change does not defeat detection and a
                     // comment/text mention of the word does not trigger a false refusal.
                     if e.local_name().as_ref() == b"encryption-data" {
-                        return Err(HwpxError::Encrypted);
+                        return Ok(true);
                     }
                 }
-                Ok(Event::Eof) => return Ok(()),
+                Ok(Event::Eof) => return Ok(false),
                 Ok(_) => {}
                 // Fail-open on a malformed manifest: see the doc comment above (T-2-13).
-                Err(_) => return Ok(()),
+                Err(_) => return Ok(false),
             }
+        }
+    }
+
+    pub fn check_body_readable(&mut self) -> Result<()> {
+        if self.has_encryption_marker()? {
+            Err(HwpxError::Encrypted)
+        } else {
+            Ok(())
         }
     }
 

@@ -57,7 +57,8 @@ fn read_document_impl(
     // part is read. An encrypted package can fail integrity for reasons unrelated to
     // the user's actual problem; the typed encryption message is the one that helps.
     match options.password {
-        Some(password) => pkg.unlock_with_password(password)?,
+        Some(password) if pkg.has_encryption_marker()? => pkg.unlock_with_password(password)?,
+        Some(_) => {}
         None => pkg.check_body_readable()?,
     }
     // 파서가 직접 사용하지 않는 Preview/BinData/확장 파트도 손상 여부를 놓치지

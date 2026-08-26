@@ -101,6 +101,20 @@ fn the_committed_sample_still_reads() {
 }
 
 #[test]
+fn an_unencrypted_package_ignores_a_supplied_password() {
+    let result = read_document_with_options(
+        &fixture(),
+        &ReadOptions {
+            password: Some("ignored-password"),
+        },
+    );
+    assert!(
+        result.is_ok(),
+        "a password must not turn a normal HWPX into an encrypted package"
+    );
+}
+
+#[test]
 fn the_committed_sample_with_an_encrypted_manifest_refuses() {
     let repacked = repack_with_manifest(&fixture(), ENCRYPTED_MANIFEST);
     let result = read_document(&repacked);

@@ -427,6 +427,37 @@ fn hwpx_cat_uses_exact_password_bytes_and_one_public_refusal() {
 }
 
 #[test]
+fn plain_hwpx_accepts_an_ignored_password_in_cli_and_mcp() {
+    let dir = temp_dir("plain-hwpx-password");
+    let plain = dir.join("plain.hwpx");
+    let created = hwp().arg("new").arg("-o").arg(&plain).output().unwrap();
+    assert!(created.status.success(), "plain HWPX creation failed");
+
+    let cli = hwp()
+        .arg("cat")
+        .arg(&plain)
+        .arg("--password")
+        .arg("ignored-password")
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "an unencrypted HWPX must stay readable: {}",
+        refusal(&cli.stderr)
+    );
+
+    let responses = mcp_calls(
+        &dir,
+        &[mcp_call(
+            1,
+            "hwp_read",
+            json!({"path": plain, "format": "plain", "password": "ignored-password"}),
+        )],
+    );
+    assert_eq!(responses[0]["result"]["isError"], false);
+}
+
+#[test]
 fn mcp_read_password_is_per_call_closed_and_sandboxed() {
     let password = "mcp-read-secret";
     let dir = temp_dir("mcp-read");
