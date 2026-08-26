@@ -365,44 +365,59 @@ fn run_multi_inner(
                 }
             }
             std::fs::create_dir_all(dir)?;
-            for (input, document) in inputs.iter().zip(documents) {
-                let stem = input
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .with_context(|| {
-                        format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
-                    })?;
-                let out = dir.join(format!("{stem}.{}", target_extension(target)));
-                let report = match document {
-                    Some(document) => execute_with_preloaded_document(
-                        input,
-                        &out,
-                        Some(target),
-                        strict,
-                        None,
-                        preserve_layout,
-                        embed_bin,
-                        md_opts,
-                        font_dirs.clone(),
-                        options,
-                        Some(document),
-                    )?,
-                    None => execute_with_options(
-                        input,
-                        &out,
-                        Some(target),
-                        strict,
-                        None,
-                        preserve_layout,
-                        embed_bin,
-                        md_opts,
-                        font_dirs.clone(),
-                        options,
-                    )?,
+            let convert_member =
+                |input: &Path, document: Option<PreloadedDocument>| -> anyhow::Result<()> {
+                    let stem = input
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .with_context(|| {
+                            format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
+                        })?;
+                    let out = dir.join(format!("{stem}.{}", target_extension(target)));
+                    let report = match document {
+                        Some(document) => execute_with_preloaded_document(
+                            input,
+                            &out,
+                            Some(target),
+                            strict,
+                            None,
+                            preserve_layout,
+                            embed_bin,
+                            md_opts,
+                            font_dirs.clone(),
+                            options,
+                            Some(document),
+                        )?,
+                        None => execute_with_options(
+                            input,
+                            &out,
+                            Some(target),
+                            strict,
+                            None,
+                            preserve_layout,
+                            embed_bin,
+                            md_opts,
+                            font_dirs.clone(),
+                            options,
+                        )?,
+                    };
+                    print_warnings(&report.warnings);
+                    crate::commands::preservation::print_report(&report.preservation);
+                    eprintln!("변환 완료: {} → {}", input.display(), out.display());
+                    Ok(())
                 };
-                print_warnings(&report.warnings);
-                crate::commands::preservation::print_report(&report.preservation);
-                eprintln!("변환 완료: {} → {}", input.display(), out.display());
+            // Consume every retained protected document first. Plain/JSON
+            // reloads cannot then overlap an input-order-later HWPX semantic
+            // tree whose size is deliberately treated as the full batch cap.
+            for (input, document) in inputs.iter().zip(documents.iter_mut()) {
+                if document.is_some() {
+                    convert_member(input, document.take())?;
+                }
+            }
+            for (input, document) in inputs.iter().zip(documents) {
+                if document.is_none() {
+                    convert_member(input, None)?;
+                }
             }
             Ok(())
         }

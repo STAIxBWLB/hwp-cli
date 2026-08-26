@@ -1075,8 +1075,8 @@ fn cli_convert_batch_and_document_stdin_keep_password_channels_distinct() {
     let mixed_out_dir = dir.join("mixed-output");
     let mixed_batch = hwp()
         .arg("convert")
-        .arg(&first)
         .arg(&json_input)
+        .arg(&first)
         .arg("--out-dir")
         .arg(&mixed_out_dir)
         .arg("--to")
