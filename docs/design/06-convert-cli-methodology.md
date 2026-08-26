@@ -33,37 +33,34 @@ The public API re-exported by `hwp-convert/src/lib.rs`: `replace_text`, `set_cel
 
 ### 1.2 Conversion matrix
 
-| Input | Output | Path | Fidelity |
-|---|---|---|---|
+| Conversion | Path | Fidelity |
+|---|---|---|
 | hwp5 → hwp5 (unmodified) | `write_hwp(preserve_layout)` | **Byte-identical round-trip** (the identity gate) |
 | hwp5 → hwpx | reader → IR → hwpx writer | Semantically equivalent (shapes, fields and tables preserved) |
 | hwpx → hwp5 | IR → `write_hwp_edited` (synthesis) | Semantically equivalent; gso is safely degraded |
 | md → hwp5/hwpx | `from_markdown` → writer (synthesis) | A new document |
-| hwp/hwpx → md/html/json/odt | IR → serialization | Lossy, one-way |
-| hwp/hwpx → pdf/png/svg | delegated to the render path | Render output |
+| html → hwp5/hwpx | `from_html` → writer (synthesis) | A new document, over the XHTML subset of [18](18-html-fragment-contract.md) |
 | json (IR) → hwp/hwpx | `from_json` → writer | Edit round-trip |
+| hwp/hwpx → md/html/json/odt | IR → serialization | Lossy, one-way |
+| hwp/hwpx → docx | IR → `docx.rs` (OOXML package) | Lossy, one-way. Output only; there is no docx input |
+| hwp/hwpx → csv/txt | IR → `csv.rs` or text extraction | Tables or plain text only |
+| hwp/hwpx → pdf/png/svg | delegated to the render path | Render output |
 
 **The key branch**: if `doc.meta.source_format` is `"hwp5"` and nothing was edited, the original line
 layout is preserved for a byte-identical round-trip. Everything else (markdown or hwpx origin, or
 edited) goes through the **synthesis path** (`edited=true`), which clears the line layout so Hancom
 recomputes it.
 
-### 1.3 CLI subcommands (`hwp-cli/src/main.rs`, clap derive)
+### 1.3 CLI subcommands (`crates/hwp-cli/src/cli.rs`, clap derive)
 
-| Command | Main flags | Behavior |
-|---|---|---|
-| `info <file>` | `--json` | Format, version, properties and stream list |
-| `cat <file>` | `--format plain\|markdown\|json\|html`, `--preview` | Text extraction; preview reads PrvText only |
-| `convert <in> -o <out>` | `--to`, `--strict`, `--preserve-layout`, `--embed-bin` | Format conversion; `.pdf` delegates to render |
-| `render <in> -o <out>` | `--pages`, `--dpi`, `--format`, `--font-dir` | PNG/SVG/PDF rendering |
-| `new -o <out>` | `--from <md\|json>`, `--set-meta` | A new document |
-| `edit <in> -o <out>` | `--replace`, `--set-cell`, `--set-field`, `--set-meta`, `--create-field`, `--create-bookmark`, `--create-hyperlink`, `--insert-image`, `--set-format`, `--set-align`, `--insert-para[-before]`, `--delete-para`, `--add-row`, `--delete-row`, `--verify` | In-memory editing |
-| `fields`/`bookmarks`/`slots <file>` | `--json` | Fields, bookmarks or `{{name}}` slots |
-| `fill <in> -o <out>` | `--set`, `--data`, `--json` | Template filling |
-| `validate <file>` | `--json` | Structural validation (exit-code contract) |
-| `mcp` | `--font-dir` | MCP stdio server |
-| `dump <file>` | `--stream`, `--raw`, `--json` | Developer record dump |
+The command surface is **generated documentation, not prose**.
+`crates/hwp-cli/tests/cli_reference.rs` renders
+[manual/cli-reference](../manual/cli-reference.md) and its Korean pair directly from the clap tree
+and fails the build on drift, so the authoritative list of subcommands and flags lives there and is
+deliberately not duplicated here. The same test gates the Korean help overlay in
+`crates/hwp-cli/src/i18n.rs` against missing and stale entries.
 
+What belongs in this document is the part a generated reference cannot state.
 `detect(path)` in `format.rs` decides by **magic bytes, not extension**: CFB
 (`D0 CF 11 E0 A1 B1 1A E1`) → Hwp5, ZIP (`50 4B`) → Hwpx. A `.json` input is treated as a serialized
 IR (`load_document`, `cat.rs`).
@@ -492,6 +489,7 @@ dropping a decorative shape in that direction exits abnormally.
 6. `from_markdown.rs`: default_header (shade_color, attr1, tab_defs), inject_section_controls
    (break_type 0x03) and table_paragraph (nparas ≥ 1).
 7. Write branching (`write_hwp_impl`, three paths) with synthesis and unmodified kept separate.
-8. The CLI (clap) plus the `cli.rs` integration tests (exit codes, flagship round-trips).
+8. The CLI (clap) plus the `cli.rs` integration tests (exit codes, flagship round-trips), and the
+   `cli_reference.rs` drift gate that generates the manual and pins the Korean help overlay.
 9. The ground-truth gates (gitignore, genuine hex constants, identity versus synthesis) and the
    diagnostics (injection, zOrder, the three-way diff).

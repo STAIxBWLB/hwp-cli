@@ -1,19 +1,20 @@
-<!-- hwp-cli PR 체크리스트 — 지우지 말고 확인 후 체크 -->
+<!-- hwp-cli PR checklist — do not delete; tick each item after checking it -->
 
-## 요약
+## Summary
 
-<!-- 변경 목적과 범위를 2~3줄로 -->
+<!-- The purpose and scope of the change, in two or three lines -->
 
-## 체크리스트
+## Checklist
 
-- [ ] `scripts/check.sh` 통과 (fmt → clippy --all-targets -D warnings → test, CI와 동일 게이트)
-- [ ] 한글(한컴오피스) 실기 확인이 필요한 변경인가? (writer/호환 규칙 영향)
-  - 필요했다면: [ ] 실기 결과를 PR 본문에 기록 (열림/손상 팝업·레이아웃 확인)
-  - 아니라면: [ ] 근거 한 줄 (예: 읽기 전용, 테스트·문서 변경)
-- [ ] 데이터 정책 준수 (fixtures/samples 예외 외 픽스처 미커밋, 한컴 스펙 문서·파생물 미동봉 — CLAUDE.md §데이터 정책)
-- [ ] 설계 문서 갱신 (해당 시): `docs/design/12-feature-gaps.md` 상태, 구조도(10/11), README/CLAUDE.md
-- [ ] 새 기능이면 테스트 동반 (왕복/골든/CLI 표면 중 해당 경로)
+- [ ] `scripts/check.sh` passes (fmt → clippy --all-targets -D warnings → test; the same gates as CI)
+- [ ] Does this change need verification in Hancom Office? (writer or compatibility-rule impact)
+  - If it does: [ ] the result is recorded in the PR body (opens without a corruption dialog, layout checked)
+  - If it does not: [ ] one line of justification (for example: read-only, tests or docs only)
+- [ ] Data policy respected (no fixtures committed beyond the fixtures/samples exception, no Hancom specification or derivatives bundled — CLAUDE.md "Data policy")
+- [ ] Design documents updated where applicable: `docs/design/12-feature-gaps.md` statuses, the structure maps (10 and 11), README and CLAUDE.md
+- [ ] New features come with tests (round-trip, golden or CLI surface, whichever path applies)
+- [ ] User-facing documentation updated on both sides (`NAME.md` and `NAME.ko.md`) in the same commit
 
-## 참고
+## Notes
 
-- 브랜치·PR 정책: CLAUDE.md §브랜치 · PR 정책. main 직접 push 금지, CI green 후 squash 머지.
+- Branch and PR policy: CLAUDE.md "Branch · PR policy". No direct pushes to main; squash merge once CI is green.

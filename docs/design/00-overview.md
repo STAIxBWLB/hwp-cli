@@ -9,7 +9,8 @@
 
 The project implements **the HWP 5.0 binary format and HWPX (OWPML) directly** rather than depending
 on an existing HWP library: parsing, serialization, conversion and rendering alike. Documents and
-code comments are written in Korean by default, with English pairs for user-facing documents.
+code comments are written in English, and every user-facing document is bilingual with English as
+the canonical side (`NAME.md`) and Korean as its pair (`NAME.ko.md`).
 
 ---
 
@@ -84,6 +85,11 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 | 10 | [hwp5-structure-map](10-hwp5-structure-map.md) | **Exhaustive HWP5 map**: CFB stream tree, record catalog (every tag plus implementation status), control characters and ctrl IDs |
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.md) | **Exhaustive HWPX map**: OPC tree, namespaces, element catalog, read/write symmetry audit |
 | 12 | [feature-gaps](12-feature-gaps.md) | Feature gap catalog plus a difficulty and dependency roadmap (inherits 07 §F; 10 §8 and 11 §5 are the underlying data) |
+| 13 | [document-spec-v1](13-document-spec-v1.md) | **DocumentSpec v1 contract** — the typed authoring specification `hwp compose` compiles |
+| 14 | [template-spec-v1](14-template-spec-v1.md) | **TemplateSpec / TemplateData v1 contract** — the typed `value`/`if`/`each` AST `hwp template` expands, with no string interpolation |
+| 15 | [document-spec-v2](15-document-spec-v2.md) | **DocumentSpec v2 contract** — v1 plus images with accessibility descriptions, the closed SVG→PNG fallback and native text boxes |
+| 16 | [certification-v1](16-certification-v1.md) | **Certification v1 contract** — the frozen policy `hwp certify` enforces and the report it publishes atomically |
+| 17 | [structured-corpus-v1](17-structured-corpus-v1.md) | **Structured corpus v1 contract** — the frozen corpus `hwp corpus` generates twice and the hashes that must agree |
 | 18 | [html-fragment-contract](18-html-fragment-contract.md) | **HTML fragment contract** — XHTML subset for Maru part-based authoring/assembly, table/image/footnote round-trip rules |
 | 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.md) | **HWP 5.0 spec supplement index** — errata, version-layout matrix, conformance checklist, consumption semantics (07·03·05·10·08 are the underlying data) |
 | 20 | [remote-mcp](20-remote-mcp.md) | **Remote MCP transport design** - future Streamable HTTP, OAuth resource-server, tenant isolation, artifact transfer, limits and security gates for web clients |
@@ -108,20 +114,24 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 
 ---
 
-## 5. Current status (as of 2026-07)
+## 5. Current status (as of 2026-08)
 
 **Working, confirmed in Hancom Office:** HWP5/HWPX reading, writing, conversion and rendering;
 single and multi-paragraph documents, long paragraphs, tables (simple, long cells, single row,
 many columns, empty cells), mixed body and table content, multi-page and composite reports;
 hyperlinks and bookmarks; formatting and structural editing; and the donut, center circle, numerals
-and arcs of the annual-report design document.
+and arcs of the annual-report design document. Since then: reading Hancom distribution documents
+(배포용문서, GA-2), the official-document authoring layer (profiles, templates, 두문/결문 frames,
+table styling and `hwp lint`, the GN series), and justified alignment and letter spacing, which
+were U2 and U4 below and are now GG-3 and GG-4, resolved 2026-08-14.
 
 **Open or under investigation:** the **text-box drop plus page overflow** on pages 5 and 6 of the
 annual report. The cause is most likely object property fidelity (vertRelTo, treatAsChar, z-order,
 textWrap, offset) rather than structure (shape-to-paragraph placement); see the external research in
-[08](08-external-research.md). Beyond that: U2 (justified alignment), U4 (letter spacing) and
-text-box render precision. The full catalog of unimplemented features and loss points, with the
-roadmap, is in [12-feature-gaps.md](12-feature-gaps.md).
+[08](08-external-research.md). Beyond that, text-box render precision. The full catalog of
+unimplemented features and loss points, with the roadmap, is in
+[12-feature-gaps.md](12-feature-gaps.md), which is the authority whenever this summary and it
+disagree.
 
 **★ The most valuable asset:** [07-hangul-compat-rules](07-hangul-compat-rules.md), roughly thirty
 Hancom-specific rules that static analysis cannot find and that were confirmed only by comparing

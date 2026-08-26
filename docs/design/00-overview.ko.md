@@ -7,7 +7,8 @@
 > 이 문서군(`docs/design/`)은 코드의 "왜"와 "어떻게"를 담은 **설계 기준선**이다.
 
 이 프로젝트는 기존 HWP 라이브러리에 의존하지 않고 **HWP 5.0 바이너리와 HWPX(OWPML)를
-직접 구현**한다(파싱·직렬화·변환·렌더링 전부). 문서·주석은 한국어를 기본으로 한다.
+직접 구현**한다(파싱·직렬화·변환·렌더링 전부). 문서와 주석은 영어로 작성하며, 사용자용 문서는
+영어를 정본(`NAME.md`)으로 하고 한국어를 짝(`NAME.ko.md`)으로 두는 이중 언어 체계를 따른다.
 
 ---
 
@@ -80,6 +81,11 @@
 | 10 | [hwp5-structure-map](10-hwp5-structure-map.ko.md) | **HWP5 전수 지도** — CFB 스트림 트리, 레코드 카탈로그(태그 전수+구현 상태), 컨트롤 문자·ctrl ID |
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.ko.md) | **HWPX 전수 지도** — OPC 트리, 네임스페이스, 요소 카탈로그, read/write 대칭성 감사 |
 | 12 | [feature-gaps](12-feature-gaps.ko.md) | 기능 격차 카탈로그 + 난이도·의존성 로드맵 (07§F 승계, 10§8·11§5가 근거 데이터) |
+| 13 | [document-spec-v1](13-document-spec-v1.ko.md) | **DocumentSpec v1 계약** — `hwp compose`가 컴파일하는 typed 저작 명세 |
+| 14 | [template-spec-v1](14-template-spec-v1.ko.md) | **TemplateSpec / TemplateData v1 계약** — `hwp template`이 확장하는 typed `value`/`if`/`each` AST. 문자열 보간은 허용하지 않는다 |
+| 15 | [document-spec-v2](15-document-spec-v2.ko.md) | **DocumentSpec v2 계약** — v1에 접근성 설명이 포함된 이미지, 닫힌 SVG→PNG fallback, 네이티브 글상자를 더한 것 |
+| 16 | [certification-v1](16-certification-v1.ko.md) | **Certification v1 계약** — `hwp certify`가 강제하는 고정 정책과 원자적으로 게시하는 리포트 |
+| 17 | [structured-corpus-v1](17-structured-corpus-v1.ko.md) | **구조 코퍼스 v1 계약** — `hwp corpus`가 2회 생성하는 고정 코퍼스와 일치해야 하는 해시 집합 |
 | 18 | [html-fragment-contract](18-html-fragment-contract.ko.md) | **HTML fragment 계약** — Maru 부분(part) 작성·조합용 XHTML 부분집합, 표/그림/각주 왕복 규약 |
 | 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.ko.md) | **HWP 5.0 명세 보완 색인** — 정오표·버전-레이아웃 매트릭스·적합성 체크리스트·소비 의미론 (07·03·05·10·08이 근거 데이터) |
 | 20 | [remote-mcp](20-remote-mcp.ko.md) | **Remote MCP transport 설계** - Web client용 향후 Streamable HTTP, OAuth resource server, tenant 격리, artifact 전송, limit 및 security gate |
@@ -99,16 +105,19 @@
 
 ---
 
-## 5. 현재 상태 (2026-07 기준)
+## 5. 현재 상태 (2026-08 기준)
 
 **정상 동작(한글 실기 확인):** HWP5/HWPX 읽기·쓰기·변환·렌더링, 단일/다문단·긴문단·표(단순/긴셀/
 1행/다열/빈셀)·본문+표혼합·멀티페이지·복합 보고서, 하이퍼링크·책갈피, 서식·구조 편집, annual 디자인
-문서의 도넛·중앙원·숫자·호(arc).
+문서의 도넛·중앙원·숫자·호(arc). 이후 추가된 것으로는 한컴 배포용문서 읽기(GA-2), 공문서 저작
+계층(프로파일·템플릿·두문/결문 틀·표 서식·`hwp lint`, GN 계열), 그리고 아래에서 U2·U4로 부르던
+양쪽정렬과 자간이 있다. 후자는 현재 GG-3·GG-4이며 2026-08-14에 해소했다.
 
 **미해결/조사 중:** annual 5·6쪽 **글상자 드롭 + 페이지 오버플로**. 원인은 구조(도형-문단 배치)가
 아니라 **개체 속성 충실도**(vertRelTo/treatAsChar/z-order/textWrap/offset)일 가능성이 유력
-(외부 리서치 [08](08-external-research.ko.md) 참조). 그 외 U2(양쪽정렬)·U4(자간)·글상자 렌더 정밀도.
-미구현 기능·손실 지점의 전체 카탈로그와 로드맵은 [12-feature-gaps.ko.md](12-feature-gaps.ko.md) 참조.
+(외부 리서치 [08](08-external-research.ko.md) 참조). 그 외에는 글상자 렌더 정밀도가 남아 있다.
+미구현 기능·손실 지점의 전체 카탈로그와 로드맵은 [12-feature-gaps.ko.md](12-feature-gaps.ko.md)에
+있으며, 이 요약과 어긋날 때에는 그쪽이 정본이다.
 
 **★가장 값진 자산:** [07-hangul-compat-rules.ko.md](07-hangul-compat-rules.ko.md) — 정적 분석으로는 잡히지
 않고 오직 정품 대조·실기로만 확정된 30여 개 한글 특정 규칙. 이 시스템을 다시 만든다면 이 카탈로그가

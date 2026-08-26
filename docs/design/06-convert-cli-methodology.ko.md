@@ -24,33 +24,30 @@
 
 ### 1.2 변환 방향 매트릭스
 
-| 입력 | 출력 | 경로 | 충실도 |
-|---|---|---|---|
+| 변환 | 경로 | 충실도 |
+|---|---|---|
 | hwp5 → hwp5 (무수정) | `write_hwp(preserve_layout)` | **바이트 동일 왕복** (identity 게이트) |
 | hwp5 → hwpx | reader→IR→hwpx writer | 의미 동등 (도형·필드·표 보존) |
 | hwpx → hwp5 | IR→`write_hwp_edited`(합성) | 의미 동등, gso는 안전 저하 |
 | md → hwp5/hwpx | `from_markdown`→writer(합성) | 신규 문서 |
-| hwp/hwpx → md/html/json/odt | IR→직렬화 | 손실 변환(단방향) |
-| hwp/hwpx → pdf/png/svg | render 경로 위임 | 렌더 출력 |
+| html → hwp5/hwpx | `from_html`→writer(합성) | 신규 문서. [18](18-html-fragment-contract.ko.md)의 XHTML 부분집합을 받는다 |
 | json(IR) → hwp/hwpx | `from_json`→writer | 편집 왕복 |
+| hwp/hwpx → md/html/json/odt | IR→직렬화 | 손실 변환(단방향) |
+| hwp/hwpx → docx | IR→`docx.rs`(OOXML 패키지) | 손실 변환(단방향). 출력 전용이며 docx 입력은 없다 |
+| hwp/hwpx → csv/txt | IR→`csv.rs` 또는 텍스트 추출 | 표 또는 평문만 |
+| hwp/hwpx → pdf/png/svg | render 경로 위임 | 렌더 출력 |
 
 **핵심 분기**: `doc.meta.source_format`이 `"hwp5"`이고 미편집이면 원본 줄 배치를 보존해 바이트 동일 왕복. 그 외(md/hwpx 출신 또는 편집됨)는 **합성 경로**(`edited=true`)로 줄 배치를 비우고 한글이 재계산하게 한다.
 
-### 1.3 CLI 서브커맨드 (`hwp-cli/src/main.rs`, clap derive)
+### 1.3 CLI 서브커맨드 (`crates/hwp-cli/src/cli.rs`, clap derive)
 
-| 커맨드 | 주요 플래그 | 동작 |
-|---|---|---|
-| `info <file>` | `--json` | 포맷/버전/속성/스트림 목록 |
-| `cat <file>` | `--format plain\|markdown\|json\|html`, `--preview` | 텍스트 추출. preview는 PrvText만 |
-| `convert <in> -o <out>` | `--to`, `--strict`, `--preserve-layout`, `--embed-bin` | 포맷 변환. `.pdf`는 render 위임 |
-| `render <in> -o <out>` | `--pages`, `--dpi`, `--format`, `--font-dir` | PNG/SVG/PDF 렌더 |
-| `new -o <out>` | `--from <md\|json>`, `--set-meta` | 새 문서 |
-| `edit <in> -o <out>` | `--replace`, `--set-cell`, `--set-field`, `--set-meta`, `--create-field`, `--create-bookmark`, `--create-hyperlink`, `--insert-image`, `--set-format`, `--set-align`, `--insert-para[-before]`, `--delete-para`, `--add-row`, `--delete-row`, `--verify` | 인메모리 편집 |
-| `fields/bookmarks/slots <file>` | `--json` | 필드/책갈피/`{{name}}` 슬롯 목록 |
-| `fill <in> -o <out>` | `--set`, `--data`, `--json` | 템플릿 채우기 |
-| `validate <file>` | `--json` | 구조 검증(exit code 계약) |
-| `mcp` | `--font-dir` | MCP stdio 서버 |
-| `dump <file>` | `--stream`, `--raw`, `--json` | 개발자용 레코드 덤프 |
+커맨드 표면은 **산문이 아니라 자동 생성 문서**다. `crates/hwp-cli/tests/cli_reference.rs`가
+[manual/cli-reference](../manual/cli-reference.ko.md)와 그 영문 짝을 clap 트리에서 직접 렌더하고
+어긋나면 빌드를 실패시키므로, 서브커맨드와 플래그의 정본 목록은 그쪽에 있으며 여기에 옮겨 적지
+않는다. 같은 테스트가 `crates/hwp-cli/src/i18n.rs`의 한국어 도움말 오버레이도 누락·잔존 항목
+기준으로 검사한다.
+
+이 문서가 담아야 할 것은 자동 생성 레퍼런스가 말해 줄 수 없는 부분이다.
 
 `format.rs`의 `detect(path)`는 **확장자가 아니라 매직 바이트**로 판별한다: CFB(`D0 CF 11 E0 A1 B1 1A E1`)→Hwp5, ZIP(`50 4B`)→Hwpx. `.json` 입력은 IR 직렬화본으로 간주(`load_document`, `cat.rs`).
 
@@ -312,5 +309,5 @@ markdown→hwpx 전체 흐름: `new`/`convert` 커맨드가 `from_markdown`으�
 5. `format.rs`/`structure.rs`/`edit.rs`: run 비트·정렬·표 행·치환·adjust_runs·instance_id·nchars bit31.
 6. `from_markdown.rs`: default_header(shade_color·attr1·tab_defs) + inject_section_controls(break_type 0x03) + table_paragraph(nparas≥1).
 7. 쓰기 분기(`write_hwp_impl` 3경로) + 합성/무수정 분리.
-8. CLI(clap) + `cli.rs` 통합 테스트(exit code·기함 왕복).
+8. CLI(clap) + `cli.rs` 통합 테스트(exit code·기함 왕복) + 매뉴얼을 생성하고 한국어 도움말 오버레이를 고정하는 `cli_reference.rs` 드리프트 게이트.
 9. 정답지 게이트(gitignore·정품 hex 상수·identity vs 합성) + 진단(주입·zOrder·diff 3중 대조).

@@ -15,10 +15,11 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 
 ## 주요 기능
 
-- **읽기·텍스트 추출** hwp/hwpx에서 plain / markdown / HTML / JSON(전체 IR)로. 표·이미지·머리말/꼬리말·
-  미해석 레코드까지 보존하며 파싱한다.
-- **포맷 변환** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ JSON(IR). 공용 문서 모델(IR)을 경유한
-  양방향 변환.
+- **읽기·텍스트 추출** hwp/hwpx에서 plain / markdown / HTML / JSON(전체 IR) / CSV로 추출한다.
+  표·이미지·머리말/꼬리말·미해석 레코드까지 보존하며 파싱하고, 한컴 배포용문서도 복호화하여
+  일반 문서와 동일하게 읽는다.
+- **포맷 변환** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ HTML, hwp/hwpx ↔ JSON(IR)을 공용 문서
+  모델(IR)을 경유해 양방향으로 변환하며, DOCX·ODT·CSV·평문으로는 단방향 내보내기를 지원한다.
 - **렌더링** hwp/hwpx → PNG / SVG / PDF. 파일에 저장된 줄 배치(PARA_LINE_SEG)를 우선 쓰고, 없으면
   자체 줄바꿈으로 보정한다. PDF는 폰트를 서브셋·임베드한 단일 멀티페이지 문서라 텍스트 선택·검색·복사가
   된다(ToUnicode CMap).
@@ -30,8 +31,11 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
   리포트를 게시하고, `corpus`는 고정 코퍼스로 2회 생성 결과의 바이트·의미·렌더 해시 일치를 강제한다.
 - **AI 편집** IR을 JSON으로 내보내 고치고 되쓰는 read → edit → rewrite 왕복. 텍스트 치환, 표 셀 설정,
   누름틀/필드 채우기를 이미지·서식·미해석 레코드를 보존한 채 적용한다.
+- **공문서 저작** 표준 프로파일 6종(`official`, `report`, `plan`, `notice`, `minutes`, `press`),
+  내장 문서 템플릿 8종(`hwp new --template`), 네이티브 두문·결문 틀, 법정 8단계 항목 부호,
+  프리셋 표 서식(`hwp edit --style-tables`), 표기법·구조 린터(`hwp lint`, 10개 규칙)를 제공한다.
 - **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 Amazon Quick Desktop을 포함한
-  데스크톱 클라이언트에 16개 도구를 노출한다.
+  데스크톱 클라이언트에 17개 도구를 노출한다.
 
 ## 구현 상태
 
@@ -43,11 +47,13 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 | 구조 편집 (문단·표 행/열·셀 병합/분할·필드·이미지·도장) | 구현 완료 (병합 표 포함) |
 | DocumentSpec v1/v2, TemplateSpec v1 합성 | 구현 완료 |
 | 인증(certify) · 구조 코퍼스 게이트(corpus) | 구현 완료 |
-| MCP 서버 (16 도구) | 구현 완료 |
-| HTML 변환 | 동작하나 markdown 대비 충실도 낮음 (로드맵) |
+| 공문서 저작 (프로파일·템플릿·문서 틀·lint·표 서식) | 구현 완료 |
+| MCP 서버 (17 도구) | 구현 완료 |
+| 배포용문서 | 읽기 지원 |
+| HTML 변환 | 구조는 markdown과 동등. 글자·문단 모양의 CSS 매핑은 아직 거칠다 |
 | 수식 | 상자+스크립트 근사 렌더 |
 | 차트 · OLE | 미지원 |
-| 암호화/배포용(DRM) 문서 | 읽기 거부 |
+| 암호·인증서·DRM 보호 문서 | 사유를 명시하며 읽기 거부 |
 
 ### 한계
 
@@ -63,22 +69,26 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 
 ## 로드맵
 
-상세 항목은 [TODO.ko.md](TODO.ko.md)(영문: [TODO.md](TODO.md)), 미구현 기능 카탈로그는
-[docs/design/12-feature-gaps.ko.md](docs/design/12-feature-gaps.ko.md)에 있다.
+미구현 기능을 항목별 코드·스펙 근거와 난이도까지 붙여 번호로 정리한 카탈로그는
+[docs/design/12-feature-gaps.ko.md](docs/design/12-feature-gaps.ko.md)에 있다. 그 파일이 상세
+정본이고, 아래 목록은 작업의 윤곽만 보여준다.
 
-1. **스펙 재문서화 (진행 중)** HWP 5.0 스펙 PDF를 검수 가능한 Markdown으로 재구성한다. rev1.3 본문은
-   재구성이 끝났고(§1~§4.4), OWPML/KS X 6101·수식·차트·배포용 문서 스펙은 확보가 필요하다.
-2. **스펙 기준 전면 재검토 (진행 중)** 재구성 스펙을 기준으로 파서·writer·IR의 비트 단위 값을 전수
-   대조한다. 기능 커버리지 감사에서 신규 갭 17건을 등재했고, 콘텐츠 소실급 4건이 수정 1순위다.
-3. **HTML 변환 고도화** markdown에서 이미 해소한 각주 마커·병합 셀 colspan/rowspan·셀 내 블록을
-   HTML 경로에도 반영하고, 글자·문단 모양의 CSS 매핑을 보강한다.
-4. **Windows** v0.5.0부터 컴파일·게시 경로가 안정화됐다. CI에서 ubuntu·macOS·Windows 모두
-   필수 게이트다.
-5. **배포용(DRM) 문서** 스펙 확보를 전제로 착수 후보다.
-6. **공문서 저작 계층** 워크스페이스 로컬 저작 스킬을 이 바이너리로 흡수한다 — 법정 8단계 항목
-   부호, 표기법 lint, 기안문·공고문·보도자료 문서 틀, 문서 템플릿, 그리고 `hwp skill export`로 함께
-   출하되는 규정 참고문서. [docs/design/12-feature-gaps.ko.md](docs/design/12-feature-gaps.ko.md)
-   §14의 GN 계열로 등재했고, 스펙은 [이슈 #121](https://github.com/STAIxBWLB/hwp-cli/issues/121)이다.
+1. **문서 단위 작업** 문서 전체를 CLI에서 병합·분할하고 내용을 비교한다(GM-3, GM-4, GM-8).
+   현재 `hwp diff`는 내용이 아니라 렌더된 픽셀을 비교한다.
+2. **에디터 엔진 표면** 임베드형 에디터가 필요로 하지만 이 바이너리가 아직 노출하지 않는 것들이다.
+   버전이 부여된 세밀한 세그먼트 봉투, 히트 테스트용 렌더 측 배치 좌표, jpeg/webp 래스터 출력,
+   그리고 주소 지정 연산과 편집 피드백을 갖춘 typed JSON 편집 연산 채널이 여기에 속한다(GO 계열).
+3. **암호 보호 문서 입력** 암호로 보호된 문서를 거부하는 대신 복호화하여 읽는다(GA-1).
+   인증서 보안 문서와 DRM 문서는 범위에서 제외한다.
+4. **스펙 커버리지** HWP 5.0 rev1.3 본문은 검수 가능한 Markdown으로 재구성하고(§1~§4.4) 구현과
+   대조하는 감사를 마쳤으며, 그 감사가 찾아낸 정오 항목은
+   [19 §1](docs/design/19-hwp5-spec-supplement.ko.md)에 정리했다. 남은 과제는 OWPML / KS X 6101,
+   수식, 차트 스펙을 아직 확보하지 못했다는 점과 파서·writer의 비트 단위 값 대조가 부분적으로만
+   끝났다는 점이다.
+5. **HTML 충실도** 각주 마커, 병합 셀 colspan/rowspan, 셀 내 블록은 이미 markdown 경로와 같은
+   수준이다. 남은 것은 글자·문단 모양과 단, 머리말·꼬리말의 CSS 매핑이다.
+
+Windows는 로드맵 항목이 아니다. 현재 ubuntu, macOS, Windows가 모두 필수 CI 게이트다.
 
 ## 설치
 
@@ -93,7 +103,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 기본 위치는 `~/.local/bin`이다(PATH에 없으면 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.5.0
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.10.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -134,7 +144,7 @@ RHEL/CentOS 7+ 및 그 이후 배포판에서 그대로 돌아간다. 빌드 러
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v0.8.5 --dir ./bin
+  | sh -s -- --tag v0.10.0 --dir ./bin
 ```
 
 플랫폼이 배포 번들을 수집하기 전에 바이너리가 있어야 하므로(Vercel `includeFiles`, Next.js
@@ -170,7 +180,7 @@ Rust edition 2024, `rust-version = 1.93` 이상이 필요하다.
 ```sh
 hwp update            # 최신 릴리스로 자체 교체 (체크섬 대조 후 원자적 교체)
 hwp update --check    # 교체 없이 현재/최신 버전만 확인
-hwp update --tag v0.4.0   # 특정 버전으로 되돌리기
+hwp update --tag v0.9.0   # 특정 버전으로 되돌리기
 ```
 
 설치 방식을 스스로 판별한다. 한 줄 스크립트·릴리스 아카이브·`cargo install`로 설치했으면 실행 중인
@@ -187,6 +197,10 @@ hwp info report.hwp
 hwp cat report.hwp                       # plain text
 hwp cat report.hwp --format markdown     # markdown
 hwp cat report.hwp --format json         # 전체 IR(JSON)
+hwp cat report.hwp --format csv          # 표를 CSV로
+
+# 본문 검색 (grep 방식. 일치하는 것이 없으면 1로 종료)
+hwp grep "예산" report.hwp
 
 # 변환 (출력 확장자로 포맷 추론)
 hwp convert report.hwp   -o report.hwpx  # hwp → hwpx (표·이미지·머리말 보존)
@@ -205,6 +219,13 @@ hwp new -o out.hwp  --from doc.json
 # 구조 문서 합성
 hwp compose spec.yaml -o report.hwpx --report
 hwp template report-template.yaml --data report-data.json -o report.hwpx
+
+# 공문서
+hwp new --list-templates                              # 내장 템플릿 8종
+hwp new -o gian.hwpx --template gian-internal         # 기안문. 두문·결문 포함
+hwp slots gian.hwpx                                   # 아직 채우지 않은 {{슬롯}} 확인
+hwp fill gian.hwpx -o final.hwpx --set "제목=예산 집행 계획"
+hwp lint final.hwpx --strict                          # 표기법·구조 규칙 검사
 
 # 편집 (이미지·서식·미해석 레코드 보존)
 hwp fields form.hwp                        # 채울 수 있는 필드/누름틀 이름 확인
@@ -237,16 +258,18 @@ hwp mcp --font-dir ./fonts
 | 명령 | 설명 |
 |---|---|
 | `info <file>` | 포맷/버전/속성/스트림 진단 |
-| `cat <file>` | 본문 추출(plain/markdown/json). `--with-segments`로 추출 근거 좌표 동반 |
-| `convert <input> -o <output>` | 포맷 변환. 출력이 `.pdf`면 렌더 경로로 위임. `--strict`는 보존 불가 데이터 발견 시 게시하지 않고 실패 |
+| `cat <file>` | 본문 추출(plain/markdown/json/html/csv). `--with-segments`로 추출 근거 좌표 동반 |
+| `grep <pattern> <file>` | 문단 텍스트를 grep 방식으로 검색(일치하는 것이 없으면 0이 아닌 종료 코드) |
+| `convert <input> -o <output>` | 포맷 변환. `--to`로 `docx`·`odt`·`csv`·`txt` 출력도 지정할 수 있다. 출력이 `.pdf`면 렌더 경로로 위임. `--strict`는 보존 불가 데이터 발견 시 게시하지 않고 실패 |
 | `render <input> -o <output>` | 페이지를 PNG/SVG(페이지별 파일)·PDF(단일 멀티페이지)로 렌더 |
-| `new -o <output>` | markdown/JSON IR에서 새 문서 생성 |
+| `new -o <output>` | markdown, JSON IR, 또는 내장 공문서 템플릿 8종(`--template`, `--list-templates`)에서 새 문서 생성 |
 | `compose <spec> -o <output>` | DocumentSpec v1/v2를 결정론적으로 합성. `--dry-run`으로 쓰지 않고 검증 |
 | `template <template> --data <data> -o <output>` | TemplateSpec/Data v1의 typed AST를 bounded expansion |
 | `edit <input> -o <output>` | 텍스트·서식·구조 편집(문단, 표 행/열, 셀 병합/분할, 필드, 이미지, 도장) |
 | `fields` / `bookmarks` / `slots` `<file>` | 필드·누름틀 / 책갈피 / `{{name}}` 슬롯 목록 |
 | `fill <input> -o <output>` | 충실도 보존 템플릿 채우기(hwpx 패키지 보존) |
 | `validate <file>` | 구조 검증(mimetype·필수 엔트리·XML 파싱) |
+| `lint <file>` | 공문서 표기법·구조 규칙 10개를 검사. 기본은 권고이며, `--strict`는 오류 등급이 있을 때 1로 종료하고 `--json`은 `hwp-lint-report-v1`을 출력 |
 | `certify <input> --policy <file> --report <dir>` | 인증 리포트를 원자적으로 게시. [Certification v1](docs/design/16-certification-v1.ko.md) |
 | `corpus --manifest <file> --report <dir>` | 고정 구조 코퍼스 게이트. [코퍼스 계약](docs/design/17-structured-corpus-v1.ko.md) |
 | `diff <input> --ref <png>` | 렌더 결과를 한글 기준 PNG와 비교(잉크·오프셋·픽셀 오차·MAE) |
@@ -325,6 +348,47 @@ hwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/report.hwpx --r
 [14-template-spec-v1](docs/design/14-template-spec-v1.ko.md), [15-document-spec-v2](docs/design/15-document-spec-v2.ko.md)에 있다.
 예제는 [`examples/`](examples/).
 
+## 공문서 저작
+
+한국 공문서는 표기법과 배치가 정해져 있다. 이 계층은 프롬프트에 맡기지 않고 바이너리에 내장했다.
+
+**프로파일**(`--preset`)은 문서 종류별 여백, 번호 매기기, 문단 모양을 지정한다. `official`(기안문·
+공문서), `report`(보고서), `plan`(사업계획서), `notice`(공고문), `minutes`(회의록),
+`press`(보도자료) 여섯 가지가 있다. `기안문`, `보고서`, `공고` 같은 한국어 별칭도 같은 여섯 가지로
+정규화된다. 중첩 목록은 법정 8단계 항목 부호로 렌더된다.
+
+**템플릿**(`--template`)은 여기서 한 걸음 더 나아간다. 각 템플릿은 자체 프로파일과 함께 네이티브
+두문·결문 표를 가져오며, 그 표는 `{{슬롯}}`으로 미리 채워져 있다.
+
+| 슬러그 | 한국어 별칭 | 비고 |
+|---|---|---|
+| `gian-internal` | 기안문-내부결재 | 내부 결재용 |
+| `gian-external` | 기안문-대외시행 | 대외 시행용 |
+| `gongmun-basic` | 공문서-기본 | 다수 수신 형식(`{{수신자}}`) |
+| `report` | 보고서 | |
+| `plan` | 사업계획서 | |
+| `minutes` | 회의록 | |
+| `notice` | 공고문 | |
+| `press` | 보도자료 | |
+
+**문서 틀** 플래그는 그 두문·결문 항목을 직접 채운다. `--doc-head 기관명=…`,
+`--doc-foot 발신명의=…`, `--notice-head`, `--notice-foot`, `--press-head`가 여기에 해당한다.
+v0.10.0부터 `--preset`과 문서 틀 플래그는 거부되지 않고 템플릿 자체 기본값을 **덮어쓴다**.
+
+**채우기** 생성된 문서 자체가 템플릿이다. `hwp slots`는 아직 채우지 않은 항목을 나열하고,
+`hwp fill`은 `{{name}}`을 치환하면서 hwpx 패키지의 나머지 부분을 바이트 단위로 보존한다. 일치하지
+않는 슬롯이 있으면 오류로 처리하며, `--allow-partial`을 주지 않는 한 아무것도 쓰지 않는다.
+
+**린트** `hwp lint`는 `.md`, `.hwp`, `.hwpx` 파일에(또는 `-`로 표준 입력의 markdown에) 10개 규칙을
+적용한다. 표기법 규칙 7개(날짜 `2026. 8. 20.`, 시각, 금액, `붙임:`의 쌍점과 번호, 마무리 `끝.`,
+문장부호), 장식 기호(`■ ▶ ▲ ◆ ● ※`. 공문서에서는 `□ ○`나 중첩 목록으로 써야 한다)를 잡는 규칙
+1개, 그리고 법정 항목 부호와 로마자 제목을 검사하는 구조 규칙 2개로 이루어진다. 오류 등급은 구조
+규칙 2개뿐이고 표기법 지적은 모두 경고다. 이 명령은 권고 성격이라 `--strict`를 주지 않으면 항상 0으로
+종료한다.
+
+**표 서식** `hwp edit --style-tables <preset>`은 해당 프로파일의 표 모양을 적용한다. 단일 열 표는
+건너뛰며, 두 번 적용해도 바이트가 동일한 결과가 나온다.
+
 ## 인증과 구조 코퍼스
 
 `certify`는 package 검증, 반복 import, bounded native render, 선택적 독립 import를 고정 정책으로
@@ -372,7 +436,7 @@ Amazon Quick Desktop)과 번들 에이전트 스킬(`hwp skill export`):
 Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
 [Amazon Quick Desktop 가이드](docs/manual/amazon-quick-desktop.ko.md)에 정리했다.
 
-Amazon Quick Desktop은 로컬 stdio 서버를 실행해 16개 도구를 모두 노출할 수 있다. publish-safe
+Amazon Quick Desktop은 로컬 stdio 서버를 실행해 17개 도구를 모두 노출할 수 있다. publish-safe
 스킬은 활성 프로필에 다음과 같이 설치한다.
 
 ```sh
@@ -389,7 +453,7 @@ Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 인증된
 artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)에
 정리했으며 현재 릴리스에는 HTTP runtime이 없다.
 
-### 노출 도구 (16종)
+### 노출 도구 (17종)
 
 | 도구 | 필수 인자 | 기능 |
 |---|---|---|
@@ -409,6 +473,7 @@ artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/des
 | `hwp_fill` | `input`, `output`, `values` | hwpx 템플릿 `{{name}}` 치환(패키지 보존) |
 | `hwp_diff` | `input`, `ref` | 지정 페이지를 렌더해 기준 PNG와 비교 |
 | `hwp_validate` | `path` | 구조 검증 `{valid, errors, warnings}` |
+| `hwp_lint` | `path` | 공문서 표기법·구조 규칙 10개를 `hwp-lint-report-v1` 리포트로 반환 |
 
 ### 클라이언트 설정 예
 
@@ -467,6 +532,10 @@ ubuntu `lint` 잡에서 한 번만 실행하고, `cargo test --workspace`는 **u
 테스트는 hwp5 바이트 동일 왕복(identity/roundtrip/synth), hwpx 의미 동등 왕복, IR JSON·markdown 왕복,
 편집·필드 보정, 렌더 레이아웃·표·diff 메트릭, 구조 코퍼스 결정성을 포함한다. 정품 fixture는 저장소에
 없으며 없으면 해당 테스트는 실패가 아니라 skip된다.
+
+한글(한컴오피스) 실기가 필요해 자동 게이트 바깥에 두는 점검표가 두 개 있다. 작성한 파일을 실기에서
+검증하는 [docs/hancom-verification-checklist.ko.md](docs/hancom-verification-checklist.ko.md)와
+릴리스 직전 게이트인 [docs/release-readiness.ko.md](docs/release-readiness.ko.md)다.
 
 ## 기여
 
