@@ -16,8 +16,9 @@ and in CI.
 
 ## Features
 
-- **Reading and text extraction** from hwp/hwpx to plain / markdown / HTML / JSON (full IR). Tables,
-  images, headers/footers and unparsed records are preserved during parsing.
+- **Reading and text extraction** from hwp/hwpx to plain / markdown / HTML / JSON (full IR) / CSV.
+  Tables, images, headers/footers and unparsed records are preserved during parsing, and Hancom
+  distribution documents (배포용문서) are decrypted and read like any other file.
 - **Format conversion** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ JSON (IR), all through a shared
   document model (IR).
 - **Rendering** hwp/hwpx → PNG / SVG / PDF. Stored line layout (PARA_LINE_SEG) is used when present
@@ -34,7 +35,11 @@ and in CI.
   twice and requires the document bytes, semantics and render hashes to match.
 - **AI editing** A read → edit → rewrite loop over the JSON IR. Text replacement, table cell values
   and field filling are applied while images, formatting and unparsed records are preserved.
-- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 16 tools to
+- **Official-document authoring (공문서)** Six canonical profiles (`official`, `report`, `plan`,
+  `notice`, `minutes`, `press`), eight embedded document templates (`hwp new --template`), native
+  두문/결문 frames, the statutory eight-level item marks, preset table styling
+  (`hwp edit --style-tables`) and a notation and structure linter (`hwp lint`, ten rules).
+- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 17 tools to
   desktop clients, including Amazon Quick Desktop.
 
 ## Implementation status
@@ -47,11 +52,13 @@ and in CI.
 | Structural editing (paragraphs, table rows/columns, cell merge/split, fields, images, seals) | Implemented, including merged tables |
 | DocumentSpec v1/v2 and TemplateSpec v1 composition | Implemented |
 | Certification (`certify`) and structured corpus gate (`corpus`) | Implemented |
-| MCP server (16 tools) | Implemented |
-| HTML conversion | Works, but lower fidelity than markdown (roadmap) |
+| Official-document authoring (profiles, templates, frames, lint, table styling) | Implemented |
+| MCP server (17 tools) | Implemented |
+| Distribution documents (배포용문서) | Read |
+| HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
 | Charts, OLE | Not supported |
-| Encrypted / distribution (DRM) documents | Reading is refused |
+| Password-, certificate- or DRM-protected documents | Reading is refused with a specific reason |
 
 ### Limitations
 
@@ -71,26 +78,28 @@ and in CI.
 
 ## Roadmap
 
-Detailed items live in [TODO.md](TODO.md) (Korean: [TODO.ko.md](TODO.ko.md)); the catalog of
-unimplemented features is [docs/design/12-feature-gaps.md](docs/design/12-feature-gaps.md).
+The numbered catalog of unimplemented features, each with its code and specification evidence and a
+difficulty estimate, is [docs/design/12-feature-gaps.md](docs/design/12-feature-gaps.md). That file
+is the detailed source; the list below is only the shape of the work.
 
-1. **Specification re-documentation (in progress)** Reconstruct the HWP 5.0 specification PDF as
-   reviewable Markdown. The rev1.3 body is done (§1 to §4.4); the OWPML/KS X 6101, equation, chart and
-   distribution-document specifications still need to be obtained.
-2. **Spec-driven review of the implementation (in progress)** Compare parser, writer and IR values
-   bit by bit against the reconstructed specification. A coverage audit registered 17 new gaps, of
-   which 4 content-loss items are the first to fix.
-3. **HTML conversion upgrade** Carry the footnote markers, merged-cell colspan/rowspan and in-cell
-   blocks already solved on the markdown path over to HTML, and improve CSS mapping of character and
-   paragraph shapes.
-4. **Windows** The compile and publish paths are stable as of v0.5.0; ubuntu, macOS, and Windows are
-   all required CI gates.
-5. **Distribution (DRM) documents** A candidate to start once the specification is available.
-6. **Official-document authoring layer (공문서)** Absorb the workspace-local authoring skill into
-   this binary: the statutory eight-level item marks, a notation lint, 기안문/공고문/보도자료 frames,
-   document templates and the regulation reference shipped with `hwp skill export`. Catalogued as the
-   GN series in [docs/design/12-feature-gaps.md](docs/design/12-feature-gaps.md) §14; spec in
-   [issue #121](https://github.com/STAIxBWLB/hwp-cli/issues/121).
+1. **Document-level workflows** Merge, split and content-compare whole documents from the CLI
+   (GM-3, GM-4, GM-8). `hwp diff` today compares rendered pixels, not content.
+2. **Editor engine surface** What an embeddable editor needs and this binary does not yet expose: a
+   versioned fine-grained segment envelope, render-side layout geometry for hit-testing, jpeg/webp
+   raster output, and a typed JSON edit-ops channel with addressed operations and edit feedback
+   (the GO series).
+3. **Password-protected input** Decrypt password-protected documents instead of refusing them
+   (GA-1). Certificate-secured and DRM documents stay out of scope.
+4. **Specification coverage** The HWP 5.0 rev1.3 body has been reconstructed as reviewable Markdown
+   (§1 to §4.4) and audited against the implementation; the errata that audit produced are
+   catalogued in [19 §1](docs/design/19-hwp5-spec-supplement.md). Still outstanding: the OWPML /
+   KS X 6101, equation and chart specifications have not been obtained, and the bit-level
+   parser/writer value comparison is only partly done.
+5. **HTML fidelity** Footnote markers, merged-cell colspan/rowspan and in-cell blocks already match
+   the markdown path. What remains is CSS mapping of character and paragraph shapes, columns and
+   headers/footers.
+
+Windows is not a roadmap item: ubuntu, macOS and Windows are all required CI gates today.
 
 ## Installation
 
@@ -106,7 +115,7 @@ The default location is `~/.local/bin` (if it is not on PATH, the script says so
 location or version with arguments or environment variables:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.5.0
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.10.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -150,7 +159,7 @@ to bump:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v0.8.5 --dir ./bin
+  | sh -s -- --tag v0.10.0 --dir ./bin
 ```
 
 Run this from the build command (or a `prebuild` script) so the binary exists before the platform
@@ -188,7 +197,7 @@ URL and verifies each against its SHA-256.
 ```sh
 hwp update            # replace itself with the latest release (checksum-verified, atomic)
 hwp update --check    # report current and latest versions without replacing
-hwp update --tag v0.4.0   # roll back to a specific version
+hwp update --tag v0.9.0   # roll back to a specific version
 ```
 
 It detects how it was installed. For the one-line script, a release archive or `cargo install`, it
@@ -206,6 +215,10 @@ hwp info report.hwp
 hwp cat report.hwp                       # plain text
 hwp cat report.hwp --format markdown     # markdown
 hwp cat report.hwp --format json         # full IR (JSON)
+hwp cat report.hwp --format csv          # tables as CSV
+
+# Search body text (grep semantics: exit 1 when nothing matches)
+hwp grep "예산" report.hwp
 
 # Convert (format inferred from the output extension)
 hwp convert report.hwp   -o report.hwpx  # hwp → hwpx (tables, images, headers preserved)
@@ -224,6 +237,13 @@ hwp new -o out.hwp  --from doc.json
 # Structured authoring
 hwp compose spec.yaml -o report.hwpx --report
 hwp template report-template.yaml --data report-data.json -o report.hwpx
+
+# Official documents (공문서)
+hwp new --list-templates                              # the eight embedded templates
+hwp new -o gian.hwpx --template gian-internal         # 기안문, 두문/결문 frames included
+hwp slots gian.hwpx                                   # the {{slots}} left to fill
+hwp fill gian.hwpx -o final.hwpx --set "제목=예산 집행 계획"
+hwp lint final.hwpx --strict                          # 표기법 and structure rules
 
 # Edit (images, formatting and unparsed records preserved)
 hwp fields form.hwp                        # list fillable fields
@@ -256,7 +276,8 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | Command | Description |
 |---|---|
 | `info <file>` | Format, version, properties and stream diagnostics |
-| `cat <file>` | Extract body text (plain/markdown/json). `--with-segments` adds provenance coordinates |
+| `cat <file>` | Extract body text (plain/markdown/json/html/csv). `--with-segments` adds provenance coordinates |
+| `grep <pattern> <file>` | Search paragraph text with grep semantics (non-zero exit when nothing matches) |
 | `convert <input> -o <output>` | Format conversion. A `.pdf` output delegates to the render path. `--strict` fails without publishing when unpreservable data is found |
 | `render <input> -o <output>` | Render pages to PNG/SVG (one file per page) or PDF (single multi-page) |
 | `new -o <output>` | Create a document from markdown or JSON IR |
@@ -266,6 +287,7 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `fields` / `bookmarks` / `slots` `<file>` | List fields, bookmarks, or `{{name}}` slots |
 | `fill <input> -o <output>` | Fidelity-preserving template filling (hwpx package preserved) |
 | `validate <file>` | Structural validation (mimetype, required entries, XML parsing) |
+| `lint <file>` | Ten official-document notation and structure rules. Advisory by default; `--strict` exits 1 on an error-severity finding and `--json` emits `hwp-lint-report-v1` |
 | `certify <input> --policy <file> --report <dir>` | Certify and publish a report atomically. See [Certification v1](docs/design/16-certification-v1.md) |
 | `corpus --manifest <file> --report <dir>` | Frozen structured corpus gate. See [the corpus contract](docs/design/17-structured-corpus-v1.md) |
 | `diff <input> --ref <png>` | Compare a render against a Hancom reference PNG (ink, offset, pixel difference, MAE) |
@@ -353,6 +375,48 @@ Normative schemas are in [`schemas/`](schemas/) and the contracts in
 [14-template-spec-v1](docs/design/14-template-spec-v1.md) and
 [15-document-spec-v2](docs/design/15-document-spec-v2.md). Examples are in [`examples/`](examples/).
 
+## Official-document authoring (공문서)
+
+Korean official documents follow a fixed notation and layout. That layer is built into the binary
+rather than left to a prompt.
+
+**Profiles** (`--preset`) set the margins, numbering and paragraph shapes of a document type:
+`official` (기안문·공문서), `report` (보고서), `plan` (사업계획서), `notice` (공고문),
+`minutes` (회의록) and `press` (보도자료). Korean aliases (`기안문`, `보고서`, `공고`, …) normalize
+onto the same six. Nested lists render the statutory eight-level item marks.
+
+**Templates** (`--template`) go further: each brings its own profile *and* native 두문/결문 tables,
+pre-filled with `{{slots}}`.
+
+| Slug | Korean alias | Notes |
+|---|---|---|
+| `gian-internal` | 기안문-내부결재 | Internal approval |
+| `gian-external` | 기안문-대외시행 | External dispatch |
+| `gongmun-basic` | 공문서-기본 | Multi-recipient form (`{{수신자}}`) |
+| `report` | 보고서 | |
+| `plan` | 사업계획서 | |
+| `minutes` | 회의록 | |
+| `notice` | 공고문 | |
+| `press` | 보도자료 | |
+
+**Frames** fill those header and footer blocks directly: `--doc-head 기관명=…`,
+`--doc-foot 발신명의=…`, `--notice-head`, `--notice-foot` and `--press-head`. Since v0.10.0 both
+`--preset` and the frame flags **override** a template's own defaults instead of being refused.
+
+**Filling** A generated document is itself a template. `hwp slots` lists what is still unfilled and
+`hwp fill` replaces `{{name}}`, preserving the rest of the hwpx package byte for byte. An unmatched
+slot is an error and nothing is written unless `--allow-partial` is given.
+
+**Linting** `hwp lint` applies ten rules to `.md`, `.hwp` and `.hwpx` files (or to stdin markdown
+with `-`): seven notation rules (date `2026. 8. 20.`, time, money, the `붙임:` colon and its
+numbering, the closing `끝.`, punctuation), one against decorative item marks (`■ ▶ ▲ ◆ ● ※`, which
+belong as `□ ○` or as nested lists), and two structural rules for statutory item marks and
+Roman-numeral headings. Only the two structural rules are error severity; every notation finding is
+a warning. The command is advisory and exits 0 unless `--strict` is given.
+
+**Table styling** `hwp edit --style-tables <preset>` applies the profile's table look. Single-column
+tables are skipped, and applying it twice produces byte-identical output.
+
 ## Certification and the structured corpus
 
 `certify` runs package validation, repeated import, bounded native rendering and an optional
@@ -404,7 +468,7 @@ The copy-paste Windows setup, create/validate acceptance test, reusable agent in
 symptom-driven recovery are in the dedicated
 [Amazon Quick Desktop runbook](docs/manual/amazon-quick-desktop.md).
 
-Amazon Quick Desktop can launch this local stdio server and expose all 16 tools. Install the
+Amazon Quick Desktop can launch this local stdio server and expose all 17 tools. Install the
 publish-safe skill into its active profile with:
 
 ```sh
@@ -422,7 +486,7 @@ Amazon Quick Web cannot launch a local stdio process. Authenticated Streamable H
 isolation and artifact transfer are specified for future work in
 [Remote MCP transport](docs/design/20-remote-mcp.md); no HTTP runtime is included today.
 
-### Exposed tools (16)
+### Exposed tools (17)
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -442,6 +506,7 @@ isolation and artifact transfer are specified for future work in
 | `hwp_fill` | `input`, `output`, `values` | Fill `{{name}}` in an hwpx template (package preserved) |
 | `hwp_diff` | `input`, `ref` | Render one page and compare it to a reference PNG |
 | `hwp_validate` | `path` | Structural validation, `{valid, errors, warnings}` |
+| `hwp_lint` | `path` | Ten official-document notation and structure rules, as an `hwp-lint-report-v1` report |
 
 ### Client configuration example
 
@@ -505,6 +570,10 @@ Tests cover byte-identical hwp5 round-trips (identity/roundtrip/synth), semantic
 round-trips, IR JSON and markdown round-trips, editing and field correction, render layout, tables and
 diff metrics, and structured corpus determinism. Genuine fixtures are not in the repository; when they
 are absent the corresponding tests skip rather than fail.
+
+Two checklists sit outside the automated gates because they need Hancom Office on real hardware:
+[docs/hancom-verification-checklist.md](docs/hancom-verification-checklist.md) for verifying written
+files, and [docs/release-readiness.md](docs/release-readiness.md) for the pre-release gate.
 
 ## Contributing
 
