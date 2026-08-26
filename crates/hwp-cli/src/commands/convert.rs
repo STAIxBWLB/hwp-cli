@@ -586,27 +586,55 @@ fn execute_with_preloaded_document(
     }
     if matches!(target, ConvertFormat::Md) {
         let (media_destination, media_prefix) = markdown_media_paths(output, md_opts.media_dir)?;
-        let warnings = crate::commands::output::write_validated_with_sidecar(
-            output,
-            Some(input),
-            &media_destination,
-            |staged, staged_media| {
-                let md = hwp_convert::to_markdown_with(
-                    &doc,
-                    &hwp_convert::MarkdownOptions {
-                        media_dir: Some(staged_media),
-                        media_prefix: Some(&media_prefix),
-                        text: hwp_model::TextOptions {
-                            include_header_footer: md_opts.with_header_footer,
-                            include_hidden: md_opts.with_hidden,
-                        },
+        let write_markdown = |staged: &Path, staged_media: &Path| {
+            let md = hwp_convert::to_markdown_with(
+                &doc,
+                &hwp_convert::MarkdownOptions {
+                    media_dir: Some(staged_media),
+                    media_prefix: Some(&media_prefix),
+                    text: hwp_model::TextOptions {
+                        include_header_footer: md_opts.with_header_footer,
+                        include_hidden: md_opts.with_hidden,
                     },
+                },
+            )?;
+            std::fs::write(staged, md)?;
+            Ok(Vec::new())
+        };
+        let warnings = if let Some(expected) = preloaded_source_sha256.as_deref() {
+            let snapshot_limit = match crate::format::detect(input)? {
+                crate::format::FileFormat::Hwp5 => hwp_cli::certification::MAX_INPUT_BYTES,
+                crate::format::FileFormat::Hwpx => {
+                    hwpx::NATIVE_PACKAGE_LIMITS.max_total_uncompressed_bytes
+                }
+            };
+            let (_, warnings) =
+                crate::commands::output::write_with_private_input_snapshot_and_sidecar(
+                    output,
+                    input,
+                    snapshot_limit,
+                    &media_destination,
+                    |_, staged, staged_media, snapshot_sha256| {
+                        if snapshot_sha256 != expected {
+                            anyhow::bail!(
+                                "batch 사전 적재 후 Markdown 입력 내용이 변경되었습니다: {}",
+                                input.display()
+                            );
+                        }
+                        write_markdown(staged, staged_media)
+                    },
+                    |_, _, _| Ok(()),
                 )?;
-                std::fs::write(staged, md)?;
-                Ok(Vec::new())
-            },
-            |_, _, _| Ok(()),
-        )?;
+            warnings
+        } else {
+            crate::commands::output::write_validated_with_sidecar(
+                output,
+                Some(input),
+                &media_destination,
+                write_markdown,
+                |_, _, _| Ok(()),
+            )?
+        };
         let report = ConvertReport {
             warnings,
             preservation: hwp_model::PreservationReport::new(),
