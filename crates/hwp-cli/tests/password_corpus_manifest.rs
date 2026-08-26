@@ -115,20 +115,27 @@ fn synthetic_deflate_with_padding(target_padding: usize) -> (Vec<u8>, Vec<u8>, V
 }
 
 fn synthetic_hwpx_path(label: &str, options: SyntheticHwpxOptions) -> std::path::PathBuf {
+    synthetic_hwpx_path_with_password(label, options, "synthetic-password")
+}
+
+fn synthetic_hwpx_path_with_password(
+    label: &str,
+    options: SyntheticHwpxOptions,
+    password: &str,
+) -> std::path::PathBuf {
     use aes::Aes256;
     use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
     use base64::Engine as _;
     use sha2::Digest as _;
     use std::io::{Read as _, Write as _};
 
-    const PASSWORD: &str = "synthetic-password";
     const SALT: [u8; 16] = [7; 16];
     const IV: [u8; 16] = [9; 16];
     let nonce = format!("{}-{}", std::process::id(), label);
     let path = std::env::temp_dir().join(format!("hwp-cli-hwpx-{nonce}.hwpx"));
     let _ = std::fs::remove_file(&path);
 
-    let mut start_key = sha2::Sha256::digest(PASSWORD.as_bytes()).to_vec();
+    let mut start_key = sha2::Sha256::digest(password.as_bytes()).to_vec();
     let mut key = [0u8; 32];
     pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&start_key, &SALT, 1024, &mut key);
     start_key.fill(0);
@@ -293,13 +300,19 @@ fn synthetic_record_stream(tag: u16) -> hwp5::record::ScanResult {
         .expect("single zero-length record is structurally valid")
 }
 
+fn synthetic_credential(reference: &str) -> Option<String> {
+    if reference.contains("UNICODE") {
+        Some("비밀".to_owned())
+    } else {
+        Some(format!("secret-for-{reference}"))
+    }
+}
+
 #[test]
 fn manifest_contract_accepts_a_redacted_synthetic_matrix() {
     let manifest = manifest_fixture();
-    let descriptors = load_manifest_for_test(&manifest, &repo_root(), |reference| {
-        Some(format!("secret-for-{reference}"))
-    })
-    .expect("the synthetic manifest should satisfy the closed contract");
+    let descriptors = load_manifest_for_test(&manifest, &repo_root(), synthetic_credential)
+        .expect("the synthetic manifest should satisfy the closed contract");
 
     assert_eq!(descriptors.len(), 3);
     assert!(descriptors.iter().any(|entry| {
@@ -325,20 +338,45 @@ fn manifest_contract_accepts_windows_absolute_source_paths() {
             serde_json::json!(format!(r"C:\private\password-corpus\fixture-{index}.bin"));
     }
 
-    let descriptors = load_manifest_for_test(&manifest, &repo_root(), |_| {
-        Some("synthetic-secret".to_owned())
-    })
-    .expect("Windows drive-letter absolute paths satisfy the closed schema");
+    let descriptors = load_manifest_for_test(&manifest, &repo_root(), synthetic_credential)
+        .expect("Windows drive-letter absolute paths satisfy the closed schema");
     assert_eq!(descriptors.len(), 3);
 
     manifest["fixtures"][0]["source_path"] =
         serde_json::json!(r"relative\password-corpus\fixture.hwp");
     assert!(
-        load_manifest_for_test(&manifest, &repo_root(), |_| {
-            Some("synthetic-secret".to_owned())
-        })
-        .is_err(),
+        load_manifest_for_test(&manifest, &repo_root(), synthetic_credential).is_err(),
         "relative source paths remain outside the closed contract"
+    );
+}
+
+#[test]
+fn manifest_contract_rejects_resolved_credential_charset_mismatch() {
+    let manifest = manifest_fixture();
+    let non_ascii_mismatch = match load_manifest_for_test(&manifest, &repo_root(), |_| {
+        Some("ascii-only-secret".to_owned())
+    }) {
+        Ok(_) => panic!("an ASCII credential must not satisfy a non-ASCII declaration"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        non_ascii_mismatch,
+        "resolved credential does not match declared charset"
+    );
+
+    let ascii_mismatch = match load_manifest_for_test(&manifest, &repo_root(), |reference| {
+        if reference == "HWP_PASSWORD_HWP5_BASELINE" {
+            Some("비밀".to_owned())
+        } else {
+            synthetic_credential(reference)
+        }
+    }) {
+        Ok(_) => panic!("a non-ASCII credential must not satisfy an ASCII declaration"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        ascii_mismatch,
+        "resolved credential does not match declared charset"
     );
 }
 
@@ -812,8 +850,12 @@ fn owner_discovery_redacts_probe_failures_to_fixture_and_format() {
     };
     let run = |manifest: serde_json::Value, expected: &str, password: &str| {
         std::fs::write(&manifest_path, manifest.to_string()).expect("manifest is writable");
-        let error = run_owner_discovery(&manifest_path, &evidence_path, |_| {
-            Some(password.to_owned())
+        let error = run_owner_discovery(&manifest_path, &evidence_path, |reference| {
+            if reference == "PRIVATE_UNICODE_REF" {
+                Some("비밀".to_owned())
+            } else {
+                Some(password.to_owned())
+            }
         })
         .expect_err("the selected fixture must fail before evidence publication");
         assert_eq!(error, expected);
@@ -1121,9 +1163,10 @@ fn owner_profile_diagnostic_outputs_only_closed_redacted_metadata() {
             ..supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64)
         },
     );
-    let valid_hwpx_path = synthetic_hwpx_path(
+    let valid_hwpx_path = synthetic_hwpx_path_with_password(
         "diagnostic-valid",
         supported_options(compressed, padding, plaintext.len() as u64),
+        "비밀",
     );
     let manifest = json!({
         "version": "password-corpus-manifest-v1",
@@ -1156,9 +1199,14 @@ fn owner_profile_diagnostic_outputs_only_closed_redacted_metadata() {
     });
     std::fs::write(&manifest_path, manifest.to_string()).expect("manifest is writable");
 
-    let lines =
-        run_owner_profile_diagnostic(&manifest_path, |_| Some("synthetic-password".to_owned()))
-            .expect("diagnostic runs all owner fixtures without publishing evidence");
+    let lines = run_owner_profile_diagnostic(&manifest_path, |reference| {
+        if reference == "PRIVATE_UNICODE_REF" {
+            Some("비밀".to_owned())
+        } else {
+            Some("synthetic-password".to_owned())
+        }
+    })
+    .expect("diagnostic runs all owner fixtures without publishing evidence");
     assert_eq!(lines.len(), 3);
     for line in &lines {
         let value: serde_json::Value = serde_json::from_str(line).expect("diagnostic is JSON");

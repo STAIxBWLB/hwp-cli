@@ -201,6 +201,14 @@ where
         let credential = resolve_credential(reference)
             .map(Zeroizing::new)
             .ok_or_else(|| "credential reference did not resolve".to_owned())?;
+        let charset_matches = match charset {
+            "ascii" => credential.is_ascii(),
+            "non_ascii" => !credential.is_ascii(),
+            _ => false,
+        };
+        if !charset_matches {
+            return Err("resolved credential does not match declared charset".to_owned());
+        }
         descriptors.push(RedactedDescriptor {
             fixture_id: fixture_id.to_owned(),
             format: format.to_owned(),

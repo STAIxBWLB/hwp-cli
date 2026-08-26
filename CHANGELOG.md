@@ -72,6 +72,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   when its EncryptVersion is unsupported. The typed unsupported-profile detail is exposed only
   after a credential is explicitly supplied.
 
+- Owner-corpus validation now checks the resolved credential bytes against the declared ASCII or
+  non-ASCII charset before profile discovery. A mislabeled secret can no longer satisfy the
+  distinct non-ASCII evidence role, and mismatch errors expose neither the value nor its reference.
+
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
   everything `hwp slots` reports. The two commands read a document differently — `slots` walks the
   IR, where a paragraph's characters are already joined, while `fill` rewrites the raw section XML
