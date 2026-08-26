@@ -145,6 +145,46 @@ fn hwp5_cat_direct_and_stdin_preserve_exact_password_bytes() {
         refusal(&stdin.stderr)
     );
 
+    let mut stdin_lf = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--password-stdin")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    stdin_lf
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{password}\n").as_bytes())
+        .unwrap();
+    let stdin_lf = stdin_lf.wait_with_output().unwrap();
+    assert!(
+        stdin_lf.status.success(),
+        "LF password stdin failed: {}",
+        refusal(&stdin_lf.stderr)
+    );
+
+    let mut stdin_without_newline = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--password-stdin")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    stdin_without_newline
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(password.as_bytes())
+        .unwrap();
+    let stdin_without_newline = stdin_without_newline.wait_with_output().unwrap();
+    assert!(
+        stdin_without_newline.status.success(),
+        "unterminated password stdin failed: {}",
+        refusal(&stdin_without_newline.stderr)
+    );
+
     let nfd = "  \u{1100}\u{1161}  ";
     let wrong = hwp()
         .arg("cat")
