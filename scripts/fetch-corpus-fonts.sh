@@ -7,8 +7,9 @@ cd "$(dirname "$0")/.."
 # Windows 러너에는 python3 셰임이 없을 수 있다.
 py=python3
 command -v "$py" >/dev/null 2>&1 || py=python
+manifest_path="${HWP_CORPUS_MANIFEST_PATH:-corpus/structured-v1/manifest.json}"
 
-exec "$py" - "corpus/structured-v1/manifest.json" <<'PY'
+exec "$py" - "$manifest_path" <<'PY'
 import hashlib
 import json
 import os
