@@ -29,6 +29,7 @@ use password_receipt::{
 const PROFILE_EVIDENCE_VERSION: &str = "password-profile-evidence-v1";
 const HWP5_ALGORITHM: &str = "hwp5-encrypt-version-4";
 const HWP5_KDF: &str = "hwp5-password-transform";
+const PASSWORD_REFUSAL_CODE: &str = "HWP_PASSWORD_REQUIRED_OR_INVALID";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CorpusRun {
@@ -398,6 +399,9 @@ fn run_case(fixture: &GenuineFixture, case: ReceiptCase) -> Result<(), String> {
                     || render.status.success()
                     || cat.status.code() != convert.status.code()
                     || convert.status.code() != render.status.code()
+                    || !stable_password_refusal(&cat)
+                    || !stable_password_refusal(&convert)
+                    || !stable_password_refusal(&render)
                     || converted.exists()
                     || rendered.exists()
                     || report.exists()
@@ -410,6 +414,12 @@ fn run_case(fixture: &GenuineFixture, case: ReceiptCase) -> Result<(), String> {
     })();
     let _ = fs::remove_dir_all(&output_dir);
     result
+}
+
+fn stable_password_refusal(output: &Output) -> bool {
+    String::from_utf8_lossy(&output.stderr)
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .any(|token| token == PASSWORD_REFUSAL_CODE)
 }
 
 fn cat_command(fixture: &GenuineFixture) -> Command {
