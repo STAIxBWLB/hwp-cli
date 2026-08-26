@@ -196,6 +196,7 @@ pub struct HwpxPackage {
     entries: Vec<EntryInfo>,
     limits: PackageLimits,
     decrypted_entries: BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
+    decrypted_plaintext_bytes: u64,
 }
 
 impl HwpxPackage {
@@ -216,6 +217,7 @@ impl HwpxPackage {
             entries,
             limits: *limits,
             decrypted_entries: BTreeMap::new(),
+            decrypted_plaintext_bytes: 0,
         };
         let mime = pkg.read_entry_string("mimetype")?;
         if mime.trim() != MIMETYPE {
@@ -231,6 +233,19 @@ impl HwpxPackage {
 
     pub fn read_entry(&mut self, name: &str) -> Result<Vec<u8>> {
         if let Some(plaintext) = self.decrypted_entries.get(name) {
+            let parser_copy = self
+                .decrypted_plaintext_bytes
+                .checked_add(plaintext.len() as u64)
+                .ok_or_else(|| {
+                    limit_error(
+                        "암호화된 엔트리의 파서 복사 예산이 정수 범위를 넘었습니다".to_string(),
+                    )
+                })?;
+            if parser_copy > self.limits.max_total_uncompressed_bytes {
+                return Err(limit_error(
+                    "암호화된 엔트리의 파서 복사가 패키지 메모리 제한을 초과합니다".to_string(),
+                ));
+            }
             return Ok(plaintext.to_vec());
         }
         let info = self
@@ -303,6 +318,7 @@ impl HwpxPackage {
             overlay.insert(entry.name.clone(), plaintext);
         }
         self.decrypted_entries = overlay;
+        self.decrypted_plaintext_bytes = retained_plaintext;
         Ok(())
     }
 
