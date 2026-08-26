@@ -184,6 +184,30 @@ impl Hwp5Container {
         Ok(buf)
     }
 
+    /// Reads an uncompressed CFB stream only after its directory-declared size
+    /// fits the caller's allocation budget.
+    pub fn read_stream_raw_bounded(&mut self, path: &str, limit: u64) -> Result<Vec<u8>> {
+        let info = self
+            .list_streams()
+            .into_iter()
+            .find(|info| info.path == path)
+            .ok_or_else(|| Hwp5Error::StreamNotFound(path.to_string()))?;
+        if info.size > limit {
+            return Err(Hwp5Error::ResourceLimitExceeded {
+                resource: format!("{path} stored stream"),
+                limit,
+            });
+        }
+        let raw = self.read_stream_raw(path)?;
+        if raw.len() as u64 > limit {
+            return Err(Hwp5Error::ResourceLimitExceeded {
+                resource: format!("{path} stored stream"),
+                limit,
+            });
+        }
+        Ok(raw)
+    }
+
     /// 레코드 스트림(DocInfo/BodyText/Scripts)을 읽는다.
     /// FileHeader의 압축 플래그가 설정되어 있으면 raw deflate를 해제한다.
     pub fn read_record_stream(&mut self, path: &str) -> Result<Vec<u8>> {
@@ -198,18 +222,7 @@ impl Hwp5Container {
     /// Certification-oriented record read that bounds both the stored stream and
     /// the raw-deflate output before allocating the semantic record tree.
     pub fn read_record_stream_bounded(&mut self, path: &str, limit: u64) -> Result<Vec<u8>> {
-        let info = self
-            .list_streams()
-            .into_iter()
-            .find(|info| info.path == path)
-            .ok_or_else(|| Hwp5Error::StreamNotFound(path.to_string()))?;
-        if info.size > limit {
-            return Err(Hwp5Error::ResourceLimitExceeded {
-                resource: format!("{path} stored stream"),
-                limit,
-            });
-        }
-        let raw = self.read_stream_raw(path)?;
+        let raw = self.read_stream_raw_bounded(path, limit)?;
         if self.header.is_compressed() && is_record_stream(path) {
             codec::decompress_bounded(&raw, path, limit)
         } else if raw.len() as u64 > limit {

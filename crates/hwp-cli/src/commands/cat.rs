@@ -17,6 +17,7 @@ use hwp_cli::cli::{PasswordArgs, TextFormat};
 /// Stable public refusal code for absent or invalid password credentials.
 pub const HWP_PASSWORD_REQUIRED_OR_INVALID: &str = "HWP_PASSWORD_REQUIRED_OR_INVALID";
 const MAX_PASSWORD_STDIN_BYTES: usize = 64 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
 
 /// A password whose backing string is zeroed when it leaves the command scope.
 /// It deliberately exposes only an exact borrowed view to the format readers.
@@ -346,7 +347,7 @@ fn preview(path: &Path, options: &LoadOptions<'_>) -> Result<(), LoadDocumentErr
                     .map_err(map_hwp5_read_error)?;
             }
             let raw = container
-                .read_stream_raw("/PrvText")
+                .read_stream_raw_bounded("/PrvText", MAX_PREVIEW_BYTES)
                 .map_err(map_hwp5_read_error)?;
             decode_utf16le(&raw)
         }

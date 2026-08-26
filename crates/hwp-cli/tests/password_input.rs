@@ -476,6 +476,37 @@ fn hwp5_cat_refusals_and_conflicts_are_secret_free() {
 }
 
 #[test]
+fn protected_hwp5_preview_is_bounded_after_authentication() {
+    let password = "preview-password";
+    let file = evidenced_hwp5_fixture(&temp_dir("bounded-preview"), password);
+    {
+        let source = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&file)
+            .unwrap();
+        let mut compound = cfb::CompoundFile::open(source).unwrap();
+        compound
+            .open_stream("/PrvText")
+            .unwrap()
+            .set_len(4 * 1024 * 1024 + 2)
+            .unwrap();
+        compound.flush().unwrap();
+    }
+    let output = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--preview")
+        .arg("--password")
+        .arg(password)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!refusal(&output.stderr).contains(password));
+}
+
+#[test]
 fn hwpx_cat_uses_exact_password_bytes_and_one_public_refusal() {
     let password = "  \u{ac00}  ";
     let file = evidenced_hwpx_fixture(&temp_dir("hwpx-public-refusal"), password);
