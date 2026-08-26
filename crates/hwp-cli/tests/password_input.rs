@@ -10,6 +10,7 @@ use aes::cipher::{
 use aes::{Aes128, Aes256};
 use base64::Engine as _;
 use flate2::{Compression, write::DeflateEncoder};
+use serde_json::{Value, json};
 use sha1::Digest as _;
 
 fn hwp() -> Command {
@@ -116,6 +117,49 @@ fn stdin_bytes(mut command: Command, bytes: &[u8]) -> Output {
     let mut child = command.stdin(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(bytes).unwrap();
     child.wait_with_output().unwrap()
+}
+
+fn mcp_calls(root: &Path, requests: &[Value]) -> Vec<Value> {
+    let mut child = hwp()
+        .arg("mcp")
+        .arg("--root")
+        .arg(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start MCP server");
+    let mut input = String::new();
+    for request in requests {
+        input.push_str(&request.to_string());
+        input.push('\n');
+    }
+    child
+        .stdin
+        .take()
+        .expect("MCP stdin")
+        .write_all(input.as_bytes())
+        .expect("write MCP requests");
+    let output = child.wait_with_output().expect("wait for MCP server");
+    assert!(
+        output.status.success(),
+        "MCP server must finish cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("MCP stdout is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("MCP response JSON"))
+        .collect()
+}
+
+fn mcp_call(id: u64, name: &str, arguments: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    })
 }
 
 fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
@@ -380,6 +424,80 @@ fn hwpx_cat_uses_exact_password_bytes_and_one_public_refusal() {
         assert!(!output.contains("Contents/header.xml"));
         assert!(!output.contains("AES256-CBC"));
     }
+}
+
+#[test]
+fn mcp_read_password_is_per_call_closed_and_sandboxed() {
+    let password = "mcp-read-secret";
+    let dir = temp_dir("mcp-read");
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let hwp5_dir = root.join("hwp5");
+    let hwpx_dir = root.join("hwpx");
+    let outside_dir = dir.join("outside");
+    std::fs::create_dir_all(&hwp5_dir).unwrap();
+    std::fs::create_dir_all(&hwpx_dir).unwrap();
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    let hwp5 = evidenced_hwp5_fixture(&hwp5_dir, password);
+    let hwpx = evidenced_hwpx_fixture(&hwpx_dir, password);
+    let outside = evidenced_hwp5_fixture(&outside_dir, password);
+
+    let responses = mcp_calls(
+        &root,
+        &[
+            mcp_call(1, "hwp_read", json!({"path": hwp5, "format": "plain"})),
+            mcp_call(
+                2,
+                "hwp_read",
+                json!({"path": hwp5, "format": "plain", "password": "wrong-password"}),
+            ),
+            mcp_call(
+                3,
+                "hwp_read",
+                json!({"path": hwp5, "format": "plain", "password": password}),
+            ),
+            mcp_call(
+                4,
+                "hwp_read",
+                json!({"path": hwpx, "format": "plain", "password": password}),
+            ),
+            mcp_call(
+                5,
+                "hwp_read",
+                json!({"path": hwp5, "format": "plain"}),
+            ),
+            mcp_call(
+                6,
+                "hwp_read",
+                json!({"path": outside, "format": "plain", "password": password}),
+            ),
+        ],
+    );
+    assert_eq!(responses.len(), 6);
+
+    let absent = &responses[0]["result"];
+    let wrong = &responses[1]["result"];
+    assert_eq!(absent["isError"], true);
+    assert_eq!(wrong["isError"], true);
+    assert_eq!(absent["structuredContent"], wrong["structuredContent"]);
+    assert_eq!(
+        absent["structuredContent"]["code"],
+        "HWP_PASSWORD_REQUIRED_OR_INVALID"
+    );
+    for response in [&responses[0], &responses[1], &responses[4], &responses[5]] {
+        let serialized = response.to_string();
+        assert!(!serialized.contains(password));
+        assert!(!serialized.contains("wrong-password"));
+    }
+    assert_eq!(responses[2]["result"]["isError"], false);
+    assert_eq!(responses[3]["result"]["isError"], false);
+    assert_eq!(responses[4]["result"]["isError"], true);
+    assert_eq!(responses[5]["result"]["isError"], true);
+    assert_ne!(
+        responses[5]["result"]["structuredContent"]["code"],
+        "HWP_PASSWORD_REQUIRED_OR_INVALID",
+        "root rejection must happen before password-aware loading"
+    );
 }
 
 #[test]
