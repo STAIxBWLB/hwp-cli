@@ -387,7 +387,11 @@ fn run_password_command(
             .output()
             .map_err(|_| "password corpus command could not run".into()),
         ReceiptCase::Correct | ReceiptCase::Wrong => {
-            command.arg("--password-stdin").stdin(Stdio::piped());
+            command
+                .arg("--password-stdin")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             let mut child = command
                 .spawn()
                 .map_err(|_| "password corpus command could not run".to_owned())?;
@@ -486,4 +490,25 @@ fn civil_date_from_unix_days(days: i64) -> (i64, u32, u32) {
     let month = (month_index + if month_index < 10 { 3 } else { -9 }) as u32;
     year += if month <= 2 { 1 } else { 0 };
     (year, month, day)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_stdin_captures_child_output() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "IFS= read -r _secret; printf captured-stdout; printf captured-stderr >&2",
+        ]);
+        let credential = Zeroizing::new("synthetic-secret".to_owned());
+
+        let output = run_password_command(command, &credential, ReceiptCase::Correct).unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"captured-stdout");
+        assert_eq!(output.stderr, b"captured-stderr");
+    }
 }
