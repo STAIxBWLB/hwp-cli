@@ -29,6 +29,62 @@ pub struct ConvertReport {
     pub preservation: hwp_model::PreservationReport,
 }
 
+const MAX_PRELOADED_BATCH_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Default)]
+struct SerializedByteCounter(u64);
+
+impl std::io::Write for SerializedByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buffer.len() as u64);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn preloaded_document_reservation(document: &hwp_model::Document) -> anyhow::Result<u64> {
+    let mut serialized = SerializedByteCounter::default();
+    serde_json::to_writer(&mut serialized, document)?;
+    let skipped_binary_bytes = document
+        .bin_streams
+        .iter()
+        .try_fold(0u64, |total, stream| {
+            total
+                .checked_add(stream.data.len() as u64)
+                .context("batch document memory reservation overflow")
+        })?
+        .checked_add(
+            document
+                .hwpx_preview_image
+                .as_ref()
+                .map_or(0, |image| image.len() as u64),
+        )
+        .context("batch document memory reservation overflow")?;
+    serialized
+        .0
+        .checked_add(skipped_binary_bytes)
+        // JSON size plus skipped binary owners is a lower-cost proxy for the
+        // complete tree. Double it to cover Vec/String spare capacity and
+        // fixed containers without allocating another serialization buffer.
+        .and_then(|bytes| bytes.checked_mul(2))
+        .context("batch document memory reservation overflow")
+}
+
+fn add_preloaded_batch_reservation(total: u64, document: u64) -> anyhow::Result<u64> {
+    let next = total
+        .checked_add(document)
+        .context("batch document memory reservation overflow")?;
+    if next > MAX_PRELOADED_BATCH_BYTES {
+        anyhow::bail!(
+            "--out-dir 입력의 사전 적재 메모리 한도를 초과했습니다: {next} > {MAX_PRELOADED_BATCH_BYTES} bytes"
+        );
+    }
+    Ok(next)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_with_options(
     input: &Path,
@@ -252,10 +308,17 @@ fn run_multi_inner(
             // directory or publishing any batch member. Moving these documents
             // into the conversion loop keeps the all-or-nothing credential gate
             // without repeating password KDF/transform work.
-            let documents = inputs
-                .iter()
-                .map(|input| load_document_with_options(input, options).map_err(anyhow::Error::new))
-                .collect::<anyhow::Result<Vec<_>>>()?;
+            let mut documents = Vec::with_capacity(inputs.len());
+            let mut reserved_batch_bytes = 0u64;
+            for input in inputs {
+                let document =
+                    load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+                reserved_batch_bytes = add_preloaded_batch_reservation(
+                    reserved_batch_bytes,
+                    preloaded_document_reservation(&document)?,
+                )?;
+                documents.push(document);
+            }
             std::fs::create_dir_all(dir)?;
             for (input, document) in inputs.iter().zip(documents) {
                 let stem = input
@@ -1560,6 +1623,22 @@ mod tests {
         issues.push(hwp_render::RenderIssueCode::FontMatched, b"font");
         let report = issues.finish();
         assert!(render_issue_messages(&report).is_empty());
+    }
+
+    #[test]
+    fn preloaded_batch_memory_reservation_is_bounded_without_serializing_to_a_buffer() {
+        let mut document = hwp_convert::from_markdown("bounded batch");
+        document.bin_streams.push(hwp_model::BinStream {
+            name: "BIN0001.bin".to_string(),
+            data: vec![0; 1024],
+        });
+        let reservation = preloaded_document_reservation(&document).unwrap();
+        assert!(reservation >= 2048);
+        assert_eq!(
+            add_preloaded_batch_reservation(MAX_PRELOADED_BATCH_BYTES - 1, 1).unwrap(),
+            MAX_PRELOADED_BATCH_BYTES
+        );
+        assert!(add_preloaded_batch_reservation(MAX_PRELOADED_BATCH_BYTES, 1).is_err());
     }
 
     #[test]
