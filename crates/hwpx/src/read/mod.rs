@@ -12,6 +12,7 @@ mod xml;
 use std::path::Path;
 
 use hwp_model::{DocMeta, Document};
+use quick_xml::events::Event;
 
 use crate::error::Result;
 use crate::package::HwpxPackage;
@@ -144,7 +145,6 @@ fn read_document_impl(
             let name = &entry.name;
             if name.ends_with('/')
                 || REGENERATED.contains(&name.as_str())
-                || (was_unlocked_with_password && name == "META-INF/manifest.xml")
                 // section 목록은 패키지 실제 엔트리 기준(section_entries와 같은 판정).
                 || (name.starts_with("Contents/section") && name.ends_with(".xml"))
                 || name.starts_with("BinData/")
@@ -152,6 +152,11 @@ fn read_document_impl(
                 continue;
             }
             let data = pkg.read_entry(name)?;
+            let data = if was_unlocked_with_password && name == "META-INF/manifest.xml" {
+                strip_manifest_encryption_data(&data)?
+            } else {
+                data
+            };
             // writer가 기본 템플릿으로 바이트 동일하게 재생성하는 엔트리는 잉여가
             // 아니다(캡처하면 의미 검증이 writer 기본값 슬롯 유무를 차이로 오인한다).
             if is_writer_default_entry(name, &data) {
@@ -230,6 +235,59 @@ fn is_writer_default_entry(name: &str, bytes: &[u8]) -> bool {
         _ => return false,
     };
     bytes == default.as_bytes()
+}
+
+fn strip_manifest_encryption_data(manifest: &[u8]) -> Result<Vec<u8>> {
+    let mut reader = quick_xml::Reader::from_reader(manifest);
+    let mut writer = quick_xml::Writer::new(Vec::with_capacity(manifest.len()));
+    let mut skipped_depth = 0usize;
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|error| crate::error::HwpxError::Xml {
+                entry: "META-INF/manifest.xml".to_string(),
+                message: error.to_string(),
+            })?;
+        match &event {
+            Event::Start(element)
+                if skipped_depth > 0 || element.local_name().as_ref() == b"encryption-data" =>
+            {
+                skipped_depth =
+                    skipped_depth
+                        .checked_add(1)
+                        .ok_or_else(|| crate::error::HwpxError::Xml {
+                            entry: "META-INF/manifest.xml".to_string(),
+                            message: "encryption-data nesting overflow".to_string(),
+                        })?;
+            }
+            Event::Empty(element)
+                if skipped_depth > 0 || element.local_name().as_ref() == b"encryption-data" => {}
+            Event::End(_) if skipped_depth > 0 => skipped_depth -= 1,
+            Event::Eof => {
+                if skipped_depth != 0 {
+                    return Err(crate::error::HwpxError::Xml {
+                        entry: "META-INF/manifest.xml".to_string(),
+                        message: "unclosed encryption-data element".to_string(),
+                    });
+                }
+                writer
+                    .write_event(event)
+                    .map_err(|error| crate::error::HwpxError::Xml {
+                        entry: "META-INF/manifest.xml".to_string(),
+                        message: error.to_string(),
+                    })?;
+                break;
+            }
+            _ if skipped_depth > 0 => {}
+            _ => writer
+                .write_event(event)
+                .map_err(|error| crate::error::HwpxError::Xml {
+                    entry: "META-INF/manifest.xml".to_string(),
+                    message: error.to_string(),
+                })?,
+        }
+    }
+    Ok(writer.into_inner())
 }
 
 /// content.hpf OPF 메타데이터에서 요약정보를 추출한다(최선 노력).

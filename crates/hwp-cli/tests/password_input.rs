@@ -228,6 +228,14 @@ fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
     writer.write_all(&custom_ciphertext).unwrap();
     writer
         .start_file(
+            "META-INF/plain-extra.xml",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(b"<plain-extra/>").unwrap();
+    writer
+        .start_file(
             "mimetype",
             zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored),
@@ -237,7 +245,7 @@ fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
         .write_all(hwpx::package::MIMETYPE.as_bytes())
         .unwrap();
     let manifest = format!(
-        r#"<?xml version="1.0"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">{}</odf:manifest>"#,
+        r#"<?xml version="1.0"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">{}<odf:file-entry full-path="META-INF/plain-extra.xml" media-type="application/vnd.example.plain+xml"/></odf:manifest>"#,
         manifest_entries.join("")
     );
     writer
@@ -799,6 +807,13 @@ fn cli_convert_render_support_password_inputs_before_publication() {
             assert!(
                 !package.has_encryption_marker().unwrap(),
                 "same-format HWPX output must discard source encryption metadata"
+            );
+            let manifest = package.read_entry_string("META-INF/manifest.xml").unwrap();
+            assert!(manifest.contains("META-INF/plain-extra.xml"));
+            assert!(manifest.contains("application/vnd.example.plain+xml"));
+            assert_eq!(
+                package.read_entry("META-INF/plain-extra.xml").unwrap(),
+                b"<plain-extra/>"
             );
         }
 
