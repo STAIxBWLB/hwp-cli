@@ -12,6 +12,8 @@ use crate::error::{Hwp5Error, Result};
 use crate::file_header::FileHeader;
 use crate::record::{RecordHeader, ScanMode, scan_stream};
 
+mod password;
+
 pub struct ReadResult {
     pub document: Document,
     /// 파싱 중 발생한 비치명 경고 (손상/미지원 구조)
