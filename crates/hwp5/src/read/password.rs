@@ -12,6 +12,8 @@ use crate::error::{Hwp5Error, Result};
 
 pub(crate) const HWP5_PASSWORD_MAX_STREAM_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const HWP5_PASSWORD_MAX_STREAMS: usize = 4_096;
+pub(crate) const HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Checks an incoming stream and all other buffers that would be live beside
 /// it before either allocation or parser handoff. The caller owns the actual

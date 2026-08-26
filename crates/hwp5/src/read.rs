@@ -15,7 +15,9 @@ use crate::record::{RecordHeader, ScanMode, scan_stream};
 
 mod password;
 use password::{
-    HWP5_PASSWORD_MAX_STREAM_BYTES, decrypt_hwp5_encrypt_version_4_in_place, validate_live_bytes,
+    HWP5_PASSWORD_MAX_STREAM_BYTES, HWP5_PASSWORD_MAX_STREAMS,
+    HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES, decrypt_hwp5_encrypt_version_4_in_place,
+    validate_live_bytes,
 };
 
 /// Per-call options for HWP5 reads. Password bytes are borrowed only for the
@@ -522,7 +524,12 @@ fn read_password_protected_document(
     let header = container.file_header().clone();
     header.check_body_readable_with_password(options.password)?;
     let password = options.password.ok_or(Hwp5Error::Encrypted)?;
-    let stream_infos = container.list_streams();
+    let stream_infos = container
+        .list_streams_bounded(
+            HWP5_PASSWORD_MAX_STREAMS,
+            HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES,
+        )
+        .map_err(normalize_password_candidate_error)?;
     if stream_infos.iter().any(|stream| {
         is_password_candidate_record_stream(&stream.path)
             && !is_evidenced_password_record_stream(&stream.path)
@@ -538,45 +545,46 @@ fn read_password_protected_document(
 
     let mut streams = BTreeMap::new();
     let mut retained_plaintext = 0u64;
-    for stream in stream_infos {
-        if !is_evidenced_password_record_stream(&stream.path) {
-            streams.insert(
-                stream.path.clone(),
-                container.read_stream_raw(&stream.path)?,
-            );
-            continue;
-        }
-
-        validate_live_bytes(stream.size, retained_plaintext)?;
+    // Authenticate both observed record streams before reporting structural
+    // limits from opaque streams. A candidate key can otherwise manufacture a
+    // decompression-limit result that leaks a different public refusal.
+    for stream in stream_infos
+        .iter()
+        .filter(|stream| is_evidenced_password_record_stream(&stream.path))
+    {
+        validate_live_bytes(stream.size, retained_plaintext)
+            .map_err(normalize_password_candidate_error)?;
         let mut protected = zeroize::Zeroizing::new(container.read_stream_raw(&stream.path)?);
         if protected.len() as u64 != stream.size {
             return Err(Hwp5Error::Encrypted);
         }
         decrypt_hwp5_encrypt_version_4_in_place(&mut protected, password)?;
         let decrypted = if header.is_compressed() {
-            let live_ciphertext = checked_password_live_bytes(retained_plaintext, stream.size)?;
-            validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES, live_ciphertext)?;
+            let live_ciphertext = checked_password_live_bytes(retained_plaintext, stream.size)
+                .map_err(normalize_password_candidate_error)?;
+            validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES, live_ciphertext)
+                .map_err(normalize_password_candidate_error)?;
             let result = crate::codec::decompress_bounded(
                 &protected,
                 "password-protected HWP5 stream",
                 HWP5_PASSWORD_MAX_STREAM_BYTES,
             );
             protected.zeroize();
-            result.map_err(|error| match error {
-                Hwp5Error::ResourceLimitExceeded { .. } => error,
-                _ => Hwp5Error::Encrypted,
-            })?
+            result.map_err(normalize_password_candidate_error)?
         } else {
             std::mem::take(&mut *protected)
         };
         protected.zeroize();
 
         let decrypted_size = decrypted.len() as u64;
-        validate_live_bytes(decrypted_size, retained_plaintext)?;
+        validate_live_bytes(decrypted_size, retained_plaintext)
+            .map_err(normalize_password_candidate_error)?;
         // Strict record identity is the password validation boundary. Reserve
         // a second copy for the temporary strict scan before invoking it.
-        let scan_live = checked_password_live_bytes(retained_plaintext, decrypted_size)?;
-        validate_live_bytes(decrypted_size, scan_live)?;
+        let scan_live = checked_password_live_bytes(retained_plaintext, decrypted_size)
+            .map_err(normalize_password_candidate_error)?;
+        validate_live_bytes(decrypted_size, scan_live)
+            .map_err(normalize_password_candidate_error)?;
         validate_password_record_identity(&stream.path, &decrypted)?;
         retained_plaintext = retained_plaintext
             .checked_add(decrypted_size)
@@ -584,7 +592,23 @@ fn read_password_protected_document(
                 resource: "password-protected HWP5 live buffers".to_string(),
                 limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
             })?;
-        streams.insert(stream.path, decrypted);
+        streams.insert(stream.path.clone(), decrypted);
+    }
+
+    // Every materialized stream, including opaque preservation paths, is
+    // bounded before `read_stream_raw` can allocate it. These resource errors
+    // are now authenticated structural failures, not credential outcomes.
+    for stream in stream_infos
+        .iter()
+        .filter(|stream| !is_evidenced_password_record_stream(&stream.path))
+    {
+        validate_live_bytes(stream.size, retained_plaintext)?;
+        let raw = container.read_stream_raw(&stream.path)?;
+        if raw.len() as u64 != stream.size {
+            return Err(Hwp5Error::Encrypted);
+        }
+        retained_plaintext = checked_password_live_bytes(retained_plaintext, stream.size)?;
+        streams.insert(stream.path.clone(), raw);
     }
 
     // The regular parser owns record data while the decrypted stream map is
@@ -593,6 +617,13 @@ fn read_password_protected_document(
     validate_live_bytes(retained_plaintext, retained_plaintext)?;
     header.check_body_readable_after_password()?;
     read_document_from_streams(&header, &streams).map_err(|_| Hwp5Error::Encrypted)
+}
+
+fn normalize_password_candidate_error(_error: Hwp5Error) -> Hwp5Error {
+    // The record identity proof has not completed yet, so an expansion limit
+    // can be induced by a wrong candidate and must share the stable credential
+    // refusal with every other failed candidate.
+    Hwp5Error::Encrypted
 }
 
 #[cfg(test)]
@@ -763,6 +794,82 @@ mod bounded_tests {
             ),
             Err(Hwp5Error::CertEncrypted)
         ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_non_record_stream_is_limited_before_materialization() {
+        let path = base_hwp("password-oversized-bindata");
+        let password = "correct-password";
+        make_evidenced_password_hwp(&path, password, 0);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            cfb.create_storage("/BinData").unwrap();
+            let mut stream = cfb.create_new_stream("/BinData/oversized.bin").unwrap();
+            stream.set_len(HWP5_PASSWORD_MAX_STREAM_BYTES + 1).unwrap();
+            drop(stream);
+            cfb.flush().unwrap();
+        }
+
+        let error = match read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(password),
+            },
+        ) {
+            Ok(_) => panic!("oversized opaque stream must be refused"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            Hwp5Error::ResourceLimitExceeded { resource, limit }
+                if resource == "password-protected HWP5 stream"
+                    && limit == HWP5_PASSWORD_MAX_STREAM_BYTES
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn compressed_candidate_limit_is_normalized_to_credential_refusal() {
+        let path = base_hwp("password-candidate-limit");
+        let candidate = "candidate-password";
+        // Set the compressed header bit and make the candidate decrypt to a
+        // valid raw-DEFLATE bomb. It reaches the resource guard before either
+        // record identity proof, exactly where a wrong candidate must remain
+        // indistinguishable from every other credential failure.
+        make_evidenced_password_hwp(&path, candidate, 1);
+        let compressed_bomb = crate::codec::compress(&vec![b'x'; 65 * 1024 * 1024]);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            let encrypted = encrypt_hwp5_stream_for_test(&compressed_bomb, candidate);
+            let mut stream = cfb.open_stream("/DocInfo").unwrap();
+            stream.set_len(0).unwrap();
+            stream.seek(SeekFrom::Start(0)).unwrap();
+            stream.write_all(&encrypted).unwrap();
+            drop(stream);
+            cfb.flush().unwrap();
+        }
+
+        let error = match read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(candidate),
+            },
+        ) {
+            Ok(_) => panic!("candidate bomb must not parse"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Hwp5Error::Encrypted), "{error:?}");
         std::fs::remove_file(path).unwrap();
     }
 
