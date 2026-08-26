@@ -8,7 +8,7 @@
 //! corpus lives outside the repository and is never committed). Run it locally with:
 //!
 //! ```text
-//! HWP_CORPUS_DIR=~/Documents/hwp_samples cargo test -p hwpx --test encrypted_gate
+//! HWP_CORPUS_DIR=/path/to/private/corpus cargo test -p hwpx --test encrypted_gate
 //! ```
 //!
 //! The corpus-gated half cannot run in CI; the committed-fixture half always does.
