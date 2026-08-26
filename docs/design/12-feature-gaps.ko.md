@@ -265,24 +265,24 @@
 
 ## 1. GA — 입력 게이트 (읽기 자체가 거부되는 것)
 
-가장 앞단. 파일을 열자마자 **의도적으로 거부**하는 부류다. 이들은 "버그"가 아니라 미구현을 명시적
-에러로 알리는 설계지만, 실문서에서 만나면 파이프라인 전체가 막히므로 갭으로 기록한다.
+가장 앞단. 지원 암호 경로가 필요하거나 본문 파싱 전에 **의도적으로 거부**해야 하는 보호 상태다.
+해소 항목은 구현 근거의 이력으로 남기고, 미해소 항목은 실문서에서 파이프라인 전체를 막는 갭으로 기록한다.
 
 | ID | 현상 | 근거 코드 | 스펙/포맷 근거 | 현 동작 | 영향 경로 | 난이도 |
 |---|---|---|---|---|---|---|
-| GA-1 | 암호화 HWP5 문서는 `Hwp5Error::Encrypted`로 즉시 거부 — **편성 확정 2026-08-22**: 비밀번호 공급 복호화가 마일스톤 2(Phase 8, GATE-03)로 착수. 참조 구현 kordoc `src/hwp5/crypto.ts`, rhwp `src/password_crypto.rs` | `hwp5/src/file_header.rs:60,136`(ENCRYPTED bit1·`is_encrypted`), `container.rs:102`(`check_body_readable`), `error.rs:40` | §3.2.1 FileHeader 속성 bit1 | 거부 | 읽기 | L |
+| GA-1 | ~~암호화 HWP5/HWPX가 일반 리더 진입 전에 거부됨~~ | `crates/hwp5/src/read.rs`·`read/password.rs`, `crates/hwpx/src/read/password.rs`, `crates/hwp-cli/src/commands/cat.rs` | HWP5 §3.2.1 bit1과 정품 프로파일 근거, HWPX ODF 암호 메타데이터와 정품 프로파일 근거 | ✅ **해소 2026-08-26**: 사용자 암호로 실증된 HWP5 EncryptVersion 4와 HWPX ODF AES-256 프로파일을 `cat`·`convert`·`render` 및 대응 MCP 호출에서 연다. 암호 부재·오류는 하나의 타입드 거부로 통합. content-free 영수증 7건과 한컴 직접 대조로 검증 | 읽기·변환·렌더 | **L**★ |
 | GA-2 | ~~배포용(ViewText) 문서 거부 — `/ViewText/Section*`에 본문이 있어도 접근 전 차단~~ | `hwp5/src/distdoc.rs`(256B `DISTRIBUTE_DOC_DATA` 난독 해제, SHA-1 유도 AES-128-ECB 키, raw inflate), `read.rs`(복호화 결과를 `/BodyText`와 동일한 `scan_stream`·`parse_section` 경로에 넘긴다) | §3.2.1 bit2, §3.2.3 ViewText. 알고리즘은 한컴 스펙이 아니라 pyhwp `hwp5/distdoc.py`에서 재구성 | ✅**해소 2026-08-20** — `cat`·`convert`·`render`가 배포용문서를 받는다. 코퍼스의 정품 배포용문서 11건 전부로 검증(`crates/hwp5/tests/distdoc_corpus.rs`) | 읽기 | **M**★ |
-| GA-3 | DRM·공인인증서 보안 문서에 **전용 거부 경로 없음** — 플래그는 인식(`info` 표시)하나 게이트는 `is_encrypted`(bit1)만 검사. DRM 전용 플래그만 선 문서는 명확한 거부 대신 하위 파싱 실패로 떨어질 수 있음 | `hwp5/src/file_header.rs:63,67,69`(DRM·CERT_ENCRYPTED·CERT_DRM 플래그), `:151`(`attribute_names`만 소비), `container.rs:101`(게이트는 bit1/bit2뿐) | §3.2.1 bit4·bit8·bit10 | 거부(불완전) | 읽기 | L |
-| GA-4 | **전자 서명 문서 미처리** — FileHeader bit7(전자서명)·bit9(예비)는 이름만 인식, `DigitalSignature`·`PublicKeyInfo` 스트림은 게이트도 카탈로그도 없어 하위 파싱 실패로 낙하 가능 | `hwp5/src/file_header.rs:66,68`(HAS_SIGNATURE·SIGNATURE_SPARE 이름만), `container.rs:101`(게이트는 bit1/bit2뿐), [10](10-hwp5-structure-map.ko.md) §1 | §3.2.1 bit7·bit9, §3.2.8 서명 스트림 | 침묵(게이트 없음) | 읽기 | L |
+| GA-3 | ~~DRM·공인인증서 보안 문서에 전용 거부 경로 없음~~ | `crates/hwp5/src/file_header.rs`의 `is_drm`·`is_cert_encrypted`·`is_cert_drm`과 순서 고정 `check_body_readable_after_password`, `crates/hwp5/src/error.rs` | §3.2.1 bit4·bit8·bit10 | ✅ **해소 2026-08-20**: 조건별 타입드 거부와 해제 안내 제공. 비트와 실제 보호 조건의 대응은 합성 헤더로 검증했으며 정품 보호 문서 근거는 없음 | 읽기 | **S** |
+| GA-4 | ~~전자 서명 문서가 하위 파싱 실패로 낙하 가능~~ | `crates/hwp5/src/file_header.rs`의 `has_signature`와 순서 고정 거부, 서명 예비 bit9는 의도적으로 제외, `crates/hwp5/src/error.rs` | §3.2.1 bit7·bit9, §3.2.8 서명 스트림 | ✅ **해소 2026-08-20**: bit7 전용 타입드 거부 제공, bit9는 메타데이터로 유지. 정품 서명 문서로 대응을 검증하지는 못함 | 읽기 | **S** |
 | GA-5 | **버전 무검사 침묵 허용** — parse는 시그니처만 검사하고 버전 필드를 게이트하지 않아 5.1.x·미래 버전 전부 통과. 합성은 5.1.x 표본 상수 길이라 PARA_HEADER 24/22B 외 버전별 레코드 길이 차는 게이팅 안 됨 | `hwp5/src/file_header.rs:91-115`(버전 무검사), `write.rs:113`(5.0.3.2 분기 하나뿐), `:1072-1089`(파싱 실패 시 5.1.0.1 기본) | §3.2.1 버전 필드 | ✅ **해소(2026-07-15)** — major≠5는 `UnsupportedVersion` 거부, 5.x 전부 허용 | 읽기·왕복 | S |
 
-**GA 교훈:** GA-1(암호화)·GA-3(DRM)·GA-4(서명)는 **복호화·인증 자체가 목표**라 정품 파일과 크립토
-역설계(L)가 없으면 손댈 수 없다. GA-2만이 예외였고 지금은 해소되었다. ★ GA-2가 L이 아니라 M이었던
+**GA 교훈:** GA-1은 정품 파일과 크립토 역설계(L)를 거쳐 2026-08-26 실증 범위 암호 지원으로
+해소됐다. GA-3·GA-4는 앞서 명시적 거부로 닫았고, 인증서·DRM·서명 비트와 실제 조건의 대응은
+정품 파일 미검증임을 계속 밝힌다. GA-2도 해소된 다른 복호화 사례다. ★ GA-2가 L이 아니라 M이었던
 것은 한컴 공식 스펙
 「한글문서파일형식\_배포용문서\_revision1.2」가 복호화 알고리즘 전체(DISTRIBUTE_DOC_DATA 256B
 레코드, 난수 배열, SHA1 유도 키, AES-128 ECB)를 공개하고 있고 pyhwp가 2014년부터 구현한 선례가
-있다([08](08-external-research.ko.md) 생태계 대조). GA-3·GA-4는 "명확한 거부 메시지" 국소 개선(S)으로
-사용성만 먼저 올릴 수 있고, GA-5는 버전 비교 한 줄이면 되는 즉시 개선 항목이다.
+있다([08](08-external-research.ko.md) 생태계 대조). GA-5는 버전 비교 한 줄이면 되는 즉시 개선 항목이다.
 
 ---
 
@@ -686,7 +686,10 @@ phase에 따라 한컴 검수 절차(07 PROC)로 끝낸다.
 |---|---|---|---|
 | **가치 高**(빈출) | ✅공문서 GN 계열은 전부 해소: ~~GN-2·GN-3·GN-5·GN-6·GN-7·GN-8~~(공문서 프리셋·표기법 lint·문서 템플릿·표 서식·번들 규정 계층·편집 동등성. 2026-08-20~2026-08-26). GC-4·GC-5(탭·구역속성), GC-8·GC-9(내어쓰기·문단배경) — ✅해소(2026-07-15): ~~GE-α1~α5·α7, GH-1·GH-2, GL-1, GA-5, GE-β4~~ / ✅해소(2026-07-18, md): ~~GH-3·GH-4·GH-5·GH-6, GH-8~~ | **GN-1·GN-4**(법정 8단계 부호·문서 틀 — writer 산출물, 한컴 검수), GG-3·GG-4(양쪽정렬·자간), GF-2(찾아보기·겹침), ~~GA-2★~~(배포용 읽기, 2026-08-20 해소), ~~GJ-1 출력~~(DOCX 내보내기 2026-08-01 해소), **GK-1**(셀 병합), **GK-2**(열 삭제 — 추가는 07-19 해소) — ✅GC-2·GC-3은 07-19 해소(J1 실기 대기) | GG-1·GG-2(글상자 드롭·오버플로) |
 | **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), ~~GG-16~~(렌더 국소 — PR 9 해소, GG-5·GG-6·GG-8~GG-11·GG-17·GG-20·GG-21·GG-22는 2026-08-13/14 해소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-3·GM-4·GM-8**(병합·분할·비교), **GM-10**(PII 비식별 — kordoc 선례) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 — 2026-08-20 처분: 범위 밖 유지, 다른 로드맵 항목이 모두 끝난 뒤에만 재검토. 같은 결정이 PDF·XLS·XLSX 들여오기에도 적용되며, 그때까지는 kordoc이 커버 도구), **GM-9 Web**(인증형 hosted MCP·tenant 격리·운영, Desktop은 해소) |
-| **가치 低**(드묾) | GA-3·GA-4(거부 메시지), **GI-5**(embed-bin), **GL-2·GL-3**(추출 세분) | **GJ-4**(rtf) | GA-1(암호화 — **재평가·편성 확정 2026-08-22**: 마일스톤 2 Phase 8 / GATE-03, 비밀번호 공급 복호화. 구체적 소비자(hwp-editor)가 생기며 이 셀을 떠남), GB-8·GB-9·GB-11(변경추적 등), **GJ-7**(역방향 입력), **GJ-8**(HWPX 배포용) |
+| **가치 低**(드묾) | **GI-5**(embed-bin), **GL-2·GL-3**(추출 세분) | **GJ-4**(rtf) | GB-8·GB-9·GB-11(변경추적 등), **GJ-7**(역방향 입력), **GJ-8**(HWPX 배포용) |
+
+GA-1·GA-3·GA-4는 미해소 가치 매트릭스에서 제거했다. 암호 입력은 2026-08-26 해소했고,
+인증서·DRM·서명 사용성 갭은 2026-08-20 명시적 거부로 해소했다.
 
 **2026-08-22 GO 에디터 계열**은 **GO-1·GO-3·GO-4·GO-6 = S, GO-2·GO-5 = M**이고 구체적 소비자(별도 hwp-editor 리포)가 있으며, 마일스톤 2(Phase 5-9)에 편성됐다. 셀이 계열 신설 이전에 쓰였으므로 셀 대신 여기에 별기한다. 같은 결정이 GA-1을 마일스톤 2로 당겼다.
 

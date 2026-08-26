@@ -3,7 +3,7 @@
 # The HWP 5.0 binary reader, specified for a rebuild
 
 This describes the read path of `crates/hwp5/src/` in enough detail to reimplement it from scratch.
-The files: `read.rs`, `container.rs`, `file_header.rs`, `codec/{reader,writer,compress}.rs`,
+The files: `read.rs`, `read/password.rs`, `container.rs`, `file_header.rs`, `codec/{reader,writer,compress}.rs`,
 `record/{header,scan,tree,tag}.rs`, `doc_info.rs`, `body_text.rs`, `summary.rs`, plus the
 consumer-side geometry parser `crates/hwp-render/src/shape_draw.rs` and the character classification
 in `crates/hwp-model/src/paragraph.rs`.
@@ -19,11 +19,16 @@ advance, so this rule gives both a lossless round-trip and tolerance of future v
 
 ## 1. The whole pipeline
 
-The order in `read_document(path) -> ReadResult { document, warnings }` (`read.rs`):
+The order in `read_document_with_options(path, options) -> ReadResult { document, warnings }`
+(`read.rs`), with `read_document(path)` supplying default options:
 
 1. `Hwp5Container::open(path)`: open the CFB and parse and validate the FileHeader.
-2. `container.check_body_readable()`: fail immediately when encrypted or a distribution document.
-3. Read `/DocInfo` (decompressed) → `scan_stream(Tolerant)` → `parse_doc_info()` → `DocHeader`.
+2. Check the ordered protection gate. Password encryption without a supplied password is refused;
+   with a password, only the genuine-corpus-evidenced EncryptVersion 4 profile enters the bounded
+   in-memory decryptor. Certificate encryption, certificate DRM, DRM and signatures remain typed
+   refusals after password authentication. Distribution documents select the ViewText path.
+3. Read `/DocInfo` from the ordinary or authenticated stream source (decompressed) →
+   `scan_stream(Tolerant)` → `parse_doc_info()` → `DocHeader`.
 4. For each `/BodyText/SectionN` from `body_sections()`: read (decompressed) → `scan_stream` →
    `parse_section()` → `Section`.
 5. `/BinData/*` streams: when the FileHeader compression flag is set, try raw deflate and fall back to
@@ -54,7 +59,7 @@ must be followed.
 | `/FileHeader` | the fixed 256B header (signature, version, attributes) | no | `file_header.rs` |
 | `/DocInfo` | the document information record stream (font, shape and style tables) | yes | `doc_info.rs` |
 | `/BodyText/Section0..N` | the body section record streams | yes | `body_text.rs` |
-| `/ViewText/Section0..N` | distribution document body (encryption related) | yes | unsupported (error) |
+| `/ViewText/Section0..N` | distribution document body | yes | `distdoc.rs` → normal section parser |
 | `/BinData/*` | attached binaries (images such as `BIN0001.png`) | per the header flag | try and fall back |
 | `/\x05HwpSummaryInformation` | the OLE property set (title, author, ...) | no | `summary.rs` |
 | `/PrvText` | preview text (UTF-16LE) | no | - |
@@ -72,9 +77,13 @@ with `/DocInfo`, `/BodyText/`, `/ViewText/` or `/Scripts/` are subject to the Fi
 flag. FileHeader, PrvText, PrvImage, BinData and the summary information are excluded (BinData gets
 its own try-and-fall-back on the read path).
 
-**The distribution and encryption guard** `check_body_readable()`: `is_encrypted()` gives
-`Hwp5Error::Encrypted` and `is_distribution()` gives `Hwp5Error::DistributionDoc`, failing clearly
-before any body access.
+**The protection gate**: `check_body_readable()` is the no-password compatibility entry point.
+`read_document_with_options` first calls `check_body_readable_with_password`; an encrypted document
+with a supplied password is authenticated and decrypted only for the evidenced profile, then
+`check_body_readable_after_password()` applies the remaining certificate/DRM/signature order.
+Wrong, absent and unsupported password profiles normalize to `Hwp5Error::Encrypted` before the CLI
+maps them to its stable public refusal. Distribution input takes the separately bounded `distdoc`
+path and feeds decrypted ViewText records into the same semantic parser.
 
 ---
 
@@ -119,8 +128,10 @@ The `/FileHeader` stream must be exactly 256 bytes (`FILE_HEADER_SIZE`); otherwi
 | 16 | HAS_VIDEO_CONTROL | a video control |
 | 17 | HAS_TOC_FIELD | a table-of-contents field control |
 
-Only `COMPRESSED` (bit0), `ENCRYPTED` (bit1) and `DISTRIBUTION` (bit2) actually drive branches on
-read. The rest are shown by `attribute_names()` for `hwp info`.
+`COMPRESSED` (bit0), `ENCRYPTED` (bit1), `DISTRIBUTION` (bit2), `DRM` (bit4), `HAS_SIGNATURE`
+(bit7), `CERT_ENCRYPTED` (bit8) and `CERT_DRM` (bit10) drive read-time branches. The signature-spare
+bit9 remains metadata-only because its real-world semantics were not established. All names are also
+shown by `attribute_names()` for `hwp info`.
 
 ---
 

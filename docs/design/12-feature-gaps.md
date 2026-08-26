@@ -310,27 +310,27 @@ is itself knowledge).
 
 ## 1. GA: the input gate (what is refused outright)
 
-The front line: files that are **deliberately refused** the moment they are opened. These are not
-"bugs" but a design that reports the unimplemented explicitly, yet they block the whole pipeline when
-they appear in real documents, so they are recorded as gaps.
+The front line: protection states that either require a supported credential path or are
+**deliberately refused** before body parsing. Resolved entries remain here as historical evidence;
+open entries still block the whole pipeline when they appear in real documents.
 
 | ID | Symptom | Code evidence | Spec/format | Current behavior | Paths | Difficulty |
 |---|---|---|---|---|---|---|
-| GA-1 | An encrypted HWP5 document is refused immediately with `Hwp5Error::Encrypted` — **scheduled 2026-08-22**: password-supplied decryption lands in milestone 2 (Phase 8, GATE-03); references kordoc `src/hwp5/crypto.ts`, rhwp `src/password_crypto.rs` | `hwp5/src/file_header.rs:60,136` (ENCRYPTED bit1, `is_encrypted`), `container.rs:102` (`check_body_readable`), `error.rs:40` | §3.2.1 FileHeader attribute bit1 | refused | read | L |
+| GA-1 | ~~Password-encrypted HWP5/HWPX is refused before the normal reader~~ | `crates/hwp5/src/read.rs` and `read/password.rs`; `crates/hwpx/src/read/password.rs`; `crates/hwp-cli/src/commands/cat.rs` | HWP5 §3.2.1 bit1 plus genuine-file profile evidence; HWPX ODF encryption metadata plus genuine-file profile evidence | ✅ **resolved 2026-08-26**: a supplied password unlocks the evidenced HWP5 EncryptVersion 4 and HWPX ODF AES-256 profiles for `cat`, `convert`, `render` and matching MCP calls. Wrong/absent passwords share one typed refusal. Verified with seven content-free receipts and direct Hancom comparison | read, convert, render | **L** ★ |
 | GA-2 | ~~Distribution (ViewText) documents are refused; even with body content in `/ViewText/Section*`, access is blocked beforehand~~ | `hwp5/src/distdoc.rs` (256B `DISTRIBUTE_DOC_DATA` deobfuscation, SHA-1 derived AES-128-ECB key, raw inflate), `read.rs` (feeds the plaintext into the same `scan_stream`/`parse_section` pair as `/BodyText`) | §3.2.1 bit2, §3.2.3 ViewText; algorithm reconstructed from pyhwp `hwp5/distdoc.py`, not from the Hancom specification | ✅ **resolved 2026-08-20**: `cat`, `convert` and `render` accept distribution documents. Verified against all 11 genuine distribution documents in the corpus (`crates/hwp5/tests/distdoc_corpus.rs`) | read | **M** ★ |
-| GA-3 | DRM and certificate-secured documents have **no dedicated refusal path**: the flags are recognized (shown by `info`) but the gate only checks `is_encrypted` (bit1). A document with only a DRM flag can fall into a downstream parse failure instead of a clear refusal | `hwp5/src/file_header.rs:63,67,69` (DRM, CERT_ENCRYPTED, CERT_DRM flags), `:151` (consumed only by `attribute_names`), `container.rs:101` (the gate covers only bit1 and bit2) | §3.2.1 bit4, bit8, bit10 | refused (incompletely) | read | L |
-| GA-4 | **Digitally signed documents are unhandled**: FileHeader bit7 (signature) and bit9 (reserved) are recognized by name only, and the `DigitalSignature` and `PublicKeyInfo` streams have neither a gate nor a catalog entry, so they can fall into a downstream parse failure | `hwp5/src/file_header.rs:66,68` (HAS_SIGNATURE, SIGNATURE_SPARE by name only), `container.rs:101`, [10](10-hwp5-structure-map.md) §1 | §3.2.1 bit7, bit9; §3.2.8 signature streams | silent (no gate) | read | L |
+| GA-3 | ~~DRM and certificate-secured documents have no dedicated refusal path~~ | `crates/hwp5/src/file_header.rs` (`is_drm`, `is_cert_encrypted`, `is_cert_drm`, ordered `check_body_readable_after_password`) and `crates/hwp5/src/error.rs` | §3.2.1 bit4, bit8, bit10 | ✅ **resolved 2026-08-20**: dedicated typed refusals with remedy hints. The bit-to-real-world-condition mapping is covered by synthesized headers, not a genuine protected file | read | **S** |
+| GA-4 | ~~Digitally signed documents can fall into downstream parsing~~ | `crates/hwp5/src/file_header.rs` (`has_signature`, ordered refusal; signature-spare deliberately excluded) and `crates/hwp5/src/error.rs` | §3.2.1 bit7, bit9; §3.2.8 signature streams | ✅ **resolved 2026-08-20**: bit7 has a dedicated typed refusal; bit9 remains metadata-only. The mapping is not verified against a genuine signed file | read | **S** |
 | GA-5 | **Versions passed silently unchecked**: parse checked only the signature, letting 5.1.x and future versions through. Synthesis uses 5.1.x sample constants, so per-version record length differences beyond PARA_HEADER 24/22B are not gated | `hwp5/src/file_header.rs:91-115` (no version check), `write.rs:113` (only one 5.0.3.2 branch), `:1072-1089` (defaults to 5.1.0.1 on parse failure) | §3.2.1 version field | ✅ **resolved (2026-07-15)**: major ≠ 5 is refused with `UnsupportedVersion`, all 5.x allowed | read, round-trip | S |
 
-**GA lesson:** GA-1 (encryption), GA-3 (DRM) and GA-4 (signatures) target **decryption and
-authentication themselves**, so they are untouchable without genuine files and crypto reverse
-engineering (L). GA-2 was the exception and is now closed. ★ It was M rather than L because
+**GA lesson:** GA-1 required genuine files and crypto reverse engineering (L) and closed on
+2026-08-26 with evidence-bounded password support. GA-3 and GA-4 closed earlier as explicit local
+refusals; their header branches remain honestly marked as unverified against genuine certificate,
+DRM or signed files. GA-2 was the other decryption case and is also closed. ★ It was M rather than L because
 Hancom's official
 「한글문서파일형식\_배포용문서\_revision1.2」 publishes the entire decryption algorithm
 (the 256B DISTRIBUTE_DOC_DATA record, the random array, the SHA1-derived key and AES-128 ECB), and
 pyhwp has implemented it since 2014 ([08](08-external-research.md), the ecosystem comparison).
-GA-3 and GA-4 can improve usability first with a local (S) change to give a clear refusal message,
-and GA-5 was a one-line version comparison, fixed immediately.
+GA-5 was a one-line version comparison, fixed immediately.
 
 ---
 
@@ -769,7 +769,10 @@ output paths) end with the Hancom acceptance procedure (07 PROC) per the milesto
 |---|---|---|---|
 | **High value** (frequent) | ✅ the whole official-document GN series is resolved: ~~GN-2, GN-3, GN-5, GN-6, GN-7, GN-8~~ (official presets, notation lint, document templates, table styling, bundled regulation layer, editing parity — 2026-08-20 to 2026-08-26). GC-4 and GC-5 (tabs, section properties), GC-8 and GC-9 (hanging indent, paragraph background). ✅ resolved 2026-07-15: ~~GE-α1 to α5 and α7, GH-1 and GH-2, GL-1, GA-5, GE-β4~~ / ✅ resolved 2026-07-18 (markdown): ~~GH-3, GH-4, GH-5, GH-6, GH-8~~ | **GN-1, GN-4** (statutory eight-level marks, document frames — writer-visible, Hancom acceptance), GG-3 and GG-4 (justify, letter spacing), GF-2 (index marks, overlap), ~~GA-2 ★~~ (reading distribution documents, resolved 2026-08-20), ~~GJ-1 output~~ (DOCX export resolved 2026-08-01), **GK-1** (cell merge), **GK-2** (column deletion; addition resolved on 07-19). ✅ GC-2 and GC-3 resolved on 07-19 (J1 awaiting Hancom) | GG-1 and GG-2 (text box drop, overflow) |
 | **Medium value** | GC-6 (multi-column text boxes), GE-2 to GE-6 (picture drop, columns, number synthesis), GF-1 (%unk), **GB-12** (bibliography), **GE-β1, β2, β5** (preview, scripts, settings), ~~GG-16~~ (local rendering, resolved in PR 9 alongside GG-5, GG-6, GG-8 to GG-11, GG-17, GG-20, GG-21, GG-22 from 2026-08-13/14), ~~GH-3, GH-4, GH-5~~ (footnote markers, merged cells, in-cell blocks; markdown resolved 2026-07-18, html and odt 2026-08-01), ~~GJ-5 and GJ-6~~ (csv, txt, resolved 08-01). ✅ the whole GI series and GE-7 resolved on 07-19. ~~GK-3, GK-4, GK-6, GK-8~~, ~~GM-1, GM-2, GM-5~~, **GM-6** (corrected to already-covered), GM-7 (sealing, resolved 07-16) — ✅ resolved in the 2026-08-01 batch | GB-4 to GB-7 and GB-10 (word art, forms, grouping, memos, master pages), GC-1 (vertical writing), GD-1 to GD-3 (equations; rhwp precedent), GE-α6 (gradients), GF-3 (field creation), **GB-1 hwpx chart generation ★** (chartSpace; kordoc precedent), **GJ-2 and GJ-3** (hml, HWP 3.x; specifications public), **GG-7, GG-12 to GG-15, GG-18, GG-19** (render pixel comparison), **GE-β3 and β6** (DocOptions, embedded fonts), **GH-7** (ODT layout), **GK-5 and GK-7** (header editing, styles), **GM-3, GM-4, GM-8** (merge, split, compare), **GM-10** (PII redaction; kordoc precedent) | GB-2 and GB-3 (OLE, video), **GJ-1 full round-trip** (DOCX import; 2026-08-20 disposition: stays out of scope and is revisited only after every other roadmap item is complete — the same call covers PDF, XLS and XLSX import, with kordoc as the covering tool meanwhile), **GM-9 Web** (authenticated hosted MCP, tenant isolation and operations; Desktop is resolved) |
-| **Low value** (rare) | GA-3 and GA-4 (refusal messages), **GI-5** (embed-bin), **GL-2 and GL-3** (extraction granularity) | **GJ-4** (rtf) | GA-1 (encryption — **re-rated and scheduled 2026-08-22**: milestone 2 Phase 8 / GATE-03, password-supplied decryption; the concrete hwp-editor consumer moved it out of this cell), GB-8, GB-9, GB-11 (change tracking and so on), **GJ-7** (reverse input), **GJ-8** (HWPX distribution) |
+| **Low value** (rare) | **GI-5** (embed-bin), **GL-2 and GL-3** (extraction granularity) | **GJ-4** (rtf) | GB-8, GB-9, GB-11 (change tracking and so on), **GJ-7** (reverse input), **GJ-8** (HWPX distribution) |
+
+GA-1, GA-3 and GA-4 are removed from the open-value matrix: password input closed on 2026-08-26,
+and the certificate/DRM/signature usability gaps closed as explicit refusals on 2026-08-20.
 
 **The 2026-08-22 GO editor series** sits at **GO-1, GO-3, GO-4, GO-6 = S, GO-2 and GO-5 = M**, all
 with a concrete consumer (the separate hwp-editor repo), and is scheduled as milestone 2

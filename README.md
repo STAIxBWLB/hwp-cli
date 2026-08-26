@@ -19,6 +19,10 @@ and in CI.
 - **Reading and text extraction** from hwp/hwpx to plain / markdown / HTML / JSON (full IR) / CSV.
   Tables, images, headers/footers and unparsed records are preserved during parsing, and Hancom
   distribution documents (배포용문서) are decrypted and read like any other file.
+- **Password-protected input** `hwp cat`, `convert` and `render` accept `--password` or the safer
+  `--password-stdin` for the evidenced HWP5 and HWPX password profiles. The matching MCP tools use
+  a per-call password field with no session cache. Wrong or absent passwords return one stable,
+  redacted refusal.
 - **Format conversion** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ HTML and hwp/hwpx ↔ JSON (IR),
   all through a shared document model (IR), plus one-way export to DOCX, ODT, CSV and plain text.
 - **Rendering** hwp/hwpx → PNG / SVG / PDF. Stored line layout (PARA_LINE_SEG) is used when present
@@ -58,7 +62,8 @@ and in CI.
 | HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
 | Charts, OLE | Not supported |
-| Password-, certificate- or DRM-protected documents | Reading is refused with a specific reason |
+| Password-protected HWP5/HWPX | Read, convert and render with a supplied password |
+| Certificate-, signature- or DRM-protected documents | Reading is refused with a specific reason |
 
 ### Limitations
 
@@ -72,6 +77,9 @@ and in CI.
   without hwp↔hwpx record synthesis (they are preserved round-trip within the same format).
 - **Fields** Existing field values can be filled and a new click-here field can be created after an
   anchor, but arbitrary field kinds cannot be created.
+- **Protection scope** Password support is limited to the genuine-corpus-evidenced HWP5
+  EncryptVersion 4 and HWPX ODF AES-256 profiles. Certificate encryption, signatures and DRM remain
+  explicit refusals. Passwords are invocation-local and are never written to reports or receipts.
 - **Render hashes** The hashes recorded by the corpus are observations for that OS and architecture,
   not a claim of cross-platform pixel equivalence.
 - **No Hancom parity claim** The final verdict is always whether the file opens correctly in Hancom Office.
@@ -88,14 +96,12 @@ is the detailed source; the list below is only the shape of the work.
    versioned fine-grained segment envelope, render-side layout geometry for hit-testing, jpeg/webp
    raster output, and a typed JSON edit-ops channel with addressed operations and edit feedback
    (the GO series).
-3. **Password-protected input** Decrypt password-protected documents instead of refusing them
-   (GA-1). Certificate-secured and DRM documents stay out of scope.
-4. **Specification coverage** The HWP 5.0 rev1.3 body has been reconstructed as reviewable Markdown
+3. **Specification coverage** The HWP 5.0 rev1.3 body has been reconstructed as reviewable Markdown
    (§1 to §4.4) and audited against the implementation; the errata that audit produced are
    catalogued in [19 §1](docs/design/19-hwp5-spec-supplement.md). Still outstanding: the OWPML /
    KS X 6101, equation and chart specifications have not been obtained, and the bit-level
    parser/writer value comparison is only partly done.
-5. **HTML fidelity** Footnote markers, merged-cell colspan/rowspan and in-cell blocks already match
+4. **HTML fidelity** Footnote markers, merged-cell colspan/rowspan and in-cell blocks already match
    the markdown path. What remains is CSS mapping of character and paragraph shapes, columns and
    headers/footers.
 

@@ -10,6 +10,24 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Password-protected HWP5 and HWPX input now enters the normal read, convert and render paths when
+  the user supplies a password. The CLI supports command-local `--password` and
+  `--password-stdin` on `cat`, `convert` and `render`; MCP supports a per-call password on
+  `hwp_read`, `hwp_convert` and `hwp_render` without caching it in the session.
+
+- The supported profiles are evidence-bound: HWP5 EncryptVersion 4 CFB streams and the observed
+  HWPX ODF AES-256/PBKDF2/checksum profile. Wrong and absent passwords share
+  `HWP_PASSWORD_REQUIRED_OR_INVALID`, and certificate encryption, signatures and DRM keep their
+  existing typed refusals. Credentials, decrypted bytes and parser details do not enter logs,
+  reports or receipts.
+
+- A private-corpus contract, profile-evidence schema and seven-case content-free receipt contract
+  gate the feature. The final release candidate passed genuine ASCII HWP5/HWPX baselines, a
+  distinct non-ASCII password success, wrong/absent cases for both formats, clean-worktree
+  inventories and direct Hancom Office comparison.
+
 **Changed**
 
 - Documentation now matches v0.10.0. The READMEs predated v0.9.0 and v0.10.0 and had become wrong

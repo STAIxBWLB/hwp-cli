@@ -2,7 +2,7 @@
 
 # HWP 5.0 바이너리 리더(reader) 재구축 명세
 
-`crates/hwp5/src/`의 읽기 경로를 처음부터 다시 구현할 수 있는 수준으로 기술한다. 대상 파일: `read.rs`, `container.rs`, `file_header.rs`, `codec/{reader,writer,compress}.rs`, `record/{header,scan,tree,tag}.rs`, `doc_info.rs`, `body_text.rs`, `summary.rs`, 그리고 소비단 기하 파서 `crates/hwp-render/src/shape_draw.rs`, 문자 분류표 `crates/hwp-model/src/paragraph.rs`.
+`crates/hwp5/src/`의 읽기 경로를 처음부터 다시 구현할 수 있는 수준으로 기술한다. 대상 파일: `read.rs`, `read/password.rs`, `container.rs`, `file_header.rs`, `codec/{reader,writer,compress}.rs`, `record/{header,scan,tree,tag}.rs`, `doc_info.rs`, `body_text.rs`, `summary.rs`, 그리고 소비단 기하 파서 `crates/hwp-render/src/shape_draw.rs`, 문자 분류표 `crates/hwp-model/src/paragraph.rs`.
 
 핵심 설계 원칙 두 가지가 전 계층을 관통한다. (1) **스캔과 해석의 분리** — `record` 계층은 태그 의미를 전혀 모르고 `(tag, level, data)`만 다루며, 의미 파싱은 `doc_info`/`body_text`가 담당한다. (2) **알려진 prefix + tail 보존** — 모든 레코드 파서는 알려진 앞부분만 구조체로 뜯고 남은 바이트를 `tail: Vec<u8>`로 그대로 보존한다. HWP는 버전이 오르며 필드가 뒤에 추가되는 전방 호환 포맷이라 이 규칙이 무손실 왕복과 미래 버전 내성을 동시에 준다.
 
@@ -10,11 +10,15 @@
 
 ## 1. 전체 파이프라인
 
-`read_document(path) -> ReadResult { document, warnings }` (`read.rs`)의 순서:
+`read_document_with_options(path, options) -> ReadResult { document, warnings }` (`read.rs`)의
+순서이며, `read_document(path)`는 기본 옵션을 넘긴다.
 
 1. `Hwp5Container::open(path)` — CFB 열기 + FileHeader 파싱/검증.
-2. `container.check_body_readable()` — 암호화/배포용이면 즉시 에러.
-3. `/DocInfo` 읽기(압축 해제) → `scan_stream(Tolerant)` → `parse_doc_info()` → `DocHeader`.
+2. 보호 게이트를 고정 순서로 검사한다. 암호가 없는 암호화 문서는 거부하고, 암호가 있으면 정품 코퍼스로
+   실증한 EncryptVersion 4 프로파일만 bounded 메모리 복호화기로 보낸다. 인증서 암호화·인증서 DRM·DRM·
+   서명은 암호 인증 뒤에도 타입드 거부로 유지한다. 배포용문서는 ViewText 경로를 선택한다.
+3. 일반 또는 인증된 스트림 소스에서 `/DocInfo` 읽기(압축 해제) → `scan_stream(Tolerant)` →
+   `parse_doc_info()` → `DocHeader`.
 4. `body_sections()`가 준 `/BodyText/SectionN`마다: 읽기(압축 해제) → `scan_stream` → `parse_section()` → `Section`.
 5. `/BinData/*` 스트림: FileHeader 압축 플래그면 raw deflate 시도, 실패 시 원본 폴백 → `BinStream`.
 6. `/\x05HwpSummaryInformation`: `parse_summary()` (없거나 손상돼도 기본값으로 진행).
@@ -35,7 +39,7 @@ HWP 5.0 파일은 MS **CFB(Compound File Binary, 구 OLE2 복합 문서)** 컨�
 | `/FileHeader` | 256B 고정 헤더(시그니처/버전/속성) | 아니오 | `file_header.rs` |
 | `/DocInfo` | 문서 정보 레코드 스트림(글꼴/모양/스타일 테이블) | 예 | `doc_info.rs` |
 | `/BodyText/Section0..N` | 본문 섹션 레코드 스트림 | 예 | `body_text.rs` |
-| `/ViewText/Section0..N` | 배포용 문서 본문(암호화 관련) | 예 | 미지원(에러) |
+| `/ViewText/Section0..N` | 배포용 문서 본문 | 예 | `distdoc.rs` → 일반 섹션 파서 |
 | `/BinData/*` | 첨부 바이너리(이미지 `BIN0001.png` 등) | 헤더 플래그 따름 | 시도-폴백 |
 | `/\x05HwpSummaryInformation` | OLE 속성 집합(제목/지은이/…) | 아니오 | `summary.rs` |
 | `/PrvText` | 미리보기 텍스트(UTF-16LE) | 아니오 | — |
@@ -47,7 +51,12 @@ HWP 5.0 파일은 MS **CFB(Compound File Binary, 구 OLE2 복합 문서)** 컨�
 
 **압축 대상 판정** `is_record_stream(path)` (`container.rs:114`): `/DocInfo`, `/BodyText/`, `/ViewText/`, `/Scripts/`로 시작하는 스트림만 FileHeader 압축 플래그의 적용을 받는다. FileHeader/PrvText/PrvImage/BinData/요약정보는 이 판정에서 제외된다(BinData는 read 경로에서 별도 시도-폴백).
 
-**배포/암호 가드** `check_body_readable()`: `is_encrypted()`면 `Hwp5Error::Encrypted`, `is_distribution()`이면 `Hwp5Error::DistributionDoc`. 본문 접근 전에 명확히 실패시킨다.
+**보호 게이트**: `check_body_readable()`은 암호 없는 호환 진입점이다.
+`read_document_with_options`는 먼저 `check_body_readable_with_password`를 호출한다. 암호가 공급된
+암호화 문서는 실증 프로파일에서만 인증·복호화한 뒤 `check_body_readable_after_password()`로 남은
+인증서·DRM·서명 순서를 적용한다. 암호 부재·오류·미지원 프로파일은 CLI가 안정된 공개 거부로
+매핑하기 전에 `Hwp5Error::Encrypted`로 정규화한다. 배포용문서는 별도 bounded `distdoc` 경로에서
+ViewText 레코드를 복호화하고 동일한 의미 파서에 넘긴다.
 
 ---
 
@@ -90,7 +99,9 @@ HWP 5.0 파일은 MS **CFB(Compound File Binary, 구 OLE2 복합 문서)** 컨�
 | 16 | HAS_VIDEO_CONTROL | 비디오 컨트롤 |
 | 17 | HAS_TOC_FIELD | 차례 필드 컨트롤 |
 
-읽기에서 실제로 분기에 쓰이는 것은 `COMPRESSED`(bit0), `ENCRYPTED`(bit1), `DISTRIBUTION`(bit2)뿐이다. 나머지는 `attribute_names()`로 `hwp info` 표시용.
+읽기 분기에 쓰이는 것은 `COMPRESSED`(bit0), `ENCRYPTED`(bit1), `DISTRIBUTION`(bit2), `DRM`(bit4),
+`HAS_SIGNATURE`(bit7), `CERT_ENCRYPTED`(bit8), `CERT_DRM`(bit10)이다. 서명 예비 bit9는 실제 의미를
+확립하지 못해 메타데이터로만 유지한다. 모든 이름은 `attribute_names()`로 `hwp info`에도 표시한다.
 
 ---
 
