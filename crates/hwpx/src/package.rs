@@ -363,37 +363,6 @@ impl HwpxPackage {
         self.password_unlocked
     }
 
-    /// Computes a conservative plaintext reservation for batch preloading
-    /// without deriving a key or decrypting an entry.
-    pub fn password_batch_preload_bytes(&mut self) -> Result<Option<u64>> {
-        if !self.has_encryption_marker()? {
-            return Ok(None);
-        }
-        let manifest = self.read_entry_string("META-INF/manifest.xml")?;
-        let profile = password::parse_profile(&manifest)?;
-        let protected: BTreeMap<&str, u64> = profile
-            .entries()
-            .iter()
-            .map(|entry| (entry.name.as_str(), entry.declared_plaintext_bytes()))
-            .collect();
-        let mut matched = 0usize;
-        let mut total = 0u64;
-        for entry in &self.entries {
-            let bytes = match protected.get(entry.name.as_str()) {
-                Some(bytes) => {
-                    matched += 1;
-                    *bytes
-                }
-                None => entry.size,
-            };
-            total = self.limits.add_uncompressed_total(total, bytes)?;
-        }
-        if matched != protected.len() {
-            return Err(HwpxError::UnsupportedEncryptionProfile);
-        }
-        Ok(Some(total))
-    }
-
     fn read_entry_untracked(&mut self, name: &str) -> Result<Vec<u8>> {
         let info = self
             .entries

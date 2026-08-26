@@ -1096,13 +1096,12 @@ fn cli_convert_batch_and_document_stdin_keep_password_channels_distinct() {
     let hwpx_dir = dir.join("hwpx");
     std::fs::create_dir_all(&hwpx_dir).unwrap();
     let first_hwpx = evidenced_hwpx_fixture(&hwpx_dir, password);
-    let second_hwpx = hwpx_dir.join("second.hwpx");
-    std::fs::copy(&first_hwpx, &second_hwpx).unwrap();
+    let plain_hwpx = hwpx_dir.join("plain.hwpx");
     let hwpx_out_dir = dir.join("hwpx-output");
     let hwpx_batch = hwp()
         .arg("convert")
         .arg(&first_hwpx)
-        .arg(&second_hwpx)
+        .arg(&plain_hwpx)
         .arg("--out-dir")
         .arg(&hwpx_out_dir)
         .arg("--to")
@@ -1117,7 +1116,7 @@ fn cli_convert_batch_and_document_stdin_keep_password_channels_distinct() {
         refusal(&hwpx_batch.stderr)
     );
     assert!(hwpx_out_dir.join("protected.md").exists());
-    assert!(hwpx_out_dir.join("second.md").exists());
+    assert!(hwpx_out_dir.join("plain.md").exists());
 
     let from_stdin = dir.join("stdin.md");
     let stdin_document = stdin_bytes(

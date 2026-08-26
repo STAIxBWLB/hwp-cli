@@ -3,6 +3,7 @@
 //! M2 범위: hwp/hwpx → markdown/JSON. hwpx 쓰기(M4)와 hwp 쓰기(M6)는
 //! 이후 마일스톤.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::commands::cat::{
@@ -10,6 +11,7 @@ use crate::commands::cat::{
 };
 use anyhow::Context as _;
 use hwp_cli::cli::{ConvertFormat, PasswordArgs};
+use sha2::{Digest as _, Sha256};
 
 /// markdown 출력 전용 추가 옵션 (다른 포맷에서는 무시).
 #[derive(Default)]
@@ -31,6 +33,49 @@ pub struct ConvertReport {
 
 const MAX_PRELOADED_BATCH_BYTES: u64 = 512 * 1024 * 1024;
 
+struct PreloadedDocument {
+    document: hwp_model::Document,
+    source_sha256: String,
+}
+
+fn source_sha256(path: &Path) -> anyhow::Result<String> {
+    let mut source = std::fs::File::open(path)
+        .with_context(|| format!("입력 해시를 위해 파일을 열 수 없습니다: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn load_preloaded_document(
+    input: &Path,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<PreloadedDocument> {
+    let before = source_sha256(input)?;
+    let document = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+    let after = source_sha256(input)?;
+    if before != after {
+        anyhow::bail!(
+            "batch 사전 적재 중 입력 내용이 변경되었습니다: {}",
+            input.display()
+        );
+    }
+    Ok(PreloadedDocument {
+        document,
+        source_sha256: after,
+    })
+}
+
 fn protected_batch_preload_reservation(input: &Path) -> anyhow::Result<Option<u64>> {
     if input
         .extension()
@@ -49,14 +94,9 @@ fn protected_batch_preload_reservation(input: &Path) -> anyhow::Result<Option<u6
         }
         crate::format::FileFormat::Hwpx => {
             let mut package = hwpx::HwpxPackage::open(input)?;
-            package
-                .password_batch_preload_bytes()?
-                .map(|bytes| {
-                    bytes
-                        .checked_mul(2)
-                        .context("batch document memory reservation overflow")
-                })
-                .transpose()
+            Ok(package
+                .has_encryption_marker()?
+                .then_some(MAX_PRELOADED_BATCH_BYTES))
         }
     }
 }
@@ -292,7 +332,8 @@ fn run_multi_inner(
                     );
                 }
             }
-            let mut documents = vec![None; inputs.len()];
+            let mut documents: Vec<Option<PreloadedDocument>> =
+                (0..inputs.len()).map(|_| None).collect();
             if options.password.is_none() {
                 // Missing credentials must reach the shared loader before any
                 // profile-specific reservation parser so batch and single-file
@@ -319,10 +360,7 @@ fn run_multi_inner(
                     if let Some(reservation) = reservation {
                         reserved_batch_bytes =
                             add_preloaded_batch_reservation(reserved_batch_bytes, reservation)?;
-                        documents[index] = Some(
-                            load_document_with_options(input, options)
-                                .map_err(anyhow::Error::new)?,
-                        );
+                        documents[index] = Some(load_preloaded_document(input, options)?);
                     }
                 }
             }
@@ -493,7 +531,7 @@ fn execute_with_preloaded_document(
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
     options: &LoadOptions<'_>,
-    preloaded: Option<hwp_model::Document>,
+    preloaded: Option<PreloadedDocument>,
 ) -> anyhow::Result<ConvertReport> {
     let target = match to {
         Some(t) => t,
@@ -516,10 +554,21 @@ fn execute_with_preloaded_document(
         }
         crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
-    let doc = match preloaded {
-        Some(document) => document,
-        None => load_document_with_options(input, options).map_err(anyhow::Error::new)?,
+    let (doc, preloaded_source_sha256) = match preloaded {
+        Some(preloaded) => (preloaded.document, Some(preloaded.source_sha256)),
+        None => (
+            load_document_with_options(input, options).map_err(anyhow::Error::new)?,
+            None,
+        ),
     };
+    if let Some(expected) = &preloaded_source_sha256
+        && source_sha256(input)? != *expected
+    {
+        anyhow::bail!(
+            "batch 변환 전에 입력 내용이 변경되었습니다: {}",
+            input.display()
+        );
+    }
     if matches!(target, ConvertFormat::Md) {
         let (media_destination, media_prefix) = markdown_media_paths(output, md_opts.media_dir)?;
         let warnings = crate::commands::output::write_validated_with_sidecar(
@@ -687,7 +736,18 @@ fn execute_with_preloaded_document(
             input,
             hwp_cli::certification::MAX_INPUT_BYTES,
             crate::commands::output::SnapshotOutputMode::Publish,
-            |snapshot, staged, _| write_staged(snapshot, staged),
+            |snapshot, staged, snapshot_sha256| {
+                if preloaded_source_sha256
+                    .as_deref()
+                    .is_some_and(|expected| expected != snapshot_sha256)
+                {
+                    anyhow::bail!(
+                        "batch 사전 적재 후 HWP 입력 내용이 변경되었습니다: {}",
+                        input.display()
+                    );
+                }
+                write_staged(snapshot, staged)
+            },
             verify_staged,
         )?;
         report
@@ -1247,7 +1307,7 @@ fn clear_linesegs(doc: &mut hwp_model::Document) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);

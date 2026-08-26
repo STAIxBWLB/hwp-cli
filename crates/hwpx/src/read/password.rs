@@ -287,12 +287,6 @@ impl EncryptionProfile {
     }
 }
 
-impl ProtectedEntry {
-    pub(crate) fn declared_plaintext_bytes(&self) -> u64 {
-        self.declared_plaintext_bytes
-    }
-}
-
 fn inflate_raw_bounded(
     compressed: &[u8],
     expected_size: u64,
