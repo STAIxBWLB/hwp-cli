@@ -32,9 +32,27 @@ fn sha(seed: char) -> String {
 
 fn fixtures() -> Vec<ExpectedFixture> {
     vec![
-        ExpectedFixture::baseline("opaque-hwp5-baseline", "hwp5", sha('a'), "hwp5-encrypt-version-4", Some("hwp5-password-transform")),
-        ExpectedFixture::baseline("opaque-hwpx-baseline", "hwpx", sha('b'), "http://www.w3.org/2001/04/xmlenc#aes256-cbc", Some("urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2")),
-        ExpectedFixture::non_ascii_success("opaque-unicode-success", "hwpx", sha('c'), "http://www.w3.org/2001/04/xmlenc#aes256-cbc", Some("urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2")),
+        ExpectedFixture::baseline(
+            "opaque-hwp5-baseline",
+            "hwp5",
+            sha('a'),
+            "hwp5-encrypt-version-4",
+            Some("hwp5-password-transform"),
+        ),
+        ExpectedFixture::baseline(
+            "opaque-hwpx-baseline",
+            "hwpx",
+            sha('b'),
+            "http://www.w3.org/2001/04/xmlenc#aes256-cbc",
+            Some("urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2"),
+        ),
+        ExpectedFixture::non_ascii_success(
+            "opaque-unicode-success",
+            "hwpx",
+            sha('c'),
+            "http://www.w3.org/2001/04/xmlenc#aes256-cbc",
+            Some("urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2"),
+        ),
     ]
 }
 
@@ -49,7 +67,12 @@ fn receipt(fixture: &ExpectedFixture, case: ReceiptCase) -> PasswordDecryptionRe
         vec!["cat".into(), "convert".into(), "render".into()],
         "hwp-cli-test-version".into(),
         sha('d'),
-        if case == ReceiptCase::Correct { "pass" } else { "refused" }.into(),
+        if case == ReceiptCase::Correct {
+            "pass"
+        } else {
+            "refused"
+        }
+        .into(),
         "2026-08-26T00:00:00Z".into(),
     )
 }
@@ -57,7 +80,11 @@ fn receipt(fixture: &ExpectedFixture, case: ReceiptCase) -> PasswordDecryptionRe
 fn publish_complete_run(dir: &std::path::Path) {
     for fixture in fixtures() {
         let cases = if fixture.role == "baseline" {
-            vec![ReceiptCase::Correct, ReceiptCase::Wrong, ReceiptCase::Absent]
+            vec![
+                ReceiptCase::Correct,
+                ReceiptCase::Wrong,
+                ReceiptCase::Absent,
+            ]
         } else {
             vec![ReceiptCase::Correct]
         };
@@ -82,7 +109,10 @@ fn schema_is_closed_and_content_free() {
     ] {
         let mut invalid = value.clone();
         invalid[forbidden] = serde_json::json!("must-not-be-accepted");
-        assert!(validate_receipt_json(&invalid).is_err(), "{forbidden} must be rejected");
+        assert!(
+            validate_receipt_json(&invalid).is_err(),
+            "{forbidden} must be rejected"
+        );
     }
 }
 
@@ -153,9 +183,18 @@ fn no_clobber_races_and_independent_directories_do_not_share_state() {
             write_receipt_atomic(&dir, &receipt(&fixture, ReceiptCase::Correct))
         }));
     }
-    let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    let outcomes: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
     assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
-    assert!(fs::read_dir(&*dir).unwrap().all(|entry| entry.unwrap().path().extension().is_some_and(|extension| extension == "json")));
+    assert!(fs::read_dir(&*dir).unwrap().all(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "json")
+    }));
 
     let left = temp_dir("parallel-left");
     let right = temp_dir("parallel-right");
