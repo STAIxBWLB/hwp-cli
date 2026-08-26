@@ -272,6 +272,35 @@ impl HwpxPackage {
         read_bounded(&mut e, name, expected_size, limit)
     }
 
+    /// Reads one entry only after both its authenticated overlay size and ZIP
+    /// directory size fit a caller-specific allocation limit.
+    pub fn read_entry_bounded(&mut self, name: &str, limit: u64) -> Result<Vec<u8>> {
+        let declared = self
+            .decrypted_entries
+            .get(name)
+            .map(|plaintext| plaintext.len() as u64)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .map(|entry| entry.size)
+            })
+            .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()))?;
+        if declared > limit {
+            return Err(limit_error(format!(
+                "'{name}' 엔트리 크기가 호출자 제한을 초과합니다 ({declared} > {limit} 바이트)"
+            )));
+        }
+        let bytes = self.read_entry(name)?;
+        if bytes.len() as u64 > limit {
+            return Err(limit_error(format!(
+                "'{name}' 엔트리 크기가 호출자 제한을 초과합니다 ({} > {limit} 바이트)",
+                bytes.len()
+            )));
+        }
+        Ok(bytes)
+    }
+
     pub fn read_entry_string(&mut self, name: &str) -> Result<String> {
         let bytes = self.read_entry(name)?;
         match String::from_utf8(bytes) {
@@ -1165,5 +1194,31 @@ mod tests {
             validate_protected_ciphertext_read(u64::MAX, 1, u64::MAX),
             Err(HwpxError::Encrypted)
         ));
+    }
+
+    #[test]
+    fn caller_entry_bound_checks_decrypted_overlay_before_copying() {
+        let path = temp_file("caller-entry-bound");
+        write_zip(
+            &path,
+            &[
+                (MIMETYPE_ENTRY, MIMETYPE.as_bytes()),
+                ("Preview/PrvText.txt", b"stored-placeholder"),
+            ],
+        );
+        let mut package = HwpxPackage::open(&path).unwrap();
+        package.parser_owned_plaintext_bytes = 0;
+        package.decrypted_entries.insert(
+            "Preview/PrvText.txt".to_string(),
+            zeroize::Zeroizing::new(vec![b'a'; 24]),
+        );
+        package.decrypted_plaintext_bytes = 24;
+
+        assert!(matches!(
+            package.read_entry_bounded("Preview/PrvText.txt", 23),
+            Err(HwpxError::PackageLimit(_))
+        ));
+        assert_eq!(package.parser_owned_plaintext_bytes, 0);
+        std::fs::remove_file(path).unwrap();
     }
 }

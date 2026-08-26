@@ -361,7 +361,7 @@ fn preview(path: &Path, options: &LoadOptions<'_>) -> Result<(), LoadDocumentErr
                 None => pkg.check_body_readable().map_err(map_hwpx_read_error)?,
             }
             let raw = pkg
-                .read_entry("Preview/PrvText.txt")
+                .read_entry_bounded("Preview/PrvText.txt", MAX_PREVIEW_BYTES)
                 .map_err(map_hwpx_read_error)?;
             // HWPX 미리보기는 보통 UTF-8이지만 UTF-16LE인 경우도 방어
             if raw.iter().take(64).any(|&b| b == 0) {
