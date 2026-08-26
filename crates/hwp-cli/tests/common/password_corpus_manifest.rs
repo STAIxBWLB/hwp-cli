@@ -267,6 +267,7 @@ enum ProfileObservation {
         pbkdf2_prf: &'static str,
         start_key_id: String,
         checksum_id: String,
+        checksum_scope: HwpxChecksumScope,
         cbc_padding: &'static str,
         protected_entry_count: usize,
         validated_entry_count: usize,
@@ -314,7 +315,7 @@ impl OwnerProfileDiagnosticOutcome {
             }
             Self::Hwpx(HwpxProbeFailureStage::ZeroSuffix) => "zero_suffix",
             Self::Hwpx(HwpxProbeFailureStage::DeflateStream) => "deflate_stream",
-            Self::Hwpx(HwpxProbeFailureStage::CompressedChecksum) => "compressed_checksum",
+            Self::Hwpx(HwpxProbeFailureStage::ChecksumScope) => "checksum_scope",
             Self::Hwpx(HwpxProbeFailureStage::DeclaredSize) => "declared_size",
             Self::Hwpx(HwpxProbeFailureStage::XmlStructure) => "xml_structure",
             Self::Hwpx(HwpxProbeFailureStage::Bounds) => "bounds",
@@ -360,10 +361,11 @@ where
     fixtures
         .iter()
         .map(|fixture| {
-            let (algorithm_id, kdf_id, outcome) = match fixture.format.as_str() {
+            let (algorithm_id, kdf_id, checksum_scope, outcome) = match fixture.format.as_str() {
                 "hwp5" => (
                     "hwp5-encrypt-version-4",
                     "hwp5-password-transform",
+                    None,
                     if fixture.source_path.is_file()
                         && probe_hwp5_encrypt_version_4(&fixture.source_path, &fixture.credential)
                             .is_ok()
@@ -379,6 +381,7 @@ where
                     (
                         diagnostic.algorithm_id,
                         diagnostic.kdf_id,
+                        diagnostic.checksum_scope,
                         diagnostic
                             .stage
                             .map(OwnerProfileDiagnosticOutcome::Hwpx)
@@ -392,6 +395,7 @@ where
                 "format": fixture.format,
                 "algorithm_id": algorithm_id,
                 "kdf_id": kdf_id,
+                "checksum_scope": checksum_scope,
                 "result": outcome.label(),
             }))
             .map_err(|_| "owner profile diagnostic cannot be encoded".to_owned())
@@ -1110,6 +1114,7 @@ pub struct HwpxProbeObservation {
     pub kdf_id: String,
     pub start_key_id: String,
     pub checksum_id: String,
+    pub checksum_scope: HwpxChecksumScope,
     pub protected_entry_count: usize,
     pub validated_entry_count: usize,
     pub protected_entry_bytes: u64,
@@ -1124,7 +1129,7 @@ pub enum HwpxProbeFailureStage {
     KeyDerivationCipherInit,
     ZeroSuffix,
     DeflateStream,
-    CompressedChecksum,
+    ChecksumScope,
     DeclaredSize,
     XmlStructure,
     Bounds,
@@ -1136,7 +1141,7 @@ impl HwpxProbeFailureStage {
         Self::KeyDerivationCipherInit,
         Self::ZeroSuffix,
         Self::DeflateStream,
-        Self::CompressedChecksum,
+        Self::ChecksumScope,
         Self::DeclaredSize,
         Self::XmlStructure,
         Self::Bounds,
@@ -1149,7 +1154,55 @@ impl HwpxProbeFailureStage {
 pub struct HwpxProbeDiagnostic {
     pub algorithm_id: &'static str,
     pub kdf_id: &'static str,
+    pub checksum_scope: Option<HwpxChecksumScope>,
     pub stage: Option<HwpxProbeFailureStage>,
+}
+
+/// The two checksum byte scopes admitted by this owner-only diagnostic. The
+/// ODF URI denotes the normative compressed scope; Hancom fixtures observed
+/// by the owner diagnostic use the inflated plaintext scope instead. Both are
+/// tried with the same declared SHA-256/1k value and ambiguity fails closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HwpxChecksumScope {
+    CompressedUnencrypted,
+    InflatedPlaintextHancom,
+}
+
+/// Selects exactly one closed checksum scope without returning or logging the
+/// protected bytes. This small seam permits a synthetic ambiguity test without
+/// constructing an infeasible SHA-256 collision in an encrypted package.
+pub fn select_hwpx_checksum_scope(
+    declared_checksum: &[u8],
+    compressed_unencrypted: &[u8],
+    inflated_plaintext: &[u8],
+) -> Result<HwpxChecksumScope, ()> {
+    let compressed_matches =
+        Sha256::digest(&compressed_unencrypted[..compressed_unencrypted.len().min(1024)])
+            .as_slice()
+            == declared_checksum;
+    let inflated_matches =
+        Sha256::digest(&inflated_plaintext[..inflated_plaintext.len().min(1024)]).as_slice()
+            == declared_checksum;
+    match (compressed_matches, inflated_matches) {
+        (true, false) => Ok(HwpxChecksumScope::CompressedUnencrypted),
+        (false, true) => Ok(HwpxChecksumScope::InflatedPlaintextHancom),
+        (false, false) | (true, true) => Err(()),
+    }
+}
+
+/// Requires every protected entry in one package to settle on the same closed
+/// checksum scope. A package that mixes the normative and observed profiles is
+/// unsupported rather than being accepted by ordering or fallback.
+pub fn merge_hwpx_checksum_scope(
+    selected: Option<HwpxChecksumScope>,
+    entry_scope: HwpxChecksumScope,
+) -> Result<HwpxChecksumScope, ()> {
+    match selected {
+        None => Ok(entry_scope),
+        Some(scope) if scope == entry_scope => Ok(entry_scope),
+        Some(_) => Err(()),
+    }
 }
 
 fn profile_observation_hwpx(observation: HwpxProbeObservation) -> ProfileObservation {
@@ -1159,6 +1212,7 @@ fn profile_observation_hwpx(observation: HwpxProbeObservation) -> ProfileObserva
         pbkdf2_prf: HWPX_PBKDF2_PRF,
         start_key_id: observation.start_key_id,
         checksum_id: observation.checksum_id,
+        checksum_scope: observation.checksum_scope,
         cbc_padding: HWPX_CBC_PADDING,
         protected_entry_count: observation.protected_entry_count,
         validated_entry_count: observation.validated_entry_count,
@@ -1240,6 +1294,7 @@ pub fn probe_hwpx_password_profile(
     let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
     let mut validated_entry_count = 0usize;
     let mut protected_entry_bytes = 0u64;
+    let mut checksum_scope = None;
 
     for entry in &protected {
         let zip_entry = entries
@@ -1293,10 +1348,13 @@ pub fn probe_hwpx_password_profile(
         if suffix.len() > 15 || suffix.iter().any(|byte| *byte != 0) {
             return Err(HWPX_INTEGRITY_ERROR.to_owned());
         }
-        let checksum_bytes = Sha256::digest(&compressed[..compressed_end.min(1024)]);
-        if checksum_bytes.as_slice() != entry.checksum.as_slice() {
-            return Err(HWPX_INTEGRITY_ERROR.to_owned());
-        }
+        let entry_checksum_scope =
+            select_hwpx_checksum_scope(&entry.checksum, &compressed[..compressed_end], &plaintext)
+                .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
+        checksum_scope = Some(
+            merge_hwpx_checksum_scope(checksum_scope, entry_checksum_scope)
+                .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?,
+        );
         if plaintext.len() as u64 != entry.declared_plaintext_bytes {
             return Err(HWPX_INTEGRITY_ERROR.to_owned());
         }
@@ -1321,6 +1379,7 @@ pub fn probe_hwpx_password_profile(
         kdf_id: profile.kdf_id,
         start_key_id: profile.start_key_id,
         checksum_id: profile.checksum_id,
+        checksum_scope: checksum_scope.ok_or_else(|| HWPX_INTEGRITY_ERROR.to_owned())?,
         protected_entry_count: protected.len(),
         validated_entry_count,
         protected_entry_bytes,
@@ -1338,6 +1397,7 @@ pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeD
     let unavailable = || HwpxProbeDiagnostic {
         algorithm_id: "unavailable",
         kdf_id: "unavailable",
+        checksum_scope: None,
         stage: Some(HwpxProbeFailureStage::CiphertextStorageProfile),
     };
     let mut package = match hwpx::HwpxPackage::open(path) {
@@ -1355,6 +1415,7 @@ pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeD
     let profile_diagnostic = |stage| HwpxProbeDiagnostic {
         algorithm_id: HWPX_ALGORITHM,
         kdf_id: HWPX_KDF,
+        checksum_scope: None,
         stage: Some(stage),
     };
     let protected = match parse_hwpx_encrypted_entries(&manifest) {
@@ -1390,6 +1451,7 @@ pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeD
     };
     let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
     let mut protected_entry_bytes = 0u64;
+    let mut checksum_scope = None;
 
     for entry in &protected {
         let Some(zip_entry) = entries
@@ -1455,11 +1517,18 @@ pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeD
         if suffix.len() > 15 || suffix.iter().any(|byte| *byte != 0) {
             return profile_diagnostic(HwpxProbeFailureStage::ZeroSuffix);
         }
-        if Sha256::digest(&compressed[..compressed_end.min(1024)]).as_slice()
-            != entry.checksum.as_slice()
-        {
-            return profile_diagnostic(HwpxProbeFailureStage::CompressedChecksum);
-        }
+        let entry_checksum_scope = match select_hwpx_checksum_scope(
+            &entry.checksum,
+            &compressed[..compressed_end],
+            &plaintext,
+        ) {
+            Ok(scope) => scope,
+            Err(_) => return profile_diagnostic(HwpxProbeFailureStage::ChecksumScope),
+        };
+        checksum_scope = match merge_hwpx_checksum_scope(checksum_scope, entry_checksum_scope) {
+            Ok(scope) => Some(scope),
+            Err(_) => return profile_diagnostic(HwpxProbeFailureStage::ChecksumScope),
+        };
         if plaintext.len() as u64 != entry.declared_plaintext_bytes {
             return profile_diagnostic(HwpxProbeFailureStage::DeclaredSize);
         }
@@ -1482,6 +1551,7 @@ pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeD
     HwpxProbeDiagnostic {
         algorithm_id: HWPX_ALGORITHM,
         kdf_id: HWPX_KDF,
+        checksum_scope,
         stage: None,
     }
 }

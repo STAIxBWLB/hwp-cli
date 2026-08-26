@@ -7,13 +7,14 @@
 mod password_corpus_manifest;
 
 use password_corpus_manifest::{
-    Hwp5ProbeObservation, Hwp5ValidatedStream, HwpxBufferSizes, HwpxProbeFailureStage,
-    after_hwp5_discovery_gate, check_hwp5_budget, check_hwp5_discovery_eligibility,
-    check_hwpx_budget, diagnose_hwpx_password_profile, discovery_would_write_evidence,
-    hwpx_integrity_error, hwpx_unsupported_profile_error, load_manifest_for_test, manifest_fixture,
-    owner_manifest_path, parse_hwpx_profile, probe_hwp5_encrypt_version_4,
-    probe_hwpx_password_profile, repo_root, run_owner_discovery, run_owner_discovery_from_env,
-    run_owner_profile_diagnostic, run_owner_profile_diagnostic_from_env,
+    Hwp5ProbeObservation, Hwp5ValidatedStream, HwpxBufferSizes, HwpxChecksumScope,
+    HwpxProbeFailureStage, after_hwp5_discovery_gate, check_hwp5_budget,
+    check_hwp5_discovery_eligibility, check_hwpx_budget, diagnose_hwpx_password_profile,
+    discovery_would_write_evidence, hwpx_integrity_error, hwpx_unsupported_profile_error,
+    load_manifest_for_test, manifest_fixture, merge_hwpx_checksum_scope, owner_manifest_path,
+    parse_hwpx_profile, probe_hwp5_encrypt_version_4, probe_hwpx_password_profile, repo_root,
+    run_owner_discovery, run_owner_discovery_from_env, run_owner_profile_diagnostic,
+    run_owner_profile_diagnostic_from_env, select_hwpx_checksum_scope,
     serialize_hwp5_profile_observation, serialize_hwpx_profile_observation,
     transform_hwp5_encrypt_version_4_in_place, validate_hwp5_record_identity,
 };
@@ -22,10 +23,73 @@ struct SyntheticHwpxOptions {
     raw_deflate: Vec<u8>,
     padding: Vec<u8>,
     declared_plaintext_bytes: u64,
+    checksum_scope: SyntheticChecksumScope,
     stored: bool,
     corrupt_checksum: bool,
     truncate_ciphertext: bool,
     kdf_id: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum SyntheticChecksumScope {
+    CompressedUnencrypted,
+    InflatedPlaintextHancom,
+}
+
+#[test]
+fn hwpx_checksum_scope_requires_exactly_one_closed_candidate() {
+    use sha2::Digest as _;
+
+    let compressed = b"compressed-unencrypted";
+    let plaintext = b"inflated-plaintext-hancom";
+    let compressed_checksum = sha2::Sha256::digest(compressed);
+    let plaintext_checksum = sha2::Sha256::digest(plaintext);
+
+    assert_eq!(
+        select_hwpx_checksum_scope(&compressed_checksum, compressed, plaintext),
+        Ok(HwpxChecksumScope::CompressedUnencrypted)
+    );
+    assert_eq!(
+        select_hwpx_checksum_scope(&plaintext_checksum, compressed, plaintext),
+        Ok(HwpxChecksumScope::InflatedPlaintextHancom)
+    );
+    assert!(select_hwpx_checksum_scope(&[0; 32], compressed, plaintext).is_err());
+    assert!(select_hwpx_checksum_scope(&sha2::Sha256::digest(b"same"), b"same", b"same").is_err());
+
+    assert_eq!(
+        serde_json::to_value(HwpxChecksumScope::CompressedUnencrypted).unwrap(),
+        "compressed-unencrypted"
+    );
+    assert_eq!(
+        serde_json::to_value(HwpxChecksumScope::InflatedPlaintextHancom).unwrap(),
+        "inflated-plaintext-hancom"
+    );
+}
+
+#[test]
+fn hwpx_mixed_entry_checksum_scopes_fail_closed() {
+    let selected = merge_hwpx_checksum_scope(None, HwpxChecksumScope::CompressedUnencrypted)
+        .expect("the first protected entry selects a closed scope");
+    assert_eq!(
+        merge_hwpx_checksum_scope(Some(selected), HwpxChecksumScope::CompressedUnencrypted),
+        Ok(HwpxChecksumScope::CompressedUnencrypted)
+    );
+    assert!(
+        merge_hwpx_checksum_scope(Some(selected), HwpxChecksumScope::InflatedPlaintextHancom)
+            .is_err()
+    );
+
+    let path = synthetic_mixed_scope_hwpx_path("mixed-entry-checksum-scopes");
+    assert_eq!(
+        probe_hwpx_password_profile(&path, "synthetic-password").unwrap_err(),
+        hwpx_integrity_error(),
+        "one package cannot mix checksum scopes"
+    );
+    assert_eq!(
+        diagnose_hwpx_password_profile(&path, "synthetic-password").stage,
+        Some(HwpxProbeFailureStage::ChecksumScope)
+    );
+    let _ = std::fs::remove_file(path);
 }
 
 fn raw_deflate(plaintext: &[u8]) -> Vec<u8> {
@@ -55,7 +119,7 @@ fn synthetic_hwpx_path(label: &str, options: SyntheticHwpxOptions) -> std::path:
     use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
     use base64::Engine as _;
     use sha2::Digest as _;
-    use std::io::Write as _;
+    use std::io::{Read as _, Write as _};
 
     const PASSWORD: &str = "synthetic-password";
     const SALT: [u8; 16] = [7; 16];
@@ -84,7 +148,18 @@ fn synthetic_hwpx_path(label: &str, options: SyntheticHwpxOptions) -> std::path:
     } else {
         ciphertext
     };
-    let mut checksum = sha2::Sha256::digest(&options.raw_deflate).to_vec();
+    let mut inflated = Vec::new();
+    let checksum_bytes = match options.checksum_scope {
+        SyntheticChecksumScope::CompressedUnencrypted => &options.raw_deflate,
+        SyntheticChecksumScope::InflatedPlaintextHancom => {
+            flate2::read::DeflateDecoder::new(options.raw_deflate.as_slice())
+                .read_to_end(&mut inflated)
+                .expect("synthetic raw deflate inflates for checksum scope");
+            &inflated
+        }
+    };
+    let mut checksum =
+        sha2::Sha256::digest(&checksum_bytes[..checksum_bytes.len().min(1024)]).to_vec();
     if options.corrupt_checksum {
         checksum[0] ^= 0xff;
     }
@@ -122,6 +197,70 @@ fn synthetic_hwpx_path(label: &str, options: SyntheticHwpxOptions) -> std::path:
     path
 }
 
+fn synthetic_mixed_scope_hwpx_path(label: &str) -> std::path::PathBuf {
+    use aes::Aes256;
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    use std::io::Write as _;
+
+    const PASSWORD: &str = "synthetic-password";
+    const SALT: [u8; 16] = [7; 16];
+    const IV: [u8; 16] = [9; 16];
+    let (plaintext, raw_deflate, padding) = synthetic_deflate_with_padding(1);
+    let mut start_key = sha2::Sha256::digest(PASSWORD.as_bytes()).to_vec();
+    let mut key = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&start_key, &SALT, 1024, &mut key);
+    start_key.fill(0);
+    let encrypt = |raw_deflate: &[u8], padding: &[u8]| {
+        let mut padded = raw_deflate.to_vec();
+        padded.extend_from_slice(padding);
+        let padded_len = padded.len();
+        cbc::Encryptor::<Aes256>::new_from_slices(&key, &IV)
+            .expect("synthetic AES setup")
+            .encrypt_padded::<NoPadding>(&mut padded, padded_len)
+            .expect("synthetic no-padding encryption")
+            .to_vec()
+    };
+    let ciphertext = encrypt(&raw_deflate, &padding);
+    key.fill(0);
+    let checksum_entry = |name: &str, checksum: &[u8]| {
+        format!(
+            r#"<odf:file-entry full-path="{name}" size="{}"><odf:encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="{}"><odf:algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="{}"/><odf:key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="{}"/><odf:start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/></odf:encryption-data></odf:file-entry>"#,
+            plaintext.len(),
+            base64::engine::general_purpose::STANDARD.encode(checksum),
+            base64::engine::general_purpose::STANDARD.encode(IV),
+            base64::engine::general_purpose::STANDARD.encode(SALT),
+        )
+    };
+    let manifest = format!(
+        r#"<?xml version="1.0"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">{}{}</odf:manifest>"#,
+        checksum_entry("Contents/section0.xml", &sha2::Sha256::digest(&raw_deflate)),
+        checksum_entry("Contents/section1.xml", &sha2::Sha256::digest(&plaintext)),
+    );
+    let nonce = format!("{}-{label}", std::process::id());
+    let path = std::env::temp_dir().join(format!("hwp-cli-hwpx-{nonce}.hwpx"));
+    let _ = std::fs::remove_file(&path);
+    let file = std::fs::File::create(&path).expect("synthetic HWPX is writable");
+    let mut zip = zip::ZipWriter::new(file);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("mimetype", stored)
+        .expect("mimetype entry starts");
+    zip.write_all(b"application/hwp+zip")
+        .expect("mimetype writes");
+    zip.start_file("META-INF/manifest.xml", stored)
+        .expect("manifest entry starts");
+    zip.write_all(manifest.as_bytes()).expect("manifest writes");
+    for name in ["Contents/section0.xml", "Contents/section1.xml"] {
+        zip.start_file(name, stored)
+            .expect("protected entry starts");
+        zip.write_all(&ciphertext).expect("protected entry writes");
+    }
+    zip.finish().expect("synthetic HWPX finalizes");
+    path
+}
+
 fn supported_options(
     raw_deflate: Vec<u8>,
     padding: Vec<u8>,
@@ -131,6 +270,7 @@ fn supported_options(
         raw_deflate,
         padding,
         declared_plaintext_bytes,
+        checksum_scope: SyntheticChecksumScope::CompressedUnencrypted,
         stored: true,
         corrupt_checksum: false,
         truncate_ciphertext: false,
@@ -446,6 +586,49 @@ fn hwpx_discovery_accepts_only_no_padding_zero_to_block_profiles() {
     probe_hwpx_password_profile(&path, "synthetic-password")
         .expect("an exact AES block requires no zero suffix");
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn hwpx_discovery_accepts_normative_and_observed_checksum_scopes() {
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let normative_path = synthetic_hwpx_path(
+        "normative-compressed-checksum",
+        supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64),
+    );
+    assert_eq!(
+        probe_hwpx_password_profile(&normative_path, "synthetic-password")
+            .expect("normative compressed checksum validates")
+            .checksum_scope,
+        HwpxChecksumScope::CompressedUnencrypted
+    );
+    assert_eq!(
+        diagnose_hwpx_password_profile(&normative_path, "synthetic-password").checksum_scope,
+        Some(HwpxChecksumScope::CompressedUnencrypted)
+    );
+
+    let observed_path = synthetic_hwpx_path(
+        "observed-inflated-checksum",
+        SyntheticHwpxOptions {
+            checksum_scope: SyntheticChecksumScope::InflatedPlaintextHancom,
+            ..supported_options(compressed, padding, plaintext.len() as u64)
+        },
+    );
+    assert_eq!(
+        probe_hwpx_password_profile(&observed_path, "synthetic-password")
+            .expect("observed Hancom plaintext checksum validates")
+            .checksum_scope,
+        HwpxChecksumScope::InflatedPlaintextHancom
+    );
+    let observed_diagnostic = diagnose_hwpx_password_profile(&observed_path, "synthetic-password");
+    assert_eq!(observed_diagnostic.stage, None);
+    assert_eq!(
+        observed_diagnostic.checksum_scope,
+        Some(HwpxChecksumScope::InflatedPlaintextHancom)
+    );
+
+    for path in [normative_path, observed_path] {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]
@@ -835,6 +1018,7 @@ fn hwpx_profile_evidence_is_limited_to_selected_content_free_facts() {
             "algorithm_id",
             "cbc_padding",
             "checksum_id",
+            "checksum_scope",
             "format",
             "kdf_id",
             "pbkdf2_prf",
@@ -849,6 +1033,7 @@ fn hwpx_profile_evidence_is_limited_to_selected_content_free_facts() {
     );
     assert_eq!(evidence["pbkdf2_prf"], "hmac-sha1");
     assert_eq!(evidence["cbc_padding"], "zero-to-aes-block");
+    assert_eq!(evidence["checksum_scope"], "compressed-unencrypted");
     let encoded = evidence.to_string();
     for forbidden in [
         "password",
@@ -881,7 +1066,7 @@ fn hwpx_diagnostic_stage_vocabulary_is_closed() {
             "key_derivation_cipher_init",
             "zero_suffix",
             "deflate_stream",
-            "compressed_checksum",
+            "checksum_scope",
             "declared_size",
             "xml_structure",
             "bounds",
@@ -955,10 +1140,17 @@ fn owner_profile_diagnostic_outputs_only_closed_redacted_metadata() {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             keys,
-            ["algorithm_id", "fixture_id", "format", "kdf_id", "result"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
+            [
+                "algorithm_id",
+                "checksum_scope",
+                "fixture_id",
+                "format",
+                "kdf_id",
+                "result"
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
         );
         for forbidden in [
             "/tmp/",
@@ -985,7 +1177,7 @@ fn owner_profile_diagnostic_outputs_only_closed_redacted_metadata() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("\"result\":\"compressed_checksum\""))
+            .any(|line| line.contains("\"result\":\"checksum_scope\""))
     );
     assert!(
         lines
@@ -1010,7 +1202,7 @@ fn hwpx_diagnostic_stage_does_not_widen_normal_discovery_errors() {
     );
     assert_eq!(
         diagnose_hwpx_password_profile(&path, "synthetic-password").stage,
-        Some(HwpxProbeFailureStage::CompressedChecksum)
+        Some(HwpxProbeFailureStage::ChecksumScope)
     );
     assert_eq!(
         probe_hwpx_password_profile(&path, "synthetic-password").unwrap_err(),
