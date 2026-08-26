@@ -47,3 +47,8 @@ pub use write::{
 /// document. Batch callers reserve this before invoking the reader.
 pub const PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT: u64 =
     read::PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT;
+
+/// Maximum HWP5 CFB container size accepted by snapshot-based publication.
+/// HWP5 uses CFB major version 3, whose supported file range ends at 2 GiB;
+/// this is intentionally separate from the protected reader's live-memory cap.
+pub const SUPPORTED_CONTAINER_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
