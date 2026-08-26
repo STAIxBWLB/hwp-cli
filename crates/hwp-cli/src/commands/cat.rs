@@ -23,6 +23,14 @@ pub struct ResolvedPassword(Zeroizing<String>);
 
 impl ResolvedPassword {
     fn new(value: String) -> Self {
+        Self::from_scoped_string(value)
+    }
+
+    /// Takes ownership of one caller-scoped password and zeroes it on drop.
+    ///
+    /// MCP uses this constructor after removing `password` from a single
+    /// JSON-RPC argument object; it never creates server or session state.
+    pub fn from_scoped_string(value: String) -> Self {
         Self(Zeroizing::new(value))
     }
 

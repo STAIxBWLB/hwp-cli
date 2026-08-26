@@ -11,7 +11,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::commands::cat::load_document;
+use crate::commands::cat::{
+    HWP_PASSWORD_REQUIRED_OR_INVALID, LoadDocumentError, LoadOptions, ResolvedPassword,
+    load_document, load_document_with_options,
+};
+use zeroize::{Zeroize as _, Zeroizing};
 
 /// Supported MCP protocol versions (newest first). Used in initialize negotiation.
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -236,14 +240,15 @@ pub fn run(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> anyhow::Result<()> {
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut line = String::new();
+    let mut line = Zeroizing::new(String::new());
     loop {
         line.clear();
-        if read_line_bounded(&mut reader, &mut line, MAX_REQUEST_LINE_BYTES)? == 0 {
+        if read_line_bounded(&mut reader, &mut *line, MAX_REQUEST_LINE_BYTES)? == 0 {
             break; // EOF
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            line.zeroize();
             continue;
         }
         if let Some(resp) = handle_request(trimmed, &ctx) {
@@ -251,6 +256,9 @@ pub fn run(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> anyhow::Result<()> {
             out.write_all(b"\n")?;
             out.flush()?;
         }
+        // The line can contain the per-call `password`; clear its backing
+        // buffer before accepting the next JSON-RPC request.
+        line.zeroize();
     }
     Ok(())
 }
@@ -273,7 +281,7 @@ fn read_line_bounded(
 
 /// 한 줄 JSON-RPC 요청 → 응답 JSON 문자열. 알림(id 없음)이면 None.
 pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
-    let req: Value = match serde_json::from_str(line) {
+    let mut req: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
             return Some(error_response(
@@ -317,13 +325,23 @@ pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
             if is_notification {
                 return None;
             }
-            let params = req.get("params").cloned().unwrap_or(Value::Null);
-            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            let args = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            Some(result_response(id_or_null(id), call_tool(name, &args, ctx)))
+            let (name, mut args) = req
+                .get_mut("params")
+                .and_then(Value::as_object_mut)
+                .map(|params| {
+                    let name = params
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let args = params.remove("arguments").unwrap_or_else(|| json!({}));
+                    (name, args)
+                })
+                .unwrap_or_else(|| (String::new(), json!({})));
+            let result = call_tool(&name, &mut args, ctx);
+            scrub_password_values(&mut args);
+            scrub_password_values(&mut req);
+            Some(result_response(id_or_null(id), result))
         }
         _ => {
             if is_notification {
@@ -350,31 +368,158 @@ fn error_response(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
 }
 
+/// Bounded tool failure shape. Password refusals alone add structured content;
+/// all pre-existing tool errors retain their text-only behavior.
+#[derive(Debug)]
+struct McpToolError {
+    message: String,
+    structured_content: Option<Value>,
+}
+
+type McpToolResult = Result<Vec<Value>, McpToolError>;
+
+impl From<String> for McpToolError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            structured_content: None,
+        }
+    }
+}
+
+impl From<&str> for McpToolError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl McpToolError {
+    fn password(path: &Path) -> Self {
+        let (format, algorithm_kdf) = match crate::format::detect(path) {
+            Ok(crate::format::FileFormat::Hwp5) => ("hwp5", "HWP5-EncryptVersion4"),
+            Ok(crate::format::FileFormat::Hwpx) => ("hwpx", "AES256-CBC/PBKDF2-HMAC-SHA1"),
+            Err(_) => ("unknown", "unknown"),
+        };
+        Self {
+            message: HWP_PASSWORD_REQUIRED_OR_INVALID.to_owned(),
+            structured_content: Some(json!({
+                "code": HWP_PASSWORD_REQUIRED_OR_INVALID,
+                "format": format,
+                "algorithm_kdf": algorithm_kdf,
+                "stage": "credential-validation",
+            })),
+        }
+    }
+}
+
+fn load_mcp_document(
+    path: &Path,
+    password: Option<&ResolvedPassword>,
+) -> Result<hwp_model::Document, McpToolError> {
+    load_document_with_options(path, &LoadOptions { password }).map_err(|error| match error {
+        LoadDocumentError::Password(_) => McpToolError::password(path),
+        LoadDocumentError::Other(error) => McpToolError::from(error.to_string()),
+    })
+}
+
+fn take_scoped_password(
+    args: &mut Value,
+    allowed: &[&str],
+) -> Result<Option<ResolvedPassword>, McpToolError> {
+    let object = args
+        .as_object_mut()
+        .ok_or_else(|| McpToolError::from("MCP 도구 인자는 객체여야 합니다".to_owned()))?;
+    if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(McpToolError::from(format!("알 수 없는 인자: {unknown}")));
+    }
+    match object.remove("password") {
+        None => Ok(None),
+        Some(Value::String(password)) => Ok(Some(ResolvedPassword::from_scoped_string(password))),
+        Some(_) => Err(McpToolError::from(
+            "password는 문자열이어야 합니다".to_owned(),
+        )),
+    }
+}
+
+fn reject_password_outside_scope(args: &Value) -> Result<(), McpToolError> {
+    if args.get("password").is_some() {
+        return Err(McpToolError::from("알 수 없는 인자: password".to_owned()));
+    }
+    Ok(())
+}
+
+fn scrub_password_values(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if key == "password" {
+                    if let Value::String(secret) = value {
+                        secret.zeroize();
+                    }
+                } else {
+                    scrub_password_values(value);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                scrub_password_values(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 도구를 실행해 `tools/call` result를 만든다. 실행 오류는 isError=true content로.
-fn call_tool(name: &str, args: &Value, ctx: &Ctx) -> Value {
-    let result: Result<Vec<Value>, String> = match name {
-        "hwp_info" => tool_info(args, ctx),
-        "hwp_read" => tool_read(args, ctx),
-        "hwp_grep" => tool_grep(args, ctx),
-        "hwp_list_fields" => tool_list_fields(args, ctx),
-        "hwp_list_bookmarks" => tool_list_bookmarks(args, ctx),
-        "hwp_render" => tool_render(args, ctx),
-        "hwp_edit" => tool_edit(args, ctx),
-        "hwp_convert" => tool_convert(args, ctx),
-        "hwp_new" => tool_new(args, ctx),
-        "hwp_compose" => tool_compose(args, ctx),
-        "hwp_template" => tool_template(args, ctx),
-        "hwp_diff" => tool_diff(args, ctx),
-        "hwp_slots" => tool_slots(args, ctx),
-        "hwp_fill" => tool_fill(args, ctx),
-        "hwp_validate" => tool_validate(args, ctx),
-        "hwp_lint" => tool_lint(args, ctx),
-        "hwp_certify" => tool_certify(args, ctx),
-        other => Err(format!("알 수 없는 도구: {other}")),
+fn call_tool(name: &str, args: &mut Value, ctx: &Ctx) -> Value {
+    let result: McpToolResult = match name {
+        "hwp_read" => tool_read_scoped(args, ctx),
+        "hwp_render" => reject_password_outside_scope(args)
+            .and_then(|_| tool_render(args, ctx).map_err(Into::into)),
+        "hwp_convert" => reject_password_outside_scope(args)
+            .and_then(|_| tool_convert(args, ctx).map_err(Into::into)),
+        "hwp_info" => reject_password_outside_scope(args)
+            .and_then(|_| tool_info(args, ctx).map_err(Into::into)),
+        "hwp_grep" => reject_password_outside_scope(args)
+            .and_then(|_| tool_grep(args, ctx).map_err(Into::into)),
+        "hwp_list_fields" => reject_password_outside_scope(args)
+            .and_then(|_| tool_list_fields(args, ctx).map_err(Into::into)),
+        "hwp_list_bookmarks" => reject_password_outside_scope(args)
+            .and_then(|_| tool_list_bookmarks(args, ctx).map_err(Into::into)),
+        "hwp_edit" => reject_password_outside_scope(args)
+            .and_then(|_| tool_edit(args, ctx).map_err(Into::into)),
+        "hwp_new" => reject_password_outside_scope(args)
+            .and_then(|_| tool_new(args, ctx).map_err(Into::into)),
+        "hwp_compose" => reject_password_outside_scope(args)
+            .and_then(|_| tool_compose(args, ctx).map_err(Into::into)),
+        "hwp_template" => reject_password_outside_scope(args)
+            .and_then(|_| tool_template(args, ctx).map_err(Into::into)),
+        "hwp_diff" => reject_password_outside_scope(args)
+            .and_then(|_| tool_diff(args, ctx).map_err(Into::into)),
+        "hwp_slots" => reject_password_outside_scope(args)
+            .and_then(|_| tool_slots(args, ctx).map_err(Into::into)),
+        "hwp_fill" => reject_password_outside_scope(args)
+            .and_then(|_| tool_fill(args, ctx).map_err(Into::into)),
+        "hwp_validate" => reject_password_outside_scope(args)
+            .and_then(|_| tool_validate(args, ctx).map_err(Into::into)),
+        "hwp_lint" => reject_password_outside_scope(args)
+            .and_then(|_| tool_lint(args, ctx).map_err(Into::into)),
+        "hwp_certify" => reject_password_outside_scope(args)
+            .and_then(|_| tool_certify(args, ctx).map_err(Into::into)),
+        other => Err(McpToolError::from(format!("알 수 없는 도구: {other}"))),
     };
     match result {
         Ok(content) => json!({"content": content, "isError": false}),
-        Err(e) => json!({"content": [text_content(&format!("오류: {e}"))], "isError": true}),
+        Err(error) => {
+            let mut response = json!({
+                "content": [text_content(&format!("오류: {}", error.message))],
+                "isError": true,
+            });
+            if let Some(structured_content) = error.structured_content {
+                response["structuredContent"] = structured_content;
+            }
+            response
+        }
     }
 }
 
@@ -631,8 +776,21 @@ fn tool_info(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_read_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let password = take_scoped_password(
+        args,
+        &[
+            "path",
+            "format",
+            "with_header_footer",
+            "with_hidden",
+            "with_segments",
+            "offset",
+            "max_bytes",
+            "password",
+        ],
+    )?;
     let format = arg_str_opt(args, "format")?.unwrap_or("plain");
     let with_header_footer = arg_bool(args, "with_header_footer", false)?;
     let with_hidden = arg_bool(args, "with_hidden", false)?;
@@ -640,11 +798,9 @@ fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     // Same contract as cat: with_segments is markdown-only, and the with_* flags apply
     // only to plain/markdown (html/json/csv take no options — they are ignored if given).
     if with_segments && !matches!(format, "markdown" | "md") {
-        return Err(format!(
-            "with_segments는 format=markdown 전용입니다 (요청: {format})"
-        ));
+        return Err(format!("with_segments는 format=markdown 전용입니다 (요청: {format})").into());
     }
-    let doc = load_document(&path).map_err(|e| e.to_string())?;
+    let doc = load_mcp_document(&path, password.as_ref())?;
     let text_options = || hwp_model::TextOptions {
         include_header_footer: with_header_footer,
         include_hidden: with_hidden,
@@ -672,9 +828,9 @@ fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         "html" => (hwp_convert::to_html(&doc), None),
         "csv" => (hwp_convert::to_csv(&doc), None),
         other => {
-            return Err(format!(
-                "알 수 없는 format: {other} (plain|markdown|json|html|csv)"
-            ));
+            return Err(
+                format!("알 수 없는 format: {other} (plain|markdown|json|html|csv)").into(),
+            );
         }
     };
     let offset = usize::try_from(arg_u64(args, "offset", 0)?)
@@ -682,13 +838,14 @@ fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let max_bytes = usize::try_from(arg_u64(args, "max_bytes", DEFAULT_READ_BYTES as u64)?)
         .map_err(|_| "max_bytes가 플랫폼 범위를 넘습니다".to_string())?;
     if max_bytes == 0 || max_bytes > MAX_READ_BYTES {
-        return Err(format!("max_bytes는 1..={MAX_READ_BYTES} 범위여야 합니다"));
+        return Err(format!("max_bytes는 1..={MAX_READ_BYTES} 범위여야 합니다").into());
     }
     if offset > text.len() || !text.is_char_boundary(offset) {
         return Err(format!(
             "offset은 UTF-8 경계인 0..={} byte 범위여야 합니다",
             text.len()
-        ));
+        )
+        .into());
     }
     let mut end = offset.saturating_add(max_bytes).min(text.len());
     while end > offset && !text.is_char_boundary(end) {
@@ -1500,6 +1657,15 @@ fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
+// Unit-test adapter retains the historical borrowed helper. The JSON-RPC path
+// exclusively calls the scoped variant and moves `password` out of its owned
+// request value before any document load.
+#[cfg(test)]
+fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let mut args = args.clone();
+    tool_read_scoped(&mut args, ctx).map_err(|error| error.message)
+}
+
 fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
@@ -1898,14 +2064,15 @@ fn tool_defs() -> Vec<Value> {
         json!({
             "name": "hwp_read",
             "description": "본문을 추출한다. format=json이면 전체 IR(구조)을, markdown/plain이면 텍스트를, html/csv면 해당 직렬화를 반환. with_header_footer/with_hidden은 plain/markdown에만 적용(cat과 동일). with_segments는 markdown 전용으로 {markdown, segments} JSON 봉투를 반환(오프셋은 전체 기준 절대 문자 위치).",
-            "inputSchema": {"type": "object", "properties": {
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "path": {"type": "string"},
                 "format": {"type": "string", "enum": ["plain", "markdown", "json", "html", "csv"], "description": "기본 plain"},
                 "with_header_footer": {"type": "boolean", "description": "머리말/꼬리말 포함(plain/markdown, 기본 false)"},
                 "with_hidden": {"type": "boolean", "description": "숨은 설명 포함(plain/markdown, 기본 false)"},
                 "with_segments": {"type": "boolean", "description": "markdown 전용. 문단 원본 좌표 세그먼트 맵 포함"},
                 "offset": {"type": "integer", "minimum": 0, "description": "UTF-8 byte offset, 기본 0"},
-                "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576, "description": "반환 byte 상한, 기본 262144"}
+                "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576, "description": "반환 byte 상한, 기본 262144"},
+                "password": {"type": "string", "description": "이번 hwp_read 호출에만 사용할 문서 암호"}
             }, "required": ["path"]}
         }),
         json!({
@@ -2514,6 +2681,24 @@ mod tests {
             let dpi = &tool["inputSchema"]["properties"]["dpi"];
             assert_eq!(dpi["minimum"], hwp_render::MIN_DPI);
             assert_eq!(dpi["maximum"], hwp_render::MAX_DPI);
+        }
+    }
+
+    #[test]
+    fn password_read_schema_is_closed_and_scoped() {
+        let tools = tool_defs();
+        let read = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_read")
+            .unwrap();
+        assert_eq!(read["inputSchema"]["additionalProperties"], false);
+        assert_eq!(
+            read["inputSchema"]["properties"]["password"]["type"],
+            "string"
+        );
+        for name in ["hwp_render", "hwp_convert", "hwp_info"] {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            assert!(tool["inputSchema"]["properties"].get("password").is_none());
         }
     }
 
@@ -4535,11 +4720,8 @@ mod tests {
         assert_eq!(result["matches"].as_array().unwrap().len(), 2);
 
         // Zero matches are a normal result, not an error (isError=false).
-        let zero = call_tool(
-            "hwp_grep",
-            &json!({"path": source, "pattern": "없는문구"}),
-            &ctx(),
-        );
+        let mut zero_args = json!({"path": source, "pattern": "없는문구"});
+        let zero = call_tool("hwp_grep", &mut zero_args, &ctx());
         assert_eq!(zero["isError"], false);
         let result: Value =
             serde_json::from_str(zero["content"][0]["text"].as_str().unwrap()).unwrap();

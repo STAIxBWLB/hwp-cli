@@ -461,11 +461,7 @@ fn mcp_read_password_is_per_call_closed_and_sandboxed() {
                 "hwp_read",
                 json!({"path": hwpx, "format": "plain", "password": password}),
             ),
-            mcp_call(
-                5,
-                "hwp_read",
-                json!({"path": hwp5, "format": "plain"}),
-            ),
+            mcp_call(5, "hwp_read", json!({"path": hwp5, "format": "plain"})),
             mcp_call(
                 6,
                 "hwp_read",
@@ -494,8 +490,7 @@ fn mcp_read_password_is_per_call_closed_and_sandboxed() {
     assert_eq!(responses[4]["result"]["isError"], true);
     assert_eq!(responses[5]["result"]["isError"], true);
     assert_ne!(
-        responses[5]["result"]["structuredContent"]["code"],
-        "HWP_PASSWORD_REQUIRED_OR_INVALID",
+        responses[5]["result"]["structuredContent"]["code"], "HWP_PASSWORD_REQUIRED_OR_INVALID",
         "root rejection must happen before password-aware loading"
     );
 }
