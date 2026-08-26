@@ -66,6 +66,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Strict HWP5 conversion still reports and refuses opaque source streams that plaintext synthesis
   cannot preserve; non-strict conversion records the loss and publishes the authenticated content.
 
+- HWP5 EncryptVersion 4 now caps aggregate CFB1 input at 2 MiB before its bit-level transform
+  begins. The genuine baseline uses 1,296 protected bytes, while the new limit bounds a candidate
+  document to 16,777,216 AES block operations instead of allowing the 64 MiB memory cap to imply
+  hundreds of millions of operations.
+
 - Compressed `BinData` in password-protected HWP5 now follows the ordinary reader's bounded
   try-DEFLATE path before entering the IR. Images therefore remain usable in cross-format output,
   and native HWP synthesis does not double-compress an already-compressed payload.

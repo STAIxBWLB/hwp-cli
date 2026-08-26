@@ -21,7 +21,7 @@ mod password;
 use password::{
     HWP5_PASSWORD_MAX_STREAM_BYTES, HWP5_PASSWORD_MAX_STREAMS,
     HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES, decrypt_hwp5_encrypt_version_4_in_place,
-    validate_live_bytes,
+    validate_live_bytes, validate_transform_bytes,
 };
 
 const HWP5_PASSWORD_MAX_RECORDS: usize = 131_072;
@@ -978,6 +978,10 @@ fn read_password_protected_document(
         .into_iter()
         .filter(|stream| is_password_document_stream(&stream.path))
         .partition(|stream| is_evidenced_password_record_stream(&stream.path));
+    let transform_bytes = record_infos.iter().try_fold(0u64, |total, stream| {
+        total.checked_add(stream.size).ok_or(Hwp5Error::Encrypted)
+    })?;
+    validate_transform_bytes(transform_bytes).map_err(normalize_password_candidate_error)?;
 
     let mut streams = BTreeMap::new();
     let mut retained_plaintext = 0u64;
@@ -1390,6 +1394,38 @@ mod bounded_tests {
             &repeated_empty_records(crate::record::tag::PARA_HEADER, per_stream),
             password,
         );
+
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some(password),
+                },
+            ),
+            Err(Hwp5Error::Encrypted)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn aggregate_cfb1_work_is_refused_before_password_transform() {
+        let path = base_hwp("password-transform-budget");
+        let password = "correct-password";
+        make_evidenced_password_hwp(&path, password, 0);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            let mut stream = cfb.open_stream("/DocInfo").unwrap();
+            stream
+                .set_len(password::HWP5_PASSWORD_MAX_TRANSFORM_BYTES + 1)
+                .unwrap();
+            drop(stream);
+            cfb.flush().unwrap();
+        }
 
         assert!(matches!(
             read_document_with_options(

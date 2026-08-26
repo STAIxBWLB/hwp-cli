@@ -12,6 +12,7 @@ use crate::error::{Hwp5Error, Result};
 
 pub(crate) const HWP5_PASSWORD_MAX_STREAM_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const HWP5_PASSWORD_MAX_TRANSFORM_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const HWP5_PASSWORD_MAX_STREAMS: usize = 4_096;
 pub(crate) const HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -35,6 +36,23 @@ pub(crate) fn validate_live_bytes(stream_bytes: u64, other_live_bytes: u64) -> R
         return Err(Hwp5Error::ResourceLimitExceeded {
             resource: "password-protected HWP5 live buffers".to_string(),
             limit: HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
+        });
+    }
+    Ok(())
+}
+
+/// Bounds aggregate CFB1 work before the bit-level password transform starts.
+///
+/// EncryptVersion 4 performs one AES block encryption per input bit, so the
+/// memory-oriented stream cap is far too large to serve as a CPU budget. The
+/// owner-observed record streams total 1,296 bytes; 2 MiB leaves more than
+/// three orders of magnitude of headroom while bounding work to 16,777,216
+/// AES block operations per document.
+pub(crate) fn validate_transform_bytes(total_ciphertext_bytes: u64) -> Result<()> {
+    if total_ciphertext_bytes > HWP5_PASSWORD_MAX_TRANSFORM_BYTES {
+        return Err(Hwp5Error::ResourceLimitExceeded {
+            resource: "password-protected HWP5 transform bytes".to_string(),
+            limit: HWP5_PASSWORD_MAX_TRANSFORM_BYTES,
         });
     }
     Ok(())
@@ -112,7 +130,8 @@ mod tests {
 
     use super::{
         HWP5_PASSWORD_MAX_STREAM_BYTES, HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
-        decrypt_hwp5_encrypt_version_4_in_place, validate_live_bytes,
+        HWP5_PASSWORD_MAX_TRANSFORM_BYTES, decrypt_hwp5_encrypt_version_4_in_place,
+        validate_live_bytes, validate_transform_bytes,
     };
 
     fn encrypt_for_test(plaintext: &[u8], password: &str) -> Vec<u8> {
@@ -186,6 +205,8 @@ mod tests {
             .is_ok()
         );
         assert!(validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES + 1, 0).is_err());
+        assert!(validate_transform_bytes(HWP5_PASSWORD_MAX_TRANSFORM_BYTES).is_ok());
+        assert!(validate_transform_bytes(HWP5_PASSWORD_MAX_TRANSFORM_BYTES + 1).is_err());
         assert!(validate_live_bytes(u64::MAX, 1).is_err());
     }
 }
