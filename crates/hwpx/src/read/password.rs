@@ -309,6 +309,17 @@ impl EncryptionProfile {
     pub(crate) fn entries(&self) -> &[ProtectedEntry] {
         &self.entries
     }
+
+    pub(crate) fn validate_candidate_work(&self, candidate_count: u64) -> Result<()> {
+        let profile_iterations = self.entries.iter().try_fold(0u64, |total, entry| {
+            total.checked_add(u64::from(entry.iterations))
+        });
+        profile_iterations
+            .and_then(|iterations| iterations.checked_mul(candidate_count))
+            .filter(|total| *total <= MAX_TOTAL_PBKDF2_ITERATIONS)
+            .map(|_| ())
+            .ok_or(HwpxError::UnsupportedEncryptionProfile)
+    }
 }
 
 fn inflate_raw_bounded(
@@ -431,6 +442,18 @@ mod tests {
         assert!(parse_profile(&manifest(8)).is_ok());
         assert!(matches!(
             parse_profile(&manifest(9)),
+            Err(HwpxError::UnsupportedEncryptionProfile)
+        ));
+        assert!(
+            parse_profile(&manifest(4))
+                .unwrap()
+                .validate_candidate_work(2)
+                .is_ok()
+        );
+        assert!(matches!(
+            parse_profile(&manifest(5))
+                .unwrap()
+                .validate_candidate_work(2),
             Err(HwpxError::UnsupportedEncryptionProfile)
         ));
     }

@@ -349,8 +349,10 @@ impl HwpxPackage {
         // clear the per-entry checksum below, and a wrong key fails on the
         // first entry before any state is committed, so retrying an encoding
         // cannot admit a password that would otherwise be refused.
+        let candidates = password::password_byte_candidates(password);
+        profile.validate_candidate_work(candidates.len() as u64)?;
         let mut refusal = HwpxError::Encrypted;
-        for candidate in password::password_byte_candidates(password) {
+        for candidate in candidates {
             match self.unlock_with_password_bytes(&profile, &candidate) {
                 Ok(()) => return Ok(()),
                 Err(error) => refusal = error,
