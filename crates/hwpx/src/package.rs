@@ -197,6 +197,11 @@ pub struct HwpxPackage {
     limits: PackageLimits,
     decrypted_entries: BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
     decrypted_plaintext_bytes: u64,
+    // Parser and document owners outlive the temporary decrypted overlay. This
+    // is deliberately monotonic for one package invocation: it is a
+    // conservative reservation for every returned byte buffer/string rather
+    // than a best-effort estimate that could undercount a retained Document.
+    parser_owned_plaintext_bytes: u64,
 }
 
 impl HwpxPackage {
@@ -218,6 +223,7 @@ impl HwpxPackage {
             limits: *limits,
             decrypted_entries: BTreeMap::new(),
             decrypted_plaintext_bytes: 0,
+            parser_owned_plaintext_bytes: 0,
         };
         let mime = pkg.read_entry_string("mimetype")?;
         if mime.trim() != MIMETYPE {
@@ -232,21 +238,20 @@ impl HwpxPackage {
     }
 
     pub fn read_entry(&mut self, name: &str) -> Result<Vec<u8>> {
-        if let Some(plaintext) = self.decrypted_entries.get(name) {
-            let parser_copy = self
+        if let Some(mut plaintext) = self.decrypted_entries.remove(name) {
+            let plaintext_bytes = u64::try_from(plaintext.len()).map_err(|_| {
+                limit_error("암호화된 엔트리 크기가 정수 범위를 넘었습니다".to_string())
+            })?;
+            self.decrypted_plaintext_bytes = self
                 .decrypted_plaintext_bytes
-                .checked_add(plaintext.len() as u64)
+                .checked_sub(plaintext_bytes)
                 .ok_or_else(|| {
-                    limit_error(
-                        "암호화된 엔트리의 파서 복사 예산이 정수 범위를 넘었습니다".to_string(),
-                    )
+                    limit_error("암호화된 엔트리 예약값이 일관되지 않습니다".to_string())
                 })?;
-            if parser_copy > self.limits.max_total_uncompressed_bytes {
-                return Err(limit_error(
-                    "암호화된 엔트리의 파서 복사가 패키지 메모리 제한을 초과합니다".to_string(),
-                ));
-            }
-            return Ok(plaintext.to_vec());
+            self.reserve_parser_owned_bytes(plaintext_bytes)?;
+            // Move the allocation into the parser instead of duplicating it
+            // beside the retained decryption overlay.
+            return Ok(std::mem::take(&mut *plaintext));
         }
         let info = self
             .entries
@@ -255,6 +260,7 @@ impl HwpxPackage {
             .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()))?;
         let limit = self.limits.entry_uncompressed_limit(name);
         let expected_size = info.size;
+        self.reserve_parser_owned_bytes(expected_size)?;
         let mut e = self
             .zip
             .by_name(name)
@@ -263,7 +269,27 @@ impl HwpxPackage {
     }
 
     pub fn read_entry_string(&mut self, name: &str) -> Result<String> {
-        Ok(String::from_utf8_lossy(&self.read_entry(name)?).into_owned())
+        let bytes = self.read_entry(name)?;
+        match String::from_utf8(bytes) {
+            // String takes ownership of Vec's allocation, so the reservation
+            // made by read_entry already covers this parser owner.
+            Ok(text) => Ok(text),
+            Err(error) => {
+                let bytes = error.into_bytes();
+                // Lossy UTF-8 conversion can allocate up to three bytes per
+                // invalid input byte for U+FFFD. Reserve that copy before it
+                // exists; keeping the reservation avoids an untracked string
+                // retained by a parser or returned Document.
+                let lossy_copy = u64::try_from(bytes.len())
+                    .ok()
+                    .and_then(|size| size.checked_mul(3))
+                    .ok_or_else(|| {
+                        limit_error("문자열 변환 예약값이 정수 범위를 넘었습니다".to_string())
+                    })?;
+                self.reserve_parser_owned_bytes(lossy_copy)?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            }
+        }
     }
 
     /// 디렉터리를 제외한 모든 엔트리를 제한 안에서 EOF까지 스트리밍한다.
@@ -285,7 +311,7 @@ impl HwpxPackage {
             .read_entry_string("META-INF/manifest.xml")
             .map_err(|_| HwpxError::Encrypted)?;
         let profile = password::parse_profile(&manifest)?;
-        let mut retained_plaintext = 0u64;
+        let mut retained_plaintext = self.live_plaintext_bytes()?;
         let mut overlay = BTreeMap::new();
         for entry in profile.entries() {
             let info = self
@@ -303,7 +329,7 @@ impl HwpxPackage {
             if !stored || info.compressed_size != info.size {
                 return Err(HwpxError::Encrypted);
             }
-            let ciphertext = self.read_entry(&entry.name)?;
+            let ciphertext = self.read_entry_untracked(&entry.name)?;
             let plaintext = password::decrypt_entry(
                 entry,
                 password,
@@ -318,7 +344,52 @@ impl HwpxPackage {
             overlay.insert(entry.name.clone(), plaintext);
         }
         self.decrypted_entries = overlay;
-        self.decrypted_plaintext_bytes = retained_plaintext;
+        self.decrypted_plaintext_bytes = retained_plaintext
+            .checked_sub(self.parser_owned_plaintext_bytes)
+            .ok_or(HwpxError::Encrypted)?;
+        Ok(())
+    }
+
+    fn read_entry_untracked(&mut self, name: &str) -> Result<Vec<u8>> {
+        let info = self
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()))?;
+        let limit = self.limits.entry_uncompressed_limit(name);
+        let expected_size = info.size;
+        let mut entry = self
+            .zip
+            .by_name(name)
+            .map_err(|_| HwpxError::EntryNotFound(name.to_string()))?;
+        read_bounded(&mut entry, name, expected_size, limit)
+    }
+
+    fn live_plaintext_bytes(&self) -> Result<u64> {
+        self.decrypted_plaintext_bytes
+            .checked_add(self.parser_owned_plaintext_bytes)
+            .ok_or_else(|| limit_error("패키지 메모리 예약값이 정수 범위를 넘었습니다".to_string()))
+    }
+
+    fn reserve_parser_owned_bytes(&mut self, bytes: u64) -> Result<()> {
+        let parser_owned = self
+            .parser_owned_plaintext_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| {
+                limit_error("파서 메모리 예약값이 정수 범위를 넘었습니다".to_string())
+            })?;
+        let live = self
+            .decrypted_plaintext_bytes
+            .checked_add(parser_owned)
+            .ok_or_else(|| {
+                limit_error("패키지 메모리 예약값이 정수 범위를 넘었습니다".to_string())
+            })?;
+        if live > self.limits.max_total_uncompressed_bytes {
+            return Err(limit_error(
+                "암호화된 엔트리의 파서/문서 메모리가 패키지 제한을 초과합니다".to_string(),
+            ));
+        }
+        self.parser_owned_plaintext_bytes = parser_owned;
         Ok(())
     }
 
@@ -1008,5 +1079,45 @@ mod tests {
         let manifest = br##"<?xml version="1.0" encoding="UTF-8"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><!-- encryption-data is mentioned here only as a comment --><odf:file-entry full-path="Contents/header.xml" media-type="application/xml" size="1"><odf:comment>encryption-data</odf:comment></odf:file-entry></odf:manifest>"##;
         let result = open_and_check("comment_marker", Some(manifest));
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn retained_parser_entries_reject_the_next_lossy_string_before_its_copy() {
+        let path = temp_file("parser-live-budget");
+        write_zip(
+            &path,
+            &[
+                (MIMETYPE_ENTRY, MIMETYPE.as_bytes()),
+                ("Contents/first.bin", b"placeholder-first"),
+                ("Contents/second.bin", b"placeholder-second"),
+            ],
+        );
+        let limits = PackageLimits {
+            max_total_uncompressed_bytes: 64,
+            ..PackageLimits::default()
+        };
+        let mut package = HwpxPackage::open_with_limits(&path, &limits).unwrap();
+        // open() only needs mimetype during construction, so it is no longer a
+        // live parser owner. Inject two equal synthetic protected entries to
+        // exercise the package-local accounting without a corpus fixture.
+        package.parser_owned_plaintext_bytes = 0;
+        package.decrypted_entries.insert(
+            "Contents/first.bin".to_string(),
+            zeroize::Zeroizing::new(vec![b'a'; 24]),
+        );
+        package.decrypted_entries.insert(
+            "Contents/second.bin".to_string(),
+            zeroize::Zeroizing::new(vec![0xff; 24]),
+        );
+        package.decrypted_plaintext_bytes = 48;
+
+        let first = package.read_entry("Contents/first.bin").unwrap();
+        assert_eq!(first.len(), 24);
+        let error = package
+            .read_entry_string("Contents/second.bin")
+            .unwrap_err();
+        assert!(matches!(error, HwpxError::PackageLimit(_)), "{error:?}");
+        assert_eq!(package.decrypted_plaintext_bytes, 0);
+        std::fs::remove_file(path).unwrap();
     }
 }
