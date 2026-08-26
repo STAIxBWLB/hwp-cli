@@ -354,7 +354,7 @@ pub fn execute(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_with_options(
+pub fn execute_with_options(
     input: &Path,
     output: &Path,
     to: Option<ConvertFormat>,

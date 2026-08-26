@@ -243,7 +243,7 @@ pub fn run(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> anyhow::Result<()> {
     let mut line = Zeroizing::new(String::new());
     loop {
         line.clear();
-        if read_line_bounded(&mut reader, &mut *line, MAX_REQUEST_LINE_BYTES)? == 0 {
+        if read_line_bounded(&mut reader, &mut line, MAX_REQUEST_LINE_BYTES)? == 0 {
             break; // EOF
         }
         let trimmed = line.trim();
@@ -474,10 +474,8 @@ fn scrub_password_values(value: &mut Value) {
 fn call_tool(name: &str, args: &mut Value, ctx: &Ctx) -> Value {
     let result: McpToolResult = match name {
         "hwp_read" => tool_read_scoped(args, ctx),
-        "hwp_render" => reject_password_outside_scope(args)
-            .and_then(|_| tool_render(args, ctx).map_err(Into::into)),
-        "hwp_convert" => reject_password_outside_scope(args)
-            .and_then(|_| tool_convert(args, ctx).map_err(Into::into)),
+        "hwp_render" => tool_render_scoped(args, ctx),
+        "hwp_convert" => tool_convert_scoped(args, ctx),
         "hwp_info" => reject_password_outside_scope(args)
             .and_then(|_| tool_info(args, ctx).map_err(Into::into)),
         "hwp_grep" => reject_password_outside_scope(args)
@@ -1038,7 +1036,7 @@ fn tool_certify(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     Ok(vec![text_content(&summary)])
 }
 
-fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_render_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     if args.get("page").is_some() && args.get("pages").is_some() {
         return Err("page와 pages는 함께 지정할 수 없습니다".into());
@@ -1047,18 +1045,33 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         "png" => hwp_cli::cli::RenderFormat::Png,
         "svg" => hwp_cli::cli::RenderFormat::Svg,
         "pdf" => hwp_cli::cli::RenderFormat::Pdf,
-        other => return Err(format!("알 수 없는 format: {other} (png|svg|pdf)")),
+        other => return Err(format!("알 수 없는 format: {other} (png|svg|pdf)").into()),
     };
     let page = usize::try_from(arg_u64(args, "page", 1)?)
         .map_err(|_| "page가 플랫폼 범위를 넘습니다".to_string())?;
     let dpi = crate::commands::render::validated_dpi(arg_f64(args, "dpi", 120.0)?)
         .map_err(|error| error.to_string())?;
-    let output_path = arg_str_opt(args, "output_path")?;
-    let doc = load_document(&path).map_err(|e| e.to_string())?;
-    let opts = hwp_render::RenderOptions {
-        dpi,
-        font_dirs: font_dirs_for(args, ctx)?,
-    };
+    let output_path = arg_str_opt(args, "output_path")?.map(ToOwned::to_owned);
+    let output = output_path
+        .as_deref()
+        .map(|raw| checked_write_path(ctx, raw))
+        .transpose()?;
+    let font_dirs = font_dirs_for(args, ctx)?;
+    let password = take_scoped_password(
+        args,
+        &[
+            "path",
+            "page",
+            "pages",
+            "format",
+            "output_path",
+            "dpi",
+            "font_dir",
+            "password",
+        ],
+    )?;
+    let doc = load_mcp_document(&path, password.as_ref())?;
+    let opts = hwp_render::RenderOptions { dpi, font_dirs };
     let pages_spec = arg_str_opt(args, "pages")?;
 
     // base64 return path: png without output_path. Only a single-page selection is allowed.
@@ -1090,7 +1103,8 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             return Err(format!(
                 "MCP 렌더 PNG가 응답 상한 {MAX_MCP_PNG_BYTES} bytes를 초과합니다: {} bytes",
                 png.len()
-            ));
+            )
+            .into());
         }
         let summary = format!(
             "페이지 {page}/{} 렌더 ({}×{}px, {dpi}dpi). issues={}, info={}, complete={}, sha256={}",
@@ -1107,12 +1121,8 @@ fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
 
     // File-publish path: svg/pdf, multiple pages, or an explicit output_path. Goes through
     // the same atomic publish transaction as the CLI render and returns JSON metadata.
-    let output = checked_write_path(
-        ctx,
-        output_path.ok_or(
-            "svg/pdf 또는 output_path 없는 다중 페이지 렌더는 output_path 인자가 필요합니다",
-        )?,
-    )?;
+    let output = output
+        .ok_or("svg/pdf 또는 output_path 없는 다중 페이지 렌더는 output_path 인자가 필요합니다")?;
     // Each path derived from the CLI's per-page filename rule is also sandbox-checked.
     let checked_derived = |base: &Path, page_no: usize, multi: bool| -> Result<PathBuf, String> {
         let derived = crate::commands::render::page_path(base, page_no, multi);
@@ -1627,23 +1637,59 @@ fn convert_request(args: &Value, ctx: &Ctx) -> Result<ConvertRequest, String> {
     })
 }
 
-fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_convert_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
     let request = convert_request(args, ctx)?;
-    let report = crate::commands::convert::execute(
-        &request.input,
-        &request.output,
-        request.to,
-        request.strict,
-        None,
-        false,
-        request.embed_bin,
-        &crate::commands::convert::MdOpts {
-            media_dir: request.media_dir.as_deref(),
-            with_header_footer: request.with_header_footer,
-            with_hidden: request.with_hidden,
-        },
-        request.font_dirs,
-    )
+    let password = take_scoped_password(
+        args,
+        &[
+            "input",
+            "output",
+            "to",
+            "media_dir",
+            "with_header_footer",
+            "with_hidden",
+            "font_dir",
+            "embed_bin",
+            "strict",
+            "password",
+        ],
+    )?;
+    // Preload through the typed shared loader before publication so password
+    // refusals stay structured and never create an output or sidecar.
+    let _ = load_mcp_document(&request.input, password.as_ref())?;
+    let md_options = crate::commands::convert::MdOpts {
+        media_dir: request.media_dir.as_deref(),
+        with_header_footer: request.with_header_footer,
+        with_hidden: request.with_hidden,
+    };
+    let report = if password.is_some() {
+        crate::commands::convert::execute_with_options(
+            &request.input,
+            &request.output,
+            request.to,
+            request.strict,
+            None,
+            false,
+            request.embed_bin,
+            &md_options,
+            request.font_dirs,
+            &LoadOptions {
+                password: password.as_ref(),
+            },
+        )
+    } else {
+        crate::commands::convert::execute(
+            &request.input,
+            &request.output,
+            request.to,
+            request.strict,
+            None,
+            false,
+            request.embed_bin,
+            &md_options,
+            request.font_dirs,
+        )
+    }
     .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
@@ -1664,6 +1710,18 @@ fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
 fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     let mut args = args.clone();
     tool_read_scoped(&mut args, ctx).map_err(|error| error.message)
+}
+
+#[cfg(test)]
+fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let mut args = args.clone();
+    tool_render_scoped(&mut args, ctx).map_err(|error| error.message)
+}
+
+#[cfg(test)]
+fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+    let mut args = args.clone();
+    tool_convert_scoped(&mut args, ctx).map_err(|error| error.message)
 }
 
 fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
@@ -2101,20 +2159,21 @@ fn tool_defs() -> Vec<Value> {
         json!({
             "name": "hwp_render",
             "description": "페이지를 렌더한다. 기본은 단일 페이지 PNG를 base64 이미지로 반환(에이전트가 문서를 직접 본다). format=svg/pdf 또는 다중 페이지 선택(pages)은 output_path가 필요하고, 파일로 저장 뒤 {files, pages, dpi} JSON을 반환한다(16MiB 응답 상한 우회). 페이지별 파일명은 CLI와 같이 <stem>-<N>.<ext>(단일 페이지면 경로 그대로), pdf는 단일 멀티페이지 파일.",
-            "inputSchema": {"type": "object", "properties": {
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "path": {"type": "string"},
                 "page": {"type": "integer", "description": "1-기반, 기본 1. pages와 함께 지정 불가"},
                 "pages": {"type": "string", "description": "페이지 범위 spec: \"1\", \"1-3\", \"all\". page와 함께 지정 불가"},
                 "format": {"type": "string", "enum": ["png", "svg", "pdf"], "description": "기본 png"},
                 "output_path": {"type": "string", "description": "출력 파일 경로. svg/pdf·다중 페이지 필수. png 다중 페이지는 페이지별 <stem>-<N>.png"},
                 "dpi": {"type": "number", "minimum": hwp_render::MIN_DPI, "maximum": hwp_render::MAX_DPI, "description": "기본 120"},
-                "font_dir": {"type": "string", "description": "추가 폰트 디렉터리(선택)"}
+                "font_dir": {"type": "string", "description": "추가 폰트 디렉터리(선택)"},
+                "password": {"type": "string", "description": "이번 hwp_render 호출에만 사용할 문서 암호"}
             }, "required": ["path"]}
         }),
         json!({
             "name": "hwp_edit",
             "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패.",
-            "inputSchema": {"type": "object", "properties": {
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
                 "replace": {"type": "array", "items": {"type": "object", "properties": {
@@ -2235,7 +2294,7 @@ fn tool_defs() -> Vec<Value> {
         json!({
             "name": "hwp_convert",
             "description": "포맷 변환. 기본은 출력 확장자(.hwp/.hwpx/.json/.md/.html/.pdf/.odt/.txt/.csv/.docx)로 결정하고 to가 있으면 CLI --to처럼 확장자보다 우선한다. pdf는 텍스트 선택가능 벡터(이미지 포함). embed_bin이면 JSON에 이미지 base64 임베드. media_dir/with_header_footer/with_hidden은 markdown 출력 전용.",
-            "inputSchema": {"type": "object", "properties": {
+            "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"}, "output": {"type": "string"},
                 "to": {"type": "string", "enum": ["hwp", "hwpx", "md", "json", "html", "pdf", "odt", "txt", "csv", "docx"], "description": "대상 포맷(선택). 지정 시 출력 확장자 추론보다 우선"},
                 "media_dir": {"type": "string", "description": "markdown 이미지 추출 디렉터리(선택, 기본 \"<출력스템>.media\")"},
@@ -2243,7 +2302,8 @@ fn tool_defs() -> Vec<Value> {
                 "with_hidden": {"type": "boolean", "description": "markdown에 숨은 설명 포함, 기본 false"},
                 "font_dir": {"type": "string", "description": "추가 폰트 디렉터리(선택) — pdf 렌더에 적용"},
                 "embed_bin": {"type": "boolean"},
-                "strict": {"type": "boolean", "description": "HWP/HWPX DROP 경고를 실패 처리; MCP 기본 true"}
+                "strict": {"type": "boolean", "description": "HWP/HWPX DROP 경고를 실패 처리; MCP 기본 true"},
+                "password": {"type": "string", "description": "이번 hwp_convert 호출에만 사용할 문서 암호"}
             }, "required": ["input", "output"]}
         }),
         json!({
