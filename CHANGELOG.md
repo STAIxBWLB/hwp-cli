@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.11.0]
+
 **Added**
 
 - Password-protected HWP5 and HWPX input now enters the normal read, convert and render paths when
@@ -52,6 +54,31 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   line with the catalog.
 
 **Fixed**
+
+- Non-ASCII passwords saved by Hangul now authenticate with the observed CP949 byte derivation,
+  while UTF-8 remains the first candidate and ASCII behavior is unchanged. The independent corpus
+  probe confirms the genuine Korean-password HWPX under CP949 and rejects the tested alternative
+  encodings; HWP5 uses the same closed candidate list but remains marked as inference until a
+  genuine non-ASCII HWP5 is measured.
+
+- Protected native conversion is snapshot-bound and publishes only after source identity,
+  container preservation and semantic reread checks agree. This applies to single files, batches,
+  Markdown media sidecars and HWP/HWPX output. Batch preloading shares crypto budgets across
+  encoding candidates, avoids duplicate decryptions, and enforces format-specific memory bounds.
+
+- HWPX manifest attributes now decode XML entities, and password-unlocked rewrites remove only
+  encryption metadata while preserving ordinary manifest registrations for opaque parts. HWP5
+  multi-section and distribution ViewText streams are authenticated and parsed rather than being
+  limited to `BodyText/Section0`.
+
+- Password handling now bounds HWP5 and HWPX preview reads, aggregate HWP5 CFB1 work, aggregate
+  HWPX PBKDF2 work, ciphertext allocation and password stdin. MCP notifications scrub parsed
+  passwords before returning, and wrong/absent corpus receipts require the exact stable refusal
+  code.
+
+- Owner corpus fixtures, receipt directories and receipt-producing source paths are canonicalized
+  before repository-isolation checks, preventing external-looking symlinks from certifying files or
+  writing evidence inside the checkout.
 
 - Password-unlocked HWPX entries remain available for every read during one package invocation,
   including the second `version.xml` access. Rewriting a decrypted document also replaces the
