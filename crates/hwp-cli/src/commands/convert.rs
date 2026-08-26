@@ -519,6 +519,12 @@ pub fn execute_with_options(
     font_dirs: Vec<PathBuf>,
     options: &LoadOptions<'_>,
 ) -> anyhow::Result<ConvertReport> {
+    let preloaded =
+        if options.password.is_some() && protected_batch_preload_reservation(input)?.is_some() {
+            Some(load_preloaded_document(input, options)?)
+        } else {
+            None
+        };
     execute_with_preloaded_document(
         input,
         output,
@@ -530,7 +536,7 @@ pub fn execute_with_options(
         md_opts,
         font_dirs,
         options,
-        None,
+        preloaded,
     )
 }
 
