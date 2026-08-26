@@ -333,6 +333,11 @@ impl HwpxPackage {
             if !stored || info.compressed_size != info.size {
                 return Err(HwpxError::Encrypted);
             }
+            validate_protected_ciphertext_read(
+                retained_plaintext,
+                info.size,
+                self.limits.max_total_uncompressed_bytes,
+            )?;
             let ciphertext = self.read_entry_untracked(&entry.name)?;
             let plaintext = password::decrypt_entry(
                 entry,
@@ -501,6 +506,18 @@ impl HwpxPackage {
         });
         Ok(v)
     }
+}
+
+fn validate_protected_ciphertext_read(
+    retained_plaintext: u64,
+    ciphertext_bytes: u64,
+    live_limit: u64,
+) -> Result<()> {
+    retained_plaintext
+        .checked_add(ciphertext_bytes)
+        .filter(|live| *live <= live_limit)
+        .map(|_| ())
+        .ok_or(HwpxError::Encrypted)
 }
 
 /// zip 크레이트는 중앙 디렉터리를 이름-keyed map으로 만들며 중복 엔트리를 덮어쓴다.
@@ -1135,5 +1152,18 @@ mod tests {
         assert!(matches!(error, HwpxError::PackageLimit(_)), "{error:?}");
         assert_eq!(package.decrypted_plaintext_bytes, 48);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_ciphertext_is_reserved_before_its_read_allocation() {
+        assert!(validate_protected_ciphertext_read(80, 40, 120).is_ok());
+        assert!(matches!(
+            validate_protected_ciphertext_read(81, 40, 120),
+            Err(HwpxError::Encrypted)
+        ));
+        assert!(matches!(
+            validate_protected_ciphertext_read(u64::MAX, 1, u64::MAX),
+            Err(HwpxError::Encrypted)
+        ));
     }
 }
