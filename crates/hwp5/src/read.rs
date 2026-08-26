@@ -282,6 +282,7 @@ struct ParsedDocument {
 }
 
 fn parse_document_streams(
+    file_header: &FileHeader,
     streams: &BTreeMap<String, Vec<u8>>,
     mut record_budget: Option<&mut RecordScanBudget>,
 ) -> Result<ParsedDocument> {
@@ -305,13 +306,18 @@ fn parse_document_streams(
             .map(|warning| format!("[DocInfo] {warning}")),
     );
 
+    let section_prefix = if file_header.is_distribution() {
+        "/ViewText/Section"
+    } else {
+        "/BodyText/Section"
+    };
     let mut body_sections: Vec<&str> = streams
         .keys()
-        .filter(|path| path.starts_with("/BodyText/Section"))
+        .filter(|path| path.starts_with(section_prefix))
         .map(String::as_str)
         .collect();
     body_sections.sort_by_key(|path| {
-        path.trim_start_matches("/BodyText/Section")
+        path.trim_start_matches(section_prefix)
             .parse::<u32>()
             .unwrap_or(u32::MAX)
     });
@@ -378,10 +384,10 @@ fn read_result_from_parsed(
     ReadResult {
         document,
         warnings: parsed.warnings,
-        // The bounded-read snapshot path does not decrypt ViewText (Task 2 adds
-        // an explicit DistributionDoc refusal to BoundedReadSnapshot::open), so
-        // a distribution document never reaches this construction site.
-        unwrapped_distribution: false,
+        // BoundedReadSnapshot refuses distribution input before this point;
+        // the password-aware path explicitly unwraps ViewText first and does
+        // reach this shared construction site.
+        unwrapped_distribution: file_header.is_distribution(),
     }
 }
 
@@ -393,7 +399,7 @@ fn read_document_from_streams_with_budget(
     streams: &BTreeMap<String, Vec<u8>>,
     record_budget: Option<&mut RecordScanBudget>,
 ) -> Result<ReadResult> {
-    let parsed = parse_document_streams(streams, record_budget)?;
+    let parsed = parse_document_streams(file_header, streams, record_budget)?;
     let bin_streams = streams
         .iter()
         .filter_map(|(path, data)| {
@@ -447,7 +453,7 @@ fn read_password_document_from_owned_streams(
     mut streams: BTreeMap<String, Vec<u8>>,
     record_budget: &mut RecordScanBudget,
 ) -> Result<ReadResult> {
-    let parsed = parse_document_streams(&streams, Some(record_budget))?;
+    let parsed = parse_document_streams(file_header, &streams, Some(record_budget))?;
     // Metadata is parsed into owned strings, so its source stream is no longer
     // needed after semantic parsing. Drop it before moving the opaque owners.
     // This keeps the pre-reserved metadata/string envelope transient.
@@ -602,7 +608,9 @@ fn read_document_from_container(container: &mut Hwp5Container) -> Result<ReadRes
 }
 
 fn is_evidenced_password_record_stream(path: &str) -> bool {
-    path == "/DocInfo" || path == "/BodyText/Section0"
+    path == "/DocInfo"
+        || path.starts_with("/BodyText/Section")
+        || path.starts_with("/ViewText/Section")
 }
 
 /// The protected path materializes only bytes that the final HWP5 Document
@@ -624,7 +632,7 @@ fn is_password_candidate_record_stream(path: &str) -> bool {
 fn expected_password_record_tag(path: &str) -> Option<u16> {
     if path == "/DocInfo" {
         Some(crate::record::tag::DOCUMENT_PROPERTIES)
-    } else if path == "/BodyText/Section0" {
+    } else if path.starts_with("/BodyText/Section") || path.starts_with("/ViewText/Section") {
         Some(crate::record::tag::PARA_HEADER)
     } else {
         None
@@ -906,13 +914,19 @@ fn reserve_summary_metadata(data: &[u8]) -> Result<u64> {
 /// the six metadata PIDs' real alias multiplicity, before any semantic owner
 /// can be allocated.
 fn password_semantic_reservation(
+    file_header: &FileHeader,
     streams: &BTreeMap<String, Vec<u8>>,
 ) -> Result<PasswordSemanticReservation> {
     let mut reservation = PasswordSemanticReservation::default();
-    for path in ["/DocInfo", "/BodyText/Section0"] {
-        let data = streams
-            .get(path)
-            .ok_or_else(|| Hwp5Error::StreamNotFound(path.to_string()))?;
+    let section_prefix = if file_header.is_distribution() {
+        "/ViewText/Section"
+    } else {
+        "/BodyText/Section"
+    };
+    for (_, data) in streams
+        .iter()
+        .filter(|(path, _)| path.as_str() == "/DocInfo" || path.starts_with(section_prefix))
+    {
         let mut reader = crate::codec::ByteReader::new(data);
         while !reader.is_empty() {
             let header = RecordHeader::decode(&mut reader)?;
@@ -958,13 +972,18 @@ fn read_password_protected_document(
             HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES,
         )
         .map_err(normalize_password_candidate_error)?;
+    let required_section = if header.is_distribution() {
+        "/ViewText/Section0"
+    } else {
+        "/BodyText/Section0"
+    };
     if stream_infos.iter().any(|stream| {
         is_password_candidate_record_stream(&stream.path)
             && !is_evidenced_password_record_stream(&stream.path)
     }) || !stream_infos.iter().any(|stream| stream.path == "/DocInfo")
         || !stream_infos
             .iter()
-            .any(|stream| stream.path == "/BodyText/Section0")
+            .any(|stream| stream.path == required_section)
     {
         return Err(Hwp5Error::UnsupportedPasswordProfile {
             encrypt_version: header.encrypt_version,
@@ -993,7 +1012,27 @@ fn read_password_protected_document(
             .map_err(normalize_password_candidate_error)?;
         validate_live_bytes(stream.size, retained_with_paths)
             .map_err(normalize_password_candidate_error)?;
-        let decrypted = if header.is_compressed() {
+        let is_view_text = stream.path.starts_with("/ViewText/Section");
+        let decrypted = if is_view_text {
+            let mut protected = zeroize::Zeroizing::new(container.read_stream_raw(&stream.path)?);
+            if protected.len() as u64 != stream.size {
+                return Err(Hwp5Error::Encrypted);
+            }
+            decrypt_hwp5_encrypt_version_4_in_place(&mut protected, password)?;
+            let doubled_ciphertext = stream.size.checked_mul(2).ok_or(Hwp5Error::Encrypted)?;
+            let live_intermediates =
+                checked_password_live_bytes(retained_with_paths, doubled_ciphertext)
+                    .map_err(normalize_password_candidate_error)?;
+            validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES, live_intermediates)
+                .map_err(normalize_password_candidate_error)?;
+            let result = crate::distdoc::decrypt_view_text_section_bounded(
+                &protected,
+                header.is_compressed(),
+                HWP5_PASSWORD_MAX_STREAM_BYTES,
+            );
+            protected.zeroize();
+            result.map_err(normalize_password_candidate_error)?
+        } else if header.is_compressed() {
             // Keep ciphertext live only while raw-DEFLATE is expanded. Its
             // buffer is zeroized and dropped before identity walking or tree
             // construction, and the expansion reservation includes it.
@@ -1076,8 +1115,8 @@ fn read_password_protected_document(
     // still live. The authenticated header-only preflight derives every
     // semantic reservation from the observed records and Summary aliases
     // before `scan_stream_bounded` can allocate a tree or IR owner.
-    let semantic =
-        password_semantic_reservation(&streams).map_err(normalize_password_candidate_error)?;
+    let semantic = password_semantic_reservation(&header, &streams)
+        .map_err(normalize_password_candidate_error)?;
     let mut record_budget = password_record_scan_budget(retained_plaintext, path_bytes, semantic)?;
     header.check_body_readable_after_password()?;
     read_password_document_from_owned_streams(&header, streams, &mut record_budget)
@@ -1192,17 +1231,23 @@ mod bounded_tests {
         header_stream.write_all(&header).unwrap();
         drop(header_stream);
 
-        for path in ["/DocInfo", "/BodyText/Section0"] {
+        let protected_paths: Vec<String> = cfb
+            .walk()
+            .filter(|entry| entry.is_stream())
+            .map(|entry| entry.path().to_string_lossy().replace('\\', "/"))
+            .filter(|path| is_evidenced_password_record_stream(path))
+            .collect();
+        for path in protected_paths {
             let mut raw = Vec::new();
-            cfb.open_stream(path)
+            cfb.open_stream(&path)
                 .unwrap()
                 .read_to_end(&mut raw)
                 .unwrap();
-            if additional_attributes & 1 != 0 {
+            if additional_attributes & 1 != 0 && !path.starts_with("/ViewText/") {
                 raw = crate::codec::compress(&raw);
             }
             let encrypted = encrypt_hwp5_stream_for_test(&raw, password);
-            let mut stream = cfb.open_stream(path).unwrap();
+            let mut stream = cfb.open_stream(&path).unwrap();
             stream.set_len(0).unwrap();
             stream.seek(SeekFrom::Start(0)).unwrap();
             stream.write_all(&encrypted).unwrap();
@@ -1307,6 +1352,83 @@ mod bounded_tests {
         .unwrap();
         assert_eq!(result.document.meta.source_format, "hwp5");
         assert_eq!(result.document.sections.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_reader_authenticates_and_parses_every_body_section() {
+        let path = base_hwp("password-multiple-sections");
+        let password = "correct-password";
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            let mut section = Vec::new();
+            cfb.open_stream("/BodyText/Section0")
+                .unwrap()
+                .read_to_end(&mut section)
+                .unwrap();
+            cfb.create_new_stream("/BodyText/Section1")
+                .unwrap()
+                .write_all(&section)
+                .unwrap();
+            cfb.flush().unwrap();
+        }
+        make_evidenced_password_hwp(&path, password, 0);
+
+        let result = read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(password),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.document.sections.len(), 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protected_distribution_reader_unwraps_every_view_text_section() {
+        const DISTRIBUTION: u32 = 1 << 2;
+        let path = base_hwp("password-distribution-sections");
+        let password = "correct-password";
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            let mut compressed_section = Vec::new();
+            cfb.open_stream("/BodyText/Section0")
+                .unwrap()
+                .read_to_end(&mut compressed_section)
+                .unwrap();
+            let section = crate::codec::decompress(&compressed_section, "test section").unwrap();
+            cfb.create_storage("/ViewText").unwrap();
+            for index in 0..2 {
+                let protected = crate::distdoc::encrypt_view_text_section_for_test(&section, true);
+                cfb.create_new_stream(format!("/ViewText/Section{index}"))
+                    .unwrap()
+                    .write_all(&protected)
+                    .unwrap();
+            }
+            cfb.flush().unwrap();
+        }
+        make_evidenced_password_hwp(&path, password, DISTRIBUTION);
+
+        let result = read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(password),
+            },
+        )
+        .unwrap();
+        assert!(result.unwrapped_distribution);
+        assert_eq!(result.document.sections.len(), 2);
         std::fs::remove_file(path).unwrap();
     }
 
