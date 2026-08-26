@@ -413,7 +413,7 @@ fn hwp5_cat_refusals_and_conflicts_are_secret_free() {
     for output in [&absent.stderr, &wrong.stderr] {
         let output = refusal(output);
         assert!(output.contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
-        assert!(output.contains("암호화된 문서는 지원하지 않습니다"));
+        assert!(output.contains("암호가 필요하거나 올바르지 않습니다"));
         assert!(!output.contains(password));
         assert!(!output.contains("different-secret"));
         assert!(!output.contains("EncryptVersion"));

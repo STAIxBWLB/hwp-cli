@@ -226,9 +226,9 @@ mod tests {
         // An ASCII password is byte-identical in both encodings, so offering a
         // second candidate would be pure waste and would double the work every
         // wrong ASCII password costs.
-        let ascii = password_byte_candidates("pw123456");
+        let ascii = password_byte_candidates("ascii-password");
         assert_eq!(ascii.len(), 1);
-        assert_eq!(&*ascii[0], b"pw123456");
+        assert_eq!(&*ascii[0], b"ascii-password");
 
         // Hangul derives the key from CP949 bytes. UTF-8 stays first because it
         // is what the format specifications say; CP949 is the observed reality.

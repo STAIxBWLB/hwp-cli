@@ -46,7 +46,12 @@ pub enum Hwp5Error {
     #[error("지원하지 않는 HWP 버전입니다: {0} (HWP 5.x만 지원)")]
     UnsupportedVersion(String),
 
-    #[error("암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.")]
+    // One message for both an absent and a wrong password: telling them apart
+    // would turn this into a credential oracle. It names the commands rather
+    // than a flag because `dump` renders this error and does not accept one.
+    #[error(
+        "암호가 필요하거나 올바르지 않습니다. 암호를 받는 cat·convert·render로 암호를 전달하세요."
+    )]
     Encrypted,
 
     #[error("지원하지 않는 HWP5 암호화 프로필입니다 (EncryptVersion {encrypt_version})")]
