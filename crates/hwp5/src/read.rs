@@ -18,6 +18,9 @@ use crate::record::{
 };
 
 mod password;
+
+pub(crate) const PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT: u64 =
+    password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES;
 use password::{
     HWP5_PASSWORD_MAX_STREAM_BYTES, HWP5_PASSWORD_MAX_STREAMS,
     HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES, decrypt_hwp5_encrypt_version_4_in_place,

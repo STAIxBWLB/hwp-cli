@@ -42,3 +42,8 @@ pub use write::{
     WriteOptions, rewrite_document_with_report, validate_evidenced_official_numbering,
     validate_official_hwp_numbering, write_document, write_document_with_report,
 };
+
+/// Conservative live-memory reservation for one password-protected HWP5
+/// document. Batch callers reserve this before invoking the reader.
+pub const PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT: u64 =
+    read::PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT;
