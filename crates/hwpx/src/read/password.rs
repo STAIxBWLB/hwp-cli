@@ -49,6 +49,7 @@ struct CurrentEntry {
     kdf: Option<(String, Vec<u8>, u32, usize)>,
     start_key: Option<String>,
     checksum: Option<(String, Vec<u8>)>,
+    in_encryption_data: bool,
 }
 
 /// Parses only the profile observed in the owner evidence. Missing, repeated,
@@ -79,8 +80,22 @@ pub fn parse_profile(manifest: &str) -> Result<EncryptionProfile> {
                         return Err(HwpxError::UnsupportedEncryptionProfile);
                     }
                 }
-                name => apply_metadata(current.as_mut(), name, &event)?,
+                name => {
+                    apply_metadata(current.as_mut(), name, &event)?;
+                    if name == b"encryption-data" {
+                        current
+                            .as_mut()
+                            .ok_or(HwpxError::UnsupportedEncryptionProfile)?
+                            .in_encryption_data = false;
+                    }
+                }
             },
+            Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"encryption-data" => {
+                current
+                    .as_mut()
+                    .ok_or(HwpxError::UnsupportedEncryptionProfile)?
+                    .in_encryption_data = false;
+            }
             Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"file-entry" => {
                 let Some(entry) = current.take() else {
                     return Err(HwpxError::UnsupportedEncryptionProfile);
@@ -116,16 +131,17 @@ fn apply_metadata(
     };
     match name {
         b"encryption-data" => {
-            if entry.checksum.is_some() {
+            if entry.in_encryption_data || entry.checksum.is_some() {
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
+            entry.in_encryption_data = true;
             entry.checksum = Some((
                 required_attr(event, b"checksum-type")?,
                 decode_attr(event, b"checksum")?,
             ));
         }
         b"algorithm" => {
-            if entry.encryption.is_some() {
+            if !entry.in_encryption_data || entry.encryption.is_some() {
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
             entry.encryption = Some((
@@ -134,7 +150,7 @@ fn apply_metadata(
             ));
         }
         b"key-derivation" => {
-            if entry.kdf.is_some() {
+            if !entry.in_encryption_data || entry.kdf.is_some() {
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
             entry.kdf = Some((
@@ -149,7 +165,7 @@ fn apply_metadata(
             ));
         }
         b"start-key-generation" => {
-            if entry.start_key.is_some() {
+            if !entry.in_encryption_data || entry.start_key.is_some() {
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
             entry.start_key = Some(required_attr(event, b"start-key-generation-name")?);
@@ -160,6 +176,9 @@ fn apply_metadata(
 }
 
 fn complete_entry(entry: CurrentEntry) -> Result<Option<ProtectedEntry>> {
+    if entry.in_encryption_data {
+        return Err(HwpxError::UnsupportedEncryptionProfile);
+    }
     let protected = entry.checksum.is_some()
         || entry.encryption.is_some()
         || entry.kdf.is_some()
@@ -330,4 +349,59 @@ fn decode_attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Result<
     base64::engine::general_purpose::STANDARD
         .decode(required_attr(event, key)?)
         .map_err(|_| HwpxError::UnsupportedEncryptionProfile)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package::NATIVE_PACKAGE_LIMITS;
+
+    #[test]
+    fn rejects_profile_metadata_outside_encryption_data() {
+        let manifest = r#"<manifest><file-entry full-path="Contents/header.xml" size="16"><algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="AAAAAAAAAAAAAAAAAAAAAA=="/><key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="AAAAAAAAAAAAAAAAAAAAAA=="/><start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/><encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="/></file-entry></manifest>"#;
+        assert!(matches!(
+            parse_profile(manifest),
+            Err(HwpxError::UnsupportedEncryptionProfile)
+        ));
+    }
+
+    #[test]
+    fn rejects_entry_and_live_budget_edges_before_crypto_allocation() {
+        let entry = |name: &str, declared_plaintext_bytes| ProtectedEntry {
+            name: name.to_string(),
+            declared_plaintext_bytes,
+            iv: vec![0; 16],
+            salt: vec![0; 16],
+            iterations: 1,
+            checksum: vec![0; 32],
+        };
+        for (entry, retained_plaintext) in [
+            (
+                entry(
+                    "Contents/header.xml",
+                    NATIVE_PACKAGE_LIMITS.max_xml_uncompressed_bytes + 1,
+                ),
+                0,
+            ),
+            (
+                entry(
+                    "BinData/item.bin",
+                    16 * (NATIVE_PACKAGE_LIMITS.max_compression_ratio + 1),
+                ),
+                0,
+            ),
+            (entry("BinData/item.bin", 1), u64::MAX),
+        ] {
+            assert!(matches!(
+                decrypt_entry(
+                    &entry,
+                    "irrelevant",
+                    vec![0; 16],
+                    &NATIVE_PACKAGE_LIMITS,
+                    retained_plaintext,
+                ),
+                Err(HwpxError::Encrypted)
+            ));
+        }
+    }
 }

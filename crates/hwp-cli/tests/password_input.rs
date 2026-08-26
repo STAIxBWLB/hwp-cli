@@ -4,8 +4,12 @@ use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use aes::Aes128;
-use aes::cipher::{Block, BlockCipherEncrypt, KeyInit};
+use aes::cipher::{
+    Block, BlockCipherEncrypt, BlockModeEncrypt, KeyInit, KeyIvInit, block_padding::NoPadding,
+};
+use aes::{Aes128, Aes256};
+use base64::Engine as _;
+use flate2::{Compression, write::DeflateEncoder};
 use sha1::Digest as _;
 
 fn hwp() -> Command {
@@ -106,6 +110,100 @@ fn evidenced_hwp5_fixture(dir: &Path, password: &str) -> PathBuf {
 
 fn refusal(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr).into_owned()
+}
+
+fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
+    let plain = dir.join("plain.hwpx");
+    let protected = dir.join("protected.hwpx");
+    let created = hwp().arg("new").arg("-o").arg(&plain).output().unwrap();
+    assert!(created.status.success(), "base HWPX creation failed");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&plain).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&protected).unwrap());
+    let mut manifest_entries = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().to_string();
+        if name == "mimetype" || name == "META-INF/manifest.xml" {
+            continue;
+        }
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if name == "Contents/header.xml" || name == "Contents/section0.xml" {
+            let (ciphertext, manifest_entry) = encrypt_hwpx_part(&name, &data, password);
+            manifest_entries.push(manifest_entry);
+            writer
+                .start_file(
+                    &name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .unwrap();
+            writer.write_all(&ciphertext).unwrap();
+        } else {
+            writer
+                .start_file(
+                    &name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated),
+                )
+                .unwrap();
+            writer.write_all(&data).unwrap();
+        }
+    }
+    writer
+        .start_file(
+            "mimetype",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer
+        .write_all(hwpx::package::MIMETYPE.as_bytes())
+        .unwrap();
+    let manifest = format!(
+        r#"<?xml version="1.0"?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">{}</odf:manifest>"#,
+        manifest_entries.join("")
+    );
+    writer
+        .start_file(
+            "META-INF/manifest.xml",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(manifest.as_bytes()).unwrap();
+    writer.finish().unwrap();
+    protected
+}
+
+fn encrypt_hwpx_part(name: &str, plaintext: &[u8], password: &str) -> (Vec<u8>, String) {
+    const SALT: [u8; 16] = [7; 16];
+    const IV: [u8; 16] = [9; 16];
+    let mut compressed = Vec::new();
+    let mut deflater = DeflateEncoder::new(&mut compressed, Compression::default());
+    deflater.write_all(plaintext).unwrap();
+    deflater.finish().unwrap();
+    compressed.extend(std::iter::repeat_n(0, (16 - compressed.len() % 16) % 16));
+    let mut start_key = sha2::Sha256::digest(password.as_bytes()).to_vec();
+    let mut key = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&start_key, &SALT, 1024, &mut key);
+    start_key.fill(0);
+    let length = compressed.len();
+    let ciphertext = cbc::Encryptor::<Aes256>::new_from_slices(&key, &IV)
+        .unwrap()
+        .encrypt_padded::<NoPadding>(&mut compressed, length)
+        .unwrap()
+        .to_vec();
+    key.fill(0);
+    let checksum = sha2::Sha256::digest(&plaintext[..plaintext.len().min(1024)]);
+    let manifest_entry = format!(
+        r#"<odf:file-entry full-path="{name}" size="{}"><odf:encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="{}"><odf:algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="{}"/><odf:key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="{}"/><odf:start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256"/></odf:encryption-data></odf:file-entry>"#,
+        plaintext.len(),
+        base64::engine::general_purpose::STANDARD.encode(checksum),
+        base64::engine::general_purpose::STANDARD.encode(IV),
+        base64::engine::general_purpose::STANDARD.encode(SALT),
+    );
+    (ciphertext, manifest_entry)
 }
 
 #[test]
@@ -245,4 +343,35 @@ fn hwp5_cat_refusals_and_conflicts_are_secret_free() {
     let cat_help = hwp().args(["cat", "--help"]).output().unwrap();
     assert!(!String::from_utf8_lossy(&root_help.stdout).contains("--password"));
     assert!(String::from_utf8_lossy(&cat_help.stdout).contains("--password-stdin"));
+}
+
+#[test]
+fn hwpx_cat_uses_exact_password_bytes_and_one_public_refusal() {
+    let password = "  \u{ac00}  ";
+    let file = evidenced_hwpx_fixture(&temp_dir("hwpx-public-refusal"), password);
+    let correct = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--password")
+        .arg(password)
+        .output()
+        .unwrap();
+    assert!(correct.status.success(), "exact HWPX password must decrypt");
+    let absent = hwp().arg("cat").arg(&file).output().unwrap();
+    let wrong = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--password")
+        .arg("  \u{1100}\u{1161}  ")
+        .output()
+        .unwrap();
+    assert!(!absent.status.success() && !wrong.status.success());
+    assert_eq!(refusal(&absent.stderr), refusal(&wrong.stderr));
+    for output in [&absent.stderr, &wrong.stderr] {
+        let output = refusal(output);
+        assert!(output.contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
+        assert!(!output.contains(password));
+        assert!(!output.contains("Contents/header.xml"));
+        assert!(!output.contains("AES256-CBC"));
+    }
 }

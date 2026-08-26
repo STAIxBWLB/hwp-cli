@@ -131,6 +131,67 @@ fn correct_password_opens_an_evidenced_profile() {
     );
 }
 
+#[test]
+fn wrong_and_absent_passwords_share_the_credential_refusal() {
+    let repacked = repack_with_evidenced_password(&fixture(), "synthetic-password");
+    let absent = read_document(&repacked);
+    let wrong = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some("different-password"),
+        },
+    );
+    let _ = std::fs::remove_file(&repacked);
+    assert!(matches!(absent, Err(HwpxError::Encrypted)));
+    assert!(matches!(wrong, Err(HwpxError::Encrypted)));
+}
+
+#[test]
+fn malformed_or_unobserved_profiles_never_enter_crypto() {
+    let repacked = repack_with_manifest(&fixture(), ENCRYPTED_MANIFEST);
+    let result = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some("synthetic-password"),
+        },
+    );
+    let _ = std::fs::remove_file(&repacked);
+    assert!(matches!(
+        result,
+        Err(HwpxError::UnsupportedEncryptionProfile)
+    ));
+}
+
+#[test]
+fn concurrent_password_reads_keep_plaintext_per_package() {
+    let first = repack_with_evidenced_password(&fixture(), "first-password");
+    let second = repack_with_evidenced_password(&fixture(), "second-password");
+    let first_path = first.clone();
+    let second_path = second.clone();
+    let first_handle = std::thread::spawn(move || {
+        read_document_with_options(
+            &first_path,
+            &ReadOptions {
+                password: Some("first-password"),
+            },
+        )
+        .is_ok()
+    });
+    let second_handle = std::thread::spawn(move || {
+        read_document_with_options(
+            &second_path,
+            &ReadOptions {
+                password: Some("second-password"),
+            },
+        )
+        .is_ok()
+    });
+    assert!(first_handle.join().unwrap());
+    assert!(second_handle.join().unwrap());
+    let _ = std::fs::remove_file(first);
+    let _ = std::fs::remove_file(second);
+}
+
 fn repack_with_evidenced_password(source: &Path, password: &str) -> PathBuf {
     const SALT: [u8; 16] = [7; 16];
     const IV: [u8; 16] = [9; 16];
