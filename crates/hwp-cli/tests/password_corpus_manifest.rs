@@ -313,6 +313,36 @@ fn manifest_contract_accepts_a_redacted_synthetic_matrix() {
 }
 
 #[test]
+fn manifest_contract_accepts_windows_absolute_source_paths() {
+    let mut manifest = manifest_fixture();
+    for (index, fixture) in manifest["fixtures"]
+        .as_array_mut()
+        .expect("fixtures are an array")
+        .iter_mut()
+        .enumerate()
+    {
+        fixture["source_path"] =
+            serde_json::json!(format!(r"C:\private\password-corpus\fixture-{index}.bin"));
+    }
+
+    let descriptors = load_manifest_for_test(&manifest, &repo_root(), |_| {
+        Some("synthetic-secret".to_owned())
+    })
+    .expect("Windows drive-letter absolute paths satisfy the closed schema");
+    assert_eq!(descriptors.len(), 3);
+
+    manifest["fixtures"][0]["source_path"] =
+        serde_json::json!(r"relative\password-corpus\fixture.hwp");
+    assert!(
+        load_manifest_for_test(&manifest, &repo_root(), |_| {
+            Some("synthetic-secret".to_owned())
+        })
+        .is_err(),
+        "relative source paths remain outside the closed contract"
+    );
+}
+
+#[test]
 fn manifest_contract_rejects_closed_schema_and_role_violations() {
     for (label, manifest) in password_corpus_manifest::invalid_manifest_cases() {
         assert!(
