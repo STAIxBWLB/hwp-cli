@@ -197,6 +197,7 @@ pub struct HwpxPackage {
     limits: PackageLimits,
     decrypted_entries: BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
     decrypted_plaintext_bytes: u64,
+    password_unlocked: bool,
     // Parser and document owners outlive the temporary decrypted overlay. This
     // is deliberately monotonic for one package invocation: it is a
     // conservative reservation for every returned byte buffer/string rather
@@ -223,6 +224,7 @@ impl HwpxPackage {
             limits: *limits,
             decrypted_entries: BTreeMap::new(),
             decrypted_plaintext_bytes: 0,
+            password_unlocked: false,
             parser_owned_plaintext_bytes: 0,
         };
         let mime = pkg.read_entry_string("mimetype")?;
@@ -238,20 +240,22 @@ impl HwpxPackage {
     }
 
     pub fn read_entry(&mut self, name: &str) -> Result<Vec<u8>> {
-        if let Some(mut plaintext) = self.decrypted_entries.remove(name) {
-            let plaintext_bytes = u64::try_from(plaintext.len()).map_err(|_| {
-                limit_error("암호화된 엔트리 크기가 정수 범위를 넘었습니다".to_string())
-            })?;
-            self.decrypted_plaintext_bytes = self
-                .decrypted_plaintext_bytes
-                .checked_sub(plaintext_bytes)
-                .ok_or_else(|| {
-                    limit_error("암호화된 엔트리 예약값이 일관되지 않습니다".to_string())
-                })?;
+        if let Some(plaintext_bytes) = self
+            .decrypted_entries
+            .get(name)
+            .map(|plaintext| u64::try_from(plaintext.len()))
+            .transpose()
+            .map_err(|_| limit_error("암호화된 엔트리 크기가 정수 범위를 넘었습니다".to_string()))?
+        {
             self.reserve_parser_owned_bytes(plaintext_bytes)?;
-            // Move the allocation into the parser instead of duplicating it
-            // beside the retained decryption overlay.
-            return Ok(std::mem::take(&mut *plaintext));
+            // Keep the authenticated overlay available for later reads of the
+            // same package entry. The returned copy is charged to the
+            // monotonic parser/document ownership budget before allocation.
+            return self
+                .decrypted_entries
+                .get(name)
+                .map(|plaintext| plaintext.to_vec())
+                .ok_or_else(|| HwpxError::EntryNotFound(name.to_string()));
         }
         let info = self
             .entries
@@ -304,7 +308,7 @@ impl HwpxPackage {
     /// Unlocks the observed, evidence-bound ODF profile into a per-package
     /// in-memory overlay. Plaintext never becomes a ZIP or a file on disk.
     pub fn unlock_with_password(&mut self, password: &str) -> Result<()> {
-        if !self.decrypted_entries.is_empty() {
+        if self.password_unlocked {
             return Err(HwpxError::Encrypted);
         }
         let manifest = self
@@ -347,7 +351,16 @@ impl HwpxPackage {
         self.decrypted_plaintext_bytes = retained_plaintext
             .checked_sub(self.parser_owned_plaintext_bytes)
             .ok_or(HwpxError::Encrypted)?;
+        self.password_unlocked = true;
         Ok(())
+    }
+
+    /// Whether this package has authenticated a password-protected profile.
+    ///
+    /// Readers use this to avoid preserving source encryption metadata when
+    /// the returned document now owns plaintext entries.
+    pub fn was_unlocked_with_password(&self) -> bool {
+        self.password_unlocked
     }
 
     fn read_entry_untracked(&mut self, name: &str) -> Result<Vec<u8>> {
@@ -1093,7 +1106,10 @@ mod tests {
             ],
         );
         let limits = PackageLimits {
-            max_total_uncompressed_bytes: 64,
+            // 48 bytes stay in the authenticated overlay. The first returned
+            // copy raises live ownership to 72; the second raw copy raises it
+            // to 96; its 72-byte lossy UTF-8 allocation must fail at 168.
+            max_total_uncompressed_bytes: 120,
             ..PackageLimits::default()
         };
         let mut package = HwpxPackage::open_with_limits(&path, &limits).unwrap();
@@ -1117,7 +1133,7 @@ mod tests {
             .read_entry_string("Contents/second.bin")
             .unwrap_err();
         assert!(matches!(error, HwpxError::PackageLimit(_)), "{error:?}");
-        assert_eq!(package.decrypted_plaintext_bytes, 0);
+        assert_eq!(package.decrypted_plaintext_bytes, 48);
         std::fs::remove_file(path).unwrap();
     }
 }

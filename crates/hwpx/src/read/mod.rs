@@ -129,6 +129,7 @@ fn read_document_impl(
     // Preview 등). "모르는 데이터는 버리지 않는다". BinData/*는 bin_streams가,
     // section/header/settings/version/preview는 기존 슬롯이 담당하므로 제외한다.
     let mut hwpx_extra_entries = Vec::new();
+    let was_unlocked_with_password = pkg.was_unlocked_with_password();
     if load_binary_data {
         const REGENERATED: &[&str] = &[
             "mimetype",
@@ -143,6 +144,7 @@ fn read_document_impl(
             let name = &entry.name;
             if name.ends_with('/')
                 || REGENERATED.contains(&name.as_str())
+                || (was_unlocked_with_password && name == "META-INF/manifest.xml")
                 // section 목록은 패키지 실제 엔트리 기준(section_entries와 같은 판정).
                 || (name.starts_with("Contents/section") && name.ends_with(".xml"))
                 || name.starts_with("BinData/")

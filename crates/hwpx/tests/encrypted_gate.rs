@@ -146,6 +146,54 @@ fn correct_password_opens_an_evidenced_profile() {
 }
 
 #[test]
+fn decrypted_entries_remain_available_for_repeated_reads() {
+    let password = "synthetic-password";
+    let original = read_document(&fixture()).expect("plain fixture reads");
+    let expected_version = original.document.hwpx_version_xml;
+    let repacked = repack_with_evidenced_password(&fixture(), password);
+    let decrypted = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some(password),
+        },
+    )
+    .expect("protected fixture reads");
+    let _ = std::fs::remove_file(&repacked);
+
+    assert_eq!(
+        decrypted.document.hwpx_version_xml, expected_version,
+        "the second version.xml read must still use authenticated plaintext"
+    );
+}
+
+#[test]
+fn decrypted_document_rewrites_an_unencrypted_manifest_and_reopens() {
+    let password = "synthetic-password";
+    let repacked = repack_with_evidenced_password(&fixture(), password);
+    let decrypted = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some(password),
+        },
+    )
+    .expect("protected fixture reads");
+    let output = temp_file("decrypted-roundtrip");
+    hwpx::write_document(&decrypted.document, &output).expect("decrypted document rewrites");
+
+    let mut output_package = hwpx::HwpxPackage::open(&output).expect("rewritten package opens");
+    assert!(
+        !output_package
+            .has_encryption_marker()
+            .expect("rewritten manifest parses"),
+        "plaintext output must not retain the source encryption metadata"
+    );
+    read_document(&output).expect("rewritten plaintext package reopens without a password");
+
+    let _ = std::fs::remove_file(repacked);
+    let _ = std::fs::remove_file(output);
+}
+
+#[test]
 fn wrong_and_absent_passwords_share_the_credential_refusal() {
     let repacked = repack_with_evidenced_password(&fixture(), "synthetic-password");
     let absent = read_document(&repacked);
@@ -221,7 +269,8 @@ fn repack_with_evidenced_password(source: &Path, password: &str) -> PathBuf {
         }
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if name == "Contents/header.xml" || name == "Contents/section0.xml" {
+        if name == "version.xml" || name == "Contents/header.xml" || name == "Contents/section0.xml"
+        {
             let (ciphertext, manifest_entry) =
                 encrypt_evidenced_entry(&name, &data, password, &SALT, &IV);
             manifest_entries.push(manifest_entry);

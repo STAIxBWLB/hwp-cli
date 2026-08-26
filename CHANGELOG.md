@@ -53,6 +53,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Password-unlocked HWPX entries remain available for every read during one package invocation,
+  including the second `version.xml` access. Rewriting a decrypted document also replaces the
+  source encryption manifest with the ordinary plaintext manifest, so HWPX-to-HWPX conversion no
+  longer publishes plaintext entries under stale encryption metadata.
+
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
   everything `hwp slots` reports. The two commands read a document differently — `slots` walks the
   IR, where a paragraph's characters are already joined, while `fill` rewrites the raw section XML
