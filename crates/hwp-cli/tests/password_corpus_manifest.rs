@@ -632,6 +632,38 @@ fn owner_discovery_without_manifest_fails_closed_without_evidence() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn owner_discovery_rejects_an_external_symlink_into_the_repository() {
+    use std::os::unix::fs::symlink;
+
+    let nonce = format!("{}-symlink", std::process::id());
+    let linked_source = std::env::temp_dir().join(format!("hwp-cli-{nonce}.hwp"));
+    let manifest_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}.json"));
+    let evidence_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}-evidence.json"));
+    let _ = std::fs::remove_file(&linked_source);
+    let _ = std::fs::remove_file(&evidence_path);
+    symlink(repo_root().join("Cargo.toml"), &linked_source).unwrap();
+
+    let mut manifest = manifest_fixture();
+    manifest["fixtures"][0]["source_path"] =
+        serde_json::Value::String(linked_source.to_string_lossy().into_owned());
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let error = run_owner_discovery(&manifest_path, &evidence_path, |reference| {
+        Some(if reference == "HWP_PASSWORD_UNICODE_SUCCESS" {
+            "가".to_string()
+        } else {
+            "ascii-password".to_string()
+        })
+    })
+    .unwrap_err();
+    assert!(error.contains("resolves inside the repository"));
+    assert!(!evidence_path.exists());
+
+    std::fs::remove_file(linked_source).unwrap();
+    std::fs::remove_file(manifest_path).unwrap();
+}
+
 #[test]
 fn hwpx_discovery_accepts_only_no_padding_zero_to_block_profiles() {
     for padding_len in 1..=15 {

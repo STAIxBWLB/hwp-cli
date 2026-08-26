@@ -364,7 +364,8 @@ where
     load_manifest_for_test(&manifest, &repo_root(), |reference| {
         resolve_credential(reference)
     })?;
-    let fixtures = owner_fixtures(&manifest, resolve_credential)?;
+    let mut fixtures = owner_fixtures(&manifest, resolve_credential)?;
+    canonicalize_owner_fixture_paths(&mut fixtures)?;
 
     fixtures
         .iter()
@@ -447,7 +448,8 @@ where
     load_manifest_for_test(&manifest, &repo_root(), |reference| {
         resolve_credential(reference)
     })?;
-    let fixtures = owner_fixtures(&manifest, resolve_credential)?;
+    let mut fixtures = owner_fixtures(&manifest, resolve_credential)?;
+    canonicalize_owner_fixture_paths(&mut fixtures)?;
 
     let mut evidence = Vec::with_capacity(fixtures.len());
     for fixture in &fixtures {
@@ -554,6 +556,24 @@ where
             })
         })
         .collect()
+}
+
+fn canonicalize_owner_fixture_paths(fixtures: &mut [OwnerFixture]) -> Result<(), String> {
+    let repository = repo_root();
+    for fixture in fixtures {
+        let resolved = fixture
+            .source_path
+            .canonicalize()
+            .map_err(|_| owner_fixture_error(fixture, "source is unavailable"))?;
+        if resolved.starts_with(&repository) {
+            return Err(owner_fixture_error(
+                fixture,
+                "source resolves inside the repository",
+            ));
+        }
+        fixture.source_path = resolved;
+    }
+    Ok(())
 }
 
 fn source_sha256(path: &Path) -> Result<String, String> {
