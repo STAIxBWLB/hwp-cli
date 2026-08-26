@@ -1016,6 +1016,26 @@ fn cli_convert_batch_authenticates_before_creating_outputs() {
         "batch credential failure must not create output"
     );
     assert!(refusal(&failed.stderr).contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
+
+    let hwpx_dir = dir.join("hwpx-absent");
+    std::fs::create_dir_all(&hwpx_dir).unwrap();
+    let protected_hwpx = evidenced_hwpx_fixture(&hwpx_dir, "hwpx-password");
+    let second_hwpx = hwpx_dir.join("second.hwpx");
+    std::fs::copy(&protected_hwpx, &second_hwpx).unwrap();
+    let hwpx_out_dir = dir.join("hwpx-absent-output");
+    let absent = hwp()
+        .arg("convert")
+        .arg(&protected_hwpx)
+        .arg(&second_hwpx)
+        .arg("--out-dir")
+        .arg(&hwpx_out_dir)
+        .arg("--to")
+        .arg("md")
+        .output()
+        .unwrap();
+    assert!(!absent.status.success());
+    assert!(!hwpx_out_dir.exists());
+    assert!(refusal(&absent.stderr).contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
 }
 
 #[test]

@@ -285,28 +285,38 @@ fn run_multi_inner(
                     );
                 }
             }
-            // Classify and reserve every protected input before loading any of
-            // them. Plain documents are validated first and dropped; protected
-            // documents are then retained within the aggregate reservation so
-            // credential preflight does not repeat expensive crypto work.
-            let reservations = inputs
-                .iter()
-                .map(|input| protected_batch_preload_reservation(input))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            for (input, reservation) in inputs.iter().zip(&reservations) {
-                if reservation.is_none() {
+            let mut documents = vec![None; inputs.len()];
+            if options.password.is_none() {
+                // Missing credentials must reach the shared loader before any
+                // profile-specific reservation parser so batch and single-file
+                // commands return the same stable refusal.
+                for input in inputs {
                     load_document_with_options(input, options).map_err(anyhow::Error::new)?;
                 }
-            }
-            let mut documents = vec![None; inputs.len()];
-            let mut reserved_batch_bytes = 0u64;
-            for (index, (input, reservation)) in inputs.iter().zip(reservations).enumerate() {
-                if let Some(reservation) = reservation {
-                    reserved_batch_bytes =
-                        add_preloaded_batch_reservation(reserved_batch_bytes, reservation)?;
-                    documents[index] = Some(
-                        load_document_with_options(input, options).map_err(anyhow::Error::new)?,
-                    );
+            } else {
+                // Classify and reserve every protected input before loading any
+                // of them. Plain documents are validated first and dropped;
+                // protected documents are retained within the aggregate
+                // reservation so credential preflight does not repeat crypto.
+                let reservations = inputs
+                    .iter()
+                    .map(|input| protected_batch_preload_reservation(input))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                for (input, reservation) in inputs.iter().zip(&reservations) {
+                    if reservation.is_none() {
+                        load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+                    }
+                }
+                let mut reserved_batch_bytes = 0u64;
+                for (index, (input, reservation)) in inputs.iter().zip(reservations).enumerate() {
+                    if let Some(reservation) = reservation {
+                        reserved_batch_bytes =
+                            add_preloaded_batch_reservation(reserved_batch_bytes, reservation)?;
+                        documents[index] = Some(
+                            load_document_with_options(input, options)
+                                .map_err(anyhow::Error::new)?,
+                        );
+                    }
                 }
             }
             std::fs::create_dir_all(dir)?;
