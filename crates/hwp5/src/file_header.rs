@@ -399,15 +399,15 @@ mod tests {
 
     #[test]
     fn several_protection_bits_refuse_in_a_fixed_order() {
-        // Password encryption alone still refuses, and its rendered message
-        // still contains the sentence it printed before this phase — pinned
-        // as a regression, not a rewrite, now with a remedy hint appended.
+        // Password encryption alone still refuses at this gate: a password is
+        // supplied to the reader, not to the header check. The message names
+        // the remedy, and is deliberately the same one a wrong password gets.
         let h = FileHeader::parse(&표본_헤더_속성(attr::ENCRYPTED)).unwrap();
         let err = h.check_body_readable().unwrap_err();
         assert!(matches!(err, Hwp5Error::Encrypted));
         assert!(
             err.to_string()
-                .contains("암호화된 문서는 지원하지 않습니다")
+                .contains("암호가 필요하거나 올바르지 않습니다")
         );
 
         // Password encryption + DRM: encryption is checked first.

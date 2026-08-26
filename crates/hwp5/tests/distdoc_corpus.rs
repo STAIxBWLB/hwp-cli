@@ -252,19 +252,19 @@ fn no_corpus_document_carries_a_protection_bit_this_phase_starts_refusing() {
     let Some(dir) = corpus else {
         return;
     };
-    let enc_path = dir.join("enc-02-hwp5-pw123456.hwp");
+    let enc_path = dir.join("enc-02-hwp5-ascii.hwp");
     if !enc_path.is_file() {
-        eprintln!("스킵: enc-02-hwp5-pw123456.hwp 없음 — 암호화 회귀 확인 생략");
+        eprintln!("스킵: enc-02-hwp5-ascii.hwp 없음 — 암호화 회귀 확인 생략");
         return;
     }
     let container = hwp5::Hwp5Container::open(&enc_path)
         .unwrap_or_else(|e| panic!("{}: {e}", enc_path.display()));
     let err = container
         .check_body_readable()
-        .expect_err("enc-02-hwp5-pw123456.hwp must still be refused as encrypted");
+        .expect_err("enc-02-hwp5-ascii.hwp must still be refused as encrypted");
     assert!(
         err.to_string()
-            .contains("암호화된 문서는 지원하지 않습니다"),
-        "unexpected message for enc-02-hwp5-pw123456.hwp: {err}"
+            .contains("암호가 필요하거나 올바르지 않습니다"),
+        "unexpected message for enc-02-hwp5-ascii.hwp: {err}"
     );
 }

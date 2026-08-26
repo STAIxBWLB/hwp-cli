@@ -554,7 +554,7 @@ fn password_encrypted_document_refuses_by_name() {
     let f = protected_hwp5_fixture(&dir, "pw", gate_bits::ENCRYPTED);
     assert_refusal_names_condition(
         &f,
-        "암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.",
+        "암호가 필요하거나 올바르지 않습니다. --password-stdin으로 암호를 전달하세요.",
     );
 }
 
@@ -636,7 +636,7 @@ fn encrypted_package_refuses_by_name() {
 
     let stderr = assert_refusal_names_condition(
         &repacked,
-        "암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.",
+        "암호가 필요하거나 올바르지 않습니다. --password-stdin으로 암호를 전달하세요.",
     );
     assert!(
         !stderr.contains("XML 파싱 오류"),
@@ -655,7 +655,11 @@ fn encrypted_package_refuses_by_name() {
 fn every_refusal_carries_a_remedy_hint() {
     let dir = tmp_dir("refusal_hints");
     let cases: Vec<(PathBuf, &str)> = [
-        ("pw", gate_bits::ENCRYPTED, "암호화된 문서는"),
+        (
+            "pw",
+            gate_bits::ENCRYPTED,
+            "암호가 필요하거나 올바르지 않습니다",
+        ),
         (
             "cert_enc",
             gate_bits::CERT_ENCRYPTED,
@@ -675,8 +679,11 @@ fn every_refusal_carries_a_remedy_hint() {
 
     for (file, prefix) in cases {
         let stderr = assert_refusal_names_condition(&file, prefix);
+        // Every refusal names its condition and then a remedy. Split on the
+        // first sentence end rather than one refusal's wording, so a message
+        // that stops saying "지원하지 않습니다" is still held to the contract.
         let after_condition = stderr
-            .split_once("지원하지 않습니다. ")
+            .split_once(". ")
             .map(|(_, rest)| rest.trim())
             .unwrap_or_else(|| panic!("조건 문장 종결 부재: {stderr}"));
         assert!(!after_condition.is_empty(), "해결 힌트 문장 부재: {stderr}");

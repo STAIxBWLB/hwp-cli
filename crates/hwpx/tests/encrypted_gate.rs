@@ -364,7 +364,7 @@ fn the_genuine_encrypted_package_refuses_with_the_typed_message() {
         eprintln!("skip: HWP_CORPUS_DIR unset — only the genuine corpus proves this branch");
         return;
     };
-    let path = dir.join("enc-01-hwpx-odf-aes256-pw123456.hwpx");
+    let path = dir.join("enc-01-hwpx-odf-aes256-ascii.hwpx");
     assert!(
         path.exists(),
         "corpus present but missing expected file: {}",
@@ -382,7 +382,7 @@ fn the_genuine_encrypted_package_refuses_with_the_typed_message() {
     );
     let message = error.to_string();
     assert!(
-        message.contains("암호화된 문서는 지원하지 않습니다"),
+        message.contains("암호가 필요하거나 올바르지 않습니다"),
         "message: {message}"
     );
     // This is the exact downstream parse error GATE-02 exists to eliminate — assert

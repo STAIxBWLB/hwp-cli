@@ -79,7 +79,7 @@ impl fmt::Display for PasswordRefusal {
         let _ = (self.format, self.algorithm, self.stage);
         write!(
             formatter,
-            "{HWP_PASSWORD_REQUIRED_OR_INVALID}: 암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요."
+            "{HWP_PASSWORD_REQUIRED_OR_INVALID}: 암호가 필요하거나 올바르지 않습니다. --password-stdin으로 암호를 전달하세요."
         )
     }
 }
