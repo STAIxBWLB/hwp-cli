@@ -786,7 +786,9 @@ dependencies = [
  "insta",
  "proptest",
  "serde",
+ "sha1",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]

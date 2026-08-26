@@ -49,6 +49,9 @@ pub enum Hwp5Error {
     #[error("암호화된 문서는 지원하지 않습니다. 한글에서 암호를 해제한 뒤 다시 저장하세요.")]
     Encrypted,
 
+    #[error("지원하지 않는 HWP5 암호화 프로필입니다 (EncryptVersion {encrypt_version})")]
+    UnsupportedPasswordProfile { encrypt_version: u32 },
+
     // GATE-02: certificate encryption, certificate DRM, DRM and digital
     // signature. The bits are parsed by `file_header.rs`; whether they are
     // set in the situations their labels name is unverified against a

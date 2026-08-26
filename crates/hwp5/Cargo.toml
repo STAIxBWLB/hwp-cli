@@ -13,6 +13,8 @@ flate2 = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 aes = { workspace = true }
+sha1 = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -33,7 +33,10 @@ pub mod write;
 pub use container::Hwp5Container;
 pub use error::Hwp5Error;
 pub use file_header::FileHeader;
-pub use read::{BoundedReadLimits, BoundedReadSnapshot, ReadResult, ScriptPresence, read_document};
+pub use read::{
+    BoundedReadLimits, BoundedReadSnapshot, ReadOptions, ReadResult, ScriptPresence, read_document,
+    read_document_with_options,
+};
 pub use summary::parse_summary;
 pub use write::{
     WriteOptions, rewrite_document_with_report, validate_evidenced_official_numbering,

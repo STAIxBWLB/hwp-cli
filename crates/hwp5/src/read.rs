@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use hwp_model::{DocMeta, Document};
+use zeroize::Zeroize as _;
 
 use crate::body_text::parse_section;
 use crate::container::{Hwp5Container, is_record_stream};
@@ -13,6 +14,16 @@ use crate::file_header::FileHeader;
 use crate::record::{RecordHeader, ScanMode, scan_stream};
 
 mod password;
+use password::{
+    HWP5_PASSWORD_MAX_STREAM_BYTES, decrypt_hwp5_encrypt_version_4_in_place, validate_live_bytes,
+};
+
+/// Per-call options for HWP5 reads. Password bytes are borrowed only for the
+/// active read and are never retained by the reader or returned document.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReadOptions<'a> {
+    pub password: Option<&'a str>,
+}
 
 pub struct ReadResult {
     pub document: Document,
@@ -337,7 +348,21 @@ fn read_document_from_streams(
 
 /// HWP 5.0 파일을 IR로 읽는다. 야생 파일 대응을 위해 관용 모드로 스캔한다.
 pub fn read_document(path: &Path) -> Result<ReadResult> {
+    read_document_with_options(path, &ReadOptions::default())
+}
+
+/// Reads HWP5 with one transient set of options. An encrypted body is accepted
+/// only for the evidence-backed EncryptVersion 4 profile and is handed to the
+/// same record parser used by ordinary HWP5 documents.
+pub fn read_document_with_options(path: &Path, options: &ReadOptions<'_>) -> Result<ReadResult> {
     let mut container = Hwp5Container::open(path)?;
+    if container.file_header().is_encrypted() {
+        return read_password_protected_document(&mut container, options);
+    }
+    read_document_from_container(&mut container)
+}
+
+fn read_document_from_container(container: &mut Hwp5Container) -> Result<ReadResult> {
     container.check_body_readable()?;
 
     let mut warnings = Vec::new();
@@ -449,10 +474,139 @@ pub fn read_document(path: &Path) -> Result<ReadResult> {
     })
 }
 
+fn is_evidenced_password_record_stream(path: &str) -> bool {
+    path == "/DocInfo" || path == "/BodyText/Section0"
+}
+
+fn is_password_candidate_record_stream(path: &str) -> bool {
+    path == "/DocInfo" || path.starts_with("/BodyText/") || path.starts_with("/ViewText/")
+}
+
+fn expected_password_record_tag(path: &str) -> Option<u16> {
+    if path == "/DocInfo" {
+        Some(crate::record::tag::DOCUMENT_PROPERTIES)
+    } else if path == "/BodyText/Section0" {
+        Some(crate::record::tag::PARA_HEADER)
+    } else {
+        None
+    }
+}
+
+fn record_tree_contains_tag(nodes: &[crate::record::RecordNode], expected: u16) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.tag == expected || record_tree_contains_tag(&node.children, expected))
+}
+
+fn validate_password_record_identity(path: &str, data: &[u8]) -> Result<()> {
+    let expected = expected_password_record_tag(path).ok_or(Hwp5Error::Encrypted)?;
+    let scan = scan_stream(data, ScanMode::Strict).map_err(|_| Hwp5Error::Encrypted)?;
+    if scan.record_count == 0 || !record_tree_contains_tag(&scan.roots, expected) {
+        return Err(Hwp5Error::Encrypted);
+    }
+    Ok(())
+}
+
+fn checked_password_live_bytes(left: u64, right: u64) -> Result<u64> {
+    left.checked_add(right)
+        .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
+            resource: "password-protected HWP5 live buffers".to_string(),
+            limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
+        })
+}
+
+fn read_password_protected_document(
+    container: &mut Hwp5Container,
+    options: &ReadOptions<'_>,
+) -> Result<ReadResult> {
+    let header = container.file_header().clone();
+    header.check_version()?;
+    if header.encrypt_version != 4 {
+        return Err(Hwp5Error::UnsupportedPasswordProfile {
+            encrypt_version: header.encrypt_version,
+        });
+    }
+    let password = options.password.ok_or(Hwp5Error::Encrypted)?;
+    let stream_infos = container.list_streams();
+    if stream_infos.iter().any(|stream| {
+        is_password_candidate_record_stream(&stream.path)
+            && !is_evidenced_password_record_stream(&stream.path)
+    }) || !stream_infos.iter().any(|stream| stream.path == "/DocInfo")
+        || !stream_infos
+            .iter()
+            .any(|stream| stream.path == "/BodyText/Section0")
+    {
+        return Err(Hwp5Error::UnsupportedPasswordProfile {
+            encrypt_version: header.encrypt_version,
+        });
+    }
+
+    let mut streams = BTreeMap::new();
+    let mut retained_plaintext = 0u64;
+    for stream in stream_infos {
+        if !is_evidenced_password_record_stream(&stream.path) {
+            streams.insert(
+                stream.path.clone(),
+                container.read_stream_raw(&stream.path)?,
+            );
+            continue;
+        }
+
+        validate_live_bytes(stream.size, retained_plaintext)?;
+        let mut protected = zeroize::Zeroizing::new(container.read_stream_raw(&stream.path)?);
+        if protected.len() as u64 != stream.size {
+            return Err(Hwp5Error::Encrypted);
+        }
+        decrypt_hwp5_encrypt_version_4_in_place(&mut protected, password)?;
+        let decrypted = if header.is_compressed() {
+            let live_ciphertext = checked_password_live_bytes(retained_plaintext, stream.size)?;
+            validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES, live_ciphertext)?;
+            let result = crate::codec::decompress_bounded(
+                &protected,
+                "password-protected HWP5 stream",
+                HWP5_PASSWORD_MAX_STREAM_BYTES,
+            );
+            protected.zeroize();
+            result.map_err(|error| match error {
+                Hwp5Error::ResourceLimitExceeded { .. } => error,
+                _ => Hwp5Error::Encrypted,
+            })?
+        } else {
+            std::mem::take(&mut *protected)
+        };
+        protected.zeroize();
+
+        let decrypted_size = decrypted.len() as u64;
+        validate_live_bytes(decrypted_size, retained_plaintext)?;
+        // Strict record identity is the password validation boundary. Reserve
+        // a second copy for the temporary strict scan before invoking it.
+        let scan_live = checked_password_live_bytes(retained_plaintext, decrypted_size)?;
+        validate_live_bytes(decrypted_size, scan_live)?;
+        validate_password_record_identity(&stream.path, &decrypted)?;
+        retained_plaintext = retained_plaintext
+            .checked_add(decrypted_size)
+            .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
+                resource: "password-protected HWP5 live buffers".to_string(),
+                limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
+            })?;
+        streams.insert(stream.path, decrypted);
+    }
+
+    // The regular parser owns record data while the decrypted stream map is
+    // still live. Reserve that handoff before parsing, rather than after an
+    // allocation has already occurred.
+    validate_live_bytes(retained_plaintext, retained_plaintext)?;
+    read_document_from_streams(&header, &streams).map_err(|_| Hwp5Error::Encrypted)
+}
+
 #[cfg(test)]
 mod bounded_tests {
-    use std::io::{Seek as _, SeekFrom, Write as _};
+    use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use aes::Aes128;
+    use aes::cipher::{Block, BlockCipherEncrypt, KeyInit};
+    use sha1::Digest as _;
 
     use super::*;
 
@@ -483,6 +637,106 @@ mod bounded_tests {
         let document = hwp_convert::from_markdown("bounded");
         crate::write_document(&document, &path, &crate::WriteOptions::default()).unwrap();
         path
+    }
+
+    fn encrypt_hwp5_stream_for_test(plaintext: &[u8], password: &str) -> Vec<u8> {
+        let password = password.as_bytes();
+        let mut source = Vec::with_capacity(password.len() * 2);
+        for (index, byte) in password.iter().copied().enumerate() {
+            let previous = if index == 0 {
+                0xec
+            } else {
+                password[index - 1]
+            };
+            source.push(previous.rotate_left(1));
+            source.push(byte);
+        }
+        let digest = sha1::Sha1::digest(&source);
+        let cipher = Aes128::new_from_slice(&digest[..16]).expect("fixed AES key length");
+        let mut register = [0u8; 16];
+        let mut encrypted = plaintext.to_vec();
+        for block in encrypted.chunks_mut(16) {
+            let mut original = [0u8; 16];
+            original[..block.len()].copy_from_slice(block);
+            let mut transformed = [0u8; 16];
+            for bit_index in 0..128 {
+                let byte_index = bit_index / 8;
+                let bit_offset = bit_index % 8;
+                let mut keystream = Block::<Aes128>::from(register);
+                cipher.encrypt_block(&mut keystream);
+                let input_bit = (original[byte_index] >> (7 - bit_offset)) & 1;
+                let result_bit = input_bit ^ (keystream[0] >> 7);
+                for index in 0..15 {
+                    register[index] = (register[index] << 1) | (register[index + 1] >> 7);
+                }
+                register[15] = (register[15] << 1) | result_bit;
+                transformed[byte_index] |= result_bit << (7 - bit_offset);
+            }
+            block.copy_from_slice(&transformed[..block.len()]);
+        }
+        encrypted
+    }
+
+    fn make_evidenced_password_hwp(path: &Path, password: &str) {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut cfb = cfb::CompoundFile::open(file).unwrap();
+        let mut header = Vec::new();
+        cfb.open_stream("/FileHeader")
+            .unwrap()
+            .read_to_end(&mut header)
+            .unwrap();
+        let attributes = u32::from_le_bytes(header[36..40].try_into().unwrap()) | (1 << 1);
+        header[36..40].copy_from_slice(&attributes.to_le_bytes());
+        header[44..48].copy_from_slice(&4u32.to_le_bytes());
+        let mut header_stream = cfb.open_stream("/FileHeader").unwrap();
+        header_stream.set_len(0).unwrap();
+        header_stream.seek(SeekFrom::Start(0)).unwrap();
+        header_stream.write_all(&header).unwrap();
+        drop(header_stream);
+
+        for path in ["/DocInfo", "/BodyText/Section0"] {
+            let mut raw = Vec::new();
+            cfb.open_stream(path)
+                .unwrap()
+                .read_to_end(&mut raw)
+                .unwrap();
+            let encrypted = encrypt_hwp5_stream_for_test(&raw, password);
+            let mut stream = cfb.open_stream(path).unwrap();
+            stream.set_len(0).unwrap();
+            stream.seek(SeekFrom::Start(0)).unwrap();
+            stream.write_all(&encrypted).unwrap();
+        }
+        cfb.flush().unwrap();
+    }
+
+    #[test]
+    fn evidenced_password_profile_reenters_the_normal_reader_with_exact_utf8() {
+        let path = base_hwp("password-profile");
+        let password = "\u{ac00}";
+        make_evidenced_password_hwp(&path, password);
+
+        assert!(matches!(read_document(&path), Err(Hwp5Error::Encrypted)));
+        let wrong = read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some("\u{1100}\u{1161}"),
+            },
+        );
+        assert!(matches!(wrong, Err(Hwp5Error::Encrypted)));
+        let result = read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(password),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.document.meta.source_format, "hwp5");
+        assert_eq!(result.document.sections.len(), 1);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
