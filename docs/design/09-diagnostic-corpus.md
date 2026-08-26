@@ -35,19 +35,22 @@ bookmark (hwp5), minimal (hwpx).
 | Render | `hwp render` does not crash | Render pipeline errors |
 | Strict conversion | `convert --strict` (fails on opaque loss) | DROP and non-preservation |
 | Text preservation | The original markdown text appears in `cat` of the generated file (≥90%) | Text loss |
-| Cross-conversion | hwp5 → hwpx (or the reverse) plus structure and render of the result | Conversion pipeline |
+| Cross-conversion | hwp5 → hwpx (or the reverse), then the structure, render and strict check of the result (four columns of the matrix) | Conversion pipeline |
 
-## Current status (as of 2026-07)
+## Current status (as of 2026-08)
 
-**All 51 self-verifiable cases pass all 10 checks**, so there are no structural, conversion or render
-level problems or regressions.
+A run reports **51 rows** (22 generated cases × 2 formats, plus the 7 fixtures) against **10
+distinct checks**, with **no failing check**, so there are no structural, conversion or render level
+problems or regressions. Two warnings are standing and expected: `strict` conversion reports a
+metadata value on every hwp5 fixture, and the `link` case preserves 33% of its markdown text because
+the link syntax becomes a hyperlink rather than literal characters.
 
 What this harness **cannot** catch is **Hancom-specific render behavior**. For example, the
 placeholder text-box drop plus blank page on page 6 of the annual report (undocumented Hancom
 heavy-content behavior; investigation closed and accepted, see
 [07](07-hangul-compat-rules.md)). Such issues are decided only by **testing in genuine Hancom
-Office**, using the checklist in `~/Documents/hwp-진단코퍼스/README-한글검토.md` where the user opens
-each file in Hancom.
+Office**, following [the Hancom verification checklist](../hancom-verification-checklist.md), where
+each file is opened in Hancom by hand.
 
 ## How to extend it
 
