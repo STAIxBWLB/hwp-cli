@@ -375,3 +375,64 @@ fn hwpx_cat_uses_exact_password_bytes_and_one_public_refusal() {
         assert!(!output.contains("AES256-CBC"));
     }
 }
+
+#[test]
+fn cli_convert_render_support_password_inputs_before_publication() {
+    let password = "convert-render-secret";
+    let dir = temp_dir("convert-render");
+    std::fs::create_dir_all(dir.join("hwp5")).unwrap();
+    std::fs::create_dir_all(dir.join("hwpx")).unwrap();
+    for (label, input) in [
+        ("hwp5", evidenced_hwp5_fixture(&dir.join("hwp5"), password)),
+        ("hwpx", evidenced_hwpx_fixture(&dir.join("hwpx"), password)),
+    ] {
+        let converted = dir.join(format!("{label}.md"));
+        let convert = hwp()
+            .arg("convert")
+            .arg(&input)
+            .arg("-o")
+            .arg(&converted)
+            .arg("--password")
+            .arg(password)
+            .output()
+            .unwrap();
+        assert!(
+            convert.status.success(),
+            "{label} convert with a password must succeed: {}",
+            refusal(&convert.stderr)
+        );
+        assert!(converted.exists());
+
+        let rendered = dir.join(format!("{label}.svg"));
+        let render = hwp()
+            .arg("render")
+            .arg(&input)
+            .arg("-o")
+            .arg(&rendered)
+            .arg("--password")
+            .arg(password)
+            .output()
+            .unwrap();
+        assert!(
+            render.status.success(),
+            "{label} render with a password must succeed: {}",
+            refusal(&render.stderr)
+        );
+        assert!(rendered.exists());
+
+        let rejected = dir.join(format!("{label}-rejected.md"));
+        let wrong = hwp()
+            .arg("convert")
+            .arg(&input)
+            .arg("-o")
+            .arg(&rejected)
+            .arg("--password")
+            .arg("wrong-password")
+            .output()
+            .unwrap();
+        assert!(!wrong.status.success());
+        assert!(!rejected.exists(), "wrong credentials must not publish output");
+        assert!(refusal(&wrong.stderr).contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
+        assert!(!refusal(&wrong.stderr).contains(password));
+    }
+}
