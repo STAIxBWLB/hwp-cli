@@ -80,7 +80,7 @@ The `crates/` prefix is omitted (`hwp5/src/write.rs` means `crates/hwp5/src/writ
 > **Registration history**: first edition (GA to GG) → the 2026-07-08 re-sweep (GH to GM added, GE-α
 > and GE-β split out) → the **2026-07-19 exhaustive specification audit** (a three-way comparison of
 > the reconstructed specification markdown §3, §4.2, §4.3 and §4.4 against the code and this catalog;
-> TODO.md Phase 2.1), which added GB-13 to 15, GD-4, GE-9 to 13, GE-α9, GE-β7 to β8, GF-4 to 5 and
+> the 2026-07-19 coverage audit), which added GB-13 to 15, GD-4, GE-9 to 13, GE-α9, GE-β7 to β8, GF-4 to 5 and
 > GG-21 to 24, strengthened the write-side evidence for GE-4/5/6, widened the scope of GG-15 and
 > GG-19, and sharpened the wording of GB-8 and GF-2 → the **2026-08-20 kordoc comparison**, which
 > added the GN series (official-document authoring layer) and GM-10 (PII redaction) and recorded
@@ -243,7 +243,8 @@ is itself knowledge).
   invariant), **in-t tab emission** (A12: a bare tab is ignored at zero width; the type and leader
   mapping was derived by reverse-engineering 91 genuine tabs), **C9** (table common properties
   44B → 46B) and **C10** (removing an incorrect holdAnchor on page-break placeholders). The other 11
-  were corrected as comment, design-document or specification-markdown errors (TODO.md §1.4). After
+  were corrected as comment, design-document or specification errors (the specification half is now
+  catalogued in [19 §1](19-hwp5-spec-supplement.md)). After
   four rounds of Hancom testing, **D1, D2 and D3 all pass**: seals and user tabs are confirmed. All
   268 tests passed.
 - **2026-07-18 (PR #8, an external contribution, comparison audit complete)**: high-fidelity markdown

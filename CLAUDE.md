@@ -9,7 +9,7 @@ Korean tone.
 
 - **Everything an AI agent reads as development context is English only**: commit messages, PR
   titles/bodies, release notes (`CHANGELOG.md`, GitHub Release bodies), issue text, code comments,
-  and internal working docs (`CLAUDE.md`, the audit log in `TODO.md`).
+  and internal working docs (`CLAUDE.md`).
 - User-facing documentation stays bilingual, but **English is canonical**: `NAME.md` (English) and
   `NAME.ko.md` (Korean).
 - Both files carry a **language link on the first line**:
