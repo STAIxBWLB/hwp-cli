@@ -61,6 +61,27 @@ fn receipt_directory_symlink_into_repository_is_rejected() {
     std::fs::remove_dir_all(inside).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn corpus_source_symlink_into_repository_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let outside = std::env::temp_dir().join(format!(
+        "hwp-cli-password-source-link-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&outside);
+    symlink(repository.join("Cargo.toml"), &outside).unwrap();
+
+    assert!(password_corpus::require_external_corpus_source(&outside, &repository).is_err());
+
+    std::fs::remove_file(outside).unwrap();
+}
+
 #[test]
 fn genuine_owner_password_corpus() {
     password_corpus::run_password_corpus_from_env().unwrap();

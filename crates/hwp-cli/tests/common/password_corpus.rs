@@ -277,9 +277,7 @@ fn build_fixture(
     let role = text("role")?.to_owned();
     let credential_charset = text("credential_charset")?.to_owned();
     let credential_ref = text("credential_ref")?;
-    if !source_path.is_file() || source_path.starts_with(repository_root) {
-        return Err("password corpus source is unavailable".into());
-    }
+    let source_path = require_external_corpus_source(&source_path, repository_root)?;
     let credential = std::env::var(credential_ref)
         .map(Zeroizing::new)
         .map_err(|_| "password corpus credential is unavailable".to_owned())?;
@@ -314,6 +312,25 @@ fn build_fixture(
         credential,
         expected,
     })
+}
+
+pub fn require_external_corpus_source(
+    source_path: &Path,
+    repository_root: &Path,
+) -> Result<PathBuf, String> {
+    if !source_path.is_absolute() || !source_path.is_file() {
+        return Err("password corpus source is unavailable".into());
+    }
+    let resolved = source_path
+        .canonicalize()
+        .map_err(|_| "password corpus source is unavailable".to_owned())?;
+    let repository = repository_root
+        .canonicalize()
+        .map_err(|_| "password corpus source is unavailable".to_owned())?;
+    if resolved.starts_with(repository) {
+        return Err("password corpus source is unavailable".into());
+    }
+    Ok(resolved)
 }
 
 fn expected_profile(evidence: &Value, format: &str) -> Result<(String, Option<String>), String> {
