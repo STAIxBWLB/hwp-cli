@@ -496,6 +496,100 @@ fn mcp_read_password_is_per_call_closed_and_sandboxed() {
 }
 
 #[test]
+fn mcp_convert_render_passwords_are_per_call_and_publish_atomically() {
+    let password = "mcp-output-secret";
+    let dir = temp_dir("mcp-convert-render");
+    let root = dir.join("root");
+    let hwp5_dir = root.join("hwp5");
+    let hwpx_dir = root.join("hwpx");
+    std::fs::create_dir_all(&hwp5_dir).unwrap();
+    std::fs::create_dir_all(&hwpx_dir).unwrap();
+    let fixtures = [
+        ("hwp5", evidenced_hwp5_fixture(&hwp5_dir, password)),
+        ("hwpx", evidenced_hwpx_fixture(&hwpx_dir, password)),
+    ];
+
+    let tools = mcp_calls(
+        &root,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})],
+    );
+    for name in ["hwp_read", "hwp_convert", "hwp_render"] {
+        let tool = tools[0]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap();
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(
+            tool["inputSchema"]["properties"]["password"]["type"],
+            "string"
+        );
+    }
+
+    for (index, (label, input)) in fixtures.iter().enumerate() {
+        let converted = root.join(format!("{label}.md"));
+        let rendered = root.join(format!("{label}.svg"));
+        let wrong_convert = root.join(format!("{label}-wrong.md"));
+        let absent_render = root.join(format!("{label}-absent.svg"));
+        let responses = mcp_calls(
+            &root,
+            &[
+                mcp_call(
+                    10 + index as u64,
+                    "hwp_convert",
+                    json!({"input": input, "output": converted, "password": password}),
+                ),
+                mcp_call(
+                    20 + index as u64,
+                    "hwp_render",
+                    json!({"path": input, "output_path": rendered, "format": "svg", "password": password}),
+                ),
+                mcp_call(
+                    30 + index as u64,
+                    "hwp_convert",
+                    json!({"input": input, "output": wrong_convert, "password": "wrong-password"}),
+                ),
+                mcp_call(
+                    40 + index as u64,
+                    "hwp_render",
+                    json!({"path": input, "output_path": absent_render, "format": "svg"}),
+                ),
+                mcp_call(
+                    50 + index as u64,
+                    "hwp_info",
+                    json!({"path": input, "password": password}),
+                ),
+            ],
+        );
+        assert_eq!(responses[0]["result"]["isError"], false);
+        assert_eq!(responses[1]["result"]["isError"], false);
+        assert!(
+            converted.exists(),
+            "{label} convert must publish after decrypt"
+        );
+        assert!(
+            rendered.exists(),
+            "{label} render must publish after decrypt"
+        );
+        assert_eq!(responses[2]["result"]["isError"], true);
+        assert_eq!(responses[3]["result"]["isError"], true);
+        assert_eq!(
+            responses[2]["result"]["structuredContent"],
+            responses[3]["result"]["structuredContent"]
+        );
+        assert!(!wrong_convert.exists());
+        assert!(!absent_render.exists());
+        assert_eq!(responses[4]["result"]["isError"], true);
+        for response in &responses[2..] {
+            let serialized = response.to_string();
+            assert!(!serialized.contains(password));
+            assert!(!serialized.contains("wrong-password"));
+        }
+    }
+}
+
+#[test]
 fn cli_convert_render_support_password_inputs_before_publication() {
     let password = "convert-render-secret";
     let dir = temp_dir("convert-render");
