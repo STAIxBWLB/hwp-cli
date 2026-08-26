@@ -1,13 +1,14 @@
 //! 최상위: HWP 5.0 파일 → [`Document`].
 
 use std::collections::BTreeMap;
+use std::mem::size_of;
 use std::path::Path;
 
 use hwp_model::{DocMeta, Document};
 use zeroize::Zeroize as _;
 
 use crate::body_text::parse_section;
-use crate::container::{Hwp5Container, is_record_stream};
+use crate::container::{Hwp5Container, StreamInfo, is_record_stream};
 use crate::doc_info::parse_doc_info;
 use crate::error::{Hwp5Error, Result};
 use crate::file_header::FileHeader;
@@ -25,11 +26,21 @@ use password::{
 
 const HWP5_PASSWORD_MAX_RECORDS: usize = 131_072;
 const HWP5_PASSWORD_MAX_RECORD_DEPTH: usize = 128;
-// A parsed record can be retained both as opaque source bytes and as typed
-// strings/semantic structures. Four output bytes per bounded scanner byte is
-// deliberately conservative: it covers UTF-16 to UTF-8 expansion, raw
-// preservation copies, and collection growth while the scanner tree is live.
-const HWP5_PASSWORD_SEMANTIC_OUTPUT_MULTIPLIER: u64 = 4;
+
+// The protected reader is built with Rust 1.93.  Its Vec/String amortized
+// growth never keeps more than twice the requested element capacity live.
+// Reserve that documented implementation bound explicitly at every owner;
+// never hide it in a semantic "multiplier" over source bytes.
+const PROTECTED_VEC_GROWTH_BOUND: u64 = 2;
+const PROTECTED_UTF8_BYTES_PER_UTF16_UNIT: u64 = 3;
+const PROTECTED_OPAQUE_COPIES_PER_RECORD: u64 = 3;
+
+#[derive(Debug, Default)]
+struct PasswordSemanticReservation {
+    scanner_bytes: u64,
+    semantic_bytes: u64,
+    summary_bytes: u64,
+}
 
 /// Per-call options for HWP5 reads. Password bytes are borrowed only for the
 /// active read and are never retained by the reader or returned document.
@@ -643,45 +654,294 @@ fn checked_password_live_bytes(left: u64, right: u64) -> Result<u64> {
         })
 }
 
+fn password_live_limit_error() -> Hwp5Error {
+    Hwp5Error::ResourceLimitExceeded {
+        resource: "password-protected HWP5 live buffers".to_string(),
+        limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
+    }
+}
+
+fn checked_password_reservation(total: &mut u64, amount: u64) -> Result<()> {
+    *total = total
+        .checked_add(amount)
+        .ok_or_else(password_live_limit_error)?;
+    if *total > password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES {
+        return Err(password_live_limit_error());
+    }
+    Ok(())
+}
+
+fn checked_password_product(left: u64, right: u64) -> Result<u64> {
+    left.checked_mul(right)
+        .ok_or_else(password_live_limit_error)
+}
+
+fn reserve_growing_owner(total: &mut u64, elements: u64, element_size: usize) -> Result<()> {
+    let bytes = checked_password_product(elements, element_size as u64)?;
+    checked_password_reservation(
+        total,
+        checked_password_product(bytes, PROTECTED_VEC_GROWTH_BOUND)?,
+    )
+}
+
+/// Accounts for every normalized path allocation that can coexist in the
+/// protected reader. The directory listing owns all names while it is drained;
+/// the materialized map then owns the document-path keys; BinData additionally
+/// owns its stripped final `BinStream::name` while its map key is still live.
+///
+/// This deliberately charges the fixed owners as well as their UTF-8 bytes so
+/// a high-cardinality CFB directory cannot hide behind short individual names.
+fn password_path_reservation(streams: &[StreamInfo]) -> Result<u64> {
+    let mut total = 0u64;
+    for stream in streams {
+        let path_bytes = stream.path.len() as u64;
+        // `Vec<StreamInfo>` retains each entry while paths are drained. Its
+        // capacity can be up to twice the observed element count.
+        checked_password_reservation(&mut total, path_bytes)?;
+        reserve_growing_owner(&mut total, 1, size_of::<StreamInfo>())?;
+
+        if is_password_document_stream(&stream.path) {
+            // BTreeMap key plus value slot. The implementation's internal leaf
+            // link/length fields are bounded by three machine words per entry.
+            checked_password_reservation(&mut total, path_bytes)?;
+            reserve_growing_owner(&mut total, 1, size_of::<(String, Vec<u8>)>())?;
+            reserve_growing_owner(&mut total, 3, size_of::<usize>())?;
+        }
+        if let Some(name) = stream.path.strip_prefix("/BinData/") {
+            // `BinStream` is built before the source map is dropped. Its short
+            // name is a distinct String, unlike XMLTemplate/DocHistory paths
+            // which are moved into their final owners.
+            checked_password_reservation(&mut total, name.len() as u64)?;
+            reserve_growing_owner(&mut total, 1, size_of::<hwp_model::BinStream>())?;
+        }
+    }
+    Ok(total)
+}
+
+fn reserve_record_semantics(total: &mut u64, header: RecordHeader) -> Result<()> {
+    let payload = u64::from(header.size);
+
+    // `to_opaque` is recursive and the control parser can simultaneously keep
+    // `extras`, `raw_children`, and one specialized raw slot. Charge all three
+    // actual raw payload owners plus their OpaqueRecord/Control containers.
+    for _ in 0..PROTECTED_OPAQUE_COPIES_PER_RECORD {
+        checked_password_reservation(total, payload)?;
+        reserve_growing_owner(total, 1, size_of::<hwp_model::OpaqueRecord>())?;
+    }
+    reserve_growing_owner(total, 1, size_of::<hwp_model::Control>())?;
+    reserve_growing_owner(total, 1, size_of::<hwp_model::Paragraph>())?;
+    reserve_growing_owner(total, 1, size_of::<hwp_model::Section>())?;
+
+    match header.tag {
+        crate::record::tag::PARA_TEXT => {
+            // `decode_para_text` emits at most one HwpChar per UTF-16 unit.
+            // Inline/extended controls additionally allocate their 12-byte
+            // payload for every eight input units.
+            let units = payload.div_ceil(2);
+            reserve_growing_owner(total, units, size_of::<hwp_model::HwpChar>())?;
+            checked_password_reservation(total, checked_password_product(units / 8, 12)?)?;
+        }
+        crate::record::tag::PARA_CHAR_SHAPE => {
+            reserve_growing_owner(
+                total,
+                payload / 8,
+                size_of::<(u32, hwp_model::CharShapeId)>(),
+            )?;
+        }
+        crate::record::tag::PARA_LINE_SEG => {
+            reserve_growing_owner(total, payload / 36, size_of::<hwp_model::LineSeg>())?;
+        }
+        _ => {
+            // The typed DocInfo/control parsers only decode record-local HWP
+            // strings. Treat every non-text record as a possible typed string
+            // owner: source UTF-16 units can expand to three UTF-8 bytes, and
+            // String's growth can retain a second allocation while decoding.
+            let units = payload / 2;
+            let utf8 = checked_password_product(units, PROTECTED_UTF8_BYTES_PER_UTF16_UNIT)?;
+            checked_password_reservation(
+                total,
+                checked_password_product(utf8, PROTECTED_VEC_GROWTH_BOUND)?,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn reserve_record_scanner(total: &mut u64, header: RecordHeader) -> Result<()> {
+    let payload = u64::from(header.size);
+    checked_password_reservation(total, payload)?;
+    // `scan_stream_with_budget` keeps the flat `(RecordHeader, Vec<u8>)`,
+    // RecordNode tree, parent/root vectors, and tolerant warning owner alive
+    // during forest construction. These are concrete Rust owner types rather
+    // than a payload multiplier.
+    let owner_bytes = (size_of::<(RecordHeader, Vec<u8>)>() as u64)
+        .checked_add(checked_password_product(
+            2,
+            size_of::<crate::record::RecordNode>() as u64,
+        )?)
+        .and_then(|bytes| bytes.checked_add(size_of::<String>() as u64))
+        .ok_or_else(password_live_limit_error)?;
+    // The scanner's existing 512-byte per-record contract also covers the
+    // bounded Korean diagnostic strings emitted by tolerant parsing. Keep it
+    // as a floor, but derive all owner storage above from concrete types.
+    checked_password_reservation(
+        total,
+        checked_password_product(owner_bytes.max(512), PROTECTED_VEC_GROWTH_BOUND)?,
+    )?;
+    Ok(())
+}
+
+fn reserve_summary_metadata(data: &[u8]) -> Result<u64> {
+    const SUMMARY_PIDS: [u32; 6] = [2, 3, 4, 5, 6, 8];
+    const VT_LPWSTR: u32 = 31;
+    let mut final_strings = 0u64;
+    let mut largest_utf16_scratch = 0u64;
+    let mut option_owners = 0u64;
+
+    let Some(0xfffe) = data
+        .get(0..2)
+        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+    else {
+        return Ok(0);
+    };
+    let Some(section_count) = data
+        .get(24..28)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+    else {
+        return Ok(0);
+    };
+    if section_count == 0 {
+        return Ok(0);
+    }
+    let Some(section_offset) = data
+        .get(44..48)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")) as usize)
+    else {
+        return Ok(0);
+    };
+    let Some(property_count) = data
+        .get(section_offset.saturating_add(4)..section_offset.saturating_add(8))
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")) as usize)
+    else {
+        return Ok(0);
+    };
+    let table = match section_offset.checked_add(8) {
+        Some(value) => value,
+        None => return Ok(0),
+    };
+    for index in 0..property_count {
+        let Some(entry) = index
+            .checked_mul(8)
+            .and_then(|offset| table.checked_add(offset))
+        else {
+            break;
+        };
+        let Some(pid) = data
+            .get(entry..entry.saturating_add(4))
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+        else {
+            break;
+        };
+        if !SUMMARY_PIDS.contains(&pid) {
+            continue;
+        }
+        let Some(value_offset) = data
+            .get(entry.saturating_add(4)..entry.saturating_add(8))
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")) as usize)
+        else {
+            break;
+        };
+        let Some(value) = section_offset.checked_add(value_offset) else {
+            continue;
+        };
+        let Some(kind) = data
+            .get(value..value.saturating_add(4))
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+        else {
+            continue;
+        };
+        if kind != VT_LPWSTR {
+            continue;
+        }
+        let Some(count) = data
+            .get(value.saturating_add(4)..value.saturating_add(8))
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")) as usize)
+        else {
+            continue;
+        };
+        let Some(chars) = value.checked_add(8) else {
+            continue;
+        };
+        let available = data.len().saturating_sub(chars) / 2;
+        let units = count.min(available);
+        let units = (0..units)
+            .find(|index| {
+                let offset = chars + index * 2;
+                data.get(offset..offset + 2)
+                    .is_some_and(|bytes| bytes == [0, 0])
+            })
+            .unwrap_or(units);
+        if units == 0 {
+            continue;
+        }
+        let units = units as u64;
+        let utf8 = checked_password_product(units, PROTECTED_UTF8_BYTES_PER_UTF16_UNIT)?;
+        final_strings = final_strings
+            .checked_add(checked_password_product(utf8, PROTECTED_VEC_GROWTH_BOUND)?)
+            .ok_or_else(password_live_limit_error)?;
+        largest_utf16_scratch = largest_utf16_scratch.max(checked_password_product(units, 2)?);
+        option_owners = option_owners
+            .checked_add(size_of::<Option<String>>() as u64)
+            .ok_or_else(password_live_limit_error)?;
+    }
+    let mut total = 0;
+    checked_password_reservation(&mut total, final_strings)?;
+    checked_password_reservation(&mut total, largest_utf16_scratch)?;
+    checked_password_reservation(&mut total, option_owners)?;
+    Ok(total)
+}
+
+/// Performs the authenticated, no-allocation preflight before record scanning.
+/// The result reserves exact observed record counts/tags/payload sizes, plus
+/// the six metadata PIDs' real alias multiplicity, before any semantic owner
+/// can be allocated.
+fn password_semantic_reservation(
+    streams: &BTreeMap<String, Vec<u8>>,
+) -> Result<PasswordSemanticReservation> {
+    let mut reservation = PasswordSemanticReservation::default();
+    for path in ["/DocInfo", "/BodyText/Section0"] {
+        let data = streams
+            .get(path)
+            .ok_or_else(|| Hwp5Error::StreamNotFound(path.to_string()))?;
+        let mut reader = crate::codec::ByteReader::new(data);
+        while !reader.is_empty() {
+            let header = RecordHeader::decode(&mut reader)?;
+            reader.read_bytes(header.size as usize)?;
+            reserve_record_scanner(&mut reservation.scanner_bytes, header)?;
+            reserve_record_semantics(&mut reservation.semantic_bytes, header)?;
+        }
+    }
+    if let Some(summary) = streams.get("/\u{5}HwpSummaryInformation") {
+        reservation.summary_bytes = reserve_summary_metadata(summary)?;
+    }
+    Ok(reservation)
+}
+
 fn password_record_scan_budget(
     retained_plaintext: u64,
-    summary_information_bytes: u64,
+    path_bytes: u64,
+    semantic: PasswordSemanticReservation,
 ) -> Result<RecordScanBudget> {
-    // `parse_summary` can hold its UTF-16 scratch vector beside accumulated
-    // UTF-8 Document metadata. Three times the raw stream covers both owners
-    // and UTF-16-to-UTF-8 expansion before the source stream is dropped.
-    const SUMMARY_METADATA_MULTIPLIER: u64 = 3;
-    let metadata_reservation = summary_information_bytes
-        .checked_mul(SUMMARY_METADATA_MULTIPLIER)
-        .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
-            resource: "password-protected HWP5 live buffers".to_string(),
-            limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
-        })?;
-    let reserved_before_records = retained_plaintext
-        .checked_add(metadata_reservation)
-        .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
-            resource: "password-protected HWP5 live buffers".to_string(),
-            limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
-        })?;
-    let remaining_live = password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES
-        .checked_sub(reserved_before_records)
-        .ok_or_else(|| Hwp5Error::ResourceLimitExceeded {
-            resource: "password-protected HWP5 live buffers".to_string(),
-            limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
-        })?;
-    // Reserve the scanner tree plus a conservative semantic-output envelope
-    // before the first parser allocation. A RecordNode payload can become
-    // opaque preservation bytes, typed strings, and collection growth while
-    // the scanner tree is still live, so final IR receives four times the
-    // scanner allocation. Opaque BinData/XMLTemplate/DocHistory are moved
-    // into the Document and therefore do not consume this copy reservation.
-    let allocation_divisor = HWP5_PASSWORD_SEMANTIC_OUTPUT_MULTIPLIER
-        .checked_add(1)
-        .expect("nonzero fixed reservation divisor");
+    let mut total = 0;
+    checked_password_reservation(&mut total, retained_plaintext)?;
+    checked_password_reservation(&mut total, path_bytes)?;
+    checked_password_reservation(&mut total, semantic.scanner_bytes)?;
+    checked_password_reservation(&mut total, semantic.semantic_bytes)?;
+    checked_password_reservation(&mut total, semantic.summary_bytes)?;
     Ok(RecordScanBudget::new(RecordScanLimits {
         max_records: HWP5_PASSWORD_MAX_RECORDS,
         max_depth: HWP5_PASSWORD_MAX_RECORD_DEPTH,
-        max_allocation_bytes: remaining_live / allocation_divisor,
+        max_allocation_bytes: semantic.scanner_bytes,
     }))
 }
 
@@ -710,22 +970,24 @@ fn read_password_protected_document(
             encrypt_version: header.encrypt_version,
         });
     }
-    let summary_information_bytes = stream_infos
-        .iter()
-        .find(|stream| stream.path == "/\u{5}HwpSummaryInformation")
-        .map(|stream| stream.size)
-        .unwrap_or(0);
+    // Charge every path owner before draining the directory listing. This
+    // covers the simultaneous listing/map/final-owner peak, even though the
+    // list itself is dropped before semantic parsing.
+    let path_bytes = password_path_reservation(&stream_infos)?;
+    let (record_infos, document_infos): (Vec<_>, Vec<_>) = stream_infos
+        .into_iter()
+        .filter(|stream| is_password_document_stream(&stream.path))
+        .partition(|stream| is_evidenced_password_record_stream(&stream.path));
 
     let mut streams = BTreeMap::new();
     let mut retained_plaintext = 0u64;
     // Authenticate both observed record streams before reporting structural
     // limits from opaque streams. A candidate key can otherwise manufacture a
     // decompression-limit result that leaks a different public refusal.
-    for stream in stream_infos
-        .iter()
-        .filter(|stream| is_evidenced_password_record_stream(&stream.path))
-    {
-        validate_live_bytes(stream.size, retained_plaintext)
+    for stream in record_infos {
+        let retained_with_paths = checked_password_live_bytes(retained_plaintext, path_bytes)
+            .map_err(normalize_password_candidate_error)?;
+        validate_live_bytes(stream.size, retained_with_paths)
             .map_err(normalize_password_candidate_error)?;
         let decrypted = if header.is_compressed() {
             // Keep ciphertext live only while raw-DEFLATE is expanded. Its
@@ -736,7 +998,7 @@ fn read_password_protected_document(
                 return Err(Hwp5Error::Encrypted);
             }
             decrypt_hwp5_encrypt_version_4_in_place(&mut protected, password)?;
-            let live_ciphertext = checked_password_live_bytes(retained_plaintext, stream.size)
+            let live_ciphertext = checked_password_live_bytes(retained_with_paths, stream.size)
                 .map_err(normalize_password_candidate_error)?;
             validate_live_bytes(HWP5_PASSWORD_MAX_STREAM_BYTES, live_ciphertext)
                 .map_err(normalize_password_candidate_error)?;
@@ -757,7 +1019,7 @@ fn read_password_protected_document(
         };
 
         let decrypted_size = decrypted.len() as u64;
-        validate_live_bytes(decrypted_size, retained_plaintext)
+        validate_live_bytes(decrypted_size, retained_with_paths)
             .map_err(normalize_password_candidate_error)?;
         // Strict identity validation is a no-allocation header walk. It is the
         // credential boundary before any RecordNode or payload clone exists.
@@ -768,33 +1030,30 @@ fn read_password_protected_document(
                 resource: "password-protected HWP5 live buffers".to_string(),
                 limit: password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES,
             })?;
-        streams.insert(stream.path.clone(), decrypted);
+        streams.insert(stream.path, decrypted);
     }
 
     // Every materialized stream, including opaque preservation paths, is
     // bounded before `read_stream_raw` can allocate it. These resource errors
     // are now authenticated structural failures, not credential outcomes.
-    for stream in stream_infos.iter().filter(|stream| {
-        !is_evidenced_password_record_stream(&stream.path)
-            && is_password_document_stream(&stream.path)
-    }) {
-        validate_live_bytes(stream.size, retained_plaintext)?;
+    for stream in document_infos {
+        let retained_with_paths = checked_password_live_bytes(retained_plaintext, path_bytes)?;
+        validate_live_bytes(stream.size, retained_with_paths)?;
         let raw = container.read_stream_raw(&stream.path)?;
         if raw.len() as u64 != stream.size {
             return Err(Hwp5Error::Encrypted);
         }
         retained_plaintext = checked_password_live_bytes(retained_plaintext, stream.size)?;
-        streams.insert(stream.path.clone(), raw);
+        streams.insert(stream.path, raw);
     }
 
     // The regular parser owns record data while the decrypted stream map is
-    // still live. Reserve that handoff before parsing, rather than after an
-    // allocation has already occurred. The one aggregate calculation covers
-    // source buffers, summary-to-string conversion, scanner trees, and the
-    // conservative semantic IR envelope; preserved opaque buffers are moved
-    // into Document rather than copied.
-    let mut record_budget =
-        password_record_scan_budget(retained_plaintext, summary_information_bytes)?;
+    // still live. The authenticated header-only preflight derives every
+    // semantic reservation from the observed records and Summary aliases
+    // before `scan_stream_bounded` can allocate a tree or IR owner.
+    let semantic =
+        password_semantic_reservation(&streams).map_err(normalize_password_candidate_error)?;
+    let mut record_budget = password_record_scan_budget(retained_plaintext, path_bytes, semantic)?;
     header.check_body_readable_after_password()?;
     read_password_document_from_owned_streams(&header, streams, &mut record_budget)
         .map_err(|_| Hwp5Error::Encrypted)
@@ -951,6 +1210,55 @@ mod bounded_tests {
         u32::from(tag).to_le_bytes().repeat(count)
     }
 
+    fn encoded_record(tag: u16, level: u16, payload: Vec<u8>) -> Vec<u8> {
+        let mut writer = crate::codec::ByteWriter::new();
+        RecordHeader {
+            tag,
+            level,
+            size: payload.len() as u32,
+        }
+        .encode(&mut writer);
+        writer.write_bytes(&payload);
+        writer.into_bytes()
+    }
+
+    fn para_text_record_stream(payload_bytes: usize) -> Vec<u8> {
+        let mut stream = encoded_record(crate::record::tag::PARA_HEADER, 0, vec![0; 22]);
+        let mut text = Vec::with_capacity(payload_bytes);
+        for _ in 0..payload_bytes / 2 {
+            text.extend_from_slice(&0xac00u16.to_le_bytes());
+        }
+        stream.extend(encoded_record(crate::record::tag::PARA_TEXT, 1, text));
+        stream
+    }
+
+    fn aliased_summary_information(payload_bytes: usize) -> Vec<u8> {
+        const SECTION_OFFSET: usize = 48;
+        const TABLE_OFFSET: usize = SECTION_OFFSET + 8;
+        const VALUE_OFFSET: usize = TABLE_OFFSET + 6 * 8;
+        const PIDS: [u32; 6] = [2, 3, 4, 5, 6, 8];
+        let units = (payload_bytes.saturating_sub(VALUE_OFFSET + 10)) / 2;
+        let mut data = vec![0; VALUE_OFFSET + 8 + (units + 1) * 2];
+        data[0..2].copy_from_slice(&0xfffeu16.to_le_bytes());
+        data[24..28].copy_from_slice(&1u32.to_le_bytes());
+        data[44..48].copy_from_slice(&(SECTION_OFFSET as u32).to_le_bytes());
+        data[SECTION_OFFSET + 4..SECTION_OFFSET + 8]
+            .copy_from_slice(&(PIDS.len() as u32).to_le_bytes());
+        for (index, pid) in PIDS.into_iter().enumerate() {
+            let entry = TABLE_OFFSET + index * 8;
+            data[entry..entry + 4].copy_from_slice(&pid.to_le_bytes());
+            data[entry + 4..entry + 8]
+                .copy_from_slice(&((VALUE_OFFSET - SECTION_OFFSET) as u32).to_le_bytes());
+        }
+        data[VALUE_OFFSET..VALUE_OFFSET + 4].copy_from_slice(&31u32.to_le_bytes());
+        data[VALUE_OFFSET + 4..VALUE_OFFSET + 8]
+            .copy_from_slice(&((units + 1) as u32).to_le_bytes());
+        for offset in (VALUE_OFFSET + 8..VALUE_OFFSET + 8 + units * 2).step_by(2) {
+            data[offset..offset + 2].copy_from_slice(&0xac00u16.to_le_bytes());
+        }
+        data
+    }
+
     #[test]
     fn evidenced_password_profile_reenters_the_normal_reader_with_exact_utf8() {
         let path = base_hwp("password-profile");
@@ -1037,6 +1345,156 @@ mod bounded_tests {
                 },
             ),
             Err(Hwp5Error::Encrypted)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authenticated_near_budget_para_text_is_refused_before_semantic_parse() {
+        let path = base_hwp("password-near-budget-para-text");
+        let password = "correct-password";
+        make_evidenced_password_hwp(&path, password, 0);
+
+        // One UTF-16 unit can retain one HwpChar (two Vec capacities) while
+        // three OpaqueRecord/control projections remain live. This payload is
+        // derived from those concrete owners, not a stream-size heuristic.
+        let bytes_per_input_byte = (size_of::<hwp_model::HwpChar>() as u64)
+            .checked_mul(PROTECTED_VEC_GROWTH_BOUND)
+            .unwrap()
+            / 2
+            + PROTECTED_OPAQUE_COPIES_PER_RECORD
+            + 2;
+        let payload =
+            (password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES / bytes_per_input_byte + 2) as usize;
+        replace_encrypted_stream_for_test(
+            &path,
+            "/BodyText/Section0",
+            &para_text_record_stream(payload),
+            password,
+        );
+
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some(password),
+                },
+            ),
+            Err(Hwp5Error::Encrypted)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authenticated_aliased_summary_properties_are_refused_before_semantic_parse() {
+        let path = base_hwp("password-aliased-summary");
+        let password = "correct-password";
+        make_evidenced_password_hwp(&path, password, 0);
+        let summary = aliased_summary_information(8 * 1024 * 1024);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            let mut stream = cfb.open_stream("/\u{5}HwpSummaryInformation").unwrap();
+            stream.set_len(0).unwrap();
+            stream.write_all(&summary).unwrap();
+            drop(stream);
+            cfb.flush().unwrap();
+        }
+
+        assert!(matches!(
+            read_document_with_options(
+                &path,
+                &ReadOptions {
+                    password: Some(password),
+                },
+            ),
+            Err(Hwp5Error::Encrypted)
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn aggregate_path_reservation_rejects_payload_boundary_before_materialization() {
+        let name_bytes =
+            HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES as usize / HWP5_PASSWORD_MAX_STREAMS;
+        let streams: Vec<StreamInfo> = (0..HWP5_PASSWORD_MAX_STREAMS)
+            .map(|index| StreamInfo {
+                path: format!(
+                    "/BinData/{index:04x}{}",
+                    "n".repeat(name_bytes.saturating_sub(14))
+                ),
+                size: 0,
+            })
+            .collect();
+        let path_bytes = password_path_reservation(&streams).unwrap();
+        assert!(path_bytes > HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES);
+        let retained = password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES - path_bytes + 1;
+        assert!(
+            password_record_scan_budget(
+                retained,
+                path_bytes,
+                PasswordSemanticReservation::default(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn nested_cfb_names_block_second_boundary_payload_before_materialization() {
+        let path = base_hwp("password-nested-name-boundary");
+        let password = "correct-password";
+        make_evidenced_password_hwp(&path, password, 0);
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            let mut cfb = cfb::CompoundFile::open(file).unwrap();
+            let mut nested = String::new();
+            // 1,024 CFB storages × 31-byte component names make every leaf
+            // path about 32 KiB. 512 leaves therefore sit just below the
+            // 16 MiB normalized-name contract without relying on host paths.
+            for depth in 0..1_024 {
+                nested.push('/');
+                nested.push_str(&format!("n{depth:04x}{}", "x".repeat(25)));
+                cfb.create_storage(&nested).unwrap();
+            }
+            for index in 0..512 {
+                let mut stream = cfb
+                    .create_new_stream(format!("{nested}/s{index:04x}"))
+                    .unwrap();
+                stream.set_len(0).unwrap();
+            }
+            cfb.create_storage("/BinData").unwrap();
+            for name in ["first.bin", "second.bin"] {
+                let mut stream = cfb.create_new_stream(format!("/BinData/{name}")).unwrap();
+                // Without path accounting both 57 MiB streams fit under the
+                // old 128 MiB source-only guard. The second must now fail
+                // before `read_stream_raw` materializes it.
+                stream.set_len(57 * 1024 * 1024).unwrap();
+            }
+            cfb.flush().unwrap();
+        }
+
+        let error = match read_document_with_options(
+            &path,
+            &ReadOptions {
+                password: Some(password),
+            },
+        ) {
+            Ok(_) => panic!("nested names plus second payload must exceed the live bound"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            Hwp5Error::ResourceLimitExceeded { resource, limit }
+                if resource == "password-protected HWP5 live buffers"
+                    && limit == password::HWP5_PASSWORD_MAX_TOTAL_LIVE_BYTES
         ));
         std::fs::remove_file(path).unwrap();
     }
