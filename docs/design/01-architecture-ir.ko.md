@@ -32,11 +32,11 @@
 | 크레이트 | 산출물 | 책임 (한 문장) | 내부 의존 | 주요 외부 의존 |
 |---|---|---|---|---|
 | **hwp-model** | lib | HWP/HWPX 공유 **의미 IR(L1)** 타입 정의 + 텍스트 추출·단위 변환 | 없음 | `serde` (그것만) |
-| **hwp5** | lib | HWP 5.0 바이너리(CFB+레코드) ↔ IR **reader/writer** | hwp-model | `cfb`, `flate2`, `thiserror` |
+| **hwp5** | lib | HWP 5.0 바이너리(CFB+레코드) ↔ IR **reader/writer**. 배포용문서 복호화를 포함한다 | hwp-model | `cfb`, `flate2`, `thiserror`, `aes` |
 | **hwpx** | lib | HWPX(OWPML/ZIP+XML) ↔ IR **reader/writer** + `patch`(충실도 보존 치환) | hwp-model, hwp-convert | `zip`, `quick-xml`, `thiserror` |
-| **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT 변환 + 편집 프리미티브(edit/field/bookmark/gso/image/structure) | hwp-model | `serde_json`, `pulldown-cmark`, `zip` |
-| **hwp-render** | lib | IR → PNG/SVG/PDF 페이지 렌더러 + 픽셀 diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2` |
-| **hwp-cli** | bin `hwp` | 서브커맨드 디스패치(info/cat/convert/render/new/edit/fields/…/mcp/dump) | 위 5개 전부 | `anyhow`, `clap`, `serde_json` |
+| **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT/DOCX/CSV 변환, 편집 프리미티브(edit/field/bookmark/gso/image/structure), 공문서 계층(official/frames/style/lint) | hwp-model | `serde_json`, `pulldown-cmark`, `quick-xml`, `regex`, `zip`, `resvg`, `image` |
+| **hwp-render** | lib | IR → PNG/SVG/PDF 페이지 렌더러 + 픽셀 diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2`, `encoding_rs`, `sha2` |
+| **hwp-cli** | bin `hwp` | 서브커맨드 디스패치와 MCP stdio 서버. 전체 표면은 자동 생성되는 [cli-reference](../manual/cli-reference.ko.md)가 정본이므로 여기에 옮겨 적지 않는다 | 위 5개 전부 | `anyhow`, `clap`, `serde_json`, `serde_yaml` |
 
 의존성 최소화가 설계 규범이다: `hwp-model`은 serde 하나만, 나머지 크레이트도 포맷/기능에 딱 필요한 크레이트만 끌어온다. `hwp5`↔`hwpx`는 서로 의존하지 않는다(양쪽 다 IR을 경유). 이 대칭성이 "N개 포맷 × M개 출력"을 N+M 어댑터로 처리하는 허브-스포크 구조의 핵심이다.
 
@@ -45,10 +45,15 @@
 `hwp5`는 아래에서 위로 계층화되며, **"스캔과 해석의 분리"**가 규범이다(`record/mod.rs`).
 
 - `container` — MS CFB 래핑, 스트림 열거/읽기 (`Hwp5Container::open`, `read_record_stream`, `body_sections`).
-- `file_header` — 256바이트 고정 `FileHeader`(시그니처/버전/압축 플래그) 파싱·직렬화.
+- `file_header` — 256바이트 고정 `FileHeader`(시그니처/버전/압축 플래그) 파싱·직렬화와 속성
+  비트를 근거로 한 읽기 게이트.
+- `distdoc` — 한컴 배포용문서의 `/ViewText/SectionN` 본문을 복호화한다. 256바이트
+  `DISTRIBUTE_DOC_DATA` 레코드에서 AES-128 키를 얻으며, 복호화 결과가 평범한 레코드 스트림이므로
+  이후 경로는 일반 문서와 완전히 동일하다.
 - `codec` — 바이트 커서(`ByteReader`/`ByteWriter`)와 raw deflate 압축(`compress`/`decompress`).
 - `record` — **의미를 전혀 해석하지 않는** 레이어. `header`(4바이트 헤더 코덱), `tag`(태그 상수/이름 조회, 항상 원시 u16 보존), `scan`(평면 스트림 스캔, `ScanMode::Tolerant`), `tree`(레벨 기반 forest 복원 `RecordNode::build_forest`).
 - `doc_info` / `body_text` — 위 `RecordNode` 트리를 의미 파싱해 IR(`DocHeader`/`Section`)로 승격.
+- `summary` / `numbering` — `\x05HwpSummaryInformation` 메타데이터와 번호 형식 합성.
 - `read` / `write` — 최상위 `read_document(path) -> ReadResult`, `write_document(doc, path, opts)`.
 
 ### 1.4 hwpx 크레이트 내부 모듈
@@ -358,9 +363,11 @@ pub struct OpaqueRecord {
 ### 5.2 read → IR (L0 → L1)
 
 **hwp5 (`read::read_document`):**
-1. `Hwp5Container::open` → CFB 열고 `check_body_readable`.
+1. `Hwp5Container::open` → CFB 열고 `check_body_readable`. 이 게이트는 암호·인증서·DRM 보호
+   문서를 거부한다. 배포용문서는 거부하지 않으며, `distdoc`이 `/ViewText/SectionN` 스트림을
+   먼저 복호화한다.
 2. `/DocInfo` 스트림 읽어(raw deflate 해제) `scan_stream(_, Tolerant)` → `RecordNode` forest(L0) → `parse_doc_info` → `DocHeader`.
-3. `body_sections()`의 각 `/BodyText/SectionN` → 같은 스캔 → `parse_section` → `Section`.
+3. `body_sections()`의 각 `/BodyText/SectionN`(또는 복호화한 `/ViewText/SectionN`) → 같은 스캔 → `parse_section` → `Section`.
 4. `/BinData/*` 스트림 → (압축 플래그면 해제 시도-폴백) → `Vec<BinStream>`.
 5. `\x05HwpSummaryInformation` → `parse_summary` → `Metadata`(최선 노력).
 6. `Document{ meta:{source_format:"hwp5", source_version:버전}, metadata, header, sections, bin_streams }`.
