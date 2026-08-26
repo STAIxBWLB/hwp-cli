@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use hwpx::{HwpxError, read_document};
+use hwpx::{HwpxError, ReadOptions, read_document, read_document_with_options};
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -107,6 +107,19 @@ fn the_committed_sample_with_an_encrypted_manifest_refuses() {
             "expected the encryption variant, got: {error}"
         ),
     }
+}
+
+#[test]
+fn correct_password_opens_an_evidenced_profile() {
+    let repacked = repack_with_manifest(&fixture(), ENCRYPTED_MANIFEST);
+    let result = read_document_with_options(
+        &repacked,
+        &ReadOptions {
+            password: Some("synthetic-password"),
+        },
+    );
+    let _ = std::fs::remove_file(&repacked);
+    assert!(result.is_ok(), "evidenced HWPX profile must be password-aware: {result:?}");
 }
 
 fn corpus_dir() -> Option<PathBuf> {
