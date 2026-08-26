@@ -32,7 +32,9 @@ pub enum HwpxError {
     // user-facing fact about a sibling format. Independent variant on purpose:
     // the hub-and-spoke invariant forbids hwpx from depending on hwp5, so this
     // is a sibling implementation, not a shared type (D-08: no typed error code).
-    #[error("암호가 필요하거나 올바르지 않습니다. --password-stdin으로 암호를 전달하세요.")]
+    #[error(
+        "암호가 필요하거나 올바르지 않습니다. 암호를 받는 cat·convert·render로 암호를 전달하세요."
+    )]
     Encrypted,
 }
 
