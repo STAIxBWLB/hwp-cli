@@ -105,6 +105,11 @@ fn evidenced_hwp5_fixture(dir: &Path, password: &str) -> PathBuf {
         stream.seek(SeekFrom::Start(0)).unwrap();
         stream.write_all(&encrypted).unwrap();
     }
+    cfb.create_storage("/Opaque").unwrap();
+    cfb.create_new_stream("/Opaque/preserved.bin")
+        .unwrap()
+        .write_all(b"source-only opaque stream")
+        .unwrap();
     cfb.flush().unwrap();
     path
 }
@@ -114,7 +119,12 @@ fn refusal(stderr: &[u8]) -> String {
 }
 
 fn stdin_bytes(mut command: Command, bytes: &[u8]) -> Output {
-    let mut child = command.stdin(Stdio::piped()).spawn().unwrap();
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     child.stdin.take().unwrap().write_all(bytes).unwrap();
     child.wait_with_output().unwrap()
 }
@@ -178,7 +188,10 @@ fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
         }
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if name == "Contents/header.xml" || name == "Contents/section0.xml" {
+        if name == "Contents/header.xml"
+            || name == "Contents/section0.xml"
+            || name == "Preview/PrvText.txt"
+        {
             let (ciphertext, manifest_entry) = encrypt_hwpx_part(&name, &data, password);
             manifest_entries.push(manifest_entry);
             writer
@@ -358,6 +371,23 @@ fn hwp5_cat_direct_and_stdin_preserve_exact_password_bytes() {
 }
 
 #[test]
+fn password_stdin_rejects_an_oversized_line_before_document_access() {
+    let mut oversized = vec![b'x'; 64 * 1024 + 1];
+    oversized.push(b'\n');
+    let mut command = hwp();
+    command
+        .arg("cat")
+        .arg("does-not-exist.hwp")
+        .arg("--password-stdin");
+    let output = stdin_bytes(command, &oversized);
+    assert!(!output.status.success());
+    let stderr = refusal(&output.stderr);
+    assert!(stderr.contains("65536바이트 제한"));
+    assert!(!stderr.contains("does-not-exist"));
+    assert!(!stderr.contains(&"x".repeat(128)));
+}
+
+#[test]
 fn hwp5_cat_refusals_and_conflicts_are_secret_free() {
     let password = "secret-not-for-output";
     let file = evidenced_hwp5_fixture(&temp_dir("refusal-and-conflict"), password);
@@ -406,6 +436,35 @@ fn hwp5_cat_refusals_and_conflicts_are_secret_free() {
     let cat_help = hwp().args(["cat", "--help"]).output().unwrap();
     assert!(!String::from_utf8_lossy(&root_help.stdout).contains("--password"));
     assert!(String::from_utf8_lossy(&cat_help.stdout).contains("--password-stdin"));
+
+    let correct_preview = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--preview")
+        .arg("--password")
+        .arg(password)
+        .output()
+        .unwrap();
+    assert!(correct_preview.status.success());
+    let absent_preview = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--preview")
+        .output()
+        .unwrap();
+    let wrong_preview = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--preview")
+        .arg("--password")
+        .arg("different-secret")
+        .output()
+        .unwrap();
+    assert!(!absent_preview.status.success() && !wrong_preview.status.success());
+    assert_eq!(
+        refusal(&absent_preview.stderr),
+        refusal(&wrong_preview.stderr)
+    );
 }
 
 #[test]
@@ -437,6 +496,35 @@ fn hwpx_cat_uses_exact_password_bytes_and_one_public_refusal() {
         assert!(!output.contains("Contents/header.xml"));
         assert!(!output.contains("AES256-CBC"));
     }
+
+    let correct_preview = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--preview")
+        .arg("--password")
+        .arg(password)
+        .output()
+        .unwrap();
+    assert!(correct_preview.status.success());
+    let absent_preview = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--preview")
+        .output()
+        .unwrap();
+    let wrong_preview = hwp()
+        .arg("cat")
+        .arg(&file)
+        .arg("--preview")
+        .arg("--password")
+        .arg("  가  ")
+        .output()
+        .unwrap();
+    assert!(!absent_preview.status.success() && !wrong_preview.status.success());
+    assert_eq!(
+        refusal(&absent_preview.stderr),
+        refusal(&wrong_preview.stderr)
+    );
 }
 
 #[test]
@@ -690,6 +778,22 @@ fn cli_convert_render_support_password_inputs_before_publication() {
                     .is_encrypted(),
                 "same-format HWP output must be an ordinary plaintext package"
             );
+            let strict_native = dir.join("hwp5-decrypted-strict.hwp");
+            let strict_convert = hwp()
+                .arg("convert")
+                .arg(&input)
+                .arg("-o")
+                .arg(&strict_native)
+                .arg("--password")
+                .arg(password)
+                .arg("--strict")
+                .output()
+                .unwrap();
+            assert!(
+                !strict_convert.status.success(),
+                "strict conversion must refuse an opaque stream that plaintext synthesis drops"
+            );
+            assert!(!strict_native.exists());
         } else {
             let mut package = hwpx::HwpxPackage::open(&native).unwrap();
             assert!(

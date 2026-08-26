@@ -456,6 +456,11 @@ pub fn execute_with_options(
     // native inputs keep the strict source-preserving container path.
     let preserve_same_native_container =
         same_native_format && !password_unlocked_hwp5 && !password_unlocked_hwpx;
+    // Decrypted HWP5 still has a readable raw CFB directory, so compare its
+    // removal-only opaque surface with the plaintext synthesis. HWPX cannot
+    // use the same inspector because protected opaque entries are ciphertext
+    // in the source and authenticated plaintext in the output.
+    let inspect_same_native_container = same_native_format && !password_unlocked_hwpx;
     let write_staged = |source: &std::path::Path, staged: &std::path::Path| {
         let mut report = match target {
             ConvertFormat::Md => {
@@ -511,7 +516,7 @@ pub fn execute_with_options(
         };
 
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
-            if preserve_same_native_container {
+            if inspect_same_native_container {
                 report.preservation.extend(
                     crate::commands::preservation::inspect_same_format_container(source, staged)?,
                 );

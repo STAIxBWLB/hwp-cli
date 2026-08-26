@@ -63,6 +63,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   source-preserving writer to reopen the encrypted container without a credential. HWPX profile
   validation also caps aggregate PBKDF2 work at eight million iterations before any entry is
   decrypted, preventing a many-entry package from multiplying the per-entry limit into a CPU DoS.
+  Strict HWP5 conversion still reports and refuses opaque source streams that plaintext synthesis
+  cannot preserve; non-strict conversion records the loss and publishes the authenticated content.
 
 - Compressed `BinData` in password-protected HWP5 now follows the ordinary reader's bounded
   try-DEFLATE path before entering the IR. Images therefore remain usable in cross-format output,
@@ -75,6 +77,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Owner-corpus validation now checks the resolved credential bytes against the declared ASCII or
   non-ASCII charset before profile discovery. A mislabeled secret can no longer satisfy the
   distinct non-ASCII evidence role, and mismatch errors expose neither the value nor its reference.
+
+- `hwp cat --preview` now authenticates protected HWP5/HWPX before exposing preview text, including
+  encrypted HWPX preview entries. `--password-stdin` reads through a 64 KiB cap so an oversized or
+  unterminated credential stream cannot grow process memory without bound.
 
 - `hwp fill` can now fill a `{{slot}}` that inline formatting split across text runs, so it fills
   everything `hwp slots` reports. The two commands read a document differently — `slots` walks the

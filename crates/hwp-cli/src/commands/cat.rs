@@ -1,11 +1,11 @@
 //! `hwp cat` — 텍스트 추출.
 //!
 //! 본문 파싱 기반 추출(plain/markdown/json)과 `--preview`(PrvText)를
-//! 지원한다. 미리보기는 컨테이너 계층만 사용하므로 본문 파싱이 실패하는
-//! 파일의 폴백으로도 쓰인다.
+//! 지원한다. 평문 미리보기는 컨테이너 계층만 사용한다. 보호 문서는 preview
+//! 텍스트를 노출하기 전에 bounded reader로 암호를 인증한다.
 
 use std::fmt;
-use std::io::BufRead as _;
+use std::io::{BufRead as _, Read as _};
 use std::path::Path;
 
 use hwp_model::Document;
@@ -16,6 +16,7 @@ use hwp_cli::cli::{PasswordArgs, TextFormat};
 
 /// Stable public refusal code for absent or invalid password credentials.
 pub const HWP_PASSWORD_REQUIRED_OR_INVALID: &str = "HWP_PASSWORD_REQUIRED_OR_INVALID";
+const MAX_PASSWORD_STDIN_BYTES: usize = 64 * 1024;
 
 /// A password whose backing string is zeroed when it leaves the command scope.
 /// It deliberately exposes only an exact borrowed view to the format readers.
@@ -116,6 +117,20 @@ impl From<anyhow::Error> for LoadDocumentError {
     }
 }
 
+fn map_hwp5_read_error(error: hwp5::Hwp5Error) -> LoadDocumentError {
+    match error {
+        hwp5::Hwp5Error::Encrypted => LoadDocumentError::Password(PasswordRefusal::hwp5()),
+        other => LoadDocumentError::Other(anyhow::Error::new(other)),
+    }
+}
+
+fn map_hwpx_read_error(error: hwpx::HwpxError) -> LoadDocumentError {
+    match error {
+        hwpx::HwpxError::Encrypted => LoadDocumentError::Password(PasswordRefusal::hwpx()),
+        other => LoadDocumentError::Other(anyhow::Error::new(other)),
+    }
+}
+
 /// Resolves command-local password input before any document read. Only a
 /// final LF or CRLF is removed; all other bytes stay untouched.
 pub fn resolve_password_args(
@@ -136,12 +151,19 @@ pub fn resolve_password_args(
     }
 
     let mut line = Zeroizing::new(String::new());
-    std::io::stdin().lock().read_line(&mut line)?;
+    let stdin = std::io::stdin();
+    stdin
+        .lock()
+        .take((MAX_PASSWORD_STDIN_BYTES + 3) as u64)
+        .read_line(&mut line)?;
     let line_len = line.len();
     if line.ends_with("\r\n") {
         line.truncate(line_len - 2);
     } else if line.ends_with('\n') {
         line.truncate(line_len - 1);
+    }
+    if line.len() > MAX_PASSWORD_STDIN_BYTES {
+        anyhow::bail!("--password-stdin 입력이 {MAX_PASSWORD_STDIN_BYTES}바이트 제한을 초과합니다");
     }
     Ok(Some(ResolvedPassword(line)))
 }
@@ -177,10 +199,7 @@ pub fn load_document_with_options(
                     password: options.password.map(ResolvedPassword::as_str),
                 },
             )
-            .map_err(|error| match error {
-                hwp5::Hwp5Error::Encrypted => LoadDocumentError::Password(PasswordRefusal::hwp5()),
-                other => LoadDocumentError::Other(anyhow::Error::new(other)),
-            })?;
+            .map_err(map_hwp5_read_error)?;
             for w in &result.warnings {
                 eprintln!("경고: {w}");
             }
@@ -211,10 +230,7 @@ pub fn load_document_with_options(
                     password: options.password.map(ResolvedPassword::as_str),
                 },
             )
-            .map_err(|error| match error {
-                hwpx::HwpxError::Encrypted => LoadDocumentError::Password(PasswordRefusal::hwpx()),
-                other => LoadDocumentError::Other(anyhow::Error::new(other)),
-            })?;
+            .map_err(map_hwpx_read_error)?;
             for w in &result.warnings {
                 eprintln!("경고: {w}");
             }
@@ -225,7 +241,8 @@ pub fn load_document_with_options(
 
 /// 본문 텍스트 추출.
 ///
-/// `preview`면 본문 파싱 없이 PrvText 미리보기만 출력한다. `with_header_footer`/`with_hidden`은
+/// `preview`면 평문은 본문 파싱 없이 PrvText 미리보기만 출력하고, 보호 문서는 먼저 암호를
+/// 인증한다. `with_header_footer`/`with_hidden`은
 /// 머리말·꼬리말/숨은 설명 포함 여부(기본 제외) — plain·markdown 경로에 일관되게 적용된다
 /// (html/json은 옵션 미대상). `with_segments`는 markdown 전용으로, markdown과 함께 각 출력
 /// 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 낸다.
@@ -250,7 +267,13 @@ pub fn run(
     }
     let password = resolve_password_args(password_args, path)?;
     if preview {
-        return self::preview(path);
+        return self::preview(
+            path,
+            &LoadOptions {
+                password: password.as_ref(),
+            },
+        )
+        .map_err(anyhow::Error::new);
     }
 
     let doc = load_document_with_options(
@@ -302,16 +325,43 @@ pub fn run(
     Ok(())
 }
 
-pub fn preview(path: &Path) -> anyhow::Result<()> {
+fn preview(path: &Path, options: &LoadOptions<'_>) -> Result<(), LoadDocumentError> {
     let text = match detect(path)? {
         FileFormat::Hwp5 => {
-            let mut container = hwp5::Hwp5Container::open(path)?;
-            let raw = container.read_stream_raw("/PrvText")?;
+            let mut container = hwp5::Hwp5Container::open(path).map_err(map_hwp5_read_error)?;
+            if container.file_header().is_encrypted() {
+                // PrvText itself may be plaintext, so authenticate the supplied
+                // credential through the bounded protected reader before
+                // exposing it. Wrong and absent credentials keep one refusal.
+                hwp5::read_document_with_options(
+                    path,
+                    &hwp5::ReadOptions {
+                        password: options.password.map(ResolvedPassword::as_str),
+                    },
+                )
+                .map_err(map_hwp5_read_error)?;
+            } else {
+                container
+                    .check_body_readable()
+                    .map_err(map_hwp5_read_error)?;
+            }
+            let raw = container
+                .read_stream_raw("/PrvText")
+                .map_err(map_hwp5_read_error)?;
             decode_utf16le(&raw)
         }
         FileFormat::Hwpx => {
-            let mut pkg = hwpx::HwpxPackage::open(path)?;
-            let raw = pkg.read_entry("Preview/PrvText.txt")?;
+            let mut pkg = hwpx::HwpxPackage::open(path).map_err(map_hwpx_read_error)?;
+            match options.password {
+                Some(password) if pkg.has_encryption_marker().map_err(map_hwpx_read_error)? => pkg
+                    .unlock_with_password(password.as_str())
+                    .map_err(map_hwpx_read_error)?,
+                Some(_) => {}
+                None => pkg.check_body_readable().map_err(map_hwpx_read_error)?,
+            }
+            let raw = pkg
+                .read_entry("Preview/PrvText.txt")
+                .map_err(map_hwpx_read_error)?;
             // HWPX 미리보기는 보통 UTF-8이지만 UTF-16LE인 경우도 방어
             if raw.iter().take(64).any(|&b| b == 0) {
                 decode_utf16le(&raw)
