@@ -32,7 +32,9 @@ syntax (used by `fill`, `slots` and the template tools).
 - `hwp cat {file} [--format plain|markdown|json|html|csv]` — extract text. Useful flags:
   `--preview` (PrvText only, no body parse), `--with-header-footer`, `--with-hidden`
   (hidden comments), `--with-segments` (markdown + source coordinates as a one-line JSON
-  envelope). `--format json` exports the full IR (tables, images, formatting).
+  envelope). `--format json` exports the full IR (tables, images, formatting). For a supported
+  password-protected HWP5/HWPX file, prefer `--password-stdin`; `--password {value}` is also
+  available when process-argument visibility is acceptable.
 - `hwp grep {pattern} {file} [--ignore-case]` — paragraph substring search over body, table
   cells and text boxes. grep convention: exit code 1 when nothing matches.
 - `hwp convert {inputs...} -o {output}` — format conversion (`--to hwp|hwpx|md|json|html|pdf|
@@ -40,7 +42,8 @@ syntax (used by `fill`, `slots` and the template tools).
   inputs require `--out-dir {dir}`. `--strict` fails without publishing when unpreservable
   (opaque) data is found. PDF output delegates to the render path and needs CJK fonts:
   `--font-dir {dir}` (repeatable; default `HWP_FONT_DIR` or `fonts/`). Markdown export flags:
-  `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json).
+  `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json). Protected inputs
+  accept the same `--password` / `--password-stdin` pair as `cat`.
 - `hwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports
   markdown or a JSON IR (empty document when omitted); `--set-meta key=value` (title/author/
   subject/keywords, repeatable); `--preset official|report|plan|notice|minutes|press`
@@ -83,6 +86,7 @@ syntax (used by `fill`, `slots` and the template tools).
 - `hwp render {input} -o {output.png|svg|pdf}` — render pages. `--pages "1"|"1-3"|"all"`,
   `--dpi 36..=600` (default 96), `--format png|svg|pdf`, `--font-dir {dir}` (repeatable).
   PNG/SVG write one file per page; PDF writes a single multi-page file. Needs CJK fonts.
+  Protected inputs accept `--password` or `--password-stdin`.
 - `hwp fields {file} [--json]` / `hwp bookmarks {file} [--json]` / `hwp slots {file} [--json]`
   — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots.
 - `hwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
@@ -194,14 +198,14 @@ Tools (17):
 | Tool | Required arguments | Purpose |
 |---|---|---|
 | `hwp_info` | `path` | Format, version, properties and stream diagnostics |
-| `hwp_read` | `path` | Extract text (`format`: plain/markdown/json/html/csv; `with_header_footer`, `with_hidden`, `with_segments`); UTF-8 byte pagination |
+| `hwp_read` | `path` | Extract text (`format`: plain/markdown/json/html/csv; optional per-call `password`; `with_header_footer`, `with_hidden`, `with_segments`); UTF-8 byte pagination |
 | `hwp_grep` | `path`, `pattern` | Paragraph substring search; `{matches, count, truncated}`; zero matches is a normal result |
 | `hwp_list_fields` | `path` | List fields |
 | `hwp_list_bookmarks` | `path` | List bookmarks (bokm) |
 | `hwp_slots` | `path` | List `{{name}}` placeholders |
-| `hwp_render` | `path` | Render pages (`format`: png/svg/pdf, `pages` range); single-page PNG returns base64, larger results write files via `output_path` |
+| `hwp_render` | `path` | Render pages (optional per-call `password`; `format`: png/svg/pdf, `pages` range); single-page PNG returns base64, larger results write files via `output_path` |
 | `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations (mirrors every `hwp edit` flag, incl. `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*`) |
-| `hwp_convert` | `input`, `output` | Format conversion (`strict` defaults to true over MCP) |
+| `hwp_convert` | `input`, `output` | Format conversion (optional per-call `password`; `strict` defaults to true over MCP) |
 | `hwp_new` | `output` | Create a document from markdown or JSON IR plus metadata, official profile and `margin_top`/`margin_bottom`/`margin_left`/`margin_right` overrides |
 | `hwp_compose` | `output`, `spec`/`spec_path` | Compose DocumentSpec v1/v2 through the same path as the CLI |
 | `hwp_template` | `output`, `template` (+`data`) | Bounded expansion of TemplateSpec/Data v1 |
@@ -228,3 +232,6 @@ Tools (17):
    deliberately, and re-check the result.
 5. **Prefer `--root` for MCP.** Scope the server to the working directory (repeat the flag
    for every directory the tools may legitimately touch) instead of running unrestricted.
+6. **Keep passwords invocation-local.** Prefer CLI `--password-stdin` over `--password`, and pass
+   MCP passwords only on the individual `hwp_read`, `hwp_convert` or `hwp_render` call. Never put a
+   credential in a report, receipt, generated file, command transcript or persistent environment.
