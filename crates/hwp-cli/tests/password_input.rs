@@ -2,7 +2,7 @@
 
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use aes::cipher::{
     Block, BlockCipherEncrypt, BlockModeEncrypt, KeyInit, KeyIvInit, block_padding::NoPadding,
@@ -110,6 +110,12 @@ fn evidenced_hwp5_fixture(dir: &Path, password: &str) -> PathBuf {
 
 fn refusal(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr).into_owned()
+}
+
+fn stdin_bytes(mut command: Command, bytes: &[u8]) -> Output {
+    let mut child = command.stdin(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    child.wait_with_output().unwrap()
 }
 
 fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
@@ -471,4 +477,202 @@ fn cli_password_scope_and_korean_help_are_exact() {
             "{command} must not echo rejected credentials"
         );
     }
+}
+
+#[test]
+fn cli_convert_render_password_stdin_and_refusals_never_publish() {
+    let password = "  \u{ac00}  ";
+    let dir = temp_dir("convert-render-stdin-refusals");
+    std::fs::create_dir_all(dir.join("hwp5")).unwrap();
+    std::fs::create_dir_all(dir.join("hwpx")).unwrap();
+    let fixtures = [
+        ("hwp5", evidenced_hwp5_fixture(&dir.join("hwp5"), password)),
+        ("hwpx", evidenced_hwpx_fixture(&dir.join("hwpx"), password)),
+    ];
+    let mut failures = Vec::new();
+
+    for (label, input) in fixtures {
+        let converted = dir.join(format!("{label}-stdin.md"));
+        let converted_result = stdin_bytes(
+            {
+                let mut command = hwp();
+                command
+                    .arg("convert")
+                    .arg(&input)
+                    .arg("-o")
+                    .arg(&converted)
+                    .arg("--password-stdin");
+                command
+            },
+            format!("{password}\r\n").as_bytes(),
+        );
+        assert!(
+            converted_result.status.success(),
+            "{label} convert password stdin must succeed: {}",
+            refusal(&converted_result.stderr)
+        );
+        assert!(converted.exists());
+
+        let rendered = dir.join(format!("{label}-stdin.svg"));
+        let rendered_result = stdin_bytes(
+            {
+                let mut command = hwp();
+                command
+                    .arg("render")
+                    .arg(&input)
+                    .arg("-o")
+                    .arg(&rendered)
+                    .arg("--password-stdin");
+                command
+            },
+            format!("{password}\n").as_bytes(),
+        );
+        assert!(
+            rendered_result.status.success(),
+            "{label} render password stdin must succeed: {}",
+            refusal(&rendered_result.stderr)
+        );
+        assert!(rendered.exists());
+
+        for (command, extension) in [("convert", "md"), ("render", "svg")] {
+            for credential in [None, Some("wrong-password")] {
+                let destination = dir.join(format!(
+                    "{label}-{command}-{}.{}",
+                    if credential.is_some() {
+                        "wrong"
+                    } else {
+                        "absent"
+                    },
+                    extension
+                ));
+                let report = dir.join(format!(
+                    "{label}-{command}-{}.json",
+                    if credential.is_some() {
+                        "wrong"
+                    } else {
+                        "absent"
+                    }
+                ));
+                let mut process = hwp();
+                process.arg(command).arg(&input).arg("-o").arg(&destination);
+                if command == "render" {
+                    process.arg("--report").arg(&report);
+                }
+                if let Some(value) = credential {
+                    process.arg("--password").arg(value);
+                }
+                let result = process.output().unwrap();
+                assert!(!result.status.success());
+                assert!(
+                    !destination.exists(),
+                    "{label} {command} must not publish output"
+                );
+                assert!(
+                    !report.exists(),
+                    "{label} {command} must not publish a report"
+                );
+                let stderr = refusal(&result.stderr);
+                assert!(stderr.contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
+                assert!(!stderr.contains(password));
+                assert!(!stderr.contains("wrong-password"));
+                failures.push(stderr);
+            }
+        }
+    }
+    assert!(failures.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[test]
+fn cli_convert_batch_authenticates_before_creating_outputs() {
+    let dir = temp_dir("convert-batch-authentication");
+    let first = evidenced_hwp5_fixture(&dir, "first-password");
+    let second = dir.join("second.hwp");
+    std::fs::copy(&first, &second).unwrap();
+    let out_dir = dir.join("output");
+
+    let failed = hwp()
+        .arg("convert")
+        .arg(&first)
+        .arg(&second)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--to")
+        .arg("md")
+        .arg("--password")
+        .arg("wrong-password")
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(
+        !out_dir.exists(),
+        "batch credential failure must not create output"
+    );
+    assert!(refusal(&failed.stderr).contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
+}
+
+#[test]
+fn cli_convert_batch_and_document_stdin_keep_password_channels_distinct() {
+    let password = "batch-password";
+    let dir = temp_dir("convert-batch-and-stdin");
+    let first = evidenced_hwp5_fixture(&dir, password);
+    let second = dir.join("second.hwp");
+    std::fs::copy(&first, &second).unwrap();
+    let out_dir = dir.join("output");
+    let batch = hwp()
+        .arg("convert")
+        .arg(&first)
+        .arg(&second)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--to")
+        .arg("md")
+        .arg("--password")
+        .arg(password)
+        .output()
+        .unwrap();
+    assert!(
+        batch.status.success(),
+        "one batch password must load every input: {}",
+        refusal(&batch.stderr)
+    );
+    assert!(out_dir.join("protected.md").exists());
+    assert!(out_dir.join("second.md").exists());
+
+    let from_stdin = dir.join("stdin.md");
+    let stdin_document = stdin_bytes(
+        {
+            let mut command = hwp();
+            command
+                .arg("convert")
+                .arg("-")
+                .arg("-o")
+                .arg(&from_stdin)
+                .arg("--password")
+                .arg(password);
+            command
+        },
+        &std::fs::read(&first).unwrap(),
+    );
+    assert!(
+        stdin_document.status.success(),
+        "direct passwords remain valid with document stdin: {}",
+        refusal(&stdin_document.stderr)
+    );
+    assert!(from_stdin.exists());
+
+    let blocked = dir.join("blocked.md");
+    let collision = hwp()
+        .arg("convert")
+        .arg("-")
+        .arg("-o")
+        .arg(&blocked)
+        .arg("--password-stdin")
+        .output()
+        .unwrap();
+    assert!(!collision.status.success());
+    assert!(!blocked.exists());
+    assert!(
+        refusal(&collision.stderr)
+            .contains("문서 입력과 --password-stdin은 모두 표준 입력을 사용할 수 없습니다")
+    );
 }

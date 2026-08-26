@@ -153,6 +153,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     ("grep", "ignore_case", "대소문자 무시 일치"),
     // convert
     ("convert", "", "포맷 변환"),
+    ("convert", "password", "명령줄에서 직접 입력할 암호"),
+    (
+        "convert",
+        "password_stdin",
+        "표준 입력에서 UTF-8 암호 한 줄 읽기",
+    ),
     (
         "convert",
         "inputs",
@@ -211,6 +217,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     ),
     // render
     ("render", "", "페이지 렌더링"),
+    ("render", "password", "명령줄에서 직접 입력할 암호"),
+    (
+        "render",
+        "password_stdin",
+        "표준 입력에서 UTF-8 암호 한 줄 읽기",
+    ),
     ("render", "input", "입력 HWP/HWPX 파일"),
     ("render", "output", "출력 파일 경로"),
     ("render", "pages", "페이지 범위: \"1\", \"1-3\", \"all\""),

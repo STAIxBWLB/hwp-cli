@@ -238,6 +238,12 @@ fn run_multi_inner(
                     );
                 }
             }
+            // Validate every source before creating the destination directory or
+            // publishing any batch member. A later bad credential must not leave
+            // earlier converted documents behind.
+            for input in inputs {
+                load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+            }
             std::fs::create_dir_all(dir)?;
             for input in inputs {
                 let stem = input
