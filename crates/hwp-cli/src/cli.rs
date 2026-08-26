@@ -154,6 +154,8 @@ pub enum Cmd {
         /// (pdf) Additional font directory (repeatable; defaults to HWP_FONT_DIR or fonts/)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
+        #[command(flatten)]
+        password: PasswordArgs,
     },
 
     /// Render pages
@@ -178,6 +180,8 @@ pub enum Cmd {
         /// Additional font directory (repeatable)
         #[arg(long)]
         font_dir: Vec<PathBuf>,
+        #[command(flatten)]
+        password: PasswordArgs,
     },
 
     /// Create a new document

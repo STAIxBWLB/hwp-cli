@@ -5,9 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::commands::cat::load_document;
+use crate::commands::cat::{
+    LoadOptions, load_document, load_document_with_options, resolve_password_args,
+};
 use anyhow::Context as _;
-use hwp_cli::cli::ConvertFormat;
+use hwp_cli::cli::{ConvertFormat, PasswordArgs};
 
 /// markdown 출력 전용 추가 옵션 (다른 포맷에서는 무시).
 #[derive(Default)]
@@ -28,7 +30,7 @@ pub struct ConvertReport {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run(
+fn run_with_options(
     input: &Path,
     output: &Path,
     to: Option<ConvertFormat>,
@@ -38,8 +40,9 @@ pub fn run(
     embed_bin: bool,
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
-    let report = execute(
+    let report = execute_with_options(
         input,
         output,
         to,
@@ -49,6 +52,7 @@ pub fn run(
         embed_bin,
         md_opts,
         font_dirs,
+        options,
     )?;
     print_warnings(&report.warnings);
     crate::commands::preservation::print_report(&report.preservation);
@@ -62,7 +66,7 @@ pub fn run(
 /// - Output `-`: emits only text formats (md/json/html/txt/csv) to stdout (`--to` required).
 /// - `--out-dir`: batch-converts multiple inputs to `<stem>.<target extension>` (`--to` required).
 #[allow(clippy::too_many_arguments)]
-pub fn run_multi(
+pub fn run_multi_with_password(
     inputs: &[PathBuf],
     output: Option<&Path>,
     out_dir: Option<&Path>,
@@ -73,6 +77,42 @@ pub fn run_multi(
     embed_bin: bool,
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
+    password_args: PasswordArgs,
+) -> anyhow::Result<()> {
+    let input = inputs
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("변환 입력이 비어 있습니다"))?;
+    let password = resolve_password_args(password_args, input)?;
+    run_multi_with_options(
+        inputs,
+        output,
+        out_dir,
+        to,
+        strict,
+        loss_report,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+        &LoadOptions {
+            password: password.as_ref(),
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_multi_with_options(
+    inputs: &[PathBuf],
+    output: Option<&Path>,
+    out_dir: Option<&Path>,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    loss_report: Option<&Path>,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
     // Input staging (`-` → stdin).
     let mut staged: Option<PathBuf> = None;
@@ -119,6 +159,7 @@ pub fn run_multi(
         embed_bin,
         md_opts,
         font_dirs,
+        options,
     );
     if let Some(path) = staged {
         let _ = std::fs::remove_file(path);
@@ -138,6 +179,7 @@ fn run_multi_inner(
     embed_bin: bool,
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
     match (output, out_dir) {
         (Some(out), None) => {
@@ -151,11 +193,12 @@ fn run_multi_inner(
                 let Some(target) = to else {
                     anyhow::bail!("출력이 `-`(stdout)이면 --to가 필요합니다");
                 };
-                let doc = load_document(&inputs[0])?;
+                let doc =
+                    load_document_with_options(&inputs[0], options).map_err(anyhow::Error::new)?;
                 print_text_output(&doc, target, embed_bin, md_opts)?;
                 return Ok(());
             }
-            run(
+            run_with_options(
                 &inputs[0],
                 out,
                 to,
@@ -165,6 +208,7 @@ fn run_multi_inner(
                 embed_bin,
                 md_opts,
                 font_dirs,
+                options,
             )
         }
         (None, Some(dir)) => {
@@ -203,7 +247,7 @@ fn run_multi_inner(
                         format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display())
                     })?;
                 let out = dir.join(format!("{stem}.{}", target_extension(target)));
-                run(
+                run_with_options(
                     input,
                     &out,
                     Some(target),
@@ -213,6 +257,7 @@ fn run_multi_inner(
                     embed_bin,
                     md_opts,
                     font_dirs.clone(),
+                    options,
                 )?;
             }
             Ok(())
@@ -288,6 +333,33 @@ pub fn execute(
     md_opts: &MdOpts,
     font_dirs: Vec<PathBuf>,
 ) -> anyhow::Result<ConvertReport> {
+    execute_with_options(
+        input,
+        output,
+        to,
+        strict,
+        loss_report,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+        &LoadOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_with_options(
+    input: &Path,
+    output: &Path,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    loss_report: Option<&Path>,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<ConvertReport> {
     let target = match to {
         Some(t) => t,
         None => infer_format(output)?,
@@ -309,7 +381,7 @@ pub fn execute(
         }
         crate::commands::output::reject_output_aliases(report_path, &[input, output])?;
     }
-    let doc = load_document(input)?;
+    let doc = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
     if matches!(target, ConvertFormat::Md) {
         let (media_destination, media_prefix) = markdown_media_paths(output, md_opts.media_dir)?;
         let warnings = crate::commands::output::write_validated_with_sidecar(

@@ -431,7 +431,10 @@ fn cli_convert_render_support_password_inputs_before_publication() {
             .output()
             .unwrap();
         assert!(!wrong.status.success());
-        assert!(!rejected.exists(), "wrong credentials must not publish output");
+        assert!(
+            !rejected.exists(),
+            "wrong credentials must not publish output"
+        );
         assert!(refusal(&wrong.stderr).contains("HWP_PASSWORD_REQUIRED_OR_INVALID"));
         assert!(!refusal(&wrong.stderr).contains(password));
     }
