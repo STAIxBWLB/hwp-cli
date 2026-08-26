@@ -34,8 +34,8 @@ pub use container::Hwp5Container;
 pub use error::Hwp5Error;
 pub use file_header::FileHeader;
 pub use read::{
-    BoundedReadLimits, BoundedReadSnapshot, ReadOptions, ReadResult, ScriptPresence, read_document,
-    read_document_with_options,
+    BoundedReadLimits, BoundedReadSnapshot, ReadOptions, ReadResult, ScriptPresence,
+    authenticate_container_with_options, read_document, read_document_with_options,
 };
 pub use summary::parse_summary;
 pub use write::{

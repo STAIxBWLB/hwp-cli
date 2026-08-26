@@ -498,6 +498,21 @@ pub fn read_document_with_options(path: &Path, options: &ReadOptions<'_>) -> Res
     read_document_from_container(&mut container)
 }
 
+/// Authenticates body access on an already opened container without reopening
+/// its path. Preview callers can then read `PrvText` from the exact container
+/// whose protected record streams validated the credential.
+pub fn authenticate_container_with_options(
+    container: &mut Hwp5Container,
+    options: &ReadOptions<'_>,
+) -> Result<()> {
+    if container.file_header().is_encrypted() {
+        read_password_protected_document(container, options)?;
+    } else {
+        container.check_body_readable()?;
+    }
+    Ok(())
+}
+
 fn read_document_from_container(container: &mut Hwp5Container) -> Result<ReadResult> {
     container.check_body_readable()?;
 

@@ -333,8 +333,8 @@ fn preview(path: &Path, options: &LoadOptions<'_>) -> Result<(), LoadDocumentErr
                 // PrvText itself may be plaintext, so authenticate the supplied
                 // credential through the bounded protected reader before
                 // exposing it. Wrong and absent credentials keep one refusal.
-                hwp5::read_document_with_options(
-                    path,
+                hwp5::authenticate_container_with_options(
+                    &mut container,
                     &hwp5::ReadOptions {
                         password: options.password.map(ResolvedPassword::as_str),
                     },
