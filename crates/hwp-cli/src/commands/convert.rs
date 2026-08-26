@@ -79,6 +79,16 @@ pub fn run_multi_with_password(
     font_dirs: Vec<PathBuf>,
     password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
+    // Resolve a password only after every document input has claimed its I/O
+    // channel. In particular, a later `-` must not let --password-stdin read
+    // the document bytes as a password before the collision is reported.
+    if password_args.password_stdin
+        && inputs
+            .iter()
+            .any(|input| input.as_os_str() == std::ffi::OsStr::new("-"))
+    {
+        anyhow::bail!("문서 입력과 --password-stdin은 모두 표준 입력을 사용할 수 없습니다");
+    }
     let input = inputs
         .first()
         .ok_or_else(|| anyhow::anyhow!("변환 입력이 비어 있습니다"))?;

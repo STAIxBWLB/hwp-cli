@@ -913,4 +913,23 @@ fn cli_convert_batch_and_document_stdin_keep_password_channels_distinct() {
         refusal(&collision.stderr)
             .contains("문서 입력과 --password-stdin은 모두 표준 입력을 사용할 수 없습니다")
     );
+
+    let non_first_collision = hwp()
+        .arg("convert")
+        .arg(&first)
+        .arg("-")
+        .arg("--out-dir")
+        .arg(dir.join("non-first-output"))
+        .arg("--to")
+        .arg("md")
+        .arg("--password-stdin")
+        .output()
+        .unwrap();
+    assert!(!non_first_collision.status.success());
+    assert!(
+        refusal(&non_first_collision.stderr)
+            .contains("문서 입력과 --password-stdin은 모두 표준 입력을 사용할 수 없습니다"),
+        "a non-first stdin input must be rejected before password resolution: {}",
+        refusal(&non_first_collision.stderr)
+    );
 }
