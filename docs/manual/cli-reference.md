@@ -57,6 +57,8 @@ Extract text
 | `--with-header-footer` |  |  | Also extract header and footer text (default: excluded) |
 | `--with-hidden` |  |  | Also extract hidden comment text (default: excluded) |
 | `--with-segments` |  |  | (markdown only) Emit the markdown together with the source coordinates (section/paragraph) of each output character range, as a one-line JSON envelope: {"markdown": ..., "segments": [...]} |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
 ## `hwp grep`
 

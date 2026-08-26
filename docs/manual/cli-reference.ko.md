@@ -57,6 +57,8 @@
 | `--with-header-footer` |  |  | 머리말/꼬리말 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-hidden` |  |  | 숨은 설명 텍스트도 추출에 포함 (기본: 제외) |
 | `--with-segments` |  |  | (markdown 전용) markdown과 함께 각 출력 문자 범위의 원본 좌표(섹션/문단)를 한 줄 JSON 봉투로 출력 — {"markdown": ..., "segments": [...]} |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
 ## `hwp grep`
 
