@@ -477,7 +477,7 @@ fn budget_boundaries_keep_the_hwp5_candidate_transform_in_memory() {
         probe_hwp5_encrypt_version_4;
     let mut ciphertext = [0x5au8; 31];
     let original = ciphertext;
-    transform_hwp5_encrypt_version_4_in_place(&mut ciphertext, "synthetic-password")
+    transform_hwp5_encrypt_version_4_in_place(&mut ciphertext, b"synthetic-password")
         .expect("candidate transform should accept a bounded synthetic stream");
     assert_ne!(ciphertext, original);
 }
@@ -501,7 +501,7 @@ fn hwp5_discovery_rejects_unmarked_inconsistent_and_unsupported_profiles_before_
     assert!(
         after_hwp5_discovery_gate(&inconsistent, || {
             accessed = true;
-            transform_hwp5_encrypt_version_4_in_place(&mut [0u8; 16], "synthetic")
+            transform_hwp5_encrypt_version_4_in_place(&mut [0u8; 16], b"synthetic")
         })
         .is_err()
     );

@@ -323,7 +323,12 @@ open entries still block the whole pipeline when they appear in real documents.
 | GA-5 | **Versions passed silently unchecked**: parse checked only the signature, letting 5.1.x and future versions through. Synthesis uses 5.1.x sample constants, so per-version record length differences beyond PARA_HEADER 24/22B are not gated | `hwp5/src/file_header.rs:91-115` (no version check), `write.rs:113` (only one 5.0.3.2 branch), `:1072-1089` (defaults to 5.1.0.1 on parse failure) | §3.2.1 version field | ✅ **resolved (2026-07-15)**: major ≠ 5 is refused with `UnsupportedVersion`, all 5.x allowed | read, round-trip | S |
 
 **GA lesson:** GA-1 required genuine files and crypto reverse engineering (L) and closed on
-2026-08-26 with evidence-bounded password support. GA-3 and GA-4 closed earlier as explicit local
+2026-08-26 with evidence-bounded password support. Its last defect was not in the cipher at all: a
+key is derived from the password's **CP949** bytes, not its UTF-8 bytes, so every non-ASCII password
+was refused while ASCII ones worked. ASCII is byte-identical in both encodings, which is exactly why
+a corpus needs a fixture whose credential is not ASCII ([07 H1](07-hangul-compat-rules.md)). The
+HWPX half is measured; the HWP5 half applies the same candidate list on the strength of sharing the
+assumption, and stays inference until a genuine HWP5 document with a non-ASCII password is measured. GA-3 and GA-4 closed earlier as explicit local
 refusals; their header branches remain honestly marked as unverified against genuine certificate,
 DRM or signed files. GA-2 was the other decryption case and is also closed. ★ It was M rather than L because
 Hancom's official

@@ -267,6 +267,25 @@ the six edit classes in [the checklist](../hancom-verification-checklist.md).
 
 ---
 
+## H. Password-protected input
+
+| # | Symptom | Cause | Fix | Ground truth |
+|---|---|---|---|---|
+| H1 | A genuine document opens in Hangul with a Korean password but every read here refuses it, with the same refusal a missing password produces | The key is derived from the password's **CP949 bytes**, not its UTF-8 bytes. An ASCII password is byte-identical in both encodings, so the divergence is invisible until a password contains a non-ASCII character | Derive from a closed, ordered candidate list: UTF-8 first, then CP949 when the password is not already ASCII and encodes without replacement | A genuine ODF-encrypted HWPX saved by Hangul 12.30.0.6446 (macOS) with the password `비밀번호1` authenticates all four protected entries under CP949 and none under UTF-8, UTF-16LE, UTF-16BE or UTF-8+NUL. Its encryption profile is otherwise identical to a working ASCII fixture: same AES-256-CBC, PBKDF2/1024, SHA-256 start key and sha256-1k checksum |
+
+Widening the encoding list is safe because it does not widen what authenticates. Every candidate
+still has to clear the boundary a single candidate had to clear (the per-entry checksum for hwpx,
+strict record identity for hwp5), and a wrong key fails there before any state is committed. What
+the list must never become is an open search: an encoding that cannot represent the password
+contributes no candidate rather than a replacement-mangled one.
+
+Only HWPX is established. The HWP5 transform consumes the same candidate list because it makes the
+same `as_bytes()` assumption, but no genuine HWP5 document with a non-ASCII password has been
+measured, so that half is inference and is marked as such in
+[12 §GA](12-feature-gaps.md).
+
+---
+
 ## Overall lessons: why this project stakes everything on Hancom testing and ground truth
 
 1. **Lenient tools give false passes.** pyhwp and our own renderer can pass 100% while Hancom refuses

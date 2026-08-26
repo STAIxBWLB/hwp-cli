@@ -910,14 +910,13 @@ pub fn unsupported_hwpx_manifest() -> String {
 /// owner corpus can establish which streams genuinely validate.
 pub fn transform_hwp5_encrypt_version_4_in_place(
     bytes: &mut [u8],
-    password: &str,
+    password: &[u8],
 ) -> Result<(), String> {
     use aes::Aes128;
     use aes::cipher::{Block, BlockCipherEncrypt, KeyInit};
     use sha1::Digest as _;
     use zeroize::Zeroize as _;
 
-    let password = password.as_bytes();
     let mut source = Zeroizing::new(Vec::with_capacity(password.len().saturating_mul(2)));
     for (index, byte) in password.iter().copied().enumerate() {
         let previous = if index == 0 {
@@ -1072,14 +1071,21 @@ pub fn probe_hwp5_encrypt_version_4(
         .map_err(|_| "HWP5 container cannot be opened for profile discovery".to_owned())?;
     let header = container.file_header().clone();
     after_hwp5_discovery_gate(&header, || {
-        probe_hwp5_candidate_streams(&mut container, &header, password)
+        let mut refusal = None;
+        for candidate in password_byte_candidates(password) {
+            match probe_hwp5_candidate_streams(&mut container, &header, &candidate) {
+                Ok(observation) => return Ok(observation),
+                Err(error) => refusal = Some(error),
+            }
+        }
+        Err(refusal.unwrap_or_else(|| "HWP5 password probe found no candidate stream".to_owned()))
     })
 }
 
 fn probe_hwp5_candidate_streams(
     container: &mut hwp5::Hwp5Container,
     header: &hwp5::FileHeader,
-    password: &str,
+    password: &[u8],
 ) -> Result<Hwp5ProbeObservation, String> {
     let streams = container.list_streams();
     let cfb_stream_bytes = streams.iter().try_fold(0u64, |total, stream| {
@@ -1279,9 +1285,42 @@ struct HwpxEncryptedEntry {
 /// material. Each protected entry must decrypt, pass the declared checksum,
 /// raw-inflate inside the fixed bounds and have valid XML when it declares an
 /// XML name. Any deviation is deliberately reported as one content-free error.
+/// The password byte encodings this harness must try, derived independently of
+/// the library it checks.
+///
+/// Hangul encodes a password in CP949 before deriving a key, not UTF-8. ASCII
+/// passwords are byte-identical in both, so only a non-ASCII credential
+/// diverges. The list is closed and ordered, and every candidate still has to
+/// clear the same checksum or record-identity boundary, so widening it cannot
+/// admit a credential that would otherwise be refused.
+pub fn password_byte_candidates(password: &str) -> Vec<Zeroizing<Vec<u8>>> {
+    let mut candidates = vec![Zeroizing::new(password.as_bytes().to_vec())];
+    if !password.is_ascii() {
+        let (encoded, _, had_errors) = encoding_rs::EUC_KR.encode(password);
+        if !had_errors {
+            candidates.push(Zeroizing::new(encoded.into_owned()));
+        }
+    }
+    candidates
+}
+
 pub fn probe_hwpx_password_profile(
     path: &Path,
     password: &str,
+) -> Result<HwpxProbeObservation, String> {
+    let mut refusal = None;
+    for candidate in password_byte_candidates(password) {
+        match probe_hwpx_password_profile_with_bytes(path, &candidate) {
+            Ok(observation) => return Ok(observation),
+            Err(error) => refusal = Some(error),
+        }
+    }
+    Err(refusal.unwrap_or_else(|| HWPX_INTEGRITY_ERROR.to_owned()))
+}
+
+fn probe_hwpx_password_profile_with_bytes(
+    path: &Path,
+    password: &[u8],
 ) -> Result<HwpxProbeObservation, String> {
     use aes::Aes256;
     use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::NoPadding};
@@ -1319,7 +1358,7 @@ pub fn probe_hwpx_password_profile(
         .map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
     let file = fs::File::open(path).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
     let mut raw_zip = zip::ZipArchive::new(file).map_err(|_| HWPX_INTEGRITY_ERROR.to_owned())?;
-    let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
+    let mut start_key = Zeroizing::new(Sha256::digest(password).to_vec());
     let mut validated_entry_count = 0usize;
     let mut protected_entry_bytes = 0u64;
     let mut checksum_scope = None;
@@ -1418,6 +1457,18 @@ pub fn probe_hwpx_password_profile(
 /// only a closed validation boundary for the owner-only ignored test. It never
 /// returns source data, key material, checksums, or decrypted bytes.
 pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeDiagnostic {
+    let mut last = None;
+    for candidate in password_byte_candidates(password) {
+        let diagnostic = diagnose_hwpx_password_profile_with_bytes(path, &candidate);
+        if diagnostic.stage.is_none() {
+            return diagnostic;
+        }
+        last = Some(diagnostic);
+    }
+    last.unwrap_or_else(|| diagnose_hwpx_password_profile_with_bytes(path, password.as_bytes()))
+}
+
+fn diagnose_hwpx_password_profile_with_bytes(path: &Path, password: &[u8]) -> HwpxProbeDiagnostic {
     use aes::Aes256;
     use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::NoPadding};
     use pbkdf2::pbkdf2_hmac;
@@ -1477,7 +1528,7 @@ pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeD
         Ok(zip) => zip,
         Err(_) => return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile),
     };
-    let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
+    let mut start_key = Zeroizing::new(Sha256::digest(password).to_vec());
     let mut protected_entry_bytes = 0u64;
     let mut checksum_scope = None;
 

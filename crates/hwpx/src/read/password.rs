@@ -230,9 +230,33 @@ fn complete_entry(entry: CurrentEntry) -> Result<Option<ProtectedEntry>> {
 
 /// Decrypts one observed-profile entry and returns plaintext only after its
 /// Hancom-observed inflated-plaintext checksum validates.
+/// The password byte encodings Hangul is observed to derive keys from.
+///
+/// Hangul encodes a password in the **legacy Korean code page (CP949)**, not
+/// UTF-8, before deriving a key. ASCII passwords are byte-identical in both
+/// encodings, which is why only a non-ASCII password diverges; a genuine
+/// document saved with the Korean password `비밀번호1` authenticates under
+/// CP949 and under no other encoding tried (UTF-8, UTF-16LE/BE, UTF-8+NUL).
+///
+/// The list is **closed and ordered**: UTF-8 first, then CP949, and CP949 only
+/// when the password is not already ASCII and encodes without replacement.
+/// This is not a guess-and-hope fallback: every candidate must still clear the
+/// same authentication boundary that a single candidate had to clear, so a
+/// wrong password cannot be admitted by adding an encoding.
+pub(crate) fn password_byte_candidates(password: &str) -> Vec<Zeroizing<Vec<u8>>> {
+    let mut candidates = vec![Zeroizing::new(password.as_bytes().to_vec())];
+    if !password.is_ascii() {
+        let (encoded, _, had_errors) = encoding_rs::EUC_KR.encode(password);
+        if !had_errors {
+            candidates.push(Zeroizing::new(encoded.into_owned()));
+        }
+    }
+    candidates
+}
+
 pub(crate) fn decrypt_entry(
     entry: &ProtectedEntry,
-    password: &str,
+    password: &[u8],
     ciphertext: Vec<u8>,
     limits: &PackageLimits,
     retained_plaintext: u64,
@@ -257,7 +281,7 @@ pub(crate) fn decrypt_entry(
         return Err(HwpxError::Encrypted);
     }
 
-    let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
+    let mut start_key = Zeroizing::new(Sha256::digest(password).to_vec());
     let mut key = Zeroizing::new([0u8; 32]);
     pbkdf2_hmac::<Sha1>(&start_key, &entry.salt, entry.iterations, &mut *key);
     start_key.zeroize();
@@ -448,7 +472,7 @@ mod tests {
             assert!(matches!(
                 decrypt_entry(
                     &entry,
-                    "irrelevant",
+                    b"irrelevant",
                     vec![0; 16],
                     &NATIVE_PACKAGE_LIMITS,
                     retained_plaintext,

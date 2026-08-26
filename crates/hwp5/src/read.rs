@@ -24,7 +24,7 @@ pub(crate) const PASSWORD_PROTECTED_DOCUMENT_LIVE_LIMIT: u64 =
 use password::{
     HWP5_PASSWORD_MAX_STREAM_BYTES, HWP5_PASSWORD_MAX_STREAMS,
     HWP5_PASSWORD_MAX_TOTAL_STREAM_NAME_BYTES, decrypt_hwp5_encrypt_version_4_in_place,
-    validate_live_bytes, validate_transform_bytes,
+    password_byte_candidates, validate_live_bytes, validate_transform_bytes,
 };
 
 const HWP5_PASSWORD_MAX_RECORDS: usize = 131_072;
@@ -984,6 +984,26 @@ fn read_password_protected_document(
     let header = container.file_header().clone();
     header.check_body_readable_with_password(options.password)?;
     let password = options.password.ok_or(Hwp5Error::Encrypted)?;
+    // Hangul derives the key from CP949 bytes, not UTF-8, so one password can
+    // have two byte encodings. Every candidate still has to clear the strict
+    // record-identity boundary below, which is what actually authenticates a
+    // key, so trying a second encoding cannot admit a wrong password. Nothing
+    // is returned until a candidate has passed that boundary on every stream.
+    let mut refusal = Hwp5Error::Encrypted;
+    for candidate in password_byte_candidates(password) {
+        match read_password_protected_document_with_bytes(container, &candidate) {
+            Ok(result) => return Ok(result),
+            Err(error) => refusal = error,
+        }
+    }
+    Err(refusal)
+}
+
+fn read_password_protected_document_with_bytes(
+    container: &mut Hwp5Container,
+    password: &[u8],
+) -> Result<ReadResult> {
+    let header = container.file_header().clone();
     let stream_infos = container
         .list_streams_bounded(
             HWP5_PASSWORD_MAX_STREAMS,
