@@ -262,6 +262,29 @@ pub fn validate_complete_run(
     }
 }
 
+pub fn validate_complete_run_for_binary(
+    receipt_dir: &Path,
+    expected: &[ExpectedFixture],
+    binary_version: &str,
+    binary_sha256: &str,
+) -> Result<(), String> {
+    validate_complete_run(receipt_dir, expected)?;
+    for entry in fs::read_dir(receipt_dir)
+        .map_err(|_| "password receipt directory is unavailable".to_owned())?
+    {
+        let entry =
+            entry.map_err(|_| "password receipt directory cannot be inspected".to_owned())?;
+        let receipt: PasswordDecryptionReceipt = serde_json::from_slice(
+            &fs::read(entry.path()).map_err(|_| "password receipt cannot be read".to_owned())?,
+        )
+        .map_err(|_| "password receipt is malformed".to_owned())?;
+        if receipt.binary_version != binary_version || receipt.binary_sha256 != binary_sha256 {
+            return Err("password receipt binary identity does not match this test binary".into());
+        }
+    }
+    Ok(())
+}
+
 fn receipt_name(encoded: &[u8]) -> String {
     let digest = Sha256::digest(encoded);
     format!(

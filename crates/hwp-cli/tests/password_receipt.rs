@@ -10,7 +10,7 @@ use std::thread;
 
 use password_receipt::{
     ExpectedFixture, PasswordDecryptionReceipt, ReceiptCase, validate_complete_run,
-    validate_receipt_json, write_receipt_atomic,
+    validate_complete_run_for_binary, validate_receipt_json, write_receipt_atomic,
 };
 
 fn temp_dir(label: &str) -> std::path::PathBuf {
@@ -121,6 +121,14 @@ fn complete_run_requires_exact_seven_manifest_matched_cases() {
     let dir = temp_dir("complete");
     publish_complete_run(&dir);
     validate_complete_run(&dir, &fixtures()).unwrap();
+    validate_complete_run_for_binary(&dir, &fixtures(), "hwp-cli-test-version", &sha('d')).unwrap();
+    assert!(
+        validate_complete_run_for_binary(&dir, &fixtures(), "other-version", &sha('d')).is_err()
+    );
+    assert!(
+        validate_complete_run_for_binary(&dir, &fixtures(), "hwp-cli-test-version", &sha('e'))
+            .is_err()
+    );
 }
 
 #[test]

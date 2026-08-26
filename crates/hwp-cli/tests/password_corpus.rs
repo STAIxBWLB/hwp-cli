@@ -38,3 +38,9 @@ fn present_manifest_requires_an_empty_external_receipt_directory() {
 fn genuine_owner_password_corpus() {
     password_corpus::run_password_corpus_from_env().unwrap();
 }
+
+#[test]
+#[ignore = "release-only revalidation after the genuine receipt run"]
+fn validate_existing_complete_run() {
+    password_corpus::validate_existing_complete_run_from_env().unwrap();
+}

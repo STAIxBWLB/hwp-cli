@@ -23,7 +23,7 @@ use zeroize::{Zeroize as _, Zeroizing};
 use password_corpus_manifest::{load_manifest_for_test, repo_root};
 use password_receipt::{
     ExpectedFixture, PasswordDecryptionReceipt, ReceiptCase, validate_complete_run,
-    write_receipt_atomic,
+    validate_complete_run_for_binary, write_receipt_atomic,
 };
 
 const PROFILE_EVIDENCE_VERSION: &str = "password-profile-evidence-v1";
@@ -118,6 +118,35 @@ pub fn run_password_corpus(
     Ok(CorpusRun::Completed)
 }
 
+pub fn validate_existing_complete_run_from_env() -> Result<(), String> {
+    let manifest_path = std::env::var_os("HWP_PASSWORD_CORPUS_MANIFEST")
+        .map(PathBuf::from)
+        .ok_or_else(|| "password corpus manifest is not configured".to_owned())?;
+    let receipt_dir = std::env::var_os("HWP_PASSWORD_RECEIPT_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| "password receipt directory is not configured".to_owned())?;
+    let repository_root = repo_root();
+    require_external_receipt_dir(&receipt_dir, &repository_root)?;
+    let manifest = read_manifest(&manifest_path)?;
+    load_manifest_for_test(&manifest, &repository_root, |reference| {
+        std::env::var(reference).ok()
+    })
+    .map_err(|_| "password corpus manifest is incomplete".to_owned())?;
+    let evidence = read_profile_evidence()?;
+    let fixtures = select_fixtures(&manifest, &evidence, &repository_root)?;
+    let expected = fixtures
+        .iter()
+        .map(|fixture| fixture.expected.clone())
+        .collect::<Vec<_>>();
+    let binary_sha256 = sha256_file(Path::new(env!("CARGO_BIN_EXE_hwp")))?;
+    validate_complete_run_for_binary(
+        &receipt_dir,
+        &expected,
+        env!("CARGO_PKG_VERSION"),
+        &binary_sha256,
+    )
+}
+
 fn read_manifest(path: &Path) -> Result<Value, String> {
     let bytes = fs::read(path).map_err(|_| "password corpus manifest cannot be read".to_owned())?;
     serde_json::from_slice(&bytes).map_err(|_| "password corpus manifest is invalid".to_owned())
@@ -127,15 +156,23 @@ fn require_empty_external_receipt_dir(
     receipt_dir: &Path,
     repository_root: &Path,
 ) -> Result<(), String> {
+    require_external_receipt_dir(receipt_dir, repository_root)?;
+    if fs::read_dir(receipt_dir)
+        .map_err(|_| "password receipt directory cannot be inspected".to_owned())?
+        .next()
+        .is_some()
+    {
+        return Err("password receipt directory must be an empty external directory".into());
+    }
+    Ok(())
+}
+
+fn require_external_receipt_dir(receipt_dir: &Path, repository_root: &Path) -> Result<(), String> {
     if !receipt_dir.is_absolute()
         || !receipt_dir.is_dir()
         || receipt_dir.starts_with(repository_root)
-        || fs::read_dir(receipt_dir)
-            .map_err(|_| "password receipt directory cannot be inspected".to_owned())?
-            .next()
-            .is_some()
     {
-        return Err("password receipt directory must be an empty external directory".into());
+        return Err("password receipt directory must be external".into());
     }
     Ok(())
 }
