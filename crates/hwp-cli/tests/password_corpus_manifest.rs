@@ -7,14 +7,15 @@
 mod password_corpus_manifest;
 
 use password_corpus_manifest::{
-    Hwp5ProbeObservation, Hwp5ValidatedStream, HwpxBufferSizes, after_hwp5_discovery_gate,
-    check_hwp5_budget, check_hwp5_discovery_eligibility, check_hwpx_budget,
-    discovery_would_write_evidence, hwpx_integrity_error, hwpx_unsupported_profile_error,
-    load_manifest_for_test, manifest_fixture, owner_manifest_path, parse_hwpx_profile,
-    probe_hwp5_encrypt_version_4, probe_hwpx_password_profile, repo_root, run_owner_discovery,
-    run_owner_discovery_from_env, serialize_hwp5_profile_observation,
-    serialize_hwpx_profile_observation, transform_hwp5_encrypt_version_4_in_place,
-    validate_hwp5_record_identity,
+    Hwp5ProbeObservation, Hwp5ValidatedStream, HwpxBufferSizes, HwpxProbeFailureStage,
+    after_hwp5_discovery_gate, check_hwp5_budget, check_hwp5_discovery_eligibility,
+    check_hwpx_budget, diagnose_hwpx_password_profile, discovery_would_write_evidence,
+    hwpx_integrity_error, hwpx_unsupported_profile_error, load_manifest_for_test, manifest_fixture,
+    owner_manifest_path, parse_hwpx_profile, probe_hwp5_encrypt_version_4,
+    probe_hwpx_password_profile, repo_root, run_owner_discovery, run_owner_discovery_from_env,
+    run_owner_profile_diagnostic, run_owner_profile_diagnostic_from_env,
+    serialize_hwp5_profile_observation, serialize_hwpx_profile_observation,
+    transform_hwp5_encrypt_version_4_in_place, validate_hwp5_record_identity,
 };
 
 struct SyntheticHwpxOptions {
@@ -865,8 +866,173 @@ fn hwpx_profile_evidence_is_limited_to_selected_content_free_facts() {
 }
 
 #[test]
+fn hwpx_diagnostic_stage_vocabulary_is_closed() {
+    let labels = HwpxProbeFailureStage::ALL.map(|stage| {
+        serde_json::to_value(stage)
+            .expect("closed diagnostic stage serializes")
+            .as_str()
+            .expect("diagnostic stage is a string")
+            .to_owned()
+    });
+    assert_eq!(
+        labels,
+        [
+            "ciphertext_storage_profile",
+            "key_derivation_cipher_init",
+            "zero_suffix",
+            "deflate_stream",
+            "compressed_checksum",
+            "declared_size",
+            "xml_structure",
+            "bounds",
+        ]
+    );
+}
+
+#[test]
+fn owner_profile_diagnostic_outputs_only_closed_redacted_metadata() {
+    use serde_json::json;
+
+    let nonce = format!("{}-owner-diagnostic", std::process::id());
+    let hwp5_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}.hwp"));
+    let manifest_path = std::env::temp_dir().join(format!("hwp-cli-{nonce}.json"));
+    std::fs::write(&hwp5_path, b"synthetic invalid hwp5")
+        .expect("synthetic HWP5 source is writable");
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let corrupt_hwpx_path = synthetic_hwpx_path(
+        "diagnostic-corrupt-checksum",
+        SyntheticHwpxOptions {
+            corrupt_checksum: true,
+            ..supported_options(compressed.clone(), padding.clone(), plaintext.len() as u64)
+        },
+    );
+    let valid_hwpx_path = synthetic_hwpx_path(
+        "diagnostic-valid",
+        supported_options(compressed, padding, plaintext.len() as u64),
+    );
+    let manifest = json!({
+        "version": "password-corpus-manifest-v1",
+        "fixtures": [
+            {
+                "fixture_id": "opaque-hwp5-baseline",
+                "source_path": hwp5_path,
+                "format": "hwp5",
+                "role": "baseline",
+                "credential_charset": "ascii",
+                "credential_ref": "PRIVATE_HWP5_REF"
+            },
+            {
+                "fixture_id": "opaque-hwpx-baseline",
+                "source_path": corrupt_hwpx_path,
+                "format": "hwpx",
+                "role": "baseline",
+                "credential_charset": "ascii",
+                "credential_ref": "PRIVATE_HWPX_REF"
+            },
+            {
+                "fixture_id": "opaque-unicode-success",
+                "source_path": valid_hwpx_path,
+                "format": "hwpx",
+                "role": "non_ascii_success",
+                "credential_charset": "non_ascii",
+                "credential_ref": "PRIVATE_UNICODE_REF"
+            }
+        ]
+    });
+    std::fs::write(&manifest_path, manifest.to_string()).expect("manifest is writable");
+
+    let lines =
+        run_owner_profile_diagnostic(&manifest_path, |_| Some("synthetic-password".to_owned()))
+            .expect("diagnostic runs all owner fixtures without publishing evidence");
+    assert_eq!(lines.len(), 3);
+    for line in &lines {
+        let value: serde_json::Value = serde_json::from_str(line).expect("diagnostic is JSON");
+        let keys = value
+            .as_object()
+            .expect("diagnostic is an object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            ["algorithm_id", "fixture_id", "format", "kdf_id", "result"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+        for forbidden in [
+            "/tmp/",
+            "PRIVATE_",
+            "synthetic-password",
+            "source_path",
+            "credential_ref",
+            "plaintext",
+            "ciphertext\"",
+            "salt",
+            "initialisation-vector",
+        ] {
+            assert!(
+                !line.contains(forbidden),
+                "diagnostic output must not expose {forbidden}"
+            );
+        }
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("\"result\":\"hwp5_probe\""))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("\"result\":\"compressed_checksum\""))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("\"result\":\"validated\""))
+    );
+
+    for path in [hwp5_path, manifest_path, corrupt_hwpx_path, valid_hwpx_path] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn hwpx_diagnostic_stage_does_not_widen_normal_discovery_errors() {
+    let (plaintext, compressed, padding) = synthetic_deflate_with_padding(1);
+    let path = synthetic_hwpx_path(
+        "diagnostic-normalization",
+        SyntheticHwpxOptions {
+            corrupt_checksum: true,
+            ..supported_options(compressed, padding, plaintext.len() as u64)
+        },
+    );
+    assert_eq!(
+        diagnose_hwpx_password_profile(&path, "synthetic-password").stage,
+        Some(HwpxProbeFailureStage::CompressedChecksum)
+    );
+    assert_eq!(
+        probe_hwpx_password_profile(&path, "synthetic-password").unwrap_err(),
+        hwpx_integrity_error(),
+        "the normal public probe must keep diagnostic stage details collapsed"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 #[ignore = "requires owner-controlled password corpus"]
 fn discover_owner_profiles() {
     run_owner_discovery_from_env()
         .expect("owner discovery must publish only after all profile probes validate");
+}
+
+#[test]
+#[ignore = "requires explicit owner diagnostic authorization and password corpus"]
+fn diagnose_owner_profiles() {
+    for line in run_owner_profile_diagnostic_from_env()
+        .expect("owner diagnostic must have explicit authorization, manifest, and credentials")
+    {
+        println!("{line}");
+    }
 }

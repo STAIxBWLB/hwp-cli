@@ -294,6 +294,111 @@ pub fn run_owner_discovery_from_env() -> Result<(), String> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum OwnerProfileDiagnosticOutcome {
+    Validated,
+    Hwp5Probe,
+    Hwpx(HwpxProbeFailureStage),
+}
+
+impl OwnerProfileDiagnosticOutcome {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Validated => "validated",
+            Self::Hwp5Probe => "hwp5_probe",
+            Self::Hwpx(HwpxProbeFailureStage::CiphertextStorageProfile) => {
+                "ciphertext_storage_profile"
+            }
+            Self::Hwpx(HwpxProbeFailureStage::KeyDerivationCipherInit) => {
+                "key_derivation_cipher_init"
+            }
+            Self::Hwpx(HwpxProbeFailureStage::ZeroSuffix) => "zero_suffix",
+            Self::Hwpx(HwpxProbeFailureStage::DeflateStream) => "deflate_stream",
+            Self::Hwpx(HwpxProbeFailureStage::CompressedChecksum) => "compressed_checksum",
+            Self::Hwpx(HwpxProbeFailureStage::DeclaredSize) => "declared_size",
+            Self::Hwpx(HwpxProbeFailureStage::XmlStructure) => "xml_structure",
+            Self::Hwpx(HwpxProbeFailureStage::Bounds) => "bounds",
+        }
+    }
+}
+
+/// Executes the owner-only diagnostic mode. The returned JSON lines are a
+/// deliberately closed terminal contract: opaque fixture ID, closed format,
+/// closed algorithm/KDF identifiers, and one outcome label. It neither writes
+/// evidence nor exposes source paths, credential references, or file content.
+pub fn run_owner_profile_diagnostic_from_env() -> Result<Vec<String>, String> {
+    if std::env::var_os("HWP_PASSWORD_DISCOVERY_DIAGNOSTIC").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return Err("owner profile diagnostic is not explicitly enabled".to_owned());
+    }
+    let manifest_path = owner_manifest_path(std::env::var_os("HWP_PASSWORD_CORPUS_MANIFEST"))?;
+    run_owner_profile_diagnostic(&manifest_path, |reference| std::env::var(reference).ok())
+}
+
+/// Parameterized test seam for the diagnostic redaction contract. Unlike the
+/// discovery path, this never hashes a source or writes a receipt.
+pub fn run_owner_profile_diagnostic<F>(
+    manifest_path: &Path,
+    resolve_credential: F,
+) -> Result<Vec<String>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !manifest_path.is_absolute() || !manifest_path.is_file() {
+        return Err("owner password corpus manifest is unavailable".to_owned());
+    }
+    let manifest_bytes = fs::read(manifest_path)
+        .map_err(|_| "owner password corpus manifest cannot be read".to_owned())?;
+    let manifest: Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|_| "owner password corpus manifest is invalid".to_owned())?;
+    load_manifest_for_test(&manifest, &repo_root(), |reference| {
+        resolve_credential(reference)
+    })?;
+    let fixtures = owner_fixtures(&manifest, resolve_credential)?;
+
+    fixtures
+        .iter()
+        .map(|fixture| {
+            let (algorithm_id, kdf_id, outcome) = match fixture.format.as_str() {
+                "hwp5" => (
+                    "hwp5-encrypt-version-4",
+                    "hwp5-password-transform",
+                    if fixture.source_path.is_file()
+                        && probe_hwp5_encrypt_version_4(&fixture.source_path, &fixture.credential)
+                            .is_ok()
+                    {
+                        OwnerProfileDiagnosticOutcome::Validated
+                    } else {
+                        OwnerProfileDiagnosticOutcome::Hwp5Probe
+                    },
+                ),
+                "hwpx" => {
+                    let diagnostic =
+                        diagnose_hwpx_password_profile(&fixture.source_path, &fixture.credential);
+                    (
+                        diagnostic.algorithm_id,
+                        diagnostic.kdf_id,
+                        diagnostic
+                            .stage
+                            .map(OwnerProfileDiagnosticOutcome::Hwpx)
+                            .unwrap_or(OwnerProfileDiagnosticOutcome::Validated),
+                    )
+                }
+                _ => return Err("owner password corpus fixture format is unsupported".to_owned()),
+            };
+            serde_json::to_string(&json!({
+                "fixture_id": fixture.fixture_id,
+                "format": fixture.format,
+                "algorithm_id": algorithm_id,
+                "kdf_id": kdf_id,
+                "result": outcome.label(),
+            }))
+            .map_err(|_| "owner profile diagnostic cannot be encoded".to_owned())
+        })
+        .collect()
+}
+
 pub fn owner_manifest_path(value: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
     value
         .map(PathBuf::from)
@@ -1010,6 +1115,43 @@ pub struct HwpxProbeObservation {
     pub protected_entry_bytes: u64,
 }
 
+/// Closed, test-only failure labels for the HWPX owner-profile probe. These
+/// identify a validation boundary without carrying the value that failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HwpxProbeFailureStage {
+    CiphertextStorageProfile,
+    KeyDerivationCipherInit,
+    ZeroSuffix,
+    DeflateStream,
+    CompressedChecksum,
+    DeclaredSize,
+    XmlStructure,
+    Bounds,
+}
+
+impl HwpxProbeFailureStage {
+    pub const ALL: [Self; 8] = [
+        Self::CiphertextStorageProfile,
+        Self::KeyDerivationCipherInit,
+        Self::ZeroSuffix,
+        Self::DeflateStream,
+        Self::CompressedChecksum,
+        Self::DeclaredSize,
+        Self::XmlStructure,
+        Self::Bounds,
+    ];
+}
+
+/// Content-free outcome of the test-only HWPX probe diagnostic. Its two
+/// identifiers are a closed vocabulary, never copied from private metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HwpxProbeDiagnostic {
+    pub algorithm_id: &'static str,
+    pub kdf_id: &'static str,
+    pub stage: Option<HwpxProbeFailureStage>,
+}
+
 fn profile_observation_hwpx(observation: HwpxProbeObservation) -> ProfileObservation {
     ProfileObservation::Hwpx {
         algorithm_id: observation.algorithm_id,
@@ -1183,6 +1325,165 @@ pub fn probe_hwpx_password_profile(
         validated_entry_count,
         protected_entry_bytes,
     })
+}
+
+/// Runs the same admitted HWPX profile checks as the public probe, but exposes
+/// only a closed validation boundary for the owner-only ignored test. It never
+/// returns source data, key material, checksums, or decrypted bytes.
+pub fn diagnose_hwpx_password_profile(path: &Path, password: &str) -> HwpxProbeDiagnostic {
+    use aes::Aes256;
+    use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::NoPadding};
+    use pbkdf2::pbkdf2_hmac;
+
+    let unavailable = || HwpxProbeDiagnostic {
+        algorithm_id: "unavailable",
+        kdf_id: "unavailable",
+        stage: Some(HwpxProbeFailureStage::CiphertextStorageProfile),
+    };
+    let mut package = match hwpx::HwpxPackage::open(path) {
+        Ok(package) => package,
+        Err(_) => return unavailable(),
+    };
+    let manifest = match package.read_entry_string("META-INF/manifest.xml") {
+        Ok(manifest) => manifest,
+        Err(_) => return unavailable(),
+    };
+    let profile = match parse_hwpx_profile(&manifest) {
+        Ok(profile) => profile,
+        Err(_) => return unavailable(),
+    };
+    let profile_diagnostic = |stage| HwpxProbeDiagnostic {
+        algorithm_id: HWPX_ALGORITHM,
+        kdf_id: HWPX_KDF,
+        stage: Some(stage),
+    };
+    let protected = match parse_hwpx_encrypted_entries(&manifest) {
+        Ok(entries) if !entries.is_empty() => entries,
+        _ => return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile),
+    };
+    if protected.iter().any(|entry| {
+        entry.algorithm_id != profile.algorithm_id
+            || entry.kdf_id != profile.kdf_id
+            || entry.start_key_id != profile.start_key_id
+            || entry.checksum_id != profile.checksum_id
+            || entry.iv.len() != 16
+            || entry.salt.is_empty()
+            || entry.salt.len() > 1024
+            || entry.key_size != 32
+            || entry.iterations == 0
+            || entry.iterations > HWPX_MAX_PBKDF2_ITERATIONS
+            || entry.checksum.len() != 32
+    }) {
+        return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile);
+    }
+    let entries = match package.entries() {
+        Ok(entries) => entries,
+        Err(_) => return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile),
+    };
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile),
+    };
+    let mut raw_zip = match zip::ZipArchive::new(file) {
+        Ok(zip) => zip,
+        Err(_) => return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile),
+    };
+    let mut start_key = Zeroizing::new(Sha256::digest(password.as_bytes()).to_vec());
+    let mut protected_entry_bytes = 0u64;
+
+    for entry in &protected {
+        let Some(zip_entry) = entries
+            .iter()
+            .find(|candidate| candidate.name == entry.name)
+        else {
+            return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile);
+        };
+        if check_hwpx_budget(
+            &entry.name,
+            HwpxBufferSizes {
+                ciphertext: zip_entry.size,
+                decrypted_compressed: zip_entry.size,
+                inflated: entry.declared_plaintext_bytes,
+                parser_owned: 0,
+            },
+        )
+        .is_err()
+        {
+            return profile_diagnostic(HwpxProbeFailureStage::Bounds);
+        }
+        let mut raw_entry = match raw_zip.by_name(&entry.name) {
+            Ok(entry) => entry,
+            Err(_) => return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile),
+        };
+        if raw_entry.compression() != zip::CompressionMethod::Stored
+            || raw_entry.size() != zip_entry.size
+            || raw_entry.compressed_size() != zip_entry.size
+            || zip_entry.size == 0
+            || zip_entry.size % 16 != 0
+        {
+            return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile);
+        }
+        let ciphertext_capacity = match usize::try_from(zip_entry.size) {
+            Ok(capacity) => capacity,
+            Err(_) => return profile_diagnostic(HwpxProbeFailureStage::Bounds),
+        };
+        let mut ciphertext = Zeroizing::new(Vec::new());
+        if ciphertext.try_reserve_exact(ciphertext_capacity).is_err() {
+            return profile_diagnostic(HwpxProbeFailureStage::Bounds);
+        }
+        if raw_entry.read_to_end(&mut ciphertext).is_err()
+            || ciphertext.len() as u64 != zip_entry.size
+        {
+            return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile);
+        }
+        let mut key = Zeroizing::new([0u8; 32]);
+        pbkdf2_hmac::<sha1::Sha1>(&start_key, &entry.salt, entry.iterations, &mut *key);
+        let decryptor = match cbc::Decryptor::<Aes256>::new_from_slices(&*key, &entry.iv) {
+            Ok(decryptor) => decryptor,
+            Err(_) => return profile_diagnostic(HwpxProbeFailureStage::KeyDerivationCipherInit),
+        };
+        let compressed = match decryptor.decrypt_padded::<NoPadding>(&mut ciphertext) {
+            Ok(compressed) => compressed,
+            Err(_) => return profile_diagnostic(HwpxProbeFailureStage::KeyDerivationCipherInit),
+        };
+        let (plaintext, compressed_end) =
+            match inflate_raw_bounded(compressed, entry.declared_plaintext_bytes, &entry.name) {
+                Ok(value) => value,
+                Err(_) => return profile_diagnostic(HwpxProbeFailureStage::DeflateStream),
+            };
+        let suffix = &compressed[compressed_end..];
+        if suffix.len() > 15 || suffix.iter().any(|byte| *byte != 0) {
+            return profile_diagnostic(HwpxProbeFailureStage::ZeroSuffix);
+        }
+        if Sha256::digest(&compressed[..compressed_end.min(1024)]).as_slice()
+            != entry.checksum.as_slice()
+        {
+            return profile_diagnostic(HwpxProbeFailureStage::CompressedChecksum);
+        }
+        if plaintext.len() as u64 != entry.declared_plaintext_bytes {
+            return profile_diagnostic(HwpxProbeFailureStage::DeclaredSize);
+        }
+        if entry.name.to_ascii_lowercase().ends_with(".xml")
+            && validate_xml_structure(&plaintext).is_err()
+        {
+            return profile_diagnostic(HwpxProbeFailureStage::XmlStructure);
+        }
+        protected_entry_bytes =
+            match protected_entry_bytes.checked_add(entry.declared_plaintext_bytes) {
+                Some(total) if total <= HWPX_LIVE_BYTES => total,
+                _ => return profile_diagnostic(HwpxProbeFailureStage::Bounds),
+            };
+    }
+    use zeroize::Zeroize as _;
+    start_key.zeroize();
+    if package.verify_integrity().is_err() {
+        return profile_diagnostic(HwpxProbeFailureStage::CiphertextStorageProfile);
+    }
+    HwpxProbeDiagnostic {
+        algorithm_id: HWPX_ALGORITHM,
+        kdf_id: HWPX_KDF,
+        stage: None,
+    }
 }
 
 fn inflate_raw_bounded(
