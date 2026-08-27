@@ -10,6 +10,25 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `hwp edit --set-cell-by-label "label=value"` fills a uniquely resolved adjacent or header-row
+  form value cell. The operation is atomic by default, rejects ambiguous and duplicate targets,
+  supports `--label-table` for recursive-table scope, and is available through the typed MCP edit
+  surface.
+
+- The bundled `hwp` skill now exports a bilingual native editing crosswalk for inspection,
+  anchor-based paragraph editing, data-driven table fill, label-value forms, and the
+  validate-plus-render guard workflow. It records explicit limits for section-index, raw-ZIP, and
+  structural XML-drift operations rather than claiming unsupported parity.
+
+**Changed**
+
+- These merged source changes are a prerequisite for retiring the old `hwpx` skill, not
+  replacement evidence by themselves. The separate release plan must publish and record the
+  first supported tag, verify its exported skill tree and old-template compatibility, and only
+  then allow the retirement gate to proceed.
+
 ## [0.11.0]
 
 **Added**
