@@ -10,6 +10,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.12.1]
+
+**Fixed**
+
+- Label-form fill now preserves explicit adjacent `{{label}}` value-cell precedence even when a
+  following data row makes the first row look like a complete table header. Complete multi-column
+  headers still resolve below the selected header, and the existing atomic ambiguity, duplicate,
+  scope and redacted-diagnostic guarantees remain covered by regression tests.
+
+- `hwp skill export` now rejects symlinked destination components and files for regular exports,
+  including the fixed Codex and Claude install targets. It stages a complete regular-file tree and
+  publishes it as one directory replacement, restoring the prior tree if publication fails so an
+  interrupted export cannot leave a mixed-version skill tree.
+
 ## [0.12.0]
 
 **Added**

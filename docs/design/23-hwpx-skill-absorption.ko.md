@@ -58,7 +58,7 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 | analyze | `hwp info` + `hwp cat --format json` | 2.5 | composed — v0.12.0 릴리스 레시피 |
 | guard | `hwp validate` + `hwp render --report` | 2.5 | composed — v0.12.0 릴리스 레시피, raw structural-drift metric은 아님 |
 | edit-section | `hwp cat --format json` + anchor 기반 `hwp edit` | 2.5 | limited — v0.12.0 릴리스 레시피, raw section-index 계약 없음 |
-| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.0 릴리스 바이너리의 인접, header/data-row, scope, 원자적 거부 영수증(§3.1) |
+| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 릴리스 바이너리의 인접 양식 우선순위, header/data-row, scope, 원자적 거부 영수증. §3.1은 역사적 v0.12.0 기록으로 유지 |
 | to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — 기존 soffice 폴백은 **의도적으로 폐기** (네이티브 엔진만) |
 | render-pdf | to-pdf와 동일 | 2.1 | verified (`to-pdf --engine hwp`의 **별칭**) |
 | to-html | `hwp cat --format html` | 2.1 | verified |
@@ -87,7 +87,10 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 
 첫 Phase 2.5 replacement 릴리스는 [v0.12.0](https://github.com/STAIxBWLB/hwp-cli/releases/tag/v0.12.0)이며 main 커밋 `79cec823053d6f7b212ee1288fb83eeb7114cef7`에 annotated tag로 생성했습니다. Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz`의 SHA-256은 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`입니다. checkout binary가 아닌 다운로드 asset은 `hwp 0.12.0`을 보고했고, 두 editing recipe와 `hwpx` sibling 없는 하나의 `hwp` tree를 export했으며 tagged install hash equality를 통과했습니다. 닫힌 여섯 템플릿, label-fill, split-run 증거는 `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`에 기록했습니다.
 
-편집 레시피 쌍은 v0.12.0을 최소 지원 버전으로 고정합니다. 상태는 의도적으로 경계를 둡니다. 네이티브 inspection과 guard는 composed 워크플로우이고, label과 section 편집은 limited 네이티브 워크플로우이며, raw unpack/repack은 intentionally retired입니다.
+편집 레시피 쌍은 수정된 label-form 및 일반 skill-export 계약이 처음 포함된 v0.12.1을 최소 지원
+버전으로 고정합니다. 상태는 의도적으로 경계를 둡니다. 네이티브 inspection과 guard는 composed
+워크플로우이고, label과 section 편집은 limited 네이티브 워크플로우이며, raw unpack/repack은 intentionally
+retired입니다.
 
 ### 3.2 여백 기록 (D-14)
 

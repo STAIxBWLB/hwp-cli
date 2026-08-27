@@ -8,9 +8,9 @@ commands with a released `hwp` binary, not a local checkout.
 
 ## Scope and release boundary
 
-Minimum supported `hwp` version: **v0.12.0**. This release is the first Phase 2.5 replacement
-candidate. A local build, an unversioned `PATH` binary, or an unmerged branch is not retirement or
-replacement evidence.
+Minimum supported `hwp` version: **v0.12.1**. This release carries the corrected Phase 2.5
+label-form and skill-export contracts. A local build, an unversioned `PATH` binary, or an unmerged
+branch is not retirement or replacement evidence.
 
 The eight Markdown files under `templates/` remain the bundled template SSOT. The six old binary
 templates are a read-only retirement compatibility corpus; do not copy, archive, or edit them.

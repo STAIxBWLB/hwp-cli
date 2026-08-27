@@ -98,6 +98,34 @@ fn set_cell_by_label_fills_unique_adjacent_cell_and_validates() {
 }
 
 #[test]
+fn set_cell_by_label_prefers_a_nonempty_adjacent_form_value_over_a_following_data_row() {
+    let source = label_form(
+        "label_adjacent_precedence",
+        "| 성명 | {{성명}} |\n|---|---|\n| below-target-must-remain | data |\n",
+    );
+    let output = tmp("label_adjacent_precedence_out.hwpx");
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .args(["--set-cell-by-label", "성명=홍길동", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "adjacent form precedence: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let text = cat(&output);
+    assert!(text.contains("홍길동"), "adjacent value is changed");
+    assert!(
+        text.contains("below-target-must-remain"),
+        "a following data-row cell must not be changed"
+    );
+}
+
+#[test]
 fn set_cell_by_label_fills_first_data_row_below_a_header_label() {
     let source = label_form("label_header", "| 성명 |\n|---|\n| |\n");
     let output = tmp("label_header_out.hwpx");

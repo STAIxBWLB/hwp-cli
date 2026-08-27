@@ -23,6 +23,7 @@
 use std::fs;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -574,23 +575,291 @@ fn home_dir() -> anyhow::Result<PathBuf> {
         .with_context(|| format!("홈 디렉터리 환경변수 ${VAR} 가 설정되어 있지 않습니다"))
 }
 
-/// Writes the embedded skill tree under `dir` (creating parent directories
-/// as needed) and returns `dir`. Files in `dir` that are not listed in
-/// `SKILL_FILES` are left untouched — export never deletes.
+/// Writes the embedded skill tree under `dir` and returns `dir`.
+///
+/// A complete replacement tree is built in a private sibling staging
+/// directory and atomically published. Existing regular files outside
+/// `SKILL_FILES` are retained, while all path components and files are checked
+/// with `symlink_metadata` before anything is written.
 fn export(dir: &Path) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(dir)
-        .with_context(|| format!("스킬 디렉터리를 만들 수 없습니다: {}", dir.display()))?;
-    for file in SKILL_FILES {
-        let path = dir.join(file.rel);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("스킬 디렉터리를 만들 수 없습니다: {}", parent.display())
-            })?;
+    let parent = parent_or_current(dir);
+    ensure_regular_directory(parent)?;
+    let staged = create_private_directory(parent, "hwp-export-stage")?;
+    let result = (|| {
+        match fs::symlink_metadata(dir) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                anyhow::bail!(
+                    "스킬 경로의 심볼릭 링크를 사용할 수 없습니다: {}",
+                    dir.display()
+                )
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                anyhow::bail!("스킬 경로가 디렉터리가 아닙니다: {}", dir.display())
+            }
+            Ok(metadata) => {
+                fs::set_permissions(&staged, metadata.permissions()).with_context(|| {
+                    format!(
+                        "스킬 스테이징 디렉터리 권한을 설정할 수 없습니다: {}",
+                        staged.display()
+                    )
+                })?;
+                copy_regular_tree(dir, &staged)?;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("스킬 경로를 확인할 수 없습니다: {}", dir.display()));
+            }
         }
-        fs::write(&path, file.contents)
-            .with_context(|| format!("{}를 쓸 수 없습니다: {}", file.rel, path.display()))?;
+
+        for file in SKILL_FILES {
+            let path = staged.join(file.rel);
+            if let Some(parent) = path.parent() {
+                ensure_regular_directory(parent)?;
+            }
+            write_regular_file(&path, file.contents)
+                .with_context(|| format!("{}를 쓸 수 없습니다: {}", file.rel, path.display()))?;
+        }
+        publish_staged_tree(dir, &staged)
+    })();
+    if result.is_err() && staged.exists() {
+        remove_regular_tree(&staged)?;
     }
+    result?;
     Ok(dir.to_path_buf())
+}
+
+fn parent_or_current(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn ensure_regular_directory(path: &Path) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            anyhow::bail!(
+                "스킬 경로의 심볼릭 링크를 사용할 수 없습니다: {}",
+                path.display()
+            )
+        }
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => anyhow::bail!("스킬 경로가 디렉터리가 아닙니다: {}", path.display()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            ensure_regular_directory(parent_or_current(path))?;
+            match fs::create_dir(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("스킬 디렉터리를 만들 수 없습니다: {}", path.display())
+                    });
+                }
+            }
+            let metadata = fs::symlink_metadata(path).with_context(|| {
+                format!("스킬 디렉터리를 확인할 수 없습니다: {}", path.display())
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                anyhow::bail!("스킬 디렉터리가 안전하지 않습니다: {}", path.display());
+            }
+            Ok(())
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("스킬 디렉터리를 확인할 수 없습니다: {}", path.display())),
+    }
+}
+
+fn create_private_directory(parent: &Path, prefix: &str) -> anyhow::Result<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    for attempt in 0..32 {
+        let path = parent.join(format!(
+            ".{prefix}-{}-{nonce}-{attempt}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "스킬 스테이징 디렉터리를 만들 수 없습니다: {}",
+                        path.display()
+                    )
+                });
+            }
+        }
+    }
+    anyhow::bail!("고유한 스킬 스테이징 디렉터리를 만들 수 없습니다")
+}
+
+fn copy_regular_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let metadata = fs::symlink_metadata(source)
+        .with_context(|| format!("스킬 경로를 확인할 수 없습니다: {}", source.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!(
+            "스킬 경로가 안전한 디렉터리가 아닙니다: {}",
+            source.display()
+        );
+    }
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("스킬 디렉터리를 읽을 수 없습니다: {}", source.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("스킬 디렉터리를 읽을 수 없습니다: {}", source.display()))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path).with_context(|| {
+            format!("스킬 경로를 확인할 수 없습니다: {}", source_path.display())
+        })?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "스킬 경로의 심볼릭 링크를 사용할 수 없습니다: {}",
+                source_path.display()
+            );
+        }
+        if metadata.is_dir() {
+            fs::create_dir(&destination_path).with_context(|| {
+                format!(
+                    "스킬 스테이징 디렉터리를 만들 수 없습니다: {}",
+                    destination_path.display()
+                )
+            })?;
+            fs::set_permissions(&destination_path, metadata.permissions()).with_context(|| {
+                format!(
+                    "스킬 스테이징 디렉터리 권한을 설정할 수 없습니다: {}",
+                    destination_path.display()
+                )
+            })?;
+            copy_regular_tree(&source_path, &destination_path)?;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "스킬 파일을 스테이징할 수 없습니다: {}",
+                    source_path.display()
+                )
+            })?;
+        } else {
+            anyhow::bail!(
+                "스킬 경로가 일반 파일이 아닙니다: {}",
+                source_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn write_regular_file(path: &Path, contents: &str) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            anyhow::bail!("스킬 파일 경로가 안전하지 않습니다: {}", path.display())
+        }
+        Ok(_) => fs::remove_file(path)
+            .with_context(|| format!("기존 스킬 파일을 제거할 수 없습니다: {}", path.display()))?,
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("스킬 파일 경로를 확인할 수 없습니다: {}", path.display())
+            });
+        }
+    }
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("스킬 파일을 쓸 수 없습니다: {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("스킬 파일을 쓸 수 없습니다: {}", path.display()))
+}
+
+fn publish_staged_tree(dir: &Path, staged: &Path) -> anyhow::Result<()> {
+    publish_staged_tree_with(dir, staged, |source, destination| {
+        fs::rename(source, destination)
+    })
+}
+
+fn publish_staged_tree_with<F>(dir: &Path, staged: &Path, mut rename: F) -> anyhow::Result<()>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    let parent = parent_or_current(dir);
+    let existing = match fs::symlink_metadata(dir) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                anyhow::bail!("스킬 경로가 안전한 디렉터리가 아닙니다: {}", dir.display());
+            }
+            true
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("스킬 경로를 확인할 수 없습니다: {}", dir.display()));
+        }
+    };
+    if !existing {
+        return rename(staged, dir)
+            .with_context(|| format!("스킬 트리를 게시할 수 없습니다: {}", dir.display()));
+    }
+
+    let backup = create_private_directory(parent, "hwp-export-backup")?;
+    fs::remove_dir(&backup)
+        .with_context(|| format!("스킬 백업 경로를 준비할 수 없습니다: {}", backup.display()))?;
+    rename(dir, &backup)
+        .with_context(|| format!("기존 스킬 트리를 백업할 수 없습니다: {}", dir.display()))?;
+    if let Err(error) = rename(staged, dir) {
+        return match rename(&backup, dir) {
+            Ok(()) => Err(error).with_context(|| {
+                format!(
+                    "스킬 트리를 게시할 수 없어 기존 버전을 복원했습니다: {}",
+                    dir.display()
+                )
+            }),
+            Err(restore_error) => Err(anyhow::anyhow!(
+                "스킬 트리 게시과 기존 버전 복원에 모두 실패했습니다: publish={error}; restore={restore_error}"
+            )),
+        };
+    }
+    if let Err(error) = remove_regular_tree(&backup) {
+        eprintln!("스킬 이전 버전 백업을 정리하지 못했습니다: {error}");
+    }
+    Ok(())
+}
+
+fn remove_regular_tree(path: &Path) -> anyhow::Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("스킬 임시 경로를 확인할 수 없습니다: {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "스킬 임시 경로의 심볼릭 링크를 제거할 수 없습니다: {}",
+            path.display()
+        );
+    }
+    if metadata.is_file() {
+        return fs::remove_file(path)
+            .with_context(|| format!("스킬 임시 파일을 제거할 수 없습니다: {}", path.display()));
+    }
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "스킬 임시 경로가 일반 파일이나 디렉터리가 아닙니다: {}",
+            path.display()
+        );
+    }
+    for entry in fs::read_dir(path)
+        .with_context(|| format!("스킬 임시 디렉터리를 읽을 수 없습니다: {}", path.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!("스킬 임시 디렉터리를 읽을 수 없습니다: {}", path.display())
+        })?;
+        remove_regular_tree(&entry.path())?;
+    }
+    fs::remove_dir(path).with_context(|| {
+        format!(
+            "스킬 임시 디렉터리를 제거할 수 없습니다: {}",
+            path.display()
+        )
+    })
 }
 
 /// Writes `skills/hwp/SKILL.md` under an already-resolved canonical Quick
@@ -776,6 +1045,12 @@ mod tests {
     }
 
     #[test]
+    fn bare_relative_export_uses_the_current_directory_as_its_parent() {
+        assert_eq!(parent_or_current(Path::new("hwp")), Path::new("."));
+        assert_eq!(parent_or_current(Path::new("./hwp")), Path::new("."));
+    }
+
+    #[test]
     fn export_never_touches_files_outside_the_table() {
         let dir = temp_dir("skill-export-merge");
         fs::create_dir_all(dir.join("references")).expect("pre-create");
@@ -824,6 +1099,76 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&home);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fixed_codex_export_rejects_symlinked_components_and_files() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_dir("skill-export-codex-symlink");
+        let outside = home.join("outside");
+        fs::create_dir_all(&outside).expect("create outside");
+        let dir = match install_target_under(InstallTarget::Codex, &home, None).expect("target") {
+            ExportTarget::Plain(dir) => dir,
+            ExportTarget::QuickProfile(_) => panic!("codex resolves to a plain directory"),
+        };
+
+        symlink(&outside, home.join(".codex")).expect("symlink component");
+        assert!(
+            export(&dir).is_err(),
+            "a Codex path component symlink is rejected"
+        );
+        assert!(
+            !outside.join("skills/hwp/SKILL.md").exists(),
+            "the component symlink target must not receive exported files"
+        );
+        fs::remove_file(home.join(".codex")).expect("remove component symlink");
+
+        fs::create_dir_all(dir.join("references")).expect("create regular target");
+        symlink(&outside, dir.join("references/link")).expect("symlink nested component");
+        assert!(
+            export(&dir).is_err(),
+            "a nested Codex path component symlink is rejected"
+        );
+        fs::remove_file(dir.join("references/link")).expect("remove nested component symlink");
+
+        let outside_file = outside.join("editing-recipes.md");
+        fs::write(&outside_file, b"keep").expect("seed outside file");
+        symlink(&outside_file, dir.join("references/editing-recipes.md"))
+            .expect("symlink exported file");
+        assert!(export(&dir).is_err(), "a Codex file symlink is rejected");
+        assert_eq!(fs::read(&outside_file).unwrap(), b"keep");
+        fs::remove_file(dir.join("references/editing-recipes.md")).expect("remove file symlink");
+        remove_regular_tree(&home).expect("clean regular test root");
+    }
+
+    #[test]
+    fn staged_export_rolls_back_the_whole_tree_when_publish_fails() {
+        let root = temp_dir("skill-export-rollback");
+        let dir = root.join("hwp");
+        fs::create_dir_all(dir.join("references")).expect("create existing target");
+        fs::write(dir.join("SKILL.md"), b"old-skill").expect("seed old skill");
+        fs::write(dir.join("references/keep.md"), b"old-reference").expect("seed old reference");
+        let staged = create_private_directory(&root, "hwp-export-test-stage").expect("stage");
+        fs::write(staged.join("SKILL.md"), b"new-skill").expect("seed staged skill");
+
+        let error = publish_staged_tree_with(&dir, &staged, |source, destination| {
+            if source == staged {
+                return Err(std::io::Error::other("forced staged publish failure"));
+            }
+            fs::rename(source, destination)
+        })
+        .expect_err("a staged publish failure must be returned");
+        assert!(error.to_string().contains("복원"));
+        assert_eq!(fs::read(dir.join("SKILL.md")).unwrap(), b"old-skill");
+        assert_eq!(
+            fs::read(dir.join("references/keep.md")).unwrap(),
+            b"old-reference",
+            "failure must not leave a mixed-version target tree"
+        );
+        remove_regular_tree(&staged).expect("clean staged tree");
+        remove_regular_tree(&root).expect("clean test root");
     }
 
     #[test]

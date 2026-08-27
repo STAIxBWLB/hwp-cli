@@ -8,8 +8,9 @@
 
 ## 범위와 릴리스 경계
 
-지원 최소 `hwp` 버전은 **v0.12.0**입니다. 이 릴리스는 첫 Phase 2.5 replacement 후보입니다.
-로컬 빌드, 버전 없는 `PATH` 바이너리, 병합 전 브랜치는 retirement 또는 replacement 근거가 아닙니다.
+지원 최소 `hwp` 버전은 **v0.12.1**입니다. 이 릴리스에는 수정된 Phase 2.5 label-form 및 skill-export
+계약이 포함됩니다. 로컬 빌드, 버전 없는 `PATH` 바이너리, 병합 전 브랜치는 retirement 또는 replacement
+근거가 아닙니다.
 
 `templates/` 아래의 마크다운 8개는 번들 템플릿 SSOT로 유지합니다. 이전 바이너리 템플릿 6개는
 읽기 전용 retirement 호환성 코퍼스이며, 복사, 보관, 편집하지 않습니다.
