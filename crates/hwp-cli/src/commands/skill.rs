@@ -582,10 +582,7 @@ fn home_dir() -> anyhow::Result<PathBuf> {
 /// `SKILL_FILES` are retained, while all path components and files are checked
 /// with `symlink_metadata` before anything is written.
 fn export(dir: &Path) -> anyhow::Result<PathBuf> {
-    let parent = dir
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .context("스킬 디렉터리의 상위 경로가 없습니다")?;
+    let parent = parent_or_current(dir);
     ensure_regular_directory(parent)?;
     let staged = create_private_directory(parent, "hwp-export-stage")?;
     let result = (|| {
@@ -599,7 +596,15 @@ fn export(dir: &Path) -> anyhow::Result<PathBuf> {
             Ok(metadata) if !metadata.is_dir() => {
                 anyhow::bail!("스킬 경로가 디렉터리가 아닙니다: {}", dir.display())
             }
-            Ok(_) => copy_regular_tree(dir, &staged)?,
+            Ok(metadata) => {
+                fs::set_permissions(&staged, metadata.permissions()).with_context(|| {
+                    format!(
+                        "스킬 스테이징 디렉터리 권한을 설정할 수 없습니다: {}",
+                        staged.display()
+                    )
+                })?;
+                copy_regular_tree(dir, &staged)?;
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(error)
@@ -624,6 +629,12 @@ fn export(dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
+fn parent_or_current(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 fn ensure_regular_directory(path: &Path) -> anyhow::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -635,11 +646,7 @@ fn ensure_regular_directory(path: &Path) -> anyhow::Result<()> {
         Ok(metadata) if metadata.is_dir() => Ok(()),
         Ok(_) => anyhow::bail!("스킬 경로가 디렉터리가 아닙니다: {}", path.display()),
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            let parent = path
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .context("스킬 디렉터리의 상위 경로가 없습니다")?;
-            ensure_regular_directory(parent)?;
+            ensure_regular_directory(parent_or_current(path))?;
             match fs::create_dir(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
@@ -720,6 +727,12 @@ fn copy_regular_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
                     destination_path.display()
                 )
             })?;
+            fs::set_permissions(&destination_path, metadata.permissions()).with_context(|| {
+                format!(
+                    "스킬 스테이징 디렉터리 권한을 설정할 수 없습니다: {}",
+                    destination_path.display()
+                )
+            })?;
             copy_regular_tree(&source_path, &destination_path)?;
         } else if metadata.is_file() {
             fs::copy(&source_path, &destination_path).with_context(|| {
@@ -771,10 +784,7 @@ fn publish_staged_tree_with<F>(dir: &Path, staged: &Path, mut rename: F) -> anyh
 where
     F: FnMut(&Path, &Path) -> std::io::Result<()>,
 {
-    let parent = dir
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .context("스킬 디렉터리의 상위 경로가 없습니다")?;
+    let parent = parent_or_current(dir);
     let existing = match fs::symlink_metadata(dir) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -811,7 +821,10 @@ where
             )),
         };
     }
-    remove_regular_tree(&backup)
+    if let Err(error) = remove_regular_tree(&backup) {
+        eprintln!("스킬 이전 버전 백업을 정리하지 못했습니다: {error}");
+    }
+    Ok(())
 }
 
 fn remove_regular_tree(path: &Path) -> anyhow::Result<()> {
@@ -1029,6 +1042,12 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_relative_export_uses_the_current_directory_as_its_parent() {
+        assert_eq!(parent_or_current(Path::new("hwp")), Path::new("."));
+        assert_eq!(parent_or_current(Path::new("./hwp")), Path::new("."));
     }
 
     #[test]
