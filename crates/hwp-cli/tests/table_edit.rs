@@ -4,8 +4,10 @@
 //!   #3~#8 중첩 2x1 단순표(표#2 셀 안)  #9 7x2 단순표([별표 1] 전문가 등급 기준, 병합 없음)
 
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use hwp_model::{Control, HwpChar, Table};
 
 fn hwp() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hwp"))
@@ -63,6 +65,238 @@ fn read_zip_entry(path: &PathBuf, name: &str) -> Vec<u8> {
     let mut buf = Vec::new();
     zip.by_name(name).unwrap().read_to_end(&mut buf).unwrap();
     buf
+}
+
+#[derive(Clone, Copy)]
+enum GeneratedLabelTable {
+    Adjacent,
+    Header,
+    Nested,
+}
+
+fn first_table(doc: &hwp_model::Document) -> Table {
+    doc.sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            Control::Table(table) => Some(table.clone()),
+            _ => None,
+        })
+        .expect("generated markdown has a table")
+}
+
+fn table_has_text(table: &Table, text: &str) -> bool {
+    table.cells.iter().any(|cell| {
+        cell.paragraphs
+            .iter()
+            .any(|paragraph| paragraph.plain_text() == text)
+    })
+}
+
+/// Build a generated HWPX form with a nested table instead of relying on a
+/// committed fixture. Each layout permutation moves the nested table relative
+/// to the adjacent and header/data form layouts while retaining three ambiguous
+/// `중복` candidates and one unique `유일` target.
+fn generated_label_ordering_form(name: &str, layout: &[GeneratedLabelTable]) -> PathBuf {
+    let mut markdown = String::from("generated label ordering fixture\n\n");
+    for table in layout {
+        match table {
+            GeneratedLabelTable::Adjacent => {
+                markdown.push_str("| 중복 | |\n|---|---|\n\n");
+            }
+            GeneratedLabelTable::Header => {
+                markdown.push_str("| 중복 |\n|---|\n| |\n\n");
+            }
+            GeneratedLabelTable::Nested => {
+                markdown.push_str("| 바깥 | NEST-HOST |\n|---|---|\n\n");
+            }
+        }
+    }
+    markdown.push_str("| 유일 | |\n|---|---|\n");
+
+    let mut doc = hwp_convert::from_markdown(&markdown);
+    let inner = first_table(&hwp_convert::from_markdown("| 중복 |\n|---|\n| |\n"));
+    let host = doc
+        .sections
+        .iter_mut()
+        .flat_map(|section| &mut section.paragraphs)
+        .flat_map(|paragraph| &mut paragraph.controls)
+        .find_map(|control| match control {
+            Control::Table(table) if table_has_text(table, "NEST-HOST") => Some(table),
+            _ => None,
+        })
+        .expect("generated fixture has a nested-table host");
+    let host_cell = host
+        .cells
+        .iter_mut()
+        .find(|cell| {
+            cell.paragraphs
+                .iter()
+                .any(|paragraph| paragraph.plain_text() == "NEST-HOST")
+        })
+        .expect("generated fixture has a host cell");
+    let host_paragraph = host_cell
+        .paragraphs
+        .first_mut()
+        .expect("generated fixture host cell has a paragraph");
+    let control_index = host_paragraph.controls.len() as u32;
+    host_paragraph.controls.push(Control::Table(inner));
+    host_paragraph.chars.push(HwpChar::ExtCtrl {
+        code: 11,
+        ctrl_id: *b"tbl ",
+        payload: vec![0; 12],
+        ctrl_index: Some(control_index),
+    });
+
+    let path = tmp(&format!("{name}.hwpx"));
+    hwpx::write_document(&doc, &path).expect("write generated label fixture");
+    path
+}
+
+fn label_edit(input: &Path, output: &Path, requests: &[&str]) -> std::process::Output {
+    let mut command = hwp();
+    command.arg("edit").arg(input).arg("-o").arg(output);
+    for request in requests {
+        command.args(["--set-cell-by-label", request]);
+    }
+    command.output().unwrap()
+}
+
+fn candidate_coordinates(stderr: &str) -> Vec<(usize, u16, u16)> {
+    stderr
+        .split('표')
+        .skip(1)
+        .filter_map(|candidate| {
+            let (table, coordinate) = candidate.split_once(" (")?;
+            let (coordinate, _) = coordinate.split_once(')')?;
+            let (row, column) = coordinate.split_once(',')?;
+            Some((table.parse().ok()?, row.parse().ok()?, column.parse().ok()?))
+        })
+        .collect()
+}
+
+fn request_permutations() -> [[&'static str; 3]; 6] {
+    [
+        ["중복=one", " 중복：=two", "중복=three"],
+        ["중복=one", "중복=three", " 중복：=two"],
+        [" 중복：=two", "중복=one", "중복=three"],
+        [" 중복：=two", "중복=three", "중복=one"],
+        ["중복=three", "중복=one", " 중복：=two"],
+        ["중복=three", " 중복：=two", "중복=one"],
+    ]
+}
+
+fn unique_request_permutations() -> [[&'static str; 3]; 6] {
+    [
+        ["유일=one", " 유일：=two", "유일=three"],
+        ["유일=one", "유일=three", " 유일：=two"],
+        [" 유일：=two", "유일=one", "유일=three"],
+        [" 유일：=two", "유일=three", "유일=one"],
+        ["유일=three", "유일=one", " 유일：=two"],
+        ["유일=three", " 유일：=two", "유일=one"],
+    ]
+}
+
+#[test]
+fn generated_label_candidate_ordering_and_duplicate_requests_are_atomic() {
+    let layouts = [
+        [
+            GeneratedLabelTable::Nested,
+            GeneratedLabelTable::Adjacent,
+            GeneratedLabelTable::Header,
+        ],
+        [
+            GeneratedLabelTable::Header,
+            GeneratedLabelTable::Nested,
+            GeneratedLabelTable::Adjacent,
+        ],
+        [
+            GeneratedLabelTable::Adjacent,
+            GeneratedLabelTable::Header,
+            GeneratedLabelTable::Nested,
+        ],
+    ];
+
+    for (fixture_index, layout) in layouts.iter().enumerate() {
+        let source =
+            generated_label_ordering_form(&format!("label_ordering_{fixture_index}"), layout);
+        let source_before = std::fs::read(&source).unwrap();
+
+        let mut baseline_diagnostic = None;
+        for (permutation_index, requests) in request_permutations().iter().enumerate() {
+            let output = tmp(&format!(
+                "label_ordering_{fixture_index}_ambiguous_{permutation_index}.hwpx"
+            ));
+            let result = label_edit(&source, &output, requests);
+            assert!(
+                !result.status.success(),
+                "ambiguous generated fixture {fixture_index}, permutation {permutation_index} must fail"
+            );
+            assert!(
+                !output.exists(),
+                "ambiguous generated fixture {fixture_index}, permutation {permutation_index} must not publish output"
+            );
+            assert_eq!(
+                std::fs::read(&source).unwrap(),
+                source_before,
+                "ambiguous preflight must leave every source byte unchanged"
+            );
+
+            let stderr = String::from_utf8(result.stderr).unwrap();
+            assert!(stderr.contains("양식 레이블 대상이 모호합니다"), "{stderr}");
+            let coordinates = candidate_coordinates(&stderr);
+            assert_eq!(coordinates.len(), 3, "{stderr}");
+            assert!(
+                coordinates.windows(2).all(|pair| pair[0] < pair[1]),
+                "candidate diagnostics must be sorted by table, row, column: {stderr}"
+            );
+            if let Some(baseline) = &baseline_diagnostic {
+                assert_eq!(
+                    &stderr, baseline,
+                    "candidate diagnostic must be byte-identical across request permutations"
+                );
+            } else {
+                baseline_diagnostic = Some(stderr);
+            }
+        }
+
+        let mut baseline_duplicate = None;
+        for (permutation_index, requests) in unique_request_permutations().iter().enumerate() {
+            let output = tmp(&format!(
+                "label_ordering_{fixture_index}_duplicate_{permutation_index}.hwpx"
+            ));
+            let sentinel =
+                format!("duplicate-sentinel-{fixture_index}-{permutation_index}").into_bytes();
+            std::fs::write(&output, &sentinel).unwrap();
+            let result = label_edit(&source, &output, requests);
+            assert!(
+                !result.status.success(),
+                "duplicate target fixture {fixture_index}, permutation {permutation_index} must fail"
+            );
+            assert_eq!(
+                std::fs::read(&output).unwrap(),
+                sentinel,
+                "duplicate preflight must leave destination bytes unchanged"
+            );
+            assert_eq!(
+                std::fs::read(&source).unwrap(),
+                source_before,
+                "duplicate preflight must leave all non-target source bytes unchanged"
+            );
+
+            let stderr = String::from_utf8(result.stderr).unwrap();
+            assert!(stderr.contains("양식 레이블 대상이 중복됩니다"), "{stderr}");
+            if let Some(baseline) = &baseline_duplicate {
+                assert_eq!(
+                    &stderr, baseline,
+                    "duplicate diagnostic must be byte-identical across request permutations"
+                );
+            } else {
+                baseline_duplicate = Some(stderr);
+            }
+        }
+    }
 }
 
 #[test]
