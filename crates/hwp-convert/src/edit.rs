@@ -35,7 +35,9 @@ pub fn normalize_form_label(label: &str) -> String {
 /// intentionally calls the readonly table walker so discovery cannot clear
 /// opaque HWPX XML or otherwise mutate the document. A label may address the
 /// immediately adjacent cell, or the first data cell directly below a label in
-/// the table's first row.
+/// a complete table header row. An empty or matching `{{label}}` cell is an
+/// explicit form-value marker, so it keeps adjacent-form precedence even when
+/// a later row makes the first row look like a complete header.
 pub fn find_form_cells_by_label(
     doc: &mut Document,
     label: &str,
@@ -80,32 +82,39 @@ pub fn find_form_cells_by_label(
                 if normalize_form_label(&visible) != wanted {
                     continue;
                 }
-                if header_is_complete && label_cell.row == 0 {
+                let right_col = label_cell.col.saturating_add(label_cell.col_span);
+                let adjacent = current
+                    .cells
+                    .iter()
+                    .find(|cell| cell.row == label_cell.row && cell.col == right_col);
+                let header = if header_is_complete && label_cell.row == 0 {
                     let first_data_row = label_cell.row.saturating_add(label_cell.row_span);
-                    if let Some(target) = current
+                    current
                         .cells
                         .iter()
                         .find(|cell| cell.row == first_data_row && cell.col == label_cell.col)
-                    {
-                        matches.push(FormCellCandidate {
-                            table: table_index,
-                            row: target.row,
-                            col: target.col,
-                        });
-                    }
                 } else {
-                    let right_col = label_cell.col.saturating_add(label_cell.col_span);
-                    if let Some(target) = current
-                        .cells
-                        .iter()
-                        .find(|cell| cell.row == label_cell.row && cell.col == right_col)
-                    {
-                        matches.push(FormCellCandidate {
-                            table: table_index,
-                            row: target.row,
-                            col: target.col,
-                        });
+                    None
+                };
+
+                // A matching placeholder is part of the documented form-value
+                // layout, not a second column heading. Prefer it before the
+                // complete-header rule; this preserves the legacy adjacent form
+                // contract without treating a multi-column header as a form.
+                let target = match (adjacent, header) {
+                    (Some(adjacent), Some(_)) if is_explicit_form_value(adjacent, &wanted) => {
+                        Some(adjacent)
                     }
+                    (_, Some(header)) => Some(header),
+                    (Some(adjacent), None) => Some(adjacent),
+                    (None, None) => None,
+                };
+                if let Some(target) = target {
+                    matches.push(FormCellCandidate {
+                        table: table_index,
+                        row: target.row,
+                        col: target.col,
+                    });
                 }
             }
             matches
@@ -119,6 +128,17 @@ pub fn find_form_cells_by_label(
     candidates.sort_unstable();
     candidates.dedup();
     candidates
+}
+
+fn is_explicit_form_value(cell: &hwp_model::Cell, wanted: &str) -> bool {
+    let visible = cell
+        .paragraphs
+        .iter()
+        .map(Paragraph::plain_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = normalize_form_label(&visible);
+    normalized.is_empty() || normalized == format!("{{{{{wanted}}}}}")
 }
 
 /// 문서 전체에서 `from`을 `to`로 치환한다(본문·표 셀·글상자 문단 재귀).
