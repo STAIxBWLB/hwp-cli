@@ -59,7 +59,7 @@ the concern disappears because the skill now ships inside the binary.
 | analyze | `hwp info` + `hwp cat --format json` | 2.5 | composed — released v0.12.0 recipe |
 | guard | `hwp validate` + `hwp render --report` | 2.5 | composed — released v0.12.0 recipe; not a raw structural-drift metric |
 | edit-section | `hwp cat --format json` + anchored `hwp edit` | 2.5 | limited — released v0.12.0 recipe; no raw section-index contract |
-| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.0 released-binary adjacent, header/data-row, scoped and atomic-refusal receipt (§3.1) |
+| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 released-binary adjacent-form precedence, header/data-row, scoped and atomic-refusal receipt; §3.1 remains the historical v0.12.0 record |
 | to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — the old soffice fallback is **intentionally dropped** (native engine only) |
 | render-pdf | same as to-pdf | 2.1 | verified (**alias** of `to-pdf --engine hwp`) |
 | to-html | `hwp cat --format html` | 2.1 | verified |
@@ -88,7 +88,10 @@ the concern disappears because the skill now ships inside the binary.
 
 The first Phase 2.5 replacement release is [v0.12.0](https://github.com/STAIxBWLB/hwp-cli/releases/tag/v0.12.0), annotated on main commit `79cec823053d6f7b212ee1288fb83eeb7114cef7`. Its Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz` has SHA-256 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`. The downloaded asset, never the checkout binary, reported `hwp 0.12.0`, exported one `hwp` tree with both editing recipes and no `hwpx` sibling, and passed tagged-install hash equality. The closed six-template, label-fill, and split-run evidence is in `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`.
 
-The editing recipe pair sets v0.12.0 as its minimum supported version. Its statuses are intentionally bounded: native inspection and guards are composed workflows; label and section editing are limited native workflows; raw unpack/repack is intentionally retired.
+The editing recipe pair sets v0.12.1 as its minimum supported version because that is the first
+release with the corrected label-form and regular skill-export contracts. Its statuses are
+intentionally bounded: native inspection and guards are composed workflows; label and section
+editing are limited native workflows; raw unpack/repack is intentionally retired.
 
 ### 3.2 Margin record (D-14)
 
