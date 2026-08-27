@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.12.0]
+
 **Added**
 
 - `hwp edit --set-cell-by-label "label=value"` fills a uniquely resolved adjacent or header-row
@@ -24,10 +26,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Changed**
 
-- These merged source changes are a prerequisite for retiring the old `hwpx` skill, not
-  replacement evidence by themselves. The separate release plan must publish and record the
-  first supported tag, verify its exported skill tree and old-template compatibility, and only
-  then allow the retirement gate to proceed.
+- `v0.12.0` is the first Phase 2.5 replacement candidate. Its release gate records the tagged
+  asset hash, bundled-skill export, released label-fill behavior, and six-template compatibility
+  before the old `hwpx` skill retirement can proceed.
 
 ## [0.11.0]
 
