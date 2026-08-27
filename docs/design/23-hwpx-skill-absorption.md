@@ -42,13 +42,13 @@ the concern disappears because the skill now ships inside the binary.
 | Old subcommand | Native equivalent | Phase | Status |
 |---|---|---|---|
 | read | `hwp cat` (+ `--format json` for structure) | 2.1 | verified |
-| summary | none direct (`hwp info` + `hwp cat --format json`) | 2.5 | gap → EDIT-01 recipe (inferred) |
+| summary | `hwp info` + `hwp cat --format json` | 2.5 | composed — released in v0.12.0; see §3.1 and the editing recipe |
 | to-md | `hwp convert --to md --media-dir` | 2.1 | verified |
-| unpack | none | 2.5 | gap → raw-zip recipe / EDIT-01 (inferred) |
-| repack | none (native writers guarantee the package layout) | 2.5 | gap → raw-zip recipe / EDIT-01 (inferred) |
+| unpack | none | 2.5 | intentionally retired — v0.12.0 documents the native edit path; no raw-ZIP replacement |
+| repack | none (native writers guarantee the package layout) | 2.5 | intentionally retired — v0.12.0 documents the native edit path; no raw-ZIP replacement |
 | fill | `hwp fill` | 2.1 | verified — default path only; run-spanning fill is the §2.2 gap row, NOT covered here |
 | slots | `hwp slots` | 2.1 | verified |
-| edit | `hwp edit --replace` (not run-spanning) | 2.5 | partial → EDIT-01 proof item (inferred) |
+| edit | `hwp edit --replace` (not run-spanning) | 2.5 | limited — released v0.12.0 documents the safe native path; arbitrary split-run replacement remains outside the contract |
 | add-rows | `hwp edit --add-row` | 2.1 | verified |
 | add-col | `hwp edit --add-col` | 2.1 | verified |
 | fill-table | `hwp fill --data tables.json` | 2.1 | verified (data-driven row fill exists) |
@@ -56,10 +56,10 @@ the concern disappears because the skill now ships inside the binary.
 | styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | verified for profiles, numbering and layout; style pass remains absent |
 | beautify | none | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
-| analyze | none | 2.5 | gap → EDIT-01 documented recipe (inferred) |
-| guard | none (`hwp render --report` gives page counts) | 2.5 | gap → EDIT-01 documented recipe (inferred) |
-| edit-section | none direct | 2.5 | gap → EDIT-01 documented recipe (inferred) |
-| fill-form | none direct | 2.5 | gap → `--set-cell-by-label` (EDIT-01, inferred) |
+| analyze | `hwp info` + `hwp cat --format json` | 2.5 | composed — released v0.12.0 recipe |
+| guard | `hwp validate` + `hwp render --report` | 2.5 | composed — released v0.12.0 recipe; not a raw structural-drift metric |
+| edit-section | `hwp cat --format json` + anchored `hwp edit` | 2.5 | limited — released v0.12.0 recipe; no raw section-index contract |
+| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.0 released-binary adjacent, header/data-row, scoped and atomic-refusal receipt (§3.1) |
 | to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — the old soffice fallback is **intentionally dropped** (native engine only) |
 | render-pdf | same as to-pdf | 2.1 | verified (**alias** of `to-pdf --engine hwp`) |
 | to-html | `hwp cat --format html` | 2.1 | verified |
@@ -74,7 +74,7 @@ the concern disappears because the skill now ships inside the binary.
 
 | Old script guarantee | Native equivalent | Phase | Status |
 |---|---|---|---|
-| run-spanning `{{slot}}` fill | none today — native `hwp fill` is a raw-XML string replace (`crates/hwpx/src/patch.rs:52-56`), so a slot split across `<hp:t>` runs does not match | 2.5 | gap → EDIT-01 (inferred) — **not verified parity**; templates authored via `hwp new --from` must keep each slot inside one run |
+| run-spanning `{{slot}}` fill | `hwp slots` + one fail-closed `hwp fill` | 2.5 | verified — v0.12.0 released binary fills the transient split-run control; the six-template receipt is recorded in §3.1 |
 | `linesegarray` clearing on edit | engine-inherent: the native IR round-trip rewrites line segments, and the byte-preserving patch path never edits text | 2.5 | engine-inherent, confirm in 2.5 (inferred) |
 | sec-index section edits | none | 2.5 | gap → EDIT-01 documented recipes (inferred) |
 | mimetype-first STORED repack | native writers obey the package layout; no native replacement for the raw-zip path | 2.5 | resolved for the writer path; raw-zip recipe gap → EDIT-01 (inferred) |
@@ -82,7 +82,15 @@ the concern disappears because the skill now ships inside the binary.
 | page_guard structural drift checks | none | 2.5 | gap → EDIT-01 documented recipes (inferred) — **not verified parity** |
 | binary discovery (`$HWP_CLI`, highest-version selection) | obsolete — the skill ships inside the binary it drives | 2.1 | resolved by absorption |
 
-## 3. Margin record (D-14)
+## 3. Release evidence and margin record
+
+### 3.1 Phase 2.5 release receipt
+
+The first Phase 2.5 replacement release is [v0.12.0](https://github.com/STAIxBWLB/hwp-cli/releases/tag/v0.12.0), annotated on main commit `79cec823053d6f7b212ee1288fb83eeb7114cef7`. Its Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz` has SHA-256 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`. The downloaded asset, never the checkout binary, reported `hwp 0.12.0`, exported one `hwp` tree with both editing recipes and no `hwpx` sibling, and passed tagged-install hash equality. The closed six-template, label-fill, and split-run evidence is in `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`.
+
+The editing recipe pair sets v0.12.0 as its minimum supported version. Its statuses are intentionally bounded: native inspection and guards are composed workflows; label and section editing are limited native workflows; raw unpack/repack is intentionally retired.
+
+### 3.2 Margin record (D-14)
 
 **Question:** does the official-profile margin set have a regulatory source?
 

@@ -41,13 +41,13 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 | 기존 서브커맨드 | 네이티브 대응 | Phase | 상태 |
 |---|---|---|---|
 | read | `hwp cat` (구조는 `--format json`) | 2.1 | verified |
-| summary | 직접 대응 없음 (`hwp info` + `hwp cat --format json`) | 2.5 | gap → EDIT-01 레시피 (inferred) |
+| summary | `hwp info` + `hwp cat --format json` | 2.5 | composed — v0.12.0 릴리스, §3.1 및 편집 레시피 참조 |
 | to-md | `hwp convert --to md --media-dir` | 2.1 | verified |
-| unpack | 없음 | 2.5 | gap → raw-zip 레시피 / EDIT-01 (inferred) |
-| repack | 없음 (네이티브 writer가 패키지 레이아웃을 보장) | 2.5 | gap → raw-zip 레시피 / EDIT-01 (inferred) |
+| unpack | 없음 | 2.5 | intentionally retired — v0.12.0은 네이티브 편집 경로를 문서화하며 raw-ZIP 대체는 없음 |
+| repack | 없음 (네이티브 writer가 패키지 레이아웃을 보장) | 2.5 | intentionally retired — v0.12.0은 네이티브 편집 경로를 문서화하며 raw-ZIP 대체는 없음 |
 | fill | `hwp fill` | 2.1 | verified — 기본 경로 한정. run-spanning 채우기는 §2.2의 갭 행이며 여기서 커버하지 않음 |
 | slots | `hwp slots` | 2.1 | verified |
-| edit | `hwp edit --replace` (run-spanning 아님) | 2.5 | partial → EDIT-01 증명 항목 (inferred) |
+| edit | `hwp edit --replace` (run-spanning 아님) | 2.5 | limited — v0.12.0이 안전한 네이티브 경로를 문서화하며 임의 split-run replace는 계약 밖 |
 | add-rows | `hwp edit --add-row` | 2.1 | verified |
 | add-col | `hwp edit --add-col` | 2.1 | verified |
 | fill-table | `hwp fill --data tables.json` | 2.1 | verified (데이터 구동 행 채우기 존재) |
@@ -55,10 +55,10 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 | styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | 프로필·번호·레이아웃은 verified, style pass는 계속 없음 |
 | beautify | 없음 | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
-| analyze | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) |
-| guard | 없음 (`hwp render --report`로 페이지 수 확인 가능) | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) |
-| edit-section | 직접 대응 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) |
-| fill-form | 직접 대응 없음 | 2.5 | gap → `--set-cell-by-label` (EDIT-01, inferred) |
+| analyze | `hwp info` + `hwp cat --format json` | 2.5 | composed — v0.12.0 릴리스 레시피 |
+| guard | `hwp validate` + `hwp render --report` | 2.5 | composed — v0.12.0 릴리스 레시피, raw structural-drift metric은 아님 |
+| edit-section | `hwp cat --format json` + anchor 기반 `hwp edit` | 2.5 | limited — v0.12.0 릴리스 레시피, raw section-index 계약 없음 |
+| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.0 릴리스 바이너리의 인접, header/data-row, scope, 원자적 거부 영수증(§3.1) |
 | to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — 기존 soffice 폴백은 **의도적으로 폐기** (네이티브 엔진만) |
 | render-pdf | to-pdf와 동일 | 2.1 | verified (`to-pdf --engine hwp`의 **별칭**) |
 | to-html | `hwp cat --format html` | 2.1 | verified |
@@ -73,7 +73,7 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 
 | 기존 스크립트 보장 | 네이티브 대응 | Phase | 상태 |
 |---|---|---|---|
-| run-spanning `{{slot}}` 채우기 | 현재 없음 — 네이티브 `hwp fill`은 raw-XML 문자열 치환(`crates/hwpx/src/patch.rs:52-56`)이라 `<hp:t>` run에 걸쳐 나뉜 슬롯은 매칭되지 않음 | 2.5 | gap → EDIT-01 (inferred) — **verified 패리티 아님**. `hwp new --from`으로 만드는 템플릿은 각 슬롯을 하나의 run 안에 유지해야 함 |
+| run-spanning `{{slot}}` 채우기 | `hwp slots` + 하나의 fail-closed `hwp fill` | 2.5 | verified — v0.12.0 릴리스 바이너리가 transient split-run control을 채웠고 여섯 템플릿 영수증은 §3.1에 기록 |
 | 편집 시 `linesegarray` 지우기 | 엔진 내재: 네이티브 IR 라운드트립은 줄 세그먼트를 다시 쓰고, 바이트 보존 패치 경로는 텍스트를 건드리지 않음 | 2.5 | 엔진 내재, 2.5에서 확인 (inferred) |
 | sec 인덱스 섹션 편집 | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) |
 | mimetype-first STORED repack | 네이티브 writer는 패키지 레이아웃을 준수. raw-zip 경로에는 네이티브 대응 없음 | 2.5 | writer 경로는 해소. raw-zip 레시피 갭 → EDIT-01 (inferred) |
@@ -81,7 +81,15 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 | page_guard 구조 드리프트 검사 | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) — **verified 패리티 아님** |
 | 바이너리 탐색 (`$HWP_CLI`, 최고 버전 선택) | 폐기 — 스킬이 자신이 구동하는 바이너리 안에 들어감 | 2.1 | resolved by absorption |
 
-## 3. 여백 기록 (D-14)
+## 3. 릴리스 증거와 여백 기록
+
+### 3.1 Phase 2.5 릴리스 영수증
+
+첫 Phase 2.5 replacement 릴리스는 [v0.12.0](https://github.com/STAIxBWLB/hwp-cli/releases/tag/v0.12.0)이며 main 커밋 `79cec823053d6f7b212ee1288fb83eeb7114cef7`에 annotated tag로 생성했습니다. Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz`의 SHA-256은 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`입니다. checkout binary가 아닌 다운로드 asset은 `hwp 0.12.0`을 보고했고, 두 editing recipe와 `hwpx` sibling 없는 하나의 `hwp` tree를 export했으며 tagged install hash equality를 통과했습니다. 닫힌 여섯 템플릿, label-fill, split-run 증거는 `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`에 기록했습니다.
+
+편집 레시피 쌍은 v0.12.0을 최소 지원 버전으로 고정합니다. 상태는 의도적으로 경계를 둡니다. 네이티브 inspection과 guard는 composed 워크플로우이고, label과 section 편집은 limited 네이티브 워크플로우이며, raw unpack/repack은 intentionally retired입니다.
+
+### 3.2 여백 기록 (D-14)
 
 **질문:** 공문서 프로필 여백 조합에 규정상 근거가 있는가?
 
