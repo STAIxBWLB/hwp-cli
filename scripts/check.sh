@@ -25,7 +25,8 @@ run $CARGO clippy --workspace --all-targets -- -D warnings
 run $CARGO test --workspace
 run python3 -m unittest tools/test_pdf_parity.py
 run bash scripts/check-structured-corpus.sh
-run target/debug/examples/validate_structured_corpus \
+target_dir="${CARGO_TARGET_DIR:-target}"
+run "$target_dir/debug/examples/validate_structured_corpus" \
     schemas/pdf-parity-history-v1.schema.json \
     fixtures/pdf-parity/public/scoreboard/history.json
 
