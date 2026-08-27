@@ -80,25 +80,25 @@ pub fn find_form_cells_by_label(
                 if normalize_form_label(&visible) != wanted {
                     continue;
                 }
-                let right_col = label_cell.col.saturating_add(label_cell.col_span);
-                if let Some(target) = current
-                    .cells
-                    .iter()
-                    .find(|cell| cell.row == label_cell.row && cell.col == right_col)
-                {
-                    matches.push(FormCellCandidate {
-                        table: table_index,
-                        row: target.row,
-                        col: target.col,
-                    });
-                }
-
                 if header_is_complete && label_cell.row == 0 {
                     let first_data_row = label_cell.row.saturating_add(label_cell.row_span);
                     if let Some(target) = current
                         .cells
                         .iter()
                         .find(|cell| cell.row == first_data_row && cell.col == label_cell.col)
+                    {
+                        matches.push(FormCellCandidate {
+                            table: table_index,
+                            row: target.row,
+                            col: target.col,
+                        });
+                    }
+                } else {
+                    let right_col = label_cell.col.saturating_add(label_cell.col_span);
+                    if let Some(target) = current
+                        .cells
+                        .iter()
+                        .find(|cell| cell.row == label_cell.row && cell.col == right_col)
                     {
                         matches.push(FormCellCandidate {
                             table: table_index,

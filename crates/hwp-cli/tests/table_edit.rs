@@ -118,6 +118,29 @@ fn set_cell_by_label_fills_first_data_row_below_a_header_label() {
 }
 
 #[test]
+fn set_cell_by_label_fills_below_a_multicolumn_header_without_ambiguity() {
+    let source = label_form(
+        "label_multicolumn_header",
+        "| 성명 | 소속 |\n|---|---|\n| | |\n",
+    );
+    let output = tmp("label_multicolumn_header_out.hwpx");
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .args(["--set-cell-by-label", "성명=홍길동", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "multi-column header fill: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(cat(&output).contains("홍길동"), "filled value is visible");
+}
+
+#[test]
 fn set_cell_by_label_uses_exact_normalized_matching_only() {
     let source = label_form("label_exact", "| 성명: | |\n|---|---|\n");
     for (case, request) in [
