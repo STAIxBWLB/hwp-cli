@@ -26,6 +26,26 @@ fn tmp(name: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// Generate a compact form table for label-fill tests without depending on private fixtures.
+fn label_form(name: &str, markdown: &str) -> PathBuf {
+    let source = tmp(&format!("{name}.md"));
+    std::fs::write(&source, markdown).unwrap();
+    let form = tmp(&format!("{name}.hwpx"));
+    let result = hwp()
+        .args(["new", "--from"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&form)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "form generation: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    form
+}
+
 /// 픽스처를 임시 사본으로 복사해 편집한다(원본 불변).
 fn copy_fixture(name: &str) -> PathBuf {
     let dst = tmp(name);
@@ -43,6 +63,90 @@ fn read_zip_entry(path: &PathBuf, name: &str) -> Vec<u8> {
     let mut buf = Vec::new();
     zip.by_name(name).unwrap().read_to_end(&mut buf).unwrap();
     buf
+}
+
+#[test]
+fn set_cell_by_label_fills_unique_adjacent_cell_and_validates() {
+    let source = label_form(
+        "label_adjacent",
+        "| 성명： | |\n|---|---|\n| 소울별 | 이름 |\n",
+    );
+    let output = tmp("label_adjacent_out.hwpx");
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .args(["--set-cell-by-label", "  성명：=홍길동", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "label fill: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(cat(&output).contains("홍길동"), "filled value is visible");
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&output)
+            .status()
+            .unwrap()
+            .success(),
+        "label fill output validates"
+    );
+}
+
+#[test]
+fn set_cell_by_label_uses_exact_normalized_matching_only() {
+    let source = label_form("label_exact", "| 성명: | |\n|---|---|\n");
+    for (case, request) in [
+        ("different_label", "성명A=값이"),
+        ("substring", "성=김"),
+        ("nfd", "가=김"),
+    ] {
+        let output = tmp(&format!("label_exact_{case}.hwpx"));
+        let result = hwp()
+            .arg("edit")
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .args(["--set-cell-by-label", request])
+            .output()
+            .unwrap();
+        assert!(!result.status.success(), "{case} must not match");
+        assert!(!output.exists(), "{case} must not publish an output");
+    }
+}
+
+#[test]
+fn set_cell_by_label_rejects_empty_or_missing_without_changing_files() {
+    let source = label_form("label_atomic", "| 성명 | |\n|---|---|\n");
+    let source_before = std::fs::read(&source).unwrap();
+    for (case, request) in [("empty", " ：=홍길동"), ("missing", "주소=제주")] {
+        let output = tmp(&format!("label_atomic_{case}.hwpx"));
+        let existing = format!("sentinel-{case}").into_bytes();
+        std::fs::write(&output, &existing).unwrap();
+        let result = hwp()
+            .arg("edit")
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .args(["--set-cell-by-label", request])
+            .output()
+            .unwrap();
+        assert!(!result.status.success(), "{case} must fail");
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            source_before,
+            "source unchanged"
+        );
+        assert_eq!(
+            std::fs::read(&output).unwrap(),
+            existing,
+            "destination unchanged"
+        );
+    }
 }
 
 /// 픽스처 자체가 유효해야 한다(익명화 후에도 한컴 규격 충족).

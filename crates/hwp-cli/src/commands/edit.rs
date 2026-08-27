@@ -20,6 +20,10 @@ use crate::commands::cat::load_document;
 enum EditOperation {
     Replace(Vec<String>),
     SetCell(Vec<String>),
+    SetCellByLabel {
+        specs: Vec<String>,
+        table: Option<usize>,
+    },
     CreateField(Vec<String>),
     CreateBookmark(Vec<String>),
     CreateHyperlink(Vec<String>),
@@ -234,6 +238,7 @@ impl EditOperation {
             | Self::DeleteBookmark(_) => true,
             Self::Replace(_)
             | Self::SetCell(_)
+            | Self::SetCellByLabel { .. }
             | Self::CreateField(_)
             | Self::CreateBookmark(_)
             | Self::CreateHyperlink(_)
@@ -257,6 +262,12 @@ pub struct EditPlan {
     typed_operations: Vec<TypedEditOperation>,
     verify: bool,
     allow_partial: bool,
+}
+
+struct ResolvedLabelEdit {
+    text: String,
+    candidate: hwp_convert::FormCellCandidate,
+    request: String,
 }
 
 #[derive(Debug)]
@@ -303,6 +314,8 @@ impl EditPlan {
             output,
             replace,
             set_cell,
+            set_cell_by_label,
+            label_table,
             set_field,
             set_meta,
             create_field,
@@ -344,6 +357,12 @@ impl EditPlan {
         }
         add!(Replace, replace);
         add!(SetCell, set_cell);
+        if !set_cell_by_label.is_empty() {
+            operations.push(EditOperation::SetCellByLabel {
+                specs: set_cell_by_label,
+                table: label_table,
+            });
+        }
         add!(CreateField, create_field);
         add!(CreateBookmark, create_bookmark);
         add!(CreateHyperlink, create_hyperlink);
@@ -588,6 +607,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
 
     let mut doc = load_document(input)?;
     let original_doc = doc.clone();
+    // Label lookup is a preflight, not another mutation primitive: every request
+    // observes the original document and errors before a staged output exists.
+    let mut resolved_label_edits = preflight_cli_label_edits(plan, &mut doc)?.into_iter();
     let mut edits = 0usize;
     let mut unapplied = Vec::new();
     // 구조 편집(문단/행 추가·삭제·이미지 삽입)은 합성 경로로 써야 한다 — 삽입 문단/행
@@ -657,6 +679,27 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         &mut edits,
                         &mut unapplied,
                     );
+                }
+            }
+            EditOperation::SetCellByLabel { specs, .. } => {
+                for _ in specs {
+                    let resolved = resolved_label_edits
+                        .next()
+                        .expect("label edits are resolved during preflight");
+                    let before = doc.clone();
+                    hwp_convert::set_cell(
+                        &mut doc,
+                        resolved.candidate.table,
+                        resolved.candidate.row,
+                        resolved.candidate.col,
+                        &resolved.text,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                    eprintln!(
+                        "양식 셀 설정: 표{} ({},{})",
+                        resolved.candidate.table, resolved.candidate.row, resolved.candidate.col
+                    );
+                    record_effect(&before, &doc, resolved.request, &mut edits, &mut unapplied);
                 }
             }
             // 누름틀 생성은 set_field보다 먼저 — 같은 호출에서 생성한 필드를 바로 채울 수 있게.
@@ -1195,6 +1238,47 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         warnings,
         preservation: writer_report.preservation,
     })
+}
+
+fn preflight_cli_label_edits(
+    plan: &EditPlan,
+    doc: &mut hwp_model::Document,
+) -> anyhow::Result<Vec<ResolvedLabelEdit>> {
+    let mut resolved = Vec::new();
+    for operation in &plan.operations {
+        let EditOperation::SetCellByLabel { specs, table } = operation else {
+            continue;
+        };
+        for spec in specs {
+            let (label, text) = spec.split_once('=').with_context(|| {
+                format!("--set-cell-by-label 형식은 \"레이블=값\" 입니다: {spec:?}")
+            })?;
+            let normalized = hwp_convert::normalize_form_label(label);
+            if normalized.is_empty() {
+                anyhow::bail!("--set-cell-by-label 레이블은 비어 있을 수 없습니다");
+            }
+            let candidates = hwp_convert::find_form_cells_by_label(doc, &normalized, *table);
+            match candidates.as_slice() {
+                [] => anyhow::bail!("양식 레이블에 해당하는 셀을 찾지 못했습니다"),
+                [candidate] => resolved.push(ResolvedLabelEdit {
+                    text: text.to_string(),
+                    candidate: *candidate,
+                    request: format!("--set-cell-by-label {spec:?}"),
+                }),
+                many => anyhow::bail!(
+                    "양식 레이블 대상이 모호합니다: {}",
+                    many.iter()
+                        .map(|candidate| format!(
+                            "표{} ({},{})",
+                            candidate.table, candidate.row, candidate.col
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 struct PatchReport {
