@@ -78,6 +78,14 @@ pub const SKILL_FILES: &[EmbeddedFile] = &[
         contents: include_str!("../../../../skills/hwp/references/korean-official-format.ko.md"),
     },
     EmbeddedFile {
+        rel: "references/editing-recipes.md",
+        contents: include_str!("../../../../skills/hwp/references/editing-recipes.md"),
+    },
+    EmbeddedFile {
+        rel: "references/editing-recipes.ko.md",
+        contents: include_str!("../../../../skills/hwp/references/editing-recipes.ko.md"),
+    },
+    EmbeddedFile {
         rel: "templates/gian-internal.md",
         contents: include_str!("../../../../skills/hwp/templates/gian-internal.md"),
     },
