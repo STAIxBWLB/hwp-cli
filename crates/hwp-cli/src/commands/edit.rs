@@ -1318,10 +1318,10 @@ fn preflight_label_edits(
     let mut unapplied = Vec::new();
     let mut targeted = BTreeSet::new();
     for request in requests {
-        if let Some(table) = request.table {
-            if hwp_convert::table_dims(doc, table).is_none() {
-                anyhow::bail!("set_cell_by_label의 table 범위가 유효하지 않습니다");
-            }
+        if let Some(table) = request.table
+            && hwp_convert::table_dims(doc, table).is_none()
+        {
+            anyhow::bail!("set_cell_by_label의 table 범위가 유효하지 않습니다");
         }
         let candidates = hwp_convert::find_form_cells_by_label(doc, &request.label, request.table);
         match candidates.as_slice() {
