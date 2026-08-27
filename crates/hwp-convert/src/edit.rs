@@ -9,6 +9,118 @@
 
 use hwp_model::{CharShapeId, Control, Document, HwpChar, Paragraph};
 
+/// A writable form-cell coordinate discovered without changing the document.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct FormCellCandidate {
+    pub table: usize,
+    pub row: u16,
+    pub col: u16,
+}
+
+/// Normalise a form label for the deliberately narrow label-fill contract.
+///
+/// Only surrounding Unicode whitespace and terminal ASCII/full-width colons are
+/// removed. In particular, this does not case-fold or Unicode-normalise input.
+pub fn normalize_form_label(label: &str) -> String {
+    label
+        .trim()
+        .trim_end_matches([':', '：'])
+        .trim_end()
+        .to_string()
+}
+
+/// Find writable form cells for a matching label.
+///
+/// Table indices use the same recursive document order as [`set_cell`]. This
+/// intentionally calls the readonly table walker so discovery cannot clear
+/// opaque HWPX XML or otherwise mutate the document. A label may address the
+/// immediately adjacent cell, or the first data cell directly below a label in
+/// the table's first row.
+pub fn find_form_cells_by_label(
+    doc: &mut Document,
+    label: &str,
+    table: Option<usize>,
+) -> Vec<FormCellCandidate> {
+    let wanted = normalize_form_label(label);
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    let mut table_index = 0usize;
+    loop {
+        let found = with_nth_table_readonly(doc, table_index, |current| {
+            if table.is_some_and(|scope| scope != table_index) {
+                return Vec::new();
+            }
+            let mut matches = Vec::new();
+            let header_is_complete =
+                current
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.row == 0)
+                    .all(|cell| {
+                        !normalize_form_label(
+                            &cell
+                                .paragraphs
+                                .iter()
+                                .map(Paragraph::plain_text)
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                        .is_empty()
+                    });
+            for label_cell in &current.cells {
+                let visible = label_cell
+                    .paragraphs
+                    .iter()
+                    .map(Paragraph::plain_text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if normalize_form_label(&visible) != wanted {
+                    continue;
+                }
+                if header_is_complete && label_cell.row == 0 {
+                    let first_data_row = label_cell.row.saturating_add(label_cell.row_span);
+                    if let Some(target) = current
+                        .cells
+                        .iter()
+                        .find(|cell| cell.row == first_data_row && cell.col == label_cell.col)
+                    {
+                        matches.push(FormCellCandidate {
+                            table: table_index,
+                            row: target.row,
+                            col: target.col,
+                        });
+                    }
+                } else {
+                    let right_col = label_cell.col.saturating_add(label_cell.col_span);
+                    if let Some(target) = current
+                        .cells
+                        .iter()
+                        .find(|cell| cell.row == label_cell.row && cell.col == right_col)
+                    {
+                        matches.push(FormCellCandidate {
+                            table: table_index,
+                            row: target.row,
+                            col: target.col,
+                        });
+                    }
+                }
+            }
+            matches
+        });
+        let Some(found) = found else {
+            break;
+        };
+        candidates.extend(found);
+        table_index += 1;
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
 /// 문서 전체에서 `from`을 `to`로 치환한다(본문·표 셀·글상자 문단 재귀).
 /// `all`이 거짓이면 첫 1건만 바꾼다. 반환값은 치환 횟수.
 ///

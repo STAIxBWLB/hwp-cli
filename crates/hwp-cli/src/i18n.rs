@@ -412,6 +412,16 @@ pub const KO: &[(&str, &str, &str)] = &[
     ),
     (
         "edit",
+        "set_cell_by_label",
+        "양식 레이블의 값 셀 설정 \"레이블=값\" (반복 가능, 정확 일치)",
+    ),
+    (
+        "edit",
+        "label_table",
+        "모든 --set-cell-by-label 요청을 이 0-기반 재귀 표 인덱스로 제한",
+    ),
+    (
+        "edit",
         "set_field",
         "필드/누름틀 채우기 \"이름=값\" (반복 가능 — hwp fields로 이름 확인)",
     ),

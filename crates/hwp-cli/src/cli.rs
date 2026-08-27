@@ -493,6 +493,12 @@ pub struct EditArgs {
     /// Set a table cell, "table:row:col=value" (repeatable; 0-based indices)
     #[arg(long = "set-cell")]
     pub set_cell: Vec<String>,
+    /// Fill the value cell immediately right of a form label, "label=value" (repeatable)
+    #[arg(long = "set-cell-by-label")]
+    pub set_cell_by_label: Vec<String>,
+    /// Restrict every --set-cell-by-label request to this zero-based recursive table index
+    #[arg(long = "label-table", requires = "set_cell_by_label")]
+    pub label_table: Option<usize>,
     /// Fill a field, "name=value" (repeatable; list names with hwp fields)
     #[arg(long = "set-field")]
     pub set_field: Vec<String>,

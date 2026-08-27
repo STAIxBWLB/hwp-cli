@@ -1263,6 +1263,13 @@ fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             text: required_item_str(item, "set_cell", "text")?.to_string(),
         });
     }
+    for item in arg_array(args, "set_cell_by_label")? {
+        operations.push(Op::SetCellByLabel {
+            label: required_item_str(item, "set_cell_by_label", "label")?.to_string(),
+            text: required_item_str(item, "set_cell_by_label", "text")?.to_string(),
+            table: optional_item_usize(item, "set_cell_by_label", "table")?,
+        });
+    }
     for item in arg_array(args, "set_field")? {
         operations.push(Op::SetField {
             name: required_item_str(item, "set_field", "name")?.to_string(),
@@ -2187,6 +2194,10 @@ fn tool_defs() -> Vec<Value> {
                     "table": {"type": "integer"}, "row": {"type": "integer"},
                     "col": {"type": "integer"}, "text": {"type": "string"}},
                     "required": ["table", "row", "col", "text"]}, "description": "표 셀 설정(0-기반)"},
+                "set_cell_by_label": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "label": {"type": "string"}, "text": {"type": "string"},
+                    "table": {"type": "integer", "minimum": 0}},
+                    "required": ["label", "text"]}, "description": "양식 레이블의 인접 또는 첫 데이터 행 셀 설정(선택 table은 0-기반 재귀 표 범위)"},
                 "set_field": {"type": "array", "items": {"type": "object", "properties": {
                     "name": {"type": "string"}, "value": {"type": "string"}},
                     "required": ["name", "value"]}, "description": "필드/누름틀 채우기(이름으로)"},
@@ -4123,6 +4134,51 @@ mod tests {
         // set_page is a single object; the rest are arrays.
         assert_eq!(properties["set_page"]["type"], "object");
         assert_eq!(properties["add_table"]["type"], "array");
+    }
+
+    #[test]
+    fn mcp_set_cell_by_label_uses_shared_preflight_and_closed_item_schema() {
+        let tools = tool_defs();
+        let edit = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_edit")
+            .unwrap();
+        let item = &edit["inputSchema"]["properties"]["set_cell_by_label"]["items"];
+        assert_eq!(item["additionalProperties"], false);
+        assert_eq!(item["properties"]["table"]["minimum"], 0);
+
+        let source = temp_file("set-cell-by-label-mcp-source.hwpx");
+        let output = temp_file("set-cell-by-label-mcp-out.hwpx");
+        create_hwpx(&source, "| 성명 | |\n|---|---|\n");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": output,
+                "set_cell_by_label": [{"label": " 성명：", "text": "MCP홍길동"}]
+            }),
+            &ctx(),
+        )
+        .expect("MCP label edit");
+        assert!(
+            load_document(&output)
+                .unwrap()
+                .plain_text()
+                .contains("MCP홍길동")
+        );
+
+        let missing = tool_edit(
+            &json!({
+                "input": source,
+                "output": output,
+                "set_cell_by_label": [{"label": null, "text": "MCP홍길동"}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(missing.contains("label 필요"), "{missing}");
+        for path in [&source, &output] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]

@@ -139,6 +139,12 @@ report·plan·notice·press에는 `- N -` 쪽 번호를 넣고 official·minutes
 `official-documents.md` (이 파일 옆에 납출됨)에, 규정 배경은
 `references/korean-official-format.md`에 있습니다.
 
+## Editing recipes (편집 레시피)
+
+retired `hwpx` 워크플로우의 정직한 한계를 포함한 이중 언어 네이티브 편집 마이그레이션 대조표는
+[references/editing-recipes.ko.md](references/editing-recipes.ko.md)에 있습니다. 분석, anchor 기반
+문단 편집, 데이터 기반 표 채우기, label-value 양식, validate-plus-render guard 순서에 사용하십시오.
+
 ## MCP 서버
 
 `hwp mcp`는 stdio 위에서 동기 JSON-RPC 2.0을 사용합니다 (줄 구분; stdout이 프로토콜을

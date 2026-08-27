@@ -30,9 +30,10 @@ pub use bookmark::{
 pub use csv::to_csv;
 pub use docx::to_docx;
 pub use edit::{
-    CloneTextMode, ObjectKind, add_col, add_rows, add_rows_at, add_table, add_table_column,
-    add_table_columns, apply_meta, clone_table, delete_object, delete_table_column,
-    delete_table_row, merge_cells, replace_text, set_cell, split_cell, table_dims,
+    CloneTextMode, FormCellCandidate, ObjectKind, add_col, add_rows, add_rows_at, add_table,
+    add_table_column, add_table_columns, apply_meta, clone_table, delete_object,
+    delete_table_column, delete_table_row, find_form_cells_by_label, merge_cells,
+    normalize_form_label, replace_text, set_cell, split_cell, table_dims,
 };
 pub use field::{
     FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, list_fields,

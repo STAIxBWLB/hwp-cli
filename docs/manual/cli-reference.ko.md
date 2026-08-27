@@ -199,6 +199,8 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
 | `--replace` | `<REPLACE>` |  | 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환) |
 | `--set-cell` | `<SET_CELL>` |  | 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스) |
+| `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | 양식 레이블의 값 셀 설정 "레이블=값" (반복 가능, 정확 일치) |
+| `--label-table` | `<LABEL_TABLE>` |  | 모든 --set-cell-by-label 요청을 이 0-기반 재귀 표 인덱스로 제한 |
 | `--set-field` | `<SET_FIELD>` |  | 필드/누름틀 채우기 "이름=값" (반복 가능 — hwp fields로 이름 확인) |
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
 | `--create-field` | `<CREATE_FIELD>` |  | 누름틀 생성 "앵커=>이름" 또는 "앵커=>이름=값" — 앵커 텍스트 뒤에 %clk 필드 삽입 (반복 가능) |

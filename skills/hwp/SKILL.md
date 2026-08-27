@@ -141,6 +141,13 @@ Per-document recipes, slot tables, the Korean alias table, fill/validate workflo
 Hancom final check live in `official-documents.md` (exported next to this file); regulation
 background lives in `references/korean-official-format.md`.
 
+## Editing recipes
+
+The bilingual native editing migration crosswalk, including honest limits for retired `hwpx`
+workflows, lives in [references/editing-recipes.md](references/editing-recipes.md). Use it for
+analysis, anchor-based paragraph edits, data-driven table fill, label-value forms, and the
+validate-plus-render guard sequence.
+
 ## MCP server
 
 `hwp mcp` speaks synchronous JSON-RPC 2.0 over stdio (line-delimited; stdout carries the
