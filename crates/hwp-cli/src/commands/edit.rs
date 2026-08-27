@@ -6,7 +6,7 @@
 //! 패키지 외과 수술 경로(`hwpx::patch::rewrite_document_staged`)로, 편집된
 //! 콘텐츠 엔트리만 재직렬화하고 나머지 엔트리는 raw 복사로 바이트 보존한다.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -67,6 +67,11 @@ pub(crate) enum TypedEditOperation {
         row: u16,
         col: u16,
         text: String,
+    },
+    SetCellByLabel {
+        label: String,
+        text: String,
+        table: Option<usize>,
     },
     CreateField {
         anchor: String,
@@ -268,6 +273,18 @@ struct ResolvedLabelEdit {
     text: String,
     candidate: hwp_convert::FormCellCandidate,
     request: String,
+}
+
+struct LabelEditRequest {
+    label: String,
+    text: String,
+    table: Option<usize>,
+    request: String,
+}
+
+struct LabelPreflight {
+    resolved: Vec<Option<ResolvedLabelEdit>>,
+    unapplied: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -609,9 +626,16 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     let original_doc = doc.clone();
     // Label lookup is a preflight, not another mutation primitive: every request
     // observes the original document and errors before a staged output exists.
-    let mut resolved_label_edits = preflight_cli_label_edits(plan, &mut doc)?.into_iter();
+    let label_preflight = preflight_label_edits(plan, &mut doc)?;
+    if !label_preflight.unapplied.is_empty() && !plan.allow_partial {
+        anyhow::bail!(
+            "적용되지 않은 편집 요청이 있습니다: {} (--allow-partial로 일치한 요청만 적용 가능)",
+            label_preflight.unapplied.join(", ")
+        );
+    }
+    let mut resolved_label_edits = label_preflight.resolved.into_iter();
     let mut edits = 0usize;
-    let mut unapplied = Vec::new();
+    let mut unapplied = label_preflight.unapplied;
     // 구조 편집(문단/행 추가·삭제·이미지 삽입)은 합성 경로로 써야 한다 — 삽입 문단/행
     // 불변식 + 그림 도형 레코드 합성(빈-extras Picture)이 적용되도록.
     let structural = plan.operations.iter().any(EditOperation::is_structural)
@@ -686,6 +710,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let resolved = resolved_label_edits
                         .next()
                         .expect("label edits are resolved during preflight");
+                    let Some(resolved) = resolved else {
+                        continue;
+                    };
                     let before = doc.clone();
                     hwp_convert::set_cell(
                         &mut doc,
@@ -1155,7 +1182,13 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         }
     }
     for operation in &plan.typed_operations {
-        apply_typed_operation(operation, &mut doc, &mut edits, &mut unapplied)?;
+        apply_typed_operation(
+            operation,
+            &mut doc,
+            &mut edits,
+            &mut unapplied,
+            &mut resolved_label_edits,
+        )?;
     }
 
     if !unapplied.is_empty() && !plan.allow_partial {
@@ -1240,11 +1273,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     })
 }
 
-fn preflight_cli_label_edits(
+fn preflight_label_edits(
     plan: &EditPlan,
     doc: &mut hwp_model::Document,
-) -> anyhow::Result<Vec<ResolvedLabelEdit>> {
-    let mut resolved = Vec::new();
+) -> anyhow::Result<LabelPreflight> {
+    let mut requests = Vec::new();
     for operation in &plan.operations {
         let EditOperation::SetCellByLabel { specs, table } = operation else {
             continue;
@@ -1257,28 +1290,76 @@ fn preflight_cli_label_edits(
             if normalized.is_empty() {
                 anyhow::bail!("--set-cell-by-label 레이블은 비어 있을 수 없습니다");
             }
-            let candidates = hwp_convert::find_form_cells_by_label(doc, &normalized, *table);
-            match candidates.as_slice() {
-                [] => anyhow::bail!("양식 레이블에 해당하는 셀을 찾지 못했습니다"),
-                [candidate] => resolved.push(ResolvedLabelEdit {
-                    text: text.to_string(),
-                    candidate: *candidate,
-                    request: format!("--set-cell-by-label {spec:?}"),
-                }),
-                many => anyhow::bail!(
-                    "양식 레이블 대상이 모호합니다: {}",
-                    many.iter()
-                        .map(|candidate| format!(
-                            "표{} ({},{})",
-                            candidate.table, candidate.row, candidate.col
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            }
+            requests.push(LabelEditRequest {
+                label: normalized,
+                text: text.to_string(),
+                table: *table,
+                request: "set_cell_by_label".to_string(),
+            });
         }
     }
-    Ok(resolved)
+    for operation in &plan.typed_operations {
+        let TypedEditOperation::SetCellByLabel { label, text, table } = operation else {
+            continue;
+        };
+        let normalized = hwp_convert::normalize_form_label(label);
+        if normalized.is_empty() {
+            anyhow::bail!("set_cell_by_label 레이블은 비어 있을 수 없습니다");
+        }
+        requests.push(LabelEditRequest {
+            label: normalized,
+            text: text.clone(),
+            table: *table,
+            request: "set_cell_by_label".to_string(),
+        });
+    }
+
+    let mut resolved = Vec::with_capacity(requests.len());
+    let mut unapplied = Vec::new();
+    let mut targeted = BTreeSet::new();
+    for request in requests {
+        if let Some(table) = request.table {
+            if hwp_convert::table_dims(doc, table).is_none() {
+                anyhow::bail!("set_cell_by_label의 table 범위가 유효하지 않습니다");
+            }
+        }
+        let candidates = hwp_convert::find_form_cells_by_label(doc, &request.label, request.table);
+        match candidates.as_slice() {
+            [] => {
+                unapplied.push(request.request);
+                resolved.push(None);
+            }
+            [candidate] => {
+                if !targeted.insert(*candidate) {
+                    anyhow::bail!(
+                        "양식 레이블 대상이 중복됩니다: 표{} ({},{})",
+                        candidate.table,
+                        candidate.row,
+                        candidate.col
+                    );
+                }
+                resolved.push(Some(ResolvedLabelEdit {
+                    text: request.text,
+                    candidate: *candidate,
+                    request: "set_cell_by_label".to_string(),
+                }));
+            }
+            many => anyhow::bail!(
+                "양식 레이블 대상이 모호합니다: {}",
+                many.iter()
+                    .map(|candidate| format!(
+                        "표{} ({},{})",
+                        candidate.table, candidate.row, candidate.col
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+    Ok(LabelPreflight {
+        resolved,
+        unapplied,
+    })
 }
 
 struct PatchReport {
@@ -1383,6 +1464,7 @@ fn apply_typed_operation(
     doc: &mut hwp_model::Document,
     edits: &mut usize,
     unapplied: &mut Vec<String>,
+    resolved_label_edits: &mut dyn Iterator<Item = Option<ResolvedLabelEdit>>,
 ) -> anyhow::Result<()> {
     match operation {
         TypedEditOperation::Replace { from, to } => {
@@ -1418,6 +1500,28 @@ fn apply_typed_operation(
                 edits,
                 unapplied,
             );
+        }
+        TypedEditOperation::SetCellByLabel { .. } => {
+            let resolved = resolved_label_edits
+                .next()
+                .expect("label edits are resolved during preflight");
+            let Some(resolved) = resolved else {
+                return Ok(());
+            };
+            let before = doc.clone();
+            hwp_convert::set_cell(
+                doc,
+                resolved.candidate.table,
+                resolved.candidate.row,
+                resolved.candidate.col,
+                &resolved.text,
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!(
+                "양식 셀 설정: 표{} ({},{})",
+                resolved.candidate.table, resolved.candidate.row, resolved.candidate.col
+            );
+            record_effect(&before, doc, resolved.request, edits, unapplied);
         }
         TypedEditOperation::CreateField {
             anchor,

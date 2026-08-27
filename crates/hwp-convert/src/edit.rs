@@ -29,11 +29,13 @@ pub fn normalize_form_label(label: &str) -> String {
         .to_string()
 }
 
-/// Find cells immediately to the right of a matching form label.
+/// Find writable form cells for a matching label.
 ///
 /// Table indices use the same recursive document order as [`set_cell`]. This
 /// intentionally calls the readonly table walker so discovery cannot clear
-/// opaque HWPX XML or otherwise mutate the document.
+/// opaque HWPX XML or otherwise mutate the document. A label may address the
+/// immediately adjacent cell, or the first data cell directly below a label in
+/// the table's first row.
 pub fn find_form_cells_by_label(
     doc: &mut Document,
     label: &str,
@@ -52,6 +54,22 @@ pub fn find_form_cells_by_label(
                 return Vec::new();
             }
             let mut matches = Vec::new();
+            let header_is_complete =
+                current
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.row == 0)
+                    .all(|cell| {
+                        !normalize_form_label(
+                            &cell
+                                .paragraphs
+                                .iter()
+                                .map(Paragraph::plain_text)
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                        .is_empty()
+                    });
             for label_cell in &current.cells {
                 let visible = label_cell
                     .paragraphs
@@ -73,6 +91,21 @@ pub fn find_form_cells_by_label(
                         row: target.row,
                         col: target.col,
                     });
+                }
+
+                if header_is_complete && label_cell.row == 0 {
+                    let first_data_row = label_cell.row.saturating_add(label_cell.row_span);
+                    if let Some(target) = current
+                        .cells
+                        .iter()
+                        .find(|cell| cell.row == first_data_row && cell.col == label_cell.col)
+                    {
+                        matches.push(FormCellCandidate {
+                            table: table_index,
+                            row: target.row,
+                            col: target.col,
+                        });
+                    }
                 }
             }
             matches

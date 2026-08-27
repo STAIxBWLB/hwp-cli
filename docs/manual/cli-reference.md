@@ -199,6 +199,8 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `-o, --output` | `<OUTPUT>` |  | Output file path |
 | `--replace` | `<REPLACE>` |  | Replace text, "find=>replace" (repeatable; replaces every match) |
 | `--set-cell` | `<SET_CELL>` |  | Set a table cell, "table:row:col=value" (repeatable; 0-based indices) |
+| `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | Fill the value cell immediately right of a form label, "label=value" (repeatable) |
+| `--label-table` | `<LABEL_TABLE>` |  | Restrict every --set-cell-by-label request to this zero-based recursive table index |
 | `--set-field` | `<SET_FIELD>` |  | Fill a field, "name=value" (repeatable; list names with hwp fields) |
 | `--set-meta` | `<SET_META>` |  | Set metadata, "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
 | `--create-field` | `<CREATE_FIELD>` |  | Create a field, "anchor=>name" or "anchor=>name=value": insert a %clk field after the anchor text (repeatable) |
