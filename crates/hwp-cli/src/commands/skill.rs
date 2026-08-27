@@ -1136,10 +1136,7 @@ mod tests {
 
         let error = publish_staged_tree_with(&dir, &staged, |source, destination| {
             if source == staged {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "forced staged publish failure",
-                ));
+                return Err(std::io::Error::other("forced staged publish failure"));
             }
             fs::rename(source, destination)
         })
