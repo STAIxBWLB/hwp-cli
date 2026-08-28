@@ -157,7 +157,7 @@ pub fn part_paragraphs(target: &mut Document, part: &Document) -> Result<Vec<Par
     Ok(out)
 }
 
-/// Shifts one paragraph's id references (including nested table cells, Generic paragraph lists, and picture bin references).
+/// Shifts one paragraph's id references (including nested table cells, Generic paragraph lists, table/picture captions, and picture bin references).
 fn remap_paragraph(
     para: &mut Paragraph,
     ps_off: u16,
@@ -175,6 +175,11 @@ fn remap_paragraph(
     for control in &mut para.controls {
         match control {
             Control::Table(t) => {
+                if let Some(cap) = &mut t.caption {
+                    for p in &mut cap.paragraphs {
+                        remap_paragraph(p, ps_off, cs_off, rename);
+                    }
+                }
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
                         remap_paragraph(p, ps_off, cs_off, rename);
@@ -195,6 +200,11 @@ fn remap_paragraph(
                     && let Some(new_name) = rename.get(name)
                 {
                     *name = new_name.clone();
+                }
+                if let Some(cap) = &mut pic.caption {
+                    for p in &mut cap.paragraphs {
+                        remap_paragraph(p, ps_off, cs_off, rename);
+                    }
                 }
             }
             _ => {}
@@ -323,5 +333,83 @@ mod tests {
             })
             .expect("표 컨트롤");
         assert_eq!(table.cells[0].col_span, 2);
+    }
+
+    #[test]
+    fn 표_캡션_문단도_오프셋이_적용된다() {
+        // Regression for #169: the part-filling remap used to skip caption
+        // paragraphs, leaving their off-palette shape ids pointing at the
+        // template's wrong entries.
+        let mut target = from_markdown("{{본문}}\n");
+        // Force nonzero offsets: the template gets one extra shape of each kind.
+        target.header.para_shapes.push(hwp_model::ParaShape {
+            line_spacing: 999,
+            ..Default::default()
+        });
+        target.header.char_shapes.push(hwp_model::CharShape {
+            base_size: 9999,
+            ..Default::default()
+        });
+        let ps_off = target.header.para_shapes.len() as u16 - BASE_PARA_SHAPES;
+        let cs_off = target.header.char_shapes.len() as u16 - PALETTE_LEN;
+
+        let mut part = from_markdown_blocks(
+            "<table><tr><td>가</td></tr></table>\n",
+            &MarkdownImportOptions::default(),
+        );
+        part.header.para_shapes.push(hwp_model::ParaShape {
+            line_spacing: 250,
+            ..Default::default()
+        });
+        let marker_ps = hwp_model::ParaShapeId((part.header.para_shapes.len() - 1) as u16);
+        part.header.char_shapes.push(hwp_model::CharShape {
+            base_size: 4321,
+            ..Default::default()
+        });
+        let marker_cs = hwp_model::CharShapeId((part.header.char_shapes.len() - 1) as u16);
+        assert!(marker_ps.0 >= BASE_PARA_SHAPES && marker_cs.0 >= PALETTE_LEN);
+
+        let table = part.sections[0].paragraphs[0]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 컨트롤");
+        table.caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![Paragraph {
+                para_shape: marker_ps,
+                char_shape_runs: vec![(0, marker_cs)],
+                ..Default::default()
+            }],
+        });
+
+        let blocks = part_paragraphs(&mut target, &part).unwrap();
+        let caption_para = &blocks
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 컨트롤")
+            .caption
+            .as_ref()
+            .expect("캡션이 유지돼야 한다")
+            .paragraphs[0];
+        assert_eq!(caption_para.para_shape.0, marker_ps.0 + ps_off);
+        assert_eq!(
+            target.header.para_shapes[caption_para.para_shape.0 as usize].line_spacing,
+            250
+        );
+        let (_, run_cs) = caption_para.char_shape_runs[0];
+        assert_eq!(run_cs.0, marker_cs.0 + cs_off);
+        assert_eq!(target.header.char_shapes[run_cs.0 as usize].base_size, 4321);
     }
 }

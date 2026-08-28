@@ -12,6 +12,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `hwp fill --set name=@part.md` (part-filling) now id-shifts table/picture caption paragraphs
+  too, so part captions referencing off-palette shapes resolve to the grafted header entries
+  instead of the template's wrong ones (#169).
+
 - `hwp split --loss-report` now rejects a report path that aliases the input file, matching the
   merge guard; the previous gap let the JSON report silently overwrite the input document
   (#167).
