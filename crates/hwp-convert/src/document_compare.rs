@@ -6,7 +6,10 @@
 //! inputs untouched (success criterion 3) — nothing on this path can write.
 //!
 //! **Text differences (D-11).** Paragraphs are flattened across sections into
-//! one ordered sequence per document and compared on their `chars` sequence
+//! one ordered sequence per document — top-level paragraphs plus the
+//! paragraphs nested in table cells/captions, picture captions, and generic
+//! control paragraph lists, visited depth-first in document order — and
+//! compared on their `chars` sequence
 //! with derived [`HwpChar`] equality — structural, not normalized (assumption
 //! A-09: no NFC/NFD folding, so two paragraphs differing only by Unicode
 //! normalization form report as changed). A hand-rolled paragraph-level LCS
@@ -24,12 +27,12 @@
 //! deletion / b-side insertion pairs are folded into one `Replace` entry. The
 //! same input pair therefore always produces the same report.
 //!
-//! **Bounded allocation (FLOW-03 `precision`).** The paragraph-level DP table
-//! has `a_len * b_len` cells. That product is computed with a checked
-//! multiply and refused above [`MAX_LCS_CELLS`] rather than allocated
-//! unbounded or silently degraded to a weaker comparison.
+//! **Bounded allocation (FLOW-03 `precision`).** Both the paragraph-level and
+//! the character-level DP tables have `a_len * b_len` cells. Each product is
+//! computed with a checked multiply and refused above [`MAX_LCS_CELLS`] rather
+//! than allocated unbounded or silently degraded to a weaker comparison.
 //!
-//! **Structure (D-12).** [`StructureDiff`] covers section counts, top-level
+//! **Structure (D-12).** [`StructureDiff`] covers section counts, flattened
 //! paragraph counts, a per-kind control inventory (the same multiset-counting
 //! shape `hwp-cli`'s `commands/preservation.rs` uses for its own control
 //! comparison), and table row/column geometry deltas, paired positionally.
@@ -39,7 +42,7 @@
 
 use std::collections::BTreeMap;
 
-use hwp_model::{Control, Document, HwpChar};
+use hwp_model::{Control, Document, HwpChar, Paragraph};
 
 /// The paragraph-level LCS DP table is refused above this many cells
 /// (`a_len * b_len`), rather than allocated unbounded or silently degraded to
@@ -67,8 +70,9 @@ pub enum ParagraphOp {
 }
 
 /// One paragraph-level operation. `a_index`/`b_index` are indices into the
-/// flattened top-level paragraph sequence of each document (not WCHAR
-/// offsets). `chars` is populated only for `Replace`.
+/// flattened paragraph sequence of each document (top-level plus nested
+/// cell/caption paragraphs; not WCHAR offsets). `chars` is populated only for
+/// `Replace`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParagraphEntry {
     pub op: ParagraphOp,
@@ -106,9 +110,10 @@ pub struct TableGeometryDelta {
     pub cols: (u16, u16),
 }
 
-/// Structural differences per D-12: section counts, top-level paragraph
-/// counts, a per-kind control inventory, and table geometry deltas. Char
-/// shape / para shape formatting is deliberately out of scope for v1.
+/// Structural differences per D-12: section counts, flattened paragraph
+/// counts (nested cell/caption paragraphs included), a per-kind control
+/// inventory, and table geometry deltas. Char shape / para shape formatting
+/// is deliberately out of scope for v1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructureDiff {
     pub sections: (usize, usize),
@@ -129,14 +134,14 @@ impl StructureDiff {
 }
 
 /// Compares two documents. Pure function, no I/O: the caller owns loading and
-/// rendering. Returns `Err` naming the paragraph-count ceiling when the LCS
-/// table would exceed [`MAX_LCS_CELLS`] cells.
+/// rendering. Returns `Err` naming the [`MAX_LCS_CELLS`] ceiling when either
+/// the paragraph-level or a character-level LCS table would exceed it.
 pub fn compare_documents(a: &Document, b: &Document) -> Result<DocumentDiff, String> {
     let a_paras = flatten_paragraph_chars(a);
     let b_paras = flatten_paragraph_chars(b);
 
     let ops = paragraph_lcs(&a_paras, &b_paras)?;
-    let paragraphs = fold_paragraph_ops(ops, &a_paras, &b_paras);
+    let paragraphs = fold_paragraph_ops(ops, &a_paras, &b_paras)?;
 
     let structure = structure_diff(a, b, a_paras.len(), b_paras.len());
 
@@ -150,16 +155,73 @@ pub fn compare_documents(a: &Document, b: &Document) -> Result<DocumentDiff, Str
     })
 }
 
-/// Flattens every section's paragraphs (top-level only — not nested table
-/// cell or caption paragraphs) into one ordered `chars` sequence per
-/// paragraph, in document order.
+/// Flattens every section's paragraphs — top-level plus the paragraphs
+/// nested in table cells/captions, picture captions, and generic control
+/// paragraph lists/captions — into one ordered `chars` sequence per
+/// paragraph, in depth-first document order.
 fn flatten_paragraph_chars(document: &Document) -> Vec<Vec<HwpChar>> {
-    document
-        .sections
-        .iter()
-        .flat_map(|section| section.paragraphs.iter())
-        .map(|paragraph| paragraph.chars.clone())
-        .collect()
+    let mut out = Vec::new();
+    walk_paragraphs(document, &mut |paragraph| out.push(paragraph.chars.clone()));
+    out
+}
+
+/// Visits every paragraph of the document in depth-first document order:
+/// each top-level paragraph, then the paragraphs nested in its controls.
+/// The nested traversal mirrors hwp-cli's
+/// `commands/preservation.rs::collect_paragraph_controls` (this crate cannot
+/// depend on that binary crate, so the traversal shape is mirrored rather
+/// than shared).
+fn walk_paragraphs(document: &Document, visit: &mut impl FnMut(&Paragraph)) {
+    for paragraph in document.sections.iter().flat_map(|s| s.paragraphs.iter()) {
+        visit(paragraph);
+        walk_nested_paragraphs(paragraph, visit);
+    }
+}
+
+/// Visits the paragraphs nested in `paragraph`'s controls: table cells and
+/// caption, picture caption, and generic paragraph lists and caption.
+fn walk_nested_paragraphs(paragraph: &Paragraph, visit: &mut impl FnMut(&Paragraph)) {
+    for control in &paragraph.controls {
+        match control {
+            Control::Table(table) => {
+                for cell in &table.cells {
+                    for nested in &cell.paragraphs {
+                        visit(nested);
+                        walk_nested_paragraphs(nested, visit);
+                    }
+                }
+                if let Some(caption) = &table.caption {
+                    for nested in &caption.paragraphs {
+                        visit(nested);
+                        walk_nested_paragraphs(nested, visit);
+                    }
+                }
+            }
+            Control::Picture(picture) => {
+                if let Some(caption) = &picture.caption {
+                    for nested in &caption.paragraphs {
+                        visit(nested);
+                        walk_nested_paragraphs(nested, visit);
+                    }
+                }
+            }
+            Control::Generic(generic) => {
+                for list in &generic.paragraph_lists {
+                    for nested in &list.paragraphs {
+                        visit(nested);
+                        walk_nested_paragraphs(nested, visit);
+                    }
+                }
+                if let Some(caption) = &generic.caption {
+                    for nested in &caption.paragraphs {
+                        visit(nested);
+                        walk_nested_paragraphs(nested, visit);
+                    }
+                }
+            }
+            Control::SectionDef(_) => {}
+        }
+    }
 }
 
 // ---- Paragraph-level LCS ----------------------------------------------
@@ -219,12 +281,13 @@ fn paragraph_lcs(a: &[Vec<HwpChar>], b: &[Vec<HwpChar>]) -> Result<Vec<AtomicOp>
 }
 
 /// Folds an adjacent a-side-deletion / b-side-insertion pair into one
-/// `Replace` entry and attaches its character sub-diff.
+/// `Replace` entry and attaches its character sub-diff. Returns `Err` when a
+/// replaced pair's character-level LCS table would exceed [`MAX_LCS_CELLS`].
 fn fold_paragraph_ops(
     ops: Vec<AtomicOp>,
     a: &[Vec<HwpChar>],
     b: &[Vec<HwpChar>],
-) -> Vec<ParagraphEntry> {
+) -> Result<Vec<ParagraphEntry>, String> {
     let mut out = Vec::with_capacity(ops.len());
     let mut iter = ops.into_iter().peekable();
     while let Some(op) = iter.next() {
@@ -238,7 +301,7 @@ fn fold_paragraph_ops(
             AtomicOp::Delete(ai) => {
                 if let Some(AtomicOp::Insert(bi)) = iter.peek().copied() {
                     iter.next();
-                    let chars = Some(char_lcs_runs(&a[ai], &b[bi]));
+                    let chars = Some(char_lcs_runs(&a[ai], &b[bi])?);
                     out.push(ParagraphEntry {
                         op: ParagraphOp::Replace,
                         a_index: Some(ai),
@@ -257,7 +320,7 @@ fn fold_paragraph_ops(
             AtomicOp::Insert(bi) => {
                 if let Some(AtomicOp::Delete(ai)) = iter.peek().copied() {
                     iter.next();
-                    let chars = Some(char_lcs_runs(&a[ai], &b[bi]));
+                    let chars = Some(char_lcs_runs(&a[ai], &b[bi])?);
                     out.push(ParagraphEntry {
                         op: ParagraphOp::Replace,
                         a_index: Some(ai),
@@ -275,7 +338,7 @@ fn fold_paragraph_ops(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 // ---- Character-level LCS (only inside a Replace pair) -----------------
@@ -287,13 +350,25 @@ enum AtomicCharOp {
     Insert(usize),
 }
 
-/// Same DP shape as [`paragraph_lcs`], one level down: over `HwpChar`
-/// elements instead of paragraphs. No separate cell ceiling — a replaced
-/// pair's element counts are individual-paragraph sized, already bounded by
-/// the per-container reader limits each input passed through on load.
-fn char_lcs(a: &[HwpChar], b: &[HwpChar]) -> Vec<AtomicCharOp> {
+/// Same DP shape and cell ceiling as [`paragraph_lcs`], one level down: over
+/// `HwpChar` elements instead of paragraphs. The ceiling applies here too —
+/// a single paragraph can hold tens of millions of WCHARs under hwp5's
+/// default `max_stream_bytes`, so an unbounded table would abort on
+/// allocation failure rather than return a catchable error.
+fn char_lcs(a: &[HwpChar], b: &[HwpChar]) -> Result<Vec<AtomicCharOp>, String> {
     let a_len = a.len();
     let b_len = b.len();
+
+    let cells = a_len
+        .checked_mul(b_len)
+        .filter(|cells| *cells <= MAX_LCS_CELLS);
+    if a_len > 0 && b_len > 0 && cells.is_none() {
+        return Err(format!(
+            "문자 수 조합이 비교 가능한 한도를 초과했습니다: {a_len} x {b_len} 문자 \
+             (상한 MAX_LCS_CELLS = {MAX_LCS_CELLS}칸)"
+        ));
+    }
+
     let mut dp = vec![vec![0u32; b_len + 1]; a_len + 1];
     for (i, a_char) in a.iter().enumerate() {
         for (j, b_char) in b.iter().enumerate() {
@@ -321,7 +396,7 @@ fn char_lcs(a: &[HwpChar], b: &[HwpChar]) -> Vec<AtomicCharOp> {
         }
     }
     ops.reverse();
-    ops
+    Ok(ops)
 }
 
 /// Prefix sums of `wchar_width`, so element index `i` maps to its WCHAR
@@ -338,9 +413,10 @@ fn wchar_prefix(chars: &[HwpChar]) -> Vec<u32> {
 }
 
 /// Runs a character-level LCS over a replaced paragraph pair and coalesces
-/// the atomic ops into WCHAR-offset [`CharRun`]s.
-fn char_lcs_runs(a: &[HwpChar], b: &[HwpChar]) -> Vec<CharRun> {
-    let ops = char_lcs(a, b);
+/// the atomic ops into WCHAR-offset [`CharRun`]s. Returns `Err` when the
+/// pair's LCS table would exceed [`MAX_LCS_CELLS`].
+fn char_lcs_runs(a: &[HwpChar], b: &[HwpChar]) -> Result<Vec<CharRun>, String> {
+    let ops = char_lcs(a, b)?;
     let a_prefix = wchar_prefix(a);
     let b_prefix = wchar_prefix(b);
 
@@ -376,7 +452,7 @@ fn char_lcs_runs(a: &[HwpChar], b: &[HwpChar]) -> Vec<CharRun> {
             });
         }
     }
-    runs
+    Ok(runs)
 }
 
 // ---- Structural inventory (D-12) ---------------------------------------
@@ -419,32 +495,34 @@ fn structure_diff(
     }
 }
 
-/// Per-kind control counts, recursing into table cells/captions and picture
-/// captions exactly like `hwp-cli`'s `commands/preservation.rs::collect_paragraph_controls`
-/// (this crate cannot depend on that binary crate, so the counting shape is
-/// mirrored rather than shared).
+/// Per-kind control counts, recursing into table cells/captions, picture
+/// captions, and generic paragraph lists/captions via [`walk_paragraphs`] —
+/// the same nested coverage as `hwp-cli`'s
+/// `commands/preservation.rs::collect_paragraph_controls` (this crate cannot
+/// depend on that binary crate, so the counting shape is mirrored rather
+/// than shared).
 fn control_inventory(document: &Document) -> BTreeMap<[u8; 4], usize> {
     let mut counts = BTreeMap::new();
-    for paragraph in document.sections.iter().flat_map(|s| s.paragraphs.iter()) {
+    walk_paragraphs(document, &mut |paragraph| {
         for control in &paragraph.controls {
             *counts.entry(control.ctrl_id()).or_default() += 1;
         }
-    }
+    });
     counts
 }
 
-/// Flattened, ordered (rows, cols) for every table in the document.
+/// Flattened, ordered (rows, cols) for every table in the document,
+/// including tables nested in cells and captions.
 fn table_geometries(document: &Document) -> Vec<(u16, u16)> {
-    document
-        .sections
-        .iter()
-        .flat_map(|s| s.paragraphs.iter())
-        .flat_map(|p| &p.controls)
-        .filter_map(|control| match control {
-            Control::Table(table) => Some((table.rows, table.cols)),
-            _ => None,
-        })
-        .collect()
+    let mut out = Vec::new();
+    walk_paragraphs(document, &mut |paragraph| {
+        for control in &paragraph.controls {
+            if let Control::Table(table) = control {
+                out.push((table.rows, table.cols));
+            }
+        }
+    });
+    out
 }
 
 #[cfg(test)]
@@ -568,6 +646,40 @@ mod tests {
         let a: Vec<Vec<HwpChar>> = (0..big).map(|_| vec![HwpChar::Text('a')]).collect();
         let b: Vec<Vec<HwpChar>> = (0..4001).map(|_| vec![HwpChar::Text('b')]).collect();
         let err = paragraph_lcs(&a, &b).unwrap_err();
+        assert!(err.contains("MAX_LCS_CELLS"));
+    }
+
+    #[test]
+    fn cell_only_text_difference_is_not_identical() {
+        // The top-level paragraphs are identical on both sides; only the text
+        // inside one table cell differs.
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let b = doc("| a | b |\n| - | - |\n| 1 | 3 |\n");
+        let diff = compare_documents(&a, &b).unwrap();
+        assert!(!diff.identical);
+        assert!(diff.paragraphs.iter().any(|e| e.op != ParagraphOp::Equal));
+    }
+
+    #[test]
+    fn char_count_product_above_ceiling_is_refused() {
+        // Same ceiling shape as the paragraph-level test: the DP matrix is
+        // refused before it is allocated.
+        let big = MAX_LCS_CELLS / 4000 + 1;
+        let a: Vec<HwpChar> = (0..big).map(|_| HwpChar::Text('a')).collect();
+        let b: Vec<HwpChar> = (0..4001).map(|_| HwpChar::Text('b')).collect();
+        let err = char_lcs(&a, &b).unwrap_err();
+        assert!(err.contains("MAX_LCS_CELLS"));
+    }
+
+    #[test]
+    fn oversized_replaced_pair_surfaces_as_err() {
+        // End to end: two paragraphs are few enough for the paragraph-level
+        // LCS, but the replaced pair's char product exceeds the ceiling, so
+        // the compare returns Err instead of aborting on allocation failure.
+        let big = MAX_LCS_CELLS / 4000 + 1;
+        let a = doc(&format!("머리\n\n{}\n", "가".repeat(big)));
+        let b = doc(&format!("머리\n\n{}\n", "나".repeat(4001)));
+        let err = compare_documents(&a, &b).unwrap_err();
         assert!(err.contains("MAX_LCS_CELLS"));
     }
 

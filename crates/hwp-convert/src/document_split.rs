@@ -11,7 +11,10 @@
 //! exactly what this project forbids CI tests from asserting on). A boundary that
 //! falls inside a paragraph rounds forward to the start of the next paragraph
 //! (D-08), so the straddling paragraph stays whole in the fragment before the
-//! boundary and the fragment after it starts clean.
+//! boundary and the fragment after it starts clean. A range whose start and end
+//! pages live in different sections produces one fragment spanning those
+//! sections (intermediate sections carried whole), so no content between the
+//! two boundaries is dropped.
 //!
 //! This module must not depend on the sibling merge-grafting module: D-06's
 //! "whole DocHeader unchanged" is exactly the direction that needs no offset
@@ -151,11 +154,17 @@ fn round_boundary(doc: &Document, addr: ParagraphAddress) -> ParagraphAddress {
 /// font-driven layout pass. A boundary that falls inside a paragraph rounds
 /// forward to the next paragraph's start (D-08): the straddling paragraph stays
 /// whole in the fragment before the boundary, and the fragment after it starts
-/// at the following paragraph. Every fragment's slice is kept within a single
-/// section (the section the range's start address names); when the slice does
-/// not already start with that section's first paragraph (which carries its
-/// `Control::SectionDef`), that first paragraph is prepended so the fragment
-/// stays a well-formed section.
+/// at the following paragraph. A fragment's slice runs from its (rounded)
+/// start address through its (rounded) end address across section boundaries:
+/// the start section contributes from `start.paragraph` on, intermediate
+/// sections are carried whole, and the end section contributes up to
+/// `end.paragraph` (a range reaching the document's last page runs to the end
+/// of the last section), so no content between the two boundaries is dropped.
+/// When the slice does not already start with the start section's first
+/// paragraph (which carries its `Control::SectionDef`), that first paragraph
+/// is prepended so the fragment's first section stays well-formed; later
+/// sections keep their own first paragraphs, so they stay well-formed as-is.
+/// The fragment's `section_count` is set to the number of sections it carries.
 ///
 /// Returns `Err` for an empty range list, a range with `first > last` or
 /// `first == 0`, a range naming a page beyond the count [`page_start_addresses`]
@@ -222,31 +231,49 @@ pub fn split_page_ranges(doc: &Document, ranges: &[PageRange]) -> Result<SplitOu
             None
         };
 
-        let section_index = start.section;
-        let section = doc
-            .sections
-            .get(section_index)
-            .ok_or_else(|| "페이지 경계가 가리키는 구역을 찾을 수 없습니다".to_string())?;
-        let end_paragraph = match end {
-            Some(end) if end.section == section_index => end.paragraph,
-            _ => section.paragraphs.len(),
-        };
-        let start_paragraph = start.paragraph.min(end_paragraph);
+        // D-08 slice, spanning every section from the range's start address
+        // to its end address: intermediate sections are taken whole, so no
+        // content between the two boundaries is dropped.
+        let start_section = start.section;
+        let last_section = end.map_or(doc.sections.len() - 1, |end| end.section);
 
-        let mut paragraphs: Vec<Paragraph> =
-            section.paragraphs[start_paragraph..end_paragraph].to_vec();
-        if start_paragraph != 0
-            && let Some(first_paragraph) = section.paragraphs.first()
-        {
-            paragraphs.insert(0, first_paragraph.clone());
+        let mut sections: Vec<Section> = Vec::new();
+        for section_index in start_section..=last_section {
+            let section = doc
+                .sections
+                .get(section_index)
+                .ok_or_else(|| "페이지 경계가 가리키는 구역을 찾을 수 없습니다".to_string())?;
+            let slice_start = if section_index == start_section {
+                start.paragraph
+            } else {
+                0
+            };
+            let slice_end = match end {
+                Some(end) if end.section == section_index => end.paragraph,
+                _ => section.paragraphs.len(),
+            };
+            let slice_start = slice_start.min(slice_end);
+            if slice_start == slice_end && !sections.is_empty() {
+                // The end boundary sits exactly at this section's start —
+                // nothing of this section belongs to the fragment.
+                continue;
+            }
+            let mut paragraphs: Vec<Paragraph> =
+                section.paragraphs[slice_start..slice_end].to_vec();
+            if slice_start != 0
+                && let Some(first_paragraph) = section.paragraphs.first()
+            {
+                paragraphs.insert(0, first_paragraph.clone());
+            }
+            sections.push(Section {
+                paragraphs,
+                extras: section.extras.clone(),
+            });
         }
 
         let mut fragment = doc.clone();
-        fragment.sections = vec![Section {
-            paragraphs,
-            extras: section.extras.clone(),
-        }];
-        fragment.header.properties.section_count = 1;
+        fragment.header.properties.section_count = sections.len() as u16;
+        fragment.sections = sections;
         fragment.header.properties.caret = (0, 0, 0);
         fragments.push(fragment);
     }
@@ -376,7 +403,16 @@ mod tests {
     }
 
     fn set_page_start(doc: &mut Document, paragraph_index: usize, text_start: u32) {
-        doc.sections[0].paragraphs[paragraph_index]
+        set_section_page_start(doc, 0, paragraph_index, text_start);
+    }
+
+    fn set_section_page_start(
+        doc: &mut Document,
+        section_index: usize,
+        paragraph_index: usize,
+        text_start: u32,
+    ) {
+        doc.sections[section_index].paragraphs[paragraph_index]
             .line_segs
             .push(LineSeg {
                 text_start,
@@ -464,5 +500,104 @@ mod tests {
         assert!(has_section_def(
             &outcome.fragments[0].sections[0].paragraphs[0]
         ));
+    }
+
+    /// A page start on every section's first paragraph: page 1 = section 0,
+    /// page 2 = section 1, page 3 = section 2.
+    fn paged_three_section_doc() -> Document {
+        let mut doc = three_section_doc();
+        set_section_page_start(&mut doc, 0, 0, 0);
+        set_section_page_start(&mut doc, 1, 0, 0);
+        set_section_page_start(&mut doc, 2, 0, 0);
+        doc
+    }
+
+    #[test]
+    fn 구역을_넘는_페이지_범위는_중간_구역을_모두_담는다() {
+        let doc = paged_three_section_doc();
+
+        // Pages 1-2 must carry section 1 whole — the single-section slice
+        // used to drop it silently (issue #162).
+        let outcome = split_page_ranges(&doc, &[PageRange { first: 1, last: 2 }]).unwrap();
+        assert!(outcome.roundings.is_empty());
+        assert_eq!(outcome.fragments.len(), 1);
+        let fragment = &outcome.fragments[0];
+        // The range ends exactly at section 2's start, so section 2 is not
+        // part of the fragment at all.
+        assert_eq!(fragment.sections.len(), 2);
+        assert_eq!(fragment.header.properties.section_count, 2);
+        let text = plain_text(fragment);
+        assert!(text.contains("첫 구역"));
+        assert!(text.contains("둘째 구역"));
+        assert!(!text.contains("셋째 구역"));
+    }
+
+    #[test]
+    fn 마지막_페이지까지의_범위는_뒤따르는_구역을_버리지_않는다() {
+        let doc = paged_three_section_doc();
+
+        // A range running to the last page must reach the end of the last
+        // section, not the end of the start section.
+        let outcome = split_page_ranges(&doc, &[PageRange { first: 1, last: 3 }]).unwrap();
+        assert!(outcome.roundings.is_empty());
+        let fragment = &outcome.fragments[0];
+        assert_eq!(fragment.sections.len(), 3);
+        assert_eq!(fragment.header.properties.section_count, 3);
+        let text = plain_text(fragment);
+        assert!(text.contains("첫 구역"));
+        assert!(text.contains("둘째 구역"));
+        assert!(text.contains("셋째 구역"));
+    }
+
+    #[test]
+    fn 구역_중간에서_시작하는_범위도_뒤_구역을_담고_섹션정의를_보존한다() {
+        let mut doc = crate::from_markdown("구역1 첫째\n\n구역1 둘째\n");
+        doc.sections
+            .push(crate::from_markdown("구역2 첫째\n").sections[0].clone());
+        // Page 1 = section 0 paragraph 0; page 2 = section 0 paragraph 1
+        // (mid-section start); page 3 = section 1 paragraph 0.
+        set_section_page_start(&mut doc, 0, 0, 0);
+        set_section_page_start(&mut doc, 0, 1, 0);
+        set_section_page_start(&mut doc, 1, 0, 0);
+
+        let outcome = split_page_ranges(&doc, &[PageRange { first: 2, last: 3 }]).unwrap();
+        assert!(outcome.roundings.is_empty());
+        let fragment = &outcome.fragments[0];
+        assert_eq!(fragment.sections.len(), 2);
+        assert_eq!(fragment.header.properties.section_count, 2);
+        // The first section starts mid-way, so its SectionDef paragraph must
+        // be prepended (that paragraph carries the section's first text in
+        // this IR — the prepend is a duplicate, not a move); the second
+        // section keeps its own first paragraph.
+        assert!(has_section_def(&fragment.sections[0].paragraphs[0]));
+        assert!(has_section_def(&fragment.sections[1].paragraphs[0]));
+        assert_eq!(fragment.sections[0].paragraphs.len(), 2);
+        let text = plain_text(fragment);
+        assert!(text.contains("구역1 둘째"));
+        assert!(text.contains("구역2 첫째"));
+    }
+
+    #[test]
+    fn 구역_끝에_걸친_페이지_경계는_다음_구역_첫_문단으로_보정된다() {
+        let mut doc = three_section_doc();
+        let last_of_section0 = doc.sections[0].paragraphs.len() - 1;
+        set_section_page_start(&mut doc, 0, 0, 0);
+        // Page 2 starts strictly inside section 0's last paragraph — the
+        // boundary must round forward to section 1's first paragraph.
+        set_section_page_start(&mut doc, 0, last_of_section0, 3);
+
+        let outcome = split_page_ranges(&doc, &[PageRange { first: 1, last: 1 }]).unwrap();
+        assert_eq!(outcome.roundings.len(), 1);
+        assert_eq!(outcome.roundings[0].from.section, 0);
+        assert_eq!(outcome.roundings[0].from.paragraph, last_of_section0);
+        assert_eq!(outcome.roundings[0].from.wchar_offset, 3);
+        assert_eq!(outcome.roundings[0].to.section, 1);
+        assert_eq!(outcome.roundings[0].to.paragraph, 0);
+        // The straddling paragraph stays whole in the earlier fragment; the
+        // next section's content belongs to the following page range.
+        let fragment = &outcome.fragments[0];
+        assert_eq!(fragment.sections.len(), 1);
+        assert!(plain_text(fragment).contains("첫 구역"));
+        assert!(!plain_text(fragment).contains("둘째 구역"));
     }
 }

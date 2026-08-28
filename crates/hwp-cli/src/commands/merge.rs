@@ -52,8 +52,9 @@ fn infer_merge_format(output: &Path) -> anyhow::Result<MergeFormat> {
 
 /// Rejects a `--loss-report` path that aliases any input or the output, using
 /// the same path normalization `convert.rs` applies to its own report path
-/// (D-15's alias guard, extended from one input to N).
-fn reject_loss_report_aliases(
+/// (D-15's alias guard, extended from one input to N). Shared with
+/// `commands::split`, which passes its single input and `--out-dir`.
+pub(crate) fn reject_loss_report_aliases(
     report_path: &Path,
     inputs: &[PathBuf],
     output: &Path,

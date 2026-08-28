@@ -10,6 +10,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp split --loss-report` now rejects a report path that aliases the input file, matching the
+  merge guard; the previous gap let the JSON report silently overwrite the input document
+  (#167).
+
+- `hwp split --pages` no longer drops content on multi-section documents: a page range whose
+  boundaries live in different sections now produces a fragment spanning those sections
+  (intermediate sections carried whole) instead of confining the slice to the start section
+  (#162).
+
+- `hwp merge` now id-shifts caption paragraphs (table and picture captions) on both graft paths
+  and grafts merged-in `header.bin_data` tables, shifting `BinRef::Id` references so hwp5-sourced
+  pictures keep resolving to their own payloads after a merge; exhausting the storage-id space
+  records a loss event instead of only a warning (#163, #164).
+
+- `hwp compare` now recurses into table cells and captions, so documents differing only inside
+  nested content are no longer reported identical; char-level LCS applies the same
+  `MAX_LCS_CELLS` ceiling as paragraph-level LCS, replacing a potential uncatchable OOM abort
+  with a graceful refusal (#165, #166).
+
 ## [0.12.1]
 
 **Fixed**
