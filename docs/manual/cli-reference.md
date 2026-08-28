@@ -340,7 +340,7 @@ Structural validation (mimetype, required entries, XML parsing); exit code 0 whe
 
 ## `hwp lint`
 
-Lint official-document notation and structure rules; advisory by default (always exit 0) — --strict exits 1 only when an error-severity finding exists
+Lint official-document notation and structure rules; advisory by default (always exit 0) — --strict exits 1 only when an error-severity finding exists. This diverges from `compare`, which follows the diff(1) convention (1 means differences were found)
 
 **Usage:** `hwp lint [OPTIONS] <FILE>`
 

@@ -448,7 +448,9 @@ pub enum Cmd {
     },
 
     /// Lint official-document notation and structure rules; advisory by default
-    /// (always exit 0) — --strict exits 1 only when an error-severity finding exists
+    /// (always exit 0) — --strict exits 1 only when an error-severity finding exists.
+    /// This diverges from `compare`, which follows the diff(1) convention (1 means
+    /// differences were found)
     Lint {
         /// Target .md/.hwp/.hwpx file ("-" reads stdin as markdown)
         file: PathBuf,

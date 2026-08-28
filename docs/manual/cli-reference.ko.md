@@ -340,7 +340,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 ## `hwp lint`
 
-공문서 표기법·구조 규칙 검사 — 기본은 권고(advisory)이며 항상 종료코드 0. --strict는 오류 심각도 지적이 있을 때만 종료코드 1
+공문서 표기법·구조 규칙 검사 — 기본은 권고(advisory)이며 항상 종료코드 0. --strict는 오류 심각도 지적이 있을 때만 종료코드 1. diff(1) 관례(1 = 차이 발견)를 따르는 compare와 의도적으로 다름
 
 **사용법:** `hwp lint [OPTIONS] <FILE>`
 
