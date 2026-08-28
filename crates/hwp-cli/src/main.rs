@@ -160,6 +160,24 @@ fn real_main() -> anyhow::Result<()> {
             format,
             ours_png.as_deref(),
         ),
+        // D-13: `compare` follows diff(1) exit-code semantics, which the default
+        // `anyhow::Result<()>` → `Termination` mapping cannot express (every other
+        // arm's `Err` becomes exit code 1, the exact code reserved here for
+        // "differences found"). This arm intercepts the outcome and calls the exit
+        // primitive explicitly for all three codes instead of returning through it.
+        Cmd::Compare {
+            a,
+            b,
+            format,
+            password,
+        } => match commands::compare::run(&a, &b, format, password) {
+            Ok(commands::compare::CompareOutcome::Identical) => std::process::exit(0),
+            Ok(commands::compare::CompareOutcome::Different) => std::process::exit(1),
+            Err(error) => {
+                eprintln!("오류: {error:#}");
+                std::process::exit(2);
+            }
+        },
         Cmd::Mcp { font_dir, root } => commands::mcp::run(font_dir, root),
         Cmd::Update {
             check,

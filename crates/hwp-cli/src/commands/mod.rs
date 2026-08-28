@@ -1,6 +1,7 @@
 pub mod bookmarks;
 pub mod cat;
 pub mod certify;
+pub mod compare;
 pub mod compose;
 pub mod convert;
 pub mod corpus;

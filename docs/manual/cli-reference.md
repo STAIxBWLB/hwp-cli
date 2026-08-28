@@ -19,6 +19,7 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 - [`hwp compose`](#hwp-compose)
 - [`hwp template`](#hwp-template)
 - [`hwp diff`](#hwp-diff)
+- [`hwp compare`](#hwp-compare)
 - [`hwp edit`](#hwp-edit)
 - [`hwp fields`](#hwp-fields)
 - [`hwp bookmarks`](#hwp-bookmarks)
@@ -219,6 +220,20 @@ Compare a render against a Hancom reference PNG (offset and pixel difference)
 | `--tolerance` | `<TOLERANCE>` | `16` | Per-channel tolerance; differences at or below this count as equal |
 | `--format` | `text` \| `json` | `text` | Report output format (json = machine-readable, for the parity batch runner) |
 | `--ours-png` | `<OURS_PNG>` |  | Compare this raster (e.g. pdftoppm of our PDF) against --ref instead of rendering the input document; the input path is only recorded in the report |
+
+## `hwp compare`
+
+Report text and structural differences between two documents, leaving both untouched (not `diff`, which compares a render against a Hancom reference PNG). Exit codes follow diff(1): 0 identical, 1 differences found, 2 the run itself failed — this deliberately diverges from `lint`, which always exits 0 unless --strict finds an error
+
+**Usage:** `hwp compare [OPTIONS] <A> <B>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<A>` |  |  | First HWP/HWPX file |
+| `<B>` |  |  | Second HWP/HWPX file |
+| `--format` | `text` \| `json` | `text` | Report output format |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
 ## `hwp edit`
 

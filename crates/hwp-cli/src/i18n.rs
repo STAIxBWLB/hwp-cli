@@ -457,6 +457,23 @@ pub const KO: &[(&str, &str, &str)] = &[
         "ours_png",
         "문서 렌더 대신 이 래스터(우리 PDF의 pdftoppm 결과)를 --ref와 비교; 입력 경로는 리포트 기록용",
     ),
+    // compare
+    (
+        "compare",
+        "",
+        "두 문서의 텍스트·구조 차이를 보고하고 둘 다 수정하지 않음 (한글 기준 PNG와 비교하는 diff와 다름). \
+         종료 코드는 diff(1) 관례를 따름: 0 동일, 1 차이 발견, 2 실행 자체 실패 — \
+         --strict 없이는 항상 0을 반환하는 lint와 의도적으로 다름",
+    ),
+    ("compare", "a", "첫 번째 HWP/HWPX 파일"),
+    ("compare", "b", "두 번째 HWP/HWPX 파일"),
+    ("compare", "format", "리포트 출력 형식"),
+    ("compare", "password", "명령줄에서 직접 입력할 암호"),
+    (
+        "compare",
+        "password_stdin",
+        "표준 입력에서 UTF-8 암호 한 줄 읽기",
+    ),
     // edit
     (
         "edit",

@@ -19,6 +19,7 @@
 - [`hwp compose`](#hwp-compose)
 - [`hwp template`](#hwp-template)
 - [`hwp diff`](#hwp-diff)
+- [`hwp compare`](#hwp-compare)
 - [`hwp edit`](#hwp-edit)
 - [`hwp fields`](#hwp-fields)
 - [`hwp bookmarks`](#hwp-bookmarks)
@@ -219,6 +220,20 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--tolerance` | `<TOLERANCE>` | `16` | 채널 차이 허용 오차 (이하면 동일 취급) |
 | `--format` | `text` \| `json` | `text` | 리포트 출력 형식 (json = 기계 판독, parity 배치 러너용) |
 | `--ours-png` | `<OURS_PNG>` |  | 문서 렌더 대신 이 래스터(우리 PDF의 pdftoppm 결과)를 --ref와 비교; 입력 경로는 리포트 기록용 |
+
+## `hwp compare`
+
+두 문서의 텍스트·구조 차이를 보고하고 둘 다 수정하지 않음 (한글 기준 PNG와 비교하는 diff와 다름). 종료 코드는 diff(1) 관례를 따름: 0 동일, 1 차이 발견, 2 실행 자체 실패 — --strict 없이는 항상 0을 반환하는 lint와 의도적으로 다름
+
+**사용법:** `hwp compare [OPTIONS] <A> <B>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<A>` |  |  | 첫 번째 HWP/HWPX 파일 |
+| `<B>` |  |  | 두 번째 HWP/HWPX 파일 |
+| `--format` | `text` \| `json` | `text` | 리포트 출력 형식 |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
 ## `hwp edit`
 

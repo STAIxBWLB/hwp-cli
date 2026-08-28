@@ -370,6 +370,23 @@ pub enum Cmd {
         ours_png: Option<PathBuf>,
     },
 
+    /// Report text and structural differences between two documents, leaving both
+    /// untouched (not `diff`, which compares a render against a Hancom reference
+    /// PNG). Exit codes follow diff(1): 0 identical, 1 differences found, 2 the
+    /// run itself failed — this deliberately diverges from `lint`, which always
+    /// exits 0 unless --strict finds an error
+    Compare {
+        /// First HWP/HWPX file
+        a: PathBuf,
+        /// Second HWP/HWPX file
+        b: PathBuf,
+        /// Report output format
+        #[arg(long, value_enum, default_value_t = CompareFormat::Text)]
+        format: CompareFormat,
+        #[command(flatten)]
+        password: PasswordArgs,
+    },
+
     /// Edit an existing document (text replacement, table cells); images and formatting preserved
     Edit(EditArgs),
 
@@ -740,6 +757,12 @@ pub enum RenderFormat {
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DiffFormat {
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CompareFormat {
     Text,
     Json,
 }
