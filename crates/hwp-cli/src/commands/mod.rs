@@ -13,6 +13,7 @@ pub mod grep;
 pub mod info;
 pub mod lint;
 pub mod mcp;
+pub mod merge;
 pub mod new;
 pub(crate) mod output;
 pub(crate) mod preservation;

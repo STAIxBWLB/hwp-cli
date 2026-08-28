@@ -158,6 +158,27 @@ pub enum Cmd {
         password: PasswordArgs,
     },
 
+    /// Combine several HWP5/HWPX inputs into one output, one Section per input in
+    /// argument order (page/footnote/outline numbering keep each input's own
+    /// start/continue settings and may need manual adjustment after merging)
+    Merge {
+        /// Input HWP/HWPX files, two or more, in the order they are concatenated
+        #[arg(required = true, num_args = 2..)]
+        inputs: Vec<PathBuf>,
+        /// Output file path (".hwp" writes HWP5, ".hwpx" writes HWPX)
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Fail when data that cannot be preserved (opaque) is found while merging
+        #[arg(long)]
+        strict: bool,
+        /// Write the typed preservation ledger (hwp-preservation-report-v1) as
+        /// JSON to this path, even when the merge succeeds without loss
+        #[arg(long)]
+        loss_report: Option<PathBuf>,
+        #[command(flatten)]
+        password: PasswordArgs,
+    },
+
     /// Render pages
     Render {
         /// Input HWP/HWPX file

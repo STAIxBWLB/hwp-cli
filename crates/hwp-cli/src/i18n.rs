@@ -215,6 +215,38 @@ pub const KO: &[(&str, &str, &str)] = &[
         "font_dir",
         "(pdf) 추가 폰트 디렉터리 (반복 가능, 기본: HWP_FONT_DIR 또는 fonts/)",
     ),
+    // merge
+    (
+        "merge",
+        "",
+        "여러 HWP5/HWPX 입력을 하나로 병합 (입력마다 구역 하나, 인자 순서대로 이어붙임; 쪽/각주/차례 번호는 각 입력의 시작/이어달기 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있음)",
+    ),
+    ("merge", "password", "명령줄에서 직접 입력할 암호"),
+    (
+        "merge",
+        "password_stdin",
+        "표준 입력에서 UTF-8 암호 한 줄 읽기",
+    ),
+    (
+        "merge",
+        "inputs",
+        "입력 HWP/HWPX 파일들, 2개 이상, 이어붙이는 순서대로",
+    ),
+    (
+        "merge",
+        "output",
+        "출력 파일 경로 (\".hwp\"는 HWP5, \".hwpx\"는 HWPX로 저장)",
+    ),
+    (
+        "merge",
+        "strict",
+        "병합 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리",
+    ),
+    (
+        "merge",
+        "loss_report",
+        "typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성",
+    ),
     // render
     ("render", "", "페이지 렌더링"),
     ("render", "password", "명령줄에서 직접 입력할 암호"),

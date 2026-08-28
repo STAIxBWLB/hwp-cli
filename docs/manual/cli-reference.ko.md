@@ -12,6 +12,7 @@
 - [`hwp cat`](#hwp-cat)
 - [`hwp grep`](#hwp-grep)
 - [`hwp convert`](#hwp-convert)
+- [`hwp merge`](#hwp-merge)
 - [`hwp render`](#hwp-render)
 - [`hwp new`](#hwp-new)
 - [`hwp compose`](#hwp-compose)
@@ -92,6 +93,21 @@
 | `--with-header-footer` |  |  | (md) 머리말/꼬리말 텍스트도 포함 (기본: 제외) |
 | `--with-hidden` |  |  | (md) 숨은 설명 텍스트도 포함 (기본: 제외) |
 | `--font-dir` | `<FONT_DIR>` |  | (pdf) 추가 폰트 디렉터리 (반복 가능, 기본: HWP_FONT_DIR 또는 fonts/) |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
+
+## `hwp merge`
+
+여러 HWP5/HWPX 입력을 하나로 병합 (입력마다 구역 하나, 인자 순서대로 이어붙임; 쪽/각주/차례 번호는 각 입력의 시작/이어달기 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있음)
+
+**사용법:** `hwp merge [OPTIONS] --output <OUTPUT> <INPUTS> <INPUTS>...`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<INPUTS>` |  |  | 입력 HWP/HWPX 파일들, 2개 이상, 이어붙이는 순서대로 (반복 가능) |
+| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 (".hwp"는 HWP5, ".hwpx"는 HWPX로 저장) |
+| `--strict` |  |  | 병합 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
+| `--loss-report` | `<LOSS_REPORT>` |  | typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 |
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 

@@ -98,6 +98,13 @@ fn real_main() -> anyhow::Result<()> {
             file,
             ignore_case,
         } => commands::grep::run(&pattern, &file, ignore_case),
+        Cmd::Merge {
+            inputs,
+            output,
+            strict,
+            loss_report,
+            password,
+        } => commands::merge::run(&inputs, &output, strict, loss_report.as_deref(), password),
         Cmd::Render {
             input,
             output,
