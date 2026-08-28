@@ -247,6 +247,39 @@ pub const KO: &[(&str, &str, &str)] = &[
         "loss_report",
         "typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성",
     ),
+    // split
+    (
+        "split",
+        "",
+        "문서 하나를 여러 출력으로 분할 (기본은 구역 단위; 페이지 범위는 --pages로 opt-in하며 한글 자체 쪽 나누기와 다를 수 있는 추정치)",
+    ),
+    ("split", "password", "명령줄에서 직접 입력할 암호"),
+    (
+        "split",
+        "password_stdin",
+        "표준 입력에서 UTF-8 암호 한 줄 읽기",
+    ),
+    ("split", "input", "입력 HWP/HWPX 파일"),
+    (
+        "split",
+        "out_dir",
+        "출력 디렉터리 (파일명은 \"<입력 stem>-NNN.<입력 확장자>\")",
+    ),
+    (
+        "split",
+        "pages",
+        "구역 대신 나눌 페이지 범위, \"N\" 또는 \"N-M\" (1부터 시작, 포함, 반복 가능). 경계는 한글이 문서 레이아웃 캐시에 저장한 페이지 시작 지점에서 가져오며, 문단 중간에 걸치면 다음 문단 시작으로 보정됩니다 — 한글 자체 쪽 나누기와 다를 수 있는 추정치입니다",
+    ),
+    (
+        "split",
+        "strict",
+        "분할 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리",
+    ),
+    (
+        "split",
+        "loss_report",
+        "typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성",
+    ),
     // render
     ("render", "", "페이지 렌더링"),
     ("render", "password", "명령줄에서 직접 입력할 암호"),

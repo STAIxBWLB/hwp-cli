@@ -180,6 +180,33 @@ pub enum Cmd {
         password: PasswordArgs,
     },
 
+    /// Divide one document into several outputs, one per section by default
+    /// (page ranges are opt-in via --pages and are an estimate that may not
+    /// match Hancom's own pagination)
+    Split {
+        /// Input HWP/HWPX file
+        input: PathBuf,
+        /// Output directory (file names are "<input stem>-NNN.<input extension>")
+        #[arg(long, required = true)]
+        out_dir: PathBuf,
+        /// Page range to split on instead of section boundaries, "N" or "N-M"
+        /// (1-based, inclusive, repeatable). Boundaries come from the page starts
+        /// Hancom itself saved in the document's layout cache — a boundary that
+        /// falls inside a paragraph rounds forward to the next paragraph's start,
+        /// and the estimate may not match what Hancom itself would paginate
+        #[arg(long)]
+        pages: Vec<String>,
+        /// Fail when data that cannot be preserved (opaque) is found while splitting
+        #[arg(long)]
+        strict: bool,
+        /// Write the typed preservation ledger (hwp-preservation-report-v1) as
+        /// JSON to this path, even when the split succeeds without loss
+        #[arg(long)]
+        loss_report: Option<PathBuf>,
+        #[command(flatten)]
+        password: PasswordArgs,
+    },
+
     /// Render pages
     Render {
         /// Input HWP/HWPX file

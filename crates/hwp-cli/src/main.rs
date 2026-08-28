@@ -105,6 +105,21 @@ fn real_main() -> anyhow::Result<()> {
             loss_report,
             password,
         } => commands::merge::run(&inputs, &output, strict, loss_report.as_deref(), password),
+        Cmd::Split {
+            input,
+            out_dir,
+            pages,
+            strict,
+            loss_report,
+            password,
+        } => commands::split::run(
+            &input,
+            &out_dir,
+            &pages,
+            strict,
+            loss_report.as_deref(),
+            password,
+        ),
         Cmd::Render {
             input,
             output,

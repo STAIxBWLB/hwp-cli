@@ -13,6 +13,7 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 - [`hwp grep`](#hwp-grep)
 - [`hwp convert`](#hwp-convert)
 - [`hwp merge`](#hwp-merge)
+- [`hwp split`](#hwp-split)
 - [`hwp render`](#hwp-render)
 - [`hwp new`](#hwp-new)
 - [`hwp compose`](#hwp-compose)
@@ -108,6 +109,22 @@ Combine several HWP5/HWPX inputs into one output, one Section per input in argum
 | `-o, --output` | `<OUTPUT>` |  | Output file path (".hwp" writes HWP5, ".hwpx" writes HWPX) |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while merging |
 | `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the merge succeeds without loss |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
+
+## `hwp split`
+
+Divide one document into several outputs, one per section by default (page ranges are opt-in via --pages and are an estimate that may not match Hancom's own pagination)
+
+**Usage:** `hwp split [OPTIONS] --out-dir <OUT_DIR> <INPUT>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<INPUT>` |  |  | Input HWP/HWPX file |
+| `--out-dir` | `<OUT_DIR>` |  | Output directory (file names are "<input stem>-NNN.<input extension>") |
+| `--pages` | `<PAGES>` |  | Page range to split on instead of section boundaries, "N" or "N-M" (1-based, inclusive, repeatable). Boundaries come from the page starts Hancom itself saved in the document's layout cache — a boundary that falls inside a paragraph rounds forward to the next paragraph's start, and the estimate may not match what Hancom itself would paginate |
+| `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while splitting |
+| `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the split succeeds without loss |
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
