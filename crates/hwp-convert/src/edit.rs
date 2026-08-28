@@ -1861,7 +1861,7 @@ fn table_object_id(t: &hwp_model::Table) -> u32 {
 }
 
 /// Maximum gso object id across all tables and pictures in the document.
-fn doc_max_object_id(doc: &Document) -> u32 {
+pub(crate) fn doc_max_object_id(doc: &Document) -> u32 {
     let mut max = 0u32;
     for section in &doc.sections {
         for para in &section.paragraphs {
@@ -1918,7 +1918,7 @@ fn max_object_id_in_para(para: &Paragraph, max: &mut u32) {
 
 /// Maximum placement z-order among all tables (drives the hwpx-sourced id
 /// synthesis `0x5000_0000 | z_order`; bumping it keeps the clone unique).
-fn doc_max_table_z_order(doc: &Document) -> i32 {
+pub(crate) fn doc_max_table_z_order(doc: &Document) -> i32 {
     let mut max = 0i32;
     for section in &doc.sections {
         for para in &section.paragraphs {

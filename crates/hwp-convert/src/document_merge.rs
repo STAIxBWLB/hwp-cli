@@ -20,23 +20,31 @@
 //! sentinel (not an index) and is never shifted, so grafting never invents a
 //! border where none existed.
 //!
-//! GSO object identity renumbering and the D-14 typed loss surface are plan
-//! 03-02's later tasks.
+//! Every non-primary input's GSO (table/picture) object identities are
+//! renumbered from a running maximum across both tiers, so no two objects
+//! originating in different inputs can share a Hancom-visible identity. The
+//! D-14 typed loss surface for dropped package-passthrough fields and
+//! superseded metadata is a later task in this plan.
 
 use std::collections::HashMap;
 
-use hwp_model::{BinRef, BinStream, Control, Document, LANG_COUNT, Paragraph};
+use hwp_model::{BinRef, BinStream, Control, Document, LANG_COUNT, Paragraph, Section};
 
 use crate::from_html::PALETTE_LEN;
 use crate::from_markdown::BASE_PARA_SHAPES;
 use crate::merge::palette_compatible;
 
 /// A typed, content-free record of something [`merge_documents`] could not
-/// carry losslessly. No variants yet — later tasks in this plan fill this in
-/// alongside the `--loss-report` ledger wiring (D-14: additive only, once
-/// published a variant is never withdrawn).
+/// carry losslessly, or a non-target change it had to make to avoid a
+/// collision (D-14: additive only — once published a variant is never
+/// withdrawn or repurposed).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MergeLoss {}
+pub enum MergeLoss {
+    /// One or more GSO (table/picture) object identities from a non-primary
+    /// input were renumbered to avoid colliding with an earlier input's.
+    /// This is a recorded, non-target change, not data loss.
+    GsoObjectIdRenumbered { count: usize },
+}
 
 /// Result of [`merge_documents`].
 #[derive(Debug)]
@@ -45,8 +53,7 @@ pub struct MergeOutcome {
     pub document: Document,
     /// Whether any non-primary input required the general (non-palette-fast-path) graft.
     pub general_path_used: bool,
-    /// Typed preservation losses recorded while merging. Always empty until a
-    /// later task in this plan.
+    /// Typed preservation losses and non-target changes recorded while merging.
     pub losses: Vec<MergeLoss>,
 }
 
@@ -63,8 +70,11 @@ pub struct MergeOutcome {
 /// running target: the palette-compatible fast path (tier 1) when the input's
 /// header is a hwp-cli-default-palette-family member, otherwise the general
 /// graft (tier 2) that shifts every DocHeader-referencing id unconditionally.
+/// Every non-primary input's GSO object identities are then renumbered from a
+/// running maximum to avoid colliding with an earlier input's.
 ///
-/// Returns `Err` only when `inputs` is empty.
+/// Returns `Err` when `inputs` is empty or a GSO object-id/z-order counter
+/// overflows.
 pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
     let (first, rest) = inputs
         .split_first()
@@ -72,8 +82,17 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
 
     let mut target = first.clone();
     let mut general_path_used = false;
+    let mut losses: Vec<MergeLoss> = Vec::new();
+    let mut next_object_id = crate::edit::doc_max_object_id(&target)
+        .checked_add(1)
+        .ok_or_else(|| "개체 id 오버플로".to_string())?;
+    let mut next_z_order = crate::edit::doc_max_table_z_order(&target)
+        .checked_add(1)
+        .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
 
     for input in rest {
+        let sections_before = target.sections.len();
+
         if palette_compatible(&target.header, &input.header) {
             graft_palette_compatible(&mut target, input);
         } else {
@@ -87,6 +106,15 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
                 target.sections.push(section);
             }
         }
+
+        let renumbered = renumber_gso_objects(
+            &mut target.sections[sections_before..],
+            &mut next_object_id,
+            &mut next_z_order,
+        )?;
+        if renumbered > 0 {
+            losses.push(MergeLoss::GsoObjectIdRenumbered { count: renumbered });
+        }
     }
 
     target.header.properties.section_count = target.sections.len() as u16;
@@ -94,7 +122,7 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
     Ok(MergeOutcome {
         document: target,
         general_path_used,
-        losses: Vec::new(),
+        losses,
     })
 }
 
@@ -408,6 +436,100 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) {
             _ => {}
         }
     }
+}
+
+/// Gives every GSO-bearing (`Table`/`Picture`) control in `sections` a fresh
+/// object identity so no object from a later-merged input can share a
+/// Hancom-visible identity with one from an earlier input. Mirrors
+/// `hwp_convert::edit::remap_clone_object_ids`/`remap_clone_object_ids_in_para`
+/// (same two-branch shape: write the id into `common_data` bytes 32..36 when
+/// present, otherwise bump `placement.z_order`), but threads `next_id`/`next_z`
+/// across every non-primary input the caller processes rather than resetting
+/// them per input. Returns the number of objects renumbered.
+fn renumber_gso_objects(
+    sections: &mut [Section],
+    next_id: &mut u32,
+    next_z: &mut i32,
+) -> Result<usize, String> {
+    let mut count = 0usize;
+    for section in sections {
+        for para in &mut section.paragraphs {
+            renumber_gso_objects_in_para(para, next_id, next_z, &mut count)?;
+        }
+    }
+    Ok(count)
+}
+
+fn renumber_gso_objects_in_para(
+    para: &mut Paragraph,
+    next_id: &mut u32,
+    next_z: &mut i32,
+    count: &mut usize,
+) -> Result<(), String> {
+    for control in &mut para.controls {
+        match control {
+            Control::Table(t) => renumber_table_object_id(t, next_id, next_z, count)?,
+            Control::Picture(pic) => {
+                if pic.common_data.len() >= 36 {
+                    let id = *next_id;
+                    *next_id = next_id
+                        .checked_add(1)
+                        .ok_or_else(|| "개체 id 오버플로".to_string())?;
+                    pic.common_data[32..36].copy_from_slice(&id.to_le_bytes());
+                    *count += 1;
+                }
+                if let Some(cap) = &mut pic.caption {
+                    for p in &mut cap.paragraphs {
+                        renumber_gso_objects_in_para(p, next_id, next_z, count)?;
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        renumber_gso_objects_in_para(p, next_id, next_z, count)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn renumber_table_object_id(
+    table: &mut hwp_model::Table,
+    next_id: &mut u32,
+    next_z: &mut i32,
+    count: &mut usize,
+) -> Result<(), String> {
+    if !table.common_data.is_empty() {
+        let id = *next_id;
+        *next_id = next_id
+            .checked_add(1)
+            .ok_or_else(|| "개체 id 오버플로".to_string())?;
+        if table.common_data.len() >= 36 {
+            table.common_data[32..36].copy_from_slice(&id.to_le_bytes());
+        }
+        *count += 1;
+    } else if let Some(pl) = &mut table.placement {
+        pl.z_order = *next_z;
+        *next_z = next_z
+            .checked_add(1)
+            .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
+        *count += 1;
+    }
+    if let Some(cap) = &mut table.caption {
+        for p in &mut cap.paragraphs {
+            renumber_gso_objects_in_para(p, next_id, next_z, count)?;
+        }
+    }
+    for cell in &mut table.cells {
+        for p in &mut cell.paragraphs {
+            renumber_gso_objects_in_para(p, next_id, next_z, count)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -733,5 +855,191 @@ mod tests {
                     .any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
             });
         assert!(merged_has_table, "표본의 표가 병합 후에도 남아 있어야 한다");
+    }
+
+    // ── Task 2: GSO object identity renumbering ─────────────────────────────
+
+    fn table_with_common_id(id: u32) -> Control {
+        let mut common_data = vec![0u8; 44];
+        common_data[32..36].copy_from_slice(&id.to_le_bytes());
+        Control::Table(hwp_model::Table {
+            common_data,
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId(0),
+            table_tail: Vec::new(),
+            cells: vec![hwp_model::Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: hwp_model::HwpUnit(100),
+                height: hwp_model::HwpUnit(100),
+                margins: [0; 4],
+                border_fill: BorderFillId(0),
+                header_tail: Vec::new(),
+                paragraphs: vec![Paragraph::default()],
+            }],
+            caption: None,
+            extras: Vec::new(),
+        })
+    }
+
+    fn table_object_id(control: &Control) -> u32 {
+        match control {
+            Control::Table(t) => u32::from_le_bytes(t.common_data[32..36].try_into().unwrap()),
+            _ => panic!("Table expected"),
+        }
+    }
+
+    fn insert_table(doc: &mut Document, id: u32) {
+        doc.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![table_with_common_id(id)],
+                ..Default::default()
+            },
+        );
+    }
+
+    #[test]
+    fn 두_입력의_표_id는_서로_다르다() {
+        let mut a = from_markdown("문서 A\n");
+        insert_table(&mut a, 7);
+        let mut b = from_markdown("문서 B\n");
+        insert_table(&mut b, 7); // same id as `a` — must be renumbered
+
+        let outcome = merge_documents(&[a, b]).unwrap();
+        let ids: Vec<u32> = outcome
+            .document
+            .sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .filter(|c| matches!(c, Control::Table(_)))
+            .map(table_object_id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn 세_입력의_표_id는_모두_다르다() {
+        let mut a = from_markdown("문서 A\n");
+        insert_table(&mut a, 1);
+        let mut b = from_markdown("문서 B\n");
+        insert_table(&mut b, 1);
+        let mut c = from_markdown("문서 C\n");
+        insert_table(&mut c, 1);
+
+        let outcome = merge_documents(&[a, b, c]).unwrap();
+        let mut ids: Vec<u32> = outcome
+            .document
+            .sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .filter(|c| matches!(c, Control::Table(_)))
+            .map(table_object_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "세 표 id가 모두 달라야 한다");
+    }
+
+    #[test]
+    fn 기본_입력의_표_id는_변경되지_않는다() {
+        let mut a = from_markdown("문서 A\n");
+        insert_table(&mut a, 42);
+        let mut b = from_markdown("문서 B\n");
+        insert_table(&mut b, 1);
+
+        let outcome = merge_documents(&[a, b]).unwrap();
+        let primary_id = table_object_id(&outcome.document.sections[0].paragraphs[0].controls[0]);
+        assert_eq!(primary_id, 42, "기본 입력의 id는 그대로 유지돼야 한다");
+    }
+
+    #[test]
+    fn 표_id_재부여는_손실_목록에_기록된다() {
+        let mut a = from_markdown("문서 A\n");
+        insert_table(&mut a, 7);
+        let mut b = from_markdown("문서 B\n");
+        insert_table(&mut b, 7);
+
+        let outcome = merge_documents(&[a, b]).unwrap();
+        assert!(
+            outcome.losses.iter().any(
+                |loss| matches!(loss, MergeLoss::GsoObjectIdRenumbered { count } if *count == 1)
+            )
+        );
+    }
+
+    #[test]
+    fn hwpx_출신_배치_z_순서도_서로_다르게_재부여된다() {
+        let mut a = from_markdown("문서 A\n");
+        with_placement_table(&mut a, 3);
+        let mut b = from_markdown("문서 B\n");
+        with_placement_table(&mut b, 3);
+
+        let outcome = merge_documents(&[a, b]).unwrap();
+        let z_orders: Vec<i32> = outcome
+            .document
+            .sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| match c {
+                Control::Table(t) => t.placement.as_ref().map(|pl| pl.z_order),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(z_orders.len(), 2);
+        assert_ne!(z_orders[0], z_orders[1]);
+    }
+
+    fn with_placement_table(doc: &mut Document, z_order: i32) {
+        let table = Control::Table(hwp_model::Table {
+            common_data: Vec::new(),
+            placement: Some(hwp_model::GsoPlacement {
+                z_order,
+                ..Default::default()
+            }),
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId(0),
+            table_tail: Vec::new(),
+            cells: vec![hwp_model::Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: 1,
+                row_span: 1,
+                width: hwp_model::HwpUnit(100),
+                height: hwp_model::HwpUnit(100),
+                margins: [0; 4],
+                border_fill: BorderFillId(0),
+                header_tail: Vec::new(),
+                paragraphs: vec![Paragraph::default()],
+            }],
+            caption: None,
+            extras: Vec::new(),
+        });
+        doc.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![table],
+                ..Default::default()
+            },
+        );
     }
 }
