@@ -189,6 +189,14 @@ pub(crate) fn inspect_document_merge_losses(
                     *count,
                 );
             }
+            hwp_convert::document_merge::MergeLoss::BinDataDropped { count, .. } => {
+                record_removed(
+                    &mut report,
+                    PreservationCode::BinaryAssetRemoved,
+                    PreservationResourceKind::BinaryAsset,
+                    *count,
+                );
+            }
         }
     }
     report

@@ -173,6 +173,43 @@ fn split_publishes_all_fragments_or_none() {
 }
 
 #[test]
+fn split_refuses_loss_report_aliasing_the_input() {
+    // Issue #167: `hwp split in.hwp --out-dir frag --loss-report in.hwp` must
+    // be refused — the report write must never overwrite the input with JSON.
+    let dir = scratch_dir("split-loss-report-alias");
+    let input = write_input_hwp(&dir, "in", "본문입니다\n");
+    let out_dir = dir.join("frag");
+    let original = std::fs::read(&input).unwrap();
+
+    let output = hwp()
+        .arg("split")
+        .arg(&input)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--loss-report")
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "입력과 같은 --loss-report 경로는 거부되어야 합니다"
+    );
+    // The refusal fires before --out-dir is even created, so no fragment set
+    // can exist — tolerate the directory simply being absent.
+    assert!(
+        !out_dir.exists() || fragment_paths(&out_dir, "in", "hwp").is_empty(),
+        "거부된 분할이 조각을 게시하면 안 됩니다"
+    );
+    assert_eq!(
+        std::fs::read(&input).unwrap(),
+        original,
+        "입력 파일이 훼손되면 안 됩니다"
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn 단일_구역_입력은_조각_하나만_낸다() {
     let dir = scratch_dir("single-section");
     let input = write_input_hwp(&dir, "solo", "단일 구역 본문\n");

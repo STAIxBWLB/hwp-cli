@@ -145,6 +145,17 @@ pub fn run(
         .with_context(|| format!("입력 파일 이름을 확인할 수 없습니다: {}", input.display()))?
         .to_string();
 
+    // D-15 alias guard: the loss report must never alias the input (or the
+    // output directory) — an unguarded report write would silently overwrite
+    // the input with JSON. Same rejection merge applies, before any work.
+    if let Some(report_path) = loss_report {
+        crate::commands::merge::reject_loss_report_aliases(
+            report_path,
+            &[input.to_path_buf()],
+            out_dir,
+        )?;
+    }
+
     let document = load_document_with_options(input, &options).map_err(anyhow::Error::new)?;
 
     let outcome: SplitOutcome = if pages.is_empty() {
@@ -316,6 +327,32 @@ mod tests {
 
         let result = crate::commands::output::reject_output_aliases(&input, &[input.as_path()]);
         assert!(result.is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loss_report_경로가_입력과_같으면_거부() {
+        // Issue #167: the fragment-destination precheck never guarded the
+        // report path itself, so `--loss-report in.hwp` used to overwrite the
+        // input with JSON.
+        let dir = temp_dir("loss-report-alias-input");
+        let input = dir.join("in.hwp");
+        let out_dir = dir.join("frag");
+        write_three_section_hwp(&input);
+        let original = std::fs::read(&input).unwrap();
+
+        let result = run(
+            &input,
+            &out_dir,
+            &[],
+            false,
+            Some(input.as_path()),
+            PasswordArgs::default(),
+        );
+        assert!(result.is_err());
+        assert!(!out_dir.join("in-001.hwp").exists());
+        assert_eq!(std::fs::read(&input).unwrap(), original);
 
         std::fs::remove_dir_all(dir).unwrap();
     }
