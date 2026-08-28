@@ -16,7 +16,18 @@ pub enum PreservationCode {
     BinaryRelationshipRemoved,
     ControlMetadataUnrepresentable,
     ControlRemoved,
+    /// A non-primary `hwp merge` input's document metadata differed from the
+    /// primary's and was superseded (D-14).
+    DocumentMetadataSuperseded,
+    /// A non-primary `hwp merge` input's non-empty singular package field
+    /// (`hwpx_settings_xml`, `hwp5_xml_template`, ...) was dropped — only the
+    /// primary input's fields are carried (D-14).
+    DocumentPackagePassthroughDropped,
     GsoHeaderUnrepresentable,
+    /// One or more GSO (table/picture) object identities were renumbered to
+    /// avoid a collision across `hwp merge` inputs — a non-target change, not
+    /// data loss (D-14).
+    GsoObjectIdRenumbered,
     GsoShapeUnrepresentable,
     HwpContainerStorageRemoved,
     HwpContainerStreamRemoved,
@@ -25,6 +36,9 @@ pub enum PreservationCode {
     HwpxPackageEntryRemoved,
     MetadataValueRemoved,
     OpaqueControlUnrepresentable,
+    /// A page-range split boundary that crossed a paragraph was rounded to
+    /// the paragraph boundary (D-08); unused until `hwp split` lands.
+    PageRangeParagraphRounded,
     PictureControlRemoved,
 }
 
@@ -35,7 +49,10 @@ impl PreservationCode {
             Self::BinaryRelationshipRemoved => "binary_relationship_removed",
             Self::ControlMetadataUnrepresentable => "control_metadata_unrepresentable",
             Self::ControlRemoved => "control_removed",
+            Self::DocumentMetadataSuperseded => "document_metadata_superseded",
+            Self::DocumentPackagePassthroughDropped => "document_package_passthrough_dropped",
             Self::GsoHeaderUnrepresentable => "gso_header_unrepresentable",
+            Self::GsoObjectIdRenumbered => "gso_object_id_renumbered",
             Self::GsoShapeUnrepresentable => "gso_shape_unrepresentable",
             Self::HwpContainerStorageRemoved => "hwp_container_storage_removed",
             Self::HwpContainerStreamRemoved => "hwp_container_stream_removed",
@@ -44,6 +61,7 @@ impl PreservationCode {
             Self::HwpxPackageEntryRemoved => "hwpx_package_entry_removed",
             Self::MetadataValueRemoved => "metadata_value_removed",
             Self::OpaqueControlUnrepresentable => "opaque_control_unrepresentable",
+            Self::PageRangeParagraphRounded => "page_range_paragraph_rounded",
             Self::PictureControlRemoved => "picture_control_removed",
         }
     }
@@ -210,6 +228,87 @@ impl WriteReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D-14: every pre-existing code's wire string is a published contract —
+    /// this plan's four new variants must be additive only. Locks each
+    /// pre-existing `as_str` value so a future edit cannot silently rename one.
+    #[test]
+    fn pre_existing_codes_keep_their_wire_string() {
+        assert_eq!(
+            PreservationCode::BinaryAssetRemoved.as_str(),
+            "binary_asset_removed"
+        );
+        assert_eq!(
+            PreservationCode::BinaryRelationshipRemoved.as_str(),
+            "binary_relationship_removed"
+        );
+        assert_eq!(
+            PreservationCode::ControlMetadataUnrepresentable.as_str(),
+            "control_metadata_unrepresentable"
+        );
+        assert_eq!(PreservationCode::ControlRemoved.as_str(), "control_removed");
+        assert_eq!(
+            PreservationCode::GsoHeaderUnrepresentable.as_str(),
+            "gso_header_unrepresentable"
+        );
+        assert_eq!(
+            PreservationCode::GsoShapeUnrepresentable.as_str(),
+            "gso_shape_unrepresentable"
+        );
+        assert_eq!(
+            PreservationCode::HwpContainerStorageRemoved.as_str(),
+            "hwp_container_storage_removed"
+        );
+        assert_eq!(
+            PreservationCode::HwpContainerStreamRemoved.as_str(),
+            "hwp_container_stream_removed"
+        );
+        assert_eq!(
+            PreservationCode::HwpOpaqueStreamChanged.as_str(),
+            "hwp_opaque_stream_changed"
+        );
+        assert_eq!(
+            PreservationCode::HwpxOpaqueEntryChanged.as_str(),
+            "hwpx_opaque_entry_changed"
+        );
+        assert_eq!(
+            PreservationCode::HwpxPackageEntryRemoved.as_str(),
+            "hwpx_package_entry_removed"
+        );
+        assert_eq!(
+            PreservationCode::MetadataValueRemoved.as_str(),
+            "metadata_value_removed"
+        );
+        assert_eq!(
+            PreservationCode::OpaqueControlUnrepresentable.as_str(),
+            "opaque_control_unrepresentable"
+        );
+        assert_eq!(
+            PreservationCode::PictureControlRemoved.as_str(),
+            "picture_control_removed"
+        );
+    }
+
+    /// The four new D-14 variants and their snake_case wire strings.
+    #[test]
+    fn new_document_level_codes_have_the_expected_wire_strings() {
+        assert_eq!(
+            PreservationCode::DocumentMetadataSuperseded.as_str(),
+            "document_metadata_superseded"
+        );
+        assert_eq!(
+            PreservationCode::DocumentPackagePassthroughDropped.as_str(),
+            "document_package_passthrough_dropped"
+        );
+        assert_eq!(
+            PreservationCode::GsoObjectIdRenumbered.as_str(),
+            "gso_object_id_renumbered"
+        );
+        assert_eq!(
+            PreservationCode::PageRangeParagraphRounded.as_str(),
+            "page_range_paragraph_rounded"
+        );
+    }
 
     #[test]
     fn events_are_aggregated_and_sorted_without_payloads() {

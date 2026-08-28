@@ -31,7 +31,7 @@ pub struct ConvertReport {
     pub preservation: hwp_model::PreservationReport,
 }
 
-const MAX_PRELOADED_BATCH_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const MAX_PRELOADED_BATCH_BYTES: u64 = 512 * 1024 * 1024;
 
 struct PreloadedDocument {
     document: hwp_model::Document,
@@ -871,7 +871,7 @@ pub(crate) fn print_warnings(warnings: &[String]) {
 /// 아직 없는 경로(새 리포트 파일)는 부모 디렉터리만 canonicalize해 파일명을
 /// 붙인다 — `.`/`..`/심볼릭 링크 철자 변형이 같은 파일을 가리키면 같아진다.
 /// 정규화가 불가능하면 절대경로로, 그마저 실패하면 원본 경로로 되돌아간다.
-fn normalize_for_alias_compare(path: &Path) -> PathBuf {
+pub(crate) fn normalize_for_alias_compare(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
@@ -886,7 +886,10 @@ fn normalize_for_alias_compare(path: &Path) -> PathBuf {
 /// `--loss-report` 산출물 — 다른 출력과 같은 staged/검증 트랜잭션으로 게시한다
 /// (렌더 `--report`의 write_report와 같은 규율). 보고서는 content-free 계약이라
 /// 입력·출력 경로를 싣지 않는다.
-fn write_loss_report(path: &Path, report: &hwp_model::PreservationReport) -> anyhow::Result<()> {
+pub(crate) fn write_loss_report(
+    path: &Path,
+    report: &hwp_model::PreservationReport,
+) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(report)?;
     crate::commands::output::write_validated(
         path,

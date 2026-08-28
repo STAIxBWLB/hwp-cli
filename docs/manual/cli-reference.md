@@ -12,11 +12,14 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 - [`hwp cat`](#hwp-cat)
 - [`hwp grep`](#hwp-grep)
 - [`hwp convert`](#hwp-convert)
+- [`hwp merge`](#hwp-merge)
+- [`hwp split`](#hwp-split)
 - [`hwp render`](#hwp-render)
 - [`hwp new`](#hwp-new)
 - [`hwp compose`](#hwp-compose)
 - [`hwp template`](#hwp-template)
 - [`hwp diff`](#hwp-diff)
+- [`hwp compare`](#hwp-compare)
 - [`hwp edit`](#hwp-edit)
 - [`hwp fields`](#hwp-fields)
 - [`hwp bookmarks`](#hwp-bookmarks)
@@ -92,6 +95,37 @@ Convert between formats
 | `--with-header-footer` |  |  | (md) Also include header and footer text (default: excluded) |
 | `--with-hidden` |  |  | (md) Also include hidden comment text (default: excluded) |
 | `--font-dir` | `<FONT_DIR>` |  | (pdf) Additional font directory (repeatable; defaults to HWP_FONT_DIR or fonts/) |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
+
+## `hwp merge`
+
+Combine several HWP5/HWPX inputs into one output, one Section per input in argument order (page/footnote/outline numbering keep each input's own start/continue settings and may need manual adjustment after merging)
+
+**Usage:** `hwp merge [OPTIONS] --output <OUTPUT> <INPUTS> <INPUTS>...`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<INPUTS>` |  |  | Input HWP/HWPX files, two or more, in the order they are concatenated (standard input "-" is not accepted; pass file paths directly) (repeatable) |
+| `-o, --output` | `<OUTPUT>` |  | Output file path (".hwp" writes HWP5, ".hwpx" writes HWPX) |
+| `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while merging |
+| `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the merge succeeds without loss |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
+
+## `hwp split`
+
+Divide one document into several outputs, one per section by default (page ranges are opt-in via --pages and are an estimate that may not match Hancom's own pagination)
+
+**Usage:** `hwp split [OPTIONS] --out-dir <OUT_DIR> <INPUT>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<INPUT>` |  |  | Input HWP/HWPX file |
+| `--out-dir` | `<OUT_DIR>` |  | Output directory (file names are "<input stem>-NNN.<input extension>") |
+| `--pages` | `<PAGES>` |  | Page range to split on instead of section boundaries, "N" or "N-M" (1-based, inclusive, repeatable). Boundaries come from the page starts Hancom itself saved in the document's layout cache — a boundary that falls inside a paragraph rounds forward to the next paragraph's start, and the estimate may not match what Hancom itself would paginate |
+| `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while splitting |
+| `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the split succeeds without loss |
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
@@ -186,6 +220,20 @@ Compare a render against a Hancom reference PNG (offset and pixel difference)
 | `--tolerance` | `<TOLERANCE>` | `16` | Per-channel tolerance; differences at or below this count as equal |
 | `--format` | `text` \| `json` | `text` | Report output format (json = machine-readable, for the parity batch runner) |
 | `--ours-png` | `<OURS_PNG>` |  | Compare this raster (e.g. pdftoppm of our PDF) against --ref instead of rendering the input document; the input path is only recorded in the report |
+
+## `hwp compare`
+
+Report text and structural differences between two documents, leaving both untouched (not `diff`, which compares a render against a Hancom reference PNG). Exit codes follow diff(1): 0 identical, 1 differences found, 2 the run itself failed — this deliberately diverges from `lint`, which always exits 0 unless --strict finds an error
+
+**Usage:** `hwp compare [OPTIONS] <A> <B>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<A>` |  |  | First HWP/HWPX file |
+| `<B>` |  |  | Second HWP/HWPX file |
+| `--format` | `text` \| `json` | `text` | Report output format |
+| `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
+| `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
 ## `hwp edit`
 
@@ -292,7 +340,7 @@ Structural validation (mimetype, required entries, XML parsing); exit code 0 whe
 
 ## `hwp lint`
 
-Lint official-document notation and structure rules; advisory by default (always exit 0) — --strict exits 1 only when an error-severity finding exists
+Lint official-document notation and structure rules; advisory by default (always exit 0) — --strict exits 1 only when an error-severity finding exists. This diverges from `compare`, which follows the diff(1) convention (1 means differences were found)
 
 **Usage:** `hwp lint [OPTIONS] <FILE>`
 

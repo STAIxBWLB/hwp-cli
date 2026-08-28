@@ -736,6 +736,7 @@ name = "hwp-convert"
 version = "0.12.1"
 dependencies = [
  "hwp-model",
+ "hwpx",
  "image",
  "libc",
  "pulldown-cmark",

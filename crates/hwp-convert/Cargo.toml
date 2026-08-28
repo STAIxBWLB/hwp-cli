@@ -22,3 +22,10 @@ windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
 ] }
+
+[dev-dependencies]
+# Test-only: document_merge's general-graft test against the committed
+# fixtures/samples/report-tables.hwpx sample reads a genuine hwpx package.
+# hwp-convert's production code stays format-agnostic (hub-and-spoke,
+# invariant 1) — this is a dev-dependency, not linked into the shipped binary.
+hwpx = { workspace = true }

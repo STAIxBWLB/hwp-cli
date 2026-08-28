@@ -621,12 +621,12 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 |---|---|---|---|
 | GM-1 | **배치/glob/디렉토리 처리 없음** — 전 명령이 단일 파일 인자 | MS BATCHHWPCONV·H2Orestart headless가 배치 수요 실증 | ✅ **해소(2026-08-01)** — convert 다중 입력 + `--out-dir` (파일명 `<스템>.<확장자>`) | S |
 | GM-2 | **stdin 입력·stdout 파이프 미흡** — convert/edit은 출력 파일 필수, `-` 미지원(cat만 stdout) | 유닉스 CLI 관례 | ✅ **해소(2026-08-01)** — convert 입력 `-`(stdin 스테이징)·출력 `-`(텍스트 포맷 stdout) | S |
-| GM-3 | **문서 병합 없음** — 여러 hwp를 하나로 | pyhwpx 쿡북 정식 챕터(33개→99쪽 병합), 현행 해법은 Windows COM 전용·불안정 | M |
-| GM-4 | **문서 분할/페이지 추출 없음** — render `--pages`는 이미지용 | pyhwpx 쿡북(100쪽→1쪽씩 분할 저장) | M |
+| GM-3 | **문서 병합 없음** — 여러 hwp를 하나로 | pyhwpx 쿡북 정식 챕터(33개→99쪽 병합), 현행 해법은 Windows COM 전용·불안정 | ✅ **한글에서 실기 점검(2026-08-29, 한글과컴퓨터 오피스 한글 12.30.0 build 6446, macOS 26.6.2 build 25G83)** — `hwp merge` 결과물 3종을 열어 손상·변조·복구 대화상자 없음을 확인: HWP5 두 입력을 `.hwp`로 병합(보존 불가 이벤트 8건 기록), 같은 입력을 `.hwpx`로 병합(152건), HWP5+HWPX 혼합 입력을 `.hwp`로 병합(16건). 기록된 손실에도 한글이 정상적으로 열었다는 뜻이며 무손실 주장이 아니고, 관측 범위는 그 정확한 한글 빌드·그 정확한 OS 빌드·그 세 산출물로 한정된다 — 일반화나 Windows 주장이 아님 | M |
+| GM-4 | **문서 분할/페이지 추출 없음** — render `--pages`는 이미지용 | pyhwpx 쿡북(100쪽→1쪽씩 분할 저장) | ✅ **한글에서 실기 점검(2026-08-29, 한글과컴퓨터 오피스 한글 12.30.0 build 6446, macOS 26.6.2 build 25G83)** — `hwp split`이 GM-3 병합 결과물에서 조각 2개를 생성했고 보존 불가 이벤트는 0건, 두 조각 모두 한글에서 손상·변조·복구 대화상자 없이 열림. 관측 범위는 그 정확한 한글/OS 빌드와 그 조각 2개로 한정된다 | M |
 | GM-5 | **텍스트 검색(grep) 명령 없음** — edit `--replace`만 존재 | — | ✅ **해소(2026-08-01)** — `hwp grep <패턴> <파일>` (문단 재귀 검색, 미일치 종료 코드 1, `--ignore-case`) | S |
 | GM-6 | **메타데이터 일괄 편집/덤프 없음** — `--set-meta`는 new/edit 국소 | — | ✅ **이미 충족(2026-08-01 정정)** — 덤프는 `hwp info`(metadata JSON), 편집은 `edit --set-meta`(title/author/subject/keywords 반복)로 커버됨 | S |
 | GM-7 | **도장/서명 자동 날인** — `edit --seal "앵커=>이미지@크기mm"` 구현(부유·글 앞 Picture, 앵커 텍스트 유지, 기본 20mm) | `hwp-convert/src/image.rs insert_seal` | ✅ **실기 확정(2026-07-16, D1·D2 통과)** — 실기 3회 반복으로 확정: hwpx=`IN_FRONT_OF_TEXT`+`allowOverlap=1`+오프셋, hwp5=attr `0x04aa4310`(글앞·PARA·본문제한 해제, §4.3.9.1 비트 표 대조) |
-| GM-8 | **문서 내용 비교 없음** — `diff`는 렌더 픽셀 비교 전용, 텍스트/구조 비교 없음 | kordoc compare_documents 선례 | M |
+| GM-8 | **문서 내용 비교 없음** — `diff`는 렌더 픽셀 비교 전용, 텍스트/구조 비교 없음 | kordoc compare_documents 선례 | ✅ **확인(2026-08-29)** — `hwp compare`는 두 문서의 문단·구조 차이를 보고하며 둘 다 수정하지 않음(실행 전후 SHA-256 불변 확인), 차이가 있으면 종료 코드 1. 읽기 전용 명령이라 한글 실행 확인 대상이 아님 | M |
 | GM-9 | **AI 연동이 client 환경별로 다름** - Amazon Quick Desktop은 publish-safe skill을 active profile에 설치하고 local stdio connector를 실행할 수 있으나, Quick Web은 `hwp mcp`를 시작하거나 desktop path를 공유할 수 없음. Tenant-isolated artifact를 사용하는 hosted authenticated Streamable HTTP service는 미구현 | Desktop profile 탐색/설치는 `skill export --install amazon-quick`으로 ✅ **해소(2026-08-09)**. Web은 [20-remote-mcp](20-remote-mcp.ko.md)와 [issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52)의 open item | Desktop S / Web L |
 | GM-10 | **PII 비식별 처리 없음** — 공문서에는 주민등록번호·전화번호·계좌·카드번호가 일상적으로 들어가지만 이를 탐지·마스킹하는 명령이 없고, 편집 파이프라인은 리터럴로 지정한 문자열만 치환 가능 | kordoc `src/redact.ts` 선례(탐지기 7종, 자릿수·구분자를 보존하는 형식 유지 마스킹, 원문 PII를 절대 담지 않는 적출 보고서). 2026-08-20 결정: 외부 관심사가 아니라 원본 보존 편집 파이프라인 위의 코어 `hwp redact` 명령 — 후보이며 미착수 | M |
 
@@ -783,4 +783,4 @@ GA-5 버전 게이트, GE-β4 요약정보)은 **2026-07-15에 일괄 해소**�
 **GC-8·GC-9**(내어쓰기·문단배경, S)와 **GE-β5·GM-7**(설정 pass-through·
 도장 날인, S)이다. 고가치·고난도의 정공법이었던 **GC-2·GC-3**(공문서 빈출 쪽테두리·각주모양)과
 **GA-2**(배포용 읽기)는 셋 다 이제 해소됐다. 과거 최대 수요였던 **GJ-1**(DOCX 출력)은
-2026-08-01 해소(내보내기 전용, 입력은 L급 미해소)이며, 다음 대형 항목은 GM-3/4/8 계열이다.
+2026-08-01 해소(내보내기 전용, 입력은 L급 미해소)이며, 다음 대형 항목이었던 GM-3/4/8 계열은 2026-08-29 한글 실기 점검을 마쳤다. 마일스톤은 이제 릴리스 게이트로 넘어간다.

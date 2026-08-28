@@ -158,6 +158,55 @@ pub enum Cmd {
         password: PasswordArgs,
     },
 
+    /// Combine several HWP5/HWPX inputs into one output, one Section per input in
+    /// argument order (page/footnote/outline numbering keep each input's own
+    /// start/continue settings and may need manual adjustment after merging)
+    Merge {
+        /// Input HWP/HWPX files, two or more, in the order they are concatenated
+        /// (standard input "-" is not accepted; pass file paths directly)
+        #[arg(required = true, num_args = 2..)]
+        inputs: Vec<PathBuf>,
+        /// Output file path (".hwp" writes HWP5, ".hwpx" writes HWPX)
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Fail when data that cannot be preserved (opaque) is found while merging
+        #[arg(long)]
+        strict: bool,
+        /// Write the typed preservation ledger (hwp-preservation-report-v1) as
+        /// JSON to this path, even when the merge succeeds without loss
+        #[arg(long)]
+        loss_report: Option<PathBuf>,
+        #[command(flatten)]
+        password: PasswordArgs,
+    },
+
+    /// Divide one document into several outputs, one per section by default
+    /// (page ranges are opt-in via --pages and are an estimate that may not
+    /// match Hancom's own pagination)
+    Split {
+        /// Input HWP/HWPX file
+        input: PathBuf,
+        /// Output directory (file names are "<input stem>-NNN.<input extension>")
+        #[arg(long, required = true)]
+        out_dir: PathBuf,
+        /// Page range to split on instead of section boundaries, "N" or "N-M"
+        /// (1-based, inclusive, repeatable). Boundaries come from the page starts
+        /// Hancom itself saved in the document's layout cache — a boundary that
+        /// falls inside a paragraph rounds forward to the next paragraph's start,
+        /// and the estimate may not match what Hancom itself would paginate
+        #[arg(long)]
+        pages: Vec<String>,
+        /// Fail when data that cannot be preserved (opaque) is found while splitting
+        #[arg(long)]
+        strict: bool,
+        /// Write the typed preservation ledger (hwp-preservation-report-v1) as
+        /// JSON to this path, even when the split succeeds without loss
+        #[arg(long)]
+        loss_report: Option<PathBuf>,
+        #[command(flatten)]
+        password: PasswordArgs,
+    },
+
     /// Render pages
     Render {
         /// Input HWP/HWPX file
@@ -321,6 +370,23 @@ pub enum Cmd {
         ours_png: Option<PathBuf>,
     },
 
+    /// Report text and structural differences between two documents, leaving both
+    /// untouched (not `diff`, which compares a render against a Hancom reference
+    /// PNG). Exit codes follow diff(1): 0 identical, 1 differences found, 2 the
+    /// run itself failed — this deliberately diverges from `lint`, which always
+    /// exits 0 unless --strict finds an error
+    Compare {
+        /// First HWP/HWPX file
+        a: PathBuf,
+        /// Second HWP/HWPX file
+        b: PathBuf,
+        /// Report output format
+        #[arg(long, value_enum, default_value_t = CompareFormat::Text)]
+        format: CompareFormat,
+        #[command(flatten)]
+        password: PasswordArgs,
+    },
+
     /// Edit an existing document (text replacement, table cells); images and formatting preserved
     Edit(EditArgs),
 
@@ -382,7 +448,9 @@ pub enum Cmd {
     },
 
     /// Lint official-document notation and structure rules; advisory by default
-    /// (always exit 0) — --strict exits 1 only when an error-severity finding exists
+    /// (always exit 0) — --strict exits 1 only when an error-severity finding exists.
+    /// This diverges from `compare`, which follows the diff(1) convention (1 means
+    /// differences were found)
     Lint {
         /// Target .md/.hwp/.hwpx file ("-" reads stdin as markdown)
         file: PathBuf,
@@ -691,6 +759,12 @@ pub enum RenderFormat {
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DiffFormat {
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CompareFormat {
     Text,
     Json,
 }

@@ -12,11 +12,14 @@
 - [`hwp cat`](#hwp-cat)
 - [`hwp grep`](#hwp-grep)
 - [`hwp convert`](#hwp-convert)
+- [`hwp merge`](#hwp-merge)
+- [`hwp split`](#hwp-split)
 - [`hwp render`](#hwp-render)
 - [`hwp new`](#hwp-new)
 - [`hwp compose`](#hwp-compose)
 - [`hwp template`](#hwp-template)
 - [`hwp diff`](#hwp-diff)
+- [`hwp compare`](#hwp-compare)
 - [`hwp edit`](#hwp-edit)
 - [`hwp fields`](#hwp-fields)
 - [`hwp bookmarks`](#hwp-bookmarks)
@@ -92,6 +95,37 @@
 | `--with-header-footer` |  |  | (md) 머리말/꼬리말 텍스트도 포함 (기본: 제외) |
 | `--with-hidden` |  |  | (md) 숨은 설명 텍스트도 포함 (기본: 제외) |
 | `--font-dir` | `<FONT_DIR>` |  | (pdf) 추가 폰트 디렉터리 (반복 가능, 기본: HWP_FONT_DIR 또는 fonts/) |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
+
+## `hwp merge`
+
+여러 HWP5/HWPX 입력을 하나로 병합 (입력마다 구역 하나, 인자 순서대로 이어붙임; 쪽/각주/차례 번호는 각 입력의 시작/이어달기 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있음)
+
+**사용법:** `hwp merge [OPTIONS] --output <OUTPUT> <INPUTS> <INPUTS>...`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<INPUTS>` |  |  | 입력 HWP/HWPX 파일들, 2개 이상, 이어붙이는 순서대로 (표준 입력 "-"는 지원하지 않음 — 파일 경로를 직접 지정) (반복 가능) |
+| `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 (".hwp"는 HWP5, ".hwpx"는 HWPX로 저장) |
+| `--strict` |  |  | 병합 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
+| `--loss-report` | `<LOSS_REPORT>` |  | typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
+
+## `hwp split`
+
+문서 하나를 여러 출력으로 분할 (기본은 구역 단위; 페이지 범위는 --pages로 opt-in하며 한글 자체 쪽 나누기와 다를 수 있는 추정치)
+
+**사용법:** `hwp split [OPTIONS] --out-dir <OUT_DIR> <INPUT>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
+| `--out-dir` | `<OUT_DIR>` |  | 출력 디렉터리 (파일명은 "<입력 stem>-NNN.<입력 확장자>") |
+| `--pages` | `<PAGES>` |  | 구역 대신 나눌 페이지 범위, "N" 또는 "N-M" (1부터 시작, 포함, 반복 가능). 경계는 한글이 문서 레이아웃 캐시에 저장한 페이지 시작 지점에서 가져오며, 문단 중간에 걸치면 다음 문단 시작으로 보정됩니다 — 한글 자체 쪽 나누기와 다를 수 있는 추정치입니다 |
+| `--strict` |  |  | 분할 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
+| `--loss-report` | `<LOSS_REPORT>` |  | typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 |
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
@@ -186,6 +220,20 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--tolerance` | `<TOLERANCE>` | `16` | 채널 차이 허용 오차 (이하면 동일 취급) |
 | `--format` | `text` \| `json` | `text` | 리포트 출력 형식 (json = 기계 판독, parity 배치 러너용) |
 | `--ours-png` | `<OURS_PNG>` |  | 문서 렌더 대신 이 래스터(우리 PDF의 pdftoppm 결과)를 --ref와 비교; 입력 경로는 리포트 기록용 |
+
+## `hwp compare`
+
+두 문서의 텍스트·구조 차이를 보고하고 둘 다 수정하지 않음 (한글 기준 PNG와 비교하는 diff와 다름). 종료 코드는 diff(1) 관례를 따름: 0 동일, 1 차이 발견, 2 실행 자체 실패 — --strict 없이는 항상 0을 반환하는 lint와 의도적으로 다름
+
+**사용법:** `hwp compare [OPTIONS] <A> <B>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<A>` |  |  | 첫 번째 HWP/HWPX 파일 |
+| `<B>` |  |  | 두 번째 HWP/HWPX 파일 |
+| `--format` | `text` \| `json` | `text` | 리포트 출력 형식 |
+| `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
+| `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
 ## `hwp edit`
 
@@ -292,7 +340,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 ## `hwp lint`
 
-공문서 표기법·구조 규칙 검사 — 기본은 권고(advisory)이며 항상 종료코드 0. --strict는 오류 심각도 지적이 있을 때만 종료코드 1
+공문서 표기법·구조 규칙 검사 — 기본은 권고(advisory)이며 항상 종료코드 0. --strict는 오류 심각도 지적이 있을 때만 종료코드 1. diff(1) 관례(1 = 차이 발견)를 따르는 compare와 의도적으로 다름
 
 **사용법:** `hwp lint [OPTIONS] <FILE>`
 
