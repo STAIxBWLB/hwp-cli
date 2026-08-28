@@ -154,6 +154,46 @@ pub(crate) fn inspect_cross_format_container(
     report
 }
 
+/// Turns `hwp_convert::document_merge::MergeLoss` values into typed
+/// `PreservationEvent`s (D-14). Emits code, resource, disposition and count
+/// only — never a field name's content, a title string or any document text.
+pub(crate) fn inspect_document_merge_losses(
+    losses: &[hwp_convert::document_merge::MergeLoss],
+) -> PreservationReport {
+    let mut report = PreservationReport::new();
+    for loss in losses {
+        match loss {
+            hwp_convert::document_merge::MergeLoss::PackagePassthroughDropped {
+                fields, ..
+            } => {
+                record_removed(
+                    &mut report,
+                    PreservationCode::DocumentPackagePassthroughDropped,
+                    PreservationResourceKind::PackageEntry,
+                    fields.len(),
+                );
+            }
+            hwp_convert::document_merge::MergeLoss::MetadataSuperseded { .. } => {
+                record_removed(
+                    &mut report,
+                    PreservationCode::DocumentMetadataSuperseded,
+                    PreservationResourceKind::Metadata,
+                    1,
+                );
+            }
+            hwp_convert::document_merge::MergeLoss::GsoObjectIdRenumbered { count } => {
+                record_changed(
+                    &mut report,
+                    PreservationCode::GsoObjectIdRenumbered,
+                    PreservationResourceKind::Control,
+                    *count,
+                );
+            }
+        }
+    }
+    report
+}
+
 pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow::Result<()> {
     if report.is_lossless() {
         return Ok(());
@@ -520,7 +560,71 @@ fn removed_multiset_count<K: Ord>(source: BTreeMap<K, usize>, output: BTreeMap<K
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hwp_convert::document_merge::MergeLoss;
     use hwp_model::{BinStream, Metadata};
+
+    #[test]
+    fn document_merge_package_passthrough_loss_becomes_one_typed_event() {
+        let losses = vec![MergeLoss::PackagePassthroughDropped {
+            input_index: 1,
+            fields: vec!["hwpx_settings_xml", "hwpx_version_xml"],
+        }];
+        let report = inspect_document_merge_losses(&losses);
+        assert_eq!(report.events.len(), 1);
+        assert_eq!(
+            report.events[0].code,
+            PreservationCode::DocumentPackagePassthroughDropped
+        );
+        assert_eq!(
+            report.events[0].resource,
+            PreservationResourceKind::PackageEntry
+        );
+        assert_eq!(
+            report.events[0].disposition,
+            PreservationDisposition::Removed
+        );
+        assert_eq!(report.events[0].count, 2);
+        // Content-free: never a field name, a title or document text.
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("hwpx_settings_xml"));
+    }
+
+    #[test]
+    fn document_merge_metadata_superseded_loss_becomes_one_typed_event() {
+        let losses = vec![MergeLoss::MetadataSuperseded { input_index: 1 }];
+        let report = inspect_document_merge_losses(&losses);
+        assert_eq!(report.events.len(), 1);
+        assert_eq!(
+            report.events[0].code,
+            PreservationCode::DocumentMetadataSuperseded
+        );
+        assert_eq!(
+            report.events[0].resource,
+            PreservationResourceKind::Metadata
+        );
+    }
+
+    #[test]
+    fn document_merge_gso_renumbering_becomes_one_typed_changed_event() {
+        let losses = vec![MergeLoss::GsoObjectIdRenumbered { count: 3 }];
+        let report = inspect_document_merge_losses(&losses);
+        assert_eq!(report.events.len(), 1);
+        assert_eq!(
+            report.events[0].code,
+            PreservationCode::GsoObjectIdRenumbered
+        );
+        assert_eq!(report.events[0].resource, PreservationResourceKind::Control);
+        assert_eq!(
+            report.events[0].disposition,
+            PreservationDisposition::ChangedNonTarget
+        );
+        assert_eq!(report.events[0].count, 3);
+    }
+
+    #[test]
+    fn document_merge_no_losses_stays_lossless() {
+        assert!(inspect_document_merge_losses(&[]).is_lossless());
+    }
 
     #[test]
     fn semantic_report_is_content_free_and_counts_removed_resources() {

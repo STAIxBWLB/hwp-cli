@@ -206,6 +206,12 @@ pub fn run(
                 &merged,
                 &output_document,
             ));
+        // D-14: every loss the general graft (or GSO renumbering) couldn't
+        // carry losslessly also joins the ledger, so --strict and the D-17
+        // stderr summary fire for these too, with no further wiring.
+        report
+            .preservation
+            .extend(crate::commands::preservation::inspect_document_merge_losses(&outcome.losses));
         Ok(report)
     };
     let verify_staged = |staged: &Path, report: &hwp_model::WriteReport| -> anyhow::Result<()> {
@@ -253,6 +259,23 @@ mod tests {
     fn write_generated_hwp(path: &Path, markdown: &str) {
         let doc = hwp_convert::from_markdown(markdown);
         crate::commands::convert::write_hwp(&doc, path, false).unwrap();
+    }
+
+    /// A genuine hwpx-origin input: `hwpx_settings_xml`/`hwpx_version_xml`
+    /// always come back `Some(...)` from a real hwpx read (package entries
+    /// every valid hwpx file carries), so merging this as a non-primary input
+    /// naturally trips `MergeLoss::PackagePassthroughDropped` through the real
+    /// path — no synthetic fixture construction needed.
+    fn write_generated_hwpx(path: &Path, markdown: &str) {
+        let doc = hwp_convert::from_markdown(markdown);
+        hwpx::write::write_document_with_report_with(
+            &doc,
+            path,
+            &hwpx::write::HwpxWriteOptions {
+                preserve_linesegs: false,
+            },
+        )
+        .unwrap();
     }
 
     #[test]
@@ -314,10 +337,10 @@ mod tests {
     #[test]
     fn strict_실패시_기존_출력이_보존된다() {
         // Regression shape mirrors convert.rs's
-        // strict_drop_failure_preserves_existing_destination: force a loss
-        // directly against write_validated so the test does not depend on
-        // document_merge actually producing a loss event yet (the general
-        // graft path that can lose something lands in plan 03-02).
+        // strict_drop_failure_preserves_existing_destination: forces a loss
+        // directly against write_validated, independent of what document_merge
+        // itself can produce. `strict는_패키지_전용_필드_손실시_거부한다` below
+        // exercises the same contract through a genuine merge-produced loss.
         let dir = temp_dir("strict-preserve");
         let destination = dir.join("result.hwp");
         std::fs::write(&destination, b"ORIGINAL").unwrap();
@@ -340,6 +363,47 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(std::fs::read(&destination).unwrap(), b"ORIGINAL");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn strict는_패키지_전용_필드_손실시_거부한다() {
+        // Closes .planning/WINDOWS.md #6: exercises a genuine (not
+        // synthetic-formatter-only) preservation loss through the real
+        // merge_documents → inspect_document_merge_losses → reject_preservation_loss
+        // path end to end. A pre-existing --output must survive the refusal (D-15).
+        let dir = temp_dir("strict-package-loss");
+        let a = dir.join("a.hwp");
+        let b = dir.join("b.hwpx");
+        let out = dir.join("out.hwp");
+        std::fs::write(&out, b"ORIGINAL").unwrap();
+        write_generated_hwp(&a, "문서 A\n");
+        write_generated_hwpx(&b, "문서 B\n");
+
+        let result = run(&[a, b], &out, true, None, PasswordArgs::default());
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"ORIGINAL");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 실제_손실이_있어도_strict_없으면_게시된다() {
+        // Closes .planning/WINDOWS.md #6: the same genuine loss as above, but
+        // without --strict — D-17 says warn, not block, so the merge must
+        // still publish (the eprintln! summary line itself fires on this
+        // real path; its content contract was already unit-tested in
+        // preservation_summary_line_은_건수와_코드를_담는다).
+        let dir = temp_dir("real-loss-non-strict");
+        let a = dir.join("a.hwp");
+        let b = dir.join("b.hwpx");
+        let out = dir.join("out.hwp");
+        write_generated_hwp(&a, "문서 A\n");
+        write_generated_hwpx(&b, "문서 B\n");
+
+        run(&[a, b], &out, false, None, PasswordArgs::default()).unwrap();
+        assert!(out.exists());
 
         std::fs::remove_dir_all(dir).unwrap();
     }

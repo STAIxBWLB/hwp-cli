@@ -22,9 +22,9 @@
 //!
 //! Every non-primary input's GSO (table/picture) object identities are
 //! renumbered from a running maximum across both tiers, so no two objects
-//! originating in different inputs can share a Hancom-visible identity. The
-//! D-14 typed loss surface for dropped package-passthrough fields and
-//! superseded metadata is a later task in this plan.
+//! originating in different inputs can share a Hancom-visible identity. Every
+//! non-primary input's dropped singular package-passthrough fields and
+//! superseded metadata are recorded as typed [`MergeLoss`] events (D-14).
 
 use std::collections::HashMap;
 
@@ -40,6 +40,19 @@ use crate::merge::palette_compatible;
 /// withdrawn or repurposed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeLoss {
+    /// A non-primary input carried one or more non-empty singular
+    /// package-passthrough fields (`hwpx_settings_xml`, `hwpx_version_xml`,
+    /// `hwpx_preview_image`, `hwp5_xml_template`, `hwp5_doc_history`,
+    /// `hwpx_extra_entries`, `hwpx_bin_manifest`, `hwpx_opf_extra_items`) that
+    /// were dropped — only the primary input's singular fields are carried.
+    /// `fields` names the dropped field identifiers only, never their content.
+    PackagePassthroughDropped {
+        input_index: usize,
+        fields: Vec<&'static str>,
+    },
+    /// A non-primary input's document metadata differed from the primary's
+    /// and was superseded — the primary input's metadata wins.
+    MetadataSuperseded { input_index: usize },
     /// One or more GSO (table/picture) object identities from a non-primary
     /// input were renumbered to avoid colliding with an earlier input's.
     /// This is a recorded, non-target change, not data loss.
@@ -57,30 +70,64 @@ pub struct MergeOutcome {
     pub losses: Vec<MergeLoss>,
 }
 
+/// The eight singular package-passthrough fields on [`Document`] that only the
+/// primary input's values survive a merge (D-14). `hwpx_section_xmlns` is
+/// deliberately excluded — it is the one documented cross-section union field
+/// and is unioned across every input instead of reported as a loss.
+fn dropped_package_passthrough_fields(input: &Document) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    if input.hwpx_settings_xml.is_some() {
+        fields.push("hwpx_settings_xml");
+    }
+    if input.hwpx_version_xml.is_some() {
+        fields.push("hwpx_version_xml");
+    }
+    if input.hwpx_preview_image.is_some() {
+        fields.push("hwpx_preview_image");
+    }
+    if !input.hwp5_xml_template.is_empty() {
+        fields.push("hwp5_xml_template");
+    }
+    if !input.hwp5_doc_history.is_empty() {
+        fields.push("hwp5_doc_history");
+    }
+    if !input.hwpx_extra_entries.is_empty() {
+        fields.push("hwpx_extra_entries");
+    }
+    if !input.hwpx_bin_manifest.is_empty() {
+        fields.push("hwpx_bin_manifest");
+    }
+    if !input.hwpx_opf_extra_items.is_empty() {
+        fields.push("hwpx_opf_extra_items");
+    }
+    fields
+}
+
 /// Merges `inputs` into one document.
 ///
 /// `inputs[0]`'s header, metadata and singular package-passthrough fields
 /// (`hwpx_settings_xml`, `hwp5_xml_template`, `hwp5_doc_history`,
 /// `hwpx_extra_entries`, `hwpx_bin_manifest`, `hwpx_opf_extra_items`,
 /// `hwpx_preview_image`, ...) become the base unchanged — no later input's
-/// singular fields are carried (a later task in this plan records those as
-/// typed losses). `hwpx_section_xmlns` is the one documented cross-section
-/// union field and is unioned across every input. Each later input's Sections
-/// are appended in argument order, after its header is grafted onto the
-/// running target: the palette-compatible fast path (tier 1) when the input's
-/// header is a hwp-cli-default-palette-family member, otherwise the general
-/// graft (tier 2) that shifts every DocHeader-referencing id unconditionally.
-/// Every non-primary input's GSO object identities are then renumbered from a
-/// running maximum to avoid colliding with an earlier input's.
+/// singular fields are carried (recorded as [`MergeLoss::PackagePassthroughDropped`]).
+/// `hwpx_section_xmlns` is the one documented cross-section union field and is
+/// unioned across every input. Each later input's Sections are appended in
+/// argument order, after its header is grafted onto the running target: the
+/// palette-compatible fast path (tier 1) when the input's header is a
+/// hwp-cli-default-palette-family member, otherwise the general graft (tier 2)
+/// that shifts every DocHeader-referencing id unconditionally. Every
+/// non-primary input's GSO object identities are renumbered from a running
+/// maximum to avoid colliding with an earlier input's.
 ///
-/// Returns `Err` when `inputs` is empty or a GSO object-id/z-order counter
-/// overflows.
+/// Returns `Err` only when `inputs` is empty or a GSO object-id/z-order
+/// counter overflows.
 pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
     let (first, rest) = inputs
         .split_first()
         .ok_or_else(|| "병합할 입력이 없습니다".to_string())?;
 
     let mut target = first.clone();
+    let primary_metadata = target.metadata.clone();
     let mut general_path_used = false;
     let mut losses: Vec<MergeLoss> = Vec::new();
     let mut next_object_id = crate::edit::doc_max_object_id(&target)
@@ -90,7 +137,8 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         .checked_add(1)
         .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
 
-    for input in rest {
+    for (i, input) in rest.iter().enumerate() {
+        let input_index = i + 1;
         let sections_before = target.sections.len();
 
         if palette_compatible(&target.header, &input.header) {
@@ -114,6 +162,17 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         )?;
         if renumbered > 0 {
             losses.push(MergeLoss::GsoObjectIdRenumbered { count: renumbered });
+        }
+
+        let dropped_fields = dropped_package_passthrough_fields(input);
+        if !dropped_fields.is_empty() {
+            losses.push(MergeLoss::PackagePassthroughDropped {
+                input_index,
+                fields: dropped_fields,
+            });
+        }
+        if input.metadata != primary_metadata {
+            losses.push(MergeLoss::MetadataSuperseded { input_index });
         }
     }
 
@@ -1041,5 +1100,47 @@ mod tests {
                 ..Default::default()
             },
         );
+    }
+
+    // ── Task 3: additive preservation codes for the document-level loss surface ──
+
+    #[test]
+    fn 두번째_입력의_hwpx_설정이_있으면_손실로_기록된다() {
+        let a = from_markdown("문서 A\n");
+        let mut b = from_markdown("문서 B\n");
+        b.hwpx_settings_xml = Some("<settings/>".to_string());
+
+        let outcome = merge_documents(&[a, b]).unwrap();
+        assert_eq!(
+            outcome.losses,
+            vec![MergeLoss::PackagePassthroughDropped {
+                input_index: 1,
+                fields: vec!["hwpx_settings_xml"],
+            }]
+        );
+    }
+
+    #[test]
+    fn 메타데이터가_다르면_손실로_기록된다() {
+        let mut a = from_markdown("문서 A\n");
+        a.metadata.title = Some("제목A".to_string());
+        let mut b = from_markdown("문서 B\n");
+        b.metadata.title = Some("제목B".to_string());
+
+        let outcome = merge_documents(&[a, b]).unwrap();
+        assert!(
+            outcome
+                .losses
+                .iter()
+                .any(|loss| matches!(loss, MergeLoss::MetadataSuperseded { input_index: 1 }))
+        );
+    }
+
+    #[test]
+    fn 손실이_없으면_비어_있다() {
+        let a = from_markdown("문서 A\n");
+        let b = from_markdown("문서 B\n");
+        let outcome = merge_documents(&[a, b]).unwrap();
+        assert!(outcome.losses.is_empty());
     }
 }
