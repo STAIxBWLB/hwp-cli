@@ -4,6 +4,7 @@ pub mod base64;
 pub mod bookmark;
 pub mod csv;
 pub mod document_merge;
+pub mod document_split;
 pub mod docx;
 pub mod edit;
 pub mod field;
