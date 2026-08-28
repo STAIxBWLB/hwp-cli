@@ -13,8 +13,9 @@
 //! (D-08), so the straddling paragraph stays whole in the fragment before the
 //! boundary and the fragment after it starts clean.
 //!
-//! This module must not depend on [`crate::document_merge`]: D-06's "whole
-//! DocHeader unchanged" is exactly the direction that needs no offset arithmetic.
+//! This module must not depend on the sibling merge-grafting module: D-06's
+//! "whole DocHeader unchanged" is exactly the direction that needs no offset
+//! arithmetic.
 
 use hwp_model::{Document, Paragraph, Section};
 
@@ -274,8 +275,8 @@ mod tests {
 
     /// A three-section document sharing one `DocHeader` (a hand-built stand-in
     /// for a multi-section hwp5 document — built directly from three
-    /// `from_markdown` sections rather than via `hwp_convert::document_merge`,
-    /// since this module must not depend on that one).
+    /// `from_markdown` sections rather than via the sibling merge-grafting
+    /// module, since this module must not depend on that one).
     fn three_section_doc() -> Document {
         let mut doc = crate::from_markdown("첫 구역\n");
         doc.sections
