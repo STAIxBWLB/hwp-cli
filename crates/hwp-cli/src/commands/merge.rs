@@ -188,16 +188,23 @@ pub fn run(
                 },
             )?,
         };
+        // The inspection sees only the merged document and a (source, target)
+        // format pair, so run it once per distinct mismatched source format —
+        // once per input would multiply the reported counts when several
+        // inputs share a format.
+        let mut inspected_formats: Vec<FileFormat> = Vec::new();
         for source_format in &source_formats {
-            if *source_format != target_format {
-                report.preservation.extend(
-                    crate::commands::preservation::inspect_cross_format_container(
-                        &merged,
-                        *source_format,
-                        target_format,
-                    ),
-                );
+            if *source_format == target_format || inspected_formats.contains(source_format) {
+                continue;
             }
+            inspected_formats.push(*source_format);
+            report.preservation.extend(
+                crate::commands::preservation::inspect_cross_format_container(
+                    &merged,
+                    *source_format,
+                    target_format,
+                ),
+            );
         }
         let output_document = load_document(staged)
             .with_context(|| format!("병합 문서 재읽기 실패: {}", staged.display()))?;
@@ -405,6 +412,84 @@ mod tests {
 
         run(&[a, b], &out, false, None, PasswordArgs::default()).unwrap();
         assert!(out.exists());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A hwpx input carrying one extra package entry, so the merged document
+    /// (with this input as primary) retains a non-empty `hwpx_extra_entries`
+    /// and `inspect_cross_format_container` has a real count to report.
+    fn write_generated_hwpx_with_extra_entry(path: &Path, markdown: &str) {
+        let mut doc = hwp_convert::from_markdown(markdown);
+        doc.hwpx_extra_entries
+            .push(("DocOptions/test.xml".to_string(), b"test".to_vec()));
+        hwpx::write::write_document_with_report_with(
+            &doc,
+            path,
+            &hwpx::write::HwpxWriteOptions {
+                preserve_linesegs: false,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn 교차_포맷_컨테이너_검사는_불일치_포맷당_한_번만_실행된다() {
+        // The inspection's counts depend only on the merged document and the
+        // (source, target) format pair, so merging three same-format
+        // mismatched inputs must report the same counts as merging one —
+        // not three times as many.
+        let dir = temp_dir("cross-format-dedupe");
+        let a = dir.join("a.hwpx");
+        let b = dir.join("b.hwp");
+        let c = dir.join("c.hwpx");
+        let d = dir.join("d.hwpx");
+        write_generated_hwpx_with_extra_entry(&a, "문서 A\n");
+        write_generated_hwp(&b, "문서 B\n");
+        write_generated_hwpx(&c, "문서 C\n");
+        write_generated_hwpx(&d, "문서 D\n");
+
+        let removed_entry_count = |report_path: &Path| -> usize {
+            let report: hwp_model::PreservationReport =
+                serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+            report
+                .events
+                .iter()
+                .filter(|event| event.code == hwp_model::PreservationCode::HwpxPackageEntryRemoved)
+                .map(|event| event.count)
+                .sum()
+        };
+
+        // Both merges share the same primary input (a.hwpx), so the merged
+        // document carries the same package extras in both runs.
+        let out_one = dir.join("one.hwp");
+        let report_one = dir.join("one.json");
+        run(
+            &[a.clone(), b],
+            &out_one,
+            false,
+            Some(report_one.as_path()),
+            PasswordArgs::default(),
+        )
+        .unwrap();
+        let out_three = dir.join("three.hwp");
+        let report_three = dir.join("three.json");
+        run(
+            &[a, c, d],
+            &out_three,
+            false,
+            Some(report_three.as_path()),
+            PasswordArgs::default(),
+        )
+        .unwrap();
+
+        let one = removed_entry_count(&report_one);
+        let three = removed_entry_count(&report_three);
+        assert!(one > 0, "검사가 실제로 손실 이벤트를 기록해야 한다");
+        assert_eq!(
+            one, three,
+            "불일치 입력 수만큼 손실 건수가 곱해지면 안 된다"
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }

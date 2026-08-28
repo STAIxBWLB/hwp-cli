@@ -37,7 +37,8 @@ pub enum PreservationCode {
     MetadataValueRemoved,
     OpaqueControlUnrepresentable,
     /// A page-range split boundary that crossed a paragraph was rounded to
-    /// the paragraph boundary (D-08); unused until `hwp split` lands.
+    /// the paragraph boundary (D-08) — an adjustment, not a loss: `hwp split`
+    /// ledgers it for audit but excludes it from `--strict` refusal (#174).
     PageRangeParagraphRounded,
     PictureControlRemoved,
 }

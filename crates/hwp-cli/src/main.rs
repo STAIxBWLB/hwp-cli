@@ -174,7 +174,10 @@ fn real_main() -> anyhow::Result<()> {
             Ok(commands::compare::CompareOutcome::Identical) => std::process::exit(0),
             Ok(commands::compare::CompareOutcome::Different) => std::process::exit(1),
             Err(error) => {
-                eprintln!("오류: {error:#}");
+                // Same `Error: ...` shape every other command's `Err` gets from
+                // the `anyhow::Result` → `Termination` mapping; only the exit
+                // code (2, not 1) differs here.
+                eprintln!("Error: {error:?}");
                 std::process::exit(2);
             }
         },

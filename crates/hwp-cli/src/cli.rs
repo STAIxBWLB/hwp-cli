@@ -186,7 +186,7 @@ pub enum Cmd {
     Split {
         /// Input HWP/HWPX file
         input: PathBuf,
-        /// Output directory (file names are "<input stem>-NNN.<input extension>")
+        /// Output directory (file names are "<input stem>-NNN.<lowercased input extension>")
         #[arg(long, required = true)]
         out_dir: PathBuf,
         /// Page range to split on instead of section boundaries, "N" or "N-M"

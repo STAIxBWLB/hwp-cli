@@ -267,6 +267,89 @@ fn 동일한_두_구역은_서로_다른_조각_파일_두_개가_된다() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn split_removes_stale_fragments_from_a_previous_larger_run() {
+    // Issue #177: re-running split with fewer fragments must not leave stale
+    // stem-NNN files in --out-dir.
+    let dir = scratch_dir("stale-fragments");
+    let out_dir = dir.join("frag");
+
+    // First run: a two-section input (same stem "in", own directory).
+    let dir_a = dir.join("a");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    let a = write_input_hwp(&dir_a, "part-a", "문서 A\n");
+    let b = write_input_hwp(&dir_a, "part-b", "문서 B\n");
+    let two_section = dir_a.join("in.hwp");
+    let status = hwp()
+        .arg("merge")
+        .arg(&a)
+        .arg(&b)
+        .arg("-o")
+        .arg(&two_section)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp merge 실패");
+    let status = hwp()
+        .arg("split")
+        .arg(&two_section)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp split 실패");
+    assert_eq!(fragment_paths(&out_dir, "in", "hwp").len(), 2);
+
+    // Second run: a single-section input with the same stem, same --out-dir.
+    let dir_b = dir.join("b");
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let one_section = write_input_hwp(&dir_b, "in", "단일 구역\n");
+    let status = hwp()
+        .arg("split")
+        .arg(&one_section)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp split 실패");
+
+    assert!(out_dir.join("in-001.hwp").exists());
+    assert!(
+        !out_dir.join("in-002.hwp").exists(),
+        "이전 실행의 초과 조각이 남아 있으면 안 됩니다"
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn split_normalizes_the_fragment_extension_to_lowercase() {
+    // Issue #177: an uppercase input extension must produce lowercase
+    // fragment names, matching the rest of the CLI's casing rule.
+    let dir = scratch_dir("lowercase-extension");
+    let lower = write_input_hwp(&dir, "in", "본문입니다\n");
+    let upper = dir.join("in.HWP");
+    std::fs::rename(&lower, &upper).unwrap();
+    let out_dir = dir.join("frag");
+
+    let status = hwp()
+        .arg("split")
+        .arg(&upper)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp split 실패");
+
+    let fragments = fragment_paths(&out_dir, "in", "hwp");
+    assert_eq!(fragments.len(), 1);
+    assert_eq!(
+        fragments[0].file_name().and_then(|name| name.to_str()),
+        Some("in-001.hwp"),
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// FLOW-02 `empty` probe (A-04): a document with zero sections is refused
 /// rather than published as an empty set.
 ///

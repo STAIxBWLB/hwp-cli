@@ -35,6 +35,31 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `MAX_LCS_CELLS` ceiling as paragraph-level LCS, replacing a potential uncatchable OOM abort
   with a graceful refusal (#165, #166).
 
+- `hwp merge` (tier 2) now shifts section-level border-fill references (hwp5
+  `page_border_fills_raw` plus the parallel `extras` copies, and hwpx `borderFillIDRef`
+  passthrough) by the border-fill offset, so merged-in page borders resolve against their own
+  table; malformed non-numeric references pass through unchanged (#171).
+
+- `hwp merge` no longer consumes object ids for tables with truncated `common_data` payloads,
+  so `GsoObjectIdRenumbered` counts and id sequences stay accurate (#172).
+
+- `hwp merge` header id arithmetic is now checked: cumulative collections beyond the u16 space
+  fail with a clear error instead of wrapping or panicking (#173).
+
+- `hwp split --strict` no longer refuses publication over page-boundary rounding alone: rounding
+  events stay in the `--loss-report` ledger but no longer trip the strict gate or the
+  "보존 불가" summary (#174).
+
+- `hwp compare`'s exit-2 error path now prints the same `Error: ...` anyhow termination as the
+  other commands instead of a hardcoded Korean prefix (#175).
+
+- `hwp merge` runs cross-format container inspection once per distinct mismatched source format
+  instead of once per mismatched input, so reported loss counts no longer inflate with multiple
+  mismatched inputs (#176).
+
+- `hwp split` removes stale `stem-NNN.ext` fragments from previous larger runs after a
+  successful publication, and fragment names now use the lowercased input extension (#177).
+
 ## [0.12.1]
 
 **Fixed**
