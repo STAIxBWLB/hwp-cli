@@ -24,7 +24,17 @@
 //! `Document::resolve_bin`'s `BIN{storage_id:04X}.{ext}` rule. A
 //! `border_fill_id`/`border_fill` of 0 is the "unspecified" sentinel (not an
 //! index) and is never shifted, so grafting never invents a border where none
-//! existed. Two reference classes are deliberately not shifted: `Style`
+//! existed. Section-level page border/fill references ride the same
+//! border-fill offset (#171): hwp5-origin sections carry them as raw
+//! PAGE_BORDER_FILL records (`SectionDef::page_border_fills_raw` plus the
+//! parallel `SectionDef::extras` copies the hwp5 writer re-emits — both are
+//! shifted, bytes 12..14 holding the 1-based id), hwpx-origin sections as
+//! `<hp:pageBorderFill>` raw-XML passthrough children
+//! (`SectionDef::secpr_raw_children`) whose numeric `borderFillIDRef`
+//! attribute is rewritten in place. A passthrough child whose
+//! `borderFillIDRef` is present but not numeric is left verbatim — the
+//! reference already resolved nowhere — rather than rewritten blindly. Two
+//! reference classes are deliberately not shifted: `Style`
 //! entries are appended verbatim because no writer or render path reads their
 //! internal shape ids, and the input header's unparsed passthrough records
 //! (`extras`, `id_extras`, `id_mappings_counts`) are not grafted — the
@@ -38,7 +48,7 @@
 
 use std::collections::HashMap;
 
-use hwp_model::{BinRef, BinStream, Control, Document, LANG_COUNT, Paragraph, Section};
+use hwp_model::{BinRef, BinStream, Control, Document, LANG_COUNT, Paragraph, Section, SectionDef};
 
 use crate::from_html::PALETTE_LEN;
 use crate::from_markdown::BASE_PARA_SHAPES;
@@ -136,8 +146,9 @@ fn dropped_package_passthrough_fields(input: &Document) -> Vec<&'static str> {
 /// Every non-primary input's GSO object identities are renumbered from a
 /// running maximum to avoid colliding with an earlier input's.
 ///
-/// Returns `Err` only when `inputs` is empty or a GSO object-id/z-order
-/// counter overflows.
+/// Returns `Err` only when `inputs` is empty, a GSO object-id/z-order counter
+/// overflows, or a DocHeader collection length / shifted id reference
+/// overflows the u16 id space (#173).
 pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
     let (first, rest) = inputs
         .split_first()
@@ -159,14 +170,14 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         let sections_before = target.sections.len();
 
         let dropped_bin_data = if palette_compatible(&target.header, &input.header) {
-            graft_palette_compatible(&mut target, input)
+            graft_palette_compatible(&mut target, input)?
         } else {
             general_path_used = true;
-            let (offsets, dropped) = graft_header_general(&mut target, input);
+            let (offsets, dropped) = graft_header_general(&mut target, input)?;
             for section in &input.sections {
                 let mut section = section.clone();
                 for p in &mut section.paragraphs {
-                    remap_paragraph_general(p, &offsets);
+                    remap_paragraph_general(p, &offsets)?;
                 }
                 target.sections.push(section);
             }
@@ -200,13 +211,35 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         }
     }
 
-    target.header.properties.section_count = target.sections.len() as u16;
+    target.header.properties.section_count =
+        u16::try_from(target.sections.len()).map_err(|_| "구역 수 오버플로".to_string())?;
 
     Ok(MergeOutcome {
         document: target,
         general_path_used,
         losses,
     })
+}
+
+/// Refusal message for a DocHeader collection length or a shifted id
+/// reference overflowing the u16 id space (#173) — parallels the GSO
+/// object-id/z-order counter refusals.
+fn header_id_overflow() -> String {
+    "헤더 id 오버플로".to_string()
+}
+
+/// Checked `*id += offset` for a DocHeader-referencing u16 id (#173): the
+/// merged header's cumulative collections can exceed the u16 id space, in
+/// which case the merge refuses rather than silently wrapping the reference.
+fn shift_id(id: &mut u16, offset: u16) -> Result<(), String> {
+    *id = id.checked_add(offset).ok_or_else(header_id_overflow)?;
+    Ok(())
+}
+
+/// u16 length of a header collection, refusing when it no longer fits the id
+/// space (a shifted reference could not resolve past it).
+fn u16_len(len: usize) -> Result<u16, String> {
+    u16::try_from(len).map_err(|_| header_id_overflow())
 }
 
 /// Grafts `input`'s hwp5 BIN_DATA table onto `target` (appending, so the
@@ -219,8 +252,12 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
 /// with, and the number of entries dropped because the u16 storage-id space
 /// was exhausted (once an entry is dropped every later entry is dropped too,
 /// keeping the surviving prefix 1:1 aligned with the shifted references).
-fn graft_bin_data(target: &mut Document, input: &Document) -> (u16, HashMap<u16, u16>, usize) {
-    let offset = target.header.bin_data.len() as u16;
+/// `Err` when the running target's table no longer fits the u16 id space.
+fn graft_bin_data(
+    target: &mut Document,
+    input: &Document,
+) -> Result<(u16, HashMap<u16, u16>, usize), String> {
+    let offset = u16_len(target.header.bin_data.len())?;
     let mut used: Vec<u16> = target
         .header
         .bin_data
@@ -279,7 +316,7 @@ fn graft_bin_data(target: &mut Document, input: &Document) -> (u16, HashMap<u16,
         }
         target.header.bin_data.push(item);
     }
-    (offset, remap, dropped)
+    Ok((offset, remap, dropped))
 }
 
 /// Whether a target bin stream already carries `BIN{storage_id:04X}.{ext}` as
@@ -365,14 +402,15 @@ fn graft_bin_streams(
 /// default-palette-family document saved as .hwp and read back carries
 /// `BinRef::Id` pictures). Returns the number of bin_data entries that could
 /// not be grafted (u16 storage-id space exhausted) for the caller to record
-/// as [`MergeLoss::BinDataDropped`].
-fn graft_palette_compatible(target: &mut Document, input: &Document) -> usize {
-    let cs_off = target.header.char_shapes.len() as u16 - PALETTE_LEN;
-    let ps_off = target.header.para_shapes.len() as u16 - BASE_PARA_SHAPES;
-    let num_off = target.header.numbering_levels.len() as u16;
-    let bul_off = target.header.bullet_chars.len() as u16;
+/// as [`MergeLoss::BinDataDropped`]. `Err` when a header collection length or
+/// a shifted id overflows the u16 id space (#173).
+fn graft_palette_compatible(target: &mut Document, input: &Document) -> Result<usize, String> {
+    let cs_off = u16_len(target.header.char_shapes.len())? - PALETTE_LEN;
+    let ps_off = u16_len(target.header.para_shapes.len())? - BASE_PARA_SHAPES;
+    let num_off = u16_len(target.header.numbering_levels.len())?;
+    let bul_off = u16_len(target.header.bullet_chars.len())?;
 
-    let (bd_off, storage_remap, dropped) = graft_bin_data(target, input);
+    let (bd_off, storage_remap, dropped) = graft_bin_data(target, input)?;
     let rename = graft_bin_streams(target, input, "merge", &storage_remap);
 
     // Extend target with the input's off-palette extras (numbering/bullet
@@ -380,8 +418,8 @@ fn graft_palette_compatible(target: &mut Document, input: &Document) -> usize {
     for ps in &input.header.para_shapes[BASE_PARA_SHAPES as usize..] {
         let mut ps = ps.clone();
         match ps.head_type() {
-            2 => ps.numbering_id += num_off, // numbering definition reference
-            3 => ps.numbering_id += bul_off, // bullet definition reference
+            2 => shift_id(&mut ps.numbering_id, num_off)?, // numbering definition reference
+            3 => shift_id(&mut ps.numbering_id, bul_off)?, // bullet definition reference
             _ => {}
         }
         target.header.para_shapes.push(ps);
@@ -411,11 +449,11 @@ fn graft_palette_compatible(target: &mut Document, input: &Document) -> usize {
     for section in &input.sections {
         let mut section = section.clone();
         for p in &mut section.paragraphs {
-            remap_paragraph(p, ps_off, cs_off, bd_off, &rename);
+            remap_paragraph(p, ps_off, cs_off, bd_off, &rename)?;
         }
         target.sections.push(section);
     }
-    dropped
+    Ok(dropped)
 }
 
 /// Shifts one paragraph's off-palette id references (para shape, char shape
@@ -425,20 +463,21 @@ fn graft_palette_compatible(target: &mut Document, input: &Document) -> usize {
 /// Generic paragraph lists and table/picture captions. A `SectionDef`
 /// control is untouched — it matches none of the arms below and stays as-is,
 /// which is exactly D-02's "each input's Section carried over unchanged"
-/// requirement. Mirrors `hwp_convert::merge::remap_paragraph`.
+/// requirement. Mirrors `hwp_convert::merge::remap_paragraph`. `Err` when a
+/// shifted id overflows the u16 id space (#173).
 fn remap_paragraph(
     para: &mut Paragraph,
     ps_off: u16,
     cs_off: u16,
     bd_off: u16,
     rename: &HashMap<String, String>,
-) {
+) -> Result<(), String> {
     if para.para_shape.0 >= BASE_PARA_SHAPES {
-        para.para_shape.0 += ps_off;
+        shift_id(&mut para.para_shape.0, ps_off)?;
     }
     for (_, id) in &mut para.char_shape_runs {
         if id.0 >= PALETTE_LEN {
-            id.0 += cs_off;
+            shift_id(&mut id.0, cs_off)?;
         }
     }
     for control in &mut para.controls {
@@ -446,19 +485,19 @@ fn remap_paragraph(
             Control::Table(t) => {
                 if let Some(cap) = &mut t.caption {
                     for p in &mut cap.paragraphs {
-                        remap_paragraph(p, ps_off, cs_off, bd_off, rename);
+                        remap_paragraph(p, ps_off, cs_off, bd_off, rename)?;
                     }
                 }
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        remap_paragraph(p, ps_off, cs_off, bd_off, rename);
+                        remap_paragraph(p, ps_off, cs_off, bd_off, rename)?;
                     }
                 }
             }
             Control::Generic(g) => {
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        remap_paragraph(p, ps_off, cs_off, bd_off, rename);
+                        remap_paragraph(p, ps_off, cs_off, bd_off, rename)?;
                     }
                 }
                 // Reference ids changed above — the original XML is stale.
@@ -471,17 +510,18 @@ fn remap_paragraph(
                             *name = new_name.clone();
                         }
                     }
-                    BinRef::Id(id) => id.0 += bd_off,
+                    BinRef::Id(id) => shift_id(&mut id.0, bd_off)?,
                 }
                 if let Some(cap) = &mut pic.caption {
                     for p in &mut cap.paragraphs {
-                        remap_paragraph(p, ps_off, cs_off, bd_off, rename);
+                        remap_paragraph(p, ps_off, cs_off, bd_off, rename)?;
                     }
                 }
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// Per-non-primary-input collection-length offsets [`graft_header_general`]
@@ -514,21 +554,25 @@ struct HeaderOffsets {
 /// hwp5 bin-data entries are appended by [`graft_bin_data`]; returns the
 /// offsets alongside the number of bin_data entries that could not be grafted
 /// (u16 storage-id space exhausted) for the caller to record as
-/// [`MergeLoss::BinDataDropped`].
-fn graft_header_general(target: &mut Document, input: &Document) -> (HeaderOffsets, usize) {
-    let char_shape = target.header.char_shapes.len() as u16;
-    let para_shape = target.header.para_shapes.len() as u16;
-    let style = target.header.styles.len() as u16;
-    let border_fill = target.header.border_fills.len() as u16;
-    let tab_def = target.header.tab_defs.len() as u16;
-    let numbering = target.header.numbering_levels.len() as u16;
-    let bullet = target.header.bullet_chars.len() as u16;
+/// [`MergeLoss::BinDataDropped`]. `Err` when a header collection length or a
+/// shifted id overflows the u16 id space (#173).
+fn graft_header_general(
+    target: &mut Document,
+    input: &Document,
+) -> Result<(HeaderOffsets, usize), String> {
+    let char_shape = u16_len(target.header.char_shapes.len())?;
+    let para_shape = u16_len(target.header.para_shapes.len())?;
+    let style = u16_len(target.header.styles.len())?;
+    let border_fill = u16_len(target.header.border_fills.len())?;
+    let tab_def = u16_len(target.header.tab_defs.len())?;
+    let numbering = u16_len(target.header.numbering_levels.len())?;
+    let bullet = u16_len(target.header.bullet_chars.len())?;
     let mut face = [0u16; LANG_COUNT];
     for (lang, offset) in face.iter_mut().enumerate() {
-        *offset = target.header.fonts[lang].len() as u16;
+        *offset = u16_len(target.header.fonts[lang].len())?;
     }
 
-    let (bin_data, storage_remap, dropped) = graft_bin_data(target, input);
+    let (bin_data, storage_remap, dropped) = graft_bin_data(target, input)?;
     let bin_rename = graft_bin_streams(target, input, "graft", &storage_remap);
 
     // Fonts, border fills, tab defs/stops, numberings/numbering_levels and
@@ -579,10 +623,10 @@ fn graft_header_general(target: &mut Document, input: &Document) -> (HeaderOffse
     for cs in &input.header.char_shapes {
         let mut cs = cs.clone();
         for (face_id, offset) in cs.face_ids.iter_mut().zip(face) {
-            *face_id += offset;
+            shift_id(face_id, offset)?;
         }
         if cs.border_fill_id != 0 {
-            cs.border_fill_id += border_fill;
+            shift_id(&mut cs.border_fill_id, border_fill)?;
         }
         target.header.char_shapes.push(cs);
     }
@@ -592,14 +636,14 @@ fn graft_header_general(target: &mut Document, input: &Document) -> (HeaderOffse
     // and the border-fill id with the zero-sentinel guard.
     for ps in &input.header.para_shapes {
         let mut ps = ps.clone();
-        ps.tab_def_id += tab_def;
+        shift_id(&mut ps.tab_def_id, tab_def)?;
         match ps.head_type() {
-            2 => ps.numbering_id += numbering,
-            3 => ps.numbering_id += bullet,
+            2 => shift_id(&mut ps.numbering_id, numbering)?,
+            3 => shift_id(&mut ps.numbering_id, bullet)?,
             _ => {}
         }
         if ps.border_fill_id != 0 {
-            ps.border_fill_id += border_fill;
+            shift_id(&mut ps.border_fill_id, border_fill)?;
         }
         target.header.para_shapes.push(ps);
     }
@@ -612,7 +656,7 @@ fn graft_header_general(target: &mut Document, input: &Document) -> (HeaderOffse
         }
     }
 
-    (
+    Ok((
         HeaderOffsets {
             char_shape,
             para_shape,
@@ -622,47 +666,49 @@ fn graft_header_general(target: &mut Document, input: &Document) -> (HeaderOffse
             bin_rename,
         },
         dropped,
-    )
+    ))
 }
 
 /// General-graft counterpart of `remap_paragraph`: shifts every id
 /// unconditionally (no shared-base guard — there is no assumed shared base on
 /// this path), adds `para.style`, the `Table`/`Cell` border-fill shift (with
-/// the zero-sentinel guard) and the hwp5 `BinRef::Id` bin-data shift.
+/// the zero-sentinel guard), the section-level page border/fill shift on a
+/// `SectionDef` control (#171) and the hwp5 `BinRef::Id` bin-data shift.
 /// Recurses into every nested paragraph collection — table cells, Generic
 /// paragraph lists, and table/picture captions — so caption paragraphs
 /// resolve to the same shifted header entries as body paragraphs and caption
-/// pictures keep their rewired bin references.
-fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) {
-    para.para_shape.0 += offsets.para_shape;
-    para.style.0 += offsets.style;
+/// pictures keep their rewired bin references. `Err` when a shifted id
+/// overflows the u16 id space (#173).
+fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Result<(), String> {
+    shift_id(&mut para.para_shape.0, offsets.para_shape)?;
+    shift_id(&mut para.style.0, offsets.style)?;
     for (_, id) in &mut para.char_shape_runs {
-        id.0 += offsets.char_shape;
+        shift_id(&mut id.0, offsets.char_shape)?;
     }
     for control in &mut para.controls {
         match control {
             Control::Table(t) => {
                 if t.border_fill.0 != 0 {
-                    t.border_fill.0 += offsets.border_fill;
+                    shift_id(&mut t.border_fill.0, offsets.border_fill)?;
                 }
                 if let Some(cap) = &mut t.caption {
                     for p in &mut cap.paragraphs {
-                        remap_paragraph_general(p, offsets);
+                        remap_paragraph_general(p, offsets)?;
                     }
                 }
                 for cell in &mut t.cells {
                     if cell.border_fill.0 != 0 {
-                        cell.border_fill.0 += offsets.border_fill;
+                        shift_id(&mut cell.border_fill.0, offsets.border_fill)?;
                     }
                     for p in &mut cell.paragraphs {
-                        remap_paragraph_general(p, offsets);
+                        remap_paragraph_general(p, offsets)?;
                     }
                 }
             }
             Control::Generic(g) => {
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        remap_paragraph_general(p, offsets);
+                        remap_paragraph_general(p, offsets)?;
                     }
                 }
                 // Reference ids changed above — the original XML is stale.
@@ -675,17 +721,109 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) {
                             *name = new_name.clone();
                         }
                     }
-                    BinRef::Id(id) => id.0 += offsets.bin_data,
+                    BinRef::Id(id) => shift_id(&mut id.0, offsets.bin_data)?,
                 }
                 if let Some(cap) = &mut pic.caption {
                     for p in &mut cap.paragraphs {
-                        remap_paragraph_general(p, offsets);
+                        remap_paragraph_general(p, offsets)?;
                     }
                 }
             }
-            _ => {}
+            Control::SectionDef(def) => {
+                shift_section_def_border_fills(def, offsets.border_fill)?;
+            }
         }
     }
+    Ok(())
+}
+
+/// hwp5 PAGE_BORDER_FILL record tag (한글문서파일형식 5.0 §3 record-tag table:
+/// HWPTAG_BEGIN 0x10 + 59), spelled out here so hwp-convert stays
+/// format-agnostic (no hwp5 dependency — hub-and-spoke, invariant 1), the
+/// same precedent `bookmark.rs`/`field.rs`'s CTRL_DATA_TAG set.
+const PAGE_BORDER_FILL_TAG: u16 = 0x0010 + 59;
+
+/// Shifts a grafted-in section's own page border/fill references by the
+/// border-fill offset so they resolve against the merged header instead of
+/// the primary's border-fill table (#171). Covers both representations: the
+/// hwp5 raw records (`page_border_fills_raw`, plus their parallel `extras`
+/// copies — the hwp5 re-serialization 정본) and the hwpx
+/// `<hp:pageBorderFill>` raw-XML passthrough in `secpr_raw_children`.
+fn shift_section_def_border_fills(def: &mut SectionDef, offset: u16) -> Result<(), String> {
+    for raw in &mut def.page_border_fills_raw {
+        shift_page_border_fill_raw(raw, offset)?;
+    }
+    for extra in &mut def.extras {
+        if extra.tag == PAGE_BORDER_FILL_TAG {
+            shift_page_border_fill_raw(&mut extra.data, offset)?;
+        }
+    }
+    for child in &mut def.secpr_raw_children {
+        if let Some(rewritten) = shift_secpr_page_border_fill(child, offset)? {
+            *child = rewritten;
+        }
+    }
+    Ok(())
+}
+
+/// Shifts the 1-based border-fill id (bytes 12..14 — the layout the hwpx
+/// writer's `write_page_border_fills` documents) of one hwp5
+/// PAGE_BORDER_FILL raw record. A record shorter than 14 B carries no
+/// readable id and is left untouched; id 0 is the "unspecified" sentinel and
+/// is never shifted.
+fn shift_page_border_fill_raw(raw: &mut [u8], offset: u16) -> Result<(), String> {
+    if raw.len() < 14 {
+        return Ok(());
+    }
+    let id = u16::from_le_bytes([raw[12], raw[13]]);
+    if id == 0 {
+        return Ok(());
+    }
+    let shifted = id.checked_add(offset).ok_or_else(header_id_overflow)?;
+    raw[12..14].copy_from_slice(&shifted.to_le_bytes());
+    Ok(())
+}
+
+/// Rewrites the numeric `borderFillIDRef` attribute of a preserved
+/// `<hp:pageBorderFill>` raw-XML child by `offset`, returning the rewritten
+/// child. Returns `Ok(None)` — the child is kept verbatim — when it is not a
+/// pageBorderFill element, carries no `borderFillIDRef` (nothing references
+/// the table), or carries a non-numeric one (a malformed reference that
+/// already resolved nowhere, left alone rather than rewritten blindly, #171).
+/// `Err` when the shift overflows the u16 id space (#173).
+fn shift_secpr_page_border_fill(child: &str, offset: u16) -> Result<Option<String>, String> {
+    let is_page_border_fill = child
+        .trim_start()
+        .strip_prefix('<')
+        .and_then(|rest| {
+            rest.split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .next()
+        })
+        .map(|name| name.rsplit(':').next().unwrap_or(name) == "pageBorderFill")
+        .unwrap_or(false);
+    if !is_page_border_fill {
+        return Ok(None);
+    }
+    const ATTR: &str = "borderFillIDRef=\"";
+    let Some(attr_pos) = child.find(ATTR) else {
+        return Ok(None);
+    };
+    let value_start = attr_pos + ATTR.len();
+    let Some(value_end) = child[value_start..].find('"').map(|i| value_start + i) else {
+        return Ok(None);
+    };
+    let Ok(id) = child[value_start..value_end].parse::<u16>() else {
+        return Ok(None);
+    };
+    if id == 0 {
+        return Ok(None); // "unspecified" sentinel — never shifted
+    }
+    let shifted = id.checked_add(offset).ok_or_else(header_id_overflow)?;
+    Ok(Some(format!(
+        "{}{shifted}{}",
+        &child[..value_start],
+        &child[value_end..]
+    )))
 }
 
 /// Gives every GSO-bearing (`Table`/`Picture`) control in `sections` a fresh
@@ -693,7 +831,10 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) {
 /// Hancom-visible identity with one from an earlier input. Mirrors
 /// `hwp_convert::edit::remap_clone_object_ids`/`remap_clone_object_ids_in_para`
 /// (same two-branch shape: write the id into `common_data` bytes 32..36 when
-/// present, otherwise bump `placement.z_order`), but threads `next_id`/`next_z`
+/// the buffer is full-length, otherwise bump `placement.z_order` when there
+/// is no `common_data` at all; a truncated non-empty `common_data` has no
+/// writable id field, so the object keeps its identity untouched — no id
+/// consumed, not counted, #172), but threads `next_id`/`next_z`
 /// across every non-primary input the caller processes rather than resetting
 /// them per input. Returns the number of objects renumbered.
 fn renumber_gso_objects(
@@ -753,22 +894,24 @@ fn renumber_table_object_id(
     next_z: &mut i32,
     count: &mut usize,
 ) -> Result<(), String> {
-    if !table.common_data.is_empty() {
+    if table.common_data.len() >= 36 {
         let id = *next_id;
         *next_id = next_id
             .checked_add(1)
             .ok_or_else(|| "개체 id 오버플로".to_string())?;
-        if table.common_data.len() >= 36 {
-            table.common_data[32..36].copy_from_slice(&id.to_le_bytes());
-        }
+        table.common_data[32..36].copy_from_slice(&id.to_le_bytes());
         *count += 1;
-    } else if let Some(pl) = &mut table.placement {
+    } else if table.common_data.is_empty()
+        && let Some(pl) = &mut table.placement
+    {
         pl.z_order = *next_z;
         *next_z = next_z
             .checked_add(1)
             .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
         *count += 1;
     }
+    // A truncated non-empty `common_data` (<36 B) has no writable id field:
+    // the object keeps its identity — no id consumed, not counted (#172).
     if let Some(cap) = &mut table.caption {
         for p in &mut cap.paragraphs {
             renumber_gso_objects_in_para(p, next_id, next_z, count)?;
@@ -1650,5 +1793,207 @@ mod tests {
         let b = from_markdown("문서 B\n");
         let outcome = merge_documents(&[a, b]).unwrap();
         assert!(outcome.losses.is_empty());
+    }
+
+    // ── Review follow-up (#171): section-level page border/fill shifting ────
+
+    /// 14-byte hwp5 PAGE_BORDER_FILL raw record with the 1-based border-fill
+    /// id at bytes 12..14 (the layout the hwpx writer's
+    /// `write_page_border_fills` documents).
+    fn page_border_fill_raw(border_fill_id: u16) -> Vec<u8> {
+        let mut raw = vec![0u8; 14];
+        raw[12..14].copy_from_slice(&border_fill_id.to_le_bytes());
+        raw
+    }
+
+    fn raw_border_fill_id(raw: &[u8]) -> u16 {
+        u16::from_le_bytes([raw[12], raw[13]])
+    }
+
+    /// Mutates the SectionDef control of `doc`'s first section (carried by
+    /// the first paragraph, as `from_markdown` emits).
+    fn with_first_section_def(doc: &mut Document, f: impl FnOnce(&mut SectionDef)) {
+        let def = doc.sections[0].paragraphs[0]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                Control::SectionDef(sd) => Some(sd),
+                _ => None,
+            })
+            .expect("구역 정의 컨트롤");
+        f(def);
+    }
+
+    fn section_def(doc: &Document, section: usize) -> &SectionDef {
+        doc.sections[section].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::SectionDef(sd) => Some(sd),
+                _ => None,
+            })
+            .expect("구역 정의 컨트롤")
+    }
+
+    #[test]
+    fn 일반_경로_hwp5_쪽_테두리_raw도_오프셋만큼_이동한다() {
+        let a = from_markdown("문서 A\n");
+        let mut b = non_palette_compatible(from_markdown("문서 B\n"));
+        // id 1 (real reference) and id 0 (unspecified sentinel), mirrored in
+        // the parallel `extras` copies the hwp5 writer re-emits.
+        with_first_section_def(&mut b, |def| {
+            def.page_border_fills_raw = vec![page_border_fill_raw(1), page_border_fill_raw(0)];
+            for raw in [page_border_fill_raw(1), page_border_fill_raw(0)] {
+                def.extras.push(hwp_model::OpaqueRecord {
+                    tag: 0x0010 + 59, // PAGE_BORDER_FILL
+                    data: raw,
+                    children: Vec::new(),
+                });
+            }
+        });
+        let offset = a.header.border_fills.len() as u16;
+
+        let outcome = merge_documents(&[a.clone(), b]).unwrap();
+        assert!(outcome.general_path_used);
+        let def = section_def(&outcome.document, a.sections.len());
+        assert_eq!(
+            raw_border_fill_id(&def.page_border_fills_raw[0]),
+            1 + offset
+        );
+        assert_eq!(
+            raw_border_fill_id(&def.page_border_fills_raw[1]),
+            0,
+            "0은 미지정 센티넬이라 이동하지 않는다"
+        );
+        // The `extras` parallel copies are shifted identically, so hwp5
+        // re-serialization resolves against the merged header too.
+        assert_eq!(def.extras[0].data, def.page_border_fills_raw[0]);
+        assert_eq!(raw_border_fill_id(&def.extras[1].data), 0);
+    }
+
+    #[test]
+    fn 일반_경로_hwpx_쪽_테두리_passthrough의_id도_이동한다() {
+        let a = from_markdown("문서 A\n");
+        let mut b = non_palette_compatible(from_markdown("문서 B\n"));
+        with_first_section_def(&mut b, |def| {
+            def.secpr_raw_children = vec![
+                "<hp:grid lineGrid=\"0\" charGrid=\"0\"/>".to_string(),
+                "<hp:pageBorderFill type=\"BOTH\" borderFillIDRef=\"1\" textBorder=\"PAPER\" headerInside=\"0\" footerInside=\"0\" fillArea=\"PAPER\"><hp:offset left=\"1417\" right=\"1417\" top=\"1417\" bottom=\"1417\"/></hp:pageBorderFill>".to_string(),
+            ];
+        });
+        let offset = a.header.border_fills.len() as u16;
+
+        let outcome = merge_documents(&[a.clone(), b]).unwrap();
+        let def = section_def(&outcome.document, a.sections.len());
+        assert_eq!(
+            def.secpr_raw_children[0], "<hp:grid lineGrid=\"0\" charGrid=\"0\"/>",
+            "pageBorderFill이 아닌 자식은 원문 그대로다"
+        );
+        assert!(
+            def.secpr_raw_children[1].contains(&format!("borderFillIDRef=\"{}\"", 1 + offset)),
+            "borderFillIDRef가 오프셋만큼 이동해야 한다: {}",
+            def.secpr_raw_children[1]
+        );
+    }
+
+    #[test]
+    fn 일반_경로_숫자가_아닌_border_fill_idref는_원문을_유지한다() {
+        let a = from_markdown("문서 A\n");
+        let mut b = non_palette_compatible(from_markdown("문서 B\n"));
+        let malformed =
+            "<hp:pageBorderFill type=\"BOTH\" borderFillIDRef=\"abc\"></hp:pageBorderFill>"
+                .to_string();
+        with_first_section_def(&mut b, |def| {
+            def.secpr_raw_children = vec![malformed.clone()];
+        });
+
+        let outcome = merge_documents(&[a.clone(), b]).unwrap();
+        let def = section_def(&outcome.document, a.sections.len());
+        assert_eq!(
+            def.secpr_raw_children[0], malformed,
+            "안전하게 재작성할 수 없는 참조는 원문 그대로 둔다"
+        );
+    }
+
+    // ── Review follow-up (#172): truncated common_data consumes nothing ─────
+
+    #[test]
+    fn 잘린_common_data_표는_id를_소비하지도_세지도_않는다() {
+        let mut a = from_markdown("문서 A\n");
+        insert_table(&mut a, 7); // primary max id 7 → next fresh id is 8
+        let mut b = from_markdown("문서 B\n");
+        let truncated = match table_with_common_id(9) {
+            Control::Table(mut t) => {
+                t.common_data.truncate(10); // <36 B: no writable id field
+                Control::Table(t)
+            }
+            _ => unreachable!(),
+        };
+        b.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![truncated],
+                ..Default::default()
+            },
+        );
+        insert_table(&mut b, 9); // full-length table — the only one renumbered
+
+        let outcome = merge_documents(&[a, b]).unwrap();
+        assert!(
+            outcome.losses.iter().any(
+                |loss| matches!(loss, MergeLoss::GsoObjectIdRenumbered { count } if *count == 1)
+            ),
+            "전체 길이 표 하나만 재부여돼야 한다"
+        );
+        let tables: Vec<&hwp_model::Table> = outcome.document.sections[1]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .filter_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        let full = tables
+            .iter()
+            .find(|t| t.common_data.len() >= 36)
+            .expect("전체 길이 표");
+        assert_eq!(
+            u32::from_le_bytes(full.common_data[32..36].try_into().unwrap()),
+            8,
+            "잘린 표가 id를 소비했다면 8이 아니라 9가 된다"
+        );
+        let truncated = tables
+            .iter()
+            .find(|t| t.common_data.len() == 10)
+            .expect("잘린 표");
+        assert_eq!(
+            truncated.common_data,
+            vec![0u8; 10],
+            "잘린 common_data는 그대로 유지돼야 한다"
+        );
+    }
+
+    // ── Review follow-up (#173): checked u16 id arithmetic ──────────────────
+
+    #[test]
+    fn 일반_경로_u16_id_오버플로는_에러다() {
+        let a = from_markdown("문서 A\n");
+        let mut b = non_palette_compatible(from_markdown("문서 B\n"));
+        b.sections[0].paragraphs[0].para_shape = hwp_model::ParaShapeId(u16::MAX);
+        let err = merge_documents(&[a, b]).unwrap_err();
+        assert!(err.contains("오버플로"), "오버플로 거부 메시지: {err}");
+    }
+
+    #[test]
+    fn 팔레트_경로_u16_id_오버플로도_에러다() {
+        let a = from_markdown("문서 A\n");
+        let mut b = from_markdown("문서 B\n");
+        // One off-palette extra, so the running target's para-shape offset for
+        // the next input is non-zero.
+        b.header.para_shapes.push(hwp_model::ParaShape::default());
+        let mut c = from_markdown("문서 C\n");
+        c.sections[0].paragraphs[0].para_shape = hwp_model::ParaShapeId(u16::MAX);
+        assert!(merge_documents(&[a, b, c]).is_err());
     }
 }

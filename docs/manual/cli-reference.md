@@ -122,7 +122,7 @@ Divide one document into several outputs, one per section by default (page range
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `<INPUT>` |  |  | Input HWP/HWPX file |
-| `--out-dir` | `<OUT_DIR>` |  | Output directory (file names are "<input stem>-NNN.<input extension>") |
+| `--out-dir` | `<OUT_DIR>` |  | Output directory (file names are "<input stem>-NNN.<lowercased input extension>") |
 | `--pages` | `<PAGES>` |  | Page range to split on instead of section boundaries, "N" or "N-M" (1-based, inclusive, repeatable). Boundaries come from the page starts Hancom itself saved in the document's layout cache — a boundary that falls inside a paragraph rounds forward to the next paragraph's start, and the estimate may not match what Hancom itself would paginate |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while splitting |
 | `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the split succeeds without loss |

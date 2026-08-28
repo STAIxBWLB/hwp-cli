@@ -263,7 +263,7 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "split",
         "out_dir",
-        "출력 디렉터리 (파일명은 \"<입력 stem>-NNN.<입력 확장자>\")",
+        "출력 디렉터리 (파일명은 \"<입력 stem>-NNN.<소문자 입력 확장자>\")",
     ),
     (
         "split",

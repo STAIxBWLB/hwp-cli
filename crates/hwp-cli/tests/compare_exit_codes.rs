@@ -86,6 +86,14 @@ fn unreadable_input_exits_two() {
         !stdout.contains("동일합니다") && !stdout.contains('+') && !stdout.contains('-'),
         "실행 실패 경로는 차이 발견 리포트를 출력하면 안 됨: {stdout}"
     );
+    // The exit-2 diagnostic must read like every other command's failed run —
+    // the `Error: ...` line anyhow's `Termination` impl prints for a returned
+    // `Err`, not a command-specific prefix.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("Error: "),
+        "실행 실패는 다른 명령과 같은 `Error:` 형식이어야 함: {stderr}"
+    );
 }
 
 #[test]
