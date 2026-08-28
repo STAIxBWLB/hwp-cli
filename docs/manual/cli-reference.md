@@ -104,7 +104,7 @@ Combine several HWP5/HWPX inputs into one output, one Section per input in argum
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
-| `<INPUTS>` |  |  | Input HWP/HWPX files, two or more, in the order they are concatenated (repeatable) |
+| `<INPUTS>` |  |  | Input HWP/HWPX files, two or more, in the order they are concatenated (standard input "-" is not accepted; pass file paths directly) (repeatable) |
 | `-o, --output` | `<OUTPUT>` |  | Output file path (".hwp" writes HWP5, ".hwpx" writes HWPX) |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while merging |
 | `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the merge succeeds without loss |

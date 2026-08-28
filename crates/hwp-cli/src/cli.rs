@@ -163,6 +163,7 @@ pub enum Cmd {
     /// start/continue settings and may need manual adjustment after merging)
     Merge {
         /// Input HWP/HWPX files, two or more, in the order they are concatenated
+        /// (standard input "-" is not accepted; pass file paths directly)
         #[arg(required = true, num_args = 2..)]
         inputs: Vec<PathBuf>,
         /// Output file path (".hwp" writes HWP5, ".hwpx" writes HWPX)

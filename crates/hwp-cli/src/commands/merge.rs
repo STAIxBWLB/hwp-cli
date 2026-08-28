@@ -93,6 +93,36 @@ fn preservation_summary_line(report: &hwp_model::PreservationReport) -> Option<S
     ))
 }
 
+/// The aggregate preload ceiling for merge inputs — reuses `convert.rs`'s
+/// existing `--out-dir` batch memory limit rather than inventing a new one.
+const MAX_MERGE_INPUT_BYTES: u64 = crate::commands::convert::MAX_PRELOADED_BATCH_BYTES;
+
+/// Overflow-checked aggregate accumulation against `MAX_MERGE_INPUT_BYTES`,
+/// mirroring convert.rs's `add_preloaded_batch_reservation` arithmetic (same
+/// ceiling, same checked-add shape; a merge-specific message since this path
+/// runs unconditionally for every input, not only password-protected ones).
+fn accumulate_input_reservation(total: u64, size: u64) -> anyhow::Result<u64> {
+    let next = total
+        .checked_add(size)
+        .context("병합 입력 메모리 예약 오버플로")?;
+    if next > MAX_MERGE_INPUT_BYTES {
+        anyhow::bail!(
+            "병합 입력의 총 크기가 사전 적재 메모리 한도를 초과했습니다: {next} > {MAX_MERGE_INPUT_BYTES} bytes"
+        );
+    }
+    Ok(next)
+}
+
+/// FLOW-01 `empty` probe (open assumption A-01): a merge result carrying zero
+/// Sections is refused rather than published — the writers would otherwise
+/// silently pad it to one empty section.
+fn reject_empty_sections(document: &hwp_model::Document) -> anyhow::Result<()> {
+    if document.sections.is_empty() {
+        anyhow::bail!("병합 결과 구역이 없어 게시하지 않습니다 — 입력에 유효한 구역이 없습니다");
+    }
+    Ok(())
+}
+
 /// `hwp merge` entry point. Resolves the password once and applies it uniformly
 /// to every input (matching `commands::convert::run_multi_with_password`'s
 /// single-password-per-batch precedent).
@@ -103,6 +133,15 @@ pub fn run(
     loss_report: Option<&Path>,
     password: PasswordArgs,
 ) -> anyhow::Result<()> {
+    // v1 accepts no per-input stdin disambiguation (the loader stages stdin
+    // to a single temp path); refuse "-" by name rather than merging it as a
+    // literal file named "-".
+    if let Some(stdin_input) = inputs.iter().find(|input| input.as_os_str() == "-") {
+        anyhow::bail!(
+            "hwp merge는 표준 입력(\"-\")을 지원하지 않습니다 — 파일 경로를 직접 지정하세요: {}",
+            stdin_input.display()
+        );
+    }
     let first = inputs
         .first()
         .ok_or_else(|| anyhow::anyhow!("병합 입력이 비어 있습니다"))?;
@@ -122,7 +161,12 @@ pub fn run(
 
     let mut documents = Vec::with_capacity(inputs.len());
     let mut source_formats = Vec::with_capacity(inputs.len());
+    let mut reserved_bytes: u64 = 0;
     for input in inputs {
+        let size = std::fs::metadata(input)
+            .with_context(|| format!("입력 파일 크기를 확인할 수 없습니다: {}", input.display()))?
+            .len();
+        reserved_bytes = accumulate_input_reservation(reserved_bytes, size)?;
         source_formats.push(crate::format::detect(input)?);
         documents.push(load_document_with_options(input, &options).map_err(anyhow::Error::new)?);
     }
@@ -130,6 +174,7 @@ pub fn run(
     let outcome = hwp_convert::document_merge::merge_documents(&documents)
         .map_err(|error| anyhow::anyhow!("병합 실패: {error}"))?;
     let merged = outcome.document;
+    reject_empty_sections(&merged)?;
 
     let write_staged = |staged: &Path| -> anyhow::Result<hwp_model::WriteReport> {
         let mut report = match format {
@@ -356,6 +401,217 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
         assert_eq!(parsed.contract, hwp_model::PRESERVATION_REPORT_CONTRACT);
         assert!(parsed.is_lossless());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn section_texts(doc: &hwp_model::Document) -> Vec<String> {
+        doc.sections
+            .iter()
+            .map(|section| {
+                section
+                    .paragraphs
+                    .iter()
+                    .flat_map(|p| &p.chars)
+                    .filter_map(|c| match c {
+                        hwp_model::HwpChar::Text(ch) => Some(*ch),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn 세_입력은_인자_순서대로_세_구역이_된다() {
+        let dir = temp_dir("three-order");
+        let a = dir.join("a.hwp");
+        let b = dir.join("b.hwp");
+        let c = dir.join("c.hwp");
+        let out = dir.join("out.hwp");
+        write_generated_hwp(
+            &a,
+            "문서 A
+",
+        );
+        write_generated_hwp(
+            &b,
+            "문서 B
+",
+        );
+        write_generated_hwp(
+            &c,
+            "문서 C
+",
+        );
+
+        run(&[a, b, c], &out, false, None, PasswordArgs::default()).unwrap();
+
+        let merged = load_document(&out).unwrap();
+        let texts = section_texts(&merged);
+        assert_eq!(texts.len(), 3);
+        assert!(texts[0].contains("문서 A"));
+        assert!(texts[1].contains("문서 B"));
+        assert!(texts[2].contains("문서 C"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 인자_순서를_뒤집으면_구역_순서도_뒤집힌다() {
+        let dir = temp_dir("three-reversed");
+        let a = dir.join("a.hwp");
+        let b = dir.join("b.hwp");
+        let c = dir.join("c.hwp");
+        let out = dir.join("out.hwp");
+        write_generated_hwp(
+            &a,
+            "문서 A
+",
+        );
+        write_generated_hwp(
+            &b,
+            "문서 B
+",
+        );
+        write_generated_hwp(
+            &c,
+            "문서 C
+",
+        );
+
+        run(&[c, b, a], &out, false, None, PasswordArgs::default()).unwrap();
+
+        let merged = load_document(&out).unwrap();
+        let texts = section_texts(&merged);
+        assert_eq!(texts.len(), 3);
+        assert!(texts[0].contains("문서 C"));
+        assert!(texts[1].contains("문서 B"));
+        assert!(texts[2].contains("문서 A"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 같은_경로를_두_번_넘기면_구역_두_개가_같은_본문을_담는다() {
+        let dir = temp_dir("duplicate-path");
+        let a = dir.join("a.hwp");
+        let out = dir.join("out.hwp");
+        write_generated_hwp(
+            &a,
+            "같은 문서
+",
+        );
+
+        run(&[a.clone(), a], &out, false, None, PasswordArgs::default()).unwrap();
+
+        let merged = load_document(&out).unwrap();
+        let texts = section_texts(&merged);
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0], texts[1]);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 동일한_마크다운으로_만든_두_입력도_구역_두_개로_유지된다() {
+        // Adjacency probe (FLOW-01, resolved by D-02): byte-equal inputs
+        // still concatenate into two Sections — they never fuse.
+        let dir = temp_dir("adjacency");
+        let a = dir.join("a.hwp");
+        let b = dir.join("b.hwp");
+        let out = dir.join("out.hwp");
+        write_generated_hwp(
+            &a,
+            "같은 내용
+",
+        );
+        write_generated_hwp(
+            &b,
+            "같은 내용
+",
+        );
+
+        run(&[a, b], &out, false, None, PasswordArgs::default()).unwrap();
+
+        let merged = load_document(&out).unwrap();
+        assert_eq!(merged.sections.len(), 2);
+        let texts = section_texts(&merged);
+        assert_eq!(texts[0], texts[1]);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn 입력이_하나면_clap_파싱이_실패한다() {
+        // FLOW-01 `empty` probe (open assumption A-01): num_args = 2.. makes
+        // fewer than two inputs a clap usage error (exit 2), not an empty
+        // output file. End-to-end exit-code/no-file-written behavior was
+        // verified manually against the built binary (plan 03-01 checkpoint).
+        use clap::Parser as _;
+        use hwp_cli::cli::Cli;
+        let result = Cli::try_parse_from(["hwp", "merge", "a.hwp", "-o", "out.hwp"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 입력이_둘이면_clap_파싱이_성공한다() {
+        use clap::Parser as _;
+        use hwp_cli::cli::Cli;
+        let result = Cli::try_parse_from(["hwp", "merge", "a.hwp", "b.hwp", "-o", "out.hwp"]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn 구역이_없는_병합_결과는_거부된다() {
+        let empty = hwp_model::Document::default();
+        assert!(reject_empty_sections(&empty).is_err());
+    }
+
+    #[test]
+    fn 구역이_있으면_통과() {
+        let doc = hwp_convert::from_markdown(
+            "x
+",
+        );
+        assert!(reject_empty_sections(&doc).is_ok());
+    }
+
+    #[test]
+    fn 입력_누적_크기가_한도를_넘으면_거부() {
+        let error = accumulate_input_reservation(MAX_MERGE_INPUT_BYTES, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&MAX_MERGE_INPUT_BYTES.to_string()));
+    }
+
+    #[test]
+    fn 입력_누적_크기가_한도_이내면_허용() {
+        assert_eq!(
+            accumulate_input_reservation(MAX_MERGE_INPUT_BYTES - 1, 1).unwrap(),
+            MAX_MERGE_INPUT_BYTES
+        );
+    }
+
+    #[test]
+    fn 표준입력_하이픈은_거부된다() {
+        let dir = temp_dir("stdin-refused");
+        let b = dir.join("b.hwp");
+        let out = dir.join("out.hwp");
+        write_generated_hwp(
+            &b, "B
+",
+        );
+
+        let result = run(
+            &[PathBuf::from("-"), b],
+            &out,
+            false,
+            None,
+            PasswordArgs::default(),
+        );
+        assert!(result.is_err());
+        assert!(!out.exists());
 
         std::fs::remove_dir_all(dir).unwrap();
     }

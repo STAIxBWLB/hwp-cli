@@ -104,7 +104,7 @@
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
-| `<INPUTS>` |  |  | 입력 HWP/HWPX 파일들, 2개 이상, 이어붙이는 순서대로 (반복 가능) |
+| `<INPUTS>` |  |  | 입력 HWP/HWPX 파일들, 2개 이상, 이어붙이는 순서대로 (표준 입력 "-"는 지원하지 않음 — 파일 경로를 직접 지정) (반복 가능) |
 | `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 (".hwp"는 HWP5, ".hwpx"는 HWPX로 저장) |
 | `--strict` |  |  | 병합 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
 | `--loss-report` | `<LOSS_REPORT>` |  | typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 |
