@@ -10,6 +10,41 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.15.0]
+
+**Added**
+
+- `hwp serve` runs the MCP protocol over HTTP, so the same twenty tools are reachable from a
+  container instead of only from a local process. `POST /mcp` carries one JSON-RPC message capped
+  at 1 MiB (a request answers `200 application/json`, a notification `202` with no body),
+  `GET /mcp` answers `405` because the server never pushes, `GET /healthz` is the readiness probe,
+  and `--files` adds `POST|GET /files/{name}` under a 64 MiB per-file and 256 MiB per-workspace
+  cap. `--root` is mandatory here, unlike `hwp mcp` where omitting it only warns: a remote
+  deployment must never run with unrestricted filesystem access. An inbound `Mcp-Session-Id` is
+  accepted and ignored, because session affinity belongs to whatever sits in front.
+
+  The adapter is a private hop by design — it expects a trusted edge to have terminated TLS,
+  authenticated the caller and capped the body — which is what let it stay synchronous. The
+  dependency decision is recorded in `docs/design/22-remote-mcp-deployment.md` §4: `tiny_http`,
+  chosen over an async stack so the workspace keeps its no-tokio, no-SDK stance. The new subtree
+  is `ascii`, `chunked_transfer`, `httpdate` and `log`.
+
+**Changed**
+
+- `commands/mcp.rs` became `commands/mcp/{mod,authority,stdio,http}.rs`. The protocol core is now
+  transport-independent and expresses file authority through a `FileAuthority` trait, so the stdio
+  and HTTP adapters share one implementation rather than forking tool semantics. stdio behavior is
+  unchanged: `initialize` and `tools/list` output is byte-identical to v0.14.0 and the process test
+  still asserts exactly twenty tools.
+
+**Documentation**
+
+- `docs/design/22-remote-mcp-deployment.md` (and its Korean pair) specifies how the remote service
+  is built and hosted, resolving the dependency gate that `20-remote-mcp.md` §8 required. It
+  records two amendments to doc 20: the protocol core stays binary-internal for now, and §10's
+  writable-path criterion is narrowed for a single-session microVM workspace.
+- The bundled `hwp` skill documents the HTTP surface in both languages.
+
 ## [0.14.0]
 
 **Added**
