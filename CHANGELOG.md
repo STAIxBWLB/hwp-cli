@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.15.1]
+
 **Fixed**
 
 - `hwp serve` now stops on `SIGTERM` and `SIGINT` instead of ignoring them. The command exists for
