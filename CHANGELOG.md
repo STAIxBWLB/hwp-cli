@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp serve` now stops on `SIGTERM` and `SIGINT` instead of ignoring them. The command exists for
+  container deployment, where it is usually PID 1, and the kernel does not deliver a signal with
+  its default disposition to PID 1 - so a process that installs no handler discards the signal and
+  a platform that stops idle containers that way can never stop it. An in-flight request still runs
+  to completion; a second signal exits immediately so a long tool call cannot make the process
+  unkillable. Windows has no equivalent signal and keeps its existing behavior.
+
 ## [0.15.0]
 
 **Added**

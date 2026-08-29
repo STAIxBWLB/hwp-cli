@@ -30,12 +30,12 @@ RUN useradd --create-home --uid 10001 hwp \
 USER hwp
 WORKDIR /work
 
-# `hwp serve` runs as PID 1, and the kernel does not deliver a signal with its
-# default disposition to PID 1 - so a plain SIGTERM is silently discarded and the
-# platform's idle stop never takes effect, leaving the container awake and billing.
-# tini installs real handlers, becomes PID 1, and forwards the signal to `hwp`,
-# which then terminates normally. Do not remove it: without an init the container
-# only stops when it is destroyed outright.
+# The platform stops an idle container with SIGTERM, and the kernel does not
+# deliver a signal with its default disposition to PID 1 - so a PID 1 that
+# installs no handler discards it and the container stays awake and billing.
+# `hwp serve` handles SIGTERM itself, so this image would stop correctly without
+# an init; tini stays only to keep the two images identical in how they run, and
+# to reap should `hwp` ever spawn a child.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
 EXPOSE 8080

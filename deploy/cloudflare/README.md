@@ -188,10 +188,11 @@ Worth recording, because each one only appeared against the deployed service:
 5. **Idle containers never stopped.** The platform stops an idle container with
    SIGTERM, and the kernel does not deliver a default-disposition signal to
    PID 1, so `hwp serve` as PID 1 ignored it: `sleepAfter` looked configured and
-   did nothing. Nine containers had been running for close to four hours. The
-   image now runs tini as its init, which forwards the signal; `docker kill
-   --signal=TERM` exits the container in about a second, where before it stayed
-   up indefinitely.
+   did nothing. Nine containers had been running for close to four hours. Fixed
+   twice over: `hwp serve` installs a handler and exits cleanly even as PID 1,
+   and the image runs tini for the releases that predate it. `docker kill
+   --signal=TERM` exits the container in about a second either way, where before
+   it stayed up indefinitely.
 
 ## What is already verified
 
@@ -228,13 +229,15 @@ capping how fast new containers can be created. `max_instances` is 20, a
 backstop rather than a budget control: set too low it turns ordinary concurrent
 use into capacity errors. The billing notification fires at $10 regardless.
 
-`sleepAfter` only works because the image runs tini as its init. The platform
-stops an idle container by sending SIGTERM, and the kernel does not deliver a
-signal with its default disposition to PID 1 - so with `hwp serve` as PID 1 the
+`sleepAfter` depends on the container actually stopping when the platform asks.
+The platform asks with SIGTERM, and the kernel does not deliver a signal with its
+default disposition to PID 1 - so with `hwp serve` as PID 1 and no handler, the
 stop was silently discarded and containers stayed awake indefinitely. Nine of
 them ran for close to four hours before this was caught, which at 1 GiB each
-would have spent the monthly allowance in under three hours. If a future change
-touches the entrypoint, re-run the check below.
+would have spent the monthly allowance in under three hours. `hwp serve` now
+installs the handler itself, and the image also runs tini as its init because
+`HWP_VERSION` still pins 0.15.0, which predates that. If a future change touches
+the entrypoint or the pinned version, re-run the check below.
 
 To check that idle sessions really stop, watch the running instance count fall to
 zero within a few minutes of the last request:
