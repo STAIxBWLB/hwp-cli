@@ -1,0 +1,1522 @@
+[
+  {
+    "description": "HWP/HWPX 파일의 포맷·버전·속성·스트림 목록을 JSON으로 진단(본문 파싱 불필요).",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "hwp/hwpx 파일 경로",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_info"
+  },
+  {
+    "description": "본문을 추출한다. format=json이면 전체 IR(구조)을, markdown/plain이면 텍스트를, html/csv면 해당 직렬화를 반환. with_header_footer/with_hidden은 plain/markdown에만 적용(cat과 동일). with_segments는 markdown 전용으로 {markdown, segments} JSON 봉투를 반환(오프셋은 전체 기준 절대 문자 위치).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "description": "기본 plain",
+          "enum": [
+            "plain",
+            "markdown",
+            "json",
+            "html",
+            "csv"
+          ],
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "반환 byte 상한, 기본 262144",
+          "maximum": 1048576,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "UTF-8 byte offset, 기본 0",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "password": {
+          "description": "이번 hwp_read 호출에만 사용할 문서 암호",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "with_header_footer": {
+          "description": "머리말/꼬리말 포함(plain/markdown, 기본 false)",
+          "type": "boolean"
+        },
+        "with_hidden": {
+          "description": "숨은 설명 포함(plain/markdown, 기본 false)",
+          "type": "boolean"
+        },
+        "with_segments": {
+          "description": "markdown 전용. 문단 원본 좌표 세그먼트 맵 포함",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_read"
+  },
+  {
+    "description": "문단 텍스트 검색(본문·표 셀·글상자 재귀). {matches, count, truncated} 반환 — matches는 최대 200건, count는 전체 매칭 수, 0건 매칭도 정상 결과.",
+    "inputSchema": {
+      "properties": {
+        "ignore_case": {
+          "description": "대소문자 무시, 기본 false",
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "pattern": {
+          "description": "검색할 부분 문자열",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_grep"
+  },
+  {
+    "description": "필드/누름틀 목록(이름·종류·값·명령)을 JSON으로. 누름틀(%clk)은 name으로 채울 수 있다.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_list_fields"
+  },
+  {
+    "description": "책갈피(bokm) 목록(이름)을 JSON으로.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_list_bookmarks"
+  },
+  {
+    "description": "페이지를 렌더한다. 기본은 단일 페이지 PNG를 base64 이미지로 반환(에이전트가 문서를 직접 본다). format=svg/pdf 또는 다중 페이지 선택(pages)은 output_path가 필요하고, 파일로 저장 뒤 {files, pages, dpi} JSON을 반환한다(16MiB 응답 상한 우회). 페이지별 파일명은 CLI와 같이 <stem>-<N>.<ext>(단일 페이지면 경로 그대로), pdf는 단일 멀티페이지 파일.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "dpi": {
+          "description": "기본 120",
+          "maximum": 600.0,
+          "minimum": 36.0,
+          "type": "number"
+        },
+        "font_dir": {
+          "description": "추가 폰트 디렉터리(선택)",
+          "type": "string"
+        },
+        "format": {
+          "description": "기본 png",
+          "enum": [
+            "png",
+            "svg",
+            "pdf"
+          ],
+          "type": "string"
+        },
+        "output_path": {
+          "description": "출력 파일 경로. svg/pdf·다중 페이지 필수. png 다중 페이지는 페이지별 <stem>-<N>.png",
+          "type": "string"
+        },
+        "page": {
+          "description": "1-기반, 기본 1. pages와 함께 지정 불가",
+          "type": "integer"
+        },
+        "pages": {
+          "description": "페이지 범위 spec: \"1\", \"1-3\", \"all\". page와 함께 지정 불가",
+          "type": "string"
+        },
+        "password": {
+          "description": "이번 hwp_render 호출에만 사용할 문서 암호",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_render"
+  },
+  {
+    "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "add_col": {
+          "description": "N번째 표의 at 위치(생략 시 끝)에 열 count개 추가(0-기반, 전체 폭 유지, 병합 표도 지원)",
+          "items": {
+            "properties": {
+              "at": {
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "count": {
+                "maximum": 65535,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "table": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "table"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "add_row": {
+          "description": "N번째 표의 at 경계 앞에 빈 행 count개 삽입(생략 시 끝에 1개, 0-기반, 병합 표도 지원)",
+          "items": {
+            "properties": {
+              "at": {
+                "description": "삽입 경계(생략 시 끝, 0-기반)",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "count": {
+                "maximum": 65535,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "table": {
+                "type": "integer"
+              },
+              "template_row": {
+                "description": "행 높이·셀 서식 기증 행(텍스트는 복제 안 함)",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "table"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "add_table": {
+          "description": "앵커 문단 뒤에 균일 표 삽입(rows는 행(문자열 배열)의 배열)",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              },
+              "rows": {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "anchor",
+              "rows"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "allow_partial": {
+          "description": "true면 일치한 요청만 게시; 기본 false",
+          "type": "boolean"
+        },
+        "clone_table": {
+          "description": "N번째 표를 깊은 복제해 앵커 문단 뒤에 삽입(구조·병합·테두리·채우기·서식 보존)",
+          "items": {
+            "properties": {
+              "anchor": {
+                "description": "복제본을 삽입할 앵커 문단 텍스트(그 뒤에 삽입)",
+                "type": "string"
+              },
+              "source_table": {
+                "description": "원본 표(0-기반, 재귀 순서)",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text_mode": {
+                "description": "blank(기본)=구조·서식만 복제하고 셀 내용은 빈 문단 1개, keep=지원 콘텐츠(중첩 표·그림)까지 복제(id 재부여, 안전하게 재매핑할 수 없는 개체가 있으면 실패)",
+                "enum": [
+                  "blank",
+                  "keep"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "source_table",
+              "anchor"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "create_bookmark": {
+          "description": "앵커 텍스트 뒤에 책갈피(bokm 지점 표식) 생성",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "anchor",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "create_field": {
+          "description": "앵커 텍스트 뒤에 %clk 누름틀 생성(이름·선택 표시값; set_field로 채움)",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "anchor",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "create_hyperlink": {
+          "description": "앵커 텍스트 뒤에 하이퍼링크(%hlk) 생성(display 생략 시 URL 표시)",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              },
+              "display": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "anchor",
+              "url"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "delete_bookmark": {
+          "description": "이름으로 책갈피 삭제(hwp_list_bookmarks로 이름 확인)",
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "delete_col": {
+          "items": {
+            "properties": {
+              "col": {
+                "type": "integer"
+              },
+              "table": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "table",
+              "col"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "delete_field": {
+          "description": "이름으로 필드 삭제(hwp_list_fields로 이름 확인)",
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "delete_image": {
+          "description": "앵커 문단의 그림 삭제",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "anchor"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "delete_para": {
+          "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지)",
+          "items": {
+            "properties": {
+              "matching": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "matching"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "delete_row": {
+          "description": "N번째 표의 R행 삭제(0-기반, 병합 행은 거부)",
+          "items": {
+            "properties": {
+              "row": {
+                "type": "integer"
+              },
+              "table": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "table",
+              "row"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "delete_table": {
+          "description": "표 삭제 — index와 anchor 중 정확히 하나",
+          "items": {
+            "properties": {
+              "anchor": {
+                "description": "앵커 텍스트가 든 문단의 표",
+                "type": "string"
+              },
+              "index": {
+                "description": "0-기반 표 인덱스",
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "input": {
+          "type": "string"
+        },
+        "insert_image": {
+          "description": "앵커 텍스트 뒤에 이미지(png/jpg/bmp/gif) 삽입(width_mm/height_mm 생략 시 원본 크기)",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              },
+              "height_mm": {
+                "type": "number"
+              },
+              "path": {
+                "type": "string"
+              },
+              "width_mm": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "anchor",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "insert_para": {
+          "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속)",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              },
+              "before": {
+                "description": "true면 앵커 문단 앞(기본 뒤)",
+                "type": "boolean"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "anchor",
+              "text"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "merge_cells": {
+          "items": {
+            "properties": {
+              "c1": {
+                "type": "integer"
+              },
+              "c2": {
+                "type": "integer"
+              },
+              "r1": {
+                "type": "integer"
+              },
+              "r2": {
+                "type": "integer"
+              },
+              "table": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "table",
+              "r1",
+              "c1",
+              "r2",
+              "c2"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "output": {
+          "type": "string"
+        },
+        "replace": {
+          "description": "텍스트 치환(모든 일치)",
+          "items": {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "seal": {
+          "description": "앵커 문구 위에 도장 이미지 부유 배치",
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "size_mm": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "anchor",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_align": {
+          "description": "문단 정렬(매칭 문단)",
+          "items": {
+            "properties": {
+              "align": {
+                "enum": [
+                  "left",
+                  "right",
+                  "center",
+                  "justify",
+                  "distribute",
+                  "divide"
+                ],
+                "type": "string"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern",
+              "align"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_cell": {
+          "description": "표 셀 설정(0-기반)",
+          "items": {
+            "properties": {
+              "col": {
+                "type": "integer"
+              },
+              "row": {
+                "type": "integer"
+              },
+              "table": {
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "table",
+              "row",
+              "col",
+              "text"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_cell_by_label": {
+          "description": "양식 레이블의 인접 또는 첫 데이터 행 셀 설정(선택 table은 0-기반 재귀 표 범위)",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "table": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "text"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_field": {
+          "description": "필드/누름틀 채우기(이름으로)",
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_format": {
+          "description": "글자 서식(매칭 텍스트)",
+          "items": {
+            "properties": {
+              "bold": {
+                "type": "boolean"
+              },
+              "color": {
+                "description": "#RRGGBB 또는 색이름",
+                "type": "string"
+              },
+              "italic": {
+                "type": "boolean"
+              },
+              "pattern": {
+                "type": "string"
+              },
+              "size": {
+                "description": "pt",
+                "type": "number"
+              },
+              "strike": {
+                "type": "boolean"
+              },
+              "underline": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_meta": {
+          "description": "title/author/subject/keywords 메타데이터",
+          "items": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_page": {
+          "description": "페이지 설정(모든 구역 정의에 적용): 용지 크기·여백(mm)·방향",
+          "properties": {
+            "height_mm": {
+              "type": "number"
+            },
+            "margin_bottom_mm": {
+              "type": "number"
+            },
+            "margin_left_mm": {
+              "type": "number"
+            },
+            "margin_right_mm": {
+              "type": "number"
+            },
+            "margin_top_mm": {
+              "type": "number"
+            },
+            "orientation": {
+              "enum": [
+                "portrait",
+                "landscape",
+                "가로",
+                "세로"
+              ],
+              "type": "string"
+            },
+            "width_mm": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "set_para": {
+          "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)",
+          "items": {
+            "properties": {
+              "bottom_mm": {
+                "type": "number"
+              },
+              "indent_mm": {
+                "type": "number"
+              },
+              "left_mm": {
+                "type": "number"
+              },
+              "line_spacing_pct": {
+                "description": "줄간격 비율(%)",
+                "type": "number"
+              },
+              "line_spacing_pt": {
+                "description": "고정 줄간격(pt) — pct와 함께 지정 불가",
+                "type": "number"
+              },
+              "pattern": {
+                "type": "string"
+              },
+              "right_mm": {
+                "type": "number"
+              },
+              "top_mm": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "split_cell": {
+          "items": {
+            "properties": {
+              "col": {
+                "type": "integer"
+              },
+              "row": {
+                "type": "integer"
+              },
+              "table": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "table",
+              "row",
+              "col"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "style_tables": {
+          "description": "official/report/plan/notice/minutes/press 또는 지원 별칭 — 문서의 모든 표에 헤더 행 강조·내용 비례 열너비 스타일 적용(D-07/D-08)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "output"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_edit"
+  },
+  {
+    "description": "포맷 변환. 기본은 출력 확장자(.hwp/.hwpx/.json/.md/.html/.pdf/.odt/.txt/.csv/.docx)로 결정하고 to가 있으면 CLI --to처럼 확장자보다 우선한다. pdf는 텍스트 선택가능 벡터(이미지 포함). embed_bin이면 JSON에 이미지 base64 임베드. media_dir/with_header_footer/with_hidden은 markdown 출력 전용.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "embed_bin": {
+          "type": "boolean"
+        },
+        "font_dir": {
+          "description": "추가 폰트 디렉터리(선택) — pdf 렌더에 적용",
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "media_dir": {
+          "description": "markdown 이미지 추출 디렉터리(선택, 기본 \"<출력스템>.media\")",
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "password": {
+          "description": "이번 hwp_convert 호출에만 사용할 문서 암호",
+          "type": "string"
+        },
+        "strict": {
+          "description": "HWP/HWPX DROP 경고를 실패 처리; MCP 기본 true",
+          "type": "boolean"
+        },
+        "to": {
+          "description": "대상 포맷(선택). 지정 시 출력 확장자 추론보다 우선",
+          "enum": [
+            "hwp",
+            "hwpx",
+            "md",
+            "json",
+            "html",
+            "pdf",
+            "odt",
+            "txt",
+            "csv",
+            "docx"
+          ],
+          "type": "string"
+        },
+        "with_header_footer": {
+          "description": "markdown에 머리말/꼬리말 포함, 기본 false",
+          "type": "boolean"
+        },
+        "with_hidden": {
+          "description": "markdown에 숨은 설명 포함, 기본 false",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input",
+        "output"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_convert"
+  },
+  {
+    "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 .hwp/.hwpx 새 문서를 생성.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "doc_foot": {
+          "description": "결문(발신명의|기안자|검토자|결재자|협조자|시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분|수신자); 수신자는 두문이 \"수신자 참조\"인 다수 수신 문서의 수신처 목록으로 지정할 때만 결문에 나옴; markdown·template과 함께 사용 가능",
+          "items": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "doc_head": {
+          "description": "두문(기관명|수신|경유); markdown·template과 함께 사용 가능",
+          "items": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "json": {
+          "description": "IR JSON 본문(선택)",
+          "type": "string"
+        },
+        "margin_bottom_mm": {
+          "maximum": 200,
+          "minimum": 0,
+          "type": "number"
+        },
+        "margin_left_mm": {
+          "maximum": 200,
+          "minimum": 0,
+          "type": "number"
+        },
+        "margin_right_mm": {
+          "maximum": 200,
+          "minimum": 0,
+          "type": "number"
+        },
+        "margin_top_mm": {
+          "maximum": 200,
+          "minimum": 0,
+          "type": "number"
+        },
+        "markdown": {
+          "description": "markdown 본문(선택)",
+          "type": "string"
+        },
+        "notice_foot": {
+          "description": "공고문 꼬리(공고일자|발신명의); markdown·template과 함께 사용 가능",
+          "items": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "notice_head": {
+          "description": "공고문 머리(기관명|공고번호); markdown·template과 함께 사용 가능",
+          "items": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "output": {
+          "type": "string"
+        },
+        "preset": {
+          "description": "official/report/plan/notice/minutes/press 또는 지원 별칭",
+          "type": "string"
+        },
+        "press_head": {
+          "description": "보도자료 머리(기관명|보도시점|배포일|담당부서|담당자|연락처); markdown·template과 함께 사용 가능",
+          "items": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_meta": {
+          "items": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "template": {
+          "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능",
+          "type": "string"
+        }
+      },
+      "required": [
+        "output"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_new"
+  },
+  {
+    "description": "DocumentSpec v1/v2 객체/JSON/YAML을 검증하고 CLI와 같은 deterministic·strict·atomic·재읽기 검증 경로로 .hwp/.hwpx 문서를 합성.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "spec_path"
+            ]
+          },
+          "required": [
+            "spec"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "spec"
+            ]
+          },
+          "required": [
+            "spec_path"
+          ]
+        }
+      ],
+      "properties": {
+        "allow_visual_fallback": {
+          "deprecated": true,
+          "description": "[deprecated] v1 compatibility only; DocumentSpec v2가 true를 받으면 policy_conflict로 거부",
+          "type": "boolean"
+        },
+        "base_dir": {
+          "description": "inline spec의 상대 asset 기준 디렉터리",
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "검증·컴파일 보고서만 반환하고 파일을 쓰지 않음",
+          "type": "boolean"
+        },
+        "format": {
+          "description": "문자열 spec 또는 확장자 없는 입력의 포맷",
+          "enum": [
+            "json",
+            "yaml"
+          ],
+          "type": "string"
+        },
+        "output": {
+          "description": "출력 .hwp/.hwpx 경로",
+          "type": "string"
+        },
+        "spec": {
+          "description": "DocumentSpec v1/v2 객체 또는 JSON/YAML 문자열",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "spec_path": {
+          "description": "DocumentSpec v1/v2 파일 경로; spec과 상호 배타적",
+          "type": "string"
+        }
+      },
+      "required": [
+        "output"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_compose"
+  },
+  {
+    "description": "TemplateSpec/Data v1의 typed AST를 CLI와 같은 bounded·deterministic·strict 경로로 확장하고 native HWP/HWPX를 생성한다. reference_hwpx는 package-surgical 보존 모드다.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "not": {
+                "required": [
+                  "template_path"
+                ]
+              },
+              "required": [
+                "template"
+              ]
+            },
+            {
+              "not": {
+                "required": [
+                  "template"
+                ]
+              },
+              "required": [
+                "template_path"
+              ]
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "not": {
+                "required": [
+                  "data_path"
+                ]
+              },
+              "required": [
+                "data"
+              ]
+            },
+            {
+              "not": {
+                "required": [
+                  "data"
+                ]
+              },
+              "required": [
+                "data_path"
+              ]
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "base_dir": {
+          "description": "inline template의 상대 reference/asset 기준 디렉터리",
+          "type": "string"
+        },
+        "data": {
+          "description": "TemplateData v1 객체 또는 JSON/YAML 문자열",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "data_format": {
+          "enum": [
+            "json",
+            "yaml"
+          ],
+          "type": "string"
+        },
+        "data_path": {
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "실제 확장·writer·검증 후 게시만 생략",
+          "type": "boolean"
+        },
+        "output": {
+          "description": "출력 .hwp/.hwpx 경로",
+          "type": "string"
+        },
+        "template": {
+          "description": "TemplateSpec v1 객체 또는 JSON/YAML 문자열",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "template_format": {
+          "enum": [
+            "json",
+            "yaml"
+          ],
+          "type": "string"
+        },
+        "template_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "output"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_template"
+  },
+  {
+    "description": "렌더 결과를 기준 PNG와 비교해 오차(잉크 적용률·위치 오프셋·픽셀 차이율)를 측정.",
+    "inputSchema": {
+      "properties": {
+        "dpi": {
+          "maximum": 600.0,
+          "minimum": 36.0,
+          "type": "number"
+        },
+        "font_dir": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "ref": {
+          "description": "기준 PNG 경로",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "ref"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_diff"
+  },
+  {
+    "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_slots"
+  },
+  {
+    "description": "템플릿의 `{{name}}`를 채운다. values는 평문 치환(hwpx 패키지 보존), parts는 부분(md+HTML, 계약 docs/design/18) 파일을 앵커 문단에 블록 이식(.hwp/.hwpx).",
+    "inputSchema": {
+      "properties": {
+        "allow_partial": {
+          "description": "미발견 키가 있어도 일치한 값만 게시; 기본 false",
+          "type": "boolean"
+        },
+        "input": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "parts": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "{앵커이름: 부분 파일 경로(md+HTML)} 객체 — 앵커 문단을 부분 블록으로 교체",
+          "type": "object"
+        },
+        "values": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "{자리표시자이름: 값} 객체",
+          "type": "object"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "values"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_fill"
+  },
+  {
+    "description": "구조 검증(mimetype·필수 엔트리·XML 파싱). {valid, errors, warnings} 반환.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_validate"
+  },
+  {
+    "description": "공문서 표기법·구조 규칙 검사(markdown). 권고성 — hwp-lint-report-v1 형태의 findings JSON(rule_id·severity·line·col·message)을 반환하며 원문 발췌는 포함하지 않는다.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "검사할 markdown 파일 경로(--root 샌드박스 안)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_lint"
+  },
+  {
+    "description": "versioned policy로 package/반복 import/native render/선택적 LibreOffice+H2Orestart 독립 import를 인증하고 새 artifact 디렉터리를 원자적으로 게시한다. passed만 성공이다.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "policy": {
+          "description": "hwp-certification-policy-v1 JSON/YAML 경로",
+          "type": "string"
+        },
+        "report": {
+          "description": "존재하지 않는 artifact 디렉터리 경로",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "policy",
+        "report"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_certify"
+  },
+  {
+    "description": "여러 HWP5/HWPX 문서를 인자 순서대로 하나로 합친다 (입력 하나당 Section 하나). 출력 포맷은 output 확장자(.hwp/.hwpx)로 정한다. 쪽/각주/개요 번호는 각 입력의 시작·계속 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있다.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "description": "병합할 입력 경로 2개 이상 (표준 입력 \"-\"는 지원하지 않음)",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "type": "array"
+        },
+        "loss_report": {
+          "description": "hwp-preservation-report-v1 JSON을 기록할 경로(선택)",
+          "type": "string"
+        },
+        "output": {
+          "description": "출력 경로 (.hwp 또는 .hwpx)",
+          "type": "string"
+        },
+        "password": {
+          "description": "이번 hwp_merge 호출에만 사용할 문서 암호 — 모든 입력에 동일하게 적용",
+          "type": "string"
+        },
+        "strict": {
+          "description": "보존 불가(opaque) 데이터가 있으면 게시하지 않고 실패; 기본 false (CLI와 동일). 병합은 첫 입력 이후의 패키지 passthrough를 항상 버리므로 strict를 켜면 평범한 병합도 거부된다 — 응답의 preservation 원장으로 손실을 판단하라",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "inputs",
+        "output"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_merge"
+  },
+  {
+    "description": "문서 하나를 여러 조각으로 나눠 out_dir에 게시한다. 기본은 구역(Section) 단위이며, pages를 주면 쪽 범위로 나눈다. 쪽 경계는 한컴이 저장한 레이아웃 캐시에서 얻은 추정값이라 한컴 자체 페이지 나눔과 다를 수 있다.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "loss_report": {
+          "description": "hwp-preservation-report-v1 JSON을 기록할 경로(선택)",
+          "type": "string"
+        },
+        "out_dir": {
+          "description": "조각 출력 디렉터리 (파일명은 \"<입력스템>-NNN.<소문자 확장자>\")",
+          "type": "string"
+        },
+        "pages": {
+          "description": "구역 대신 사용할 쪽 범위 \"N\" 또는 \"N-M\" 목록(1-based, 양끝 포함, 선택)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "password": {
+          "description": "이번 hwp_split 호출에만 사용할 문서 암호",
+          "type": "string"
+        },
+        "strict": {
+          "description": "보존 불가(opaque) 데이터가 있으면 게시하지 않고 실패; 기본 false (CLI와 동일) — 응답의 preservation 원장으로 손실을 판단하라",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input",
+        "out_dir"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_split"
+  },
+  {
+    "description": "문서 두 개의 문단·구조 차이를 hwp-compare-report-v1 JSON으로 보고한다. 두 입력 모두 수정하지 않는 읽기 전용 작업이다. 차이가 있는 것은 정상 결과이므로 isError가 되지 않으며, 호출자는 identical 필드를 읽는다 (CLI의 diff(1) 종료 코드에 해당하는 MCP 개념은 없다). 렌더 결과를 한컴 참조 PNG와 비교하는 hwp_diff와는 다른 도구다.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "a": {
+          "description": "첫 번째 HWP/HWPX 파일",
+          "type": "string"
+        },
+        "b": {
+          "description": "두 번째 HWP/HWPX 파일",
+          "type": "string"
+        },
+        "password": {
+          "description": "이번 hwp_compare 호출에만 사용할 문서 암호 — 두 입력에 동일하게 적용",
+          "type": "string"
+        }
+      },
+      "required": [
+        "a",
+        "b"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_compare"
+  }
+]
