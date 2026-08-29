@@ -13,7 +13,7 @@ process. Amazon Quick Web is the first concrete consumer. Implementation remains
 
 ### 1.1 Scope
 
-- Preserve `hwp mcp` stdio as the default local transport and keep its 17-tool behavior compatible.
+- Preserve `hwp mcp` stdio as the default local transport and keep its 20-tool behavior compatible.
 - Add an explicit, separately configured Streamable HTTP mode for hosted deployments.
 - Reuse one transport-independent JSON-RPC and tool-dispatch core from both adapters.
 - Authenticate every remote request and isolate workspaces by tenant, principal, and session.
@@ -236,14 +236,14 @@ security tests pass without recreating an unsafe framework.
 ## 9. Phased follow-up backlog
 
 1. **Core extraction:** introduce typed JSON-RPC values and authority contexts; keep stdio output and
-   all 17 tools byte/behavior compatible.
+   all 20 tools byte/behavior compatible.
 2. **Artifact model:** implement tenant-owned uploads, immutable outputs, remote-safe schemas, quotas,
    and cleanup without opening a network listener.
 3. **Transport and auth:** add the selected HTTP adapter, protocol headers, SSE/session lifecycle,
    OAuth resource-server validation, proxy boundary, and audit events behind an explicit build or
    deployment mode.
 4. **Quick Web pilot:** register a non-production connector, verify initialization and remote-safe
-   parity for all 17 tools, then test upload, edit, render, convert, download, expiry, and reconnect.
+   parity for all 20 tools, then test upload, edit, render, convert, download, expiry, and reconnect.
 5. **Security gate:** complete cross-tenant, rebinding, proxy-bypass, archive-bomb, race, timeout,
    cancellation, and load tests; obtain an independent review before general availability.
 6. **Operations:** define SLOs, capacity, key rotation, incident response, deletion verification,
@@ -253,7 +253,7 @@ security tests pass without recreating an unsafe framework.
 
 A Remote MCP implementation is acceptable only when all of the following are demonstrated:
 
-- stdio remains the default and its existing process test still exposes exactly 17 tools;
+- stdio remains the default and its existing process test still exposes exactly 20 tools;
 - HTTP conformance covers `POST`, `GET`, `DELETE`, both response media types, version negotiation,
   notifications, session creation/termination, reconnect, and disconnect behavior;
 - invalid origin, host, content type, protocol version, token, scope, session, or artifact ownership
@@ -266,7 +266,7 @@ A Remote MCP implementation is acceptable only when all of the following are dem
 - logs and errors contain no tokens, document content, client-local paths, or server filesystem paths;
 - the application backend cannot be reached by bypassing TLS, the trusted proxy, host/origin checks,
   or OAuth validation;
-- Quick Web completes initialize, lists the intended 17 remote-safe tools, and performs an
+- Quick Web completes initialize, lists the intended 20 remote-safe tools, and performs an
   upload-to-download edit workflow in a tenant-isolated test environment.
 
 The implementation fails the release gate if any criterion is unverified, if HTTP merely shells out

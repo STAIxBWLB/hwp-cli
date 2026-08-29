@@ -13,18 +13,23 @@ import JSON in this guide over editing Quick's internal configuration files.
 Validation baseline: Amazon Quick Desktop `0.1000.2660` and hwp-cli `0.8.3` on Windows,
 2026-08-09.
 
+That baseline is a historical record of the last run on Windows hardware. The tool count, the tool
+names and the command surface below were re-checked against hwp-cli v0.13.0 on 2026-08-29 by
+reading the CLI and MCP definitions; the Windows procedure itself was not re-run. The `hwp-cli
+v0.8.2 or later` floor stated below still holds.
+
 ## What a working setup contains
 
 | Component | Purpose | Known-good Windows value |
 |---|---|---|
 | `hwp.exe` | Runs the MCP stdio server | One current binary at a stable absolute path |
-| HWP MCP connector | Exposes the 16 HWP tools | `hwp.exe mcp ...` |
+| HWP MCP connector | Exposes the 20 HWP tools | `hwp.exe mcp ...` |
 | HWP skill | Tells the Quick agent when and how to use the tools | `skills/hwp/SKILL.md` in the active Quick profile |
 | Exchange root | Low-integrity file boundary shared with the MCP child | `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | Font directory | Supplies Windows fonts for rendering | `C:\Windows\Fonts` |
 
 The connector and the skill are separate. Installing the skill does not install the binary or
-create the connector. A connector can also show 16 tools while later file writes fail, so a real
+create the connector. A connector can also show 20 tools while later file writes fail, so a real
 create-and-validate smoke test is required.
 
 ## 1. Install and verify one current `hwp.exe`
@@ -71,7 +76,7 @@ Windows verbatim path such as `\\?\C:\...`, confirm that `hwp --version` reports
 Quick's built-in file tools and its local MCP child do not receive the same filesystem permissions.
 On the tested Windows build, Quick starts `hwp.exe` at Low mandatory integrity
 (`S-1-16-4096`). Ordinary folders such as `C:\TEMP` and `%LOCALAPPDATA%\Temp` are normally Medium
-integrity: the MCP connector can start and expose 16 tools there, but the first write can fail with
+integrity: the MCP connector can start and expose 20 tools there, but the first write can fail with
 `Access is denied (os error 5)` when `hwp_new` creates its private staging directory.
 
 Use a dedicated child of Windows' existing `LocalLow` directory. It inherits the Low-integrity
@@ -110,8 +115,10 @@ Run the current binary:
 The command reads `%USERPROFILE%\.quickwork\profiles.json`, selects its valid `last_active` profile
 or the only valid profile, and writes only `skills\hwp\SKILL.md` inside it. The official-document
 files (`SKILL.ko.md`, `official-documents(.ko).md`, `references/`, `templates/`) are **not**
-installed on the Quick path; the command prints a note saying so. It does not copy
-`hwp.exe`, register the MCP connector, create an agent, or publish anything.
+installed on the Quick path; the command prints a note saying so, in Korean regardless of the
+display language. It does not copy `hwp.exe`, register the MCP connector, create an agent, or
+publish anything. The export refuses a symlinked destination and restores the previous tree if the
+publish fails, so re-installing over an existing skill directory is safe.
 
 If Quick has several profiles or automatic selection is ambiguous, pass the profile ID or absolute
 profile directory:
@@ -120,6 +127,9 @@ profile directory:
 & $Hwp skill export --install amazon-quick --quick-profile enterprise-example
 & $Hwp skill export --install amazon-quick --quick-profile "C:\absolute\path\to\quick\profile"
 ```
+
+`--quick-profile` takes a bare profile ID or an absolute path. A relative multi-component path such
+as `profiles\enterprise-example` is rejected, so pass just the ID in that case.
 
 Restart or refresh Quick after installing or replacing the skill.
 
@@ -158,7 +168,7 @@ For manual entry, use:
 | Name | `hwp` |
 | Command | the exact absolute `hwp.exe` path verified above |
 | Arguments | `mcp --font-dir C:\Windows\Fonts --root C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
-| Description | `Read, write, edit, render, validate, and convert HWP/HWPX documents.` |
+| Description | `Read, write, edit, render, validate, lint, convert, merge, split, and compare HWP/HWPX documents.` |
 | Timeout | `30` seconds |
 
 The Arguments field is not a shell. Do not type single or double quote characters around paths.
@@ -173,12 +183,12 @@ contains quotes. The root then fails fast and the MCP handshake closes. The JSON
 failure by keeping every token as a separate array item.
 
 Select **Test connection**, approve Quick's command-execution confirmation, and expect
-**Connected** and **16 tools available**. Then select **Add MCP**, approve the confirmation, refresh
-connections, and verify that `hwp` is enabled and reports **16 tools, Connected**.
+**Connected** and **20 tools available**. Then select **Add MCP**, approve the confirmation, refresh
+connections, and verify that `hwp` is enabled and reports **20 tools, Connected**.
 
 ## 5. Run an end-to-end smoke test
 
-Do not stop at “16 tools available.” Start a new Quick chat and paste this prompt:
+Do not stop at “20 tools available.” Start a new Quick chat and paste this prompt:
 
 ```text
 Use the HWP MCP tools, not a shell command.
@@ -215,7 +225,10 @@ Use the installed hwp skill and HWP MCP tools for every .hwp or .hwpx task.
 On Windows Quick Desktop, use only the absolute LocalLow root configured in the MCP connector.
 The known-good root is C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace; replace YOUR_NAME before tool calls.
 Copy inputs into that root before an HWP operation and return the final artifact path under it.
-After hwp_new, hwp_edit, hwp_fill, hwp_convert, hwp_compose, or hwp_template, always call hwp_validate.
+After hwp_new, hwp_edit, hwp_fill, hwp_convert, hwp_compose, hwp_template, hwp_merge, or hwp_split, always call hwp_validate.
+Before handing on a Korean official document, call hwp_lint and report every error-severity finding.
+Read the preservation field of every hwp_merge and hwp_split response; do not claim a lossless run without it.
+hwp_compare is read-only and returns identical; differences are a normal result, not a failure.
 When page appearance matters, also call hwp_render and inspect the requested pages.
 Never hard-code the generated MCP server prefix; select tools by their hwp_new/hwp_read/etc. names.
 If access is denied, report the attempted path and configured root. Do not remove the root restriction.
@@ -243,6 +256,28 @@ Useful prompts include:
 - “Convert `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.hwpx` to `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\input.md`.”
 - “Create `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\report.hwpx` from this Markdown, validate it, and render page 1.”
 - “Fill the slots in `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\template.hwpx`, write `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\filled.hwpx`, and validate it.”
+- “Merge `…\part1.hwpx` and `…\part2.hwpx` into `…\report.hwpx` and report what the merge could not preserve.”
+- “Split `…\report.hwpx` into `…\fragments\` and list the fragment paths.”
+- “Compare `…\draft.hwpx` with `…\final.hwpx` and tell me which paragraphs differ.”
+
+## Tools added since the 0.8.3 baseline
+
+The connector exposed sixteen tools when this runbook was first written. Four more arrived, and
+several existing tools grew arguments a 0.8.3-era agent instruction never mentions:
+
+| Tool | What is new |
+|---|---|
+| `hwp_lint` | Ten Korean official-document notation and structure rules, returning the `hwp-lint-report-v1` findings JSON. The gate to run before an official document leaves the agent |
+| `hwp_merge` | Concatenate two or more documents, one Section per input; returns the preservation ledger |
+| `hwp_split` | One fragment per Section by default, or per `pages` range; returns the published fragment paths |
+| `hwp_compare` | Read-only paragraph and structure diff. Differences never set `isError` — read `identical` |
+| `hwp_new` | Official-document arguments: `template`, `preset`, `margin_top`/`margin_bottom`/`margin_left`/`margin_right`, `doc_head`, `doc_foot`, `notice_head`, `notice_foot`, `press_head` |
+| `hwp_edit` | `set_cell_by_label` (fill the value cell next to a label) with `label_table`, and `style_tables` for the table look of a profile |
+| `hwp_read`, `hwp_convert`, `hwp_render` | A per-call `password` for protected inputs, never cached across calls |
+
+`hwp_merge` and `hwp_split` do not default to strict: a merge always drops the package passthrough
+of every input after the first, so read the `preservation` field of the response rather than
+assuming a lossless run.
 
 ## Troubleshooting by symptom
 
@@ -250,7 +285,7 @@ Useful prompts include:
 |---|---|---|
 | `hwp.exe` does not start or `--version` fails | Wrong binary, wrong architecture, blocked or incomplete extraction | Re-download, verify SHA-256, extract the Windows x86_64 archive, and test the exact absolute command path |
 | Test connection shows no tools or the server exits immediately | Missing/unreadable `--root`, literal `YOUR_NAME`, quote characters in Arguments, typo, or stale command path | Create the `LocalLow` child, substitute the absolute account path, import the JSON above, remove shell quotes, and verify `hwp.exe --version` |
-| **Connected, 16 tools** but `hwp_new` returns `Access is denied (os error 5)` | Discovery only needed read access; the requested destination is Medium integrity (commonly `C:\TEMP` or `%LOCALAPPDATA%\Temp`), or an older binary still passes `\\?\...` | Point `--root` and every tool path at the dedicated `LocalLow` child; verify its Low label with `icacls`; use hwp-cli v0.8.2 or later; restart and run the smoke test |
+| **Connected, 20 tools** but `hwp_new` returns `Access is denied (os error 5)` | Discovery only needed read access; the requested destination is Medium integrity (commonly `C:\TEMP` or `%LOCALAPPDATA%\Temp`), or an older binary still passes `\\?\...` | Point `--root` and every tool path at the dedicated `LocalLow` child; verify its Low label with `icacls`; use hwp-cli v0.8.2 or later; restart and run the smoke test |
 | A path added to **Local folders and access permissions** still fails | That setting controls Quick's built-in read/search tools; it does not make a Medium-integrity folder writable by the Low-integrity MCP child | Use the built-in tool or Explorer to copy the file into the configured `LocalLow` exchange root, then call HWP tools there |
 | `os error 2` | The path does not exist, `YOUR_NAME` was not replaced, or Desktop moved the file to OneDrive | Check the real absolute path, create the intended directory, or stage the file under the configured exchange root |
 | Connector becomes disabled after repeated failures | Quick auto-disabled a connector whose startup/handshake repeatedly failed | Correct the command/root, save, explicitly enable the connector, refresh, and restart Quick if needed |
@@ -293,8 +328,8 @@ Get-Content "$env:LOCALAPPDATA\Temp\quickwork-backend.log" -Tail 300 |
   Select-String "UserMCP|Loaded.*servers|total tools|hwp"
 ```
 
-A healthy startup contains messages equivalent to “Started ... with 16 tools” and “Loaded 1/1
-servers (0 failed), 16 total tools.” Log wording and location are not stable API contracts.
+A healthy startup contains messages equivalent to “Started ... with 20 tools” and “Loaded 1/1
+servers (0 failed), 20 total tools.” Log wording and location are not stable API contracts.
 
 ## Completion checklist
 
@@ -302,9 +337,11 @@ servers (0 failed), 16 total tools.” Log wording and location are not stable A
 - The connector uses separate JSON arguments and has no embedded shell quotes.
 - `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` exists, inherits the Low label, and is the Windows MCP root.
 - The current HWP skill is installed in the active Quick profile.
-- Test connection reports **Connected** and **16 tools available**.
+- Test connection reports **Connected** and **20 tools available**.
 - The connector stays enabled after refresh or restart.
 - `hwp_new`, `hwp_validate`, and `hwp_read` succeed on the absolute `LocalLow` smoke-test path.
+- `hwp_merge`, `hwp_split` and `hwp_compare` succeed on two copies of that smoke-test document
+  under the same root.
 - `hwp_validate` returns `valid: true`; rendering is also tested when appearance matters.
 - The agent validates after every write and returns the final artifact path.
 

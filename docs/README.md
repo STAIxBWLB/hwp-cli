@@ -8,10 +8,11 @@ Notes on the HWP 5.0 format specification material used when working on the pars
 
 | Path | Contents |
 |---|---|
-| [design/](design/) | The design knowledge of record. Start at [00-overview](design/00-overview.md) |
+| [design/](design/) | The design knowledge of record. Start at [00-overview](design/00-overview.md). Required reading before touching the writer: [07-hangul-compat-rules](design/07-hangul-compat-rules.md); check [12-feature-gaps](design/12-feature-gaps.md) before assuming a feature is missing |
 | [manual/cli-reference.md](manual/cli-reference.md) | CLI reference generated from the clap definitions (do not edit by hand) |
 | [manual/ai-integrations.md](manual/ai-integrations.md) | AI client setup: MCP registration, the agent skill, the claude.ai bundle |
 | [manual/amazon-quick-desktop.md](manual/amazon-quick-desktop.md) | Amazon Quick Desktop setup, end-to-end verification, agent instructions, and troubleshooting |
+| [design/23-hwpx-skill-absorption.md](design/23-hwpx-skill-absorption.md) | Parity record of the retired downstream `hwpx` skill against the native commands |
 | [release-readiness.md](release-readiness.md) | Pre-release gate checklist |
 | [hancom-verification-checklist.md](hancom-verification-checklist.md) | Checklist for verifying files in Hancom Office |
 

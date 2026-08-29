@@ -10,6 +10,31 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- The document-level workflows are reachable over MCP: `hwp_merge`, `hwp_split` and `hwp_compare`
+  join the stdio server, taking the tool count from seventeen to twenty. `hwp merge`, `hwp split`
+  and `hwp compare` shipped in v0.13.0 as CLI-only commands, so an MCP-only client could not reach
+  them at all. Each command grew a password-resolved `execute` alongside its `PasswordArgs`
+  wrapper, mirroring `convert::execute_with_options`; `compare` needed it most, because
+  `compare::run` reports through stdout and over stdio that stream carries JSON-RPC. `strict`
+  follows the CLI default (false) rather than `hwp_convert`'s fail-closed MCP default, because a
+  merge always drops the package passthrough of every input after the first — the preservation
+  ledger comes back on every call instead. Differences from `hwp_compare` never set `isError`;
+  callers read `identical`, since the CLI's diff(1) exit codes have no MCP equivalent.
+
+**Changed**
+
+- Documentation caught up with v0.12/v0.13. The bundled `hwp` skill gains `merge`, `split`,
+  `compare` and `lint` in its command quick reference plus the exit-code and preservation-ledger
+  conventions; `docs/manual/ai-integrations*.md` gains a cross-client conventions section
+  (document-level workflows, the ledger, linting, exit codes, passwords, environment variables);
+  the Amazon Quick Desktop runbook gains a table of everything added since its 0.8.3 validation
+  baseline, which is kept as the historical Windows record. The stale "16 tools" claim in both
+  manuals and the "17 tools" claim in the READMEs, the skill and `20-remote-mcp` are corrected
+  together. The READMEs gain `merge`/`split`/`compare` rows and drop the shipped roadmap item, and
+  the release checklist gains gates for tool-count, version-pin and bundled-skill drift.
+
 ## [0.13.0]
 
 **Added**

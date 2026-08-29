@@ -27,11 +27,15 @@ package upload or release publication.
       claim is made for a profile with exclusions
 - [ ] `git status --short --untracked-files=all` reviewed; unrelated user changes excluded
 - [ ] no commit, push, tag, package upload or release performed by the readiness run
-- [ ] downstream `STAIxBWLB/skills` `skills/hwpx` reviewed against the parity matrix in
-      [design/23-hwpx-skill-absorption](design/23-hwpx-skill-absorption.md) — the parity source of
-      truth until the old skill retires (RET-01) — for CLI-surface drift (that repo's
-      `upstream-hwp-cli` workflow files an issue within a day, but a release that changes the CLI
-      surface should not wait for the cron)
+- [ ] version-pinned examples in `README.md` / `README.ko.md` (the `install.sh --tag` snippets)
+      bumped to the release being cut
+- [ ] tool-count claims agree with the server: `hwp mcp` `tools/list` length equals every "N tools"
+      in `README*.md`, `docs/manual/*.md` and `skills/hwp/SKILL*.md`
+- [ ] bundled `skills/hwp/SKILL.md` and `SKILL.ko.md` cover every command and MCP tool the release
+      adds — an exported skill is what agents read, and nothing gates its content
+- [ ] the retired downstream `STAIxBWLB/skills` `skills/hwpx` still matches the parity matrix in
+      [design/23-hwpx-skill-absorption](design/23-hwpx-skill-absorption.md) — the parity record of
+      what the retirement (RET-01, closed 2026-08-27) replaced
 
 The release must not claim that the seven smoke fixtures cover every real document form, provide
 Hancom pixel parity, or prove cross-platform-identical raster bytes.

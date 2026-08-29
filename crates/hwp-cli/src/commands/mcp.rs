@@ -483,6 +483,9 @@ fn call_tool(name: &str, args: &mut Value, ctx: &Ctx) -> Value {
         "hwp_read" => tool_read_scoped(args, ctx),
         "hwp_render" => tool_render_scoped(args, ctx),
         "hwp_convert" => tool_convert_scoped(args, ctx),
+        "hwp_merge" => tool_merge_scoped(args, ctx),
+        "hwp_split" => tool_split_scoped(args, ctx),
+        "hwp_compare" => tool_compare_scoped(args, ctx),
         "hwp_info" => reject_password_outside_scope(args)
             .and_then(|_| tool_info(args, ctx).map_err(Into::into)),
         "hwp_grep" => reject_password_outside_scope(args)
@@ -1041,6 +1044,134 @@ fn tool_certify(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         return Err(summary);
     }
     Ok(vec![text_content(&summary)])
+}
+
+/// `hwp merge` over MCP. Every input, the output and the optional loss report
+/// are root-checked before any file is touched, and the single password applies
+/// to every input — the same single-password-per-batch rule the CLI documents.
+fn tool_merge_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+    let inputs = arg_array(args, "inputs")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "inputs의 각 항목은 문자열이어야 합니다".to_string())
+                .and_then(|raw| checked_read_path(ctx, raw))
+        })
+        .collect::<Result<Vec<PathBuf>, String>>()?;
+    if inputs.len() < 2 {
+        return Err("inputs에는 입력 경로가 2개 이상 필요합니다".into());
+    }
+    let output = checked_write_path(ctx, arg_str(args, "output")?)?;
+    let loss_report = arg_str_opt(args, "loss_report")?
+        .map(|raw| checked_write_path(ctx, raw))
+        .transpose()?;
+    // Unlike hwp_convert, strict defaults to false here — the CLI default. A
+    // merge inherently drops the package passthrough of every input after the
+    // first, so a fail-closed default would refuse even a two-plain-document
+    // merge. The preservation ledger is returned on every call instead, so the
+    // caller judges the losses rather than never seeing the tool succeed.
+    let strict = arg_bool(args, "strict", false)?;
+    let password = take_scoped_password(
+        args,
+        &["inputs", "output", "loss_report", "strict", "password"],
+    )?;
+    let report = crate::commands::merge::execute(
+        &inputs,
+        &output,
+        strict,
+        loss_report.as_deref(),
+        &LoadOptions {
+            password: password.as_ref(),
+        },
+    )
+    .map_err(|error| McpToolError::from(format!("{error:#}")))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&json!({
+            "inputs": inputs,
+            "output": output,
+            "strict": strict,
+            "warnings": report.warnings,
+            "preservation": report.preservation,
+        }))
+        .unwrap_or_default(),
+    )])
+}
+
+/// `hwp split` over MCP. `out_dir` is write-checked like any other output path,
+/// so the published fragments land under a configured root by construction.
+fn tool_split_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+    let input = checked_read_path(ctx, arg_str(args, "input")?)?;
+    let out_dir = checked_write_path(ctx, arg_str(args, "out_dir")?)?;
+    let pages = arg_array(args, "pages")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "pages의 각 항목은 문자열이어야 합니다".to_string())
+        })
+        .collect::<Result<Vec<String>, String>>()?;
+    let loss_report = arg_str_opt(args, "loss_report")?
+        .map(|raw| checked_write_path(ctx, raw))
+        .transpose()?;
+    // strict follows the CLI default (false) for the same reason hwp_merge does;
+    // the preservation ledger comes back on every call.
+    let strict = arg_bool(args, "strict", false)?;
+    let password = take_scoped_password(
+        args,
+        &[
+            "input",
+            "out_dir",
+            "pages",
+            "loss_report",
+            "strict",
+            "password",
+        ],
+    )?;
+    let summary = crate::commands::split::execute(
+        &input,
+        &out_dir,
+        &pages,
+        strict,
+        loss_report.as_deref(),
+        &LoadOptions {
+            password: password.as_ref(),
+        },
+    )
+    .map_err(|error| McpToolError::from(format!("{error:#}")))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&json!({
+            "input": input,
+            "out_dir": out_dir,
+            "strict": strict,
+            "fragments": summary.fragments,
+            "warnings": summary.report.warnings,
+            "preservation": summary.report.preservation,
+        }))
+        .unwrap_or_default(),
+    )])
+}
+
+/// `hwp compare` over MCP. Read-only: both inputs are read-checked and neither
+/// is written. Differences are a normal result, never `isError` — the CLI's
+/// diff(1) exit codes have no MCP equivalent, so the caller reads `identical`
+/// instead. This matches how `hwp_grep` reports zero matches.
+fn tool_compare_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+    let a = checked_read_path(ctx, arg_str(args, "a")?)?;
+    let b = checked_read_path(ctx, arg_str(args, "b")?)?;
+    let password = take_scoped_password(args, &["a", "b", "password"])?;
+    let report = crate::commands::compare::execute(
+        &a,
+        &b,
+        &LoadOptions {
+            password: password.as_ref(),
+        },
+    )
+    .map_err(|error| McpToolError::from(format!("{error:#}")))?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&report).unwrap_or_default(),
+    )])
 }
 
 fn tool_render_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
@@ -2471,6 +2602,53 @@ fn tool_defs() -> Vec<Value> {
                 "required": ["input", "policy", "report"]
             }
         }),
+        json!({
+            "name": "hwp_merge",
+            "description": "여러 HWP5/HWPX 문서를 인자 순서대로 하나로 합친다 (입력 하나당 Section 하나). 출력 포맷은 output 확장자(.hwp/.hwpx)로 정한다. 쪽/각주/개요 번호는 각 입력의 시작·계속 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있다.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "inputs": {"type": "array", "items": {"type": "string"}, "minItems": 2, "description": "병합할 입력 경로 2개 이상 (표준 입력 \"-\"는 지원하지 않음)"},
+                    "output": {"type": "string", "description": "출력 경로 (.hwp 또는 .hwpx)"},
+                    "strict": {"type": "boolean", "description": "보존 불가(opaque) 데이터가 있으면 게시하지 않고 실패; 기본 false (CLI와 동일). 병합은 첫 입력 이후의 패키지 passthrough를 항상 버리므로 strict를 켜면 평범한 병합도 거부된다 — 응답의 preservation 원장으로 손실을 판단하라"},
+                    "loss_report": {"type": "string", "description": "hwp-preservation-report-v1 JSON을 기록할 경로(선택)"},
+                    "password": {"type": "string", "description": "이번 hwp_merge 호출에만 사용할 문서 암호 — 모든 입력에 동일하게 적용"}
+                },
+                "required": ["inputs", "output"]
+            }
+        }),
+        json!({
+            "name": "hwp_split",
+            "description": "문서 하나를 여러 조각으로 나눠 out_dir에 게시한다. 기본은 구역(Section) 단위이며, pages를 주면 쪽 범위로 나눈다. 쪽 경계는 한컴이 저장한 레이아웃 캐시에서 얻은 추정값이라 한컴 자체 페이지 나눔과 다를 수 있다.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "input": {"type": "string"},
+                    "out_dir": {"type": "string", "description": "조각 출력 디렉터리 (파일명은 \"<입력스템>-NNN.<소문자 확장자>\")"},
+                    "pages": {"type": "array", "items": {"type": "string"}, "description": "구역 대신 사용할 쪽 범위 \"N\" 또는 \"N-M\" 목록(1-based, 양끝 포함, 선택)"},
+                    "strict": {"type": "boolean", "description": "보존 불가(opaque) 데이터가 있으면 게시하지 않고 실패; 기본 false (CLI와 동일) — 응답의 preservation 원장으로 손실을 판단하라"},
+                    "loss_report": {"type": "string", "description": "hwp-preservation-report-v1 JSON을 기록할 경로(선택)"},
+                    "password": {"type": "string", "description": "이번 hwp_split 호출에만 사용할 문서 암호"}
+                },
+                "required": ["input", "out_dir"]
+            }
+        }),
+        json!({
+            "name": "hwp_compare",
+            "description": "문서 두 개의 문단·구조 차이를 hwp-compare-report-v1 JSON으로 보고한다. 두 입력 모두 수정하지 않는 읽기 전용 작업이다. 차이가 있는 것은 정상 결과이므로 isError가 되지 않으며, 호출자는 identical 필드를 읽는다 (CLI의 diff(1) 종료 코드에 해당하는 MCP 개념은 없다). 렌더 결과를 한컴 참조 PNG와 비교하는 hwp_diff와는 다른 도구다.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "a": {"type": "string", "description": "첫 번째 HWP/HWPX 파일"},
+                    "b": {"type": "string", "description": "두 번째 HWP/HWPX 파일"},
+                    "password": {"type": "string", "description": "이번 hwp_compare 호출에만 사용할 문서 암호 — 두 입력에 동일하게 적용"}
+                },
+                "required": ["a", "b"]
+            }
+        }),
     ]
 }
 
@@ -2715,6 +2893,9 @@ mod tests {
             "hwp_validate",
             "hwp_certify",
             "hwp_list_bookmarks",
+            "hwp_merge",
+            "hwp_split",
+            "hwp_compare",
         ] {
             assert!(names.contains(&expected), "{expected} 누락");
         }
@@ -2766,10 +2947,24 @@ mod tests {
         }
     }
 
+    /// The exact set of tools that may take a per-call `password`. Every one of
+    /// them loads a protected input through the password-aware loader; the
+    /// document-level trio joined it when `hwp merge`/`split`/`compare` gained
+    /// MCP surfaces. Adding a name here is a deliberate widening of the
+    /// credential surface, so the closed-schema test below pins it.
+    const PASSWORD_SCOPED_TOOLS: [&str; 6] = [
+        "hwp_read",
+        "hwp_convert",
+        "hwp_render",
+        "hwp_merge",
+        "hwp_split",
+        "hwp_compare",
+    ];
+
     #[test]
     fn password_read_schema_is_closed_and_scoped() {
         let tools = tool_defs();
-        for name in ["hwp_read", "hwp_convert", "hwp_render"] {
+        for name in PASSWORD_SCOPED_TOOLS {
             let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
             assert_eq!(tool["inputSchema"]["additionalProperties"], false);
             assert_eq!(
@@ -2779,13 +2974,119 @@ mod tests {
         }
         for tool in &tools {
             let name = tool["name"].as_str().unwrap();
-            if !matches!(name, "hwp_read" | "hwp_convert" | "hwp_render") {
+            if !PASSWORD_SCOPED_TOOLS.contains(&name) {
                 assert!(
                     tool["inputSchema"]["properties"].get("password").is_none(),
                     "{name} must not accept password"
                 );
             }
         }
+    }
+
+    /// `hwp_merge` → `hwp_split` → `hwp_compare` over the same documents the CLI
+    /// path uses, proving the three MCP tools reach `commands::{merge,split,
+    /// compare}::execute` and report their structured results.
+    #[test]
+    fn mcp_document_workflow_merge_split_compare_round_trip() {
+        let a = temp_file("workflow-a.hwpx");
+        let b = temp_file("workflow-b.hwpx");
+        let merged = temp_file("workflow-merged.hwpx");
+        let fragments_dir = temp_file("workflow-fragments");
+        create_hwpx(&a, "첫 문서 본문");
+        create_hwpx(&b, "둘째 문서 본문");
+        std::fs::create_dir_all(&fragments_dir).unwrap();
+
+        let result = tool_merge_scoped(&mut json!({"inputs": [a, b], "output": merged}), &ctx())
+            .expect("hwp_merge");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["inputs"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            report["strict"], false,
+            "병합은 패키지 passthrough 손실이 불가피하므로 CLI와 같은 기본값을 쓴다"
+        );
+        assert!(
+            !report["preservation"].is_null(),
+            "손실 원장은 strict와 무관하게 항상 돌려준다"
+        );
+        assert_eq!(
+            load_document(&merged).unwrap().sections.len(),
+            2,
+            "입력 하나당 Section 하나"
+        );
+
+        let result = tool_split_scoped(
+            &mut json!({"input": merged, "out_dir": fragments_dir}),
+            &ctx(),
+        )
+        .expect("hwp_split");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        let fragments = report["fragments"].as_array().unwrap();
+        assert_eq!(fragments.len(), 2, "구역 두 개는 조각 두 개가 된다");
+        for fragment in fragments {
+            assert!(Path::new(fragment.as_str().unwrap()).exists());
+        }
+
+        // Differences are a normal result: isError stays false and the caller
+        // reads `identical` instead of a diff(1) exit code.
+        let result =
+            tool_compare_scoped(&mut json!({"a": a, "b": merged}), &ctx()).expect("hwp_compare");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["contract"], "hwp-compare-report-v1");
+        assert_eq!(report["identical"], false);
+
+        let result = tool_compare_scoped(&mut json!({"a": a, "b": a}), &ctx())
+            .expect("hwp_compare 자기비교");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["identical"], true);
+    }
+
+    /// The document-level tools honour `--root` exactly like every other write
+    /// tool: an input or an output outside the configured roots is refused
+    /// before any file is touched.
+    #[test]
+    fn mcp_document_workflow_respects_roots() {
+        let root = temp_file("workflow-root");
+        std::fs::create_dir_all(&root).unwrap();
+        let inside = root.join("inside.hwpx");
+        let outside = temp_file("workflow-outside.hwpx");
+        create_hwpx(&inside, "루트 안 문서");
+        create_hwpx(&outside, "루트 밖 문서");
+        let ctx = ctx_with_roots(vec![std::fs::canonicalize(&root).unwrap()]);
+
+        let error = tool_merge_scoped(
+            &mut json!({"inputs": [inside, outside], "output": root.join("out.hwpx")}),
+            &ctx,
+        )
+        .expect_err("루트 밖 입력은 거부");
+        assert!(!error.message.is_empty());
+
+        let error = tool_compare_scoped(&mut json!({"a": inside, "b": outside}), &ctx)
+            .expect_err("루트 밖 비교 대상은 거부");
+        assert!(!error.message.is_empty());
+
+        let error = tool_split_scoped(
+            &mut json!({"input": inside, "out_dir": temp_file("workflow-outside-dir")}),
+            &ctx,
+        )
+        .expect_err("루트 밖 출력 디렉터리는 거부");
+        assert!(!error.message.is_empty());
+    }
+
+    /// `hwp merge` needs at least two inputs, and refuses stdin by name because
+    /// the loader stages stdin to a single temp path.
+    #[test]
+    fn mcp_merge_rejects_thin_and_stdin_inputs() {
+        let a = temp_file("merge-guard-a.hwpx");
+        create_hwpx(&a, "본문");
+        let output = temp_file("merge-guard-out.hwpx");
+
+        let error = tool_merge_scoped(&mut json!({"inputs": [a], "output": output}), &ctx())
+            .expect_err("입력 하나는 거부");
+        assert!(error.message.contains("2개 이상"));
+
+        let error = tool_merge_scoped(&mut json!({"inputs": [a, "-"], "output": output}), &ctx())
+            .expect_err("표준 입력은 거부");
+        assert!(error.message.contains("표준 입력"));
     }
 
     #[test]
