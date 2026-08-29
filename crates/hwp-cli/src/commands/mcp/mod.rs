@@ -1,12 +1,19 @@
-//! `hwp mcp` — MCP(Model Context Protocol) stdio 서버.
+//! `hwp mcp` — MCP(Model Context Protocol) 서버의 transport 독립 코어.
 //!
-//! tokio/SDK 없이 serde_json만으로 동기 JSON-RPC 2.0(줄 단위 over stdio)을 구현한다.
+//! tokio/SDK 없이 serde_json만으로 동기 JSON-RPC 2.0을 구현한다.
 //! 에이전트(Claude 등)가 도구 호출로 HWP를 **읽고·렌더해서 보고·편집·변환**하게 한다.
-//! stdout은 프로토콜 전용(라이브러리 함수는 stdout 미오염, 로그는 stderr).
+//! 이 모듈은 요청 처리·도구 레지스트리·디스패치를 담고, framing은 adapter가 맡는다.
 //!
 //! 도구는 라이브러리 계층을 직접 감싼다(commands/*::run 아님 — 그건 stdout 출력).
 
-use std::io::{BufRead, Read as _, Write};
+mod authority;
+mod stdio;
+
+pub use authority::FileAuthority;
+pub use stdio::run;
+
+use authority::{checked_read_path, checked_write_path, font_dirs_for};
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -15,7 +22,7 @@ use crate::commands::cat::{
     HWP_PASSWORD_REQUIRED_OR_INVALID, LoadDocumentError, LoadOptions, ResolvedPassword,
     load_document, load_document_with_options,
 };
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroize as _;
 
 /// Supported MCP protocol versions (newest first). Used in initialize negotiation.
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -23,264 +30,8 @@ const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
 const DEFAULT_READ_BYTES: usize = 256 * 1024;
 const MAX_READ_BYTES: usize = 1024 * 1024;
 
-/// Server context (default font directories for render/diff, `--root` file access sandbox).
-pub struct Ctx {
-    pub font_dirs: Vec<PathBuf>,
-    /// Canonicalized allowed roots. Empty means unrestricted file access (previous behavior).
-    pub roots: Vec<PathBuf>,
-}
-
-/// Canonicalize a path for sandbox authorization.
-///
-/// Keep Windows canonical paths in their verbatim spelling here. Lower-level
-/// template and asset checks also use `std::fs::canonicalize`, so the roots in
-/// `Ctx` must retain the same security identity. A sandbox-compatible spelling
-/// is derived only after containment succeeds.
-fn canonicalize_mcp_path(path: &Path) -> std::io::Result<PathBuf> {
-    std::fs::canonicalize(path)
-}
-
-/// Derive the spelling used for downstream read-only filesystem I/O from an
-/// already authorized canonical path.
-fn sandbox_compatible_mcp_path(canonical: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        strip_windows_verbatim_prefix(canonical.to_path_buf())
-    }
-    #[cfg(not(windows))]
-    {
-        canonical.to_path_buf()
-    }
-}
-
-/// Derive a spelling that remains ordinary even after the atomic writer adds
-/// its private sibling workspace and staged filename.
-fn sandbox_compatible_mcp_write_path(canonical: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt as _;
-
-        // Compared with the destination, StagedOutput's longest current path adds:
-        // leading dot + marker + max u32 pid + max u64 sequence + separators +
-        // 32-char random token + `.tmp` + workspace separator, then either repeats
-        // the destination filename or uses `destination.backup`. Certification has
-        // a deeper fixed report tree, so reserve its larger relative expansion too.
-        const ATOMIC_STAGING_FIXED_OVERHEAD_UTF16: usize = 82;
-        const ATOMIC_STAGING_MIN_CHILD_NAME_UTF16: usize = 18;
-        let file_name_units = canonical
-            .file_name()
-            .map(|name| name.encode_wide().count())
-            .unwrap_or(0);
-        let output_staging_budget = ATOMIC_STAGING_FIXED_OVERHEAD_UTF16
-            .saturating_add(file_name_units.max(ATOMIC_STAGING_MIN_CHILD_NAME_UTF16));
-        strip_windows_verbatim_prefix_with_budget(
-            canonical.to_path_buf(),
-            output_staging_budget
-                .max(hwp_cli::certification::WINDOWS_CERTIFICATION_TREE_OVERHEAD_UTF16),
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        canonical.to_path_buf()
-    }
-}
-
-#[cfg(windows)]
-fn windows_ordinary_component_is_safe(component: &std::ffi::OsStr) -> bool {
-    let Some(text) = component.to_str() else {
-        return false;
-    };
-    if text.is_empty() || text.ends_with('.') || text.ends_with(' ') {
-        return false;
-    }
-    if text.chars().any(|character| {
-        character.is_control()
-            || matches!(
-                character,
-                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
-            )
-    }) {
-        return false;
-    }
-
-    let stem = text
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_uppercase();
-    if matches!(
-        stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
-    ) {
-        return false;
-    }
-    for prefix in ["COM", "LPT"] {
-        if stem.strip_prefix(prefix).is_some_and(|suffix| {
-            matches!(
-                suffix,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-            )
-        }) {
-            return false;
-        }
-    }
-    true
-}
-
-#[cfg(windows)]
-fn windows_verbatim_components_are_ordinary_safe(path: &Path) -> bool {
-    use std::path::{Component, Prefix};
-
-    let mut components = path.components();
-    match components.next() {
-        Some(Component::Prefix(prefix)) => match prefix.kind() {
-            Prefix::VerbatimDisk(_) => {}
-            Prefix::VerbatimUNC(server, share) => {
-                if !windows_ordinary_component_is_safe(server)
-                    || !windows_ordinary_component_is_safe(share)
-                {
-                    return false;
-                }
-            }
-            _ => return false,
-        },
-        _ => return false,
-    }
-    components.all(|component| match component {
-        Component::RootDir => true,
-        Component::Normal(component) => windows_ordinary_component_is_safe(component),
-        _ => false,
-    })
-}
-
-#[cfg(windows)]
-fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
-    strip_windows_verbatim_prefix_with_budget(path, 0)
-}
-
-#[cfg(windows)]
-fn strip_windows_verbatim_prefix_with_budget(
-    path: PathBuf,
-    additional_utf16_units: usize,
-) -> PathBuf {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
-
-    // Rust's Windows path layer switches ordinary absolute paths back to verbatim
-    // spelling at this legacy directory-path threshold. Leave room for the NUL
-    // terminator and for any downstream path expansion supplied by the caller.
-    const LEGACY_MAX_PATH_UTF16: usize = 248;
-    const SLASH: u16 = b'\\' as u16;
-    const VERBATIM: [u16; 4] = [SLASH, SLASH, b'?' as u16, SLASH];
-    const VERBATIM_UNC: [u16; 8] = [
-        SLASH,
-        SLASH,
-        b'?' as u16,
-        SLASH,
-        b'U' as u16,
-        b'N' as u16,
-        b'C' as u16,
-        SLASH,
-    ];
-
-    if !windows_verbatim_components_are_ordinary_safe(&path) {
-        return path;
-    }
-
-    let fits_ordinary_io = |ordinary_units: usize| {
-        ordinary_units
-            .checked_add(additional_utf16_units)
-            .and_then(|units| units.checked_add(1))
-            .is_some_and(|units_with_nul| units_with_nul < LEGACY_MAX_PATH_UTF16)
-    };
-    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    if wide.starts_with(&VERBATIM_UNC) {
-        let mut ordinary = Vec::with_capacity(wide.len() - VERBATIM_UNC.len() + 2);
-        ordinary.extend_from_slice(&[SLASH, SLASH]);
-        ordinary.extend_from_slice(&wide[VERBATIM_UNC.len()..]);
-        if fits_ordinary_io(ordinary.len()) {
-            return PathBuf::from(OsString::from_wide(&ordinary));
-        }
-        return path;
-    }
-    if wide.starts_with(&VERBATIM)
-        && wide.get(5) == Some(&(b':' as u16))
-        && wide
-            .get(4)
-            .is_some_and(|letter| matches!(*letter, 65..=90 | 97..=122))
-    {
-        let ordinary = &wide[VERBATIM.len()..];
-        if fits_ordinary_io(ordinary.len()) {
-            return PathBuf::from(OsString::from_wide(ordinary));
-        }
-    }
-    path
-}
-
-/// stdio JSON-RPC 루프. EOF까지 한 줄씩 처리한다.
-pub fn run(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> anyhow::Result<()> {
-    let mut canonical_roots = Vec::with_capacity(roots.len());
-    for root in &roots {
-        let canonical = canonicalize_mcp_path(root).map_err(|error| {
-            anyhow::anyhow!(
-                "--root 경로를 확인할 수 없습니다: {} ({error})",
-                root.display()
-            )
-        })?;
-        canonical_roots.push(canonical);
-    }
-    if canonical_roots.is_empty() {
-        eprintln!("경고: --root 미지정 — MCP 서버의 파일 접근이 제한되지 않습니다");
-    }
-    let ctx = Ctx {
-        font_dirs,
-        roots: canonical_roots,
-    };
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    let mut line = Zeroizing::new(String::new());
-    loop {
-        line.clear();
-        if read_line_bounded(&mut reader, &mut line, MAX_REQUEST_LINE_BYTES)? == 0 {
-            break; // EOF
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            line.zeroize();
-            continue;
-        }
-        if let Some(resp) = handle_request(trimmed, &ctx) {
-            out.write_all(resp.as_bytes())?;
-            out.write_all(b"\n")?;
-            out.flush()?;
-        }
-        // The line can contain the per-call `password`; clear its backing
-        // buffer before accepting the next JSON-RPC request.
-        line.zeroize();
-    }
-    Ok(())
-}
-
-fn read_line_bounded(
-    reader: &mut impl BufRead,
-    line: &mut String,
-    max_bytes: usize,
-) -> std::io::Result<usize> {
-    let mut limited = reader.take((max_bytes as u64).saturating_add(1));
-    let read = limited.read_line(line)?;
-    if line.len() > max_bytes || (read == max_bytes.saturating_add(1) && !line.ends_with('\n')) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("MCP 요청 한 줄이 {max_bytes} bytes 제한을 넘었습니다"),
-        ));
-    }
-    Ok(read)
-}
-
 /// 한 줄 JSON-RPC 요청 → 응답 JSON 문자열. 알림(id 없음)이면 None.
-pub fn handle_request(line: &str, ctx: &Ctx) -> Option<String> {
+pub fn handle_request(line: &str, ctx: &dyn FileAuthority) -> Option<String> {
     let mut req: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
@@ -478,7 +229,7 @@ fn scrub_password_values(value: &mut Value) {
 }
 
 /// 도구를 실행해 `tools/call` result를 만든다. 실행 오류는 isError=true content로.
-fn call_tool(name: &str, args: &mut Value, ctx: &Ctx) -> Value {
+fn call_tool(name: &str, args: &mut Value, ctx: &dyn FileAuthority) -> Value {
     let result: McpToolResult = match name {
         "hwp_read" => tool_read_scoped(args, ctx),
         "hwp_render" => tool_render_scoped(args, ctx),
@@ -681,102 +432,9 @@ fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<
         .transpose()
 }
 
-// ---- Path sandbox (`--root`) ----
-
-/// Checks that a canonical path sits below one of the allowed roots.
-fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, String> {
-    if ctx
-        .roots
-        .iter()
-        .any(|root| canonical_path_starts_with(canonical, root))
-    {
-        Ok(canonical.to_path_buf())
-    } else {
-        Err(format!(
-            "허용된 --root 밖 경로라 거부합니다: {raw} ({}으로 확인됨)",
-            canonical.display()
-        ))
-    }
-}
-
-fn canonical_path_starts_with(path: &Path, root: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        if path.starts_with(root) {
-            return true;
-        }
-        let path = strip_windows_verbatim_prefix(path.to_path_buf());
-        let root = strip_windows_verbatim_prefix(root.to_path_buf());
-        path.starts_with(root)
-    }
-    #[cfg(not(windows))]
-    {
-        path.starts_with(root)
-    }
-}
-
-/// Read-path validation: the path must exist (canonicalize) and the canonical result
-/// must sit below a root. Empty roots pass without a check (previous behavior).
-fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
-    if ctx.roots.is_empty() {
-        return Ok(PathBuf::from(raw));
-    }
-    let canonical = canonicalize_mcp_path(Path::new(raw))
-        .map_err(|error| format!("경로를 확인할 수 없습니다: {raw} ({error})"))?;
-    let authorized = under_any_root(ctx, &canonical, raw)?;
-    Ok(sandbox_compatible_mcp_path(&authorized))
-}
-
-/// Write-path validation: rejects `..` components and a missing file name, then
-/// canonicalizes an existing file (blocking symlink-overwrite bypasses) or, for a new
-/// file, canonicalizes the parent and rejoins, before the root check.
-/// Empty roots pass without a check (previous behavior).
-fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
-    if ctx.roots.is_empty() {
-        return Ok(PathBuf::from(raw));
-    }
-    let path = Path::new(raw);
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(format!("'..'를 포함한 출력 경로는 거부합니다: {raw}"));
-    }
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| format!("출력 경로에 파일 이름이 없습니다: {raw}"))?;
-    let resolved = if path.exists() {
-        canonicalize_mcp_path(path)
-            .map_err(|error| format!("출력 경로를 확인할 수 없습니다: {raw} ({error})"))?
-    } else {
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let canonical_parent = canonicalize_mcp_path(parent).map_err(|error| {
-            format!(
-                "출력 경로의 부모 디렉터리를 확인할 수 없습니다: {} ({error})",
-                parent.display()
-            )
-        })?;
-        canonical_parent.join(file_name)
-    };
-    let authorized = under_any_root(ctx, &resolved, raw)?;
-    Ok(sandbox_compatible_mcp_write_path(&authorized))
-}
-
-fn font_dirs_for(args: &Value, ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
-    let mut dirs = ctx.font_dirs.clone();
-    if let Some(d) = arg_str_opt(args, "font_dir")? {
-        // Per-call font_dir is subject to the sandbox check (startup --font-dir is trusted).
-        dirs.push(checked_read_path(ctx, d)?);
-    }
-    Ok(dirs)
-}
-
 // ---- 도구 핸들러 ----
 
-fn tool_info(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_info(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let v = crate::commands::info::info_json(&path).map_err(|e| e.to_string())?;
     Ok(vec![text_content(
@@ -784,7 +442,7 @@ fn tool_info(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_read_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+fn tool_read_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let password = take_scoped_password(
         args,
@@ -901,7 +559,7 @@ fn tool_read_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
     ])
 }
 
-fn tool_list_fields(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_list_fields(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let doc = load_document(&path).map_err(|e| e.to_string())?;
     let fields: Vec<Value> = hwp_convert::list_fields(&doc)
@@ -918,7 +576,7 @@ fn tool_list_fields(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_list_bookmarks(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_list_bookmarks(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let doc = load_document(&path).map_err(|e| e.to_string())?;
     let bookmarks: Vec<Value> = hwp_convert::list_bookmarks(&doc)
@@ -930,7 +588,7 @@ fn tool_list_bookmarks(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_slots(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_slots(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let doc = load_document(&path).map_err(|e| e.to_string())?;
     let items: Vec<Value> = hwp_convert::scan_placeholders(&doc)
@@ -942,7 +600,7 @@ fn tool_slots(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_fill(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_fill(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     let values_obj = args
@@ -980,7 +638,7 @@ fn tool_fill(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
             &set,
             None,
             arg_bool(args, "allow_partial", false)?,
-            &ctx.roots,
+            ctx.roots(),
         )
         .map_err(|error| format!("{error:#}"))?
     } else {
@@ -998,7 +656,7 @@ fn tool_fill(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_validate(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_validate(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let v = crate::commands::validate::validate_json(&path);
     Ok(vec![text_content(
@@ -1011,7 +669,7 @@ fn tool_validate(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
 /// every other read tool (`checked_read_path`), then the shared lint entry —
 /// findings carry rule_id/severity/line/col/message only, no source excerpts
 /// (T-02.3-04).
-fn tool_lint(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_lint(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let report =
         crate::commands::lint::lint_path_json(&path, hwp_convert::lint::LintProfile::Gongmun);
@@ -1020,7 +678,7 @@ fn tool_lint(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_certify(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_certify(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
@@ -1049,7 +707,7 @@ fn tool_certify(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
 /// `hwp merge` over MCP. Every input, the output and the optional loss report
 /// are root-checked before any file is touched, and the single password applies
 /// to every input — the same single-password-per-batch rule the CLI documents.
-fn tool_merge_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+fn tool_merge_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult {
     let inputs = arg_array(args, "inputs")?
         .iter()
         .map(|value| {
@@ -1100,7 +758,7 @@ fn tool_merge_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
 
 /// `hwp split` over MCP. `out_dir` is write-checked like any other output path,
 /// so the published fragments land under a configured root by construction.
-fn tool_split_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+fn tool_split_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let out_dir = checked_write_path(ctx, arg_str(args, "out_dir")?)?;
     let pages = arg_array(args, "pages")?
@@ -1157,7 +815,7 @@ fn tool_split_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
 /// is written. Differences are a normal result, never `isError` — the CLI's
 /// diff(1) exit codes have no MCP equivalent, so the caller reads `identical`
 /// instead. This matches how `hwp_grep` reports zero matches.
-fn tool_compare_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+fn tool_compare_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult {
     let a = checked_read_path(ctx, arg_str(args, "a")?)?;
     let b = checked_read_path(ctx, arg_str(args, "b")?)?;
     let password = take_scoped_password(args, &["a", "b", "password"])?;
@@ -1174,7 +832,7 @@ fn tool_compare_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
     )])
 }
 
-fn tool_render_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+fn tool_render_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     if args.get("page").is_some() && args.get("pages").is_some() {
         return Err("page와 pages는 함께 지정할 수 없습니다".into());
@@ -1360,7 +1018,7 @@ fn grep_result_capped(matches: Vec<String>, cap: usize) -> Value {
     })
 }
 
-fn tool_grep(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_grep(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
     let pattern = arg_str(args, "pattern")?;
     let ignore_case = arg_bool(args, "ignore_case", false)?;
@@ -1373,7 +1031,7 @@ fn tool_grep(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_edit(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     use crate::commands::edit::TypedEditOperation as Op;
@@ -1756,7 +1414,7 @@ fn parse_convert_format(value: &str) -> Result<hwp_cli::cli::ConvertFormat, Stri
     }
 }
 
-fn convert_request(args: &Value, ctx: &Ctx) -> Result<ConvertRequest, String> {
+fn convert_request(args: &Value, ctx: &dyn FileAuthority) -> Result<ConvertRequest, String> {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     // An explicit to wins over output-extension inference, like the CLI --to.
@@ -1782,7 +1440,7 @@ fn convert_request(args: &Value, ctx: &Ctx) -> Result<ConvertRequest, String> {
     })
 }
 
-fn tool_convert_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
+fn tool_convert_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult {
     let request = convert_request(args, ctx)?;
     let password = take_scoped_password(
         args,
@@ -1849,24 +1507,24 @@ fn tool_convert_scoped(args: &mut Value, ctx: &Ctx) -> McpToolResult {
 // exclusively calls the scoped variant and moves `password` out of its owned
 // request value before any document load.
 #[cfg(test)]
-fn tool_read(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_read(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let mut args = args.clone();
     tool_read_scoped(&mut args, ctx).map_err(|error| error.message)
 }
 
 #[cfg(test)]
-fn tool_render(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_render(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let mut args = args.clone();
     tool_render_scoped(&mut args, ctx).map_err(|error| error.message)
 }
 
 #[cfg(test)]
-fn tool_convert(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_convert(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let mut args = args.clone();
     tool_convert_scoped(&mut args, ctx).map_err(|error| error.message)
 }
 
-fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_new(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "hwp_new 인자는 객체여야 합니다".to_string())?;
@@ -1959,13 +1617,13 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         (Some(text), _, _) => crate::commands::new::NewInput::Markdown {
             text,
             base_dir: None,
-            roots: &ctx.roots,
+            roots: ctx.roots(),
         },
         (None, Some(markdown), None) => crate::commands::new::NewInput::Markdown {
             text: markdown,
             base_dir: None,
             // Bind image references inside the markdown to the sandbox roots (#56).
-            roots: &ctx.roots,
+            roots: ctx.roots(),
         },
         (None, None, Some(document_json)) => crate::commands::new::NewInput::Json(document_json),
         (None, None, None) => crate::commands::new::NewInput::Empty,
@@ -2018,7 +1676,7 @@ fn tool_new(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_compose(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_compose(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
@@ -2087,7 +1745,7 @@ fn tool_compose(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         arg_bool(args, "dry_run", false)?,
         arg_bool(args, "allow_visual_fallback", false)?,
         source_path.as_deref(),
-        &ctx.roots,
+        ctx.roots(),
     )
     .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
@@ -2095,7 +1753,7 @@ fn tool_compose(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
     )])
 }
 
-fn tool_template(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_template(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
@@ -2194,7 +1852,7 @@ fn tool_template(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
         &output,
         arg_bool(args, "dry_run", false)?,
         &source_paths,
-        &ctx.roots,
+        ctx.roots(),
     )
     .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
@@ -2219,7 +1877,7 @@ fn parse_spec_format(value: &str) -> Result<hwp_cli::document_spec::SpecInputFor
     }
 }
 
-fn tool_diff(args: &Value, ctx: &Ctx) -> Result<Vec<Value>, String> {
+fn tool_diff(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let reference = checked_read_path(ctx, arg_str(args, "ref")?)?;
     let page = usize::try_from(arg_u64(args, "page", 1)?)
@@ -2654,6 +2312,13 @@ fn tool_defs() -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::authority::{LocalFsContext, canonicalize_mcp_path};
+    #[cfg(windows)]
+    use super::authority::{
+        canonical_path_starts_with, sandbox_compatible_mcp_write_path,
+        strip_windows_verbatim_prefix,
+    };
+    use super::stdio::read_line_bounded;
     use super::*;
 
     #[cfg(windows)]
@@ -2775,22 +2440,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
-    fn ctx() -> Ctx {
-        Ctx {
-            font_dirs: vec![PathBuf::from(concat!(
+    fn ctx() -> LocalFsContext {
+        LocalFsContext::new(
+            vec![PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../../fonts"
             ))],
-            roots: Vec::new(),
-        }
+            Vec::new(),
+        )
     }
 
     /// Sandbox context allowing only the given root (canonicalized by the caller).
-    fn ctx_with_roots(roots: Vec<PathBuf>) -> Ctx {
-        Ctx {
-            font_dirs: Vec::new(),
-            roots,
-        }
+    fn ctx_with_roots(roots: Vec<PathBuf>) -> LocalFsContext {
+        LocalFsContext::new(Vec::new(), roots)
     }
 
     fn fixture(rel: &str) -> String {
@@ -4980,8 +4642,7 @@ mod tests {
     #[test]
     fn mcp_convert_request_merges_font_dirs_and_maps_args() {
         // Seam verified without rendering: a pdf-target conversion receives the startup/per-call font directories.
-        let mut sandbox_ctx = ctx();
-        sandbox_ctx.font_dirs = vec![PathBuf::from("/launch-fonts")];
+        let sandbox_ctx = LocalFsContext::new(vec![PathBuf::from("/launch-fonts")], Vec::new());
         let request = convert_request(
             &json!({
                 "input": "in.hwpx",
