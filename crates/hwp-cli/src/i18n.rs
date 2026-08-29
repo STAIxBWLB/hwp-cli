@@ -761,6 +761,32 @@ pub const KO: &[(&str, &str, &str)] = &[
         "root",
         "모든 파일 접근을 이 디렉터리 아래로 제한 (반복 가능). 기본: 제한 없음",
     ),
+    // serve
+    (
+        "serve",
+        "",
+        "컨테이너 배포용 MCP HTTP 서버 — 같은 도구를 POST /mcp로 제공",
+    ),
+    (
+        "serve",
+        "addr",
+        "수신 주소. 포트가 0이면 빈 포트를 골라 바인드된 주소를 stderr로 출력",
+    ),
+    (
+        "serve",
+        "root",
+        "작업 공간 root — 모든 파일 접근을 이 디렉터리 아래로 제한",
+    ),
+    (
+        "serve",
+        "font_dir",
+        "렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능)",
+    ),
+    (
+        "serve",
+        "files",
+        "root 아래에서 POST/GET /files/{name} 업로드·다운로드 활성화",
+    ),
     // update
     (
         "update",

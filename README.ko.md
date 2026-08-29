@@ -459,9 +459,11 @@ Windows에서는 `%USERPROFILE%\AppData\LocalLow` 아래에 전용 교환 root(�
 거부될 수 있다. Quick의 로컬 폴더 권한은 이 쓰기 무결성을 바꾸지 않으므로 전용 가이드의
 생성·import JSON·복구 절차를 따른다.
 
-Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 인증된 Streamable HTTP, tenant 격리,
-artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)에
-정리했으며 현재 릴리스에는 HTTP runtime이 없다.
+Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 이제 `hwp serve`가 같은 도구를
+컨테이너 배포용 HTTP로 제공한다(`POST /mcp`,
+[배포 설계](docs/design/22-remote-mcp-deployment.ko.md) 참고). 다만 이 서버는 앞단에 신뢰된
+edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, tenant 격리, artifact 전송은
+여전히 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)의 후속 작업이다.
 
 ### 노출 도구 (20종)
 

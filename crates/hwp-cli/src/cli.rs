@@ -498,6 +498,21 @@ pub enum Cmd {
         #[arg(long)]
         root: Vec<PathBuf>,
     },
+    /// MCP HTTP server for container deployment: the same tools over POST /mcp
+    Serve {
+        /// Listen address. Port 0 picks a free port and prints the bound address to stderr
+        #[arg(long, default_value = "0.0.0.0:8080")]
+        addr: std::net::SocketAddr,
+        /// Workspace root: all file access is restricted to this directory
+        #[arg(long)]
+        root: PathBuf,
+        /// Default font directory for the render and diff tools (repeatable)
+        #[arg(long)]
+        font_dir: Vec<PathBuf>,
+        /// Enable POST and GET /files/{name} upload and download inside the root
+        #[arg(long)]
+        files: bool,
+    },
 
     /// Self-update: fetch the latest `hwp` from GitHub releases and replace the running binary
     Update {

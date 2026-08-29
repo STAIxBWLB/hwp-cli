@@ -182,6 +182,12 @@ fn real_main() -> anyhow::Result<()> {
             }
         },
         Cmd::Mcp { font_dir, root } => commands::mcp::run(font_dir, root),
+        Cmd::Serve {
+            addr,
+            root,
+            font_dir,
+            files,
+        } => commands::mcp::serve(addr, root, font_dir, files),
         Cmd::Update {
             check,
             tag,
