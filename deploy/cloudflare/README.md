@@ -120,6 +120,47 @@ Then check the negatives, which are the parts worth distrusting:
 
 After testing, confirm the container count returns to zero in the dashboard.
 
+## Deployed and verified
+
+Live at `https://hwp-mcp.staix.workers.dev`. The whole path was exercised against
+the real service: dynamic client registration, the consent screen, Google
+sign-in, an access token this Worker issued (never a Google one), `initialize`
+starting a container, `tools/list` returning all 20 tools, `hwp_new` writing into
+the workspace, and the document coming back through `/files`.
+
+Negative cases, all confirmed on the deployed service:
+
+| Case | Result |
+|---|---|
+| No credentials, or an unknown personal access token | `401` with a `WWW-Authenticate` challenge |
+| A session id this service never minted, on `/mcp` and on `/files` | `404`, revealing nothing |
+| `GET /mcp` | `405` — no server-push stream is offered |
+| Body over 1 MiB | `413` before parsing |
+| File name outside the allowed charset | `400` |
+| Tool writing outside the workspace | refused, same message the stdio server gives |
+| `DELETE`, then reuse of that session | `204`, then `404` |
+
+Five consecutive full round trips pass with no flakiness.
+
+### Three defects this verification caught
+
+Worth recording, because each one only appeared against the deployed service:
+
+1. **An invented session id was accepted.** The guard asked "is this session
+   dead?", but a never-initialized Durable Object has no dead flag either, so a
+   made-up id started a fresh container. Cross-user isolation was never at risk —
+   the object name derives from the authenticated principal — but one caller
+   could have spun up containers without limit. `isUsable()` now also requires
+   the marker `initialize` writes.
+2. **Request bodies cannot be streamed across the Durable Object RPC boundary.**
+   `wrangler tail` showed `ReadableStream received over RPC disconnected
+   prematurely`, which made uploads fail intermittently. `/files` now buffers
+   both directions, capped at 32 MiB on the Worker side.
+3. **Overriding `alarm()` hijacked the Container base class.** That class runs its
+   own alarm for sleep and activity bookkeeping; intercepting it ran the
+   8-hour-cap teardown seconds after a session started. Maximum lifetime is
+   checked on the request path now, and nothing competes with the base class.
+
 ## What is already verified
 
 The container half was built and exercised on an amd64 host before any Cloudflare
