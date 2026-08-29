@@ -23,7 +23,7 @@ to deploy once they exist.
 2. **A Cloudflare API token** for the deploy host, with: Workers Scripts:Edit,
    Workers KV Storage:Edit, D1:Edit, Containers:Edit, Account Settings:Read.
 3. **A Google OAuth client** (type: Web application) with the redirect URI
-   `https://hwp-mcp.<account>.workers.dev/callback`. Keep the client id and secret.
+   `https://hwp-mcp.young-joon-lee.workers.dev/callback`. Keep the client id and secret.
 4. **A $10/month billing notification** (Dashboard → Notifications). The budget cap
    for this service is $10/month; see *Cost* below.
 
@@ -49,16 +49,26 @@ CLOUDFLARE_ACCOUNT_ID=...
 EOF
 ```
 
+## Already provisioned
+
+Account `entelecheia` (`b378caab1c7aea09cb77db791fe5f3f8`), workers.dev subdomain
+`young-joon-lee`, so the service URL is
+`https://hwp-mcp.young-joon-lee.workers.dev`.
+
+These exist and their ids are already in `wrangler.jsonc` — do not recreate them:
+
+| Resource | Id |
+|---|---|
+| KV namespace `OAUTH_KV` | `6e717629e44a48b4afc8e2b52684cfe9` |
+| D1 database `hwp-mcp` | `b8a7e5b9-7c14-4354-91a6-52e5c36d45c8` |
+
+`schema.sql` is applied to the remote database; `users`, `pats` and `audit` are live.
+
 ## First deploy
 
 ```bash
 set -a && . ~/.config/hwp-mcp-deploy.env && set +a
 npm ci
-
-# Create the stores, then paste the printed ids into wrangler.jsonc.
-npx wrangler kv namespace create OAUTH_KV
-npx wrangler d1 create hwp-mcp
-npx wrangler d1 execute hwp-mcp --remote --file schema.sql
 
 # Secrets (never in wrangler.jsonc).
 npx wrangler secret put GOOGLE_CLIENT_ID
@@ -76,12 +86,12 @@ image. The Worker URL may answer before container routes do.
 ```bash
 # 1. Protocol, from a machine with a browser.
 npx @modelcontextprotocol/inspector
-#    Transport: Streamable HTTP → https://hwp-mcp.<account>.workers.dev/mcp
+#    Transport: Streamable HTTP → https://hwp-mcp.young-joon-lee.workers.dev/mcp
 #    Expect: dynamic registration → Google sign-in → initialize returns
 #    Mcp-Session-Id → tools/list shows exactly 20 tools.
 
 # 2. A real client.
-claude mcp add --transport http hwp https://hwp-mcp.<account>.workers.dev/mcp
+claude mcp add --transport http hwp https://hwp-mcp.young-joon-lee.workers.dev/mcp
 ```
 
 Then check the negatives, which are the parts worth distrusting:

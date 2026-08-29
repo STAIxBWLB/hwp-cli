@@ -27,13 +27,13 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HwpSession"] }],
 
   // The OAuth provider library requires this exact binding name.
-  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "PLACEHOLDER_RUN_WRANGLER_KV_NAMESPACE_CREATE" }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "6e717629e44a48b4afc8e2b52684cfe9" }],
 
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "hwp-mcp",
-      "database_id": "PLACEHOLDER_RUN_WRANGLER_D1_CREATE"
+      "database_id": "b8a7e5b9-7c14-4354-91a6-52e5c36d45c8"
     }
   ],
 
