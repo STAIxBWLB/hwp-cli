@@ -33,6 +33,14 @@
      name of the tool or method called, whether it succeeded, how long it took, and how
      many bytes moved in and out. It contains <strong>no tool arguments, no file names,
      no paths, no document content and no tokens</strong>.</p>
+  <p><strong>Authorization records for connected clients.</strong> When an MCP client
+     connects through the OAuth flow, the service stores a registration for that client,
+     a grant recording that you authorized it, and a record per access token it holds.
+     Each grant carries your account identifier and your email address, and the tokens
+     are stored so they can be checked and revoked. These are what let a client keep
+     working without asking you to sign in again, and they are deleted when the grant
+     is revoked. A short-lived entry also exists during sign-in itself and expires
+     within ten minutes.</p>
   <p><strong>Sign-in cookies.</strong> A signed dashboard session cookie lasting twelve
      hours, a cookie preventing cross-site request forgery, and a signed cookie
      recording which client you already approved, lasting ninety days. All are signed
