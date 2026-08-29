@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+<title>Privacy policy — hwp MCP</title>
+<main>
+  <h1>Privacy policy</h1>
+  <p>hwp MCP is an MCP server for HWP and HWPX documents, operated by Young Joon Lee.
+     Contact: <a href="mailto:yj.lee@chu.ac.kr">yj.lee@chu.ac.kr</a>.</p>
+  <p>This page describes exactly what the service stores. Where it says something is
+     not stored, that is enforced in code, not policy.</p>
+
+  <h2>What Google gives us</h2>
+  <p>Signing in requests only the <code>openid</code>, <code>email</code> and
+     <code>profile</code> scopes. From the resulting token the service reads three
+     claims and nothing else: your Google account identifier (<code>sub</code>), your
+     email address, and your display name. They identify your account. They are never
+     sold, never shared, never used for advertising, and never used to train models.
+     Use of information received from Google APIs follows the
+     <a href="https://developers.google.com/terms/api-services-user-data-policy">Google
+     API Services User Data Policy</a>, including its Limited Use requirements.</p>
+
+  <h2>What the service stores</h2>
+  <p><strong>Your account.</strong> An internal identifier, the Google
+     <code>sub</code>, your email address, your display name, and the times you first
+     signed in and last signed in. Identity is keyed on <code>sub</code> rather than on
+     the email address, because an address can be reassigned to a different person.</p>
+  <p><strong>Access tokens you create.</strong> An identifier, a label you chose, a
+     SHA-256 hash of the token, and the times it was created, last used and revoked.
+     The token itself is shown once at creation and is never stored.</p>
+  <p><strong>An activity log, metadata only.</strong> A timestamp, a request
+     identifier, your account identifier, a SHA-256 hash of the session identifier, the
+     name of the tool or method called, whether it succeeded, how long it took, and how
+     many bytes moved in and out. It contains <strong>no tool arguments, no file names,
+     no paths, no document content and no tokens</strong>.</p>
+  <p><strong>Sign-in cookies.</strong> A signed dashboard session cookie lasting twelve
+     hours, a cookie preventing cross-site request forgery, and a signed cookie
+     recording which client you already approved, lasting ninety days. All are signed
+     rather than tracking, and there are no third-party cookies and no analytics.</p>
+
+  <h2>Your documents</h2>
+  <p>Documents you upload or generate exist only inside a container created for your
+     session. That container has no network access to anywhere, is private to your
+     session, and is destroyed when the session ends. Document content is never written
+     to durable storage, never logged, and never read by the operator.</p>
+
+  <h2>Who else is involved</h2>
+  <p>Cloudflare provides the infrastructure the service runs on, and Google provides
+     sign-in. No one else receives your data.</p>
+
+  <h2>Retention and deletion</h2>
+  <p>Your account record and your tokens are deleted on request to
+     <a href="mailto:yj.lee@chu.ac.kr">yj.lee@chu.ac.kr</a>; there is no self-service
+     deletion page today. The metadata-only activity log described above is currently
+     retained without a fixed expiry. Documents need no deletion request because they
+     do not outlive the session that created them.</p>
+
+  <h2>Changes</h2>
+  <p>Material changes to this page will be reflected here before they take effect in
+     the service.</p>
+  <p><a href="/">Back</a></p>
+</main>

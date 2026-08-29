@@ -199,9 +199,22 @@ async function callback(request: Request, env: Env, url: URL): Promise<Response>
 }
 
 function home(): Response {
+  // Google's verification review reads this page: it wants a homepage on the verified
+  // domain that says what the app does and links the privacy policy. It is also the
+  // first thing a person sees, so it says what the service is for, not just that it
+  // exists.
   return html(
     `<h1>hwp MCP</h1>
-     <p>An MCP server for HWP and HWPX documents. Point an MCP client at
-        <code>/mcp</code> and sign in with Google when it asks.</p>`,
+     <p>An MCP server for HWP and HWPX documents. It reads, renders, converts, edits
+        and creates Korean word-processor files, so an AI assistant can work with them
+        directly instead of asking you to open Hangul.</p>
+     <p>Point an MCP client at <code>/mcp</code> and sign in with Google when it asks.
+        For a client that needs a fixed <code>Authorization</code> header instead, sign
+        in at <a href="/dashboard">the dashboard</a> and create a token there.</p>
+     <p>Each session gets its own container with no network access, and it is destroyed
+        when the session ends. What is stored, and what deliberately is not, is set out
+        in the <a href="/privacy">privacy policy</a>.</p>
+     <p>Operated by Young Joon Lee. Contact
+        <a href="mailto:yj.lee@chu.ac.kr">yj.lee@chu.ac.kr</a>.</p>`,
   );
 }

@@ -36,6 +36,51 @@ Two things about the Google side are worth knowing before anyone else tries to s
   `chu-rise` project, so a dedicated project is the clean fix if this service ever needs its own
   branding.
 
+## Google verification
+
+The app is in **Testing** publishing status, which caps it at 100 listed test users.
+That cap, not a review queue, is what stops anyone but the owner from using the
+service. Moving to production is the unblock.
+
+The scopes are `openid email profile` (`google-handler.ts:60`), all **non-sensitive**.
+That matters: this app does not enter the sensitive or restricted path, so there is no
+CASA assessment and no third-party penetration test. Check the console before planning
+around a multi-day review that may not apply here.
+
+What the repo now provides, both served from the verified domain:
+
+| Requirement | Where |
+|---|---|
+| A homepage saying what the app does | `/`, from `home()` in `src/google-handler.ts` |
+| A privacy policy | `/privacy`, from `public/privacy.html` — no route needed, the unmatched-path fallthrough to `env.ASSETS` serves it |
+| A contact address | `yj.lee@chu.ac.kr`, on both pages |
+
+The privacy policy is written from `schema.sql` and `src/audit.ts` rather than from a
+template, so it names the actual columns and states what is deliberately absent from
+the audit table. Keep it that way: if either file gains a field, the page is wrong
+until it is updated.
+
+Owner steps, none of which are in this repo:
+
+1. **Decide the Google Cloud project.** The consent screen's privacy-policy URL,
+   authorized domains and publishing status are all *project-scoped*. Verifying the
+   shared `chu-rise` project would point every other client's consent screen at this
+   service's privacy policy, which is wrong for those apps' users. A dedicated project
+   costs a new client id and secret, two `wrangler secret put` calls and a deploy.
+2. **Verify domain ownership.** A DNS TXT record on `staix.net` as a Search Console
+   Domain property, added in the Cloudflare zone the account already owns. It covers
+   `hwp-mcp.staix.net` and every future subdomain.
+3. **Fill the consent screen.** One field cannot follow the usual contact convention:
+   Google's **User support email** must be a Google account or a Group you own, and
+   `yj.lee@chu.ac.kr` is not one — it was already rejected as a test user for that
+   reason. That field has to be `hello@jeju.ai` unless a Group is created on
+   `staix.net`. The privacy-policy contact and the developer contact field both take
+   `yj.lee@chu.ac.kr` normally.
+4. **At submission, drop the workers.dev redirect URI** rather than verifying it.
+   `workers.dev` is on the Public Suffix List and its DNS is not ours. This stops *new
+   sign-ins* on the old hostname; already-issued tokens and PATs keep working there,
+   because Google is only involved at sign-in.
+
 ## Where to deploy from
 
 `wrangler deploy` builds the container image locally, so the deploy host needs a
