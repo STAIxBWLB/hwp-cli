@@ -124,6 +124,23 @@ fn reject_empty_sections(document: &hwp_model::Document) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Guards shared by both entry points: v1 accepts no per-input stdin
+/// disambiguation (the loader stages stdin to a single temp path), so refuse
+/// "-" by name rather than merging it as a literal file named "-", and refuse
+/// an empty input list before any work happens.
+fn reject_unsupported_inputs(inputs: &[PathBuf]) -> anyhow::Result<()> {
+    if inputs.is_empty() {
+        anyhow::bail!("병합 입력이 비어 있습니다");
+    }
+    if let Some(stdin_input) = inputs.iter().find(|input| input.as_os_str() == "-") {
+        anyhow::bail!(
+            "hwp merge는 표준 입력(\"-\")을 지원하지 않습니다 — 파일 경로를 직접 지정하세요: {}",
+            stdin_input.display()
+        );
+    }
+    Ok(())
+}
+
 /// `hwp merge` entry point. Resolves the password once and applies it uniformly
 /// to every input (matching `commands::convert::run_multi_with_password`'s
 /// single-password-per-batch precedent).
@@ -134,22 +151,33 @@ pub fn run(
     loss_report: Option<&Path>,
     password: PasswordArgs,
 ) -> anyhow::Result<()> {
-    // v1 accepts no per-input stdin disambiguation (the loader stages stdin
-    // to a single temp path); refuse "-" by name rather than merging it as a
-    // literal file named "-".
-    if let Some(stdin_input) = inputs.iter().find(|input| input.as_os_str() == "-") {
-        anyhow::bail!(
-            "hwp merge는 표준 입력(\"-\")을 지원하지 않습니다 — 파일 경로를 직접 지정하세요: {}",
-            stdin_input.display()
-        );
-    }
-    let first = inputs
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("병합 입력이 비어 있습니다"))?;
-    let resolved_password = resolve_password_args(password, first)?;
-    let options = LoadOptions {
-        password: resolved_password.as_ref(),
-    };
+    reject_unsupported_inputs(inputs)?;
+    let resolved_password = resolve_password_args(password, &inputs[0])?;
+    execute(
+        inputs,
+        output,
+        strict,
+        loss_report,
+        &LoadOptions {
+            password: resolved_password.as_ref(),
+        },
+    )?;
+    Ok(())
+}
+
+/// The merge itself, with the password already resolved. Split out of [`run`]
+/// so the MCP `hwp_merge` tool reaches the same path and receives the write
+/// report; the CLI discards it and relies on the stderr summary instead. This
+/// mirrors `convert::execute_with_options`, which `tool_convert_scoped` calls
+/// for the same reason.
+pub(crate) fn execute(
+    inputs: &[PathBuf],
+    output: &Path,
+    strict: bool,
+    loss_report: Option<&Path>,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    reject_unsupported_inputs(inputs)?;
 
     let format = infer_merge_format(output)?;
     let target_format = format.target_format();
@@ -169,7 +197,7 @@ pub fn run(
             .len();
         reserved_bytes = accumulate_input_reservation(reserved_bytes, size)?;
         source_formats.push(crate::format::detect(input)?);
-        documents.push(load_document_with_options(input, &options).map_err(anyhow::Error::new)?);
+        documents.push(load_document_with_options(input, options).map_err(anyhow::Error::new)?);
     }
 
     let outcome = hwp_convert::document_merge::merge_documents(&documents)
@@ -241,10 +269,11 @@ pub fn run(
         Ok(())
     };
 
-    crate::commands::output::write_validated(output, None, write_staged, verify_staged)?;
+    let report =
+        crate::commands::output::write_validated(output, None, write_staged, verify_staged)?;
 
     eprintln!("병합 완료: {}개 입력 → {}", inputs.len(), output.display());
-    Ok(())
+    Ok(report)
 }
 
 #[cfg(test)]

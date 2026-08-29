@@ -71,6 +71,22 @@ pub fn run(
     })
 }
 
+/// Loads both inputs read-only with an already-resolved password and returns
+/// the typed `hwp-compare-report-v1` body. Split out of [`run`] so the MCP
+/// `hwp_compare` tool never reaches `run`'s `println!` reporting — over stdio
+/// that stream carries JSON-RPC and a leaked report would corrupt the session.
+pub(crate) fn execute(
+    a: &Path,
+    b: &Path,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<serde_json::Value> {
+    let doc_a = load_document_with_options(a, options).map_err(anyhow::Error::new)?;
+    let doc_b = load_document_with_options(b, options).map_err(anyhow::Error::new)?;
+    let diff = hwp_convert::document_compare::compare_documents(&doc_a, &doc_b)
+        .map_err(|error| anyhow::anyhow!("비교 실패: {error}"))?;
+    Ok(compare_report_json(a, b, &diff))
+}
+
 /// Plain text extraction identical in shape to `commands/grep.rs`'s `para_text`
 /// (this file has no reuse path across binaries, so the small helper is
 /// duplicated rather than shared).
@@ -180,7 +196,7 @@ fn char_run_json(run: &CharRun) -> serde_json::Value {
 /// Builds the `hwp-compare-report-v1` payload: one flat `serde_json::json!`
 /// value, matching `commands/diff.rs`'s `diff_report_json` shape rather than a
 /// new `#[derive(Serialize)]` struct (D-10).
-fn compare_report_json(a: &Path, b: &Path, diff: &DocumentDiff) -> serde_json::Value {
+pub(crate) fn compare_report_json(a: &Path, b: &Path, diff: &DocumentDiff) -> serde_json::Value {
     let paragraphs: Vec<serde_json::Value> = diff
         .paragraphs
         .iter()

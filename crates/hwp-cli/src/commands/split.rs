@@ -180,6 +180,14 @@ fn remove_stale_fragments(out_dir: &Path, stem: &str, extension: &str, keep: &[P
     }
 }
 
+/// Structured outcome of one split run: the published fragment paths plus the
+/// write report, returned so the MCP `hwp_split` tool can report both without
+/// re-scanning the output directory.
+pub(crate) struct SplitSummary {
+    pub fragments: Vec<PathBuf>,
+    pub report: WriteReport,
+}
+
 /// `hwp split` entry point.
 pub fn run(
     input: &Path,
@@ -190,9 +198,32 @@ pub fn run(
     password: PasswordArgs,
 ) -> anyhow::Result<()> {
     let resolved_password = resolve_password_args(password, input)?;
-    let options = LoadOptions {
-        password: resolved_password.as_ref(),
-    };
+    execute(
+        input,
+        out_dir,
+        pages,
+        strict,
+        loss_report,
+        &LoadOptions {
+            password: resolved_password.as_ref(),
+        },
+    )?;
+    Ok(())
+}
+
+/// The split itself, with the password already resolved. Split out of [`run`]
+/// so the MCP `hwp_split` tool reaches the same path and receives the fragment
+/// list; the CLI discards it and relies on the stderr summary instead. This
+/// mirrors `convert::execute_with_options`, which `tool_convert_scoped` calls
+/// for the same reason.
+pub(crate) fn execute(
+    input: &Path,
+    out_dir: &Path,
+    pages: &[String],
+    strict: bool,
+    loss_report: Option<&Path>,
+    options: &LoadOptions<'_>,
+) -> anyhow::Result<SplitSummary> {
     let source_format = crate::format::detect(input)?;
     // Fragment names normalize the extension to lowercase, the same casing
     // rule the rest of the CLI applies to format-bearing names (#177).
@@ -218,7 +249,7 @@ pub fn run(
         )?;
     }
 
-    let document = load_document_with_options(input, &options).map_err(anyhow::Error::new)?;
+    let document = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
 
     let outcome: SplitOutcome = if pages.is_empty() {
         hwp_convert::document_split::split_sections(&document)
@@ -304,7 +335,10 @@ pub fn run(
         destinations.len(),
         out_dir.display()
     );
-    Ok(())
+    Ok(SplitSummary {
+        fragments: destinations,
+        report,
+    })
 }
 
 #[cfg(test)]
