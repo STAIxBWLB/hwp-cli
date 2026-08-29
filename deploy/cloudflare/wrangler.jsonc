@@ -52,6 +52,14 @@
     { "name": "CALL_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
   ],
 
+  // A Custom Domain rather than a route: Cloudflare provisions the DNS record and
+  // the certificate itself, where a plain route would need both done by hand first.
+  // workers.dev stays on deliberately. Every credential is host-independent - the
+  // OAuth provider keys KV as client:/grant:/token: with no origin, and PATs are
+  // SHA-256 hashes in D1 - so clients configured before the move keep working on
+  // the old hostname instead of breaking on a date nobody told them about.
+  "routes": [{ "pattern": "hwp-mcp.staix.net", "custom_domain": true }],
+
   "assets": { "directory": "./public", "binding": "ASSETS" },
 
   "observability": { "enabled": true }
