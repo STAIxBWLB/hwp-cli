@@ -70,8 +70,23 @@ fn tools_list() -> serde_json::Value {
     send(serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
     let list = recv("tools/list");
 
+    // Bounded shutdown, the same shape cli_surface.rs uses. An unconditional wait()
+    // turns a regression where `hwp mcp` stops exiting on stdin EOF into a test that
+    // hangs until the CI job's own timeout, which reports as a stuck workspace rather
+    // than as the MCP defect it is.
     drop(stdin);
-    let _ = child.wait();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            assert!(status.success(), "MCP 종료 코드: {status}");
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("MCP가 stdin EOF 후 30s 내 종료하지 않음");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     let tools = list["result"]["tools"].clone();
     assert!(

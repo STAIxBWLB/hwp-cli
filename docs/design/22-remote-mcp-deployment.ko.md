@@ -111,15 +111,32 @@ adapter가 강제하는 규칙은 다음과 같다.
 
 ### 3.3 Remote-safe inline content
 
-Tier B는 `/mcp` 외의 route를 노출하지 않으므로 문서가 JSON-RPC 안으로 이동해야 한다. 이에 따라
-tool schema에 inline mode를 추가한다. 문서 입력이나 출력을 path 대신 크기 제한이 있는 base64
-content로 주고받는 방식이다. 이 패턴은 현재 server에 이미 존재한다. `hwp_compose`는 `spec`을
-inline이나 `spec_path`로 받고, `hwp_template`은 `inline_contract_input`으로 template과 data를
-inline으로 받는다.
+Tier B는 `/mcp` 외의 route를 노출하지 않으므로 문서가 JSON-RPC 안으로 이동해야 한다. 이를
+도구 두 개가 담당한다. `hwp_put_file {name, content}`은 base64 콘텐츠를 세션 워크스페이스의
+파일로 쓰고, `hwp_get_file {path}`은 워크스페이스 파일을 base64로 반환한다. 상한은 복호 기준
+512 KiB이며, 인코딩하면 약 699 KB라서 1 MiB인 줄 상한 안에 JSON-RPC 봉투가 들어갈 여유가 남는다.
 
-이는 doc 20 §3.2가 요구하는 remote schema의 첫 부분이다. tenant 소유 upload, immutable output,
-보존 기간, object store 기반 signed download URL을 포함하는 완전한 artifact model은 두 tier
-모두에서 후속 phase로 남는다.
+**이 절은 원래 기존 tool schema에 inline mode를 추가하는 방식을 규정했으나, 구현 단계에서
+기각되었다.** 도구별 inline은 17개 도구에 인자 약 30개를 더하고, 각 인자를 그 도구의 알 수 없는
+인자 배열에도 넣어야 하며, 비밀번호 범위 도구 6개에서는 `take_scoped_password` 허용 목록에도
+추가해야 한다. 여기에 crate에서 가장 안전이 중요한 파일 안에 발행하지 않고 스테이징만 하는 경로가
+필요했다. 그러고도 `hwp_split`·`hwp_certify`·다중 페이지 `hwp_render`·`hwp_convert --media-dir`의
+디렉터리 및 다중 파일 출력은 표현하지 못해 모두 제외해야 했다. 도구 두 개는 파일 하나로 끝나고,
+기존 20개 스키마를 한 바이트도 바꾸지 않으며, 모든 경로 인자를 균일하게 다룬다. doc 20 §3.2가
+열거하는 이미지·폰트·정책·부품 경로까지 포함되는데, 문서 입출력만 다루는 도구별 범위였다면
+이것들은 빠졌을 것이다. §7이 이미 이 형태를 규정하고 있다. 도구는 계속 경로 인자를 받고, 경로는
+하나의 사설 워크스페이스 안의 상대 이름이다.
+
+이 도구들은 Tier A의 공백도 함께 메운다. `/files`는 `Mcp-Session-Id`를 실은 별도 HTTP 요청이
+필요한 경로이고 MCP 클라이언트는 그런 요청을 보낼 수 없다. 따라서 이 도구들이 생기기 전까지
+배포된 서비스는 텍스트에서 문서를 만들 수는 있어도 기존 문서를 받을 수는 없었다.
+
+우회하지 말고 명시해 둘 제약이 둘 있다. 512 KiB는 이미지가 많은 문서에는 작다. Tier A의
+`/files`는 64 MiB까지 받지만 Tier B에는 대응물이 없다. 그리고 받아 온 문서의 base64는 클라이언트
+메시지 스트림에 그대로 쌓이며 대부분의 클라이언트가 이를 모델에 넘긴다. 상한을 올리려면 분할
+전송이 필요하고, 분할 전송은 곧 doc 20 §3.2의 artifact model이다. tenant 소유 upload, immutable
+output, 보존 기간, object store 기반 signed download URL을 포함하는 그 모델은 두 tier 모두에서
+후속 phase로 남으며, 여기서 즉석으로 만들 프로토콜이 아니다.
 
 ## 4. Dependency 결정 기록
 

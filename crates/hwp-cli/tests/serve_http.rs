@@ -14,8 +14,8 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-/// The 20 tools the MCP surface publishes; must agree with `cli_surface.rs`.
-const EXPECTED_TOOLS: [&str; 20] = [
+/// The 22 tools the MCP surface publishes; must agree with `cli_surface.rs`.
+const EXPECTED_TOOLS: [&str; 22] = [
     "hwp_certify",
     "hwp_compare",
     "hwp_compose",
@@ -23,6 +23,7 @@ const EXPECTED_TOOLS: [&str; 20] = [
     "hwp_diff",
     "hwp_edit",
     "hwp_fill",
+    "hwp_get_file",
     "hwp_grep",
     "hwp_info",
     "hwp_lint",
@@ -30,6 +31,7 @@ const EXPECTED_TOOLS: [&str; 20] = [
     "hwp_list_fields",
     "hwp_merge",
     "hwp_new",
+    "hwp_put_file",
     "hwp_read",
     "hwp_render",
     "hwp_slots",
@@ -329,4 +331,61 @@ fn serve_exits_on_sigterm() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     assert!(exit.success(), "정상 종료가 아닙니다: {exit:?}");
+}
+
+/// Inline transfer over HTTP: the flow Tier B has to use, where `/mcp` is the entire
+/// contract and no `/files` sideband exists. Proves a document can enter and leave a
+/// session without any route but this one.
+#[test]
+fn serve_inline_transfer_roundtrip() {
+    let server = spawn("inline", false);
+
+    // Build a real document inside the workspace, then read its bytes back out so the
+    // test has something with genuine structure to send, not a synthetic blob.
+    let made = call_tool(
+        &server.addr,
+        "hwp_new",
+        serde_json::json!({
+            "output": server.root.join("made.hwpx").to_string_lossy(),
+            "markdown": "# 인라인 전송\n\n본문.",
+        }),
+    );
+    assert_eq!(made["isError"], false, "{made}");
+    let original = std::fs::read(server.root.join("made.hwpx")).unwrap();
+
+    let fetched = call_tool(
+        &server.addr,
+        "hwp_get_file",
+        serde_json::json!({"path": server.root.join("made.hwpx").to_string_lossy()}),
+    );
+    assert_eq!(fetched["isError"], false, "{fetched}");
+    let blob = fetched["content"][1]["resource"]["blob"].as_str().unwrap();
+
+    // Round the bytes back in under a different name, then confirm the copy is usable
+    // by a normal path-taking tool — the doc 22 §7 model, where inline transfer feeds
+    // the workspace rather than replacing path arguments.
+    let put = call_tool(
+        &server.addr,
+        "hwp_put_file",
+        serde_json::json!({
+            "name": server.root.join("copy.hwpx").to_string_lossy(),
+            "content": blob,
+        }),
+    );
+    assert_eq!(put["isError"], false, "{put}");
+    assert_eq!(
+        std::fs::read(server.root.join("copy.hwpx")).unwrap(),
+        original,
+        "HTTP 왕복 후 바이트가 달라졌습니다"
+    );
+
+    let info = call_tool(
+        &server.addr,
+        "hwp_info",
+        serde_json::json!({"path": server.root.join("copy.hwpx").to_string_lossy()}),
+    );
+    assert_eq!(
+        info["isError"], false,
+        "왕복한 문서를 읽지 못했습니다: {info}"
+    );
 }

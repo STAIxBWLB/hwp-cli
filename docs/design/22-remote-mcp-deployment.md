@@ -111,15 +111,33 @@ Rules the adapter enforces:
 
 ### 3.3 Remote-safe inline content
 
-Tier B exposes no route other than `/mcp`, so documents must travel inside JSON-RPC. Tool schemas
-gain an inline mode in which a document input or output is base64 content with a size cap rather
-than a path. The pattern already exists in the current server: `hwp_compose` accepts a `spec`
-inline or as `spec_path`, and `hwp_template` accepts inline template and data through
-`inline_contract_input`.
+Tier B exposes no route other than `/mcp`, so documents must travel inside JSON-RPC. Two tools do
+this: `hwp_put_file {name, content}` writes base64 content into the session workspace, and
+`hwp_get_file {path}` returns a workspace file as base64. The cap is 512 KiB decoded, which encodes
+to roughly 699 KB and leaves the JSON-RPC envelope room inside the 1 MiB line limit.
 
-This is the first slice of the doc 20 §3.2 remote schema requirement. The complete artifact model,
-meaning tenant-owned uploads, immutable outputs, retention, and signed download URLs backed by an
-object store, is a later phase in both tiers.
+**This section originally specified an inline mode added to the existing tool schemas, and that was
+rejected during implementation.** Per-tool inline would have added around thirty keys across
+seventeen tools, each also needing an entry in that tool's unknown-argument array and, for the six
+password-scoped tools, in its `take_scoped_password` allow-list, plus a stage-without-publishing
+path inside the crate's most safety-critical file. It still could not express the directory and
+multi-file outputs of `hwp_split`, `hwp_certify`, multi-page `hwp_render` and `hwp_convert
+--media-dir`, all of which would have been excluded. Two tools are one file, leave all twenty
+existing schemas byte-identical, and cover every path argument uniformly - including the image,
+font, policy and parts paths doc 20 §3.2 enumerates and that a per-tool document-only scope would
+have missed. §7 already commits to this shape: tools keep taking path arguments, and a path is a
+relative name inside one private workspace.
+
+It also closes a gap in Tier A. `/files` is a separate HTTP route requiring an out-of-band request
+that carries `Mcp-Session-Id`, which an MCP client cannot make, so before these tools the deployed
+service could author documents from text but could not ingest an existing one through the protocol.
+
+Two limits are worth stating rather than engineering around. 512 KiB is small for an image-heavy
+document; Tier A's `/files` handles 64 MiB, and Tier B has no equivalent. And a fetched document
+puts its base64 into the client's message stream, which most clients feed to the model. Raising the
+ceiling means chunking, and chunking is the doc 20 §3.2 artifact model - tenant-owned uploads,
+immutable outputs, retention, and signed download URLs backed by an object store - which remains a
+later phase in both tiers, not a protocol invented here.
 
 ## 4. Dependency decision record
 
@@ -348,7 +366,7 @@ Satisfied by the first implementation, with the point that enforces each:
 
 | Criterion | Enforcement |
 |---|---|
-| stdio stays the default and still exposes exactly 20 tools | The existing stdio process test gates the core split |
+| stdio stays the default and exposes the same tools as the HTTP adapter | The existing stdio process test gates the core split |
 | Authentication precedes tool execution | Tier A: the OAuth provider and the token middleware both reject before the handler. Tier B: the runtime's JWT authorizer rejects before the container |
 | Sessions bind to a principal and cross-principal access fails closed | Tier A: the object name derives from the principal, so a foreign session identifier yields an uninformative `404`. Tier B: the platform scopes sessions to the authorized caller |
 | Request, upload, workspace, and deadline limits with deterministic cleanup | Body rejection before parsing at the edge and again in `hwp serve`; file and workspace caps in the adapter; deadlines and termination at the edge |

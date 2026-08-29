@@ -46,7 +46,7 @@ and in CI.
 - **Document-level workflows** Merge several documents into one (`hwp merge`, one Section per
   input), split one into per-section or per-page-range fragments (`hwp split`), and report the
   paragraph and structural differences between two documents (`hwp compare`).
-- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 20 tools to
+- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 22 tools to
   desktop clients, including Amazon Quick Desktop.
 
 ## Implementation status
@@ -61,7 +61,7 @@ and in CI.
 | Certification (`certify`) and structured corpus gate (`corpus`) | Implemented |
 | Document-level workflows (`merge`, `split`, `compare`) | Implemented; spot-checked in Hancom on 2026-08-29 (see [12-feature-gaps](docs/design/12-feature-gaps.md) GM-3/GM-4/GM-8) |
 | Official-document authoring (profiles, templates, frames, lint, table styling) | Implemented |
-| MCP server (20 tools) | Implemented |
+| MCP server (22 tools) | Implemented |
 | Distribution documents (배포용문서) | Read |
 | HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
@@ -480,7 +480,7 @@ The copy-paste Windows setup, create/validate acceptance test, reusable agent in
 symptom-driven recovery are in the dedicated
 [Amazon Quick Desktop runbook](docs/manual/amazon-quick-desktop.md).
 
-Amazon Quick Desktop can launch this local stdio server and expose all 20 tools. Install the
+Amazon Quick Desktop can launch this local stdio server and expose all 22 tools. Install the
 publish-safe skill into its active profile with:
 
 ```sh
@@ -524,6 +524,8 @@ tenant isolation and artifact transfer remain future work in
 | `hwp_merge` | `inputs`, `output` | Combine two or more documents; returns the preservation ledger |
 | `hwp_split` | `input`, `out_dir` | Split per Section (or per `pages` range); returns the published fragment paths |
 | `hwp_compare` | `a`, `b` | Read-only paragraph/structure diff as `hwp-compare-report-v1`. Differences never set `isError` — read `identical` |
+| `hwp_put_file` | `name`, `content` | Write base64 content into the session workspace. The only way to hand an existing document to a remote deployment: tool arguments take paths, so upload first and pass the name. 512 KiB decoded |
+| `hwp_get_file` | `path` | Return a workspace file as base64 (a receipt block plus an embedded resource). Refuses above 512 KiB rather than truncating. Keep intermediates in the workspace and fetch only the final artifact - the base64 lands in the client's message stream |
 
 ### Client configuration example
 

@@ -161,7 +161,7 @@ image. The Worker URL may answer before container routes do.
 npx @modelcontextprotocol/inspector
 #    Transport: Streamable HTTP → https://hwp-mcp.staix.net/mcp
 #    Expect: dynamic registration → Google sign-in → initialize returns
-#    Mcp-Session-Id → tools/list shows exactly 20 tools.
+#    Mcp-Session-Id → tools/list shows exactly 22 tools.
 
 # 2. A real client.
 claude mcp add --transport http hwp https://hwp-mcp.staix.net/mcp
@@ -185,7 +185,7 @@ Live at `https://hwp-mcp.staix.net` (and still at `https://hwp-mcp.staix.workers
 The whole path was exercised against
 the real service: dynamic client registration, the consent screen, Google
 sign-in, an access token this Worker issued (never a Google one), `initialize`
-starting a container, `tools/list` returning all 20 tools, `hwp_new` writing into
+starting a container, `tools/list` returning all 22 tools, `hwp_new` writing into
 the workspace, and the document coming back through `/files`.
 
 Personal access tokens work too, for clients that carry a fixed header instead of
@@ -267,7 +267,7 @@ against real Cloudflare services.
 |---|---|
 | `docker build` from the repo root | 134 MB image; the Rust release build takes well under a minute on a large host |
 | `hwp serve` startup | binds and prints `hwp serve: listening on http://0.0.0.0:8080` |
-| `GET /healthz`, `POST /mcp` initialize, `tools/list` | 200, correct handshake, exactly 20 tools |
+| `GET /healthz`, `POST /mcp` initialize, `tools/list` | 200, correct handshake, exactly 22 tools |
 | `GET /mcp` | 405 |
 | `/files` upload, download, and a rejected `.hidden` name | 200, byte-identical, 400 |
 | `hwp_new` into `/work`, then `GET /files/made.hwpx` | created and downloadable |

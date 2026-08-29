@@ -32,6 +32,16 @@ const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
 const DEFAULT_READ_BYTES: usize = 256 * 1024;
 const MAX_READ_BYTES: usize = 1024 * 1024;
 
+/// 인라인 전송 한 건의 복호 후 상한 (doc 22 §3.3).
+///
+/// base64는 3바이트를 4문자로 부풀리므로 512 KiB는 약 699 KB로 인코딩되고, 1 MiB인
+/// `MAX_REQUEST_LINE_BYTES` 안에 JSON-RPC 봉투가 들어갈 여유가 남는다. Tier A의
+/// `/files`는 64 MiB까지 받으므로, 이 상한은 사이드밴드가 없는 Tier B의 제약이다.
+const MAX_INLINE_CONTENT_BYTES: usize = 512 * 1024;
+/// 복호 전에 거절하기 위한 인코딩 길이 상한. `decode`는 출력 전체를 할당하므로
+/// 먼저 막지 않으면 요청 하나로 상한을 훨씬 넘는 메모리를 잡을 수 있다.
+const MAX_INLINE_CONTENT_B64_CHARS: usize = MAX_INLINE_CONTENT_BYTES.div_ceil(3) * 4;
+
 /// 한 줄 JSON-RPC 요청 → 응답 JSON 문자열. 알림(id 없음)이면 None.
 pub fn handle_request(line: &str, ctx: &dyn FileAuthority) -> Option<String> {
     let mut req: Value = match serde_json::from_str(line) {
@@ -267,6 +277,10 @@ fn call_tool(name: &str, args: &mut Value, ctx: &dyn FileAuthority) -> Value {
             .and_then(|_| tool_lint(args, ctx).map_err(Into::into)),
         "hwp_certify" => reject_password_outside_scope(args)
             .and_then(|_| tool_certify(args, ctx).map_err(Into::into)),
+        "hwp_put_file" => reject_password_outside_scope(args)
+            .and_then(|_| tool_put_file(args, ctx).map_err(Into::into)),
+        "hwp_get_file" => reject_password_outside_scope(args)
+            .and_then(|_| tool_get_file(args, ctx).map_err(Into::into)),
         other => Err(McpToolError::from(format!("알 수 없는 도구: {other}"))),
     };
     match result {
@@ -704,6 +718,234 @@ fn tool_certify(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, Str
         return Err(summary);
     }
     Ok(vec![text_content(&summary)])
+}
+
+/// 워크스페이스 파일 하나의 SHA-256 16진 표기.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// base64 문자열의 구조를 검사한다.
+///
+/// 공유 디코더는 `=`와 공백을 건너뛰고 남는 비트를 버리므로 `"A"`나 `"===="` 같은
+/// 입력이 빈 벡터로 조용히 통과한다. 전송 도구에서 그것은 0바이트 파일을 업로드
+/// 성공으로 보고한다는 뜻이라 여기서 먼저 막는다.
+///
+/// 잡아내지 못하는 것도 적어 둔다. 4문자 경계에 딱 맞게 잘린 페이로드는 인코딩만
+/// 봐서는 온전한 것과 구분할 수 없다. 그래서 두 도구 모두 영수증에 sha256을 담는다.
+fn validate_base64_structure(text: &str) -> Result<(), String> {
+    let compact: Vec<u8> = text
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    let padding = compact.iter().rev().take_while(|&&b| b == b'=').count();
+    if padding > 2 {
+        return Err("잘못된 base64: 패딩이 2자를 넘습니다".to_string());
+    }
+    let payload = &compact[..compact.len() - padding];
+    if payload.contains(&b'=') {
+        return Err("잘못된 base64: 패딩이 끝이 아닌 위치에 있습니다".to_string());
+    }
+    if !compact.is_empty() && !compact.len().is_multiple_of(4) {
+        return Err(format!(
+            "잘못된 base64: 공백을 제외한 길이가 4의 배수가 아닙니다 ({}자)",
+            compact.len()
+        ));
+    }
+    // 길이 %4 == 1 은 어떤 바이트열도 만들어낼 수 없는 형태다.
+    if payload.len() % 4 == 1 {
+        return Err("잘못된 base64: 잘린 페이로드입니다".to_string());
+    }
+    Ok(())
+}
+
+/// 파일 경로를 `file://` URI로 만든다.
+///
+/// `format!("file://{}", path.display())`는 공백·`#`·비ASCII·윈도우 드라이브 경로에서
+/// 유효한 URI가 아니다. MCP 클라이언트가 resource `uri`를 URI로 파싱하면 멀쩡한 blob을
+/// 거절하거나 잘못 해석할 수 있다.
+fn file_uri(path: &Path) -> String {
+    const UNRESERVED_EXTRA: &[u8] = b"-._~/";
+    let text = path.display().to_string().replace('\\', "/");
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || UNRESERVED_EXTRA.contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    // 윈도우의 `C:/...`처럼 슬래시로 시작하지 않는 경로는 빈 authority 뒤에 루트가 온다.
+    if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        format!("file:///{encoded}")
+    }
+}
+
+/// 확장자로 추정한 MIME 타입. 모르면 octet-stream이다.
+fn mime_for(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("hwp") => "application/x-hwp",
+        Some("hwpx") => "application/hwp+zip",
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json",
+        Some("md") => "text/markdown",
+        Some("html") => "text/html",
+        Some("csv") => "text/csv",
+        Some("txt") => "text/plain",
+        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("odt") => "application/vnd.oasis.opendocument.text",
+        _ => "application/octet-stream",
+    }
+}
+
+/// base64 콘텐츠를 워크스페이스 파일로 쓴다.
+///
+/// Tier B(AgentCore)는 `/mcp` 외의 경로를 제공하지 않으므로 문서가 JSON-RPC 안으로
+/// 들어와야 한다. Tier A에도 필요한데, `/files`는 `Mcp-Session-Id`를 실은 별도 HTTP
+/// 요청이라 MCP 클라이언트가 호출할 수 없기 때문이다. 이 도구가 생기기 전까지 원격
+/// 서비스는 텍스트에서 문서를 **만들 수는** 있어도 기존 문서를 **받을 수는** 없었다.
+///
+/// 이름 검사는 `checked_write_path`에 맡긴다. `/files` 라우트의 `valid_file_name`을
+/// 재사용하지 않는데, 그 정규식은 URL 경로 조각이 canonicalize 검사 없이 root에
+/// 이어붙는 라우트에서 **그 자체가 봉쇄 수단**이라 존재한다. 여기서는
+/// `checked_write_path`가 더 강한 검사를 하며, ASCII 전용 문자셋을 씌우면 다른 모든
+/// 도구가 받는 한글 파일명을 이 도구만 거절하게 된다.
+fn tool_put_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "name" | "content"))
+    {
+        return Err(format!("알 수 없는 hwp_put_file 인자: {unknown}"));
+    }
+    let path = checked_write_path(ctx, arg_str(args, "name")?)?;
+    let content = arg_str(args, "content")?;
+    if content.len() > MAX_INLINE_CONTENT_B64_CHARS {
+        return Err(format!(
+            "content가 너무 큽니다: base64 {}자 (상한 {}자, 복호 {} KiB). \
+             더 작은 파일로 나누거나 Tier A의 /files 경로를 쓰세요.",
+            content.len(),
+            MAX_INLINE_CONTENT_B64_CHARS,
+            MAX_INLINE_CONTENT_BYTES / 1024
+        ));
+    }
+    validate_base64_structure(content)?;
+    let bytes = hwp_convert::base64::decode(content)?;
+    // decode는 공백과 패딩을 무시하므로 위 검사만으로는 복호 크기를 보장하지 못한다.
+    if bytes.len() > MAX_INLINE_CONTENT_BYTES {
+        return Err(format!(
+            "content가 너무 큽니다: 복호 {}바이트 (상한 {}바이트)",
+            bytes.len(),
+            MAX_INLINE_CONTENT_BYTES
+        ));
+    }
+    // 스테이징·fsync·재읽기 검증은 다른 모든 출력 경로와 같은 헬퍼가 처리한다.
+    crate::commands::output::write_validated(
+        &path,
+        None,
+        |staged| {
+            std::fs::write(staged, &bytes)?;
+            Ok(())
+        },
+        |staged, _| {
+            let written = std::fs::read(staged)?;
+            if written != bytes {
+                anyhow::bail!("업로드 검증 중 바이트 불일치: {}", staged.display());
+            }
+            Ok(())
+        },
+    )
+    .map_err(|error| format!("{error:#}"))?;
+
+    let summary = serde_json::to_string_pretty(&json!({
+        "path": path.display().to_string(),
+        "bytes": bytes.len(),
+        "sha256": sha256_hex(&bytes),
+    }))
+    .map_err(|error| error.to_string())?;
+    Ok(vec![text_content(&summary)])
+}
+
+/// 워크스페이스 파일을 base64로 돌려준다.
+///
+/// 반환은 두 블록이다. 영수증 역할의 텍스트 블록은 알 수 없는 블록 타입을 버리는
+/// 클라이언트에도 무엇이 생겼는지 남기고, embedded resource 블록이 실제 바이트를
+/// 나른다. `tool_read_scoped`·`tool_render_scoped`가 이미 쓰는 두 블록 관례와 같다.
+///
+/// 상한을 넘으면 잘라내지 않고 거절한다. 반쪽 문서는 오류보다 나쁘고, 파일은 그대로
+/// 남으므로 더 작은 포맷으로 변환하거나 Tier A의 `/files`로 받으면 된다.
+fn tool_get_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments는 객체여야 합니다".to_string())?;
+    if let Some(unknown) = object.keys().find(|key| key.as_str() != "path") {
+        return Err(format!("알 수 없는 hwp_get_file 인자: {unknown}"));
+    }
+    use std::io::Read as _;
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let file =
+        std::fs::File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    // 일반 파일만 받는다. 문자 장치는 metadata가 0바이트라고 보고하므로 크기 검사만
+    // 믿으면 /dev/zero 같은 경로에서 읽기가 끝나지 않는다(root 제한이 없는 stdio에서).
+    if !metadata.is_file() {
+        return Err(format!("일반 파일이 아닙니다: {}", path.display()));
+    }
+    let too_big = format!(
+        "파일이 인라인 상한을 넘습니다 (상한 {}바이트). \
+         파일은 워크스페이스에 그대로 있으니 더 작은 포맷으로 변환하거나 \
+         Tier A의 /files 경로로 받으세요.",
+        MAX_INLINE_CONTENT_BYTES
+    );
+    if metadata.len() > MAX_INLINE_CONTENT_BYTES as u64 {
+        return Err(too_big);
+    }
+    // 읽기 자체도 묶는다. metadata 이후에 파일이 자라도 상한을 넘길 수 없다.
+    let mut bytes = Vec::new();
+    file.take(MAX_INLINE_CONTENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if bytes.len() > MAX_INLINE_CONTENT_BYTES {
+        return Err(too_big);
+    }
+    let summary = serde_json::to_string_pretty(&json!({
+        "path": path.display().to_string(),
+        "bytes": bytes.len(),
+        "sha256": sha256_hex(&bytes),
+    }))
+    .map_err(|error| error.to_string())?;
+    Ok(vec![
+        text_content(&summary),
+        json!({
+            "type": "resource",
+            "resource": {
+                "uri": file_uri(&path),
+                "mimeType": mime_for(&path),
+                "blob": hwp_convert::base64::encode(&bytes),
+            }
+        }),
+    ])
 }
 
 /// `hwp merge` over MCP. Every input, the output and the optional loss report
@@ -2260,6 +2502,31 @@ fn tool_defs() -> Vec<Value> {
                     "report": {"type": "string", "description": "존재하지 않는 artifact 디렉터리 경로"}
                 },
                 "required": ["input", "policy", "report"]
+            }
+        }),
+        json!({
+            "name": "hwp_put_file",
+            "description": "base64 콘텐츠를 세션 워크스페이스의 파일로 저장한다. 원격 배포에서 기존 문서를 넣는 유일한 경로다(도구 인자는 경로를 받으므로, 먼저 이 도구로 올린 뒤 그 이름을 넘긴다). 복호 512 KiB 상한.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "name": {"type": "string", "description": "워크스페이스 안의 파일명 또는 상대 경로"},
+                    "content": {"type": "string", "description": "파일 내용의 base64. 복호 512 KiB 상한"}
+                },
+                "required": ["name", "content"]
+            }
+        }),
+        json!({
+            "name": "hwp_get_file",
+            "description": "워크스페이스 파일을 base64로 돌려준다(영수증 JSON + embedded resource 두 블록). 512 KiB 상한이며 초과 시 자르지 않고 거절한다. 중간 산출물은 워크스페이스에 두고 최종 결과물만 받는 것이 좋다 — 반환된 base64는 클라이언트의 메시지 스트림에 그대로 쌓인다.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "path": {"type": "string", "description": "워크스페이스 안의 파일 경로"}
+                },
+                "required": ["path"]
             }
         }),
         json!({
@@ -4857,5 +5124,205 @@ mod tests {
         assert_eq!(capped["count"], 3);
         assert_eq!(capped["truncated"], true);
         assert_eq!(capped["matches"].as_array().unwrap().len(), 2);
+    }
+
+    /// 인라인 전송 왕복. 이 흐름이 R3의 존재 이유다 — 이 도구들이 생기기 전에는
+    /// 원격 세션에 기존 문서를 넣을 방법이 프로토콜 안에 없었다.
+    #[test]
+    fn 인라인_전송_왕복() {
+        let root = temp_file("inline-roundtrip");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ctx_with_roots(vec![root.canonicalize().unwrap()]);
+
+        let source = root.join("source.hwpx");
+        create_hwpx(&source, "# 인라인 왕복\n\n본문 한 줄.");
+        let original = std::fs::read(&source).unwrap();
+        let encoded = hwp_convert::base64::encode(&original);
+
+        let put = tool_put_file(
+            &json!({"name": root.join("uploaded.hwpx").display().to_string(), "content": encoded}),
+            &ctx,
+        )
+        .expect("put");
+        let receipt: Value = serde_json::from_str(put[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(receipt["bytes"], original.len());
+
+        // 올린 파일이 다른 도구에 그대로 보인다: 경로 인자를 유지한다는 doc 22 §7의 모델.
+        let info = tool_info(
+            &json!({"path": root.join("uploaded.hwpx").display().to_string()}),
+            &ctx,
+        );
+        assert!(info.is_ok(), "업로드한 문서를 hwp_info가 읽지 못했습니다");
+
+        let got = tool_get_file(
+            &json!({"path": root.join("uploaded.hwpx").display().to_string()}),
+            &ctx,
+        )
+        .expect("get");
+        assert_eq!(got.len(), 2, "영수증과 resource 두 블록이어야 합니다");
+        assert_eq!(got[1]["resource"]["mimeType"], "application/hwp+zip");
+        let blob = got[1]["resource"]["blob"].as_str().unwrap();
+        assert_eq!(
+            hwp_convert::base64::decode(blob).unwrap(),
+            original,
+            "왕복 후 바이트가 달라졌습니다"
+        );
+        let got_receipt: Value = serde_json::from_str(got[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(got_receipt["sha256"], receipt["sha256"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 상한 초과는 복호 **전에** 걸러야 한다. 걸러지지 않으면 요청 하나가 상한을
+    /// 훨씬 넘는 메모리를 잡으므로, 파일이 생기지 않았다는 것이 그 증거다.
+    #[test]
+    fn 인라인_업로드_상한() {
+        let root = temp_file("inline-cap");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ctx_with_roots(vec![root.canonicalize().unwrap()]);
+        let destination = root.join("too-big.bin");
+
+        let oversized = "A".repeat(MAX_INLINE_CONTENT_B64_CHARS + 1);
+        let error = tool_put_file(
+            &json!({"name": destination.display().to_string(), "content": oversized}),
+            &ctx,
+        )
+        .expect_err("상한을 넘겼는데 통과했습니다");
+        assert!(error.contains("너무 큽니다"), "{error}");
+        assert!(
+            !destination.exists(),
+            "복호 전에 거절해야 하므로 파일이 생기면 안 됩니다"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 상한을 넘는 파일은 잘라내지 않고 거절하며, 파일 자체는 남는다.
+    #[test]
+    fn 인라인_다운로드_상한() {
+        let root = temp_file("inline-get-cap");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ctx_with_roots(vec![root.canonicalize().unwrap()]);
+
+        let big = root.join("big.bin");
+        std::fs::write(&big, vec![0u8; MAX_INLINE_CONTENT_BYTES + 1]).unwrap();
+        let error = tool_get_file(&json!({"path": big.display().to_string()}), &ctx)
+            .expect_err("상한을 넘겼는데 통과했습니다");
+        assert!(error.contains("인라인 상한"), "{error}");
+        assert!(big.exists(), "거절이 파일을 지우면 안 됩니다");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 잘못된 인자와 sandbox 이탈은 다른 도구와 같은 방식으로 거절한다.
+    #[test]
+    fn 인라인_전송_인자와_sandbox_검사() {
+        let root = temp_file("inline-guards");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ctx_with_roots(vec![root.canonicalize().unwrap()]);
+
+        let unknown = tool_put_file(
+            &json!({"name": "a.bin", "content": "QQ==", "extra": 1}),
+            &ctx,
+        )
+        .expect_err("알 수 없는 인자를 통과시켰습니다");
+        assert!(
+            unknown.contains("알 수 없는 hwp_put_file 인자"),
+            "{unknown}"
+        );
+
+        let bad_base64 = tool_put_file(
+            &json!({"name": root.join("a.bin").display().to_string(), "content": "not base64!"}),
+            &ctx,
+        )
+        .expect_err("잘못된 base64를 통과시켰습니다");
+        assert!(!bad_base64.is_empty());
+
+        // root 밖으로 나가는 이름은 checked_write_path 가 막는다.
+        for escape in ["../escape.bin", "/tmp/escape.bin"] {
+            assert!(
+                tool_put_file(&json!({"name": escape, "content": "QQ=="}), &ctx).is_err(),
+                "sandbox 이탈이 허용되었습니다: {escape}"
+            );
+        }
+        assert!(
+            tool_get_file(&json!({"path": "../escape.bin"}), &ctx).is_err(),
+            "읽기에서 sandbox 이탈이 허용되었습니다"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 공유 디코더는 `"A"`와 `"===="`를 빈 벡터로 통과시킨다. 전송 도구에서 그것은
+    /// 0바이트 파일을 업로드 성공으로 보고한다는 뜻이므로 구조 검사가 먼저 막는다.
+    #[test]
+    fn 인라인_업로드_잘못된_base64_거절() {
+        let root = temp_file("inline-b64");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ctx_with_roots(vec![root.canonicalize().unwrap()]);
+
+        // 디코더 자체는 이것들을 조용히 통과시킨다는 사실을 먼저 고정한다.
+        assert_eq!(hwp_convert::base64::decode("A").unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            hwp_convert::base64::decode("====").unwrap(),
+            Vec::<u8>::new()
+        );
+
+        for bad in ["A", "====", "QQ", "QUJD="] {
+            let destination = root.join(format!("bad-{}.bin", bad.len()));
+            let error = tool_put_file(
+                &json!({"name": destination.display().to_string(), "content": bad}),
+                &ctx,
+            )
+            .unwrap_err();
+            assert!(error.contains("잘못된 base64"), "{bad}: {error}");
+            assert!(!destination.exists(), "{bad}: 파일이 생기면 안 됩니다");
+        }
+
+        // 정상 입력은 그대로 통과한다.
+        assert!(validate_base64_structure("QUJD").is_ok());
+        assert!(validate_base64_structure("QQ==").is_ok());
+        assert!(validate_base64_structure("QUJ=").is_ok());
+        assert!(validate_base64_structure("QUJD\nRUZH").is_ok());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 문자 장치는 metadata가 0바이트라고 보고하므로, 크기 검사만 믿으면 읽기가
+    /// 끝나지 않는다. root 제한이 없는 stdio에서 실제로 도달 가능한 경로였다.
+    #[test]
+    #[cfg(unix)]
+    fn 인라인_다운로드_일반_파일만() {
+        // roots가 비어 있으면 checked_read_path가 아무 경로나 통과시킨다 — 이것이
+        // 이 검사가 필요한 조건 그대로다.
+        let ctx = ctx_with_roots(Vec::new());
+        let error = tool_get_file(&json!({"path": "/dev/zero"}), &ctx)
+            .expect_err("/dev/zero 를 읽으려 시도했습니다");
+        assert!(error.contains("일반 파일이 아닙니다"), "{error}");
+    }
+
+    /// resource uri는 클라이언트가 URI로 파싱하므로 공백·비ASCII·윈도우 경로에서도
+    /// 유효해야 한다.
+    #[test]
+    fn 인라인_다운로드_uri_인코딩() {
+        assert_eq!(
+            file_uri(Path::new("/work/보고서 최종.hwpx")),
+            "file:///work/%EB%B3%B4%EA%B3%A0%EC%84%9C%20%EC%B5%9C%EC%A2%85.hwpx"
+        );
+        assert_eq!(
+            file_uri(Path::new("/work/a#b.pdf")),
+            "file:///work/a%23b.pdf"
+        );
+        // 슬래시로 시작하지 않는 경로는 빈 authority 뒤에 루트를 세운다.
+        let windows = file_uri(Path::new(r"C:\work\out.hwpx"));
+        assert!(
+            windows == "file:///C%3A/work/out.hwpx",
+            "윈도우 경로 URI: {windows}"
+        );
     }
 }

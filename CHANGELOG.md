@@ -12,6 +12,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `hwp_put_file` and `hwp_get_file` move documents in and out of a session workspace as base64,
+  capped at 512 KiB decoded. Remote deployments could author documents from text but could not
+  ingest an existing one: no tool accepted document bytes, and the `/files` route needs an
+  out-of-band HTTP request an MCP client cannot make. AgentCore, which exposes `/mcp` and nothing
+  else, has no sideband at all. The tool count is now 22; the twenty existing schemas are unchanged.
 - A `aarch64-unknown-linux-gnu` release archive, cross-built against the same glibc 2.17 floor as
   the x86_64 Linux one, so `install.sh` and `hwp update` now serve arm64 Linux instead of sending it
   to a source build. Homebrew is unchanged: it does not run on arm64 Linux.
