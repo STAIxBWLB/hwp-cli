@@ -254,7 +254,9 @@ pub enum Cmd {
         #[arg(long = "set-meta")]
         set_meta: Vec<String>,
         /// Official-document profile (markdown input only): official, report, plan, notice,
-        /// minutes, or press. Legacy and Korean aliases normalize to one profile.
+        /// minutes, or press. Legacy and Korean aliases normalize to one profile. official and
+        /// report also select the official heading-numbering ladder (Ⅰ./1./가./1)); other
+        /// profiles and no preset keep the section ladder (1./1-1./1-1-1.)
         #[arg(long, value_parser = parse_preset_arg)]
         preset: Option<PresetArg>,
         /// Top page margin in millimetres (0..=200)

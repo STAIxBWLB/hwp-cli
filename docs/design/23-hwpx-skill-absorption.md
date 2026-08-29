@@ -56,9 +56,9 @@ the concern disappears because the skill now ships inside the binary.
 | styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | verified for profiles, numbering and layout; style pass remains absent |
 | beautify | none | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
-| analyze | `hwp info` + `hwp cat --format json` | 2.5 | composed — released v0.12.0 recipe |
-| guard | `hwp validate` + `hwp render --report` | 2.5 | composed — released v0.12.0 recipe; not a raw structural-drift metric |
-| edit-section | `hwp cat --format json` + anchored `hwp edit` | 2.5 | limited — released v0.12.0 recipe; no raw section-index contract |
+| analyze | `hwp info` + `hwp cat --with-segments` + `hwp fields`/`hwp slots` | 2.5 | verified — SKILL.md recipe run verbatim on `fixtures/samples/report-tables.hwpx` (hwp 0.12.1, 2026-08-29): 43 segments over 11,853 markdown chars, fields/slots legitimately `[]` |
+| guard | `hwp validate` + `hwp render --report` | 2.5 | verified — same fixture and date: before/after reports compared (`total_pages` 6→5 after an IR-round-trip edit; a plain `convert` round-trip alone reflows 6→5, byte-preserving `--replace` keeps 6); still not a raw structural-drift metric |
+| edit-section | `hwp cat --with-segments` + text-anchored `hwp edit` | 2.5 | verified — same fixture and date: segment (section 0, para 0) located "3-2-1. 예시 과제 제목 1", `--insert-para`/`--delete-para` round-trip re-read 52→51 paragraphs, `hwp validate` OK; no raw section-index contract |
 | fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 released-binary adjacent-form precedence, header/data-row, scoped and atomic-refusal receipt; §3.1 remains the historical v0.12.0 record |
 | to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — the old soffice fallback is **intentionally dropped** (native engine only) |
 | render-pdf | same as to-pdf | 2.1 | verified (**alias** of `to-pdf --engine hwp`) |
@@ -75,11 +75,11 @@ the concern disappears because the skill now ships inside the binary.
 | Old script guarantee | Native equivalent | Phase | Status |
 |---|---|---|---|
 | run-spanning `{{slot}}` fill | `hwp slots` + one fail-closed `hwp fill` | 2.5 | verified — v0.12.0 released binary fills the transient split-run control; the six-template receipt is recorded in §3.1 |
-| `linesegarray` clearing on edit | engine-inherent: the native IR round-trip rewrites line segments, and the byte-preserving patch path never edits text | 2.5 | engine-inherent, confirm in 2.5 (inferred) |
-| sec-index section edits | none | 2.5 | gap → EDIT-01 documented recipes (inferred) |
-| mimetype-first STORED repack | native writers obey the package layout; no native replacement for the raw-zip path | 2.5 | resolved for the writer path; raw-zip recipe gap → EDIT-01 (inferred) |
+| `linesegarray` clearing on edit | engine-inherent: the native IR round-trip drops stale body-paragraph line segments for Hangul to recompute (cell/text-box paragraphs always re-emit them, matching genuine files); the byte-preserving `--replace` patch path edits only text bytes and carries layout records over untouched | 2.5 | verified (corrected) — 2026-08-29, `report-tables.hwpx`: `--insert-para` output kept only the 182 cell-subList `linesegarray` elements (53 body-paragraph ones dropped), `--replace` output carried all 470 occurrences byte-preserved. Correction: this row previously said the patch path "never edits text" — it is exactly the text-editing fast path; what it never touches is layout records |
+| sec-index section edits | segment addressing (`hwp cat --with-segments`) + text-anchored `hwp edit` | 2.5 | verified — EDIT-01 recipe documented in SKILL.md and run on `report-tables.hwpx` (2026-08-29); raw index surgery intentionally absent |
+| mimetype-first STORED repack | native writers emit `mimetype` first and STORED (`crates/hwpx/src/write/mod.rs`), and the patch paths raw-copy the original entry order/compression | 2.5 | verified — raw-zip recipe unnecessary: `zipinfo` on `edit`/`edit --replace`/`convert` outputs (2026-08-29) all show `mimetype` as the first entry, `stor`; `hwp validate` rejects a bad mimetype on open |
 | style_pass table rules | none | 2.4 | gap → GONG-03 (inferred) — **not verified parity** |
-| page_guard structural drift checks | none | 2.5 | gap → EDIT-01 documented recipes (inferred) — **not verified parity** |
+| page_guard structural drift checks | `hwp validate` + `hwp render --report` before/after page-count comparison | 2.5 | verified — EDIT-01 guard recipe documented in SKILL.md and run on `report-tables.hwpx` (2026-08-29); **not verified parity** — a review signal, not the old XML drift thresholds |
 | binary discovery (`$HWP_CLI`, highest-version selection) | obsolete — the skill ships inside the binary it drives | 2.1 | resolved by absorption |
 
 ## 3. Release evidence and margin record

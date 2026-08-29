@@ -55,9 +55,9 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 | styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | 프로필·번호·레이아웃은 verified, style pass는 계속 없음 |
 | beautify | 없음 | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
 | validate | `hwp validate` | 2.1 | verified |
-| analyze | `hwp info` + `hwp cat --format json` | 2.5 | composed — v0.12.0 릴리스 레시피 |
-| guard | `hwp validate` + `hwp render --report` | 2.5 | composed — v0.12.0 릴리스 레시피, raw structural-drift metric은 아님 |
-| edit-section | `hwp cat --format json` + anchor 기반 `hwp edit` | 2.5 | limited — v0.12.0 릴리스 레시피, raw section-index 계약 없음 |
+| analyze | `hwp info` + `hwp cat --with-segments` + `hwp fields`/`hwp slots` | 2.5 | verified — SKILL.md 레시피를 `fixtures/samples/report-tables.hwpx`에 그대로 실행 (hwp 0.12.1, 2026-08-29): markdown 11,853자에 세그먼트 43개, fields/slots는 정당하게 `[]` |
+| guard | `hwp validate` + `hwp render --report` | 2.5 | verified — 같은 픽스처·날짜: 전후 보고서 비교 (IR 왕복 편집 후 `total_pages` 6→5. 편집 없는 `convert` 왕복만으로도 6→5로 리플로우, 바이트 보존 `--replace`는 6 유지). raw structural-drift metric은 여전히 아님 |
+| edit-section | `hwp cat --with-segments` + 텍스트 anchor 기반 `hwp edit` | 2.5 | verified — 같은 픽스처·날짜: 세그먼트(section 0, para 0)에서 "3-2-1. 예시 과제 제목 1"을 찾아 `--insert-para`/`--delete-para` 왕복, 재읽기 52→51문단, `hwp validate` 통과. raw section-index 계약 없음 |
 | fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 릴리스 바이너리의 인접 양식 우선순위, header/data-row, scope, 원자적 거부 영수증. §3.1은 역사적 v0.12.0 기록으로 유지 |
 | to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — 기존 soffice 폴백은 **의도적으로 폐기** (네이티브 엔진만) |
 | render-pdf | to-pdf와 동일 | 2.1 | verified (`to-pdf --engine hwp`의 **별칭**) |
@@ -74,11 +74,11 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 | 기존 스크립트 보장 | 네이티브 대응 | Phase | 상태 |
 |---|---|---|---|
 | run-spanning `{{slot}}` 채우기 | `hwp slots` + 하나의 fail-closed `hwp fill` | 2.5 | verified — v0.12.0 릴리스 바이너리가 transient split-run control을 채웠고 여섯 템플릿 영수증은 §3.1에 기록 |
-| 편집 시 `linesegarray` 지우기 | 엔진 내재: 네이티브 IR 라운드트립은 줄 세그먼트를 다시 쓰고, 바이트 보존 패치 경로는 텍스트를 건드리지 않음 | 2.5 | 엔진 내재, 2.5에서 확인 (inferred) |
-| sec 인덱스 섹션 편집 | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) |
-| mimetype-first STORED repack | 네이티브 writer는 패키지 레이아웃을 준수. raw-zip 경로에는 네이티브 대응 없음 | 2.5 | writer 경로는 해소. raw-zip 레시피 갭 → EDIT-01 (inferred) |
+| 편집 시 `linesegarray` 지우기 | 엔진 내재: 네이티브 IR 왕복은 낡은 본문 문단 줄 배치를 제거해 한글이 재계산하게 하고(셀·글상자 문단은 정품 실측대로 항상 다시 방출), 바이트 보존 `--replace` 패치 경로는 텍스트 바이트만 고치고 레이아웃 레코드는 그대로 가져감 | 2.5 | verified (정정) — 2026-08-29, `report-tables.hwpx`: `--insert-para` 출력은 셀 subList의 `linesegarray` 182개만 남기고(본문 문단 53개 제거), `--replace` 출력은 470개를 모두 바이트 보존. 정정: 이 행은 원래 패치 경로가 "텍스트를 건드리지 않는다"고 했으나, 그 경로가 바로 텍스트 편집 고속 경로이며 건드리지 않는 것은 레이아웃 레코드임 |
+| sec 인덱스 섹션 편집 | 세그먼트 어드레싱(`hwp cat --with-segments`) + 텍스트 anchor 기반 `hwp edit` | 2.5 | verified — EDIT-01 레시피가 SKILL.md에 문서화되고 `report-tables.hwpx`에서 실행됨 (2026-08-29). raw 인덱스 수술은 의도적으로 없음 |
+| mimetype-first STORED repack | 네이티브 writer는 `mimetype`을 첫 엔트리·무압축(STORED)으로 방출하고(`crates/hwpx/src/write/mod.rs`), 패치 경로는 원본 엔트리 순서·압축을 raw 복사함 | 2.5 | verified — raw-zip 레시피 불필요: `edit`/`edit --replace`/`convert` 출력의 `zipinfo`(2026-08-29)가 모두 `mimetype`을 첫 엔트리·`stor`로 보여주고, `hwp validate`는 잘못된 mimetype을 open 시점에 거부 |
 | style_pass 표 규칙 | 없음 | 2.4 | gap → GONG-03 (inferred) — **verified 패리티 아님** |
-| page_guard 구조 드리프트 검사 | 없음 | 2.5 | gap → EDIT-01 문서화 레시피 (inferred) — **verified 패리티 아님** |
+| page_guard 구조 드리프트 검사 | `hwp validate` + `hwp render --report` 전후 페이지 수 비교 | 2.5 | verified — EDIT-01 guard 레시피가 SKILL.md에 문서화되고 `report-tables.hwpx`에서 실행됨 (2026-08-29). **verified 패리티 아님** — 검토 신호이지 기존 XML 드리프트 임계값이 아님 |
 | 바이너리 탐색 (`$HWP_CLI`, 최고 버전 선택) | 폐기 — 스킬이 자신이 구동하는 바이너리 안에 들어감 | 2.1 | resolved by absorption |
 
 ## 3. 릴리스 증거와 여백 기록

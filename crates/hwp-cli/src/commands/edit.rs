@@ -2469,6 +2469,15 @@ fn canonical_document(
         for start in &mut canonical.header.properties.start_numbers {
             *start = (*start).max(1);
         }
+        // The HWPX writer emits an explicit no-fill brush (`winBrush faceColor="none"`)
+        // whenever fill bit 0 is set, and the reader returns the none-sentinel color for
+        // it. An hwp5-sourced fill may carry the bit with no color at all; project the
+        // same materialization as the writer so both sides agree.
+        for fill in &mut canonical.header.border_fills {
+            if fill.fill_type & 0x1 != 0 && fill.bg_color.is_none() {
+                fill.bg_color = Some(0xFFFF_FFFF);
+            }
+        }
         // The HWPX writer bundles only streams referenced by a Picture (BinCollector).
         // Unreferenced streams (leftovers of deleted objects, etc.) do not exist on disk,
         // so both sides exclude them by the same rule — writer loss of referenced streams

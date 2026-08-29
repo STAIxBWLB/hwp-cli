@@ -84,6 +84,23 @@ impl ListState {
         Some(format!("{}.", parts.join(".")))
     }
 
+    /// Visible number of this paragraph's own list level, including the level's
+    /// `start` offset. Reads the counters as `marker()` left them, so call it
+    /// only after `marker()` counted the paragraph. `None` for bullets and
+    /// non-list paragraphs.
+    pub fn current_number(&self, doc: &Document, para: &Paragraph) -> Option<u64> {
+        let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
+        if ps.head_type() != 2 {
+            return None;
+        }
+        let level = ps.head_level() as usize;
+        let counter = *self.counters.get(&ps.numbering_id)?.get(level)?;
+        let start = numbering_levels(doc, ps.numbering_id as usize)
+            .and_then(|levels| levels.get(level - 1))
+            .map_or(1, |nl| nl.start);
+        Some(u64::from(counter.max(1)) + u64::from(start.saturating_sub(1)))
+    }
+
     /// Renderer marker including the default per-level outline (`head_type == 1`) formats.
     /// The eight official levels are `1.` / `가.` / `1)` / `가)` / `(1)` / `(가)` / `①` / `㉮`.
     pub fn marker_for_render(&mut self, doc: &Document, para: &Paragraph) -> Option<String> {
@@ -282,6 +299,52 @@ mod tests {
         // 비목록 문단은 None.
         doc.header.para_shapes.push(mk(0, 0));
         assert_eq!(st.marker(&doc, &p(3)), None);
+    }
+
+    #[test]
+    fn 현재_번호_조회() {
+        use crate::{NumFmt, NumLevel, ParaShape, ParaShapeId};
+        let mut doc = Document::default();
+        let mk = |ty: u32, lv: u32, nid: u16| ParaShape {
+            attr1: (ty << 23) | (lv << 25),
+            numbering_id: nid,
+            ..ParaShape::default()
+        };
+        doc.header.para_shapes = vec![mk(2, 1, 0), mk(2, 2, 1), mk(3, 1, 0)];
+        doc.header.numbering_levels = vec![
+            vec![
+                NumLevel {
+                    start: 3,
+                    fmt: NumFmt::Digit,
+                    template: String::new(),
+                };
+                7
+            ],
+            vec![
+                NumLevel {
+                    start: 1,
+                    fmt: NumFmt::HangulSyllable,
+                    template: String::new(),
+                };
+                7
+            ],
+        ];
+        let mut st = ListState::default();
+        let p = |id| Paragraph {
+            para_shape: ParaShapeId(id),
+            ..Paragraph::default()
+        };
+        // Bullets and paragraphs not yet counted by marker() have no number.
+        assert_eq!(st.current_number(&doc, &p(0)), None);
+        assert_eq!(st.marker(&doc, &p(2)).as_deref(), Some("•"));
+        assert_eq!(st.current_number(&doc, &p(2)), None);
+        // The start offset is included; non-digit formats share the same number.
+        assert_eq!(st.marker(&doc, &p(0)).as_deref(), Some("3."));
+        assert_eq!(st.current_number(&doc, &p(0)), Some(3));
+        assert_eq!(st.marker(&doc, &p(0)).as_deref(), Some("4."));
+        assert_eq!(st.current_number(&doc, &p(0)), Some(4));
+        assert_eq!(st.marker(&doc, &p(1)).as_deref(), Some("가.가."));
+        assert_eq!(st.current_number(&doc, &p(1)), Some(1));
     }
 
     #[test]

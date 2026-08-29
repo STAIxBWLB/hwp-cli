@@ -18,7 +18,29 @@ pub enum OfficialPreset {
 /// Retired in 0.9.0: `gaejosik` named a writing style, not a document class.
 const GAEJOSIK_IS_NOT_A_PROFILE: &str = "개조식은 문체이며 공문서 프로필이 아닙니다. 보고서·계획서는 --preset report|plan을 쓰고, 명사형 종결은 본문에서 적용하세요.";
 
+/// Heading number ladder selected for markdown import (#125).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum HeadingNumbering {
+    /// Section ladder (pre-#125 behavior): `#`~`###` get `1.` / `1-1.` / `1-1-1.` — a
+    /// dotted join of the ancestor counters. A downstream project (RISE annual reports)
+    /// depends on exactly this, so it stays the default.
+    #[default]
+    Section,
+    /// Korean official-document ladder: `#` is the document title and gets no number;
+    /// `##`~`#####` get `Ⅰ.` / `1.` / `가.` / `1)`, each level counting independently.
+    Official,
+}
+
 impl OfficialPreset {
+    /// Heading number ladder this preset selects for markdown import (#125): official and
+    /// report use the official ladder; every other profile keeps the section ladder.
+    pub const fn heading_numbering(self) -> HeadingNumbering {
+        match self {
+            Self::Official | Self::Report => HeadingNumbering::Official,
+            _ => HeadingNumbering::Section,
+        }
+    }
+
     /// Source-compatible legacy spelling; new callers should use [`Self::Official`].
     #[allow(non_upper_case_globals)]
     pub const Gian: Self = Self::Official;

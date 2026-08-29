@@ -145,6 +145,63 @@ retired `hwpx` 워크플로우의 정직한 한계를 포함한 이중 언어 �
 [references/editing-recipes.ko.md](references/editing-recipes.ko.md)에 있습니다. 분석, anchor 기반
 문단 편집, 데이터 기반 표 채우기, label-value 양식, validate-plus-render guard 순서에 사용하십시오.
 
+아래 세 워크플로우는 기록하기 전에 `fixtures/samples/report-tables.hwpx`를 대상으로
+그대로 실행해 검증했습니다 (hwp 0.12.1, 2026-08-29).
+
+### 문서 분석 (analyze)
+
+"이 문서에 무엇이 들어 있는가"를 한 번에 보는 패스: 패키지 인벤토리, 원본 좌표가 붙은 텍스트,
+그다음 프로그램적 핸들(필드와 템플릿 슬롯) 순서입니다:
+
+```bash
+hwp info doc.hwpx --json
+hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+hwp fields doc.hwpx --json
+hwp slots doc.hwpx --json
+```
+
+`--with-segments`는 한 줄 JSON 봉투 `{"markdown": ..., "segments": [...]}`를 출력하며 각
+세그먼트는 `{"kind": "para", "section": N, "para": N, "start": N, "end": N}`이고 start/end는
+markdown 문자열 기준 문자 오프셋입니다. 문서에 필드나 `{{slot}}` 자리표시자가 없으면
+`fields`와 `slots`는 정당하게 `[]`를 반환합니다 — 비어 있는 것도 답이며 오류가 아닙니다.
+
+### 섹션 단위 편집 (edit-section)
+
+세그먼트 좌표가 문단을 찾아 주고, 실제 편집은 그 범위의 보이는 텍스트를 anchor로
+수행합니다 — raw `sec` 인덱스 계약은 없습니다. 검증을 통과할 때까지는 복사본에서
+작업하십시오:
+
+```bash
+hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+hwp edit doc.hwpx -o edited.hwpx --insert-para "anchor text=>new paragraph" --verify
+hwp edit edited.hwpx -o reverted.hwpx --delete-para "new paragraph" --verify
+hwp validate edited.hwpx
+```
+
+대상 텍스트가 들어 있는 markdown 범위의 세그먼트에서 `(section, para)` 좌표를 읽고, 그
+범위의 평문(markdown 기호 제외)을 anchor로 사용하십시오. `--insert-para "anchor=>text"`는
+anchor 문단 뒤에 삽입하고(`--insert-para-before`는 앞에), `--delete-para "text"`는 텍스트로
+문단을 삭제합니다. 둘 다 기본적으로 all-or-nothing이며 `--verify`에서 출력을 다시 읽습니다.
+
+### 편집 감시 (guard)
+
+편집 전후 구조 드리프트 검사: 구조 검증과 렌더러 페이지 수 비교입니다.
+
+```bash
+hwp validate edited.hwpx
+hwp render doc.hwpx -o before.png --report before.render.json
+hwp render edited.hwpx -o after.png --report after.render.json
+```
+
+두 렌더 보고서의 `total_pages`를 비교하십시오 (보고서에는 `font_coverage`와
+`font_resolution_complete`도 들어 있습니다. 렌더링에는 CJK 폰트가 필요하고 페이지 수는
+사용 가능한 폰트에 따라 달라집니다). 페이지 수 변화는 검토 신호이지 내용 드리프트의
+증거가 아닙니다: IR 왕복만으로도 레이아웃이 리플로우될 수 있습니다 — 픽스처에서
+검증한 결과, 편집 없는 `hwp convert --to hwpx` 왕복이 6페이지에서 5페이지로 렌더링된
+반면 바이트 보존 `--replace` 고속 경로는 원래 페이지 수를 유지했습니다. 레이아웃을
+그대로 유지해야 한다면 `--replace` 전용 편집(패키지 보존 경로)을 우선하고, 페이지 수가
+바뀌면 검증을 약화시키지 말고 렌더링된 페이지를 직접 살펴보십시오.
+
 ## MCP 서버
 
 `hwp mcp`는 stdio 위에서 동기 JSON-RPC 2.0을 사용합니다 (줄 구분; stdout이 프로토콜을

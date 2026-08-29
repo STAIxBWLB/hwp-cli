@@ -8,8 +8,10 @@
 //! - 이미지(Picture) → `![image]()` (또는 media_dir 지정 시 추출·상대참조)
 //! - 표 → GFM 표 (첫 행을 헤더로). 병합 셀(col_span/row_span>1)이나 셀 안 중첩 표가
 //!   있으면 HTML `<table>`(colspan/rowspan + 인라인 HTML 태그)로 폴백 — 내용 보존 우선
-//! - 글머리표/번호 문단 → `- `/`N. ` 목록 (번호는 numbering_levels 형식 합성;
-//!   아라비아 숫자 외 형식은 `- 가. ` 식 리터럴 마커로 보존)
+//! - 글머리표/번호 문단 → `- `/`N. ` 목록. Numbered heads always export the
+//!   item's ordinal in digit form ("3."), since GFM ordered markers are digits
+//!   only — non-digit engine marks ("가.", "㉮") must not harden into literal
+//!   text on the md round trip (#134).
 //! - 각주/미주 → 본문 `[^N]`/`[^eN]` 마커 + 문서 끝 정의 (GFM 풋노트)
 //! - 수식(eqed) → 인라인 `$스크립트$`, 블록 `$$스크립트$$` (HWP 수식 스크립트 원문)
 //! - 줄나눔(10) → 강제 줄바꿈, 탭 → 공백
@@ -654,9 +656,10 @@ fn render_paragraph(
         return;
     }
 
-    if let Some(mk) = marker.as_deref() {
+    if marker.is_some() {
         let (ty, level, definition_id) = list_head(doc, para).unwrap_or((3, 1, 0));
-        emit_list_fragments(&fragments, ty, level, definition_id, mk, ctx, out);
+        let number = list_state.current_number(doc, para);
+        emit_list_fragments(&fragments, ty, level, definition_id, number, ctx, out);
         return;
     }
 
@@ -714,22 +717,27 @@ fn emit_list_fragments(
     ty: u8,
     level: u8,
     definition_id: u16,
-    marker: &str,
+    number: Option<u64>,
     ctx: &mut Ctx,
     out: &mut String,
 ) {
-    let (gfm_marker, literal_prefix) = if ty == 3 {
-        ("-", None)
-    } else if is_digit_marker(marker) {
-        (marker, None)
+    // GFM ordered markers are digits only, so a numbered head always exports
+    // the item's ordinal in digit form ("3."), whatever its engine mark
+    // ("가.", "1)", "(가)", "㉮", …): the importer rebuilds the same numbered
+    // head from it, while carrying the mark as literal text would harden it
+    // into the body on every round trip (#134). Ordinals past the CommonMark
+    // 9-digit marker limit degrade to a plain bullet.
+    let gfm_marker = if ty == 3 {
+        "-".to_string()
     } else {
-        ("-", Some(marker))
+        number
+            .filter(|n| *n <= 999_999_999)
+            .map_or_else(|| "-".to_string(), |n| format!("{n}."))
     };
-    let indent = prepare_list_level(ctx, ty, level, definition_id, gfm_marker, out);
+    let indent = prepare_list_level(ctx, ty, level, definition_id, &gfm_marker, out);
     let first_prefix = format!("{}{gfm_marker} ", " ".repeat(indent));
     let continuation = " ".repeat(indent + gfm_marker.chars().count() + 1);
     let mut emitted = false;
-    let mut literal_pending = literal_prefix;
 
     for fragment in fragments {
         match fragment {
@@ -738,23 +746,17 @@ fn emit_list_fragments(
                 if text.is_empty() {
                     continue;
                 }
-                let content = match literal_pending.take() {
-                    Some(literal) => format!("{literal} {text}"),
-                    None => text.to_string(),
-                };
                 if emitted {
                     out.push('\n');
-                    push_indented_lines(out, &continuation, &continuation, &content);
+                    push_indented_lines(out, &continuation, &continuation, text);
                 } else {
-                    push_indented_lines(out, &first_prefix, &continuation, &content);
+                    push_indented_lines(out, &first_prefix, &continuation, text);
                     emitted = true;
                 }
             }
             Fragment::Block(block) => {
                 if !emitted {
-                    let initial = literal_pending.take().unwrap_or_default();
                     out.push_str(&first_prefix);
-                    out.push_str(initial);
                     out.push('\n');
                     emitted = true;
                 }
@@ -846,14 +848,6 @@ fn list_head(doc: &Document, para: &Paragraph) -> Option<(u8, u8, u16)> {
     let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
     let ty = ps.head_type();
     (ty == 2 || ty == 3).then(|| (ty, ps.head_level(), ps.numbering_id))
-}
-
-/// "1."/"1)" 같이 GFM 순서 목록으로 쓸 수 있는 형태인지.
-fn is_digit_marker(mk: &str) -> bool {
-    let Some(digits) = mk.strip_suffix('.').or_else(|| mk.strip_suffix(')')) else {
-        return false;
-    };
-    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// 문단 내용을 인라인/블록 fragment로 등장 순서대로 렌더링한다.
@@ -1841,7 +1835,7 @@ mod tests {
         assert!(md.contains("1. 번호 하나\n"), "숫자 번호 1: {md}");
         assert!(md.contains("2. 번호 둘\n"), "숫자 번호 2: {md}");
 
-        // 가나다 형식 번호는 GFM 목록 마커가 없어 리터럴 마커로 보존한다.
+        // 가나다 형식 번호는 GFM 마커가 숫자뿐이라 서수의 숫자 형태("1.")로 내린다 (#134).
         let mut doc2 = from_markdown("한글 번호\n");
         let base2 = doc2.header.para_shapes.len() as u16;
         doc2.header.para_shapes.push(ps(2, 1, 1));
@@ -1858,7 +1852,64 @@ mod tests {
         ];
         doc2.sections[0].paragraphs[0].para_shape = ParaShapeId(base2);
         let md2 = to_markdown(&doc2);
-        assert!(md2.contains("- 가. 한글 번호"), "한글 형식 리터럴: {md2}");
+        assert!(md2.contains("1. 한글 번호"), "한글 형식 서수 마커: {md2}");
+        assert!(!md2.contains("가."), "마커가 본문으로 굳으면 안 됨: {md2}");
+    }
+
+    /// 비숫자 엔진 마커("가.", "1)") 사다리도 md→IR→md 왕복이 안정적이어야 한다 (#134).
+    #[test]
+    fn 비숫자_번호마커_왕복_안정() {
+        use hwp_model::{NumFmt, NumLevel, ParaShape, ParaShapeId};
+        let ps = |level: u32| ParaShape {
+            attr1: (2 << 23) | (level << 25),
+            numbering_id: 0,
+            ..ParaShape::default()
+        };
+        let lvl = |fmt: NumFmt, template: &str| NumLevel {
+            start: 1,
+            fmt,
+            template: template.to_string(),
+        };
+        // The statutory ladder's first three rungs: "1." / "가." / "1)".
+        let mut doc = from_markdown("상위\n\n중위\n\n하위\n");
+        let base = doc.header.para_shapes.len() as u16;
+        doc.header.para_shapes.push(ps(1));
+        doc.header.para_shapes.push(ps(2));
+        doc.header.para_shapes.push(ps(3));
+        doc.header.numbering_levels = vec![vec![
+            lvl(NumFmt::Digit, "^1."),
+            lvl(NumFmt::HangulSyllable, "^2."),
+            lvl(NumFmt::Digit, "^3)"),
+        ]];
+        for (paragraph, shape) in
+            doc.sections[0]
+                .paragraphs
+                .iter_mut()
+                .zip([base, base + 1, base + 2])
+        {
+            paragraph.para_shape = ParaShapeId(shape);
+        }
+
+        let md1 = to_markdown(&doc);
+        assert!(
+            md1.contains("1. 상위\n   1. 중위\n      1. 하위"),
+            "모든 수준이 숫자 서수 마커여야 함: {md1}"
+        );
+        assert!(
+            !md1.contains("가.") && !md1.contains("1)"),
+            "엔진 마커가 리터럴로 새면 안 됨: {md1}"
+        );
+
+        // Re-importing must rebuild the same numbered heads, so a second export
+        // is byte-identical (no "가. 가."-style degradation).
+        let doc2 = from_markdown(&md1);
+        let md2 = to_markdown(&doc2);
+        assert_eq!(md1, md2, "md 왕복은 안정적이어야 함");
+
+        // A bullet ladder round-trips through `- ` unchanged.
+        let bullet = from_markdown("- 하나\n  - 둘\n");
+        let bullet_md = to_markdown(&bullet);
+        assert_eq!(bullet_md, to_markdown(&from_markdown(&bullet_md)));
     }
 
     #[test]
@@ -1903,14 +1954,6 @@ mod tests {
             }
         }
         assert_eq!(max_depth, 2, "파서에서도 중첩 목록이어야 함: {md}");
-    }
-
-    #[test]
-    fn 순서목록_마커_판별() {
-        assert!(is_digit_marker("1."));
-        assert!(is_digit_marker("12)"));
-        assert!(!is_digit_marker("1"));
-        assert!(!is_digit_marker("가."));
     }
 
     #[test]

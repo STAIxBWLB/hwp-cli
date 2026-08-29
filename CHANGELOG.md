@@ -10,7 +10,36 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Markdown-to-HWP conversion now maps unordered list depth to the official symbol ladder
+  `□ → ○ → - → ·` (saturating at `·` from depth 5), reusing the symbol paragraph shapes so
+  list-sourced and paragraph-sourced rungs render identically (#125).
+
+- Heading numbering is selectable per preset: `--preset official`/`--preset report` (including
+  the legacy `gian` alias) use the official ladder — `#` stays an unnumbered document title and
+  `##`–`#####` get `Ⅰ.` / `1.` / `가.` / `1)` with per-level counters; every other preset and
+  bare conversion keep the existing section ladder (`1.` / `1-1.` / `1-1-1.`) (#125).
+
+- The bundled `hwp` skill gains three editing recipes verified against real documents
+  (analyze, edit-section, guard), and the hwpx-skill absorption matrix rows are flipped from
+  inferred to verified with evidence (#147).
+
 **Fixed**
+
+- `hwp cat --format markdown` now exports numbered list items with their ordinal as a GFM digit
+  marker regardless of the engine mark's format (`가.`, `1)`, `㉮`, …), so a markdown round trip
+  no longer hardens engine-assigned marks into body text (`가. 가. 대상`); ordinals past
+  CommonMark's 9-digit marker limit degrade to a plain bullet (#134).
+
+- `hwp lint` no longer reports false `struct-item-mark` errors on documents generated with an
+  official preset — the reconstruction no longer emits engine-assigned marks as literal item
+  text, and a regression gate now lints preset-generated documents (#141).
+
+- `hwp edit --verify` no longer fails on real Hancom-authored HWPX documents whose header
+  carries explicit no-fill brushes (`winBrush faceColor="none"`) or empty numbering paraHead
+  templates: the HWPX writer now round-trips both faithfully instead of dropping the former and
+  synthesizing default templates for the latter (#135).
 
 - `hwp fill --set name=@part.md` (part-filling) now id-shifts table/picture caption paragraphs
   too, so part captions referencing off-palette shapes resolve to the grafted header entries

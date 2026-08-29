@@ -160,7 +160,7 @@ Create a new document
 | `--template` | `<TEMPLATE>` |  | Use an embedded document template by English slug or Korean alias (see --list-templates). Brings its own profile and native 두문/결문 frames, whose values default to the template's own {{slots}}. Mutually exclusive with --from; --preset and the frame flags override one template default each |
 | `--list-templates` |  |  | List all embedded document templates (slug and Korean alias) and exit; needs no -o |
 | `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
-| `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, or press. Legacy and Korean aliases normalize to one profile |
+| `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, or press. Legacy and Korean aliases normalize to one profile. official and report also select the official heading-numbering ladder (Ⅰ./1./가./1)); other profiles and no preset keep the section ladder (1./1-1./1-1-1.) |
 | `--margin-top` | `<MARGIN_TOP>` |  | Top page margin in millimetres (0..=200) |
 | `--margin-bottom` | `<MARGIN_BOTTOM>` |  | Bottom page margin in millimetres (0..=200) |
 | `--margin-left` | `<MARGIN_LEFT>` |  | Left page margin in millimetres (0..=200) |

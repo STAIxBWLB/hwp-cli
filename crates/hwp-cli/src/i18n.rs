@@ -321,7 +321,7 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "new",
         "preset",
-        "공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/press. 기존·한국어 별칭은 하나의 프로필로 정규화",
+        "공문서 프로필 (markdown 입력 전용): official/report/plan/notice/minutes/press. 기존·한국어 별칭은 하나의 프로필로 정규화. official·report는 공문서식 머리글 번호 사다리(Ⅰ./1./가./1))도 함께 선택하고, 나머지 프로필과 프리셋 생략 시에는 절 번호 사다리(1./1-1./1-1-1.)를 유지",
     ),
     ("new", "margin_top", "위쪽 페이지 여백(mm, 0..=200)"),
     ("new", "margin_bottom", "아래쪽 페이지 여백(mm, 0..=200)"),
