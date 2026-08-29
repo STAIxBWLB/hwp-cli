@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.13.0]
+
 **Added**
 
 - Markdown-to-HWP conversion now maps unordered list depth to the official symbol ladder
