@@ -31,9 +31,10 @@ Two things about the Google side are worth knowing before anyone else tries to s
   `hello@jeju.ai` is listed; `yj.lee@chu.ac.kr` was rejected because it is not a Google account.
   Add more under Google Auth Platform → Audience → Test users, or publish the app (which then
   needs verification).
-- The consent screen is shared per Google Cloud project, so it currently shows the project's
-  existing app name, **Obsidian**, not "hwp MCP". Changing it would rename the consent screen for
-  the other client in that project; a dedicated project is the clean fix if the branding matters.
+- The consent screen is shared per Google Cloud project. Its app name is **STAIx**, which is what
+  people see when they sign in. Renaming it there renames it for every OAuth client in the
+  `chu-rise` project, so a dedicated project is the clean fix if this service ever needs its own
+  branding.
 
 ## Where to deploy from
 
