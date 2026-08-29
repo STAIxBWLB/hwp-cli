@@ -14,18 +14,26 @@ MCP client ──HTTPS──► Worker ──► Durable Object (one per session
                       OAuth + Google, PAT auth, limits, audit          --root /work, no egress
 ```
 
-## Owner prerequisites
+## Owner prerequisites — done
 
-These four cannot be done by an agent. Everything else in this directory is ready
-to deploy once they exist.
+All four are satisfied; nothing here needs repeating for a first deploy.
 
-1. **Workers Paid** ($5/month) on the Cloudflare account. Containers require it.
-2. **A Cloudflare API token** for the deploy host, with: Workers Scripts:Edit,
-   Workers KV Storage:Edit, D1:Edit, Containers:Edit, Account Settings:Read.
-3. **A Google OAuth client** (type: Web application) with the redirect URI
-   `https://hwp-mcp.young-joon-lee.workers.dev/callback`. Keep the client id and secret.
-4. **A $10/month billing notification** (Dashboard → Notifications). The budget cap
-   for this service is $10/month; see *Cost* below.
+| Item | State |
+|---|---|
+| Workers Paid | Active. `wrangler containers list` succeeds, which is the authoritative test |
+| API token `hwp-mcp deploy` | Created, scoped to the `entelecheia` account with Workers Scripts, Workers KV Storage, D1 and Containers all at Edit. Verified against `/user/tokens/verify` and stored on the deploy host at `~/.config/hwp-mcp-deploy.env` (mode 600) |
+| Google OAuth client `hwp MCP` | Web application in project `chu-rise`, redirect URI `https://hwp-mcp.young-joon-lee.workers.dev/callback`. Its id and secret are Worker secrets already |
+| Budget notification | Cloudflare's auto-created budget alert is already exactly $10 USD to yj.lee@me.com |
+
+Two things about the Google side are worth knowing before anyone else tries to sign in:
+
+- The app's publishing status is **Testing**, so only listed test users can complete the flow.
+  `hello@jeju.ai` is listed; `yj.lee@chu.ac.kr` was rejected because it is not a Google account.
+  Add more under Google Auth Platform → Audience → Test users, or publish the app (which then
+  needs verification).
+- The consent screen is shared per Google Cloud project, so it currently shows the project's
+  existing app name, **Obsidian**, not "hwp MCP". Changing it would rename the consent screen for
+  the other client in that project; a dedicated project is the clean fix if the branding matters.
 
 ## Where to deploy from
 
@@ -66,16 +74,22 @@ These exist and their ids are already in `wrangler.jsonc` — do not recreate th
 
 ## First deploy
 
+All three Worker secrets (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `COOKIE_ENCRYPTION_KEY`)
+are already set, so a first deploy is just:
+
 ```bash
+ssh yjlee@172.16.229.33
+cd ~/hwp-cli/deploy/cloudflare        # clone the repo here if it is not present
 set -a && . ~/.config/hwp-mcp-deploy.env && set +a
 npm ci
-
-# Secrets (never in wrangler.jsonc).
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
-openssl rand -hex 32 | npx wrangler secret put COOKIE_ENCRYPTION_KEY
-
 npx wrangler deploy
+```
+
+The first deploy takes several minutes: it compiles the Rust workspace inside the container image.
+Rebuilding a secret is only needed if one is rotated:
+
+```bash
+openssl rand -hex 32 | npx wrangler secret put COOKIE_ENCRYPTION_KEY
 ```
 
 The first deploy takes several minutes: it compiles the Rust workspace inside the
