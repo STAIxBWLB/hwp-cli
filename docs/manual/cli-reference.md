@@ -30,6 +30,7 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 - [`hwp certify`](#hwp-certify)
 - [`hwp corpus`](#hwp-corpus)
 - [`hwp mcp`](#hwp-mcp)
+- [`hwp serve`](#hwp-serve)
 - [`hwp update`](#hwp-update)
 - [`hwp skill`](#hwp-skill)
 - [`hwp skill export`](#hwp-skill-export)
@@ -384,6 +385,19 @@ MCP (Model Context Protocol) stdio server: a tool interface for AI agents
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | Default font directory for the render and diff tools (repeatable) |
 | `--root` | `<ROOT>` |  | Restrict all file access to this directory (repeatable). Default: unrestricted |
+
+## `hwp serve`
+
+MCP HTTP server for container deployment: the same tools over POST /mcp
+
+**Usage:** `hwp serve [OPTIONS] --root <ROOT>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `--addr` | `<ADDR>` | `0.0.0.0:8080` | Listen address. Port 0 picks a free port and prints the bound address to stderr |
+| `--root` | `<ROOT>` |  | Workspace root: all file access is restricted to this directory |
+| `--font-dir` | `<FONT_DIR>` |  | Default font directory for the render and diff tools (repeatable) |
+| `--files` |  |  | Enable POST and GET /files/{name} upload and download inside the root |
 
 ## `hwp update`
 

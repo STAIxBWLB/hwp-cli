@@ -7,9 +7,11 @@
 //! 도구는 라이브러리 계층을 직접 감싼다(commands/*::run 아님 — 그건 stdout 출력).
 
 mod authority;
+mod http;
 mod stdio;
 
 pub use authority::FileAuthority;
+pub use http::serve;
 pub use stdio::run;
 
 use authority::{checked_read_path, checked_write_path, font_dirs_for};

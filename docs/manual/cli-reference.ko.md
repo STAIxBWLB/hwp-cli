@@ -30,6 +30,7 @@
 - [`hwp certify`](#hwp-certify)
 - [`hwp corpus`](#hwp-corpus)
 - [`hwp mcp`](#hwp-mcp)
+- [`hwp serve`](#hwp-serve)
 - [`hwp update`](#hwp-update)
 - [`hwp skill`](#hwp-skill)
 - [`hwp skill export`](#hwp-skill-export)
@@ -384,6 +385,19 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
 | `--root` | `<ROOT>` |  | 모든 파일 접근을 이 디렉터리 아래로 제한 (반복 가능). 기본: 제한 없음 |
+
+## `hwp serve`
+
+컨테이너 배포용 MCP HTTP 서버 — 같은 도구를 POST /mcp로 제공
+
+**사용법:** `hwp serve [OPTIONS] --root <ROOT>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `--addr` | `<ADDR>` | `0.0.0.0:8080` | 수신 주소. 포트가 0이면 빈 포트를 골라 바인드된 주소를 stderr로 출력 |
+| `--root` | `<ROOT>` |  | 작업 공간 root — 모든 파일 접근을 이 디렉터리 아래로 제한 |
+| `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
+| `--files` |  |  | root 아래에서 POST/GET /files/{name} 업로드·다운로드 활성화 |
 
 ## `hwp update`
 

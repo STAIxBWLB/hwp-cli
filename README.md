@@ -493,9 +493,11 @@ expand environment variables). Quick starts the local MCP child at Low mandatory
 not change that write integrity; use the dedicated runbook's creation, import JSON, and recovery
 steps.
 
-Amazon Quick Web cannot launch a local stdio process. Authenticated Streamable HTTP, tenant
-isolation and artifact transfer are specified for future work in
-[Remote MCP transport](docs/design/20-remote-mcp.md); no HTTP runtime is included today.
+Amazon Quick Web cannot launch a local stdio process. `hwp serve` now runs the same tools over
+HTTP for container deployment (`POST /mcp`, see [deployment design](docs/design/22-remote-mcp-deployment.md)),
+but it is a private hop that expects a trusted edge in front of it: authenticated Streamable HTTP,
+tenant isolation and artifact transfer remain future work in
+[Remote MCP transport](docs/design/20-remote-mcp.md).
 
 ### Exposed tools (20)
 

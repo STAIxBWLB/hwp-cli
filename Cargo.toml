@@ -39,6 +39,9 @@ sha2 = "0.11"
 aes = "0.9.1"
 getrandom = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
+# `hwp serve` HTTP adapter (doc 22 §4 결정 기록) — 동기식 thread 모델이라 tokio를
+# 들이지 않는다. 새로 붙는 하위 트리는 ascii/chunked_transfer/httpdate뿐이다.
+tiny_http = "0.12"
 
 # Rendering
 tiny-skia = "0.12"
