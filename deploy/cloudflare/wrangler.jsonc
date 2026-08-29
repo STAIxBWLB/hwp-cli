@@ -15,9 +15,10 @@
       // 1/4 vCPU, 1 GiB, 4 GB disk. Rendering is the memory-hungry path; raise
       // this if the diagnostic corpus ever OOMs.
       "instance_type": "basic",
-      // Budget guard: the owner's cap is $10/month and Workers Paid includes
-      // 25 GiB-hours of container memory.
-      "max_instances": 5
+      // Raised from 5: each session holds an instance until it sleeps, so a
+      // ceiling that low turned ordinary concurrent use into capacity errors.
+      // Cost is still bounded by sleepAfter and the rate limiter, not by this.
+      "max_instances": 20
     }
   ],
 
@@ -35,6 +36,16 @@
       "database_name": "hwp-mcp",
       "database_id": "b8a7e5b9-7c14-4354-91a6-52e5c36d45c8"
     }
+  ],
+
+  // Rate limits. `period` may only be 10 or 60 seconds.
+  //
+  // SESSION_LIMITER is the budget guard: every initialize starts a container, and
+  // container time is what the $10/month cap actually buys. CALL_LIMITER is the
+  // much looser ceiling on ordinary traffic inside a session.
+  "ratelimits": [
+    { "name": "SESSION_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+    { "name": "CALL_LIMITER", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
   ],
 
   "assets": { "directory": "./public", "binding": "ASSETS" },

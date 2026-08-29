@@ -115,7 +115,19 @@ export class HwpSession extends Container<Env> {
       // Anything else is this one request's problem, not the session's. Killing
       // the session here made a transient RPC hiccup look like an expired
       // session on the *next* call, which is a confusing way to lose a workspace.
-      console.error('container fetch failed', error instanceof Error ? error.message : error);
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error('container fetch failed', detail);
+
+      // Running out of instance capacity is an ordinary, retryable condition, so
+      // it gets 503 rather than a 500 carrying Cloudflare's internal wording to
+      // the caller.
+      if (/max_instances|running container instances/i.test(detail)) {
+        await this.terminate();
+        return new Response('no capacity for a new session; try again shortly', {
+          status: 503,
+          headers: { 'retry-after': '60' },
+        });
+      }
       return new Response('container unavailable', { status: 502 });
     }
   }

@@ -52,7 +52,6 @@ function describe(body: ArrayBuffer): { method: string | null; tool: string | nu
   }
 }
 
-/** `fetch` is required (not optional) so this satisfies the provider's handler type. */
 /**
  * DNS-rebinding defense (docs/design/20-remote-mcp.md §2.2).
  *
@@ -66,6 +65,7 @@ function originAllowed(request: Request, url: URL): boolean {
   return origin === null || origin === url.origin;
 }
 
+/** `fetch` is required (not optional) so this satisfies the provider's handler type. */
 export const mcpApiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const principal = principalOf(ctx);
@@ -130,9 +130,27 @@ async function handleMcp(
   let sessionId: string;
   let minted = false;
   if (method === 'initialize') {
+    // The budget guard sits here rather than on the edge as a whole: this is the
+    // one call that starts a container, and container time is what the monthly
+    // cap actually buys. Ordinary traffic inside a session is far cheaper and
+    // gets the looser limit below.
+    const { success } = await env.SESSION_LIMITER.limit({ key: principal.userId });
+    if (!success) {
+      return new Response('too many sessions started; wait a minute', {
+        status: 429,
+        headers: { 'retry-after': '60' },
+      });
+    }
     sessionId = crypto.randomUUID();
     minted = true;
   } else {
+    const { success } = await env.CALL_LIMITER.limit({ key: principal.userId });
+    if (!success) {
+      return new Response('too many requests', {
+        status: 429,
+        headers: { 'retry-after': '60' },
+      });
+    }
     if (!headerSessionId || !SESSION_ID_RE.test(headerSessionId)) {
       return new Response('session not found', { status: 404 });
     }
@@ -197,6 +215,11 @@ async function handleFiles(
   }
   if (request.method !== 'GET' && request.method !== 'POST') {
     return new Response(null, { status: 405, headers: { Allow: 'GET, POST' } });
+  }
+
+  const { success } = await env.CALL_LIMITER.limit({ key: principal.userId });
+  if (!success) {
+    return new Response('too many requests', { status: 429, headers: { 'retry-after': '60' } });
   }
 
   const stub = sessionStub(env, principal, sessionId);
