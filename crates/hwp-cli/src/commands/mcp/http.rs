@@ -10,6 +10,8 @@ use std::fs::File;
 use std::io::{self, Cursor, Read as _};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use tiny_http::{Header, Method, Request, Response, Server};
 use zeroize::Zeroizing;
@@ -37,6 +39,48 @@ fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes())
         .expect("정적 헤더 이름/값은 항상 유효하다")
 }
+
+/// 종료 신호를 받았는지 나타낸다. 시그널 핸들러가 유일한 기록자다.
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// accept 대기 주기. 종료 신호를 알아채기까지의 최대 지연이기도 하다.
+const ACCEPT_POLL: Duration = Duration::from_millis(200);
+
+/// 시그널 핸들러. async-signal-safe 한 연산만 수행한다.
+///
+/// 첫 신호는 정상 종료를 요청하므로 처리 중인 요청이 끝날 때까지 기다린다. 두 번째
+/// 신호는 즉시 종료로 처리한다. 긴 도구 호출 도중에도 빠져나갈 수 있어야 하기
+/// 때문이다.
+#[cfg(unix)]
+extern "C" fn on_terminate(_signal: libc::c_int) {
+    if SHUTDOWN.swap(true, Ordering::SeqCst) {
+        // SAFETY: `_exit`는 async-signal-safe 하다. atexit 처리기를 건너뛰지만
+        // 이 서버는 종료 시점에 flush할 상태를 들고 있지 않다.
+        unsafe { libc::_exit(130) };
+    }
+}
+
+/// SIGTERM·SIGINT를 받으면 수신 루프가 빠져나오도록 등록한다.
+///
+/// 컨테이너에서 이 프로세스는 대개 PID 1이 되는데, 커널은 기본 처리 방식을 가진
+/// 시그널을 PID 1에 전달하지 않는다. 즉 핸들러를 등록하지 않으면 SIGTERM이 조용히
+/// 버려지고, 유휴 컨테이너를 그렇게 정지시키는 플랫폼은 이 프로세스를 영영 멈추지
+/// 못한다. Cloudflare Containers에서 컨테이너 9개가 종료되지 않고 약 4시간 동안
+/// 남아 있던 원인이 이것이었다.
+#[cfg(unix)]
+fn install_signal_handlers() {
+    // SAFETY: 핸들러는 async-signal-safe 한 연산만 수행한다(위 주석 참고).
+    // libc::signal 자체도 이 시점에는 다른 스레드가 없어 경합하지 않는다.
+    unsafe {
+        let handler = on_terminate as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGINT, handler);
+    }
+}
+
+/// Windows에는 대응하는 시그널이 없다. 콘솔 종료는 기존 동작 그대로 둔다.
+#[cfg(not(unix))]
+fn install_signal_handlers() {}
 
 /// HTTP JSON-RPC 서버. 요청을 한 번에 하나씩 처리한다.
 ///
@@ -73,7 +117,19 @@ pub fn serve(
     // stdout은 도구 출력 전용이므로 운영 로그는 stderr로 보낸다.
     eprintln!("hwp serve: listening on http://{bound}");
 
-    for mut request in server.incoming_requests() {
+    install_signal_handlers();
+
+    // incoming_requests()는 accept에서 막혀 종료 신호를 알아채지 못하므로, 짧은
+    // timeout으로 받아 처리 중인 요청은 끝까지 마친 뒤 루프를 빠져나온다.
+    while !SHUTDOWN.load(Ordering::SeqCst) {
+        let mut request = match server.recv_timeout(ACCEPT_POLL) {
+            Ok(Some(request)) => request,
+            Ok(None) => continue,
+            Err(error) => {
+                eprintln!("hwp serve: 연결 수신 실패: {error}");
+                continue;
+            }
+        };
         let path = request.url().split('?').next().unwrap_or("").to_string();
         let method = request.method().clone();
         let result = match (&method, path.as_str()) {
@@ -93,6 +149,7 @@ pub fn serve(
             eprintln!("hwp serve: 응답 전송 실패: {error}");
         }
     }
+    eprintln!("hwp serve: shutting down");
     Ok(())
 }
 

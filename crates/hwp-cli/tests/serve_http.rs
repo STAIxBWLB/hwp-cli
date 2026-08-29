@@ -43,6 +43,10 @@ struct Serve {
     child: Child,
     addr: String,
     root: PathBuf,
+    /// Held only to keep the stderr pipe open. The server writes one line at
+    /// shutdown, and printing into a closed pipe would panic the process under
+    /// test rather than let it exit cleanly.
+    _stderr: BufReader<std::process::ChildStderr>,
 }
 
 impl Drop for Serve {
@@ -78,9 +82,9 @@ fn spawn(test: &str, files: bool) -> Serve {
         .unwrap();
 
     // The bound address arrives on the first stderr line.
-    let stderr = child.stderr.take().unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut first = String::new();
-    BufReader::new(stderr).read_line(&mut first).unwrap();
+    stderr.read_line(&mut first).unwrap();
     let addr = first
         .trim()
         .rsplit("http://")
@@ -89,7 +93,12 @@ fn spawn(test: &str, files: bool) -> Serve {
         .to_string();
     assert!(!addr.is_empty(), "바인드 주소를 읽지 못했습니다: {first:?}");
 
-    Serve { child, addr, root }
+    Serve {
+        child,
+        addr,
+        root,
+        _stderr: stderr,
+    }
 }
 
 /// Minimal HTTP/1.1 exchange. Returns (status, body).
@@ -291,4 +300,33 @@ fn serve_refuses_to_start_without_a_usable_root() {
         !bad_root.status.success(),
         "존재하지 않는 --root 로 기동이 성공했습니다"
     );
+}
+
+/// A container platform stops an idle instance with SIGTERM, and the kernel does not
+/// deliver a signal with its default disposition to PID 1 — which `hwp serve` becomes
+/// in a container. Without a handler the signal is discarded and the process runs
+/// forever; that is exactly how nine Cloudflare containers stayed up for hours.
+#[test]
+#[cfg(unix)]
+fn serve_exits_on_sigterm() {
+    let mut server = spawn("sigterm", false);
+    // Prove it is serving first, so a pass cannot mean "it never started".
+    let (status, _) = request(&server.addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200);
+
+    // SAFETY: the pid belongs to a child this test spawned and has not reaped.
+    unsafe { libc::kill(server.child.id() as libc::pid_t, libc::SIGTERM) };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let exit = loop {
+        if let Some(exit) = server.child.try_wait().unwrap() {
+            break exit;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SIGTERM 후 10초가 지나도 종료되지 않았습니다"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(exit.success(), "정상 종료가 아닙니다: {exit:?}");
 }
