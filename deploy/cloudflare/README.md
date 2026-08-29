@@ -22,7 +22,7 @@ All four are satisfied; nothing here needs repeating for a first deploy.
 |---|---|
 | Workers Paid | Active. `wrangler containers list` succeeds, which is the authoritative test |
 | API token `hwp-mcp deploy` | Created, scoped to the `entelecheia` account with Workers Scripts, Workers KV Storage, D1 and Containers all at Edit. Verified against `/user/tokens/verify` and stored on the deploy host at `~/.config/hwp-mcp-deploy.env` (mode 600) |
-| Google OAuth client `hwp MCP` | Web application in project `chu-rise`, redirect URI `https://hwp-mcp.young-joon-lee.workers.dev/callback`. Its id and secret are Worker secrets already |
+| Google OAuth client `hwp MCP` | Web application in project `chu-rise`, redirect URI `https://hwp-mcp.staix.workers.dev/callback`. Its id and secret are Worker secrets already |
 | Budget notification | Cloudflare's auto-created budget alert is already exactly $10 USD to yj.lee@me.com |
 
 Two things about the Google side are worth knowing before anyone else tries to sign in:
@@ -60,8 +60,8 @@ EOF
 ## Already provisioned
 
 Account `entelecheia` (`b378caab1c7aea09cb77db791fe5f3f8`), workers.dev subdomain
-`young-joon-lee`, so the service URL is
-`https://hwp-mcp.young-joon-lee.workers.dev`.
+`staix`, so the service URL is
+`https://hwp-mcp.staix.workers.dev`.
 
 These exist and their ids are already in `wrangler.jsonc` — do not recreate them:
 
@@ -100,12 +100,12 @@ image. The Worker URL may answer before container routes do.
 ```bash
 # 1. Protocol, from a machine with a browser.
 npx @modelcontextprotocol/inspector
-#    Transport: Streamable HTTP → https://hwp-mcp.young-joon-lee.workers.dev/mcp
+#    Transport: Streamable HTTP → https://hwp-mcp.staix.workers.dev/mcp
 #    Expect: dynamic registration → Google sign-in → initialize returns
 #    Mcp-Session-Id → tools/list shows exactly 20 tools.
 
 # 2. A real client.
-claude mcp add --transport http hwp https://hwp-mcp.young-joon-lee.workers.dev/mcp
+claude mcp add --transport http hwp https://hwp-mcp.staix.workers.dev/mcp
 ```
 
 Then check the negatives, which are the parts worth distrusting:
