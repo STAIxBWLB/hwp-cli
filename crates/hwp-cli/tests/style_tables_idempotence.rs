@@ -65,27 +65,6 @@ fn new_from(md: &Path, out: &Path, extra_args: &[&str]) {
     assert!(status.success(), "hwp new --from {md:?} -o {out:?} failed");
 }
 
-/// Same as [`style_tables`] but without `--verify`. Used only by the opaque-container
-/// regression, whose fixture trips a separate HWPX round-trip defect (#135) unrelated to
-/// styling: `--verify` compares the semantic hash of the edit result against the same document
-/// re-read from disk, and this file does not survive that comparison even though its containers
-/// hold no tables at all. Byte stability across re-application is still asserted in full.
-fn style_tables_no_verify(input: &Path, output: &Path) {
-    let r = hwp()
-        .arg("edit")
-        .arg(input)
-        .arg("-o")
-        .arg(output)
-        .args(["--style-tables", "official"])
-        .output()
-        .unwrap();
-    assert!(
-        r.status.success(),
-        "hwp edit {input:?} -o {output:?} --style-tables official failed: {}",
-        String::from_utf8_lossy(&r.stderr)
-    );
-}
-
 fn style_tables(input: &Path, output: &Path) {
     let r = hwp()
         .arg("edit")
@@ -468,9 +447,10 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
 /// already-styled document produced zero edits, which the publish gate could not tell apart from
 /// "no table matched", so the second of two identical runs failed outright.
 ///
-/// `--verify` is deliberately omitted: this fixture fails the edit/re-read semantic-hash
-/// comparison for a reason unrelated to styling (#135) — its ten `hp:container` elements hold no
-/// tables at all — and gating this regression on that defect would couple the two.
+/// This test runs with `--verify` (the semantic-hash self-check). It was --verify-free while the
+/// fixture tripped an unrelated HWPX writer round-trip defect (#135 — explicit no-fill border
+/// fills and empty numbering templates were not written back faithfully); with that fixed, the
+/// full edit/re-read comparison is asserted here too.
 #[test]
 fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
     let source = Path::new(
@@ -486,9 +466,9 @@ fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
     let third = dir.join("s3.hwpx");
 
     // Each pass must PUBLISH. Before the fix the second one failed the publish gate outright.
-    style_tables_no_verify(source, &first);
-    style_tables_no_verify(&first, &second);
-    style_tables_no_verify(&second, &third);
+    style_tables(source, &first);
+    style_tables(&first, &second);
+    style_tables(&second, &third);
 
     assert_bytes_eq(
         &first,

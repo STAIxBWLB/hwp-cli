@@ -222,6 +222,19 @@ fn write_border_fills(out: &mut String, header: &DocHeader) {
                 r##"<hc:fillBrush><hc:winBrush faceColor="{}" hatchColor="{hatch}" alpha="0"/></hc:fillBrush>"##,
                 color_attr(bg)
             );
+        } else if bf.fill_type & 0x1 != 0 {
+            // Genuine Hancom files carry an explicit no-fill brush
+            // (`winBrush faceColor="none"`); the reader maps it to fill bit 0 with the
+            // none-sentinel color. Emit it back so a write/re-read cycle keeps the bit
+            // instead of silently dropping the fill record (#135).
+            let hatch = bf
+                .hatch
+                .map(|(c, _)| color_attr(c))
+                .unwrap_or_else(|| "#999999".to_string());
+            let _ = write!(
+                out,
+                r##"<hc:fillBrush><hc:winBrush faceColor="none" hatchColor="{hatch}" alpha="0"/></hc:fillBrush>"##
+            );
         }
         out.push_str("</hh:borderFill>");
     }
@@ -473,13 +486,26 @@ fn write_numberings(out: &mut String, header: &DocHeader) {
         let levels = header.numbering_levels.get(i);
         let level_count = levels.map_or(7, |levels| levels.len().min(10));
         for level in 1..=level_count {
-            // 보존된 수준 형식이 있으면 그 시작/형식/템플릿을, 없으면 기존 상수 기본.
+            // A preserved level format contributes its start/format/template; a level
+            // with no modeled format falls back to the constant default. An explicitly
+            // empty template is genuine content (Hancom self-closes such paraHead), so
+            // emit it verbatim — substituting the default would fabricate a number
+            // format the source does not have and break the write/re-read cycle (#135).
             let nl = levels.and_then(|v| v.get(level - 1));
             let start = nl.map_or(1, |n| n.start);
             let numfmt = nl.map_or("DIGIT", |n| num_format_name(n.fmt));
+            if let Some(n) = nl
+                && n.template.is_empty()
+            {
+                let _ = write!(
+                    out,
+                    r##"<hh:paraHead start="{start}" level="{level}" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="{numfmt}" charPrIDRef="4294967295" checkable="0"/>"##
+                );
+                continue;
+            }
             let template = match nl {
-                Some(n) if !n.template.is_empty() => esc(&n.template),
-                _ => format!("^{level}."),
+                Some(n) => esc(&n.template),
+                None => format!("^{level}."),
             };
             let _ = write!(
                 out,

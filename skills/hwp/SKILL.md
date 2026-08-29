@@ -148,6 +148,64 @@ workflows, lives in [references/editing-recipes.md](references/editing-recipes.m
 analysis, anchor-based paragraph edits, data-driven table fill, label-value forms, and the
 validate-plus-render guard sequence.
 
+The three workflows below were run verbatim against `fixtures/samples/report-tables.hwpx`
+(hwp 0.12.1, 2026-08-29) before being written down.
+
+### Analyze a document
+
+One "what is in this document" pass: package inventory, then text with source coordinates,
+then the programmatic handles (fields and template slots):
+
+```bash
+hwp info doc.hwpx --json
+hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+hwp fields doc.hwpx --json
+hwp slots doc.hwpx --json
+```
+
+`--with-segments` prints a one-line JSON envelope `{"markdown": ..., "segments": [...]}` where
+each segment is `{"kind": "para", "section": N, "para": N, "start": N, "end": N}` and
+start/end are character offsets into the markdown string. `fields` and `slots` legitimately
+return `[]` when the document has no fields or `{{slot}}` placeholders — empty is an answer,
+not an error.
+
+### Edit one section
+
+Segments locate the paragraph; the edit itself anchors on the visible text of that range —
+there is no raw `sec` index contract. Work on a copy until the result passes validation:
+
+```bash
+hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+hwp edit doc.hwpx -o edited.hwpx --insert-para "anchor text=>new paragraph" --verify
+hwp edit edited.hwpx -o reverted.hwpx --delete-para "new paragraph" --verify
+hwp validate edited.hwpx
+```
+
+Read the `(section, para)` coordinate of the segment whose markdown range contains the target
+text, then use that range's plain text (without markdown markers) as the anchor.
+`--insert-para "anchor=>text"` inserts after the anchor paragraph (`--insert-para-before`
+inserts before it); `--delete-para "text"` removes a paragraph by its text. Both are
+all-or-nothing by default and re-read the output under `--verify`.
+
+### Guard an edit
+
+Before/after structural-drift check: structural validation plus renderer page counts.
+
+```bash
+hwp validate edited.hwpx
+hwp render doc.hwpx -o before.png --report before.render.json
+hwp render edited.hwpx -o after.png --report after.render.json
+```
+
+Compare `total_pages` in the two render reports (the report also carries `font_coverage` and
+`font_resolution_complete`; rendering needs CJK fonts, and page counts depend on the fonts
+available). A changed page count is a review signal, not proof of content drift: an IR
+round-trip alone can reflow layout — verified on the fixture, where a plain
+`hwp convert --to hwpx` round-trip rendered 6 pages before and 5 after while the
+byte-preserving `--replace` fast path kept the original count. When layout must stay
+untouched, prefer `--replace`-only edits (the package-preserving path) and treat any
+page-count change as a reason to inspect the rendered pages, not to weaken validation.
+
 ## MCP server
 
 `hwp mcp` speaks synchronous JSON-RPC 2.0 over stdio (line-delimited; stdout carries the

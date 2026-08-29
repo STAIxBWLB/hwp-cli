@@ -60,7 +60,8 @@ pub use markdown::{
 };
 pub use odt::to_odt;
 pub use official::{
-    OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides, profile, profiles,
+    HeadingNumbering, OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides,
+    profile, profiles,
 };
 pub use structure::{delete_paragraph, insert_paragraph};
 pub use style::{display_width, style_table, style_tables};

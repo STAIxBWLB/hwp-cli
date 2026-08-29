@@ -1263,7 +1263,8 @@ fn 쪽_테두리_렌더() {
 /// lives inside the text area, so the marker sits at the paragraph's left edge
 /// and the first line's text clears it. Hangul places the marker at `left`, never
 /// left of the paragraph, which is what the oracle raster shows.
-/// Glyph presence depends on font availability (CLAUDE.md CI rule) — skip if none.
+/// Depth 1 uses the ladder rung `□` (#125). Glyph presence depends on font
+/// availability (CLAUDE.md CI rule) — skip if none.
 #[test]
 fn 목록_마커_내어쓰기_배치() {
     use hwp_render::display::Item;
@@ -1283,11 +1284,14 @@ fn 목록_마커_내어쓰기_배치() {
         eprintln!("스킵: 사용 가능한 폰트 없음 — 글리프 미생성");
         return;
     }
-    let marker_x = glyphs
+    let Some(marker_x) = glyphs
         .iter()
-        .find(|(_, t)| t.contains('-'))
+        .find(|(_, t)| t.contains('□'))
         .map(|(x, _)| *x)
-        .expect("불릿 마커(-) 글리프가 있어야");
+    else {
+        eprintln!("스킵: 사용 가능한 폰트에 □(U+25A1) 글리프 없음");
+        return;
+    };
     let text_x = glyphs
         .iter()
         .find(|(_, t)| t.contains('항'))

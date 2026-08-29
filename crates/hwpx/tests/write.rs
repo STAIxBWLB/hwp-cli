@@ -3087,3 +3087,58 @@ fn 셀배경_그러데이션_hwpx_왕복() {
     assert_eq!(g.stops[0].1, 0x0000_00FF);
     assert_eq!(g.stops[1].1, 0x00FF_0000);
 }
+
+/// #135: a genuine Hancom header can self-close a `paraHead` (no format template at
+/// all). The writer used to substitute the default `^N.` template for such levels,
+/// so a write/re-read cycle fabricated a template the source never had.
+#[test]
+fn empty_numbering_template_round_trips_as_empty() {
+    let xml = r##"<hh:head><hh:numberings itemCnt="1"><hh:numbering id="1" start="0"><hh:paraHead start="1" level="1" numFormat="DIGIT">^1.</hh:paraHead><hh:paraHead start="1" level="9" numFormat="HANGUL_JAMO"/><hh:paraHead start="1" level="10" numFormat="ROMAN_SMALL"/></hh:numbering></hh:numberings></hh:head>"##;
+    let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
+    assert_eq!(h1.numbering_levels[0].len(), 10);
+    assert_eq!(h1.numbering_levels[0][8].template, "");
+    assert_eq!(h1.numbering_levels[0][9].template, "");
+
+    let out = hwpx::write::header::write_header(&h1, 1);
+    assert!(
+        out.contains(r#"level="9" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="HANGUL_JAMO" charPrIDRef="4294967295" checkable="0"/>"#),
+        "an empty template must self-close instead of materializing a default: {out}"
+    );
+
+    let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
+    let levels = &h2.numbering_levels[0];
+    assert_eq!(levels.len(), 10, "level count must survive the round trip");
+    assert_eq!(levels[0].template, "^1.");
+    assert_eq!(levels[8].template, "", "level 9 template must stay empty");
+    assert_eq!(levels[9].template, "", "level 10 template must stay empty");
+    assert_eq!(levels[8].fmt, hwp_model::NumFmt::HangulJamo);
+    assert_eq!(levels[9].fmt, hwp_model::NumFmt::RomanLower);
+}
+
+/// #135: genuine Hancom files carry an explicit no-fill brush
+/// (`winBrush faceColor="none"`), which the reader maps to fill bit 0 plus the
+/// none-sentinel color. The writer used to drop the brush for the none-sentinel,
+/// so the re-read fill lost the bit entirely.
+#[test]
+fn no_fill_win_brush_round_trips() {
+    let xml = r##"<hh:head><hh:borderFills itemCnt="2"><hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0"><hh:slash type="NONE" Crooked="0" isCounter="0"/><hh:backSlash type="NONE" Crooked="0" isCounter="0"/><hh:leftBorder type="NONE" width="0.1 mm" color="#000000"/><hh:rightBorder type="NONE" width="0.1 mm" color="#000000"/><hh:topBorder type="NONE" width="0.1 mm" color="#000000"/><hh:bottomBorder type="NONE" width="0.1 mm" color="#000000"/><hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/></hh:borderFill><hh:borderFill id="2" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0"><hh:slash type="NONE" Crooked="0" isCounter="0"/><hh:backSlash type="NONE" Crooked="0" isCounter="0"/><hh:leftBorder type="NONE" width="0.1 mm" color="#000000"/><hh:rightBorder type="NONE" width="0.1 mm" color="#000000"/><hh:topBorder type="NONE" width="0.1 mm" color="#000000"/><hh:bottomBorder type="NONE" width="0.1 mm" color="#000000"/><hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/><hc:fillBrush><hc:winBrush faceColor="none" hatchColor="#999999" alpha="0"/></hc:fillBrush></hh:borderFill></hh:borderFills></hh:head>"##;
+    let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
+    assert_eq!(h1.border_fills.len(), 2);
+    assert_eq!(h1.border_fills[1].fill_type & 0x1, 0x1);
+    assert_eq!(h1.border_fills[1].bg_color, Some(0xFFFF_FFFF));
+
+    let out = hwpx::write::header::write_header(&h1, 1);
+    assert!(
+        out.contains(r#"<hc:winBrush faceColor="none""#),
+        "the explicit no-fill brush must be emitted back: {out}"
+    );
+
+    let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
+    let bf = &h2.border_fills[1];
+    assert_eq!(
+        bf.fill_type & 0x1,
+        0x1,
+        "fill bit 0 must survive the round trip"
+    );
+    assert_eq!(bf.bg_color, Some(0xFFFF_FFFF));
+}

@@ -377,8 +377,11 @@ fn ordered_list_start_boundaries_fail_closed_without_marker_overflow() {
         "maximum ordered-list start cat",
     );
     assert_success(&maximum_cat, "maximum ordered-list start cat");
+    // 4294967295 exceeds CommonMark's 9-digit ordered-marker limit, so the
+    // exporter degrades it to a plain bullet rather than emitting a marker no
+    // importer would parse back as a list (#134).
     assert!(
-        String::from_utf8_lossy(&maximum_cat.stdout).contains("4294967295. first"),
+        String::from_utf8_lossy(&maximum_cat.stdout).contains("- first"),
         "markdown: {}",
         String::from_utf8_lossy(&maximum_cat.stdout)
     );

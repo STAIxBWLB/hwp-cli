@@ -4,6 +4,8 @@
 //! codes follow D-05, human output follows D-07, `--json` validates against the
 //! published hwp-lint-report-v1 schema (D-06), stdin works (D-08), and binary
 //! .hwpx input flows through the same engine with the D-02 note (D-01/D-02).
+//! Generated preset documents are gated too (#141): linting a `--preset`
+//! document must not flag the engine's own list numbering as typed marks.
 //!
 //! CI-safe by construction: text fixtures written to per-test tmp dirs, .hwpx
 //! inputs generated via `hwp new --from` — no committed fixtures, no fonts, no
@@ -250,6 +252,61 @@ fn silent_on_embedded_templates() {
             String::from_utf8_lossy(&out.stdout)
         );
     }
+}
+
+#[test]
+fn preset_generated_documents_lint_silent() {
+    // #141 regression gate: a preset installs the eight-level engine
+    // numbering, and the reconstruction re-emits each item's ordinal as a GFM
+    // digit marker (`1. `) — never as literal text. Linting the generated
+    // document must therefore not flag the engine's own numbering as typed
+    // marks (the markdown-source gate in `silent_on_embedded_templates` does
+    // not cover this path). `report` and `plan` are the affected presets.
+    let dir = test_dir("preset-generated");
+    for (template, preset) in [("report.md", "report"), ("plan.md", "plan")] {
+        let hwpx = dir.join(format!("{preset}.hwpx"));
+        let made = hwp()
+            .args(["new", "--from"])
+            .arg(repo(&format!("skills/hwp/templates/{template}")))
+            .args(["--preset", preset, "--output"])
+            .arg(&hwpx)
+            .output()
+            .expect("hwp new --preset");
+        assert!(
+            made.status.success(),
+            "hwp new --preset {preset}: {}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+        let out = lint_ok(&hwpx);
+        assert!(
+            out.stdout.is_empty(),
+            "preset-generated {preset} document must lint silent, got:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn typed_item_mark_in_generated_document_still_fires() {
+    // #141 positive control: a hand-typed rung mark inside a list item
+    // survives the markdown→IR→markdown round-trip as item text and must
+    // still be caught when linting the generated binary document.
+    let dir = test_dir("typed-mark-binary");
+    let md = write_md(&dir, "typed-mark.md", "- 가. 직접 입력한 부호입니다\n");
+    let hwpx = dir.join("typed-mark.hwpx");
+    new_hwpx(&md, &hwpx);
+
+    let out = lint_ok(&hwpx);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        rule_ids(&stdout),
+        BTreeSet::from(["struct-item-mark".to_owned()]),
+        "typed mark inside a list item fires on binary input:\n{stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -22,7 +22,7 @@ use hwp_model::{
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::frames::FrameFields;
-use crate::official::{self, OfficialPreset, PageMarginOverrides};
+use crate::official::{self, HeadingNumbering, OfficialPreset, PageMarginOverrides};
 
 /// Number of base para shapes (indexes 0~4) created by default_header. List para shapes are
 /// appended after these (5~). from_html's list para shapes use the same basis.
@@ -58,6 +58,24 @@ pub(crate) fn validate_official_list_depth(depth: usize) -> Result<u16, Authored
         });
     }
     Ok(observed)
+}
+
+/// Gaejo-style unordered-list ladder (`□ → ○ → - → ·`) — one rung per depth, saturating at
+/// the last rung for depth 5+ (#125). The workspace pins rung 4 to `·` (U+00B7) rather than
+/// the guide's `•`. Rungs 1-2 (`□`/`○`) match the depths of the legacy paragraph-sourced
+/// symbols (symbol_para_shape), so list-sourced and paragraph-sourced rungs render identically.
+pub(crate) const BULLET_LADDER: [char; 4] = ['□', '○', '-', '·'];
+
+/// Bullet glyph for a 1-based list depth — the ladder rung, saturating at `·` for depth 5+.
+pub(crate) fn bullet_ladder_char(level: u16) -> char {
+    BULLET_LADDER[(level.max(1) as usize - 1).min(BULLET_LADDER.len() - 1)]
+}
+
+/// Paragraph spacing of the symbol rungs — 600 above a □ (depth 1) block boundary, 300 below
+/// both. Shared by symbol_para_shape and the bullet-list rungs 1-2 so list-sourced and legacy
+/// paragraph-sourced □/○ rungs render identically (#125).
+pub(crate) fn symbol_para_spacing(depth: u16) -> (i32, i32) {
+    (if depth == 1 { 600 } else { 0 }, 300)
 }
 
 /// Normalizes an authored ordered-list start to the IR's persisted u32 range.
@@ -589,6 +607,10 @@ fn from_markdown_inner(
         note_bodies,
         base_dir: opts.base_dir.map(Path::to_path_buf),
         roots: opts.roots.to_vec(),
+        // The preset selects the heading number ladder; no preset keeps the section ladder.
+        heading_numbering: opts
+            .preset
+            .map_or(HeadingNumbering::Section, OfficialPreset::heading_numbering),
         ..Builder::default()
     };
     for event in &events {
@@ -801,9 +823,12 @@ struct Builder {
     in_blockquote: u32,        // blockquote nesting depth (>0 means a quote paragraph)
     in_codeblock: bool,        // code block span (gray background paragraph)
     heading: Option<u16>,      // 1..=6
-    // H1~H3 section number ladder (1. / 1-1. / 1-1-1.) — report standard. If a heading already
-    // starts with a number (1. / Ⅰ. / hangul.), the prefix is omitted (prevents double numbering).
-    h_counters: [u32; 3],
+    // Heading number ladder (#125): `section` numbers H1~H3 as 1. / 1-1. / 1-1-1. (dotted join of
+    // ancestor counters); `official` leaves H1 unnumbered (document title) and numbers H2~H5 as
+    // Ⅰ. / 1. / 가. / 1) with per-level counters. If a heading already starts with a number
+    // (1. / Ⅰ. / hangul.), the prefix is omitted (prevents double numbering).
+    heading_numbering: HeadingNumbering,
+    h_counters: [u32; 5],
     pending_heading_num: Option<String>,
     section_para_shape: Option<u16>, // para shape index for H2/H3 indent (left 2000)
     // Outdent para shapes for body paragraphs starting with gaejo-style symbols (□·○) (allocated once per symbol).
@@ -1070,12 +1095,11 @@ impl Builder {
                 self.numbering_levels.push(levels);
                 self.push_list_para_shape(2, level, def_id)
             }
-            // Bullet list: bullet char + BULLET head. The bullet chars use the bottom two rungs of
-            // the gaejo-style ladder (□ → ○ → - → ·) — since this tool targets Korean official
-            // documents, level 1 `-` and level 2+ `·` are the defaults (`•` is no longer used).
+            // Bullet list: bullet char + BULLET head. The bullet chars follow the gaejo-style
+            // ladder (□ → ○ → - → ·) by depth, saturating at `·` for depth 5+ (#125).
             None => {
                 let def_id = self.bullet_chars.len() as u16;
-                self.bullet_chars.push(if level >= 2 { '·' } else { '-' });
+                self.bullet_chars.push(bullet_ladder_char(level));
                 self.push_list_para_shape(3, level, def_id)
             }
         };
@@ -1201,6 +1225,13 @@ impl Builder {
         // Indent per level (HWPUNIT) — makes nesting visible in Hancom. The exporter's nesting
         // detection is head_level based, so this has no effect on round-trip closure (the margin is for on-screen display).
         let step = 2000i32;
+        // Bullet rungs 1-2 reuse the symbol-para spacing (symbol_para_spacing) so list-sourced
+        // and legacy paragraph-sourced □/○ rungs render identically (#125).
+        let (spacing_top, spacing_bottom) = if head_type == 3 && level <= 2 {
+            symbol_para_spacing(level)
+        } else {
+            (0, 0)
+        };
         self.extra_para_shapes.push(ParaShape {
             // Healthy body para shape (0x180: Hangul line-break + line grid) + left align + head type/level.
             // HWP5 has only three persisted level bits. HWPX level 8 stays semantic through
@@ -1211,6 +1242,8 @@ impl Builder {
                 | (u32::from(if level > 7 { 7 } else { level }) << 25),
             margin_left: i32::from(level) * step,
             indent: -step, // outdent: aligns marker and body text
+            spacing_top,
+            spacing_bottom,
             line_spacing_old: 160,
             line_spacing: 160,
             border_fill_id: 2,
@@ -1231,15 +1264,17 @@ impl Builder {
         let step = 2000i32;
         // □=level 1, ○=level 2. The outdent (-step) aligns wrapped lines with the body after the symbol.
         let depth = if sym == '□' { 1 } else { 2 };
+        // Paragraph spacing makes □ block boundaries visible — 600 above □ matches the heading (1)
+        // spacing_top; the common 300 below matches the heading spacing_bottom convention.
+        // Shared with bullet-list rungs 1-2 (symbol_para_spacing, #125).
+        let (spacing_top, spacing_bottom) = symbol_para_spacing(depth);
         let idx = BASE_PARA_SHAPES + self.extra_para_shapes.len() as u16;
         self.extra_para_shapes.push(ParaShape {
             attr1: 0x180 | (1 << 2), // healthy body + left align (no head type/level)
-            margin_left: depth * step,
+            margin_left: i32::from(depth) * step,
             indent: -step,
-            // Paragraph spacing makes □ block boundaries visible — 600 above □ matches the heading (1)
-            // spacing_top; the common 300 below matches the heading spacing_bottom convention.
-            spacing_top: if depth == 1 { 600 } else { 0 },
-            spacing_bottom: 300,
+            spacing_top,
+            spacing_bottom,
             line_spacing_old: 160,
             line_spacing: 160,
             border_fill_id: 2,
@@ -1412,23 +1447,36 @@ impl Builder {
                 let n = heading_level(level);
                 self.heading = Some(n);
                 self.style = n; // "개요 N" style
-                // H1~H3 section number computation: +1 at this level, reset lower to 0, promote zero upper to 1.
-                self.pending_heading_num = if n <= 3 {
-                    let i = (n - 1) as usize;
-                    self.h_counters[i] += 1;
-                    for c in &mut self.h_counters[i + 1..] {
-                        *c = 0;
-                    }
-                    for c in &mut self.h_counters[..i] {
-                        if *c == 0 {
-                            *c = 1;
+                // Heading number computation: +1 at this level, reset lower to 0. The section
+                // ladder additionally promotes zero upper counters to 1 (dotted join needs every
+                // ancestor); the official ladder leaves them at 0 (levels count independently).
+                self.pending_heading_num = match self.heading_numbering {
+                    HeadingNumbering::Section if n <= 3 => {
+                        let i = (n - 1) as usize;
+                        self.h_counters[i] += 1;
+                        for c in &mut self.h_counters[i + 1..] {
+                            *c = 0;
                         }
+                        for c in &mut self.h_counters[..i] {
+                            if *c == 0 {
+                                *c = 1;
+                            }
+                        }
+                        let nums: Vec<String> =
+                            self.h_counters[..=i].iter().map(u32::to_string).collect();
+                        Some(format!("{}. ", nums.join("-")))
                     }
-                    let nums: Vec<String> =
-                        self.h_counters[..=i].iter().map(u32::to_string).collect();
-                    Some(format!("{}. ", nums.join("-")))
-                } else {
-                    None
+                    // H1 is the document title and gets no number; H2~H5 get the per-level
+                    // official rung. H6 stays unnumbered like the deeper section levels.
+                    HeadingNumbering::Official if (2..=5).contains(&n) => {
+                        let i = (n - 1) as usize;
+                        self.h_counters[i] += 1;
+                        for c in &mut self.h_counters[i + 1..] {
+                            *c = 0;
+                        }
+                        Some(official_heading_num(n, self.h_counters[i]))
+                    }
+                    _ => None,
                 };
                 // H2/H3 indent para shape (allocated once).
                 if (2..=3).contains(&n) && self.section_para_shape.is_none() {
@@ -1459,7 +1507,7 @@ impl Builder {
             Event::Start(Tag::Strikethrough) => self.strike = true,
             Event::End(TagEnd::Strikethrough) => self.strike = false,
             Event::Text(t) => {
-                // Section number prefix: inserted before the heading's first text (skipped for headings that already have a number).
+                // Heading number prefix: inserted before the heading's first text (skipped for headings that already have a number).
                 if self.heading.is_some()
                     && let Some(num) = self.pending_heading_num.take()
                     && !starts_with_literal_number(&t)
@@ -1659,7 +1707,7 @@ fn leading_symbol(chars: &[HwpChar]) -> Option<char> {
     }
 }
 
-/// Whether a heading already carries a number — condition for skipping the automatic section
+/// Whether a heading already carries a number — condition for skipping the automatic heading
 /// number prefix (prevents double numbering): Arabic digits (`1.`), full-width Roman numerals
 /// (`Ⅰ.`·`ⅰ.`), Hangul item markers (syllable + `.`/`)`). Numberless word headings are not caught
 /// and receive the automatic number as-is.
@@ -1682,6 +1730,42 @@ fn heading_level(level: HeadingLevel) -> u16 {
         HeadingLevel::H5 => 5,
         HeadingLevel::H6 => 6,
     }
+}
+
+/// Official-ladder heading number for one level (#125): H2 `Ⅰ.`, H3 `1.`, H4 `가.`, H5 `1)`.
+/// The counter is the level's own (no ancestor join).
+fn official_heading_num(level: u16, n: u32) -> String {
+    match level {
+        2 => format!("{}. ", fullwidth_roman(n)),
+        3 => format!("{n}. "),
+        4 => format!(
+            "{}. ",
+            hwp_model::list::format_number(n, hwp_model::NumFmt::HangulSyllable)
+        ),
+        _ => format!("{n}) "),
+    }
+}
+
+/// Fullwidth Roman numeral for the official heading ladder — `Ⅰ` is U+2160, never ASCII `I`.
+/// 1..=12 use the precomposed forms (Ⅰ..Ⅻ); larger values compose fullwidth letters, and
+/// values beyond the Roman range fall back to decimal (same rule as the IR's list formatter).
+fn fullwidth_roman(n: u32) -> String {
+    if (1..=12).contains(&n) {
+        return char::from_u32(0x215F + n).map_or_else(|| n.to_string(), |c| c.to_string());
+    }
+    hwp_model::list::format_number(n, hwp_model::NumFmt::RomanUpper)
+        .chars()
+        .map(|c| match c {
+            'I' => 'Ⅰ',
+            'V' => 'Ⅴ',
+            'X' => 'Ⅹ',
+            'L' => 'Ⅼ',
+            'C' => 'Ⅽ',
+            'D' => 'Ⅾ',
+            'M' => 'Ⅿ',
+            _ => c,
+        })
+        .collect()
 }
 
 /// Inserts secd/cold extended controls (+ pgnp with a preset) before the first paragraph
@@ -2345,6 +2429,70 @@ mod tests {
         assert!(!text.contains("1. 1. 서론"), "이중 번호 금지: {text}");
     }
 
+    /// Official heading ladder (#125): `#` is the unnumbered document title, `##`~`#####` get
+    /// `Ⅰ.` / `1.` / `가.` / `1)` with per-level counters (deeper levels restart). `Ⅰ` is the
+    /// fullwidth form (U+2160), never ASCII `I`.
+    #[test]
+    fn 헤딩_공문서_번호_사다리() {
+        let opts = |p| MarkdownImportOptions {
+            preset: p,
+            ..Default::default()
+        };
+        let md = "# 보고서 제목\n\n## 개요\n\n### 배경\n\n#### 세부\n\n##### 하위\n\n## 계획\n\n### 일정\n";
+        let report = from_markdown_with(md, &opts(Some(OfficialPreset::Report))).plain_text();
+        for want in [
+            "Ⅰ. 개요",
+            "1. 배경",
+            "가. 세부",
+            "1) 하위",
+            "Ⅱ. 계획",
+            "1. 일정", // H3 counter restarts under the new H2
+        ] {
+            assert!(report.contains(want), "{want} 없음: {report}");
+        }
+        assert!(
+            report.contains("보고서 제목") && !report.contains("1. 보고서 제목"),
+            "H1은 번호 없는 문서 제목: {report}"
+        );
+        assert!(
+            !report.contains("I. 개요"),
+            "ASCII I 금지 (U+2160이어야 함): {report}"
+        );
+
+        // official (= legacy alias gian) selects the same ladder.
+        let official = from_markdown_with(md, &opts(Some(OfficialPreset::Official))).plain_text();
+        assert!(official.contains("Ⅰ. 개요"), "{official}");
+
+        // The other profiles keep the section ladder.
+        let plan = from_markdown_with("## 개요\n", &opts(Some(OfficialPreset::Plan))).plain_text();
+        assert!(plan.contains("1-1. 개요"), "{plan}");
+        // Bare conversion (no preset) keeps today's section behavior.
+        let plain = from_markdown("# 서론\n## 배경\n### 세부\n").plain_text();
+        for want in ["1. 서론", "1-1. 배경", "1-1-1. 세부"] {
+            assert!(plain.contains(want), "{want} 없음: {plain}");
+        }
+    }
+
+    /// Legacy compatibility (#125): paragraph-sourced `□ `/`○ ` and a literal `Ⅰ.` heading
+    /// convert unchanged under the official ladder — no doubled symbols or numbers.
+    #[test]
+    fn 헤딩_공문서_레거시_혼합_방지() {
+        let doc = from_markdown_with(
+            "## Ⅰ. 사업 개요\n\n□ 현황\n\n○ 세부\n\n- 목록\n",
+            &MarkdownImportOptions {
+                preset: Some(OfficialPreset::Report),
+                ..Default::default()
+            },
+        );
+        let text = doc.plain_text();
+        assert!(text.contains("Ⅰ. 사업 개요"), "{text}");
+        assert!(!text.contains("Ⅰ. Ⅰ."), "이중 번호 금지: {text}");
+        assert!(text.contains("□ 현황"), "{text}");
+        assert!(!text.contains("□ □"), "이중 기호 금지: {text}");
+        assert!(text.contains("○ 세부"), "{text}");
+        assert_eq!(doc.header.bullet_chars, vec!['□'], "목록 rung 1 = □");
+    }
+
     /// Gaejo-style literal numbers (full-width Roman numerals, Hangul item markers) also block the
     /// automatic section number. Numberless word headings still receive the automatic number (prevents guard overreach).
     #[test]
@@ -2363,11 +2511,45 @@ mod tests {
         );
     }
 
-    /// Bullet char ladder: level 1 `-`, level 2+ `·` (gaejo-style standard, `•` dropped).
+    /// Bullet char ladder (#125): depth 1-4 map to `□`/`○`/`-`/`·`, saturating at `·` for
+    /// depth 5+. Rungs 1-2 reuse the symbol-para spacing (600/300 above, 300 below).
     #[test]
     fn 글머리_사다리_수준별_문자() {
         let doc = from_markdown("- 상위\n  - 하위\n");
-        assert_eq!(doc.header.bullet_chars, vec!['-', '·']);
+        assert_eq!(doc.header.bullet_chars, vec!['□', '○']);
+    }
+
+    #[test]
+    fn 글머리_사다리_4단_포화() {
+        let md = "- l1\n  - l2\n    - l3\n      - l4\n        - l5\n";
+        let doc = from_markdown(md);
+        assert_eq!(doc.header.bullet_chars, vec!['□', '○', '-', '·', '·']);
+
+        let shape_of = |needle: &str| {
+            let p = doc.sections[0]
+                .paragraphs
+                .iter()
+                .find(|p| {
+                    p.chars
+                        .iter()
+                        .filter_map(|c| match c {
+                            HwpChar::Text(ch) => Some(*ch),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                        .contains(needle)
+                })
+                .unwrap_or_else(|| panic!("{needle} 문단 없음"));
+            &doc.header.para_shapes[p.para_shape.0 as usize]
+        };
+        // Rungs 1-2 carry the symbol-para spacing; deeper rungs keep no spacing.
+        let l1 = shape_of("l1");
+        assert_eq!(l1.head_type(), 3, "BULLET 머리 유지");
+        assert_eq!((l1.spacing_top, l1.spacing_bottom), (600, 300));
+        let l2 = shape_of("l2");
+        assert_eq!((l2.spacing_top, l2.spacing_bottom), (0, 300));
+        let l3 = shape_of("l3");
+        assert_eq!((l3.spacing_top, l3.spacing_bottom), (0, 0));
     }
 
     /// `□ `/`○ ` body paragraphs get the outdent para shape (margin ladder), and the head (BULLET)

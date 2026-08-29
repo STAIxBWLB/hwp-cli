@@ -991,7 +991,8 @@ impl Parser<'_> {
             }
             None => {
                 let def_id = self.bullet_chars.len() as u16;
-                self.bullet_chars.push(if level >= 2 { '·' } else { '-' });
+                self.bullet_chars
+                    .push(from_markdown::bullet_ladder_char(level));
                 self.push_list_para_shape(3, level, def_id)
             }
         };
@@ -1030,6 +1031,12 @@ impl Parser<'_> {
     fn push_list_para_shape(&mut self, head_type: u32, level: u16, def_id: u16) -> u16 {
         let idx = BASE_PARA_SHAPES + self.extra_para_shapes.len() as u16;
         let step = 2000i32;
+        // Bullet rungs 1-2 reuse the symbol-para spacing (same rule as from_markdown, #125).
+        let (spacing_top, spacing_bottom) = if head_type == 3 && level <= 2 {
+            from_markdown::symbol_para_spacing(level)
+        } else {
+            (0, 0)
+        };
         self.extra_para_shapes.push(ParaShape {
             attr1: 0x180
                 | (1 << 2)
@@ -1037,6 +1044,8 @@ impl Parser<'_> {
                 | (u32::from(if level > 7 { 7 } else { level }) << 25),
             margin_left: i32::from(level) * step,
             indent: -step,
+            spacing_top,
+            spacing_bottom,
             line_spacing_old: 160,
             line_spacing: 160,
             border_fill_id: 2,
@@ -1943,5 +1952,23 @@ mod tests {
             .find(|f| f.name.contains("script"))
             .map(|f| f.name.clone());
         assert_eq!(name.as_deref(), Some("x</style><script>"), "왕복: {name:?}");
+    }
+
+    /// Bullet char ladder mirrors from_markdown (#125): depth 1-4 map to `□`/`○`/`-`/`·`,
+    /// and rungs 1-2 carry the symbol-para spacing.
+    #[test]
+    fn 글머리_사다리_수준별_문자() {
+        let doc = from_html(
+            "<ul><li>l1<ul><li>l2<ul><li>l3<ul><li>l4</li></ul></li></ul></li></ul></li></ul>",
+        )
+        .unwrap();
+        assert_eq!(doc.header.bullet_chars, vec!['□', '○', '-', '·']);
+        let l1 = doc
+            .header
+            .para_shapes
+            .iter()
+            .find(|s| s.head_type() == 3 && s.head_level() == 1)
+            .expect("rung 1 bullet shape");
+        assert_eq!((l1.spacing_top, l1.spacing_bottom), (600, 300));
     }
 }
