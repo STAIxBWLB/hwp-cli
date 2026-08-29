@@ -325,6 +325,11 @@ hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/
 never run with unrestricted filesystem access. An inbound `Mcp-Session-Id` is accepted and ignored,
 because session affinity belongs to the platform in front.
 
+Run it under an init such as `tini`, or with `docker run --init`, rather than as PID 1. `hwp serve`
+installs no signal handlers, and the kernel does not deliver a signal with its default disposition
+to PID 1 — so as PID 1 it ignores SIGTERM, and a platform that stops idle containers that way will
+never stop it.
+
 ## Safety rules (must follow)
 
 1. **Validate after every write.** After `new` / `edit` / `fill` / `compose` / `template` /

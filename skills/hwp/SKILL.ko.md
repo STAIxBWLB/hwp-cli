@@ -322,6 +322,11 @@ hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/
 제한되지 않은 상태로 실행되어서는 안 되기 때문입니다. 들어오는 `Mcp-Session-Id`는 받아들이되
 무시합니다. session affinity는 앞단 platform의 책임입니다.
 
+PID 1로 직접 실행하지 말고 `tini` 같은 init 아래에서, 또는 `docker run --init`으로 실행하세요.
+`hwp serve`는 시그널 핸들러를 설치하지 않는데, 커널은 기본 처리 방식을 가진 시그널을 PID 1에
+전달하지 않습니다. 따라서 PID 1로 실행하면 SIGTERM을 무시하게 되고, 유휴 컨테이너를 그 방식으로
+정지시키는 플랫폼은 이 컨테이너를 영원히 정지시키지 못합니다.
+
 ## 안전 규칙 (반드시 준수)
 
 1. **쓰기 후에는 항상 검증하세요.** `new` / `edit` / `fill` / `compose` / `template` /
