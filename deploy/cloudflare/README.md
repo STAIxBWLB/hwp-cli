@@ -143,6 +143,10 @@ Negative cases, all confirmed on the deployed service:
 | A session id this service never minted, on `/mcp` and on `/files` | `404`, revealing nothing |
 | `GET /mcp` | `405` — no server-push stream is offered |
 | Body over 1 MiB | `413` before parsing |
+| An upload over the 32 MiB sideband cap | `413` |
+| A spoofed `Origin`, versus this deployment's own | `403`, versus `200` |
+| More than 5 `initialize` calls a minute | `429` with `retry-after` |
+| No instance capacity left | `503` with `retry-after`, not a raw 500 |
 | File name outside the allowed charset | `400` |
 | Tool writing outside the workspace | refused, same message the stdio server gives |
 | `DELETE`, then reuse of that session | `204`, then `404` |
@@ -195,8 +199,18 @@ minutes and 200 GB-hours of disk. The `basic` instance type is 1 GiB, so roughly
 25 hours of *active* container time per month are included; beyond that it is
 about $0.009 per hour. Containers scale to zero, so idle sessions cost nothing.
 
-Three guards keep this inside the $10 cap: `sleepAfter` is 10 minutes,
-`max_instances` is 5, and the billing notification above fires at $10.
+Three guards keep this inside the $10 cap, and it is worth knowing which one does
+what. `sleepAfter` is **3 minutes** — that is the lever that actually bounds both
+spend and live instance count, because a session holds its container until it
+sleeps. `SESSION_LIMITER` allows 5 `initialize` calls per person per minute,
+capping how fast new containers can be created. `max_instances` is 20, a
+backstop rather than a budget control: set too low it turns ordinary concurrent
+use into capacity errors. The billing notification fires at $10 regardless.
+
+Logs and the audit table were checked against a call carrying a password and a
+document path: neither the password, the path, the file name, nor the access
+token appears in either. The audit row keeps the tool name, the outcome, byte
+counts, and a *hash* of the session id.
 
 ## Layout
 
