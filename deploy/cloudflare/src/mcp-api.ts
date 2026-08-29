@@ -1,4 +1,5 @@
 import { writeAudit } from './audit';
+import { sign, verify } from './cookies';
 import { FILE_NAME_RE, MAX_BODY_BYTES, MAX_FILE_TRANSFER_BYTES } from './limits';
 import type { Env, Principal } from './types';
 
@@ -17,8 +18,28 @@ function principalOf(ctx: ExecutionContext): Principal | null {
   return props && typeof props.userId === 'string' ? props : null;
 }
 
-/** A session id is opaque and server-minted; reject anything that is not ours. */
-const SESSION_ID_RE = /^[0-9a-f-]{36}$/;
+/**
+ * A session id is opaque and server-minted: a random uuid carrying an HMAC of
+ * itself, so the edge can tell a real id from an invented one without asking
+ * storage.
+ *
+ * The check is not cosmetic. Reaching the Durable Object at all is what starts a
+ * container, and it starts even on the path that answers 404 - so validating the
+ * id only inside the object let anyone signed in burn a container per made-up id
+ * and pin the whole instance ceiling. Verifying the MAC here means a forged id
+ * never touches the object.
+ */
+const SESSION_ID_RE = /^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/;
+
+async function mintSessionId(env: Env): Promise<string> {
+  return sign(env.COOKIE_ENCRYPTION_KEY, crypto.randomUUID());
+}
+
+/** Returns the id when this service minted it, and null otherwise. */
+async function ourSessionId(env: Env, sessionId: string | null): Promise<string | null> {
+  if (!sessionId || !SESSION_ID_RE.test(sessionId)) return null;
+  return (await verify(env.COOKIE_ENCRYPTION_KEY, sessionId)) === null ? null : sessionId;
+}
 
 function sessionStub(env: Env, principal: Principal, sessionId: string) {
   // The principal is part of the name, so another user presenting this session id
@@ -95,10 +116,11 @@ async function handleMcp(
   const requestId = request.headers.get('cf-ray');
 
   if (request.method === 'DELETE') {
-    if (!headerSessionId || !SESSION_ID_RE.test(headerSessionId)) {
+    const known = await ourSessionId(env, headerSessionId);
+    if (!known) {
       return new Response('session not found', { status: 404 });
     }
-    await sessionStub(env, principal, headerSessionId).terminate();
+    await sessionStub(env, principal, known).terminate();
     return new Response(null, { status: 204 });
   }
 
@@ -141,7 +163,7 @@ async function handleMcp(
         headers: { 'retry-after': '60' },
       });
     }
-    sessionId = crypto.randomUUID();
+    sessionId = await mintSessionId(env);
     minted = true;
   } else {
     const { success } = await env.CALL_LIMITER.limit({ key: principal.userId });
@@ -151,10 +173,11 @@ async function handleMcp(
         headers: { 'retry-after': '60' },
       });
     }
-    if (!headerSessionId || !SESSION_ID_RE.test(headerSessionId)) {
+    const known = await ourSessionId(env, headerSessionId);
+    if (!known) {
       return new Response('session not found', { status: 404 });
     }
-    sessionId = headerSessionId;
+    sessionId = known;
   }
 
   const stub = sessionStub(env, principal, sessionId);
@@ -205,8 +228,8 @@ async function handleFiles(
   principal: Principal,
   url: URL,
 ): Promise<Response> {
-  const sessionId = request.headers.get('mcp-session-id');
-  if (!sessionId || !SESSION_ID_RE.test(sessionId)) {
+  const sessionId = await ourSessionId(env, request.headers.get('mcp-session-id'));
+  if (!sessionId) {
     return new Response('session not found', { status: 404 });
   }
   const name = url.pathname.slice('/files/'.length);
