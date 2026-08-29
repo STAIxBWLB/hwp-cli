@@ -34,3 +34,26 @@ button {
   cursor: pointer;
 }
 button:hover { filter: brightness(1.08); }
+
+/* Dashboard */
+main { max-width: 44rem; }
+table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; font-size: 0.94rem; }
+th, td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid color-mix(in srgb, var(--fg) 12%, transparent); }
+th { color: var(--muted); font-weight: 600; }
+form { display: flex; gap: 0.5rem; align-items: center; margin: 1rem 0 0; }
+input[type="text"], input:not([type]) {
+  font: inherit; flex: 1; padding: 0.55rem 0.7rem; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent);
+  background: transparent; color: var(--fg);
+}
+td form { margin: 0; }
+td button { background: transparent; color: var(--muted); border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent); padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+td button:hover { color: #c0392b; border-color: #c0392b; filter: none; }
+.token {
+  margin: 1.5rem 0; padding: 1rem 1.1rem; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.token code { display: block; margin: 0.5rem 0; padding: 0.6rem 0.7rem; word-break: break-all; line-height: 1.5; }
+.token p { color: var(--fg); }
+.empty { margin-top: 1.5rem; color: var(--muted); }

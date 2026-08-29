@@ -1,4 +1,5 @@
 import { readCookie, setCookie, sign, verify } from './cookies';
+import { handleDashboard, startSession } from './dashboard';
 import { MCP_SCOPE } from './limits';
 import { upsertUser, type GoogleIdentity } from './users';
 import type { Env, Principal } from './types';
@@ -86,10 +87,27 @@ export const googleHandler: ExportedHandler<Env> = {
 
     if (url.pathname === '/authorize') return authorize(request, env, url);
     if (url.pathname === '/callback') return callback(request, env, url);
+    if (url.pathname === '/dashboard/login') return dashboardLogin(env, url);
+    if (url.pathname.startsWith('/dashboard')) return handleDashboard(request, env, url);
     if (url.pathname === '/') return home();
     return env.ASSETS.fetch(request);
   },
 };
+
+/**
+ * Sign-in for the dashboard.
+ *
+ * Reuses the OAuth path's Google round trip rather than adding a second one; the
+ * stored state carries a `dashboard` marker so `callback` knows to set a session
+ * cookie instead of completing an authorization nobody requested.
+ */
+async function dashboardLogin(env: Env, url: URL): Promise<Response> {
+  const state = crypto.randomUUID();
+  await env.OAUTH_KV.put(`state:${state}`, JSON.stringify({ dashboard: true }), {
+    expirationTtl: STATE_TTL_SECONDS,
+  });
+  return redirectToGoogle(env, url, state);
+}
 
 async function authorize(request: Request, env: Env, url: URL): Promise<Response> {
   const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
@@ -128,8 +146,10 @@ async function authorize(request: Request, env: Env, url: URL): Promise<Response
 
 async function callback(request: Request, env: Env, url: URL): Promise<Response> {
   const code = url.searchParams.get('code');
-  const authRequest = await takeAuthRequest(env, url.searchParams.get('state'));
-  if (!code || !authRequest) {
+  const stored = await takeAuthRequest(env, url.searchParams.get('state'));
+  const toDashboard = (stored as { dashboard?: boolean } | null)?.dashboard === true;
+  const authRequest = toDashboard ? null : stored;
+  if (!code || (!authRequest && !toDashboard)) {
     return html('<h1>Sign-in failed</h1><p>The request expired. Start again from your client.</p>', 400);
   }
 
@@ -157,12 +177,19 @@ async function callback(request: Request, env: Env, url: URL): Promise<Response>
     return html('<h1>Sign-in refused</h1><p>This service is restricted to one domain.</p>', 403);
   }
 
-  // First login is signup.
+  // First login is signup, whichever door it came through.
   const userId = await upsertUser(env, identity);
-  const props: Principal = { userId, email: identity.email, via: 'oauth' };
 
+  if (toDashboard) {
+    return new Response(null, {
+      status: 302,
+      headers: { location: `${url.origin}/dashboard`, 'set-cookie': await startSession(env, userId) },
+    });
+  }
+
+  const props: Principal = { userId, email: identity.email, via: 'oauth' };
   const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
-    request: authRequest,
+    request: authRequest!,
     userId,
     metadata: { email: identity.email },
     scope: [MCP_SCOPE],
