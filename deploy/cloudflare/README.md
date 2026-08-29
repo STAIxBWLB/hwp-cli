@@ -336,6 +336,7 @@ counts, and a *hash* of the session id.
 | `src/limits.ts` | Every limit in one place, mirroring doc 20 §7 |
 | `container/Dockerfile.slim` | The deployed image: pinned release tarball, checksum-verified |
 | `container/Dockerfile` | Source build, for testing an unreleased change |
+| `../aws/Dockerfile.agentcore` | arm64 image for AWS Bedrock AgentCore: port 8000, no `/files`. Not used by this deployment |
 | `schema.sql` | D1 tables |
 
 ## Known scope
