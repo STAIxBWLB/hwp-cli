@@ -466,7 +466,7 @@ Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 이제 `h
 edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, tenant 격리, artifact 전송은
 여전히 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)의 후속 작업이다.
 
-### 노출 도구 (20종)
+### 노출 도구 (22종)
 
 | 도구 | 필수 인자 | 기능 |
 |---|---|---|
@@ -490,6 +490,8 @@ edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, ten
 | `hwp_merge` | `inputs`, `output` | 문서 두 개 이상을 합치고 보존 손실 원장을 반환 |
 | `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages` 범위)로 나누고 발행된 조각 경로를 반환 |
 | `hwp_compare` | `a`, `b` | 읽기 전용 문단·구조 비교를 `hwp-compare-report-v1`으로 반환. 차이가 있어도 `isError`가 아니므로 `identical`을 읽는다 |
+| `hwp_put_file` | `name`, `content` | base64 콘텐츠를 세션 워크스페이스에 저장. 원격 배포에 기존 문서를 넣는 유일한 경로다. 도구 인자는 경로를 받으므로 먼저 올린 뒤 그 이름을 넘긴다. 복호 512 KiB 상한 |
+| `hwp_get_file` | `path` | 워크스페이스 파일을 base64로 반환(영수증 블록 + embedded resource). 상한을 넘으면 자르지 않고 거절한다. 중간 산출물은 워크스페이스에 두고 최종 결과물만 받는다. 반환된 base64는 클라이언트 메시지 스트림에 쌓인다 |
 
 ### 클라이언트 설정 예
 

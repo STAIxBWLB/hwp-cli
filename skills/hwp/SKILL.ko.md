@@ -300,10 +300,12 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_merge` | `inputs`, `output` | 문서 두 개 이상을 합침 (입력 하나당 Section 하나); 보존 손실 원장을 반환 |
 | `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages`)로 조각내고 발행된 조각 경로를 반환 |
 | `hwp_compare` | `a`, `b` | 읽기 전용 문단·구조 비교로 `hwp-compare-report-v1`을 반환. 차이가 있는 것은 정상 결과라 `isError`가 되지 않으므로 `identical`을 읽는다 |
+| `hwp_put_file` | `name`, `content` | base64 콘텐츠를 세션 워크스페이스에 저장. 원격 배포에 기존 문서를 넣는 유일한 경로다. 도구 인자는 경로를 받으므로 먼저 올린 뒤 그 이름을 넘긴다. 복호 512 KiB 상한 |
+| `hwp_get_file` | `path` | 워크스페이스 파일을 base64로 반환(영수증 블록 + embedded resource). 상한을 넘으면 자르지 않고 거절한다. 중간 산출물은 워크스페이스에 두고 최종 결과물만 받는다. 반환된 base64는 클라이언트 메시지 스트림에 쌓인다 |
 
 ## 컨테이너용 HTTP 모드
 
-`hwp serve`는 `hwp mcp`와 같은 프로토콜을 stdio 대신 HTTP로 제공하므로, 같은 20종 도구를
+`hwp serve`는 `hwp mcp`와 같은 프로토콜을 stdio 대신 HTTP로 제공하므로, 같은 22종 도구를
 컨테이너에서 사용할 수 있습니다. 인터넷에 직접 노출하는 용도가 아니라, TLS 종단·인증·본문
 크기 제한을 이미 수행한 신뢰된 edge 뒤에 두는 것을 전제로 합니다.
 

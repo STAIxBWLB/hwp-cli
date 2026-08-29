@@ -1416,6 +1416,45 @@
     "name": "hwp_certify"
   },
   {
+    "description": "base64 콘텐츠를 세션 워크스페이스의 파일로 저장한다. 원격 배포에서 기존 문서를 넣는 유일한 경로다(도구 인자는 경로를 받으므로, 먼저 이 도구로 올린 뒤 그 이름을 넘긴다). 복호 512 KiB 상한.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "description": "파일 내용의 base64. 복호 512 KiB 상한",
+          "type": "string"
+        },
+        "name": {
+          "description": "워크스페이스 안의 파일명 또는 상대 경로",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "content"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_put_file"
+  },
+  {
+    "description": "워크스페이스 파일을 base64로 돌려준다(영수증 JSON + embedded resource 두 블록). 512 KiB 상한이며 초과 시 자르지 않고 거절한다. 중간 산출물은 워크스페이스에 두고 최종 결과물만 받는 것이 좋다 — 반환된 base64는 클라이언트의 메시지 스트림에 그대로 쌓인다.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "워크스페이스 안의 파일 경로",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_get_file"
+  },
+  {
     "description": "여러 HWP5/HWPX 문서를 인자 순서대로 하나로 합친다 (입력 하나당 Section 하나). 출력 포맷은 output 확장자(.hwp/.hwpx)로 정한다. 쪽/각주/개요 번호는 각 입력의 시작·계속 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있다.",
     "inputSchema": {
       "additionalProperties": false,

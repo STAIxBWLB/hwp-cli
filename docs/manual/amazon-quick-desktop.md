@@ -29,7 +29,7 @@ v0.8.2 or later` floor stated below still holds.
 | Font directory | Supplies Windows fonts for rendering | `C:\Windows\Fonts` |
 
 The connector and the skill are separate. Installing the skill does not install the binary or
-create the connector. A connector can also show 20 tools while later file writes fail, so a real
+create the connector. A connector can also show 22 tools while later file writes fail, so a real
 create-and-validate smoke test is required.
 
 ## 1. Install and verify one current `hwp.exe`
@@ -76,7 +76,7 @@ Windows verbatim path such as `\\?\C:\...`, confirm that `hwp --version` reports
 Quick's built-in file tools and its local MCP child do not receive the same filesystem permissions.
 On the tested Windows build, Quick starts `hwp.exe` at Low mandatory integrity
 (`S-1-16-4096`). Ordinary folders such as `C:\TEMP` and `%LOCALAPPDATA%\Temp` are normally Medium
-integrity: the MCP connector can start and expose 20 tools there, but the first write can fail with
+integrity: the MCP connector can start and expose 22 tools there, but the first write can fail with
 `Access is denied (os error 5)` when `hwp_new` creates its private staging directory.
 
 Use a dedicated child of Windows' existing `LocalLow` directory. It inherits the Low-integrity
@@ -183,12 +183,12 @@ contains quotes. The root then fails fast and the MCP handshake closes. The JSON
 failure by keeping every token as a separate array item.
 
 Select **Test connection**, approve Quick's command-execution confirmation, and expect
-**Connected** and **20 tools available**. Then select **Add MCP**, approve the confirmation, refresh
-connections, and verify that `hwp` is enabled and reports **20 tools, Connected**.
+**Connected** and **22 tools available**. Then select **Add MCP**, approve the confirmation, refresh
+connections, and verify that `hwp` is enabled and reports **22 tools, Connected**.
 
 ## 5. Run an end-to-end smoke test
 
-Do not stop at “20 tools available.” Start a new Quick chat and paste this prompt:
+Do not stop at “22 tools available.” Start a new Quick chat and paste this prompt:
 
 ```text
 Use the HWP MCP tools, not a shell command.
@@ -285,7 +285,7 @@ assuming a lossless run.
 |---|---|---|
 | `hwp.exe` does not start or `--version` fails | Wrong binary, wrong architecture, blocked or incomplete extraction | Re-download, verify SHA-256, extract the Windows x86_64 archive, and test the exact absolute command path |
 | Test connection shows no tools or the server exits immediately | Missing/unreadable `--root`, literal `YOUR_NAME`, quote characters in Arguments, typo, or stale command path | Create the `LocalLow` child, substitute the absolute account path, import the JSON above, remove shell quotes, and verify `hwp.exe --version` |
-| **Connected, 20 tools** but `hwp_new` returns `Access is denied (os error 5)` | Discovery only needed read access; the requested destination is Medium integrity (commonly `C:\TEMP` or `%LOCALAPPDATA%\Temp`), or an older binary still passes `\\?\...` | Point `--root` and every tool path at the dedicated `LocalLow` child; verify its Low label with `icacls`; use hwp-cli v0.8.2 or later; restart and run the smoke test |
+| **Connected, 22 tools** but `hwp_new` returns `Access is denied (os error 5)` | Discovery only needed read access; the requested destination is Medium integrity (commonly `C:\TEMP` or `%LOCALAPPDATA%\Temp`), or an older binary still passes `\\?\...` | Point `--root` and every tool path at the dedicated `LocalLow` child; verify its Low label with `icacls`; use hwp-cli v0.8.2 or later; restart and run the smoke test |
 | A path added to **Local folders and access permissions** still fails | That setting controls Quick's built-in read/search tools; it does not make a Medium-integrity folder writable by the Low-integrity MCP child | Use the built-in tool or Explorer to copy the file into the configured `LocalLow` exchange root, then call HWP tools there |
 | `os error 2` | The path does not exist, `YOUR_NAME` was not replaced, or Desktop moved the file to OneDrive | Check the real absolute path, create the intended directory, or stage the file under the configured exchange root |
 | Connector becomes disabled after repeated failures | Quick auto-disabled a connector whose startup/handshake repeatedly failed | Correct the command/root, save, explicitly enable the connector, refresh, and restart Quick if needed |
@@ -328,8 +328,8 @@ Get-Content "$env:LOCALAPPDATA\Temp\quickwork-backend.log" -Tail 300 |
   Select-String "UserMCP|Loaded.*servers|total tools|hwp"
 ```
 
-A healthy startup contains messages equivalent to “Started ... with 20 tools” and “Loaded 1/1
-servers (0 failed), 20 total tools.” Log wording and location are not stable API contracts.
+A healthy startup contains messages equivalent to “Started ... with 22 tools” and “Loaded 1/1
+servers (0 failed), 22 total tools.” Log wording and location are not stable API contracts.
 
 ## Completion checklist
 
@@ -337,7 +337,7 @@ servers (0 failed), 20 total tools.” Log wording and location are not stable A
 - The connector uses separate JSON arguments and has no embedded shell quotes.
 - `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` exists, inherits the Low label, and is the Windows MCP root.
 - The current HWP skill is installed in the active Quick profile.
-- Test connection reports **Connected** and **20 tools available**.
+- Test connection reports **Connected** and **22 tools available**.
 - The connector stays enabled after refresh or restart.
 - `hwp_new`, `hwp_validate`, and `hwp_read` succeed on the absolute `LocalLow` smoke-test path.
 - `hwp_merge`, `hwp_split` and `hwp_compare` succeed on two copies of that smoke-test document

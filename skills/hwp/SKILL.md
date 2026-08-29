@@ -270,7 +270,7 @@ of it, and re-enable the connector if repeated startup failures caused Quick to 
 
 When helping someone configure Quick, prefer JSON import and never put shell quote characters
 inside an argument. Verify three layers in order: the exact absolute binary returns a version;
-Quick reports 20 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
+Quick reports 22 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
 succeeds on an absolute path under the configured LocalLow root (for example
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`). Do not claim
 that discovery alone proves file access.
@@ -302,6 +302,8 @@ Tools (20):
 | `hwp_merge` | `inputs`, `output` | Combine two or more documents, one Section per input; returns the preservation ledger |
 | `hwp_split` | `input`, `out_dir` | Split into per-Section (or `pages`) fragments; returns the published fragment paths |
 | `hwp_compare` | `a`, `b` | Read-only paragraph/structure diff returning `hwp-compare-report-v1`. Differences are a normal result and never set `isError` — read `identical` |
+| `hwp_put_file` | `name`, `content` | Write base64 content into the session workspace. The only way to hand an existing document to a remote deployment: tool arguments take paths, so upload first and pass the name. 512 KiB decoded |
+| `hwp_get_file` | `path` | Return a workspace file as base64 (a receipt block plus an embedded resource). Refuses above 512 KiB rather than truncating. Keep intermediates in the workspace and fetch only the final artifact - the base64 lands in the client's message stream |
 
 ## HTTP mode for containers
 

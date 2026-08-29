@@ -169,7 +169,7 @@ claude.ai 코드 실행 샌드박스는 네트워크가 레지스트리로 제�
 
 ## Amazon Quick Desktop
 
-Amazon Quick Desktop은 `hwp mcp`를 로컬 stdio 커넥터로 실행할 수 있다. HWP 도구 20개가
+Amazon Quick Desktop은 `hwp mcp`를 로컬 stdio 커넥터로 실행할 수 있다. HWP 도구 22개가
 모두 노출되는 연결을 실기 확인했다. Quick 릴리스에 따라 UI 이름은 달라질 수 있으며 아래 명칭은
 현재 Desktop 흐름 기준이다.
 
@@ -211,8 +211,8 @@ Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/hwp`가 나온다. 이
 모든 root를 생략하지 않는다.
 
 **Test connection**을 선택하고 Quick의 명령 실행 확인 창에서 **Add server**를 승인한다. 테스트는
-**Connected**, **20 tools available**을 표시해야 한다. 이어서 **Add MCP**를 선택하고 확인 창을
-다시 승인한 뒤 연결을 새로고침한다. `Hwp`가 활성화되어 있고 **20 tools, Connected**로 표시되는지
+**Connected**, **22 tools available**을 표시해야 한다. 이어서 **Add MCP**를 선택하고 확인 창을
+다시 승인한 뒤 연결을 새로고침한다. `Hwp`가 활성화되어 있고 **22 tools, Connected**로 표시되는지
 확인한다.
 
 같은 설정의 import JSON:
@@ -275,7 +275,7 @@ Quick의 **Local folders and access permissions**는 내장 읽기·검색 도�
 승인된 목적 폴더로 복사한다.
 
 자동 비활성화된 커넥터의 설정을 바꾼 뒤에는 명시적으로 다시 활성화한다. 복구되면
-**Connected**, **20 tools available**가 표시되고 새로고침 뒤에도 활성 상태를 유지한다.
+**Connected**, **22 tools available**가 표시되고 새로고침 뒤에도 활성 상태를 유지한다.
 
 ### 3. publish-safe HWP 스킬 설치
 
@@ -329,8 +329,8 @@ HTML로 오인할 수 있는 angle-bracket markup을 포함하지 않는다.
 ### Desktop 확인 체크리스트
 
 - `hwp --version`이 의도한 최신 바이너리를 표시함
-- 커넥터 테스트가 **Connected**, **20 tools available**을 표시함
-- 새로고침 뒤에도 커넥터가 활성화되어 있고 **20 tools, Connected**를 표시함
+- 커넥터 테스트가 **Connected**, **22 tools available**을 표시함
+- 새로고침 뒤에도 커넥터가 활성화되어 있고 **22 tools, Connected**를 표시함
 - 테스트 HWPX에서 `hwp_new`, `hwp_read`, `hwp_validate`, `hwp_render`가 성공함(Windows에서는
   설정된 LocalLow root 아래에서 테스트. 예: `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace`)
 - 같은 root 아래에 둔 그 문서의 사본 두 개로 `hwp_merge`, `hwp_split`, `hwp_compare`가 성공하며,

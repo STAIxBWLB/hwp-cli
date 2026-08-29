@@ -236,14 +236,14 @@ security tests pass without recreating an unsafe framework.
 ## 9. Phased follow-up backlog
 
 1. **Core extraction:** introduce typed JSON-RPC values and authority contexts; keep stdio output and
-   all 20 tools byte/behavior compatible.
+   all 22 tools byte/behavior compatible.
 2. **Artifact model:** implement tenant-owned uploads, immutable outputs, remote-safe schemas, quotas,
    and cleanup without opening a network listener.
 3. **Transport and auth:** add the selected HTTP adapter, protocol headers, SSE/session lifecycle,
    OAuth resource-server validation, proxy boundary, and audit events behind an explicit build or
    deployment mode.
 4. **Quick Web pilot:** register a non-production connector, verify initialization and remote-safe
-   parity for all 20 tools, then test upload, edit, render, convert, download, expiry, and reconnect.
+   parity for all 22 tools, then test upload, edit, render, convert, download, expiry, and reconnect.
 5. **Security gate:** complete cross-tenant, rebinding, proxy-bypass, archive-bomb, race, timeout,
    cancellation, and load tests; obtain an independent review before general availability.
 6. **Operations:** define SLOs, capacity, key rotation, incident response, deletion verification,
@@ -261,7 +261,7 @@ artifact model of §3.2 remains required and unimplemented.
 
 A Remote MCP implementation is acceptable only when all of the following are demonstrated:
 
-- stdio remains the default and its existing process test still exposes exactly 20 tools;
+- stdio remains the default and its existing process test still exposes exactly 22 tools;
 - HTTP conformance covers `POST`, `GET`, `DELETE`, both response media types, version negotiation,
   notifications, session creation/termination, reconnect, and disconnect behavior;
 - invalid origin, host, content type, protocol version, token, scope, session, or artifact ownership

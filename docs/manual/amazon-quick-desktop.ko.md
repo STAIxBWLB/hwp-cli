@@ -22,13 +22,13 @@ Windows 절차 자체를 다시 실행하지는 않았다. 아래에 적은 `hwp
 | 구성요소 | 역할 | Windows 확인값 |
 |---|---|---|
 | `hwp.exe` | MCP stdio 서버 실행 | 안정된 절대 경로의 최신 바이너리 하나 |
-| HWP MCP 커넥터 | HWP 도구 20개 노출 | `hwp.exe mcp ...` |
+| HWP MCP 커넥터 | HWP 도구 22개 노출 | `hwp.exe mcp ...` |
 | HWP 스킬 | Quick 에이전트에게 도구 사용 시점과 방법 안내 | 활성 Quick 프로필의 `skills/hwp/SKILL.md` |
 | 교환 root | Low 무결성 MCP 자식과 파일을 주고받는 경계 | `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | 폰트 디렉터리 | Windows 렌더링 폰트 공급 | `C:\Windows\Fonts` |
 
 커넥터와 스킬은 서로 별개다. 스킬 설치는 바이너리를 설치하거나 커넥터를 만들지 않는다. 커넥터에
-도구 20개가 표시된 뒤에도 파일 쓰기는 실패할 수 있으므로, 실제 생성·검증 smoke test까지 해야 한다.
+도구 22개가 표시된 뒤에도 파일 쓰기는 실패할 수 있으므로, 실제 생성·검증 smoke test까지 해야 한다.
 
 ## 1. 최신 `hwp.exe` 하나 설치하고 확인
 
@@ -72,7 +72,7 @@ Quick에도 이 경로를 그대로 입력한다. 다른 터미널의 PATH에 �
 Quick 내장 파일 도구와 로컬 MCP 자식 프로세스는 같은 파일 권한을 받지 않는다. 확인한 Windows
 빌드에서 Quick은 `hwp.exe`를 Low mandatory integrity(`S-1-16-4096`)로 시작한다. `C:\TEMP`와
 `%LOCALAPPDATA%\Temp` 같은 일반 폴더는 보통 Medium 무결성이다. 이 경로에서는 MCP 커넥터가
-시작하고 도구 20개를 노출해도, `hwp_new`가 private staging 디렉터리를 만드는 첫 쓰기에서
+시작하고 도구 22개를 노출해도, `hwp_new`가 private staging 디렉터리를 만드는 첫 쓰기에서
 `Access is denied (os error 5)`가 발생할 수 있다.
 
 Windows가 기본 제공하는 `LocalLow` 아래에 전용 자식 디렉터리를 만든다. 관리자 권한 없이 Low
@@ -172,13 +172,13 @@ Quick은 이 따옴표를 제거하지 않고 그대로 넘길 수 있다. 그�
 찾고, root 확인에 실패해 즉시 종료하며 MCP handshake가 닫힌다. JSON 형식은 각 token을 배열의 별도
 항목으로 유지해 이 문제를 피한다.
 
-**Test connection**을 선택하고 Quick의 명령 실행 확인을 승인한다. **Connected**, **20 tools
+**Test connection**을 선택하고 Quick의 명령 실행 확인을 승인한다. **Connected**, **22 tools
 available**이 표시되어야 한다. 이어서 **Add MCP**를 선택하고 다시 승인한 뒤 연결을 새로고침한다.
-`hwp`가 활성화되어 있고 **20 tools, Connected**로 표시되는지 확인한다.
+`hwp`가 활성화되어 있고 **22 tools, Connected**로 표시되는지 확인한다.
 
 ## 5. 실제 end-to-end smoke test 실행
 
-“20 tools available”에서 멈추지 않는다. 새 Quick 대화를 열고 다음 prompt를 붙여넣는다.
+“22 tools available”에서 멈추지 않는다. 새 Quick 대화를 열고 다음 prompt를 붙여넣는다.
 
 ```text
 셸 명령이 아니라 HWP MCP 도구를 사용하라.
@@ -272,7 +272,7 @@ passthrough를 항상 버리므로, 무손실이라고 가정하지 말고 응�
 |---|---|---|
 | `hwp.exe`가 시작하지 않거나 `--version`이 실패함 | 잘못된 바이너리·아키텍처, 차단되거나 불완전한 압축 해제 | 다시 다운로드하고 SHA-256을 확인한 뒤 Windows x86_64 아카이브를 풀고 정확한 절대 command를 테스트한다 |
 | Test connection에 도구가 없거나 서버가 즉시 종료함 | 없거나 읽을 수 없는 `--root`, 바꾸지 않은 `YOUR_NAME`, Arguments 안의 따옴표 문자, 오타, 오래된 command 경로 | `LocalLow` 자식 생성, 실제 계정 절대 경로 치환, 위 JSON import, 셸 따옴표 제거, `hwp.exe --version` 검증 |
-| **Connected, 20 tools**인데 `hwp_new`가 `Access is denied (os error 5)`를 반환함 | 탐색에는 읽기 권한만 필요했다. 요청 목적지가 Medium 무결성(대표적으로 `C:\TEMP`, `%LOCALAPPDATA%\Temp`)이거나 구버전이 `\\?\...`를 전달함 | `--root`와 모든 도구 경로를 전용 `LocalLow` 자식으로 지정, `icacls`로 Low 레이블 확인, hwp-cli v0.8.2 이상 사용, 재시작 뒤 smoke test |
+| **Connected, 22 tools**인데 `hwp_new`가 `Access is denied (os error 5)`를 반환함 | 탐색에는 읽기 권한만 필요했다. 요청 목적지가 Medium 무결성(대표적으로 `C:\TEMP`, `%LOCALAPPDATA%\Temp`)이거나 구버전이 `\\?\...`를 전달함 | `--root`와 모든 도구 경로를 전용 `LocalLow` 자식으로 지정, `icacls`로 Low 레이블 확인, hwp-cli v0.8.2 이상 사용, 재시작 뒤 smoke test |
 | **Local folders and access permissions**에 추가한 경로도 실패함 | 이 설정은 Quick 내장 읽기·검색 도구를 제어하며 Medium 폴더를 Low 무결성 MCP 자식이 쓸 수 있게 만들지 않음 | 내장 도구나 Explorer로 파일을 설정된 `LocalLow` 교환 root에 복사한 뒤 HWP 도구 호출 |
 | `os error 2` | 경로가 실제로 없거나 `YOUR_NAME`을 바꾸지 않았거나 Desktop이 OneDrive로 파일을 이동함 | 실제 절대 경로 확인, 목적 디렉터리 생성, 또는 설정된 교환 root에 staging |
 | 반복 실패 뒤 커넥터가 비활성화됨 | 시작·handshake 실패가 반복되어 Quick이 자동 비활성화함 | command/root 수정·저장, 커넥터를 명시적으로 다시 활성화, 새로고침, 필요하면 Quick 재시작 |
@@ -315,7 +315,7 @@ Get-Content "$env:LOCALAPPDATA\Temp\quickwork-backend.log" -Tail 300 |
   Select-String "UserMCP|Loaded.*servers|total tools|hwp"
 ```
 
-정상 기동 시 “Started ... with 20 tools”, “Loaded 1/1 servers (0 failed), 20 total tools”와 같은
+정상 기동 시 “Started ... with 22 tools”, “Loaded 1/1 servers (0 failed), 22 total tools”와 같은
 메시지가 보인다. 로그 문구와 위치는 안정된 API 계약이 아니다.
 
 ## 완료 체크리스트
@@ -324,7 +324,7 @@ Get-Content "$env:LOCALAPPDATA\Temp\quickwork-backend.log" -Tail 300 |
 - 커넥터가 분리된 JSON 인자를 사용하며 셸 따옴표가 들어 있지 않음
 - `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace`가 존재하고 Low 레이블을 상속하며 Windows MCP root로 설정됨
 - 현재 HWP 스킬이 활성 Quick 프로필에 설치됨
-- Test connection이 **Connected**, **20 tools available**을 표시함
+- Test connection이 **Connected**, **22 tools available**을 표시함
 - 새로고침·재시작 뒤에도 커넥터가 활성 상태임
 - 절대 `LocalLow` smoke-test 경로에서 `hwp_new`, `hwp_validate`, `hwp_read`가 성공함
 - 같은 root 아래에 둔 그 smoke-test 문서의 사본 두 개로 `hwp_merge`, `hwp_split`,

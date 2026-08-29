@@ -274,6 +274,7 @@ fn mcp_stdio_session() {
         "hwp_diff",
         "hwp_edit",
         "hwp_fill",
+        "hwp_get_file",
         "hwp_grep",
         "hwp_info",
         "hwp_lint",
@@ -281,6 +282,7 @@ fn mcp_stdio_session() {
         "hwp_list_fields",
         "hwp_merge",
         "hwp_new",
+        "hwp_put_file",
         "hwp_read",
         "hwp_render",
         "hwp_slots",
@@ -291,7 +293,7 @@ fn mcp_stdio_session() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    assert_eq!(names, expect, "도구 20종");
+    assert_eq!(names, expect, "도구 22종");
 
     send(
         serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
