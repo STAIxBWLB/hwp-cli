@@ -129,6 +129,12 @@ sign-in, an access token this Worker issued (never a Google one), `initialize`
 starting a container, `tools/list` returning all 20 tools, `hwp_new` writing into
 the workspace, and the document coming back through `/files`.
 
+Personal access tokens work too, for clients that carry a fixed header instead of
+running an OAuth flow: `/dashboard` signs in with Google, mints a token shown
+once, drives `initialize` and `tools/list` with nothing but an `Authorization`
+header, records `last_used_at`, and returns `401` on the very next call after the
+token is revoked.
+
 Negative cases, all confirmed on the deployed service:
 
 | Case | Result |
@@ -201,6 +207,7 @@ Three guards keep this inside the $10 cap: `sleepAfter` is 10 minutes,
 | `src/session.ts` | `HwpSession` — one container per session, deadlines, idle and lifetime expiry |
 | `src/google-handler.ts` | Consent screen, Google round trip, and the callback where first login becomes signup |
 | `src/pat.ts` | Personal access tokens for header-configured clients |
+| `src/dashboard.ts` | The token dashboard: Google sign-in, create, list, revoke |
 | `src/users.ts` | The user upsert keyed on the Google `sub` claim |
 | `src/audit.ts` | Metadata-only audit writes |
 | `src/limits.ts` | Every limit in one place, mirroring doc 20 §7 |
