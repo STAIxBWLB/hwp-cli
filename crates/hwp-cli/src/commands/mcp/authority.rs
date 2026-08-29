@@ -10,11 +10,41 @@ use serde_json::Value;
 
 use super::arg_str_opt;
 
-/// Server context (default font directories for render/diff, `--root` file access sandbox).
-pub struct Ctx {
-    pub font_dirs: Vec<PathBuf>,
-    /// Canonicalized allowed roots. Empty means unrestricted file access (previous behavior).
-    pub roots: Vec<PathBuf>,
+/// File authority for a tool call: which directories may be read or written, and
+/// where fonts come from.
+///
+/// The protocol core talks to this trait rather than to a concrete context so a
+/// future artifact-backed authority (doc 20 §3.2) can replace the local
+/// filesystem one without touching a single tool handler. There is deliberately
+/// one implementation today.
+pub trait FileAuthority {
+    /// Canonicalized allowed roots. Empty means unrestricted file access.
+    fn roots(&self) -> &[PathBuf];
+    /// Default font directories supplied at startup.
+    fn font_dirs(&self) -> &[PathBuf];
+}
+
+/// Local filesystem authority: the `--root` sandbox and `--font-dir` defaults.
+pub struct LocalFsContext {
+    font_dirs: Vec<PathBuf>,
+    roots: Vec<PathBuf>,
+}
+
+impl LocalFsContext {
+    /// `roots` must already be canonicalized by the caller.
+    pub fn new(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> Self {
+        Self { font_dirs, roots }
+    }
+}
+
+impl FileAuthority for LocalFsContext {
+    fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    fn font_dirs(&self) -> &[PathBuf] {
+        &self.font_dirs
+    }
 }
 
 /// Canonicalize a path for sandbox authorization.
@@ -207,9 +237,9 @@ fn strip_windows_verbatim_prefix_with_budget(
 // ---- Path sandbox (`--root`) ----
 
 /// Checks that a canonical path sits below one of the allowed roots.
-fn under_any_root(ctx: &Ctx, canonical: &Path, raw: &str) -> Result<PathBuf, String> {
+fn under_any_root(ctx: &dyn FileAuthority, canonical: &Path, raw: &str) -> Result<PathBuf, String> {
     if ctx
-        .roots
+        .roots()
         .iter()
         .any(|root| canonical_path_starts_with(canonical, root))
     {
@@ -240,8 +270,8 @@ pub(super) fn canonical_path_starts_with(path: &Path, root: &Path) -> bool {
 
 /// Read-path validation: the path must exist (canonicalize) and the canonical result
 /// must sit below a root. Empty roots pass without a check (previous behavior).
-pub(super) fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
-    if ctx.roots.is_empty() {
+pub(super) fn checked_read_path(ctx: &dyn FileAuthority, raw: &str) -> Result<PathBuf, String> {
+    if ctx.roots().is_empty() {
         return Ok(PathBuf::from(raw));
     }
     let canonical = canonicalize_mcp_path(Path::new(raw))
@@ -254,8 +284,8 @@ pub(super) fn checked_read_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String>
 /// canonicalizes an existing file (blocking symlink-overwrite bypasses) or, for a new
 /// file, canonicalizes the parent and rejoins, before the root check.
 /// Empty roots pass without a check (previous behavior).
-pub(super) fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String> {
-    if ctx.roots.is_empty() {
+pub(super) fn checked_write_path(ctx: &dyn FileAuthority, raw: &str) -> Result<PathBuf, String> {
+    if ctx.roots().is_empty() {
         return Ok(PathBuf::from(raw));
     }
     let path = Path::new(raw);
@@ -288,8 +318,8 @@ pub(super) fn checked_write_path(ctx: &Ctx, raw: &str) -> Result<PathBuf, String
     Ok(sandbox_compatible_mcp_write_path(&authorized))
 }
 
-pub(super) fn font_dirs_for(args: &Value, ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
-    let mut dirs = ctx.font_dirs.clone();
+pub(super) fn font_dirs_for(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<PathBuf>, String> {
+    let mut dirs = ctx.font_dirs().to_vec();
     if let Some(d) = arg_str_opt(args, "font_dir")? {
         // Per-call font_dir is subject to the sandbox check (startup --font-dir is trusted).
         dirs.push(checked_read_path(ctx, d)?);

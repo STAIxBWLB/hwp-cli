@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use zeroize::{Zeroize as _, Zeroizing};
 
-use super::authority::{Ctx, canonicalize_mcp_path};
+use super::authority::{LocalFsContext, canonicalize_mcp_path};
 use super::{MAX_REQUEST_LINE_BYTES, handle_request};
 
 /// stdio JSON-RPC 루프. EOF까지 한 줄씩 처리한다.
@@ -26,10 +26,7 @@ pub fn run(font_dirs: Vec<PathBuf>, roots: Vec<PathBuf>) -> anyhow::Result<()> {
     if canonical_roots.is_empty() {
         eprintln!("경고: --root 미지정 — MCP 서버의 파일 접근이 제한되지 않습니다");
     }
-    let ctx = Ctx {
-        font_dirs,
-        roots: canonical_roots,
-    };
+    let ctx = LocalFsContext::new(font_dirs, canonical_roots);
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();
