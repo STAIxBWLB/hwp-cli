@@ -2,9 +2,9 @@
 #
 # Prefer this over ../Dockerfile once a release carries `hwp serve`: it skips the
 # Rust toolchain entirely, so the build is a download rather than a compile and
-# the image drops to roughly the size of the binary plus fonts.
+# the image is the runtime base plus fonts plus the binary, nothing else.
 #
-# The build context is this directory, not the repository root — nothing from the
+# The build context is this directory, not the repository root - nothing from the
 # source tree is needed:
 #
 #     docker build -f Dockerfile.slim -t hwp-mcp .
@@ -13,30 +13,35 @@
 # is published alongside the tarball as hwp-<version>-<target>.sha256; the build
 # fails loudly if it does not match, which is the point.
 
-FROM debian:bookworm-slim
-
 ARG HWP_VERSION=v0.15.0
 ARG HWP_TARGET=x86_64-unknown-linux-gnu
-ARG HWP_SHA256=REPLACE_WITH_PUBLISHED_SHA256
+ARG HWP_SHA256=884b762cbb005830e9f32f0862c84889e84fecb80e5e9b868b3db5b4b3b5fe76
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl fonts-nanum \
- && rm -rf /var/lib/apt/lists/*
-
+# Fetch stage. ADD downloads over the builder's own network stack, so no curl and
+# no CA bundle are ever installed; keeping it in a discarded stage also keeps the
+# archive itself out of the shipped layers.
+FROM debian:bookworm-slim AS fetch
+ARG HWP_VERSION
+ARG HWP_TARGET
+ARG HWP_SHA256
+ADD https://github.com/STAIxBWLB/hwp-cli/releases/download/${HWP_VERSION}/hwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
 RUN set -eux; \
-    url="https://github.com/STAIxBWLB/hwp-cli/releases/download/${HWP_VERSION}/hwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz"; \
-    curl -fsSL -o /tmp/hwp.tar.gz "$url"; \
     echo "${HWP_SHA256}  /tmp/hwp.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin hwp; \
     chmod +x /usr/local/bin/hwp; \
-    rm -f /tmp/hwp.tar.gz; \
     hwp --version; \
     # A release without `serve` would otherwise fail only at runtime, inside a
     # container nobody is watching.
     hwp serve --help >/dev/null
 
-# curl was only needed for the download.
-RUN apt-get purge -y --auto-remove curl
+FROM debian:bookworm-slim
+# Rendering and PDF output need real font files; fonts-nanum matches the font
+# baseline CI already uses (glyf outlines, fast in debug builds).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fonts-nanum \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=fetch /usr/local/bin/hwp /usr/local/bin/hwp
 
 RUN useradd --create-home --uid 10001 hwp \
  && mkdir -p /work \
