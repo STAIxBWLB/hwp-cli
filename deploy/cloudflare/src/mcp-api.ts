@@ -1,5 +1,5 @@
 import { writeAudit } from './audit';
-import { FILE_NAME_RE, MAX_BODY_BYTES } from './limits';
+import { FILE_NAME_RE, MAX_BODY_BYTES, MAX_FILE_TRANSFER_BYTES } from './limits';
 import type { Env, Principal } from './types';
 
 /**
@@ -204,9 +204,30 @@ async function handleFiles(
     return new Response('session not found', { status: 404 });
   }
 
+  // Both directions are buffered rather than streamed. A ReadableStream sent
+  // across the Durable Object RPC boundary disconnects partway through, which
+  // surfaced as an intermittently failing upload, so the bytes are materialized
+  // on this side and handed over whole.
+  let body: ArrayBuffer | undefined;
+  if (request.method === 'POST') {
+    const declared = request.headers.get('content-length');
+    if (declared !== null && Number(declared) > MAX_FILE_TRANSFER_BYTES) {
+      return new Response('file too large', { status: 413 });
+    }
+    body = await request.arrayBuffer();
+    if (body.byteLength > MAX_FILE_TRANSFER_BYTES) {
+      return new Response('file too large', { status: 413 });
+    }
+  }
+
   const forwarded = new Request(`http://container/files/${name}`, {
     method: request.method,
-    body: request.method === 'POST' ? request.body : undefined,
+    body,
   });
-  return stub.proxy(forwarded, null);
+  const response = await stub.proxy(forwarded, null);
+  const out = await response.arrayBuffer();
+  return new Response(out.byteLength === 0 ? null : out, {
+    status: response.status,
+    headers: response.headers,
+  });
 }

@@ -91,15 +91,20 @@ export class HwpSession extends Container<Env> {
     try {
       return await this.containerFetch(deadlined);
     } catch (error) {
-      // A blown deadline ends the session: the container may still be mid-write,
-      // and the only guarantee worth keeping is that nothing partial survives.
-      // ponytail: deadline kills the session; per-request cancellation when a
-      // real user hits this.
-      await this.terminate();
       const timedOut = error instanceof Error && error.name === 'TimeoutError';
-      return new Response(timedOut ? 'tool deadline exceeded' : 'container unavailable', {
-        status: timedOut ? 504 : 502,
-      });
+      if (timedOut) {
+        // A blown deadline ends the session: the container may still be mid-write,
+        // and the only guarantee worth keeping is that nothing partial survives.
+        // ponytail: deadline kills the session; per-request cancellation when a
+        // real user hits this.
+        await this.terminate();
+        return new Response('tool deadline exceeded', { status: 504 });
+      }
+      // Anything else is this one request's problem, not the session's. Killing
+      // the session here made a transient RPC hiccup look like an expired
+      // session on the *next* call, which is a confusing way to lose a workspace.
+      console.error('container fetch failed', error instanceof Error ? error.message : error);
+      return new Response('container unavailable', { status: 502 });
     }
   }
 

@@ -16,6 +16,16 @@ export const SLOW_TOOL_DEADLINE_MS = 300_000;
 /** Tools that get the longer deadline. */
 export const SLOW_TOOLS = new Set(['hwp_render', 'hwp_convert', 'hwp_certify', 'hwp_diff']);
 
+/**
+ * Worker-side cap for one `/files` transfer.
+ *
+ * The container enforces 64 MiB, but the Worker has to hold the bytes in memory:
+ * a request body cannot be streamed across the Durable Object RPC boundary
+ * without the stream disconnecting mid-transfer, so both directions are
+ * buffered. 32 MiB keeps that comfortably inside a Worker's 128 MB budget.
+ */
+export const MAX_FILE_TRANSFER_BYTES = 32 * 1024 * 1024;
+
 /** Idle lifetime before the container is stopped and the session invalidated. */
 export const IDLE_SLEEP_AFTER = '10m';
 
