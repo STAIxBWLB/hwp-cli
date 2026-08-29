@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.16.0]
+
 **Added**
 
 - `hwp_put_file` and `hwp_get_file` move documents in and out of a session workspace as base64,
