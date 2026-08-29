@@ -301,6 +301,27 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages`)로 조각내고 발행된 조각 경로를 반환 |
 | `hwp_compare` | `a`, `b` | 읽기 전용 문단·구조 비교로 `hwp-compare-report-v1`을 반환. 차이가 있는 것은 정상 결과라 `isError`가 되지 않으므로 `identical`을 읽는다 |
 
+## 컨테이너용 HTTP 모드
+
+`hwp serve`는 `hwp mcp`와 같은 프로토콜을 stdio 대신 HTTP로 제공하므로, 같은 20종 도구를
+컨테이너에서 사용할 수 있습니다. 인터넷에 직접 노출하는 용도가 아니라, TLS 종단·인증·본문
+크기 제한을 이미 수행한 신뢰된 edge 뒤에 두는 것을 전제로 합니다.
+
+```bash
+hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/nanum
+```
+
+| 경로 | 동작 |
+|---|---|
+| `POST /mcp` | JSON-RPC 메시지 하나, 1 MiB 상한. request는 `200 application/json`, notification은 본문 없이 `202` |
+| `GET /mcp` | `405` — server가 push하지 않으므로 event stream을 제공하지 않습니다 |
+| `GET /healthz` | listener가 bind되면 `200`. container platform이 확인하는 지점입니다 |
+| `POST\|GET /files/{name}` | `--files`로만 활성화. 이름은 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`를 만족해야 하며, 파일당 64 MiB·workspace당 256 MiB |
+
+`--root`는 여기서 필수입니다. 생략하면 경고만 하는 `hwp mcp`와 달리, 원격 배포는 파일 접근이
+제한되지 않은 상태로 실행되어서는 안 되기 때문입니다. 들어오는 `Mcp-Session-Id`는 받아들이되
+무시합니다. session affinity는 앞단 platform의 책임입니다.
+
 ## 안전 규칙 (반드시 준수)
 
 1. **쓰기 후에는 항상 검증하세요.** `new` / `edit` / `fill` / `compose` / `template` /

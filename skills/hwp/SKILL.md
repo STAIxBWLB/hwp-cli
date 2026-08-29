@@ -303,6 +303,28 @@ Tools (20):
 | `hwp_split` | `input`, `out_dir` | Split into per-Section (or `pages`) fragments; returns the published fragment paths |
 | `hwp_compare` | `a`, `b` | Read-only paragraph/structure diff returning `hwp-compare-report-v1`. Differences are a normal result and never set `isError` — read `identical` |
 
+## HTTP mode for containers
+
+`hwp serve` speaks the same protocol as `hwp mcp`, over HTTP instead of stdio, so the same twenty
+tools are reachable from a container. It is meant to sit behind a trusted edge that has already
+terminated TLS, authenticated the caller and capped the request body — not to face the internet
+directly.
+
+```bash
+hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/nanum
+```
+
+| Route | Behavior |
+|---|---|
+| `POST /mcp` | One JSON-RPC message, capped at 1 MiB. A request answers `200 application/json`; a notification answers `202` with no body |
+| `GET /mcp` | `405` — the server never pushes, so no event stream is offered |
+| `GET /healthz` | `200` once the listener is bound; container platforms probe this |
+| `POST\|GET /files/{name}` | Only with `--files`. Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; 64 MiB per file, 256 MiB per workspace |
+
+`--root` is mandatory here, unlike `hwp mcp` where omitting it only warns: a remote deployment must
+never run with unrestricted filesystem access. An inbound `Mcp-Session-Id` is accepted and ignored,
+because session affinity belongs to the platform in front.
+
 ## Safety rules (must follow)
 
 1. **Validate after every write.** After `new` / `edit` / `fill` / `compose` / `template` /
