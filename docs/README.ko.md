@@ -12,6 +12,7 @@
 | [manual/cli-reference.ko.md](manual/cli-reference.ko.md) | clap 정의에서 자동 생성되는 CLI 레퍼런스(수동 편집 금지) |
 | [manual/ai-integrations.ko.md](manual/ai-integrations.ko.md) | AI 클라이언트 설정: MCP 등록, 에이전트 스킬, claude.ai 번들 |
 | [manual/amazon-quick-desktop.ko.md](manual/amazon-quick-desktop.ko.md) | Amazon Quick Desktop 설정, end-to-end 검증, 에이전트 지침, 문제 해결 |
+| [design/22-remote-mcp-deployment.ko.md](design/22-remote-mcp-deployment.ko.md) | Remote MCP deployment 설계: 공유 `hwp serve` HTTP adapter와 Cloudflare·AgentCore 호스팅 tier |
 | [design/23-hwpx-skill-absorption.ko.md](design/23-hwpx-skill-absorption.ko.md) | 퇴역한 다운스트림 `hwpx` 스킬과 네이티브 명령의 패리티 기록 |
 | [release-readiness.ko.md](release-readiness.ko.md) | 릴리스 전 게이트 체크리스트 |
 | [hancom-verification-checklist.ko.md](hancom-verification-checklist.ko.md) | 한글 실기 검증 체크리스트 |

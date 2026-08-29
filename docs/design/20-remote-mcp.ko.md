@@ -238,6 +238,14 @@ maintained protocol/HTTP primitive를 우선한다. no tokio/no SDK 유지는 un
 6. **Operations:** production enablement 전에 SLO, capacity, key rotation, incident response,
    deletion verification, backup 정책, cost control 정의.
 
+**Deployment tier.** [Doc 22](22-remote-mcp-deployment.ko.md)는 위 1번, 3번, 4번 항목을 무엇으로
+만들고 어디에 올리는지 규정한다. 추출한 protocol core 위의 공유 `hwp serve` HTTP adapter, 이
+문서 §8이 요구하는 dependency 결정, 그리고 두 hosting tier(Cloudflare Workers + Containers,
+Amazon Quick connector 뒤의 AgentCore)가 그 내용이다. doc 22는 이 문서에 대한 amendment 두 건을
+기록한다. §3.1의 "library-visible module"은 두 adapter가 공유하는 binary 내부 module로 바뀌고,
+§10의 writable path 실패 기준은 단일 session microVM workspace에 한해 좁혀진다. §3.2의 artifact
+model은 여전히 필수이며 아직 구현되지 않았다.
+
 ## 10. Acceptance/failure 기준
 
 Remote MCP 구현은 다음을 모두 입증해야 통과한다.
