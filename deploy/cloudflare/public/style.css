@@ -1,0 +1,36 @@
+:root {
+  color-scheme: light dark;
+  --fg: #16181d;
+  --muted: #5b6270;
+  --bg: #fbfbfc;
+  --accent: #2f5fd0;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e8eaef; --muted: #a0a7b4; --bg: #14161a; --accent: #7ea2f0; }
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif;
+}
+main { max-width: 34rem; margin: 0 auto; padding: 3rem 1.25rem; }
+h1 { font-size: 1.5rem; letter-spacing: -0.01em; margin: 0 0 1rem; }
+p { color: var(--muted); margin: 0 0 1rem; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+button {
+  font: inherit;
+  color: #fff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  padding: 0.6rem 1.1rem;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.08); }

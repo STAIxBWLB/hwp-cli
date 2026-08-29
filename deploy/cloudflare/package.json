@@ -1,0 +1,21 @@
+{
+  "name": "hwp-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@cloudflare/workers-oauth-provider": "^0.10.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260829.1",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.127.1"
+  }
+}
