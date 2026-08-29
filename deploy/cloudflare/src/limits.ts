@@ -26,8 +26,17 @@ export const SLOW_TOOLS = new Set(['hwp_render', 'hwp_convert', 'hwp_certify', '
  */
 export const MAX_FILE_TRANSFER_BYTES = 32 * 1024 * 1024;
 
-/** Idle lifetime before the container is stopped and the session invalidated. */
-export const IDLE_SLEEP_AFTER = '10m';
+/**
+ * Idle lifetime before the container is stopped and the session invalidated.
+ *
+ * This is the lever that keeps live containers under `max_instances`, not the
+ * rate limiter: the limiter caps how fast sessions are *created*, but each one
+ * holds an instance for this long, so 5 new sessions a minute against a 10-minute
+ * hold reaches ten times the ceiling. Three minutes keeps a working session alive
+ * across normal think-time while returning capacity quickly, and it is the same
+ * lever that keeps the monthly container-hours bill down.
+ */
+export const IDLE_SLEEP_AFTER = '3m';
 
 /** Maximum session lifetime; after this the client must reinitialize (doc 20 §7). */
 export const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
