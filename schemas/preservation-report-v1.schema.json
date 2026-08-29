@@ -26,7 +26,10 @@
             "binary_relationship_removed",
             "control_metadata_unrepresentable",
             "control_removed",
+            "document_metadata_superseded",
+            "document_package_passthrough_dropped",
             "gso_header_unrepresentable",
+            "gso_object_id_renumbered",
             "gso_shape_unrepresentable",
             "hwp_container_storage_removed",
             "hwp_container_stream_removed",
@@ -35,7 +38,9 @@
             "hwpx_package_entry_removed",
             "metadata_value_removed",
             "opaque_control_unrepresentable",
-            "picture_control_removed"
+            "page_range_paragraph_rounded",
+            "picture_control_removed",
+            "section_border_fill_ref_unresolvable"
           ]
         },
         "resource": {

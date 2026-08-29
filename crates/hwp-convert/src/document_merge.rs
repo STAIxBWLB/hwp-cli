@@ -32,8 +32,10 @@
 //! `<hp:pageBorderFill>` raw-XML passthrough children
 //! (`SectionDef::secpr_raw_children`) whose numeric `borderFillIDRef`
 //! attribute is rewritten in place. A passthrough child whose
-//! `borderFillIDRef` is present but not numeric is left verbatim — the
-//! reference already resolved nowhere — rather than rewritten blindly. Two
+//! `borderFillIDRef` is present but not numeric cannot be shifted onto the
+//! merged border-fill table, so it is kept verbatim and recorded as
+//! [`MergeLoss::SectionBorderFillRefUnresolvable`] (#180) rather than
+//! silently passing through to resolve against the wrong table. Two
 //! reference classes are deliberately not shifted: `Style`
 //! entries are appended verbatim because no writer or render path reads their
 //! internal shape ids, and the input header's unparsed passthrough records
@@ -82,6 +84,12 @@ pub enum MergeLoss {
     /// remaining entries were dropped, so `BinRef::Id` references to them no
     /// longer resolve (their payload streams are still carried).
     BinDataDropped { input_index: usize, count: usize },
+    /// A non-primary hwpx-origin input's `<hp:pageBorderFill>` passthrough
+    /// carried a `borderFillIDRef` that is present but not numeric, so the
+    /// tier-2 graft could not shift it onto the merged border-fill table —
+    /// the attribute is passed through verbatim and now resolves against the
+    /// wrong table (#180). A recorded, non-target change, not data loss.
+    SectionBorderFillRefUnresolvable { input_index: usize, count: usize },
 }
 
 /// Result of [`merge_documents`].
@@ -174,12 +182,19 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         } else {
             general_path_used = true;
             let (offsets, dropped) = graft_header_general(&mut target, input)?;
+            let mut unresolvable_border_fill_refs = 0usize;
             for section in &input.sections {
                 let mut section = section.clone();
                 for p in &mut section.paragraphs {
-                    remap_paragraph_general(p, &offsets)?;
+                    unresolvable_border_fill_refs += remap_paragraph_general(p, &offsets)?;
                 }
                 target.sections.push(section);
+            }
+            if unresolvable_border_fill_refs > 0 {
+                losses.push(MergeLoss::SectionBorderFillRefUnresolvable {
+                    input_index,
+                    count: unresolvable_border_fill_refs,
+                });
             }
             dropped
         };
@@ -677,9 +692,13 @@ fn graft_header_general(
 /// Recurses into every nested paragraph collection — table cells, Generic
 /// paragraph lists, and table/picture captions — so caption paragraphs
 /// resolve to the same shifted header entries as body paragraphs and caption
-/// pictures keep their rewired bin references. `Err` when a shifted id
-/// overflows the u16 id space (#173).
-fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Result<(), String> {
+/// pictures keep their rewired bin references. Returns the number of
+/// non-numeric `borderFillIDRef` passthrough attributes that could not be
+/// shifted and are left resolving against the wrong table (#180) — the
+/// caller records them as `MergeLoss::SectionBorderFillRefUnresolvable`.
+/// `Err` when a shifted id overflows the u16 id space (#173).
+fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Result<usize, String> {
+    let mut unresolvable = 0usize;
     shift_id(&mut para.para_shape.0, offsets.para_shape)?;
     shift_id(&mut para.style.0, offsets.style)?;
     for (_, id) in &mut para.char_shape_runs {
@@ -693,7 +712,7 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Res
                 }
                 if let Some(cap) = &mut t.caption {
                     for p in &mut cap.paragraphs {
-                        remap_paragraph_general(p, offsets)?;
+                        unresolvable += remap_paragraph_general(p, offsets)?;
                     }
                 }
                 for cell in &mut t.cells {
@@ -701,14 +720,14 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Res
                         shift_id(&mut cell.border_fill.0, offsets.border_fill)?;
                     }
                     for p in &mut cell.paragraphs {
-                        remap_paragraph_general(p, offsets)?;
+                        unresolvable += remap_paragraph_general(p, offsets)?;
                     }
                 }
             }
             Control::Generic(g) => {
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        remap_paragraph_general(p, offsets)?;
+                        unresolvable += remap_paragraph_general(p, offsets)?;
                     }
                 }
                 // Reference ids changed above — the original XML is stale.
@@ -725,16 +744,16 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Res
                 }
                 if let Some(cap) = &mut pic.caption {
                     for p in &mut cap.paragraphs {
-                        remap_paragraph_general(p, offsets)?;
+                        unresolvable += remap_paragraph_general(p, offsets)?;
                     }
                 }
             }
             Control::SectionDef(def) => {
-                shift_section_def_border_fills(def, offsets.border_fill)?;
+                unresolvable += shift_section_def_border_fills(def, offsets.border_fill)?;
             }
         }
     }
-    Ok(())
+    Ok(unresolvable)
 }
 
 /// hwp5 PAGE_BORDER_FILL record tag (한글문서파일형식 5.0 §3 record-tag table:
@@ -749,7 +768,10 @@ const PAGE_BORDER_FILL_TAG: u16 = 0x0010 + 59;
 /// hwp5 raw records (`page_border_fills_raw`, plus their parallel `extras`
 /// copies — the hwp5 re-serialization 정본) and the hwpx
 /// `<hp:pageBorderFill>` raw-XML passthrough in `secpr_raw_children`.
-fn shift_section_def_border_fills(def: &mut SectionDef, offset: u16) -> Result<(), String> {
+/// Returns the number of non-numeric `borderFillIDRef` attributes that
+/// could not be shifted (#180).
+fn shift_section_def_border_fills(def: &mut SectionDef, offset: u16) -> Result<usize, String> {
+    let mut unresolvable = 0usize;
     for raw in &mut def.page_border_fills_raw {
         shift_page_border_fill_raw(raw, offset)?;
     }
@@ -759,11 +781,29 @@ fn shift_section_def_border_fills(def: &mut SectionDef, offset: u16) -> Result<(
         }
     }
     for child in &mut def.secpr_raw_children {
-        if let Some(rewritten) = shift_secpr_page_border_fill(child, offset)? {
-            *child = rewritten;
+        match shift_secpr_page_border_fill(child, offset)? {
+            SecprBorderFillShift::Rewritten(rewritten) => *child = rewritten,
+            SecprBorderFillShift::Unresolvable => unresolvable += 1,
+            SecprBorderFillShift::Untouched => {}
         }
     }
-    Ok(())
+    Ok(unresolvable)
+}
+
+/// Outcome of attempting to shift one `<hp:pageBorderFill>` raw-XML
+/// passthrough child (#180).
+enum SecprBorderFillShift {
+    /// Not a pageBorderFill element, no `borderFillIDRef` at all (nothing
+    /// references the table), or the "unspecified" sentinel id 0 — the child
+    /// is kept verbatim and records nothing.
+    Untouched,
+    /// The numeric `borderFillIDRef` was rewritten by the border-fill offset.
+    Rewritten(String),
+    /// `borderFillIDRef` is present but not a parseable u16 — it cannot be
+    /// shifted onto the merged border-fill table, so the child is kept
+    /// verbatim and the caller records
+    /// `MergeLoss::SectionBorderFillRefUnresolvable` (#180).
+    Unresolvable,
 }
 
 /// Shifts the 1-based border-fill id (bytes 12..14 — the layout the hwpx
@@ -785,13 +825,12 @@ fn shift_page_border_fill_raw(raw: &mut [u8], offset: u16) -> Result<(), String>
 }
 
 /// Rewrites the numeric `borderFillIDRef` attribute of a preserved
-/// `<hp:pageBorderFill>` raw-XML child by `offset`, returning the rewritten
-/// child. Returns `Ok(None)` — the child is kept verbatim — when it is not a
-/// pageBorderFill element, carries no `borderFillIDRef` (nothing references
-/// the table), or carries a non-numeric one (a malformed reference that
-/// already resolved nowhere, left alone rather than rewritten blindly, #171).
-/// `Err` when the shift overflows the u16 id space (#173).
-fn shift_secpr_page_border_fill(child: &str, offset: u16) -> Result<Option<String>, String> {
+/// `<hp:pageBorderFill>` raw-XML child by `offset`. See
+/// [`SecprBorderFillShift`] for the three outcomes; in particular a present
+/// but non-numeric (or unterminated) reference is reported `Unresolvable`
+/// rather than silently passed through (#180). `Err` when the shift
+/// overflows the u16 id space (#173).
+fn shift_secpr_page_border_fill(child: &str, offset: u16) -> Result<SecprBorderFillShift, String> {
     let is_page_border_fill = child
         .trim_start()
         .strip_prefix('<')
@@ -802,24 +841,24 @@ fn shift_secpr_page_border_fill(child: &str, offset: u16) -> Result<Option<Strin
         .map(|name| name.rsplit(':').next().unwrap_or(name) == "pageBorderFill")
         .unwrap_or(false);
     if !is_page_border_fill {
-        return Ok(None);
+        return Ok(SecprBorderFillShift::Untouched);
     }
     const ATTR: &str = "borderFillIDRef=\"";
     let Some(attr_pos) = child.find(ATTR) else {
-        return Ok(None);
+        return Ok(SecprBorderFillShift::Untouched);
     };
     let value_start = attr_pos + ATTR.len();
     let Some(value_end) = child[value_start..].find('"').map(|i| value_start + i) else {
-        return Ok(None);
+        return Ok(SecprBorderFillShift::Unresolvable);
     };
     let Ok(id) = child[value_start..value_end].parse::<u16>() else {
-        return Ok(None);
+        return Ok(SecprBorderFillShift::Unresolvable);
     };
     if id == 0 {
-        return Ok(None); // "unspecified" sentinel — never shifted
+        return Ok(SecprBorderFillShift::Untouched); // "unspecified" sentinel — never shifted
     }
     let shifted = id.checked_add(offset).ok_or_else(header_id_overflow)?;
-    Ok(Some(format!(
+    Ok(SecprBorderFillShift::Rewritten(format!(
         "{}{shifted}{}",
         &child[..value_start],
         &child[value_end..]
@@ -1894,10 +1933,19 @@ mod tests {
             "borderFillIDRef가 오프셋만큼 이동해야 한다: {}",
             def.secpr_raw_children[1]
         );
+        // Numeric references shift cleanly and record no loss (#180).
+        assert!(
+            !outcome
+                .losses
+                .iter()
+                .any(|loss| matches!(loss, MergeLoss::SectionBorderFillRefUnresolvable { .. })),
+            "숫자 참조는 손실 없이 이동해야 한다: {:?}",
+            outcome.losses
+        );
     }
 
     #[test]
-    fn 일반_경로_숫자가_아닌_border_fill_idref는_원문을_유지한다() {
+    fn 일반_경로_숫자가_아닌_border_fill_idref는_원문을_유지하고_손실로_기록한다() {
         let a = from_markdown("문서 A\n");
         let mut b = non_palette_compatible(from_markdown("문서 B\n"));
         let malformed =
@@ -1912,6 +1960,22 @@ mod tests {
         assert_eq!(
             def.secpr_raw_children[0], malformed,
             "안전하게 재작성할 수 없는 참조는 원문 그대로 둔다"
+        );
+        // #180: the verbatim passthrough is no longer silent — exactly one
+        // typed loss event is recorded for the unshiftable reference.
+        let recorded: Vec<&MergeLoss> = outcome
+            .losses
+            .iter()
+            .filter(|loss| matches!(loss, MergeLoss::SectionBorderFillRefUnresolvable { .. }))
+            .collect();
+        assert_eq!(
+            recorded,
+            [&MergeLoss::SectionBorderFillRefUnresolvable {
+                input_index: 1,
+                count: 1
+            }],
+            "이동하지 못한 참조 하나가 정확히 한 건의 손실로 기록돼야 한다: {:?}",
+            outcome.losses
         );
     }
 

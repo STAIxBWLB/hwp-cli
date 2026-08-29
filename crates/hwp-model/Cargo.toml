@@ -8,3 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+
+[dev-dependencies]
+# Test-only: the schema-locking test parses
+# `schemas/preservation-report-v1.schema.json` to compare its `code` enum
+# against every `PreservationCode` wire string (#179).
+serde_json = { workspace = true }
