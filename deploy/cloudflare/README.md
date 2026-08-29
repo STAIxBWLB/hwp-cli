@@ -199,10 +199,10 @@ Worth recording, because each one only appeared against the deployed service:
    SIGTERM, and the kernel does not deliver a default-disposition signal to
    PID 1, so `hwp serve` as PID 1 ignored it: `sleepAfter` looked configured and
    did nothing. Nine containers had been running for close to four hours. Fixed
-   twice over: `hwp serve` installs a handler and exits cleanly even as PID 1,
-   and the image runs tini for the releases that predate it. `docker kill
-   --signal=TERM` exits the container in about a second either way, where before
-   it stayed up indefinitely.
+   in the binary: `hwp serve` installs a handler and exits cleanly even as PID 1,
+   released as 0.15.1 and pinned here. `docker kill --signal=TERM` now exits the
+   container in about two seconds, where before it stayed up indefinitely. tini
+   carried the image between the discovery and the release, and is gone again.
 
 ## What is already verified
 
@@ -244,10 +244,10 @@ The platform asks with SIGTERM, and the kernel does not deliver a signal with it
 default disposition to PID 1 - so with `hwp serve` as PID 1 and no handler, the
 stop was silently discarded and containers stayed awake indefinitely. Nine of
 them ran for close to four hours before this was caught, which at 1 GiB each
-would have spent the monthly allowance in under three hours. `hwp serve` now
-installs the handler itself, and the image also runs tini as its init because
-`HWP_VERSION` still pins 0.15.0, which predates that. If a future change touches
-the entrypoint or the pinned version, re-run the check below.
+would have spent the monthly allowance in under three hours. `hwp serve` installs
+the handler itself since 0.15.1, which is what `HWP_VERSION` pins, so the image
+needs no init. Moving `HWP_VERSION` below 0.15.1 would reintroduce the defect;
+re-run the check below after any change to the pin or the entrypoint.
 
 To check that idle sessions really stop, watch the running instance count fall to
 zero within a few minutes of the last request:

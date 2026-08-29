@@ -19,7 +19,7 @@ FROM debian:bookworm-slim
 # Rendering and PDF output need real font files; fonts-nanum matches the font
 # baseline CI already uses (glyf outlines, fast in debug builds).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends fonts-nanum tini \
+ && apt-get install -y --no-install-recommends fonts-nanum \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/target/release/hwp /usr/local/bin/hwp
@@ -30,14 +30,8 @@ RUN useradd --create-home --uid 10001 hwp \
 USER hwp
 WORKDIR /work
 
-# The platform stops an idle container with SIGTERM, and the kernel does not
-# deliver a signal with its default disposition to PID 1 - so a PID 1 that
-# installs no handler discards it and the container stays awake and billing.
-# `hwp serve` handles SIGTERM itself, so this image would stop correctly without
-# an init; tini stays only to keep the two images identical in how they run, and
-# to reap should `hwp` ever spawn a child.
-ENTRYPOINT ["/usr/bin/tini", "--"]
-
+# No init: `hwp serve` handles SIGTERM itself, so it stops correctly even as PID 1,
+# where the kernel delivers no signal that still has its default disposition.
 EXPOSE 8080
 CMD ["hwp", "serve", \
      "--addr", "0.0.0.0:8080", \
