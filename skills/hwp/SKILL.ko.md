@@ -44,6 +44,18 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   `--font-dir {dir}` (반복 가능; 기본값 `HWP_FONT_DIR` 또는 `fonts/`). 마크다운 납출
   플래그: `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json).
   보호 입력은 `cat`과 같은 `--password` / `--password-stdin` 쌍을 받습니다.
+- `hwp merge {inputs...} -o {output}` — 문서 두 개 이상을 인자 순서대로 하나로 합칩니다.
+  입력 하나가 Section 하나가 되고, writer는 출력 확장자(`.hwp`/`.hwpx`)로 정해지며,
+  표준 입력 `-`는 받지 않습니다. `--strict`는 보존 불가(opaque) 데이터가 있으면 발행하지
+  않고 실패하며, `--loss-report {file.json}`은 손실이 없어도
+  `hwp-preservation-report-v1` 원장을 기록합니다. 쪽·각주·개요 번호는 각 입력의
+  시작·계속 설정을 그대로 유지하므로 병합한 뒤 다시 확인하세요. `--password` /
+  `--password-stdin`은 전체 입력에 한 번만 적용됩니다.
+- `hwp split {input} --out-dir {dir}` — 문서 하나를 조각으로 나눕니다. 기본은 Section
+  하나당 조각 하나이며 이름은 `{stem}-NNN.{소문자 확장자}`입니다. `--pages "N"|"N-M"`
+  (반복 가능)을 주면 쪽 범위로 나누는데, 그 경계는 한컴이 저장한 레이아웃 캐시에서 얻은
+  추정값이라 한컴 자체 페이지 나눔과 다를 수 있습니다. `--strict`와 `--loss-report`는
+  `merge`와 같습니다.
 - `hwp new -o {out.hwpx|out.hwp}` — 문서 생성. `--from {file.md|file.json}`은 마크다운
   또는 JSON IR을 가져옵니다 (생략 시 빈 문서); `--set-meta key=value` (title/author/
   subject/keywords, 반복 가능); `--preset official|report|plan|notice|minutes|press`
@@ -89,11 +101,20 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열.
 - `hwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
   유효하면 종료 코드 0.
+- `hwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` —
+  공문서 표기·구조 규칙 열 가지를 검사합니다 (`-`는 표준 입력을 markdown으로 읽습니다).
+  기본은 조언용이라 항상 종료 코드 0이며, `--strict`가 error 등급 지적을 찾았을 때만
+  1로 끝납니다. `--json`은 `hwp-lint-report-v1` 계약
+  (`rule_id`/`severity`/`line`/`col`/`message`)을 출력합니다.
 - `hwp certify {input} --policy {policy.json|yaml} --report {dir}` — 버전 관리된 정책에
   따라 패키지, 의미, 네이티브 렌더, 독립 임포트를 인증; 보고서 디렉터리를 원자적으로
   발행.
 - `hwp diff {input} --ref {hancom.png} [--page N] [--dpi N] [--tolerance N] [-o diff.png]` —
   렌더를 한컴 참조 PNG와 비교 (오프셋, 픽셀 차이).
+- `hwp compare {a} {b} [--format text|json]` — 문서 두 개의 문단·구조 차이를 보고하며 두
+  입력 모두 수정하지 않습니다. 렌더를 한컴 참조 PNG와 비교하는 `hwp diff`와는 다른
+  명령입니다. `--format json`은 `hwp-compare-report-v1` 계약을 출력합니다. 종료 코드는
+  diff(1) 관례를 따르므로 아래 안전 규칙의 종료 코드 항목을 확인하세요.
 
 ## Official documents (공문서)
 
@@ -246,7 +267,7 @@ Quick의 로컬 폴터 권한에 추가된 폴터는 내장 읽기/검색 도구
 
 Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 셸 인용 문자를 넣지 마세요.
 세 계층을 순서대로 검증하세요: 정확한 절대 경로 바이너리가 버전을 반환하는지; Quick이
-17개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
+20개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
 `hwp_validate`가 설정된 LocalLow 루트 아래 절대 경로에서 성공하는지 (예:
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`).
 디스커버리만으로 파일 접근이 증명된다고 주장하지 마세요.
@@ -255,7 +276,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 복사-붙여넣기 운영자 및 AI 런북:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-도구 (17):
+도구 (20):
 
 | 도구 | 필수 인수 | 용도 |
 |---|---|---|
@@ -276,6 +297,9 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_lint` | `path` | 마크다운 파일의 공문서 표기법·구조 규칙 검사 (권고성; 경로만, `--root` 샌드박스 적용); hwp-lint-report-v1 findings JSON (`rule_id`/`severity`/`line`/`col`/`message`) 반환 |
 | `hwp_certify` | `input`, `policy`, `report` | 인증 실행 후 보고서를 원자적으로 발행 |
 | `hwp_diff` | `input`, `ref` | 한 페이지를 렌더링해 참조 PNG와 비교 |
+| `hwp_merge` | `inputs`, `output` | 문서 두 개 이상을 합침 (입력 하나당 Section 하나); 보존 손실 원장을 반환 |
+| `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages`)로 조각내고 발행된 조각 경로를 반환 |
+| `hwp_compare` | `a`, `b` | 읽기 전용 문단·구조 비교로 `hwp-compare-report-v1`을 반환. 차이가 있는 것은 정상 결과라 `isError`가 되지 않으므로 `identical`을 읽는다 |
 
 ## 안전 규칙 (반드시 준수)
 
@@ -295,5 +319,24 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 5. **MCP에는 `--root`를 선호하세요.** 제한 없이 실행하는 대신, 도구가 정당하게 접근할
    수 있는 모든 디렉터리에 대해 플래그를 반복해 서버 범위를 작업 디렉터리로 한정하세요.
 6. **암호는 호출 안에서만 유지하세요.** CLI에서는 `--password`보다 `--password-stdin`을
-   우선하고, MCP 암호는 개별 `hwp_read`·`hwp_convert`·`hwp_render` 호출에만 넣으세요.
+   우선하고, MCP 암호는 그 인수를 받는 여섯 도구 — `hwp_read`·`hwp_convert`·`hwp_render`·
+   `hwp_merge`·`hwp_split`·`hwp_compare` — 중 실제로 필요한 호출에만 넣으세요.
    암호를 리포트·영수증·생성 파일·명령 기록·지속 환경변수에 남기지 마세요.
+7. **종료 코드는 명령마다의 관례대로 읽으세요.** 관례가 의도적으로 다르기 때문에
+   "0이 아니면 실패"라는 단일 해석은 틀립니다.
+
+   | 명령 | 관례 |
+   |---|---|
+   | `compare` | diff(1) 관례: 0은 동일, 1은 차이 발견, 2는 실행 자체가 실패 |
+   | `lint` | 항상 0; `--strict`일 때만 error 등급 지적에서 1 |
+   | `grep` | 일치가 없으면 1 (오류가 아니라 정상 결과) |
+   | `validate`, `new --strict`, `convert --strict`, `merge --strict`, `split --strict` | 성공은 0, 실패는 0이 아님 |
+
+   MCP에는 종료 코드가 없습니다. `hwp_compare`는 `identical`을, `hwp_grep`은 `count`를
+   돌려주며 두 경우 모두 `isError`는 false입니다.
+8. **문서 단위 쓰기 뒤에는 보존 손실 원장을 확인하세요.** `convert`·`merge`·`split`은
+   보존하지 못한 항목을 `hwp-preservation-report-v1` 원장에 기록합니다. CLI에서는
+   `--loss-report {file.json}`로 기록되고, MCP에서는 모든 `hwp_merge`·`hwp_split` 응답의
+   `preservation` 필드로 돌아옵니다. 병합은 첫 입력 이후의 패키지 passthrough를 항상
+   버리기 때문에 두 명령 모두 `--strict`가 기본값이 아닌 선택 사항입니다. 손실이 없다고
+   가정하지 말고 원장을 확인하세요.

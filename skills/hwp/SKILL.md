@@ -44,6 +44,18 @@ syntax (used by `fill`, `slots` and the template tools).
   `--font-dir {dir}` (repeatable; default `HWP_FONT_DIR` or `fonts/`). Markdown export flags:
   `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json). Protected inputs
   accept the same `--password` / `--password-stdin` pair as `cat`.
+- `hwp merge {inputs...} -o {output}` — combine two or more documents into one, one Section per
+  input in argument order. The writer comes from the output extension (`.hwp`/`.hwpx`); standard
+  input `-` is not accepted. `--strict` fails without publishing when unpreservable (opaque) data
+  is found; `--loss-report {file.json}` writes the typed `hwp-preservation-report-v1` ledger even
+  on a clean run. Page, footnote and outline numbering keep each input's own start/continue
+  settings, so re-check them after merging. One `--password` / `--password-stdin` covers the
+  whole batch.
+- `hwp split {input} --out-dir {dir}` — divide one document into fragments, one per Section by
+  default (named `{stem}-NNN.{lowercased ext}`). `--pages "N"|"N-M"` (repeatable) splits on page
+  ranges instead; those boundaries come from the layout cache Hancom saved, so they are an
+  estimate that may not match Hancom's own pagination. `--strict` and `--loss-report` behave as
+  in `merge`.
 - `hwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports
   markdown or a JSON IR (empty document when omitted); `--set-meta key=value` (title/author/
   subject/keywords, repeatable); `--preset official|report|plan|notice|minutes|press`
@@ -91,11 +103,19 @@ syntax (used by `fill`, `slots` and the template tools).
   — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots.
 - `hwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
   parsing); exit code 0 when valid.
+- `hwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` — ten
+  official-document notation and structure rules (`-` reads stdin as markdown). Advisory: it
+  always exits 0 unless `--strict` finds an error-severity finding. `--json` prints the
+  `hwp-lint-report-v1` contract (`rule_id`/`severity`/`line`/`col`/`message`).
 - `hwp certify {input} --policy {policy.json|yaml} --report {dir}` — certify package,
   semantics, native render and independent import under a versioned policy; publishes the
   report directory atomically.
 - `hwp diff {input} --ref {hancom.png} [--page N] [--dpi N] [--tolerance N] [-o diff.png]` —
   compare a render against a Hancom reference PNG (offset, pixel difference).
+- `hwp compare {a} {b} [--format text|json]` — report paragraph and structural differences
+  between two documents, leaving both untouched. This is not `hwp diff`, which compares a render
+  against a Hancom reference PNG. `--format json` prints the `hwp-compare-report-v1` contract.
+  Its exit codes follow diff(1) — see Exit codes below.
 
 ## Official documents
 
@@ -250,7 +270,7 @@ of it, and re-enable the connector if repeated startup failures caused Quick to 
 
 When helping someone configure Quick, prefer JSON import and never put shell quote characters
 inside an argument. Verify three layers in order: the exact absolute binary returns a version;
-Quick reports 17 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
+Quick reports 20 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
 succeeds on an absolute path under the configured LocalLow root (for example
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`). Do not claim
 that discovery alone proves file access.
@@ -258,7 +278,7 @@ After a connector edit, refresh or start a new chat instead of reusing an old ge
 The copy-paste operator and AI runbook is:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-Tools (17):
+Tools (20):
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -279,6 +299,9 @@ Tools (17):
 | `hwp_lint` | `path` | Advisory official-document notation/structure lint on a markdown file (path only, `--root` sandboxed); returns the hwp-lint-report-v1 findings JSON (`rule_id`/`severity`/`line`/`col`/`message`) |
 | `hwp_certify` | `input`, `policy`, `report` | Run certification and publish the report atomically |
 | `hwp_diff` | `input`, `ref` | Render one page and compare it to a reference PNG |
+| `hwp_merge` | `inputs`, `output` | Combine two or more documents, one Section per input; returns the preservation ledger |
+| `hwp_split` | `input`, `out_dir` | Split into per-Section (or `pages`) fragments; returns the published fragment paths |
+| `hwp_compare` | `a`, `b` | Read-only paragraph/structure diff returning `hwp-compare-report-v1`. Differences are a normal result and never set `isError` — read `identical` |
 
 ## Safety rules (must follow)
 
@@ -298,5 +321,25 @@ Tools (17):
 5. **Prefer `--root` for MCP.** Scope the server to the working directory (repeat the flag
    for every directory the tools may legitimately touch) instead of running unrestricted.
 6. **Keep passwords invocation-local.** Prefer CLI `--password-stdin` over `--password`, and pass
-   MCP passwords only on the individual `hwp_read`, `hwp_convert` or `hwp_render` call. Never put a
-   credential in a report, receipt, generated file, command transcript or persistent environment.
+   MCP passwords only on the individual call that needs one — `hwp_read`, `hwp_convert`,
+   `hwp_render`, `hwp_merge`, `hwp_split` or `hwp_compare`, the only six tools that accept the
+   argument. Never put a credential in a report, receipt, generated file, command transcript or
+   persistent environment.
+7. **Read exit codes by their command's convention.** They deliberately differ, so a single
+   "non-zero means failure" reading is wrong:
+
+   | Command | Convention |
+   |---|---|
+   | `compare` | diff(1): 0 identical, 1 differences found, 2 the run itself failed |
+   | `lint` | always 0; `--strict` exits 1 only on an error-severity finding |
+   | `grep` | 1 when nothing matched (a normal result, not an error) |
+   | `validate`, `new --strict`, `convert --strict`, `merge --strict`, `split --strict` | 0 on success, non-zero on failure |
+
+   MCP has no exit codes: `hwp_compare` returns `identical` and `hwp_grep` returns `count`, both
+   with `isError` false.
+8. **Read the preservation ledger after a document-level write.** `convert`, `merge` and `split`
+   record every unpreservable item in the typed `hwp-preservation-report-v1` ledger — written to
+   `--loss-report {file.json}` on the CLI, and returned in the `preservation` field of every
+   `hwp_merge` / `hwp_split` response. A merge always drops the package passthrough of every
+   input after the first, so `--strict` is opt-in on both commands rather than the default:
+   check the ledger instead of assuming a clean run.

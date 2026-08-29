@@ -37,8 +37,11 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 - **공문서 저작** 표준 프로파일 6종(`official`, `report`, `plan`, `notice`, `minutes`, `press`),
   내장 문서 템플릿 8종(`hwp new --template`), 네이티브 두문·결문 틀, 법정 8단계 항목 부호,
   프리셋 표 서식(`hwp edit --style-tables`), 표기법·구조 린터(`hwp lint`, 10개 규칙)를 제공한다.
+- **문서 단위 작업** 여러 문서를 하나로 합치고(`hwp merge`, 입력 하나가 Section 하나), 하나를
+  구역별·쪽 범위별 조각으로 나누며(`hwp split`), 문서 두 개의 문단·구조 차이를 보고한다
+  (`hwp compare`).
 - **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 Amazon Quick Desktop을 포함한
-  데스크톱 클라이언트에 17개 도구를 노출한다.
+  데스크톱 클라이언트에 20개 도구를 노출한다.
 
 ## 구현 상태
 
@@ -50,8 +53,9 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 | 구조 편집 (문단·표 행/열·셀 병합/분할·필드·이미지·도장) | 구현 완료 (병합 표 포함) |
 | DocumentSpec v1/v2, TemplateSpec v1 합성 | 구현 완료 |
 | 인증(certify) · 구조 코퍼스 게이트(corpus) | 구현 완료 |
+| 문서 단위 작업(`merge`·`split`·`compare`) | 구현 완료. 2026-08-29 한글에서 표본 확인([12-feature-gaps](docs/design/12-feature-gaps.ko.md) GM-3·GM-4·GM-8) |
 | 공문서 저작 (프로파일·템플릿·문서 틀·lint·표 서식) | 구현 완료 |
-| MCP 서버 (17 도구) | 구현 완료 |
+| MCP 서버 (20 도구) | 구현 완료 |
 | 배포용문서 | 읽기 지원 |
 | HTML 변환 | 구조는 markdown과 동등. 글자·문단 모양의 CSS 매핑은 아직 거칠다 |
 | 수식 | 상자+스크립트 근사 렌더 |
@@ -80,17 +84,15 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 [docs/design/12-feature-gaps.ko.md](docs/design/12-feature-gaps.ko.md)에 있다. 그 파일이 상세
 정본이고, 아래 목록은 작업의 윤곽만 보여준다.
 
-1. **문서 단위 작업** 문서 전체를 CLI에서 병합·분할하고 내용을 비교한다(GM-3, GM-4, GM-8).
-   현재 `hwp diff`는 내용이 아니라 렌더된 픽셀을 비교한다.
-2. **에디터 엔진 표면** 임베드형 에디터가 필요로 하지만 이 바이너리가 아직 노출하지 않는 것들이다.
+1. **에디터 엔진 표면** 임베드형 에디터가 필요로 하지만 이 바이너리가 아직 노출하지 않는 것들이다.
    버전이 부여된 세밀한 세그먼트 봉투, 히트 테스트용 렌더 측 배치 좌표, jpeg/webp 래스터 출력,
    그리고 주소 지정 연산과 편집 피드백을 갖춘 typed JSON 편집 연산 채널이 여기에 속한다(GO 계열).
-3. **스펙 커버리지** HWP 5.0 rev1.3 본문은 검수 가능한 Markdown으로 재구성하고(§1~§4.4) 구현과
+2. **스펙 커버리지** HWP 5.0 rev1.3 본문은 검수 가능한 Markdown으로 재구성하고(§1~§4.4) 구현과
    대조하는 감사를 마쳤으며, 그 감사가 찾아낸 정오 항목은
    [19 §1](docs/design/19-hwp5-spec-supplement.ko.md)에 정리했다. 남은 과제는 OWPML / KS X 6101,
    수식, 차트 스펙을 아직 확보하지 못했다는 점과 파서·writer의 비트 단위 값 대조가 부분적으로만
    끝났다는 점이다.
-4. **HTML 충실도** 각주 마커, 병합 셀 colspan/rowspan, 셀 내 블록은 이미 markdown 경로와 같은
+3. **HTML 충실도** 각주 마커, 병합 셀 colspan/rowspan, 셀 내 블록은 이미 markdown 경로와 같은
    수준이다. 남은 것은 글자·문단 모양과 단, 머리말·꼬리말의 CSS 매핑이다.
 
 Windows는 로드맵 항목이 아니다. 현재 ubuntu, macOS, Windows가 모두 필수 CI 게이트다.
@@ -108,7 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 기본 위치는 `~/.local/bin`이다(PATH에 없으면 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.11.0
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.13.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -149,7 +151,7 @@ RHEL/CentOS 7+ 및 그 이후 배포판에서 그대로 돌아간다. 빌드 러
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v0.11.0 --dir ./bin
+  | sh -s -- --tag v0.13.0 --dir ./bin
 ```
 
 플랫폼이 배포 번들을 수집하기 전에 바이너리가 있어야 하므로(Vercel `includeFiles`, Next.js
@@ -267,6 +269,8 @@ hwp mcp --font-dir ./fonts
 | `grep <pattern> <file>` | 문단 텍스트를 grep 방식으로 검색(일치하는 것이 없으면 0이 아닌 종료 코드) |
 | `convert <input> -o <output>` | 포맷 변환. `--to`로 `docx`·`odt`·`csv`·`txt` 출력도 지정할 수 있다. 출력이 `.pdf`면 렌더 경로로 위임. `--strict`는 보존 불가 데이터 발견 시 게시하지 않고 실패 |
 | `render <input> -o <output>` | 페이지를 PNG/SVG(페이지별 파일)·PDF(단일 멀티페이지)로 렌더 |
+| `merge <inputs...> -o <output>` | 문서 두 개 이상을 인자 순서대로 합침(입력 하나가 Section 하나). `--strict`·`--loss-report`는 `convert`와 같음 |
+| `split <input> --out-dir <dir>` | 기본은 Section 하나당 조각 하나. `--pages`는 한글이 저장한 배치 캐시에서 추정한 쪽 범위로 나눔 |
 | `new -o <output>` | markdown, JSON IR, 또는 내장 공문서 템플릿 8종(`--template`, `--list-templates`)에서 새 문서 생성 |
 | `compose <spec> -o <output>` | DocumentSpec v1/v2를 결정론적으로 합성. `--dry-run`으로 쓰지 않고 검증 |
 | `template <template> --data <data> -o <output>` | TemplateSpec/Data v1의 typed AST를 bounded expansion |
@@ -278,6 +282,7 @@ hwp mcp --font-dir ./fonts
 | `certify <input> --policy <file> --report <dir>` | 인증 리포트를 원자적으로 게시. [Certification v1](docs/design/16-certification-v1.ko.md) |
 | `corpus --manifest <file> --report <dir>` | 고정 구조 코퍼스 게이트. [코퍼스 계약](docs/design/17-structured-corpus-v1.ko.md) |
 | `diff <input> --ref <png>` | 렌더 결과를 한글 기준 PNG와 비교(잉크·오프셋·픽셀 오차·MAE) |
+| `compare <a> <b>` | 문서 두 개의 문단·구조 차이를 보고하며 두 입력 모두 수정하지 않음. 종료 코드는 diff(1) 관례(0 동일, 1 차이 발견, 2 실행 실패) |
 | `mcp` | MCP stdio 서버 실행 |
 | `skill export` | Amazon Quick 프로필 자동 탐색을 포함한 번들 에이전트 스킬 내보내기/설치 |
 | `update` | 자체 업데이트(brew 설치본은 `brew upgrade`에 위임) |
@@ -441,7 +446,7 @@ Amazon Quick Desktop)과 번들 에이전트 스킬(`hwp skill export`):
 Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
 [Amazon Quick Desktop 가이드](docs/manual/amazon-quick-desktop.ko.md)에 정리했다.
 
-Amazon Quick Desktop은 로컬 stdio 서버를 실행해 17개 도구를 모두 노출할 수 있다. publish-safe
+Amazon Quick Desktop은 로컬 stdio 서버를 실행해 20개 도구를 모두 노출할 수 있다. publish-safe
 스킬은 활성 프로필에 다음과 같이 설치한다.
 
 ```sh
@@ -458,7 +463,7 @@ Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 인증된
 artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)에
 정리했으며 현재 릴리스에는 HTTP runtime이 없다.
 
-### 노출 도구 (17종)
+### 노출 도구 (20종)
 
 | 도구 | 필수 인자 | 기능 |
 |---|---|---|
@@ -479,6 +484,9 @@ artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/des
 | `hwp_diff` | `input`, `ref` | 지정 페이지를 렌더해 기준 PNG와 비교 |
 | `hwp_validate` | `path` | 구조 검증 `{valid, errors, warnings}` |
 | `hwp_lint` | `path` | 공문서 표기법·구조 규칙 10개를 `hwp-lint-report-v1` 리포트로 반환 |
+| `hwp_merge` | `inputs`, `output` | 문서 두 개 이상을 합치고 보존 손실 원장을 반환 |
+| `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages` 범위)로 나누고 발행된 조각 경로를 반환 |
+| `hwp_compare` | `a`, `b` | 읽기 전용 문단·구조 비교를 `hwp-compare-report-v1`으로 반환. 차이가 있어도 `isError`가 아니므로 `identical`을 읽는다 |
 
 ### 클라이언트 설정 예
 
@@ -504,7 +512,7 @@ artifact 전송 요구사항은 후속 작업용 [Remote MCP transport](docs/des
 1. **읽기** `hwp_read`(`format=json`)가 문서 전체를 IR로 내보낸다. 표·이미지 참조·서식·미해석 레코드까지 담긴다.
 2. **편집** `hwp_edit`로 치환·셀 설정·필드 채우기를 적용한다. IR만 바꾸므로 이미지·서식·opaque 레코드가
    보존되고, 편집된 문단의 줄 배치만 무효화되어 writer가 재합성한다.
-3. **확인** `hwp_render`가 결과 페이지를 PNG로 돌려주어 에이전트가 변경을 눈으로 검증한다. `hwp_diff`로
+2. **확인** `hwp_render`가 결과 페이지를 PNG로 돌려주어 에이전트가 변경을 눈으로 검증한다. `hwp_diff`로
    한글 기준 렌더와 정량 비교할 수 있다.
 
 편집된 hwp는 writer 합성 경로에서 한글 문단 불변식(줄 배치·문단끝 `0x0d`·nchars 등)을 다시 세우므로

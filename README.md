@@ -43,7 +43,10 @@ and in CI.
   `notice`, `minutes`, `press`), eight embedded document templates (`hwp new --template`), native
   두문/결문 frames, the statutory eight-level item marks, preset table styling
   (`hwp edit --style-tables`) and a notation and structure linter (`hwp lint`, ten rules).
-- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 17 tools to
+- **Document-level workflows** Merge several documents into one (`hwp merge`, one Section per
+  input), split one into per-section or per-page-range fragments (`hwp split`), and report the
+  paragraph and structural differences between two documents (`hwp compare`).
+- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 20 tools to
   desktop clients, including Amazon Quick Desktop.
 
 ## Implementation status
@@ -56,8 +59,9 @@ and in CI.
 | Structural editing (paragraphs, table rows/columns, cell merge/split, fields, images, seals) | Implemented, including merged tables |
 | DocumentSpec v1/v2 and TemplateSpec v1 composition | Implemented |
 | Certification (`certify`) and structured corpus gate (`corpus`) | Implemented |
+| Document-level workflows (`merge`, `split`, `compare`) | Implemented; spot-checked in Hancom on 2026-08-29 (see [12-feature-gaps](docs/design/12-feature-gaps.md) GM-3/GM-4/GM-8) |
 | Official-document authoring (profiles, templates, frames, lint, table styling) | Implemented |
-| MCP server (17 tools) | Implemented |
+| MCP server (20 tools) | Implemented |
 | Distribution documents (배포용문서) | Read |
 | HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
@@ -90,18 +94,16 @@ The numbered catalog of unimplemented features, each with its code and specifica
 difficulty estimate, is [docs/design/12-feature-gaps.md](docs/design/12-feature-gaps.md). That file
 is the detailed source; the list below is only the shape of the work.
 
-1. **Document-level workflows** Merge, split and content-compare whole documents from the CLI
-   (GM-3, GM-4, GM-8). `hwp diff` today compares rendered pixels, not content.
-2. **Editor engine surface** What an embeddable editor needs and this binary does not yet expose: a
+1. **Editor engine surface** What an embeddable editor needs and this binary does not yet expose: a
    versioned fine-grained segment envelope, render-side layout geometry for hit-testing, jpeg/webp
    raster output, and a typed JSON edit-ops channel with addressed operations and edit feedback
    (the GO series).
-3. **Specification coverage** The HWP 5.0 rev1.3 body has been reconstructed as reviewable Markdown
+2. **Specification coverage** The HWP 5.0 rev1.3 body has been reconstructed as reviewable Markdown
    (§1 to §4.4) and audited against the implementation; the errata that audit produced are
    catalogued in [19 §1](docs/design/19-hwp5-spec-supplement.md). Still outstanding: the OWPML /
    KS X 6101, equation and chart specifications have not been obtained, and the bit-level
    parser/writer value comparison is only partly done.
-4. **HTML fidelity** Footnote markers, merged-cell colspan/rowspan and in-cell blocks already match
+3. **HTML fidelity** Footnote markers, merged-cell colspan/rowspan and in-cell blocks already match
    the markdown path. What remains is CSS mapping of character and paragraph shapes, columns and
    headers/footers.
 
@@ -121,7 +123,7 @@ The default location is `~/.local/bin` (if it is not on PATH, the script says so
 location or version with arguments or environment variables:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.11.0
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.13.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -165,7 +167,7 @@ to bump:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v0.11.0 --dir ./bin
+  | sh -s -- --tag v0.13.0 --dir ./bin
 ```
 
 Run this from the build command (or a `prebuild` script) so the binary exists before the platform
@@ -286,6 +288,8 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `grep <pattern> <file>` | Search paragraph text with grep semantics (non-zero exit when nothing matches) |
 | `convert <input> -o <output>` | Format conversion; `--to` also targets `docx`, `odt`, `csv` and `txt`. A `.pdf` output delegates to the render path. `--strict` fails without publishing when unpreservable data is found |
 | `render <input> -o <output>` | Render pages to PNG/SVG (one file per page) or PDF (single multi-page) |
+| `merge <inputs...> -o <output>` | Combine two or more documents, one Section per input in argument order. `--strict` and `--loss-report` as in `convert` |
+| `split <input> --out-dir <dir>` | One fragment per Section by default; `--pages` splits on page ranges estimated from the layout cache Hancom saved |
 | `new -o <output>` | Create a document from markdown, from JSON IR, or from one of the eight embedded official-document templates (`--template`, `--list-templates`) |
 | `compose <spec> -o <output>` | Compose DocumentSpec v1/v2 deterministically. `--dry-run` validates without writing |
 | `template <template> --data <data> -o <output>` | Bounded expansion of the TemplateSpec/Data v1 typed AST |
@@ -297,6 +301,7 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `certify <input> --policy <file> --report <dir>` | Certify and publish a report atomically. See [Certification v1](docs/design/16-certification-v1.md) |
 | `corpus --manifest <file> --report <dir>` | Frozen structured corpus gate. See [the corpus contract](docs/design/17-structured-corpus-v1.md) |
 | `diff <input> --ref <png>` | Compare a render against a Hancom reference PNG (ink, offset, pixel difference, MAE) |
+| `compare <a> <b>` | Paragraph and structural differences between two documents, leaving both untouched. Exit codes follow diff(1): 0 identical, 1 differences found, 2 the run failed |
 | `mcp` | Run the MCP stdio server |
 | `skill export` | Export or install the bundled agent skill, including Amazon Quick profile discovery |
 | `update` | Self-update (a brew installation delegates to `brew upgrade`) |
@@ -474,7 +479,7 @@ The copy-paste Windows setup, create/validate acceptance test, reusable agent in
 symptom-driven recovery are in the dedicated
 [Amazon Quick Desktop runbook](docs/manual/amazon-quick-desktop.md).
 
-Amazon Quick Desktop can launch this local stdio server and expose all 17 tools. Install the
+Amazon Quick Desktop can launch this local stdio server and expose all 20 tools. Install the
 publish-safe skill into its active profile with:
 
 ```sh
@@ -492,7 +497,7 @@ Amazon Quick Web cannot launch a local stdio process. Authenticated Streamable H
 isolation and artifact transfer are specified for future work in
 [Remote MCP transport](docs/design/20-remote-mcp.md); no HTTP runtime is included today.
 
-### Exposed tools (17)
+### Exposed tools (20)
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -513,6 +518,9 @@ isolation and artifact transfer are specified for future work in
 | `hwp_diff` | `input`, `ref` | Render one page and compare it to a reference PNG |
 | `hwp_validate` | `path` | Structural validation, `{valid, errors, warnings}` |
 | `hwp_lint` | `path` | Ten official-document notation and structure rules, as an `hwp-lint-report-v1` report |
+| `hwp_merge` | `inputs`, `output` | Combine two or more documents; returns the preservation ledger |
+| `hwp_split` | `input`, `out_dir` | Split per Section (or per `pages` range); returns the published fragment paths |
+| `hwp_compare` | `a`, `b` | Read-only paragraph/structure diff as `hwp-compare-report-v1`. Differences never set `isError` — read `identical` |
 
 ### Client configuration example
 
@@ -541,7 +549,7 @@ at startup.
 2. **Edit** `hwp_edit` applies replacements, cell values and field filling. Because only the IR
    changes, images, formatting and opaque records survive; only the line layout of edited paragraphs
    is invalidated and re-synthesized by the writer.
-3. **Verify** `hwp_render` returns the resulting page as PNG so the agent can check the change
+2. **Verify** `hwp_render` returns the resulting page as PNG so the agent can check the change
    visually, and `hwp_diff` compares it numerically against a Hancom reference render.
 
 An edited hwp goes through the writer's synthesis path, which re-establishes Hancom's paragraph
