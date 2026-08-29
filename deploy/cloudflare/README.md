@@ -185,6 +185,16 @@ Worth recording, because each one only appeared against the deployed service:
    `ourSessionId()` rejects a forged one at the edge and the object is never
    touched. Without this an authenticated caller could hold the whole instance
    ceiling with junk ids and lock real users out.
+
+   A *retired* id — one this service really minted, whose session has since
+   stopped — still reaches the object and starts a container once, because the
+   edge cannot know a session died without asking. That is bounded and was left
+   alone: the id maps to one object, so retrying it cannot create more than one
+   container, obtaining ids is already capped at 5 `initialize` calls a minute,
+   and the container stops on the idle timer (measured: gone within a minute).
+   A forged id was different in kind — invented ids are unlimited. Do not add a
+   per-request KV lookup to close this; it would cost a network hop on every
+   call to save a container that stops by itself.
 5. **Idle containers never stopped.** The platform stops an idle container with
    SIGTERM, and the kernel does not deliver a default-disposition signal to
    PID 1, so `hwp serve` as PID 1 ignored it: `sleepAfter` looked configured and
