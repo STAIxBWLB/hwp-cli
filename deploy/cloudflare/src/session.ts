@@ -47,6 +47,20 @@ export class HwpSession extends Container<Env> {
     return (await this.ctx.storage.get<boolean>('dead')) === true;
   }
 
+  /**
+   * True only for a session that `initialize` actually created and that is still
+   * alive.
+   *
+   * Asking "is it dead?" is not enough: a never-initialized object has no dead
+   * flag either, so a caller who invents a well-formed session id would sail
+   * through and start a fresh container. The id must correspond to a session
+   * this service minted.
+   */
+  async isUsable(): Promise<boolean> {
+    if (await this.isDead()) return false;
+    return (await this.ctx.storage.get<number>('started')) !== undefined;
+  }
+
   /** Records the creation time and arms the maximum-lifetime alarm. */
   async begin(): Promise<void> {
     const started = await this.ctx.storage.get<number>('started');

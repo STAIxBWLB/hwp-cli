@@ -142,7 +142,7 @@ async function handleMcp(
   const stub = sessionStub(env, principal, sessionId);
   if (minted) {
     await stub.begin();
-  } else if (await stub.isDead()) {
+  } else if (!(await stub.isUsable())) {
     return new Response('session not found', { status: 404 });
   }
 
@@ -200,7 +200,7 @@ async function handleFiles(
   }
 
   const stub = sessionStub(env, principal, sessionId);
-  if (await stub.isDead()) {
+  if (!(await stub.isUsable())) {
     return new Response('session not found', { status: 404 });
   }
 
