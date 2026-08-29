@@ -549,7 +549,7 @@ at startup.
 2. **Edit** `hwp_edit` applies replacements, cell values and field filling. Because only the IR
    changes, images, formatting and opaque records survive; only the line layout of edited paragraphs
    is invalidated and re-synthesized by the writer.
-2. **Verify** `hwp_render` returns the resulting page as PNG so the agent can check the change
+3. **Verify** `hwp_render` returns the resulting page as PNG so the agent can check the change
    visually, and `hwp_diff` compares it numerically against a Hancom reference render.
 
 An edited hwp goes through the writer's synthesis path, which re-establishes Hancom's paragraph
