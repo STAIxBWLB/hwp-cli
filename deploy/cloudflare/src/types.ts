@@ -8,6 +8,11 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
 
+  /** Caps how often one principal may start a container (see wrangler.jsonc). */
+  SESSION_LIMITER: RateLimit;
+  /** Caps ordinary traffic once a session exists. */
+  CALL_LIMITER: RateLimit;
+
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   COOKIE_ENCRYPTION_KEY: string;
