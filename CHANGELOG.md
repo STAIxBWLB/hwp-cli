@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.14.0]
+
 **Added**
 
 - The document-level workflows are reachable over MCP: `hwp_merge`, `hwp_split` and `hwp_compare`
