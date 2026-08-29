@@ -135,6 +135,7 @@ hwp --version
 | 플랫폼 | 아카이브 |
 |---|---|
 | Linux x86_64 | `hwp-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `hwp-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Apple Silicon | `hwp-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `hwp-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
 | Windows x86_64 | `hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
