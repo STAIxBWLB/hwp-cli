@@ -43,10 +43,12 @@ export async function handlePat(
       .then(() => undefined),
   );
 
+  // Attach the principal the same way the OAuth provider does: by assigning to
+  // `ctx.props` on the live context. Cloning the context instead would leave
+  // `waitUntil` — which lives on the prototype — behind, and the audit writes in
+  // mcp-api.ts depend on it.
   const principal: Principal = { userId: row.user_id, email: row.email, via: 'pat' };
-  const withProps = Object.assign(Object.create(Object.getPrototypeOf(ctx) as object), ctx, {
-    props: principal,
-  }) as ExecutionContext;
+  (ctx as ExecutionContext & { props?: Principal }).props = principal;
 
-  return mcpApiHandler.fetch(request, env, withProps);
+  return mcpApiHandler.fetch(request, env, ctx);
 }

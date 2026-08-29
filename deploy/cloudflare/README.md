@@ -96,6 +96,26 @@ Then check the negatives, which are the parts worth distrusting:
 
 After testing, confirm the container count returns to zero in the dashboard.
 
+## What is already verified
+
+The container half was built and exercised on an amd64 host before any Cloudflare
+account existed, so the only untested part of this directory is the Worker running
+against real Cloudflare services.
+
+| Checked | Result |
+|---|---|
+| `docker build` from the repo root | 134 MB image; the Rust release build takes well under a minute on a large host |
+| `hwp serve` startup | binds and prints `hwp serve: listening on http://0.0.0.0:8080` |
+| `GET /healthz`, `POST /mcp` initialize, `tools/list` | 200, correct handshake, exactly 20 tools |
+| `GET /mcp` | 405 |
+| `/files` upload, download, and a rejected `.hidden` name | 200, byte-identical, 400 |
+| `hwp_new` into `/work`, then `GET /files/made.hwpx` | created and downloadable |
+| A tool writing outside `/work` | refused, same message the stdio server gives |
+| Process identity and fonts | runs as `hwp` (uid 10001); fonts-nanum present |
+
+`wrangler deploy --dry-run` bundles the Worker (about 52 KiB gzipped) and resolves
+all four bindings plus the container.
+
 ## Cost
 
 Workers Paid is $5/month and includes 25 GiB-hours of container memory, 375 vCPU

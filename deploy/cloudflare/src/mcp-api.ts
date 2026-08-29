@@ -53,6 +53,19 @@ function describe(body: ArrayBuffer): { method: string | null; tool: string | nu
 }
 
 /** `fetch` is required (not optional) so this satisfies the provider's handler type. */
+/**
+ * DNS-rebinding defense (docs/design/20-remote-mcp.md §2.2).
+ *
+ * Absent Origin is allowed, and that is the documented policy rather than an
+ * oversight: MCP clients are not browsers and send no Origin. A *present* Origin
+ * must be this deployment's own, because nothing here is meant to be called from
+ * another site's page.
+ */
+function originAllowed(request: Request, url: URL): boolean {
+  const origin = request.headers.get('origin');
+  return origin === null || origin === url.origin;
+}
+
 export const mcpApiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const principal = principalOf(ctx);
@@ -63,6 +76,9 @@ export const mcpApiHandler = {
     }
 
     const url = new URL(request.url);
+    if (!originAllowed(request, url)) {
+      return new Response('origin not allowed', { status: 403 });
+    }
     if (url.pathname === '/mcp') return handleMcp(request, env, ctx, principal);
     if (url.pathname.startsWith('/files/')) return handleFiles(request, env, principal, url);
     return new Response('not found', { status: 404 });
