@@ -65,7 +65,13 @@ function when(ms: number | null): string {
   return ms ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : 'never';
 }
 
-async function render(env: Env, userId: string, csrf: string, fresh?: string): Promise<string> {
+async function render(
+  env: Env,
+  origin: string,
+  userId: string,
+  csrf: string,
+  fresh?: string,
+): Promise<string> {
   const { results } = await env.DB.prepare(
     `SELECT id, label, created_at, last_used_at FROM pats
       WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
@@ -95,7 +101,7 @@ async function render(env: Env, userId: string, csrf: string, fresh?: string): P
          <p><strong>Copy this now.</strong> It is not shown again.</p>
          <code>${escape(fresh)}</code>
          <p>Point a client at it with:</p>
-         <code>claude mcp add --transport http hwp https://hwp-mcp.staix.workers.dev/mcp --header "Authorization: Bearer ${escape(fresh)}"</code>
+         <code>claude mcp add --transport http hwp ${escape(origin)}/mcp --header "Authorization: Bearer ${escape(fresh)}"</code>
        </div>`
     : '';
 
@@ -145,7 +151,7 @@ export async function handleDashboard(request: Request, env: Env, url: URL): Pro
   if (csrf.header) headers['set-cookie'] = csrf.header;
 
   if (request.method === 'GET' && url.pathname === '/dashboard') {
-    return page(await render(env, userId, csrf.value), headers);
+    return page(await render(env, url.origin, userId, csrf.value), headers);
   }
 
   if (request.method === 'POST') {
@@ -162,7 +168,7 @@ export async function handleDashboard(request: Request, env: Env, url: URL): Pro
       )
         .bind(crypto.randomUUID(), userId, await sha256Hex(token), label, Date.now())
         .run();
-      return page(await render(env, userId, csrf.value, token), headers);
+      return page(await render(env, url.origin, userId, csrf.value, token), headers);
     }
 
     if (url.pathname === '/dashboard/revoke') {
@@ -175,7 +181,7 @@ export async function handleDashboard(request: Request, env: Env, url: URL): Pro
           .bind(Date.now(), id, userId)
           .run();
       }
-      return page(await render(env, userId, csrf.value), headers);
+      return page(await render(env, url.origin, userId, csrf.value), headers);
     }
   }
 

@@ -22,7 +22,7 @@ All four are satisfied; nothing here needs repeating for a first deploy.
 |---|---|
 | Workers Paid | Active. `wrangler containers list` succeeds, which is the authoritative test |
 | API token `hwp-mcp deploy` | Created, scoped to the `entelecheia` account with Workers Scripts, Workers KV Storage, D1 and Containers all at Edit. Verified against `/user/tokens/verify` and stored on the deploy host at `~/.config/hwp-mcp-deploy.env` (mode 600) |
-| Google OAuth client `hwp MCP` | Web application in project `chu-rise`, redirect URI `https://hwp-mcp.staix.workers.dev/callback`. Its id and secret are Worker secrets already |
+| Google OAuth client `hwp MCP` | Web application in project `chu-rise`. **Both** redirect URIs are registered: `https://hwp-mcp.staix.net/callback` and `https://hwp-mcp.staix.workers.dev/callback`. Both are required while two hostnames serve the Worker, because `google-handler.ts` builds the redirect from `url.origin`, so whichever host the user arrived on is the one sent to Google. Its id and secret are Worker secrets already |
 | Budget notification | Cloudflare's auto-created budget alert is already exactly $10 USD to yj.lee@me.com |
 
 Two things about the Google side are worth knowing before anyone else tries to sign in:
@@ -60,9 +60,16 @@ EOF
 
 ## Already provisioned
 
-Account `entelecheia` (`b378caab1c7aea09cb77db791fe5f3f8`), workers.dev subdomain
-`staix`, so the service URL is
-`https://hwp-mcp.staix.workers.dev`.
+Account `entelecheia` (`b378caab1c7aea09cb77db791fe5f3f8`). The service URL is
+`https://hwp-mcp.staix.net`, a Custom Domain on the `staix.net` zone declared in
+`wrangler.jsonc`; Cloudflare owns its DNS record and certificate.
+
+`https://hwp-mcp.staix.workers.dev` still answers and is meant to. Nothing stored
+is tied to a hostname - the OAuth provider keys KV as `client:`/`grant:`/`token:`
+with no origin, and PATs are SHA-256 hashes in D1 - so every registered client,
+grant, token and PAT works on both. Rolling back is deleting the `routes` block
+and deploying, which costs no client anything because none was ever forced off
+the old host.
 
 These exist and their ids are already in `wrangler.jsonc` — do not recreate them:
 
@@ -107,12 +114,12 @@ image. The Worker URL may answer before container routes do.
 ```bash
 # 1. Protocol, from a machine with a browser.
 npx @modelcontextprotocol/inspector
-#    Transport: Streamable HTTP → https://hwp-mcp.staix.workers.dev/mcp
+#    Transport: Streamable HTTP → https://hwp-mcp.staix.net/mcp
 #    Expect: dynamic registration → Google sign-in → initialize returns
 #    Mcp-Session-Id → tools/list shows exactly 20 tools.
 
 # 2. A real client.
-claude mcp add --transport http hwp https://hwp-mcp.staix.workers.dev/mcp
+claude mcp add --transport http hwp https://hwp-mcp.staix.net/mcp
 ```
 
 Then check the negatives, which are the parts worth distrusting:
@@ -129,7 +136,8 @@ After testing, confirm the container count returns to zero in the dashboard.
 
 ## Deployed and verified
 
-Live at `https://hwp-mcp.staix.workers.dev`. The whole path was exercised against
+Live at `https://hwp-mcp.staix.net` (and still at `https://hwp-mcp.staix.workers.dev`).
+The whole path was exercised against
 the real service: dynamic client registration, the consent screen, Google
 sign-in, an access token this Worker issued (never a Google one), `initialize`
 starting a container, `tools/list` returning all 20 tools, `hwp_new` writing into
