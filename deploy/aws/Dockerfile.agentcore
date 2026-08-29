@@ -1,0 +1,82 @@
+# hwp MCP container for AWS Bedrock AgentCore Runtime.
+#
+# Deliberately a separate file from ../cloudflare/container/Dockerfile.slim rather
+# than a build-arg on it. The two differences that matter live in CMD - port 8000
+# and the absence of --files - and an exec-form CMD cannot take an ARG. Making it
+# configurable means shell-form CMD, which puts `sh` at PID 1 and reintroduces the
+# defect #199 and #203 fixed: `hwp serve` handles SIGTERM *because* it is PID 1, and
+# `sh` would not forward it. That file is also pinned by wrangler.jsonc and built by
+# a live deploy, so it is the wrong place to experiment.
+#
+# AgentCore requires arm64 and Streamable HTTP on 0.0.0.0:8000/mcp, and it exposes no
+# other route, so the /files sideband cannot exist there (docs/design/22-remote-mcp-deployment.md
+# §6.1). Documents travel inline through hwp_put_file and hwp_get_file instead.
+#
+# Build and verify (the host may be x86_64; binfmt supplies the emulation):
+#
+#     docker run --privileged --rm tonistiigi/binfmt --install arm64
+#     docker buildx build --platform linux/arm64 -f Dockerfile.agentcore -t hwp-agentcore:arm64 .
+#     docker run -d --name t --platform linux/arm64 -p 8000:8000 hwp-agentcore:arm64
+#     # initialize + tools/list == 22 on :8000; /files/x is NOT 200
+#     time docker stop t    # ~2s, not the 10s kill timeout - the #199 regression check
+#
+# To move to a new release, bump HWP_VERSION and HWP_SHA256 together. The sha256 is
+# published beside the tarball as hwp-<version>-<target>.sha256, and a mismatch fails
+# the build, which is the point.
+
+# The platform is pinned, and through an ARG of our own name rather than buildkit's
+# predefined TARGETPLATFORM, which buildkit overrides so a default there would do
+# nothing. Dropping the pin is worse than the lint it avoids: a build that forgets
+# --platform would produce an image labelled for the host arch holding an aarch64
+# binary, which AgentCore rejects. Override only to test another architecture.
+ARG HWP_PLATFORM=linux/arm64
+
+ARG HWP_VERSION=v0.16.0
+ARG HWP_TARGET=aarch64-unknown-linux-gnu
+ARG HWP_SHA256=54d56d339febd220a444c8fc06a6002095ac95c9d3bdfbcc3fd1b40b70c7a7d1
+
+# Fetch stage. ADD downloads over the builder's own network stack, so no curl and
+# no CA bundle are ever installed; keeping it in a discarded stage also keeps the
+# archive itself out of the shipped layers.
+FROM --platform=${HWP_PLATFORM} debian:bookworm-slim AS fetch
+ARG HWP_VERSION
+ARG HWP_TARGET
+ARG HWP_SHA256
+ADD https://github.com/STAIxBWLB/hwp-cli/releases/download/${HWP_VERSION}/hwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
+RUN set -eux; \
+    echo "${HWP_SHA256}  /tmp/hwp.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin hwp; \
+    chmod +x /usr/local/bin/hwp; \
+    hwp --version; \
+    # A release without `serve` would otherwise fail only at runtime, inside a
+    # container nobody is watching.
+    hwp serve --help >/dev/null
+
+ARG HWP_PLATFORM
+FROM --platform=${HWP_PLATFORM} debian:bookworm-slim
+# Rendering and PDF output need real font files; fonts-nanum matches the font
+# baseline CI already uses (glyf outlines, fast in debug builds).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fonts-nanum \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=fetch /usr/local/bin/hwp /usr/local/bin/hwp
+
+RUN useradd --create-home --uid 10001 hwp \
+ && mkdir -p /work \
+ && chown hwp:hwp /work
+USER hwp
+WORKDIR /work
+
+# No init: `hwp serve` handles SIGTERM itself since 0.15.1, so it stops correctly
+# even as PID 1, where the kernel delivers no signal that still has its default
+# disposition. If HWP_VERSION is ever moved back below 0.15.1, put tini back -
+# without one, an idle-stop signal is discarded and the container bills until it
+# is destroyed outright.
+
+EXPOSE 8000
+# No --files: AgentCore exposes only /mcp, so the sideband has nowhere to live.
+CMD ["hwp", "serve", \
+     "--addr", "0.0.0.0:8000", \
+     "--root", "/work", \
+     "--font-dir", "/usr/share/fonts/truetype/nanum"]

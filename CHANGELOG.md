@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `deploy/aws/Dockerfile.agentcore` builds the arm64 image AWS Bedrock AgentCore requires, pinned to
+  the v0.16.0 release tarball with its published sha256 verified at build time. It serves
+  `0.0.0.0:8000` and omits `--files`, because AgentCore exposes no route but `/mcp`; documents move
+  through `hwp_put_file` and `hwp_get_file` instead. Deploying to AgentCore is separate work.
+
 ## [0.16.0]
 
 **Added**
