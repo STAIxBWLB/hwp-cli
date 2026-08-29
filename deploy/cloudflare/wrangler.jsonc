@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "hwp-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The container runs `hwp serve` from the repository root, so the build context
+  // is the repo, not this directory.
+  "containers": [
+    {
+      "class_name": "HwpSession",
+      "image": "./container/Dockerfile",
+      "image_build_context": "../..",
+      // 1/4 vCPU, 1 GiB, 4 GB disk. Rendering is the memory-hungry path; raise
+      // this if the diagnostic corpus ever OOMs.
+      "instance_type": "basic",
+      // Budget guard: the owner's cap is $10/month and Workers Paid includes
+      // 25 GiB-hours of container memory.
+      "max_instances": 5
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [{ "name": "HWP_SESSION", "class_name": "HwpSession" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HwpSession"] }],
+
+  // The OAuth provider library requires this exact binding name.
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "PLACEHOLDER_RUN_WRANGLER_KV_NAMESPACE_CREATE" }],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hwp-mcp",
+      "database_id": "PLACEHOLDER_RUN_WRANGLER_D1_CREATE"
+    }
+  ],
+
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+
+  "observability": { "enabled": true }
+}

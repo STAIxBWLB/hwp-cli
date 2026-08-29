@@ -1,0 +1,36 @@
+/**
+ * Operational limits, mirroring docs/design/20-remote-mcp.md §7 and doc 22 §3.2.
+ *
+ * The body cap is one byte below the 1 MiB the container's `hwp serve` enforces,
+ * so a request this Worker accepts can never be the one the container rejects.
+ */
+
+export const MAX_BODY_BYTES = 1024 * 1024 - 1;
+
+/** Default tool deadline (doc 20 §7). */
+export const TOOL_DEADLINE_MS = 120_000;
+
+/** Deadline for rendering, conversion and certification (doc 20 §7). */
+export const SLOW_TOOL_DEADLINE_MS = 300_000;
+
+/** Tools that get the longer deadline. */
+export const SLOW_TOOLS = new Set(['hwp_render', 'hwp_convert', 'hwp_certify', 'hwp_diff']);
+
+/** Idle lifetime before the container is stopped and the session invalidated. */
+export const IDLE_SLEEP_AFTER = '10m';
+
+/** Maximum session lifetime; after this the client must reinitialize (doc 20 §7). */
+export const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * Workspace file names. The charset excludes `/` and a leading `.`, so a name
+ * that passes cannot traverse out of the workspace. Percent-escapes are not
+ * decoded anywhere in the chain; `hwp serve` applies the identical rule.
+ */
+export const FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** Personal access token prefix. Recognised before the OAuth provider sees the request. */
+export const PAT_PREFIX = 'hwp_pat_';
+
+/** The single scope this service issues. */
+export const MCP_SCOPE = 'mcp:tools';

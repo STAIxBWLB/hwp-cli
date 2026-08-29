@@ -1,0 +1,23 @@
+# The Cloudflare container image builds from the repository root (its Dockerfile
+# needs the whole Cargo workspace), so everything the build does not need must be
+# excluded here or it is uploaded as build context. `target/` alone is ~17 GB.
+
+target/
+**/target/
+
+# Never ship documents or fonts into an image.
+fixtures/
+fonts/
+corpus/
+docs/spec.txt
+
+# Tooling and local state.
+.git/
+.github/
+.planning/
+node_modules/
+**/node_modules/
+deploy/cloudflare/.wrangler/
+deploy/cloudflare/.dev.vars
+Formula/
+*.log
