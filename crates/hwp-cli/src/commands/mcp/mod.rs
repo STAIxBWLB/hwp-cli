@@ -732,6 +732,64 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// base64 문자열의 구조를 검사한다.
+///
+/// 공유 디코더는 `=`와 공백을 건너뛰고 남는 비트를 버리므로 `"A"`나 `"===="` 같은
+/// 입력이 빈 벡터로 조용히 통과한다. 전송 도구에서 그것은 0바이트 파일을 업로드
+/// 성공으로 보고한다는 뜻이라 여기서 먼저 막는다.
+///
+/// 잡아내지 못하는 것도 적어 둔다. 4문자 경계에 딱 맞게 잘린 페이로드는 인코딩만
+/// 봐서는 온전한 것과 구분할 수 없다. 그래서 두 도구 모두 영수증에 sha256을 담는다.
+fn validate_base64_structure(text: &str) -> Result<(), String> {
+    let compact: Vec<u8> = text
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    let padding = compact.iter().rev().take_while(|&&b| b == b'=').count();
+    if padding > 2 {
+        return Err("잘못된 base64: 패딩이 2자를 넘습니다".to_string());
+    }
+    let payload = &compact[..compact.len() - padding];
+    if payload.contains(&b'=') {
+        return Err("잘못된 base64: 패딩이 끝이 아닌 위치에 있습니다".to_string());
+    }
+    if !compact.is_empty() && !compact.len().is_multiple_of(4) {
+        return Err(format!(
+            "잘못된 base64: 공백을 제외한 길이가 4의 배수가 아닙니다 ({}자)",
+            compact.len()
+        ));
+    }
+    // 길이 %4 == 1 은 어떤 바이트열도 만들어낼 수 없는 형태다.
+    if payload.len() % 4 == 1 {
+        return Err("잘못된 base64: 잘린 페이로드입니다".to_string());
+    }
+    Ok(())
+}
+
+/// 파일 경로를 `file://` URI로 만든다.
+///
+/// `format!("file://{}", path.display())`는 공백·`#`·비ASCII·윈도우 드라이브 경로에서
+/// 유효한 URI가 아니다. MCP 클라이언트가 resource `uri`를 URI로 파싱하면 멀쩡한 blob을
+/// 거절하거나 잘못 해석할 수 있다.
+fn file_uri(path: &Path) -> String {
+    const UNRESERVED_EXTRA: &[u8] = b"-._~/";
+    let text = path.display().to_string().replace('\\', "/");
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || UNRESERVED_EXTRA.contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    // 윈도우의 `C:/...`처럼 슬래시로 시작하지 않는 경로는 빈 authority 뒤에 루트가 온다.
+    if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        format!("file:///{encoded}")
+    }
+}
+
 /// 확장자로 추정한 MIME 타입. 모르면 octet-stream이다.
 fn mime_for(path: &Path) -> &'static str {
     match path
@@ -790,6 +848,7 @@ fn tool_put_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
             MAX_INLINE_CONTENT_BYTES / 1024
         ));
     }
+    validate_base64_structure(content)?;
     let bytes = hwp_convert::base64::decode(content)?;
     // decode는 공백과 패딩을 무시하므로 위 검사만으로는 복호 크기를 보장하지 못한다.
     if bytes.len() > MAX_INLINE_CONTENT_BYTES {
@@ -841,19 +900,35 @@ fn tool_get_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
     if let Some(unknown) = object.keys().find(|key| key.as_str() != "path") {
         return Err(format!("알 수 없는 hwp_get_file 인자: {unknown}"));
     }
+    use std::io::Read as _;
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
-    let size = std::fs::metadata(&path)
-        .map_err(|error| format!("{}: {error}", path.display()))?
-        .len();
-    if size > MAX_INLINE_CONTENT_BYTES as u64 {
-        return Err(format!(
-            "파일이 인라인 상한을 넘습니다: {size}바이트 (상한 {}바이트). \
-             파일은 워크스페이스에 그대로 있으니 더 작은 포맷으로 변환하거나 \
-             Tier A의 /files 경로로 받으세요.",
-            MAX_INLINE_CONTENT_BYTES
-        ));
+    let file =
+        std::fs::File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    // 일반 파일만 받는다. 문자 장치는 metadata가 0바이트라고 보고하므로 크기 검사만
+    // 믿으면 /dev/zero 같은 경로에서 읽기가 끝나지 않는다(root 제한이 없는 stdio에서).
+    if !metadata.is_file() {
+        return Err(format!("일반 파일이 아닙니다: {}", path.display()));
     }
-    let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let too_big = format!(
+        "파일이 인라인 상한을 넘습니다 (상한 {}바이트). \
+         파일은 워크스페이스에 그대로 있으니 더 작은 포맷으로 변환하거나 \
+         Tier A의 /files 경로로 받으세요.",
+        MAX_INLINE_CONTENT_BYTES
+    );
+    if metadata.len() > MAX_INLINE_CONTENT_BYTES as u64 {
+        return Err(too_big);
+    }
+    // 읽기 자체도 묶는다. metadata 이후에 파일이 자라도 상한을 넘길 수 없다.
+    let mut bytes = Vec::new();
+    file.take(MAX_INLINE_CONTENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if bytes.len() > MAX_INLINE_CONTENT_BYTES {
+        return Err(too_big);
+    }
     let summary = serde_json::to_string_pretty(&json!({
         "path": path.display().to_string(),
         "bytes": bytes.len(),
@@ -865,7 +940,7 @@ fn tool_get_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
         json!({
             "type": "resource",
             "resource": {
-                "uri": format!("file://{}", path.display()),
+                "uri": file_uri(&path),
                 "mimeType": mime_for(&path),
                 "blob": hwp_convert::base64::encode(&bytes),
             }
@@ -5180,5 +5255,74 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 공유 디코더는 `"A"`와 `"===="`를 빈 벡터로 통과시킨다. 전송 도구에서 그것은
+    /// 0바이트 파일을 업로드 성공으로 보고한다는 뜻이므로 구조 검사가 먼저 막는다.
+    #[test]
+    fn 인라인_업로드_잘못된_base64_거절() {
+        let root = temp_file("inline-b64");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ctx_with_roots(vec![root.canonicalize().unwrap()]);
+
+        // 디코더 자체는 이것들을 조용히 통과시킨다는 사실을 먼저 고정한다.
+        assert_eq!(hwp_convert::base64::decode("A").unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            hwp_convert::base64::decode("====").unwrap(),
+            Vec::<u8>::new()
+        );
+
+        for bad in ["A", "====", "QQ", "QUJD="] {
+            let destination = root.join(format!("bad-{}.bin", bad.len()));
+            let error = tool_put_file(
+                &json!({"name": destination.display().to_string(), "content": bad}),
+                &ctx,
+            )
+            .unwrap_err();
+            assert!(error.contains("잘못된 base64"), "{bad}: {error}");
+            assert!(!destination.exists(), "{bad}: 파일이 생기면 안 됩니다");
+        }
+
+        // 정상 입력은 그대로 통과한다.
+        assert!(validate_base64_structure("QUJD").is_ok());
+        assert!(validate_base64_structure("QQ==").is_ok());
+        assert!(validate_base64_structure("QUJ=").is_ok());
+        assert!(validate_base64_structure("QUJD\nRUZH").is_ok());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 문자 장치는 metadata가 0바이트라고 보고하므로, 크기 검사만 믿으면 읽기가
+    /// 끝나지 않는다. root 제한이 없는 stdio에서 실제로 도달 가능한 경로였다.
+    #[test]
+    #[cfg(unix)]
+    fn 인라인_다운로드_일반_파일만() {
+        // roots가 비어 있으면 checked_read_path가 아무 경로나 통과시킨다 — 이것이
+        // 이 검사가 필요한 조건 그대로다.
+        let ctx = ctx_with_roots(Vec::new());
+        let error = tool_get_file(&json!({"path": "/dev/zero"}), &ctx)
+            .expect_err("/dev/zero 를 읽으려 시도했습니다");
+        assert!(error.contains("일반 파일이 아닙니다"), "{error}");
+    }
+
+    /// resource uri는 클라이언트가 URI로 파싱하므로 공백·비ASCII·윈도우 경로에서도
+    /// 유효해야 한다.
+    #[test]
+    fn 인라인_다운로드_uri_인코딩() {
+        assert_eq!(
+            file_uri(Path::new("/work/보고서 최종.hwpx")),
+            "file:///work/%EB%B3%B4%EA%B3%A0%EC%84%9C%20%EC%B5%9C%EC%A2%85.hwpx"
+        );
+        assert_eq!(
+            file_uri(Path::new("/work/a#b.pdf")),
+            "file:///work/a%23b.pdf"
+        );
+        // 슬래시로 시작하지 않는 경로는 빈 authority 뒤에 루트를 세운다.
+        let windows = file_uri(Path::new(r"C:\work\out.hwpx"));
+        assert!(
+            windows == "file:///C%3A/work/out.hwpx",
+            "윈도우 경로 URI: {windows}"
+        );
     }
 }
