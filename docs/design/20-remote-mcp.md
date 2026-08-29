@@ -249,6 +249,14 @@ security tests pass without recreating an unsafe framework.
 6. **Operations:** define SLOs, capacity, key rotation, incident response, deletion verification,
    backups if any, and cost controls before production enablement.
 
+**Deployment tiers.** [Doc 22](22-remote-mcp-deployment.md) specifies how items 1, 3, and 4 above
+are built and hosted: a shared `hwp serve` HTTP adapter over the extracted protocol core, the
+dependency decision this document's §8 requires, and two hosting tiers (Cloudflare Workers plus
+Containers, and AgentCore behind an Amazon Quick connector). It records two amendments to this
+document: §3.1's "library-visible module" becomes a binary-internal module shared by both adapters,
+and §10's writable-path failure criterion is narrowed for a single-session microVM workspace. The
+artifact model of §3.2 remains required and unimplemented.
+
 ## 10. Acceptance and failure criteria
 
 A Remote MCP implementation is acceptable only when all of the following are demonstrated:
