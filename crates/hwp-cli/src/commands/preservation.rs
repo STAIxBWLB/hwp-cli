@@ -197,6 +197,17 @@ pub(crate) fn inspect_document_merge_losses(
                     *count,
                 );
             }
+            hwp_convert::document_merge::MergeLoss::SectionBorderFillRefUnresolvable {
+                count,
+                ..
+            } => {
+                record_changed(
+                    &mut report,
+                    PreservationCode::SectionBorderFillRefUnresolvable,
+                    PreservationResourceKind::Control,
+                    *count,
+                );
+            }
         }
     }
     report
@@ -632,6 +643,31 @@ mod tests {
     #[test]
     fn document_merge_no_losses_stays_lossless() {
         assert!(inspect_document_merge_losses(&[]).is_lossless());
+    }
+
+    /// #180: an unshiftable non-numeric `borderFillIDRef` passthrough is a
+    /// recorded non-target change on the section's control, not a removal.
+    #[test]
+    fn document_merge_unresolvable_border_fill_ref_becomes_one_typed_changed_event() {
+        let losses = vec![MergeLoss::SectionBorderFillRefUnresolvable {
+            input_index: 1,
+            count: 2,
+        }];
+        let report = inspect_document_merge_losses(&losses);
+        assert_eq!(report.events.len(), 1);
+        assert_eq!(
+            report.events[0].code,
+            PreservationCode::SectionBorderFillRefUnresolvable
+        );
+        assert_eq!(report.events[0].resource, PreservationResourceKind::Control);
+        assert_eq!(
+            report.events[0].disposition,
+            PreservationDisposition::ChangedNonTarget
+        );
+        assert_eq!(report.events[0].count, 2);
+        // Content-free: the malformed attribute value never leaks.
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(serialized.contains("section_border_fill_ref_unresolvable"));
     }
 
     #[test]

@@ -41,6 +41,12 @@ pub enum PreservationCode {
     /// ledgers it for audit but excludes it from `--strict` refusal (#174).
     PageRangeParagraphRounded,
     PictureControlRemoved,
+    /// An hwpx-origin `hwp merge` input's `<hp:pageBorderFill>` passthrough
+    /// carried a `borderFillIDRef` that is present but not numeric, so the
+    /// tier-2 graft could not shift it onto the merged border-fill table and
+    /// passed it through verbatim — the reference now resolves against the
+    /// wrong table (#180).
+    SectionBorderFillRefUnresolvable,
 }
 
 impl PreservationCode {
@@ -64,6 +70,7 @@ impl PreservationCode {
             Self::OpaqueControlUnrepresentable => "opaque_control_unrepresentable",
             Self::PageRangeParagraphRounded => "page_range_paragraph_rounded",
             Self::PictureControlRemoved => "picture_control_removed",
+            Self::SectionBorderFillRefUnresolvable => "section_border_fill_ref_unresolvable",
         }
     }
 }
@@ -229,6 +236,103 @@ impl WriteReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    /// Every `PreservationCode` variant, exhaustively. The trailing `match`
+    /// has no wildcard arm on purpose: adding a variant without extending
+    /// this list is a compile error, so the schema-locking test below cannot
+    /// silently miss a new code (#179).
+    fn every_preservation_code() -> Vec<PreservationCode> {
+        use PreservationCode::*;
+        let all = [
+            BinaryAssetRemoved,
+            BinaryRelationshipRemoved,
+            ControlMetadataUnrepresentable,
+            ControlRemoved,
+            DocumentMetadataSuperseded,
+            DocumentPackagePassthroughDropped,
+            GsoHeaderUnrepresentable,
+            GsoObjectIdRenumbered,
+            GsoShapeUnrepresentable,
+            HwpContainerStorageRemoved,
+            HwpContainerStreamRemoved,
+            HwpOpaqueStreamChanged,
+            HwpxOpaqueEntryChanged,
+            HwpxPackageEntryRemoved,
+            MetadataValueRemoved,
+            OpaqueControlUnrepresentable,
+            PageRangeParagraphRounded,
+            PictureControlRemoved,
+            SectionBorderFillRefUnresolvable,
+        ];
+        for code in all {
+            match code {
+                BinaryAssetRemoved
+                | BinaryRelationshipRemoved
+                | ControlMetadataUnrepresentable
+                | ControlRemoved
+                | DocumentMetadataSuperseded
+                | DocumentPackagePassthroughDropped
+                | GsoHeaderUnrepresentable
+                | GsoObjectIdRenumbered
+                | GsoShapeUnrepresentable
+                | HwpContainerStorageRemoved
+                | HwpContainerStreamRemoved
+                | HwpOpaqueStreamChanged
+                | HwpxOpaqueEntryChanged
+                | HwpxPackageEntryRemoved
+                | MetadataValueRemoved
+                | OpaqueControlUnrepresentable
+                | PageRangeParagraphRounded
+                | PictureControlRemoved
+                | SectionBorderFillRefUnresolvable => {}
+            }
+        }
+        all.to_vec()
+    }
+
+    /// #179: the published schema's `code` enum must list exactly the wire
+    /// strings of every `PreservationCode`. Adding a variant without updating
+    /// `schemas/preservation-report-v1.schema.json` fails this test, and the
+    /// exhaustive list above fails to compile until the variant is named.
+    #[test]
+    fn schema_code_enum_matches_every_preservation_code_wire_string() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/preservation-report-v1.schema.json"
+        ))
+        .unwrap();
+        let schema_codes: Vec<&str> = schema["$defs"]["event"]["properties"]["code"]["enum"]
+            .as_array()
+            .expect("schema $defs/event code enum")
+            .iter()
+            .map(|value| value.as_str().expect("string enum entry"))
+            .collect();
+        assert!(
+            schema_codes.windows(2).all(|pair| pair[0] < pair[1]),
+            "schema code enum must stay sorted: {schema_codes:?}"
+        );
+        let schema_set: BTreeSet<&str> = schema_codes.iter().copied().collect();
+        let wire_strings: BTreeSet<&str> = every_preservation_code()
+            .iter()
+            .map(|code| code.as_str())
+            .collect();
+        assert_eq!(
+            schema_set, wire_strings,
+            "schemas/preservation-report-v1.schema.json code enum drifted from PreservationCode"
+        );
+    }
+
+    /// Every variant's serde wire string equals its `as_str()` — the two
+    /// spellings can never drift apart.
+    #[test]
+    fn serde_wire_string_matches_as_str_for_every_code() {
+        for code in every_preservation_code() {
+            assert_eq!(
+                serde_json::to_string(&code).unwrap(),
+                format!("\"{}\"", code.as_str()),
+            );
+        }
+    }
 
     /// D-14: every pre-existing code's wire string is a published contract —
     /// this plan's four new variants must be additive only. Locks each
@@ -308,6 +412,19 @@ mod tests {
         assert_eq!(
             PreservationCode::PageRangeParagraphRounded.as_str(),
             "page_range_paragraph_rounded"
+        );
+    }
+
+    /// The #180 variant and its snake_case wire string.
+    #[test]
+    fn section_border_fill_ref_unresolvable_has_the_expected_wire_string() {
+        assert_eq!(
+            PreservationCode::SectionBorderFillRefUnresolvable.as_str(),
+            "section_border_fill_ref_unresolvable"
+        );
+        assert_eq!(
+            serde_json::to_string(&PreservationCode::SectionBorderFillRefUnresolvable).unwrap(),
+            "\"section_border_fill_ref_unresolvable\""
         );
     }
 

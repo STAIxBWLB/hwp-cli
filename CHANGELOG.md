@@ -38,7 +38,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `hwp merge` (tier 2) now shifts section-level border-fill references (hwp5
   `page_border_fills_raw` plus the parallel `extras` copies, and hwpx `borderFillIDRef`
   passthrough) by the border-fill offset, so merged-in page borders resolve against their own
-  table; malformed non-numeric references pass through unchanged (#171).
+  table (#171).
 
 - `hwp merge` no longer consumes object ids for tables with truncated `common_data` payloads,
   so `GsoObjectIdRenumbered` counts and id sequences stay accurate (#172).
@@ -59,6 +59,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - `hwp split` removes stale `stem-NNN.ext` fragments from previous larger runs after a
   successful publication, and fragment names now use the lowercased input extension (#177).
+
+- The `preservation-report-v1` schema now enumerates every preservation code the CLI emits
+  (the merge/split codes `document_metadata_superseded`, `document_package_passthrough_dropped`,
+  `gso_object_id_renumbered`, and `page_range_paragraph_rounded` were missing), with a locking
+  test that fails CI if the schema and the `PreservationCode` wire strings drift apart again
+  (#179).
+
+- `hwp merge` (tier 2) now records a typed `section_border_fill_ref_unresolvable` loss event
+  when a section's hwpx `borderFillIDRef` passthrough carries a non-numeric value that cannot
+  be shifted, instead of silently leaving it pointing at the wrong border-fill table (#180).
 
 ## [0.12.1]
 
