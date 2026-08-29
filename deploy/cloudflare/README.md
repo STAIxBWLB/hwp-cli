@@ -159,7 +159,7 @@ Negative cases, all confirmed on the deployed service:
 
 Five consecutive full round trips pass with no flakiness.
 
-### Three defects this verification caught
+### Five defects this verification caught
 
 Worth recording, because each one only appeared against the deployed service:
 
@@ -177,6 +177,21 @@ Worth recording, because each one only appeared against the deployed service:
    own alarm for sleep and activity bookkeeping; intercepting it ran the
    8-hour-cap teardown seconds after a session started. Maximum lifetime is
    checked on the request path now, and nothing competes with the base class.
+4. **Answering 404 still cost a container.** Defect 1's fix was incomplete:
+   `isUsable()` runs *inside* the object, and merely reaching the object starts a
+   container, so a forged id was rejected correctly and billed anyway. Measured
+   directly — one `404` for an invented id, and a container named after that id
+   appeared within 25 seconds. Session ids now carry an HMAC of themselves, so
+   `ourSessionId()` rejects a forged one at the edge and the object is never
+   touched. Without this an authenticated caller could hold the whole instance
+   ceiling with junk ids and lock real users out.
+5. **Idle containers never stopped.** The platform stops an idle container with
+   SIGTERM, and the kernel does not deliver a default-disposition signal to
+   PID 1, so `hwp serve` as PID 1 ignored it: `sleepAfter` looked configured and
+   did nothing. Nine containers had been running for close to four hours. The
+   image now runs tini as its init, which forwards the signal; `docker kill
+   --signal=TERM` exits the container in about a second, where before it stayed
+   up indefinitely.
 
 ## What is already verified
 
@@ -212,6 +227,28 @@ sleeps. `SESSION_LIMITER` allows 5 `initialize` calls per person per minute,
 capping how fast new containers can be created. `max_instances` is 20, a
 backstop rather than a budget control: set too low it turns ordinary concurrent
 use into capacity errors. The billing notification fires at $10 regardless.
+
+`sleepAfter` only works because the image runs tini as its init. The platform
+stops an idle container by sending SIGTERM, and the kernel does not deliver a
+signal with its default disposition to PID 1 - so with `hwp serve` as PID 1 the
+stop was silently discarded and containers stayed awake indefinitely. Nine of
+them ran for close to four hours before this was caught, which at 1 GiB each
+would have spent the monthly allowance in under three hours. If a future change
+touches the entrypoint, re-run the check below.
+
+To check that idle sessions really stop, watch the running instance count fall to
+zero within a few minutes of the last request:
+
+```bash
+curl -s "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/applications/$APP_ID/instances" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  | jq '[.result.instances[] | select(.status.state == "running")] | length'
+```
+
+A container that is still running ten minutes after its last request means the
+idle stop is not landing; `wrangler containers list` shows the same count. The
+image-level check is faster: `docker kill --signal=TERM <id>` must exit the
+container within a second or two.
 
 Logs and the audit table were checked against a call carrying a password and a
 document path: neither the password, the path, the file name, nor the access
