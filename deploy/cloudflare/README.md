@@ -86,7 +86,13 @@ npm ci
 npx wrangler deploy
 ```
 
-The first deploy takes several minutes: it compiles the Rust workspace inside the container image.
+The image is built from the published release tarball, so a deploy downloads a binary rather than
+compiling one: the build finishes in seconds and the image is 129 MB. Moving to a new `hwp` release
+means bumping `HWP_VERSION` and `HWP_SHA256` together in `container/Dockerfile.slim` - the checksum
+is published next to the tarball as `hwp-<version>-<target>.sha256`, and a mismatch fails the build.
+To try a change that is not released yet, point `wrangler.jsonc` at `container/Dockerfile` instead
+(source build, `image_build_context` `../..`, several minutes for the Rust compile).
+
 Rebuilding a secret is only needed if one is rotated:
 
 ```bash
@@ -225,7 +231,8 @@ counts, and a *hash* of the session id.
 | `src/users.ts` | The user upsert keyed on the Google `sub` claim |
 | `src/audit.ts` | Metadata-only audit writes |
 | `src/limits.ts` | Every limit in one place, mirroring doc 20 §7 |
-| `container/Dockerfile` | Builds `hwp` and runs `hwp serve` |
+| `container/Dockerfile.slim` | The deployed image: pinned release tarball, checksum-verified |
+| `container/Dockerfile` | Source build, for testing an unreleased change |
 | `schema.sql` | D1 tables |
 
 ## Known scope

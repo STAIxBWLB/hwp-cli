@@ -1,6 +1,7 @@
-# The Cloudflare container image builds from the repository root (its Dockerfile
-# needs the whole Cargo workspace), so everything the build does not need must be
-# excluded here or it is uploaded as build context. `target/` alone is ~17 GB.
+# Only the source-build image (deploy/cloudflare/container/Dockerfile) uses the
+# repository root as its build context; the deployed slim image downloads a
+# released binary and needs none of it. Everything that build does not need must
+# be excluded here or it is uploaded as build context. `target/` alone is ~17 GB.
 
 target/
 **/target/

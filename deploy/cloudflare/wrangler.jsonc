@@ -10,8 +10,12 @@
   "containers": [
     {
       "class_name": "HwpSession",
-      "image": "./container/Dockerfile",
-      "image_build_context": "../..",
+      // Built from the published release tarball, not from source: the image is
+      // smaller, the build is seconds rather than a Rust compile, and the binary
+      // that ships is the one users install. ../Dockerfile still builds from
+      // source when a change has to be tried before it is released.
+      "image": "./container/Dockerfile.slim",
+      "image_build_context": "./container",
       // 1/4 vCPU, 1 GiB, 4 GB disk. Rendering is the memory-hungry path; raise
       // this if the diagnostic corpus ever OOMs.
       "instance_type": "basic",
