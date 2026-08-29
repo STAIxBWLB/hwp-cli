@@ -54,6 +54,7 @@ pub fn target_triple(os: &str, arch: &str) -> Option<(&'static str, Archive)> {
         ("macos", "aarch64") => Some(("aarch64-apple-darwin", Archive::TarGz)),
         ("macos", "x86_64") => Some(("x86_64-apple-darwin", Archive::TarGz)),
         ("linux", "x86_64") => Some(("x86_64-unknown-linux-gnu", Archive::TarGz)),
+        ("linux", "aarch64") => Some(("aarch64-unknown-linux-gnu", Archive::TarGz)),
         ("windows", "x86_64") => Some(("x86_64-pc-windows-msvc", Archive::Zip)),
         _ => None,
     }
@@ -456,7 +457,10 @@ mod tests {
             Some(("x86_64-pc-windows-msvc", Archive::Zip))
         );
         // 릴리스가 없는 조합은 소스 설치로 안내해야 하므로 None이어야 한다.
-        assert_eq!(target_triple("linux", "aarch64"), None);
+        assert_eq!(
+            target_triple("linux", "aarch64"),
+            Some(("aarch64-unknown-linux-gnu", Archive::TarGz))
+        );
         assert_eq!(target_triple("freebsd", "x86_64"), None);
     }
 

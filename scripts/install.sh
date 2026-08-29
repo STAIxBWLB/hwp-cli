@@ -40,6 +40,7 @@ case "$os/$arch" in
   Darwin/arm64)  target="aarch64-apple-darwin" ;;
   Darwin/x86_64) target="x86_64-apple-darwin" ;;
   Linux/x86_64)  target="x86_64-unknown-linux-gnu" ;;
+  Linux/aarch64) target="aarch64-unknown-linux-gnu" ;;
   *) die "사전 빌드 바이너리가 없는 플랫폼입니다: $os/$arch
   소스에서 설치하세요: cargo install --git https://github.com/$REPO hwp-cli" ;;
 esac

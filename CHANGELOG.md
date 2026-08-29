@@ -10,6 +10,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- A `aarch64-unknown-linux-gnu` release archive, cross-built against the same glibc 2.17 floor as
+  the x86_64 Linux one, so `install.sh` and `hwp update` now serve arm64 Linux instead of sending it
+  to a source build. Homebrew is unchanged: it does not run on arm64 Linux.
+
 ## [0.15.1]
 
 **Fixed**
