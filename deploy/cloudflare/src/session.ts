@@ -58,15 +58,27 @@ export class HwpSession extends Container<Env> {
    */
   async isUsable(): Promise<boolean> {
     if (await this.isDead()) return false;
-    return (await this.ctx.storage.get<number>('started')) !== undefined;
+    const started = await this.ctx.storage.get<number>('started');
+    if (started === undefined) return false;
+    if (Date.now() - started > MAX_SESSION_MS) {
+      await this.terminate();
+      return false;
+    }
+    return true;
   }
 
-  /** Records the creation time and arms the maximum-lifetime alarm. */
+  /**
+   * Records the creation time.
+   *
+   * Deliberately does not schedule an alarm. The Container base class runs its
+   * own alarm for sleep and activity bookkeeping, so setting one here clobbers
+   * its schedule and overriding `alarm()` hijacks its callback — which is how an
+   * 8-hour cap ended up terminating sessions seconds after they started. Maximum
+   * lifetime is enforced on the request path instead, in `isUsable()`.
+   */
   async begin(): Promise<void> {
-    const started = await this.ctx.storage.get<number>('started');
-    if (started === undefined) {
+    if ((await this.ctx.storage.get<number>('started')) === undefined) {
       await this.ctx.storage.put('started', Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + MAX_SESSION_MS);
     }
   }
 
@@ -108,19 +120,14 @@ export class HwpSession extends Container<Env> {
     }
   }
 
-  /** Idempotent: stops the container, kills the alarm, and marks the session dead. */
+  /** Idempotent: stops the container and marks the session dead. */
   async terminate(): Promise<void> {
     await this.markDead();
-    await this.ctx.storage.deleteAlarm();
     try {
       await this.destroy();
     } catch {
       // Already gone; the dead flag is what callers read.
     }
-  }
-
-  override async alarm(): Promise<void> {
-    await this.terminate();
   }
 
   override onStop(): void | Promise<void> {
