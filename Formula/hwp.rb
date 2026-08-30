@@ -10,24 +10,24 @@ class Hwp < Formula
   # brew style: desc 는 formula 이름(hwp)으로 시작하면 안 된다.
   desc "한글 문서(HWP 5.0·HWPX) 읽기·변환·렌더·편집 단일 바이너리"
   homepage "https://github.com/STAIxBWLB/hwp-cli"
-  version "0.16.0"
+  version "0.16.1"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
     on_arm do
       url "https://github.com/STAIxBWLB/hwp-cli/releases/download/v#{version}/hwp-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "c442bff8945bdc6628c25697fb5f8f29378e41346990921aeb118055df4ba0f4"
+      sha256 "604a1c0598b63befffb46efc866d3994280e736db7a8f793ff007780447c8c87"
     end
     on_intel do
       url "https://github.com/STAIxBWLB/hwp-cli/releases/download/v#{version}/hwp-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "f1077ad655430bac6bd8890be3f20879ecbbe663b0c0ec039d7ba5c444d4eb76"
+      sha256 "1058b9092ccf811de72768ebb83cb892b0a0102a31f5f26cb2be7c6627fca18c"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/STAIxBWLB/hwp-cli/releases/download/v#{version}/hwp-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "633fefcf0d23af6fe5d727f76284565021f185b8b63176424d5beb4f32a5cba6"
+      sha256 "dd7145b73dd3d3b20aa1386e691e5ed2d16dafa8654772407c4a5d18f955b702"
     end
   end
 
