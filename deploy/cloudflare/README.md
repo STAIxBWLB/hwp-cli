@@ -2,7 +2,7 @@
 
 The Cloudflare tier of [docs/design/22-remote-mcp-deployment.md](../../docs/design/22-remote-mcp-deployment.md):
 a public MCP service where anyone signs in with a Google account and drives the
-20 hwp tools from any MCP client.
+22 hwp tools from any MCP client.
 
 A Worker is the public edge — it is this service's OAuth **authorization server**,
 not merely a resource server, so clients register themselves and no administrator
@@ -22,7 +22,7 @@ All four are satisfied; nothing here needs repeating for a first deploy.
 |---|---|
 | Workers Paid | Active. `wrangler containers list` succeeds, which is the authoritative test |
 | API token `hwp-mcp deploy` | Created, scoped to the `entelecheia` account with Workers Scripts, Workers KV Storage, D1 and Containers all at Edit. Verified against `/user/tokens/verify` and stored on the deploy host at `~/.config/hwp-mcp-deploy.env` (mode 600) |
-| Google OAuth client `hwp MCP` | Web application in project `chu-rise`. **Both** redirect URIs are registered: `https://hwp-mcp.staix.net/callback` and `https://hwp-mcp.staix.workers.dev/callback`. Both are required while two hostnames serve the Worker, because `google-handler.ts` builds the redirect from `url.origin`, so whichever host the user arrived on is the one sent to Google. Its id and secret are Worker secrets already |
+| Google OAuth client `hwp MCP` | Web application in the dedicated project `hwp-mcp` (project number `718611541845`, owned by `hello@jeju.ai`). The client id begins with that project number, which is how you confirm from a browser URL alone that a sign-in is hitting this project and not the old shared one. **Both** redirect URIs are registered: `https://hwp-mcp.staix.net/callback` and `https://hwp-mcp.staix.workers.dev/callback`. Both are required while two hostnames serve the Worker, because `google-handler.ts` builds the redirect from `url.origin`, so whichever host the user arrived on is the one sent to Google. Its id and secret are Worker secrets already |
 | Budget notification | Cloudflare's auto-created budget alert is already exactly $10 USD to yj.lee@me.com |
 
 Two things about the Google side are worth knowing before anyone else tries to sign in:
@@ -31,16 +31,39 @@ Two things about the Google side are worth knowing before anyone else tries to s
   `hello@jeju.ai` is listed; `yj.lee@chu.ac.kr` was rejected because it is not a Google account.
   Add more under Google Auth Platform → Audience → Test users, or publish the app (which then
   needs verification).
-- The consent screen is shared per Google Cloud project. Its app name is **STAIx**, which is what
-  people see when they sign in. Renaming it there renames it for every OAuth client in the
-  `chu-rise` project, so a dedicated project is the clean fix if this service ever needs its own
-  branding.
+- The consent screen is scoped to the Google Cloud project, and this service now has its own
+  (`hwp-mcp`), so its app name, privacy-policy URL and publishing status belong to it alone.
+  That was the point of moving off the shared `chu-rise` project: verifying `chu-rise` would
+  have pointed every unrelated client's consent screen at this service's privacy policy.
 
 ## Google verification
 
-The app is in **Testing** publishing status, which caps it at 100 listed test users.
-That cap, not a review queue, is what stops anyone but the owner from using the
-service. Moving to production is the unblock.
+The app stays in **Testing** publishing status, which caps it at 100 listed test
+users. That is a deliberate choice, not an unfinished step, and the reason is
+budget rather than paperwork.
+
+**The rate limiters are per user, so they do not bound how many users there are.**
+`SESSION_LIMITER` and `CALL_LIMITER` both key on `principal.userId`
+(`src/mcp-api.ts:159,169`). The only global ceiling is `max_instances: 20`, and that
+caps concurrency, not cumulative container time. Today spend sits near zero because
+exactly one person can sign in; publishing is what removes that, and nothing else in
+the stack replaces it.
+
+The arithmetic, at Cloudflare's published rates. CPU bills on active use, memory and
+disk on provisioned resources, so a `basic` instance that is awake but idle costs
+about **$0.010 per instance-hour** (1 GiB x $0.0000025/GiB-s + 4 GB x
+$0.00000007/GB-s). Workers Paid includes 25 GiB-hours of memory per month, which for
+this instance type is roughly 25 instance-hours free. Beyond that, 20 instances held
+awake around the clock is 480 instance-hours a day, near **$145 a month**. The $10
+budget figure is an *alert*, not a cap: it emails, it does not stop anything.
+
+So publishing needs one of two things first: a global usage ceiling that bounds
+monthly instance-hours regardless of how many accounts exist, or an acceptance that
+the ceiling is Cloudflare's bill. Until one of those is settled, adding test users by
+hand is both sufficient (100 of them) and reversible.
+
+Should that change, the steps are below, and the first is domain ownership - it is not
+needed now, because `staix.net` is already accepted as an authorized domain without it.
 
 The scopes are `openid email profile` (`google-handler.ts:60`), all **non-sensitive**.
 That matters: this app does not enter the sensitive or restricted path, so there is no
@@ -62,11 +85,10 @@ until it is updated.
 
 Owner steps, none of which are in this repo:
 
-1. **Decide the Google Cloud project.** The consent screen's privacy-policy URL,
-   authorized domains and publishing status are all *project-scoped*. Verifying the
-   shared `chu-rise` project would point every other client's consent screen at this
-   service's privacy policy, which is wrong for those apps' users. A dedicated project
-   costs a new client id and secret, two `wrangler secret put` calls and a deploy.
+1. ~~**Decide the Google Cloud project.**~~ Done: the dedicated project `hwp-mcp` holds
+   the client, and sign-in on it is verified end to end. Identity survived the move
+   because it is keyed on the Google `sub` claim, not the project — the existing `users`
+   row was updated rather than duplicated.
 2. **Verify domain ownership.** A DNS TXT record on `staix.net` as a Search Console
    Domain property, added in the Cloudflare zone the account already owns. It covers
    `hwp-mcp.staix.net` and every future subdomain.
@@ -154,6 +176,19 @@ Rebuilding a secret is only needed if one is rotated:
 
 ```bash
 openssl rand -hex 32 | npx wrangler secret put COOKIE_ENCRYPTION_KEY
+```
+
+**Always pipe the value in. Never rely on the interactive prompt.** Over SSH, or from
+any wrapper that does not attach a TTY, `wrangler secret put NAME` alone reads nothing,
+stores the empty string, and prints `✨ Success! Uploaded secret NAME`. The binding then
+exists and is empty, which is worse than missing: the Worker starts, the failure surfaces
+only at the point of use, and every check that asks *whether* the secret is bound says
+yes. This cost hours on the `hwp-mcp.staix.net` cutover, chasing a wrong secret value
+that was in fact an absent one. To set a secret whose value must not appear in shell
+history or the terminal, pipe it from the clipboard:
+
+```bash
+pbpaste | ssh <deploy-host> 'cd ... && npx wrangler secret put GOOGLE_CLIENT_SECRET'
 ```
 
 The first deploy takes several minutes: it compiles the Rust workspace inside the
