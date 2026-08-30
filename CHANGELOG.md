@@ -10,6 +10,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
+  `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
+  ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.
+
 ## [0.16.1]
 
 **Fixed**
