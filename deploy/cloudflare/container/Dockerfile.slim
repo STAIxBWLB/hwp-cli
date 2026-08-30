@@ -13,9 +13,9 @@
 # is published alongside the tarball as hwp-<version>-<target>.sha256; the build
 # fails loudly if it does not match, which is the point.
 
-ARG HWP_VERSION=v0.15.1
+ARG HWP_VERSION=v0.16.0
 ARG HWP_TARGET=x86_64-unknown-linux-gnu
-ARG HWP_SHA256=0c8f92a91eae1e6c8bb2932afbd5084ab918c6a1397ab68acbd3dc6a8cc9284d
+ARG HWP_SHA256=633fefcf0d23af6fe5d727f76284565021f185b8b63176424d5beb4f32a5cba6
 
 # Fetch stage. ADD downloads over the builder's own network stack, so no curl and
 # no CA bundle are ever installed; keeping it in a discarded stage also keeps the
