@@ -217,7 +217,19 @@ Then check the negatives, which are the parts worth distrusting:
 | `DELETE /mcp`, then any call on that session | `204`, then `404` |
 | A tool argument pointing outside the workspace | refused, same message the stdio server gives |
 
-After testing, confirm the container count returns to zero in the dashboard.
+After testing, confirm nothing is still running. Ask for the instance states, not
+the summary:
+
+```bash
+npx wrangler containers instances <application-id>   # id from `containers list`
+```
+
+Every row should read `inactive`. **Do not read the `LIVE INSTANCES` column of
+`wrangler containers list` as a count of what is running right now** - it does not
+track sleep. On a service with zero running containers it sat at `7` for six
+straight minutes while `containers instances` reported all 68 instance records
+`inactive`, and the same row's `LAST MODIFIED` was an hour stale. Instance records
+accumulate and are not a cost signal; only their state is.
 
 ## Deployed and verified
 
