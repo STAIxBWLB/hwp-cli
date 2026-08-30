@@ -165,6 +165,12 @@ async function callback(request: Request, env: Env, url: URL): Promise<Response>
     }),
   });
   if (!exchange.ok) {
+    // Log Google's own error code. Without it the only signal is "rejected", which is
+    // indistinguishable between a wrong secret, a redirect_uri mismatch and a code
+    // already spent -- three very different fixes. The body carries no user data and
+    // no token: on failure Google returns {error, error_description} only.
+    const detail = await exchange.text().catch(() => '');
+    console.error('google token exchange failed', exchange.status, detail.slice(0, 300));
     return html('<h1>Sign-in failed</h1><p>Google rejected the exchange.</p>', 502);
   }
 
