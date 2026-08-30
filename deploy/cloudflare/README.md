@@ -38,9 +38,32 @@ Two things about the Google side are worth knowing before anyone else tries to s
 
 ## Google verification
 
-The app is in **Testing** publishing status, which caps it at 100 listed test users.
-That cap, not a review queue, is what stops anyone but the owner from using the
-service. Moving to production is the unblock.
+The app stays in **Testing** publishing status, which caps it at 100 listed test
+users. That is a deliberate choice, not an unfinished step, and the reason is
+budget rather than paperwork.
+
+**The rate limiters are per user, so they do not bound how many users there are.**
+`SESSION_LIMITER` and `CALL_LIMITER` both key on `principal.userId`
+(`src/mcp-api.ts:159,169`). The only global ceiling is `max_instances: 20`, and that
+caps concurrency, not cumulative container time. Today spend sits near zero because
+exactly one person can sign in; publishing is what removes that, and nothing else in
+the stack replaces it.
+
+The arithmetic, at Cloudflare's published rates. CPU bills on active use, memory and
+disk on provisioned resources, so a `basic` instance that is awake but idle costs
+about **$0.010 per instance-hour** (1 GiB x $0.0000025/GiB-s + 4 GB x
+$0.00000007/GB-s). Workers Paid includes 25 GiB-hours of memory per month, which for
+this instance type is roughly 25 instance-hours free. Beyond that, 20 instances held
+awake around the clock is 480 instance-hours a day, near **$145 a month**. The $10
+budget figure is an *alert*, not a cap: it emails, it does not stop anything.
+
+So publishing needs one of two things first: a global usage ceiling that bounds
+monthly instance-hours regardless of how many accounts exist, or an acceptance that
+the ceiling is Cloudflare's bill. Until one of those is settled, adding test users by
+hand is both sufficient (100 of them) and reversible.
+
+Should that change, the steps are below, and the first is domain ownership - it is not
+needed now, because `staix.net` is already accepted as an authorized domain without it.
 
 The scopes are `openid email profile` (`google-handler.ts:60`), all **non-sensitive**.
 That matters: this app does not enter the sensitive or restricted path, so there is no
