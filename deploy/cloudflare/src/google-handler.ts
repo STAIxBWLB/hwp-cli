@@ -171,7 +171,31 @@ async function callback(request: Request, env: Env, url: URL): Promise<Response>
     // no token: on failure Google returns {error, error_description} only.
     const detail = await exchange.text().catch(() => '');
     console.error('google token exchange failed', exchange.status, detail.slice(0, 300));
-    return html('<h1>Sign-in failed</h1><p>Google rejected the exchange.</p>', 502);
+    // Google's `error` field is a short fixed enum -- invalid_client, invalid_grant,
+    // redirect_uri_mismatch and so on -- and carries no secret. Showing it turns four
+    // indistinguishable failures into one that names its own cause, which matters
+    // because the alternative is reading Worker logs that need a token scope the
+    // deploy credentials do not have.
+    let reason = '';
+    try {
+      const parsed = JSON.parse(detail) as { error?: unknown };
+      const description =
+        typeof (parsed as { error_description?: unknown }).error_description === 'string'
+          ? (parsed as { error_description: string }).error_description
+          : '';
+      if (typeof parsed.error === 'string' && /^[a-z_]{1,40}$/.test(parsed.error)) {
+        // The description names the offending parameter, which is the whole point:
+        // invalid_request alone does not say *which* field Google refused.
+        reason = description
+          ? ` (${parsed.error}: ${description.slice(0, 200)})`
+          : ` (${parsed.error})`;
+      }
+    } catch {
+      // A non-JSON body means Google is not answering the way it documents; the
+      // status alone is then the only honest signal.
+      reason = ` (HTTP ${exchange.status})`;
+    }
+    return html(`<h1>Sign-in failed</h1><p>Google rejected the exchange${escape(reason)}.</p>`, 502);
   }
 
   const tokens = (await exchange.json()) as { id_token?: string };
