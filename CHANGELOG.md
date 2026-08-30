@@ -10,6 +10,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp_put_file` refuses empty `content` instead of reporting a successful upload of a zero-byte
+  file. Found in live verification, where a shell step produced an empty string and the tool said it
+  had worked; the failure then surfaced as a confusing error from whatever tool read the file next.
+
 **Added**
 
 - `deploy/aws/Dockerfile.agentcore` builds the arm64 image AWS Bedrock AgentCore requires, pinned to

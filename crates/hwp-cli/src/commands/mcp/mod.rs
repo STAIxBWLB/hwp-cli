@@ -745,6 +745,13 @@ fn validate_base64_structure(text: &str) -> Result<(), String> {
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
         .collect();
+    // 빈 입력은 0바이트 파일을 업로드 성공으로 보고하게 만든다. 문서를 옮기는
+    // 도구에서 그것은 거의 언제나 호출부의 인코딩이 조용히 실패한 흔적이고,
+    // 실제로 라이브 검증 중에 그렇게 물렸다. 다음 도구에서 이해하기 어려운
+    // 오류로 드러나느니 여기서 말하는 편이 낫다.
+    if compact.is_empty() {
+        return Err("content가 비어 있습니다".to_string());
+    }
     let padding = compact.iter().rev().take_while(|&&b| b == b'=').count();
     if padding > 2 {
         return Err("잘못된 base64: 패딩이 2자를 넘습니다".to_string());
@@ -753,7 +760,7 @@ fn validate_base64_structure(text: &str) -> Result<(), String> {
     if payload.contains(&b'=') {
         return Err("잘못된 base64: 패딩이 끝이 아닌 위치에 있습니다".to_string());
     }
-    if !compact.is_empty() && !compact.len().is_multiple_of(4) {
+    if !compact.len().is_multiple_of(4) {
         return Err(format!(
             "잘못된 base64: 공백을 제외한 길이가 4의 배수가 아닙니다 ({}자)",
             compact.len()
@@ -5273,14 +5280,17 @@ mod tests {
             Vec::<u8>::new()
         );
 
-        for bad in ["A", "====", "QQ", "QUJD="] {
-            let destination = root.join(format!("bad-{}.bin", bad.len()));
+        for bad in ["", "   ", "A", "====", "QQ", "QUJD="] {
+            let destination = root.join(format!("bad-{}.bin", bad.escape_debug()));
             let error = tool_put_file(
                 &json!({"name": destination.display().to_string(), "content": bad}),
                 &ctx,
             )
             .unwrap_err();
-            assert!(error.contains("잘못된 base64"), "{bad}: {error}");
+            assert!(
+                error.contains("잘못된 base64") || error.contains("비어 있습니다"),
+                "{bad}: {error}"
+            );
             assert!(!destination.exists(), "{bad}: 파일이 생기면 안 됩니다");
         }
 
