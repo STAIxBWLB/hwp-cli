@@ -109,12 +109,17 @@ Account `entelecheia` (`b378caab1c7aea09cb77db791fe5f3f8`). The service URL is
 `https://hwp-mcp.staix.net`, a Custom Domain on the `staix.net` zone declared in
 `wrangler.jsonc`; Cloudflare owns its DNS record and certificate.
 
-`https://hwp-mcp.staix.workers.dev` still answers and is meant to. Nothing stored
-is tied to a hostname - the OAuth provider keys KV as `client:`/`grant:`/`token:`
-with no origin, and PATs are SHA-256 hashes in D1 - so every registered client,
-grant, token and PAT works on both. Rolling back is deleting the `routes` block
-and deploying, which costs no client anything because none was ever forced off
-the old host.
+`https://hwp-mcp.staix.workers.dev` still answers, and it takes an explicit
+`"workers_dev": true` in `wrangler.jsonc` to keep it that way. **Once `routes`
+exists, wrangler disables workers.dev by default**, which is not obvious and is
+not what the first deploy of the custom domain was expected to do: it took the
+old hostname to 404 until the flag was added back. Keeping it on costs nothing
+and matters because nothing stored is tied to a hostname - the OAuth provider
+keys KV as `client:`/`grant:`/`token:` with no origin, and PATs are SHA-256
+hashes in D1 - so every registered client, grant, token and PAT works on both.
+Turn it off deliberately, once the old hostname is advertised nowhere.
+
+Rolling back the custom domain is deleting the `routes` block and deploying.
 
 These exist and their ids are already in `wrangler.jsonc` — do not recreate them:
 
