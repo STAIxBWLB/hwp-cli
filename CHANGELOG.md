@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.16.1]
+
 **Fixed**
 
 - `hwp_put_file` refuses empty `content` instead of reporting a successful upload of a zero-byte
