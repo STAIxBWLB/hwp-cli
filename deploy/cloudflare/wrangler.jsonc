@@ -54,11 +54,16 @@
 
   // A Custom Domain rather than a route: Cloudflare provisions the DNS record and
   // the certificate itself, where a plain route would need both done by hand first.
-  // workers.dev stays on deliberately. Every credential is host-independent - the
-  // OAuth provider keys KV as client:/grant:/token: with no origin, and PATs are
-  // SHA-256 hashes in D1 - so clients configured before the move keep working on
-  // the old hostname instead of breaking on a date nobody told them about.
   "routes": [{ "pattern": "hwp-mcp.staix.net", "custom_domain": true }],
+
+  // Required, and not the default. Once `routes` exists, wrangler disables
+  // workers.dev unless this says otherwise - the first deploy of the custom domain
+  // took the old hostname down for that reason. Keep it true: every credential is
+  // host-independent (the OAuth provider keys KV as client:/grant:/token: with no
+  // origin, and PATs are SHA-256 hashes in D1), so clients configured before the
+  // move keep working instead of breaking on a date nobody told them about. Turn it
+  // off only deliberately, when the old hostname is no longer advertised anywhere.
+  "workers_dev": true,
 
   "assets": { "directory": "./public", "binding": "ASSETS" },
 
