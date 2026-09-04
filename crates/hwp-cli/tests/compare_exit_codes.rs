@@ -129,6 +129,12 @@ fn added_cell_paragraph_prints_its_cell_and_its_text() {
         stdout.contains("○ 둘째 항목 BBB"),
         "stdout에 추가된 문단 텍스트가 있어야 함: {stdout}"
     );
+    // The structure summary states each side's own count of paragraphs living
+    // in a table cell, not a tally of the diff's own insert/delete operations.
+    assert!(
+        stdout.contains("표 내부 문단 4→5 (+1)"),
+        "stdout에 표 내부 문단 집계가 있어야 함: {stdout}"
+    );
 }
 
 /// Catches a regression where the "differences found" path starts returning

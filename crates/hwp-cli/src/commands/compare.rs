@@ -164,17 +164,19 @@ fn print_text_report(a: &Path, b: &Path, diff: &DocumentDiff) {
         .filter(|(a, b)| a != b)
         .count();
     // The existing fields keep their order; the D-18 additions are appended,
-    // and the table count only when the two sides actually differ.
+    // and the table count only when the two sides actually differ. The cell
+    // paragraph figure is each side's own count, so it reads like every other
+    // a→b pair on the line.
+    let (a_cells, b_cells) = diff.structure.cell_paragraphs;
+    let cell_delta = b_cells as isize - a_cells as isize;
     let mut summary = format!(
-        "구조: 구역 {}→{}, 문단 {}→{}, 표 변경 {}건, 컨트롤 종류 변경 {}건, 표 내부 문단 +{} -{}",
+        "구조: 구역 {}→{}, 문단 {}→{}, 표 변경 {}건, 컨트롤 종류 변경 {}건, 표 내부 문단 {a_cells}→{b_cells} ({cell_delta:+})",
         diff.structure.sections.0,
         diff.structure.sections.1,
         diff.structure.paragraphs.0,
         diff.structure.paragraphs.1,
         diff.structure.tables.len(),
         changed_controls,
-        diff.structure.cell_paragraphs.0,
-        diff.structure.cell_paragraphs.1,
     );
     let (a_tables, b_tables) = diff.structure.table_counts;
     if a_tables != b_tables {
@@ -332,9 +334,11 @@ pub(crate) fn compare_report_json(a: &Path, b: &Path, diff: &DocumentDiff) -> se
             "paragraphs": {"a": diff.structure.paragraphs.0, "b": diff.structure.paragraphs.1},
             "controls": controls,
             "tables": tables,
+            // Per-side counts, like every other pair in this block: how many
+            // paragraphs live in a table cell on each side.
             "cell_paragraphs": {
-                "inserted": diff.structure.cell_paragraphs.0,
-                "deleted": diff.structure.cell_paragraphs.1,
+                "a": diff.structure.cell_paragraphs.0,
+                "b": diff.structure.cell_paragraphs.1,
             },
             "table_count": {"a": diff.structure.table_counts.0, "b": diff.structure.table_counts.1},
         },

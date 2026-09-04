@@ -186,10 +186,16 @@ pub struct StructureDiff {
     /// `b"tbl "`). Only kinds present on at least one side appear.
     pub controls: BTreeMap<[u8; 4], (usize, usize)>,
     pub tables: Vec<TableGeometryDelta>,
-    /// Paragraphs inserted and deleted inside table cells (D-18). Counted
-    /// from the paragraph entries whose location is the cell variant, so a
-    /// difference that lives only inside a table is a reported fact rather
-    /// than something the summary has to be read between the lines for.
+    /// How many paragraphs live in a table cell on each side (D-18) — the
+    /// paragraphs whose location is [`ParagraphLocation::Cell`], counted
+    /// independently per document rather than tallied from the diff's own
+    /// operations. A difference that lives only inside a table is therefore a
+    /// reported fact rather than something to read between the lines of the
+    /// summary.
+    ///
+    /// Cells of a table nested inside a caption are not in this bucket: they
+    /// have no `--set-cell` address and report as
+    /// [`ParagraphLocation::Nested`].
     pub cell_paragraphs: (usize, usize),
     /// How many tables each document has. `tables` above only pairs the
     /// tables both sides have; before this field the surplus was dropped by a
@@ -203,7 +209,7 @@ impl StructureDiff {
             && self.paragraphs.0 == self.paragraphs.1
             && self.controls.values().all(|(a, b)| a == b)
             && self.tables.is_empty()
-            && self.cell_paragraphs == (0, 0)
+            && self.cell_paragraphs.0 == self.cell_paragraphs.1
             && self.table_counts.0 == self.table_counts.1
     }
 }
@@ -218,7 +224,7 @@ pub fn compare_documents(a: &Document, b: &Document) -> Result<DocumentDiff, Str
     let ops = paragraph_lcs(&a_paras, &b_paras)?;
     let paragraphs = fold_paragraph_ops(ops, &a_paras, &b_paras, &a_meta, &b_meta)?;
 
-    let structure = structure_diff(a, b, a_paras.len(), b_paras.len(), &paragraphs);
+    let structure = structure_diff(a, b, &a_meta, &b_meta);
 
     let identical =
         paragraphs.iter().all(|e| e.op == ParagraphOp::Equal) && structure.is_identical();
@@ -643,9 +649,8 @@ fn char_lcs_runs(a: &[HwpChar], b: &[HwpChar]) -> Result<Vec<CharRun>, String> {
 fn structure_diff(
     a: &Document,
     b: &Document,
-    a_paragraph_count: usize,
-    b_paragraph_count: usize,
-    paragraphs: &[ParagraphEntry],
+    a_meta: &[ParagraphMeta],
+    b_meta: &[ParagraphMeta],
 ) -> StructureDiff {
     let a_controls = control_inventory(a);
     let b_controls = control_inventory(b);
@@ -671,23 +676,23 @@ fn structure_diff(
         })
         .collect();
 
-    let is_cell = |location: &ParagraphLocation| matches!(location, ParagraphLocation::Cell { .. });
-    let count_cell = |op| {
-        paragraphs
-            .iter()
-            .filter(|entry| entry.op == op && is_cell(&entry.location))
+    // Per-side inventory, not a tally of the diff's own operations: a
+    // paragraph moved from one cell to another, or replaced across the body /
+    // cell boundary, produces no net change here, which is the truth. Deriving
+    // the number from Insert/Delete ops instead reported such a move as one
+    // gain and one loss.
+    let cells = |meta: &[ParagraphMeta]| {
+        meta.iter()
+            .filter(|entry| matches!(entry.location, ParagraphLocation::Cell { .. }))
             .count()
     };
 
     StructureDiff {
         sections: (a.sections.len(), b.sections.len()),
-        paragraphs: (a_paragraph_count, b_paragraph_count),
+        paragraphs: (a_meta.len(), b_meta.len()),
         controls,
         tables,
-        cell_paragraphs: (
-            count_cell(ParagraphOp::Insert),
-            count_cell(ParagraphOp::Delete),
-        ),
+        cell_paragraphs: (cells(a_meta), cells(b_meta)),
         table_counts: (a_tables.len(), b_tables.len()),
     }
 }
@@ -1071,18 +1076,35 @@ mod tests {
         assert!(diff.paragraphs.iter().any(|e| e.op != ParagraphOp::Equal));
     }
 
+    /// #227 finding B: the same paragraph in a different cell is a move, not
+    /// a gain plus a loss. The count is a per-side inventory, so it stays
+    /// equal; the Insert/Delete tally it replaced reported `(1, 1)` here.
     #[test]
-    fn cell_paragraph_changes_are_counted_and_never_look_identical() {
-        // One paragraph added inside a cell on each side, in different cells,
-        // so the pair reports one insertion and one deletion inside tables.
+    fn a_paragraph_moved_between_cells_keeps_the_cell_paragraph_count() {
         let table = "| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
         let mut a = doc(table);
         let mut b = doc(table);
-        push_cell_paragraph(&mut a, 0, 0, "a쪽 추가");
+        push_cell_paragraph(&mut a, 0, 0, "옮긴 문단");
+        push_cell_paragraph(&mut b, 1, 1, "옮긴 문단");
+
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.cell_paragraphs, (5, 5));
+        // The chars-only LCS still sees a deletion and an insertion, so the
+        // pair is not identical. Teaching the diff to recognize a move is
+        // Phase 3 (D-11/D-12) and deliberately out of scope here.
+        assert!(!diff.identical);
+    }
+
+    /// A paragraph added on one side only does move the count.
+    #[test]
+    fn an_added_cell_paragraph_moves_the_cell_paragraph_count() {
+        let table = "| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
+        let a = doc(table);
+        let mut b = doc(table);
         push_cell_paragraph(&mut b, 1, 1, "b쪽 추가");
 
         let diff = compare_documents(&a, &b).unwrap();
-        assert_eq!(diff.structure.cell_paragraphs, (1, 1));
+        assert_eq!(diff.structure.cell_paragraphs, (4, 5));
         assert!(!diff.structure.is_identical());
         assert!(!diff.identical);
     }
@@ -1097,11 +1119,11 @@ mod tests {
     }
 
     #[test]
-    fn identical_structure_reports_zero_for_the_new_counts() {
+    fn identical_structure_reports_matching_new_counts() {
         let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
         let b = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
         let diff = compare_documents(&a, &b).unwrap();
-        assert_eq!(diff.structure.cell_paragraphs, (0, 0));
+        assert_eq!(diff.structure.cell_paragraphs, (4, 4));
         assert_eq!(diff.structure.table_counts, (1, 1));
         assert!(diff.structure.is_identical());
         assert!(diff.identical);
