@@ -15,6 +15,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
   `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
   ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.
+- Every paragraph entry of the `hwp compare --json` report gains a `text` string and a `location`
+  object naming where that paragraph lives; a replaced pair also carries `b_text` and `b_location`.
+  The change is purely additive - the report contract string stays `hwp-compare-report-v1` and every
+  key present before is still present with the same meaning, so existing consumers need no change
+  (#223).
+
+**Fixed**
+
+- `hwp compare` names and quotes paragraphs inside table cells instead of printing a blank line. The
+  report used to look each paragraph's text up in a flat list of top-level paragraphs while the
+  index came from the engine's deep walk, so past the first table the two index spaces diverged. A
+  cell difference now prints as `표 0 셀 (1,1) 문단 1: text`, using the same 0-based table numbering
+  `hwp edit --set-cell` takes. The structure summary counts paragraph insertions and deletions
+  inside tables and states a table-count change instead of silently dropping the surplus tables
+  (#223).
 
 ## [0.16.1]
 
