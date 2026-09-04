@@ -2788,7 +2788,10 @@ fn emit_char_shape(cs: &CharShape) -> RecordNode {
 
 fn emit_para_shape(ps: &ParaShape) -> RecordNode {
     let mut w = ByteWriter::new();
-    w.write_u32(ps.attr1);
+    // 줄간격 종류는 attr1 bits 0~1이다(parse_para_shape와 같은 규약). IR에서 바뀐
+    // 종류를 되접어 넣지 않으면 한글 2010+ 가 예전 종류로 읽는다. clear-then-set이라
+    // 읽은 그대로인 문단모양에는 무영향이다. 바이트 동일 왕복 게이트가 그대로 유지된다.
+    w.write_u32((ps.attr1 & !0x3) | (u32::from(ps.line_spacing_type) & 0x3));
     w.write_i32(ps.margin_left);
     w.write_i32(ps.margin_right);
     w.write_i32(ps.indent);
@@ -2822,6 +2825,14 @@ fn emit_para_shape(ps: &ParaShape) -> RecordNode {
             160
         });
         w.write_u32(0); // 후행 4B — 5.1.0.1 표본 hello_world와 동일 (00 00 00 00)
+    } else if ps.tail.len() >= 12 {
+        // 5.0.2.5+ 줄간격 값은 tail[8..12]에 있다(reader가 여기서 읽는다).
+        // 보존 tail을 그대로 내보내면 IR에서 바뀐 줄간격이 사라지고 한글은
+        // 예전 값을 보여준다. 읽은 그대로인 문단모양에는 같은 값을 다시 쓰므로
+        // 무영향이다. 12바이트 미만 tail은 길이를 바꾸지 않고 그대로 둔다.
+        let mut tail = ps.tail.clone();
+        tail[8..12].copy_from_slice(&ps.line_spacing.to_le_bytes());
+        w.write_bytes(&tail);
     } else {
         w.write_bytes(&ps.tail);
     }
