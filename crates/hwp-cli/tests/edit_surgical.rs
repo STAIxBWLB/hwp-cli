@@ -207,6 +207,56 @@ fn table_op_preserves_non_target_entries() {
     );
 }
 
+/// #220: 빈 줄로 나뉘어 문단이 여러 개가 되는 set-cell 값도 여전히 비구조 편집이다 —
+/// 위 단일 블록 테스트와 같은 엔트리 목록이 바이트 동일해야 한다.
+#[test]
+fn multi_paragraph_table_op_preserves_non_target_entries() {
+    let src = copy_fixture("surgical_tbl_multi.hwpx");
+    let out = tmp("surgical_tbl_multi_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set-cell", "9:0:0=첫째 블록\n\n둘째 블록"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "set-cell: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    assert_entries_identical(
+        &src,
+        &out,
+        &[
+            "Contents/header.xml",
+            "Contents/content.hpf",
+            "Preview/PrvImage.png",
+            "Preview/PrvText.txt",
+            "META-INF/container.rdf",
+            "META-INF/container.xml",
+            "META-INF/manifest.xml",
+            "settings.xml",
+            "version.xml",
+        ],
+    );
+    let section = String::from_utf8(read_zip_entry(&out, "Contents/section0.xml")).unwrap();
+    assert!(section.contains("첫째 블록"), "첫 블록 반영");
+    assert!(section.contains("둘째 블록"), "둘째 블록 반영");
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&out)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "validate 통과"
+    );
+}
+
 /// 메타데이터 op(set-meta): content.hpf만 재생성되고 header/미리보기/META-INF는
 /// 바이트 동일. BinData가 없는 문서라 엔트리 수도 같아야 한다.
 #[test]

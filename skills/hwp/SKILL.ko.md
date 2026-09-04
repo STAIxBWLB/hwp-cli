@@ -64,12 +64,14 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   `--margin-right`로 지정합니다. `--strict`는 마크다운 가져오기가 내용을 유실하면 실패합니다.
 - `hwp edit {input} -o {output} [flags...]` — 기존 문서 편집; 이미지, 서식, 미파싱
   레코드는 보존합니다. 문자열 플래그 (모두 반복 가능): `--replace "find=>repl"`,
-  `--set-cell "t:r:c=value"` (0-기반), `--set-field "name=value"`, `--set-meta "k=v"`,
+  `--set-cell "t:r:c=value"` (0-기반; 빈 줄로 나뉜 값은 블록마다 문단 하나가 됩니다),
+  `--set-field "name=value"`, `--set-meta "k=v"`,
   `--create-field "anchor=>name[=value]"`, `--create-bookmark "anchor=>name"`,
   `--create-hyperlink "anchor=>[text=>]URL"`, `--insert-image "anchor=>path[@WxH mm]"`,
   `--seal "anchor=>path[@size mm]"`, `--set-format "find:prop=value,..."`,
   `--set-align "find=left|right|center|justify|distribute"`. 구조 플래그 (모두 반복
-  가능): `--insert-para "anchor=>text"`, `--insert-para-before`, `--delete-para "text"`,
+  가능): `--insert-para "anchor=>text"`, `--insert-para-before`, `--delete-para "text"`
+  (anchor는 표 셀·캡션 안에서도 찾습니다),
   `--add-row "t[:at[:count[:template_row]]]"` / `--add-col "t[:at[:count]]"` (`at` 생략
   또는 `end`는 끝에 추가; 숫자는 해당 행/열 앞에 삽입; 병합 셀 표 지원) /
   `--delete-row "t:r"` / `--delete-col "t:c"` /
@@ -78,8 +80,10 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   blank는 구조/스타일만 유지하고 셀을 비우고, keep은 중첩 표/이미지까지 재매핑된 ID로
   복제) /
   `--delete-table "n|anchor"` / `--delete-image "anchor"` / `--delete-field "name"` /
-  `--delete-bookmark "name"`, 문단 모양 `--set-para "find=>key:value"`
-  (line-spacing, indent, left/right/top/bottom mm)와 페이지 설정 `--set-page "key:value"`
+  `--delete-bookmark "name"`, 문단 모양 `--set-para "find=>key:value[,key:value]"`
+  (line-spacing, indent, left/right/top/bottom mm, align),
+  `--set-cell-para "t:r:c=>key:value[,key:value]"` (같은 키를 앵커 없이 그 셀의 모든 문단에
+  적용하며, 한 번의 실행에서 `--set-cell` 뒤에 돕니다)와 페이지 설정 `--set-page "key:value"`
   (width/height/margin-*/orientation). `--verify`는 출력을 다시 읽습니다;
   `--allow-partial`은 전부 아니면 전무 규칙을 완화합니다 (안전 규칙 참조).
 - `hwp fill {template.hwpx} -o {output}` — 충실도 보존 `{{name}}` 템플릿 채우기

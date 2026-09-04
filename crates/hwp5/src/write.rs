@@ -434,6 +434,16 @@ fn merge_control_node(
     }
 }
 
+/// Rewrites the edited paragraphs of a table into its **source** record tree, leaving every
+/// other source child byte-identical and in place.
+///
+/// The table itself must be structurally unchanged (same cells, caption, spans, tails); a
+/// structural edit still falls back to the fully regenerated `emitted` node. Within one
+/// paragraph list the count may change: the list's paragraph records are then replaced as a
+/// run and only its LIST_HEADER paragraph count is rewritten. Regenerating the whole table
+/// instead would lose what the IR does not carry - `emit_caption_header` cannot reproduce a
+/// caption's wrapping and vertical-alignment listflags, and `table.extras` are re-appended
+/// after every cell rather than at the position they were read from.
 fn merge_table_control(
     source: &RecordNode,
     emitted: &RecordNode,
@@ -444,43 +454,86 @@ fn merge_table_control(
     let mut edited_structure = edited.clone();
     clear_table_paragraphs(&mut original_structure);
     clear_table_paragraphs(&mut edited_structure);
-    let original_paragraphs = table_paragraphs(original);
-    let edited_paragraphs = table_paragraphs(edited);
-    if original_structure != edited_structure
-        || original_paragraphs.len() != edited_paragraphs.len()
-    {
+    if original_structure != edited_structure {
         return emitted.clone();
     }
 
-    let source_indices = source
-        .children
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| node.tag == tag::PARA_HEADER)
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    let emitted_paragraphs_nodes = emitted
-        .children
-        .iter()
-        .filter(|node| node.tag == tag::PARA_HEADER)
-        .collect::<Vec<_>>();
-    if source_indices.len() != original_paragraphs.len()
-        || emitted_paragraphs_nodes.len() != edited_paragraphs.len()
+    let original_lists = table_paragraph_lists(original);
+    let edited_lists = table_paragraph_lists(edited);
+    let Some(source_lists) = record_paragraph_lists(source, original) else {
+        return emitted.clone();
+    };
+    let Some(emitted_lists) = record_paragraph_lists(emitted, edited) else {
+        return emitted.clone();
+    };
+    // The record tree and the IR must agree list for list, otherwise the addressing below
+    // would splice into the wrong place - fall back to the regenerated table.
+    if source_lists.len() != original_lists.len()
+        || emitted_lists.len() != edited_lists.len()
+        || original_lists.len() != edited_lists.len()
+        || source_lists
+            .iter()
+            .zip(&original_lists)
+            .any(|((_, records), paragraphs)| records.len() != paragraphs.len())
+        || emitted_lists
+            .iter()
+            .zip(&edited_lists)
+            .any(|((_, records), paragraphs)| records.len() != paragraphs.len())
     {
         return emitted.clone();
     }
 
     let mut merged = source.clone();
-    for index in 0..original_paragraphs.len() {
-        if original_paragraphs[index] != edited_paragraphs[index] {
-            let child_index = source_indices[index];
-            merged.children[child_index] = merge_paragraph_node(
-                &source.children[child_index],
-                emitted_paragraphs_nodes[index],
-                original_paragraphs[index],
-                edited_paragraphs[index],
-            );
+    // Splice from the last list backwards so a length change never shifts an index this loop
+    // has yet to use.
+    for list_index in (0..source_lists.len()).rev() {
+        let (header_index, source_paragraph_indices) = &source_lists[list_index];
+        let (_, emitted_paragraph_indices) = &emitted_lists[list_index];
+        let original_paragraphs = original_lists[list_index];
+        let edited_paragraphs = edited_lists[list_index];
+        if original_paragraphs == edited_paragraphs {
+            continue;
         }
+        if original_paragraphs.len() == edited_paragraphs.len() {
+            for (position, &child_index) in source_paragraph_indices.iter().enumerate() {
+                if original_paragraphs[position] != edited_paragraphs[position] {
+                    merged.children[child_index] = merge_paragraph_node(
+                        &source.children[child_index],
+                        &emitted.children[emitted_paragraph_indices[position]],
+                        &original_paragraphs[position],
+                        &edited_paragraphs[position],
+                    );
+                }
+            }
+            continue;
+        }
+        // The count changed. Replace this list's paragraph records as one run; that keeps
+        // every other source child - opaque records, the TABLE record, other cells - exactly
+        // where and as it was.
+        let contiguous = source_paragraph_indices
+            .windows(2)
+            .all(|pair| pair[1] == pair[0] + 1);
+        if !contiguous {
+            return emitted.clone();
+        }
+        let start = source_paragraph_indices
+            .first()
+            .copied()
+            .unwrap_or(header_index + 1);
+        let end = source_paragraph_indices
+            .last()
+            .map_or(start, |last| last + 1);
+        let replacement = emitted_paragraph_indices
+            .iter()
+            .map(|&index| emitted.children[index].clone());
+        merged.children.splice(start..end, replacement);
+        // LIST_HEADER's leading INT32 is the paragraph count (caption table 71, cell table 76).
+        let count = edited_paragraphs.len() as i32;
+        let header = &mut merged.children[*header_index];
+        if header.data.len() < 4 {
+            return emitted.clone();
+        }
+        header.data[..4].copy_from_slice(&count.to_le_bytes());
     }
     merged
 }
@@ -494,14 +547,45 @@ fn clear_table_paragraphs(table: &mut Table) {
     }
 }
 
-fn table_paragraphs(table: &Table) -> Vec<&Paragraph> {
-    let mut paragraphs = table
+/// The table's paragraph lists in canonical order: the caption first, then the cells - the
+/// order `emit_table` writes them in.
+fn table_paragraph_lists(table: &Table) -> Vec<&[Paragraph]> {
+    let mut lists = table
         .caption
         .iter()
-        .flat_map(|caption| caption.paragraphs.iter())
+        .map(|caption| caption.paragraphs.as_slice())
         .collect::<Vec<_>>();
-    paragraphs.extend(table.cells.iter().flat_map(|cell| cell.paragraphs.iter()));
-    paragraphs
+    lists.extend(table.cells.iter().map(|cell| cell.paragraphs.as_slice()));
+    lists
+}
+
+/// Groups a table record node's children into `(LIST_HEADER index, paragraph record indices)`
+/// per list, returned in the same canonical order as [`table_paragraph_lists`].
+///
+/// `parse_table` accepts a caption LIST_HEADER either before the TABLE record or after the
+/// declared cells are full, so a source tree may carry it last; the emitted tree always writes
+/// it first. Returns `None` when the children cannot be grouped that way - a paragraph record
+/// with no list header before it, or a caption the parser found in neither position.
+fn record_paragraph_lists(node: &RecordNode, table: &Table) -> Option<Vec<(usize, Vec<usize>)>> {
+    let mut lists: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut table_record: Option<usize> = None;
+    for (index, child) in node.children.iter().enumerate() {
+        match child.tag {
+            tag::TABLE if table_record.is_none() => table_record = Some(index),
+            tag::LIST_HEADER => lists.push((index, Vec::new())),
+            tag::PARA_HEADER => lists.last_mut()?.1.push(index),
+            _ => {}
+        }
+    }
+    if table.caption.is_some() {
+        let first = lists.first()?.0;
+        if first > table_record? {
+            // Caption last in the source: rotate it to the front so list 0 is the caption.
+            let caption = lists.pop()?;
+            lists.insert(0, caption);
+        }
+    }
+    Some(lists)
 }
 
 fn materialize_document(
@@ -3939,6 +4023,200 @@ mod tests {
                 .plain_text()
                 .contains("updated")
         );
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
+
+    /// Caption LIST_HEADER carrying listflag bits the IR does not model (wrapping and vertical
+    /// alignment live above the direction bits `emit_caption_header` reconstructs).
+    const CAPTION_LIST_ATTR: u32 = 0x0000_0068;
+
+    fn table_control_node(path: &Path) -> RecordNode {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        let roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+        find_control_node(&roots, b" lbt").expect("table control")
+    }
+
+    /// Gives the source table a caption whose listflags the IR cannot round-trip and an
+    /// unknown record wedged between the TABLE record and the first cell - the two things a
+    /// full table regeneration would rewrite or move.
+    fn inject_table_caption_and_opaque(path: &Path) {
+        let mut container = crate::Hwp5Container::open(path).unwrap();
+        let compressed = container.file_header().is_compressed();
+        let bytes = container.read_record_stream("/BodyText/Section0").unwrap();
+        drop(container);
+        let mut roots = scan_stream(&bytes, ScanMode::Strict).unwrap().roots;
+
+        fn inject(nodes: &mut [RecordNode]) -> bool {
+            for node in nodes {
+                if node.tag == tag::CTRL_HEADER && node.data.get(..4) == Some(b" lbt") {
+                    let table_index = node
+                        .children
+                        .iter()
+                        .position(|child| child.tag == tag::TABLE)
+                        .expect("TABLE record");
+                    let paragraph = node
+                        .children
+                        .iter()
+                        .find(|child| child.tag == tag::PARA_HEADER)
+                        .expect("cell paragraph")
+                        .clone();
+                    let mut data = Vec::with_capacity(22);
+                    data.extend_from_slice(&1_i32.to_le_bytes()); // paragraph count
+                    data.extend_from_slice(&CAPTION_LIST_ATTR.to_le_bytes());
+                    data.extend_from_slice(&3_u32.to_le_bytes()); // side = bottom, explicit width
+                    data.extend_from_slice(&12_345_i32.to_le_bytes()); // width
+                    data.extend_from_slice(&283_u16.to_le_bytes()); // gap
+                    data.extend_from_slice(&54_321_i32.to_le_bytes()); // maximum text extent
+                    node.children.insert(
+                        table_index,
+                        RecordNode {
+                            tag: tag::LIST_HEADER,
+                            data,
+                            children: Vec::new(),
+                        },
+                    );
+                    node.children.insert(table_index + 1, paragraph);
+                    node.children.insert(
+                        table_index + 3,
+                        RecordNode {
+                            tag: tag::CTRL_DATA,
+                            data: b"table-order-sentinel".to_vec(),
+                            children: Vec::new(),
+                        },
+                    );
+                    return true;
+                }
+                if inject(&mut node.children) {
+                    return true;
+                }
+            }
+            false
+        }
+        assert!(inject(&mut roots));
+        let encoded = encode_compressed_stream(RecordNode::serialize_forest(&roots), compressed);
+        let mut cfb = cfb::open_rw(path).unwrap();
+        cfb.create_stream("/BodyText/Section0")
+            .unwrap()
+            .write_all(&encoded)
+            .unwrap();
+        cfb.flush().unwrap();
+    }
+
+    /// #220 review: a `--set-cell` value that becomes several paragraphs changes one cell's
+    /// paragraph count. That used to drop the whole table on the regeneration path, which
+    /// cannot reproduce a caption's upper listflags and re-appends unknown records after every
+    /// cell. The paragraph run is spliced into the source tree instead, so only the target
+    /// cell's records and its LIST_HEADER paragraph count change.
+    #[test]
+    fn source_preserving_multi_paragraph_cell_splices_into_the_source_table() {
+        let source = source_rewrite_path("cell-splice-source");
+        let output = source_rewrite_path("cell-splice-output");
+        let document = hwp_convert::from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        write_document_with_report(&document, &source, &WriteOptions::default()).unwrap();
+        inject_table_caption_and_opaque(&source);
+
+        let original = crate::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        hwp_convert::set_cell(&mut edited, 0, 1, 0, "첫째 블록\n\n둘째 블록").unwrap();
+
+        rewrite_document_with_report(
+            &source,
+            &original,
+            &edited,
+            &output,
+            &WriteOptions {
+                preserve_linesegs: true,
+                ..WriteOptions::default()
+            },
+        )
+        .unwrap();
+
+        let source_table = table_control_node(&source);
+        let output_table = table_control_node(&output);
+
+        // The caption LIST_HEADER, its paragraph, the TABLE record and the unknown record keep
+        // their bytes and their positions.
+        assert_eq!(source_table.children[0].tag, tag::LIST_HEADER);
+        assert_eq!(
+            u32::from_le_bytes(source_table.children[0].data[4..8].try_into().unwrap()),
+            CAPTION_LIST_ATTR,
+            "픽스처 캡션 listflags"
+        );
+        for index in 0..4 {
+            assert_eq!(
+                source_table.children[index], output_table.children[index],
+                "표 자식 {index} 보존"
+            );
+        }
+        assert_eq!(output_table.children[2].tag, tag::TABLE);
+        assert_eq!(output_table.children[3].data, b"table-order-sentinel");
+
+        // Every source child that is not part of the edited cell survives unchanged.
+        let sentinels = |node: &RecordNode| {
+            node.children
+                .iter()
+                .filter(|child| child.tag == tag::CTRL_DATA)
+                .count()
+        };
+        assert_eq!(sentinels(&source_table), sentinels(&output_table));
+        assert_eq!(
+            source_table.children.len() + 1,
+            output_table.children.len(),
+            "문단 레코드 하나만 늘어난다"
+        );
+
+        // The edited cell now declares and holds two paragraphs.
+        let cell_headers = |node: &RecordNode| -> Vec<(usize, i32)> {
+            node.children
+                .iter()
+                .enumerate()
+                .filter(|(_, child)| child.tag == tag::LIST_HEADER)
+                .map(|(index, child)| {
+                    (
+                        index,
+                        i32::from_le_bytes(child.data[..4].try_into().unwrap()),
+                    )
+                })
+                .collect()
+        };
+        let headers = cell_headers(&output_table);
+        // Index 0 is the caption; the first cell of the table follows the TABLE record.
+        assert_eq!(headers[0].1, 1, "캡션 문단 수 그대로");
+        let edited_cell = headers
+            .iter()
+            .find(|(_, count)| *count == 2)
+            .expect("문단 2개 셀");
+        for offset in 1..=2 {
+            assert_eq!(
+                output_table.children[edited_cell.0 + offset].tag,
+                tag::PARA_HEADER,
+                "셀 LIST_HEADER 뒤 문단 레코드"
+            );
+        }
+
+        let written = crate::read_document(&output).unwrap().document;
+        let table = written.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("표 없음");
+        let cell = table
+            .cells
+            .iter()
+            .find(|cell| cell.row == 1 && cell.col == 0)
+            .expect("셀 (1,0)");
+        assert_eq!(cell.paragraphs.len(), 2);
+        assert!(cell.paragraphs[0].plain_text().contains("첫째 블록"));
+        assert!(cell.paragraphs[1].plain_text().contains("둘째 블록"));
+        let caption = table.caption.as_ref().expect("캡션 없음");
+        assert_eq!(caption.paragraphs.len(), 1);
+
         std::fs::remove_file(source).unwrap();
         std::fs::remove_file(output).unwrap();
     }

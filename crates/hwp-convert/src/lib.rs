@@ -43,7 +43,8 @@ pub use field::{
     scan_placeholders, set_field,
 };
 pub use format::{
-    CharFormat, PageProps, ParaProps, set_char_format, set_page_def, set_para_align, set_para_props,
+    CharFormat, PageProps, ParaProps, set_cell_para_props, set_char_format, set_page_def,
+    set_para_align, set_para_props,
 };
 pub use frames::{
     FrameFields, compatibility_warnings, leading_frames, parse_field, parse_frame_fields,
@@ -63,7 +64,7 @@ pub use official::{
     HeadingNumbering, OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides,
     profile, profiles,
 };
-pub use structure::{delete_paragraph, insert_paragraph};
+pub use structure::{delete_paragraph, insert_paragraph, text_in_unwritable_object};
 pub use style::{display_width, style_table, style_tables};
 
 /// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).

@@ -259,9 +259,9 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--seal` | `<SEAL>` |  | 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치 (반복 가능) |
 | `--set-format` | `<SET_FORMAT>` |  | 글자 서식 "찾기:속성=값,..." (예: "제목:bold=on,size=16,color=#FF0000") (반복 가능) |
 | `--set-align` | `<SET_ALIGN>` |  | 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute) (반복 가능) |
-| `--insert-para` | `<INSERT_PARA>` |  | 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단 (반복 가능) |
-| `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단 (반복 가능) |
-| `--delete-para` | `<DELETE_PARA>` |  | 문단 삭제 "텍스트" — 텍스트가 있는 문단 삭제 (반복 가능) |
+| `--insert-para` | `<INSERT_PARA>` |  | 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단. 앵커는 표 셀·중첩 표·캡션 안에서도 찾는다 (반복 가능) |
+| `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단. 앵커는 표 셀·중첩 표·캡션 안에서도 찾는다 (반복 가능) |
+| `--delete-para` | `<DELETE_PARA>` |  | 문단 삭제 "텍스트" — 텍스트가 있는 문단 삭제. 표 셀·캡션 안도 지우며, 리스트마다 최소 1문단은 남긴다 (반복 가능) |
 | `--add-row` | `<ADD_ROW>` |  | 표 행 추가 "표[:위치[:개수[:템플릿행]]]" — 위치 생략·end면 끝, 숫자면 그 행 앞에 삽입 (반복 가능, 0-기반; 병합 표도 지원) |
 | `--add-col` | `<ADD_COL>` |  | 표 열 추가 "표[:위치[:개수]]" — 위치 생략·end면 끝, 숫자면 그 열 앞에 삽입. 전체 폭 유지(기존 열 균등 축소). 병합 표도 지원 (반복 가능, 0-기반) |
 | `--delete-row` | `<DELETE_ROW>` |  | 표 행 삭제 "표:행" — N번째 표의 R행 (반복 가능, 0-기반; 병합 행은 거부) |
@@ -270,7 +270,8 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--split-cell` | `<SPLIT_CELL>` |  | 셀 분할 "표:행:열" — 병합 셀을 1×1로 분해 (반복 가능, 0-기반) |
 | `--add-table` | `<ADD_TABLE>` |  | 표 삽입 "앵커=>행JSON" — 앵커 문단 뒤에 균일 표 삽입. 행JSON은 문자열 배열의 배열 (반복 가능) |
 | `--clone-table` | `<CLONE_TABLE>` |  | 표 복제 "원본표=>앵커[=>blank\|keep]" — N번째 표(0-기반, 재귀 순서)를 깊은 복제해 앵커 문단 뒤에 삽입. blank(기본)는 구조·서식만 남기고 셀 내용을 비우고, keep은 지원 콘텐츠(중첩 표·그림)까지 복제(id 재부여) (반복 가능) |
-| `--set-para` | `<SET_PARA>` |  | 문단 모양 "찾기=>키:값" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm) (반복 가능) |
+| `--set-para` | `<SET_PARA>` |  | 문단 모양 "찾기=>키:값[,키:값]" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm), align (left\|right\|center\|justify\|distribute) (반복 가능) |
+| `--set-cell-para` | `<SET_CELL_PARA>` |  | 셀 문단 모양 "표:행:열=>키:값[,키:값]" — 앵커 없이 그 셀의 모든 문단에 적용. 키는 --set-para와 같고, 한 번의 실행에서 --set-cell 뒤에 돈다 (반복 가능, 0-기반) |
 | `--set-page` | `<SET_PAGE>` |  | 페이지 설정 "키:값" — 키: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape) (반복 가능) |
 | `--delete-image` | `<DELETE_IMAGE>` |  | 그림 삭제 "앵커" — 앵커 문단의 그림 삭제 (반복 가능) |
 | `--delete-table` | `<DELETE_TABLE>` |  | 표 삭제 "n"(0-기반 인덱스) 또는 "앵커"(앵커 문단의 표) (반복 가능) |

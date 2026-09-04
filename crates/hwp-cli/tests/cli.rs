@@ -2505,6 +2505,525 @@ fn edit_set_para_line_spacing_fields_survive_hwp5_roundtrip() {
     }
 }
 
+/// #220: a blank-line-separated `--set-cell` value becomes one paragraph per block, on both
+/// writers. On the hwp5 surgical path hwp-convert must supply what the writer will not
+/// (synthesize=false): the last-paragraph bit on the last paragraph only, and distinct
+/// instance ids. Asserts on IR JSON and exit codes only - never on glyphs or page counts.
+#[test]
+fn edit_set_cell_splits_blank_lines_into_paragraphs() {
+    const TABLE_MD: &str = "| 가 | 나 |\n|----|----|\n| 1 | 2 |\n";
+    const VALUE: &str = "0:1:0=첫째 항목\n\n둘째 항목";
+
+    // hwpx via make_doc; hwp5 built the same way so the test needs no fixture.
+    let md = tmp("s_tier_cell_paras.md");
+    std::fs::write(&md, TABLE_MD).unwrap();
+    let src_hwp = tmp("s_tier_cell_paras.hwp");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src_hwp)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let src_hwpx = make_doc("s_tier_cell_paras_x", TABLE_MD);
+
+    for (case, src) in [("hwp5", &src_hwp), ("hwpx", &src_hwpx)] {
+        let ext = if case == "hwp5" { "hwp" } else { "hwpx" };
+        let out = tmp(&format!("s_tier_cell_paras_out_{case}.{ext}"));
+        let json = tmp(&format!("s_tier_cell_paras_out_{case}.json"));
+        let r = hwp()
+            .arg("edit")
+            .arg(src)
+            .arg("-o")
+            .arg(&out)
+            .args(["--set-cell", VALUE])
+            .output()
+            .unwrap();
+        assert!(
+            r.status.success(),
+            "{case} set-cell: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        let c = hwp()
+            .arg("convert")
+            .arg(&out)
+            .args(["--to", "json", "-o"])
+            .arg(&json)
+            .output()
+            .unwrap();
+        assert!(
+            c.status.success(),
+            "{case} convert json: {}",
+            String::from_utf8_lossy(&c.stderr)
+        );
+        let ir: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&json).unwrap()).expect("IR JSON");
+        let table = ir["sections"][0]["paragraphs"]
+            .as_array()
+            .expect("paragraphs")
+            .iter()
+            .flat_map(|p| p["controls"].as_array().cloned().unwrap_or_default())
+            .find_map(|c| c.get("Table").cloned())
+            .expect("표 없음");
+        let cell = table["cells"]
+            .as_array()
+            .expect("cells")
+            .iter()
+            .find(|c| c["row"] == 1 && c["col"] == 0)
+            .expect("셀 (1,0)")
+            .clone();
+        let paras = cell["paragraphs"].as_array().expect("cell paragraphs");
+        assert_eq!(paras.len(), 2, "{case}: 블록 2개 → 문단 2개");
+
+        let texts: Vec<String> = paras
+            .iter()
+            .map(|p| {
+                p["chars"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|ch| ch.get("Text").and_then(|t| t.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(texts, vec!["첫째 항목", "둘째 항목"], "{case}: 블록 순서");
+
+        // B4 and A8 are hwp5 paragraph-header invariants; OWPML carries neither the
+        // nchars flag nor the hwp5 instance id, so they only apply on the hwp5 path -
+        // which is exactly the path whose writer will not set them for us.
+        if case == "hwp5" {
+            let flag = |i: usize| paras[i]["header"]["chars_flags"].as_u64().unwrap() & 0x80;
+            assert_eq!(flag(0), 0, "{case}: 첫 문단 마지막 비트 없음");
+            assert_ne!(flag(1), 0, "{case}: 마지막 문단 마지막 비트");
+
+            let id = |i: usize| paras[i]["header"]["instance_id"].as_u64().unwrap();
+            assert_ne!(id(0), 0, "{case}: 문단 0 instance_id 비-0");
+            assert_ne!(id(1), 0, "{case}: 문단 1 instance_id 비-0");
+            assert_ne!(id(0), id(1), "{case}: instance_id 중복");
+        }
+
+        let v = hwp().arg("validate").arg(&out).output().unwrap();
+        assert!(
+            v.status.success(),
+            "{case} validate: {}",
+            String::from_utf8_lossy(&v.stderr)
+        );
+        for f in [&out, &json] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+    for f in [&md, &src_hwp, &src_hwpx] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// #221: --set-cell-para restyles every paragraph of the addressed cell with no text anchor,
+/// and in one invocation it runs after --set-cell, so it reaches the paragraphs that
+/// invocation just created. Asserts on IR JSON only.
+#[test]
+fn edit_set_cell_para_styles_every_paragraph_of_the_cell() {
+    let md = tmp("s_tier_cell_para.md");
+    std::fs::write(&md, "| 가 | 나 |\n|----|----|\n| 1 | 2 |\n").unwrap();
+    let src = tmp("s_tier_cell_para.hwp");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let out = tmp("s_tier_cell_para_out.hwp");
+    let json = tmp("s_tier_cell_para_out.json");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set-cell", "0:1:0=첫째\n\n둘째"])
+        .args([
+            "--set-cell-para",
+            "0:1:0=>line-spacing:150%,indent:-12mm,align:center",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "set-cell + set-cell-para: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let c = hwp()
+        .arg("convert")
+        .arg(&out)
+        .args(["--to", "json", "-o"])
+        .arg(&json)
+        .output()
+        .unwrap();
+    assert!(
+        c.status.success(),
+        "convert json: {}",
+        String::from_utf8_lossy(&c.stderr)
+    );
+    let ir: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&json).unwrap()).expect("IR JSON");
+    let table = ir["sections"][0]["paragraphs"]
+        .as_array()
+        .expect("paragraphs")
+        .iter()
+        .flat_map(|p| p["controls"].as_array().cloned().unwrap_or_default())
+        .find_map(|c| c.get("Table").cloned())
+        .expect("표 없음");
+    let cell = table["cells"]
+        .as_array()
+        .expect("cells")
+        .iter()
+        .find(|c| c["row"] == 1 && c["col"] == 0)
+        .expect("셀 (1,0)")
+        .clone();
+    let paras = cell["paragraphs"].as_array().expect("cell paragraphs");
+    assert_eq!(paras.len(), 2, "--set-cell이 만든 문단 2개");
+
+    let shape_ids: Vec<u64> = paras
+        .iter()
+        .map(|p| p["para_shape"].as_u64().expect("para_shape id"))
+        .collect();
+    assert_eq!(shape_ids[0], shape_ids[1], "두 문단이 한 모양을 공유");
+    let shape = &ir["header"]["para_shapes"][shape_ids[0] as usize];
+    // Line spacing follows the fields plan 03.1-01 established: ratio type 0, value 150.
+    assert_eq!(shape["line_spacing_type"], 0, "비율 줄간격");
+    assert_eq!(shape["line_spacing"], 150);
+    assert_eq!(shape["line_spacing_old"], 150);
+    // Alignment lives in attr1 bits 2..4; center is 3.
+    let attr1 = shape["attr1"].as_u64().expect("attr1");
+    assert_eq!((attr1 >> 2) & 0x7, 3, "가운데 정렬 코드");
+    assert!(
+        shape["indent"].as_i64().expect("indent") < 0,
+        "내어쓰기(음수 들여쓰기): {}",
+        shape["indent"]
+    );
+
+    // A table index that does not exist fails and the error names the flag.
+    let bad = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(tmp("s_tier_cell_para_bad.hwp"))
+        .args(["--set-cell-para", "99:0:0=>align:center"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "없는 표는 실패해야 한다");
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("--set-cell-para"),
+        "오류가 플래그를 명시: {stderr}"
+    );
+
+    for f in [&md, &src, &out, &json] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// #220 review: an hwp5 Generic control that carries its original record subtree
+/// (`raw_children`) is re-emitted from those bytes, so an IR edit inside it would be dropped
+/// on save. `--insert-para` must therefore refuse such an anchor instead of reporting success,
+/// and the written document must not gain the text. A composed header is that case: the hwp5
+/// reader gives every `head` control both `paragraph_lists` and `raw_children`.
+#[test]
+fn edit_refuses_to_insert_into_a_source_preserved_object() {
+    let spec = tmp("s_tier_raw_object.json");
+    std::fs::write(
+        &spec,
+        r#"{
+  "version": "1.0",
+  "sections": [
+    {
+      "header": {
+        "default": [
+          { "type": "paragraph", "runs": [ { "type": "text", "text": "머리말앵커" } ] }
+        ]
+      },
+      "blocks": [
+        { "type": "paragraph", "runs": [ { "type": "text", "text": "본문 문단" } ] }
+      ]
+    }
+  ]
+}
+"#,
+    )
+    .unwrap();
+    // Compose to hwpx, then convert to hwp5: the hwp5 reader is what turns the header into a
+    // Generic control that owns both `paragraph_lists` and `raw_children`.
+    let staged = tmp("s_tier_raw_object.hwpx");
+    let src = tmp("s_tier_raw_object.hwp");
+    for f in [&staged, &src] {
+        let _ = std::fs::remove_file(f);
+    }
+    let composed = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&staged)
+        .output()
+        .unwrap();
+    assert!(
+        composed.status.success(),
+        "compose: {}",
+        String::from_utf8_lossy(&composed.stderr)
+    );
+    let converted = hwp()
+        .arg("convert")
+        .arg(&staged)
+        .args(["--to", "hwp", "-o"])
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "convert to hwp: {}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let head_text = |path: &std::path::Path| -> String {
+        let out = hwp()
+            .arg("cat")
+            .arg(path)
+            .args(["--with-header-footer"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "cat: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(
+        head_text(&src).contains("머리말앵커"),
+        "머리말 앵커가 원본에 있어야 한다"
+    );
+
+    // Default: an unapplied edit is a hard error, and the message names the real reason.
+    let out = tmp("s_tier_raw_object_out.hwp");
+    let _ = std::fs::remove_file(&out);
+    let refused = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--insert-para", "머리말앵커=>삽입된 문단"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "적용되지 않은 편집은 실패");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("개체") && stderr.contains("편집할 수 없어"),
+        "거부 사유를 밝혀야 한다: {stderr}"
+    );
+
+    assert!(!out.exists(), "거부된 편집은 출력을 만들지 않는다");
+
+    // Paired with an edit that does apply, --allow-partial publishes the file - and the
+    // header must come out byte-for-byte the same text it went in with.
+    let partial = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--replace", "본문 문단=>바뀐 본문"])
+        .args(["--insert-para", "머리말앵커=>삽입된 문단"])
+        .arg("--allow-partial")
+        .output()
+        .unwrap();
+    assert!(
+        partial.status.success(),
+        "--allow-partial: {}",
+        String::from_utf8_lossy(&partial.stderr)
+    );
+    let after = head_text(&out);
+    assert!(
+        after.contains("바뀐 본문"),
+        "적용 가능한 편집은 반영: {after}"
+    );
+    assert!(after.contains("머리말앵커"), "머리말은 그대로: {after}");
+    assert!(
+        !after.contains("삽입된 문단"),
+        "저장 파일에 삽입되지 않았는데 성공으로 보고되면 안 된다: {after}"
+    );
+
+    // Deleting inside the same object is refused the same way.
+    let del = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(tmp("s_tier_raw_object_del.hwp"))
+        .args(["--delete-para", "머리말앵커"])
+        .output()
+        .unwrap();
+    assert!(!del.status.success(), "머리말 문단 삭제도 거부");
+
+    for f in [
+        &spec,
+        &staged,
+        &src,
+        &out,
+        &tmp("s_tier_raw_object_del.hwp"),
+    ] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// #220 review: a paragraph inserted into a nested list has to come out of the writer with
+/// line layout (rule B2) - a last paragraph that sets nchars bit31 while carrying zero
+/// PARA_LINE_SEG records is the contradiction rule B3 names. Neither a table caption nor a
+/// table nested in a cell can be authored from markdown or a compose spec, so the source is
+/// built through the IR; the edit itself goes through the CLI and the result is re-read.
+#[test]
+fn edit_insert_para_fills_line_layout_in_nested_lists() {
+    use hwp_model::{Control, HwpChar, ctrl_char};
+
+    fn set_text(para: &mut hwp_model::Paragraph, text: &str) {
+        para.chars = text
+            .chars()
+            .map(HwpChar::Text)
+            .chain(std::iter::once(HwpChar::CharCtrl(ctrl_char::PARA_BREAK)))
+            .collect();
+        para.line_segs.clear();
+    }
+
+    let mut doc = hwp_convert::from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+    // The markdown writer already emits a paragraph carrying the table anchor character, so
+    // cloning it and swapping in another table is the well-formed way to nest one.
+    let anchor_para = doc.sections[0]
+        .paragraphs
+        .iter()
+        .find(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+        .expect("표 앵커 문단")
+        .clone();
+    {
+        let table = doc.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|p| &mut p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음");
+
+        let mut inner = table.clone();
+        set_text(&mut inner.cells[0].paragraphs[0], "중첩앵커");
+        let mut nested_anchor = anchor_para.clone();
+        nested_anchor.controls = vec![Control::Table(inner)];
+
+        let mut caption_para = table.cells[0].paragraphs[0].clone();
+        set_text(&mut caption_para, "캡션앵커");
+        table.caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![caption_para],
+        });
+
+        let host = table
+            .cells
+            .iter_mut()
+            .find(|c| c.row == 1 && c.col == 1)
+            .expect("셀 (1,1)");
+        host.paragraphs = vec![nested_anchor];
+    }
+
+    let src = tmp("s_tier_nested_lists.hwp");
+    let out = tmp("s_tier_nested_lists_out.hwp");
+    for f in [&src, &out] {
+        let _ = std::fs::remove_file(f);
+    }
+    hwp5::write_document(&doc, &src, &hwp5::WriteOptions::default()).expect("hwp5 write");
+
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--insert-para", "중첩앵커=>중첩 새 문단"])
+        .args(["--insert-para", "캡션앵커=>캡션 새 문단"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "insert-para: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let written = hwp5::read_document(&out).expect("hwp5 re-read").document;
+    let table = written.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("표 없음");
+
+    // Every paragraph of a list that gained one must carry line layout, and only the last of
+    // the list may declare the layout cache complete (nchars bit31).
+    let check = |label: &str, paras: &[hwp_model::Paragraph]| {
+        assert_eq!(paras.len(), 2, "{label}: 문단 2개");
+        for (i, p) in paras.iter().enumerate() {
+            assert!(
+                !p.line_segs.is_empty(),
+                "{label} 문단 {i}: 줄 배치 비어 있음"
+            );
+            assert_eq!(
+                p.header.chars_flags & 0x80 != 0,
+                i + 1 == paras.len(),
+                "{label} 문단 {i}: 마지막 문단 비트"
+            );
+        }
+    };
+
+    let caption = table.caption.as_ref().expect("캡션 없음");
+    assert!(
+        caption.paragraphs[1].plain_text().contains("캡션 새 문단"),
+        "캡션 삽입: {:?}",
+        caption.paragraphs[1].plain_text()
+    );
+    check("캡션", &caption.paragraphs);
+
+    let nested = table
+        .cells
+        .iter()
+        .find(|c| c.row == 1 && c.col == 1)
+        .expect("셀 (1,1)")
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("중첩 표 없음");
+    assert!(
+        nested.cells[0].paragraphs[1]
+            .plain_text()
+            .contains("중첩 새 문단"),
+        "중첩 셀 삽입: {:?}",
+        nested.cells[0].paragraphs[1].plain_text()
+    );
+    check("중첩 셀", &nested.cells[0].paragraphs);
+
+    for f in [&src, &out] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 /// The same edit under `--verify`: the hwp5 semantic canonicaliser has to mirror what the writer
 /// emits for the spacing fields (attr1 bits 0..1 and the 5.0.2.5+ tail window), otherwise the
 /// expected side keeps the source bytes, the re-read side carries the emitted ones, and a valid

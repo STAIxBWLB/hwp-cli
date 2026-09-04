@@ -66,12 +66,14 @@ syntax (used by `fill`, `slots` and the template tools).
   `--strict` fails when markdown import drops content.
 - `hwp edit {input} -o {output} [flags...]` — edit an existing document; images, formatting
   and unparsed records are preserved. String flags (all repeatable): `--replace "find=>repl"`,
-  `--set-cell "t:r:c=value"` (0-based), `--set-field "name=value"`, `--set-meta "k=v"`,
+  `--set-cell "t:r:c=value"` (0-based; a value split by blank lines writes one paragraph per
+  block), `--set-field "name=value"`, `--set-meta "k=v"`,
   `--create-field "anchor=>name[=value]"`, `--create-bookmark "anchor=>name"`,
   `--create-hyperlink "anchor=>[text=>]URL"`, `--insert-image "anchor=>path[@WxH mm]"`,
   `--seal "anchor=>path[@size mm]"`, `--set-format "find:prop=value,..."`,
   `--set-align "find=left|right|center|justify|distribute"`. Structural flags (all
-  repeatable): `--insert-para "anchor=>text"`, `--insert-para-before`, `--delete-para "text"`,
+  repeatable): `--insert-para "anchor=>text"`, `--insert-para-before`, `--delete-para "text"`
+  (the anchor is also searched inside table cells and captions),
   `--add-row "t[:at[:count[:template_row]]]"` / `--add-col "t[:at[:count]]"` (`at` omitted or
   `end` appends; a number inserts before that row/column; merged tables supported) /
   `--delete-row "t:r"` / `--delete-col "t:c"` /
@@ -80,8 +82,11 @@ syntax (used by `fill`, `slots` and the template tools).
   blank keeps structure/styles with empty cells, keep also clones nested tables/images
   with remapped IDs) /
   `--delete-table "n|anchor"` / `--delete-image "anchor"` / `--delete-field "name"` /
-  `--delete-bookmark "name"`, paragraph shape `--set-para "find=>key:value"`
-  (line-spacing, indent, left/right/top/bottom mm) and page setup `--set-page "key:value"`
+  `--delete-bookmark "name"`, paragraph shape `--set-para "find=>key:value[,key:value]"`
+  (line-spacing, indent, left/right/top/bottom mm, align),
+  `--set-cell-para "t:r:c=>key:value[,key:value]"` (same keys, applied to every paragraph of
+  the addressed cell with no text anchor; runs after `--set-cell` in one invocation)
+  and page setup `--set-page "key:value"`
   (width/height/margin-*/orientation). `--verify` re-reads the output; `--allow-partial`
   relaxes the all-or-nothing rule (see Safety rules).
 - `hwp fill {template.hwpx} -o {output}` — fidelity-preserving `{{name}}` template fill

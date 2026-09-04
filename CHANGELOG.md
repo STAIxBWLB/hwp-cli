@@ -10,23 +10,28 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
-**Fixed**
+**Added**
 
-- A table cell holding several paragraphs whose saved line positions restart per paragraph no longer
-  draws those paragraphs on top of each other. The layout flow floor now advances once per
-  paragraph, so it covers text boxes, headers and footers through the same shared function, and a
-  paragraph the floor pushes down moves as a whole instead of having each of its lines clamped onto
-  the floor. That move is bounded by the cell (or cell fragment) it belongs to: a line the move
-  would push past the cell bottom is clipped there and reported as `table_cell_content_overflow`,
-  instead of being painted over the row below or over the footer. Documents whose saved line
-  positions already accumulate across a cell, which is what Hancom writes, render exactly as before
-  (#222).
+- `hwp edit --set-cell-para "표:행:열=>키:값[,키:값]"` applies a paragraph shape to every
+  paragraph of the addressed cell with no text anchor, using the same 0-based addressing as
+  `--set-cell` and running after it in one invocation, so it reaches the paragraphs that
+  invocation just created. It accepts the `--set-para` keys plus `align`
+  (`left`, `right`, `center`, `justify`, `distribute`), and the MCP `hwp_edit` tool gains a
+  matching typed `set_cell_para` array. As a consequence `--set-para` now accepts `align` and
+  comma-separated key lists too, because both flags share one parser. (#221)
 
 **Changed**
 
-- Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
-  `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
-  ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.
+- **Behaviour change:** `hwp edit --set-cell "표:행:열=값"` now splits the value on blank lines
+  and writes one paragraph per block, where it previously wrote a single paragraph containing
+  line breaks. CRLF is normalised first, a run of two or more line feeds is a paragraph
+  boundary, empty blocks are dropped, and a single line feed inside a block is still an
+  in-paragraph line break. An empty value still yields one empty paragraph, and a value with no
+  blank line still yields exactly one paragraph. `hwp fill`, `--data tables`,
+  `--set-cell-by-label` and the MCP typed `set_cell` operation share the same behaviour. The
+  paragraph identifiers the extra paragraphs need are reserved with checked arithmetic before
+  anything is written, so a document whose identifiers already reach the 32-bit limit fails the
+  call and is left untouched instead of wrapping onto an identifier in use. (#220)
 - Every paragraph entry of the `hwp compare --json` report gains a `text` string carrying the
   paragraph's full text and a `location` object naming where that paragraph lives; a replaced pair
   also carries `b_text` and `b_location`. A nested location additionally carries the `path` of
@@ -35,21 +40,41 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   and `table_count` (`{a, b}`). The change is purely additive - the report contract string stays
   `hwp-compare-report-v1` and every key present before is still present with the same meaning, so
   existing consumers need no change (#223).
+- Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
+  `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
+  ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.
 
 **Fixed**
 
-- `hwp compare` names and quotes paragraphs inside table cells instead of printing a blank line. The
-  report used to look each paragraph's text up in a flat list of top-level paragraphs while the
-  index came from the engine's deep walk, so past the first table the two index spaces diverged. A
-  cell difference now prints as `표 0 셀 (1,1) 문단 1: text`, using the same 0-based table numbering
-  `hwp edit --set-cell` takes - a table nested inside a caption is unreachable for that editor, so
-  it consumes no table number and cannot shift the ones that follow. The structure summary states
-  each side's own count of paragraphs inside table cells (`표 내부 문단 4→5 (+1)`), which is
-  unmoved by a paragraph that merely migrates between cells, and states a table-count change
-  instead of silently dropping the surplus tables (#223).
-
-**Fixed**
-
+- `hwp edit --insert-para`, `--insert-para-before` and `--delete-para` find their anchor inside
+  table cells, nested tables and table, picture and shape captions, not only among a section's
+  own paragraphs. Insertion searches every section's own paragraphs first, in section order, and
+  only then the nested lists in document order, so every invocation that matched a top-level
+  paragraph before matches the same one now; every section, cell and caption keeps at least one
+  paragraph. Objects an HWP 5.0 source hands over
+  as their original records (text boxes, headers and footers) are not entered, because the
+  writer re-emits those records verbatim and an edit inside them would be silently discarded on
+  save; an anchor found only there is reported as unapplied with that reason instead. (#220)
+- A `--set-cell` value that becomes several paragraphs no longer rewrites the rest of its table.
+  Changing a cell's paragraph count used to fall back to regenerating the whole table control,
+  which clears a caption's wrapping and vertical-alignment listflags and re-appends unknown
+  records after the last cell instead of where they were read from. The new paragraph records
+  are spliced into the source record tree, updating only that cell's LIST_HEADER paragraph
+  count and leaving every other source child byte-identical and in position. A structural
+  change to the table (added rows or columns) still regenerates it as before. (#220)
+- Line layout is now synthesized for every nested paragraph list, not only for the cells of a
+  section's own paragraphs: table, picture and shape captions, and the tables and objects a cell
+  paragraph itself holds, are reached recursively. A paragraph inserted there used to be written
+  with no PARA_LINE_SEG record, which Hangul draws at zero height, and as the last paragraph of
+  its list it also declared a complete layout cache it did not have. Lists that already carry
+  line layout keep it; table cells are still recomputed as before. (#220)
+- A table cell holding several paragraphs is no longer measured once per paragraph when
+  synthesizing table height, which made such tables render several times too tall. The cell's
+  cached vertical positions already accumulate across its paragraphs, so the height comes from
+  the last paragraph's line block. (#220)
+- A paragraph created for a table cell no longer inherits the template paragraph's control mask.
+  The mask pointed at controls the new, emptied paragraph does not have, which Hangul reads as
+  corruption; it is now cleared so the writer recomputes it from the characters. (#220)
 - `hwp edit --set-para "찾기=>line-spacing:150%"` accepts the trailing percent sign the help has
   always documented, instead of failing the integer parse. A rejected value now names `--set-para`,
   quotes what it was given and lists the accepted forms (`150%`, `150`, `15pt`). Only an ASCII `%`
@@ -63,6 +88,24 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `hwp edit --verify` no longer rejects an hwp5 line-spacing edit: the semantic canonicaliser now
   projects the same attribute bits and record-tail bytes the writer emits, so the edit publishes
   instead of failing verification. (#225)
+- A table cell holding several paragraphs whose saved line positions restart per paragraph no longer
+  draws those paragraphs on top of each other. The layout flow floor now advances once per
+  paragraph, so it covers text boxes, headers and footers through the same shared function, and a
+  paragraph the floor pushes down moves as a whole instead of having each of its lines clamped onto
+  the floor. That move is bounded by the cell (or cell fragment) it belongs to: a line the move
+  would push past the cell bottom is clipped there and reported as `table_cell_content_overflow`,
+  instead of being painted over the row below or over the footer. Documents whose saved line
+  positions already accumulate across a cell, which is what Hancom writes, render exactly as before
+  (#222).
+- `hwp compare` names and quotes paragraphs inside table cells instead of printing a blank line. The
+  report used to look each paragraph's text up in a flat list of top-level paragraphs while the
+  index came from the engine's deep walk, so past the first table the two index spaces diverged. A
+  cell difference now prints as `표 0 셀 (1,1) 문단 1: text`, using the same 0-based table numbering
+  `hwp edit --set-cell` takes - a table nested inside a caption is unreachable for that editor, so
+  it consumes no table number and cannot shift the ones that follow. The structure summary states
+  each side's own count of paragraphs inside table cells (`표 내부 문단 4→5 (+1)`), which is
+  unmoved by a paragraph that merely migrates between cells, and states a table-count change
+  instead of silently dropping the surplus tables (#223).
 
 ## [0.16.1]
 

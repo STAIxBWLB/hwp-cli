@@ -53,47 +53,193 @@ fn para_template(p: &Paragraph) -> (ParaShapeId, StyleId, CharShapeId) {
     )
 }
 
-/// `anchor`를 가진 첫 본문 문단 뒤(또는 앞)에 `text` 문단을 삽입한다. 반환=삽입 여부.
-/// 새 문단은 앵커 문단의 글자/문단 모양을 상속한다.
+/// 문서의 모든 문단 리스트에 `f`를 적용한다 — 주어진 리스트를 **먼저** 부르고,
+/// 그다음 그 리스트의 각 문단이 품은 중첩 리스트(표 캡션·표 셀·그림 캡션·개체
+/// 문단 리스트·개체 캡션)로 재귀한다. 구역정의 컨트롤은 건너뛴다.
+///
+/// `f`가 참을 돌려주면 그 리스트가 바뀐 것으로 본다. 절대 조기 종료하지 않고
+/// (결과는 OR로 합친다) 모든 레벨을 방문한다 — 조기 종료 여부는 `f`가 스스로
+/// 상태를 들고 판단한다. 원문 XML(`hwpx_raw_xml`)을 품은 개체 안이 바뀌면 그
+/// 원문은 낡으므로 지운다 — writer가 stale XML을 방출하는 것을 막는다.
+///
+/// **hwp5 원본 레코드를 품은 개체(`raw_children` 비어있지 않음)는 들어가지 않는다.**
+/// hwp5 writer(`emit_control`)는 그런 개체를 `raw_children` 바이트 그대로 다시 쓰고
+/// `paragraph_lists`는 보지 않으므로, 안쪽 IR을 고쳐도 저장 파일은 그대로다. IR에서
+/// 재합성하는 길도 없다 — gso 재합성은 정품과 어긋나 손상을 부르는 것으로 판명돼
+/// (규칙 E6) 글상자는 `degrade_hwpx_gso`가 본문으로 내리는 안전 강등만 지원한다.
+/// 따라서 조용한 성공 대신 아예 방문하지 않는다. 그 안의 앵커는
+/// [`text_in_unwritable_object`]가 따로 알려 준다.
+pub(crate) fn walk_para_lists(
+    paras: &mut Vec<Paragraph>,
+    f: &mut dyn FnMut(&mut Vec<Paragraph>) -> bool,
+) -> bool {
+    let hit = f(paras);
+    hit | walk_nested_para_lists(paras, f)
+}
+
+/// [`walk_para_lists`]에서 **주어진 리스트 자신은 빼고** 그 아래 중첩 리스트만 훑는다.
+/// 두 단계 탐색(섹션 본문 먼저, 그다음 중첩)이 필요한 [`insert_paragraph`]가 쓴다.
+fn walk_nested_para_lists(
+    paras: &mut [Paragraph],
+    f: &mut dyn FnMut(&mut Vec<Paragraph>) -> bool,
+) -> bool {
+    let mut hit = false;
+    for para in paras.iter_mut() {
+        for ctrl in &mut para.controls {
+            match ctrl {
+                Control::Table(t) => {
+                    if let Some(cap) = &mut t.caption {
+                        hit |= walk_para_lists(&mut cap.paragraphs, f);
+                    }
+                    for cell in &mut t.cells {
+                        hit |= walk_para_lists(&mut cell.paragraphs, f);
+                    }
+                }
+                Control::Picture(pic) => {
+                    if let Some(cap) = &mut pic.caption {
+                        hit |= walk_para_lists(&mut cap.paragraphs, f);
+                    }
+                }
+                // 저장 시 원본 서브트리를 그대로 쓰는 개체 — 안쪽 편집은 버려진다.
+                Control::Generic(g) if !g.raw_children.is_empty() => {}
+                Control::Generic(g) => {
+                    let mut inner = false;
+                    for list in &mut g.paragraph_lists {
+                        inner |= walk_para_lists(&mut list.paragraphs, f);
+                    }
+                    if let Some(cap) = &mut g.caption {
+                        inner |= walk_para_lists(&mut cap.paragraphs, f);
+                    }
+                    if inner {
+                        g.hwpx_raw_xml = None;
+                    }
+                    hit |= inner;
+                }
+                Control::SectionDef(_) => {}
+            }
+        }
+    }
+    hit
+}
+
+/// [`walk_para_lists`]가 건너뛰는 개체(hwp5 원본 레코드를 품은 글상자·머리말 등)
+/// 안에 `text`가 있는지 본다. 문단 삽입·삭제가 아무 것도 못 했을 때 "앵커가 없다"와
+/// "앵커가 손댈 수 없는 개체 안에 있다"를 구별해 알리기 위한 진단용이다.
+pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
+    fn in_list(paras: &[Paragraph], text: &str, inside_raw: bool) -> bool {
+        if inside_raw
+            && paras
+                .iter()
+                .any(|p| find_match(&p.chars, text, 0).is_some())
+        {
+            return true;
+        }
+        paras.iter().any(|p| {
+            p.controls.iter().any(|ctrl| match ctrl {
+                Control::Table(t) => {
+                    t.caption
+                        .as_ref()
+                        .is_some_and(|c| in_list(&c.paragraphs, text, inside_raw))
+                        || t.cells
+                            .iter()
+                            .any(|c| in_list(&c.paragraphs, text, inside_raw))
+                }
+                Control::Picture(pic) => pic
+                    .caption
+                    .as_ref()
+                    .is_some_and(|c| in_list(&c.paragraphs, text, inside_raw)),
+                Control::Generic(g) => {
+                    let raw = inside_raw || !g.raw_children.is_empty();
+                    g.paragraph_lists
+                        .iter()
+                        .any(|l| in_list(&l.paragraphs, text, raw))
+                        || g.caption
+                            .as_ref()
+                            .is_some_and(|c| in_list(&c.paragraphs, text, raw))
+                }
+                Control::SectionDef(_) => false,
+            })
+        })
+    }
+    doc.sections
+        .iter()
+        .any(|s| in_list(&s.paragraphs, text, false))
+}
+
+/// `anchor`를 가진 첫 문단 뒤(또는 앞)에 `text` 문단을 삽입한다. 반환=삽입 여부.
+/// 새 문단은 앵커 문단의 글자/문단 모양을 상속한다. 앵커는 본문뿐 아니라 표 셀·
+/// 중첩 표·캡션 안에서도 찾는다.
+///
+/// 탐색은 **두 단계**다: ① 모든 섹션의 본문 문단을 섹션 순서대로, ② 그래도 못 찾으면
+/// 중첩 리스트를 문서 순서대로. 중첩 탐색이 없던 시절의 우선순위가 그대로 남는다 —
+/// 단순 전위 순회로 하면 섹션 0의 셀이 섹션 1의 본문을 이겨, 예전에 섹션 1 본문을
+/// 맞히던 호출이 조용히 다른 문단을 고르게 된다.
 pub fn insert_paragraph(doc: &mut Document, anchor: &str, text: &str, before: bool) -> bool {
-    for section in &mut doc.sections {
-        if let Some(i) = section
-            .paragraphs
+    // 두 단계가 같은 클로저를 공유하므로 완료 플래그는 Cell에 둔다(클로저가 &done만 잡는다).
+    let done = std::cell::Cell::new(false);
+    let mut visit = |list: &mut Vec<Paragraph>| -> bool {
+        if done.get() {
+            return false;
+        }
+        let Some(i) = list
             .iter()
             .position(|p| find_match(&p.chars, anchor, 0).is_some())
-        {
-            let (ps, sty, cs) = para_template(&section.paragraphs[i]);
-            let new = make_paragraph(text, ps, sty, cs);
-            let at = if before { i } else { i + 1 };
-            section.paragraphs.insert(at, new);
+        else {
+            return false;
+        };
+        let (ps, sty, cs) = para_template(&list[i]);
+        let new = make_paragraph(text, ps, sty, cs);
+        let at = if before { i } else { i + 1 };
+        list.insert(at, new);
+        crate::edit::fixup_last_para_flag(list);
+        done.set(true);
+        true
+    };
+    for section in &mut doc.sections {
+        visit(&mut section.paragraphs);
+        if done.get() {
+            return true;
+        }
+    }
+    for section in &mut doc.sections {
+        walk_nested_para_lists(&mut section.paragraphs, &mut visit);
+        if done.get() {
             return true;
         }
     }
     false
 }
 
-/// `matching`을 가진 본문 문단을 삭제한다(섹션에 최소 1문단·구역정의 문단은 보존).
-/// 반환=삭제 개수.
+/// `matching`을 가진 문단을 삭제한다 — 본문뿐 아니라 표 셀·중첩 표·캡션 안에서도
+/// 지운다. 리스트마다 최소 1문단은 남기고(섹션·셀·캡션이 비면 한글이 손상으로
+/// 판정한다), 구역정의 문단은 보존한다. 반환=삭제 개수.
 pub fn delete_paragraph(doc: &mut Document, matching: &str) -> usize {
-    let mut count = 0;
+    let mut count = 0usize;
     for section in &mut doc.sections {
-        let mut i = 0;
-        while i < section.paragraphs.len() {
-            let p = &section.paragraphs[i];
-            let is_secd = p
-                .controls
-                .iter()
-                .any(|c| matches!(c, Control::SectionDef(_)));
-            if !is_secd
-                && section.paragraphs.len() > 1
-                && find_match(&p.chars, matching, 0).is_some()
-            {
-                section.paragraphs.remove(i);
-                count += 1;
-            } else {
-                i += 1;
+        let mut visit = |list: &mut Vec<Paragraph>| -> bool {
+            let mut removed = 0usize;
+            let mut i = 0;
+            while i < list.len() {
+                let p = &list[i];
+                let is_secd = p
+                    .controls
+                    .iter()
+                    .any(|c| matches!(c, Control::SectionDef(_)));
+                if !is_secd && list.len() > 1 && find_match(&p.chars, matching, 0).is_some() {
+                    list.remove(i);
+                    removed += 1;
+                } else {
+                    i += 1;
+                }
             }
-        }
+            if removed == 0 {
+                return false;
+            }
+            crate::edit::fixup_last_para_flag(list);
+            count += removed;
+            true
+        };
+        walk_para_lists(&mut section.paragraphs, &mut visit);
     }
     count
 }
@@ -132,5 +278,266 @@ mod tests {
         delete_paragraph(&mut doc, "유일");
         let after: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
         assert_eq!(before, after, "최소 1문단 유지");
+    }
+
+    // ── #220: 앵커를 표 셀·중첩 표·캡션 안에서도 찾는다 ──────────────────────
+
+    fn first_table_mut(doc: &mut Document) -> &mut hwp_model::Table {
+        doc.sections
+            .iter_mut()
+            .flat_map(|s| &mut s.paragraphs)
+            .flat_map(|p| &mut p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음")
+    }
+
+    fn cell_texts(doc: &Document, row: u16, col: u16) -> Vec<String> {
+        doc.sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음")
+            .cells
+            .iter()
+            .find(|c| c.row == row && c.col == col)
+            .expect("셀 없음")
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect()
+    }
+
+    #[test]
+    fn 셀_안_앵커에_삽입된다() {
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 표안앵커 | 2 |\n");
+        assert!(insert_paragraph(&mut doc, "표안앵커", "셀 새 문단", false));
+        let texts = cell_texts(&doc, 1, 0);
+        assert_eq!(texts.len(), 2, "셀 문단 2개: {texts:?}");
+        assert!(texts[1].contains("셀 새 문단"), "앵커 뒤 삽입: {texts:?}");
+        // 삽입 뒤에도 리스트 마지막 문단만 bit31.
+        let t = first_table_mut(&mut doc);
+        let cell = t.cells.iter().find(|c| c.row == 1 && c.col == 0).unwrap();
+        for (i, p) in cell.paragraphs.iter().enumerate() {
+            let last = i + 1 == cell.paragraphs.len();
+            assert_eq!(
+                p.header.chars_flags & 0x80 != 0,
+                last,
+                "문단 {i} 마지막 비트"
+            );
+        }
+    }
+
+    #[test]
+    fn 중첩_표_셀_안_앵커에_삽입된다() {
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        let inner = {
+            let mut d = from_markdown("| 중첩앵커 |\n|---|\n| x |\n");
+            first_table_mut(&mut d).clone()
+        };
+        {
+            let outer = first_table_mut(&mut doc);
+            let cell = outer
+                .cells
+                .iter_mut()
+                .find(|c| c.row == 1 && c.col == 1)
+                .unwrap();
+            cell.paragraphs[0].controls.push(Control::Table(inner));
+        }
+        assert!(insert_paragraph(
+            &mut doc,
+            "중첩앵커",
+            "중첩 새 문단",
+            false
+        ));
+        // plain_text는 중첩 표까지 훑지 않으므로 구조로 확인한다.
+        let inner_cell = {
+            let outer = first_table_mut(&mut doc);
+            let host = outer
+                .cells
+                .iter()
+                .find(|c| c.row == 1 && c.col == 1)
+                .unwrap();
+            host.paragraphs
+                .iter()
+                .flat_map(|p| &p.controls)
+                .find_map(|c| match c {
+                    Control::Table(t) => Some(t),
+                    _ => None,
+                })
+                .expect("중첩 표 없음")
+                .cells
+                .iter()
+                .find(|c| c.row == 0 && c.col == 0)
+                .expect("중첩 셀 없음")
+                .clone()
+        };
+        let texts: Vec<String> = inner_cell
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert_eq!(texts.len(), 2, "중첩 셀 문단 2개: {texts:?}");
+        assert!(texts[1].contains("중첩 새 문단"), "{texts:?}");
+    }
+
+    #[test]
+    fn 캡션_안_앵커에_삽입된다() {
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        {
+            let t = first_table_mut(&mut doc);
+            let template = t.cells[0].paragraphs[0].clone();
+            let mut cap_para = template.clone();
+            cap_para.chars = "캡션앵커"
+                .chars()
+                .map(HwpChar::Text)
+                .chain(std::iter::once(HwpChar::CharCtrl(ctrl_char::PARA_BREAK)))
+                .collect();
+            t.caption = Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 0,
+                width: None,
+                last_width: 0,
+                paragraphs: vec![cap_para],
+            });
+        }
+        assert!(insert_paragraph(
+            &mut doc,
+            "캡션앵커",
+            "캡션 새 문단",
+            false
+        ));
+        let t = first_table_mut(&mut doc);
+        let cap = t.caption.as_ref().unwrap();
+        assert_eq!(cap.paragraphs.len(), 2, "캡션 문단 2개");
+        assert!(cap.paragraphs[1].plain_text().contains("캡션 새 문단"));
+    }
+
+    #[test]
+    fn 본문_문단이_셀보다_먼저_잡힌다() {
+        // 같은 앵커가 본문과 셀 양쪽에 있으면 본문이 이긴다 — 이 변경 전에 최상위
+        // 문단을 맞히던 호출이 계속 같은 문단을 맞힌다는 호환성 보장.
+        let mut doc = from_markdown("공통앵커\n\n| 가 | 나 |\n|----|----|\n| 공통앵커 | 2 |\n");
+        assert!(insert_paragraph(&mut doc, "공통앵커", "새 문단", false));
+        // 셀은 그대로 1문단.
+        assert_eq!(cell_texts(&doc, 1, 0).len(), 1, "셀은 안 바뀜");
+        // 본문에 삽입.
+        let body: Vec<String> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert!(
+            body.iter().any(|t| t.contains("새 문단")),
+            "본문에 삽입: {body:?}"
+        );
+    }
+
+    #[test]
+    fn 뒤_섹션_본문이_앞_섹션_셀보다_먼저_잡힌다() {
+        // 중첩 탐색이 없던 시절 insert_paragraph는 섹션 본문만, 섹션 순서로 훑었다.
+        // 단순 전위 순회로 바꾸면 섹션 0의 셀이 섹션 1의 본문을 이겨 예전 호출이
+        // 조용히 다른 문단을 고른다 — 두 단계 탐색이 그 우선순위를 지킨다.
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 공통앵커 | 2 |\n");
+        let mut second = doc.sections[0].clone();
+        let mut anchor_para = second.paragraphs[0].clone();
+        anchor_para.controls.clear();
+        anchor_para.chars = "공통앵커"
+            .chars()
+            .map(HwpChar::Text)
+            .chain(std::iter::once(HwpChar::CharCtrl(ctrl_char::PARA_BREAK)))
+            .collect();
+        second.paragraphs = vec![second.paragraphs[0].clone(), anchor_para];
+        doc.sections.push(second);
+
+        assert!(insert_paragraph(&mut doc, "공통앵커", "새 문단", false));
+        assert_eq!(cell_texts(&doc, 1, 0).len(), 1, "앞 섹션 셀은 안 바뀜");
+        let body: Vec<String> = doc.sections[1]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert!(
+            body.iter().any(|t| t.contains("새 문단")),
+            "섹션 1 본문에 삽입: {body:?}"
+        );
+    }
+
+    #[test]
+    fn 셀_안_문단도_지운다_단_마지막은_남는다() {
+        // 셀 문단 2개 중 하나만 매치 → 지워진다.
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 유지 | 2 |\n");
+        insert_paragraph(&mut doc, "유지", "지울문단", false);
+        assert_eq!(cell_texts(&doc, 1, 0).len(), 2);
+        assert_eq!(delete_paragraph(&mut doc, "지울문단"), 1);
+        assert_eq!(cell_texts(&doc, 1, 0).len(), 1, "하나만 지움");
+
+        // 셀에 하나뿐인 문단이 매치되면 남긴다(셀이 비면 한글 손상 판정).
+        assert_eq!(delete_paragraph(&mut doc, "유지"), 0, "마지막 문단 보존");
+        assert_eq!(cell_texts(&doc, 1, 0).len(), 1);
+    }
+
+    /// hwp5 원본 서브트리(`raw_children`)를 품은 개체를 하나 단다 — writer가 그 바이트를
+    /// 그대로 다시 쓰는, 안쪽 IR 편집이 저장되지 않는 개체.
+    fn attach_raw_object(doc: &mut Document, text: &str) {
+        let template = doc.sections[0].paragraphs[0].clone();
+        let mut inner = template.clone();
+        inner.chars = text
+            .chars()
+            .map(HwpChar::Text)
+            .chain(std::iter::once(HwpChar::CharCtrl(ctrl_char::PARA_BREAK)))
+            .collect();
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"head",
+                data: vec![0u8; 8],
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![inner],
+                }],
+                extras: Vec::new(),
+                // 비어 있지 않다 = hwp5 출신, 저장 시 원본 그대로 방출.
+                raw_children: vec![hwp_model::OpaqueRecord {
+                    tag: 0x0048,
+                    data: Vec::new(),
+                    children: Vec::new(),
+                }],
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            }));
+    }
+
+    #[test]
+    fn 원본보존_개체_안은_건드리지_않는다() {
+        let mut doc = from_markdown("본문");
+        attach_raw_object(&mut doc, "개체앵커");
+        // 삽입도 삭제도 그 안에서는 일어나지 않는다 — 조용한 성공 금지.
+        assert!(!insert_paragraph(&mut doc, "개체앵커", "새 문단", false));
+        assert_eq!(delete_paragraph(&mut doc, "개체앵커"), 0);
+        // 진단 함수가 "없음"과 "손댈 수 없음"을 구별한다.
+        assert!(text_in_unwritable_object(&doc, "개체앵커"));
+        assert!(!text_in_unwritable_object(&doc, "본문"));
+        assert!(!text_in_unwritable_object(&doc, "어디에도 없는 문자열"));
+        let g = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Generic(g) if g.ctrl_id == *b"head" => Some(g),
+                _ => None,
+            })
+            .expect("개체 없음");
+        assert_eq!(g.paragraph_lists[0].paragraphs.len(), 1, "안쪽 IR 불변");
     }
 }
