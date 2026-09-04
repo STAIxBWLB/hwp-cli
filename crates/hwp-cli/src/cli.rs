@@ -611,13 +611,13 @@ pub struct EditArgs {
     /// Paragraph alignment, "find=alignment" (left/right/center/justify/distribute)
     #[arg(long = "set-align")]
     pub set_align: Vec<String>,
-    /// Insert a paragraph, "anchor=>text": after the paragraph containing the anchor (repeatable)
+    /// Insert a paragraph, "anchor=>text": after the paragraph containing the anchor; the anchor is also searched inside table cells, nested tables and captions (repeatable)
     #[arg(long = "insert-para")]
     pub insert_para: Vec<String>,
-    /// Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor (repeatable)
+    /// Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor; the anchor is also searched inside table cells, nested tables and captions (repeatable)
     #[arg(long = "insert-para-before")]
     pub insert_para_before: Vec<String>,
-    /// Delete a paragraph, "text": delete the paragraph containing the text (repeatable)
+    /// Delete a paragraph, "text": delete the paragraph containing the text, inside table cells and captions as well; every list keeps at least one paragraph (repeatable)
     #[arg(long = "delete-para")]
     pub delete_para: Vec<String>,
     /// Add table rows, "table[:at[:count[:template_row]]]": at omitted or "end" appends, a number inserts before that row; count defaults to 1; template_row donates row height and cell/paragraph/character styling, never text (repeatable, 0-based; merged tables supported)

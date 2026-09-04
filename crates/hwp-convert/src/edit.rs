@@ -549,7 +549,7 @@ fn has_text(p: &Paragraph) -> bool {
 }
 
 /// 리스트 마지막 문단만 nchars bit31(chars_flags 0x80)을 세운다(B4 규칙).
-fn fixup_last_para_flag(paras: &mut [Paragraph]) {
+pub(crate) fn fixup_last_para_flag(paras: &mut [Paragraph]) {
     let n = paras.len();
     for (i, p) in paras.iter_mut().enumerate() {
         if i + 1 == n {
