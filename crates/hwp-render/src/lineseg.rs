@@ -206,12 +206,11 @@ fn table_height(table: &Table) -> i32 {
         if r >= row_heights.len() {
             continue;
         }
-        // 셀 안 모든 문단의 줄블록 합(여러 문단이면 누적). 마지막 줄은 line_height,
-        // 그 위 줄들은 line_advance(=v_pos 증분)로 이미 v_pos에 반영돼 있다.
-        let mut block = 0i32;
-        for para in &cell.paragraphs {
-            block += para_line_block(para);
-        }
+        // 셀의 줄블록은 **마지막 문단**의 줄블록이다. 셀 v_pos는 fill_nested가
+        // 셀 단위로 누적하므로(문단마다 리셋하지 않는다) 마지막 문단 마지막 줄의
+        // v_pos + line_height가 곧 셀 전체 세로 크기다 — 문단별로 더하면 앞 문단
+        // 높이가 뒤 문단 v_pos에 이미 들어 있어 다중 문단 셀이 중복 계산된다.
+        let block = cell.paragraphs.last().map_or(0, para_line_block);
         let cell_h = i32::from(cell.margins[2]) + block + i32::from(cell.margins[3]);
         if cell_h > row_heights[r] {
             row_heights[r] = cell_h;
@@ -419,5 +418,88 @@ mod advance_tests {
         assert_eq!(source_wchar_len("a"), 1);
         assert_eq!(source_wchar_len("\u{1f600}"), 2);
         assert_eq!(source_wchar_len("x\u{301}"), 2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hwp_model::{Cell, HwpUnit, ids::BorderFillId};
+
+    /// 셀 v_pos는 셀 단위 누적(fill_nested)이므로, 문단 N개짜리 셀의 줄블록은
+    /// 마지막 문단의 것 하나다.
+    fn seg(v_pos: i32, line_height: i32) -> LineSeg {
+        LineSeg {
+            text_start: 0,
+            v_pos,
+            line_height,
+            text_height: line_height,
+            baseline_gap: 0,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 1000,
+            flags: 0,
+        }
+    }
+
+    fn cell_with(blocks: &[i32]) -> Cell {
+        // blocks[i] = i번째 문단 마지막 줄의 v_pos (line_height는 1000 고정).
+        Cell {
+            list_attr: 0,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(5000),
+            height: HwpUnit(1000),
+            margins: [141, 141, 141, 141],
+            border_fill: BorderFillId::default(),
+            header_tail: Vec::new(),
+            paragraphs: blocks
+                .iter()
+                .map(|&v| Paragraph {
+                    line_segs: vec![seg(v, 1000)],
+                    ..Default::default()
+                })
+                .collect(),
+        }
+    }
+
+    fn table_with(cell: Cell) -> Table {
+        Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId::default(),
+            table_tail: Vec::new(),
+            cells: vec![cell],
+            caption: None,
+            extras: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn table_height_multi_paragraph_cell_is_not_double_counted() {
+        // 문단 4개, v_pos 0/1600/3200/4800 — 셀 줄블록 = 4800 + 1000.
+        let h = table_height(&table_with(cell_with(&[0, 1600, 3200, 4800])));
+        assert_eq!(h, 141 + (4800 + 1000) + 141 + TABLE_BLOCK_PADDING);
+    }
+
+    #[test]
+    fn table_height_single_paragraph_cell_unchanged() {
+        let h = table_height(&table_with(cell_with(&[0])));
+        assert_eq!(h, 141 + 1000 + 141 + TABLE_BLOCK_PADDING);
+    }
+
+    #[test]
+    fn table_height_empty_cell_falls_back() {
+        // 문단이 없는 셀은 줄블록 0 — 여백만 남고, 폴백 경로가 패닉 없이 돈다.
+        let h = table_height(&table_with(cell_with(&[])));
+        assert_eq!(h, 141 + 141 + TABLE_BLOCK_PADDING);
     }
 }

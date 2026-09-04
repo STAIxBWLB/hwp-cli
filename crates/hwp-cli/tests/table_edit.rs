@@ -834,6 +834,88 @@ fn tbl9_add_row_then_fill() {
     );
 }
 
+/// 표#9(#220): 빈 줄로 나뉜 set-cell 값이 커밋된 픽스처에서도 셀 문단 여러 개가 된다.
+/// hwp5 문단 헤더 불변식(B4 마지막 문단 비트·A8 instance_id)은 OWPML이 나르지 않는
+/// 필드라 여기서 확인할 수 없다 — hwp5 경로는 `tests/cli.rs`의
+/// `edit_set_cell_splits_blank_lines_into_paragraphs`가 확인한다.
+#[test]
+fn tbl9_set_cell_splits_blank_lines_into_paragraphs() {
+    let src = copy_fixture("tbl9_multi_para.hwpx");
+    let out = tmp("tbl9_multi_para_out.hwpx");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set-cell", "9:6:0=첫째 블록\n\n둘째 블록"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "set-cell: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let cat_json = hwp()
+        .arg("cat")
+        .arg(&out)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    let ir: serde_json::Value = serde_json::from_slice(&cat_json.stdout).unwrap();
+    let mut tables = Vec::new();
+    collect_tables_deep(&ir["sections"][0]["paragraphs"], &mut tables);
+    let cell = tables[9]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["row"] == 6 && c["col"] == 0)
+        .expect("표#9 셀 (6,0)");
+    let texts: Vec<String> = cell["paragraphs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            p["chars"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|ch| ch.get("Text").and_then(|t| t.as_str()).map(str::to_string))
+                .collect()
+        })
+        .collect();
+    assert_eq!(texts, vec!["첫째 블록", "둘째 블록"], "블록마다 문단 하나");
+
+    assert!(
+        hwp()
+            .arg("validate")
+            .arg(&out)
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "validate 통과"
+    );
+}
+
+/// 재귀 깊이 우선 표 수집 — `--set-cell`의 표 인덱스와 같은 순서.
+fn collect_tables_deep<'a>(paras: &'a serde_json::Value, out: &mut Vec<&'a serde_json::Value>) {
+    for p in paras.as_array().unwrap() {
+        for c in p["controls"].as_array().unwrap() {
+            if let Some(t) = c.get("Table") {
+                out.push(t);
+                for cell in t["cells"].as_array().unwrap() {
+                    collect_tables_deep(&cell["paragraphs"], out);
+                }
+            } else if let Some(g) = c.get("Generic") {
+                for l in g["paragraph_lists"].as_array().unwrap() {
+                    collect_tables_deep(&l["paragraphs"], out);
+                }
+            }
+        }
+    }
+}
+
 /// 표#9: 열 추가 성공 + 전체 표 폭이 정확히 보존(행별 총폭 동일).
 #[test]
 fn tbl9_add_col_width_preserved() {
