@@ -1194,6 +1194,10 @@ fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
         } else {
             160
         };
+        // emit_para_shape now patches tail[8..12] from this field, so the fallback has to land
+        // in the field too. Leaving line_spacing at 0 here would make the emitter write that 0
+        // back over the 160 this tail carries.
+        para_shape.line_spacing = line_spacing;
         tail[8..12].copy_from_slice(&u32::try_from(line_spacing).unwrap_or(160).to_le_bytes());
         tail[12..16].copy_from_slice(&u32::from(semantic_level - 1).to_le_bytes());
         para_shape.tail = tail;
@@ -2788,7 +2792,10 @@ fn emit_char_shape(cs: &CharShape) -> RecordNode {
 
 fn emit_para_shape(ps: &ParaShape) -> RecordNode {
     let mut w = ByteWriter::new();
-    w.write_u32(ps.attr1);
+    // 줄간격 종류는 attr1 bits 0~1이다(parse_para_shape와 같은 규약). IR에서 바뀐
+    // 종류를 되접어 넣지 않으면 한글 2010+ 가 예전 종류로 읽는다. clear-then-set이라
+    // 읽은 그대로인 문단모양에는 무영향이다. 바이트 동일 왕복 게이트가 그대로 유지된다.
+    w.write_u32((ps.attr1 & !0x3) | (u32::from(ps.line_spacing_type) & 0x3));
     w.write_i32(ps.margin_left);
     w.write_i32(ps.margin_right);
     w.write_i32(ps.indent);
@@ -2822,6 +2829,14 @@ fn emit_para_shape(ps: &ParaShape) -> RecordNode {
             160
         });
         w.write_u32(0); // 후행 4B — 5.1.0.1 표본 hello_world와 동일 (00 00 00 00)
+    } else if ps.tail.len() >= 12 {
+        // 5.0.2.5+ 줄간격 값은 tail[8..12]에 있다(reader가 여기서 읽는다).
+        // 보존 tail을 그대로 내보내면 IR에서 바뀐 줄간격이 사라지고 한글은
+        // 예전 값을 보여준다. 읽은 그대로인 문단모양에는 같은 값을 다시 쓰므로
+        // 무영향이다. 12바이트 미만 tail은 길이를 바꾸지 않고 그대로 둔다.
+        let mut tail = ps.tail.clone();
+        tail[8..12].copy_from_slice(&ps.line_spacing.to_le_bytes());
+        w.write_bytes(&tail);
     } else {
         w.write_bytes(&ps.tail);
     }
@@ -3498,6 +3513,79 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #225: the attr1 fold and the tail patch must be byte-level no-ops for a shape whose
+    /// stored bits already agree with the IR spacing fields - that is exactly what keeps the
+    /// hwp5 identity round trip byte-identical. Also pins the two short-tail branches: a tail
+    /// under 12 bytes is emitted verbatim and never grown, and the empty tail keeps today's
+    /// four trailing u32 values.
+    #[test]
+    fn emit_para_shape_preserves_agreeing_tail_and_never_grows_a_short_one() {
+        // attr1: bit7 (KEEP_WORD) plus spacing type 1 in bits 0..1, agreeing with the fields.
+        const ATTR1: u32 = 0x0000_0081;
+        const SPACING: i32 = 320;
+
+        let shape = |tail: Vec<u8>| ParaShape {
+            attr1: ATTR1,
+            indent: 0,
+            margin_left: 100,
+            margin_right: 200,
+            spacing_top: 300,
+            spacing_bottom: 400,
+            line_spacing_old: SPACING,
+            tab_def_id: 1,
+            numbering_id: 0,
+            list_level: None,
+            border_fill_id: 2,
+            border_offsets: [1, 2, 3, 4],
+            line_spacing_type: 1,
+            line_spacing: SPACING,
+            tail,
+        };
+
+        let mut head = Vec::new();
+        head.extend_from_slice(&ATTR1.to_le_bytes());
+        head.extend_from_slice(&100i32.to_le_bytes()); // margin_left
+        head.extend_from_slice(&200i32.to_le_bytes()); // margin_right
+        head.extend_from_slice(&0i32.to_le_bytes()); // indent
+        head.extend_from_slice(&300i32.to_le_bytes()); // spacing_top
+        head.extend_from_slice(&400i32.to_le_bytes()); // spacing_bottom
+        head.extend_from_slice(&SPACING.to_le_bytes()); // line_spacing_old
+        head.extend_from_slice(&1u16.to_le_bytes()); // tab_def_id
+        head.extend_from_slice(&0u16.to_le_bytes()); // numbering_id (head_type 0)
+        head.extend_from_slice(&2u16.to_le_bytes()); // border_fill_id
+        for offset in [1u16, 2, 3, 4] {
+            head.extend_from_slice(&offset.to_le_bytes());
+        }
+
+        // 16-byte tail already carrying line_spacing at [8..12]: emitted unchanged.
+        let mut tail = vec![0u8; 16];
+        tail[8..12].copy_from_slice(&SPACING.to_le_bytes());
+        let mut expected = head.clone();
+        expected.extend_from_slice(&tail);
+        assert_eq!(
+            emit_para_shape(&shape(tail.clone())).data,
+            expected,
+            "일치하는 tail은 바이트 동일하게 재방출되어야 한다"
+        );
+
+        // 8-byte tail: too short for the 5.0.2.5+ window, emitted verbatim and not padded.
+        let short = vec![0xAAu8; 8];
+        let mut expected = head.clone();
+        expected.extend_from_slice(&short);
+        let emitted = emit_para_shape(&shape(short.clone())).data;
+        assert_eq!(emitted, expected, "12바이트 미만 tail은 그대로 방출한다");
+        assert_eq!(emitted.len(), head.len() + 8, "짧은 tail은 늘어나지 않는다");
+
+        // Empty tail: unchanged 5.1.0.1 filler (attr2, attr3, line spacing, trailing 4B).
+        let emitted = emit_para_shape(&shape(Vec::new())).data;
+        assert_eq!(emitted.len(), head.len() + 16);
+        let filler: Vec<u32> = emitted[head.len()..]
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(filler, vec![0, 0, SPACING as u32, 0]);
+    }
 
     fn source_rewrite_path(label: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()

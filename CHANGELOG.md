@@ -16,6 +16,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
   ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.
 
+**Fixed**
+
+- `hwp edit --set-para "찾기=>line-spacing:150%"` accepts the trailing percent sign the help has
+  always documented, instead of failing the integer parse. A rejected value now names `--set-para`,
+  quotes what it was given and lists the accepted forms (`150%`, `150`, `15pt`). Only an ASCII `%`
+  is stripped, so a full-width percent sign is still refused rather than silently normalized.
+  (#224)
+- hwp5 output persists line spacing into the fields Hangul 2010 and later actually read: the
+  spacing type folds into the paragraph-shape attribute bits and the value into the preserved
+  record tail, not only the pre-5.0.2.5 field. A spacing edit that previously opened with the old
+  value now shows what was set. Byte-identical re-serialization is unaffected, since the emitter
+  writes the same values the reader took from those positions. (#225)
+- `hwp edit --verify` no longer rejects an hwp5 line-spacing edit: the semantic canonicaliser now
+  projects the same attribute bits and record-tail bytes the writer emits, so the edit publishes
+  instead of failing verification. (#225)
+
 ## [0.16.1]
 
 **Fixed**

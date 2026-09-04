@@ -2010,11 +2010,24 @@ fn parse_para_props(kv: &str) -> anyhow::Result<hwp_convert::ParaProps> {
     let value = value.trim();
     match key {
         "line-spacing" => {
+            // One message for both branches: the caller cannot tell which one it missed.
+            let bad = || {
+                format!(
+                    "--set-para 줄간격 값이 올바르지 않습니다: {value:?} (허용 형식: 150%, 150, 15pt)"
+                )
+            };
             if let Some(pt) = value.strip_suffix("pt") {
-                let pt: f32 = pt.parse().context("줄간격 pt 값")?;
+                let pt: f32 = pt.parse().with_context(bad)?;
                 props.line_spacing = Some((1, (pt * 100.0).round() as i32));
             } else {
-                let pct: i32 = value.parse().context("줄간격 비율(%) 값")?;
+                // The help has always documented the ratio form as "%"; strip exactly one
+                // trailing ASCII U+0025 and nothing else (no width folding, no arbitrary
+                // trailing characters), so a full-width "％" still fails the integer parse.
+                let pct: i32 = value
+                    .strip_suffix('%')
+                    .unwrap_or(value)
+                    .parse()
+                    .with_context(bad)?;
                 props.line_spacing = Some((0, pct));
             }
         }
@@ -2447,6 +2460,13 @@ fn canonical_document(
             }
         }
         for shape in &mut canonical.header.para_shapes {
+            // emit_para_shape folds line_spacing_type back into attr1 bits 0..1 and rewrites the
+            // 5.0.2.5+ spacing window at tail[8..12]; project the same writes before classifying
+            // the tail, or an edited spacing leaves the two sides holding different bytes.
+            shape.attr1 = (shape.attr1 & !0x3) | (u32::from(shape.line_spacing_type) & 0x3);
+            if shape.tail.len() >= 12 {
+                shape.tail[8..12].copy_from_slice(&shape.line_spacing.to_le_bytes());
+            }
             let generated_tail = shape.tail.is_empty()
                 || hwp5::write::is_materialized_generated_para_shape_tail(shape);
             if generated_tail {
@@ -2871,6 +2891,37 @@ pub(crate) fn verify_document_quiet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #224: the three spellings the help documents all parse, and the two ratio spellings
+    /// produce the same tuple - only the `pt` suffix selects the fixed-spacing type.
+    #[test]
+    fn parse_para_props_accepts_percent_bare_and_pt_line_spacing() {
+        let spacing = |kv: &str| parse_para_props(kv).unwrap().line_spacing;
+        assert_eq!(spacing("line-spacing:150%"), Some((0, 150)));
+        assert_eq!(spacing("line-spacing:150"), Some((0, 150)));
+        assert_eq!(spacing("line-spacing:150%"), spacing("line-spacing: 150 "));
+        // set_para_props doubles length kinds on the way into IR units, so 15000 becomes 30000.
+        assert_eq!(spacing("line-spacing:150pt"), Some((1, 15000)));
+    }
+
+    /// #224: every refused spelling gets one error that names the flag, quotes the offending
+    /// value and lists the accepted forms. Full-width digits and a full-width percent sign are
+    /// refused rather than normalized - no NFKC, no width folding.
+    #[test]
+    fn parse_para_props_refuses_bad_line_spacing_naming_the_flag() {
+        for kv in [
+            "line-spacing:",
+            "line-spacing:abc",
+            "line-spacing:１５０％",
+            "line-spacing:150 %",
+            "line-spacing:150pt%",
+        ] {
+            let rendered = format!("{:#}", parse_para_props(kv).unwrap_err());
+            assert!(rendered.contains("--set-para"), "{kv}: {rendered}");
+            assert!(rendered.contains("150%"), "{kv}: {rendered}");
+            assert!(rendered.contains("15pt"), "{kv}: {rendered}");
+        }
+    }
 
     #[test]
     fn canonical_semantics_cover_page_sections_resources_and_pass_through() {

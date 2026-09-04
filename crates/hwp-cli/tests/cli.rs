@@ -2426,6 +2426,157 @@ fn edit_set_para_and_set_page() {
     }
 }
 
+/// #224 + #225: the documented `150%` spelling parses, and on an hwp5 target the value lands in
+/// all three spacing fields (attr1 bits 0..1, the 5.0.2.5+ tail window, and the legacy field),
+/// not only the legacy one. Asserts on IR JSON values only - never on glyphs or page counts.
+#[test]
+fn edit_set_para_line_spacing_fields_survive_hwp5_roundtrip() {
+    let md = tmp("s_tier_line_spacing.md");
+    std::fs::write(&md, "본문 문단입니다.\n").unwrap();
+    let src = tmp("s_tier_line_spacing.hwp");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // --set-para specs -> expected (line_spacing_type, line_spacing) on the resolved shape.
+    // The last case pins the ordering: repeated flags apply in command-line order, last wins.
+    for (case, specs, want_type, want_spacing) in [
+        ("pct", &["본문=>line-spacing:150%"][..], 0, 150),
+        ("pt", &["본문=>line-spacing:150pt"][..], 1, 30000),
+        (
+            "last_wins",
+            &["본문=>line-spacing:130", "본문=>line-spacing:150%"][..],
+            0,
+            150,
+        ),
+    ] {
+        let out = tmp(&format!("s_tier_line_spacing_{case}.hwp"));
+        let json = tmp(&format!("s_tier_line_spacing_{case}.json"));
+        let r = hwp()
+            .arg("edit")
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .args(specs.iter().flat_map(|spec| ["--set-para", spec]))
+            .output()
+            .unwrap();
+        assert!(
+            r.status.success(),
+            "set-para {specs:?}: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        let c = hwp()
+            .arg("convert")
+            .arg(&out)
+            .args(["--to", "json", "-o"])
+            .arg(&json)
+            .output()
+            .unwrap();
+        assert!(
+            c.status.success(),
+            "convert json: {}",
+            String::from_utf8_lossy(&c.stderr)
+        );
+        let ir: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&json).unwrap()).expect("IR JSON");
+        let shape_id = ir["sections"][0]["paragraphs"][0]["para_shape"]
+            .as_u64()
+            .expect("para_shape id");
+        let shape = &ir["header"]["para_shapes"][shape_id as usize];
+        assert_eq!(shape["line_spacing_type"], want_type, "{case} type");
+        assert_eq!(shape["line_spacing"], want_spacing, "{case} line_spacing");
+        assert_eq!(
+            shape["line_spacing_old"], want_spacing,
+            "{case} line_spacing_old"
+        );
+        for f in [&out, &json] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+    for f in [&md, &src] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// The same edit under `--verify`: the hwp5 semantic canonicaliser has to mirror what the writer
+/// emits for the spacing fields (attr1 bits 0..1 and the 5.0.2.5+ tail window), otherwise the
+/// expected side keeps the source bytes, the re-read side carries the emitted ones, and a valid
+/// edit is rejected without publishing anything.
+#[test]
+fn edit_set_para_line_spacing_passes_verify_on_hwp5() {
+    let md = tmp("s_tier_line_spacing_verify.md");
+    std::fs::write(&md, "본문 문단입니다.\n").unwrap();
+    let src = tmp("s_tier_line_spacing_verify.hwp");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    for (case, spec, want_type, want_spacing) in [
+        ("pct", "본문=>line-spacing:150%", 0, 150),
+        ("pt", "본문=>line-spacing:150pt", 1, 30000),
+    ] {
+        let out = tmp(&format!("s_tier_line_spacing_verify_{case}.hwp"));
+        let json = tmp(&format!("s_tier_line_spacing_verify_{case}.json"));
+        let r = hwp()
+            .arg("edit")
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .args(["--set-para", spec, "--verify"])
+            .output()
+            .unwrap();
+        assert!(
+            r.status.success(),
+            "set-para {spec} --verify: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        let c = hwp()
+            .arg("convert")
+            .arg(&out)
+            .args(["--to", "json", "-o"])
+            .arg(&json)
+            .output()
+            .unwrap();
+        assert!(
+            c.status.success(),
+            "convert json: {}",
+            String::from_utf8_lossy(&c.stderr)
+        );
+        let ir: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&json).unwrap()).expect("IR JSON");
+        let shape_id = ir["sections"][0]["paragraphs"][0]["para_shape"]
+            .as_u64()
+            .expect("para_shape id");
+        let shape = &ir["header"]["para_shapes"][shape_id as usize];
+        assert_eq!(shape["line_spacing_type"], want_type, "{case} type");
+        assert_eq!(shape["line_spacing"], want_spacing, "{case} line_spacing");
+        assert_eq!(
+            shape["line_spacing_old"], want_spacing,
+            "{case} line_spacing_old"
+        );
+        for f in [&out, &json] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+    for f in [&md, &src] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 #[test]
 fn convert_multi_input_out_dir_and_txt_csv() {
     let a = make_doc("s_tier_a", "문서 A\n\n| 가 |\n|---|\n| 1 |\n");

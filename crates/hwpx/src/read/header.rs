@@ -561,7 +561,12 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             // 덮어써 문단별 줄간격(170/130 등)을 잃고 페이지가 밀린다.
                             ps.line_spacing_old = stored;
                             // 줄간격 종류를 attr1 bits0-1에 인코딩(PERCENT면 0).
-                            ps.attr1 |= u32::from(lstype) & 0x3;
+                            // OR가 아니라 clear-then-set이다(align_para와 같은 마스크 규율):
+                            // OR면 이미 켜진 비트를 끌 수 없어 PERCENT(0)가 앞선 값을 지우지
+                            // 못한다. 지금은 paraPr마다 attr1이 0에서 시작하고 para_ls_done이
+                            // 중복 lineSpacing을 막아 도달하지 않지만, 그 전제가 바뀌어도
+                            // XML이 선언한 종류가 그대로 남게 한다.
+                            ps.attr1 = (ps.attr1 & !0x3) | (u32::from(lstype) & 0x3);
                         }
                     }
                     b"breakSetting" => {
