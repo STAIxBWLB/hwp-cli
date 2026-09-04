@@ -1307,13 +1307,21 @@ fn set_cell_in_table(
 /// 셀당 문단 ≥1·문자모양 run ≥1만 요구하므로 빈 chars로 충분하다(writer가
 /// nchars=1·PARA_TEXT 생략을 처리).
 ///
-/// 이 문단은 항상 셀의 **유일·마지막** 문단이 되므로(set_cell·add_rows 모두
-/// `cell.paragraphs = vec![이 문단]`), nchars bit31(리스트 마지막 문단 표식)을
-/// 강제한다. hwp5 출신 편집 경로는 writer가 set_last_para_flag를 돌리지 않으므로
-/// (synthesize=false) 여기서 세우지 않으면 다중 문단 셀을 복제할 때 비트가 빠진다.
+/// nchars bit31(리스트 마지막 문단 표식)을 켠 채로 돌려준다 — 대부분의 호출자는
+/// `cell.paragraphs = vec![이 문단]`이라 이 문단이 리스트의 마지막이기 때문이다.
+/// 여러 문단을 만드는 호출자([`set_cell_in_table`])는 리스트를 다 만든 뒤
+/// [`fixup_last_para_flag`]로 마지막 문단에만 비트를 남겨야 한다. hwp5 출신 편집
+/// 경로는 writer가 set_last_para_flag를 돌리지 않으므로(synthesize=false) 이 비트를
+/// 여기서 관리하지 않으면 한글이 셀을 손상으로 판정한다(B4).
+///
+/// 템플릿 헤더의 `ctrl_mask`는 지운다 — 마스크는 템플릿이 품고 있던 확장/인라인
+/// 컨트롤을 가리키는데 이 문단은 controls를 비우므로, 그대로 물려주면 writer가
+/// "있다고 표시된 컨트롤이 실제로 없는" 문단을 방출한다(한글 손상 판정). 0이면
+/// writer가 문자 목록에서 다시 계산한다.
 fn blank_para_like(template: Option<&Paragraph>) -> Paragraph {
     let mut header = template.map(|p| p.header.clone()).unwrap_or_default();
     header.chars_flags |= 0x80;
+    header.ctrl_mask = 0;
     Paragraph {
         para_shape: template.map(|p| p.para_shape).unwrap_or_default(),
         style: template.map(|p| p.style).unwrap_or_default(),
@@ -2808,6 +2816,36 @@ mod tests {
         assert_eq!(uniq.len(), ids.len(), "instance_id 중복: {ids:?}");
         // 줄 배치는 비워 writer가 재합성한다(B2/B3).
         assert!(cell.paragraphs.iter().all(|p| p.line_segs.is_empty()));
+    }
+
+    #[test]
+    fn blank_para_like_는_ctrl_mask를_지운다() {
+        // 템플릿이 품은 컨트롤 마스크를 물려받으면 controls가 빈 문단이 "있다고
+        // 표시된 컨트롤이 없는" 상태로 방출된다 — 한글 손상 판정.
+        let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        {
+            let t = doc.sections[0]
+                .paragraphs
+                .iter_mut()
+                .flat_map(|p| &mut p.controls)
+                .find_map(|c| match c {
+                    Control::Table(t) => Some(t),
+                    _ => None,
+                })
+                .expect("표 없음");
+            let cell = t
+                .cells
+                .iter_mut()
+                .find(|c| c.row == 1 && c.col == 0)
+                .expect("셀 없음");
+            cell.paragraphs[0].header.ctrl_mask = 0x0000_0800;
+        }
+        set_cell(&mut doc, 0, 1, 0, "A\n\nB").unwrap();
+        let cell = cell_at(first_table(&doc), 1, 0);
+        assert!(
+            cell.paragraphs.iter().all(|p| p.header.ctrl_mask == 0),
+            "새 문단이 템플릿 ctrl_mask를 물려받음"
+        );
     }
 
     #[test]
