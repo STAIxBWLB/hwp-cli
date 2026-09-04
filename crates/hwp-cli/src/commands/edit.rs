@@ -2460,6 +2460,13 @@ fn canonical_document(
             }
         }
         for shape in &mut canonical.header.para_shapes {
+            // emit_para_shape folds line_spacing_type back into attr1 bits 0..1 and rewrites the
+            // 5.0.2.5+ spacing window at tail[8..12]; project the same writes before classifying
+            // the tail, or an edited spacing leaves the two sides holding different bytes.
+            shape.attr1 = (shape.attr1 & !0x3) | (u32::from(shape.line_spacing_type) & 0x3);
+            if shape.tail.len() >= 12 {
+                shape.tail[8..12].copy_from_slice(&shape.line_spacing.to_le_bytes());
+            }
             let generated_tail = shape.tail.is_empty()
                 || hwp5::write::is_materialized_generated_para_shape_tail(shape);
             if generated_tail {

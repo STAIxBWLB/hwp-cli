@@ -28,6 +28,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   record tail, not only the pre-5.0.2.5 field. A spacing edit that previously opened with the old
   value now shows what was set. Byte-identical re-serialization is unaffected, since the emitter
   writes the same values the reader took from those positions. (#225)
+- `hwp edit --verify` no longer rejects an hwp5 line-spacing edit: the semantic canonicaliser now
+  projects the same attribute bits and record-tail bytes the writer emits, so the edit publishes
+  instead of failing verification. (#225)
 
 ## [0.16.1]
 
