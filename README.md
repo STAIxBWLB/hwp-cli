@@ -123,7 +123,7 @@ The default location is `~/.local/bin` (if it is not on PATH, the script says so
 location or version with arguments or environment variables:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.16.0
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.17.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -168,7 +168,7 @@ to bump:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v0.16.0 --dir ./bin
+  | sh -s -- --tag v0.17.0 --dir ./bin
 ```
 
 Run this from the build command (or a `prebuild` script) so the binary exists before the platform

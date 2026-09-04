@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.17.0]
+
 **Added**
 
 - `hwp edit --set-cell-para "표:행:열=>키:값[,키:값]"` applies a paragraph shape to every
