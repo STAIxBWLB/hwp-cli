@@ -259,9 +259,9 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--seal` | `<SEAL>` |  | Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text (repeatable) |
 | `--set-format` | `<SET_FORMAT>` |  | Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000") (repeatable) |
 | `--set-align` | `<SET_ALIGN>` |  | Paragraph alignment, "find=alignment" (left/right/center/justify/distribute) (repeatable) |
-| `--insert-para` | `<INSERT_PARA>` |  | Insert a paragraph, "anchor=>text": after the paragraph containing the anchor (repeatable) |
-| `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor (repeatable) |
-| `--delete-para` | `<DELETE_PARA>` |  | Delete a paragraph, "text": delete the paragraph containing the text (repeatable) |
+| `--insert-para` | `<INSERT_PARA>` |  | Insert a paragraph, "anchor=>text": after the paragraph containing the anchor; the anchor is also searched inside table cells, nested tables and captions (repeatable) |
+| `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor; the anchor is also searched inside table cells, nested tables and captions (repeatable) |
+| `--delete-para` | `<DELETE_PARA>` |  | Delete a paragraph, "text": delete the paragraph containing the text, inside table cells and captions as well; every list keeps at least one paragraph (repeatable) |
 | `--add-row` | `<ADD_ROW>` |  | Add table rows, "table[:at[:count[:template_row]]]": at omitted or "end" appends, a number inserts before that row; count defaults to 1; template_row donates row height and cell/paragraph/character styling, never text (repeatable, 0-based; merged tables supported) |
 | `--add-col` | `<ADD_COL>` |  | Add table columns, "table[:at[:count]]": at omitted or "end" appends, a number inserts before that column; count defaults to 1; total width is preserved by shrinking existing columns evenly. Merged tables supported (repeatable, 0-based) |
 | `--delete-row` | `<DELETE_ROW>` |  | Delete a table row, "table:row" (repeatable, 0-based; a merged row is refused) |
@@ -270,7 +270,8 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--split-cell` | `<SPLIT_CELL>` |  | Split a cell, "table:row:col": break a merged cell back into 1x1 cells (repeatable, 0-based) |
 | `--add-table` | `<ADD_TABLE>` |  | Insert a table, "anchor=>json": insert a uniform table after the anchor paragraph; json is an array of row arrays (repeatable) |
 | `--clone-table` | `<CLONE_TABLE>` |  | Clone a table, "source_table=>anchor[=>blank\|keep]": deep-copy table source_table (0-based, recursive) after the anchor paragraph; blank (default) keeps structure/styles with empty cells, keep also clones supported content (nested tables, images) with remapped ids (repeatable) |
-| `--set-para` | `<SET_PARA>` |  | Paragraph shape properties, "find=>key:value" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm); repeatable) |
+| `--set-para` | `<SET_PARA>` |  | Paragraph shape properties, "find=>key:value[,key:value]" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm), align (left\|right\|center\|justify\|distribute); repeatable) |
+| `--set-cell-para` | `<SET_CELL_PARA>` |  | Paragraph shape for a whole cell, "table:row:col=>key:value[,key:value]": applies to every paragraph of the addressed cell with no text anchor; same keys as --set-para and it runs after --set-cell in one invocation (repeatable, 0-based) |
 | `--set-page` | `<SET_PAGE>` |  | Page setup, "key:value" (keys: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape); repeatable) |
 | `--delete-image` | `<DELETE_IMAGE>` |  | Delete an image, "anchor": delete the picture in the anchor paragraph (repeatable) |
 | `--delete-table` | `<DELETE_TABLE>` |  | Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable) |

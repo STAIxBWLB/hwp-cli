@@ -675,6 +675,67 @@
           },
           "type": "array"
         },
+        "set_cell_para": {
+          "description": "셀 문단모양(앵커 없이 그 셀의 모든 문단): 줄간격·들여쓰기·여백(mm)·정렬. 한 번의 실행에서 set_cell 뒤에 적용된다",
+          "items": {
+            "properties": {
+              "align": {
+                "description": "문단 정렬",
+                "enum": [
+                  "left",
+                  "right",
+                  "center",
+                  "justify",
+                  "distribute"
+                ],
+                "type": "string"
+              },
+              "bottom_mm": {
+                "type": "number"
+              },
+              "col": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "indent_mm": {
+                "type": "number"
+              },
+              "left_mm": {
+                "type": "number"
+              },
+              "line_spacing_pct": {
+                "description": "줄간격 비율(%)",
+                "type": "number"
+              },
+              "line_spacing_pt": {
+                "description": "고정 줄간격(pt) — pct와 함께 지정 불가",
+                "type": "number"
+              },
+              "right_mm": {
+                "type": "number"
+              },
+              "row": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "table": {
+                "description": "0-기반 표 인덱스(재귀 순서)",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "top_mm": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "table",
+              "row",
+              "col"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "set_field": {
           "description": "필드/누름틀 채우기(이름으로)",
           "items": {
@@ -782,9 +843,20 @@
           "type": "object"
         },
         "set_para": {
-          "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)",
+          "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬",
           "items": {
             "properties": {
+              "align": {
+                "description": "문단 정렬",
+                "enum": [
+                  "left",
+                  "right",
+                  "center",
+                  "justify",
+                  "distribute"
+                ],
+                "type": "string"
+              },
               "bottom_mm": {
                 "type": "number"
               },

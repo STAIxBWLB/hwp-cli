@@ -10,14 +10,43 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `hwp edit --set-cell-para "표:행:열=>키:값[,키:값]"` applies a paragraph shape to every
+  paragraph of the addressed cell with no text anchor, using the same 0-based addressing as
+  `--set-cell` and running after it in one invocation, so it reaches the paragraphs that
+  invocation just created. It accepts the `--set-para` keys plus `align`
+  (`left`, `right`, `center`, `justify`, `distribute`), and the MCP `hwp_edit` tool gains a
+  matching typed `set_cell_para` array. As a consequence `--set-para` now accepts `align` and
+  comma-separated key lists too, because both flags share one parser. (#221)
+
 **Changed**
 
+- **Behaviour change:** `hwp edit --set-cell "표:행:열=값"` now splits the value on blank lines
+  and writes one paragraph per block, where it previously wrote a single paragraph containing
+  line breaks. CRLF is normalised first, a run of two or more line feeds is a paragraph
+  boundary, empty blocks are dropped, and a single line feed inside a block is still an
+  in-paragraph line break. An empty value still yields one empty paragraph, and a value with no
+  blank line still yields exactly one paragraph. `hwp fill`, `--data tables`,
+  `--set-cell-by-label` and the MCP typed `set_cell` operation share the same behaviour. (#220)
 - Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
   `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
   ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.
 
 **Fixed**
 
+- `hwp edit --insert-para`, `--insert-para-before` and `--delete-para` find their anchor inside
+  table cells, nested tables and table, picture and shape captions, not only among a section's
+  own paragraphs. A section's own paragraphs are still searched before any nested list, so every
+  invocation that matched a top-level paragraph before matches the same one now, and every
+  section, cell and caption keeps at least one paragraph. (#220)
+- A table cell holding several paragraphs is no longer measured once per paragraph when
+  synthesizing table height, which made such tables render several times too tall. The cell's
+  cached vertical positions already accumulate across its paragraphs, so the height comes from
+  the last paragraph's line block. (#220)
+- A paragraph created for a table cell no longer inherits the template paragraph's control mask.
+  The mask pointed at controls the new, emptied paragraph does not have, which Hangul reads as
+  corruption; it is now cleared so the writer recomputes it from the characters. (#220)
 - `hwp edit --set-para "찾기=>line-spacing:150%"` accepts the trailing percent sign the help has
   always documented, instead of failing the integer parse. A rejected value now names `--set-para`,
   quotes what it was given and lists the accepted forms (`150%`, `150`, `15pt`). Only an ASCII `%`
