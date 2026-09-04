@@ -2445,10 +2445,17 @@ fn edit_set_para_line_spacing_fields_survive_hwp5_roundtrip() {
             .success()
     );
 
-    // (ratio spelling with the documented %, fixed points) -> (line_spacing_type, line_spacing)
-    for (case, value, want_type, want_spacing) in [
-        ("pct", "본문=>line-spacing:150%", 0, 150),
-        ("pt", "본문=>line-spacing:150pt", 1, 30000),
+    // --set-para specs -> expected (line_spacing_type, line_spacing) on the resolved shape.
+    // The last case pins the ordering: repeated flags apply in command-line order, last wins.
+    for (case, specs, want_type, want_spacing) in [
+        ("pct", &["본문=>line-spacing:150%"][..], 0, 150),
+        ("pt", &["본문=>line-spacing:150pt"][..], 1, 30000),
+        (
+            "last_wins",
+            &["본문=>line-spacing:130", "본문=>line-spacing:150%"][..],
+            0,
+            150,
+        ),
     ] {
         let out = tmp(&format!("s_tier_line_spacing_{case}.hwp"));
         let json = tmp(&format!("s_tier_line_spacing_{case}.json"));
@@ -2457,12 +2464,12 @@ fn edit_set_para_line_spacing_fields_survive_hwp5_roundtrip() {
             .arg(&src)
             .arg("-o")
             .arg(&out)
-            .args(["--set-para", value])
+            .args(specs.iter().flat_map(|spec| ["--set-para", spec]))
             .output()
             .unwrap();
         assert!(
             r.status.success(),
-            "set-para {value}: {}",
+            "set-para {specs:?}: {}",
             String::from_utf8_lossy(&r.stderr)
         );
         let c = hwp()
