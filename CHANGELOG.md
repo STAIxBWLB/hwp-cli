@@ -43,6 +43,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   as their original records (text boxes, headers and footers) are not entered, because the
   writer re-emits those records verbatim and an edit inside them would be silently discarded on
   save; an anchor found only there is reported as unapplied with that reason instead. (#220)
+- Line layout is now synthesized for every nested paragraph list, not only for the cells of a
+  section's own paragraphs: table, picture and shape captions, and the tables and objects a cell
+  paragraph itself holds, are reached recursively. A paragraph inserted there used to be written
+  with no PARA_LINE_SEG record, which Hangul draws at zero height, and as the last paragraph of
+  its list it also declared a complete layout cache it did not have. Lists that already carry
+  line layout keep it; table cells are still recomputed as before. (#220)
 - A table cell holding several paragraphs is no longer measured once per paragraph when
   synthesizing table height, which made such tables render several times too tall. The cell's
   cached vertical positions already accumulate across its paragraphs, so the height comes from

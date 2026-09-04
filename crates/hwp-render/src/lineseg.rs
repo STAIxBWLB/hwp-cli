@@ -64,7 +64,13 @@ pub fn synthesize_linesegs(
                 v_pos += sp_top;
             }
             // 셀 안 문단 줄 배치를 먼저 채운다(셀 줄 수를 표 높이 계산이 읽어야 한다).
-            fill_nested(si, pi, &snap, doc, store, warnings);
+            fill_nested(
+                &mut doc.sections[si].paragraphs[pi],
+                body_width,
+                &snap,
+                store,
+                warnings,
+            );
             // 이 문단의 표 총높이.
             let mut table_total = 0i32;
             for ctrl in &doc.sections[si].paragraphs[pi].controls {
@@ -97,80 +103,132 @@ pub fn synthesize_linesegs(
     }
 }
 
-/// 표 셀 안 문단에도 줄 배치를 합성한다 (셀 폭 기준, 셀마다 v_pos 리셋).
+/// 한 문단이 품은 **모든** 중첩 문단 리스트에 줄 배치를 합성한다 — 표 캡션·표 셀·
+/// 셀 문단이 다시 품은 컨트롤(중첩 표 포함)·그림 캡션·개체 문단 리스트·개체 캡션.
+/// hwp-convert `walk_para_lists`가 문단을 넣을 수 있는 리스트와 같은 집합이다:
+/// 거기 삽입된 문단이 줄 배치 없이 남으면 한글이 0높이로 그리고(B2), 그 문단이
+/// 리스트의 마지막이면 bit31과 빈 PARA_LINE_SEG가 모순된다(B3).
+///
+/// `snap`은 `doc`의 별도 복제본이므로 여기서 `doc`을 자유롭게 빌려도 충돌하지 않는다
+/// (문단 모양·글자 모양 조회 용도).
 fn fill_nested(
-    si: usize,
-    pi: usize,
+    para: &mut Paragraph,
+    body_width: i32,
     snap: &Document,
-    doc: &mut Document,
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) {
-    let nctrl = doc.sections[si].paragraphs[pi].controls.len();
-    for ci in 0..nctrl {
-        // 글상자(hwpx-출신 Generic: gso_shapes 보유) 안 문단 — 박스 폭 기준,
-        // 리스트마다 v_pos 리셋(박스 상대). hwp5-출신 글상자는 raw_children 원본이
-        // 방출되므로 무관(문단 line_segs 이미 보유 시 건너뜀).
-        if let Control::Generic(snap_g) = &snap.sections[si].paragraphs[pi].controls[ci] {
-            if !snap_g.gso_shapes.is_empty() && !snap_g.paragraph_lists.is_empty() {
-                // LIST_HEADER 안쪽 여백(283×2)을 뺀 본문 폭.
-                let bw = (snap_g.gso_shapes[0].w - 566).max(1);
-                let lists: Vec<usize> = snap_g
-                    .paragraph_lists
-                    .iter()
-                    .map(|l| l.paragraphs.len())
-                    .collect();
-                for (li, &npara) in lists.iter().enumerate() {
-                    let mut bv = 0i32;
-                    for lpi in 0..npara {
-                        let Control::Generic(snap_g) =
-                            &snap.sections[si].paragraphs[pi].controls[ci]
-                        else {
-                            unreachable!();
-                        };
-                        let src = &snap_g.paragraph_lists[li].paragraphs[lpi];
-                        if !src.line_segs.is_empty() {
-                            continue;
-                        }
-                        let segs =
-                            compute_linesegs(store, snap, src, bw, i32::MAX, &mut bv, warnings);
-                        if let Control::Generic(g) =
-                            &mut doc.sections[si].paragraphs[pi].controls[ci]
-                        {
-                            g.paragraph_lists[li].paragraphs[lpi].line_segs = segs;
-                        }
-                    }
+    for ctrl in &mut para.controls {
+        match ctrl {
+            Control::Table(t) => {
+                if let Some(cap) = &mut t.caption {
+                    let w = caption_width(cap.width, body_width);
+                    fill_list(
+                        &mut cap.paragraphs,
+                        w,
+                        false,
+                        body_width,
+                        snap,
+                        store,
+                        warnings,
+                    );
+                }
+                for cell in &mut t.cells {
+                    let w =
+                        (cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]))
+                            .max(1);
+                    // 셀은 기존 동작대로 항상 재계산한다 — 셀 줄 수가 표 높이의 입력이고,
+                    // 편집으로 낡은 줄 배치를 그대로 두면 표가 어긋난다.
+                    fill_list(
+                        &mut cell.paragraphs,
+                        w,
+                        true,
+                        body_width,
+                        snap,
+                        store,
+                        warnings,
+                    );
                 }
             }
-            continue;
-        }
-        let Control::Table(snap_t) = &snap.sections[si].paragraphs[pi].controls[ci] else {
-            continue;
-        };
-        // 셀별 (본문 폭, 문단 수)을 먼저 수집 (snap 불변 참조).
-        let cells: Vec<(i32, usize)> = snap_t
-            .cells
-            .iter()
-            .map(|c| {
-                let w = (c.width.0 - i32::from(c.margins[0]) - i32::from(c.margins[1])).max(1);
-                (w, c.paragraphs.len())
-            })
-            .collect();
-        for (celli, &(cw, npara)) in cells.iter().enumerate() {
-            let mut cv = 0i32;
-            for cpi in 0..npara {
-                let Control::Table(snap_t) = &snap.sections[si].paragraphs[pi].controls[ci] else {
-                    unreachable!();
-                };
-                let csrc = &snap_t.cells[celli].paragraphs[cpi];
-                // 셀 내부는 페이지 분할 안 함(content_h=MAX): 셀 줄 v_pos는 셀
-                // 상대 누적이고, 페이지 넘침은 표 단위로 synthesize_linesegs가 처리.
-                let segs = compute_linesegs(store, snap, csrc, cw, i32::MAX, &mut cv, warnings);
-                if let Control::Table(t) = &mut doc.sections[si].paragraphs[pi].controls[ci] {
-                    t.cells[celli].paragraphs[cpi].line_segs = segs;
+            Control::Picture(pic) => {
+                if let Some(cap) = &mut pic.caption {
+                    let w = caption_width(cap.width, body_width);
+                    fill_list(
+                        &mut cap.paragraphs,
+                        w,
+                        false,
+                        body_width,
+                        snap,
+                        store,
+                        warnings,
+                    );
                 }
             }
+            Control::Generic(g) => {
+                // 글상자(gso_shapes 보유): LIST_HEADER 안쪽 여백(283×2)을 뺀 박스 폭.
+                let bw = g
+                    .gso_shapes
+                    .first()
+                    .map_or(body_width, |s| (s.w - 566).max(1));
+                for list in &mut g.paragraph_lists {
+                    fill_list(
+                        &mut list.paragraphs,
+                        bw,
+                        false,
+                        body_width,
+                        snap,
+                        store,
+                        warnings,
+                    );
+                }
+                if let Some(cap) = &mut g.caption {
+                    let w = caption_width(cap.width, body_width);
+                    fill_list(
+                        &mut cap.paragraphs,
+                        w,
+                        false,
+                        body_width,
+                        snap,
+                        store,
+                        warnings,
+                    );
+                }
+            }
+            Control::SectionDef(_) => {}
         }
+    }
+}
+
+/// 캡션 본문 폭. `None`은 "여백까지 넓힘"이라 본문 폭으로 본다.
+fn caption_width(width: Option<u32>, body_width: i32) -> i32 {
+    width
+        .and_then(|w| i32::try_from(w).ok())
+        .filter(|w| *w > 0)
+        .unwrap_or(body_width)
+}
+
+/// 문단 리스트 하나를 채운다. v_pos는 **리스트 단위**로 누적한다(문단마다 리셋하지
+/// 않는다 — `table_height`가 마지막 문단의 v_pos를 셀 전체 높이로 읽는 근거).
+/// `force`가 거짓이면 이미 줄 배치가 있는 문단은 원본을 그대로 둔다.
+fn fill_list(
+    paras: &mut [Paragraph],
+    width: i32,
+    force: bool,
+    body_width: i32,
+    snap: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+) {
+    let mut v = 0i32;
+    for para in paras.iter_mut() {
+        fill_nested(para, body_width, snap, store, warnings);
+        if !force && !para.line_segs.is_empty() {
+            continue;
+        }
+        // 리스트 안쪽은 페이지 분할 안 함(content_h=MAX): 페이지 넘침은 표/개체
+        // 단위로 synthesize_linesegs가 처리한다.
+        let segs = compute_linesegs(store, snap, para, width, i32::MAX, &mut v, warnings);
+        para.line_segs = segs;
     }
 }
 

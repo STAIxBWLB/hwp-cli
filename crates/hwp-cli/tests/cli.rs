@@ -2877,6 +2877,153 @@ fn edit_refuses_to_insert_into_a_source_preserved_object() {
     }
 }
 
+/// #220 review: a paragraph inserted into a nested list has to come out of the writer with
+/// line layout (rule B2) - a last paragraph that sets nchars bit31 while carrying zero
+/// PARA_LINE_SEG records is the contradiction rule B3 names. Neither a table caption nor a
+/// table nested in a cell can be authored from markdown or a compose spec, so the source is
+/// built through the IR; the edit itself goes through the CLI and the result is re-read.
+#[test]
+fn edit_insert_para_fills_line_layout_in_nested_lists() {
+    use hwp_model::{Control, HwpChar, ctrl_char};
+
+    fn set_text(para: &mut hwp_model::Paragraph, text: &str) {
+        para.chars = text
+            .chars()
+            .map(HwpChar::Text)
+            .chain(std::iter::once(HwpChar::CharCtrl(ctrl_char::PARA_BREAK)))
+            .collect();
+        para.line_segs.clear();
+    }
+
+    let mut doc = hwp_convert::from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+    // The markdown writer already emits a paragraph carrying the table anchor character, so
+    // cloning it and swapping in another table is the well-formed way to nest one.
+    let anchor_para = doc.sections[0]
+        .paragraphs
+        .iter()
+        .find(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+        .expect("표 앵커 문단")
+        .clone();
+    {
+        let table = doc.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|p| &mut p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음");
+
+        let mut inner = table.clone();
+        set_text(&mut inner.cells[0].paragraphs[0], "중첩앵커");
+        let mut nested_anchor = anchor_para.clone();
+        nested_anchor.controls = vec![Control::Table(inner)];
+
+        let mut caption_para = table.cells[0].paragraphs[0].clone();
+        set_text(&mut caption_para, "캡션앵커");
+        table.caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![caption_para],
+        });
+
+        let host = table
+            .cells
+            .iter_mut()
+            .find(|c| c.row == 1 && c.col == 1)
+            .expect("셀 (1,1)");
+        host.paragraphs = vec![nested_anchor];
+    }
+
+    let src = tmp("s_tier_nested_lists.hwp");
+    let out = tmp("s_tier_nested_lists_out.hwp");
+    for f in [&src, &out] {
+        let _ = std::fs::remove_file(f);
+    }
+    hwp5::write_document(&doc, &src, &hwp5::WriteOptions::default()).expect("hwp5 write");
+
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--insert-para", "중첩앵커=>중첩 새 문단"])
+        .args(["--insert-para", "캡션앵커=>캡션 새 문단"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "insert-para: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let written = hwp5::read_document(&out).expect("hwp5 re-read").document;
+    let table = written.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("표 없음");
+
+    // Every paragraph of a list that gained one must carry line layout, and only the last of
+    // the list may declare the layout cache complete (nchars bit31).
+    let check = |label: &str, paras: &[hwp_model::Paragraph]| {
+        assert_eq!(paras.len(), 2, "{label}: 문단 2개");
+        for (i, p) in paras.iter().enumerate() {
+            assert!(
+                !p.line_segs.is_empty(),
+                "{label} 문단 {i}: 줄 배치 비어 있음"
+            );
+            assert_eq!(
+                p.header.chars_flags & 0x80 != 0,
+                i + 1 == paras.len(),
+                "{label} 문단 {i}: 마지막 문단 비트"
+            );
+        }
+    };
+
+    let caption = table.caption.as_ref().expect("캡션 없음");
+    assert!(
+        caption.paragraphs[1].plain_text().contains("캡션 새 문단"),
+        "캡션 삽입: {:?}",
+        caption.paragraphs[1].plain_text()
+    );
+    check("캡션", &caption.paragraphs);
+
+    let nested = table
+        .cells
+        .iter()
+        .find(|c| c.row == 1 && c.col == 1)
+        .expect("셀 (1,1)")
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .expect("중첩 표 없음");
+    assert!(
+        nested.cells[0].paragraphs[1]
+            .plain_text()
+            .contains("중첩 새 문단"),
+        "중첩 셀 삽입: {:?}",
+        nested.cells[0].paragraphs[1].plain_text()
+    );
+    check("중첩 셀", &nested.cells[0].paragraphs);
+
+    for f in [&src, &out] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 #[test]
 fn convert_multi_input_out_dir_and_txt_csv() {
     let a = make_doc("s_tier_a", "문서 A\n\n| 가 |\n|---|\n| 1 |\n");
