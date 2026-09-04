@@ -49,12 +49,6 @@ use hwp_model::{Control, Document, HwpChar, Paragraph};
 /// a weaker comparison (FLOW-03 `precision` probe, planner decision A-11).
 pub const MAX_LCS_CELLS: usize = 25_000_000;
 
-/// How much of a paragraph's text a [`ParagraphEntry`] carries, counted in
-/// `char`s (Unicode scalar values), never bytes — a Korean paragraph yields
-/// this many Hangul syllables and never a split UTF-8 sequence. The cap also
-/// stops one pathologically long paragraph from inflating the whole report.
-pub const TEXT_EXCERPT_CHARS: usize = 60;
-
 /// The full result of comparing two documents.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentDiff {
@@ -163,9 +157,10 @@ pub struct ParagraphEntry {
     pub a_index: Option<usize>,
     pub b_index: Option<usize>,
     pub chars: Option<Vec<CharRun>>,
-    /// The paragraph's own text, the first [`TEXT_EXCERPT_CHARS`] `char`s of
-    /// [`para_text`]. Taken from the a-side, except for a pure `Insert`,
-    /// which has no a-side and therefore reports the b-side.
+    /// The paragraph's own text in full, as [`para_text`] extracts it — never
+    /// truncated, so a difference past any fixed excerpt length is still
+    /// visible. Taken from the a-side, except for a pure `Insert`, which has
+    /// no a-side and therefore reports the b-side.
     pub text: String,
     /// Where [`text`](Self::text) lives — same side as `text`.
     pub location: ParagraphLocation,
@@ -286,7 +281,7 @@ pub fn para_text(para: &Paragraph) -> String {
     text.trim().to_string()
 }
 
-/// One flattened paragraph's reportable identity: its excerpt and where it
+/// One flattened paragraph's reportable identity: its full text and where it
 /// lives. Collected in the same single walk that flattens the `chars`
 /// sequences, so the two can never drift out of index alignment.
 struct ParagraphMeta {
@@ -304,10 +299,7 @@ fn flatten_paragraphs(document: &Document) -> (Vec<Vec<HwpChar>>, Vec<ParagraphM
     walk_paragraphs(document, &mut |paragraph, location| {
         chars.push(paragraph.chars.clone());
         meta.push(ParagraphMeta {
-            text: para_text(paragraph)
-                .chars()
-                .take(TEXT_EXCERPT_CHARS)
-                .collect(),
+            text: para_text(paragraph),
             location,
         });
     });
@@ -1099,26 +1091,24 @@ mod tests {
         ));
     }
 
+    /// #227 finding D: the text is carried in full. A 60-char excerpt hid
+    /// every difference past that point behind two identical-looking lines.
     #[test]
-    fn excerpt_is_capped_in_chars_not_bytes() {
-        let a = doc("머리\n");
-        let mut b = doc("머리\n\n{}\n");
-        b.sections[0]
-            .paragraphs
-            .last_mut()
-            .unwrap()
-            .chars
-            .splice(.., "가".repeat(80).chars().map(HwpChar::Text));
+    fn paragraph_text_is_never_truncated() {
+        let long = |tail: &str| format!("{}{tail}", "가".repeat(80));
+        let a = doc(&format!("머리\n\n{}\n", long("앞")));
+        let b = doc(&format!("머리\n\n{}\n", long("뒤")));
 
         let diff = compare_documents(&a, &b).unwrap();
         let changed = diff
             .paragraphs
             .iter()
-            .find(|e| e.op != ParagraphOp::Equal)
-            .expect("the long paragraph differs");
-        let excerpt = changed.b_text.as_deref().unwrap_or(&changed.text);
-        assert_eq!(excerpt.chars().count(), TEXT_EXCERPT_CHARS);
-        assert_eq!(excerpt, "가".repeat(TEXT_EXCERPT_CHARS));
+            .find(|entry| entry.op == ParagraphOp::Replace)
+            .expect("the long paragraph is replaced");
+        assert_eq!(changed.text, long("앞"));
+        assert_eq!(changed.b_text.as_deref(), Some(long("뒤").as_str()));
+        // The two report lines differ even though the first 80 chars match.
+        assert_ne!(Some(changed.text.as_str()), changed.b_text.as_deref());
     }
 
     #[test]

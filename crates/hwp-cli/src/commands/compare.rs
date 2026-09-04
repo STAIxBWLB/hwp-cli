@@ -122,7 +122,7 @@ fn location_str(location: &ParagraphLocation) -> String {
 }
 
 /// One report line: the operation sign, the bracketed flattened index, the
-/// location when there is one, then the paragraph's excerpt.
+/// location when there is one, then the paragraph's full text.
 fn entry_line(sign: char, index: usize, location: &ParagraphLocation, text: &str) -> String {
     let location = location_str(location);
     if location.is_empty() {
