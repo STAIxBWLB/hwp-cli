@@ -180,6 +180,15 @@ pub struct StructureDiff {
     /// `b"tbl "`). Only kinds present on at least one side appear.
     pub controls: BTreeMap<[u8; 4], (usize, usize)>,
     pub tables: Vec<TableGeometryDelta>,
+    /// Paragraphs inserted and deleted inside table cells (D-18). Counted
+    /// from the paragraph entries whose location is the cell variant, so a
+    /// difference that lives only inside a table is a reported fact rather
+    /// than something the summary has to be read between the lines for.
+    pub cell_paragraphs: (usize, usize),
+    /// How many tables each document has. `tables` above only pairs the
+    /// tables both sides have; before this field the surplus was dropped by a
+    /// positional `zip` without a word (D-18).
+    pub table_counts: (usize, usize),
 }
 
 impl StructureDiff {
@@ -188,6 +197,8 @@ impl StructureDiff {
             && self.paragraphs.0 == self.paragraphs.1
             && self.controls.values().all(|(a, b)| a == b)
             && self.tables.is_empty()
+            && self.cell_paragraphs == (0, 0)
+            && self.table_counts.0 == self.table_counts.1
     }
 }
 
@@ -201,7 +212,7 @@ pub fn compare_documents(a: &Document, b: &Document) -> Result<DocumentDiff, Str
     let ops = paragraph_lcs(&a_paras, &b_paras)?;
     let paragraphs = fold_paragraph_ops(ops, &a_paras, &b_paras, &a_meta, &b_meta)?;
 
-    let structure = structure_diff(a, b, a_paras.len(), b_paras.len());
+    let structure = structure_diff(a, b, a_paras.len(), b_paras.len(), &paragraphs);
 
     let identical =
         paragraphs.iter().all(|e| e.op == ParagraphOp::Equal) && structure.is_identical();
@@ -610,6 +621,7 @@ fn structure_diff(
     b: &Document,
     a_paragraph_count: usize,
     b_paragraph_count: usize,
+    paragraphs: &[ParagraphEntry],
 ) -> StructureDiff {
     let a_controls = control_inventory(a);
     let b_controls = control_inventory(b);
@@ -635,11 +647,24 @@ fn structure_diff(
         })
         .collect();
 
+    let is_cell = |location: &ParagraphLocation| matches!(location, ParagraphLocation::Cell { .. });
+    let count_cell = |op| {
+        paragraphs
+            .iter()
+            .filter(|entry| entry.op == op && is_cell(&entry.location))
+            .count()
+    };
+
     StructureDiff {
         sections: (a.sections.len(), b.sections.len()),
         paragraphs: (a_paragraph_count, b_paragraph_count),
         controls,
         tables,
+        cell_paragraphs: (
+            count_cell(ParagraphOp::Insert),
+            count_cell(ParagraphOp::Delete),
+        ),
+        table_counts: (a_tables.len(), b_tables.len()),
     }
 }
 
@@ -918,6 +943,42 @@ mod tests {
         let diff = compare_documents(&a, &b).unwrap();
         assert!(!diff.identical);
         assert!(diff.paragraphs.iter().any(|e| e.op != ParagraphOp::Equal));
+    }
+
+    #[test]
+    fn cell_paragraph_changes_are_counted_and_never_look_identical() {
+        // One paragraph added inside a cell on each side, in different cells,
+        // so the pair reports one insertion and one deletion inside tables.
+        let table = "| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
+        let mut a = doc(table);
+        let mut b = doc(table);
+        push_cell_paragraph(&mut a, 0, 0, "a쪽 추가");
+        push_cell_paragraph(&mut b, 1, 1, "b쪽 추가");
+
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.cell_paragraphs, (1, 1));
+        assert!(!diff.structure.is_identical());
+        assert!(!diff.identical);
+    }
+
+    #[test]
+    fn differing_table_counts_are_reported_not_truncated() {
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let b = doc("| a | b |\n| - | - |\n| 1 | 2 |\n\n본문\n\n| c | d |\n| - | - |\n| 3 | 4 |\n");
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.table_counts, (1, 2));
+        assert!(!diff.structure.is_identical());
+    }
+
+    #[test]
+    fn identical_structure_reports_zero_for_the_new_counts() {
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let b = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.cell_paragraphs, (0, 0));
+        assert_eq!(diff.structure.table_counts, (1, 1));
+        assert!(diff.structure.is_identical());
+        assert!(diff.identical);
     }
 
     #[test]

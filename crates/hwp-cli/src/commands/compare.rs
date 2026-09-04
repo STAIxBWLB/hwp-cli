@@ -163,15 +163,24 @@ fn print_text_report(a: &Path, b: &Path, diff: &DocumentDiff) {
         .values()
         .filter(|(a, b)| a != b)
         .count();
-    println!(
-        "구조: 구역 {}→{}, 문단 {}→{}, 표 변경 {}건, 컨트롤 종류 변경 {}건",
+    // The existing fields keep their order; the D-18 additions are appended,
+    // and the table count only when the two sides actually differ.
+    let mut summary = format!(
+        "구조: 구역 {}→{}, 문단 {}→{}, 표 변경 {}건, 컨트롤 종류 변경 {}건, 표 내부 문단 +{} -{}",
         diff.structure.sections.0,
         diff.structure.sections.1,
         diff.structure.paragraphs.0,
         diff.structure.paragraphs.1,
         diff.structure.tables.len(),
         changed_controls,
+        diff.structure.cell_paragraphs.0,
+        diff.structure.cell_paragraphs.1,
     );
+    let (a_tables, b_tables) = diff.structure.table_counts;
+    if a_tables != b_tables {
+        summary.push_str(&format!(", 표 개수 {a_tables}→{b_tables}"));
+    }
+    println!("{summary}");
 }
 
 /// A `ctrl_id` as its four printable characters (e.g. `gso `).
@@ -323,6 +332,11 @@ pub(crate) fn compare_report_json(a: &Path, b: &Path, diff: &DocumentDiff) -> se
             "paragraphs": {"a": diff.structure.paragraphs.0, "b": diff.structure.paragraphs.1},
             "controls": controls,
             "tables": tables,
+            "cell_paragraphs": {
+                "inserted": diff.structure.cell_paragraphs.0,
+                "deleted": diff.structure.cell_paragraphs.1,
+            },
+            "table_count": {"a": diff.structure.table_counts.0, "b": diff.structure.table_counts.1},
         },
     })
 }
