@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- A table cell holding several paragraphs whose saved line positions restart per paragraph no longer
+  draws those paragraphs on top of each other. The layout flow floor now advances once per
+  paragraph, so it covers text boxes, headers and footers through the same shared function, and a
+  paragraph the floor pushes down moves as a whole instead of having each of its lines clamped onto
+  the floor. Documents whose saved line positions already accumulate across a cell, which is what
+  Hancom writes, render exactly as before (#222).
+
 **Changed**
 
 - Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
