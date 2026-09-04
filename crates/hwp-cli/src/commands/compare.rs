@@ -196,6 +196,54 @@ fn char_op_str(op: CharOp) -> &'static str {
     }
 }
 
+/// Serializes a [`ParagraphLocation`] by hand into a `kind`-discriminated
+/// object carrying that variant's numbers. Hand-rolled rather than derived so
+/// the engine types stay free of a serde dependency and the emitted shape is
+/// explicit and reviewable.
+fn location_json(location: &ParagraphLocation) -> serde_json::Value {
+    match location {
+        ParagraphLocation::Body { section, index } => serde_json::json!({
+            "kind": "body",
+            "section": section,
+            "index": index,
+        }),
+        ParagraphLocation::Cell {
+            section,
+            table,
+            row,
+            col,
+            index,
+        } => serde_json::json!({
+            "kind": "cell",
+            "section": section,
+            "table": table,
+            "row": row,
+            "col": col,
+            "index": index,
+        }),
+        ParagraphLocation::Caption {
+            section,
+            table,
+            index,
+        } => serde_json::json!({
+            "kind": "caption",
+            "section": section,
+            "table": table,
+            "index": index,
+        }),
+        ParagraphLocation::Nested {
+            section,
+            ctrl_id,
+            index,
+        } => serde_json::json!({
+            "kind": "nested",
+            "section": section,
+            "ctrl_id": ctrl_id_str(ctrl_id),
+            "index": index,
+        }),
+    }
+}
+
 fn char_run_json(run: &CharRun) -> serde_json::Value {
     serde_json::json!({
         "op": char_op_str(run.op),
@@ -213,11 +261,23 @@ pub(crate) fn compare_report_json(a: &Path, b: &Path, diff: &DocumentDiff) -> se
         .paragraphs
         .iter()
         .map(|entry| {
+            // `text` and `location` are additive (D-17): every key below was
+            // present before them and keeps its meaning, and the contract
+            // string is unchanged, so a consumer that ignores unknown keys
+            // needs no change.
             let mut value = serde_json::json!({
                 "op": paragraph_op_str(entry.op),
                 "a_index": entry.a_index,
                 "b_index": entry.b_index,
+                "text": entry.text,
+                "location": location_json(&entry.location),
             });
+            if let Some(b_text) = &entry.b_text {
+                value["b_text"] = serde_json::json!(b_text);
+            }
+            if let Some(b_location) = &entry.b_location {
+                value["b_location"] = location_json(b_location);
+            }
             if let Some(chars) = &entry.chars {
                 value["chars"] =
                     serde_json::json!(chars.iter().map(char_run_json).collect::<Vec<_>>());
@@ -282,6 +342,36 @@ mod tests {
         )
     }
 
+    /// A pair whose only difference is one paragraph appended inside a table
+    /// cell — the #223 shape.
+    fn diff_with_cell_insertion() -> (std::path::PathBuf, std::path::PathBuf, DocumentDiff) {
+        use hwp_model::{Control, HwpChar};
+
+        let markdown = "본문 문단\n\n| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
+        let doc_a = hwp_convert::from_markdown::from_markdown(markdown);
+        let mut doc_b = doc_a.clone();
+        let cell = doc_b
+            .sections
+            .iter_mut()
+            .flat_map(|s| s.paragraphs.iter_mut())
+            .flat_map(|p| p.controls.iter_mut())
+            .find_map(|control| match control {
+                Control::Table(table) => table.cells.iter_mut().find(|c| c.row == 1 && c.col == 1),
+                _ => None,
+            })
+            .expect("셀 (1,1)이 있어야 함");
+        let mut added = cell.paragraphs[0].clone();
+        added.chars = "○ 둘째 항목 BBB".chars().map(HwpChar::Text).collect();
+        cell.paragraphs.push(added);
+
+        let diff = hwp_convert::document_compare::compare_documents(&doc_a, &doc_b).unwrap();
+        (
+            std::path::PathBuf::from("a.hwpx"),
+            std::path::PathBuf::from("b.hwpx"),
+            diff,
+        )
+    }
+
     #[test]
     fn json_report_contract() {
         let (a, b, diff) = diff_a_vs_a();
@@ -293,6 +383,40 @@ mod tests {
         assert!(v["structure"]["sections"].is_object());
         assert!(v["structure"]["controls"].is_array());
         assert!(v["structure"]["tables"].is_array());
+
+        // The `text` and `location` keys are additive: every key the report
+        // carried before them is still present with the same meaning, on
+        // every entry, so a consumer that ignores unknown keys keeps working.
+        for entry in v["paragraphs"].as_array().unwrap() {
+            assert!(entry["op"].is_string());
+            assert!(entry.get("a_index").is_some());
+            assert!(entry.get("b_index").is_some());
+            assert!(entry["text"].is_string());
+            assert!(entry["location"]["kind"].is_string());
+        }
+    }
+
+    /// #223: a paragraph inside a table cell must be addressable from the
+    /// JSON report, with the same 0-based table number `--set-cell` uses.
+    #[test]
+    fn json_report_locates_a_cell_paragraph() {
+        let (a, b, diff) = diff_with_cell_insertion();
+        let v = compare_report_json(&a, &b, &diff);
+        assert_eq!(v["contract"], "hwp-compare-report-v1");
+
+        let inserted = v["paragraphs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["op"] == "insert")
+            .expect("추가된 셀 문단이 있어야 함");
+        assert_eq!(inserted["text"], "○ 둘째 항목 BBB");
+        assert_eq!(inserted["location"]["kind"], "cell");
+        assert_eq!(inserted["location"]["section"], 0);
+        assert_eq!(inserted["location"]["table"], 0);
+        assert_eq!(inserted["location"]["row"], 1);
+        assert_eq!(inserted["location"]["col"], 1);
+        assert_eq!(inserted["location"]["index"], 1);
     }
 
     /// Both inputs go in as `.json` IR (no hwp5/hwpx container writer touches
