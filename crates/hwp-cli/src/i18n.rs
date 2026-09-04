@@ -605,7 +605,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "edit",
         "set_para",
-        "문단 모양 \"찾기=>키:값\" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm) (반복 가능)",
+        "문단 모양 \"찾기=>키:값[,키:값]\" — 키: line-spacing(% 또는 Npt), indent, left, right, top, bottom (mm), align (left|right|center|justify|distribute) (반복 가능)",
+    ),
+    (
+        "edit",
+        "set_cell_para",
+        "셀 문단 모양 \"표:행:열=>키:값[,키:값]\" — 앵커 없이 그 셀의 모든 문단에 적용. 키는 --set-para와 같고, 한 번의 실행에서 --set-cell 뒤에 돈다 (반복 가능, 0-기반)",
     ),
     (
         "edit",

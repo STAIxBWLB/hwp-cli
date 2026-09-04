@@ -644,9 +644,12 @@ pub struct EditArgs {
     /// Clone a table, "source_table=>anchor[=>blank|keep]": deep-copy table source_table (0-based, recursive) after the anchor paragraph; blank (default) keeps structure/styles with empty cells, keep also clones supported content (nested tables, images) with remapped ids (repeatable)
     #[arg(long = "clone-table")]
     pub clone_table: Vec<String>,
-    /// Paragraph shape properties, "find=>key:value" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm); repeatable)
+    /// Paragraph shape properties, "find=>key:value[,key:value]" (keys: line-spacing (% or Npt), indent, left, right, top, bottom (mm), align (left|right|center|justify|distribute); repeatable)
     #[arg(long = "set-para")]
     pub set_para: Vec<String>,
+    /// Paragraph shape for a whole cell, "table:row:col=>key:value[,key:value]": applies to every paragraph of the addressed cell with no text anchor; same keys as --set-para and it runs after --set-cell in one invocation (repeatable, 0-based)
+    #[arg(long = "set-cell-para")]
+    pub set_cell_para: Vec<String>,
     /// Page setup, "key:value" (keys: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait|landscape); repeatable)
     #[arg(long = "set-page")]
     pub set_page: Vec<String>,

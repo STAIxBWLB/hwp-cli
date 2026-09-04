@@ -294,6 +294,9 @@ pub struct ParaProps {
     pub margin_right: Option<i32>,
     pub spacing_top: Option<i32>,
     pub spacing_bottom: Option<i32>,
+    /// Alignment code written into `attr1` bits 2..4
+    /// (justify=0, left=1, right=2, center=3, distribute=4).
+    pub align: Option<u8>,
 }
 
 impl ParaProps {
@@ -304,7 +307,65 @@ impl ParaProps {
             && self.margin_right.is_none()
             && self.spacing_top.is_none()
             && self.spacing_bottom.is_none()
+            && self.align.is_none()
     }
+}
+
+/// HWPUNIT -> IR (hwp5 PARA_SHAPE) unit conversion. Every entry point that stores a
+/// [`ParaProps`] goes through this, so the same key and value produce the same stored
+/// shape whichever flag wrote it.
+fn to_ir_units(props: &ParaProps) -> ParaProps {
+    ParaProps {
+        line_spacing: props.line_spacing.map(|(kind, v)| {
+            if kind == 0 {
+                (kind, v) // ratio (%) needs no conversion
+            } else {
+                (kind, v.saturating_mul(2))
+            }
+        }),
+        indent: props.indent.map(|v| v.saturating_mul(2)),
+        margin_left: props.margin_left.map(|v| v.saturating_mul(2)),
+        margin_right: props.margin_right.map(|v| v.saturating_mul(2)),
+        spacing_top: props.spacing_top.map(|v| v.saturating_mul(2)),
+        spacing_bottom: props.spacing_bottom.map(|v| v.saturating_mul(2)),
+        // An alignment code is not a dimension - it is stored verbatim.
+        align: props.align,
+    }
+}
+
+/// Point one paragraph at a shape carrying `props` (an existing identical shape is reused).
+/// `props` must already be in IR units - see [`to_ir_units`].
+fn apply_para_props(para: &mut Paragraph, props: &ParaProps, pshapes: &mut Vec<ParaShape>) {
+    let mut ps = pshapes
+        .get(para.para_shape.0 as usize)
+        .cloned()
+        .unwrap_or_default();
+    if let Some((kind, value)) = props.line_spacing {
+        ps.line_spacing_type = kind;
+        ps.line_spacing = value;
+        ps.line_spacing_old = value;
+    }
+    if let Some(v) = props.indent {
+        ps.indent = v;
+    }
+    if let Some(v) = props.margin_left {
+        ps.margin_left = v;
+    }
+    if let Some(v) = props.margin_right {
+        ps.margin_right = v;
+    }
+    if let Some(v) = props.spacing_top {
+        ps.spacing_top = v;
+    }
+    if let Some(v) = props.spacing_bottom {
+        ps.spacing_bottom = v;
+    }
+    if let Some(align) = props.align {
+        // 정렬은 attr1 비트 2~4 — align_para와 같은 clear-then-set.
+        ps.attr1 = (ps.attr1 & !(0x7 << 2)) | ((u32::from(align) & 0x7) << 2);
+    }
+    para.para_shape = find_or_insert_para(pshapes, ps);
+    para.line_segs.clear();
 }
 
 /// Changes the para shape properties of paragraphs containing `pattern` (GK-4 — recurses
@@ -319,21 +380,7 @@ pub fn set_para_props(doc: &mut Document, pattern: &str, props: &ParaProps) -> u
     if pattern.is_empty() || props.is_empty() {
         return 0;
     }
-    // HWPUNIT → IR (hwp5 PARA_SHAPE) unit conversion.
-    let props = ParaProps {
-        line_spacing: props.line_spacing.map(|(kind, v)| {
-            if kind == 0 {
-                (kind, v) // ratio (%) needs no conversion
-            } else {
-                (kind, v.saturating_mul(2))
-            }
-        }),
-        indent: props.indent.map(|v| v.saturating_mul(2)),
-        margin_left: props.margin_left.map(|v| v.saturating_mul(2)),
-        margin_right: props.margin_right.map(|v| v.saturating_mul(2)),
-        spacing_top: props.spacing_top.map(|v| v.saturating_mul(2)),
-        spacing_bottom: props.spacing_bottom.map(|v| v.saturating_mul(2)),
-    };
+    let props = to_ir_units(props);
     let props = &props;
     let Document {
         header, sections, ..
@@ -356,32 +403,7 @@ fn props_para(
 ) -> usize {
     let mut n = 0;
     if find_match(&para.chars, pattern, 0).is_some() {
-        let mut ps = pshapes
-            .get(para.para_shape.0 as usize)
-            .cloned()
-            .unwrap_or_default();
-        if let Some((kind, value)) = props.line_spacing {
-            ps.line_spacing_type = kind;
-            ps.line_spacing = value;
-            ps.line_spacing_old = value;
-        }
-        if let Some(v) = props.indent {
-            ps.indent = v;
-        }
-        if let Some(v) = props.margin_left {
-            ps.margin_left = v;
-        }
-        if let Some(v) = props.margin_right {
-            ps.margin_right = v;
-        }
-        if let Some(v) = props.spacing_top {
-            ps.spacing_top = v;
-        }
-        if let Some(v) = props.spacing_bottom {
-            ps.spacing_bottom = v;
-        }
-        para.para_shape = find_or_insert_para(pshapes, ps);
-        para.line_segs.clear();
+        apply_para_props(para, props, pshapes);
         n += 1;
     }
     for ctrl in &mut para.controls {
@@ -409,6 +431,42 @@ fn props_para(
         }
     }
     n
+}
+
+/// Applies `props` to **every** paragraph of the `(row, col)` cell of the `table`th table
+/// (0-based, document order - the same addressing `set_cell` uses), with no text anchor.
+/// Returns the number of paragraphs changed; empty `props` is a no-op returning 0.
+///
+/// Units follow [`set_para_props`]: dimensions are HWPUNIT and are scaled through the shared
+/// [`to_ir_units`], so `--set-para` and `--set-cell-para` cannot drift.
+pub fn set_cell_para_props(
+    doc: &mut Document,
+    table: usize,
+    row: u16,
+    col: u16,
+    props: &ParaProps,
+) -> Result<usize, String> {
+    if props.is_empty() {
+        return Ok(0);
+    }
+    let props = to_ir_units(props);
+    // The table walker holds the document mutably while the closure needs the shape list,
+    // so lend the list out for the duration and put it back afterwards.
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let result = crate::edit::with_nth_table(doc, table, |t| {
+        let cell = t
+            .cells
+            .iter_mut()
+            .find(|c| c.row == row && c.col == col)
+            .ok_or_else(|| format!("표에 셀 ({row}, {col})이 없습니다"))?;
+        for para in &mut cell.paragraphs {
+            apply_para_props(para, &props, &mut pshapes);
+        }
+        Ok(cell.paragraphs.len())
+    })
+    .unwrap_or_else(|| Err(format!("표 #{table}를 찾을 수 없습니다")));
+    doc.header.para_shapes = pshapes;
+    result
 }
 
 /// Page setup change items (GK-6). None items keep their existing values. Dimensions are HWPUNIT.
@@ -681,5 +739,118 @@ mod tests {
         );
         assert_eq!(n, 0);
         assert_eq!(doc.header.char_shapes.len(), before, "shape 추가 없음");
+    }
+    // ── #221 --set-cell-para (CELL-02) ──────────────────────────────────────
+
+    fn table_doc() -> Document {
+        from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n")
+    }
+
+    fn cell_paras(doc: &Document, row: u16, col: u16) -> &[Paragraph] {
+        doc.sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음")
+            .cells
+            .iter()
+            .find(|c| c.row == row && c.col == col)
+            .expect("셀 없음")
+            .paragraphs
+            .as_slice()
+    }
+
+    #[test]
+    fn set_cell_para_props_셀_전체_문단에_적용() {
+        let mut doc = table_doc();
+        crate::edit::set_cell(&mut doc, 0, 1, 0, "첫째\n\n둘째\n\n셋째").unwrap();
+        let props = ParaProps {
+            line_spacing: Some((0, 150)),
+            indent: Some(-1000),
+            ..ParaProps::default()
+        };
+        assert_eq!(set_cell_para_props(&mut doc, 0, 1, 0, &props).unwrap(), 3);
+        let paras = cell_paras(&doc, 1, 0);
+        assert_eq!(paras.len(), 3);
+        for p in paras {
+            let ps = &doc.header.para_shapes[p.para_shape.0 as usize];
+            assert_eq!(ps.line_spacing, 150);
+            assert_eq!(ps.line_spacing_type, 0);
+            assert_eq!(ps.indent, -2000, "치수는 IR 2배 단위");
+            assert!(p.line_segs.is_empty(), "줄 배치 무효화");
+        }
+    }
+
+    #[test]
+    fn set_cell_para_props_는_set_para_props와_같은_단위환산() {
+        // 같은 키·값이면 어느 플래그로 썼든 같은 모양이 저장돼야 한다(to_ir_units 공유).
+        let props = ParaProps {
+            line_spacing: Some((1, 1300)),
+            indent: Some(-1000),
+            margin_left: Some(2000),
+            spacing_bottom: Some(300),
+            ..ParaProps::default()
+        };
+        let mut by_anchor = table_doc();
+        assert_eq!(set_para_props(&mut by_anchor, "1", &props), 1);
+        let a = doc_shape_of_cell(&by_anchor, 1, 0);
+
+        let mut by_cell = table_doc();
+        assert_eq!(
+            set_cell_para_props(&mut by_cell, 0, 1, 0, &props).unwrap(),
+            1
+        );
+        let b = doc_shape_of_cell(&by_cell, 1, 0);
+        assert_eq!(a, b, "두 진입점의 저장 모양이 달라졌다");
+    }
+
+    fn doc_shape_of_cell(doc: &Document, row: u16, col: u16) -> ParaShape {
+        let p = &cell_paras(doc, row, col)[0];
+        doc.header.para_shapes[p.para_shape.0 as usize].clone()
+    }
+
+    #[test]
+    fn set_cell_para_props_정렬_다섯_이름() {
+        // justify=0 left=1 right=2 center=3 distribute=4 — attr1 비트 2~4에 clear-then-set.
+        for align in [0u8, 1, 2, 3, 4] {
+            let mut doc = table_doc();
+            let props = ParaProps {
+                align: Some(align),
+                ..ParaProps::default()
+            };
+            assert_eq!(set_cell_para_props(&mut doc, 0, 1, 0, &props).unwrap(), 1);
+            let ps = doc_shape_of_cell(&doc, 1, 0);
+            assert_eq!(ps.alignment(), align, "정렬 코드 {align}");
+        }
+    }
+
+    #[test]
+    fn set_cell_para_props_빈_속성은_무변경() {
+        let mut doc = table_doc();
+        let before = doc.header.para_shapes.clone();
+        let n = set_cell_para_props(&mut doc, 0, 1, 0, &ParaProps::default()).unwrap();
+        assert_eq!(n, 0, "빈 속성은 0 보고");
+        assert_eq!(doc.header.para_shapes, before, "모양 추가 없음");
+    }
+
+    #[test]
+    fn set_cell_para_props_없는_주소는_오류() {
+        let mut doc = table_doc();
+        let props = ParaProps {
+            align: Some(3),
+            ..ParaProps::default()
+        };
+        assert!(
+            set_cell_para_props(&mut doc, 0, 99, 99, &props).is_err(),
+            "없는 셀"
+        );
+        assert!(
+            set_cell_para_props(&mut doc, 9, 0, 0, &props).is_err(),
+            "없는 표"
+        );
     }
 }

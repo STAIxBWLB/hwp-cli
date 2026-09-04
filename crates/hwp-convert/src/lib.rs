@@ -43,7 +43,8 @@ pub use field::{
     scan_placeholders, set_field,
 };
 pub use format::{
-    CharFormat, PageProps, ParaProps, set_char_format, set_page_def, set_para_align, set_para_props,
+    CharFormat, PageProps, ParaProps, set_cell_para_props, set_char_format, set_page_def,
+    set_para_align, set_para_props,
 };
 pub use frames::{
     FrameFields, compatibility_warnings, leading_frames, parse_field, parse_frame_fields,

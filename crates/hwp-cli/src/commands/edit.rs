@@ -45,6 +45,7 @@ enum EditOperation {
     AddTable(Vec<String>),
     CloneTable(Vec<String>),
     SetPara(Vec<String>),
+    SetCellPara(Vec<String>),
     SetPage(Vec<String>),
     DeleteImage(Vec<String>),
     DeleteTable(Vec<String>),
@@ -166,6 +167,14 @@ pub(crate) enum TypedEditOperation {
         /// Paragraph shape converted up to HWPUNIT/pt×100 units (same units as the CLI `parse_para_props`).
         props: hwp_convert::ParaProps,
     },
+    /// Paragraph shape for every paragraph of one cell, addressed like `set_cell` (0-based).
+    SetCellPara {
+        table: usize,
+        row: u16,
+        col: u16,
+        /// Same units as `SetPara` - both go through hwp-convert's shared scaling.
+        props: hwp_convert::ParaProps,
+    },
     SetPage {
         /// Page setup converted up to HWPUNIT units (same units as the CLI `apply_page_prop`).
         props: hwp_convert::PageProps,
@@ -252,6 +261,7 @@ impl EditOperation {
             | Self::SetFormat(_)
             | Self::SetAlign(_)
             | Self::SetPara(_)
+            | Self::SetCellPara(_)
             | Self::SetPage(_)
             | Self::StyleTables(_) => false,
         }
@@ -354,6 +364,7 @@ impl EditPlan {
             add_table,
             clone_table,
             set_para,
+            set_cell_para,
             set_page,
             delete_image,
             delete_table,
@@ -401,6 +412,9 @@ impl EditPlan {
         add!(AddTable, add_table);
         add!(CloneTable, clone_table);
         add!(SetPara, set_para);
+        // After SetPara and therefore after SetCell: in one invocation --set-cell-para
+        // restyles the paragraphs the same invocation just created.
+        add!(SetCellPara, set_cell_para);
         add!(SetPage, set_page);
         add!(DeleteImage, delete_image);
         add!(DeleteTable, delete_table);
@@ -686,13 +700,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let (loc, text) = spec.split_once('=').with_context(|| {
                         format!("--set-cell 형식은 \"표:행:열=값\" 입니다: {spec:?}")
                     })?;
-                    let parts: Vec<&str> = loc.split(':').collect();
-                    if parts.len() != 3 {
-                        anyhow::bail!("--set-cell 위치는 \"표:행:열\" 형식입니다: {loc:?}");
-                    }
-                    let ti: usize = parts[0].trim().parse().context("표 인덱스")?;
-                    let r: u16 = parts[1].trim().parse().context("행 번호")?;
-                    let c: u16 = parts[2].trim().parse().context("열 번호")?;
+                    let (ti, r, c) = parse_cell_loc(loc, "--set-cell")?;
                     hwp_convert::set_cell(&mut doc, ti, r, c, text)
                         .map_err(|e| anyhow::anyhow!(e))?;
                     eprintln!("셀 설정: 표{ti} ({r},{c}) = {text:?}");
@@ -1056,7 +1064,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let (pattern, kv) = spec.split_once("=>").with_context(|| {
                         format!("--set-para 형식은 \"찾기=>키:값\" 입니다: {spec:?}")
                     })?;
-                    let props = parse_para_props(kv)?;
+                    let props = parse_para_props(kv, "--set-para")?;
                     let n = hwp_convert::set_para_props(&mut doc, pattern, &props);
                     if n == 0 {
                         eprintln!("경고: 문단모양 대상 {pattern:?}를 찾지 못했습니다");
@@ -1067,6 +1075,31 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                             &before,
                             &doc,
                             format!("--set-para {spec:?}"),
+                            &mut edits,
+                            &mut unapplied,
+                        );
+                    }
+                }
+            }
+            EditOperation::SetCellPara(specs) => {
+                for spec in specs {
+                    let before = doc.clone();
+                    let (loc, kv) = spec.split_once("=>").with_context(|| {
+                        format!("--set-cell-para 형식은 \"표:행:열=>키:값\" 입니다: {spec:?}")
+                    })?;
+                    let (ti, r, c) = parse_cell_loc(loc, "--set-cell-para")?;
+                    let props = parse_para_props(kv, "--set-cell-para")?;
+                    let n = hwp_convert::set_cell_para_props(&mut doc, ti, r, c, &props)
+                        .map_err(|e| anyhow::anyhow!("--set-cell-para {loc:?}: {e}"))?;
+                    if n == 0 {
+                        eprintln!("경고: 셀 문단모양 대상 {loc:?}에 적용할 속성이 없습니다");
+                        unapplied.push(format!("--set-cell-para {spec:?}"));
+                    } else {
+                        eprintln!("셀 문단 모양: 표{ti} ({r},{c}) {kv} ({n}건)");
+                        record_effect(
+                            &before,
+                            &doc,
+                            format!("--set-cell-para {spec:?}"),
                             &mut edits,
                             &mut unapplied,
                         );
@@ -1760,6 +1793,28 @@ fn apply_typed_operation(
                 );
             }
         }
+        TypedEditOperation::SetCellPara {
+            table,
+            row,
+            col,
+            props,
+        } => {
+            let before = doc.clone();
+            let count = hwp_convert::set_cell_para_props(doc, *table, *row, *col, props)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            if count == 0 {
+                unapplied.push(format!("set_cell_para table={table} row={row} col={col}"));
+            } else {
+                eprintln!("셀 문단 모양: 표{table} ({row},{col}) ({count}건)");
+                record_effect(
+                    &before,
+                    doc,
+                    format!("set_cell_para table={table} row={row} col={col}"),
+                    edits,
+                    unapplied,
+                );
+            }
+        }
         TypedEditOperation::SetPage { props } => {
             let before = doc.clone();
             let count = hwp_convert::set_page_def(doc, props);
@@ -1999,21 +2054,41 @@ fn parse_mm(value: &str) -> anyhow::Result<i32> {
     Ok(mm_to_hwpunit(mm))
 }
 
-/// Parses `--set-para`'s "key:value" into ParaProps.
-/// Keys: line-spacing (ratio % or fixed Npt), indent, left, right, top, bottom (mm).
-fn parse_para_props(kv: &str) -> anyhow::Result<hwp_convert::ParaProps> {
-    let (key, value) = kv
-        .split_once(':')
-        .with_context(|| format!("--set-para 형식은 \"키:값\" 입니다: {kv:?}"))?;
+/// Parses a paragraph-shape property list, "key:value[,key:value]", into ParaProps.
+/// Keys: line-spacing (ratio % or fixed Npt), indent, left, right, top, bottom (mm),
+/// align (left/right/center/justify/distribute). Shared by `--set-para` and
+/// `--set-cell-para`; `flag` names the caller in every error message.
+///
+/// A list with no recognised pairs yields empty props, which every entry point treats as a
+/// no-op rather than as a rewrite with defaults.
+pub(crate) fn parse_para_props(kv: &str, flag: &str) -> anyhow::Result<hwp_convert::ParaProps> {
     let mut props = hwp_convert::ParaProps::default();
-    let key = key.trim();
-    let value = value.trim();
+    for pair in kv.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = pair
+            .split_once(':')
+            .with_context(|| format!("{flag} 형식은 \"키:값\" 입니다: {pair:?}"))?;
+        apply_para_prop(&mut props, key.trim(), value.trim(), flag)?;
+    }
+    Ok(props)
+}
+
+/// Applies one "key:value" pair to `props`. `flag` names the caller in error messages.
+fn apply_para_prop(
+    props: &mut hwp_convert::ParaProps,
+    key: &str,
+    value: &str,
+    flag: &str,
+) -> anyhow::Result<()> {
     match key {
         "line-spacing" => {
             // One message for both branches: the caller cannot tell which one it missed.
             let bad = || {
                 format!(
-                    "--set-para 줄간격 값이 올바르지 않습니다: {value:?} (허용 형식: 150%, 150, 15pt)"
+                    "{flag} 줄간격 값이 올바르지 않습니다: {value:?} (허용 형식: 150%, 150, 15pt)"
                 )
             };
             if let Some(pt) = value.strip_suffix("pt") {
@@ -2036,11 +2111,24 @@ fn parse_para_props(kv: &str) -> anyhow::Result<hwp_convert::ParaProps> {
         "right" => props.margin_right = Some(parse_mm(value)?),
         "top" => props.spacing_top = Some(parse_mm(value)?),
         "bottom" => props.spacing_bottom = Some(parse_mm(value)?),
+        "align" => props.align = Some(parse_align(value)?),
         other => anyhow::bail!(
-            "알 수 없는 문단모양 키: {other:?} (line-spacing/indent/left/right/top/bottom)"
+            "{flag} 알 수 없는 문단모양 키: {other:?} (line-spacing/indent/left/right/top/bottom/align)"
         ),
     }
-    Ok(props)
+    Ok(())
+}
+
+/// Parses a `"table:row:col"` cell address (0-based). `flag` names the caller in errors.
+pub(crate) fn parse_cell_loc(loc: &str, flag: &str) -> anyhow::Result<(usize, u16, u16)> {
+    let parts: Vec<&str> = loc.split(':').collect();
+    if parts.len() != 3 {
+        anyhow::bail!("{flag} 위치는 \"표:행:열\" 형식입니다: {loc:?}");
+    }
+    let table: usize = parts[0].trim().parse().context("표 인덱스")?;
+    let row: u16 = parts[1].trim().parse().context("행 번호")?;
+    let col: u16 = parts[2].trim().parse().context("열 번호")?;
+    Ok((table, row, col))
 }
 
 /// Applies one `--set-page` "key:value" to PageProps.
@@ -2889,7 +2977,7 @@ mod tests {
     /// produce the same tuple - only the `pt` suffix selects the fixed-spacing type.
     #[test]
     fn parse_para_props_accepts_percent_bare_and_pt_line_spacing() {
-        let spacing = |kv: &str| parse_para_props(kv).unwrap().line_spacing;
+        let spacing = |kv: &str| parse_para_props(kv, "--set-para").unwrap().line_spacing;
         assert_eq!(spacing("line-spacing:150%"), Some((0, 150)));
         assert_eq!(spacing("line-spacing:150"), Some((0, 150)));
         assert_eq!(spacing("line-spacing:150%"), spacing("line-spacing: 150 "));
@@ -2909,10 +2997,68 @@ mod tests {
             "line-spacing:150 %",
             "line-spacing:150pt%",
         ] {
-            let rendered = format!("{:#}", parse_para_props(kv).unwrap_err());
+            let rendered = format!("{:#}", parse_para_props(kv, "--set-para").unwrap_err());
             assert!(rendered.contains("--set-para"), "{kv}: {rendered}");
             assert!(rendered.contains("150%"), "{kv}: {rendered}");
             assert!(rendered.contains("15pt"), "{kv}: {rendered}");
+        }
+    }
+
+    /// #221: both paragraph-shape flags share one parser, so `align` and comma-separated
+    /// key lists work for `--set-para` as well as for `--set-cell-para`.
+    #[test]
+    fn parse_para_props_accepts_align_and_comma_lists() {
+        let props = parse_para_props(
+            "line-spacing:150%,indent:-12mm,align:center",
+            "--set-cell-para",
+        )
+        .unwrap();
+        assert_eq!(props.line_spacing, Some((0, 150)));
+        assert_eq!(props.indent, Some(mm_to_hwpunit(-12.0)));
+        assert_eq!(props.align, Some(3));
+
+        // justify=0 left=1 right=2 center=3 distribute=4 - the existing name map.
+        for (name, code) in [
+            ("justify", 0u8),
+            ("left", 1),
+            ("right", 2),
+            ("center", 3),
+            ("distribute", 4),
+        ] {
+            let props = parse_para_props(&format!("align:{name}"), "--set-para").unwrap();
+            assert_eq!(props.align, Some(code), "{name}");
+        }
+
+        // A list with no pairs is empty props, which every entry point treats as a no-op.
+        assert!(parse_para_props("", "--set-cell-para").unwrap().is_empty());
+
+        // Errors name the caller's flag, not the other one.
+        let error = format!(
+            "{:#}",
+            parse_para_props("align:sideways", "--set-cell-para").unwrap_err()
+        );
+        assert!(error.contains("알 수 없는 정렬"), "{error}");
+        let error = format!(
+            "{:#}",
+            parse_para_props("nope:1", "--set-cell-para").unwrap_err()
+        );
+        assert!(error.contains("--set-cell-para"), "{error}");
+    }
+
+    /// #221: the cell address parser names the caller's flag and rejects a malformed address.
+    #[test]
+    fn parse_cell_loc_names_the_flag() {
+        assert_eq!(parse_cell_loc("0:1:2", "--set-cell").unwrap(), (0, 1, 2));
+        assert_eq!(
+            parse_cell_loc(" 3 : 4 : 5 ", "--set-cell").unwrap(),
+            (3, 4, 5)
+        );
+        for loc in ["0:1", "0:1:2:3", "a:1:2"] {
+            let error = format!("{:#}", parse_cell_loc(loc, "--set-cell-para").unwrap_err());
+            assert!(
+                error.contains("--set-cell-para") || error.contains("인덱스"),
+                "{loc}: {error}"
+            );
         }
     }
 

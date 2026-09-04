@@ -1146,7 +1146,7 @@ pub fn apply_meta(doc: &mut Document, spec: &str) -> Result<(), String> {
 /// `f`가 개체 원문 XML(`hwpx_raw_xml`)을 품은 Generic 안의 표를 바꾸면 그 원문은
 /// 낡으므로 지운다 — writer가 stale XML을 방출하는 것을 막는다(방출할 emitter가
 /// 없어 fail-closed 보존 오류로 이어진다).
-fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
+pub(crate) fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     doc: &mut Document,
     index: usize,
     f: F,

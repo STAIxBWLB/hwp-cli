@@ -433,6 +433,47 @@ fn optional_item_bool(item: &Value, operation: &str, key: &str) -> Result<Option
         .transpose()
 }
 
+/// Builds a [`hwp_convert::ParaProps`] from one typed-edit item. Shared by `set_para` and
+/// `set_cell_para`; `operation` names the caller's array in every error message, and the
+/// units match the CLI's `parse_para_props` exactly.
+fn para_props_item(item: &Value, operation: &str) -> Result<hwp_convert::ParaProps, String> {
+    // The CLI line-spacing (% integer | Npt) split into two numeric arguments — mutually exclusive.
+    let line_spacing = match (
+        optional_item_f32(item, operation, "line_spacing_pct")?,
+        optional_item_f32(item, operation, "line_spacing_pt")?,
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "{operation}는 line_spacing_pct와 line_spacing_pt를 함께 지정할 수 없습니다"
+            ));
+        }
+        (Some(pct), None) => Some((0, pct as i32)),
+        (None, Some(pt)) => Some((1, (pt * 100.0).round() as i32)),
+        (None, None) => None,
+    };
+    let align = match optional_item_str(item, operation, "align")? {
+        Some(name) => Some(
+            crate::commands::edit::parse_align(name)
+                .map_err(|error| format!("{operation}: {error}"))?,
+        ),
+        None => None,
+    };
+    Ok(hwp_convert::ParaProps {
+        line_spacing,
+        indent: optional_item_f32(item, operation, "indent_mm")?
+            .map(crate::commands::edit::mm_to_hwpunit),
+        margin_left: optional_item_f32(item, operation, "left_mm")?
+            .map(crate::commands::edit::mm_to_hwpunit),
+        margin_right: optional_item_f32(item, operation, "right_mm")?
+            .map(crate::commands::edit::mm_to_hwpunit),
+        spacing_top: optional_item_f32(item, operation, "top_mm")?
+            .map(crate::commands::edit::mm_to_hwpunit),
+        spacing_bottom: optional_item_f32(item, operation, "bottom_mm")?
+            .map(crate::commands::edit::mm_to_hwpunit),
+        align,
+    })
+}
+
 fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<f32>, String> {
     item.get(key)
         .map(|value| {
@@ -1512,37 +1553,17 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         });
     }
     for item in arg_array(args, "set_para")? {
-        // The CLI line-spacing (% integer | Npt) split into two numeric arguments — mutually exclusive.
-        let line_spacing = match (
-            optional_item_f32(item, "set_para", "line_spacing_pct")?,
-            optional_item_f32(item, "set_para", "line_spacing_pt")?,
-        ) {
-            (Some(_), Some(_)) => {
-                return Err(
-                    "set_para는 line_spacing_pct와 line_spacing_pt를 함께 지정할 수 없습니다"
-                        .into(),
-                );
-            }
-            (Some(pct), None) => Some((0, pct as i32)),
-            (None, Some(pt)) => Some((1, (pt * 100.0).round() as i32)),
-            (None, None) => None,
-        };
-        let props = hwp_convert::ParaProps {
-            line_spacing,
-            indent: optional_item_f32(item, "set_para", "indent_mm")?
-                .map(crate::commands::edit::mm_to_hwpunit),
-            margin_left: optional_item_f32(item, "set_para", "left_mm")?
-                .map(crate::commands::edit::mm_to_hwpunit),
-            margin_right: optional_item_f32(item, "set_para", "right_mm")?
-                .map(crate::commands::edit::mm_to_hwpunit),
-            spacing_top: optional_item_f32(item, "set_para", "top_mm")?
-                .map(crate::commands::edit::mm_to_hwpunit),
-            spacing_bottom: optional_item_f32(item, "set_para", "bottom_mm")?
-                .map(crate::commands::edit::mm_to_hwpunit),
-        };
         operations.push(Op::SetPara {
             pattern: required_item_str(item, "set_para", "pattern")?.to_string(),
-            props,
+            props: para_props_item(item, "set_para")?,
+        });
+    }
+    for item in arg_array(args, "set_cell_para")? {
+        operations.push(Op::SetCellPara {
+            table: required_item_usize(item, "set_cell_para", "table")?,
+            row: required_item_u16(item, "set_cell_para", "row")?,
+            col: required_item_u16(item, "set_cell_para", "col")?,
+            props: para_props_item(item, "set_cell_para")?,
         });
     }
     // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
@@ -2320,9 +2341,23 @@ fn tool_defs() -> Vec<Value> {
                     "line_spacing_pt": {"type": "number", "description": "고정 줄간격(pt) — pct와 함께 지정 불가"},
                     "indent_mm": {"type": "number"}, "left_mm": {"type": "number"},
                     "right_mm": {"type": "number"}, "top_mm": {"type": "number"},
-                    "bottom_mm": {"type": "number"}},
+                    "bottom_mm": {"type": "number"},
+                    "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute"],
+                        "description": "문단 정렬"}},
                     "required": ["pattern"]},
-                    "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)"},
+                    "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
+                "set_cell_para": {"type": "array", "items": {"type": "object", "properties": {
+                    "table": {"type": "integer", "minimum": 0, "description": "0-기반 표 인덱스(재귀 순서)"},
+                    "row": {"type": "integer", "minimum": 0}, "col": {"type": "integer", "minimum": 0},
+                    "line_spacing_pct": {"type": "number", "description": "줄간격 비율(%)"},
+                    "line_spacing_pt": {"type": "number", "description": "고정 줄간격(pt) — pct와 함께 지정 불가"},
+                    "indent_mm": {"type": "number"}, "left_mm": {"type": "number"},
+                    "right_mm": {"type": "number"}, "top_mm": {"type": "number"},
+                    "bottom_mm": {"type": "number"},
+                    "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute"],
+                        "description": "문단 정렬"}},
+                    "required": ["table", "row", "col"]},
+                    "description": "셀 문단모양(앵커 없이 그 셀의 모든 문단): 줄간격·들여쓰기·여백(mm)·정렬. 한 번의 실행에서 set_cell 뒤에 적용된다"},
                 "set_page": {"type": "object", "properties": {
                     "width_mm": {"type": "number"}, "height_mm": {"type": "number"},
                     "margin_left_mm": {"type": "number"}, "margin_right_mm": {"type": "number"},
@@ -4359,6 +4394,7 @@ mod tests {
         for key in [
             "add_table",
             "set_para",
+            "set_cell_para",
             "set_page",
             "delete_image",
             "delete_table",
@@ -4514,6 +4550,84 @@ mod tests {
         assert_eq!(page.width.0, crate::commands::edit::mm_to_hwpunit(200.0));
         assert_eq!(page.attr & 1, 1, "landscape 비트");
         for path in [&source, &out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// #221: the typed `set_cell_para` operation reaches the same mutation path as the CLI
+    /// flag, so a document edited through MCP matches the one edited through the CLI.
+    #[test]
+    fn mcp_typed_set_cell_para_matches_the_cli_flag() {
+        let source = temp_file("typed-set-cell-para-source.hwpx");
+        let mcp_out = temp_file("typed-set-cell-para-mcp.hwpx");
+        create_hwpx(&source, "본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "set_cell": [{"table": 0, "row": 1, "col": 0, "text": "첫째\n\n둘째"}],
+                "set_cell_para": [{"table": 0, "row": 1, "col": 0,
+                                   "line_spacing_pct": 150, "indent_mm": -12, "align": "center"}]
+            }),
+            &ctx(),
+        )
+        .expect("set_cell_para 편집");
+
+        // The CLI mini-language spelling of the same request must build the same props,
+        // and both surfaces then call the same hwp-convert entry point.
+        let cli_props = crate::commands::edit::parse_para_props(
+            "line-spacing:150%,indent:-12mm,align:center",
+            "--set-cell-para",
+        )
+        .expect("CLI 속성 파싱");
+        let mcp_props = para_props_item(
+            &json!({"line_spacing_pct": 150, "indent_mm": -12, "align": "center"}),
+            "set_cell_para",
+        )
+        .expect("MCP 속성 매핑");
+        assert_eq!(cli_props, mcp_props, "CLI와 MCP가 만든 ParaProps가 다르다");
+        assert_eq!(
+            crate::commands::edit::parse_cell_loc("0:1:0", "--set-cell-para").unwrap(),
+            (0, 1, 0),
+            "CLI 셀 주소 파싱"
+        );
+
+        let shape_of = |path: &Path| {
+            let doc = load_document(path).unwrap();
+            let cell = doc
+                .sections
+                .iter()
+                .flat_map(|s| &s.paragraphs)
+                .flat_map(|p| &p.controls)
+                .find_map(|c| match c {
+                    hwp_model::Control::Table(t) => Some(t),
+                    _ => None,
+                })
+                .expect("표")
+                .cells
+                .iter()
+                .find(|c| c.row == 1 && c.col == 0)
+                .expect("셀 (1,0)")
+                .clone();
+            let shapes: Vec<hwp_model::ParaShape> = cell
+                .paragraphs
+                .iter()
+                .map(|p| doc.header.para_shapes[p.para_shape.0 as usize].clone())
+                .collect();
+            let texts: Vec<String> = cell.paragraphs.iter().map(|p| p.plain_text()).collect();
+            (texts, shapes)
+        };
+
+        let (mcp_texts, mcp_shapes) = shape_of(&mcp_out);
+        assert_eq!(mcp_texts, vec!["첫째", "둘째"], "블록 순서");
+        assert_eq!(mcp_shapes.len(), 2, "블록 2개 → 문단 2개");
+        for ps in &mcp_shapes {
+            assert_eq!(ps.line_spacing_type, 0);
+            assert_eq!(ps.line_spacing, 150);
+            assert_eq!(ps.alignment(), 3, "가운데 정렬");
+        }
+        for path in [&source, &mcp_out] {
             let _ = std::fs::remove_file(path);
         }
     }

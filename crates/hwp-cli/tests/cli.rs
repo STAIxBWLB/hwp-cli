@@ -2620,6 +2620,115 @@ fn edit_set_cell_splits_blank_lines_into_paragraphs() {
     }
 }
 
+/// #221: --set-cell-para restyles every paragraph of the addressed cell with no text anchor,
+/// and in one invocation it runs after --set-cell, so it reaches the paragraphs that
+/// invocation just created. Asserts on IR JSON only.
+#[test]
+fn edit_set_cell_para_styles_every_paragraph_of_the_cell() {
+    let md = tmp("s_tier_cell_para.md");
+    std::fs::write(&md, "| 가 | 나 |\n|----|----|\n| 1 | 2 |\n").unwrap();
+    let src = tmp("s_tier_cell_para.hwp");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let out = tmp("s_tier_cell_para_out.hwp");
+    let json = tmp("s_tier_cell_para_out.json");
+    let r = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--set-cell", "0:1:0=첫째\n\n둘째"])
+        .args([
+            "--set-cell-para",
+            "0:1:0=>line-spacing:150%,indent:-12mm,align:center",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "set-cell + set-cell-para: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let c = hwp()
+        .arg("convert")
+        .arg(&out)
+        .args(["--to", "json", "-o"])
+        .arg(&json)
+        .output()
+        .unwrap();
+    assert!(
+        c.status.success(),
+        "convert json: {}",
+        String::from_utf8_lossy(&c.stderr)
+    );
+    let ir: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&json).unwrap()).expect("IR JSON");
+    let table = ir["sections"][0]["paragraphs"]
+        .as_array()
+        .expect("paragraphs")
+        .iter()
+        .flat_map(|p| p["controls"].as_array().cloned().unwrap_or_default())
+        .find_map(|c| c.get("Table").cloned())
+        .expect("표 없음");
+    let cell = table["cells"]
+        .as_array()
+        .expect("cells")
+        .iter()
+        .find(|c| c["row"] == 1 && c["col"] == 0)
+        .expect("셀 (1,0)")
+        .clone();
+    let paras = cell["paragraphs"].as_array().expect("cell paragraphs");
+    assert_eq!(paras.len(), 2, "--set-cell이 만든 문단 2개");
+
+    let shape_ids: Vec<u64> = paras
+        .iter()
+        .map(|p| p["para_shape"].as_u64().expect("para_shape id"))
+        .collect();
+    assert_eq!(shape_ids[0], shape_ids[1], "두 문단이 한 모양을 공유");
+    let shape = &ir["header"]["para_shapes"][shape_ids[0] as usize];
+    // Line spacing follows the fields plan 03.1-01 established: ratio type 0, value 150.
+    assert_eq!(shape["line_spacing_type"], 0, "비율 줄간격");
+    assert_eq!(shape["line_spacing"], 150);
+    assert_eq!(shape["line_spacing_old"], 150);
+    // Alignment lives in attr1 bits 2..4; center is 3.
+    let attr1 = shape["attr1"].as_u64().expect("attr1");
+    assert_eq!((attr1 >> 2) & 0x7, 3, "가운데 정렬 코드");
+    assert!(
+        shape["indent"].as_i64().expect("indent") < 0,
+        "내어쓰기(음수 들여쓰기): {}",
+        shape["indent"]
+    );
+
+    // A table index that does not exist fails and the error names the flag.
+    let bad = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(tmp("s_tier_cell_para_bad.hwp"))
+        .args(["--set-cell-para", "99:0:0=>align:center"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "없는 표는 실패해야 한다");
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("--set-cell-para"),
+        "오류가 플래그를 명시: {stderr}"
+    );
+
+    for f in [&md, &src, &out, &json] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 #[test]
 fn convert_multi_input_out_dir_and_txt_csv() {
     let a = make_doc("s_tier_a", "문서 A\n\n| 가 |\n|---|\n| 1 |\n");
