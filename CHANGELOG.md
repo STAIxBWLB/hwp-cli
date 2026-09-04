@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- Both deployment images pin the v0.17.0 tarball instead of v0.16.1, so the live service gets the
+  cell-paragraph series (issues #220 through #225). `deploy/cloudflare/container/Dockerfile.slim`
+  is the one that ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from
+  drifting.
+
 ## [0.17.0]
 
 **Added**
