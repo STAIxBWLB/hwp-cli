@@ -28,7 +28,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   boundary, empty blocks are dropped, and a single line feed inside a block is still an
   in-paragraph line break. An empty value still yields one empty paragraph, and a value with no
   blank line still yields exactly one paragraph. `hwp fill`, `--data tables`,
-  `--set-cell-by-label` and the MCP typed `set_cell` operation share the same behaviour. (#220)
+  `--set-cell-by-label` and the MCP typed `set_cell` operation share the same behaviour. The
+  paragraph identifiers the extra paragraphs need are reserved with checked arithmetic before
+  anything is written, so a document whose identifiers already reach the 32-bit limit fails the
+  call and is left untouched instead of wrapping onto an identifier in use. (#220)
 - Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
   `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
   ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.

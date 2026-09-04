@@ -311,9 +311,30 @@ pub fn set_cell(
     // assign_instance_ids nor set_last_para_flag runs and paragraphs created here
     // must carry their own document-unique ids. Read the global maximum before the
     // table borrow so the new ids cannot collide with a paragraph elsewhere.
-    let next_instance_id = doc_max_instance_id(doc).wrapping_add(1).max(1);
+    //
+    // A8 requires every instance id to be non-zero and unique, so the whole range is
+    // reserved with checked arithmetic before anything is mutated: on overflow the call
+    // fails and the document is left exactly as it was, rather than wrapping to zero or
+    // back onto an id already in use.
+    let blocks = split_cell_blocks(text);
+    let overflow = || {
+        "문단 instance_id를 더 배정할 수 없습니다 (u32 한계) — 셀 값을 나누지 않고 넣으세요"
+            .to_string()
+    };
+    // Paragraph 0 keeps the template id, so only the blocks after it need new ones - a
+    // single-block value allocates nothing and cannot overflow.
+    let needed = blocks.len().saturating_sub(1) as u32;
+    let next_instance_id = if needed == 0 {
+        0
+    } else {
+        let next = doc_max_instance_id(doc)
+            .checked_add(1)
+            .ok_or_else(overflow)?;
+        next.checked_add(needed - 1).ok_or_else(overflow)?;
+        next
+    };
     with_nth_table(doc, table_index, |t| {
-        set_cell_in_table(t, row, col, text, next_instance_id)
+        set_cell_in_table(t, row, col, &blocks, next_instance_id)
     })
     .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
 }
@@ -1251,11 +1272,13 @@ fn split_cell_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
+/// `next_instance_id` must already be a reserved, overflow-checked range of
+/// `blocks.len() - 1` ids - see [`set_cell`], which refuses before mutating anything.
 fn set_cell_in_table(
     table: &mut hwp_model::Table,
     row: u16,
     col: u16,
-    text: &str,
+    blocks: &[String],
     next_instance_id: u32,
 ) -> Result<(), String> {
     let cell = table
@@ -1267,8 +1290,8 @@ fn set_cell_in_table(
     // 첫 문단을 서식 템플릿으로 — 문단/스타일/문자 모양/헤더 보존, 내용만 교체.
     // 셀의 문단 목록은 아래에서 통째로 교체되므로 템플릿을 미리 복제해 둔다.
     let template = cell.paragraphs.first().cloned();
-    let mut paras: Vec<Paragraph> = split_cell_blocks(text)
-        .into_iter()
+    let mut paras: Vec<Paragraph> = blocks
+        .iter()
         .enumerate()
         .map(|(i, block)| {
             let mut para = blank_para_like(template.as_ref());
@@ -1277,7 +1300,7 @@ fn set_cell_in_table(
                 // single-block value still produces the IR it produced before the
                 // split; the rest take document-global ids because the surgical
                 // writer will not assign them (see `set_cell`).
-                para.header.instance_id = next_instance_id.wrapping_add(i as u32 - 1);
+                para.header.instance_id = next_instance_id + (i as u32 - 1);
             }
             para.chars = block
                 .chars()
@@ -2810,12 +2833,84 @@ mod tests {
             ids[1..].iter().all(|id| *id != 0),
             "새 문단 id 비-0: {ids:?}"
         );
-        let mut uniq = ids.clone();
-        uniq.sort_unstable();
-        uniq.dedup();
-        assert_eq!(uniq.len(), ids.len(), "instance_id 중복: {ids:?}");
+        // 그리고 셀 안이 아니라 **문서 전체**에서 유일해야 한다 — 템플릿 id를 물려받는
+        // 문단 0만 예외이므로 새로 만든 id들만 검사한다.
+        let mut all = Vec::new();
+        collect_instance_ids(&doc, &mut all);
+        for id in &ids[1..] {
+            assert_eq!(
+                all.iter().filter(|other| *other == id).count(),
+                1,
+                "새 id {id}가 문서에서 유일하지 않다: {all:?}"
+            );
+        }
         // 줄 배치는 비워 writer가 재합성한다(B2/B3).
         assert!(cell.paragraphs.iter().all(|p| p.line_segs.is_empty()));
+    }
+
+    fn collect_instance_ids(doc: &Document, out: &mut Vec<u32>) {
+        fn walk(paras: &[Paragraph], out: &mut Vec<u32>) {
+            for p in paras {
+                out.push(p.header.instance_id);
+                for ctrl in &p.controls {
+                    match ctrl {
+                        Control::Table(t) => {
+                            if let Some(cap) = &t.caption {
+                                walk(&cap.paragraphs, out);
+                            }
+                            for cell in &t.cells {
+                                walk(&cell.paragraphs, out);
+                            }
+                        }
+                        Control::Picture(pic) => {
+                            if let Some(cap) = &pic.caption {
+                                walk(&cap.paragraphs, out);
+                            }
+                        }
+                        Control::Generic(g) => {
+                            if let Some(cap) = &g.caption {
+                                walk(&cap.paragraphs, out);
+                            }
+                            for list in &g.paragraph_lists {
+                                walk(&list.paragraphs, out);
+                            }
+                        }
+                        Control::SectionDef(_) => {}
+                    }
+                }
+            }
+        }
+        for section in &doc.sections {
+            walk(&section.paragraphs, out);
+        }
+    }
+
+    /// A8: instance id 배정이 u32를 넘기면 0으로 감기거나 살아 있는 id와 충돌한다.
+    /// 넘칠 상황이면 아무것도 바꾸지 않고 거절해야 한다(원자적 거부).
+    #[test]
+    fn set_cell_는_instance_id_넘침을_거절한다() {
+        let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        // 문서 최댓값을 u32 끝에 붙여 둔다 — 새 문단 하나도 배정할 수 없다.
+        doc.sections[0].paragraphs[0].header.instance_id = u32::MAX;
+        let before = doc.clone();
+        let err = set_cell(&mut doc, 0, 1, 0, "첫째\n\n둘째").unwrap_err();
+        assert!(err.contains("instance_id"), "{err}");
+        assert_eq!(doc, before, "거절 시 문서 불변");
+
+        // 한 칸만 남으면 새 문단 하나(블록 2개)까지는 배정된다.
+        doc.sections[0].paragraphs[0].header.instance_id = u32::MAX - 1;
+        set_cell(&mut doc, 0, 1, 0, "첫째\n\n둘째").unwrap();
+        let cell = cell_at(first_table(&doc), 1, 0);
+        assert_eq!(cell.paragraphs[1].header.instance_id, u32::MAX);
+
+        // 두 칸이 필요하면(블록 3개) 다시 거절한다.
+        let before = doc.clone();
+        let err = set_cell(&mut doc, 0, 1, 1, "첫째\n\n둘째\n\n셋째").unwrap_err();
+        assert!(err.contains("instance_id"), "{err}");
+        assert_eq!(doc, before, "거절 시 문서 불변");
+
+        // 블록 하나짜리 값은 새 id가 필요 없으므로 넘침과 무관하게 통과한다.
+        set_cell(&mut doc, 0, 1, 1, "한 문단").unwrap();
     }
 
     #[test]
