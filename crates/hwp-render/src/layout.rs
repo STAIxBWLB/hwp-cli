@@ -4212,6 +4212,11 @@ enum BoxParaSelection {
 /// cached `v_pos` restarts at zero from landing on the previous paragraph
 /// (#222); for the cell-cumulative caches genuine Hancom files carry it is a
 /// no-op, because the next paragraph already starts below that bottom.
+///
+/// A paragraph the floor does push down moves as a whole, by the single offset
+/// its first line needs (`para_shift`), so its own line spacing survives.
+/// Clamping each of its lines to the floor separately would fold them onto one
+/// baseline, which is the overlap this guard exists to remove.
 #[allow(clippy::too_many_arguments)]
 fn layout_box_para_iter<'a>(
     doc: &Document,
@@ -4321,6 +4326,16 @@ fn layout_box_para_iter<'a>(
                 }
                 BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
             };
+            // A paragraph whose cached position starts above the flow floor is
+            // moved down as a whole, by the one offset its first line needs.
+            // Clamping each line to the floor on its own would fold every line
+            // of the paragraph onto the floor and re-create the overlap this
+            // guard exists to remove (#222). Zero for a well-formed cache.
+            let para_shift = para.line_segs.get(selected.start).map_or(0.0, |first| {
+                let v_pos = first.v_pos.saturating_sub(v_origin);
+                let stored = origin_y + (v_pos + first.baseline_gap) as f32 / 100.0;
+                (flow_floor + first.baseline_gap as f32 / 100.0 - stored).max(0.0)
+            });
             for i in selected {
                 let seg = &para.line_segs[i];
                 let line_start = seg.text_start;
@@ -4354,7 +4369,8 @@ fn layout_box_para_iter<'a>(
                 let v_pos = seg.v_pos.saturating_sub(v_origin);
                 let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
                 // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
-                let baseline_y = stored.max(flow_floor + gap_pt);
+                // `para_shift`는 문단 전체를 같은 양만큼 내려 줄 간격을 보존한다.
+                let baseline_y = (stored + para_shift).max(flow_floor + gap_pt);
                 let first_selected = match &selection {
                     BoxParaSelection::All => i == 0,
                     BoxParaSelection::Segments(range) => i == range.start,

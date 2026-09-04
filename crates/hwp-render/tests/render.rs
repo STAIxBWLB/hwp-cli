@@ -1770,42 +1770,48 @@ fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
     );
 }
 
+/// One cached line is 10pt tall with an 8pt baseline gap, so a paragraph's
+/// content bottom sits 2pt below its last baseline.
+const 캐시_줄높이: i32 = 1000;
+const 캐시_베이스라인_간격: i32 = 800;
+
 /// Builds a one-row table whose single cell holds one paragraph per entry of
-/// `v_positions`, each with a single cached line segment at that position.
-/// `row_h_pt` is generous so overflow is never the subject of the assertions.
-fn 셀_문단_캐시_문서(row_h_pt: i32, v_positions: &[i32]) -> hwp_model::Document {
+/// `paras`; each entry lists the cached `v_pos` of that paragraph's lines, one
+/// character of text per line. An empty entry means a paragraph with no cached
+/// line segments at all. `row_h_pt` is generous so overflow is never the
+/// subject of the assertions.
+fn 셀_문단_캐시_문서(row_h_pt: i32, paras: &[&[i32]]) -> hwp_model::Document {
     let mut doc = 표_분할_문서(0, 1, row_h_pt, 0, false, 0);
-    let template = hwp_convert::from_markdown(셀_문단_텍스트)
+    // The second paragraph, so the template carries no section/column control
+    // characters and wchar index 0 is the first character of the text.
+    let template = hwp_convert::from_markdown("앵커\n\n본문")
         .sections
         .remove(0)
         .paragraphs
-        .remove(0);
-    let paragraphs: Vec<_> = v_positions
+        .remove(1);
+    let paragraphs: Vec<_> = paras
         .iter()
-        .map(|v_pos| {
+        .map(|v_positions| {
             let mut para = template.clone();
             para.controls.clear();
-            para.line_segs = vec![hwp_model::LineSeg {
-                text_start: 0,
-                v_pos: *v_pos,
-                line_height: 1000,
-                text_height: 900,
-                baseline_gap: 800,
-                line_spacing: 0,
-                col_start: 0,
-                seg_width: 4000,
-                flags: 0x0006_0000,
-            }];
+            para.line_segs = v_positions
+                .iter()
+                .enumerate()
+                .map(|(line, v_pos)| hwp_model::LineSeg {
+                    text_start: line as u32,
+                    v_pos: *v_pos,
+                    line_height: 캐시_줄높이,
+                    text_height: 900,
+                    baseline_gap: 캐시_베이스라인_간격,
+                    line_spacing: 0,
+                    col_start: 0,
+                    seg_width: 4000,
+                    flags: 0x0006_0000,
+                })
+                .collect();
             para
         })
         .collect();
-    셀_문단_교체(&mut doc, paragraphs);
-    doc
-}
-
-const 셀_문단_텍스트: &str = "본문";
-
-fn 셀_문단_교체(doc: &mut hwp_model::Document, paragraphs: Vec<hwp_model::Paragraph>) {
     let table = doc.sections[0].paragraphs[0]
         .controls
         .iter_mut()
@@ -1815,26 +1821,31 @@ fn 셀_문단_교체(doc: &mut hwp_model::Document, paragraphs: Vec<hwp_model::P
         })
         .expect("표 앵커가 있어야");
     table.cells[0].paragraphs = paragraphs;
+    doc
 }
 
 /// Vertical positions of the cell's glyph runs, in display-list order, with
 /// consecutive duplicates collapsed so one line split into several runs counts
-/// once. Geometry only: no glyph shape, font metric or page count is read.
+/// once. The anchor paragraph of `표_분할_문서` is empty, so every glyph on the
+/// page belongs to the cell. Geometry only: no glyph shape, font metric or page
+/// count is read.
 fn 셀_글자_세로좌표(list: &hwp_render::display::DisplayList) -> Vec<f32> {
     let mut ys: Vec<f32> = Vec::new();
     for item in &list.pages[0].items {
-        let hwp_render::display::Item::Glyphs { y, run, .. } = item else {
+        let hwp_render::display::Item::Glyphs { y, .. } = item else {
             continue;
         };
-        if !run.text.contains("본문") {
-            continue;
-        }
         if ys.last().is_some_and(|last| (last - y).abs() < 0.01) {
             continue;
         }
         ys.push(*y);
     }
     ys
+}
+
+/// Gaps between consecutive line positions, in points.
+fn 줄_간격(ys: &[f32]) -> Vec<f32> {
+    ys.windows(2).map(|w| w[1] - w[0]).collect()
 }
 
 /// #222: a cell whose paragraphs each cache their line at `v_pos: 0` (the
@@ -1845,7 +1856,7 @@ fn 셀_글자_세로좌표(list: &hwp_render::display::DisplayList) -> Vec<f32> 
 /// of every paragraph, so the lines are distinct and ordered.
 #[test]
 fn cell_paragraphs_with_restarting_line_cache_do_not_overlap() {
-    let doc = 셀_문단_캐시_문서(200, &[0, 0, 0, 0]);
+    let doc = 셀_문단_캐시_문서(200, &[&[0], &[0], &[0], &[0]]);
     let (list, _) = 표_레이아웃(&doc);
 
     let ys = 셀_글자_세로좌표(&list);
@@ -1857,6 +1868,120 @@ fn cell_paragraphs_with_restarting_line_cache_do_not_overlap() {
     assert!(
         ys.windows(2).all(|w| w[1] > w[0]),
         "셀 문단은 순서대로 아래로 내려가야: {ys:?}"
+    );
+}
+
+/// A paragraph pushed down by the flow floor keeps its own line spacing: the
+/// whole paragraph moves by one offset instead of every line being clamped to
+/// the floor, which would fold the paragraph onto a single baseline and
+/// re-create the overlap of #222 inside the paragraph.
+#[test]
+fn cell_paragraph_pushed_below_the_floor_keeps_its_line_spacing() {
+    let doc = 셀_문단_캐시_문서(200, &[&[0, 1000], &[0, 1000]]);
+    let (list, _) = 표_레이아웃(&doc);
+
+    let ys = 셀_글자_세로좌표(&list);
+    assert_eq!(ys.len(), 4, "문단 2개 x 줄 2개: {ys:?}");
+    let gaps = 줄_간격(&ys);
+    assert!(
+        gaps.iter().all(|gap| (gap - 10.0).abs() < 0.01),
+        "줄 간격은 캐시 줄높이 10pt를 유지해야: {gaps:?} ({ys:?})"
+    );
+}
+
+/// The floor raise is a lower bound, so it must not move a cell whose cached
+/// positions accumulate across the cell - the convention genuine Hancom files
+/// use. Covers cumulative positions with slack, positions that touch the
+/// previous paragraph's content bottom exactly, a paragraph with no cached
+/// lines at all, and a single-paragraph cell.
+#[test]
+fn well_formed_cell_line_caches_are_reproduced_exactly() {
+    // Cumulative with slack: each paragraph starts 12pt below the previous one
+    // while a line occupies 10pt, so the cache alone decides every position.
+    let (list, _) = 표_레이아웃(&셀_문단_캐시_문서(
+        200,
+        &[&[0], &[1200], &[2400], &[3600]],
+    ));
+    let ys = 셀_글자_세로좌표(&list);
+    assert_eq!(ys.len(), 4, "문단 4개: {ys:?}");
+    let gaps = 줄_간격(&ys);
+    assert!(
+        gaps.iter().all(|gap| (gap - 12.0).abs() < 0.01),
+        "캐시가 지정한 12pt 간격 그대로여야: {gaps:?}"
+    );
+
+    // Exactly touching: the second paragraph starts at the first one's content
+    // bottom. The raise is a maximum, so it is neither pushed down nor pulled up.
+    let (list, _) = 표_레이아웃(&셀_문단_캐시_문서(200, &[&[0], &[1000]]));
+    let 맞닿은 = 셀_글자_세로좌표(&list);
+    assert_eq!(맞닿은.len(), 2, "문단 2개: {맞닿은:?}");
+    assert!(
+        (맞닿은[1] - 맞닿은[0] - 10.0).abs() < 0.01,
+        "맞닿은 문단은 캐시 자리 그대로: {맞닿은:?}"
+    );
+
+    // A paragraph with no cached line segments takes the measurement fallback.
+    let (list, _) = 표_레이아웃(&셀_문단_캐시_문서(200, &[&[]]));
+    assert!(
+        !셀_글자_세로좌표(&list).is_empty(),
+        "캐시 없는 문단도 폴백 경로로 글자가 배치돼야"
+    );
+
+    // A single-paragraph cell lands where a four-paragraph cell puts its first
+    // paragraph: the raise only ever affects what comes after a paragraph.
+    let (list, _) = 표_레이아웃(&셀_문단_캐시_문서(200, &[&[0]]));
+    let 단일 = 셀_글자_세로좌표(&list);
+    assert_eq!(단일.len(), 1, "문단 1개: {단일:?}");
+    assert!(
+        (단일[0] - ys[0]).abs() < 0.01,
+        "단일 문단 좌표는 변하지 않아야: {단일:?} vs {ys:?}"
+    );
+}
+
+/// Genuine Hancom bytes. `report-tables.hwpx` holds 22 multi-paragraph cells;
+/// 21 cache their positions cumulatively across the cell and are untouched by
+/// the floor raise. The remaining one (a cell Hancom continued on the next
+/// page) restarts its third paragraph at `v_pos: 0`, and that paragraph used to
+/// be drawn exactly on top of the first one. Lines are grouped by their
+/// vertical position and their text joined, because how shaping splits a line
+/// into runs depends on the fonts installed; the assertion is on order only.
+#[test]
+fn report_tables_cell_paragraphs_keep_their_document_order() {
+    use hwp_render::display::Item;
+
+    let path = fixture("samples/report-tables.hwpx");
+    let doc = hwpx::read_document(&path).unwrap().document;
+    let (list, _) = 표_레이아웃(&doc);
+
+    let mut lines: Vec<((usize, i32), String)> = Vec::new();
+    for (page_index, page) in list.pages.iter().enumerate() {
+        for item in &page.items {
+            let Item::Glyphs { y, run, .. } = item else {
+                continue;
+            };
+            let key = (page_index, (y * 100.0).round() as i32);
+            match lines.iter_mut().find(|(seen, _)| *seen == key) {
+                Some((_, text)) => text.push_str(&run.text),
+                None => lines.push((key, run.text.clone())),
+            }
+        }
+    }
+    let 줄_위치 = |needle: &str| -> (usize, i32) {
+        let hits: Vec<(usize, i32)> = lines
+            .iter()
+            .filter(|(_, text)| text.contains(needle))
+            .map(|(key, _)| *key)
+            .collect();
+        assert_eq!(hits.len(), 1, "{needle}: 한 줄에만 있어야 {hits:?}");
+        hits[0]
+    };
+    // The three paragraphs of one cell, in document order.
+    let 앞 = 줄_위치("문장 45");
+    let 가운데 = 줄_위치("문장 46");
+    let 뒤 = 줄_위치("문장 47");
+    assert!(
+        앞 < 가운데 && 가운데 < 뒤,
+        "셀 문단은 문서 순서대로 아래로 내려가야: {앞:?} {가운데:?} {뒤:?}"
     );
 }
 
