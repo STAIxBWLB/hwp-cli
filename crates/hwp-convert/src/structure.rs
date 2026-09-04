@@ -57,9 +57,6 @@ fn para_template(p: &Paragraph) -> (ParaShapeId, StyleId, CharShapeId) {
 /// 그다음 그 리스트의 각 문단이 품은 중첩 리스트(표 캡션·표 셀·그림 캡션·개체
 /// 문단 리스트·개체 캡션)로 재귀한다. 구역정의 컨트롤은 건너뛴다.
 ///
-/// 리스트 순서가 곧 호환성 보장이다: 섹션 자기 문단이 어떤 중첩 리스트보다 먼저
-/// 방문되므로, 이 변경 전에 최상위 문단을 맞히던 호출은 그대로 같은 문단을 맞힌다.
-///
 /// `f`가 참을 돌려주면 그 리스트가 바뀐 것으로 본다. 절대 조기 종료하지 않고
 /// (결과는 OR로 합친다) 모든 레벨을 방문한다 — 조기 종료 여부는 `f`가 스스로
 /// 상태를 들고 판단한다. 원문 XML(`hwpx_raw_xml`)을 품은 개체 안이 바뀌면 그
@@ -76,7 +73,17 @@ pub(crate) fn walk_para_lists(
     paras: &mut Vec<Paragraph>,
     f: &mut dyn FnMut(&mut Vec<Paragraph>) -> bool,
 ) -> bool {
-    let mut hit = f(paras);
+    let hit = f(paras);
+    hit | walk_nested_para_lists(paras, f)
+}
+
+/// [`walk_para_lists`]에서 **주어진 리스트 자신은 빼고** 그 아래 중첩 리스트만 훑는다.
+/// 두 단계 탐색(섹션 본문 먼저, 그다음 중첩)이 필요한 [`insert_paragraph`]가 쓴다.
+fn walk_nested_para_lists(
+    paras: &mut [Paragraph],
+    f: &mut dyn FnMut(&mut Vec<Paragraph>) -> bool,
+) -> bool {
+    let mut hit = false;
     for para in paras.iter_mut() {
         for ctrl in &mut para.controls {
             match ctrl {
@@ -161,35 +168,46 @@ pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
 
 /// `anchor`를 가진 첫 문단 뒤(또는 앞)에 `text` 문단을 삽입한다. 반환=삽입 여부.
 /// 새 문단은 앵커 문단의 글자/문단 모양을 상속한다. 앵커는 본문뿐 아니라 표 셀·
-/// 중첩 표·캡션 안에서도 찾는다([`walk_para_lists`]의 방문 순서대로 첫 리스트 하나만
-/// 바뀐다).
+/// 중첩 표·캡션 안에서도 찾는다.
+///
+/// 탐색은 **두 단계**다: ① 모든 섹션의 본문 문단을 섹션 순서대로, ② 그래도 못 찾으면
+/// 중첩 리스트를 문서 순서대로. 중첩 탐색이 없던 시절의 우선순위가 그대로 남는다 —
+/// 단순 전위 순회로 하면 섹션 0의 셀이 섹션 1의 본문을 이겨, 예전에 섹션 1 본문을
+/// 맞히던 호출이 조용히 다른 문단을 고르게 된다.
 pub fn insert_paragraph(doc: &mut Document, anchor: &str, text: &str, before: bool) -> bool {
-    let mut done = false;
-    for section in &mut doc.sections {
-        let mut visit = |list: &mut Vec<Paragraph>| -> bool {
-            if done {
-                return false;
-            }
-            let Some(i) = list
-                .iter()
-                .position(|p| find_match(&p.chars, anchor, 0).is_some())
-            else {
-                return false;
-            };
-            let (ps, sty, cs) = para_template(&list[i]);
-            let new = make_paragraph(text, ps, sty, cs);
-            let at = if before { i } else { i + 1 };
-            list.insert(at, new);
-            crate::edit::fixup_last_para_flag(list);
-            done = true;
-            true
+    // 두 단계가 같은 클로저를 공유하므로 완료 플래그는 Cell에 둔다(클로저가 &done만 잡는다).
+    let done = std::cell::Cell::new(false);
+    let mut visit = |list: &mut Vec<Paragraph>| -> bool {
+        if done.get() {
+            return false;
+        }
+        let Some(i) = list
+            .iter()
+            .position(|p| find_match(&p.chars, anchor, 0).is_some())
+        else {
+            return false;
         };
-        walk_para_lists(&mut section.paragraphs, &mut visit);
-        if done {
-            break;
+        let (ps, sty, cs) = para_template(&list[i]);
+        let new = make_paragraph(text, ps, sty, cs);
+        let at = if before { i } else { i + 1 };
+        list.insert(at, new);
+        crate::edit::fixup_last_para_flag(list);
+        done.set(true);
+        true
+    };
+    for section in &mut doc.sections {
+        visit(&mut section.paragraphs);
+        if done.get() {
+            return true;
         }
     }
-    done
+    for section in &mut doc.sections {
+        walk_nested_para_lists(&mut section.paragraphs, &mut visit);
+        if done.get() {
+            return true;
+        }
+    }
+    false
 }
 
 /// `matching`을 가진 문단을 삭제한다 — 본문뿐 아니라 표 셀·중첩 표·캡션 안에서도
@@ -419,6 +437,36 @@ mod tests {
         assert!(
             body.iter().any(|t| t.contains("새 문단")),
             "본문에 삽입: {body:?}"
+        );
+    }
+
+    #[test]
+    fn 뒤_섹션_본문이_앞_섹션_셀보다_먼저_잡힌다() {
+        // 중첩 탐색이 없던 시절 insert_paragraph는 섹션 본문만, 섹션 순서로 훑었다.
+        // 단순 전위 순회로 바꾸면 섹션 0의 셀이 섹션 1의 본문을 이겨 예전 호출이
+        // 조용히 다른 문단을 고른다 — 두 단계 탐색이 그 우선순위를 지킨다.
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 공통앵커 | 2 |\n");
+        let mut second = doc.sections[0].clone();
+        let mut anchor_para = second.paragraphs[0].clone();
+        anchor_para.controls.clear();
+        anchor_para.chars = "공통앵커"
+            .chars()
+            .map(HwpChar::Text)
+            .chain(std::iter::once(HwpChar::CharCtrl(ctrl_char::PARA_BREAK)))
+            .collect();
+        second.paragraphs = vec![second.paragraphs[0].clone(), anchor_para];
+        doc.sections.push(second);
+
+        assert!(insert_paragraph(&mut doc, "공통앵커", "새 문단", false));
+        assert_eq!(cell_texts(&doc, 1, 0).len(), 1, "앞 섹션 셀은 안 바뀜");
+        let body: Vec<String> = doc.sections[1]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert!(
+            body.iter().any(|t| t.contains("새 문단")),
+            "섹션 1 본문에 삽입: {body:?}"
         );
     }
 

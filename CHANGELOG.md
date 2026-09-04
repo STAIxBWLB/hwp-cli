@@ -40,9 +40,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - `hwp edit --insert-para`, `--insert-para-before` and `--delete-para` find their anchor inside
   table cells, nested tables and table, picture and shape captions, not only among a section's
-  own paragraphs. A section's own paragraphs are still searched before any nested list, so every
-  invocation that matched a top-level paragraph before matches the same one now, and every
-  section, cell and caption keeps at least one paragraph. Objects an HWP 5.0 source hands over
+  own paragraphs. Insertion searches every section's own paragraphs first, in section order, and
+  only then the nested lists in document order, so every invocation that matched a top-level
+  paragraph before matches the same one now; every section, cell and caption keeps at least one
+  paragraph. Objects an HWP 5.0 source hands over
   as their original records (text boxes, headers and footers) are not entered, because the
   writer re-emits those records verbatim and an edit inside them would be silently discarded on
   save; an anchor found only there is reported as unapplied with that reason instead. (#220)
