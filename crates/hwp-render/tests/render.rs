@@ -1940,18 +1940,29 @@ fn well_formed_cell_line_caches_are_reproduced_exactly() {
 
 /// Genuine Hancom bytes. `report-tables.hwpx` holds 22 multi-paragraph cells;
 /// 21 cache their positions cumulatively across the cell and are untouched by
-/// the floor raise. The remaining one (a cell Hancom continued on the next
-/// page) restarts its third paragraph at `v_pos: 0`, and that paragraph used to
-/// be drawn exactly on top of the first one. Lines are grouped by their
-/// vertical position and their text joined, because how shaping splits a line
-/// into runs depends on the fonts installed; the assertion is on order only.
+/// the floor raise. The remaining one restarts its third paragraph at
+/// `v_pos: 0`, and that paragraph used to be drawn exactly on top of the first
+/// one (main) and then, once the floor advanced per paragraph, 37pt below the
+/// row and past the page body bottom.
+///
+/// That cell's cached content (65pt) does not fit its 15.65pt row on any page,
+/// and the cell-fragment planner cannot rescue it: a row-spanning cell starts
+/// on the same row, so `layout_table_cell_fragments` rejects the plan at the
+/// `row-span-with-cell-fragment` guard. The contract is therefore the
+/// fail-closed one - the shifted paragraph is clipped at the cell bottom and
+/// reported - and this test pins it.
+///
+/// Lines are grouped by their vertical position and their text joined, because
+/// how shaping splits a line into runs depends on the fonts installed; the
+/// assertions are on order, page and bounds only.
 #[test]
 fn report_tables_cell_paragraphs_keep_their_document_order() {
     use hwp_render::display::Item;
 
     let path = fixture("samples/report-tables.hwpx");
     let doc = hwpx::read_document(&path).unwrap().document;
-    let (list, _) = 표_레이아웃(&doc);
+    let (_, 본문_아래) = 본문_기하(&doc);
+    let (list, report) = 표_레이아웃(&doc);
 
     let mut lines: Vec<((usize, i32), String)> = Vec::new();
     for (page_index, page) in list.pages.iter().enumerate() {
@@ -1966,22 +1977,45 @@ fn report_tables_cell_paragraphs_keep_their_document_order() {
             }
         }
     }
-    let 줄_위치 = |needle: &str| -> (usize, i32) {
-        let hits: Vec<(usize, i32)> = lines
+    let 줄_찾기 = |needle: &str| -> Vec<(usize, i32)> {
+        lines
             .iter()
             .filter(|(_, text)| text.contains(needle))
             .map(|(key, _)| *key)
-            .collect();
+            .collect()
+    };
+    let 줄_위치 = |needle: &str| -> (usize, i32) {
+        let hits = 줄_찾기(needle);
         assert_eq!(hits.len(), 1, "{needle}: 한 줄에만 있어야 {hits:?}");
         hits[0]
     };
-    // The three paragraphs of one cell, in document order.
+    // The first two paragraphs of the cell keep their cached positions, in
+    // document order, on the same page.
     let 앞 = 줄_위치("문장 45");
     let 가운데 = 줄_위치("문장 46");
-    let 뒤 = 줄_위치("문장 47");
     assert!(
-        앞 < 가운데 && 가운데 < 뒤,
-        "셀 문단은 문서 순서대로 아래로 내려가야: {앞:?} {가운데:?} {뒤:?}"
+        앞 < 가운데,
+        "셀 문단은 문서 순서대로 아래로 내려가야: {앞:?} {가운데:?}"
+    );
+    assert_eq!(앞.0, 가운데.0, "두 문단은 같은 쪽에 있어야");
+    assert!(
+        가운데.1 as f32 / 100.0 <= 본문_아래,
+        "셀 글자는 본문 영역 안에 있어야: {가운데:?} vs {본문_아래}"
+    );
+    // The third paragraph does not fit the row on this page and the planner
+    // cannot continue the cell, so it is clipped instead of being painted
+    // below the row (it used to land at y=771.59, past the body bottom).
+    assert!(
+        줄_찾기("문장 47").is_empty(),
+        "행을 벗어나는 셋째 문단은 잘려야: {:?}",
+        줄_찾기("문장 47")
+    );
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
+        "잘린 사실은 typed 이슈로 보고돼야"
     );
 }
 

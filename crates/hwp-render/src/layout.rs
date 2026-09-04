@@ -2618,6 +2618,7 @@ fn layout_para_objects(
                         Some(&mut box_list_state),
                         None,
                         0,
+                        None,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -2730,6 +2731,7 @@ fn layout_para_objects(
                             Some(&mut box_list_state),
                             None,
                             0,
+                            None,
                         );
                         flow_end = flow_end.max(inner);
                     } else {
@@ -2759,6 +2761,7 @@ fn layout_para_objects(
                                 Some(&mut box_list_state),
                                 None,
                                 0,
+                                None,
                             );
                             flow_end = flow_end.max(inner);
                         }
@@ -2821,6 +2824,7 @@ fn layout_para_objects(
                         Some(&mut box_list_state),
                         None,
                         0,
+                        None,
                     );
                     flow_end = flow_end.max(inner);
                 }
@@ -3984,6 +3988,9 @@ fn draw_table_cell_fragment(
             Some(cell_ls),
             None,
             v_origin,
+            // The fragment's content bottom bounds `para_shift`: a paragraph
+            // the flow floor pushes down may never be drawn outside the cell.
+            Some(cy + ch - mb),
         );
     }
 
@@ -4095,17 +4102,23 @@ fn draw_table_rows(
             2 => avail,
             _ => 0.0,
         };
-        layout_box_paragraphs(
+        layout_box_para_iter(
             doc,
             store,
             page,
-            &cell.paragraphs,
+            cell.paragraphs
+                .iter()
+                .map(|para| (para, BoxParaSelection::All)),
             cx + ml,
             cy + mt + voff,
             (cw - ml - mr).max(4.0),
             warnings,
             Some(cell_ls), // 렌더 패스: 셀 목록 마커 그림
             None,
+            0,
+            // Same bound as the fragment emitter: a floor-pushed paragraph
+            // must stay inside the cell instead of running into the row below.
+            Some(cy + ch - mb),
         );
 
         // 3) Borders (left, right, top, bottom).
@@ -4182,6 +4195,7 @@ fn layout_box_paragraphs(
         list_state,
         page_number,
         0,
+        None,
     )
 }
 
@@ -4217,6 +4231,15 @@ enum BoxParaSelection {
 /// its first line needs (`para_shift`), so its own line spacing survives.
 /// Clamping each of its lines to the floor separately would fold them onto one
 /// baseline, which is the overlap this guard exists to remove.
+///
+/// `content_limit` is the bottom of the container the caller owns (a table
+/// cell or cell fragment; `None` for a text box, a header/footer, and the
+/// measurement pass, which have no such edge). It bounds the shift only: a
+/// line the shift would push past that edge is clipped and reported as
+/// `TableCellContentOverflow` instead of being painted over the row below or
+/// over the footer. A cached line that already overflows where Hancom stored
+/// it is left alone, because a stored row height is never grown here and the
+/// measurement pass already reports that overflow.
 #[allow(clippy::too_many_arguments)]
 fn layout_box_para_iter<'a>(
     doc: &Document,
@@ -4230,6 +4253,7 @@ fn layout_box_para_iter<'a>(
     mut list_state: Option<&mut crate::list::ListState>,
     page_number: Option<u32>,
     v_origin: i32,
+    content_limit: Option<f32>,
 ) -> f32 {
     let mut content_bottom = origin_y;
     // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
@@ -4346,6 +4370,30 @@ fn layout_box_para_iter<'a>(
                 if line_end <= line_start {
                     continue;
                 }
+                let gap_pt = seg.baseline_gap as f32 / 100.0;
+                let v_pos = seg.v_pos.saturating_sub(v_origin);
+                let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
+                // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
+                // `para_shift`는 문단 전체를 같은 양만큼 내려 줄 간격을 보존한다.
+                let baseline_y = (stored + para_shift).max(flow_floor + gap_pt);
+                // Fail closed on a shift that would leave the container: the
+                // line is clipped rather than painted over the row below or
+                // over the footer, and the loss is reported (#222 follow-up).
+                // Only a shifted line is checked - a cached line that overflows
+                // where Hancom stored it keeps the established contract that a
+                // stored row height is never grown, and is already reported by
+                // the measurement pass.
+                if para_shift > 0.0
+                    && let Some(limit) = content_limit
+                    && baseline_y - gap_pt + seg.line_height.max(seg.text_height) as f32 / 100.0
+                        > limit + CELL_CONTENT_OVERFLOW_EPSILON_PT
+                {
+                    warnings.push_once(
+                        RenderIssueCode::TableCellContentOverflow,
+                        format!("shift-clipped {:.0}", baseline_y - gap_pt - limit),
+                    );
+                    continue;
+                }
                 let mut items = shape_range_page(
                     store,
                     doc,
@@ -4365,12 +4413,6 @@ fn layout_box_para_iter<'a>(
                     .get(para.para_shape.0 as usize)
                     .map_or(0, |ps| ps.alignment());
 
-                let gap_pt = seg.baseline_gap as f32 / 100.0;
-                let v_pos = seg.v_pos.saturating_sub(v_origin);
-                let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
-                // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
-                // `para_shift`는 문단 전체를 같은 양만큼 내려 줄 간격을 보존한다.
-                let baseline_y = (stored + para_shift).max(flow_floor + gap_pt);
                 let first_selected = match &selection {
                     BoxParaSelection::All => i == 0,
                     BoxParaSelection::Segments(range) => i == range.start,

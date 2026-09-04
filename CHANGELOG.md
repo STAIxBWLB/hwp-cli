@@ -16,8 +16,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   draws those paragraphs on top of each other. The layout flow floor now advances once per
   paragraph, so it covers text boxes, headers and footers through the same shared function, and a
   paragraph the floor pushes down moves as a whole instead of having each of its lines clamped onto
-  the floor. Documents whose saved line positions already accumulate across a cell, which is what
-  Hancom writes, render exactly as before (#222).
+  the floor. That move is bounded by the cell (or cell fragment) it belongs to: a line the move
+  would push past the cell bottom is clipped there and reported as `table_cell_content_overflow`,
+  instead of being painted over the row below or over the footer. Documents whose saved line
+  positions already accumulate across a cell, which is what Hancom writes, render exactly as before
+  (#222).
 
 **Changed**
 
