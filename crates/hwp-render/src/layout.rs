@@ -4196,13 +4196,22 @@ enum BoxParaSelection {
     Empty,
 }
 
-/// `layout_box_paragraphs`의 반복자 버전 — 단(컬럼)으로 분할된 조각도 받는다.
+/// Iterator form of `layout_box_paragraphs`; it also accepts a column fragment.
 ///
-/// 캐시된 lineseg v_pos는 한컴 배치 그대로 존중한다(흐름 커서로 끌어내리지 않음 —
-/// 끌어내리면 키 큰 글상자에서 줄마다 드리프트가 누적돼 페이지 밖으로 넘친다).
-/// `flow_floor`는 "흐름으로 배치된 콘텐츠"(캐시 없는 폴백 문단, 표/이미지 블록 개체,
-/// 우리 줄바꿈이 캐시와 어긋나 캐시 자리 아래로 넘친 줄)만 바닥을 올려, 뒤따르는
-/// 캐시 문단이 그 위로 겹치지 않게 한다.
+/// A cached lineseg `v_pos` is honoured exactly as Hancom stored it and is never
+/// pulled down to the flow cursor: pulling it down accumulates per-line drift in
+/// a tall text box until the content runs off the page. `flow_floor` is a lower
+/// bound only, raised (never lowered) so that a following cached paragraph cannot
+/// land on top of content already placed.
+///
+/// The floor advances in two ways. Flow-placed content raises it as it is
+/// emitted: a fallback paragraph without a cache, a nested table or image, and a
+/// line whose re-wrap pushed it below the position its cache claims. On top of
+/// that it advances once at the end of every paragraph, to that paragraph's
+/// content bottom. That per-paragraph raise is what keeps a paragraph whose
+/// cached `v_pos` restarts at zero from landing on the previous paragraph
+/// (#222); for the cell-cumulative caches genuine Hancom files carry it is a
+/// no-op, because the next paragraph already starts below that bottom.
 #[allow(clippy::too_many_arguments)]
 fn layout_box_para_iter<'a>(
     doc: &Document,
@@ -4442,6 +4451,12 @@ fn layout_box_para_iter<'a>(
                 flow_floor = flow_floor.max(content_bottom);
             }
         }
+
+        // End of a paragraph: the next one may not start above what this one
+        // occupies. Documents whose cached v_pos restarts at 0 per paragraph
+        // would otherwise stack every paragraph of a cell on the first one
+        // (#222). No-op for cell-cumulative caches, which already sit below.
+        flow_floor = flow_floor.max(content_bottom);
     }
     content_bottom
 }

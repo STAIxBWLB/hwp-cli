@@ -1770,6 +1770,96 @@ fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
     );
 }
 
+/// Builds a one-row table whose single cell holds one paragraph per entry of
+/// `v_positions`, each with a single cached line segment at that position.
+/// `row_h_pt` is generous so overflow is never the subject of the assertions.
+fn 셀_문단_캐시_문서(row_h_pt: i32, v_positions: &[i32]) -> hwp_model::Document {
+    let mut doc = 표_분할_문서(0, 1, row_h_pt, 0, false, 0);
+    let template = hwp_convert::from_markdown(셀_문단_텍스트)
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    let paragraphs: Vec<_> = v_positions
+        .iter()
+        .map(|v_pos| {
+            let mut para = template.clone();
+            para.controls.clear();
+            para.line_segs = vec![hwp_model::LineSeg {
+                text_start: 0,
+                v_pos: *v_pos,
+                line_height: 1000,
+                text_height: 900,
+                baseline_gap: 800,
+                line_spacing: 0,
+                col_start: 0,
+                seg_width: 4000,
+                flags: 0x0006_0000,
+            }];
+            para
+        })
+        .collect();
+    셀_문단_교체(&mut doc, paragraphs);
+    doc
+}
+
+const 셀_문단_텍스트: &str = "본문";
+
+fn 셀_문단_교체(doc: &mut hwp_model::Document, paragraphs: Vec<hwp_model::Paragraph>) {
+    let table = doc.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find_map(|control| match control {
+            hwp_model::Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("표 앵커가 있어야");
+    table.cells[0].paragraphs = paragraphs;
+}
+
+/// Vertical positions of the cell's glyph runs, in display-list order, with
+/// consecutive duplicates collapsed so one line split into several runs counts
+/// once. Geometry only: no glyph shape, font metric or page count is read.
+fn 셀_글자_세로좌표(list: &hwp_render::display::DisplayList) -> Vec<f32> {
+    let mut ys: Vec<f32> = Vec::new();
+    for item in &list.pages[0].items {
+        let hwp_render::display::Item::Glyphs { y, run, .. } = item else {
+            continue;
+        };
+        if !run.text.contains("본문") {
+            continue;
+        }
+        if ys.last().is_some_and(|last| (last - y).abs() < 0.01) {
+            continue;
+        }
+        ys.push(*y);
+    }
+    ys
+}
+
+/// #222: a cell whose paragraphs each cache their line at `v_pos: 0` (the
+/// positions restart per paragraph instead of accumulating across the cell)
+/// used to stack all four paragraphs on the same baseline, because the box
+/// layout path fixes the paragraph origin for the whole cell and raised the
+/// flow floor only in three special cases. The floor now advances at the end
+/// of every paragraph, so the lines are distinct and ordered.
+#[test]
+fn cell_paragraphs_with_restarting_line_cache_do_not_overlap() {
+    let doc = 셀_문단_캐시_문서(200, &[0, 0, 0, 0]);
+    let (list, _) = 표_레이아웃(&doc);
+
+    let ys = 셀_글자_세로좌표(&list);
+    assert_eq!(
+        ys.len(),
+        4,
+        "문단 4개는 서로 다른 줄 4개로 배치돼야: {ys:?}"
+    );
+    assert!(
+        ys.windows(2).all(|w| w[1] > w[0]),
+        "셀 문단은 순서대로 아래로 내려가야: {ys:?}"
+    );
+}
+
 /// Regime-A CELL tables use the cached line layout as the only trustworthy
 /// internal page boundary.  This fixture keeps all assertions structural so
 /// a font substitution cannot change the expected geometry.
