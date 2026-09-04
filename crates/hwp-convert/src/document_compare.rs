@@ -80,17 +80,19 @@ pub enum ParagraphOp {
 /// source `Document` a second time — the divergent second index space that
 /// made cell paragraphs print blank (#223).
 ///
-/// `table` is the 0-based depth-first document-order table number
-/// `hwp_convert::edit`'s `with_nth_table` uses, so a printed cell location is
-/// a valid `hwp edit --set-cell "table:row:col=..."` address.
+/// `table` is the 0-based document-order table number `hwp_convert::edit`'s
+/// `with_nth_table` uses, so a printed cell location is a valid
+/// `hwp edit --set-cell "table:row:col=..."` address. The two counters are
+/// kept in lockstep by construction: only tables that walker can reach get a
+/// number at all (see [`walk_nested_paragraphs`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParagraphLocation {
     /// A section's own paragraph: the 0-based section index and the 0-based
     /// index within that section's paragraph list.
     Body { section: usize, index: usize },
-    /// A paragraph inside a table cell: the section, the document-order table
-    /// number, the cell's `row` and `col`, and the 0-based index within the
-    /// cell's paragraph list.
+    /// A paragraph inside the cell of an addressable table: the section, the
+    /// document-order table number, the cell's `row` and `col`, and the
+    /// 0-based index within the cell's paragraph list.
     Cell {
         section: usize,
         table: usize,
@@ -98,16 +100,20 @@ pub enum ParagraphLocation {
         col: u16,
         index: usize,
     },
-    /// A paragraph inside a table caption: the section, the table number, and
-    /// the 0-based index within the caption's paragraph list.
+    /// A paragraph inside the caption of an addressable table: the section,
+    /// the table number, and the 0-based index within the caption's
+    /// paragraph list.
     Caption {
         section: usize,
         table: usize,
         index: usize,
     },
-    /// A paragraph inside any other nested list (picture caption, generic
-    /// control paragraph list or caption): the section, the owning control's
-    /// `ctrl_id`, and the 0-based index within that list.
+    /// A paragraph inside any other nested list: a picture caption, a generic
+    /// control's paragraph list or caption, or anything below a caption —
+    /// including the cells of a table nested inside one, which `--set-cell`
+    /// cannot address and which therefore carries no table number. The
+    /// section, the owning control's `ctrl_id`, and the 0-based index within
+    /// that list.
     Nested {
         section: usize,
         ctrl_id: [u8; 4],
@@ -278,110 +284,128 @@ fn flatten_paragraphs(document: &Document) -> (Vec<Vec<HwpChar>>, Vec<ParagraphM
 /// depend on that binary crate, so the traversal shape is mirrored rather
 /// than shared).
 ///
-/// The table counter is document-global and increments on every
-/// `Control::Table` **before** that table's own nested content is walked,
-/// which is the pre-order `edit.rs`'s `with_nth_table` counts in. Its one
-/// known divergence: `with_nth_table` does not descend into captions, so a
-/// table nested inside a caption is counted here but is not addressable by
-/// `--set-cell` at all. No such document is known, and caption coverage for
-/// the editing walkers is already tracked as deferred work.
+/// The table counter is document-global; see [`walk_nested_paragraphs`] for
+/// how it is kept identical to `edit.rs`'s `with_nth_table` numbering.
 fn walk_paragraphs(document: &Document, visit: &mut impl FnMut(&Paragraph, ParagraphLocation)) {
     let mut tables = 0usize;
     for (section, sec) in document.sections.iter().enumerate() {
         for (index, paragraph) in sec.paragraphs.iter().enumerate() {
             visit(paragraph, ParagraphLocation::Body { section, index });
-            walk_nested_paragraphs(paragraph, section, &mut tables, visit);
+            let scope = Scope {
+                section,
+                addressable: true,
+            };
+            walk_nested_paragraphs(paragraph, scope, &mut tables, visit);
         }
     }
 }
 
+/// What a nested paragraph inherits from the list it lives in.
+#[derive(Debug, Clone, Copy)]
+struct Scope {
+    section: usize,
+    /// Whether `edit.rs`'s `walk_nth_table` can reach this list at all.
+    addressable: bool,
+}
+
 /// Visits the paragraphs nested in `paragraph`'s controls: table cells and
 /// caption, picture caption, and generic paragraph lists and caption.
+///
+/// **Table numbering.** The counter must produce exactly the index
+/// `edit.rs`'s `with_nth_table` takes, or a printed `--set-cell` address
+/// edits the wrong table. That walker increments on a `Control::Table`
+/// **before** descending into its cells, and it descends only through
+/// section paragraphs, table cells and generic paragraph lists — never
+/// through a caption. So the counter here increments in the same pre-order
+/// and only while `scope.addressable` holds; every caption clears the flag
+/// for its whole subtree, and a table found there gets no number and
+/// consumes none, keeping later tables correctly numbered.
 fn walk_nested_paragraphs(
     paragraph: &Paragraph,
-    section: usize,
+    scope: Scope,
     tables: &mut usize,
     visit: &mut impl FnMut(&Paragraph, ParagraphLocation),
 ) {
+    let section = scope.section;
+    let caption_scope = Scope {
+        addressable: false,
+        ..scope
+    };
     for control in &paragraph.controls {
+        let ctrl_id = control.ctrl_id();
+        let nested = move |index| ParagraphLocation::Nested {
+            section,
+            ctrl_id,
+            index,
+        };
         match control {
             Control::Table(table) => {
-                let table_index = *tables;
-                *tables += 1;
+                let number = scope.addressable.then(|| {
+                    let number = *tables;
+                    *tables += 1;
+                    number
+                });
                 for cell in &table.cells {
-                    for (index, nested) in cell.paragraphs.iter().enumerate() {
-                        visit(
-                            nested,
-                            ParagraphLocation::Cell {
+                    walk_list(
+                        &cell.paragraphs,
+                        scope,
+                        tables,
+                        visit,
+                        |index| match number {
+                            Some(table) => ParagraphLocation::Cell {
                                 section,
-                                table: table_index,
+                                table,
                                 row: cell.row,
                                 col: cell.col,
                                 index,
                             },
-                        );
-                        walk_nested_paragraphs(nested, section, tables, visit);
-                    }
+                            None => nested(index),
+                        },
+                    );
                 }
                 if let Some(caption) = &table.caption {
-                    for (index, nested) in caption.paragraphs.iter().enumerate() {
-                        visit(
-                            nested,
-                            ParagraphLocation::Caption {
+                    walk_list(&caption.paragraphs, caption_scope, tables, visit, |index| {
+                        match number {
+                            Some(table) => ParagraphLocation::Caption {
                                 section,
-                                table: table_index,
+                                table,
                                 index,
                             },
-                        );
-                        walk_nested_paragraphs(nested, section, tables, visit);
-                    }
+                            None => nested(index),
+                        }
+                    });
                 }
             }
             Control::Picture(picture) => {
                 if let Some(caption) = &picture.caption {
-                    for (index, nested) in caption.paragraphs.iter().enumerate() {
-                        visit(
-                            nested,
-                            ParagraphLocation::Nested {
-                                section,
-                                ctrl_id: control.ctrl_id(),
-                                index,
-                            },
-                        );
-                        walk_nested_paragraphs(nested, section, tables, visit);
-                    }
+                    walk_list(&caption.paragraphs, caption_scope, tables, visit, nested);
                 }
             }
             Control::Generic(generic) => {
                 for list in &generic.paragraph_lists {
-                    for (index, nested) in list.paragraphs.iter().enumerate() {
-                        visit(
-                            nested,
-                            ParagraphLocation::Nested {
-                                section,
-                                ctrl_id: control.ctrl_id(),
-                                index,
-                            },
-                        );
-                        walk_nested_paragraphs(nested, section, tables, visit);
-                    }
+                    walk_list(&list.paragraphs, scope, tables, visit, nested);
                 }
                 if let Some(caption) = &generic.caption {
-                    for (index, nested) in caption.paragraphs.iter().enumerate() {
-                        visit(
-                            nested,
-                            ParagraphLocation::Nested {
-                                section,
-                                ctrl_id: control.ctrl_id(),
-                                index,
-                            },
-                        );
-                        walk_nested_paragraphs(nested, section, tables, visit);
-                    }
+                    walk_list(&caption.paragraphs, caption_scope, tables, visit, nested);
                 }
             }
             Control::SectionDef(_) => {}
         }
+    }
+}
+
+/// Visits one nested paragraph list: each paragraph with the location
+/// `locate` builds for it, then that paragraph's own nested lists.
+fn walk_list(
+    paragraphs: &[Paragraph],
+    scope: Scope,
+    tables: &mut usize,
+    visit: &mut impl FnMut(&Paragraph, ParagraphLocation),
+    mut locate: impl FnMut(usize) -> ParagraphLocation,
+) {
+    for (index, nested) in paragraphs.iter().enumerate() {
+        visit(nested, locate(index));
+        walk_nested_paragraphs(nested, scope, tables, visit);
     }
 }
 
@@ -730,6 +754,108 @@ mod tests {
             }
         }
         panic!("the document has no table");
+    }
+
+    /// The `n`th table directly under a section paragraph. Test-only: it does
+    /// not recurse, so it stays independent of the walker under test.
+    fn nth_top_level_table(document: &mut Document, n: usize) -> &mut hwp_model::Table {
+        document.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|para| para.controls.iter_mut())
+            .filter_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .nth(n)
+            .expect("the table exists")
+    }
+
+    /// Gives table `n` a caption holding a copy of itself, so the document has
+    /// a table `edit`'s `with_nth_table` can never reach.
+    fn add_caption_table(document: &mut Document, n: usize) {
+        let inner = nth_top_level_table(document, n).clone();
+        nth_top_level_table(document, n).caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 283,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![Paragraph {
+                controls: vec![Control::Table(inner)],
+                ..Paragraph::default()
+            }],
+        });
+    }
+
+    /// #227 finding A: `with_nth_table` never descends into a caption, so a
+    /// table nested in one must not consume a table number — otherwise every
+    /// later table is off by one and the printed cell address edits the wrong
+    /// table.
+    #[test]
+    fn a_caption_nested_table_does_not_shift_the_set_cell_numbering() {
+        let one = "| a | b |\n| - | - |\n| 1 | 2 |\n";
+        let mut a = doc(&format!("{one}\n첫 본문\n\n{one}\n둘째 본문\n\n{one}"));
+        add_caption_table(&mut a, 0);
+
+        let mut b = a.clone();
+        let cell = nth_top_level_table(&mut b, 2)
+            .cells
+            .iter_mut()
+            .find(|c| c.row == 1 && c.col == 1)
+            .expect("the cell exists");
+        let mut added = cell.paragraphs[0].clone();
+        added.chars = "셋째 표 셀 추가".chars().map(HwpChar::Text).collect();
+        cell.paragraphs.push(added);
+
+        let diff = compare_documents(&a, &b).unwrap();
+        let inserted = diff
+            .paragraphs
+            .iter()
+            .find(|e| e.op == ParagraphOp::Insert)
+            .expect("the added cell paragraph is one insertion");
+        let ParagraphLocation::Cell {
+            table: reported,
+            row,
+            col,
+            ..
+        } = inserted.location
+        else {
+            panic!("a cell paragraph reports a cell location: {:?}", inserted);
+        };
+        assert_eq!(reported, 2, "the caption table must not take a number");
+
+        // The reported number is a real `--set-cell` address: driving the
+        // editor with it lands in that same table.
+        let mut edited = a.clone();
+        crate::edit::set_cell(&mut edited, reported, row, col, "찍었다").unwrap();
+        let landed = nth_top_level_table(&mut edited, 2)
+            .cells
+            .iter()
+            .find(|c| c.row == row && c.col == col)
+            .expect("the cell exists");
+        assert_eq!(para_text(&landed.paragraphs[0]), "찍었다");
+    }
+
+    /// Everything below a caption is unaddressable, cells included.
+    #[test]
+    fn a_caption_nested_table_cell_reports_a_nested_location() {
+        let mut a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        add_caption_table(&mut a, 0);
+        let mut locations = Vec::new();
+        walk_paragraphs(&a, &mut |_, location| locations.push(location));
+        assert!(
+            locations.iter().any(
+                |l| matches!(l, ParagraphLocation::Nested { ctrl_id, .. } if ctrl_id == b"tbl ")
+            ),
+            "a caption table's cells are nested, not addressable: {locations:?}"
+        );
+        assert!(
+            !locations
+                .iter()
+                .any(|l| matches!(l, ParagraphLocation::Cell { table, .. } if *table != 0)),
+            "only table 0 is addressable here: {locations:?}"
+        );
     }
 
     #[test]
