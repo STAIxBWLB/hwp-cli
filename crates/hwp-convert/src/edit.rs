@@ -298,7 +298,8 @@ pub(crate) fn adjust_runs(runs: &mut Vec<(u32, CharShapeId)>, p: u32, lo: u32, l
 }
 
 /// `table_index`번째 표(문서 등장 순서, 0-기반)의 (row, col) 셀 텍스트를 바꾼다.
-/// 셀의 첫 문단 서식을 템플릿으로 보존하고 내용만 교체한다.
+/// 셀의 첫 문단 서식을 템플릿으로 보존하고 내용만 교체한다. 빈 줄(LF 두 개 이상)로
+/// 나뉜 값은 블록마다 문단 하나가 된다 — [`split_cell_blocks`] 참고.
 pub fn set_cell(
     doc: &mut Document,
     table_index: usize,
@@ -306,8 +307,15 @@ pub fn set_cell(
     col: u16,
     text: &str,
 ) -> Result<(), String> {
-    with_nth_table(doc, table_index, |t| set_cell_in_table(t, row, col, text))
-        .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
+    // The hwp5-sourced edit path runs the writer with synthesize=false, so neither
+    // assign_instance_ids nor set_last_para_flag runs and paragraphs created here
+    // must carry their own document-unique ids. Read the global maximum before the
+    // table borrow so the new ids cannot collide with a paragraph elsewhere.
+    let next_instance_id = doc_max_instance_id(doc).wrapping_add(1).max(1);
+    with_nth_table(doc, table_index, |t| {
+        set_cell_in_table(t, row, col, text, next_instance_id)
+    })
+    .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
 }
 
 /// `table_index`번째 표(0-기반)에 빈 행을 `count`개 추가한다. `template_row`(0-기반,
@@ -1225,11 +1233,30 @@ fn walk_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     }
 }
 
+/// Split a `--set-cell` value into one block per paragraph: CRLF is normalised to
+/// LF, a run of two or more LF is a paragraph boundary, each block loses only its
+/// leading and trailing LF, empty blocks are dropped, and an empty result falls
+/// back to a single empty block so an empty value keeps producing one empty
+/// paragraph. A single LF inside a block stays an in-paragraph line break.
+fn split_cell_blocks(text: &str) -> Vec<String> {
+    let normalised = text.replace("\r\n", "\n");
+    let mut blocks: Vec<String> = normalised
+        .split("\n\n")
+        .map(|b| b.trim_matches('\n').to_string())
+        .filter(|b| !b.is_empty())
+        .collect();
+    if blocks.is_empty() {
+        blocks.push(String::new());
+    }
+    blocks
+}
+
 fn set_cell_in_table(
     table: &mut hwp_model::Table,
     row: u16,
     col: u16,
     text: &str,
+    next_instance_id: u32,
 ) -> Result<(), String> {
     let cell = table
         .cells
@@ -1238,22 +1265,40 @@ fn set_cell_in_table(
         .ok_or_else(|| format!("표에 셀 ({row}, {col})이 없습니다"))?;
 
     // 첫 문단을 서식 템플릿으로 — 문단/스타일/문자 모양/헤더 보존, 내용만 교체.
-    let mut para = blank_para_like(cell.paragraphs.first());
-    para.chars = text
-        .chars()
-        .map(|c| {
-            if c == '\n' {
-                HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
-            } else {
-                HwpChar::Text(c)
+    // 셀의 문단 목록은 아래에서 통째로 교체되므로 템플릿을 미리 복제해 둔다.
+    let template = cell.paragraphs.first().cloned();
+    let mut paras: Vec<Paragraph> = split_cell_blocks(text)
+        .into_iter()
+        .enumerate()
+        .map(|(i, block)| {
+            let mut para = blank_para_like(template.as_ref());
+            if i > 0 {
+                // Paragraph 0 keeps the template's own instance id, so a
+                // single-block value still produces the IR it produced before the
+                // split; the rest take document-global ids because the surgical
+                // writer will not assign them (see `set_cell`).
+                para.header.instance_id = next_instance_id.wrapping_add(i as u32 - 1);
             }
+            para.chars = block
+                .chars()
+                .map(|c| {
+                    if c == '\n' {
+                        HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
+                    } else {
+                        HwpChar::Text(c)
+                    }
+                })
+                .collect();
+            if !para.chars.is_empty() {
+                para.chars
+                    .push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
+            }
+            para
         })
         .collect();
-    if !para.chars.is_empty() {
-        para.chars
-            .push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
-    }
-    cell.paragraphs = vec![para];
+    // B4: only the last paragraph of the list carries nchars bit31.
+    fixup_last_para_flag(&mut paras);
+    cell.paragraphs = paras;
     Ok(())
 }
 
@@ -2665,6 +2710,126 @@ mod tests {
         // 셀이 1개 문단(내용+문단끝)만 갖는지.
         assert!(set_cell(&mut doc, 0, 99, 99, "x").is_err());
         assert!(set_cell(&mut doc, 5, 0, 0, "x").is_err());
+    }
+
+    fn cell_at(t: &hwp_model::Table, row: u16, col: u16) -> &hwp_model::Cell {
+        t.cells
+            .iter()
+            .find(|c| c.row == row && c.col == col)
+            .expect("셀 없음")
+    }
+
+    #[test]
+    fn set_cell_블록_분할_규칙() {
+        // CRLF 정규화 · LF 2개 이상이 경계 · 앞뒤 LF만 제거 · 빈 블록 폐기.
+        assert_eq!(split_cell_blocks("A\n\nB"), vec!["A", "B"]);
+        assert_eq!(split_cell_blocks("A\r\n\r\nB"), vec!["A", "B"]);
+        assert_eq!(split_cell_blocks("A\n\n\nB"), vec!["A", "B"]);
+        assert_eq!(split_cell_blocks("A\n\n\n\n\nB"), vec!["A", "B"]);
+        // 블록 안의 단일 LF는 문단 내 줄바꿈으로 남는다.
+        assert_eq!(split_cell_blocks("A\nB"), vec!["A\nB"]);
+        // 빈 값 · 빈 줄뿐인 값은 빈 문단 1개(기존 동작).
+        assert_eq!(split_cell_blocks(""), vec![""]);
+        assert_eq!(split_cell_blocks("\n\n\n"), vec![""]);
+    }
+
+    #[test]
+    fn set_cell_단일_블록은_문단_1개() {
+        // 분할 도입 전 동작 보존: 블록 1개면 문단 1개, 템플릿 instance_id 그대로.
+        let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        let before = cell_at(first_table(&doc), 1, 0).paragraphs[0]
+            .header
+            .instance_id;
+        set_cell(&mut doc, 0, 1, 0, "한 줄\n두 줄").unwrap();
+        let cell = cell_at(first_table(&doc), 1, 0);
+        assert_eq!(cell.paragraphs.len(), 1, "단일 블록 → 문단 1개");
+        assert_eq!(
+            cell.paragraphs[0].header.instance_id, before,
+            "문단 0은 템플릿 instance_id 유지"
+        );
+        assert_eq!(
+            cell.paragraphs[0].header.chars_flags & 0x80,
+            0x80,
+            "마지막 문단 비트"
+        );
+        // 문단 내 줄바꿈은 LINE_BREAK로 남는다.
+        assert!(
+            cell.paragraphs[0]
+                .chars
+                .iter()
+                .any(|c| matches!(c, HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK))),
+            "단일 LF는 줄바꿈 문자"
+        );
+    }
+
+    #[test]
+    fn set_cell_빈_줄로_나뉜_값은_문단_여러_개() {
+        let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        set_cell(&mut doc, 0, 1, 0, "첫째\n\n둘째\n\n셋째").unwrap();
+        let cell = cell_at(first_table(&doc), 1, 0);
+        assert_eq!(cell.paragraphs.len(), 3, "블록 3개 → 문단 3개");
+        let texts: Vec<String> = cell
+            .paragraphs
+            .iter()
+            .map(|p| {
+                p.chars
+                    .iter()
+                    .filter_map(|c| match c {
+                        HwpChar::Text(ch) => Some(*ch),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(texts, vec!["첫째", "둘째", "셋째"], "블록 순서 보존");
+        // B4: 마지막 문단만 bit31.
+        for (i, p) in cell.paragraphs.iter().enumerate() {
+            let last = i + 1 == cell.paragraphs.len();
+            assert_eq!(
+                p.header.chars_flags & 0x80 != 0,
+                last,
+                "문단 {i} 마지막 비트"
+            );
+        }
+        // A8: 문단마다 고유 instance_id. 문단 0은 템플릿 id를 물려받으므로(여기서는
+        // from_markdown 문서라 0), 새로 만든 1..N만 비-0을 요구한다.
+        let ids: Vec<u32> = cell
+            .paragraphs
+            .iter()
+            .map(|p| p.header.instance_id)
+            .collect();
+        assert!(
+            ids[1..].iter().all(|id| *id != 0),
+            "새 문단 id 비-0: {ids:?}"
+        );
+        let mut uniq = ids.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), ids.len(), "instance_id 중복: {ids:?}");
+        // 줄 배치는 비워 writer가 재합성한다(B2/B3).
+        assert!(cell.paragraphs.iter().all(|p| p.line_segs.is_empty()));
+    }
+
+    #[test]
+    fn set_cell_반복_적용은_멱등() {
+        // 같은 값을 두 번 넣으면 문단 텍스트·개수가 그대로다(멱등성 프로브).
+        let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        set_cell(&mut doc, 0, 1, 0, "A\n\nB").unwrap();
+        let once = cell_at(first_table(&doc), 1, 0).clone();
+        set_cell(&mut doc, 0, 1, 0, "A\n\nB").unwrap();
+        let twice = cell_at(first_table(&doc), 1, 0);
+        assert_eq!(twice.paragraphs.len(), once.paragraphs.len());
+        assert_eq!(
+            twice
+                .paragraphs
+                .iter()
+                .map(|p| p.chars.clone())
+                .collect::<Vec<_>>(),
+            once.paragraphs
+                .iter()
+                .map(|p| p.chars.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     fn first_table(doc: &Document) -> &hwp_model::Table {

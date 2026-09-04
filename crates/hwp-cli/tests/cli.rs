@@ -2505,6 +2505,121 @@ fn edit_set_para_line_spacing_fields_survive_hwp5_roundtrip() {
     }
 }
 
+/// #220: a blank-line-separated `--set-cell` value becomes one paragraph per block, on both
+/// writers. On the hwp5 surgical path hwp-convert must supply what the writer will not
+/// (synthesize=false): the last-paragraph bit on the last paragraph only, and distinct
+/// instance ids. Asserts on IR JSON and exit codes only - never on glyphs or page counts.
+#[test]
+fn edit_set_cell_splits_blank_lines_into_paragraphs() {
+    const TABLE_MD: &str = "| 가 | 나 |\n|----|----|\n| 1 | 2 |\n";
+    const VALUE: &str = "0:1:0=첫째 항목\n\n둘째 항목";
+
+    // hwpx via make_doc; hwp5 built the same way so the test needs no fixture.
+    let md = tmp("s_tier_cell_paras.md");
+    std::fs::write(&md, TABLE_MD).unwrap();
+    let src_hwp = tmp("s_tier_cell_paras.hwp");
+    assert!(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&md)
+            .arg("-o")
+            .arg(&src_hwp)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let src_hwpx = make_doc("s_tier_cell_paras_x", TABLE_MD);
+
+    for (case, src) in [("hwp5", &src_hwp), ("hwpx", &src_hwpx)] {
+        let ext = if case == "hwp5" { "hwp" } else { "hwpx" };
+        let out = tmp(&format!("s_tier_cell_paras_out_{case}.{ext}"));
+        let json = tmp(&format!("s_tier_cell_paras_out_{case}.json"));
+        let r = hwp()
+            .arg("edit")
+            .arg(src)
+            .arg("-o")
+            .arg(&out)
+            .args(["--set-cell", VALUE])
+            .output()
+            .unwrap();
+        assert!(
+            r.status.success(),
+            "{case} set-cell: {}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        let c = hwp()
+            .arg("convert")
+            .arg(&out)
+            .args(["--to", "json", "-o"])
+            .arg(&json)
+            .output()
+            .unwrap();
+        assert!(
+            c.status.success(),
+            "{case} convert json: {}",
+            String::from_utf8_lossy(&c.stderr)
+        );
+        let ir: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&json).unwrap()).expect("IR JSON");
+        let table = ir["sections"][0]["paragraphs"]
+            .as_array()
+            .expect("paragraphs")
+            .iter()
+            .flat_map(|p| p["controls"].as_array().cloned().unwrap_or_default())
+            .find_map(|c| c.get("Table").cloned())
+            .expect("표 없음");
+        let cell = table["cells"]
+            .as_array()
+            .expect("cells")
+            .iter()
+            .find(|c| c["row"] == 1 && c["col"] == 0)
+            .expect("셀 (1,0)")
+            .clone();
+        let paras = cell["paragraphs"].as_array().expect("cell paragraphs");
+        assert_eq!(paras.len(), 2, "{case}: 블록 2개 → 문단 2개");
+
+        let texts: Vec<String> = paras
+            .iter()
+            .map(|p| {
+                p["chars"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|ch| ch.get("Text").and_then(|t| t.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(texts, vec!["첫째 항목", "둘째 항목"], "{case}: 블록 순서");
+
+        // B4 and A8 are hwp5 paragraph-header invariants; OWPML carries neither the
+        // nchars flag nor the hwp5 instance id, so they only apply on the hwp5 path -
+        // which is exactly the path whose writer will not set them for us.
+        if case == "hwp5" {
+            let flag = |i: usize| paras[i]["header"]["chars_flags"].as_u64().unwrap() & 0x80;
+            assert_eq!(flag(0), 0, "{case}: 첫 문단 마지막 비트 없음");
+            assert_ne!(flag(1), 0, "{case}: 마지막 문단 마지막 비트");
+
+            let id = |i: usize| paras[i]["header"]["instance_id"].as_u64().unwrap();
+            assert_ne!(id(0), 0, "{case}: 문단 0 instance_id 비-0");
+            assert_ne!(id(1), 0, "{case}: 문단 1 instance_id 비-0");
+            assert_ne!(id(0), id(1), "{case}: instance_id 중복");
+        }
+
+        let v = hwp().arg("validate").arg(&out).output().unwrap();
+        assert!(
+            v.status.success(),
+            "{case} validate: {}",
+            String::from_utf8_lossy(&v.stderr)
+        );
+        for f in [&out, &json] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+    for f in [&md, &src_hwp, &src_hwpx] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 #[test]
 fn convert_multi_input_out_dir_and_txt_csv() {
     let a = make_doc("s_tier_a", "문서 A\n\n| 가 |\n|---|\n| 1 |\n");
