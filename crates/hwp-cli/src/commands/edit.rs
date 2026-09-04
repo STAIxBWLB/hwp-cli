@@ -2014,7 +2014,14 @@ fn parse_para_props(kv: &str) -> anyhow::Result<hwp_convert::ParaProps> {
                 let pt: f32 = pt.parse().context("줄간격 pt 값")?;
                 props.line_spacing = Some((1, (pt * 100.0).round() as i32));
             } else {
-                let pct: i32 = value.parse().context("줄간격 비율(%) 값")?;
+                // The help has always documented the ratio form as "%"; strip exactly one
+                // trailing ASCII U+0025 and nothing else (no width folding, no arbitrary
+                // trailing characters), so a full-width "％" still fails the integer parse.
+                let pct: i32 = value
+                    .strip_suffix('%')
+                    .unwrap_or(value)
+                    .parse()
+                    .context("줄간격 비율(%) 값")?;
                 props.line_spacing = Some((0, pct));
             }
         }
