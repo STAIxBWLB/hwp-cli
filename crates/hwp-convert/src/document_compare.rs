@@ -112,13 +112,45 @@ pub enum ParagraphLocation {
     /// control's paragraph list or caption, or anything below a caption —
     /// including the cells of a table nested inside one, which `--set-cell`
     /// cannot address and which therefore carries no table number. The
-    /// section, the owning control's `ctrl_id`, and the 0-based index within
-    /// that list.
+    /// section, the owning control's `ctrl_id`, the 0-based index within that
+    /// list, and the `path` down to it.
+    ///
+    /// The other three variants are unique on their own numbers: a section
+    /// index plus a paragraph index, or a table number that is unique per
+    /// document. `ctrl_id` is not — two generic controls in one paragraph
+    /// share it — so this variant carries the full owner `path` and is unique
+    /// through that.
     Nested {
         section: usize,
         ctrl_id: [u8; 4],
         index: usize,
+        path: Vec<LocationStep>,
     },
+}
+
+/// One step from a paragraph list down into a nested one: which paragraph of
+/// the current list owns the control, which control of that paragraph it is,
+/// and which of that control's paragraph lists was entered. A chain of these
+/// from the section's own paragraph list names any nested list in a document
+/// exactly once, however deeply it nests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocationStep {
+    /// 0-based index of the owning paragraph within its own list.
+    pub paragraph: usize,
+    /// 0-based ordinal of the control within that paragraph's `controls`.
+    pub control: usize,
+    pub list: ListKind,
+}
+
+/// Which paragraph list of a control a [`LocationStep`] enters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKind {
+    /// A table cell, named by its `(row, col)`.
+    Cell { row: u16, col: u16 },
+    /// The control's caption.
+    Caption,
+    /// A generic control's `paragraph_lists[n]`.
+    List(usize),
 }
 
 /// One paragraph-level operation. `a_index`/`b_index` are indices into the
@@ -300,18 +332,23 @@ fn walk_paragraphs(document: &Document, visit: &mut impl FnMut(&Paragraph, Parag
             let scope = Scope {
                 section,
                 addressable: true,
+                paragraph: index,
             };
-            walk_nested_paragraphs(paragraph, scope, &mut tables, visit);
+            walk_nested_paragraphs(paragraph, &[], scope, &mut tables, visit);
         }
     }
 }
 
-/// What a nested paragraph inherits from the list it lives in.
+/// What a paragraph inherits from the list it lives in. The list's own
+/// [`LocationStep`] path travels beside it as a slice, so a caller can extend
+/// it with one local `Vec` per nested list.
 #[derive(Debug, Clone, Copy)]
 struct Scope {
     section: usize,
     /// Whether `edit.rs`'s `walk_nth_table` can reach this list at all.
     addressable: bool,
+    /// 0-based index of the current paragraph within its own list.
+    paragraph: usize,
 }
 
 /// Visits the paragraphs nested in `paragraph`'s controls: table cells and
@@ -328,6 +365,7 @@ struct Scope {
 /// consumes none, keeping later tables correctly numbered.
 fn walk_nested_paragraphs(
     paragraph: &Paragraph,
+    path: &[LocationStep],
     scope: Scope,
     tables: &mut usize,
     visit: &mut impl FnMut(&Paragraph, ParagraphLocation),
@@ -337,12 +375,17 @@ fn walk_nested_paragraphs(
         addressable: false,
         ..scope
     };
-    for control in &paragraph.controls {
+    for (control_index, control) in paragraph.controls.iter().enumerate() {
         let ctrl_id = control.ctrl_id();
-        let nested = move |index| ParagraphLocation::Nested {
-            section,
-            ctrl_id,
-            index,
+        // The path down to one of this control's paragraph lists.
+        let descend = |list| {
+            let mut path = path.to_vec();
+            path.push(LocationStep {
+                paragraph: scope.paragraph,
+                control: control_index,
+                list,
+            });
+            path
         };
         match control {
             Control::Table(table) => {
@@ -352,8 +395,13 @@ fn walk_nested_paragraphs(
                     number
                 });
                 for cell in &table.cells {
+                    let path = descend(ListKind::Cell {
+                        row: cell.row,
+                        col: cell.col,
+                    });
                     walk_list(
                         &cell.paragraphs,
+                        &path,
                         scope,
                         tables,
                         visit,
@@ -365,34 +413,84 @@ fn walk_nested_paragraphs(
                                 col: cell.col,
                                 index,
                             },
-                            None => nested(index),
+                            None => ParagraphLocation::Nested {
+                                section,
+                                ctrl_id,
+                                index,
+                                path: path.clone(),
+                            },
                         },
                     );
                 }
                 if let Some(caption) = &table.caption {
-                    walk_list(&caption.paragraphs, caption_scope, tables, visit, |index| {
-                        match number {
+                    let path = descend(ListKind::Caption);
+                    walk_list(
+                        &caption.paragraphs,
+                        &path,
+                        caption_scope,
+                        tables,
+                        visit,
+                        |index| match number {
                             Some(table) => ParagraphLocation::Caption {
                                 section,
                                 table,
                                 index,
                             },
-                            None => nested(index),
-                        }
-                    });
+                            None => ParagraphLocation::Nested {
+                                section,
+                                ctrl_id,
+                                index,
+                                path: path.clone(),
+                            },
+                        },
+                    );
                 }
             }
             Control::Picture(picture) => {
                 if let Some(caption) = &picture.caption {
-                    walk_list(&caption.paragraphs, caption_scope, tables, visit, nested);
+                    let path = descend(ListKind::Caption);
+                    walk_list(
+                        &caption.paragraphs,
+                        &path,
+                        caption_scope,
+                        tables,
+                        visit,
+                        |index| ParagraphLocation::Nested {
+                            section,
+                            ctrl_id,
+                            index,
+                            path: path.clone(),
+                        },
+                    );
                 }
             }
             Control::Generic(generic) => {
-                for list in &generic.paragraph_lists {
-                    walk_list(&list.paragraphs, scope, tables, visit, nested);
+                for (list_index, list) in generic.paragraph_lists.iter().enumerate() {
+                    let path = descend(ListKind::List(list_index));
+                    walk_list(&list.paragraphs, &path, scope, tables, visit, |index| {
+                        ParagraphLocation::Nested {
+                            section,
+                            ctrl_id,
+                            index,
+                            path: path.clone(),
+                        }
+                    });
                 }
                 if let Some(caption) = &generic.caption {
-                    walk_list(&caption.paragraphs, caption_scope, tables, visit, nested);
+                    let path = descend(ListKind::Caption);
+                    walk_list(
+                        &caption.paragraphs,
+                        &path,
+                        caption_scope,
+                        tables,
+                        visit,
+                        |index| ParagraphLocation::Nested {
+                            section,
+                            ctrl_id,
+                            index,
+                            path: path.clone(),
+                        },
+                    );
                 }
             }
             Control::SectionDef(_) => {}
@@ -400,10 +498,12 @@ fn walk_nested_paragraphs(
     }
 }
 
-/// Visits one nested paragraph list: each paragraph with the location
-/// `locate` builds for it, then that paragraph's own nested lists.
+/// Visits one nested paragraph list reached by `path`: each paragraph with
+/// the location `locate` builds for it, then that paragraph's own nested
+/// lists.
 fn walk_list(
     paragraphs: &[Paragraph],
+    path: &[LocationStep],
     scope: Scope,
     tables: &mut usize,
     visit: &mut impl FnMut(&Paragraph, ParagraphLocation),
@@ -411,7 +511,11 @@ fn walk_list(
 ) {
     for (index, nested) in paragraphs.iter().enumerate() {
         visit(nested, locate(index));
-        walk_nested_paragraphs(nested, scope, tables, visit);
+        let scope = Scope {
+            paragraph: index,
+            ..scope
+        };
+        walk_nested_paragraphs(nested, path, scope, tables, visit);
     }
 }
 
@@ -840,6 +944,74 @@ mod tests {
             .find(|c| c.row == row && c.col == col)
             .expect("the cell exists");
         assert_eq!(para_text(&landed.paragraphs[0]), "찍었다");
+    }
+
+    /// A generic control holding one paragraph list of `texts`.
+    fn generic_with_list(texts: &[&str]) -> Control {
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: texts
+                    .iter()
+                    .map(|text| Paragraph {
+                        chars: text.chars().map(HwpChar::Text).collect(),
+                        ..Paragraph::default()
+                    })
+                    .collect(),
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// #227 finding C: `section` + `ctrl_id` + `index` repeats between two
+    /// sibling generic controls in one paragraph. The owner path separates
+    /// them.
+    #[test]
+    fn sibling_generic_paragraph_lists_get_distinct_locations() {
+        let mut document = doc("본문\n");
+        document.sections[0].paragraphs[0].controls = vec![
+            generic_with_list(&["첫 상자"]),
+            generic_with_list(&["둘 상자"]),
+        ];
+
+        let mut locations = Vec::new();
+        walk_paragraphs(&document, &mut |_, location| locations.push(location));
+        let nested: Vec<_> = locations
+            .iter()
+            .filter(|l| matches!(l, ParagraphLocation::Nested { .. }))
+            .collect();
+        assert_eq!(nested.len(), 2, "one paragraph per box: {locations:?}");
+        assert_ne!(nested[0], nested[1], "sibling boxes must not collide");
+    }
+
+    /// Uniqueness is not a two-control special case: every location in a
+    /// document with sibling boxes, a table and a caption is distinct.
+    #[test]
+    fn every_location_in_a_nested_document_is_unique() {
+        let mut document = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        add_caption_table(&mut document, 0);
+        document.sections[0].paragraphs[0].controls.extend([
+            generic_with_list(&["첫 상자"]),
+            generic_with_list(&["둘 상자"]),
+        ]);
+
+        let mut locations = Vec::new();
+        walk_paragraphs(&document, &mut |_, location| locations.push(location));
+        for (index, location) in locations.iter().enumerate() {
+            assert!(
+                !locations[index + 1..].contains(location),
+                "duplicate location {location:?} in {locations:?}"
+            );
+        }
     }
 
     /// Everything below a caption is unaddressable, cells included.

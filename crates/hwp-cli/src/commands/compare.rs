@@ -26,7 +26,7 @@ use std::path::Path;
 
 use hwp_cli::cli::{CompareFormat, PasswordArgs};
 use hwp_convert::document_compare::{
-    CharOp, CharRun, DocumentDiff, ParagraphLocation, ParagraphOp,
+    CharOp, CharRun, DocumentDiff, ListKind, LocationStep, ParagraphLocation, ParagraphOp,
 };
 
 use crate::commands::cat::{LoadOptions, load_document_with_options, resolve_password_args};
@@ -102,8 +102,21 @@ fn location_str(location: &ParagraphLocation) -> String {
             ..
         } => format!("표 {table} 셀 ({row},{col}) 문단 {index}"),
         ParagraphLocation::Caption { table, index, .. } => format!("표 {table} 캡션 문단 {index}"),
-        ParagraphLocation::Nested { ctrl_id, index, .. } => {
-            format!("개체 {} 문단 {index}", ctrl_id_str(ctrl_id))
+        ParagraphLocation::Nested {
+            ctrl_id,
+            index,
+            path,
+            ..
+        } => {
+            // The innermost step says which of the control's lists this is;
+            // without it two sibling lists print the same label.
+            let list = match path.last().map(|step| step.list) {
+                Some(ListKind::Cell { row, col }) => format!(" 셀 ({row},{col})"),
+                Some(ListKind::Caption) => " 캡션".to_string(),
+                Some(ListKind::List(n)) => format!(" 목록 {n}"),
+                None => String::new(),
+            };
+            format!("개체 {}{list} 문단 {index}", ctrl_id_str(ctrl_id))
         }
     }
 }
@@ -246,13 +259,40 @@ fn location_json(location: &ParagraphLocation) -> serde_json::Value {
             section,
             ctrl_id,
             index,
+            path,
         } => serde_json::json!({
             "kind": "nested",
             "section": section,
             "ctrl_id": ctrl_id_str(ctrl_id),
             "index": index,
+            // The owner path: one entry per nesting level, from the section's
+            // own paragraph list down to the list holding this paragraph.
+            // `ctrl_id` alone repeats between sibling controls, so this is
+            // what makes a nested location unique.
+            "path": path.iter().map(location_step_json).collect::<Vec<_>>(),
         }),
     }
+}
+
+/// One [`LocationStep`] of a nested location's owner path.
+fn location_step_json(step: &LocationStep) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "paragraph": step.paragraph,
+        "control": step.control,
+    });
+    match step.list {
+        ListKind::Cell { row, col } => {
+            value["list"] = serde_json::json!("cell");
+            value["row"] = serde_json::json!(row);
+            value["col"] = serde_json::json!(col);
+        }
+        ListKind::Caption => value["list"] = serde_json::json!("caption"),
+        ListKind::List(index) => {
+            value["list"] = serde_json::json!("list");
+            value["list_index"] = serde_json::json!(index);
+        }
+    }
+    value
 }
 
 fn char_run_json(run: &CharRun) -> serde_json::Value {
