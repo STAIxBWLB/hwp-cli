@@ -64,7 +64,7 @@ pub use official::{
     HeadingNumbering, OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides,
     profile, profiles,
 };
-pub use structure::{delete_paragraph, insert_paragraph};
+pub use structure::{delete_paragraph, insert_paragraph, text_in_unwritable_object};
 pub use style::{display_width, style_table, style_tables};
 
 /// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).

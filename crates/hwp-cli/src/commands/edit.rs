@@ -910,7 +910,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         eprintln!("문단 삽입(앞): {anchor:?} 앞에 {text:?}");
                         edits += 1;
                     } else {
-                        eprintln!("경고: 앵커 {anchor:?}를 찾지 못했습니다");
+                        eprintln!("{}", paragraph_miss_message(&doc, anchor, "앵커"));
                         unapplied.push(format!("--insert-para-before {spec:?}"));
                     }
                 }
@@ -924,7 +924,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         eprintln!("문단 삽입(뒤): {anchor:?} 뒤에 {text:?}");
                         edits += 1;
                     } else {
-                        eprintln!("경고: 앵커 {anchor:?}를 찾지 못했습니다");
+                        eprintln!("{}", paragraph_miss_message(&doc, anchor, "앵커"));
                         unapplied.push(format!("--insert-para {spec:?}"));
                     }
                 }
@@ -933,7 +933,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 for matching in specs {
                     let n = hwp_convert::delete_paragraph(&mut doc, matching);
                     if n == 0 {
-                        eprintln!("경고: 삭제 대상 문단 {matching:?}를 찾지 못했습니다");
+                        eprintln!(
+                            "{}",
+                            paragraph_miss_message(&doc, matching, "삭제 대상 문단")
+                        );
                         unapplied.push(format!("--delete-para {matching:?}"));
                     } else {
                         eprintln!("문단 삭제: {matching:?} ({n}건)");
@@ -1688,12 +1691,17 @@ fn apply_typed_operation(
                 eprintln!("문단 삽입: {anchor:?}, before={before}, text={text:?}");
                 *edits += 1;
             } else {
+                eprintln!("{}", paragraph_miss_message(doc, anchor, "앵커"));
                 unapplied.push(format!("insert_para anchor={anchor:?}"));
             }
         }
         TypedEditOperation::DeletePara { matching } => {
             let count = hwp_convert::delete_paragraph(doc, matching);
             if count == 0 {
+                eprintln!(
+                    "{}",
+                    paragraph_miss_message(doc, matching, "삭제 대상 문단")
+                );
                 unapplied.push(format!("delete_para matching={matching:?}"));
             } else {
                 eprintln!("문단 삭제: {matching:?} ({count}건)");
@@ -2117,6 +2125,21 @@ fn apply_para_prop(
         ),
     }
     Ok(())
+}
+
+/// Explains a paragraph insert/delete that matched nothing writable. When the text does live
+/// in the document but only inside an object the hwp5 writer re-emits from its original record
+/// bytes (a text box, a header/footer), editing the IR there would be dropped on save, so the
+/// walker never enters it - say that instead of the misleading "the anchor was not found".
+fn paragraph_miss_message(doc: &hwp_model::Document, text: &str, subject: &str) -> String {
+    if hwp_convert::text_in_unwritable_object(doc, text) {
+        format!(
+            "경고: {subject} {text:?}가 원본 레코드를 그대로 보존하는 개체(글상자·머리말 등) 안에만 있습니다 \
+             — 그 안의 문단은 편집할 수 없어 적용하지 않았습니다"
+        )
+    } else {
+        format!("경고: {subject} {text:?}를 찾지 못했습니다")
+    }
 }
 
 /// Parses a `"table:row:col"` cell address (0-based). `flag` names the caller in errors.

@@ -64,6 +64,14 @@ fn para_template(p: &Paragraph) -> (ParaShapeId, StyleId, CharShapeId) {
 /// (결과는 OR로 합친다) 모든 레벨을 방문한다 — 조기 종료 여부는 `f`가 스스로
 /// 상태를 들고 판단한다. 원문 XML(`hwpx_raw_xml`)을 품은 개체 안이 바뀌면 그
 /// 원문은 낡으므로 지운다 — writer가 stale XML을 방출하는 것을 막는다.
+///
+/// **hwp5 원본 레코드를 품은 개체(`raw_children` 비어있지 않음)는 들어가지 않는다.**
+/// hwp5 writer(`emit_control`)는 그런 개체를 `raw_children` 바이트 그대로 다시 쓰고
+/// `paragraph_lists`는 보지 않으므로, 안쪽 IR을 고쳐도 저장 파일은 그대로다. IR에서
+/// 재합성하는 길도 없다 — gso 재합성은 정품과 어긋나 손상을 부르는 것으로 판명돼
+/// (규칙 E6) 글상자는 `degrade_hwpx_gso`가 본문으로 내리는 안전 강등만 지원한다.
+/// 따라서 조용한 성공 대신 아예 방문하지 않는다. 그 안의 앵커는
+/// [`text_in_unwritable_object`]가 따로 알려 준다.
 pub(crate) fn walk_para_lists(
     paras: &mut Vec<Paragraph>,
     f: &mut dyn FnMut(&mut Vec<Paragraph>) -> bool,
@@ -85,6 +93,8 @@ pub(crate) fn walk_para_lists(
                         hit |= walk_para_lists(&mut cap.paragraphs, f);
                     }
                 }
+                // 저장 시 원본 서브트리를 그대로 쓰는 개체 — 안쪽 편집은 버려진다.
+                Control::Generic(g) if !g.raw_children.is_empty() => {}
                 Control::Generic(g) => {
                     let mut inner = false;
                     for list in &mut g.paragraph_lists {
@@ -103,6 +113,50 @@ pub(crate) fn walk_para_lists(
         }
     }
     hit
+}
+
+/// [`walk_para_lists`]가 건너뛰는 개체(hwp5 원본 레코드를 품은 글상자·머리말 등)
+/// 안에 `text`가 있는지 본다. 문단 삽입·삭제가 아무 것도 못 했을 때 "앵커가 없다"와
+/// "앵커가 손댈 수 없는 개체 안에 있다"를 구별해 알리기 위한 진단용이다.
+pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
+    fn in_list(paras: &[Paragraph], text: &str, inside_raw: bool) -> bool {
+        if inside_raw
+            && paras
+                .iter()
+                .any(|p| find_match(&p.chars, text, 0).is_some())
+        {
+            return true;
+        }
+        paras.iter().any(|p| {
+            p.controls.iter().any(|ctrl| match ctrl {
+                Control::Table(t) => {
+                    t.caption
+                        .as_ref()
+                        .is_some_and(|c| in_list(&c.paragraphs, text, inside_raw))
+                        || t.cells
+                            .iter()
+                            .any(|c| in_list(&c.paragraphs, text, inside_raw))
+                }
+                Control::Picture(pic) => pic
+                    .caption
+                    .as_ref()
+                    .is_some_and(|c| in_list(&c.paragraphs, text, inside_raw)),
+                Control::Generic(g) => {
+                    let raw = inside_raw || !g.raw_children.is_empty();
+                    g.paragraph_lists
+                        .iter()
+                        .any(|l| in_list(&l.paragraphs, text, raw))
+                        || g.caption
+                            .as_ref()
+                            .is_some_and(|c| in_list(&c.paragraphs, text, raw))
+                }
+                Control::SectionDef(_) => false,
+            })
+        })
+    }
+    doc.sections
+        .iter()
+        .any(|s| in_list(&s.paragraphs, text, false))
 }
 
 /// `anchor`를 가진 첫 문단 뒤(또는 앞)에 `text` 문단을 삽입한다. 반환=삽입 여부.
@@ -380,5 +434,62 @@ mod tests {
         // 셀에 하나뿐인 문단이 매치되면 남긴다(셀이 비면 한글 손상 판정).
         assert_eq!(delete_paragraph(&mut doc, "유지"), 0, "마지막 문단 보존");
         assert_eq!(cell_texts(&doc, 1, 0).len(), 1);
+    }
+
+    /// hwp5 원본 서브트리(`raw_children`)를 품은 개체를 하나 단다 — writer가 그 바이트를
+    /// 그대로 다시 쓰는, 안쪽 IR 편집이 저장되지 않는 개체.
+    fn attach_raw_object(doc: &mut Document, text: &str) {
+        let template = doc.sections[0].paragraphs[0].clone();
+        let mut inner = template.clone();
+        inner.chars = text
+            .chars()
+            .map(HwpChar::Text)
+            .chain(std::iter::once(HwpChar::CharCtrl(ctrl_char::PARA_BREAK)))
+            .collect();
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"head",
+                data: vec![0u8; 8],
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![inner],
+                }],
+                extras: Vec::new(),
+                // 비어 있지 않다 = hwp5 출신, 저장 시 원본 그대로 방출.
+                raw_children: vec![hwp_model::OpaqueRecord {
+                    tag: 0x0048,
+                    data: Vec::new(),
+                    children: Vec::new(),
+                }],
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            }));
+    }
+
+    #[test]
+    fn 원본보존_개체_안은_건드리지_않는다() {
+        let mut doc = from_markdown("본문");
+        attach_raw_object(&mut doc, "개체앵커");
+        // 삽입도 삭제도 그 안에서는 일어나지 않는다 — 조용한 성공 금지.
+        assert!(!insert_paragraph(&mut doc, "개체앵커", "새 문단", false));
+        assert_eq!(delete_paragraph(&mut doc, "개체앵커"), 0);
+        // 진단 함수가 "없음"과 "손댈 수 없음"을 구별한다.
+        assert!(text_in_unwritable_object(&doc, "개체앵커"));
+        assert!(!text_in_unwritable_object(&doc, "본문"));
+        assert!(!text_in_unwritable_object(&doc, "어디에도 없는 문자열"));
+        let g = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Generic(g) if g.ctrl_id == *b"head" => Some(g),
+                _ => None,
+            })
+            .expect("개체 없음");
+        assert_eq!(g.paragraph_lists[0].paragraphs.len(), 1, "안쪽 IR 불변");
     }
 }

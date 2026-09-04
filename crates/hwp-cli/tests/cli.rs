@@ -2729,6 +2729,154 @@ fn edit_set_cell_para_styles_every_paragraph_of_the_cell() {
     }
 }
 
+/// #220 review: an hwp5 Generic control that carries its original record subtree
+/// (`raw_children`) is re-emitted from those bytes, so an IR edit inside it would be dropped
+/// on save. `--insert-para` must therefore refuse such an anchor instead of reporting success,
+/// and the written document must not gain the text. A composed header is that case: the hwp5
+/// reader gives every `head` control both `paragraph_lists` and `raw_children`.
+#[test]
+fn edit_refuses_to_insert_into_a_source_preserved_object() {
+    let spec = tmp("s_tier_raw_object.json");
+    std::fs::write(
+        &spec,
+        r#"{
+  "version": "1.0",
+  "sections": [
+    {
+      "header": {
+        "default": [
+          { "type": "paragraph", "runs": [ { "type": "text", "text": "머리말앵커" } ] }
+        ]
+      },
+      "blocks": [
+        { "type": "paragraph", "runs": [ { "type": "text", "text": "본문 문단" } ] }
+      ]
+    }
+  ]
+}
+"#,
+    )
+    .unwrap();
+    // Compose to hwpx, then convert to hwp5: the hwp5 reader is what turns the header into a
+    // Generic control that owns both `paragraph_lists` and `raw_children`.
+    let staged = tmp("s_tier_raw_object.hwpx");
+    let src = tmp("s_tier_raw_object.hwp");
+    for f in [&staged, &src] {
+        let _ = std::fs::remove_file(f);
+    }
+    let composed = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&staged)
+        .output()
+        .unwrap();
+    assert!(
+        composed.status.success(),
+        "compose: {}",
+        String::from_utf8_lossy(&composed.stderr)
+    );
+    let converted = hwp()
+        .arg("convert")
+        .arg(&staged)
+        .args(["--to", "hwp", "-o"])
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "convert to hwp: {}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let head_text = |path: &std::path::Path| -> String {
+        let out = hwp()
+            .arg("cat")
+            .arg(path)
+            .args(["--with-header-footer"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "cat: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(
+        head_text(&src).contains("머리말앵커"),
+        "머리말 앵커가 원본에 있어야 한다"
+    );
+
+    // Default: an unapplied edit is a hard error, and the message names the real reason.
+    let out = tmp("s_tier_raw_object_out.hwp");
+    let _ = std::fs::remove_file(&out);
+    let refused = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--insert-para", "머리말앵커=>삽입된 문단"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "적용되지 않은 편집은 실패");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("개체") && stderr.contains("편집할 수 없어"),
+        "거부 사유를 밝혀야 한다: {stderr}"
+    );
+
+    assert!(!out.exists(), "거부된 편집은 출력을 만들지 않는다");
+
+    // Paired with an edit that does apply, --allow-partial publishes the file - and the
+    // header must come out byte-for-byte the same text it went in with.
+    let partial = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .args(["--replace", "본문 문단=>바뀐 본문"])
+        .args(["--insert-para", "머리말앵커=>삽입된 문단"])
+        .arg("--allow-partial")
+        .output()
+        .unwrap();
+    assert!(
+        partial.status.success(),
+        "--allow-partial: {}",
+        String::from_utf8_lossy(&partial.stderr)
+    );
+    let after = head_text(&out);
+    assert!(
+        after.contains("바뀐 본문"),
+        "적용 가능한 편집은 반영: {after}"
+    );
+    assert!(after.contains("머리말앵커"), "머리말은 그대로: {after}");
+    assert!(
+        !after.contains("삽입된 문단"),
+        "저장 파일에 삽입되지 않았는데 성공으로 보고되면 안 된다: {after}"
+    );
+
+    // Deleting inside the same object is refused the same way.
+    let del = hwp()
+        .arg("edit")
+        .arg(&src)
+        .arg("-o")
+        .arg(tmp("s_tier_raw_object_del.hwp"))
+        .args(["--delete-para", "머리말앵커"])
+        .output()
+        .unwrap();
+    assert!(!del.status.success(), "머리말 문단 삭제도 거부");
+
+    for f in [
+        &spec,
+        &staged,
+        &src,
+        &out,
+        &tmp("s_tier_raw_object_del.hwp"),
+    ] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 #[test]
 fn convert_multi_input_out_dir_and_txt_csv() {
     let a = make_doc("s_tier_a", "문서 A\n\n| 가 |\n|---|\n| 1 |\n");

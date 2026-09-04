@@ -39,7 +39,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   table cells, nested tables and table, picture and shape captions, not only among a section's
   own paragraphs. A section's own paragraphs are still searched before any nested list, so every
   invocation that matched a top-level paragraph before matches the same one now, and every
-  section, cell and caption keeps at least one paragraph. (#220)
+  section, cell and caption keeps at least one paragraph. Objects an HWP 5.0 source hands over
+  as their original records (text boxes, headers and footers) are not entered, because the
+  writer re-emits those records verbatim and an edit inside them would be silently discarded on
+  save; an anchor found only there is reported as unapplied with that reason instead. (#220)
 - A table cell holding several paragraphs is no longer measured once per paragraph when
   synthesizing table height, which made such tables render several times too tall. The cell's
   cached vertical positions already accumulate across its paragraphs, so the height comes from
