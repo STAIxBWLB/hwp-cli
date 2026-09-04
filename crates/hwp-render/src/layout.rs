@@ -2618,6 +2618,7 @@ fn layout_para_objects(
                         Some(&mut box_list_state),
                         None,
                         0,
+                        None,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -2730,6 +2731,7 @@ fn layout_para_objects(
                             Some(&mut box_list_state),
                             None,
                             0,
+                            None,
                         );
                         flow_end = flow_end.max(inner);
                     } else {
@@ -2759,6 +2761,7 @@ fn layout_para_objects(
                                 Some(&mut box_list_state),
                                 None,
                                 0,
+                                None,
                             );
                             flow_end = flow_end.max(inner);
                         }
@@ -2821,6 +2824,7 @@ fn layout_para_objects(
                         Some(&mut box_list_state),
                         None,
                         0,
+                        None,
                     );
                     flow_end = flow_end.max(inner);
                 }
@@ -3984,6 +3988,9 @@ fn draw_table_cell_fragment(
             Some(cell_ls),
             None,
             v_origin,
+            // The fragment's content bottom bounds `para_shift`: a paragraph
+            // the flow floor pushes down may never be drawn outside the cell.
+            Some(cy + ch - mb),
         );
     }
 
@@ -4095,17 +4102,23 @@ fn draw_table_rows(
             2 => avail,
             _ => 0.0,
         };
-        layout_box_paragraphs(
+        layout_box_para_iter(
             doc,
             store,
             page,
-            &cell.paragraphs,
+            cell.paragraphs
+                .iter()
+                .map(|para| (para, BoxParaSelection::All)),
             cx + ml,
             cy + mt + voff,
             (cw - ml - mr).max(4.0),
             warnings,
             Some(cell_ls), // 렌더 패스: 셀 목록 마커 그림
             None,
+            0,
+            // Same bound as the fragment emitter: a floor-pushed paragraph
+            // must stay inside the cell instead of running into the row below.
+            Some(cy + ch - mb),
         );
 
         // 3) Borders (left, right, top, bottom).
@@ -4182,6 +4195,7 @@ fn layout_box_paragraphs(
         list_state,
         page_number,
         0,
+        None,
     )
 }
 
@@ -4196,13 +4210,36 @@ enum BoxParaSelection {
     Empty,
 }
 
-/// `layout_box_paragraphs`의 반복자 버전 — 단(컬럼)으로 분할된 조각도 받는다.
+/// Iterator form of `layout_box_paragraphs`; it also accepts a column fragment.
 ///
-/// 캐시된 lineseg v_pos는 한컴 배치 그대로 존중한다(흐름 커서로 끌어내리지 않음 —
-/// 끌어내리면 키 큰 글상자에서 줄마다 드리프트가 누적돼 페이지 밖으로 넘친다).
-/// `flow_floor`는 "흐름으로 배치된 콘텐츠"(캐시 없는 폴백 문단, 표/이미지 블록 개체,
-/// 우리 줄바꿈이 캐시와 어긋나 캐시 자리 아래로 넘친 줄)만 바닥을 올려, 뒤따르는
-/// 캐시 문단이 그 위로 겹치지 않게 한다.
+/// A cached lineseg `v_pos` is honoured exactly as Hancom stored it and is never
+/// pulled down to the flow cursor: pulling it down accumulates per-line drift in
+/// a tall text box until the content runs off the page. `flow_floor` is a lower
+/// bound only, raised (never lowered) so that a following cached paragraph cannot
+/// land on top of content already placed.
+///
+/// The floor advances in two ways. Flow-placed content raises it as it is
+/// emitted: a fallback paragraph without a cache, a nested table or image, and a
+/// line whose re-wrap pushed it below the position its cache claims. On top of
+/// that it advances once at the end of every paragraph, to that paragraph's
+/// content bottom. That per-paragraph raise is what keeps a paragraph whose
+/// cached `v_pos` restarts at zero from landing on the previous paragraph
+/// (#222); for the cell-cumulative caches genuine Hancom files carry it is a
+/// no-op, because the next paragraph already starts below that bottom.
+///
+/// A paragraph the floor does push down moves as a whole, by the single offset
+/// its first line needs (`para_shift`), so its own line spacing survives.
+/// Clamping each of its lines to the floor separately would fold them onto one
+/// baseline, which is the overlap this guard exists to remove.
+///
+/// `content_limit` is the bottom of the container the caller owns (a table
+/// cell or cell fragment; `None` for a text box, a header/footer, and the
+/// measurement pass, which have no such edge). It bounds the shift only: a
+/// line the shift would push past that edge is clipped and reported as
+/// `TableCellContentOverflow` instead of being painted over the row below or
+/// over the footer. A cached line that already overflows where Hancom stored
+/// it is left alone, because a stored row height is never grown here and the
+/// measurement pass already reports that overflow.
 #[allow(clippy::too_many_arguments)]
 fn layout_box_para_iter<'a>(
     doc: &Document,
@@ -4216,6 +4253,7 @@ fn layout_box_para_iter<'a>(
     mut list_state: Option<&mut crate::list::ListState>,
     page_number: Option<u32>,
     v_origin: i32,
+    content_limit: Option<f32>,
 ) -> f32 {
     let mut content_bottom = origin_y;
     // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
@@ -4312,6 +4350,16 @@ fn layout_box_para_iter<'a>(
                 }
                 BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
             };
+            // A paragraph whose cached position starts above the flow floor is
+            // moved down as a whole, by the one offset its first line needs.
+            // Clamping each line to the floor on its own would fold every line
+            // of the paragraph onto the floor and re-create the overlap this
+            // guard exists to remove (#222). Zero for a well-formed cache.
+            let para_shift = para.line_segs.get(selected.start).map_or(0.0, |first| {
+                let v_pos = first.v_pos.saturating_sub(v_origin);
+                let stored = origin_y + (v_pos + first.baseline_gap) as f32 / 100.0;
+                (flow_floor + first.baseline_gap as f32 / 100.0 - stored).max(0.0)
+            });
             for i in selected {
                 let seg = &para.line_segs[i];
                 let line_start = seg.text_start;
@@ -4320,6 +4368,30 @@ fn layout_box_para_iter<'a>(
                     .get(i + 1)
                     .map_or(para.wchar_len(), |next| next.text_start);
                 if line_end <= line_start {
+                    continue;
+                }
+                let gap_pt = seg.baseline_gap as f32 / 100.0;
+                let v_pos = seg.v_pos.saturating_sub(v_origin);
+                let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
+                // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
+                // `para_shift`는 문단 전체를 같은 양만큼 내려 줄 간격을 보존한다.
+                let baseline_y = (stored + para_shift).max(flow_floor + gap_pt);
+                // Fail closed on a shift that would leave the container: the
+                // line is clipped rather than painted over the row below or
+                // over the footer, and the loss is reported (#222 follow-up).
+                // Only a shifted line is checked - a cached line that overflows
+                // where Hancom stored it keeps the established contract that a
+                // stored row height is never grown, and is already reported by
+                // the measurement pass.
+                if para_shift > 0.0
+                    && let Some(limit) = content_limit
+                    && baseline_y - gap_pt + seg.line_height.max(seg.text_height) as f32 / 100.0
+                        > limit + CELL_CONTENT_OVERFLOW_EPSILON_PT
+                {
+                    warnings.push_once(
+                        RenderIssueCode::TableCellContentOverflow,
+                        format!("shift-clipped {:.0}", baseline_y - gap_pt - limit),
+                    );
                     continue;
                 }
                 let mut items = shape_range_page(
@@ -4341,11 +4413,6 @@ fn layout_box_para_iter<'a>(
                     .get(para.para_shape.0 as usize)
                     .map_or(0, |ps| ps.alignment());
 
-                let gap_pt = seg.baseline_gap as f32 / 100.0;
-                let v_pos = seg.v_pos.saturating_sub(v_origin);
-                let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
-                // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
-                let baseline_y = stored.max(flow_floor + gap_pt);
                 let first_selected = match &selection {
                     BoxParaSelection::All => i == 0,
                     BoxParaSelection::Segments(range) => i == range.start,
@@ -4442,6 +4509,12 @@ fn layout_box_para_iter<'a>(
                 flow_floor = flow_floor.max(content_bottom);
             }
         }
+
+        // End of a paragraph: the next one may not start above what this one
+        // occupies. Documents whose cached v_pos restarts at 0 per paragraph
+        // would otherwise stack every paragraph of a cell on the first one
+        // (#222). No-op for cell-cumulative caches, which already sit below.
+        flow_floor = flow_floor.max(content_bottom);
     }
     content_bottom
 }

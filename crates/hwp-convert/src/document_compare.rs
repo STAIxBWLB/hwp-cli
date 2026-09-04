@@ -69,6 +69,84 @@ pub enum ParagraphOp {
     Replace,
 }
 
+/// Where a paragraph sits in its document (D-16). Carried on every
+/// [`ParagraphEntry`] so a report can name the paragraph without walking the
+/// source `Document` a second time — the divergent second index space that
+/// made cell paragraphs print blank (#223).
+///
+/// `table` is the 0-based document-order table number `hwp_convert::edit`'s
+/// `with_nth_table` uses, so a printed cell location is a valid
+/// `hwp edit --set-cell "table:row:col=..."` address. The two counters are
+/// kept in lockstep by construction: only tables that walker can reach get a
+/// number at all (see [`walk_nested_paragraphs`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParagraphLocation {
+    /// A section's own paragraph: the 0-based section index and the 0-based
+    /// index within that section's paragraph list.
+    Body { section: usize, index: usize },
+    /// A paragraph inside the cell of an addressable table: the section, the
+    /// document-order table number, the cell's `row` and `col`, and the
+    /// 0-based index within the cell's paragraph list.
+    Cell {
+        section: usize,
+        table: usize,
+        row: u16,
+        col: u16,
+        index: usize,
+    },
+    /// A paragraph inside the caption of an addressable table: the section,
+    /// the table number, and the 0-based index within the caption's
+    /// paragraph list.
+    Caption {
+        section: usize,
+        table: usize,
+        index: usize,
+    },
+    /// A paragraph inside any other nested list: a picture caption, a generic
+    /// control's paragraph list or caption, or anything below a caption —
+    /// including the cells of a table nested inside one, which `--set-cell`
+    /// cannot address and which therefore carries no table number. The
+    /// section, the owning control's `ctrl_id`, the 0-based index within that
+    /// list, and the `path` down to it.
+    ///
+    /// The other three variants are unique on their own numbers: a section
+    /// index plus a paragraph index, or a table number that is unique per
+    /// document. `ctrl_id` is not — two generic controls in one paragraph
+    /// share it — so this variant carries the full owner `path` and is unique
+    /// through that.
+    Nested {
+        section: usize,
+        ctrl_id: [u8; 4],
+        index: usize,
+        path: Vec<LocationStep>,
+    },
+}
+
+/// One step from a paragraph list down into a nested one: which paragraph of
+/// the current list owns the control, which control of that paragraph it is,
+/// and which of that control's paragraph lists was entered. A chain of these
+/// from the section's own paragraph list names any nested list in a document
+/// exactly once, however deeply it nests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocationStep {
+    /// 0-based index of the owning paragraph within its own list.
+    pub paragraph: usize,
+    /// 0-based ordinal of the control within that paragraph's `controls`.
+    pub control: usize,
+    pub list: ListKind,
+}
+
+/// Which paragraph list of a control a [`LocationStep`] enters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKind {
+    /// A table cell, named by its `(row, col)`.
+    Cell { row: u16, col: u16 },
+    /// The control's caption.
+    Caption,
+    /// A generic control's `paragraph_lists[n]`.
+    List(usize),
+}
+
 /// One paragraph-level operation. `a_index`/`b_index` are indices into the
 /// flattened paragraph sequence of each document (top-level plus nested
 /// cell/caption paragraphs; not WCHAR offsets). `chars` is populated only for
@@ -79,6 +157,19 @@ pub struct ParagraphEntry {
     pub a_index: Option<usize>,
     pub b_index: Option<usize>,
     pub chars: Option<Vec<CharRun>>,
+    /// The paragraph's own text in full, as [`para_text`] extracts it — never
+    /// truncated, so a difference past any fixed excerpt length is still
+    /// visible. Taken from the a-side, except for a pure `Insert`, which has
+    /// no a-side and therefore reports the b-side.
+    pub text: String,
+    /// Where [`text`](Self::text) lives — same side as `text`.
+    pub location: ParagraphLocation,
+    /// The b-side text of a `Replace`, which is the one operation with a
+    /// paragraph on both sides; `None` for every other operation, mirroring
+    /// how `chars` is populated only for `Replace`.
+    pub b_text: Option<String>,
+    /// Where [`b_text`](Self::b_text) lives; `None` whenever `b_text` is.
+    pub b_location: Option<ParagraphLocation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +213,21 @@ pub struct StructureDiff {
     /// `b"tbl "`). Only kinds present on at least one side appear.
     pub controls: BTreeMap<[u8; 4], (usize, usize)>,
     pub tables: Vec<TableGeometryDelta>,
+    /// How many paragraphs live in a table cell on each side (D-18) — the
+    /// paragraphs whose location is [`ParagraphLocation::Cell`], counted
+    /// independently per document rather than tallied from the diff's own
+    /// operations. A difference that lives only inside a table is therefore a
+    /// reported fact rather than something to read between the lines of the
+    /// summary.
+    ///
+    /// Cells of a table nested inside a caption are not in this bucket: they
+    /// have no `--set-cell` address and report as
+    /// [`ParagraphLocation::Nested`].
+    pub cell_paragraphs: (usize, usize),
+    /// How many tables each document has. `tables` above only pairs the
+    /// tables both sides have; before this field the surplus was dropped by a
+    /// positional `zip` without a word (D-18).
+    pub table_counts: (usize, usize),
 }
 
 impl StructureDiff {
@@ -130,6 +236,8 @@ impl StructureDiff {
             && self.paragraphs.0 == self.paragraphs.1
             && self.controls.values().all(|(a, b)| a == b)
             && self.tables.is_empty()
+            && self.cell_paragraphs.0 == self.cell_paragraphs.1
+            && self.table_counts.0 == self.table_counts.1
     }
 }
 
@@ -137,13 +245,13 @@ impl StructureDiff {
 /// rendering. Returns `Err` naming the [`MAX_LCS_CELLS`] ceiling when either
 /// the paragraph-level or a character-level LCS table would exceed it.
 pub fn compare_documents(a: &Document, b: &Document) -> Result<DocumentDiff, String> {
-    let a_paras = flatten_paragraph_chars(a);
-    let b_paras = flatten_paragraph_chars(b);
+    let (a_paras, a_meta) = flatten_paragraphs(a);
+    let (b_paras, b_meta) = flatten_paragraphs(b);
 
     let ops = paragraph_lcs(&a_paras, &b_paras)?;
-    let paragraphs = fold_paragraph_ops(ops, &a_paras, &b_paras)?;
+    let paragraphs = fold_paragraph_ops(ops, &a_paras, &b_paras, &a_meta, &b_meta)?;
 
-    let structure = structure_diff(a, b, a_paras.len(), b_paras.len());
+    let structure = structure_diff(a, b, &a_meta, &b_meta);
 
     let identical =
         paragraphs.iter().all(|e| e.op == ParagraphOp::Equal) && structure.is_identical();
@@ -155,72 +263,251 @@ pub fn compare_documents(a: &Document, b: &Document) -> Result<DocumentDiff, Str
     })
 }
 
+/// Plain text of one paragraph: text characters kept, the `LINE_BREAK`
+/// control character mapped to a space, every other element dropped, then
+/// trimmed. Moved here from `hwp-cli`'s `commands/compare.rs` so the compare
+/// report can read a paragraph's text off its [`ParagraphEntry`] instead of
+/// indexing back into the source document (D-16). The near-identical copies
+/// in `commands/grep.rs` and `commands/fill.rs` are deliberately left alone.
+pub fn para_text(para: &Paragraph) -> String {
+    let mut text = String::new();
+    for ch in &para.chars {
+        match ch {
+            HwpChar::Text(c) => text.push(*c),
+            HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK) => text.push(' '),
+            _ => {}
+        }
+    }
+    text.trim().to_string()
+}
+
+/// One flattened paragraph's reportable identity: its full text and where it
+/// lives. Collected in the same single walk that flattens the `chars`
+/// sequences, so the two can never drift out of index alignment.
+struct ParagraphMeta {
+    text: String,
+    location: ParagraphLocation,
+}
+
 /// Flattens every section's paragraphs — top-level plus the paragraphs
 /// nested in table cells/captions, picture captions, and generic control
 /// paragraph lists/captions — into one ordered `chars` sequence per
-/// paragraph, in depth-first document order.
-fn flatten_paragraph_chars(document: &Document) -> Vec<Vec<HwpChar>> {
-    let mut out = Vec::new();
-    walk_paragraphs(document, &mut |paragraph| out.push(paragraph.chars.clone()));
-    out
+/// paragraph plus its [`ParagraphMeta`], in depth-first document order.
+fn flatten_paragraphs(document: &Document) -> (Vec<Vec<HwpChar>>, Vec<ParagraphMeta>) {
+    let mut chars = Vec::new();
+    let mut meta = Vec::new();
+    walk_paragraphs(document, &mut |paragraph, location| {
+        chars.push(paragraph.chars.clone());
+        meta.push(ParagraphMeta {
+            text: para_text(paragraph),
+            location,
+        });
+    });
+    (chars, meta)
 }
 
-/// Visits every paragraph of the document in depth-first document order:
-/// each top-level paragraph, then the paragraphs nested in its controls.
+/// Visits every paragraph of the document in depth-first document order —
+/// each top-level paragraph, then the paragraphs nested in its controls —
+/// handing the visitor the paragraph's [`ParagraphLocation`].
 /// The nested traversal mirrors hwp-cli's
 /// `commands/preservation.rs::collect_paragraph_controls` (this crate cannot
 /// depend on that binary crate, so the traversal shape is mirrored rather
 /// than shared).
-fn walk_paragraphs(document: &Document, visit: &mut impl FnMut(&Paragraph)) {
-    for paragraph in document.sections.iter().flat_map(|s| s.paragraphs.iter()) {
-        visit(paragraph);
-        walk_nested_paragraphs(paragraph, visit);
+///
+/// The table counter is document-global; see [`walk_nested_paragraphs`] for
+/// how it is kept identical to `edit.rs`'s `with_nth_table` numbering.
+fn walk_paragraphs(document: &Document, visit: &mut impl FnMut(&Paragraph, ParagraphLocation)) {
+    let mut tables = 0usize;
+    for (section, sec) in document.sections.iter().enumerate() {
+        for (index, paragraph) in sec.paragraphs.iter().enumerate() {
+            visit(paragraph, ParagraphLocation::Body { section, index });
+            let scope = Scope {
+                section,
+                addressable: true,
+                paragraph: index,
+            };
+            walk_nested_paragraphs(paragraph, &[], scope, &mut tables, visit);
+        }
     }
+}
+
+/// What a paragraph inherits from the list it lives in. The list's own
+/// [`LocationStep`] path travels beside it as a slice, so a caller can extend
+/// it with one local `Vec` per nested list.
+#[derive(Debug, Clone, Copy)]
+struct Scope {
+    section: usize,
+    /// Whether `edit.rs`'s `walk_nth_table` can reach this list at all.
+    addressable: bool,
+    /// 0-based index of the current paragraph within its own list.
+    paragraph: usize,
 }
 
 /// Visits the paragraphs nested in `paragraph`'s controls: table cells and
 /// caption, picture caption, and generic paragraph lists and caption.
-fn walk_nested_paragraphs(paragraph: &Paragraph, visit: &mut impl FnMut(&Paragraph)) {
-    for control in &paragraph.controls {
+///
+/// **Table numbering.** The counter must produce exactly the index
+/// `edit.rs`'s `with_nth_table` takes, or a printed `--set-cell` address
+/// edits the wrong table. That walker increments on a `Control::Table`
+/// **before** descending into its cells, and it descends only through
+/// section paragraphs, table cells and generic paragraph lists — never
+/// through a caption. So the counter here increments in the same pre-order
+/// and only while `scope.addressable` holds; every caption clears the flag
+/// for its whole subtree, and a table found there gets no number and
+/// consumes none, keeping later tables correctly numbered.
+fn walk_nested_paragraphs(
+    paragraph: &Paragraph,
+    path: &[LocationStep],
+    scope: Scope,
+    tables: &mut usize,
+    visit: &mut impl FnMut(&Paragraph, ParagraphLocation),
+) {
+    let section = scope.section;
+    let caption_scope = Scope {
+        addressable: false,
+        ..scope
+    };
+    for (control_index, control) in paragraph.controls.iter().enumerate() {
+        let ctrl_id = control.ctrl_id();
+        // The path down to one of this control's paragraph lists.
+        let descend = |list| {
+            let mut path = path.to_vec();
+            path.push(LocationStep {
+                paragraph: scope.paragraph,
+                control: control_index,
+                list,
+            });
+            path
+        };
         match control {
             Control::Table(table) => {
+                let number = scope.addressable.then(|| {
+                    let number = *tables;
+                    *tables += 1;
+                    number
+                });
                 for cell in &table.cells {
-                    for nested in &cell.paragraphs {
-                        visit(nested);
-                        walk_nested_paragraphs(nested, visit);
-                    }
+                    let path = descend(ListKind::Cell {
+                        row: cell.row,
+                        col: cell.col,
+                    });
+                    walk_list(
+                        &cell.paragraphs,
+                        &path,
+                        scope,
+                        tables,
+                        visit,
+                        |index| match number {
+                            Some(table) => ParagraphLocation::Cell {
+                                section,
+                                table,
+                                row: cell.row,
+                                col: cell.col,
+                                index,
+                            },
+                            None => ParagraphLocation::Nested {
+                                section,
+                                ctrl_id,
+                                index,
+                                path: path.clone(),
+                            },
+                        },
+                    );
                 }
                 if let Some(caption) = &table.caption {
-                    for nested in &caption.paragraphs {
-                        visit(nested);
-                        walk_nested_paragraphs(nested, visit);
-                    }
+                    let path = descend(ListKind::Caption);
+                    walk_list(
+                        &caption.paragraphs,
+                        &path,
+                        caption_scope,
+                        tables,
+                        visit,
+                        |index| match number {
+                            Some(table) => ParagraphLocation::Caption {
+                                section,
+                                table,
+                                index,
+                            },
+                            None => ParagraphLocation::Nested {
+                                section,
+                                ctrl_id,
+                                index,
+                                path: path.clone(),
+                            },
+                        },
+                    );
                 }
             }
             Control::Picture(picture) => {
                 if let Some(caption) = &picture.caption {
-                    for nested in &caption.paragraphs {
-                        visit(nested);
-                        walk_nested_paragraphs(nested, visit);
-                    }
+                    let path = descend(ListKind::Caption);
+                    walk_list(
+                        &caption.paragraphs,
+                        &path,
+                        caption_scope,
+                        tables,
+                        visit,
+                        |index| ParagraphLocation::Nested {
+                            section,
+                            ctrl_id,
+                            index,
+                            path: path.clone(),
+                        },
+                    );
                 }
             }
             Control::Generic(generic) => {
-                for list in &generic.paragraph_lists {
-                    for nested in &list.paragraphs {
-                        visit(nested);
-                        walk_nested_paragraphs(nested, visit);
-                    }
+                for (list_index, list) in generic.paragraph_lists.iter().enumerate() {
+                    let path = descend(ListKind::List(list_index));
+                    walk_list(&list.paragraphs, &path, scope, tables, visit, |index| {
+                        ParagraphLocation::Nested {
+                            section,
+                            ctrl_id,
+                            index,
+                            path: path.clone(),
+                        }
+                    });
                 }
                 if let Some(caption) = &generic.caption {
-                    for nested in &caption.paragraphs {
-                        visit(nested);
-                        walk_nested_paragraphs(nested, visit);
-                    }
+                    let path = descend(ListKind::Caption);
+                    walk_list(
+                        &caption.paragraphs,
+                        &path,
+                        caption_scope,
+                        tables,
+                        visit,
+                        |index| ParagraphLocation::Nested {
+                            section,
+                            ctrl_id,
+                            index,
+                            path: path.clone(),
+                        },
+                    );
                 }
             }
             Control::SectionDef(_) => {}
         }
+    }
+}
+
+/// Visits one nested paragraph list reached by `path`: each paragraph with
+/// the location `locate` builds for it, then that paragraph's own nested
+/// lists.
+fn walk_list(
+    paragraphs: &[Paragraph],
+    path: &[LocationStep],
+    scope: Scope,
+    tables: &mut usize,
+    visit: &mut impl FnMut(&Paragraph, ParagraphLocation),
+    mut locate: impl FnMut(usize) -> ParagraphLocation,
+) {
+    for (index, nested) in paragraphs.iter().enumerate() {
+        visit(nested, locate(index));
+        let scope = Scope {
+            paragraph: index,
+            ..scope
+        };
+        walk_nested_paragraphs(nested, path, scope, tables, visit);
     }
 }
 
@@ -287,53 +574,51 @@ fn fold_paragraph_ops(
     ops: Vec<AtomicOp>,
     a: &[Vec<HwpChar>],
     b: &[Vec<HwpChar>],
+    a_meta: &[ParagraphMeta],
+    b_meta: &[ParagraphMeta],
 ) -> Result<Vec<ParagraphEntry>, String> {
+    // Text and location come from the a-side, except for a pure Insert, which
+    // has no a-side; a Replace additionally carries its b-side explicitly.
+    let entry = |op, a_index: Option<usize>, b_index: Option<usize>, chars| {
+        let primary = a_index
+            .map(|i| &a_meta[i])
+            .unwrap_or_else(|| &b_meta[b_index.expect("an entry has at least one side")]);
+        let b_side = (op == ParagraphOp::Replace).then(|| &b_meta[b_index.unwrap()]);
+        ParagraphEntry {
+            op,
+            a_index,
+            b_index,
+            chars,
+            text: primary.text.clone(),
+            location: primary.location.clone(),
+            b_text: b_side.map(|meta| meta.text.clone()),
+            b_location: b_side.map(|meta| meta.location.clone()),
+        }
+    };
+
     let mut out = Vec::with_capacity(ops.len());
     let mut iter = ops.into_iter().peekable();
     while let Some(op) = iter.next() {
         match op {
-            AtomicOp::Equal(ai, bi) => out.push(ParagraphEntry {
-                op: ParagraphOp::Equal,
-                a_index: Some(ai),
-                b_index: Some(bi),
-                chars: None,
-            }),
+            AtomicOp::Equal(ai, bi) => {
+                out.push(entry(ParagraphOp::Equal, Some(ai), Some(bi), None))
+            }
             AtomicOp::Delete(ai) => {
                 if let Some(AtomicOp::Insert(bi)) = iter.peek().copied() {
                     iter.next();
                     let chars = Some(char_lcs_runs(&a[ai], &b[bi])?);
-                    out.push(ParagraphEntry {
-                        op: ParagraphOp::Replace,
-                        a_index: Some(ai),
-                        b_index: Some(bi),
-                        chars,
-                    });
+                    out.push(entry(ParagraphOp::Replace, Some(ai), Some(bi), chars));
                 } else {
-                    out.push(ParagraphEntry {
-                        op: ParagraphOp::Delete,
-                        a_index: Some(ai),
-                        b_index: None,
-                        chars: None,
-                    });
+                    out.push(entry(ParagraphOp::Delete, Some(ai), None, None));
                 }
             }
             AtomicOp::Insert(bi) => {
                 if let Some(AtomicOp::Delete(ai)) = iter.peek().copied() {
                     iter.next();
                     let chars = Some(char_lcs_runs(&a[ai], &b[bi])?);
-                    out.push(ParagraphEntry {
-                        op: ParagraphOp::Replace,
-                        a_index: Some(ai),
-                        b_index: Some(bi),
-                        chars,
-                    });
+                    out.push(entry(ParagraphOp::Replace, Some(ai), Some(bi), chars));
                 } else {
-                    out.push(ParagraphEntry {
-                        op: ParagraphOp::Insert,
-                        a_index: None,
-                        b_index: Some(bi),
-                        chars: None,
-                    });
+                    out.push(entry(ParagraphOp::Insert, None, Some(bi), None));
                 }
             }
         }
@@ -460,8 +745,8 @@ fn char_lcs_runs(a: &[HwpChar], b: &[HwpChar]) -> Result<Vec<CharRun>, String> {
 fn structure_diff(
     a: &Document,
     b: &Document,
-    a_paragraph_count: usize,
-    b_paragraph_count: usize,
+    a_meta: &[ParagraphMeta],
+    b_meta: &[ParagraphMeta],
 ) -> StructureDiff {
     let a_controls = control_inventory(a);
     let b_controls = control_inventory(b);
@@ -487,11 +772,24 @@ fn structure_diff(
         })
         .collect();
 
+    // Per-side inventory, not a tally of the diff's own operations: a
+    // paragraph moved from one cell to another, or replaced across the body /
+    // cell boundary, produces no net change here, which is the truth. Deriving
+    // the number from Insert/Delete ops instead reported such a move as one
+    // gain and one loss.
+    let cells = |meta: &[ParagraphMeta]| {
+        meta.iter()
+            .filter(|entry| matches!(entry.location, ParagraphLocation::Cell { .. }))
+            .count()
+    };
+
     StructureDiff {
         sections: (a.sections.len(), b.sections.len()),
-        paragraphs: (a_paragraph_count, b_paragraph_count),
+        paragraphs: (a_meta.len(), b_meta.len()),
         controls,
         tables,
+        cell_paragraphs: (cells(a_meta), cells(b_meta)),
+        table_counts: (a_tables.len(), b_tables.len()),
     }
 }
 
@@ -503,7 +801,7 @@ fn structure_diff(
 /// than shared).
 fn control_inventory(document: &Document) -> BTreeMap<[u8; 4], usize> {
     let mut counts = BTreeMap::new();
-    walk_paragraphs(document, &mut |paragraph| {
+    walk_paragraphs(document, &mut |paragraph, _location| {
         for control in &paragraph.controls {
             *counts.entry(control.ctrl_id()).or_default() += 1;
         }
@@ -515,7 +813,7 @@ fn control_inventory(document: &Document) -> BTreeMap<[u8; 4], usize> {
 /// including tables nested in cells and captions.
 fn table_geometries(document: &Document) -> Vec<(u16, u16)> {
     let mut out = Vec::new();
-    walk_paragraphs(document, &mut |paragraph| {
+    walk_paragraphs(document, &mut |paragraph, _location| {
         for control in &paragraph.controls {
             if let Control::Table(table) = control {
                 out.push((table.rows, table.cols));
@@ -531,6 +829,286 @@ mod tests {
 
     fn doc(md: &str) -> Document {
         crate::from_markdown::from_markdown(md)
+    }
+
+    /// Appends a paragraph inside the first table's `(row, col)` cell — the
+    /// #223 shape, where both documents' top-level paragraphs are identical
+    /// and the only difference lives inside a cell.
+    fn push_cell_paragraph(document: &mut Document, row: u16, col: u16, text: &str) {
+        for para in document
+            .sections
+            .iter_mut()
+            .flat_map(|s| s.paragraphs.iter_mut())
+        {
+            for control in &mut para.controls {
+                if let Control::Table(table) = control {
+                    let cell = table
+                        .cells
+                        .iter_mut()
+                        .find(|c| c.row == row && c.col == col)
+                        .expect("the cell exists");
+                    let mut added = cell.paragraphs[0].clone();
+                    added.chars = text.chars().map(HwpChar::Text).collect();
+                    cell.paragraphs.push(added);
+                    return;
+                }
+            }
+        }
+        panic!("the document has no table");
+    }
+
+    /// The `n`th table directly under a section paragraph. Test-only: it does
+    /// not recurse, so it stays independent of the walker under test.
+    fn nth_top_level_table(document: &mut Document, n: usize) -> &mut hwp_model::Table {
+        document.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|para| para.controls.iter_mut())
+            .filter_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .nth(n)
+            .expect("the table exists")
+    }
+
+    /// Gives table `n` a caption holding a copy of itself, so the document has
+    /// a table `edit`'s `with_nth_table` can never reach.
+    fn add_caption_table(document: &mut Document, n: usize) {
+        let inner = nth_top_level_table(document, n).clone();
+        nth_top_level_table(document, n).caption = Some(hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 283,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![Paragraph {
+                controls: vec![Control::Table(inner)],
+                ..Paragraph::default()
+            }],
+        });
+    }
+
+    /// #227 finding A: `with_nth_table` never descends into a caption, so a
+    /// table nested in one must not consume a table number — otherwise every
+    /// later table is off by one and the printed cell address edits the wrong
+    /// table.
+    #[test]
+    fn a_caption_nested_table_does_not_shift_the_set_cell_numbering() {
+        let one = "| a | b |\n| - | - |\n| 1 | 2 |\n";
+        let mut a = doc(&format!("{one}\n첫 본문\n\n{one}\n둘째 본문\n\n{one}"));
+        add_caption_table(&mut a, 0);
+
+        let mut b = a.clone();
+        let cell = nth_top_level_table(&mut b, 2)
+            .cells
+            .iter_mut()
+            .find(|c| c.row == 1 && c.col == 1)
+            .expect("the cell exists");
+        let mut added = cell.paragraphs[0].clone();
+        added.chars = "셋째 표 셀 추가".chars().map(HwpChar::Text).collect();
+        cell.paragraphs.push(added);
+
+        let diff = compare_documents(&a, &b).unwrap();
+        let inserted = diff
+            .paragraphs
+            .iter()
+            .find(|e| e.op == ParagraphOp::Insert)
+            .expect("the added cell paragraph is one insertion");
+        let ParagraphLocation::Cell {
+            table: reported,
+            row,
+            col,
+            ..
+        } = inserted.location
+        else {
+            panic!("a cell paragraph reports a cell location: {:?}", inserted);
+        };
+        assert_eq!(reported, 2, "the caption table must not take a number");
+
+        // The reported number is a real `--set-cell` address: driving the
+        // editor with it lands in that same table.
+        let mut edited = a.clone();
+        crate::edit::set_cell(&mut edited, reported, row, col, "찍었다").unwrap();
+        let landed = nth_top_level_table(&mut edited, 2)
+            .cells
+            .iter()
+            .find(|c| c.row == row && c.col == col)
+            .expect("the cell exists");
+        assert_eq!(para_text(&landed.paragraphs[0]), "찍었다");
+    }
+
+    /// A generic control holding one paragraph list of `texts`.
+    fn generic_with_list(texts: &[&str]) -> Control {
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: texts
+                    .iter()
+                    .map(|text| Paragraph {
+                        chars: text.chars().map(HwpChar::Text).collect(),
+                        ..Paragraph::default()
+                    })
+                    .collect(),
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// #227 finding C: `section` + `ctrl_id` + `index` repeats between two
+    /// sibling generic controls in one paragraph. The owner path separates
+    /// them.
+    #[test]
+    fn sibling_generic_paragraph_lists_get_distinct_locations() {
+        let mut document = doc("본문\n");
+        document.sections[0].paragraphs[0].controls = vec![
+            generic_with_list(&["첫 상자"]),
+            generic_with_list(&["둘 상자"]),
+        ];
+
+        let mut locations = Vec::new();
+        walk_paragraphs(&document, &mut |_, location| locations.push(location));
+        let nested: Vec<_> = locations
+            .iter()
+            .filter(|l| matches!(l, ParagraphLocation::Nested { .. }))
+            .collect();
+        assert_eq!(nested.len(), 2, "one paragraph per box: {locations:?}");
+        assert_ne!(nested[0], nested[1], "sibling boxes must not collide");
+    }
+
+    /// Uniqueness is not a two-control special case: every location in a
+    /// document with sibling boxes, a table and a caption is distinct.
+    #[test]
+    fn every_location_in_a_nested_document_is_unique() {
+        let mut document = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        add_caption_table(&mut document, 0);
+        document.sections[0].paragraphs[0].controls.extend([
+            generic_with_list(&["첫 상자"]),
+            generic_with_list(&["둘 상자"]),
+        ]);
+
+        let mut locations = Vec::new();
+        walk_paragraphs(&document, &mut |_, location| locations.push(location));
+        for (index, location) in locations.iter().enumerate() {
+            assert!(
+                !locations[index + 1..].contains(location),
+                "duplicate location {location:?} in {locations:?}"
+            );
+        }
+    }
+
+    /// Everything below a caption is unaddressable, cells included.
+    #[test]
+    fn a_caption_nested_table_cell_reports_a_nested_location() {
+        let mut a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        add_caption_table(&mut a, 0);
+        let mut locations = Vec::new();
+        walk_paragraphs(&a, &mut |_, location| locations.push(location));
+        assert!(
+            locations.iter().any(
+                |l| matches!(l, ParagraphLocation::Nested { ctrl_id, .. } if ctrl_id == b"tbl ")
+            ),
+            "a caption table's cells are nested, not addressable: {locations:?}"
+        );
+        assert!(
+            !locations
+                .iter()
+                .any(|l| matches!(l, ParagraphLocation::Cell { table, .. } if *table != 0)),
+            "only table 0 is addressable here: {locations:?}"
+        );
+    }
+
+    #[test]
+    fn inserted_cell_paragraph_carries_its_cell_location_and_text() {
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let mut b = a.clone();
+        push_cell_paragraph(&mut b, 1, 1, "○ 둘째 항목 BBB");
+
+        let diff = compare_documents(&a, &b).unwrap();
+        let inserted = diff
+            .paragraphs
+            .iter()
+            .find(|e| e.op == ParagraphOp::Insert)
+            .expect("the added cell paragraph is one insertion");
+        assert_eq!(inserted.text, "○ 둘째 항목 BBB");
+        assert_eq!(
+            inserted.location,
+            ParagraphLocation::Cell {
+                section: 0,
+                table: 0,
+                row: 1,
+                col: 1,
+                index: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn two_equal_adjacent_cell_paragraphs_stay_two_entries() {
+        // The diff is index-based over the deep walk, so byte-equal
+        // neighbours never merge into one entry or collide on one location.
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let mut b = a.clone();
+        push_cell_paragraph(&mut b, 1, 1, "같은 문단");
+        push_cell_paragraph(&mut b, 1, 1, "같은 문단");
+
+        let diff = compare_documents(&a, &b).unwrap();
+        let inserted: Vec<_> = diff
+            .paragraphs
+            .iter()
+            .filter(|e| e.op == ParagraphOp::Insert)
+            .collect();
+        assert_eq!(inserted.len(), 2);
+        assert_ne!(inserted[0].location, inserted[1].location);
+        assert_ne!(inserted[0].b_index, inserted[1].b_index);
+    }
+
+    #[test]
+    fn empty_cell_paragraph_still_carries_a_full_location() {
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let mut b = a.clone();
+        push_cell_paragraph(&mut b, 1, 1, "");
+
+        let diff = compare_documents(&a, &b).unwrap();
+        let inserted = diff
+            .paragraphs
+            .iter()
+            .find(|e| e.op == ParagraphOp::Insert)
+            .expect("an empty added paragraph is still an insertion");
+        assert_eq!(inserted.text, "");
+        assert!(matches!(
+            inserted.location,
+            ParagraphLocation::Cell { row: 1, col: 1, .. }
+        ));
+    }
+
+    /// #227 finding D: the text is carried in full. A 60-char excerpt hid
+    /// every difference past that point behind two identical-looking lines.
+    #[test]
+    fn paragraph_text_is_never_truncated() {
+        let long = |tail: &str| format!("{}{tail}", "가".repeat(80));
+        let a = doc(&format!("머리\n\n{}\n", long("앞")));
+        let b = doc(&format!("머리\n\n{}\n", long("뒤")));
+
+        let diff = compare_documents(&a, &b).unwrap();
+        let changed = diff
+            .paragraphs
+            .iter()
+            .find(|entry| entry.op == ParagraphOp::Replace)
+            .expect("the long paragraph is replaced");
+        assert_eq!(changed.text, long("앞"));
+        assert_eq!(changed.b_text.as_deref(), Some(long("뒤").as_str()));
+        // The two report lines differ even though the first 80 chars match.
+        assert_ne!(Some(changed.text.as_str()), changed.b_text.as_deref());
     }
 
     #[test]
@@ -658,6 +1236,59 @@ mod tests {
         let diff = compare_documents(&a, &b).unwrap();
         assert!(!diff.identical);
         assert!(diff.paragraphs.iter().any(|e| e.op != ParagraphOp::Equal));
+    }
+
+    /// #227 finding B: the same paragraph in a different cell is a move, not
+    /// a gain plus a loss. The count is a per-side inventory, so it stays
+    /// equal; the Insert/Delete tally it replaced reported `(1, 1)` here.
+    #[test]
+    fn a_paragraph_moved_between_cells_keeps_the_cell_paragraph_count() {
+        let table = "| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
+        let mut a = doc(table);
+        let mut b = doc(table);
+        push_cell_paragraph(&mut a, 0, 0, "옮긴 문단");
+        push_cell_paragraph(&mut b, 1, 1, "옮긴 문단");
+
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.cell_paragraphs, (5, 5));
+        // The chars-only LCS still sees a deletion and an insertion, so the
+        // pair is not identical. Teaching the diff to recognize a move is
+        // Phase 3 (D-11/D-12) and deliberately out of scope here.
+        assert!(!diff.identical);
+    }
+
+    /// A paragraph added on one side only does move the count.
+    #[test]
+    fn an_added_cell_paragraph_moves_the_cell_paragraph_count() {
+        let table = "| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
+        let a = doc(table);
+        let mut b = doc(table);
+        push_cell_paragraph(&mut b, 1, 1, "b쪽 추가");
+
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.cell_paragraphs, (4, 5));
+        assert!(!diff.structure.is_identical());
+        assert!(!diff.identical);
+    }
+
+    #[test]
+    fn differing_table_counts_are_reported_not_truncated() {
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let b = doc("| a | b |\n| - | - |\n| 1 | 2 |\n\n본문\n\n| c | d |\n| - | - |\n| 3 | 4 |\n");
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.table_counts, (1, 2));
+        assert!(!diff.structure.is_identical());
+    }
+
+    #[test]
+    fn identical_structure_reports_matching_new_counts() {
+        let a = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let b = doc("| a | b |\n| - | - |\n| 1 | 2 |\n");
+        let diff = compare_documents(&a, &b).unwrap();
+        assert_eq!(diff.structure.cell_paragraphs, (4, 4));
+        assert_eq!(diff.structure.table_counts, (1, 1));
+        assert!(diff.structure.is_identical());
+        assert!(diff.identical);
     }
 
     #[test]
