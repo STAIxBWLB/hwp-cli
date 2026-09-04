@@ -1782,36 +1782,50 @@ const 캐시_베이스라인_간격: i32 = 800;
 /// subject of the assertions.
 fn 셀_문단_캐시_문서(row_h_pt: i32, paras: &[&[i32]]) -> hwp_model::Document {
     let mut doc = 표_분할_문서(0, 1, row_h_pt, 0, false, 0);
+    let paragraphs: Vec<_> = paras
+        .iter()
+        .map(|v_positions| 캐시_문단("본문", v_positions))
+        .collect();
+    셀_문단_설정(&mut doc, 0, paragraphs);
+    doc
+}
+
+/// One cached paragraph: `v_positions` are the cached `v_pos` of its lines,
+/// one character of `text` per line.  An empty slice means a paragraph with no
+/// cached line segments at all.
+fn 캐시_문단(text: &str, v_positions: &[i32]) -> hwp_model::Paragraph {
     // The second paragraph, so the template carries no section/column control
     // characters and wchar index 0 is the first character of the text.
-    let template = hwp_convert::from_markdown("앵커\n\n본문")
+    let mut para = hwp_convert::from_markdown(&format!("앵커\n\n{text}"))
         .sections
         .remove(0)
         .paragraphs
         .remove(1);
-    let paragraphs: Vec<_> = paras
+    para.controls.clear();
+    para.line_segs = v_positions
         .iter()
-        .map(|v_positions| {
-            let mut para = template.clone();
-            para.controls.clear();
-            para.line_segs = v_positions
-                .iter()
-                .enumerate()
-                .map(|(line, v_pos)| hwp_model::LineSeg {
-                    text_start: line as u32,
-                    v_pos: *v_pos,
-                    line_height: 캐시_줄높이,
-                    text_height: 900,
-                    baseline_gap: 캐시_베이스라인_간격,
-                    line_spacing: 0,
-                    col_start: 0,
-                    seg_width: 4000,
-                    flags: 0x0006_0000,
-                })
-                .collect();
-            para
+        .enumerate()
+        .map(|(line, v_pos)| hwp_model::LineSeg {
+            text_start: line as u32,
+            v_pos: *v_pos,
+            line_height: 캐시_줄높이,
+            text_height: 900,
+            baseline_gap: 캐시_베이스라인_간격,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 4000,
+            flags: 0x0006_0000,
         })
         .collect();
+    para
+}
+
+/// Replaces the paragraphs of one cell of the anchored table.
+fn 셀_문단_설정(
+    doc: &mut hwp_model::Document,
+    cell_index: usize,
+    paragraphs: Vec<hwp_model::Paragraph>,
+) {
     let table = doc.sections[0].paragraphs[0]
         .controls
         .iter_mut()
@@ -1820,8 +1834,7 @@ fn 셀_문단_캐시_문서(row_h_pt: i32, paras: &[&[i32]]) -> hwp_model::Docum
             _ => None,
         })
         .expect("표 앵커가 있어야");
-    table.cells[0].paragraphs = paragraphs;
-    doc
+    table.cells[cell_index].paragraphs = paragraphs;
 }
 
 /// Vertical positions of the cell's glyph runs, in display-list order, with
@@ -1935,6 +1948,85 @@ fn well_formed_cell_line_caches_are_reproduced_exactly() {
     assert!(
         (단일[0] - ys[0]).abs() < 0.01,
         "단일 문단 좌표는 변하지 않아야: {단일:?} vs {ys:?}"
+    );
+}
+
+/// A cell shorter than its cached content: three paragraphs whose cached
+/// `v_pos` all restart at 0 do not fit the 25pt row, and the row below must
+/// not be painted over.  The floor raise moves the second paragraph down
+/// inside the cell; the third would land across the row boundary, so it is
+/// clipped at the cell edge and the loss is reported.  Font independent: the
+/// assertions only compare positions against the emitted row rectangles.
+#[test]
+fn cell_paragraph_shift_is_clipped_at_the_cell_bottom() {
+    use hwp_render::display::Item;
+
+    let mut doc = 표_분할_문서(0, 2, 25, 0, false, 0);
+    셀_문단_설정(
+        &mut doc,
+        0,
+        vec![
+            캐시_문단("가", &[0]),
+            캐시_문단("나", &[0]),
+            캐시_문단("다", &[0]),
+        ],
+    );
+    셀_문단_설정(&mut doc, 1, vec![캐시_문단("라", &[0])]);
+
+    let (list, report) = 표_레이아웃(&doc);
+    let 셀_사각형: Vec<(f32, f32)> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Rect { y, h, .. } if (h - 25.0).abs() < 0.5 => Some((*y, *h)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(셀_사각형.len(), 2, "행 2개의 셀 배경: {셀_사각형:?}");
+    let (윗행_위, 윗행_높이) = 셀_사각형[0];
+    let 아랫행_위 = 셀_사각형[1].0;
+    assert!(
+        (아랫행_위 - (윗행_위 + 윗행_높이)).abs() < 0.5,
+        "두 행은 맞닿아야: {셀_사각형:?}"
+    );
+
+    let 글자: Vec<(String, f32)> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Glyphs { y, run, .. } => Some((run.text.clone(), *y)),
+            _ => None,
+        })
+        .collect();
+    let 위치 = |문자: &str| -> Option<f32> {
+        글자
+            .iter()
+            .find(|(text, _)| text.contains(문자))
+            .map(|(_, y)| *y)
+    };
+    let 첫문단 = 위치("가").expect("첫 문단은 그려져야");
+    let 둘째문단 = 위치("나").expect("둘째 문단은 셀 안에 들어가므로 그려져야");
+    let 아랫행 = 위치("라").expect("아랫 행 문단은 그려져야");
+    assert!(
+        위치("다").is_none(),
+        "셀을 벗어나는 셋째 문단은 잘려야: {글자:?}"
+    );
+    // The bottom of a line sits `줄높이 - 베이스라인_간격` below its baseline.
+    let 줄_아래 = |baseline: f32| baseline + (캐시_줄높이 - 캐시_베이스라인_간격) as f32 / 100.0;
+    assert!(
+        첫문단 < 둘째문단 && 줄_아래(둘째문단) <= 아랫행_위 + 0.01,
+        "밀린 문단도 윗행 안에 머물러야: {첫문단} {둘째문단} < {아랫행_위}"
+    );
+    assert!(
+        아랫행 > 아랫행_위,
+        "아랫 행 글자는 아랫 행 안에 있어야: {아랫행} vs {아랫행_위}"
+    );
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
+        "잘린 사실은 typed 이슈로 보고돼야"
     );
 }
 
