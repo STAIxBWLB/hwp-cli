@@ -43,6 +43,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   as their original records (text boxes, headers and footers) are not entered, because the
   writer re-emits those records verbatim and an edit inside them would be silently discarded on
   save; an anchor found only there is reported as unapplied with that reason instead. (#220)
+- A `--set-cell` value that becomes several paragraphs no longer rewrites the rest of its table.
+  Changing a cell's paragraph count used to fall back to regenerating the whole table control,
+  which clears a caption's wrapping and vertical-alignment listflags and re-appends unknown
+  records after the last cell instead of where they were read from. The new paragraph records
+  are spliced into the source record tree, updating only that cell's LIST_HEADER paragraph
+  count and leaving every other source child byte-identical and in position. A structural
+  change to the table (added rows or columns) still regenerates it as before. (#220)
 - Line layout is now synthesized for every nested paragraph list, not only for the cells of a
   section's own paragraphs: table, picture and shape captions, and the tables and objects a cell
   paragraph itself holds, are reached recursively. A paragraph inserted there used to be written
