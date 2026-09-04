@@ -25,8 +25,9 @@
 use std::path::Path;
 
 use hwp_cli::cli::{CompareFormat, PasswordArgs};
-use hwp_convert::document_compare::{CharOp, CharRun, DocumentDiff, ParagraphOp};
-use hwp_model::{Document, HwpChar, Paragraph};
+use hwp_convert::document_compare::{
+    CharOp, CharRun, DocumentDiff, ParagraphLocation, ParagraphOp,
+};
 
 use crate::commands::cat::{LoadOptions, load_document_with_options, resolve_password_args};
 
@@ -57,7 +58,7 @@ pub fn run(
         .map_err(|error| anyhow::anyhow!("비교 실패: {error}"))?;
 
     match format {
-        CompareFormat::Text => print_text_report(a, b, &doc_a, &doc_b, &diff),
+        CompareFormat::Text => print_text_report(a, b, &diff),
         CompareFormat::Json => {
             let json = compare_report_json(a, b, &diff);
             println!("{}", serde_json::to_string_pretty(&json)?);
@@ -87,60 +88,66 @@ pub(crate) fn execute(
     Ok(compare_report_json(a, b, &diff))
 }
 
-/// Plain text extraction identical in shape to `commands/grep.rs`'s `para_text`
-/// (this file has no reuse path across binaries, so the small helper is
-/// duplicated rather than shared).
-fn para_text(para: &Paragraph) -> String {
-    let mut text = String::new();
-    for ch in &para.chars {
-        match ch {
-            HwpChar::Text(c) => text.push(*c),
-            HwpChar::CharCtrl(10) => text.push(' '),
-            _ => {}
+/// The Korean location label for one paragraph. Body paragraphs render as an
+/// empty string — they are addressed by their bracketed index alone, which is
+/// what `hwp compare` printed before locations existed.
+fn location_str(location: &ParagraphLocation) -> String {
+    match location {
+        ParagraphLocation::Body { .. } => String::new(),
+        ParagraphLocation::Cell {
+            table,
+            row,
+            col,
+            index,
+            ..
+        } => format!("표 {table} 셀 ({row},{col}) 문단 {index}"),
+        ParagraphLocation::Caption { table, index, .. } => format!("표 {table} 캡션 문단 {index}"),
+        ParagraphLocation::Nested { ctrl_id, index, .. } => {
+            format!("개체 {} 문단 {index}", ctrl_id_str(ctrl_id))
         }
     }
-    text.trim().to_string()
 }
 
-fn flat_paragraphs(doc: &Document) -> Vec<&Paragraph> {
-    doc.sections.iter().flat_map(|s| &s.paragraphs).collect()
+/// One report line: the operation sign, the bracketed flattened index, the
+/// location when there is one, then the paragraph's excerpt.
+fn entry_line(sign: char, index: usize, location: &ParagraphLocation, text: &str) -> String {
+    let location = location_str(location);
+    if location.is_empty() {
+        format!("{sign} [{index}] {text}")
+    } else {
+        format!("{sign} [{index}] {location}: {text}")
+    }
 }
 
 /// Unified-diff-style text report: a header naming both paths, one line per
 /// non-equal paragraph operation, then a short structural summary.
-fn print_text_report(a: &Path, b: &Path, doc_a: &Document, doc_b: &Document, diff: &DocumentDiff) {
+///
+/// Every printed value comes off the [`ParagraphEntry`], never from a second
+/// walk of the source documents: the report's old flat top-level paragraph
+/// list and the engine's deep walk indexed different sequences, so past the
+/// first table the lookup either missed or named the wrong paragraph (#223).
+fn print_text_report(a: &Path, b: &Path, diff: &DocumentDiff) {
     println!("--- {}", a.display());
     println!("+++ {}", b.display());
-
-    let a_paras = flat_paragraphs(doc_a);
-    let b_paras = flat_paragraphs(doc_b);
 
     for entry in &diff.paragraphs {
         match entry.op {
             ParagraphOp::Equal => {}
             ParagraphOp::Insert => {
                 let index = entry.b_index.unwrap_or_default();
-                let text = b_paras.get(index).map(|p| para_text(p)).unwrap_or_default();
-                println!("+ [{index}] {text}");
+                println!("{}", entry_line('+', index, &entry.location, &entry.text));
             }
             ParagraphOp::Delete => {
                 let index = entry.a_index.unwrap_or_default();
-                let text = a_paras.get(index).map(|p| para_text(p)).unwrap_or_default();
-                println!("- [{index}] {text}");
+                println!("{}", entry_line('-', index, &entry.location, &entry.text));
             }
             ParagraphOp::Replace => {
                 let a_index = entry.a_index.unwrap_or_default();
                 let b_index = entry.b_index.unwrap_or_default();
-                let a_text = a_paras
-                    .get(a_index)
-                    .map(|p| para_text(p))
-                    .unwrap_or_default();
-                let b_text = b_paras
-                    .get(b_index)
-                    .map(|p| para_text(p))
-                    .unwrap_or_default();
-                println!("- [{a_index}] {a_text}");
-                println!("+ [{b_index}] {b_text}");
+                println!("{}", entry_line('-', a_index, &entry.location, &entry.text));
+                let b_location = entry.b_location.as_ref().unwrap_or(&entry.location);
+                let b_text = entry.b_text.as_deref().unwrap_or_default();
+                println!("{}", entry_line('+', b_index, b_location, b_text));
             }
         }
     }
@@ -165,6 +172,11 @@ fn print_text_report(a: &Path, b: &Path, doc_a: &Document, doc_b: &Document, dif
         diff.structure.tables.len(),
         changed_controls,
     );
+}
+
+/// A `ctrl_id` as its four printable characters (e.g. `gso `).
+fn ctrl_id_str(ctrl_id: &[u8; 4]) -> String {
+    String::from_utf8_lossy(ctrl_id).into_owned()
 }
 
 fn paragraph_op_str(op: ParagraphOp) -> &'static str {

@@ -37,6 +37,41 @@ fn write_json_doc(path: &Path, markdown: &str) {
     std::fs::write(path, json).unwrap();
 }
 
+/// Same as [`write_json_doc`], plus one extra paragraph appended inside the
+/// first table's `(row, col)` cell — the #223 shape, where the two documents'
+/// top-level paragraphs are identical and the only difference is in a cell.
+fn write_json_doc_with_cell_paragraph(path: &Path, markdown: &str, row: u16, col: u16, text: &str) {
+    use hwp_model::{Control, HwpChar};
+
+    let mut doc = hwp_convert::from_markdown::from_markdown(markdown);
+    let mut done = false;
+    for para in doc
+        .sections
+        .iter_mut()
+        .flat_map(|s| s.paragraphs.iter_mut())
+    {
+        for control in &mut para.controls {
+            if let Control::Table(table) = control {
+                let cell = table
+                    .cells
+                    .iter_mut()
+                    .find(|c| c.row == row && c.col == col)
+                    .expect("셀이 있어야 함");
+                let mut added = cell.paragraphs[0].clone();
+                added.chars = text.chars().map(HwpChar::Text).collect();
+                cell.paragraphs.push(added);
+                done = true;
+                break;
+            }
+        }
+        if done {
+            break;
+        }
+    }
+    assert!(done, "표가 있는 문서여야 함");
+    std::fs::write(path, hwp_convert::to_json(&doc, true, false).unwrap()).unwrap();
+}
+
 fn sha256(path: &Path) -> Vec<u8> {
     Sha256::digest(std::fs::read(path).unwrap()).to_vec()
 }
@@ -67,6 +102,32 @@ fn differing_documents_exit_one() {
     assert!(
         stdout.contains("고유텍스트마커삽입됨"),
         "stdout에 변경된 문단 텍스트가 있어야 함: {stdout}"
+    );
+}
+
+/// #223: a paragraph added inside a table cell used to print as a blank line,
+/// because the report re-looked-up the text in a flat list of top-level
+/// paragraphs while the index came from the engine's deep walk. The entry now
+/// carries its own text and its own location, so the line names the cell.
+#[test]
+fn added_cell_paragraph_prints_its_cell_and_its_text() {
+    let dir = tmp_dir("cell_paragraph");
+    let a = dir.join("a.json");
+    let b = dir.join("b.json");
+    let table = "본문 문단\n\n| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
+    write_json_doc(&a, table);
+    write_json_doc_with_cell_paragraph(&b, table, 1, 1, "○ 둘째 항목 BBB");
+
+    let output = hwp().arg("compare").arg(&a).arg(&b).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("표 0 셀 (1,1) 문단 1"),
+        "stdout에 셀 위치가 있어야 함: {stdout}"
+    );
+    assert!(
+        stdout.contains("○ 둘째 항목 BBB"),
+        "stdout에 추가된 문단 텍스트가 있어야 함: {stdout}"
     );
 }
 
