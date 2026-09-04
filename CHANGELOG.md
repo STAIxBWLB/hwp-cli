@@ -15,6 +15,26 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Both deployment images pin the v0.16.1 tarball instead of v0.16.0, so the live service gets the
   `hwp_put_file` empty-content fix. `deploy/cloudflare/container/Dockerfile.slim` is the one that
   ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from drifting.
+- Every paragraph entry of the `hwp compare --json` report gains a `text` string carrying the
+  paragraph's full text and a `location` object naming where that paragraph lives; a replaced pair
+  also carries `b_text` and `b_location`. A nested location additionally carries the `path` of
+  owning paragraph / control / list steps down to it, which is what makes it unique. The structure
+  block gains `cell_paragraphs` (`{a, b}`, how many paragraphs live in a table cell on each side)
+  and `table_count` (`{a, b}`). The change is purely additive - the report contract string stays
+  `hwp-compare-report-v1` and every key present before is still present with the same meaning, so
+  existing consumers need no change (#223).
+
+**Fixed**
+
+- `hwp compare` names and quotes paragraphs inside table cells instead of printing a blank line. The
+  report used to look each paragraph's text up in a flat list of top-level paragraphs while the
+  index came from the engine's deep walk, so past the first table the two index spaces diverged. A
+  cell difference now prints as `표 0 셀 (1,1) 문단 1: text`, using the same 0-based table numbering
+  `hwp edit --set-cell` takes - a table nested inside a caption is unreachable for that editor, so
+  it consumes no table number and cannot shift the ones that follow. The structure summary states
+  each side's own count of paragraphs inside table cells (`표 내부 문단 4→5 (+1)`), which is
+  unmoved by a paragraph that merely migrates between cells, and states a table-count change
+  instead of silently dropping the surplus tables (#223).
 
 **Fixed**
 

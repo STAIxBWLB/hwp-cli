@@ -25,8 +25,9 @@
 use std::path::Path;
 
 use hwp_cli::cli::{CompareFormat, PasswordArgs};
-use hwp_convert::document_compare::{CharOp, CharRun, DocumentDiff, ParagraphOp};
-use hwp_model::{Document, HwpChar, Paragraph};
+use hwp_convert::document_compare::{
+    CharOp, CharRun, DocumentDiff, ListKind, LocationStep, ParagraphLocation, ParagraphOp,
+};
 
 use crate::commands::cat::{LoadOptions, load_document_with_options, resolve_password_args};
 
@@ -57,7 +58,7 @@ pub fn run(
         .map_err(|error| anyhow::anyhow!("비교 실패: {error}"))?;
 
     match format {
-        CompareFormat::Text => print_text_report(a, b, &doc_a, &doc_b, &diff),
+        CompareFormat::Text => print_text_report(a, b, &diff),
         CompareFormat::Json => {
             let json = compare_report_json(a, b, &diff);
             println!("{}", serde_json::to_string_pretty(&json)?);
@@ -87,60 +88,79 @@ pub(crate) fn execute(
     Ok(compare_report_json(a, b, &diff))
 }
 
-/// Plain text extraction identical in shape to `commands/grep.rs`'s `para_text`
-/// (this file has no reuse path across binaries, so the small helper is
-/// duplicated rather than shared).
-fn para_text(para: &Paragraph) -> String {
-    let mut text = String::new();
-    for ch in &para.chars {
-        match ch {
-            HwpChar::Text(c) => text.push(*c),
-            HwpChar::CharCtrl(10) => text.push(' '),
-            _ => {}
+/// The Korean location label for one paragraph. Body paragraphs render as an
+/// empty string — they are addressed by their bracketed index alone, which is
+/// what `hwp compare` printed before locations existed.
+fn location_str(location: &ParagraphLocation) -> String {
+    match location {
+        ParagraphLocation::Body { .. } => String::new(),
+        ParagraphLocation::Cell {
+            table,
+            row,
+            col,
+            index,
+            ..
+        } => format!("표 {table} 셀 ({row},{col}) 문단 {index}"),
+        ParagraphLocation::Caption { table, index, .. } => format!("표 {table} 캡션 문단 {index}"),
+        ParagraphLocation::Nested {
+            ctrl_id,
+            index,
+            path,
+            ..
+        } => {
+            // The innermost step says which of the control's lists this is;
+            // without it two sibling lists print the same label.
+            let list = match path.last().map(|step| step.list) {
+                Some(ListKind::Cell { row, col }) => format!(" 셀 ({row},{col})"),
+                Some(ListKind::Caption) => " 캡션".to_string(),
+                Some(ListKind::List(n)) => format!(" 목록 {n}"),
+                None => String::new(),
+            };
+            format!("개체 {}{list} 문단 {index}", ctrl_id_str(ctrl_id))
         }
     }
-    text.trim().to_string()
 }
 
-fn flat_paragraphs(doc: &Document) -> Vec<&Paragraph> {
-    doc.sections.iter().flat_map(|s| &s.paragraphs).collect()
+/// One report line: the operation sign, the bracketed flattened index, the
+/// location when there is one, then the paragraph's full text.
+fn entry_line(sign: char, index: usize, location: &ParagraphLocation, text: &str) -> String {
+    let location = location_str(location);
+    if location.is_empty() {
+        format!("{sign} [{index}] {text}")
+    } else {
+        format!("{sign} [{index}] {location}: {text}")
+    }
 }
 
 /// Unified-diff-style text report: a header naming both paths, one line per
 /// non-equal paragraph operation, then a short structural summary.
-fn print_text_report(a: &Path, b: &Path, doc_a: &Document, doc_b: &Document, diff: &DocumentDiff) {
+///
+/// Every printed value comes off the [`ParagraphEntry`], never from a second
+/// walk of the source documents: the report's old flat top-level paragraph
+/// list and the engine's deep walk indexed different sequences, so past the
+/// first table the lookup either missed or named the wrong paragraph (#223).
+fn print_text_report(a: &Path, b: &Path, diff: &DocumentDiff) {
     println!("--- {}", a.display());
     println!("+++ {}", b.display());
-
-    let a_paras = flat_paragraphs(doc_a);
-    let b_paras = flat_paragraphs(doc_b);
 
     for entry in &diff.paragraphs {
         match entry.op {
             ParagraphOp::Equal => {}
             ParagraphOp::Insert => {
                 let index = entry.b_index.unwrap_or_default();
-                let text = b_paras.get(index).map(|p| para_text(p)).unwrap_or_default();
-                println!("+ [{index}] {text}");
+                println!("{}", entry_line('+', index, &entry.location, &entry.text));
             }
             ParagraphOp::Delete => {
                 let index = entry.a_index.unwrap_or_default();
-                let text = a_paras.get(index).map(|p| para_text(p)).unwrap_or_default();
-                println!("- [{index}] {text}");
+                println!("{}", entry_line('-', index, &entry.location, &entry.text));
             }
             ParagraphOp::Replace => {
                 let a_index = entry.a_index.unwrap_or_default();
                 let b_index = entry.b_index.unwrap_or_default();
-                let a_text = a_paras
-                    .get(a_index)
-                    .map(|p| para_text(p))
-                    .unwrap_or_default();
-                let b_text = b_paras
-                    .get(b_index)
-                    .map(|p| para_text(p))
-                    .unwrap_or_default();
-                println!("- [{a_index}] {a_text}");
-                println!("+ [{b_index}] {b_text}");
+                println!("{}", entry_line('-', a_index, &entry.location, &entry.text));
+                let b_location = entry.b_location.as_ref().unwrap_or(&entry.location);
+                let b_text = entry.b_text.as_deref().unwrap_or_default();
+                println!("{}", entry_line('+', b_index, b_location, b_text));
             }
         }
     }
@@ -156,8 +176,14 @@ fn print_text_report(a: &Path, b: &Path, doc_a: &Document, doc_b: &Document, dif
         .values()
         .filter(|(a, b)| a != b)
         .count();
-    println!(
-        "구조: 구역 {}→{}, 문단 {}→{}, 표 변경 {}건, 컨트롤 종류 변경 {}건",
+    // The existing fields keep their order; the D-18 additions are appended,
+    // and the table count only when the two sides actually differ. The cell
+    // paragraph figure is each side's own count, so it reads like every other
+    // a→b pair on the line.
+    let (a_cells, b_cells) = diff.structure.cell_paragraphs;
+    let cell_delta = b_cells as isize - a_cells as isize;
+    let mut summary = format!(
+        "구조: 구역 {}→{}, 문단 {}→{}, 표 변경 {}건, 컨트롤 종류 변경 {}건, 표 내부 문단 {a_cells}→{b_cells} ({cell_delta:+})",
         diff.structure.sections.0,
         diff.structure.sections.1,
         diff.structure.paragraphs.0,
@@ -165,6 +191,16 @@ fn print_text_report(a: &Path, b: &Path, doc_a: &Document, doc_b: &Document, dif
         diff.structure.tables.len(),
         changed_controls,
     );
+    let (a_tables, b_tables) = diff.structure.table_counts;
+    if a_tables != b_tables {
+        summary.push_str(&format!(", 표 개수 {a_tables}→{b_tables}"));
+    }
+    println!("{summary}");
+}
+
+/// A `ctrl_id` as its four printable characters (e.g. `gso `).
+fn ctrl_id_str(ctrl_id: &[u8; 4]) -> String {
+    String::from_utf8_lossy(ctrl_id).into_owned()
 }
 
 fn paragraph_op_str(op: ParagraphOp) -> &'static str {
@@ -184,6 +220,81 @@ fn char_op_str(op: CharOp) -> &'static str {
     }
 }
 
+/// Serializes a [`ParagraphLocation`] by hand into a `kind`-discriminated
+/// object carrying that variant's numbers. Hand-rolled rather than derived so
+/// the engine types stay free of a serde dependency and the emitted shape is
+/// explicit and reviewable.
+fn location_json(location: &ParagraphLocation) -> serde_json::Value {
+    match location {
+        ParagraphLocation::Body { section, index } => serde_json::json!({
+            "kind": "body",
+            "section": section,
+            "index": index,
+        }),
+        ParagraphLocation::Cell {
+            section,
+            table,
+            row,
+            col,
+            index,
+        } => serde_json::json!({
+            "kind": "cell",
+            "section": section,
+            "table": table,
+            "row": row,
+            "col": col,
+            "index": index,
+        }),
+        ParagraphLocation::Caption {
+            section,
+            table,
+            index,
+        } => serde_json::json!({
+            "kind": "caption",
+            "section": section,
+            "table": table,
+            "index": index,
+        }),
+        ParagraphLocation::Nested {
+            section,
+            ctrl_id,
+            index,
+            path,
+        } => serde_json::json!({
+            "kind": "nested",
+            "section": section,
+            "ctrl_id": ctrl_id_str(ctrl_id),
+            "index": index,
+            // The owner path: one entry per nesting level, from the section's
+            // own paragraph list down to the list holding this paragraph.
+            // `ctrl_id` alone repeats between sibling controls, so this is
+            // what makes a nested location unique.
+            "path": path.iter().map(location_step_json).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+/// One [`LocationStep`] of a nested location's owner path.
+fn location_step_json(step: &LocationStep) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "paragraph": step.paragraph,
+        "control": step.control,
+    });
+    match step.list {
+        ListKind::Cell { row, col } => {
+            value["list"] = serde_json::json!("cell");
+            value["row"] = serde_json::json!(row);
+            value["col"] = serde_json::json!(col);
+        }
+        ListKind::Caption => value["list"] = serde_json::json!("caption"),
+        ListKind::List(index) => {
+            value["list"] = serde_json::json!("list");
+            value["list_index"] = serde_json::json!(index);
+        }
+    }
+    value
+}
+
 fn char_run_json(run: &CharRun) -> serde_json::Value {
     serde_json::json!({
         "op": char_op_str(run.op),
@@ -201,11 +312,23 @@ pub(crate) fn compare_report_json(a: &Path, b: &Path, diff: &DocumentDiff) -> se
         .paragraphs
         .iter()
         .map(|entry| {
+            // `text` and `location` are additive (D-17): every key below was
+            // present before them and keeps its meaning, and the contract
+            // string is unchanged, so a consumer that ignores unknown keys
+            // needs no change.
             let mut value = serde_json::json!({
                 "op": paragraph_op_str(entry.op),
                 "a_index": entry.a_index,
                 "b_index": entry.b_index,
+                "text": entry.text,
+                "location": location_json(&entry.location),
             });
+            if let Some(b_text) = &entry.b_text {
+                value["b_text"] = serde_json::json!(b_text);
+            }
+            if let Some(b_location) = &entry.b_location {
+                value["b_location"] = location_json(b_location);
+            }
             if let Some(chars) = &entry.chars {
                 value["chars"] =
                     serde_json::json!(chars.iter().map(char_run_json).collect::<Vec<_>>());
@@ -251,6 +374,13 @@ pub(crate) fn compare_report_json(a: &Path, b: &Path, diff: &DocumentDiff) -> se
             "paragraphs": {"a": diff.structure.paragraphs.0, "b": diff.structure.paragraphs.1},
             "controls": controls,
             "tables": tables,
+            // Per-side counts, like every other pair in this block: how many
+            // paragraphs live in a table cell on each side.
+            "cell_paragraphs": {
+                "a": diff.structure.cell_paragraphs.0,
+                "b": diff.structure.cell_paragraphs.1,
+            },
+            "table_count": {"a": diff.structure.table_counts.0, "b": diff.structure.table_counts.1},
         },
     })
 }
@@ -270,6 +400,36 @@ mod tests {
         )
     }
 
+    /// A pair whose only difference is one paragraph appended inside a table
+    /// cell — the #223 shape.
+    fn diff_with_cell_insertion() -> (std::path::PathBuf, std::path::PathBuf, DocumentDiff) {
+        use hwp_model::{Control, HwpChar};
+
+        let markdown = "본문 문단\n\n| 항목 | 내용 |\n| - | - |\n| 하나 | 둘 |\n";
+        let doc_a = hwp_convert::from_markdown::from_markdown(markdown);
+        let mut doc_b = doc_a.clone();
+        let cell = doc_b
+            .sections
+            .iter_mut()
+            .flat_map(|s| s.paragraphs.iter_mut())
+            .flat_map(|p| p.controls.iter_mut())
+            .find_map(|control| match control {
+                Control::Table(table) => table.cells.iter_mut().find(|c| c.row == 1 && c.col == 1),
+                _ => None,
+            })
+            .expect("셀 (1,1)이 있어야 함");
+        let mut added = cell.paragraphs[0].clone();
+        added.chars = "○ 둘째 항목 BBB".chars().map(HwpChar::Text).collect();
+        cell.paragraphs.push(added);
+
+        let diff = hwp_convert::document_compare::compare_documents(&doc_a, &doc_b).unwrap();
+        (
+            std::path::PathBuf::from("a.hwpx"),
+            std::path::PathBuf::from("b.hwpx"),
+            diff,
+        )
+    }
+
     #[test]
     fn json_report_contract() {
         let (a, b, diff) = diff_a_vs_a();
@@ -281,6 +441,40 @@ mod tests {
         assert!(v["structure"]["sections"].is_object());
         assert!(v["structure"]["controls"].is_array());
         assert!(v["structure"]["tables"].is_array());
+
+        // The `text` and `location` keys are additive: every key the report
+        // carried before them is still present with the same meaning, on
+        // every entry, so a consumer that ignores unknown keys keeps working.
+        for entry in v["paragraphs"].as_array().unwrap() {
+            assert!(entry["op"].is_string());
+            assert!(entry.get("a_index").is_some());
+            assert!(entry.get("b_index").is_some());
+            assert!(entry["text"].is_string());
+            assert!(entry["location"]["kind"].is_string());
+        }
+    }
+
+    /// #223: a paragraph inside a table cell must be addressable from the
+    /// JSON report, with the same 0-based table number `--set-cell` uses.
+    #[test]
+    fn json_report_locates_a_cell_paragraph() {
+        let (a, b, diff) = diff_with_cell_insertion();
+        let v = compare_report_json(&a, &b, &diff);
+        assert_eq!(v["contract"], "hwp-compare-report-v1");
+
+        let inserted = v["paragraphs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["op"] == "insert")
+            .expect("추가된 셀 문단이 있어야 함");
+        assert_eq!(inserted["text"], "○ 둘째 항목 BBB");
+        assert_eq!(inserted["location"]["kind"], "cell");
+        assert_eq!(inserted["location"]["section"], 0);
+        assert_eq!(inserted["location"]["table"], 0);
+        assert_eq!(inserted["location"]["row"], 1);
+        assert_eq!(inserted["location"]["col"], 1);
+        assert_eq!(inserted["location"]["index"], 1);
     }
 
     /// Both inputs go in as `.json` IR (no hwp5/hwpx container writer touches
