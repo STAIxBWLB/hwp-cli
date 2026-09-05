@@ -25,6 +25,7 @@ run $CARGO clippy --workspace --all-targets -- -D warnings
 run $CARGO test --workspace
 run python3 -m unittest tools/test_pdf_parity.py
 run bash scripts/check-structured-corpus.sh
+run bash scripts/check-claims.sh
 target_dir="${CARGO_TARGET_DIR:-target}"
 run "$target_dir/debug/examples/validate_structured_corpus" \
     schemas/pdf-parity-history-v1.schema.json \
@@ -55,4 +56,4 @@ if [ "$fail" -ne 0 ]; then
     echo "== check: FAILED (위 게이트 중 실패 있음) =="
     exit 1
 fi
-echo "== check: OK (fmt/clippy/test/pdf-runner/structured-corpus/public-parity=$parity_result) =="
+echo "== check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/public-parity=$parity_result) =="

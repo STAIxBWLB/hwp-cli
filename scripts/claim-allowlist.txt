@@ -1,0 +1,14 @@
+# Allowlist for scripts/check-claims.sh.
+#
+# Each non-comment, non-blank line is ONE exact sentence that is allowed to contain a scanned
+# phrase, because the sentence negates or quotes the claim rather than making it.
+#
+# Rules:
+#   - An entry is a sentence. It is never a file name, a directory or a pattern.
+#   - An entry is matched as a fixed substring of the offending line, so the same forbidden words
+#     in a different sentence still fail the lint.
+#   - A new genuine claim is fixed in the copy. It is never silenced by widening an entry here.
+#
+# Format: one sentence per line, '#' starts a comment line, blank lines ignored.
+
+**No Hancom parity claim** The final verdict is always whether the file opens correctly in Hancom Office.
