@@ -43,15 +43,24 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   refused rather than guessed at.
 - `scripts/check-verification-block.sh` is the release boundary both ends share: it requires the
   version's section to carry one marked block citing one Actions run URL of this repository, and
-  the GitHub API to report that run as a successful `release-readiness.yml` run whose head_sha is
-  the commit being released. `scripts/release.sh` runs it before the version bump and
-  `.github/workflows/release.yml` runs it against the tagged commit. There is no override flag.
+  the GitHub API to report that run as a successful `release-readiness.yml` run. What binds the
+  evidence to the code is that run's own `hwp-release-readiness-record-v1` artifact, which the
+  script downloads and reads: its `evaluated_sha` must be the commit being released, its result a
+  pass with a clean tree, and its `workflow_source_sha` the run's head_sha. A dispatch run's
+  head_sha is the ref the run was started from, not the ref it evaluated, so head_sha is recorded
+  as provenance and is no longer what the release is checked against. A record that is missing,
+  expired, unparsable or not a pass is a stop. `scripts/release.sh` runs it before the version
+  bump and `.github/workflows/release.yml` runs it against the tagged commit. There is no
+  override flag.
 - The CI `lint` job now runs the claim lint, the doc-surface gate and both fixture suites, and
   the workflow's path filters no longer exclude the documents those gates read.
 - `.github/workflows/release-readiness.yml` runs every automatable gate of
   `docs/release-readiness.md` against a dispatched tag or branch, from a clean checkout on the
   runner whose Poppler the public parity manifest pins, and uploads one
   `hwp-release-readiness-record-v1` JSON artifact naming each gate, its status and its evidence.
+  The record separates `evaluated_sha`, the commit the run checked out and measured, from
+  `workflow_source_sha`, the commit the workflow file itself came from, and carries one `result`
+  field, so a reader and the release gate can both tell which code the evidence belongs to.
   The run holds a read-only token and performs no commit, tag, package upload, release or
   registry push; the 3-OS evidence is the evaluated commit's own CI check runs, and an absent or
   incomplete one is recorded as pending rather than as a pass. A line the run cannot evaluate is

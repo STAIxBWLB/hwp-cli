@@ -40,8 +40,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      # A workflow_dispatch run's own GITHUB_SHA is the default branch's, not the evaluated
-      # ref's, so resolve the checked-out commit explicitly and use it everywhere below.
+      # A workflow_dispatch run's own GITHUB_SHA is the dispatch ref's commit (the run's
+      # head_sha), not the evaluated ref's, so the two are recorded as separate fields and the
+      # evaluated one is resolved explicitly here and used everywhere below. A verifier that
+      # compares the run's head_sha to the commit being released would be checking the dispatch
+      # ref, not the code this run evaluated; scripts/check-verification-block.sh compares the
+      # record's evaluated_sha instead.
       - name: Resolve the evaluated commit
         shell: bash
         env:
@@ -55,7 +59,7 @@ jobs:
             echo "CHECK_RUNS_FILE=$RUNNER_TEMP/check-runs.tsv"
           } >>"$GITHUB_ENV"
           : >"$RUNNER_TEMP/gates.tsv"
-          echo "ref=$READINESS_REF sha=$sha"
+          echo "ref=$READINESS_REF evaluated_sha=$sha workflow_source_sha=$GITHUB_SHA"
 
       # Checklist line 28, run first: the checklist asks for a clean checkout, and later gates
       # fetch fonts and write parity scorecards into the working tree.
@@ -440,6 +444,7 @@ jobs:
           READINESS_REF: ${{ inputs.ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RECORD_PATH: release-readiness-record.json
+          WORKFLOW_SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -554,6 +559,8 @@ jobs:
           if check_runs_path and os.path.exists(check_runs_path):
               check_runs = {name: state for name, state in read_tsv(check_runs_path, 2)}
 
+          blocking = [g for g in gates if g["status"] in ("fail", "pending")]
+
           record = {
               "schema": "hwp-release-readiness-record-v1",
               "generated_at": datetime.datetime.now(datetime.timezone.utc)
@@ -561,7 +568,13 @@ jobs:
               .isoformat()
               .replace("+00:00", "Z"),
               "ref": os.environ["READINESS_REF"],
-              "sha": lower_hex(os.environ["READINESS_SHA"]),
+              # The commit this run actually evaluated (the resolved `ref` input). This is the
+              # field a release verifier must compare against the commit being released.
+              "evaluated_sha": lower_hex(os.environ["READINESS_SHA"]),
+              # The commit the workflow file itself came from (the dispatch ref, = this run's
+              # head_sha). Recorded for provenance only; it says nothing about what was evaluated.
+              "workflow_source_sha": lower_hex(os.environ["WORKFLOW_SOURCE_SHA"]),
+              "result": "fail" if blocking else "pass",
               "run_url": os.environ["RUN_URL"],
               "hwp_version": cargo_version(),
               "pdfinfo_version": os.environ.get("PDFINFO_VERSION") or None,
@@ -577,17 +590,19 @@ jobs:
               handle.write(text)
           print(text)
 
-          blocking = [g for g in gates if g["status"] in ("fail", "pending")]
           if blocking:
               names = ", ".join(f'{g["name"]}={g["status"]}' for g in blocking)
               print(f"::error::release readiness gates not green: {names}", file=sys.stderr)
               sys.exit(1)
           PY
+      # The artifact name is the record's own contract string, because
+      # scripts/check-verification-block.sh downloads it by that name from the run the release
+      # copy cites and reads evaluated_sha out of it.
       - name: Upload the run record
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: release-readiness-record
+          name: hwp-release-readiness-record-v1
           path: release-readiness-record.json
           if-no-files-found: error
           retention-days: 90
