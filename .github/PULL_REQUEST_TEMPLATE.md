@@ -12,6 +12,7 @@
   - If it does not: [ ] one line of justification (for example: read-only, tests or docs only)
 - [ ] Data policy respected (no fixtures committed beyond the fixtures/samples exception, no Hancom specification or derivatives bundled — CLAUDE.md "Data policy")
 - [ ] Design documents updated where applicable: `docs/design/12-feature-gaps.md` statuses, the structure maps (10 and 11), README and CLAUDE.md
+  - If a status label in `docs/design/12-feature-gaps.md` changes: [ ] the structure map that governs it (10 or 11) already states that status, in an earlier commit or in this pull request
 - [ ] New features come with tests (round-trip, golden or CLI surface, whichever path applies)
 - [ ] User-facing documentation updated on both sides (`NAME.md` and `NAME.ko.md`) in the same commit
 
