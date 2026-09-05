@@ -108,6 +108,9 @@ syntax (used by `fill`, `slots` and the template tools).
   — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots.
 - `hwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
   parsing); exit code 0 when valid.
+- `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
+  low-level record and stream diagnostics for a single file. Reach for it only when `hwp info`
+  and `hwp validate` do not explain a defect; it prints format internals, not document content.
 - `hwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` — ten
   official-document notation and structure rules (`-` reads stdin as markdown). Advisory: it
   always exits 0 unless `--strict` finds an error-severity finding. `--json` prints the
@@ -283,7 +286,7 @@ After a connector edit, refresh or start a new chat instead of reusing an old ge
 The copy-paste operator and AI runbook is:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-Tools (20):
+Tools (22):
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -312,8 +315,8 @@ Tools (20):
 
 ## HTTP mode for containers
 
-`hwp serve` speaks the same protocol as `hwp mcp`, over HTTP instead of stdio, so the same twenty
-tools are reachable from a container. It is meant to sit behind a trusted edge that has already
+`hwp serve` speaks the same protocol as `hwp mcp`, over HTTP instead of stdio, so the same
+22 tools are reachable from a container. It is meant to sit behind a trusted edge that has already
 terminated TLS, authenticated the caller and capped the request body — not to face the internet
 directly.
 

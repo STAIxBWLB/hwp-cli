@@ -1,0 +1,13 @@
+# Allowlist for the tool-count check of scripts/check-doc-surface.sh.
+#
+# Each non-comment, non-blank line is ONE exact line of prose whose count shape is not a tool
+# count, and which the check must therefore not report.
+#
+# Rules:
+#   - An entry is one exact line. It is never a file name, a directory or a pattern.
+#   - A genuinely stale count is fixed in the copy. It is never silenced by an entry here.
+#   - The pattern in scripts/check-doc-surface.sh is never narrowed to make a finding go away;
+#     dropping a shape is what this file exists to make unnecessary.
+#
+# There are no entries at introduction: every count-shaped occurrence in the scan set today is a
+# real tool count.

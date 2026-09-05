@@ -500,7 +500,7 @@ but it is a private hop that expects a trusted edge in front of it: authenticate
 tenant isolation and artifact transfer remain future work in
 [Remote MCP transport](docs/design/20-remote-mcp.md).
 
-### Exposed tools (20)
+### Exposed tools (22)
 
 | Tool | Required arguments | Purpose |
 |---|---|---|

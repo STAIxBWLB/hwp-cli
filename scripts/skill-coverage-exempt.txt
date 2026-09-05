@@ -1,0 +1,9 @@
+# CLI subcommands deliberately outside the bundled agent skill's scope, for
+# scripts/check-doc-surface.sh.
+#
+# Each non-comment line is a subcommand name followed by a reason on the same line. A subcommand
+# that operates on a document is never exempted here: it is documented in skills/hwp/SKILL.md and
+# skills/hwp/SKILL.ko.md instead.
+
+corpus the frozen structured-corpus harness is a repository gate, not a document operation an agent performs
+update the self-updater replaces the binary on the host; an agent is given a binary, it does not install one
