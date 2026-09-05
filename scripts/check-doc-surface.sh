@@ -26,14 +26,14 @@ check | --self-test) ;;
 esac
 
 ROOT="$PWD"
-HWP_BIN="${HWP_BIN:-$ROOT/target/debug/hwp}"
-if [ ! -x "$HWP_BIN" ] && [ -x "$ROOT/target/release/hwp" ]; then
-    HWP_BIN="$ROOT/target/release/hwp"
+if [ -z "${HWP_BIN:-}" ]; then
+    # Cargo checks freshness even when a binary from an older checkout exists.
+    cargo build --locked -p hwp-cli --quiet
+    HWP_BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/hwp"
 fi
 if [ ! -x "$HWP_BIN" ]; then
-    echo "[doc-surface] building hwp-cli (no binary at $HWP_BIN)" >&2
-    cargo build -p hwp-cli --quiet
-    HWP_BIN="$ROOT/target/debug/hwp"
+    echo "[doc-surface] executable not found: $HWP_BIN" >&2
+    exit 2
 fi
 
 export HWP_BIN
