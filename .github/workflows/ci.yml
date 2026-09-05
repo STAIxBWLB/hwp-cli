@@ -10,6 +10,9 @@ name: CI
 # The same list must be kept identical under push and pull_request (GitHub Actions does not
 # support YAML anchors).
 on:
+  # Readiness binds CI to the exact evaluated SHA, including docs-only main commits.
+  # Run this manually before readiness when the path filters skip automatic CI.
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -107,6 +110,12 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/release_verification_block.sh --self-test
+      # Runs the readiness workflow's own steps against fixtures: the trust policy, the gate
+      # entries the record is assembled from, and the release binding that reads it.
+      - name: Release readiness workflow fixtures
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/tests/release-readiness-selfcheck.sh
 
   pdf-parity:
     name: pdf-parity

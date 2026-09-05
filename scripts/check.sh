@@ -30,6 +30,7 @@ run bash scripts/check-claims.sh --self-test
 run bash scripts/check-doc-surface.sh
 run bash scripts/check-doc-surface.sh --self-test
 run bash scripts/release_verification_block.sh --self-test
+run bash scripts/tests/release-readiness-selfcheck.sh
 target_dir="${CARGO_TARGET_DIR:-target}"
 run "$target_dir/debug/examples/validate_structured_corpus" \
     schemas/pdf-parity-history-v1.schema.json \
@@ -60,4 +61,4 @@ if [ "$fail" -ne 0 ]; then
     echo "== check: FAILED (위 게이트 중 실패 있음) =="
     exit 1
 fi
-echo "== check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/public-parity=$parity_result) =="
+echo "== check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=$parity_result) =="
