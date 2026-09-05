@@ -5,7 +5,7 @@ name: CI
 # gate input is re-included: skills/hwp/SKILL.md (include_str! into the binary),
 # docs/manual/** (cli-reference{,.ko}.md are compared byte-for-byte by tests/cli_reference.rs,
 # and the whole directory is scanned by check-claims.sh and check-doc-surface.sh), README{,.ko}.md,
-# CHANGELOG.md, skills/hwp/SKILL.ko.md and scripts/** — every path those two gates read. A file
+# CHANGELOG.md, skills/hwp/SKILL.ko.md and scripts/**: every path those two gates read. A file
 # a gate scans but the filter excludes is a gate that never sees the change that breaks it.
 # The same list must be kept identical under push and pull_request (GitHub Actions does not
 # support YAML anchors).
@@ -103,6 +103,10 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/check-doc-surface.sh --self-test
+      - name: Verification block fixtures
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/release_verification_block.sh --self-test
 
   pdf-parity:
     name: pdf-parity
