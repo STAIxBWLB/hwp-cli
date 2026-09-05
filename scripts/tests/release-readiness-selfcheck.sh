@@ -192,7 +192,7 @@ trust() { # <ref> <sha> -> prints "<rc> <trusted>"
                 READINESS_REF="$1" EVALUATED_SHA="$2" WORKFLOW_SOURCE_SHA="$(printf 'b%.0s' {1..40})" \
                 RUN_URL="https://github.com/STAIxBWLB/hwp-cli/actions/runs/424242" \
                 RECORD_PATH="$tmp/record.json" GITHUB_OUTPUT="$out" \
-                bash "$steps/trust-policy-for-the-evaluated-ref.sh"
+                bash --noprofile --norc -e -o pipefail "$steps/trust-policy-for-the-evaluated-ref.sh"
     ) >"$tmp/trust.log" 2>&1
     rc=$?
     printf '%s %s' "$rc" "$(sed -n 's/^trusted=//p' "$out")"
@@ -274,7 +274,7 @@ check "the simulated gate script did write its forgery somewhere" \
 fmt_out="$tmp/gate-fmt-output"
 : >"$fmt_out"
 (cd "$work" && RUNNER_TEMP="$RUNNER_TEMP" GITHUB_OUTPUT="$fmt_out" OUTCOME=failure \
-    bash "$steps/gate-fmt.sh") >/dev/null 2>&1
+    bash --noprofile --norc -e -o pipefail "$steps/gate-fmt.sh") >/dev/null 2>&1
 fmt_entry="$(out_value "$fmt_out" entry)"
 same "the controller records the failing target step once, as fail" \
     "$fmt_entry" "$(printf 'fmt\tfail\tcargo fmt --all --check')"
@@ -308,7 +308,7 @@ run_url="https://github.com/STAIxBWLB/hwp-cli/actions/runs/424242"
 (cd "$record_dir" && GATE_FMT="$fmt_entry" GATE_REST="$rest" CHECK_RUNS="" READINESS_REF=v9.9.9 \
     READINESS_SHA="$evaluated" WORKFLOW_SOURCE_SHA="$dispatched" PDFINFO_VERSION="" \
     ORACLE_STATUS="" ORACLE_LOCK_SHA256="" RUN_URL="$run_url" \
-    RECORD_PATH="$record_dir/record.json" bash "$assembly") >/dev/null 2>&1
+    RECORD_PATH="$record_dir/record.json" bash --noprofile --norc -e -o pipefail "$assembly") >/dev/null 2>&1
 check "the assembly writes a record from the controller entries" \
     "$([ -f "$record_dir/record.json" ] && echo 0 || echo 1)"
 python3 - "$record_dir/record.json" "$evaluated" "$dispatched" <<'PYEOF'
@@ -330,7 +330,7 @@ check "the record keeps the two commits apart and carries no forged gate" "$?"
 (cd "$record_dir" && GATE_ALL="$(printf '%s\n%s\n' "$(printf 'fmt\tpass\tcargo fmt --all --check')" "$rest")" \
     CHECK_RUNS="" READINESS_REF=v9.9.9 READINESS_SHA="$evaluated" WORKFLOW_SOURCE_SHA="$dispatched" \
     PDFINFO_VERSION="" ORACLE_STATUS="" ORACLE_LOCK_SHA256="" RUN_URL="$run_url" \
-    RECORD_PATH="$record_dir/green.json" bash "$assembly") >/dev/null 2>&1
+    RECORD_PATH="$record_dir/green.json" bash --noprofile --norc -e -o pipefail "$assembly") >/dev/null 2>&1
 check "a run with every gate passing records result pass" \
     "$(python3 -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['result'] == 'pass' else 1)" \
         "$record_dir/green.json" && echo 0 || echo 1)"
@@ -386,7 +386,7 @@ readme_gate() { # <ref> <sha> -> prints the recorded status
     local out="$tmp/readme-output"
     : >"$out"
     (cd "$readme" && GITHUB_OUTPUT="$out" READINESS_REF="$1" EVALUATED_SHA="$2" \
-        bash "$steps/gate-readme-pinned-tag.sh") >/dev/null 2>&1
+        bash --noprofile --norc -e -o pipefail "$steps/gate-readme-pinned-tag.sh") >/dev/null 2>&1
     out_value "$out" entry | cut -f2
 }
 same "a bare tag with both READMEs pinned passes" "$(readme_gate v9.9.9 "$readme_sha")" "pass"
@@ -401,6 +401,8 @@ rm -f "$readme/README.ko.md"
 same "a missing README.ko.md fails" "$(readme_gate v9.9.9 "$readme_sha")" "fail"
 printf 'curl | sh -s -- --tag v0.0.1\n' >"$readme/README.ko.md"
 same "a README.ko.md pinning another version fails" "$(readme_gate v9.9.9 "$readme_sha")" "fail"
+printf 'curl | sh -s -- --dir ./bin\n' >"$readme/README.ko.md"
+same "an install snippet without a tag pin records fail" "$(readme_gate v9.9.9 "$readme_sha")" "fail"
 
 # --- 5. workspace test fonts stay private and are cleaned on success and failure ---------------
 echo "-- workspace font isolation"
@@ -436,7 +438,7 @@ for test_exit in 0 101; do
     rc=0
     env -u HWP_FONT_DIR -u FONTCONFIG_FILE PATH="$font_bin:$PATH" RUNNER_TEMP="$tmp" \
         FONT_PROBE="$font_probe" FONT_TEST_EXIT="$test_exit" \
-        bash "$steps/target-test-workspace.sh" >"$tmp/font-test-$test_exit.log" 2>&1 || rc=$?
+        bash --noprofile --norc -e -o pipefail "$steps/target-test-workspace.sh" >"$tmp/font-test-$test_exit.log" 2>&1 || rc=$?
     same "workspace test exit $test_exit is preserved" "$rc" "$test_exit"
     probe_status=1
     test -s "$font_probe" && probe_status=0

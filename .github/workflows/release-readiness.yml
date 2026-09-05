@@ -109,7 +109,7 @@ jobs:
           git fetch --quiet --force origin "+refs/tags/*:refs/tags/*"
           trusted=no
           why=""
-          if tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" &&
+          if tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" || tag_sha="" &&
             [ "$tag_sha" = "$EVALUATED_SHA" ]; then
             trusted=yes
             why="the evaluated commit is refs/tags/${tag} of this repository"
@@ -696,7 +696,7 @@ jobs:
           # that runs later can reach them.
           GATES_FILE="$(mktemp)"
           tag="${READINESS_REF#refs/tags/}"
-          tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)"
+          tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" || tag_sha=""
           # One exit path, so the entry is always emitted: an early `exit 0` here would leave the
           # record with no readme-pinned-tag line at all, which the assembly refuses.
           if [ -z "$tag_sha" ]; then
@@ -717,12 +717,12 @@ jobs:
                 problems="${problems:+$problems; }$file does not exist"
                 continue
               fi
-              snippets="$(grep -h -- 'sh -s --' "$file")"
+              snippets="$(grep -h -- 'sh -s --' "$file")" || snippets=""
               if [ -z "$snippets" ]; then
                 problems="${problems:+$problems; }$file carries no install.sh 'sh -s --' snippet"
                 continue
               fi
-              found="$(printf '%s\n' "$snippets" | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)"
+              found="$(printf '%s\n' "$snippets" | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)" || found=""
               if [ -z "$found" ]; then
                 problems="${problems:+$problems; }$file has an install.sh snippet with no --tag pin"
               elif [ "$found" != "$tag" ]; then
