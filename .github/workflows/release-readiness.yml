@@ -18,13 +18,15 @@ name: Release readiness
 #
 # Controller steps and target steps. A step that executes code from the evaluated ref is a target
 # step: it runs the command, captures stdout/stderr into $RUNNER_TEMP/gates/<name>/log, and does
-# nothing else. It is never told where the ledger is - the ledger path is a random file name held
-# in a step OUTPUT of the prepare step, which the runner passes only to the steps that reference
-# it, and it is never written to $GITHUB_ENV (which every later step, target steps included,
-# receives). Every gate ENTRY is written by a controller step, whose shell lives in this file (the
-# dispatch ref) rather than in the evaluated checkout, from the target step's recorded outcome.
-# So a gate script from the evaluated ref decides its own exit status and nothing else: it cannot
-# append an entry, rewrite an earlier one, or change what the record says about it.
+# nothing else. Every gate ENTRY is written by a controller step, whose shell lives in this file
+# (the dispatch ref) rather than in the evaluated checkout, out of `steps.<id>.outcome` - the exit
+# status the runner recorded for the target step, which no process on the runner can rewrite.
+# There is deliberately no ledger file shared across steps: a random name under $RUNNER_TEMP would
+# still be one `find` away for a gate script running as the same user. Each controller step keeps
+# its entries in a file that lives only for the length of that step and hands them to the record
+# assembly as a step OUTPUT instead. So a gate script from the evaluated ref decides its own exit
+# status and nothing else: it cannot append an entry, rewrite an earlier one, or change what the
+# record says about it.
 #
 # Step order is dependency order, not checklist order: the clean-tree gate runs before anything
 # writes to the checkout, and the public parity gate runs last because it writes scorecards into
@@ -68,10 +70,11 @@ jobs:
       # ref, not the code this run evaluated; scripts/check-verification-block.sh compares the
       # record's evaluated_sha instead.
       #
-      # The ledger and the check-run file are created here, with random names, and their paths
-      # leave this step as step outputs only. Nothing puts them in $GITHUB_ENV, so no target step
-      # is handed a way to locate the evidence.
-      - name: Prepare the controller ledger
+      # There is no shared ledger file for a gate script to find: each controller step keeps its
+      # entries in a file of its own for the length of that one step and emits them as a step
+      # output, which the runner holds and which nothing running later can write to. Nothing goes
+      # into $GITHUB_ENV either, since every later step - target steps included - receives that.
+      - name: Prepare the evaluated commit
         id: prepare
         shell: bash
         env:
@@ -79,14 +82,8 @@ jobs:
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
-          ledger="$(mktemp "$RUNNER_TEMP/ledger.XXXXXXXXXXXX")"
-          check_runs="$(mktemp "$RUNNER_TEMP/check-runs.XXXXXXXXXXXX")"
           mkdir -p "$RUNNER_TEMP/gates"
-          {
-            echo "evaluated_sha=$sha"
-            echo "ledger=$ledger"
-            echo "check_runs=$check_runs"
-          } >>"$GITHUB_OUTPUT"
+          echo "evaluated_sha=$sha" >>"$GITHUB_OUTPUT"
           echo "ref=$READINESS_REF evaluated_sha=$sha workflow_source_sha=$GITHUB_SHA"
 
       # The gate that has to come before every target step: this run executes the evaluated ref's
@@ -163,12 +160,15 @@ jobs:
       # fetch fonts and write parity scorecards into the working tree. Controller step: `git
       # status` reads the checkout, it does not execute anything from it.
       - name: Gate clean-tree
+        id: gate-clean-tree
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
-        env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           dirty="$(git status --porcelain --untracked-files=all)"
           if [ -z "$dirty" ]; then
             status=pass
@@ -178,6 +178,11 @@ jobs:
             evidence="git status --short --untracked-files=all is not empty: $(echo "$dirty" | tr '\n' ';')"
           fi
           printf '%s\t%s\t%s\n' clean-tree "$status" "$evidence" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       - if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         uses: dtolnay/rust-toolchain@1.93.0
@@ -248,19 +253,28 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Gate fmt
+        id: gate-fmt
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-fmt.outcome }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           case "$OUTCOME" in
           success) status=pass ;;
           failure) status=fail ;;
           *) status=pending ;;
           esac
           printf '%s\t%s\t%s\n' fmt "$status" 'cargo fmt --all --check' >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Target clippy
         id: target-clippy
@@ -274,19 +288,28 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Gate clippy
+        id: gate-clippy
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-clippy.outcome }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           case "$OUTCOME" in
           success) status=pass ;;
           failure) status=fail ;;
           *) status=pending ;;
           esac
           printf '%s\t%s\t%s\n' clippy "$status" 'cargo clippy --workspace --all-targets -- -D warnings' >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # No font package is installed anywhere in this job, which is what keeps the corpus gate's
       # no-ambient-font line meaningful. The render tests print "skip: no usable font" and drop
@@ -305,19 +328,28 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Gate test-workspace
+        id: gate-test-workspace
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-test.outcome }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           case "$OUTCOME" in
           success) status=pass ;;
           failure) status=fail ;;
           *) status=pending ;;
           esac
           printf '%s\t%s\t%s\n' test-workspace "$status" 'cargo test --workspace' >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # One script, four checklist lines: it also validates the three frozen corpus schemas and
       # asserts the manifest pins and TRACKED_FILES.txt are in the Git index. The three derived
@@ -337,13 +369,17 @@ jobs:
       # derived entries are not re-executed: when the corpus gate failed, the schema and index
       # checks inside it did not report a pass either.
       - name: Gates structured-corpus, corpus-schemas and corpus-git-index
+        id: gate-corpus
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-corpus.outcome }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           case "$OUTCOME" in
           success) status=pass ;;
           failure) status=fail ;;
@@ -356,18 +392,26 @@ jobs:
             printf '%s\t%s\t%s\n' corpus-git-index "$status" \
               'scripts/check-structured-corpus.sh checks every TRACKED_FILES.txt entry and every corpus schema with git ls-files --error-unmatch and git check-ignore'
           } >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Structural plus a runtime assertion on the environment the corpus gate just ran in: this
       # job installs poppler-utils only and never a font package, and no step sets HWP_FONT_DIR
       # for the corpus gate (only the public parity target step sets it, on its own step). The
       # corpus font bytes come from scripts/fetch-corpus-fonts.sh through the manifest hashes.
       - name: Gate corpus-no-ambient-fonts
+        id: gate-corpus-no-ambient-fonts
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
-        env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           if [ -n "${HWP_FONT_DIR:-}" ]; then
             status=fail
             evidence="the job environment the corpus gate ran in sets HWP_FONT_DIR=${HWP_FONT_DIR}"
@@ -376,6 +420,11 @@ jobs:
             evidence='the corpus gate step declares no font environment variable and the job installs poppler-utils only, never a font package; corpus fonts come from scripts/fetch-corpus-fonts.sh through the manifest hashes'
           fi
           printf '%s\t%s\t%s\n' corpus-no-ambient-fonts "$status" "$evidence" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Target corpus-fonts-reproduce
         id: target-corpus-fonts
@@ -392,13 +441,17 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Gate corpus-fonts-reproduce
+        id: gate-corpus-fonts-reproduce
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-corpus-fonts.outcome }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           case "$OUTCOME" in
           success) status=pass ;;
           failure) status=fail ;;
@@ -406,16 +459,24 @@ jobs:
           esac
           printf '%s\t%s\t%s\n' corpus-fonts-reproduce "$status" \
             'bash scripts/fetch-corpus-fonts.sh against an emptied corpus/structured-v1/fonts; the script verifies every font, license and metadata file against the manifest sha256' >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # The checklist line is conditional ("if the corpus ships"). It does not: release.yml
       # publishes the hwp binary archive only. Assert that shape rather than assume it.
       - name: Gate release-archive-fonts
+        id: gate-release-archive-fonts
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
-        env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           status=pass
           evidence='.github/workflows/release.yml packages bin: hwp through upload-rust-binary-action and names no font file, so the corpus does not ship and no OFL inventory is required'
           if grep -nEi '\.(ttf|otf|ttc|woff2?)' .github/workflows/release.yml; then
@@ -426,6 +487,11 @@ jobs:
             evidence='.github/workflows/release.yml no longer packages bin: hwp; the archive contents must be re-checked by hand'
           fi
           printf '%s\t%s\t%s\n' release-archive-fonts "$status" "$evidence" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Not applicable by construction, and never a pass. The independent import oracle is the
       # LibreOffice + H2Orestart certification container of docs/design/16-certification-v1.md,
@@ -437,10 +503,12 @@ jobs:
         id: oracle
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
-        env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -euo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           lock=oracle/primary-artifacts.lock.json
           eval "$(python3 - "$lock" <<'PY'
           import hashlib
@@ -465,19 +533,32 @@ jobs:
           printf '%s\t%s\t%s\n' independent-oracle 'n/a' \
             "no supported public oracle image is shipped by this repository: docs/design/16-certification-v1.md section 'Independent import oracle' states that required oracle mode remains partial until the image gaps are closed, and $lock reports status $lock_status with a null image digest, so the gate cannot run and is not a pass" \
             >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Not applicable in CI: the Hancom-open evidence is an owner observation made on Hancom
       # Office, and the receipts are private (never committed).
       - name: Gate hancom-receipt
+        id: gate-hancom-receipt
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
-        env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           printf '%s\t%s\t%s\n' hancom-receipt 'n/a' \
             'the hancom-verification-receipt-v1 receipts are recorded by the owner opening each artifact in Hancom Office and are kept privately outside the repository; CI has no Hancom oracle, so this gate cannot run here and is not a pass' \
             >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Checklist line 26-27, the release-copy claim lint. Guarded: a retroactive dispatch may
       # evaluate a ref from before this script existed, and a missing script is n/a, never a pass.
@@ -498,14 +579,18 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Gate release-copy-claims
+        id: gate-release-copy-claims
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-claims.outcome }}
           READINESS_REF: ${{ inputs.ref }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           script=scripts/check-claims.sh
           if [ ! -f "$script" ]; then
             status='n/a'
@@ -519,6 +604,11 @@ jobs:
             evidence="bash $script, the same file scripts/check.sh runs locally"
           fi
           printf '%s\t%s\t%s\n' release-copy-claims "$status" "$evidence" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Checklist lines 32-35. One script covers both lines: it reports the tool-count check and
       # the skill-coverage check in one invocation, so both entries carry that run's status and
@@ -540,14 +630,18 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Gates tool-count and skill-coverage
+        id: gate-doc-surface
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-doc-surface.outcome }}
           READINESS_REF: ${{ inputs.ref }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           script=scripts/check-doc-surface.sh
           if [ ! -f "$script" ]; then
             status='n/a'
@@ -564,6 +658,11 @@ jobs:
             "$detail the documented tool counts against the length of the live hwp mcp tools/list response" >>"$GATES_FILE"
           printf '%s\t%s\t%s\n' skill-coverage "$status" \
             "$detail skills/hwp/SKILL.md and SKILL.ko.md naming every CLI subcommand and every MCP tool" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Checklist lines 30-31. Only meaningful against a tag: a branch is not a release being cut.
       # Three things this gate has to get right, because each of them used to turn a real release
@@ -577,82 +676,107 @@ jobs:
       #   - a missing file, a grep failure or an empty extraction is a `fail`. There is no reading
       #     of "the pinned versions could not be read" that is evidence the pins are right.
       - name: Gate readme-pinned-tag
+        id: gate-readme-pinned-tag
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           READINESS_REF: ${{ inputs.ref }}
           EVALUATED_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           tag="${READINESS_REF#refs/tags/}"
           tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)"
+          # One exit path, so the entry is always emitted: an early `exit 0` here would leave the
+          # record with no readme-pinned-tag line at all, which the assembly refuses.
           if [ -z "$tag_sha" ]; then
-            printf '%s\t%s\t%s\n' readme-pinned-tag 'n/a' \
-              "the evaluated ref ${READINESS_REF} is not a tag in this checkout, so there is no release being cut to compare the install snippets against" >>"$GATES_FILE"
-            exit 0
-          fi
-          if [ "$tag_sha" != "$EVALUATED_SHA" ]; then
-            printf '%s\t%s\t%s\n' readme-pinned-tag fail \
-              "refs/tags/${tag} points at ${tag_sha}, but this run evaluated ${EVALUATED_SHA}; the checkout and the tag disagree about which commit is being released" >>"$GATES_FILE"
-            exit 0
-          fi
-          # Only the install.sh snippets, which all pipe into `sh -s --`. `hwp update --tag v0.9.0`
-          # is a rollback example and is deliberately not compared. Each README must carry the
-          # complete pin on its own.
-          status=pass
-          evidence="the install.sh --tag snippets in README.md and README.ko.md pin ${tag}"
-          problems=""
-          for file in README.md README.ko.md; do
-            if [ ! -f "$file" ]; then
-              problems="${problems:+$problems; }$file does not exist"
-              continue
-            fi
-            snippets="$(grep -h -- 'sh -s --' "$file")"
-            if [ -z "$snippets" ]; then
-              problems="${problems:+$problems; }$file carries no install.sh 'sh -s --' snippet"
-              continue
-            fi
-            found="$(printf '%s\n' "$snippets" | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)"
-            if [ -z "$found" ]; then
-              problems="${problems:+$problems; }$file has an install.sh snippet with no --tag pin"
-            elif [ "$found" != "$tag" ]; then
-              problems="${problems:+$problems; }$file pins $(echo "$found" | tr '\n' ' ')instead of ${tag}"
-            fi
-          done
-          if [ -n "$problems" ]; then
+            status='n/a'
+            evidence="the evaluated ref ${READINESS_REF} is not a tag in this checkout, so there is no release being cut to compare the install snippets against"
+          elif [ "$tag_sha" != "$EVALUATED_SHA" ]; then
             status=fail
-            evidence="the evaluated tag is ${tag}, but: ${problems}"
+            evidence="refs/tags/${tag} points at ${tag_sha}, but this run evaluated ${EVALUATED_SHA}; the checkout and the tag disagree about which commit is being released"
+          else
+            # Only the install.sh snippets, which all pipe into `sh -s --`. `hwp update --tag
+            # v0.9.0` is a rollback example and is deliberately not compared. Each README must
+            # carry the complete pin on its own.
+            status=pass
+            evidence="the install.sh --tag snippets in README.md and README.ko.md pin ${tag}"
+            problems=""
+            for file in README.md README.ko.md; do
+              if [ ! -f "$file" ]; then
+                problems="${problems:+$problems; }$file does not exist"
+                continue
+              fi
+              snippets="$(grep -h -- 'sh -s --' "$file")"
+              if [ -z "$snippets" ]; then
+                problems="${problems:+$problems; }$file carries no install.sh 'sh -s --' snippet"
+                continue
+              fi
+              found="$(printf '%s\n' "$snippets" | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)"
+              if [ -z "$found" ]; then
+                problems="${problems:+$problems; }$file has an install.sh snippet with no --tag pin"
+              elif [ "$found" != "$tag" ]; then
+                problems="${problems:+$problems; }$file pins $(echo "$found" | tr '\n' ' ')instead of ${tag}"
+              fi
+            done
+            if [ -n "$problems" ]; then
+              status=fail
+              evidence="the evaluated tag is ${tag}, but: ${problems}"
+            fi
           fi
           printf '%s\t%s\t%s\n' readme-pinned-tag "$status" "$evidence" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Checklist line 29. A structural property of this workflow file rather than a runtime
       # command: the run holds a read-only token and declares no mutating step, which is what the
       # plan's own verify gate and review assert. Recorded as such, with no claim that a command
       # proved it.
       - name: Gate no-publish
+        id: gate-no-publish
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
-        env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           printf '%s\t%s\t%s\n' no-publish pass \
             'structural: the top-level permissions block of .github/workflows/release-readiness.yml grants contents: read and checks: read only, and the file declares no step that commits, creates or moves a ref, publishes a release or contacts a registry; the only upload is this run record artifact' \
             >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Checklist lines 36-38. The comparison target is the retired STAIxBWLB/skills repository,
       # which is not checked out here, so this stays a manual cross-repository review.
       - name: Gate hwpx-skill-parity
+        id: gate-hwpx-skill-parity
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
-        env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           printf '%s\t%s\t%s\n' hwpx-skill-parity 'n/a' \
             'the retired downstream skills/hwpx lives in the separate STAIxBWLB/skills repository, which this run does not check out; the parity matrix in docs/design/23-hwpx-skill-absorption.md is compared by manual cross-repository review, so this gate cannot run here and is not a pass' \
             >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Checklist line 12, read rather than re-run (D-07): the evaluated commit's own CI check
       # runs are the 3-OS evidence. The expected job names below must stay in sync with ci.yml,
@@ -660,15 +784,19 @@ jobs:
       # `pending` and fails the job; it is never a pass. Controller step: it queries the API, it
       # runs nothing from the evaluated ref.
       - name: Gate ci-matrix
+        id: gate-ci-matrix
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
-          CHECK_RUNS_FILE: ${{ steps.prepare.outputs.check_runs }}
           READINESS_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
+          CHECK_RUNS_FILE="$(mktemp)"
           expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
           if ! runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$READINESS_SHA/check-runs?filter=latest&per_page=100")"; then
             runs='{"check_runs":[]}'
@@ -702,6 +830,14 @@ jobs:
             evidence="check-runs API for $READINESS_SHA: $problems"
           fi
           printf '%s\t%s\t%s\n' ci-matrix "$status" "$evidence" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+            echo "check_runs<<CHECK_RUNS_EOF"
+            cat "$CHECK_RUNS_FILE"
+            echo "CHECK_RUNS_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # Checklist lines 21-25, last because it writes scorecards into the tracked scoreboard
       # directory. Same shape as ci.yml's pdf-parity job, against the committed public oracle,
@@ -724,13 +860,17 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Gate pdf-parity-public
+        id: gate-pdf-parity-public
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           OUTCOME: ${{ steps.target-parity.outcome }}
         run: |
           set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
           case "$OUTCOME" in
           success) status=pass ;;
           failure) status=fail ;;
@@ -738,6 +878,11 @@ jobs:
           esac
           printf '%s\t%s\t%s\n' pdf-parity-public "$status" \
             'bash scripts/pdf-parity.sh run --oracle-dir fixtures/pdf-parity/public/oracle with the pinned Poppler and the exact OFL fonts; the public manifest declares no gate_exclusions, so every gate blocks' >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
 
       # --- run record ---------------------------------------------------------------------------
       # Runs even when a gate failed, so the record is always complete. It is the step that
@@ -748,8 +893,27 @@ jobs:
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
-          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
-          CHECK_RUNS_FILE: ${{ steps.prepare.outputs.check_runs }}
+          # One variable per controller step, each carrying that step's gate entries. This is the
+          # whole ledger: it is assembled here out of values the runner held, never out of a file
+          # any earlier step could have written to.
+          GATE_CLEAN_TREE: ${{ steps.gate-clean-tree.outputs.entry }}
+          GATE_FMT: ${{ steps.gate-fmt.outputs.entry }}
+          GATE_CLIPPY: ${{ steps.gate-clippy.outputs.entry }}
+          GATE_TEST_WORKSPACE: ${{ steps.gate-test-workspace.outputs.entry }}
+          GATE_CORPUS: ${{ steps.gate-corpus.outputs.entry }}
+          GATE_CORPUS_NO_AMBIENT_FONTS: ${{ steps.gate-corpus-no-ambient-fonts.outputs.entry }}
+          GATE_CORPUS_FONTS_REPRODUCE: ${{ steps.gate-corpus-fonts-reproduce.outputs.entry }}
+          GATE_RELEASE_ARCHIVE_FONTS: ${{ steps.gate-release-archive-fonts.outputs.entry }}
+          GATE_INDEPENDENT_ORACLE: ${{ steps.oracle.outputs.entry }}
+          GATE_HANCOM_RECEIPT: ${{ steps.gate-hancom-receipt.outputs.entry }}
+          GATE_RELEASE_COPY_CLAIMS: ${{ steps.gate-release-copy-claims.outputs.entry }}
+          GATE_DOC_SURFACE: ${{ steps.gate-doc-surface.outputs.entry }}
+          GATE_README_PINNED_TAG: ${{ steps.gate-readme-pinned-tag.outputs.entry }}
+          GATE_NO_PUBLISH: ${{ steps.gate-no-publish.outputs.entry }}
+          GATE_HWPX_SKILL_PARITY: ${{ steps.gate-hwpx-skill-parity.outputs.entry }}
+          GATE_CI_MATRIX: ${{ steps.gate-ci-matrix.outputs.entry }}
+          GATE_PDF_PARITY_PUBLIC: ${{ steps.gate-pdf-parity-public.outputs.entry }}
+          CHECK_RUNS: ${{ steps.gate-ci-matrix.outputs.check_runs }}
           READINESS_REF: ${{ inputs.ref }}
           READINESS_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
           WORKFLOW_SOURCE_SHA: ${{ github.sha }}
@@ -836,21 +1000,25 @@ jobs:
               """Digests are recorded as lowercase hexadecimal, never mixed case."""
               return value.lower() if HEX.match(value.lower()) else value
 
-          def read_tsv(path, fields):
+          def read_tsv(source, text, fields):
               rows = []
-              with open(path, encoding="utf-8") as handle:
-                  for number, line in enumerate(handle, 1):
-                      line = line.rstrip("\n")
-                      if not line:
-                          continue
-                      parts = line.split("\t")
-                      if len(parts) != fields:
-                          sys.exit(f"{path} line {number} has {len(parts)} fields, not {fields}")
-                      rows.append([part.strip() for part in parts])
+              for number, line in enumerate(text.splitlines(), 1):
+                  if not line.strip():
+                      continue
+                  parts = line.split("\t")
+                  if len(parts) != fields:
+                      sys.exit(f"{source} line {number} has {len(parts)} fields, not {fields}")
+                  rows.append([part.strip() for part in parts])
               return rows
 
+          def gate_entries():
+              """Every GATE_* variable holds the entries one controller step emitted."""
+              for key in sorted(os.environ):
+                  if key.startswith("GATE_"):
+                      yield from read_tsv(key, os.environ[key], 3)
+
           recorded = {}
-          for name, status, evidence in read_tsv(os.environ["GATES_FILE"], 3):
+          for name, status, evidence in gate_entries():
               if status not in ALLOWED:
                   sys.exit(f"gate {name!r} has status {status!r}, not one of {ALLOWED}")
               if not name or not evidence:
@@ -867,10 +1035,7 @@ jobs:
               sys.exit(f"checklist lines with no recorded gate: {missing}")
           gates = [recorded[name] for name in CHECKLIST]
 
-          check_runs = {}
-          check_runs_path = os.environ.get("CHECK_RUNS_FILE", "")
-          if check_runs_path and os.path.exists(check_runs_path):
-              check_runs = {name: state for name, state in read_tsv(check_runs_path, 2)}
+          check_runs = dict(read_tsv("CHECK_RUNS", os.environ.get("CHECK_RUNS", ""), 2))
 
           blocking = [g for g in gates if g["status"] in ("fail", "pending")]
 
