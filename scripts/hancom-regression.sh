@@ -123,6 +123,12 @@ skip() {
   REPORT+=("skip  $1  $2")
 }
 
+# push_row <series> <staged artifact> <command> <sha256> <reread> <validate>
+push_row() {
+  ROWS+=("$1"$'\t'"$(basename "$2")"$'\t'"$2"$'\t'"$4"$'\t'"$5"$'\t'"$6"$'\t'"$3")
+  REPORT+=("pass  $1  $(basename "$2")")
+}
+
 # record <series> <staged artifact> <command string>
 record() {
   local series="$1" src="$2" cmd="$3"
@@ -141,8 +147,7 @@ record() {
     fail "$series" "empty hash: $name"
     return 0
   fi
-  ROWS+=("$series"$'\t'"$name"$'\t'"$src"$'\t'"$hash"$'\t'pass$'\t'pass$'\t'"$cmd")
-  REPORT+=("pass  $series  $name")
+  push_row "$series" "$src" "$cmd" "$hash" pass pass
   return 0
 }
 
@@ -162,25 +167,134 @@ emit() {
 echo "Destination: $DEST"
 echo "Binary: $HWP_BINARY ($HWP_VERSION)"
 
-# The synthetic base document carries the anchors the B series edits target.
-cat > "$WORK/base.md" <<'MD'
-# 실기 검증 문서
+# --- delegated generation ----------------------------------------------------
+# Series A, B, C, D, H, I, J, K and L come from the rounds 13-23 generator, which
+# in turn runs tools/gen_effects_cases.py for the IR-surgery cases. Series O comes
+# from the same generator's default phase-02.2 mode. Nothing is reimplemented
+# here; this script absorbs their outputs into one gated, indexed set.
+LEGACY_DIR="$STAGE/legacy"
+LEGACY_LOG="$WORK/legacy.log"
+LEGACY_CMD="tools/gen_verification_set.sh --legacy <destination>"
+mkdir -p "$LEGACY_DIR"
+echo "Delegating series A-L to tools/gen_verification_set.sh --legacy"
+HWP_BIN="$HWP" bash "$REPO/tools/gen_verification_set.sh" --legacy "$LEGACY_DIR" \
+  >"$LEGACY_LOG" 2>&1 || true
 
-제목 문단입니다. 이 문장 여기에 하이퍼링크가 삽입됩니다.
+# absorb <series> <file name> - map one delegated report line onto this script's
+# report. The delegated generator marks each case pass, skip or fail; a failed
+# case is a failed case here too, so a known defect can never publish silently.
+absorb() {
+  local series="$1" name="$2" line detail
+  line="$(grep -m1 -F -- "$name" "$LEGACY_LOG" || true)"
+  detail="${line#* }"
+  if [[ -z "$line" ]]; then
+    skip "$series" "delegated generator reported no case for $name"
+    return 0
+  fi
+  case "$line" in
+    '✅'*)
+      mv -f "$LEGACY_DIR/$name" "$STAGE/$name"
+      record "$series" "$STAGE/$name" "$LEGACY_CMD (case $name)"
+      ;;
+    '⏭'*) skip "$series" "$detail" ;;
+    *)    fail "$series" "delegated case failed: $detail" ;;
+  esac
+  return 0
+}
 
-둘째 문단으로 책갈피와 링크가 문서 흐름에 정상 배치되는지 확인합니다.
-MD
-if ! "$HWP" new --from "$WORK/base.md" -o "$WORK/base.hwp" >/dev/null 2>&1; then
-  fail base "base.hwp generation failed"
-fi
+# --- A. The full pipeline on real documents ---------------------------------
+# A5 and A6 need the private approval document from the ground-truth corpus.
+absorb A1 'A1A2_work_report_변환.hwpx'
+absorb A2 'A1A2_work_report_왕복.hwp'
+absorb A3 'A3A4_annual_report_변환.hwpx'
+absorb A4 'A3A4_annual_report_왕복.hwp'
+absorb A5 'A5A6_품의_변환.hwpx'
+absorb A6 'A5A6_품의_왕복.hwp'
 
 # --- B. Minimal per-feature files -------------------------------------------
-if [[ -s "$WORK/base.hwp" ]]; then
-  emit B1 "$STAGE/B1_책갈피.hwp" \
-    "$HWP" edit "$WORK/base.hwp" -o "$STAGE/B1_책갈피.hwp" \
-    --create-bookmark "제목=>검증책갈피"
+absorb B1 'B1_책갈피.hwp'
+absorb B2 'B2_책갈피.hwpx'
+absorb B3 'B3_하이퍼링크.hwp'
+absorb B4 'B4_하이퍼링크.hwpx'
+absorb B5 'B5_복합.hwp'
+
+# --- C. Character effects and summary information ---------------------------
+absorb C1 'C1_그림자.hwpx'
+absorb C2 'C2_외곽선.hwpx'
+absorb C3 'C3_양각음각.hwpx'
+absorb C4 'C4_첨자.hwpx'
+absorb C5 'C5_밑줄모양.hwpx'
+absorb C6 'C6_번호형식.hwpx'
+absorb C7 'C7_글자효과통합.hwpx'
+absorb C8 'C8_요약정보.hwp'
+absorb C9 'C9_요약정보.hwpx'
+
+# --- D. Seal stamping and user tabs -----------------------------------------
+absorb D1 'D1_도장.hwpx'
+absorb D2 'D2_도장.hwp'
+absorb D3 'D3_사용자탭.hwpx'
+
+# Series E, F and G are not regenerated. The checklist records that bisection as
+# closed on 2026-07-18 (the raw 0x09 body tab, fixed) and its diagnostic outputs
+# were removed from the folder to prevent false readings.
+
+# --- H and I. The markdown import round-trip --------------------------------
+absorb H1 'H1_md왕복.hwpx'
+absorb H2 'H2_md왕복.hwp'
+absorb I1 'I1_md이미지코드.hwpx'
+
+# --- J. Page border cross-conversion ----------------------------------------
+# The source is a private bordered document from the ground-truth corpus.
+absorb J1 'J1_쪽테두리.hwpx'
+
+# --- K. Cell merging and column manipulation --------------------------------
+absorb K1 'K1_셀병합.hwpx'
+absorb K2 'K2_셀병합.hwp'
+absorb K3 'K3_열조작.hwpx'
+
+# --- L. Equation emission ----------------------------------------------------
+absorb L1 'L1_수식.hwpx'
+
+# --- M and N. Private source-preserving and package-surgical edits ----------
+# Both series need a private, genuinely complex source document that is not
+# committed, and the series N harness (run-authoring-validation-c.sh) is private
+# and absent from this repository. Their case matrices also address anchors that
+# only exist inside that specific document, so they cannot be generated from a
+# path alone. They stay a manual step; the variables below only record whether
+# the owner has a source on hand.
+if [[ -n "${HWP_SERIES_M_SOURCE:-}" && -f "${HWP_SERIES_M_SOURCE:-}" ]]; then
+  skip M "source supplied via HWP_SERIES_M_SOURCE; the case matrix is document-specific and stays manual"
 else
-  skip B1 "base.hwp unavailable"
+  skip M "no source: set HWP_SERIES_M_SOURCE to a private complex HWP"
+fi
+if [[ -n "${HWP_SERIES_N_SOURCE:-}" && -f "${HWP_SERIES_N_SOURCE:-}" ]]; then
+  skip N "source supplied via HWP_SERIES_N_SOURCE; run-authoring-validation-c.sh is private and not reconstructed here"
+else
+  skip N "no source: set HWP_SERIES_N_SOURCE to a private complex HWPX"
+fi
+
+# --- O. Phase 2.2 official profiles -----------------------------------------
+# The delegated generator already gates and hashes each of its twelve artifacts
+# and writes those columns into phase-02.2-index.tsv; reuse them rather than
+# re-reading and re-hashing the same bytes.
+O_DIR="$STAGE/phase-02.2"
+O_CMD="tools/gen_verification_set.sh <destination>"
+mkdir -p "$O_DIR"
+echo "Delegating series O to tools/gen_verification_set.sh (phase-02.2 mode)"
+if HWP_BIN="$HWP" bash "$REPO/tools/gen_verification_set.sh" "$O_DIR" >"$WORK/phase-02.2.log" 2>&1; then
+  while IFS=$'\t' read -r profile format digest _rest; do
+    [[ "$profile" == 'profile' || -z "$profile" ]] && continue
+    o_name="phase-02.2-${profile}.${format}"
+    if [[ -s "$O_DIR/$o_name" ]]; then
+      mv -f "$O_DIR/$o_name" "$STAGE/$o_name"
+      push_row "O_${profile}_${format}" "$STAGE/$o_name" "$O_CMD (profile $profile, $format)" \
+        "$digest" pass pass
+    else
+      fail "O_${profile}_${format}" "delegated generator published no $o_name"
+    fi
+  done < "$O_DIR/phase-02.2-index.tsv"
+else
+  fail O "delegated phase-02.2 generation failed; see the generator output"
 fi
 
 # --- publish and index ------------------------------------------------------
