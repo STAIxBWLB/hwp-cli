@@ -313,7 +313,8 @@ jobs:
 
       # The CLI render smoke tests require Korean glyphs. Extract the same package used by
       # ci.yml into a private directory, without installing it into the system. Only this
-      # command receives HWP_FONT_DIR; the directory is removed before the corpus gate.
+      # command receives HWP_FONT_DIR and FONTCONFIG_FILE; the latter also supplies fonts to
+      # renderer unit tests using fontdb's system discovery. Both are gone before corpus.
       - name: Target test-workspace
         id: target-test
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
@@ -328,7 +329,9 @@ jobs:
           dpkg-deb --extract "$font_root"/fonts-nanum_*.deb "$font_root/extracted" || exit 1
           test_fonts="$font_root/extracted/usr/share/fonts/truetype/nanum"
           test -d "$test_fonts" || exit 1
-          HWP_FONT_DIR="$test_fonts" cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
+          printf '<fontconfig><include ignore_missing="yes">/etc/fonts/fonts.conf</include><dir>%s</dir></fontconfig>\n' "$test_fonts" >"$font_root/fonts.conf"
+          HWP_FONT_DIR="$test_fonts" FONTCONFIG_FILE="$font_root/fonts.conf" \
+            cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
           exit "${PIPESTATUS[0]}"
 
       - name: Gate test-workspace
@@ -693,7 +696,7 @@ jobs:
           # that runs later can reach them.
           GATES_FILE="$(mktemp)"
           tag="${READINESS_REF#refs/tags/}"
-          tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)"
+          tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" || tag_sha=""
           # One exit path, so the entry is always emitted: an early `exit 0` here would leave the
           # record with no readme-pinned-tag line at all, which the assembly refuses.
           if [ -z "$tag_sha" ]; then
@@ -714,12 +717,12 @@ jobs:
                 problems="${problems:+$problems; }$file does not exist"
                 continue
               fi
-              snippets="$(grep -h -- 'sh -s --' "$file")"
+              snippets="$(grep -h -- 'sh -s --' "$file")" || snippets=""
               if [ -z "$snippets" ]; then
                 problems="${problems:+$problems; }$file carries no install.sh 'sh -s --' snippet"
                 continue
               fi
-              found="$(printf '%s\n' "$snippets" | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)"
+              found="$(printf '%s\n' "$snippets" | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)" || found=""
               if [ -z "$found" ]; then
                 problems="${problems:+$problems; }$file has an install.sh snippet with no --tag pin"
               elif [ "$found" != "$tag" ]; then
