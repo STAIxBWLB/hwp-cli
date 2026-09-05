@@ -425,6 +425,8 @@ SH
 cat >"$font_bin/cargo" <<'SH'
 #!/usr/bin/env bash
 [[ "$*" == 'test --workspace' && -d "${HWP_FONT_DIR:-}" ]] || exit 93
+[[ -f "${FONTCONFIG_FILE:-}" ]] || exit 94
+grep -Fq "<dir>$HWP_FONT_DIR</dir>" "$FONTCONFIG_FILE" || exit 95
 printf '%s' "$HWP_FONT_DIR" >"$FONT_PROBE"
 exit "$FONT_TEST_EXIT"
 SH
@@ -432,7 +434,7 @@ chmod +x "$font_bin/"*
 for test_exit in 0 101; do
     font_probe="$tmp/font-probe-$test_exit"
     rc=0
-    env -u HWP_FONT_DIR PATH="$font_bin:$PATH" RUNNER_TEMP="$tmp" \
+    env -u HWP_FONT_DIR -u FONTCONFIG_FILE PATH="$font_bin:$PATH" RUNNER_TEMP="$tmp" \
         FONT_PROBE="$font_probe" FONT_TEST_EXIT="$test_exit" \
         bash "$steps/target-test-workspace.sh" >"$tmp/font-test-$test_exit.log" 2>&1 || rc=$?
     same "workspace test exit $test_exit is preserved" "$rc" "$test_exit"
