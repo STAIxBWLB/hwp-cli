@@ -862,7 +862,14 @@ for line in sys.stdin:
                 # The receipt attests a Hancom open. Font substitution on the
                 # verifier host must not decide that question.
                 "fonts": {"forbid_substitution": False},
-                "hancom_open": {"receipt": receipt_rel, "require_pass": True},
+                # require_artifact_sha256 binds this receipt to this artifact:
+                # a receipt with no hash, or one carrying another artifacts
+                # hash, is refused instead of standing in for it.
+                "hancom_open": {
+                    "receipt": receipt_rel,
+                    "require_pass": True,
+                    "require_artifact_sha256": True,
+                },
             },
             "render": {},
         }
