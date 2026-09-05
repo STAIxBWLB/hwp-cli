@@ -229,7 +229,7 @@ arm** of each parser function (the exhaustive match-arm comparison is at the end
 | `winBrush` | shape (fillBrush) | faceColor | `ShapeGeom.fill` | semantic | :1040 |
 | `pt0...ptN` | Polygon/Curve | x, y | `ShapeGeom.points` | semantic | :1047 |
 | `center`/`ax1`/`ax2` | Arc | x, y | `ShapeGeom.points` (three points) | semantic | :1054 |
-| `gradation` | shape (fillBrush) | type, angle, centerX, centerY, step, colors | `fill_gradient` (`GradientSpec`) | semantic, **resolved (2026-08-19, GE-α6)** | `collect_shape` → `parse_gradation` |
+| `gradation` | shape (fillBrush) | type, angle, centerX, centerY, step, colors | `fill_gradient` (`GradientSpec`) | partial: angle, centerX, centerY and step **resolved (2026-08-19, GE-α6)**; `type` still approximated (`parse_gradation` keeps a single `radial` bool, so CIRCLE, CONICAL and SQUARE all read back as RADIAL, see the gradation type row in the control-payload table below) | `collect_shape` → `parse_gradation` |
 | `subList` | shape | (paragraphs) | `paragraph_lists` | recursive | :1068 |
 | *other shape children* (shadow, outMargin, renderingInfo, and the pt of Rect/Ellipse/Arc) | shape | - | - | **skip (ignored)** | :1059 `_ => {}` |
 | `script` | equation | text | `Equation.script` | semantic | :1145 |
@@ -394,7 +394,7 @@ approximation, so it is **lost in an hwpx → hwpx round-trip**.
 | charPr `supscript`/`subscript` | attr bit15/16 | ✅ emitted only when set | **resolved (2026-07-15)** | `:234`, `:239` ↔ likewise |
 | `hh:underline shape` | type, **shape** and color interpreted (new IR `underline_shape`) | ✅ driven by `underline_shape` (0 = SOLID) | **resolved (2026-07-15)** | `:204` ↔ likewise |
 | colPr `colSz`/`colLine` (per-column widths and separators) | uncollected (equal width assumed) | emits the values but has no per-column width | unequal columns and separators lost | `parse_col_pr :377` ↔ `write_col_ctrl :473` |
-| `hc:gradation angle`, center, step | angle plus centerX/Y and step (IR `GradientSpec`) | ✅ IR-driven (`gr.angle_deg`, `gr.center_x`, `gr.center_y`, `gr.step`) | **resolved (2026-08-19, GE-α6)**: PR #115 emits the parsed center and step; checked in Hancom in the Phase 1 round | `parse_gradation` ↔ `write_shape_element` |
+| `hc:gradation angle`, center, step | angle plus centerX/Y and step (IR `GradientSpec`) | ✅ IR-driven (`gr.angle_deg`, `gr.center_x`, `gr.center_y`, `gr.step`) | **resolved (2026-08-19, GE-α6)**: PR #115 emits the parsed center and step; checked in Hancom in the Phase 1 round (FIDL-01, linear fade in both the reference and our conversion). Scope note: the gradation `type` is not part of this row and stays approximated (every non-LINEAR value collapses to RADIAL) | `parse_gradation` ↔ `write_shape_element` |
 | `hp:pagePr landscape` | attr bit0 | re-emitted by default_sec_pr | preserved (along with the other secPr constants) | `:340` ↔ `:453` |
 | numbering `paraHead` format | template, start and numFormat collected | ✅ driven by `numbering_levels` (falling back to the old constant) | **resolved (2026-07-15)**, which also fixed itemCnt being flattened for multiple numbering definitions | `:333` ↔ `write_numberings` |
 | tab `tabPr` (positions and leaders) | `tabPr`/`tabItem` parsed semantically into the IR `TabDef` | ✅ emitted from `tab_stops` (falling back to the old constant) | **resolved (2026-07-15, GC-4)** | `read/header.rs` ↔ `write_tab_properties` |
