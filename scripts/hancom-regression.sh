@@ -179,6 +179,10 @@ fi
 # Absolute path, version line and content hash of the executable that produced
 # the set: without them an index cannot say which build it is evidence for.
 HWP_PATH="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=False))' "$HWP")"
+# Keep every later invocation independent of directory changes (P3 runs from
+# WORK so its input arguments stay relative). The resolved path is also the
+# path recorded and hashed below.
+HWP="$HWP_PATH"
 HWP_VERSION="$("$HWP" --version 2>/dev/null | head -1)"
 HWP_SHA256="$(shasum -a 256 "$HWP" | awk '{print $1}')"
 [[ -n "$HWP_VERSION" && -n "$HWP_SHA256" ]] || {

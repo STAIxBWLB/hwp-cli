@@ -36,6 +36,19 @@ run_gate() {
   printf '%s' "$status"
 }
 
+# Exercise the same path forms users commonly pass from the repository root.
+# The gate must resolve both executables before its P3 directory change.
+run_gate_relative_paths() {
+  local dest="$1"
+  shift
+  local status=0
+  (cd "$REPO" && \
+    env HWP_BIN='scripts/tests/stub-hwp.sh' \
+      HWP_REGRESSION_GENERATOR='scripts/tests/stub-generator.sh' "$@" \
+      bash "$GATE" "$dest") >"$dest.log" 2>&1 || status=$?
+  printf '%s' "$status"
+}
+
 # The expected-case manifest as the gate itself declares it, so the coverage
 # assertion below checks the real list rather than a copy that can drift.
 expected_cases() {
@@ -114,6 +127,29 @@ then
 else
   fail 'coverage' 'the index does not prove complete coverage'
 fi
+
+# Relative executable paths must survive P3's `(cd "$WORK")`, and both
+# delegated generator modes must still publish their outputs.
+dest="$ROOT/relative-paths"
+mkdir -p "$dest"
+status="$(run_gate_relative_paths "$dest")"
+if [[ "$status" == '3' ]] \
+  && python3 - "$dest/current/$INDEX_NAME" <<'PY'
+import json
+import sys
+
+index = json.load(open(sys.argv[1], encoding="utf-8"))
+series = {artifact["series"] for artifact in index["artifacts"]}
+assert "P3_compare_readonly" in series
+assert "A1" in series
+assert "O_official_hwp" in series
+PY
+then
+  pass 'relative binary and delegated paths survive P3 and publish outputs'
+else
+  fail 'relative paths' "expected exit 3 with P3 and delegated outputs, got $status"
+fi
+
 receipts="$dest/current/receipts"
 if [[ -d "$receipts" && ! -L "$receipts" && -z "$(ls -A "$receipts")" ]]; then
   pass 'receipts/ is a fresh empty directory, not a symlink'
