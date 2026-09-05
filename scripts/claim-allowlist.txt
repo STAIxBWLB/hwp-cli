@@ -1,14 +1,16 @@
 # Allowlist for scripts/check-claims.sh.
 #
-# Each non-comment, non-blank line is ONE exact sentence that is allowed to contain a scanned
-# phrase, because the sentence negates or quotes the claim rather than making it.
+# Each non-comment, non-blank line exempts ONE exact line of ONE file, because that line negates
+# or quotes the claim rather than making it.
+#
+# Format: <relative path><TAB><the exact line, verbatim>
 #
 # Rules:
-#   - An entry is a sentence. It is never a file name, a directory or a pattern.
-#   - An entry is matched as a fixed substring of the offending line, so the same forbidden words
-#     in a different sentence still fail the lint.
-#   - A new genuine claim is fixed in the copy. It is never silenced by widening an entry here.
-#
-# Format: one sentence per line, '#' starts a comment line, blank lines ignored.
+#   - An entry names one file and one whole line. It is never a directory or a pattern.
+#   - The line must match exactly, so appending a claim to an allowlisted line is still caught:
+#     the appended sentence changes the line and the exemption lapses.
+#   - A new genuine claim is fixed in the copy. It is never silenced by an entry here.
+#   - Most negated sentences need no entry at all: the lint already ignores a claim whose sentence
+#     negates it before the phrase. An entry is for the residue that rule cannot see.
 
-**No Hancom parity claim** The final verdict is always whether the file opens correctly in Hancom Office.
+README.md	- **No Hancom parity claim** The final verdict is always whether the file opens correctly in Hancom Office.
