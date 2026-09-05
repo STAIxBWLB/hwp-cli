@@ -107,6 +107,12 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/release_verification_block.sh --self-test
+      # Runs the readiness workflow's own steps against fixtures: the trust policy, the gate
+      # entries the record is assembled from, and the release binding that reads it.
+      - name: Release readiness workflow fixtures
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/tests/release-readiness-selfcheck.sh
 
   pdf-parity:
     name: pdf-parity
