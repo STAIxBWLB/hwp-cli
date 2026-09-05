@@ -1,0 +1,156 @@
+name: Release readiness
+
+# Manual, read-only run of the automatable gates in docs/release-readiness.md against a chosen
+# ref, from a clean checkout. It records gate outcomes and uploads one run-record JSON artifact.
+#
+# The checklist's own words (docs/release-readiness.md lines 5-6 and line 29): "Run from a clean
+# checkout. This checklist records gates; it does not authorize commit, push, tag, package upload
+# or release publication" and "no commit, push, tag, package upload or release performed by the
+# readiness run". That is why the permissions below are read-only and why no step in this file
+# commits, creates or moves a ref, publishes a release, or builds or pushes an image. The only
+# thing the run uploads is its own record artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch to evaluate (for example v0.17.0 or main)"
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  checks: read # the CI-matrix gate reads the evaluated commit's check runs
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  readiness:
+    name: readiness
+    # The public parity manifest pins the Poppler binary, so do not use ubuntu-latest here
+    # (same reason as ci.yml's pdf-parity job).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      # A workflow_dispatch run's own GITHUB_SHA is the default branch's, not the evaluated
+      # ref's, so resolve the checked-out commit explicitly and use it everywhere below.
+      - name: Resolve the evaluated commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "READINESS_SHA=$sha" >>"$GITHUB_ENV"
+          echo "GATES_FILE=$RUNNER_TEMP/gates.tsv" >>"$GITHUB_ENV"
+          : >"$RUNNER_TEMP/gates.tsv"
+          echo "ref=$READINESS_REF sha=$sha"
+        env:
+          READINESS_REF: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # --- gates, in docs/release-readiness.md order -------------------------------------------
+      # Every gate step records one tab-separated `name<TAB>status<TAB>evidence` line and never
+      # fails the job itself: the record-assembly step decides the outcome, so one run reports
+      # every gate instead of stopping at the first failure. `if: ${{ !cancelled() }}` keeps the
+      # remaining gates running when an earlier step does fail anyway (same idiom as ci.yml's
+      # lint job).
+      - name: Gate fmt
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if cargo fmt --all --check; then status=pass; else status=fail; fi
+          printf '%s\t%s\t%s\n' fmt "$status" 'cargo fmt --all --check' >>"$GATES_FILE"
+
+      # --- run record ---------------------------------------------------------------------------
+      # Runs even when a gate failed, so the record is always complete. It is the step that
+      # decides the job outcome: any `fail` or `pending` entry exits non-zero. `n/a` does not.
+      - name: Assemble the run record
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          READINESS_REF: ${{ inputs.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RECORD_PATH: release-readiness-record.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+          import re
+          import sys
+
+          ALLOWED = ("pass", "fail", "n/a", "pending")
+          HEX = re.compile(r"^[0-9a-f]+$")
+
+          def cargo_version():
+              """[workspace.package] version of the evaluated ref, without building anything."""
+              section = False
+              with open("Cargo.toml", encoding="utf-8") as handle:
+                  for line in handle:
+                      line = line.strip()
+                      if line.startswith("["):
+                          section = line == "[workspace.package]"
+                      elif section and line.startswith("version"):
+                          return line.split("=", 1)[1].strip().strip('"')
+              sys.exit("Cargo.toml has no [workspace.package] version")
+
+          def lower_hex(value):
+              """Digests are recorded as lowercase hexadecimal, never mixed case."""
+              return value.lower() if HEX.match(value.lower()) else value
+
+          gates = []
+          with open(os.environ["GATES_FILE"], encoding="utf-8") as handle:
+              for number, line in enumerate(handle, 1):
+                  line = line.rstrip("\n")
+                  if not line:
+                      continue
+                  fields = line.split("\t")
+                  if len(fields) != 3:
+                      sys.exit(f"gate line {number} is not name/status/evidence: {line!r}")
+                  name, status, evidence = (field.strip() for field in fields)
+                  if status not in ALLOWED:
+                      sys.exit(f"gate {name!r} has status {status!r}, not one of {ALLOWED}")
+                  if not name or not evidence:
+                      sys.exit(f"gate line {number} is missing a name or its evidence")
+                  gates.append({"name": name, "status": status, "evidence": evidence})
+          if not gates:
+              sys.exit("no gate was recorded; the run evaluated nothing")
+
+          record = {
+              "schema": "hwp-release-readiness-record-v1",
+              "generated_at": datetime.datetime.now(datetime.timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z"),
+              "ref": os.environ["READINESS_REF"],
+              "sha": lower_hex(os.environ["READINESS_SHA"]),
+              "run_url": os.environ["RUN_URL"],
+              "hwp_version": cargo_version(),
+              "gates": gates,
+          }
+          text = json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+          with open(os.environ["RECORD_PATH"], "w", encoding="utf-8") as handle:
+              handle.write(text)
+          print(text)
+
+          blocking = [g for g in gates if g["status"] in ("fail", "pending")]
+          if blocking:
+              names = ", ".join(f'{g["name"]}={g["status"]}' for g in blocking)
+              print(f"::error::release readiness gates not green: {names}", file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Upload the run record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-readiness-record
+          path: release-readiness-record.json
+          if-no-files-found: error
+          retention-days: 90
