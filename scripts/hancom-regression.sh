@@ -189,6 +189,60 @@ FAILED=0
 declare -a ROWS=()
 declare -a REPORT=()
 declare -a KNOWN_FAILURES=()   # <case>\t<reason>\t<issue>, one per excluded case
+declare -a OUTCOMES=()         # <case>\t<outcome>, exactly one per expected case
+declare -a SKIPS=()            # <case>\t<reason code>\t<detail>, one per skip
+
+# --- expected-case manifest --------------------------------------------------
+# Every case this gate is responsible for. A case that ends the run without
+# exactly one typed outcome (published, known_failure or skipped) is a hole in
+# the evidence, so the run fails closed rather than publishing a set that only
+# looks complete. Series E, F and G are deliberately absent: the checklist
+# records that bisection as closed and its diagnostic outputs removed.
+EXPECTED_CASES=(
+  A1 A2 A3 A4 A5 A6
+  B1 B2 B3 B4 B5
+  C1 C2 C3 C4 C5 C6 C7 C8 C9
+  D1 D2 D3
+  H1 H2
+  I1
+  J1
+  K1 K2 K3
+  L1
+  M N
+  O_official_hwp O_official_hwpx
+  O_report_hwp O_report_hwpx
+  O_plan_hwp O_plan_hwpx
+  O_notice_hwp O_notice_hwpx
+  O_minutes_hwp O_minutes_hwpx
+  O_press_hwp O_press_hwpx
+  P1_merge P2_split P3_compare_readonly P4_distdoc_read
+  P5_set_cell_blank_line P6_set_cell_para
+)
+
+# The only reasons a case may end as `skipped`. Anything else is a failure:
+# an untyped skip is how a silent gap gets written into an index that then
+# reads as complete coverage.
+SKIP_REASONS=(private_input_missing series_not_regenerable)
+
+# A published artifact name may carry a fragment suffix (hwp split emits one
+# file per section); the case that owns those artifacts is the unsuffixed id.
+case_of() {
+  local series="$1"
+  [[ "$series" =~ ^(.*)_[0-9]{3}$ ]] && series="${BASH_REMATCH[1]}"
+  printf '%s' "$series"
+}
+
+has_outcome() {
+  [[ ${#OUTCOMES[@]} -eq 0 ]] && return 1
+  printf '%s\n' "${OUTCOMES[@]}" | cut -f1 | grep -qxF "$1"
+}
+
+outcome() {
+  if has_outcome "$1"; then
+    return 0   # a case with several artifacts reports its outcome once
+  fi
+  OUTCOMES+=("$1"$'\t'"$2")
+}
 
 # Self-reread and structure gate, identical to tools/gen_verification_set.sh.
 reread_and_validate() {
@@ -242,14 +296,28 @@ fail() {
   if is_excluded "$1"; then
     KNOWN_FAILURES+=("$1"$'\t'"$2"$'\t'"$(known_failure_issue "$1")")
     REPORT+=("known  $1  $2")
+    outcome "$1" known_failure
     return 0
   fi
   FAILED=1
   REPORT+=("FAIL  $1  $2")
+  outcome "$1" failed
 }
 
+# skip <case> <reason code> <detail>. The reason code is closed vocabulary: an
+# unrecognized one is itself a failure, so a new kind of hole cannot enter the
+# index disguised as an ordinary skip.
 skip() {
-  REPORT+=("skip  $1  $2")
+  local case_id="$1" reason="$2" detail="$3" allowed
+  for allowed in "${SKIP_REASONS[@]}"; do
+    if [[ "$reason" == "$allowed" ]]; then
+      SKIPS+=("$case_id"$'\t'"$reason"$'\t'"$detail")
+      REPORT+=("skip  $case_id  [$reason] $detail")
+      outcome "$case_id" skipped
+      return 0
+    fi
+  done
+  fail "$case_id" "unrecognized skip reason '$reason': $detail"
 }
 
 # push_row <series> <staged artifact> <command> <sha256> <reread> <validate>
@@ -262,6 +330,7 @@ push_row() {
   cmd="${cmd//$'\t'/\\t}"
   ROWS+=("$1"$'\t'"$(basename "$2")"$'\t'"$2"$'\t'"$4"$'\t'"$5"$'\t'"$6"$'\t'"$cmd")
   REPORT+=("pass  $1  $(basename "$2")")
+  outcome "$(case_of "$1")" published
 }
 
 # record <series> <staged artifact> <command string>
@@ -307,44 +376,51 @@ echo "Binary: $HWP_PATH ($HWP_VERSION, sha256 ${HWP_SHA256:0:12}..., explicit=$H
 # in turn runs tools/gen_effects_cases.py for the IR-surgery cases. Series O comes
 # from the same generator's default phase-02.2 mode. Nothing is reimplemented
 # here; this script absorbs their outputs into one gated, indexed set.
+GENERATOR="${HWP_REGRESSION_GENERATOR:-$REPO/tools/gen_verification_set.sh}"
 LEGACY_DIR="$STAGE/legacy"
 LEGACY_LOG="$WORK/legacy.log"
 LEGACY_CMD="tools/gen_verification_set.sh --legacy <destination>"
 mkdir -p "$LEGACY_DIR"
 echo "Delegating series A-L to tools/gen_verification_set.sh --legacy"
-HWP_BIN="$HWP" bash "$REPO/tools/gen_verification_set.sh" --legacy "$LEGACY_DIR" \
-  >"$LEGACY_LOG" 2>&1 || true
+LEGACY_STATUS=0
+HWP_BIN="$HWP" bash "$GENERATOR" --legacy "$LEGACY_DIR" \
+  >"$LEGACY_LOG" 2>&1 || LEGACY_STATUS=$?
 
-# absorb <series> <file name> - map one delegated report line onto this script's
-# report. The delegated generator marks each case pass, skip or fail; a failed
-# case is a failed case here too, so a known defect can never publish silently.
+# absorb <case> <file name> [<fallback log key>] - map one delegated report line
+# onto this script's outcome table. The delegated generator marks each case
+# pass, skip or fail. A case the generator said nothing about is not a skip: an
+# early exit looks exactly like that from here, so it fails closed.
 absorb() {
-  local series="$1" name="$2" line detail
+  local case_id="$1" name="$2" fallback="${3:-}" line detail
   line="$(grep -m1 -F -- "$name" "$LEGACY_LOG" || true)"
-  detail="${line#* }"
+  if [[ -z "$line" && -n "$fallback" ]]; then
+    line="$(grep -m1 -F -- "$fallback" "$LEGACY_LOG" || true)"
+  fi
   if [[ -z "$line" ]]; then
-    skip "$series" "delegated generator reported no case for $name"
+    fail "$case_id" "delegated generator reported no outcome for $name (exit $LEGACY_STATUS)"
     return 0
   fi
+  detail="${line#* }"
+  detail="${detail# }"
   case "$line" in
     '✅'*)
       mv -f "$LEGACY_DIR/$name" "$STAGE/$name"
-      record "$series" "$STAGE/$name" "$LEGACY_CMD (case $name)"
+      record "$case_id" "$STAGE/$name" "$LEGACY_CMD (case $name)"
       ;;
-    '⏭'*) skip "$series" "$detail" ;;
-    *)    fail "$series" "delegated case failed: $detail" ;;
+    '⏭'*) skip "$case_id" private_input_missing "$detail" ;;
+    *)    fail "$case_id" "delegated case failed: $detail" ;;
   esac
   return 0
 }
 
 # --- A. The full pipeline on real documents ---------------------------------
 # A5 and A6 need the private approval document from the ground-truth corpus.
-absorb A1 'A1A2_work_report_변환.hwpx'
-absorb A2 'A1A2_work_report_왕복.hwp'
-absorb A3 'A3A4_annual_report_변환.hwpx'
-absorb A4 'A3A4_annual_report_왕복.hwp'
-absorb A5 'A5A6_품의_변환.hwpx'
-absorb A6 'A5A6_품의_왕복.hwp'
+absorb A1 'A1A2_work_report_변환.hwpx' 'A1A2_work_report'
+absorb A2 'A1A2_work_report_왕복.hwp' 'A1A2_work_report'
+absorb A3 'A3A4_annual_report_변환.hwpx' 'A3A4_annual_report'
+absorb A4 'A3A4_annual_report_왕복.hwp' 'A3A4_annual_report'
+absorb A5 'A5A6_품의_변환.hwpx' 'A5A6_품의'
+absorb A6 'A5A6_품의_왕복.hwp' 'A5A6_품의'
 
 # --- B. Minimal per-feature files -------------------------------------------
 absorb B1 'B1_책갈피.hwp'
@@ -398,14 +474,14 @@ absorb L1 'L1_수식.hwpx'
 # path alone. They stay a manual step; the variables below only record whether
 # the owner has a source on hand.
 if [[ -n "${HWP_SERIES_M_SOURCE:-}" && -f "${HWP_SERIES_M_SOURCE:-}" ]]; then
-  skip M "source supplied via HWP_SERIES_M_SOURCE; the case matrix is document-specific and stays manual"
+  skip M series_not_regenerable "source supplied via HWP_SERIES_M_SOURCE; the case matrix is document-specific and stays manual"
 else
-  skip M "no source: set HWP_SERIES_M_SOURCE to a private complex HWP"
+  skip M series_not_regenerable "no source: set HWP_SERIES_M_SOURCE to a private complex HWP"
 fi
 if [[ -n "${HWP_SERIES_N_SOURCE:-}" && -f "${HWP_SERIES_N_SOURCE:-}" ]]; then
-  skip N "source supplied via HWP_SERIES_N_SOURCE; run-authoring-validation-c.sh is private and not reconstructed here"
+  skip N series_not_regenerable "source supplied via HWP_SERIES_N_SOURCE; run-authoring-validation-c.sh is private and not reconstructed here"
 else
-  skip N "no source: set HWP_SERIES_N_SOURCE to a private complex HWPX"
+  skip N series_not_regenerable "no source: set HWP_SERIES_N_SOURCE to a private complex HWPX"
 fi
 
 # --- O. Phase 2.2 official profiles -----------------------------------------
@@ -416,7 +492,7 @@ O_DIR="$STAGE/phase-02.2"
 O_CMD="tools/gen_verification_set.sh <destination>"
 mkdir -p "$O_DIR"
 echo "Delegating series O to tools/gen_verification_set.sh (phase-02.2 mode)"
-if HWP_BIN="$HWP" bash "$REPO/tools/gen_verification_set.sh" "$O_DIR" >"$WORK/phase-02.2.log" 2>&1; then
+if HWP_BIN="$HWP" bash "$GENERATOR" "$O_DIR" >"$WORK/phase-02.2.log" 2>&1; then
   while IFS=$'\t' read -r profile format digest _rest; do
     [[ "$profile" == 'profile' || -z "$profile" ]] && continue
     o_name="phase-02.2-${profile}.${format}"
@@ -429,7 +505,13 @@ if HWP_BIN="$HWP" bash "$REPO/tools/gen_verification_set.sh" "$O_DIR" >"$WORK/ph
     fi
   done < "$O_DIR/phase-02.2-index.tsv"
 else
-  fail O "delegated phase-02.2 generation failed; see the generator output"
+  # Fail every case the delegation owns. A single "O" line would leave twelve
+  # expected cases with no outcome, which is exactly the hole this table closes.
+  for o_profile in official report plan notice minutes press; do
+    for o_format in hwp hwpx; do
+      fail "O_${o_profile}_${o_format}" "delegated phase-02.2 generation failed; see the generator output"
+    done
+  done
 fi
 
 # --- P. Document-level workflows and Phase 3.1 cell paragraphs (D-01) -------
@@ -453,7 +535,7 @@ if [[ -s "${WORK}/merge_a.hwpx" && -s "${WORK}/merge_b.hwpx" ]]; then
     "$HWP" merge "$WORK/merge_a.hwpx" "$WORK/merge_b.hwpx" \
     -o "$STAGE/P1_merge.hwpx" --loss-report "$WORK/merge-loss.json"
 else
-  skip P1_merge "no merge inputs: fixtures/samples/report-tables.hwpx is missing"
+  fail P1_merge "no merge inputs: the committed fixture fixtures/samples/report-tables.hwpx is missing"
 fi
 
 # Split the merged document: one section per merge input, so the fragments are
@@ -476,7 +558,7 @@ if [[ -s "$STAGE/P1_merge.hwpx" ]]; then
     fail P2_split "split failed on P1_merge.hwpx"
   fi
 else
-  skip P2_split "no merged document to split"
+  fail P2_split "no merged document to split: P1_merge did not publish"
 fi
 
 # hwp compare is read-only: it never opens in Hancom, so this row carries the
@@ -497,7 +579,7 @@ if [[ -s "$STAGE/P1_merge-001.hwpx" ]]; then
     fail P3_compare_readonly "compare run failed (exit $compare_status)"
   fi
 else
-  skip P3_compare_readonly "no split fragment to compare"
+  fail P3_compare_readonly "no split fragment to compare: P2_split did not publish"
 fi
 
 # GA-2 distribution-document read. The source is a genuine corpus document; it is
@@ -508,10 +590,10 @@ if [[ -n "${HWP_CORPUS_DIR:-}" && -d "${HWP_CORPUS_DIR:-}" ]]; then
     emit P4_distdoc_read "$STAGE/P4_distdoc.hwpx" \
       "$HWP" convert "$distdoc" -o "$STAGE/P4_distdoc.hwpx"
   else
-    skip P4_distdoc_read "no dist-*.hwp under HWP_CORPUS_DIR"
+    skip P4_distdoc_read private_input_missing "no dist-*.hwp under HWP_CORPUS_DIR"
   fi
 else
-  skip P4_distdoc_read "no corpus: set HWP_CORPUS_DIR to the ground-truth corpus directory"
+  skip P4_distdoc_read private_input_missing "no corpus: set HWP_CORPUS_DIR to the ground-truth corpus directory"
 fi
 
 # Phase 3.1 multi-paragraph cells: a blank line in a --set-cell value becomes two
@@ -525,9 +607,51 @@ if [[ -f "$SAMPLE" ]]; then
     --set-cell "0:1:1=$cell_value" \
     --set-cell-para "0:1:1=>line-spacing:180,align:center"
 else
-  skip P5_set_cell_blank_line "fixtures/samples/report-tables.hwpx is missing"
-  skip P6_set_cell_para "fixtures/samples/report-tables.hwpx is missing"
+  fail P5_set_cell_blank_line "the committed fixture fixtures/samples/report-tables.hwpx is missing"
+  fail P6_set_cell_para "the committed fixture fixtures/samples/report-tables.hwpx is missing"
 fi
+
+# --- reconcile the delegated exit status ------------------------------------
+# The legacy generator exits non-zero when one of its cases failed, and every
+# such case has already become a `failed` or `known_failure` outcome above. A
+# non-zero exit with no failing case is something else entirely - a crash, a
+# missing interpreter, a destination refusal - and it must not be swallowed.
+if [[ "$LEGACY_STATUS" -ne 0 ]]; then
+  legacy_failures=0
+  for delegated_case in A1 A2 A3 A4 A5 A6 B1 B2 B3 B4 B5 \
+    C1 C2 C3 C4 C5 C6 C7 C8 C9 D1 D2 D3 H1 H2 I1 J1 K1 K2 K3 L1; do
+    if [[ ${#OUTCOMES[@]} -gt 0 ]] && printf '%s\n' "${OUTCOMES[@]}" \
+      | grep -qE "^${delegated_case}"$'\t'"(failed|known_failure)$"; then
+      legacy_failures=$((legacy_failures + 1))
+    fi
+  done
+  if [[ "$legacy_failures" -eq 0 ]]; then
+    FAILED=1
+    REPORT+=("FAIL  delegation  tools/gen_verification_set.sh --legacy exited $LEGACY_STATUS with no failing case to explain it")
+  fi
+fi
+
+# --- coverage ----------------------------------------------------------------
+# Exactly one typed outcome per expected case. Zero outcomes means the run lost
+# a case somewhere; more than one means two code paths claimed it. Either way
+# the set is not the evidence the index would say it is.
+for expected_case in "${EXPECTED_CASES[@]}"; do
+  outcome_count=0
+  if [[ ${#OUTCOMES[@]} -gt 0 ]]; then
+    outcome_count="$(printf '%s\n' "${OUTCOMES[@]}" | cut -f1 | grep -cxF "$expected_case" || true)"
+  fi
+  if [[ "$outcome_count" -ne 1 ]]; then
+    FAILED=1
+    REPORT+=("FAIL  $expected_case  expected exactly one outcome, got $outcome_count")
+  fi
+done
+for recorded_case in ${OUTCOMES[@]+"${OUTCOMES[@]}"}; do
+  recorded_case="${recorded_case%%$'\t'*}"
+  if ! printf '%s\n' "${EXPECTED_CASES[@]}" | grep -qxF "$recorded_case"; then
+    FAILED=1
+    REPORT+=("FAIL  $recorded_case  reported an outcome but is not in the expected-case manifest")
+  fi
+done
 
 # A listed case that did not fail is a stale entry: say so, so the list does not
 # outlive the defect it excuses.
@@ -546,13 +670,21 @@ done
 
 # Report how many cases the hatch excused, in both outcomes, so a run that is
 # not a clean pass can never read as one.
-excluded_summary() {
-  if [[ ${#KNOWN_FAILURES[@]} -eq 0 ]]; then
-    echo 'Known failures excluded: 0'
-    return 0
+outcome_summary() {
+  local published_cases=0
+  if [[ ${#OUTCOMES[@]} -gt 0 ]]; then
+    published_cases="$(printf '%s\n' "${OUTCOMES[@]}" | grep -c $'\tpublished$' || true)"
   fi
-  echo "Known failures excluded: ${#KNOWN_FAILURES[@]} ($(printf '%s\n' "${KNOWN_FAILURES[@]}" | cut -f1 | paste -sd, -)) by $KNOWN_FAILURE_VAR"
-  echo 'A run with exclusions is not a clean pass.'
+  echo "Cases: ${#EXPECTED_CASES[@]} expected, $published_cases published, ${#KNOWN_FAILURES[@]} known failure(s), ${#SKIPS[@]} skipped"
+  if [[ ${#KNOWN_FAILURES[@]} -gt 0 ]]; then
+    echo "  known failures: $(printf '%s\n' "${KNOWN_FAILURES[@]}" | cut -f1 | paste -sd, -) (excluded by $KNOWN_FAILURE_VAR)"
+  fi
+  if [[ ${#SKIPS[@]} -gt 0 ]]; then
+    echo "  skipped: $(printf '%s\n' "${SKIPS[@]}" | cut -f1 | paste -sd, -)"
+  fi
+  if [[ ${#KNOWN_FAILURES[@]} -gt 0 || ${#SKIPS[@]} -gt 0 ]]; then
+    echo '  A run with known failures or skips is not a clean pass.'
+  fi
 }
 
 # --- publish and index ------------------------------------------------------
@@ -562,7 +694,7 @@ if [[ "$FAILED" -ne 0 ]]; then
   [[ ${#REPORT[@]} -eq 0 ]] || printf '%s\n' "${REPORT[@]}"
   echo
   echo "Regeneration failed; nothing was published and no index was written."
-  excluded_summary
+  outcome_summary
   echo 'No Hancom observation and no pass receipt was created by this run.'
   exit 1
 fi
@@ -582,6 +714,9 @@ done < <([[ ${#ROWS[@]} -eq 0 ]] || printf '%s\n' "${ROWS[@]}" | cut -f2,3)
 KNOWN_FILE="$WORK/known-failures.tsv"
 : >"$KNOWN_FILE"
 [[ ${#KNOWN_FAILURES[@]} -eq 0 ]] || printf '%s\n' "${KNOWN_FAILURES[@]}" >"$KNOWN_FILE"
+SKIP_FILE="$WORK/skips.tsv"
+: >"$SKIP_FILE"
+[[ ${#SKIPS[@]} -eq 0 ]] || printf '%s\n' "${SKIPS[@]}" >"$SKIP_FILE"
 {
   [[ ${#ROWS[@]} -eq 0 ]] || printf '%s\n' "${ROWS[@]}"
 } | python3 -c '
@@ -590,7 +725,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-schema, binary_json, dest, index_name, known_path, excluded_by = sys.argv[1:7]
+schema, binary_json, dest, index_name, known_path, skip_path, excluded_by = sys.argv[1:8]
 binary = json.loads(binary_json)
 receipts = os.path.join(dest, "receipts")
 os.makedirs(receipts, exist_ok=True)
@@ -653,6 +788,18 @@ with open(known_path, encoding="utf-8") as handle:
             }
         )
 
+# Cases that produced no artifact because an input this repository does not
+# carry was absent. Recording them is what lets the index prove complete
+# coverage: published + known_failures + skips accounts for every expected case.
+skips = []
+with open(skip_path, encoding="utf-8") as handle:
+    for line in handle:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        case, reason, detail = line.split("\t")
+        skips.append({"case": case, "reason": reason, "detail": detail})
+
 index = {
     "schema": schema,
     "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -661,11 +808,12 @@ index = {
     "binary": binary,
     "artifacts": artifacts,
     "known_failures": known_failures,
+    "skips": skips,
 }
 with open(os.path.join(dest, index_name), "w", encoding="utf-8") as handle:
     json.dump(index, handle, ensure_ascii=False, indent=2)
     handle.write("\n")
-' "$INDEX_SCHEMA" "$BINARY_JSON" "$DEST" "$INDEX_NAME" "$KNOWN_FILE" "$KNOWN_FAILURE_VAR"
+' "$INDEX_SCHEMA" "$BINARY_JSON" "$DEST" "$INDEX_NAME" "$KNOWN_FILE" "$SKIP_FILE" "$KNOWN_FAILURE_VAR"
 
 echo
 echo "=== regeneration report ==="
@@ -682,5 +830,5 @@ echo "    --policy $DEST/<artifact>.policy.json \\"
 echo '    --report <a fresh report directory>'
 echo 'The receipt binding is the "hancom_open" check in that report.'
 echo
-excluded_summary
+outcome_summary
 echo 'No Hancom observation and no pass receipt was created by this run.'
