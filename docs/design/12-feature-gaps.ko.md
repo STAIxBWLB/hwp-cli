@@ -343,6 +343,8 @@ XML 파트**(`Chart/chartN.xml` + manifest 등재 + `hp:chart chartIDRef`)여서
 | GC-2 | **쪽 테두리/배경 미반영** — 2026-07-19 조사로 재정의: 레이아웃(14B)은 정품 714레코드 전수로 확정·코드 왕복 이미 올바름(08 "반증" 이력 종결). 실질 갭 = ①hwp5→hwpx 교차변환 손실(상수 대체) ②렌더 전무. hwpx↔hwpx는 GC-5 pass-through로 이미 무손실 | 정답지: 제안요청서_11.19 hwp(BOTH=id7 실테두리, BF#7=4면 실선 0.4mm 검정) | §4.3.10.1.3(표135 길이 선언 오기 — TODO §1.4) | ✅ **해소·실기 확정(2026-07-19)** — raw 병행(extras=identity 정본 유지)+출처별 단일 방출(hwpx 원문→hwp5 raw 해석→상수 3단), 쪽 테두리 렌더 신규(정답지 4변 수치 일치·이중 독립 검증). J1 실기: 34쪽 전 쪽 테두리 표시·무손상 확인. 잔여: hwpx 직접 렌더 미표시(read enrich 후속), EVEN/ODD·본문기준(정품 표본 부재) | 합성(hwp5→hwpx)·렌더 | S~M |
 | GC-3 | **각주/미주 모양 미반영** — 2026-07-19 조사로 재정의: 레이아웃(28B, 구분선 길이 4B)은 정품 476레코드 전수 확정. **코퍼스 전수에서 attr 커스텀 0건 + 현 렌더 하드코딩이 이미 모든 정품과 일치** → 렌더는 후순위 타당. 실질 갭 = hwp5→hwpx 교차변환 손실뿐 | 정품 5개 고유값 전부 기본형 | §4.3.10.1.2(구분선 길이 자료형 오기 — TODO §1.4) | ✅ **해소(2026-07-19)** — 각주/미주 모양 raw 병행+hwpx 방출(28B 해석). 렌더는 후순위 유지(현 하드코딩이 정품 전수와 일치) | 합성(hwp5→hwpx) | S |
 | GC-4 | **탭 정의 손실**(사용자 탭 위치·채움문자) | IR `TabDef/TabItem` 신설, hwp5 `parse_tab_def`(§4.2.7, raw 병행 보존·identity 불변), hwpx `tabPr/tabItem` 왕복 — ★1차 실기에서 naked tabItem이 **한글 먹통** 유발 → 정품 `hp:switch` 구조로 교정([07](07-hangul-compat-rules.ko.md) **A11**) | §4.2.7 `TAB_DEF` / `hh:tabPr` | ✅ **해소·실기 확정(2026-07-18, 4차)** — 실기 결함 2건을 이분탐색·정답지 대조로 해소: raw 0x09 먹통([07](07-hangul-compat-rules.ko.md) **A11**)과 bare 탭 폭0 무시(**A12** in-t 방출·속성 유도). 렌더 반영은 잔존 | 왕복(hwpx만)·렌더 | S |
+> **GC-4 렌더 범위:** 탭 위치·채움의 구조적 방출은 **2026-08-19 해소**됐지만, 종류별 배치 기하(우측/가운데/소수점)는 한글 출력과 비교하지 않아 미검증이다. 리더 방식도 한글의 TJ 반복 글리프와 다르며 렌더 리듬만 측정 확인했다.
+
 | GC-5 | **구역 속성 skip**(grid/startNum/visibility/lineNumberShape) | hwpx `parse_sec_pr`가 미해석 자식 **원문 XML pass-through**(`secpr_raw_children`+pagePr 센티넬), write는 원문 재방출(없으면 기존 상수) | OWPML `secPr` 자식 | ✅ **해소(2026-07-15 3차)** — 의미 파싱이 아닌 원문 보존 | 왕복(hwpx만)·합성 | S |
 | GC-6 | **글상자 다단 미지원** — 연결/다단 글상자를 단일 단으로 근사 렌더 | `hwp-render/src/layout.rs:864`(`v1 단일 단 — hwp5 arm의 다단은 미지원`), `:788` | §4.3.10.2 단 정의 | 근사(단일 단) | 렌더 | S |
 | GC-7 | **홀/짝수 조정 미해석** — 별도 의미 파싱 없이 Generic 통과 | hwpx `read/section.rs:597`(미지 ctrl → 코드 21 Generic), [10](10-hwp5-structure-map.ko.md) §6.1 각주 | §4.3.10.8 | Generic 보존(미해석) | 합성·렌더 | S |
@@ -386,7 +388,7 @@ hwpx/렌더로 내보내는 것"이다 → 정답지로 레코드 레이아웃�
 | ID | 현상 | 근거 코드 | 스펙/포맷 근거 | 현 동작 | 영향 경로 | 난이도 |
 |---|---|---|---|---|---|---|
 | GE-1 | **hwpx→hwp5 도형 의도적 저하** — 글상자는 텍스트를 본문으로 hoist하고 도형 래퍼 생략, 순수 장식은 드롭(무손실 gso 재합성 미확보) | `hwp5/src/write.rs:467`(`degrade_hwpx_gso`), `:510`(경고) | §4.3.9 개체 | 드롭(안전 저하) | 합성(hwpx→hwp5) | L |
-| GE-2 | **이미지 바이너리 미발견 시 그림 드롭** — bin_ref가 가리키는 스트림을 못 찾으면 그림 생략 | `hwp5/src/write.rs:726`(`DROP: 이미지 바이너리 스트림을 찾지 못해 생략`) | §4.3.9.4 그림 | 드롭(소실) | 합성 | S |
+| GE-2 | **그림 바이너리 참조가 해소되지 않으면 그림 드롭** — bin_ref가 문서의 스트림을 가리키지 않으면 그림 생략. ~~기존 스트림을 가리킨 참조도 `bin_streams[0]`으로 잘못 대체될 수 있었음~~ | `hwp5/src/write.rs`(`bin_stream_index` `:1723`, `Document::resolve_bin`과 동일하게 `BinRef::Id`는 `header.bin_data` storage id를 거치고 `BinRef::ItemRef`는 `BIN_DATA` 표의 말단 구성요소와 대조) 및 드롭 지점 `synth_pictures_para` `:1887-1895`(`bin_index`가 `None`이면 `PreservationCode::BinaryAssetRemoved` 기록 후 `continue`), 회귀 테스트 `picture_with_unresolvable_reference_reports_binary_asset_removed` `:4664-4699`로 고정 | §4.3.9.4 그림 | ~~엉뚱한 스트림 대체(다른 로고·도장·서명·사진)~~ **2026-08-19 오대체 하위 사례만 해소**: Phase 1 FIDL-02, PR #115가 `bin_stream_index`로 참조 스트림을 해소하고 index-0 폴백을 제거했으며, 재현 사례를 `write.rs` 회귀 테스트로 고정. Phase 1에서 한글 확인(폴백 아닌 참조 이미지 표시). **잔여, 해소로 닫지 않음**: 실제로 해소되지 않는 참조는 여전히 그림을 드롭. writer는 타입이 있는 `BinaryAssetRemoved` 보존 이벤트를 기록하고 합성을 건너뛰며, 위 회귀 테스트는 해당 이벤트와 `PictureControlRemoved`를 모두 요구하므로 이 절반은 열린 상태. 의도적 판단: 무관한 이미지를 대체하는 것보다 손실을 보고하는 편이 안전하며, 복구에는 문서에 없는 바이트의 출처가 필요 | 합성 | S |
 | GE-3 | **colPr 단별폭·구분선 미수집** — 등폭·구분선 없음으로 가정, 불균등 단 손실 | `hwpx/src/read/section.rs:375`(`colSz·colLine 자식은 v1 미수집`), `:392` | §4.3.10.2 / `hp:colPr` | 드롭→상수 | 합성·렌더 | S |
 | GE-4 | **pgnp 쪽번호 서식 DIGIT 고정** — 아라비아 숫자만 매핑, 그 외 형식(원문자·로마·가나다 등) 소실. **write도 대칭 결함**: hwp5-origin `g.data`의 서식 필드를 안 읽고 `formatType="DIGIT"` 고정(2026-07-19 감사 보강) | read `hwpx/src/read/section.rs:429`(`build_pgnp:415`) + write `hwpx/src/write/section.rs:307-325` | §4.3.10.9 / `hp:pageNum` | 근사(DIGIT 고정) | 합성(양방향) | S |
 | GE-5 | **nwno 새 번호 종류 PAGE 고정** — 번호 값만 취하고 종류는 PAGE로 고정. **write도 대칭 결함**: `g.data[0..4]`(종류)를 버리고 `numType="PAGE"` 고정(2026-07-19 감사 보강) | read `hwpx/src/read/section.rs:473`(`build_nwno`) + write `hwpx/src/write/section.rs:343-352` | §4.3.10.6 / `hp:newNum` | 근사(종류 고정) | 합성(양방향) | S |
@@ -437,7 +439,7 @@ hwpx/렌더로 내보내는 것"이다 → 정답지로 레코드 레이아웃�
 | GE-α3 | **양각·음각**(emboss/engrave) | read `read/header.rs:266,271` ↔ write 동상 | ✅ **해소(2026-07-15)** | 왕복(hwpx→hwpx) | S |
 | GE-α4 | **위·아래 첨자**(supscript/subscript) | read `read/header.rs:234,239` ↔ write 동상 | ✅ **해소(2026-07-15)** | 왕복(hwpx→hwpx) | S |
 | GE-α5 | **밑줄 모양**(underline shape) | read `read/header.rs:204`(IR `underline_shape` 신설) ↔ write 동상 | ✅ **해소(2026-07-15)** | 왕복(hwpx→hwpx) | S |
-| GE-α6 | **그러데이션 중심·step** | read `read/section.rs:1217`(`parse_gradation`, angle만) ↔ write `write/section.rs:764`(center/step 상수) | 근사(중심·단계 상수) | 왕복(hwpx→hwpx)·렌더 | M |
+| GE-α6 | **그러데이션 중심·step** | read `read/section.rs`(`parse_gradation` `:1751`, angle·centerX/Y·step) ↔ write `write/section.rs`(`write_shape_element` `:1434`, IR의 `gr.center_x`·`gr.center_y`·`gr.step` 방출) | ~~근사(중심·단계 상수)~~ **2026-08-19 HWPX 왕복만 해소**: Phase 1 FIDL-01에서 양쪽을 IR 기반으로 수정하고 선형 페이드를 한글에서 확인. **렌더는 미해소**: `hwp-render/src/shape_draw.rs:62-66`은 radial·angle·stop만 전달하므로 centerX·centerY·step이 렌더에 반영되지 않음. **gradation `type`은 부분 상태 유지**: `parse_gradation` `:1757`은 비-LINEAR을 단일 radial bool로 축약하고 writer는 LINEAR/RADIAL만 방출하므로 CIRCLE·CONICAL·SQUARE가 왕복에서 변함. type 2의 radial 근사는 정품 파일로 미검증. [11](11-hwpx-structure-map.ko.md) §(b)에서 관리 | 왕복(hwpx→hwpx)·렌더 | M |
 | GE-α7 | **번호 형식**(numbering paraHead) | read `read/header.rs:333` ↔ write `write_numberings` | ✅ **해소(2026-07-15)** — `numbering_levels` 기반, 다중 번호정의 itemCnt도 수정 | 왕복(hwpx→hwpx) | S |
 | GE-α8 | **문단↔번호 연결**(paraPr heading) — read는 해석(attr1 bits23-27 + numbering_id)하나 write가 `type="NONE"` 고정이었음 | read `read/header.rs:309` ↔ write `write_para_properties` | ✅ **해소(2026-07-15 2차)** — OUTLINE/NUMBER/BULLET 역방출, 실기(C6)에서 발견된 결함 | 왕복(hwpx→hwpx)·합성 | S |
 | GE-α9 | **머리말/꼬리말 적용쪽(applyPageType)** — read는 BOTH/EVEN/ODD를 정확히 해석(hwp5-origin도 raw 8B에 적용쪽 보존)하나 write가 `applyPageType="BOTH"` 상수 방출 → 홀·짝 구분 머리말/꼬리말이 hwpx 왕복·합성에서 전부 "양쪽"으로 오기록. **hwpx 파일 자체의 훼손**이라(한글에서 열어도 동일 증상) GG-16(렌더 무시)보다 심각. 서적형 홀짝 머리말은 공문서·논문 빈출. 2026-07-19 스펙 전수 감사 발견 | read `read/section.rs:506-517`(`head_foot_data`) ↔ write `write/section.rs:863-901`(`:879` 상수) | ✅ **해소(2026-08-14 문서 정합 반영 — 코드는 5db1c6a에서 수정)** — write가 `header_footer_apply_page`(`write/section.rs:907-918`)로 보존된 적용쪽을 방출 | 왕복(hwpx→hwpx)·합성 | S |
@@ -690,7 +692,7 @@ phase에 따라 한컴 검수 절차(07 PROC)로 끝낸다.
 | | **난이도 S**(자료구조만) | **난이도 M**(정답지 필요) | **난이도 L**(실기 반복) |
 |---|---|---|---|
 | **가치 高**(빈출) | ✅공문서 GN 계열은 전부 해소: ~~GN-2·GN-3·GN-5·GN-6·GN-7·GN-8~~(공문서 프리셋·표기법 lint·문서 템플릿·표 서식·번들 규정 계층·편집 동등성. 2026-08-20~2026-08-26). GC-4·GC-5(탭·구역속성), GC-8·GC-9(내어쓰기·문단배경) — ✅해소(2026-07-15): ~~GE-α1~α5·α7, GH-1·GH-2, GL-1, GA-5, GE-β4~~ / ✅해소(2026-07-18, md): ~~GH-3·GH-4·GH-5·GH-6, GH-8~~ | **GN-1·GN-4**(법정 8단계 부호·문서 틀 — writer 산출물, 한컴 검수), GG-3·GG-4(양쪽정렬·자간), GF-2(찾아보기·겹침), ~~GA-2★~~(배포용 읽기, 2026-08-20 해소), ~~GJ-1 출력~~(DOCX 내보내기 2026-08-01 해소), **GK-1**(셀 병합), **GK-2**(열 삭제 — 추가는 07-19 해소) — ✅GC-2·GC-3은 07-19 해소(J1 실기 대기) | GG-1·GG-2(글상자 드롭·오버플로) |
-| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), ~~GG-16~~(렌더 국소 — PR 9 해소, GG-5·GG-6·GG-8~GG-11·GG-17·GG-20·GG-21·GG-22는 2026-08-13/14 해소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, ~~GM-3·GM-4·GM-8~~(병합·분할·비교 — v0.13.0 출시, 2026-08-29 한글 표본 확인. 위 행 참조), **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), GE-α6(그러데이션), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-10**(PII 비식별 — kordoc 선례) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 — 2026-08-20 처분: 범위 밖 유지, 다른 로드맵 항목이 모두 끝난 뒤에만 재검토. 같은 결정이 PDF·XLS·XLSX 들여오기에도 적용되며, 그때까지는 kordoc이 커버 도구), **GM-9 Web**(인증형 hosted MCP·tenant 격리·운영, Desktop은 해소) |
+| **가치 中** | GC-6(글상자 다단), GE-2~GE-6(그림 드롭·단·번호 합성), GF-1(%unk), **GB-12**(참고문헌), **GE-β1·β2·β5**(미리보기·스크립트·설정), ~~GG-16~~(렌더 국소 — PR 9 해소, GG-5·GG-6·GG-8~GG-11·GG-17·GG-20·GG-21·GG-22는 2026-08-13/14 해소), **GH-3·GH-4·GH-5**(html/odt 각주 마커·병합셀·셀 블록 — md는 2026-07-18 해소), ~~GJ-5·GJ-6~~(csv·txt, 08-01 해소) — ✅GI 계열 전체·GE-7은 07-19 해소, ~~GK-3·GK-4·GK-6·GK-8~~, ~~GM-1·GM-2·GM-5~~, ~~GM-3·GM-4·GM-8~~(병합·분할·비교 — v0.13.0 출시, 2026-08-29 한글 표본 확인. 위 행 참조), **GM-6**(이미 충족 정정)·GM-7(날인, 07-16 해소) — ✅ 2026-08-01 배치 해소 | GB-4~GB-7·GB-10(글맵시·양식·묶음·메모·바탕쪽), GC-1(세로쓰기), GD-1~GD-3(수식 — rhwp 선례), **GE-α6**(HWPX 왕복 중심·step은 2026-08-19 해소, 중심·step 렌더는 미해소, gradation `type`은 근사 유지, 비-LINEAR는 RADIAL로 축약), GF-3(필드 생성), **GB-1 hwpx 차트 생성★**(chartSpace — kordoc 선례), **GJ-2·GJ-3**(hml·HWP3.x — 공식 스펙 공개), **GG-7·GG-12~GG-15·GG-18·GG-19**(렌더 픽셀 대조), **GE-β3·β6**(DocOptions·임베디드 폰트), **GH-7**(ODT 레이아웃), **GK-5·GK-7**(머리말 편집·스타일), **GM-10**(PII 비식별 — kordoc 선례) | GB-2·GB-3(OLE·동영상), **GJ-1 완전 왕복**(docx 들여오기 — 2026-08-20 처분: 범위 밖 유지, 다른 로드맵 항목이 모두 끝난 뒤에만 재검토. 같은 결정이 PDF·XLS·XLSX 들여오기에도 적용되며, 그때까지는 kordoc이 커버 도구), **GM-9 Web**(인증형 hosted MCP·tenant 격리·운영, Desktop은 해소) |
 | **가치 低**(드묾) | **GI-5**(embed-bin), **GL-2·GL-3**(추출 세분) | **GJ-4**(rtf) | GB-8·GB-9·GB-11(변경추적 등), **GJ-7**(역방향 입력), **GJ-8**(HWPX 배포용) |
 
 GA-1·GA-3·GA-4는 미해소 가치 매트릭스에서 제거했다. 암호 입력은 2026-08-26 해소했고,
@@ -716,11 +718,14 @@ GA-1·GA-3·GA-4는 미해소 가치 매트릭스에서 제거했다. 암호 입
    │                              GJ-2(HWPML — 스펙 Part II)   GJ-3(HWP 3.x — 스펙 Part I)
    │                              (단, 스펙-실파일 불일치 사례가 있어 실파일 코퍼스 검증은 별도)
    │
-[독립·즉시 착수] ──▶ GE-α6     (그러데이션 중심·step — α1~α5·α7·α8은 ✅해소 2026-07-15)
-                    GE-2       (write.rs 국소, 그림 드롭 경고→복구)
+[독립·즉시 착수] ──▶ GE-α6     (HWPX 왕복 중심·step은 ✅해소(2026-08-19), 렌더 centerX/Y·step은 미해소,
+                               gradation `type`은 근사 유지 — α1~α5·α7·α8은 ✅해소 2026-07-15)
+                    GE-2       (write.rs 국소, 오대체 선택은 ✅해소(2026-08-19), 해소되지 않는 참조는 보고 후 그림 드롭)
                     GA-3/GA-4  (거부 메시지 — GA-5 버전 게이트는 ✅해소)
-                    GC-4 렌더  (탭 위치·채움을 hwp-render/tab.rs에 반영 — 왕복은 ✅해소)
-                    (✅해소: GH-1/GH-2, GL-1, GC-4/5/8/9, GE-β5 · GM-7 구현=실기 대기)
+                    GC-4 렌더  (탭 위치·채움을 hwp-render/tab.rs에 반영, 구조 방출 ✅해소(2026-08-19),
+                               종류별 배치 기하는 한글과 비교하지 않음 — 왕복은 ✅해소)
+                    (✅해소: GH-1/GH-2, GL-1, GC-4 왕복, GC-5/8/9, GE-β5 · GM-7 구현=실기 대기)
+                    (선행 ✅가 없는 노드는 완전 해소가 아님: 잔여는 해당 행 참조)
    │
 [수요 최상] ──▶ GJ-1(DOCX 출력) ──품질 선행──▶ GH-1/GH-2/GH-4 (링크·이미지·병합셀 정리가
                                                DOCX 매핑의 기초 데이터가 됨)
@@ -783,4 +788,4 @@ GA-5 버전 게이트, GE-β4 요약정보)은 **2026-07-15에 일괄 해소**�
 **GC-8·GC-9**(내어쓰기·문단배경, S)와 **GE-β5·GM-7**(설정 pass-through·
 도장 날인, S)이다. 고가치·고난도의 정공법이었던 **GC-2·GC-3**(공문서 빈출 쪽테두리·각주모양)과
 **GA-2**(배포용 읽기)는 셋 다 이제 해소됐다. 과거 최대 수요였던 **GJ-1**(DOCX 출력)은
-2026-08-01 해소(내보내기 전용, 입력은 L급 미해소)이며, 다음 대형 항목이었던 GM-3/4/8 계열은 2026-08-29 한글 실기 점검을 마쳤다. 마일스톤은 이제 릴리스 게이트로 넘어간다.
+2026-08-01 해소(내보내기 전용, 입력은 L급 미해소)이며, 다음 대형 항목이었던 GM-3/4/8 계열은 2026-08-29 한글 실기 점검을 마쳤다. 마일스톤은 이제 릴리스 게이트로 넘어간다. 마일스톤 1은 Phase 1 충실성 3종(GE-α6·GE-2·GC-4 렌더, 2026-08-19 PR #115)을 코드가 증명하는 범위에서 닫았다: HWPX 왕복 그러데이션 중심·step, 그림 스트림 선택, 구조적 탭·채움 방출. 네 가지 잔여는 전체 종결에 접지 않고 각 행에 남긴다: 그러데이션 중심·step 렌더, gradation `type`, 해소되지 않는 그림 참조, 종류별 탭 배치 기하. 따라서 v1.0 전 남은 작업은 릴리스 게이트 자체(준비 기록·주장 규율·이 절의 카탈로그 점검)다.

@@ -223,7 +223,7 @@ Preview text는 재생성한다. `META-INF/*`는 여전히 IR 읽기 경로가 �
 | `winBrush` | 도형(fillBrush) | faceColor | `ShapeGeom.fill` | 의미파싱 | :1040 |
 | `pt0…ptN` | Polygon/Curve | x, y | `ShapeGeom.points` | 의미파싱 | :1047 |
 | `center`/`ax1`/`ax2` | Arc | x, y | `ShapeGeom.points`(3점) | 의미파싱 | :1054 |
-| `gradation` | 도형(fillBrush) | type, angle, color* | `fill_gradient` | 부분파싱(각도 근사) | :1085 → `parse_gradation` :1217 |
+| `gradation` | 도형(fillBrush) | type, angle, centerX, centerY, step, color* | `fill_gradient`(`GradientSpec`) | 부분파싱: angle·centerX·centerY·step은 **HWPX 왕복에서 해소(2026-08-19, GE-α6)**, 렌더는 centerX·centerY·step을 아직 반영하지 않음(`shape_draw.rs:62-66`), `type`은 여전히 근사(`parse_gradation`이 단일 `radial` bool로 보존하므로 CIRCLE·CONICAL·SQUARE도 RADIAL로 읽힘, 아래 제어 페이로드 표의 그러데이션 type 행 참조) | `collect_shape` → `parse_gradation` |
 | `subList` | 도형 | (문단) | `paragraph_lists` | 재귀 | :1068 |
 | *그 외 도형 자식*(shadow/outMargin/renderingInfo·Rect/Ellipse/Arc의 pt) | 도형 | — | — | **skip(무시)** | :1059 `_ => {}` |
 | `script` | equation | 텍스트 | `Equation.script` | 의미파싱 | :1145 |
@@ -380,7 +380,7 @@ IR엔 값이 있으나(hwp5로는 나감) hwpx write가 상수/근사로 눌러 
 | charPr `supscript`/`subscript` | attr bit15/16 | ✅ 켜진 것만 방출 | **해소(2026-07-15)** | `:234,:239` ↔ 동상 |
 | `hh:underline shape` | type/**shape**/color 해석(IR `underline_shape` 신설) | ✅ `underline_shape` 기반(0=SOLID) | **해소(2026-07-15)** | `:204` ↔ 동상 |
 | colPr `colSz`/`colLine`(단별폭·구분선) | 미수집(등폭 가정) | 값 방출하나 단별폭 없음 | 불균등 단·구분선 손실 | `parse_col_pr :377` ↔ `write_col_ctrl :473` |
-| `hc:gradation angle`·중심·step | angle만(라디안 근사) | angle round + centerX/Y/step 상수 | 그러데이션 중심·단계 근사 | `parse_gradation :1217` ↔ `:764` |
+| `hc:gradation angle`·중심·step | angle·centerX/Y·step(IR `GradientSpec`) | HWPX 왕복에서 IR 기반(`gr.angle_deg`, `gr.center_x`, `gr.center_y`, `gr.step`) | **왕복 해소(2026-08-19, GE-α6)**: PR #115가 파싱한 중심·단계를 방출하며 Phase 1에서 한글 확인(FIDL-01, 정답지와 변환물 모두 선형 페이드). 렌더는 미해소: `shape_draw.rs:62-66`이 radial·angle·stop만 display gradient에 전달하여 centerX/Y·step이 렌더에 반영되지 않음. 범위 주의: gradation `type`은 이 행에 포함하지 않으며 여전히 근사(비-LINEAR 값은 RADIAL로 축약) | `parse_gradation` ↔ `write_shape_element` |
 | `hp:pagePr landscape` | attr bit0 | default_sec_pr에서 재방출 | 보존(단 secPr 다른 상수와 함께) | `:340` ↔ `:453` |
 | numbering `paraHead` 형식 | template/start/numFormat 수집 | ✅ `numbering_levels` 기반(없으면 기존 상수) | **해소(2026-07-15)** — 다중 번호정의 itemCnt 뭉개짐도 함께 수정 | `:333` ↔ `write_numberings` |
 | tab `tabPr`(위치·채움) | `tabPr/tabItem` 의미 파싱 → IR `TabDef` | ✅ `tab_stops` 기반 방출(없으면 기존 상수) | **해소(2026-07-15, GC-4)** | `read/header.rs` ↔ `write_tab_properties` |
@@ -484,4 +484,4 @@ IR엔 값이 있으나(hwp5로는 나감) hwpx write가 상수/근사로 눌러 
 - header: beginNum/compatibleDocument/docOption/linkinfo/autoSpacing 등 미매칭 요소(`:510`).
 
 **read만 해석·write 손실(범주 (b)):** charPr의 shadow·outline·emboss·engrave·supscript·subscript,
-underline shape, colPr 단별폭·구분선, gradation 중심·step, numbering 번호형식, tab 정의.
+  underline shape, colPr 단별폭·구분선, gradation type과 중심·step 렌더, numbering 번호형식, tab 정의.
