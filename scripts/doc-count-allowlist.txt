@@ -9,5 +9,7 @@
 #   - The pattern in scripts/check-doc-surface.sh is never narrowed to make a finding go away;
 #     dropping a shape is what this file exists to make unnecessary.
 #
-# There are no entries at introduction: every count-shaped occurrence in the scan set today is a
-# real tool count.
+# docs/manual/amazon-quick-desktop.md: a historical statement about the connector as it stood at
+# the 0.8.3 baseline, not a claim about the current server. The line right under it counts the
+# tools added since, so restating it as today's number would make the section false.
+The connector exposed sixteen tools when this runbook was first written. Four more arrived, and
