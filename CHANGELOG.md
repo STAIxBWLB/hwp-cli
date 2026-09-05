@@ -15,14 +15,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `scripts/hancom-regression.sh` regenerates every artifact
   `docs/hancom-verification-checklist.md` still verifies from the release binary in one command,
   into a private destination outside the repository. It gates each artifact on self-reread and
-  structural validation before publishing, writes a `hancom-regression-index-v1` JSON index last
-  carrying the file, checklist series item, command and SHA-256 of every artifact, and emits the
-  per-artifact `hwp certify` policy plus an empty `receipts/` directory. Local-only inputs skip
-  with the missing input named instead of failing. The run creates no Hancom observation and no
-  pass receipt. `HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5,C7,H2` excludes a case whose failure is
-  already tracked as an issue: the case is not published and not a pass, the index records it under
-  `known_failures` with its failure line and issue URL, and the closing report names how many cases
-  were excluded, because a run with exclusions is not a clean pass.
+  structural validation, builds the whole bundle in one fresh generation directory and publishes it
+  atomically as `<destination>/gen-<timestamp>` with a `current` symlink, so a failed rerun leaves
+  the previous generation untouched and never mixes generations. The `hancom-regression-index-v1`
+  index is written last and carries the file, checklist series item, command and SHA-256 of every
+  artifact, the binary the set is evidence for (path, version, SHA-256), and a `clean` boolean. The
+  run emits a per-artifact `hwp certify` policy plus a fresh empty `receipts/` directory, and
+  creates no Hancom observation and no pass receipt.
+
+  Coverage is proved rather than assumed: an expected-case manifest requires exactly one typed
+  outcome per case (`published`, `known_failure`, or `skipped` with reason code
+  `private_input_missing` or `series_not_regenerable`), and a case the delegated generator reported
+  nothing for is a failure, not a skip. `HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5,C7,H2` excuses a
+  case whose failure is already tracked as an issue, but only at the stage and with the message
+  fingerprint the script's table records; any other failure of that case fails the run closed. Exit
+  status is 0 for a clean pass, 1 for a regression, 2 for a precondition error and 3 for a run that
+  published but is not clean.
+
+- `hwp certify` policies accept `document.hancom_open.require_artifact_sha256`. With it set, a
+  Hancom-open receipt must carry `artifact_sha256` and it must equal the certified input, so one
+  observation cannot be replayed across a set. It defaults to false, leaving existing policies
+  unchanged; `scripts/hancom-regression.sh` sets it in every policy it emits.
 
 **Changed**
 
