@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/release.sh X.Y.Z
+# scripts/release.sh X.Y.Z <readiness-run-url>
 #
 # 워크스페이스 버전(Cargo.toml [workspace.package] version)을 bump 하고 커밋 + 태그를
 # 만든다. main 은 보호 브랜치라 이 커밋을 직접 밀 수 없다 — 브랜치에서 실행하고 PR 로
@@ -10,6 +10,13 @@
 #     gh pr create ... && gh pr merge --squash        # CHANGELOG 절 마감도 같은 PR 에서
 #     git switch main && git pull                     # main CI 가 초록인지 확인 후
 #     git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
+#
+# 두 번째 인수는 release-readiness 워크플로 실행 URL이다. docs/release-readiness.md는 릴리스
+# 문구가 제외된 parity 게이트와 그 측정 거리를 밝히도록 요구하므로, bump 전에
+# scripts/release_verification_block.sh 가 그 URL로 해당 버전 절에 **Verification** 블록을
+# 쓴다. URL이 없거나 블록이 없으면 이 스크립트는 파일을 건드리기 전에 거부한다.
+#
+#     scripts/release.sh 0.18.0 https://github.com/STAIxBWLB/hwp-cli/actions/runs/1234567890
 #
 # 자체 점검:  scripts/release.sh --self-test
 set -euo pipefail
@@ -37,7 +44,8 @@ fi
 
 # --- 릴리스 준비 -------------------------------------------------------------
 ver="${1:-}"
-[ -n "$ver" ] || { echo "usage: scripts/release.sh X.Y.Z" >&2; exit 2; }
+readiness_url="${2:-}"
+[ -n "$ver" ] || { echo "usage: scripts/release.sh X.Y.Z <readiness-run-url>" >&2; exit 2; }
 semver_ok "$ver" || { echo "오류: 시맨틱 버전 형식이 아닙니다: '$ver' (예: 0.2.0, 0.2.0-rc1)" >&2; exit 1; }
 
 cd "$(git rev-parse --show-toplevel)"
@@ -45,6 +53,23 @@ cd "$(git rev-parse --show-toplevel)"
 [ -z "$(git status --porcelain)" ] || { echo "오류: 작업 트리가 깨끗하지 않습니다. 커밋/스태시 후 다시 실행하세요." >&2; exit 1; }
 if git rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then
   echo "오류: 태그 v$ver 가 이미 존재합니다." >&2; exit 1
+fi
+
+# 릴리스 준비 증거 게이트 — 파일을 하나라도 고치기 전에 거부한다.
+if [ -z "$readiness_url" ]; then
+  cat >&2 <<EOF
+오류: release-readiness 실행 URL이 없습니다. 버전 bump, 커밋, 태그를 모두 중단합니다.
+      .github 의 release-readiness 워크플로를 먼저 dispatch 하고 그 실행 URL을 두 번째
+      인수로 넘기세요:
+        scripts/release.sh $ver https://github.com/STAIxBWLB/hwp-cli/actions/runs/<run-id>
+EOF
+  exit 1
+fi
+bash scripts/release_verification_block.sh "$ver" "$readiness_url"
+if ! awk -v want="[$ver]" '/^## / { if (found) exit; if ($2 == want) { found = 1; next } }
+                           found { print }' CHANGELOG.md | grep -q '^\*\*Verification\*\*'; then
+  echo "오류: CHANGELOG.md의 [$ver] 절에 Verification 블록이 없습니다. 태그를 만들지 않습니다." >&2
+  exit 1
 fi
 
 old=$(extract_version Cargo.toml)
@@ -65,7 +90,7 @@ fi
 # 않게 한다(릴리스 커밋에 원치 않는 dependency 변경 혼입 방지).
 cargo update --workspace --offline >/dev/null
 
-git add Cargo.toml Cargo.lock
+git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "chore(release): v$ver"
 git tag -a "v$ver" -m "v$ver"
 

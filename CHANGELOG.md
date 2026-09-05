@@ -17,6 +17,26 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   is the one that ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from
   drifting.
 
+**Added**
+
+- `scripts/check-claims.sh` fails the local gate when release-facing copy acquires one of the
+  four claim families `docs/release-readiness.md` forbids, in English or Korean. A negated or
+  quoted occurrence is exempted through `scripts/claim-allowlist.txt` one exact sentence at a
+  time, so an entry can never widen into a file-level or pattern-level exemption. The script
+  itself carries the enumeration, one alternative per line with the checklist sentence it
+  enforces.
+- `scripts/check-doc-surface.sh` ties the documentation to the running server: every tool-count
+  claim in `README*.md`, `docs/manual/*.md` and `skills/hwp/SKILL*.md` must equal the length of
+  the live `hwp mcp` `tools/list` response, and both skill files must name every CLI subcommand
+  and every MCP tool. Counts are matched in each shape the documents use and across a line wrap,
+  and a `--self-test` mode seeds every shape so the pattern cannot be narrowed unnoticed. Nine
+  stale counts and the previously undocumented `hwp dump` command are corrected with it.
+- `scripts/release_verification_block.sh` writes the `**Verification**` block into a version's
+  CHANGELOG section, naming the four excluded parity gates with the distances measured in
+  `docs/design/21-pdf-parity.md` sections 4.5 and 4.6 and the release-readiness run URL. It is
+  idempotent per version, and `scripts/release.sh` now refuses to bump, commit or tag without a
+  readiness run URL and that block.
+
 ## [0.17.0]
 
 **Added**
