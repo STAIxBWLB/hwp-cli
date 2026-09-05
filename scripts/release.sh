@@ -13,8 +13,11 @@
 #
 # 두 번째 인수는 release-readiness 워크플로 실행 URL이다. docs/release-readiness.md는 릴리스
 # 문구가 제외된 parity 게이트와 그 측정 거리를 밝히도록 요구하므로, bump 전에
-# scripts/release_verification_block.sh 가 그 URL로 해당 버전 절에 **Verification** 블록을
-# 쓴다. URL이 없거나 블록이 없으면 이 스크립트는 파일을 건드리기 전에 거부한다.
+# scripts/release_verification_block.sh 가 그 URL로 해당 버전 절에 마커로 둘러싸인
+# **Verification** 블록을 쓰고, scripts/check-verification-block.sh 가 그 실행이 실제로
+# release-readiness.yml 의 성공한 실행이며 릴리스 대상 커밋을 평가했는지 GitHub API 로
+# 확인한다. 어느 하나라도 어긋나면 파일을 건드리기 전에(또는 되돌린 뒤) 거부한다.
+# 우회 플래그는 없다.
 #
 #     scripts/release.sh 0.18.0 https://github.com/STAIxBWLB/hwp-cli/actions/runs/1234567890
 #
@@ -59,16 +62,21 @@ fi
 if [ -z "$readiness_url" ]; then
   cat >&2 <<EOF
 오류: release-readiness 실행 URL이 없습니다. 버전 bump, 커밋, 태그를 모두 중단합니다.
-      .github 의 release-readiness 워크플로를 먼저 dispatch 하고 그 실행 URL을 두 번째
-      인수로 넘기세요:
+      릴리스 준비 워크플로 .github/workflows/release-readiness.yml 은 Phase 4 plan 04-04
+      이 추가한다(PR 대기 중). 그 PR 이 머지되기 전에는 dispatch 할 수 없으므로 릴리스도
+      진행할 수 없다. 머지된 뒤 릴리스 대상 커밋(지금의 HEAD)으로 dispatch 하고, 그 실행
+      URL 을 두 번째 인수로 넘긴다:
         scripts/release.sh $ver https://github.com/STAIxBWLB/hwp-cli/actions/runs/<run-id>
 EOF
   exit 1
 fi
 bash scripts/release_verification_block.sh "$ver" "$readiness_url"
-if ! awk -v want="[$ver]" '/^## / { if (found) exit; if ($2 == want) { found = 1; next } }
-                           found { print }' CHANGELOG.md | grep -q '^\*\*Verification\*\*'; then
-  echo "오류: CHANGELOG.md의 [$ver] 절에 Verification 블록이 없습니다. 태그를 만들지 않습니다." >&2
+# 블록 자체 + 인용된 실행(성공 여부, 워크플로, head_sha)까지 확인한다. release.yml 도 태그
+# 커밋에 대해 같은 스크립트를 돌린다. 실패하면 방금 쓴 블록을 되돌려 트리를 원상복구한다
+# (위에서 트리가 깨끗함을 이미 확인했다).
+if ! bash scripts/check-verification-block.sh "$ver" "$(git rev-parse HEAD)"; then
+  git checkout -- CHANGELOG.md
+  echo "오류: 릴리스 준비 증거가 확인되지 않았습니다. CHANGELOG.md 변경을 되돌렸고, 태그를 만들지 않습니다." >&2
   exit 1
 fi
 
