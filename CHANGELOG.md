@@ -19,23 +19,35 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
-- `scripts/check-claims.sh` fails the local gate when release-facing copy acquires one of the
-  four claim families `docs/release-readiness.md` forbids, in English or Korean. A negated or
-  quoted occurrence is exempted through `scripts/claim-allowlist.txt` one exact sentence at a
-  time, so an entry can never widen into a file-level or pattern-level exemption. The script
-  itself carries the enumeration, one alternative per line with the checklist sentence it
-  enforces.
+- `scripts/check-claims.sh` fails the gate when release-facing copy acquires one of the four
+  claim families `docs/release-readiness.md` forbids, in English or Korean, in either word order
+  and in the documented equivalents of each family. A sentence that negates the phrase before
+  saying it is not a finding; a negation after it still is. Anything else is exempted through
+  `scripts/claim-allowlist.txt` as an exact `<path><TAB><line>` pair, so appending a claim to an
+  exempted line changes the line and the exemption lapses. `--self-test` runs adversarial
+  fixtures, positive and negative, over the shape list, the negation rule and the allowlist.
 - `scripts/check-doc-surface.sh` ties the documentation to the running server: every tool-count
   claim in `README*.md`, `docs/manual/*.md` and `skills/hwp/SKILL*.md` must equal the length of
   the live `hwp mcp` `tools/list` response, and both skill files must name every CLI subcommand
-  and every MCP tool. Counts are matched in each shape the documents use and across a line wrap,
-  and a `--self-test` mode seeds every shape so the pattern cannot be narrowed unnoticed. Nine
-  stale counts and the previously undocumented `hwp dump` command are corrected with it.
+  and every MCP tool. Counts are matched in every shape the documents use - numeral, counter,
+  parenthesised, labelled with a colon, spelled out in English, and Korean native numerals -
+  across up to three wrapped lines, and `--self-test` drives a table of every shape against
+  several stale values plus the live one, so neither the shapes nor the window can shrink
+  unnoticed. Nine stale counts and the previously undocumented `hwp dump` command are corrected
+  with it.
 - `scripts/release_verification_block.sh` writes the `**Verification**` block into a version's
-  CHANGELOG section, naming the four excluded parity gates with the distances measured in
-  `docs/design/21-pdf-parity.md` sections 4.5 and 4.6 and the release-readiness run URL. It is
-  idempotent per version, and `scripts/release.sh` now refuses to bump, commit or tag without a
-  readiness run URL and that block.
+  CHANGELOG section between `<!-- verification:begin -->` and `<!-- verification:end -->`, naming
+  the four excluded parity gates with the distances measured in `docs/design/21-pdf-parity.md`
+  sections 4.5 and 4.6 and the release-readiness run URL. A rerun replaces exactly that region,
+  so anything an editor added around it survives, and a missing, duplicated or unmarked block is
+  refused rather than guessed at.
+- `scripts/check-verification-block.sh` is the release boundary both ends share: it requires the
+  version's section to carry one marked block citing one Actions run URL of this repository, and
+  the GitHub API to report that run as a successful `release-readiness.yml` run whose head_sha is
+  the commit being released. `scripts/release.sh` runs it before the version bump and
+  `.github/workflows/release.yml` runs it against the tagged commit. There is no override flag.
+- The CI `lint` job now runs the claim lint, the doc-surface gate and both fixture suites, and
+  the workflow's path filters no longer exclude the documents those gates read.
 
 ## [0.17.0]
 
