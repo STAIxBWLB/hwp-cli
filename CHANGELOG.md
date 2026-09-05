@@ -48,6 +48,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `.github/workflows/release.yml` runs it against the tagged commit. There is no override flag.
 - The CI `lint` job now runs the claim lint, the doc-surface gate and both fixture suites, and
   the workflow's path filters no longer exclude the documents those gates read.
+- `.github/workflows/release-readiness.yml` runs every automatable gate of
+  `docs/release-readiness.md` against a dispatched tag or branch, from a clean checkout on the
+  runner whose Poppler the public parity manifest pins, and uploads one
+  `hwp-release-readiness-record-v1` JSON artifact naming each gate, its status and its evidence.
+  The run holds a read-only token and performs no commit, tag, package upload, release or
+  registry push; the 3-OS evidence is the evaluated commit's own CI check runs, and an absent or
+  incomplete one is recorded as pending rather than as a pass. A line the run cannot evaluate is
+  recorded as not applicable with a reason, among them the independent certification oracle,
+  which remains partial: no supported public oracle image is shipped, as
+  `docs/design/16-certification-v1.md` and the `partial_not_buildable` status of
+  `oracle/primary-artifacts.lock.json` both state.
 
 ## [0.17.0]
 
