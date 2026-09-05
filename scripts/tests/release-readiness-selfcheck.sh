@@ -402,6 +402,50 @@ same "a missing README.ko.md fails" "$(readme_gate v9.9.9 "$readme_sha")" "fail"
 printf 'curl | sh -s -- --tag v0.0.1\n' >"$readme/README.ko.md"
 same "a README.ko.md pinning another version fails" "$(readme_gate v9.9.9 "$readme_sha")" "fail"
 
+# --- 5. workspace test fonts stay private and are cleaned on success and failure ---------------
+echo "-- workspace font isolation"
+font_bin="$tmp/font-bin"
+mkdir -p "$font_bin"
+cat >"$font_bin/timeout" <<'SH'
+#!/usr/bin/env bash
+shift
+exec "$@"
+SH
+cat >"$font_bin/apt-get" <<'SH'
+#!/usr/bin/env bash
+[[ "$*" == *"download fonts-nanum" ]] || exit 90
+[[ "$*" != *"install"* ]] || exit 91
+touch fonts-nanum_fixture.deb
+SH
+cat >"$font_bin/dpkg-deb" <<'SH'
+#!/usr/bin/env bash
+[[ "$1" == --extract ]] || exit 92
+mkdir -p "$3/usr/share/fonts/truetype/nanum"
+SH
+cat >"$font_bin/cargo" <<'SH'
+#!/usr/bin/env bash
+[[ "$*" == 'test --workspace' && -d "${HWP_FONT_DIR:-}" ]] || exit 93
+printf '%s' "$HWP_FONT_DIR" >"$FONT_PROBE"
+exit "$FONT_TEST_EXIT"
+SH
+chmod +x "$font_bin/"*
+for test_exit in 0 101; do
+    font_probe="$tmp/font-probe-$test_exit"
+    rc=0
+    env -u HWP_FONT_DIR PATH="$font_bin:$PATH" RUNNER_TEMP="$tmp" \
+        FONT_PROBE="$font_probe" FONT_TEST_EXIT="$test_exit" \
+        bash "$steps/target-test-workspace.sh" >"$tmp/font-test-$test_exit.log" 2>&1 || rc=$?
+    same "workspace test exit $test_exit is preserved" "$rc" "$test_exit"
+    probe_status=1
+    test -s "$font_probe" && probe_status=0
+    check "workspace test receives an isolated font directory (exit $test_exit)" "$probe_status"
+    cleanup_status=1
+    if [ -s "$font_probe" ] && [ ! -e "$(cat "$font_probe")" ]; then
+        cleanup_status=0
+    fi
+    check "test font directory is removed before corpus (exit $test_exit)" "$cleanup_status"
+done
+
 if [ "$fail" -ne 0 ]; then
     echo "== release-readiness self-check: FAILED" >&2
     exit 1

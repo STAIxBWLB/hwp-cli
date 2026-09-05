@@ -311,11 +311,9 @@ jobs:
             echo "GATE_ENTRY_EOF"
           } >>"$GITHUB_OUTPUT"
 
-      # No font package is installed anywhere in this job, which is what keeps the corpus gate's
-      # no-ambient-font line meaningful. The render tests print "skip: no usable font" and drop
-      # their text assertions when no system CJK face exists; the 3-OS matrix cited by the
-      # ci-matrix gate is where those assertions actually run (ci.yml's test job installs
-      # fonts-nanum).
+      # The CLI render smoke tests require Korean glyphs. Extract the same package used by
+      # ci.yml into a private directory, without installing it into the system. Only this
+      # command receives HWP_FONT_DIR; the directory is removed before the corpus gate.
       - name: Target test-workspace
         id: target-test
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
@@ -324,7 +322,13 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/gates/test-workspace"
-          cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
+          font_root="$(mktemp -d)" || exit 1
+          trap 'rm -rf "$font_root"' EXIT
+          (cd "$font_root" && timeout 120 apt-get -o Acquire::Retries=2 download fonts-nanum) || exit 1
+          dpkg-deb --extract "$font_root"/fonts-nanum_*.deb "$font_root/extracted" || exit 1
+          test_fonts="$font_root/extracted/usr/share/fonts/truetype/nanum"
+          test -d "$test_fonts" || exit 1
+          HWP_FONT_DIR="$test_fonts" cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
           exit "${PIPESTATUS[0]}"
 
       - name: Gate test-workspace
@@ -400,7 +404,7 @@ jobs:
 
       # Structural plus a runtime assertion on the environment the corpus gate just ran in: this
       # job installs poppler-utils only and never a font package, and no step sets HWP_FONT_DIR
-      # for the corpus gate (only the public parity target step sets it, on its own step). The
+      # for the corpus gate (workspace tests and public parity scope it to their own commands). The
       # corpus font bytes come from scripts/fetch-corpus-fonts.sh through the manifest hashes.
       - name: Gate corpus-no-ambient-fonts
         id: gate-corpus-no-ambient-fonts
