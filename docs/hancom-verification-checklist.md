@@ -27,7 +27,26 @@ Every artifact is gated on self-reread (`hwp cat` with no warning) and structura
 a `hancom-regression-index-v1` JSON index last. An index file in the destination therefore means
 the whole set passed. Each index row carries the file name, its checklist series item, the exact
 command that produced it, its SHA-256 and the two gate columns, so an artifact can always be mapped
-back to the table entry that judges it.
+back to the table entry that judges it. The index also names the binary the set is evidence for:
+absolute path, `--version` line and SHA-256.
+
+The whole bundle is built inside one fresh generation directory and published as a unit:
+
+```
+<destination>/
+  current -> gen-<timestamp>     the published set
+  gen-<timestamp>/               immutable: artifacts, per-artifact policies,
+                                 an empty receipts/ directory, and the index
+```
+
+Nothing is written into `<destination>` itself except that generation directory and the `current`
+symlink, and nothing is ever merged into contents the script does not manage: a `current` that is a
+real directory, or a symlink aimed anywhere but a sibling `gen-*`, is refused before generation
+starts. The index is written through a temp file and renamed last inside the generation, the whole
+generation is flushed, then the generation is renamed into place and `current` swings onto it. If
+anything fails, the previous `current` is untouched and the staging directory is removed, so a rerun
+never leaves a stale index, a mixed generation or an orphan artifact. The previous generation is
+kept (the owner may have written receipts into it); anything older is removed.
 
 An artifact whose input is local only (the series A approval document, the series J bordered
 source, the series M and N private sources, and the distribution-document read gated on
@@ -73,11 +92,14 @@ just checking that the script exited or that an index file exists.
 Series E, F and G are not regenerated. That bisection is closed (see the E section below) and its
 diagnostic outputs were removed from the folder to prevent false readings.
 
-The run creates no Hancom observation and no receipt. It writes, beside each artifact, an
-`<artifact>.policy.json` naming the one receipt that will bind to that artifact, and an empty
-`receipts/` directory for those receipts to land in, so that once a real observation exists
-`hwp certify <artifact> --policy <artifact>.policy.json --report <directory>` is a single command
-with no hand editing. Never prefill a pass receipt.
+The run creates no Hancom observation and no receipt. It writes, beside each artifact in the
+generation, an `<artifact>.policy.json` naming the one receipt that will bind to that artifact, and
+a fresh empty `receipts/` directory for those receipts to land in, so that once a real observation
+exists `hwp certify current/<artifact> --policy current/<artifact>.policy.json --report <directory>`
+is a single command with no hand editing. The emitted policy sets
+`hancom_open.require_artifact_sha256`, so a receipt without an `artifact_sha256`, or with one that
+does not equal the certified artifact, is refused: a receipt cannot be replayed from one artifact
+onto another. Never prefill a pass receipt.
 
 ## Common verdict (every file)
 

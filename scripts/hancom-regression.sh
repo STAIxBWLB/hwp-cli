@@ -210,8 +210,53 @@ print(json.dumps({
 
 set -e
 WORK="$(mktemp -d)"
-STAGE="$(mktemp -d "$DEST/.hancom-regression-stage.XXXXXX")"
-trap 'rm -rf "$WORK" "$STAGE"' EXIT
+
+# --- generation directory and publish target ---------------------------------
+# The whole bundle is built inside one fresh generation directory and published
+# by renaming it into place and swinging a symlink. Writing artifacts straight
+# into the destination made a rerun mix generations: a failure half way through
+# left the previous run's artifacts beside the new ones with an index that
+# described neither.
+CURRENT="$DEST/current"
+GEN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+GEN="$DEST/.staging-$GEN_STAMP.$$"
+GEN_FINAL=""
+
+# The destination must hold nothing this script does not manage. `current` is
+# either absent or a relative symlink to a gen-* directory beside it; anything
+# else (a real directory, a symlink aimed somewhere else) is refused rather
+# than absorbed, so a rerun can never merge into unmanaged contents.
+if [[ -L "$CURRENT" ]]; then
+  current_target="$(readlink "$CURRENT")"
+  case "$current_target" in
+    gen-*/|gen-*) ;;
+    *)
+      echo "$CURRENT is a symlink to '$current_target', which this script does not manage." >&2
+      echo "Move it aside, or choose an empty destination." >&2
+      exit 2
+      ;;
+  esac
+elif [[ -e "$CURRENT" ]]; then
+  echo "$CURRENT exists and is not a symlink managed by this script." >&2
+  echo "Move it aside, or choose an empty destination." >&2
+  exit 2
+fi
+
+mkdir "$GEN"   # no -p: a colliding generation directory is an error, not a merge
+STAGE="$GEN"   # every artifact is generated straight into the new generation
+
+# shellcheck disable=SC2329  # invoked by the EXIT trap below
+cleanup() {
+  rm -rf "$WORK" "$GEN"
+  # A generation renamed into place but never linked from `current` is an
+  # orphan. Remove it so the destination only ever holds published sets.
+  if [[ -n "$GEN_FINAL" && -d "$GEN_FINAL" ]]; then
+    if [[ "$(readlink "$CURRENT" 2>/dev/null)" != "$(basename "$GEN_FINAL")" ]]; then
+      rm -rf "$GEN_FINAL"
+    fi
+  fi
+}
+trap cleanup EXIT
 
 FAILED=0
 declare -a ROWS=()
@@ -423,7 +468,7 @@ echo "Binary: $HWP_PATH ($HWP_VERSION, sha256 ${HWP_SHA256:0:12}..., explicit=$H
 # from the same generator's default phase-02.2 mode. Nothing is reimplemented
 # here; this script absorbs their outputs into one gated, indexed set.
 GENERATOR="${HWP_REGRESSION_GENERATOR:-$REPO/tools/gen_verification_set.sh}"
-LEGACY_DIR="$STAGE/legacy"
+LEGACY_DIR="$WORK/legacy"
 LEGACY_LOG="$WORK/legacy.log"
 LEGACY_CMD="tools/gen_verification_set.sh --legacy <destination>"
 mkdir -p "$LEGACY_DIR"
@@ -534,7 +579,7 @@ fi
 # The delegated generator already gates and hashes each of its twelve artifacts
 # and writes those columns into phase-02.2-index.tsv; reuse them rather than
 # re-reading and re-hashing the same bytes.
-O_DIR="$STAGE/phase-02.2"
+O_DIR="$WORK/phase-02.2"
 O_CMD="tools/gen_verification_set.sh <destination>"
 mkdir -p "$O_DIR"
 echo "Delegating series O to tools/gen_verification_set.sh (phase-02.2 mode)"
@@ -745,18 +790,12 @@ if [[ "$FAILED" -ne 0 ]]; then
   exit 1
 fi
 
-# Publish every staged artifact first. The index is the completion receipt, so
-# it is written only after the last move succeeds.
-published=0
-while IFS=$'\t' read -r name src; do
-  [[ -n "$name" ]] || continue
-  mv -f "$src" "$DEST/$name"
-  published=$((published + 1))
-done < <([[ ${#ROWS[@]} -eq 0 ]] || printf '%s\n' "${ROWS[@]}" | cut -f2,3)
-
-# Then the certify wiring: one policy per artifact naming the one receipt that
-# will bind to it, and an empty receipts directory for those receipts to land in.
-# The index is the completion receipt, so it is written after both.
+# Every artifact was generated straight into the new generation, so there is no
+# per-file publish step: the bundle is completed in place and then published as
+# one unit. What remains is the certify wiring (one policy per artifact naming
+# the one receipt that will bind to it, plus an empty receipts directory) and
+# the index, written through a temp file and renamed last inside the generation.
+published=${#ROWS[@]}
 KNOWN_FILE="$WORK/known-failures.tsv"
 : >"$KNOWN_FILE"
 [[ ${#KNOWN_FAILURES[@]} -eq 0 ]] || printf '%s\n' "${KNOWN_FAILURES[@]}" >"$KNOWN_FILE"
@@ -768,13 +807,30 @@ SKIP_FILE="$WORK/skips.tsv"
 } | python3 -c '
 import json
 import os
+import stat
 import sys
 from datetime import datetime, timezone
 
-schema, binary_json, dest, index_name, known_path, skip_path, excluded_by = sys.argv[1:8]
+schema, binary_json, gen, index_name, known_path, skip_path, excluded_by = sys.argv[1:8]
 binary = json.loads(binary_json)
-receipts = os.path.join(dest, "receipts")
-os.makedirs(receipts, exist_ok=True)
+
+
+# Create and write a file that must not already exist and must not be a
+# symlink. O_EXCL plus O_NOFOLLOW means a planted symlink is an error, never a
+# write through to whatever it points at.
+def write_new(path, text):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+# A fresh, empty, non-symlink receipts directory the owner will fill in later.
+# mkdir without exist_ok is the check: this directory is created by this run or
+# the run fails, so a pre-existing receipts path can never be reused.
+receipts = os.path.join(gen, "receipts")
+os.mkdir(receipts, 0o755)
 
 artifacts = []
 for line in sys.stdin:
@@ -810,9 +866,10 @@ for line in sys.stdin:
             },
             "render": {},
         }
-        with open(os.path.join(dest, policy_name), "w", encoding="utf-8") as handle:
-            json.dump(policy, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+        write_new(
+            os.path.join(gen, policy_name),
+            json.dumps(policy, ensure_ascii=False, indent=2) + "\n",
+        )
     artifacts.append(row)
 
 # Cases excluded by the known-failure hatch. They have no artifact row: they
@@ -862,23 +919,83 @@ index = {
     "known_failures": known_failures,
     "skips": skips,
 }
-with open(os.path.join(dest, index_name), "w", encoding="utf-8") as handle:
-    json.dump(index, handle, ensure_ascii=False, indent=2)
-    handle.write("\n")
-' "$INDEX_SCHEMA" "$BINARY_JSON" "$DEST" "$INDEX_NAME" "$KNOWN_FILE" "$SKIP_FILE" "$KNOWN_FAILURE_VAR"
+# Every child of the generation must be a regular file or the receipts
+# directory. A symlink here would publish a pointer to something outside the
+# evidence set under a name the index vouches for.
+for entry in sorted(os.listdir(gen)):
+    child = os.path.join(gen, entry)
+    info = os.lstat(child)
+    if stat.S_ISLNK(info.st_mode):
+        raise SystemExit("refusing to publish a symlink: " + entry)
+    if entry == "receipts":
+        if not stat.S_ISDIR(info.st_mode) or os.listdir(child):
+            raise SystemExit("receipts must be a fresh empty directory")
+        continue
+    if not stat.S_ISREG(info.st_mode):
+        raise SystemExit("refusing to publish a non-regular file: " + entry)
+
+# The index is the completion receipt, so it lands last and atomically: a
+# reader either sees no index or sees a complete one.
+index_tmp = os.path.join(gen, "." + index_name + ".tmp")
+write_new(index_tmp, json.dumps(index, ensure_ascii=False, indent=2) + "\n")
+os.rename(index_tmp, os.path.join(gen, index_name))
+
+# Flush the whole generation before the caller renames it into place, so a
+# crash between publish and the next boot cannot leave named-but-empty files.
+for entry in sorted(os.listdir(gen)):
+    child = os.path.join(gen, entry)
+    if os.path.isfile(child):
+        fd = os.open(child, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+dir_fd = os.open(gen, os.O_RDONLY)
+try:
+    os.fsync(dir_fd)
+finally:
+    os.close(dir_fd)
+' "$INDEX_SCHEMA" "$BINARY_JSON" "$GEN" "$INDEX_NAME" "$KNOWN_FILE" "$SKIP_FILE" "$KNOWN_FAILURE_VAR" || {
+  echo 'bundle assembly failed; the previous generation is untouched.' >&2
+  exit 1
+}
+
+# --- publish -----------------------------------------------------------------
+# Two renames, both atomic, in this order: the finished generation becomes an
+# immutable gen-<timestamp> directory, then `current` swings onto it. Until the
+# second rename lands, every reader still sees the previous generation whole.
+GEN_FINAL="$DEST/gen-$GEN_STAMP"
+[[ -e "$GEN_FINAL" ]] && { echo "generation already exists: $GEN_FINAL" >&2; exit 1; }
+mv "$GEN" "$GEN_FINAL"
+CURRENT_PREVIOUS="$(readlink "$CURRENT" 2>/dev/null || true)"
+ln -s "$(basename "$GEN_FINAL")" "$CURRENT.new.$$"
+mv -f "$CURRENT.new.$$" "$CURRENT"
+
+# Keep the generation `current` points at plus the one before it: the owner may
+# have written receipts into the previous generation, and losing those to a
+# rerun would destroy real observations. Anything older is removed, so the
+# destination never accumulates orphan artifacts.
+for stale in "$DEST"/gen-*; do
+  [[ -d "$stale" ]] || continue
+  stale_name="$(basename "$stale")"
+  [[ "$stale_name" == "$(basename "$GEN_FINAL")" ]] && continue
+  [[ -n "$CURRENT_PREVIOUS" && "$stale_name" == "${CURRENT_PREVIOUS%/}" ]] && continue
+  rm -rf "$stale"
+done
 
 echo
 echo "=== regeneration report ==="
 [[ ${#REPORT[@]} -eq 0 ]] || printf '%s\n' "${REPORT[@]}"
 echo
-echo "Published: $published artifact(s)"
-echo "Index: $DEST/$INDEX_NAME"
-echo "Receipts directory (empty): $DEST/receipts"
+echo "Published: $published artifact(s) in generation $(basename "$GEN_FINAL")"
+echo "Current: $CURRENT -> $(basename "$GEN_FINAL")"
+echo "Index: $CURRENT/$INDEX_NAME"
+echo "Receipts directory (empty): $CURRENT/receipts"
 echo
 echo 'After a real Hancom observation, write that artifact its receipt at the path'
 echo 'its index row names, then prove the binding with one command per artifact:'
-echo "  hwp certify $DEST/<artifact> \\"
-echo "    --policy $DEST/<artifact>.policy.json \\"
+echo "  hwp certify $CURRENT/<artifact> \\"
+echo "    --policy $CURRENT/<artifact>.policy.json \\"
 echo '    --report <a fresh report directory>'
 echo 'The receipt binding is the "hancom_open" check in that report.'
 echo
