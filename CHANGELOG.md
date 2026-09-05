@@ -19,7 +19,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   carrying the file, checklist series item, command and SHA-256 of every artifact, and emits the
   per-artifact `hwp certify` policy plus an empty `receipts/` directory. Local-only inputs skip
   with the missing input named instead of failing. The run creates no Hancom observation and no
-  pass receipt.
+  pass receipt. `HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5,C7,H2` excludes a case whose failure is
+  already tracked as an issue: the case is not published and not a pass, the index records it under
+  `known_failures` with its failure line and issue URL, and the closing report names how many cases
+  were excluded, because a run with exclusions is not a clean pass.
 
 **Changed**
 

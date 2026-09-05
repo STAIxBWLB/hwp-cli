@@ -18,6 +18,12 @@
 # Environment:
 #   HWP_BIN   override the hwp binary (default: target/release/hwp, then
 #             target/debug/hwp, otherwise a release build is made)
+#   HWP_REGRESSION_ALLOW_KNOWN_FAILURES
+#             comma-separated checklist case ids (for example C5,C7,H2) whose
+#             failure is already tracked as a GitHub issue. A listed case that
+#             fails is recorded in the index as a known_failure instead of
+#             failing the run; it is still not published and still not a pass.
+#             Only an id in KNOWN_FAILURE_ISSUES below may be listed.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,6 +32,57 @@ export HWP_FONT_DIR="$REPO/fonts"   # hwp5 synthetic lineseg computation needs i
 
 INDEX_NAME='hancom-regression-index.json'
 INDEX_SCHEMA='hancom-regression-index-v1'
+
+# --- known-failure hatch -----------------------------------------------------
+# A case may be excluded only if it is in this table: the index entry has to
+# name the issue that tracks it, so an exclusion is always an open defect on
+# record and never a quiet allowance. Remove the row when the issue closes.
+KNOWN_FAILURE_VAR='HWP_REGRESSION_ALLOW_KNOWN_FAILURES'
+KNOWN_FAILURE_ISSUES=(
+  'C5=https://github.com/STAIxBWLB/hwp-cli/issues/236'
+  'C7=https://github.com/STAIxBWLB/hwp-cli/issues/237'
+  'H2=https://github.com/STAIxBWLB/hwp-cli/issues/238'
+)
+
+known_failure_issue() {
+  local entry
+  for entry in "${KNOWN_FAILURE_ISSUES[@]}"; do
+    if [[ "$entry" == "$1="* ]]; then
+      printf '%s' "${entry#*=}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Parse and validate the allow list before anything is generated: an id nobody
+# tracks must stop the run, not silently widen the gate mid-way.
+declare -a EXCLUDE=()
+if [[ -n "${!KNOWN_FAILURE_VAR:-}" ]]; then
+  IFS=',' read -r -a exclude_raw <<<"${!KNOWN_FAILURE_VAR}"
+  for entry in "${exclude_raw[@]}"; do
+    entry="${entry//[[:space:]]/}"
+    [[ -n "$entry" ]] || continue
+    if ! known_failure_issue "$entry" >/dev/null; then
+      echo "$KNOWN_FAILURE_VAR: unknown case id '$entry'; only a case tracked in" >&2
+      echo "KNOWN_FAILURE_ISSUES may be excluded. Tracked ids:" >&2
+      printf '  %s\n' "${KNOWN_FAILURE_ISSUES[@]%%=*}" >&2
+      exit 1
+    fi
+    EXCLUDE+=("$entry")
+  done
+fi
+
+is_excluded() {
+  local id
+  if [[ ${#EXCLUDE[@]} -eq 0 ]]; then
+    return 1
+  fi
+  for id in "${EXCLUDE[@]}"; do
+    [[ "$id" == "$1" ]] && return 0
+  done
+  return 1
+}
 
 # The regenerated set is private evidence. Resolve both paths before creating
 # the destination so repository paths and symlink aliases are rejected before
@@ -68,6 +125,7 @@ trap 'rm -rf "$WORK" "$STAGE"' EXIT
 FAILED=0
 declare -a ROWS=()
 declare -a REPORT=()
+declare -a KNOWN_FAILURES=()   # <case>\t<reason>\t<issue>, one per excluded case
 
 # Self-reread and structure gate, identical to tools/gen_verification_set.sh.
 reread_and_validate() {
@@ -114,7 +172,15 @@ index_command() {
   printf '%s' "$out"
 }
 
+# A failure of a case listed in HWP_REGRESSION_ALLOW_KNOWN_FAILURES is recorded
+# against its tracking issue and the run continues. It is still not published
+# and still not a pass; any other failure fails the whole run closed.
 fail() {
+  if is_excluded "$1"; then
+    KNOWN_FAILURES+=("$1"$'\t'"$2"$'\t'"$(known_failure_issue "$1")")
+    REPORT+=("known  $1  $2")
+    return 0
+  fi
   FAILED=1
   REPORT+=("FAIL  $1  $2")
 }
@@ -400,6 +466,32 @@ else
   skip P6_set_cell_para "fixtures/samples/report-tables.hwpx is missing"
 fi
 
+# A listed case that did not fail is a stale entry: say so, so the list does not
+# outlive the defect it excuses.
+for excluded_id in ${EXCLUDE[@]+"${EXCLUDE[@]}"}; do
+  excluded_seen=0
+  for recorded in ${KNOWN_FAILURES[@]+"${KNOWN_FAILURES[@]}"}; do
+    [[ "${recorded%%$'\t'*}" == "$excluded_id" ]] && excluded_seen=1
+  done
+  [[ "$excluded_seen" -eq 1 ]] && continue
+  if [[ ${#ROWS[@]} -gt 0 ]] && printf '%s\n' "${ROWS[@]}" | cut -f1 | grep -qxF "$excluded_id"; then
+    REPORT+=("listed but passed  $excluded_id  remove it from $KNOWN_FAILURE_VAR")
+  else
+    REPORT+=("listed but not run  $excluded_id  the case never reported a result")
+  fi
+done
+
+# Report how many cases the hatch excused, in both outcomes, so a run that is
+# not a clean pass can never read as one.
+excluded_summary() {
+  if [[ ${#KNOWN_FAILURES[@]} -eq 0 ]]; then
+    echo 'Known failures excluded: 0'
+    return 0
+  fi
+  echo "Known failures excluded: ${#KNOWN_FAILURES[@]} ($(printf '%s\n' "${KNOWN_FAILURES[@]}" | cut -f1 | paste -sd, -)) by $KNOWN_FAILURE_VAR"
+  echo 'A run with exclusions is not a clean pass.'
+}
+
 # --- publish and index ------------------------------------------------------
 if [[ "$FAILED" -ne 0 ]]; then
   echo
@@ -407,6 +499,7 @@ if [[ "$FAILED" -ne 0 ]]; then
   [[ ${#REPORT[@]} -eq 0 ]] || printf '%s\n' "${REPORT[@]}"
   echo
   echo "Regeneration failed; nothing was published and no index was written."
+  excluded_summary
   echo 'No Hancom observation and no pass receipt was created by this run.'
   exit 1
 fi
@@ -423,6 +516,9 @@ done < <([[ ${#ROWS[@]} -eq 0 ]] || printf '%s\n' "${ROWS[@]}" | cut -f2,3)
 # Then the certify wiring: one policy per artifact naming the one receipt that
 # will bind to it, and an empty receipts directory for those receipts to land in.
 # The index is the completion receipt, so it is written after both.
+KNOWN_FILE="$WORK/known-failures.tsv"
+: >"$KNOWN_FILE"
+[[ ${#KNOWN_FAILURES[@]} -eq 0 ]] || printf '%s\n' "${KNOWN_FAILURES[@]}" >"$KNOWN_FILE"
 {
   [[ ${#ROWS[@]} -eq 0 ]] || printf '%s\n' "${ROWS[@]}"
 } | python3 -c '
@@ -431,7 +527,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-schema, version, binary, dest, index_name = sys.argv[1:6]
+schema, version, binary, dest, index_name, known_path, excluded_by = sys.argv[1:8]
 receipts = os.path.join(dest, "receipts")
 os.makedirs(receipts, exist_ok=True)
 
@@ -474,17 +570,37 @@ for line in sys.stdin:
             handle.write("\n")
     artifacts.append(row)
 
+# Cases excluded by the known-failure hatch. They have no artifact row: they
+# failed, were not published, and are not a pass. The entry names the issue that
+# tracks the defect and the variable that let the run continue.
+known_failures = []
+with open(known_path, encoding="utf-8") as handle:
+    for line in handle:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        case, reason, issue = line.split("\t")
+        known_failures.append(
+            {
+                "case": case,
+                "reason": reason,
+                "issue": issue,
+                "excluded_by": excluded_by,
+            }
+        )
+
 index = {
     "schema": schema,
     "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "hwp_version": version,
     "hwp_binary": binary,
     "artifacts": artifacts,
+    "known_failures": known_failures,
 }
 with open(os.path.join(dest, index_name), "w", encoding="utf-8") as handle:
     json.dump(index, handle, ensure_ascii=False, indent=2)
     handle.write("\n")
-' "$INDEX_SCHEMA" "$HWP_VERSION" "$HWP_BINARY" "$DEST" "$INDEX_NAME"
+' "$INDEX_SCHEMA" "$HWP_VERSION" "$HWP_BINARY" "$DEST" "$INDEX_NAME" "$KNOWN_FILE" "$KNOWN_FAILURE_VAR"
 
 echo
 echo "=== regeneration report ==="
@@ -500,4 +616,6 @@ echo "  hwp certify $DEST/<artifact> \\"
 echo "    --policy $DEST/<artifact>.policy.json \\"
 echo '    --report <a fresh report directory>'
 echo 'The receipt binding is the "hancom_open" check in that report.'
+echo
+excluded_summary
 echo 'No Hancom observation and no pass receipt was created by this run.'

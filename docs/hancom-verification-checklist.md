@@ -35,6 +35,17 @@ source, the series M and N private sources, and the distribution-document read g
 missing private input is not a regression. A case that fails gets no index row either, and fails
 the run, so a gap is never silent.
 
+`HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5,C7,H2` lets the run continue past a case whose failure is
+already tracked as a GitHub issue. **Use it only for a failure that has an issue**; a case nobody is
+carrying must fail the run. A listed case that fails is still not published and still not counted as
+a pass: it is recorded in the index's `known_failures` array with the harness's own failure line, the
+issue that tracks it and the name of the variable that excluded it, and the closing report names how
+many cases were excluded. An id the script does not track is rejected before any artifact is
+generated, and a listed case that unexpectedly passes is published normally and reported as
+"listed but passed", so a stale entry cannot outlive the defect it excuses. Every exclusion is
+carried forward into the release verification block (phase 4, plan 04-05): **a run with exclusions is
+not a clean pass**, and the milestone is not clean until those issues close and the variable is unset.
+
 Series E, F and G are not regenerated. That bisection is closed (see the E section below) and its
 diagnostic outputs were removed from the folder to prevent false readings.
 
