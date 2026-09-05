@@ -200,6 +200,10 @@ trust() { # <ref> <sha> -> prints "<rc> <trusted>"
 same "a commit reachable from origin/main is trusted" "$(trust main "$main_sha")" "0 yes"
 same "a tag of this repository is trusted" "$(trust v9.9.9 "$side_sha")" "0 yes"
 same "a fully qualified tag ref is trusted" "$(trust refs/tags/v9.9.9 "$side_sha")" "0 yes"
+git -C "$work" tag -f v9.9.9 "$main_sha" >/dev/null
+git -C "$work" push -q --force origin v9.9.9
+same "an existing tag pointing elsewhere does not trust a side commit" \
+    "$(trust v9.9.9 "$side_sha")" "1 no"
 git -C "$work" tag -d v9.9.9 >/dev/null
 git -C "$work" push -q origin :refs/tags/v9.9.9
 same "a ref that is neither a tag nor an ancestor of main is refused" \

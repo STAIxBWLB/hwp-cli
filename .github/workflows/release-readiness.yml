@@ -109,7 +109,7 @@ jobs:
           git fetch --quiet --force origin "+refs/tags/*:refs/tags/*"
           trusted=no
           why=""
-          if tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" || tag_sha="" &&
+          if tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" &&
             [ "$tag_sha" = "$EVALUATED_SHA" ]; then
             trusted=yes
             why="the evaluated commit is refs/tags/${tag} of this repository"
