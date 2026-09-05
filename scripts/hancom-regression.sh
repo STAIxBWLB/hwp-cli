@@ -13,11 +13,20 @@
 # Hancom Office and reports what happened.
 #
 # Usage:
-#   scripts/hancom-regression.sh [destination]
+#   scripts/hancom-regression.sh [--no-build] [destination]
+#
+#   --no-build  never invoke cargo; if target/release/hwp is absent, print the
+#               exact build command and exit instead of building it here.
 #
 # Environment:
-#   HWP_BIN   override the hwp binary (default: target/release/hwp, then
-#             target/debug/hwp, otherwise a release build is made)
+#   HWP_BIN   run this executable instead of target/release/hwp. An explicitly
+#             supplied binary is recorded in the index with "explicit": true and
+#             is exempt from the workspace-version match, because the caller has
+#             taken responsibility for what it points at. With HWP_BIN unset the
+#             gate uses target/release/hwp and nothing else: a debug build has
+#             different optimization and different assertion behaviour, so
+#             certifying its bytes would certify something the release never
+#             ships.
 #   HWP_REGRESSION_ALLOW_KNOWN_FAILURES
 #             comma-separated checklist case ids (for example C5,C7,H2) whose
 #             failure is already tracked as a GitHub issue. A listed case that
@@ -27,7 +36,20 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${1:-$HOME/Documents/hwp-verification/regression}"
+
+NO_BUILD=false
+declare -a POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-build) NO_BUILD=true ;;
+    -h|--help) sed -n '2,/^set -uo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit 0 ;;
+    --) shift; POSITIONAL+=("$@"); break ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) POSITIONAL+=("$1") ;;
+  esac
+  shift
+done
+DEST="${POSITIONAL[0]:-$HOME/Documents/hwp-verification/regression}"
 export HWP_FONT_DIR="$REPO/fonts"   # hwp5 synthetic lineseg computation needs it (5.1.x)
 
 INDEX_NAME='hancom-regression-index.json'
@@ -100,22 +122,63 @@ fi
 DEST="$DEST_REAL"
 mkdir -p "$DEST"
 
-# Release binary first: the checklist verdict is about what the release ships.
+# --- binary resolution -------------------------------------------------------
+# The release binary, or an executable the caller took explicit responsibility
+# for. There is no debug fallback: a release gate that silently certifies a
+# debug build certifies bytes the release never produces.
+RELEASE_BIN="$REPO/target/release/hwp"
+BUILD_CMD="cargo build --release --locked --manifest-path $REPO/Cargo.toml"
+HWP_EXPLICIT=false
 HWP="${HWP_BIN:-}"
-if [[ -z "$HWP" ]]; then
-  HWP="$REPO/target/release/hwp"
+if [[ -n "$HWP" ]]; then
+  HWP_EXPLICIT=true
+else
+  HWP="$RELEASE_BIN"
   if [[ ! -x "$HWP" ]]; then
-    HWP="$REPO/target/debug/hwp"
-    [[ -x "$HWP" ]] || {
-      HWP="$REPO/target/release/hwp"
-      cargo build --release --manifest-path "$REPO/Cargo.toml" -q
-    }
+    if [[ "$NO_BUILD" == true ]]; then
+      echo "release binary missing: $RELEASE_BIN" >&2
+      echo "--no-build was given; build it first with:" >&2
+      echo "  $BUILD_CMD" >&2
+      exit 2
+    fi
+    echo "Building the release binary: $BUILD_CMD"
+    # shellcheck disable=SC2086  # BUILD_CMD is script-authored, word splitting is intended
+    $BUILD_CMD -q || { echo "release build failed: $BUILD_CMD" >&2; exit 2; }
   fi
 fi
-[[ -x "$HWP" ]] || { echo "hwp binary not found: $HWP" >&2; exit 1; }
+[[ -x "$HWP" ]] || { echo "hwp binary not found or not executable: $HWP" >&2; exit 2; }
+
+# Absolute path, version line and content hash of the executable that produced
+# the set: without them an index cannot say which build it is evidence for.
+HWP_PATH="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=False))' "$HWP")"
 HWP_VERSION="$("$HWP" --version 2>/dev/null | head -1)"
-HWP_BINARY="$HWP"
-[[ "$HWP_BINARY" == "$REPO_REAL/"* ]] && HWP_BINARY="${HWP_BINARY#"$REPO_REAL"/}"
+HWP_SHA256="$(shasum -a 256 "$HWP" | awk '{print $1}')"
+[[ -n "$HWP_VERSION" && -n "$HWP_SHA256" ]] || {
+  echo "could not read --version or sha256 from: $HWP_PATH" >&2
+  exit 2
+}
+WORKSPACE_VERSION="$(awk '
+  /^\[workspace\.package\]/ { in_section = 1; next }
+  /^\[/                     { in_section = 0 }
+  in_section && /^version[[:space:]]*=/ { gsub(/[^0-9.]/, ""); print; exit }
+' "$REPO/Cargo.toml")"
+if [[ "$HWP_EXPLICIT" != true && "$HWP_VERSION" != "hwp $WORKSPACE_VERSION" ]]; then
+  echo "binary version mismatch: $HWP_PATH reports '$HWP_VERSION'," >&2
+  echo "but the workspace is at $WORKSPACE_VERSION. Rebuild with:" >&2
+  echo "  $BUILD_CMD" >&2
+  echo "or set HWP_BIN explicitly to certify a different build on purpose." >&2
+  exit 2
+fi
+BINARY_JSON="$(python3 -c '
+import json
+import sys
+print(json.dumps({
+    "path": sys.argv[1],
+    "version": sys.argv[2],
+    "sha256": sys.argv[3],
+    "explicit": sys.argv[4] == "true",
+}))
+' "$HWP_PATH" "$HWP_VERSION" "$HWP_SHA256" "$HWP_EXPLICIT")"
 
 set -e
 WORK="$(mktemp -d)"
@@ -237,7 +300,7 @@ emit() {
 }
 
 echo "Destination: $DEST"
-echo "Binary: $HWP_BINARY ($HWP_VERSION)"
+echo "Binary: $HWP_PATH ($HWP_VERSION, sha256 ${HWP_SHA256:0:12}..., explicit=$HWP_EXPLICIT)"
 
 # --- delegated generation ----------------------------------------------------
 # Series A, B, C, D, H, I, J, K and L come from the rounds 13-23 generator, which
@@ -527,7 +590,8 @@ import os
 import sys
 from datetime import datetime, timezone
 
-schema, version, binary, dest, index_name, known_path, excluded_by = sys.argv[1:8]
+schema, binary_json, dest, index_name, known_path, excluded_by = sys.argv[1:7]
+binary = json.loads(binary_json)
 receipts = os.path.join(dest, "receipts")
 os.makedirs(receipts, exist_ok=True)
 
@@ -592,15 +656,16 @@ with open(known_path, encoding="utf-8") as handle:
 index = {
     "schema": schema,
     "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "hwp_version": version,
-    "hwp_binary": binary,
+    # Which build this set is evidence for. Without the hash an index cannot
+    # distinguish two runs of the same version number.
+    "binary": binary,
     "artifacts": artifacts,
     "known_failures": known_failures,
 }
 with open(os.path.join(dest, index_name), "w", encoding="utf-8") as handle:
     json.dump(index, handle, ensure_ascii=False, indent=2)
     handle.write("\n")
-' "$INDEX_SCHEMA" "$HWP_VERSION" "$HWP_BINARY" "$DEST" "$INDEX_NAME" "$KNOWN_FILE" "$KNOWN_FAILURE_VAR"
+' "$INDEX_SCHEMA" "$BINARY_JSON" "$DEST" "$INDEX_NAME" "$KNOWN_FILE" "$KNOWN_FAILURE_VAR"
 
 echo
 echo "=== regeneration report ==="
