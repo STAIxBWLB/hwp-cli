@@ -10,6 +10,22 @@ name: Release readiness
 # commits, creates or moves a ref, publishes a release, or builds or pushes an image. The only
 # thing the run uploads is its own record artifact.
 #
+# Trust policy. Half of what this run executes is code from the EVALUATED ref (cargo build
+# scripts, scripts/*.sh), and the record it produces is the evidence a release cites. So before
+# any of that code runs, the trust step requires the evaluated commit to be either a tag of this
+# repository or an ancestor of origin/main. Anything else is refused with a single `refused`
+# outcome, and no gate step runs at all.
+#
+# Controller steps and target steps. A step that executes code from the evaluated ref is a target
+# step: it runs the command, captures stdout/stderr into $RUNNER_TEMP/gates/<name>/log, and does
+# nothing else. It is never told where the ledger is - the ledger path is a random file name held
+# in a step OUTPUT of the prepare step, which the runner passes only to the steps that reference
+# it, and it is never written to $GITHUB_ENV (which every later step, target steps included,
+# receives). Every gate ENTRY is written by a controller step, whose shell lives in this file (the
+# dispatch ref) rather than in the evaluated checkout, from the target step's recorded outcome.
+# So a gate script from the evaluated ref decides its own exit status and nothing else: it cannot
+# append an entry, rewrite an earlier one, or change what the record says about it.
+#
 # Step order is dependency order, not checklist order: the clean-tree gate runs before anything
 # writes to the checkout, and the public parity gate runs last because it writes scorecards into
 # the tracked scoreboard directory. The record assembly re-orders every entry into the checklist's
@@ -40,32 +56,117 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
+          # The trust policy resolves this repository's tags and asks whether the evaluated
+          # commit is an ancestor of origin/main; neither question is answerable in a shallow
+          # clone.
+          fetch-depth: 0
+
       # A workflow_dispatch run's own GITHUB_SHA is the dispatch ref's commit (the run's
       # head_sha), not the evaluated ref's, so the two are recorded as separate fields and the
       # evaluated one is resolved explicitly here and used everywhere below. A verifier that
       # compares the run's head_sha to the commit being released would be checking the dispatch
       # ref, not the code this run evaluated; scripts/check-verification-block.sh compares the
       # record's evaluated_sha instead.
-      - name: Resolve the evaluated commit
+      #
+      # The ledger and the check-run file are created here, with random names, and their paths
+      # leave this step as step outputs only. Nothing puts them in $GITHUB_ENV, so no target step
+      # is handed a way to locate the evidence.
+      - name: Prepare the controller ledger
+        id: prepare
         shell: bash
         env:
           READINESS_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
+          ledger="$(mktemp "$RUNNER_TEMP/ledger.XXXXXXXXXXXX")"
+          check_runs="$(mktemp "$RUNNER_TEMP/check-runs.XXXXXXXXXXXX")"
+          mkdir -p "$RUNNER_TEMP/gates"
           {
-            echo "READINESS_SHA=$sha"
-            echo "GATES_FILE=$RUNNER_TEMP/gates.tsv"
-            echo "CHECK_RUNS_FILE=$RUNNER_TEMP/check-runs.tsv"
-          } >>"$GITHUB_ENV"
-          : >"$RUNNER_TEMP/gates.tsv"
+            echo "evaluated_sha=$sha"
+            echo "ledger=$ledger"
+            echo "check_runs=$check_runs"
+          } >>"$GITHUB_OUTPUT"
           echo "ref=$READINESS_REF evaluated_sha=$sha workflow_source_sha=$GITHUB_SHA"
 
-      # Checklist line 28, run first: the checklist asks for a clean checkout, and later gates
-      # fetch fonts and write parity scorecards into the working tree.
-      - name: Gate clean-tree
-        if: ${{ !cancelled() }}
+      # The gate that has to come before every target step: this run executes the evaluated ref's
+      # build scripts and shell scripts, so the evaluated commit must be code this repository has
+      # already accepted. A tag of this repository, or a commit reachable from origin/main, is
+      # accepted; a fork branch, a pull-request head or a rewritten commit is refused, recorded as
+      # one `refused` outcome, and stops the job before any target-ref code runs.
+      - name: Trust policy for the evaluated ref
+        id: trust
         shell: bash
+        env:
+          READINESS_REF: ${{ inputs.ref }}
+          EVALUATED_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
+          WORKFLOW_SOURCE_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RECORD_PATH: ${{ runner.temp }}/release-readiness-record.json
+        run: |
+          set -euo pipefail
+          # `refs/tags/v1` and `v1` name the same tag; normalize before resolving so the policy
+          # never builds refs/tags/refs/tags/... and never misses a genuine tag.
+          tag="${READINESS_REF#refs/tags/}"
+          git fetch --quiet --force origin "+refs/heads/main:refs/remotes/origin/main"
+          git fetch --quiet --force origin "+refs/tags/*:refs/tags/*"
+          trusted=no
+          why=""
+          if tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" &&
+            [ "$tag_sha" = "$EVALUATED_SHA" ]; then
+            trusted=yes
+            why="the evaluated commit is refs/tags/${tag} of this repository"
+          elif git merge-base --is-ancestor "$EVALUATED_SHA" refs/remotes/origin/main; then
+            trusted=yes
+            why="the evaluated commit is reachable from origin/main"
+          else
+            why="the evaluated commit is neither a tag of this repository nor reachable from origin/main"
+          fi
+          echo "trusted=$trusted" >>"$GITHUB_OUTPUT"
+          echo "trust: $trusted ($why)"
+          if [ "$trusted" = yes ]; then
+            exit 0
+          fi
+          # Refused: write the record here, because no gate ran and none will.
+          export WHY="$why"
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+
+          record = {
+              "schema": "hwp-release-readiness-record-v1",
+              "generated_at": datetime.datetime.now(datetime.timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z"),
+              "ref": os.environ["READINESS_REF"],
+              "evaluated_sha": os.environ["EVALUATED_SHA"].lower(),
+              "workflow_source_sha": os.environ["WORKFLOW_SOURCE_SHA"].lower(),
+              "result": "refused",
+              "run_url": os.environ["RUN_URL"],
+              "gates": [
+                  {
+                      "name": "trust-policy",
+                      "status": "refused",
+                      "evidence": os.environ["WHY"],
+                  }
+              ],
+          }
+          with open(os.environ["RECORD_PATH"], "w", encoding="utf-8") as handle:
+              handle.write(json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+          PY
+          echo "::error::refused: $why. No gate ran and no code from ${READINESS_REF} was executed."
+          exit 1
+
+      # Checklist line 28, run first: the checklist asks for a clean checkout, and later gates
+      # fetch fonts and write parity scorecards into the working tree. Controller step: `git
+      # status` reads the checkout, it does not execute anything from it.
+      - name: Gate clean-tree
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
           dirty="$(git status --porcelain --untracked-files=all)"
@@ -78,16 +179,19 @@ jobs:
           fi
           printf '%s\t%s\t%s\n' clean-tree "$status" "$evidence" >>"$GATES_FILE"
 
-      - uses: dtolnay/rust-toolchain@1.93.0
+      - if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        uses: Swatinem/rust-cache@v2
 
       # Copied from ci.yml's pdf-parity job, including the mirror pin and the bounded retry: the
       # public manifest pins the Poppler version, so the parity gate is only meaningful when the
       # installed pdfinfo matches it.
       - name: Install pinned Poppler tools
-        if: ${{ !cancelled() }}
+        id: poppler
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         # Worst case is 3 x (120s update + 120s install) + 2 x 10s sleep, ~12.3 min;
         # with the mirror pinned and apt-level timeouts the normal case is seconds.
@@ -121,29 +225,67 @@ jobs:
           expected="$(python3 -c 'import json; print(json.load(open("fixtures/pdf-parity/public/manifest.json", encoding="utf-8"))["pins"]["poppler_version"])')"
           actual="$(pdfinfo -v 2>&1 | sed -n '1p')"
           echo "pdfinfo: $actual"
-          echo "PDFINFO_VERSION=$actual" >>"$GITHUB_ENV"
+          echo "pdfinfo_version=$actual" >>"$GITHUB_OUTPUT"
           test "$actual" = "$expected"
 
       # --- gates ---------------------------------------------------------------------------------
-      # Every gate step records one tab-separated `name<TAB>status<TAB>evidence` line and never
-      # fails the job itself: the record-assembly step decides the outcome, so one run reports
-      # every gate instead of stopping at the first failure. `if: ${{ !cancelled() }}` keeps the
+      # Target steps carry `continue-on-error: true` and run one command from the evaluated ref;
+      # the controller step that follows turns `steps.<id>.outcome`, which the runner holds and no
+      # target process can touch, into one `name<TAB>status<TAB>evidence` line. No gate step fails
+      # the job: the record-assembly step decides the outcome, so one run reports every gate
+      # instead of stopping at the first failure. `if: ${{ !cancelled() && ... }}` keeps the
       # remaining gates running when a non-gate step does fail (same idiom as ci.yml's lint job).
 
-      - name: Gate fmt
-        if: ${{ !cancelled() }}
+      - name: Target fmt
+        id: target-fmt
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -uo pipefail
-          if cargo fmt --all --check; then status=pass; else status=fail; fi
+          mkdir -p "$RUNNER_TEMP/gates/fmt"
+          cargo fmt --all --check 2>&1 | tee "$RUNNER_TEMP/gates/fmt/log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Gate fmt
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-fmt.outcome }}
+        run: |
+          set -uo pipefail
+          case "$OUTCOME" in
+          success) status=pass ;;
+          failure) status=fail ;;
+          *) status=pending ;;
+          esac
           printf '%s\t%s\t%s\n' fmt "$status" 'cargo fmt --all --check' >>"$GATES_FILE"
 
-      - name: Gate clippy
-        if: ${{ !cancelled() }}
+      - name: Target clippy
+        id: target-clippy
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -uo pipefail
-          if cargo clippy --workspace --all-targets -- -D warnings; then status=pass; else status=fail; fi
+          mkdir -p "$RUNNER_TEMP/gates/clippy"
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gates/clippy/log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Gate clippy
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-clippy.outcome }}
+        run: |
+          set -uo pipefail
+          case "$OUTCOME" in
+          success) status=pass ;;
+          failure) status=fail ;;
+          *) status=pending ;;
+          esac
           printf '%s\t%s\t%s\n' clippy "$status" 'cargo clippy --workspace --all-targets -- -D warnings' >>"$GATES_FILE"
 
       # No font package is installed anywhere in this job, which is what keeps the corpus gate's
@@ -151,46 +293,79 @@ jobs:
       # their text assertions when no system CJK face exists; the 3-OS matrix cited by the
       # ci-matrix gate is where those assertions actually run (ci.yml's test job installs
       # fonts-nanum).
-      - name: Gate test-workspace
-        if: ${{ !cancelled() }}
+      - name: Target test-workspace
+        id: target-test
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -uo pipefail
-          if cargo test --workspace; then status=pass; else status=fail; fi
+          mkdir -p "$RUNNER_TEMP/gates/test-workspace"
+          cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Gate test-workspace
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-test.outcome }}
+        run: |
+          set -uo pipefail
+          case "$OUTCOME" in
+          success) status=pass ;;
+          failure) status=fail ;;
+          *) status=pending ;;
+          esac
           printf '%s\t%s\t%s\n' test-workspace "$status" 'cargo test --workspace' >>"$GATES_FILE"
 
       # One script, four checklist lines: it also validates the three frozen corpus schemas and
       # asserts the manifest pins and TRACKED_FILES.txt are in the Git index. The three derived
       # entries below cite it rather than re-running any of that.
-      - name: Gate structured-corpus
-        if: ${{ !cancelled() }}
+      - name: Target structured-corpus
+        id: target-corpus
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -uo pipefail
-          if bash scripts/check-structured-corpus.sh; then status=pass; else status=fail; fi
-          printf '%s\t%s\t%s\n' structured-corpus "$status" 'bash scripts/check-structured-corpus.sh' >>"$GATES_FILE"
+          mkdir -p "$RUNNER_TEMP/gates/structured-corpus"
+          bash scripts/check-structured-corpus.sh 2>&1 | tee "$RUNNER_TEMP/gates/structured-corpus/log"
+          exit "${PIPESTATUS[0]}"
 
-      # Derived from the run above, not re-executed. The status is that run's status: when the
-      # corpus gate failed, the schema and index checks inside it did not report a pass either.
-      - name: Gates corpus-schemas and corpus-git-index (derived from the corpus run)
-        if: ${{ !cancelled() }}
+      # Controller for the corpus run and for the three checklist lines derived from it. The
+      # derived entries are not re-executed: when the corpus gate failed, the schema and index
+      # checks inside it did not report a pass either.
+      - name: Gates structured-corpus, corpus-schemas and corpus-git-index
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-corpus.outcome }}
         run: |
           set -uo pipefail
-          status="$(awk -F'\t' '$1 == "structured-corpus" { print $2 }' "$GATES_FILE")"
-          [ -n "$status" ] || status=pending
-          printf '%s\t%s\t%s\n' corpus-schemas "$status" \
-            'scripts/check-structured-corpus.sh validates the manifest, the run summary and the artifacts against schemas/structured-corpus{,-run,-artifacts}-v1.schema.json through the validate_structured_corpus example' >>"$GATES_FILE"
-          printf '%s\t%s\t%s\n' corpus-git-index "$status" \
-            'scripts/check-structured-corpus.sh checks every TRACKED_FILES.txt entry and every corpus schema with git ls-files --error-unmatch and git check-ignore' >>"$GATES_FILE"
+          case "$OUTCOME" in
+          success) status=pass ;;
+          failure) status=fail ;;
+          *) status=pending ;;
+          esac
+          {
+            printf '%s\t%s\t%s\n' structured-corpus "$status" 'bash scripts/check-structured-corpus.sh'
+            printf '%s\t%s\t%s\n' corpus-schemas "$status" \
+              'scripts/check-structured-corpus.sh validates the manifest, the run summary and the artifacts against schemas/structured-corpus{,-run,-artifacts}-v1.schema.json through the validate_structured_corpus example'
+            printf '%s\t%s\t%s\n' corpus-git-index "$status" \
+              'scripts/check-structured-corpus.sh checks every TRACKED_FILES.txt entry and every corpus schema with git ls-files --error-unmatch and git check-ignore'
+          } >>"$GATES_FILE"
 
       # Structural plus a runtime assertion on the environment the corpus gate just ran in: this
       # job installs poppler-utils only and never a font package, and no step sets HWP_FONT_DIR
-      # for the corpus gate (only the public parity gate sets it, on its own step). The corpus
-      # font bytes come from scripts/fetch-corpus-fonts.sh through the manifest hashes.
+      # for the corpus gate (only the public parity target step sets it, on its own step). The
+      # corpus font bytes come from scripts/fetch-corpus-fonts.sh through the manifest hashes.
       - name: Gate corpus-no-ambient-fonts
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
           if [ -n "${HWP_FONT_DIR:-}" ]; then
@@ -202,23 +377,43 @@ jobs:
           fi
           printf '%s\t%s\t%s\n' corpus-no-ambient-fonts "$status" "$evidence" >>"$GATES_FILE"
 
-      - name: Gate corpus-fonts-reproduce
-        if: ${{ !cancelled() }}
+      - name: Target corpus-fonts-reproduce
+        id: target-corpus-fonts
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/gates/corpus-fonts-reproduce"
           # From a clean fonts directory, so the script's own sha256 verification against the
           # manifest is what passes the gate, not a cached byte.
           rm -rf corpus/structured-v1/fonts
-          if bash scripts/fetch-corpus-fonts.sh; then status=pass; else status=fail; fi
+          bash scripts/fetch-corpus-fonts.sh 2>&1 | tee "$RUNNER_TEMP/gates/corpus-fonts-reproduce/log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Gate corpus-fonts-reproduce
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-corpus-fonts.outcome }}
+        run: |
+          set -uo pipefail
+          case "$OUTCOME" in
+          success) status=pass ;;
+          failure) status=fail ;;
+          *) status=pending ;;
+          esac
           printf '%s\t%s\t%s\n' corpus-fonts-reproduce "$status" \
             'bash scripts/fetch-corpus-fonts.sh against an emptied corpus/structured-v1/fonts; the script verifies every font, license and metadata file against the manifest sha256' >>"$GATES_FILE"
 
       # The checklist line is conditional ("if the corpus ships"). It does not: release.yml
       # publishes the hwp binary archive only. Assert that shape rather than assume it.
       - name: Gate release-archive-fonts
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
           status=pass
@@ -236,10 +431,14 @@ jobs:
       # LibreOffice + H2Orestart certification container of docs/design/16-certification-v1.md,
       # section "Independent import oracle"; this repository ships no supported public image for
       # it. The status is read from the lock file so a future lock file moves the record with it,
-      # and nothing here builds, tags or attests an image.
+      # and nothing here builds, tags or attests an image. Controller step: it parses the lock
+      # file as data, it does not execute anything from the evaluated ref.
       - name: Gate independent-oracle
-        if: ${{ !cancelled() }}
+        id: oracle
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -euo pipefail
           lock=oracle/primary-artifacts.lock.json
@@ -259,8 +458,10 @@ jobs:
           print("lock_sha256=" + shlex.quote(digest.lower()))
           PY
           )"
-          echo "ORACLE_STATUS=$oracle" >>"$GITHUB_ENV"
-          echo "ORACLE_LOCK_SHA256=$lock_sha256" >>"$GITHUB_ENV"
+          {
+            echo "oracle_status=$oracle"
+            echo "oracle_lock_sha256=$lock_sha256"
+          } >>"$GITHUB_OUTPUT"
           printf '%s\t%s\t%s\n' independent-oracle 'n/a' \
             "no supported public oracle image is shipped by this repository: docs/design/16-certification-v1.md section 'Independent import oracle' states that required oracle mode remains partial until the image gaps are closed, and $lock reports status $lock_status with a null image digest, so the gate cannot run and is not a pass" \
             >>"$GATES_FILE"
@@ -268,8 +469,10 @@ jobs:
       # Not applicable in CI: the Hancom-open evidence is an owner observation made on Hancom
       # Office, and the receipts are private (never committed).
       - name: Gate hancom-receipt
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
           printf '%s\t%s\t%s\n' hancom-receipt 'n/a' \
@@ -278,10 +481,28 @@ jobs:
 
       # Checklist line 26-27, the release-copy claim lint. Guarded: a retroactive dispatch may
       # evaluate a ref from before this script existed, and a missing script is n/a, never a pass.
+      - name: Target release-copy-claims
+        id: target-claims
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/gates/release-copy-claims"
+          script=scripts/check-claims.sh
+          if [ ! -f "$script" ]; then
+            echo "$script is absent from this checkout" | tee "$RUNNER_TEMP/gates/release-copy-claims/log"
+            exit 0
+          fi
+          bash "$script" 2>&1 | tee "$RUNNER_TEMP/gates/release-copy-claims/log"
+          exit "${PIPESTATUS[0]}"
+
       - name: Gate release-copy-claims
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-claims.outcome }}
           READINESS_REF: ${{ inputs.ref }}
         run: |
           set -uo pipefail
@@ -290,7 +511,11 @@ jobs:
             status='n/a'
             evidence="$script is absent from the checkout of $READINESS_REF, so the claim lint cannot run against that ref"
           else
-            if bash "$script"; then status=pass; else status=fail; fi
+            case "$OUTCOME" in
+            success) status=pass ;;
+            failure) status=fail ;;
+            *) status=pending ;;
+            esac
             evidence="bash $script, the same file scripts/check.sh runs locally"
           fi
           printf '%s\t%s\t%s\n' release-copy-claims "$status" "$evidence" >>"$GATES_FILE"
@@ -298,10 +523,28 @@ jobs:
       # Checklist lines 32-35. One script covers both lines: it reports the tool-count check and
       # the skill-coverage check in one invocation, so both entries carry that run's status and
       # say which check they stand for. Guarded the same way as the claim lint.
+      - name: Target doc-surface
+        id: target-doc-surface
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/gates/doc-surface"
+          script=scripts/check-doc-surface.sh
+          if [ ! -f "$script" ]; then
+            echo "$script is absent from this checkout" | tee "$RUNNER_TEMP/gates/doc-surface/log"
+            exit 0
+          fi
+          bash "$script" 2>&1 | tee "$RUNNER_TEMP/gates/doc-surface/log"
+          exit "${PIPESTATUS[0]}"
+
       - name: Gates tool-count and skill-coverage
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-doc-surface.outcome }}
           READINESS_REF: ${{ inputs.ref }}
         run: |
           set -uo pipefail
@@ -310,7 +553,11 @@ jobs:
             status='n/a'
             detail="$script is absent from the checkout of $READINESS_REF, so this check could not run:"
           else
-            if bash "$script"; then status=pass; else status=fail; fi
+            case "$OUTCOME" in
+            success) status=pass ;;
+            failure) status=fail ;;
+            *) status=pending ;;
+            esac
             detail="bash $script, one invocation that reports both checks, so both entries carry its status:"
           fi
           printf '%s\t%s\t%s\n' tool-count "$status" \
@@ -320,10 +567,12 @@ jobs:
 
       # Checklist lines 30-31. Only meaningful against a tag: a branch is not a release being cut.
       - name: Gate readme-pinned-tag
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
           READINESS_REF: ${{ inputs.ref }}
+          EVALUATED_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
         run: |
           set -uo pipefail
           if ! git rev-parse -q --verify "refs/tags/${READINESS_REF}^{commit}" >/dev/null; then
@@ -351,8 +600,10 @@ jobs:
       # plan's own verify gate and review assert. Recorded as such, with no claim that a command
       # proved it.
       - name: Gate no-publish
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
           printf '%s\t%s\t%s\n' no-publish pass \
@@ -362,8 +613,10 @@ jobs:
       # Checklist lines 36-38. The comparison target is the retired STAIxBWLB/skills repository,
       # which is not checked out here, so this stays a manual cross-repository review.
       - name: Gate hwpx-skill-parity
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
         run: |
           set -uo pipefail
           printf '%s\t%s\t%s\n' hwpx-skill-parity 'n/a' \
@@ -373,12 +626,16 @@ jobs:
       # Checklist line 12, read rather than re-run (D-07): the evaluated commit's own CI check
       # runs are the 3-OS evidence. The expected job names below must stay in sync with ci.yml,
       # exactly as release.yml's verify-ci job already requires. An absent or incomplete run is
-      # `pending` and fails the job; it is never a pass.
+      # `pending` and fails the job; it is never a pass. Controller step: it queries the API, it
+      # runs nothing from the evaluated ref.
       - name: Gate ci-matrix
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          CHECK_RUNS_FILE: ${{ steps.prepare.outputs.check_runs }}
+          READINESS_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
         run: |
           set -uo pipefail
           expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
@@ -418,33 +675,58 @@ jobs:
       # Checklist lines 21-25, last because it writes scorecards into the tracked scoreboard
       # directory. Same shape as ci.yml's pdf-parity job, against the committed public oracle,
       # whose manifest declares no gate exclusions.
-      - name: Gate pdf-parity-public
-        if: ${{ !cancelled() }}
+      - name: Target pdf-parity-public
+        id: target-parity
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
         shell: bash
         env:
           HWP_FONT_DIR: fixtures/pdf-parity/fonts
         run: |
           set -uo pipefail
-          status=fail
-          if bash scripts/fetch-pdf-parity-fonts.sh &&
-            cargo build --locked -p hwp-cli &&
-            bash scripts/pdf-parity.sh run --oracle-dir fixtures/pdf-parity/public/oracle; then
-            status=pass
-          fi
+          mkdir -p "$RUNNER_TEMP/gates/pdf-parity-public"
+          {
+            bash scripts/fetch-pdf-parity-fonts.sh &&
+              cargo build --locked -p hwp-cli &&
+              bash scripts/pdf-parity.sh run --oracle-dir fixtures/pdf-parity/public/oracle
+          } 2>&1 | tee "$RUNNER_TEMP/gates/pdf-parity-public/log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Gate pdf-parity-public
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          OUTCOME: ${{ steps.target-parity.outcome }}
+        run: |
+          set -uo pipefail
+          case "$OUTCOME" in
+          success) status=pass ;;
+          failure) status=fail ;;
+          *) status=pending ;;
+          esac
           printf '%s\t%s\t%s\n' pdf-parity-public "$status" \
             'bash scripts/pdf-parity.sh run --oracle-dir fixtures/pdf-parity/public/oracle with the pinned Poppler and the exact OFL fonts; the public manifest declares no gate_exclusions, so every gate blocks' >>"$GATES_FILE"
 
       # --- run record ---------------------------------------------------------------------------
       # Runs even when a gate failed, so the record is always complete. It is the step that
       # decides the job outcome: any `fail` or `pending` entry exits non-zero. `n/a` does not.
+      # Controller step: it reads the ledger the controller steps wrote and nothing from the
+      # evaluated ref except Cargo.toml's version string.
       - name: Assemble the run record
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
         env:
+          GATES_FILE: ${{ steps.prepare.outputs.ledger }}
+          CHECK_RUNS_FILE: ${{ steps.prepare.outputs.check_runs }}
           READINESS_REF: ${{ inputs.ref }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          RECORD_PATH: release-readiness-record.json
+          READINESS_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
           WORKFLOW_SOURCE_SHA: ${{ github.sha }}
+          PDFINFO_VERSION: ${{ steps.poppler.outputs.pdfinfo_version }}
+          ORACLE_STATUS: ${{ steps.oracle.outputs.oracle_status }}
+          ORACLE_LOCK_SHA256: ${{ steps.oracle.outputs.oracle_lock_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RECORD_PATH: ${{ runner.temp }}/release-readiness-record.json
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -595,14 +877,16 @@ jobs:
               print(f"::error::release readiness gates not green: {names}", file=sys.stderr)
               sys.exit(1)
           PY
+
       # The artifact name is the record's own contract string, because
       # scripts/check-verification-block.sh downloads it by that name from the run the release
-      # copy cites and reads evaluated_sha out of it.
+      # copy cites and reads evaluated_sha out of it. The record is written outside the checkout,
+      # so no gate from the evaluated ref shares a directory with it.
       - name: Upload the run record
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: hwp-release-readiness-record-v1
-          path: release-readiness-record.json
+          path: ${{ runner.temp }}/release-readiness-record.json
           if-no-files-found: error
           retention-days: 90
