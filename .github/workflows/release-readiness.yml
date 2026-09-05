@@ -193,9 +193,8 @@ jobs:
 
       # Copied from ci.yml's pdf-parity job, including the mirror pin and the bounded retry: the
       # public manifest pins the Poppler version, so the parity gate is only meaningful when the
-      # installed pdfinfo matches it. The workspace render smoke tests also need the same
-      # glyf-outline Korean fonts as ci.yml's Ubuntu test job.
-      - name: Install Korean test fonts and pinned Poppler tools
+      # installed pdfinfo matches it.
+      - name: Install pinned Poppler tools
         id: poppler
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
@@ -217,15 +216,15 @@ jobs:
           # writes it the same way.
           # shellcheck disable=SC2086
           for attempt in 1 2 3; do
-            if timeout 120 $apt_get update && timeout 120 $apt_get install --no-install-recommends -y poppler-utils fonts-nanum; then
+            if timeout 120 $apt_get update && timeout 120 $apt_get install --no-install-recommends -y poppler-utils; then
               installed=1
               break
             fi
-            echo "Poppler/font install attempt ${attempt} failed or timed out; retrying" >&2
+            echo "poppler install attempt ${attempt} failed or timed out; retrying" >&2
             sleep 10
           done
           if [ "$installed" != 1 ]; then
-            echo "poppler-utils and fonts-nanum could not be installed after 3 attempts" >&2
+            echo "poppler-utils could not be installed after 3 attempts" >&2
             exit 1
           fi
           expected="$(python3 -c 'import json; print(json.load(open("fixtures/pdf-parity/public/manifest.json", encoding="utf-8"))["pins"]["poppler_version"])')"
@@ -312,11 +311,9 @@ jobs:
             echo "GATE_ENTRY_EOF"
           } >>"$GITHUB_OUTPUT"
 
-      # No font package is installed anywhere in this job, which is what keeps the corpus gate's
-      # no-ambient-font line meaningful. The render tests print "skip: no usable font" and drop
-      # their text assertions when no system CJK face exists; the 3-OS matrix cited by the
-      # ci-matrix gate is where those assertions actually run (ci.yml's test job installs
-      # fonts-nanum).
+      # The CLI render smoke tests require Korean glyphs. Extract the same package used by
+      # ci.yml into a private directory, without installing it into the system. Only this
+      # command receives HWP_FONT_DIR; the directory is removed before the corpus gate.
       - name: Target test-workspace
         id: target-test
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
@@ -325,7 +322,13 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/gates/test-workspace"
-          cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
+          font_root="$(mktemp -d)" || exit 1
+          trap 'rm -rf "$font_root"' EXIT
+          (cd "$font_root" && timeout 120 apt-get -o Acquire::Retries=2 download fonts-nanum) || exit 1
+          dpkg-deb --extract "$font_root"/fonts-nanum_*.deb "$font_root/extracted" || exit 1
+          test_fonts="$font_root/extracted/usr/share/fonts/truetype/nanum"
+          test -d "$test_fonts" || exit 1
+          HWP_FONT_DIR="$test_fonts" cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
           exit "${PIPESTATUS[0]}"
 
       - name: Gate test-workspace
@@ -401,7 +404,7 @@ jobs:
 
       # Structural plus a runtime assertion on the environment the corpus gate just ran in: this
       # job installs poppler-utils only and never a font package, and no step sets HWP_FONT_DIR
-      # for the corpus gate (only the public parity target step sets it, on its own step). The
+      # for the corpus gate (workspace tests and public parity scope it to their own commands). The
       # corpus font bytes come from scripts/fetch-corpus-fonts.sh through the manifest hashes.
       - name: Gate corpus-no-ambient-fonts
         id: gate-corpus-no-ambient-fonts
