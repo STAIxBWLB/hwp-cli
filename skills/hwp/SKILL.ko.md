@@ -105,6 +105,9 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열.
 - `hwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
   유효하면 종료 코드 0.
+- `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
+  파일 하나의 저수준 레코드·스트림 진단. `hwp info`와 `hwp validate`로 결함이 설명되지
+  않을 때만 사용합니다. 문서 내용이 아니라 포맷 내부 구조를 출력합니다.
 - `hwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` —
   공문서 표기·구조 규칙 열 가지를 검사합니다 (`-`는 표준 입력을 markdown으로 읽습니다).
   기본은 조언용이라 항상 종료 코드 0이며, `--strict`가 error 등급 지적을 찾았을 때만
@@ -271,7 +274,7 @@ Quick의 로컬 폴터 권한에 추가된 폴터는 내장 읽기/검색 도구
 
 Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 셸 인용 문자를 넣지 마세요.
 세 계층을 순서대로 검증하세요: 정확한 절대 경로 바이너리가 버전을 반환하는지; Quick이
-20개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
+22개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
 `hwp_validate`가 설정된 LocalLow 루트 아래 절대 경로에서 성공하는지 (예:
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`).
 디스커버리만으로 파일 접근이 증명된다고 주장하지 마세요.
@@ -280,7 +283,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 복사-붙여넣기 운영자 및 AI 런북:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-도구 (20):
+도구 (22):
 
 | 도구 | 필수 인수 | 용도 |
 |---|---|---|

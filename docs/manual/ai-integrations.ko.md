@@ -4,7 +4,7 @@
 
 `hwp`는 AI 클라이언트용 연동 표면을 두 가지 제공한다.
 
-- MCP를 구사하는 클라이언트용 **MCP stdio 서버**(`hwp mcp`, 20개 도구)
+- MCP를 구사하는 클라이언트용 **MCP stdio 서버**(`hwp mcp`, 22개 도구)
 - CLI와 MCP 사용법을 에이전트에게 가르치는 **에이전트 스킬**(이 저장소의 `skills/hwp/` 트리).
   바이너리에 임베드되어 있으며 `hwp skill export`로 디렉터리 형태로 풀어낼 수 있다:
   `SKILL.md`, `SKILL.ko.md`, 공문서 가이드(`official-documents(.ko).md`), `references/`,

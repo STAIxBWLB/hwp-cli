@@ -17,6 +17,7 @@ permissions:
   contents: write
   pull-requests: write
   checks: read # verify-ci reads the tagged commit's check runs
+  actions: read # verify-ci reads the readiness run cited by the CHANGELOG
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,6 +30,7 @@ jobs:
   verify-ci:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - name: Tagged commit has green CI
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,6 +50,16 @@ jobs:
             echo "::error::Tagged commit $GITHUB_SHA has no green CI. Let the CI workflow pass on main, then re-run this workflow."
             exit 1
           fi
+
+      # Second half of the same gate: the release BODY must carry the marker-bounded
+      # Verification block, and the release-readiness run it cites must be a successful run of
+      # release-readiness.yml against this very commit. scripts/release.sh runs the same script
+      # before it tags, so a release cannot acquire evidence between the branch and the tag.
+      - name: Tagged version cites a verified readiness run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-verification-block.sh "${GITHUB_REF_NAME#v}" "$GITHUB_SHA"
 
   # Version gate — the tag must match the Cargo.toml [workspace.package] version.
   verify-version:

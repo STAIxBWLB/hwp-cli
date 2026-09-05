@@ -41,7 +41,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
   구역별·쪽 범위별 조각으로 나누며(`hwp split`), 문서 두 개의 문단·구조 차이를 보고한다
   (`hwp compare`).
 - **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 Amazon Quick Desktop을 포함한
-  데스크톱 클라이언트에 20개 도구를 노출한다.
+  데스크톱 클라이언트에 22개 도구를 노출한다.
 
 ## 구현 상태
 
@@ -55,7 +55,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 | 인증(certify) · 구조 코퍼스 게이트(corpus) | 구현 완료 |
 | 문서 단위 작업(`merge`·`split`·`compare`) | 구현 완료. 2026-08-29 한글에서 표본 확인([12-feature-gaps](docs/design/12-feature-gaps.ko.md) GM-3·GM-4·GM-8) |
 | 공문서 저작 (프로파일·템플릿·문서 틀·lint·표 서식) | 구현 완료 |
-| MCP 서버 (20 도구) | 구현 완료 |
+| MCP 서버 (22 도구) | 구현 완료 |
 | 배포용문서 | 읽기 지원 |
 | HTML 변환 | 구조는 markdown과 동등. 글자·문단 모양의 CSS 매핑은 아직 거칠다 |
 | 수식 | 상자+스크립트 근사 렌더 |
@@ -447,7 +447,7 @@ Amazon Quick Desktop)과 번들 에이전트 스킬(`hwp skill export`):
 Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
 [Amazon Quick Desktop 가이드](docs/manual/amazon-quick-desktop.ko.md)에 정리했다.
 
-Amazon Quick Desktop은 로컬 stdio 서버를 실행해 20개 도구를 모두 노출할 수 있다. publish-safe
+Amazon Quick Desktop은 로컬 stdio 서버를 실행해 22개 도구를 모두 노출할 수 있다. publish-safe
 스킬은 활성 프로필에 다음과 같이 설치한다.
 
 ```sh

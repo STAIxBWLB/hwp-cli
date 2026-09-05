@@ -1,0 +1,16 @@
+# Allowlist for scripts/check-claims.sh.
+#
+# Each non-comment, non-blank line exempts ONE exact line of ONE file, because that line negates
+# or quotes the claim rather than making it.
+#
+# Format: <relative path><TAB><the exact line, verbatim>
+#
+# Rules:
+#   - An entry names one file and one whole line. It is never a directory or a pattern.
+#   - The line must match exactly, so appending a claim to an allowlisted line is still caught:
+#     the appended sentence changes the line and the exemption lapses.
+#   - A new genuine claim is fixed in the copy. It is never silenced by an entry here.
+#   - Most negated sentences need no entry at all: the lint already ignores a claim whose sentence
+#     negates it before the phrase. An entry is for the residue that rule cannot see.
+
+README.md	- **No Hancom parity claim** The final verdict is always whether the file opens correctly in Hancom Office.
