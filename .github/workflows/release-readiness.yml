@@ -566,6 +566,16 @@ jobs:
             "$detail skills/hwp/SKILL.md and SKILL.ko.md naming every CLI subcommand and every MCP tool" >>"$GATES_FILE"
 
       # Checklist lines 30-31. Only meaningful against a tag: a branch is not a release being cut.
+      # Three things this gate has to get right, because each of them used to turn a real release
+      # into a green line:
+      #   - `refs/tags/v1` and `v1` name the same tag. Concatenating the prefix again produced
+      #     refs/tags/refs/tags/v1, which resolves to nothing, so a fully qualified tag dispatch
+      #     recorded `n/a` and the READMEs were never compared at all.
+      #   - the two READMEs are checked one at a time. Grepping both at once let README.md's
+      #     correct pin stand in for a README.ko.md that carries no snippet, or no file at all
+      #     (the grep error went to stderr and the gate still recorded a pass).
+      #   - a missing file, a grep failure or an empty extraction is a `fail`. There is no reading
+      #     of "the pinned versions could not be read" that is evidence the pins are right.
       - name: Gate readme-pinned-tag
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
@@ -575,23 +585,44 @@ jobs:
           EVALUATED_SHA: ${{ steps.prepare.outputs.evaluated_sha }}
         run: |
           set -uo pipefail
-          if ! git rev-parse -q --verify "refs/tags/${READINESS_REF}^{commit}" >/dev/null; then
+          tag="${READINESS_REF#refs/tags/}"
+          tag_sha="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)"
+          if [ -z "$tag_sha" ]; then
             printf '%s\t%s\t%s\n' readme-pinned-tag 'n/a' \
               "the evaluated ref ${READINESS_REF} is not a tag in this checkout, so there is no release being cut to compare the install snippets against" >>"$GATES_FILE"
             exit 0
           fi
+          if [ "$tag_sha" != "$EVALUATED_SHA" ]; then
+            printf '%s\t%s\t%s\n' readme-pinned-tag fail \
+              "refs/tags/${tag} points at ${tag_sha}, but this run evaluated ${EVALUATED_SHA}; the checkout and the tag disagree about which commit is being released" >>"$GATES_FILE"
+            exit 0
+          fi
           # Only the install.sh snippets, which all pipe into `sh -s --`. `hwp update --tag v0.9.0`
-          # is a rollback example and is deliberately not compared.
-          found="$(grep -h -- 'sh -s --' README.md README.ko.md | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)"
-          if [ -z "$found" ]; then
+          # is a rollback example and is deliberately not compared. Each README must carry the
+          # complete pin on its own.
+          status=pass
+          evidence="the install.sh --tag snippets in README.md and README.ko.md pin ${tag}"
+          problems=""
+          for file in README.md README.ko.md; do
+            if [ ! -f "$file" ]; then
+              problems="${problems:+$problems; }$file does not exist"
+              continue
+            fi
+            snippets="$(grep -h -- 'sh -s --' "$file")"
+            if [ -z "$snippets" ]; then
+              problems="${problems:+$problems; }$file carries no install.sh 'sh -s --' snippet"
+              continue
+            fi
+            found="$(printf '%s\n' "$snippets" | grep -oE -- '--tag v[0-9]+\.[0-9]+\.[0-9]+' | sed 's/^--tag //' | sort -u)"
+            if [ -z "$found" ]; then
+              problems="${problems:+$problems; }$file has an install.sh snippet with no --tag pin"
+            elif [ "$found" != "$tag" ]; then
+              problems="${problems:+$problems; }$file pins $(echo "$found" | tr '\n' ' ')instead of ${tag}"
+            fi
+          done
+          if [ -n "$problems" ]; then
             status=fail
-            evidence='no install.sh --tag snippet was found in README.md or README.ko.md; the version-pinned examples cannot be checked'
-          elif [ "$found" = "$READINESS_REF" ]; then
-            status=pass
-            evidence="the install.sh --tag snippets in README.md and README.ko.md pin ${READINESS_REF}"
-          else
-            status=fail
-            evidence="the install.sh --tag snippets in README.md and README.ko.md pin $(echo "$found" | tr '\n' ' ')but the evaluated tag is ${READINESS_REF}"
+            evidence="the evaluated tag is ${tag}, but: ${problems}"
           fi
           printf '%s\t%s\t%s\n' readme-pinned-tag "$status" "$evidence" >>"$GATES_FILE"
 
