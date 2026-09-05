@@ -193,8 +193,9 @@ jobs:
 
       # Copied from ci.yml's pdf-parity job, including the mirror pin and the bounded retry: the
       # public manifest pins the Poppler version, so the parity gate is only meaningful when the
-      # installed pdfinfo matches it.
-      - name: Install pinned Poppler tools
+      # installed pdfinfo matches it. The workspace render smoke tests also need the same
+      # glyf-outline Korean fonts as ci.yml's Ubuntu test job.
+      - name: Install Korean test fonts and pinned Poppler tools
         id: poppler
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
         shell: bash
@@ -216,15 +217,15 @@ jobs:
           # writes it the same way.
           # shellcheck disable=SC2086
           for attempt in 1 2 3; do
-            if timeout 120 $apt_get update && timeout 120 $apt_get install --no-install-recommends -y poppler-utils; then
+            if timeout 120 $apt_get update && timeout 120 $apt_get install --no-install-recommends -y poppler-utils fonts-nanum; then
               installed=1
               break
             fi
-            echo "poppler install attempt ${attempt} failed or timed out; retrying" >&2
+            echo "Poppler/font install attempt ${attempt} failed or timed out; retrying" >&2
             sleep 10
           done
           if [ "$installed" != 1 ]; then
-            echo "poppler-utils could not be installed after 3 attempts" >&2
+            echo "poppler-utils and fonts-nanum could not be installed after 3 attempts" >&2
             exit 1
           fi
           expected="$(python3 -c 'import json; print(json.load(open("fixtures/pdf-parity/public/manifest.json", encoding="utf-8"))["pins"]["poppler_version"])')"
