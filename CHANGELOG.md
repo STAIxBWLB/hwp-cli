@@ -68,6 +68,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   which remains partial: no supported public oracle image is shipped, as
   `docs/design/16-certification-v1.md` and the `partial_not_buildable` status of
   `oracle/primary-artifacts.lock.json` both state.
+  The run executes code from the ref it evaluates, so it first requires that commit to be a tag
+  of this repository or an ancestor of `origin/main`; anything else records one `refused`
+  outcome and stops the job before a single gate runs. A step that runs evaluated-ref code does
+  nothing but run it: the gate entry is written by a step defined in the workflow itself, out of
+  the exit status the runner recorded, and the entries travel as step outputs rather than
+  through a file on disk, so a gate script cannot add, edit or delete the evidence it is
+  measured by. The tag gate that compares the README install snippets accepts `v0.17.0` and
+  `refs/tags/v0.17.0` alike, requires the tag to point at the evaluated commit, and requires
+  `README.md` and `README.ko.md` each to carry the matching pin; a missing file or an
+  unreadable pin is a failure, not a pass.
+- `scripts/tests/release-readiness-selfcheck.sh` runs the readiness workflow's own steps against
+  fixtures - the trust policy, the ledger a gate script must not be able to reach, the record
+  fields and the release gate that reads them, and the README tag comparison - by extracting each
+  step out of the workflow file, so the harness cannot drift from what ships. `scripts/check.sh`
+  and the CI `lint` job run it.
 
 ## [0.17.0]
 
