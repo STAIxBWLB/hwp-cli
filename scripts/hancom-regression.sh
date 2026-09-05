@@ -124,8 +124,14 @@ skip() {
 }
 
 # push_row <series> <staged artifact> <command> <sha256> <reread> <validate>
+# A row is one tab-separated line, so a command carrying a newline or a tab (a
+# --set-cell value with a blank-line paragraph break does) is escaped rather
+# than allowed to split the row.
 push_row() {
-  ROWS+=("$1"$'\t'"$(basename "$2")"$'\t'"$2"$'\t'"$4"$'\t'"$5"$'\t'"$6"$'\t'"$3")
+  local cmd="$3"
+  cmd="${cmd//$'\n'/\\n}"
+  cmd="${cmd//$'\t'/\\t}"
+  ROWS+=("$1"$'\t'"$(basename "$2")"$'\t'"$2"$'\t'"$4"$'\t'"$5"$'\t'"$6"$'\t'"$cmd")
   REPORT+=("pass  $1  $(basename "$2")")
 }
 
@@ -297,6 +303,103 @@ else
   fail O "delegated phase-02.2 generation failed; see the generator output"
 fi
 
+# --- P. Document-level workflows and Phase 3.1 cell paragraphs (D-01) -------
+# These have no checklist series of their own yet; they carry a P prefix so they
+# sort after O and stay last in the index.
+SAMPLE="$REPO/fixtures/samples/report-tables.hwpx"
+if [[ -f "$SAMPLE" ]]; then
+  cp "$SAMPLE" "$WORK/merge_a.hwpx"
+  cat > "$WORK/merge_b.md" <<'MD'
+# 병합 검증 문서
+
+첫째 문단입니다. 병합된 두 번째 구역의 본문이 살아 있는지 확인합니다.
+
+둘째 문단입니다. 구역 경계 뒤의 문단 흐름을 확인합니다.
+MD
+  "$HWP" new --from "$WORK/merge_b.md" -o "$WORK/merge_b.hwpx" >/dev/null 2>&1 || true
+fi
+
+if [[ -s "${WORK}/merge_a.hwpx" && -s "${WORK}/merge_b.hwpx" ]]; then
+  emit P1_merge "$STAGE/P1_merge.hwpx" \
+    "$HWP" merge "$WORK/merge_a.hwpx" "$WORK/merge_b.hwpx" \
+    -o "$STAGE/P1_merge.hwpx" --loss-report "$WORK/merge-loss.json"
+else
+  skip P1_merge "no merge inputs: fixtures/samples/report-tables.hwpx is missing"
+fi
+
+# Split the merged document: one section per merge input, so the fragments are
+# the round trip of the merge case.
+if [[ -s "$STAGE/P1_merge.hwpx" ]]; then
+  mkdir -p "$WORK/split"
+  if "$HWP" split "$STAGE/P1_merge.hwpx" --out-dir "$WORK/split" \
+      --loss-report "$WORK/split-loss.json" >/dev/null 2>&1; then
+    fragment_index=0
+    for fragment in "$WORK"/split/*.hwpx; do
+      [[ -e "$fragment" ]] || continue
+      fragment_index=$((fragment_index + 1))
+      fragment_name="$(basename "$fragment")"
+      mv -f "$fragment" "$STAGE/$fragment_name"
+      record "$(printf 'P2_split_%03d' "$fragment_index")" "$STAGE/$fragment_name" \
+        "hwp split P1_merge.hwpx --out-dir <directory> --loss-report <file>"
+    done
+    [[ "$fragment_index" -gt 0 ]] || fail P2_split "split produced no fragment"
+  else
+    fail P2_split "split failed on P1_merge.hwpx"
+  fi
+else
+  skip P2_split "no merged document to split"
+fi
+
+# hwp compare is read-only: it never opens in Hancom, so this row carries the
+# comparison report's own hash and no receipt policy. Run it from the working
+# directory with relative arguments so no absolute path lands in the report.
+if [[ -s "$STAGE/P1_merge-001.hwpx" ]]; then
+  cp "$STAGE/P1_merge-001.hwpx" "$WORK/P1_merge-001.hwpx"
+  compare_status=0
+  (cd "$WORK" && "$HWP" compare P1_merge-001.hwpx merge_a.hwpx --format json) \
+    > "$STAGE/P3_compare.json" 2>/dev/null || compare_status=$?
+  # diff(1) exit codes: 0 identical, 1 differences found, 2 the run itself failed.
+  if [[ "$compare_status" -le 1 && -s "$STAGE/P3_compare.json" ]]; then
+    compare_hash="$(shasum -a 256 "$STAGE/P3_compare.json" | awk '{print $1}')"
+    push_row P3_compare_readonly "$STAGE/P3_compare.json" \
+      "hwp compare P1_merge-001.hwpx merge_a.hwpx --format json" \
+      "$compare_hash" 'n/a (read-only)' 'n/a (read-only)'
+  else
+    fail P3_compare_readonly "compare run failed (exit $compare_status)"
+  fi
+else
+  skip P3_compare_readonly "no split fragment to compare"
+fi
+
+# GA-2 distribution-document read. The source is a genuine corpus document; it is
+# never copied into the destination and its path never reaches the index.
+if [[ -n "${HWP_CORPUS_DIR:-}" && -d "${HWP_CORPUS_DIR:-}" ]]; then
+  distdoc="$(find "$HWP_CORPUS_DIR" -type f -name 'dist-*.hwp' 2>/dev/null | sort | head -1)"
+  if [[ -n "$distdoc" ]]; then
+    emit P4_distdoc_read "$STAGE/P4_distdoc.hwpx" \
+      "$HWP" convert "$distdoc" -o "$STAGE/P4_distdoc.hwpx"
+  else
+    skip P4_distdoc_read "no dist-*.hwp under HWP_CORPUS_DIR"
+  fi
+else
+  skip P4_distdoc_read "no corpus: set HWP_CORPUS_DIR to the ground-truth corpus directory"
+fi
+
+# Phase 3.1 multi-paragraph cells: a blank line in a --set-cell value becomes two
+# paragraphs in the cell, and --set-cell-para shapes every paragraph of that cell.
+if [[ -f "$SAMPLE" ]]; then
+  cell_value="$(printf '첫째 문단입니다.\n\n둘째 문단입니다.')"
+  emit P5_set_cell_blank_line "$STAGE/P5_셀문단.hwpx" \
+    "$HWP" edit "$SAMPLE" -o "$STAGE/P5_셀문단.hwpx" --set-cell "0:1:1=$cell_value"
+  emit P6_set_cell_para "$STAGE/P6_셀문단모양.hwpx" \
+    "$HWP" edit "$SAMPLE" -o "$STAGE/P6_셀문단모양.hwpx" \
+    --set-cell "0:1:1=$cell_value" \
+    --set-cell-para "0:1:1=>line-spacing:180,align:center"
+else
+  skip P5_set_cell_blank_line "fixtures/samples/report-tables.hwpx is missing"
+  skip P6_set_cell_para "fixtures/samples/report-tables.hwpx is missing"
+fi
+
 # --- publish and index ------------------------------------------------------
 if [[ "$FAILED" -ne 0 ]]; then
   echo
@@ -317,30 +420,60 @@ while IFS=$'\t' read -r name src; do
   published=$((published + 1))
 done < <([[ ${#ROWS[@]} -eq 0 ]] || printf '%s\n' "${ROWS[@]}" | cut -f2,3)
 
+# Then the certify wiring: one policy per artifact naming the one receipt that
+# will bind to it, and an empty receipts directory for those receipts to land in.
+# The index is the completion receipt, so it is written after both.
 {
   [[ ${#ROWS[@]} -eq 0 ]] || printf '%s\n' "${ROWS[@]}"
 } | python3 -c '
 import json
+import os
 import sys
 from datetime import datetime, timezone
 
-schema, version, binary, out = sys.argv[1:5]
+schema, version, binary, dest, index_name = sys.argv[1:6]
+receipts = os.path.join(dest, "receipts")
+os.makedirs(receipts, exist_ok=True)
+
 artifacts = []
 for line in sys.stdin:
     line = line.rstrip("\n")
     if not line:
         continue
     series, name, _src, digest, reread, validate, command = line.split("\t")
-    artifacts.append(
-        {
-            "file": name,
-            "series": series,
-            "command": command,
-            "sha256": digest,
-            "internal_reread": reread,
-            "internal_validate": validate,
+    row = {
+        "file": name,
+        "series": series,
+        "command": command,
+        "sha256": digest,
+        "internal_reread": reread,
+        "internal_validate": validate,
+        "policy": None,
+    }
+    # A read-only report never opens in Hancom, so it gets no receipt policy.
+    if not reread.startswith("n/a"):
+        receipt_rel = os.path.join("receipts", name + ".receipt.json")
+        policy_name = name + ".policy.json"
+        row["policy"] = policy_name
+        row["receipt"] = receipt_rel
+        # The policy sits beside its artifact rather than in a subdirectory:
+        # certify resolves receipt relative to the policy file and refuses any
+        # path holding a ".." component.
+        policy = {
+            "schema_version": "1.0",
+            "document": {
+                # The receipt attests a Hancom open. Font substitution on the
+                # verifier host must not decide that question.
+                "fonts": {"forbid_substitution": False},
+                "hancom_open": {"receipt": receipt_rel, "require_pass": True},
+            },
+            "render": {},
         }
-    )
+        with open(os.path.join(dest, policy_name), "w", encoding="utf-8") as handle:
+            json.dump(policy, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    artifacts.append(row)
+
 index = {
     "schema": schema,
     "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -348,10 +481,10 @@ index = {
     "hwp_binary": binary,
     "artifacts": artifacts,
 }
-with open(out, "w", encoding="utf-8") as handle:
+with open(os.path.join(dest, index_name), "w", encoding="utf-8") as handle:
     json.dump(index, handle, ensure_ascii=False, indent=2)
     handle.write("\n")
-' "$INDEX_SCHEMA" "$HWP_VERSION" "$HWP_BINARY" "$DEST/$INDEX_NAME"
+' "$INDEX_SCHEMA" "$HWP_VERSION" "$HWP_BINARY" "$DEST" "$INDEX_NAME"
 
 echo
 echo "=== regeneration report ==="
@@ -359,4 +492,12 @@ echo "=== regeneration report ==="
 echo
 echo "Published: $published artifact(s)"
 echo "Index: $DEST/$INDEX_NAME"
+echo "Receipts directory (empty): $DEST/receipts"
+echo
+echo 'After a real Hancom observation, write that artifact its receipt at the path'
+echo 'its index row names, then prove the binding with one command per artifact:'
+echo "  hwp certify $DEST/<artifact> \\"
+echo "    --policy $DEST/<artifact>.policy.json \\"
+echo '    --report <a fresh report directory>'
+echo 'The receipt binding is the "hancom_open" check in that report.'
 echo 'No Hancom observation and no pass receipt was created by this run.'

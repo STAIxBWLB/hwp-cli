@@ -2,8 +2,8 @@
 
 # Hancom verification checklist (the write paths of rounds 13 to 23)
 
-A table for opening the files that `tools/gen_verification_set.sh` generates under
-`~/Documents/hwp-verification/` **directly in Hancom Office** and judging whether they are accepted.
+A table for opening the files that `scripts/hancom-regression.sh` generates under a private
+directory **directly in Hancom Office** and judging whether they are accepted.
 These files already pass our own verification (re-reading without warnings plus a visual render check)
 with our reader and renderer, so **the only thing left unverified is whether Hancom accepts these
 synthesized or converted bytes without corruption or alteration**.
@@ -13,6 +13,36 @@ synthesized or converted bytes without corruption or alteration**.
 > text boxes (preserving the text in the body, omitting the shape wrapper), removing the corruption,
 > and hyperlinks were given a **blue underlined character shape** on the display text. Those two are
 > what this round re-checks.
+
+## Regenerating the artifacts
+
+Run `scripts/hancom-regression.sh /private/directory` to regenerate every artifact this checklist
+still verifies, from the release binary, in one command. Per-series manual commands are no longer
+the procedure. The destination must be outside this repository: the script refuses the repository
+root and any path under it, including a symlink or relative alias of it, and the run writes nothing
+into the working tree.
+
+Every artifact is gated on self-reread (`hwp cat` with no warning) and structural validation
+(`hwp validate --json` reporting valid with no warnings) before it is published, and the run writes
+a `hancom-regression-index-v1` JSON index last. An index file in the destination therefore means
+the whole set passed. Each index row carries the file name, its checklist series item, the exact
+command that produced it, its SHA-256 and the two gate columns, so an artifact can always be mapped
+back to the table entry that judges it.
+
+An artifact whose input is local only (the series A approval document, the series J bordered
+source, the series M and N private sources, and the distribution-document read gated on
+`HWP_CORPUS_DIR`) is reported as a skip naming the missing input and gets no index row, because a
+missing private input is not a regression. A case that fails gets no index row either, and fails
+the run, so a gap is never silent.
+
+Series E, F and G are not regenerated. That bisection is closed (see the E section below) and its
+diagnostic outputs were removed from the folder to prevent false readings.
+
+The run creates no Hancom observation and no receipt. It writes, beside each artifact, an
+`<artifact>.policy.json` naming the one receipt that will bind to that artifact, and an empty
+`receipts/` directory for those receipts to land in, so that once a real observation exists
+`hwp certify <artifact> --policy <artifact>.policy.json --report <directory>` is a single command
+with no hand editing. Never prefill a pass receipt.
 
 ## Common verdict (every file)
 
@@ -292,10 +322,11 @@ from unverified to confirmed in Hancom. When the C series passes, the items reso
 
 ## O. Phase 2.2 official profiles and eight-level numbering (unverified)
 
-Run `tools/gen_verification_set.sh /private/directory` to create the bounded Phase 2.2 set. It
-creates exactly twelve labelled documents, one HWP and one HWPX for each canonical profile, plus
-the content-free `phase-02.2-index.tsv`. The generator only proves internal reread and structural
-validation; it creates no Hancom pass receipt and makes no Hancom acceptance claim.
+`scripts/hancom-regression.sh` regenerates this set with the rest of the checklist; it delegates to
+`tools/gen_verification_set.sh` in its Phase 2.2 mode and absorbs the twelve labelled documents,
+one HWP and one HWPX for each canonical profile, into its own index. The generator only proves
+internal reread and structural validation; it creates no Hancom pass receipt and makes no Hancom
+acceptance claim.
 
 For every generated HWP and HWPX, perform all seven observations below. Record the actual result
 against the matching SHA-256 in the private index. A skipped, unavailable, or failed observation is

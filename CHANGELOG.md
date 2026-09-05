@@ -10,6 +10,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `scripts/hancom-regression.sh` regenerates every artifact
+  `docs/hancom-verification-checklist.md` still verifies from the release binary in one command,
+  into a private destination outside the repository. It gates each artifact on self-reread and
+  structural validation before publishing, writes a `hancom-regression-index-v1` JSON index last
+  carrying the file, checklist series item, command and SHA-256 of every artifact, and emits the
+  per-artifact `hwp certify` policy plus an empty `receipts/` directory. Local-only inputs skip
+  with the missing input named instead of failing. The run creates no Hancom observation and no
+  pass receipt.
+
 **Changed**
 
 - Both deployment images pin the v0.17.0 tarball instead of v0.16.1, so the live service gets the
