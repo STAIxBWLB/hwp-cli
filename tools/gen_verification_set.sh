@@ -39,8 +39,9 @@ fi
 DEST="$DEST_REAL"
 mkdir -p "$DEST"
 
-# 바이너리: debug가 있으면 재사용, 없으면 release 빌드.
-HWP="$REPO/target/debug/hwp"
+# Binary: HWP_BIN wins (callers such as scripts/hancom-regression.sh pin the
+# release binary), otherwise reuse debug if present, otherwise build release.
+HWP="${HWP_BIN:-$REPO/target/debug/hwp}"
 if [[ ! -x "$HWP" ]]; then
   HWP="$REPO/target/release/hwp"
   [[ -x "$HWP" ]] || cargo build --release --manifest-path "$REPO/Cargo.toml" -q
@@ -223,7 +224,13 @@ gen_pipeline() {  # <입력hwp> <접두>
 }
 gen_pipeline "$FIX/work_report.hwp"   "A1A2_work_report"
 gen_pipeline "$FIX/annual_report.hwp" "A3A4_annual_report"
-[[ -n "$PUMUI" ]] && gen_pipeline "$PUMUI" "A5A6_품의"
+if [[ -n "$PUMUI" ]]; then
+  gen_pipeline "$PUMUI" "A5A6_품의"
+else
+  # 코퍼스 품의 문서가 없으면 아무 줄도 남기지 않던 자리. 호출자(회귀 게이트)가
+  # "보고 없음"과 "입력 없음"을 구분할 수 있도록 skip 줄을 명시적으로 남긴다.
+  REPORT+=("⏭  A5A6_품의 — 입력 없음: 코퍼스 품의 문서(~/Documents/hwp_samples)")
+fi
 
 # ── B. 기능별 최소 파일 ──
 "$HWP" new --from "$WORK/base.md" -o "$WORK/base.hwp" >/dev/null 2>&1

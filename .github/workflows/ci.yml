@@ -77,6 +77,12 @@ jobs:
       - name: PDF parity runner tests
         if: ${{ !cancelled() }}
         run: python3 -m unittest tools/test_pdf_parity.py
+      # Stubbed: exercises the release gate's refusals and publish protocol, not
+      # real HWP bytes, so it needs no release build.
+      - name: Hancom regression gate self test
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/tests/hancom-regression.sh
       # Fonts are not committed; the script fetches them from upstream and verifies
       # manifest hashes.
       - name: Structured document corpus (pinned OFL fonts, offline cargo)

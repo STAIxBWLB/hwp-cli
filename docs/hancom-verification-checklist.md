@@ -2,8 +2,8 @@
 
 # Hancom verification checklist (the write paths of rounds 13 to 23)
 
-A table for opening the files that `tools/gen_verification_set.sh` generates under
-`~/Documents/hwp-verification/` **directly in Hancom Office** and judging whether they are accepted.
+A table for opening the files that `scripts/hancom-regression.sh` generates under a private
+directory **directly in Hancom Office** and judging whether they are accepted.
 These files already pass our own verification (re-reading without warnings plus a visual render check)
 with our reader and renderer, so **the only thing left unverified is whether Hancom accepts these
 synthesized or converted bytes without corruption or alteration**.
@@ -13,6 +13,93 @@ synthesized or converted bytes without corruption or alteration**.
 > text boxes (preserving the text in the body, omitting the shape wrapper), removing the corruption,
 > and hyperlinks were given a **blue underlined character shape** on the display text. Those two are
 > what this round re-checks.
+
+## Regenerating the artifacts
+
+Run `scripts/hancom-regression.sh /private/directory` to regenerate every artifact this checklist
+still verifies, from the release binary, in one command. Per-series manual commands are no longer
+the procedure. The destination must be outside this repository: the script refuses the repository
+root and any path under it, including a symlink or relative alias of it, and the run writes nothing
+into the working tree.
+
+Every artifact is gated on self-reread (`hwp cat` with no warning) and structural validation
+(`hwp validate --json` reporting valid with no warnings) before it is published, and the run writes
+a `hancom-regression-index-v1` JSON index last. An index file in the destination therefore means
+the whole set passed. Each index row carries the file name, its checklist series item, the exact
+command that produced it, its SHA-256 and the two gate columns, so an artifact can always be mapped
+back to the table entry that judges it. The index also names the binary the set is evidence for:
+absolute path, `--version` line and SHA-256.
+
+The whole bundle is built inside one fresh generation directory and published as a unit:
+
+```
+<destination>/
+  current -> gen-<timestamp>     the published set
+  gen-<timestamp>/               immutable: artifacts, per-artifact policies,
+                                 an empty receipts/ directory, and the index
+```
+
+Nothing is written into `<destination>` itself except that generation directory and the `current`
+symlink, and nothing is ever merged into contents the script does not manage: a `current` that is a
+real directory, or a symlink aimed anywhere but a sibling `gen-*`, is refused before generation
+starts. The index is written through a temp file and renamed last inside the generation, the whole
+generation is flushed, then the generation is renamed into place and `current` swings onto it. If
+anything fails, the previous `current` is untouched and the staging directory is removed, so a rerun
+never leaves a stale index, a mixed generation or an orphan artifact. The previous generation is
+kept (the owner may have written receipts into it); anything older is removed.
+
+An artifact whose input is local only (the series A approval document, the series J bordered
+source, the series M and N private sources, and the distribution-document read gated on
+`HWP_CORPUS_DIR`) is reported as a skip naming the missing input and gets no index row, because a
+missing private input is not a regression. A case that fails gets no index row either, and fails
+the run, so a gap is never silent.
+
+`HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5,C7,H2` lets the run continue past a case whose failure is
+already tracked as a GitHub issue. **Use it only for a failure that has an issue**; a case nobody is
+carrying must fail the run. An exclusion covers one defect, not one case id: the script's
+`KNOWN_FAILURE_ISSUES` table gives each listed case an expected failure stage (`fidelity`, meaning
+the harness's own assertion about what survived the round trip) and a fingerprint, a stable substring
+of the harness message. A listed case that fails at another stage, or with a different message, fails
+the run closed, so a crash during generation is never waved through under a fidelity defect's issue
+number.
+
+A listed case that fails is still not published and still not counted as a pass: it is recorded in
+the index `known_failures` array with its stage, fingerprint, the harness's own failure line, the
+issue that tracks it and the name of the variable that excluded it. An id the script does not track
+is rejected before any artifact is generated, and a listed case that unexpectedly passes is published
+normally and reported as "listed but passed", so a stale entry cannot outlive the defect it excuses.
+Every exclusion is carried forward into the release verification block (phase 4, plan 04-05): **a run
+with exclusions is not a clean pass**, and the milestone is not clean until those issues close and
+the variable is unset.
+
+### Exit status
+
+The run tells a caller which of four things happened, and the index carries the same verdict as a
+top-level `clean` boolean.
+
+| Status | Meaning |
+|--------|---------|
+| 0 | Clean pass. Every expected case published, no known failure, no skip, index `"clean": true`. |
+| 1 | Regression. A case failed, nothing was published, no index was written. |
+| 2 | Usage or precondition error. The destination, the allow list or the binary was refused before generation started. |
+| 3 | Published, but **not** a clean pass: known failures and/or skips are present and the index says `"clean": false`. |
+
+Status 3 is the ordinary outcome on a host without the private corpus, because the private-input
+cases skip. It is not a pass. A caller that treats 3 as success is claiming coverage the set does not
+have, so the release verification block must read `clean`, `known_failures` and `skips` rather than
+just checking that the script exited or that an index file exists.
+
+Series E, F and G are not regenerated. That bisection is closed (see the E section below) and its
+diagnostic outputs were removed from the folder to prevent false readings.
+
+The run creates no Hancom observation and no receipt. It writes, beside each artifact in the
+generation, an `<artifact>.policy.json` naming the one receipt that will bind to that artifact, and
+a fresh empty `receipts/` directory for those receipts to land in, so that once a real observation
+exists `hwp certify current/<artifact> --policy current/<artifact>.policy.json --report <directory>`
+is a single command with no hand editing. The emitted policy sets
+`hancom_open.require_artifact_sha256`, so a receipt without an `artifact_sha256`, or with one that
+does not equal the certified artifact, is refused: a receipt cannot be replayed from one artifact
+onto another. Never prefill a pass receipt.
 
 ## Common verdict (every file)
 
@@ -292,10 +379,11 @@ from unverified to confirmed in Hancom. When the C series passes, the items reso
 
 ## O. Phase 2.2 official profiles and eight-level numbering (unverified)
 
-Run `tools/gen_verification_set.sh /private/directory` to create the bounded Phase 2.2 set. It
-creates exactly twelve labelled documents, one HWP and one HWPX for each canonical profile, plus
-the content-free `phase-02.2-index.tsv`. The generator only proves internal reread and structural
-validation; it creates no Hancom pass receipt and makes no Hancom acceptance claim.
+`scripts/hancom-regression.sh` regenerates this set with the rest of the checklist; it delegates to
+`tools/gen_verification_set.sh` in its Phase 2.2 mode and absorbs the twelve labelled documents,
+one HWP and one HWPX for each canonical profile, into its own index. The generator only proves
+internal reread and structural validation; it creates no Hancom pass receipt and makes no Hancom
+acceptance claim.
 
 For every generated HWP and HWPX, perform all seven observations below. Record the actual result
 against the matching SHA-256 in the private index. A skipped, unavailable, or failed observation is

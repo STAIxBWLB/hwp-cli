@@ -219,6 +219,12 @@ pub struct HancomOpenPolicy {
     /// When true (default) the receipt result must be `pass`.
     #[serde(default = "default_true")]
     pub require_pass: bool,
+    /// When true, the receipt must carry `artifact_sha256` and it must equal the certified
+    /// input's hash. The field stays optional at the schema level; a policy that binds one
+    /// receipt to one artifact turns this on so an unbound receipt cannot stand in for it.
+    /// Defaults to false, so policies written before this option keep their behaviour.
+    #[serde(default)]
+    pub require_artifact_sha256: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2085,7 +2091,16 @@ fn valid_receipt_timestamp(value: &str) -> bool {
         && digits(&offset[4..6])
 }
 
-fn valid_receipt(receipt: &HancomVerificationReceipt, input_sha256: &str) -> bool {
+fn valid_receipt(
+    receipt: &HancomVerificationReceipt,
+    input_sha256: &str,
+    require_artifact_sha256: bool,
+) -> bool {
+    if require_artifact_sha256 && receipt.artifact_sha256.is_none() {
+        // The policy binds this receipt to one artifact. A receipt with no hash names no
+        // artifact, so it cannot be the evidence this policy asks for.
+        return false;
+    }
     receipt.schema_version == "1.0"
         && matches!(receipt.result.as_str(), "pass" | "fail")
         && valid_receipt_text(&receipt.application)
@@ -2198,7 +2213,7 @@ fn evaluate_hancom_open_evidence(
     let Ok(receipt) = serde_json::from_slice::<HancomVerificationReceipt>(&bytes) else {
         return invalid();
     };
-    if !valid_receipt(&receipt, input_sha256) {
+    if !valid_receipt(&receipt, input_sha256, policy.require_artifact_sha256) {
         return invalid();
     }
     let passed = !policy.require_pass || receipt.result == "pass";
@@ -5011,6 +5026,7 @@ exit 2"#,
         let policy = HancomOpenPolicy {
             receipt: "hancom-receipt.json".to_string(),
             require_pass: true,
+            require_artifact_sha256: false,
         };
         let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Passed);
@@ -5041,6 +5057,7 @@ exit 2"#,
         let policy = HancomOpenPolicy {
             receipt: "hancom-receipt.json".to_string(),
             require_pass: true,
+            require_artifact_sha256: false,
         };
         let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Failed);
@@ -5055,6 +5072,7 @@ exit 2"#,
         let policy = HancomOpenPolicy {
             receipt: "hancom-receipt.json".to_string(),
             require_pass: true,
+            require_artifact_sha256: false,
         };
         let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
         assert_eq!(check.status, CheckStatus::Failed);
@@ -5096,6 +5114,7 @@ exit 2"#,
         let policy = HancomOpenPolicy {
             receipt: "hancom-receipt.json".to_string(),
             require_pass: true,
+            require_artifact_sha256: false,
         };
         // The receipt hash matches the certified input.
         write_receipt(&dir, valid_receipt_json());
@@ -5115,6 +5134,70 @@ exit 2"#,
         let check = evaluate_hancom_open_evidence(&policy, &dir, &"1".repeat(64));
         assert_eq!(check.status, CheckStatus::Passed);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn require_artifact_sha256_makes_the_receipt_binding_mandatory() {
+        let dir = evidence_scratch_dir("hancom-require-hash");
+        let policy = HancomOpenPolicy {
+            receipt: "hancom-receipt.json".to_string(),
+            require_pass: true,
+            require_artifact_sha256: true,
+        };
+
+        // A receipt naming the certified artifact passes.
+        write_receipt(&dir, valid_receipt_json());
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
+        assert_eq!(check.status, CheckStatus::Passed);
+        assert!(check.reason_codes.is_empty());
+
+        // A receipt naming a different artifact fails closed.
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"1".repeat(64));
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert_eq!(check.reason_codes, ["hancom_open_receipt_invalid"]);
+
+        // A receipt with no hash names no artifact, so under this option it is not
+        // evidence for any of them. The default policy still accepts it.
+        let mut unbound = valid_receipt_json();
+        unbound.as_object_mut().unwrap().remove("artifact_sha256");
+        write_receipt(&dir, unbound);
+        let check = evaluate_hancom_open_evidence(&policy, &dir, &"0".repeat(64));
+        assert_eq!(check.status, CheckStatus::Failed);
+        assert_eq!(check.reason_codes, ["hancom_open_receipt_invalid"]);
+        let default_policy = HancomOpenPolicy {
+            require_artifact_sha256: false,
+            ..policy
+        };
+        let check = evaluate_hancom_open_evidence(&default_policy, &dir, &"0".repeat(64));
+        assert_eq!(check.status, CheckStatus::Passed);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn require_artifact_sha256_defaults_to_false_in_a_parsed_policy() {
+        let policy: CertificationPolicy = serde_json::from_value(serde_json::json!({
+            "schema_version": "1.0",
+            "document": {"hancom_open": {"receipt": "hancom-receipt.json"}},
+            "render": {}
+        }))
+        .unwrap();
+        let hancom_open = policy.document.hancom_open.unwrap();
+        assert!(hancom_open.require_pass);
+        assert!(!hancom_open.require_artifact_sha256);
+
+        let policy: CertificationPolicy = serde_json::from_value(serde_json::json!({
+            "schema_version": "1.0",
+            "document": {
+                "hancom_open": {
+                    "receipt": "hancom-receipt.json",
+                    "require_artifact_sha256": true
+                }
+            },
+            "render": {}
+        }))
+        .unwrap();
+        assert!(policy.document.hancom_open.unwrap().require_artifact_sha256);
     }
 
     #[test]
