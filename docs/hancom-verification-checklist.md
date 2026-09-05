@@ -37,14 +37,38 @@ the run, so a gap is never silent.
 
 `HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5,C7,H2` lets the run continue past a case whose failure is
 already tracked as a GitHub issue. **Use it only for a failure that has an issue**; a case nobody is
-carrying must fail the run. A listed case that fails is still not published and still not counted as
-a pass: it is recorded in the index's `known_failures` array with the harness's own failure line, the
-issue that tracks it and the name of the variable that excluded it, and the closing report names how
-many cases were excluded. An id the script does not track is rejected before any artifact is
-generated, and a listed case that unexpectedly passes is published normally and reported as
-"listed but passed", so a stale entry cannot outlive the defect it excuses. Every exclusion is
-carried forward into the release verification block (phase 4, plan 04-05): **a run with exclusions is
-not a clean pass**, and the milestone is not clean until those issues close and the variable is unset.
+carrying must fail the run. An exclusion covers one defect, not one case id: the script's
+`KNOWN_FAILURE_ISSUES` table gives each listed case an expected failure stage (`fidelity`, meaning
+the harness's own assertion about what survived the round trip) and a fingerprint, a stable substring
+of the harness message. A listed case that fails at another stage, or with a different message, fails
+the run closed, so a crash during generation is never waved through under a fidelity defect's issue
+number.
+
+A listed case that fails is still not published and still not counted as a pass: it is recorded in
+the index `known_failures` array with its stage, fingerprint, the harness's own failure line, the
+issue that tracks it and the name of the variable that excluded it. An id the script does not track
+is rejected before any artifact is generated, and a listed case that unexpectedly passes is published
+normally and reported as "listed but passed", so a stale entry cannot outlive the defect it excuses.
+Every exclusion is carried forward into the release verification block (phase 4, plan 04-05): **a run
+with exclusions is not a clean pass**, and the milestone is not clean until those issues close and
+the variable is unset.
+
+### Exit status
+
+The run tells a caller which of four things happened, and the index carries the same verdict as a
+top-level `clean` boolean.
+
+| Status | Meaning |
+|--------|---------|
+| 0 | Clean pass. Every expected case published, no known failure, no skip, index `"clean": true`. |
+| 1 | Regression. A case failed, nothing was published, no index was written. |
+| 2 | Usage or precondition error. The destination, the allow list or the binary was refused before generation started. |
+| 3 | Published, but **not** a clean pass: known failures and/or skips are present and the index says `"clean": false`. |
+
+Status 3 is the ordinary outcome on a host without the private corpus, because the private-input
+cases skip. It is not a pass. A caller that treats 3 as success is claiming coverage the set does not
+have, so the release verification block must read `clean`, `known_failures` and `skips` rather than
+just checking that the script exited or that an index file exists.
 
 Series E, F and G are not regenerated. That bisection is closed (see the E section below) and its
 diagnostic outputs were removed from the folder to prevent false readings.

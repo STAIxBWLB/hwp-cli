@@ -32,7 +32,21 @@
 #             failure is already tracked as a GitHub issue. A listed case that
 #             fails is recorded in the index as a known_failure instead of
 #             failing the run; it is still not published and still not a pass.
-#             Only an id in KNOWN_FAILURE_ISSUES below may be listed.
+#             Only an id in KNOWN_FAILURE_ISSUES below may be listed, and the
+#             exclusion holds only for the failure that table describes: the
+#             expected stage and a stable substring of the harness's own
+#             message. A listed case that fails at another stage, or with a
+#             different message, fails the run closed.
+#   HWP_REGRESSION_GENERATOR
+#             path to the delegated generator (default
+#             tools/gen_verification_set.sh). For the self test only.
+#
+# Exit status:
+#   0  clean pass: every expected case published, no known failure, no skip.
+#   1  regression: a case failed, nothing was published, no index was written.
+#   2  usage or precondition error: the run never started generating.
+#   3  published, but NOT a clean pass: known failures and/or skips are present
+#      and the index says `"clean": false`. A caller must not read 3 as a pass.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -59,18 +73,32 @@ INDEX_SCHEMA='hancom-regression-index-v1'
 # A case may be excluded only if it is in this table: the index entry has to
 # name the issue that tracks it, so an exclusion is always an open defect on
 # record and never a quiet allowance. Remove the row when the issue closes.
+# Each row is <case>|<expected stage>|<fingerprint>|<issue>. Naming the case
+# alone would excuse any failure of that case, including a new one: a crash
+# during generation would be waved through under a fidelity defect's issue
+# number. The stage says where the failure is allowed to happen and the
+# fingerprint is a stable substring of the harness's own message, so the
+# exclusion covers one known defect and nothing else.
 KNOWN_FAILURE_VAR='HWP_REGRESSION_ALLOW_KNOWN_FAILURES'
 KNOWN_FAILURE_ISSUES=(
-  'C5=https://github.com/STAIxBWLB/hwp-cli/issues/236'
-  'C7=https://github.com/STAIxBWLB/hwp-cli/issues/237'
-  'H2=https://github.com/STAIxBWLB/hwp-cli/issues/238'
+  'C5|fidelity|밑줄모양(3) 소실|https://github.com/STAIxBWLB/hwp-cli/issues/236'
+  'C7|fidelity|통합 효과 소실: 밑줄|https://github.com/STAIxBWLB/hwp-cli/issues/237'
+  'H2|fidelity|0x25cb|https://github.com/STAIxBWLB/hwp-cli/issues/238'
 )
 
-known_failure_issue() {
+# Stages a case can fail at. `fidelity` is the harness's own assertion about
+# what survived the round trip; the others are the run breaking before that
+# question is even reached.
+# generation - the command produced nothing, or exited non-zero
+# gate       - self-reread or structural validation refused the artifact
+# fidelity   - the artifact exists and the harness says a feature was lost
+# delegation - the delegated generator reported no outcome for the case
+# coverage   - the case broke this script's own accounting rules
+known_failure_spec() {
   local entry
   for entry in "${KNOWN_FAILURE_ISSUES[@]}"; do
-    if [[ "$entry" == "$1="* ]]; then
-      printf '%s' "${entry#*=}"
+    if [[ "$entry" == "$1|"* ]]; then
+      printf '%s' "${entry#*|}"
       return 0
     fi
   done
@@ -85,11 +113,11 @@ if [[ -n "${!KNOWN_FAILURE_VAR:-}" ]]; then
   for entry in "${exclude_raw[@]}"; do
     entry="${entry//[[:space:]]/}"
     [[ -n "$entry" ]] || continue
-    if ! known_failure_issue "$entry" >/dev/null; then
+    if ! known_failure_spec "$entry" >/dev/null; then
       echo "$KNOWN_FAILURE_VAR: unknown case id '$entry'; only a case tracked in" >&2
       echo "KNOWN_FAILURE_ISSUES may be excluded. Tracked ids:" >&2
-      printf '  %s\n' "${KNOWN_FAILURE_ISSUES[@]%%=*}" >&2
-      exit 1
+      printf '  %s\n' "${KNOWN_FAILURE_ISSUES[@]%%|*}" >&2
+      exit 2
     fi
     EXCLUDE+=("$entry")
   done
@@ -111,13 +139,13 @@ is_excluded() {
 # anything can be written, moved or deleted there.
 command -v python3 >/dev/null 2>&1 || {
   echo "python3 is required to resolve a private regression destination" >&2
-  exit 1
+  exit 2
 }
 REPO_REAL="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve(strict=False))' "$REPO")"
 DEST_REAL="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve(strict=False))' "$DEST")"
 if [[ "$DEST_REAL" == "$REPO_REAL" || "$DEST_REAL" == "$REPO_REAL/"* ]]; then
   echo "regression destination must be outside the repository: $DEST_REAL" >&2
-  exit 1
+  exit 2
 fi
 DEST="$DEST_REAL"
 mkdir -p "$DEST"
@@ -292,16 +320,34 @@ index_command() {
 # A failure of a case listed in HWP_REGRESSION_ALLOW_KNOWN_FAILURES is recorded
 # against its tracking issue and the run continues. It is still not published
 # and still not a pass; any other failure fails the whole run closed.
+# fail <case> <stage> <detail>. An excluded case is excused only for the exact
+# failure its table row describes; anything else about that case still fails the
+# run closed.
 fail() {
-  if is_excluded "$1"; then
-    KNOWN_FAILURES+=("$1"$'\t'"$2"$'\t'"$(known_failure_issue "$1")")
-    REPORT+=("known  $1  $2")
-    outcome "$1" known_failure
+  local case_id="$1" stage="$2" detail="$3"
+  local expected_stage fingerprint issue
+  if is_excluded "$case_id"; then
+    IFS='|' read -r expected_stage fingerprint issue <<<"$(known_failure_spec "$case_id")"
+    if [[ "$stage" != "$expected_stage" ]]; then
+      FAILED=1
+      REPORT+=("FAIL  $case_id  excluded at stage '$expected_stage' but failed at '$stage': $detail")
+      outcome "$case_id" failed
+      return 0
+    fi
+    if [[ "$detail" != *"$fingerprint"* ]]; then
+      FAILED=1
+      REPORT+=("FAIL  $case_id  excluded for '$fingerprint' but failed differently: $detail")
+      outcome "$case_id" failed
+      return 0
+    fi
+    KNOWN_FAILURES+=("$case_id"$'\t'"$stage"$'\t'"$fingerprint"$'\t'"$detail"$'\t'"$issue")
+    REPORT+=("known  $case_id  [$stage] $detail")
+    outcome "$case_id" known_failure
     return 0
   fi
   FAILED=1
-  REPORT+=("FAIL  $1  $2")
-  outcome "$1" failed
+  REPORT+=("FAIL  $case_id  [$stage] $detail")
+  outcome "$case_id" failed
 }
 
 # skip <case> <reason code> <detail>. The reason code is closed vocabulary: an
@@ -317,7 +363,7 @@ skip() {
       return 0
     fi
   done
-  fail "$case_id" "unrecognized skip reason '$reason': $detail"
+  fail "$case_id" coverage "unrecognized skip reason '$reason': $detail"
 }
 
 # push_row <series> <staged artifact> <command> <sha256> <reread> <validate>
@@ -339,16 +385,16 @@ record() {
   local name hash
   name="$(basename "$src")"
   if [[ ! -s "$src" ]]; then
-    fail "$series" "missing or empty output: $name"
+    fail "$series" generation "missing or empty output: $name"
     return 0
   fi
   if ! reread_and_validate "$src"; then
-    fail "$series" "reread/validate gate failed: $name"
+    fail "$series" gate "reread/validate gate failed: $name"
     return 0
   fi
   hash="$(shasum -a 256 "$src" | awk '{print $1}')"
   if [[ -z "$hash" ]]; then
-    fail "$series" "empty hash: $name"
+    fail "$series" gate "empty hash: $name"
     return 0
   fi
   push_row "$series" "$src" "$cmd" "$hash" pass pass
@@ -362,7 +408,7 @@ emit() {
   local cmd
   cmd="$(index_command "$@")"
   if ! "$@" >/dev/null 2>&1; then
-    fail "$series" "generation failed: $(basename "$out")"
+    fail "$series" generation "generation failed: $(basename "$out")"
     return 0
   fi
   record "$series" "$out" "$cmd"
@@ -397,7 +443,7 @@ absorb() {
     line="$(grep -m1 -F -- "$fallback" "$LEGACY_LOG" || true)"
   fi
   if [[ -z "$line" ]]; then
-    fail "$case_id" "delegated generator reported no outcome for $name (exit $LEGACY_STATUS)"
+    fail "$case_id" delegation "delegated generator reported no outcome for $name (exit $LEGACY_STATUS)"
     return 0
   fi
   detail="${line#* }"
@@ -408,7 +454,7 @@ absorb() {
       record "$case_id" "$STAGE/$name" "$LEGACY_CMD (case $name)"
       ;;
     '⏭'*) skip "$case_id" private_input_missing "$detail" ;;
-    *)    fail "$case_id" "delegated case failed: $detail" ;;
+    *)    fail "$case_id" fidelity "delegated case failed: $detail" ;;
   esac
   return 0
 }
@@ -501,7 +547,7 @@ if HWP_BIN="$HWP" bash "$GENERATOR" "$O_DIR" >"$WORK/phase-02.2.log" 2>&1; then
       push_row "O_${profile}_${format}" "$STAGE/$o_name" "$O_CMD (profile $profile, $format)" \
         "$digest" pass pass
     else
-      fail "O_${profile}_${format}" "delegated generator published no $o_name"
+      fail "O_${profile}_${format}" generation "delegated generator published no $o_name"
     fi
   done < "$O_DIR/phase-02.2-index.tsv"
 else
@@ -509,7 +555,7 @@ else
   # expected cases with no outcome, which is exactly the hole this table closes.
   for o_profile in official report plan notice minutes press; do
     for o_format in hwp hwpx; do
-      fail "O_${o_profile}_${o_format}" "delegated phase-02.2 generation failed; see the generator output"
+      fail "O_${o_profile}_${o_format}" delegation "delegated phase-02.2 generation failed; see the generator output"
     done
   done
 fi
@@ -535,7 +581,7 @@ if [[ -s "${WORK}/merge_a.hwpx" && -s "${WORK}/merge_b.hwpx" ]]; then
     "$HWP" merge "$WORK/merge_a.hwpx" "$WORK/merge_b.hwpx" \
     -o "$STAGE/P1_merge.hwpx" --loss-report "$WORK/merge-loss.json"
 else
-  fail P1_merge "no merge inputs: the committed fixture fixtures/samples/report-tables.hwpx is missing"
+  fail P1_merge generation "no merge inputs: the committed fixture fixtures/samples/report-tables.hwpx is missing"
 fi
 
 # Split the merged document: one section per merge input, so the fragments are
@@ -553,12 +599,12 @@ if [[ -s "$STAGE/P1_merge.hwpx" ]]; then
       record "$(printf 'P2_split_%03d' "$fragment_index")" "$STAGE/$fragment_name" \
         "hwp split P1_merge.hwpx --out-dir <directory> --loss-report <file>"
     done
-    [[ "$fragment_index" -gt 0 ]] || fail P2_split "split produced no fragment"
+    [[ "$fragment_index" -gt 0 ]] || fail P2_split generation "split produced no fragment"
   else
-    fail P2_split "split failed on P1_merge.hwpx"
+    fail P2_split generation "split failed on P1_merge.hwpx"
   fi
 else
-  fail P2_split "no merged document to split: P1_merge did not publish"
+  fail P2_split generation "no merged document to split: P1_merge did not publish"
 fi
 
 # hwp compare is read-only: it never opens in Hancom, so this row carries the
@@ -576,10 +622,10 @@ if [[ -s "$STAGE/P1_merge-001.hwpx" ]]; then
       "hwp compare P1_merge-001.hwpx merge_a.hwpx --format json" \
       "$compare_hash" 'n/a (read-only)' 'n/a (read-only)'
   else
-    fail P3_compare_readonly "compare run failed (exit $compare_status)"
+    fail P3_compare_readonly generation "compare run failed (exit $compare_status)"
   fi
 else
-  fail P3_compare_readonly "no split fragment to compare: P2_split did not publish"
+  fail P3_compare_readonly generation "no split fragment to compare: P2_split did not publish"
 fi
 
 # GA-2 distribution-document read. The source is a genuine corpus document; it is
@@ -607,8 +653,8 @@ if [[ -f "$SAMPLE" ]]; then
     --set-cell "0:1:1=$cell_value" \
     --set-cell-para "0:1:1=>line-spacing:180,align:center"
 else
-  fail P5_set_cell_blank_line "the committed fixture fixtures/samples/report-tables.hwpx is missing"
-  fail P6_set_cell_para "the committed fixture fixtures/samples/report-tables.hwpx is missing"
+  fail P5_set_cell_blank_line generation "the committed fixture fixtures/samples/report-tables.hwpx is missing"
+  fail P6_set_cell_para generation "the committed fixture fixtures/samples/report-tables.hwpx is missing"
 fi
 
 # --- reconcile the delegated exit status ------------------------------------
@@ -778,10 +824,12 @@ with open(known_path, encoding="utf-8") as handle:
         line = line.rstrip("\n")
         if not line:
             continue
-        case, reason, issue = line.split("\t")
+        case, stage, fingerprint, reason, issue = line.split("\t")
         known_failures.append(
             {
                 "case": case,
+                "stage": stage,
+                "fingerprint": fingerprint,
                 "reason": reason,
                 "issue": issue,
                 "excluded_by": excluded_by,
@@ -806,6 +854,10 @@ index = {
     # Which build this set is evidence for. Without the hash an index cannot
     # distinguish two runs of the same version number.
     "binary": binary,
+    # A clean pass is every expected case published. Anything excused or
+    # skipped leaves a hole in the evidence, and a consumer that only checks
+    # whether an index file exists must still be able to see that hole.
+    "clean": not known_failures and not skips,
     "artifacts": artifacts,
     "known_failures": known_failures,
     "skips": skips,
@@ -832,3 +884,12 @@ echo 'The receipt binding is the "hancom_open" check in that report.'
 echo
 outcome_summary
 echo 'No Hancom observation and no pass receipt was created by this run.'
+
+# A published-but-incomplete run gets its own exit status. Sharing 0 with a
+# clean pass is how "we shipped with three known failures" becomes "we shipped
+# green" one release later.
+if [[ ${#KNOWN_FAILURES[@]} -gt 0 || ${#SKIPS[@]} -gt 0 ]]; then
+  echo 'Exit 3: the index says "clean": false. This run is not a clean pass.'
+  exit 3
+fi
+exit 0
