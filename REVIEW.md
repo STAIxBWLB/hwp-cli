@@ -27,6 +27,9 @@ Run these passes and tag every finding with its pass:
   private fixtures. The narrow committed exceptions are listed in `CLAUDE.md`.
 - **Bilingual docs**: user-facing `NAME.md` and `NAME.ko.md` change in the same commit; the `KO`
   overlay in `crates/hwp-cli/src/i18n.rs` gains an entry whenever a command or flag is added.
+- **No font-dependent assertions in CI-run tests**: CI render glyphs come from system fonts, so a
+  test that asserts on glyphs or page counts is a finding, not a nit. Gate it behind `HWP_GOLDEN=1`
+  or an explicit font directory instead.
 
 ## What Important means here
 
@@ -45,7 +48,8 @@ Report at most 5 nits per review; summarize the rest as a count.
   -- -D warnings`, `cargo test --workspace`, the PDF-runner tests, the Hancom regression gate, the
   structured-corpus gate, claim lint, the documentation-surface gate, the release-readiness
   self-checks, and the public PDF parity oracle.
-- Font-dependent expectations in tests, which CI cannot assert on.
+
+Font-dependent test expectations are the opposite case: report them, see the focus list above.
 
 ## Feedback into CLAUDE.md
 

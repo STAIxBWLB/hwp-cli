@@ -60,8 +60,14 @@ HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus
 scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/doc/release gates
 ```
 
-- Healthy output is the final line
-  `== check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=ran|skipped) ==`.
+- A successful run ends with exactly one of these two lines (the last field reports the public
+  parity gate; the script prints one word there, never both):
+
+  ```
+  == check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=ran) ==
+  == check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=skipped) ==
+  ```
+
   Any other ending means the run failed; the script keeps going after a failing gate so one run reports all of them.
 - **Run it before reporting a task complete, and paste the output.** For a partial run during development,
   call the single command directly (clippy only, test only) - but the full script is what gates the PR.
