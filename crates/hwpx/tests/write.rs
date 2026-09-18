@@ -2269,6 +2269,40 @@ fn ge_a5_underline_shape_roundtrip() {
     assert!(out.contains(r#"shape="DASH""#), "serialized DASH: {out}");
 }
 
+/// An IR that sets only the legacy `underline_shape` field (the JSON IR surgery
+/// path of `tools/gen_effects_cases.py`) keeps its shape through the HWPX write
+/// (#236 dotted, #237 double).
+#[test]
+fn legacy_underline_shape_field_alone_survives_roundtrip() {
+    for (field, expected) in [(3u8, "DOT"), (7, "CIRCLE"), (8, "DOUBLE_SLIM")] {
+        let xml = r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"><hh:underline type="BOTTOM" shape="SOLID" color="#000000"/></hh:charPr></hh:charProperties></hh:head>"##;
+        let (mut header, _) = hwpx::read::header::parse_header(xml).unwrap();
+        let shape = &mut header.char_shapes[0];
+        shape.attr &= !(0xFu32 << 4);
+        shape.underline_shape = field;
+
+        let out = hwpx::write::header::write_header(&header, 1);
+        assert!(
+            out.contains(&format!(
+                r#"<hh:underline type="BOTTOM" shape="{expected}""#
+            )),
+            "serialized {expected}: {out}"
+        );
+        let (roundtripped, _) = hwpx::read::header::parse_header(&out).unwrap();
+        let cs = &roundtripped.char_shapes[0];
+        assert_eq!(cs.underline_kind(), 1, "underline kind survives");
+        assert_eq!(
+            cs.underline_shape, field,
+            "legacy field round-trips {expected}"
+        );
+        assert_eq!(
+            cs.underline_shape_code(),
+            field - 1,
+            "normalized code {expected}"
+        );
+    }
+}
+
 /// HWP5-style normalized underline bits serialize without the HWPX-only legacy field.
 #[test]
 fn normalized_underline_shape_writes_without_legacy_field() {

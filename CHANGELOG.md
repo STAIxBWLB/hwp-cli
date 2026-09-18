@@ -26,9 +26,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Coverage is proved rather than assumed: an expected-case manifest requires exactly one typed
   outcome per case (`published`, `known_failure`, or `skipped` with reason code
   `private_input_missing` or `series_not_regenerable`), and a case the delegated generator reported
-  nothing for is a failure, not a skip. `HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5,C7,H2` excuses a
+  nothing for is a failure, not a skip. `HWP_REGRESSION_ALLOW_KNOWN_FAILURES=<case,...>` excuses a
   case whose failure is already tracked as an issue, but only at the stage and with the message
-  fingerprint the script's table records; any other failure of that case fails the run closed. Exit
+  fingerprint the script's table records; any other failure of that case fails the run closed, and
+  an id the table does not track is refused up front. Exit
   status is 0 for a clean pass, 1 for a regression, 2 for a precondition error and 3 for a run that
   published but is not clean.
 
@@ -43,6 +44,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   cell-paragraph series (issues #220 through #225). `deploy/cloudflare/container/Dockerfile.slim`
   is the one that ships; `deploy/aws/Dockerfile.agentcore` moves with it to keep the two from
   drifting.
+
+**Fixed**
+
+- HWPX write: a character shape whose underline shape is given only through the IR's legacy
+  `underline_shape` field (the JSON IR path, `hwp new --from <ir.json>`) no longer collapses to a
+  SOLID underline. `CharShape::underline_shape_code` now falls back to that field for an active
+  underline when the normalized bits 4..=7 are empty, so a dotted (#236) or double (#237) underline
+  survives read -> write -> read, and the render and edit paths see the same shape.
+- `tools/gen_effects_cases.py` case H2 asserted a `U+2022` bullet for a nested markdown list; the
+  markdown importer has emitted the gaejo-style ladder (`□ → ○ → - → ·`, #125) since v0.17.0, so a
+  depth-2 bullet is `○` (`U+25CB`). The assertion now encodes that rule (#238). With C5, C7 and H2
+  passing, `scripts/hancom-regression.sh` tracks no known failure: its table is empty, every
+  `HWP_REGRESSION_ALLOW_KNOWN_FAILURES` id is refused, and the self test exercises the hatch on a
+  patched copy of the gate (`HWP_REGRESSION_REPO` points that copy at the checkout).
 
 **Added**
 

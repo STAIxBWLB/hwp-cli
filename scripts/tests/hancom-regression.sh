@@ -223,9 +223,22 @@ else
 fi
 
 # --- 5. an allowlisted case failing for another reason fails closed ----------
+# The real table is empty whenever every case passes, so the hatch is exercised
+# on a patched copy of the gate that tracks one C5 row. HWP_REGRESSION_REPO keeps
+# the copy pointed at the real checkout.
+GATE_TRACKED="$ROOT/gate-tracked-c5.sh"
+sed "s|^KNOWN_FAILURE_ISSUES=()|KNOWN_FAILURE_ISSUES=('C5\|fidelity\|밑줄모양(3) 소실\|https://example.invalid/issues/0')|" \
+  "$GATE" > "$GATE_TRACKED"
+if grep -q "KNOWN_FAILURE_ISSUES=('C5" "$GATE_TRACKED"; then
+  pass 'self test tracks one C5 row in a patched gate copy'
+else
+  fail 'patched gate' 'could not inject the C5 known-failure row'
+fi
+GATE_REAL="$GATE"
+GATE="$GATE_TRACKED"
 dest="$ROOT/wrong-reason"
 mkdir -p "$dest"
-status="$(run_gate "$dest" HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5 \
+status="$(run_gate "$dest" HWP_REGRESSION_REPO="$REPO" HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5 \
   STUB_C5_FAILURE='C5_밑줄모양.hwpx — 예상치 못한 새로운 실패')"
 if [[ "$status" == '1' ]] && grep -q 'excluded for' "$dest.log"; then
   pass 'an allowlisted case failing for a different reason fails closed'
@@ -236,7 +249,7 @@ fi
 # The same case failing for the reason the table describes is excused.
 dest="$ROOT/right-reason"
 mkdir -p "$dest"
-status="$(run_gate "$dest" HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5 \
+status="$(run_gate "$dest" HWP_REGRESSION_REPO="$REPO" HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5 \
   STUB_C5_FAILURE='C5_밑줄모양.hwpx — 점선 밑줄 밑줄모양(3) 소실')"
 if [[ "$status" == '3' ]] \
   && python3 -c 'import json,sys; i=json.load(open(sys.argv[1])); assert [k for k in i["known_failures"] if k["case"] == "C5" and k["stage"] == "fidelity"]' \
@@ -249,11 +262,22 @@ fi
 # An id nobody tracks is refused before anything is generated.
 dest="$ROOT/unknown-id"
 mkdir -p "$dest"
-status="$(run_gate "$dest" HWP_REGRESSION_ALLOW_KNOWN_FAILURES=Z9)"
+status="$(run_gate "$dest" HWP_REGRESSION_REPO="$REPO" HWP_REGRESSION_ALLOW_KNOWN_FAILURES=Z9)"
 if [[ "$status" == '2' && ! -e "$dest/current" ]]; then
   pass 'an untracked case id is refused with exit 2'
 else
   fail 'unknown id' "expected exit 2, got $status"
+fi
+GATE="$GATE_REAL"
+
+# With the real (empty) table, no id at all may be excluded.
+dest="$ROOT/empty-table"
+mkdir -p "$dest"
+status="$(run_gate "$dest" HWP_REGRESSION_ALLOW_KNOWN_FAILURES=C5)"
+if [[ "$status" == '2' && ! -e "$dest/current" ]] && grep -q '(none)' "$dest.log"; then
+  pass 'the real table tracks no case, so every exclusion is refused'
+else
+  fail 'empty table' "expected exit 2 naming an empty table, got $status"
 fi
 
 # --- 6. an unmanaged publish target is refused ------------------------------

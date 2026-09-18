@@ -810,8 +810,12 @@ def h2_md_hwp(dest):
     if not has_strike_run:
         raise Fail("취소선 run(bit18 참조) 소실")
     # BULLET 레코드가 정품 필드 패턴과 일치하는지(바이트 수준, 사업계획서 전수 대조):
-    # 25B, [8..12]=글자모양 id 없음(ffffffff), [12..14]=글머리표 문자('•'=0x2022).
+    # 25B, [8..12]=글자모양 id 없음(ffffffff), [12..14]=글머리표 문자.
     # 오프셋이 어긋나면(과거 20B/오프셋8 합성) 한글이 마커를 미표시한다(1차 H2 결함).
+    # 글머리표 문자는 md 목록 깊이별 개조식 사다리(□→○→-→·, #125,
+    # hwp-convert from_markdown BULLET_LADDER)를 따른다. H_MD의 글머리 목록은 순서
+    # 목록 안에 중첩된 깊이 2라 '○'(0x25CB)가 정답이다(#238). 한글 수용 여부는
+    # hancom-regression 실기 라운드가 판정한다.
     bullets = r["header"].get("bullets") or []
     if not bullets:
         raise Fail("BULLET 레코드 소실")
@@ -821,10 +825,11 @@ def h2_md_hwp(dest):
     if data[8:12] != b"\xff\xff\xff\xff":
         raise Fail(f"BULLET 글자모양 id 필드(8..12) 불일치: {data[8:12].hex()}")
     ch = int.from_bytes(data[12:14], "little")
-    if ch != 0x2022:
-        raise Fail(f"BULLET 글머리표 문자(오프셋12)가 '•' 아님: {hex(ch)}")
+    if ch != 0x25CB:
+        raise Fail(f"BULLET 글머리표 문자(오프셋12)가 깊이2 사다리 '○' 아님: {hex(ch)}")
     return out, ("md 왕복: 각주(fn)+순서/글머리 머리(정의 non-dangling)+취소선 run(속성 bit18) "
-                 "+ BULLET 25B 정품 패턴(문자 오프셋12) (취소선 bit18 한글수용은 실기 확정 대상)")
+                 "+ BULLET 25B 정품 패턴(문자 오프셋12, 깊이2 사다리 '○') "
+                 "(취소선 bit18 한글수용은 실기 확정 대상)")
 
 
 # ── I 시리즈: markdown 이미지·인라인 코드(GI-3·GI-4) ─────────────────────────
