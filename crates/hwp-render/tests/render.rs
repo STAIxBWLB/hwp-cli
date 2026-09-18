@@ -1708,19 +1708,21 @@ fn 표_레이아웃(
     (list, warns.finish())
 }
 
-/// A row whose cells carry a cached line layout was sized by Hancom, so a cell
-/// whose measured content is taller must not grow it: growing moves every row
-/// below it and the fragment grid on the following pages with it. The overflow
-/// is reported as a typed warning instead. Cells without a cache keep the
-/// measurement pass, which the corpus documents rely on.
+/// A stored row height is only a lower bound once the cell's own cache runs
+/// past it: the cache is where Hancom drew the lines. Four paragraphs whose
+/// cached `v_pos` all restart at 0 add up to 40pt of cached text in a row that
+/// stores 20pt, so the row grows to hold them and nothing is reported as
+/// overflow. A cache that fits its stored height while only the measurement
+/// (an object, our own wrapping) exceeds it keeps the old contract, pinned by
+/// `cell_paragraph_shift_is_clipped_at_the_cell_bottom`.
 #[test]
-fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
+fn 캐시가_저장_행높이를_넘으면_행이_캐시만큼_커진다() {
     use hwp_render::display::Item;
 
     let mut doc = 표_분할_문서(0, 1, 20, 0, false, 0);
-    // Fill the single cell with four cached text paragraphs; their measured
-    // height is far past the 20pt the row stores.
-    let mut filler = hwp_convert::from_markdown("셀 안의 본문입니다")
+    // Two characters fit the 50pt cell on one line, so the measurement agrees
+    // with the cache and only the cache contradicts the stored height.
+    let mut filler = hwp_convert::from_markdown("본문")
         .sections
         .remove(0)
         .paragraphs
@@ -1734,7 +1736,7 @@ fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
         baseline_gap: 800,
         line_spacing: 0,
         col_start: 0,
-        seg_width: 20000,
+        seg_width: 4000,
         flags: 0x0006_0000,
     }];
     let table = doc.sections[0].paragraphs[0]
@@ -1746,7 +1748,6 @@ fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
         })
         .expect("표 앵커가 있어야");
     table.cells[0].paragraphs = vec![filler; 4];
-    let fill = table.cells[0].border_fill;
 
     let (list, report) = 표_레이아웃(&doc);
     let heights: Vec<f32> = list.pages[0]
@@ -1757,16 +1758,33 @@ fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
             _ => None,
         })
         .collect();
+    // Default vertical cell margins are 141 HWPUNIT each (2.82pt together).
     assert!(
-        heights.iter().any(|h| (h - 20.0).abs() < 0.5),
-        "셀 배경은 저장 높이 20pt를 유지해야: {heights:?} (fill {fill:?})"
+        heights.iter().any(|h| (h - 42.82).abs() < 0.5),
+        "셀 배경은 캐시 4줄(40pt)+여백까지 커져야: {heights:?}"
+    );
+    let mut baselines: Vec<i32> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Glyphs { y, .. } => Some((y * 100.0).round() as i32),
+            _ => None,
+        })
+        .collect();
+    baselines.sort_unstable();
+    baselines.dedup();
+    assert_eq!(
+        baselines.len(),
+        4,
+        "네 문단이 서로 다른 높이에 그려져야: {baselines:?}"
     );
     assert!(
-        report
+        !report
             .issues
             .iter()
             .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
-        "넘친 사실은 typed 이슈로 보고돼야"
+        "커진 행 안의 내용은 넘침이 아니다: {:?}",
+        report.issues
     );
 }
 
@@ -1815,12 +1833,12 @@ fn stale_stored_row_height_grows_to_a_monotonic_cache() {
     );
 }
 
-/// A cache that restarts `v_pos` continues the cell on a later page (#233).
-/// Only the run before the restart proves the row height on this page, so the
-/// row grows to that run and no further; the continuation is still clipped at
-/// the row bottom and reported.
+/// A cache that restarts `v_pos` is Hancom continuing the cell on a later page
+/// (#233). Once the run before the restart proves the stored height wrong, the
+/// row grows to the whole cached content and the continuation is drawn below
+/// the first run, in document order, instead of being clipped.
 #[test]
-fn continuing_cache_grows_the_row_to_its_first_run_only() {
+fn continuing_cache_grows_the_row_to_its_full_content() {
     use hwp_render::display::Item;
 
     let mut doc = 표_분할_문서(0, 2, 12, 0, false, 0);
@@ -1834,33 +1852,85 @@ fn continuing_cache_grows_the_row_to_its_first_run_only() {
     let (list, report) = 표_레이아웃(&doc);
     let heights: Vec<f32> = 채움_사각형(&list, 0).iter().map(|(_, h, _)| *h).collect();
     assert!(
-        heights.iter().any(|h| (h - 22.82).abs() < 0.5),
-        "첫 행은 되돌림 전 2줄(20pt)+여백까지만 커져야: {heights:?}"
+        heights.iter().any(|h| (h - 32.82).abs() < 0.5),
+        "첫 행은 캐시 3줄(30pt)+여백까지 커져야: {heights:?}"
     );
     assert!(
         heights.iter().any(|h| (h - 12.0).abs() < 0.5),
         "둘째 행은 저장 높이 12pt를 유지해야: {heights:?}"
     );
-    let 글자: Vec<String> = list.pages[0]
+    let 글자: Vec<(String, f32)> = list.pages[0]
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Glyphs { run, .. } => Some(run.text.clone()),
+            Item::Glyphs { y, run, .. } => Some((run.text.clone(), *y)),
             _ => None,
         })
         .collect();
-    let 있음 = |문자: &str| 글자.iter().any(|text| text.contains(문자));
+    let 위치 = |문자: &str| -> f32 {
+        글자
+            .iter()
+            .find(|(text, _)| text.contains(문자))
+            .map(|(_, y)| *y)
+            .unwrap_or_else(|| panic!("{문자}는 그려져야: {글자:?}"))
+    };
+    let (가, 나, 다, 라) = (위치("가"), 위치("나"), 위치("다"), 위치("라"));
     assert!(
-        있음("가") && 있음("나") && 있음("라"),
-        "첫 조각과 아랫 행은 그려져야: {글자:?}"
+        가 < 나 && 나 < 다 && 다 < 라,
+        "문서 순서대로 아래로: {가} {나} {다} {라}"
     );
-    assert!(!있음("다"), "이어지는 조각은 잘려야: {글자:?}");
     assert!(
-        report
+        !report
             .issues
             .iter()
             .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
-        "잘린 사실은 typed 이슈로 보고돼야"
+        "커진 행 안의 내용은 넘침이 아니다: {:?}",
+        report.issues
+    );
+}
+
+/// The restart may also sit inside one paragraph (a cell whose single
+/// paragraph Hancom split across pages). Its second run follows the previous
+/// line rather than being painted over the paragraph's first run.
+#[test]
+fn mid_paragraph_cache_restart_continues_below_the_previous_line() {
+    use hwp_render::display::Item;
+
+    let mut doc = 표_분할_문서(0, 1, 12, 0, false, 0);
+    셀_문단_설정(
+        &mut doc,
+        0,
+        vec![캐시_문단("가나다라", &[0, 1000, 0, 1000])],
+    );
+
+    let (list, report) = 표_레이아웃(&doc);
+    let heights: Vec<f32> = 채움_사각형(&list, 0).iter().map(|(_, h, _)| *h).collect();
+    assert!(
+        heights.iter().any(|h| (h - 42.82).abs() < 0.5),
+        "행은 두 조각 4줄(40pt)+여백까지 커져야: {heights:?}"
+    );
+    let mut baselines: Vec<i32> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Glyphs { y, .. } => Some((y * 100.0).round() as i32),
+            _ => None,
+        })
+        .collect();
+    baselines.sort_unstable();
+    baselines.dedup();
+    assert_eq!(
+        baselines.len(),
+        4,
+        "네 줄이 서로 다른 높이에 그려져야: {baselines:?}"
+    );
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
+        "이어 그린 조각은 넘침이 아니다: {:?}",
+        report.issues
     );
 }
 
@@ -2080,23 +2150,25 @@ fn well_formed_cell_line_caches_are_reproduced_exactly() {
     );
 }
 
-/// A cell shorter than its cached content: three paragraphs whose cached
-/// `v_pos` all restart at 0 do not fit the 25pt row, and the row below must
-/// not be painted over.  The floor raise moves the second paragraph down
-/// inside the cell; the third would land across the row boundary, so it is
-/// clipped at the cell edge and the loss is reported.  Font independent: the
-/// assertions only compare positions against the emitted row rectangles.
+/// A cell whose cache fits its stored row while the measured content does not:
+/// two cached one-line paragraphs (20pt of cache, inside the 30pt row) around a
+/// paragraph with no cache at all, which the fallback flow lays out at its own
+/// height.  The stored height stays, so the row below must not be painted
+/// over.  The floor raise moves the cache-less paragraph down inside the cell;
+/// the third would land across the row boundary, so it is clipped at the cell
+/// edge and the loss is reported.  Font independent: the assertions only
+/// compare positions against the emitted row rectangles.
 #[test]
 fn cell_paragraph_shift_is_clipped_at_the_cell_bottom() {
     use hwp_render::display::Item;
 
-    let mut doc = 표_분할_문서(0, 2, 25, 0, false, 0);
+    let mut doc = 표_분할_문서(0, 2, 30, 0, false, 0);
     셀_문단_설정(
         &mut doc,
         0,
         vec![
             캐시_문단("가", &[0]),
-            캐시_문단("나", &[0]),
+            캐시_문단("나", &[]),
             캐시_문단("다", &[0]),
         ],
     );
@@ -2107,7 +2179,7 @@ fn cell_paragraph_shift_is_clipped_at_the_cell_bottom() {
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Rect { y, h, .. } if (h - 25.0).abs() < 0.5 => Some((*y, *h)),
+            Item::Rect { y, h, .. } if (h - 30.0).abs() < 0.5 => Some((*y, *h)),
             _ => None,
         })
         .collect();
@@ -2140,10 +2212,11 @@ fn cell_paragraph_shift_is_clipped_at_the_cell_bottom() {
         위치("다").is_none(),
         "셀을 벗어나는 셋째 문단은 잘려야: {글자:?}"
     );
-    // The bottom of a line sits `줄높이 - 베이스라인_간격` below its baseline.
-    let 줄_아래 = |baseline: f32| baseline + (캐시_줄높이 - 캐시_베이스라인_간격) as f32 / 100.0;
+    // A fallback (cache-less) line ends `0.4 * size` below its baseline
+    // (`layout_box_para_iter`), 4pt for the 10pt char shape the template uses.
+    let 폴백_줄_아래 = |baseline: f32| baseline + 4.0;
     assert!(
-        첫문단 < 둘째문단 && 줄_아래(둘째문단) <= 아랫행_위 + 0.01,
+        첫문단 < 둘째문단 && 폴백_줄_아래(둘째문단) <= 아랫행_위 + 0.01,
         "밀린 문단도 윗행 안에 머물러야: {첫문단} {둘째문단} < {아랫행_위}"
     );
     assert!(
@@ -2163,19 +2236,15 @@ fn cell_paragraph_shift_is_clipped_at_the_cell_bottom() {
 /// 21 cache their positions cumulatively across the cell and are untouched by
 /// the floor raise. The remaining one restarts its third paragraph at
 /// `v_pos: 0`, and that paragraph used to be drawn exactly on top of the first
-/// one (main) and then, once the floor advanced per paragraph, 37pt below the
-/// row and past the page body bottom.
+/// one (main), then 37pt below the row and past the page body bottom, then
+/// clipped at the stored 15.65pt row (v0.17.0, #233).
 ///
-/// That cell's cached content (65pt) does not fit its 15.65pt row on any page,
-/// and the cell-fragment planner cannot rescue it: a row-spanning cell starts
-/// on the same row, so `layout_table_cell_fragments` rejects the plan at the
-/// `row-span-with-cell-fragment` guard. The contract is therefore the
-/// fail-closed one - the shifted paragraph is clipped at the cell bottom and
-/// reported - and this test pins it.
+/// The cell's first cached run (45 and 46, 44pt) already contradicts that
+/// stored height, so the row grows to the whole cached content and the third
+/// paragraph is drawn below the second, in document order, inside the body.
 ///
 /// Lines are grouped by their vertical position and their text joined, because
-/// how shaping splits a line into runs depends on the fonts installed; the
-/// assertions are on order, page and bounds only.
+/// a line is emitted as several glyph runs.
 #[test]
 fn report_tables_cell_paragraphs_keep_their_document_order() {
     use hwp_render::display::Item;
@@ -2183,7 +2252,7 @@ fn report_tables_cell_paragraphs_keep_their_document_order() {
     let path = fixture("samples/report-tables.hwpx");
     let doc = hwpx::read_document(&path).unwrap().document;
     let (_, 본문_아래) = 본문_기하(&doc);
-    let (list, report) = 표_레이아웃(&doc);
+    let (list, _report) = 표_레이아웃(&doc);
 
     let mut lines: Vec<((usize, i32), String)> = Vec::new();
     for (page_index, page) in list.pages.iter().enumerate() {
@@ -2198,45 +2267,26 @@ fn report_tables_cell_paragraphs_keep_their_document_order() {
             }
         }
     }
-    let 줄_찾기 = |needle: &str| -> Vec<(usize, i32)> {
-        lines
+    let 줄_위치 = |needle: &str| -> (usize, i32) {
+        let hits: Vec<(usize, i32)> = lines
             .iter()
             .filter(|(_, text)| text.contains(needle))
             .map(|(key, _)| *key)
-            .collect()
-    };
-    let 줄_위치 = |needle: &str| -> (usize, i32) {
-        let hits = 줄_찾기(needle);
+            .collect();
         assert_eq!(hits.len(), 1, "{needle}: 한 줄에만 있어야 {hits:?}");
         hits[0]
     };
-    // The first two paragraphs of the cell keep their cached positions, in
-    // document order, on the same page.
     let 앞 = 줄_위치("문장 45");
     let 가운데 = 줄_위치("문장 46");
+    let 뒤 = 줄_위치("문장 47");
     assert!(
-        앞 < 가운데,
-        "셀 문단은 문서 순서대로 아래로 내려가야: {앞:?} {가운데:?}"
+        앞 < 가운데 && 가운데 < 뒤,
+        "셀 문단은 문서 순서대로 아래로 내려가야: {앞:?} {가운데:?} {뒤:?}"
     );
-    assert_eq!(앞.0, 가운데.0, "두 문단은 같은 쪽에 있어야");
+    assert_eq!(앞.0, 뒤.0, "세 문단은 같은 쪽에 있어야");
     assert!(
-        가운데.1 as f32 / 100.0 <= 본문_아래,
-        "셀 글자는 본문 영역 안에 있어야: {가운데:?} vs {본문_아래}"
-    );
-    // The third paragraph does not fit the row on this page and the planner
-    // cannot continue the cell, so it is clipped instead of being painted
-    // below the row (it used to land at y=771.59, past the body bottom).
-    assert!(
-        줄_찾기("문장 47").is_empty(),
-        "행을 벗어나는 셋째 문단은 잘려야: {:?}",
-        줄_찾기("문장 47")
-    );
-    assert!(
-        report
-            .issues
-            .iter()
-            .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
-        "잘린 사실은 typed 이슈로 보고돼야"
+        뒤.1 as f32 / 100.0 <= 본문_아래,
+        "셀 글자는 본문 영역 안에 있어야: {뒤:?} vs {본문_아래}"
     );
 }
 
