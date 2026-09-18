@@ -1770,6 +1770,135 @@ fn 저장된_행높이는_내용이_넘쳐도_유지된다() {
     );
 }
 
+/// A stored row height is only a lower bound once the cell's own cache runs
+/// past it: an edit that re-synthesizes the cell keeps the pre-edit height
+/// under a taller monotonic cache (#245). The row grows to the measured
+/// content, every cached line is drawn and nothing is reported as overflow.
+/// Geometry only: rect heights and distinct glyph baselines, no font metric.
+#[test]
+fn stale_stored_row_height_grows_to_a_monotonic_cache() {
+    use hwp_render::display::Item;
+
+    let mut doc = 표_분할_문서(0, 1, 20, 0, false, 0);
+    // Five cached 10pt lines (v_pos 0..=4000) in a row that stores 20pt.
+    셀_문단_설정(&mut doc, 0, vec![cached_cell_paragraph(5)]);
+
+    let (list, report) = 표_레이아웃(&doc);
+    // Default vertical cell margins are 141 HWPUNIT each (2.82pt together).
+    let heights: Vec<f32> = 채움_사각형(&list, 0).iter().map(|(_, h, _)| *h).collect();
+    assert!(
+        heights.iter().any(|h| (h - 52.82).abs() < 0.5),
+        "행은 캐시 5줄(50pt)+여백만큼 커져야: {heights:?}"
+    );
+    let mut baselines: Vec<i32> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Glyphs { y, .. } => Some((y * 100.0).round() as i32),
+            _ => None,
+        })
+        .collect();
+    baselines.sort_unstable();
+    baselines.dedup();
+    assert_eq!(
+        baselines.len(),
+        5,
+        "캐시 5줄이 모두 그려져야: {baselines:?}"
+    );
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
+        "커진 행 안의 내용은 넘침이 아니다: {:?}",
+        report.issues
+    );
+}
+
+/// A cache that restarts `v_pos` continues the cell on a later page (#233).
+/// Only the run before the restart proves the row height on this page, so the
+/// row grows to that run and no further; the continuation is still clipped at
+/// the row bottom and reported.
+#[test]
+fn continuing_cache_grows_the_row_to_its_first_run_only() {
+    use hwp_render::display::Item;
+
+    let mut doc = 표_분할_문서(0, 2, 12, 0, false, 0);
+    셀_문단_설정(
+        &mut doc,
+        0,
+        vec![캐시_문단("가나", &[0, 1000]), 캐시_문단("다", &[0])],
+    );
+    셀_문단_설정(&mut doc, 1, vec![캐시_문단("라", &[0])]);
+
+    let (list, report) = 표_레이아웃(&doc);
+    let heights: Vec<f32> = 채움_사각형(&list, 0).iter().map(|(_, h, _)| *h).collect();
+    assert!(
+        heights.iter().any(|h| (h - 22.82).abs() < 0.5),
+        "첫 행은 되돌림 전 2줄(20pt)+여백까지만 커져야: {heights:?}"
+    );
+    assert!(
+        heights.iter().any(|h| (h - 12.0).abs() < 0.5),
+        "둘째 행은 저장 높이 12pt를 유지해야: {heights:?}"
+    );
+    let 글자: Vec<String> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Glyphs { run, .. } => Some(run.text.clone()),
+            _ => None,
+        })
+        .collect();
+    let 있음 = |문자: &str| 글자.iter().any(|text| text.contains(문자));
+    assert!(
+        있음("가") && 있음("나") && 있음("라"),
+        "첫 조각과 아랫 행은 그려져야: {글자:?}"
+    );
+    assert!(!있음("다"), "이어지는 조각은 잘려야: {글자:?}");
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::TableCellContentOverflow),
+        "잘린 사실은 typed 이슈로 보고돼야"
+    );
+}
+
+/// The edit-then-render shape of #245: a CELL table whose single row stores one
+/// line while its re-synthesized cache holds a hundred. The grown row no longer
+/// fits a page, so the table splits at cached line boundaries and every line is
+/// drawn across the pages instead of the pre-edit page count being reported.
+#[test]
+fn stale_stored_row_height_splits_the_table_across_pages() {
+    use hwp_render::display::Item;
+
+    let mut doc = 표_분할_문서(2, 1, 20, 0, false, 0);
+    셀_문단_설정(&mut doc, 0, vec![cached_cell_paragraph(100)]);
+
+    let (list, report) = 표_레이아웃(&doc);
+    assert_no_fragment_issues(&report);
+    assert!(
+        list.pages.len() > 1,
+        "1000pt 캐시는 한 쪽에 들어가지 않으므로 쪽이 늘어야: {}",
+        list.pages.len()
+    );
+    let mut lines = 0usize;
+    for page in &list.pages {
+        let mut baselines: Vec<i32> = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Glyphs { y, .. } => Some((y * 100.0).round() as i32),
+                _ => None,
+            })
+            .collect();
+        baselines.sort_unstable();
+        baselines.dedup();
+        lines += baselines.len();
+    }
+    assert_eq!(lines, 100, "캐시 100줄이 쪽에 걸쳐 모두 그려져야");
+}
+
 /// One cached line is 10pt tall with an 8pt baseline gap, so a paragraph's
 /// content bottom sits 2pt below its last baseline.
 const 캐시_줄높이: i32 = 1000;
