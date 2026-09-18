@@ -122,9 +122,15 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
    layout and growing it moves every row below plus the fragment grid on the following pages
    (measured: one cell holding an object grew its row by 190pt and displaced a whole page's
    fragment). When the measured content exceeds a stored row, the content is still drawn and the
-   deviation is reported as the typed warning `table_cell_content_overflow`. For `row_span>1`,
-   any shortfall against the spanned sum is added to the last spanned row — again only when the
-   spanned rows carry no stored height.
+   deviation is reported as the typed warning `table_cell_content_overflow`. The stored height is
+   trusted only while the cell's own cache fits it: the run of cached lines before the first
+   restart (page-start flag or `v_pos` going backwards) was laid out on one page by Hancom, so when
+   that run ends below the stored height the row was taller than stored (Hancom's HWPX export keeps
+   the declared minimum; an edit that re-synthesizes a cell keeps the pre-edit height, #245). Such
+   a row grows to the measured height when the cache is monotonic, and only to that first run when
+   the cache continues on a later page (#233) — the continuation stays clipped and reported. For
+   `row_span>1`, any shortfall against the spanned sum is added to the last spanned row — again only
+   when the spanned rows carry no stored height or the same cache contradiction applies.
 4. Cumulative offsets `col_x = prefix_sums(col_w, x)` and `row_prefix = prefix_sums(row_h, 0)` (per
    fragment a base y is added, so the same prefix serves every page fragment).
 5. Per cell: **a background Rect**, then **the content** (margins plus the vertical alignment `voff`

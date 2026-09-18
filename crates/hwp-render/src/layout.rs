@@ -2935,6 +2935,43 @@ fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
     )
 }
 
+/// Height, in points, that the line-layout cache of `cell` proves the cell's
+/// row had on the page where the cell starts, and whether the cache restarts
+/// (a page-start flag or a `v_pos` going backwards, i.e. the cell continues on
+/// a later page). Only the run of text-bearing lines before the first restart
+/// counts: that run was laid out on one page by Hancom, so the row there was at
+/// least as tall. A trailing empty cache record is legal and adds no height.
+///
+/// The stored row height is only a lower bound. Hancom's HWPX export keeps the
+/// declared minimum height while the cache runs past it, and an edit that
+/// re-synthesizes a cell keeps the pre-edit height under a taller monotonic
+/// cache (#245); in both cases the row was taller than stored.
+fn cell_cache_first_run(cell: &hwp_model::Cell) -> (f32, bool) {
+    let mut previous_v: Option<i32> = None;
+    let mut block_end = 0i32;
+    for para in &cell.paragraphs {
+        let wchar_len = para.wchar_len();
+        for (index, seg) in para.line_segs.iter().enumerate() {
+            let line_end = para
+                .line_segs
+                .get(index + 1)
+                .map_or(wchar_len, |next| next.text_start);
+            if line_end <= seg.text_start {
+                continue;
+            }
+            if seg.flags & 0x1 != 0 || previous_v.is_some_and(|previous| seg.v_pos < previous) {
+                return (block_end as f32 / 100.0, true);
+            }
+            previous_v = Some(seg.v_pos);
+            block_end = block_end.max(
+                seg.v_pos
+                    .saturating_add(seg.line_height.max(seg.text_height)),
+            );
+        }
+    }
+    (block_end as f32 / 100.0, false)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn layout_table(
     doc: &Document,
@@ -3038,24 +3075,42 @@ fn layout_table(
         // 대신 넘친다는 사실을 typed 이슈로 보고해 원인이 묻히지 않게 한다. 캐시가 없는
         // 셀(우리가 만든 문서 등)은 저장 높이도 레이아웃 산출물이 아니므로 실측이
         // 유일한 근거다 — 종전대로 행을 늘린다.
+        //
+        // 단, 캐시 자체가 저장 높이를 넘는 셀은 저장 높이가 하한일 뿐이다. 캐시는 한글이
+        // 그린 줄 위치 그 자체라, 첫 되돌림(쪽 이어짐) 전까지의 줄이 저장 높이를 지나면 그
+        // 쪽의 행은 실제로 그만큼 컸다. 편집으로 재합성된 셀은 편집 전 저장 높이 위에
+        // 단조 증가 캐시만 자라므로(#245) 정확히 이 모순을 보이고, 한글 hwpx 내보내기의
+        // 선언 최소 높이도 같다. 되돌림 없는 캐시는 실측으로, 되돌림이 있는 캐시(다음 쪽
+        // 이어짐, #233)는 첫 조각 캐시 높이까지만 행을 늘린다 — 이어지는 조각은 종전대로
+        // 잘리고 보고된다.
         let cell_cached = cell
             .paragraphs
             .iter()
             .any(|para| !para.line_segs.is_empty());
+        let mut grow_to = needed;
         if cell_cached && (r..end).all(|i| row_stored.get(i).copied().unwrap_or(false)) {
             let stored: f32 = row_h[r..end].iter().sum();
-            if needed > stored + CELL_CONTENT_OVERFLOW_EPSILON_PT {
-                warnings.push_once(
-                    RenderIssueCode::TableCellContentOverflow,
-                    format!("{:.0}", needed - stored),
-                );
+            let (first_run, continues) = cell_cache_first_run(cell);
+            let cache_min = first_run + mt + mb;
+            if cache_min <= stored + CELL_CONTENT_OVERFLOW_EPSILON_PT {
+                if needed > stored + CELL_CONTENT_OVERFLOW_EPSILON_PT {
+                    warnings.push_once(
+                        RenderIssueCode::TableCellContentOverflow,
+                        format!("{:.0}", needed - stored),
+                    );
+                }
+                continue;
             }
-            continue;
+            grow_to = if continues {
+                cache_min
+            } else {
+                needed.max(cache_min)
+            };
         }
         if span == 1 {
-            row_h[r] = row_h[r].max(needed);
+            row_h[r] = row_h[r].max(grow_to);
         } else {
-            spanned.push((r, span, needed));
+            spanned.push((r, span, grow_to));
         }
     }
     // row_span>1 셀: 스팬 행 합이 부족하면 마지막 스팬 행에 부족분을 더한다.

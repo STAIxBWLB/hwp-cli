@@ -58,6 +58,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   passing, `scripts/hancom-regression.sh` tracks no known failure: its table is empty, every
   `HWP_REGRESSION_ALLOW_KNOWN_FAILURES` id is refused, and the self test exercises the hatch on a
   patched copy of the gate (`HWP_REGRESSION_REPO` points that copy at the checkout).
+- Render: a table row's stored height is now trusted only while the cell's own line-layout cache
+  fits it. After `hwp edit` grows a cell, the writer re-synthesizes that cell's cache but keeps the
+  pre-edit row height, so the renderer clipped the new lines at the old row, reported them as
+  `table_cell_content_overflow` and kept the pre-edit page count (#245). Hancom's HWPX export shows
+  the same shape with its declared minimum heights. When the cached lines before the first restart
+  end below the stored height, the row grows: to the measured content for a monotonic cache, and
+  only to that first run when the cache continues on a later page (#233), where the continuation
+  stays clipped and reported. A grown row that no longer fits its page splits at cached line
+  boundaries as before, so the page count follows the edited content.
 
 **Added**
 
