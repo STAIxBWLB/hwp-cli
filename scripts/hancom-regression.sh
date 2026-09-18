@@ -49,7 +49,10 @@
 #      and the index says `"clean": false`. A caller must not read 3 as a pass.
 set -uo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# HWP_REGRESSION_REPO is a seam for scripts/tests/hancom-regression.sh only: it
+# runs a patched copy of this file from a temporary directory and must still
+# point at the real checkout. It does not widen any gate.
+REPO="${HWP_REGRESSION_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 NO_BUILD=false
 declare -a POSITIONAL=()
@@ -78,13 +81,11 @@ INDEX_SCHEMA='hancom-regression-index-v1'
 # during generation would be waved through under a fidelity defect's issue
 # number. The stage says where the failure is allowed to happen and the
 # fingerprint is a stable substring of the harness's own message, so the
-# exclusion covers one known defect and nothing else.
+# exclusion covers one known defect and nothing else. The table is empty when
+# no case is excluded (every case passes fidelity); the self test injects a
+# row into a patched copy to exercise the hatch.
 KNOWN_FAILURE_VAR='HWP_REGRESSION_ALLOW_KNOWN_FAILURES'
-KNOWN_FAILURE_ISSUES=(
-  'C5|fidelity|밑줄모양(3) 소실|https://github.com/STAIxBWLB/hwp-cli/issues/236'
-  'C7|fidelity|통합 효과 소실: 밑줄|https://github.com/STAIxBWLB/hwp-cli/issues/237'
-  'H2|fidelity|0x25cb|https://github.com/STAIxBWLB/hwp-cli/issues/238'
-)
+KNOWN_FAILURE_ISSUES=()
 
 # Stages a case can fail at. `fidelity` is the harness's own assertion about
 # what survived the round trip; the others are the run breaking before that
@@ -96,6 +97,7 @@ KNOWN_FAILURE_ISSUES=(
 # coverage   - the case broke this script's own accounting rules
 known_failure_spec() {
   local entry
+  [[ ${#KNOWN_FAILURE_ISSUES[@]} -gt 0 ]] || return 1
   for entry in "${KNOWN_FAILURE_ISSUES[@]}"; do
     if [[ "$entry" == "$1|"* ]]; then
       printf '%s' "${entry#*|}"
@@ -116,7 +118,11 @@ if [[ -n "${!KNOWN_FAILURE_VAR:-}" ]]; then
     if ! known_failure_spec "$entry" >/dev/null; then
       echo "$KNOWN_FAILURE_VAR: unknown case id '$entry'; only a case tracked in" >&2
       echo "KNOWN_FAILURE_ISSUES may be excluded. Tracked ids:" >&2
-      printf '  %s\n' "${KNOWN_FAILURE_ISSUES[@]%%|*}" >&2
+      if [[ ${#KNOWN_FAILURE_ISSUES[@]} -gt 0 ]]; then
+        printf '  %s\n' "${KNOWN_FAILURE_ISSUES[@]%%|*}" >&2
+      else
+        echo '  (none)' >&2
+      fi
       exit 2
     fi
     EXCLUDE+=("$entry")

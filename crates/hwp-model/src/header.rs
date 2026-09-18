@@ -140,8 +140,17 @@ impl CharShape {
     /// 0 Solid, 1 Dash, 2 Dot, 3 DashDot, 4 DashDotDot, 5 LongDash, 6 CircleDot,
     /// 7 Double, 8 ThinThick, 9 ThickThin, 10 ThinThickThin, 11 Wave, 12 DoubleWave.
     /// Values 13..=15 are 3D variants and degrade to solid rendering.
+    ///
+    /// An IR that carries only the HWPX legacy field (`underline_shape`, the
+    /// one-based border-line code) leaves bits 4..=7 at zero. For an active
+    /// underline that field is honored instead, so the shape does not collapse
+    /// to SOLID on the HWPX write (#236, #237).
     pub fn underline_shape_code(&self) -> u8 {
-        ((self.attr >> 4) & 0xF) as u8
+        let bits = ((self.attr >> 4) & 0xF) as u8;
+        if bits == 0 && self.underline_kind() != 0 && self.underline_shape > 1 {
+            return self.underline_shape - 1;
+        }
+        bits
     }
 
     /// Returns the emphasis kind from bits 21..=24.
@@ -577,5 +586,48 @@ mod char_effect_tests {
         // 기본값은 전부 효과 없음.
         let d = CharShape::default();
         assert!(!d.is_superscript() && !d.is_subscript() && !d.has_shadow());
+    }
+
+    /// The legacy HWPX field stands in for empty shape bits only while the
+    /// underline is active; explicit bits always win (#236, #237).
+    #[test]
+    fn underline_shape_code_falls_back_to_legacy_field() {
+        let dotted = CharShape {
+            attr: 1 << 2,
+            underline_shape: 3,
+            ..CharShape::default()
+        };
+        assert_eq!(
+            dotted.underline_shape_code(),
+            2,
+            "DOT (one-based 3) -> zero-based 2"
+        );
+        let double = CharShape {
+            attr: 1 << 2,
+            underline_shape: 8,
+            ..CharShape::default()
+        };
+        assert_eq!(double.underline_shape_code(), 7);
+        let inactive = CharShape {
+            underline_shape: 3,
+            ..CharShape::default()
+        };
+        assert_eq!(inactive.underline_shape_code(), 0, "no underline, no shape");
+        let solid = CharShape {
+            attr: 1 << 2,
+            underline_shape: 1,
+            ..CharShape::default()
+        };
+        assert_eq!(solid.underline_shape_code(), 0);
+        let explicit = CharShape {
+            attr: (1 << 2) | (11 << 4),
+            underline_shape: 3,
+            ..CharShape::default()
+        };
+        assert_eq!(
+            explicit.underline_shape_code(),
+            11,
+            "bits win over the field"
+        );
     }
 }
