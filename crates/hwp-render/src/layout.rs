@@ -2936,21 +2936,26 @@ fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
 }
 
 /// Height, in points, that the line-layout cache of `cell` proves the cell's
-/// row had on the page where the cell starts, and whether the cache restarts
-/// (a page-start flag or a `v_pos` going backwards, i.e. the cell continues on
-/// a later page). Only the run of text-bearing lines before the first restart
-/// counts: that run was laid out on one page by Hancom, so the row there was at
-/// least as tall. A trailing empty cache record is legal and adds no height.
+/// content has: the text-bearing cached lines, summed per run. A run ends at a
+/// restart — a page-start flag, a `v_pos` going backwards, or a paragraph whose
+/// first line does not advance past the previous line (a cumulative cache
+/// always advances between paragraphs; equal `v_pos` inside a paragraph is one
+/// line split into several segments) — which is Hancom continuing the cell on a
+/// later page (#233); each run's extent is its last line bottom minus its first
+/// line top. A trailing empty cache record is legal and adds no height.
 ///
-/// The stored row height is only a lower bound. Hancom's HWPX export keeps the
-/// declared minimum height while the cache runs past it, and an edit that
-/// re-synthesizes a cell keeps the pre-edit height under a taller monotonic
-/// cache (#245); in both cases the row was taller than stored.
-fn cell_cache_first_run(cell: &hwp_model::Cell) -> (f32, bool) {
+/// The stored row height is only a lower bound on this. Hancom's HWPX export
+/// keeps the declared minimum height while the cache runs past it, and an edit
+/// that re-synthesizes a cell keeps the pre-edit height under a taller cache
+/// (#245); in both cases the row was taller than stored.
+fn cell_cache_total(cell: &hwp_model::Cell) -> f32 {
     let mut previous_v: Option<i32> = None;
-    let mut block_end = 0i32;
+    let mut run_start = 0i32;
+    let mut run_end = 0i32;
+    let mut total = 0.0f32;
     for para in &cell.paragraphs {
         let wchar_len = para.wchar_len();
+        let mut para_start = true;
         for (index, seg) in para.line_segs.iter().enumerate() {
             let line_end = para
                 .line_segs
@@ -2959,17 +2964,23 @@ fn cell_cache_first_run(cell: &hwp_model::Cell) -> (f32, bool) {
             if line_end <= seg.text_start {
                 continue;
             }
-            if seg.flags & 0x1 != 0 || previous_v.is_some_and(|previous| seg.v_pos < previous) {
-                return (block_end as f32 / 100.0, true);
+            let restarts = previous_v.is_some_and(|previous| {
+                seg.v_pos < previous || (para_start && seg.v_pos == previous)
+            });
+            para_start = false;
+            if seg.flags & 0x1 != 0 || restarts {
+                total += (run_end - run_start).max(0) as f32 / 100.0;
+                run_start = seg.v_pos;
+                run_end = seg.v_pos;
             }
             previous_v = Some(seg.v_pos);
-            block_end = block_end.max(
+            run_end = run_end.max(
                 seg.v_pos
                     .saturating_add(seg.line_height.max(seg.text_height)),
             );
         }
     }
-    (block_end as f32 / 100.0, false)
+    total + (run_end - run_start).max(0) as f32 / 100.0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3077,40 +3088,42 @@ fn layout_table(
         // 유일한 근거다 — 종전대로 행을 늘린다.
         //
         // 단, 캐시 자체가 저장 높이를 넘는 셀은 저장 높이가 하한일 뿐이다. 캐시는 한글이
-        // 그린 줄 위치 그 자체라, 첫 되돌림(쪽 이어짐) 전까지의 줄이 저장 높이를 지나면 그
-        // 쪽의 행은 실제로 그만큼 컸다. 편집으로 재합성된 셀은 편집 전 저장 높이 위에
-        // 단조 증가 캐시만 자라므로(#245) 정확히 이 모순을 보이고, 한글 hwpx 내보내기의
-        // 선언 최소 높이도 같다. 되돌림 없는 캐시는 실측으로, 되돌림이 있는 캐시(다음 쪽
-        // 이어짐, #233)는 첫 조각 캐시 높이까지만 행을 늘린다 — 이어지는 조각은 종전대로
-        // 잘리고 보고된다.
+        // 그린 줄 위치 그 자체라, 캐시 줄들이 저장 높이 밖에서 끝나면 그 행은 실제로
+        // 그만큼 컸다. 편집으로 재합성된 셀은 편집 전 저장 높이 위에 단조 증가 캐시만
+        // 자라므로(#245) 정확히 이 모순을 보이고, 한글 hwpx 내보내기의 선언 최소 높이도
+        // 같다. 되돌림(v_pos 역행·쪽 시작 플래그·전진하지 않는 문단 시작)으로 나뉜 조각은
+        // 한글이 다음 쪽에 이어 그린 내용이라(#233) 조각 높이를 합쳐 센다. 행은 저장
+        // 높이와 캐시 전체 높이 중 큰 쪽을 하한으로 삼고, 그 하한을 넘는 실측(개체, 우리
+        // 줄바꿈)은 종전대로 늘리지 않고 보고만 한다. 이어지는 조각은
+        // layout_box_para_iter가 앞 줄 아래로 이어 그리므로 한 행 안에 다 들어가고, 우리
+        // 쪽 나눔이 한글과 다르면 행 전체가 다음 쪽으로 옮겨지되 내용은 잃지 않는다.
         let cell_cached = cell
             .paragraphs
             .iter()
             .any(|para| !para.line_segs.is_empty());
-        let mut grow_to = needed;
         if cell_cached && (r..end).all(|i| row_stored.get(i).copied().unwrap_or(false)) {
             let stored: f32 = row_h[r..end].iter().sum();
-            let (first_run, continues) = cell_cache_first_run(cell);
-            let cache_min = first_run + mt + mb;
-            if cache_min <= stored + CELL_CONTENT_OVERFLOW_EPSILON_PT {
-                if needed > stored + CELL_CONTENT_OVERFLOW_EPSILON_PT {
-                    warnings.push_once(
-                        RenderIssueCode::TableCellContentOverflow,
-                        format!("{:.0}", needed - stored),
-                    );
-                }
+            let floor = stored.max(cell_cache_total(cell) + mt + mb);
+            if needed > floor + CELL_CONTENT_OVERFLOW_EPSILON_PT {
+                warnings.push_once(
+                    RenderIssueCode::TableCellContentOverflow,
+                    format!("{:.0}", needed - floor),
+                );
+            }
+            if floor <= stored + CELL_CONTENT_OVERFLOW_EPSILON_PT {
                 continue;
             }
-            grow_to = if continues {
-                cache_min
+            if span == 1 {
+                row_h[r] = row_h[r].max(floor);
             } else {
-                needed.max(cache_min)
-            };
+                spanned.push((r, span, floor));
+            }
+            continue;
         }
         if span == 1 {
-            row_h[r] = row_h[r].max(grow_to);
+            row_h[r] = row_h[r].max(needed);
         } else {
-            spanned.push((r, span, grow_to));
+            spanned.push((r, span, needed));
         }
     }
     // row_span>1 셀: 스팬 행 합이 부족하면 마지막 스팬 행에 부족분을 더한다.
@@ -4415,6 +4428,12 @@ fn layout_box_para_iter<'a>(
                 let stored = origin_y + (v_pos + first.baseline_gap) as f32 / 100.0;
                 (flow_floor + first.baseline_gap as f32 / 100.0 - stored).max(0.0)
             });
+            // A cached run that restarts inside the paragraph is Hancom continuing
+            // the cell on a later page (#233). It follows the previous line instead
+            // of being painted over the paragraph's first run; the offset is the
+            // one its first line needs, so the run keeps its own line spacing.
+            let mut run_shift = 0.0f32;
+            let mut previous_v: Option<i32> = None;
             for i in selected {
                 let seg = &para.line_segs[i];
                 let line_start = seg.text_start;
@@ -4428,9 +4447,14 @@ fn layout_box_para_iter<'a>(
                 let gap_pt = seg.baseline_gap as f32 / 100.0;
                 let v_pos = seg.v_pos.saturating_sub(v_origin);
                 let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
+                if previous_v.is_some_and(|previous| seg.v_pos < previous) {
+                    run_shift = run_shift.max(content_bottom + gap_pt - stored - para_shift);
+                }
+                previous_v = Some(seg.v_pos);
+                let shift = para_shift + run_shift;
                 // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
                 // `para_shift`는 문단 전체를 같은 양만큼 내려 줄 간격을 보존한다.
-                let baseline_y = (stored + para_shift).max(flow_floor + gap_pt);
+                let baseline_y = (stored + shift).max(flow_floor + gap_pt);
                 // Fail closed on a shift that would leave the container: the
                 // line is clipped rather than painted over the row below or
                 // over the footer, and the loss is reported (#222 follow-up).
@@ -4438,7 +4462,7 @@ fn layout_box_para_iter<'a>(
                 // where Hancom stored it keeps the established contract that a
                 // stored row height is never grown, and is already reported by
                 // the measurement pass.
-                if para_shift > 0.0
+                if shift > 0.0
                     && let Some(limit) = content_limit
                     && baseline_y - gap_pt + seg.line_height.max(seg.text_height) as f32 / 100.0
                         > limit + CELL_CONTENT_OVERFLOW_EPSILON_PT
