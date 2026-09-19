@@ -78,7 +78,8 @@ the variable is unset.
 `.ttf`/`.otf`/`.ttc` in that directory into `gen-<timestamp>/fonts/` and writes the same sorted list
 of paths and SHA-256 hashes into each policy's `document.fonts.manifest` and into the index as
 `font_manifest`. Substitution stays allowed (`forbid_substitution: false`). A directory with no
-font file, or with the same font bytes twice, is refused before generation starts. Without the
+font file, with the same font bytes twice, or past certify's limits (128 fonts, 32 MiB each,
+128 MiB total) is refused before generation starts. Without the
 variable the run still publishes, but warns on stderr and records `"font_manifest": "none"`: its
 policies pin no fonts, so `hwp certify` reports every face `missing` and the fonts rule fails. Such
 a set is not evidence of certification against real fonts. `HWP_FONT_DIR`, which the script sets

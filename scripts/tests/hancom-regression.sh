@@ -389,6 +389,20 @@ else
 fi
 rm "$fontdir/a-Copy.ttf"
 
+# Past certify's 128-font limit every emitted policy would be refused, so the
+# gate refuses the directory instead of publishing them.
+manyfonts="$ROOT/cert-fonts-many"
+mkdir -p "$manyfonts"
+for n in $(seq 1 129); do printf 'synthetic font %s\n' "$n" > "$manyfonts/f$n.ttf"; done
+dest="$ROOT/fonts-many"
+mkdir -p "$dest"
+status="$(run_gate "$dest" HWP_CERT_FONT_DIR="$manyfonts")"
+if [[ "$status" == '2' && ! -e "$dest/current" ]] && grep -q '128-font limit' "$dest.log"; then
+  pass 'a font directory past certify limits is refused with exit 2'
+else
+  fail 'font limits' "expected exit 2 naming the limit, got $status"
+fi
+
 # End to end: the real binary accepts an emitted policy, snapshots the pinned
 # files and reaches the fonts rule with a non-empty resolution log. The stub
 # artifact is not a document, so a committed sample stands in beside a copy of

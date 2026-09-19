@@ -295,13 +295,23 @@ source, target = sys.argv[1:3]
 if not os.path.isdir(source):
     raise SystemExit("HWP_CERT_FONT_DIR is not a directory: " + source)
 os.mkdir(target, 0o755)
-manifest, seen = [], set()
+# certify's limits (certification.rs MAX_FONT_FILES, MAX_FONT_FILE_BYTES,
+# MAX_FONT_TOTAL_BYTES): a set past them would publish policies certify refuses.
+MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES = 128, 32 * 1024 * 1024, 128 * 1024 * 1024
+manifest, seen, total = [], set(), 0
 for name in sorted(os.listdir(source)):
     path = os.path.join(source, name)
     if not name.lower().endswith((".ttf", ".otf", ".ttc")) or not os.path.isfile(path):
         continue
     with open(path, "rb") as handle:
         data = handle.read()
+    total += len(data)
+    if len(data) > MAX_FILE_BYTES:
+        raise SystemExit("HWP_CERT_FONT_DIR font exceeds certify's 32 MiB per-file limit: " + name)
+    if total > MAX_TOTAL_BYTES:
+        raise SystemExit("HWP_CERT_FONT_DIR fonts exceed certify's 128 MiB total limit")
+    if len(manifest) >= MAX_FILES:
+        raise SystemExit("HWP_CERT_FONT_DIR holds more than certify's 128-font limit")
     digest = hashlib.sha256(data).hexdigest()
     # certify refuses a manifest pinning the same bytes twice.
     if digest in seen:
@@ -1040,11 +1050,13 @@ for entry in sorted(os.listdir(gen)) + [
             os.fsync(fd)
         finally:
             os.close(fd)
-dir_fd = os.open(gen, os.O_RDONLY)
-try:
-    os.fsync(dir_fd)
-finally:
-    os.close(dir_fd)
+# fonts/ first: its own entries persist only through an fsync of that directory.
+for directory in ([os.path.join(gen, "fonts")] if font_manifest != "none" else []) + [gen]:
+    dir_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 ' "$INDEX_SCHEMA" "$BINARY_JSON" "$GEN" "$INDEX_NAME" "$KNOWN_FILE" "$SKIP_FILE" "$KNOWN_FAILURE_VAR" \
   "$FONT_MANIFEST_JSON" || {
   echo 'bundle assembly failed; the previous generation is untouched.' >&2
