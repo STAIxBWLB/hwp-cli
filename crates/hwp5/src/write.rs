@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hwp_model::{
     BorderLine, Caption, CaptionDirection, CaptionSide, Cell, CharShape, Control, Document,
@@ -814,6 +814,46 @@ fn materialize_document(
     })
 }
 
+/// CFB entries (both streams AND storages) can pick up the wall clock from the underlying
+/// `cfb` crate whenever a genuinely new directory entry is created (confirmed this session:
+/// a freshly created `BinData` storage carries `SystemTime::now()` as its created/modified
+/// time; a stream created via `create_stream`/`create_new_stream` does not, but nothing in the
+/// `cfb` crate's public contract promises that will stay true across versions). The `cfb` crate
+/// (0.14) never rewrites the times of an entry that already exists, so pinning every entry the
+/// write itself created makes both write paths deterministic, while an in-place edit keeps the
+/// source container's own entry times intact (#253 review).
+const SECONDS_FROM_CFB_TO_UNIX_EPOCH: u64 = 11_644_473_600;
+
+fn cfb_epoch() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH
+        .checked_sub(std::time::Duration::from_secs(
+            SECONDS_FROM_CFB_TO_UNIX_EPOCH,
+        ))
+        .expect("CFB epoch는 지원되는 SystemTime 범위")
+}
+
+/// Pins the created/modified time of every entry (stream and storage) not in `source_entries`
+/// to the fixed CFB epoch, so a container's bytes do not depend on when it was written. The
+/// compose path passes an empty set (pin everything); the in-place edit path passes the source
+/// container's entry paths so untouched source metadata survives. Called right before
+/// `cfb.flush()`.
+fn pin_new_entry_times(
+    cfb: &mut cfb::CompoundFile<std::fs::File>,
+    source_entries: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    let epoch = cfb_epoch();
+    let entry_paths = cfb
+        .walk()
+        .map(|entry| entry.path().to_path_buf())
+        .filter(|path| !source_entries.contains(path))
+        .collect::<Vec<_>>();
+    for entry_path in entry_paths {
+        cfb.set_created_time(&entry_path, epoch)?;
+        cfb.set_modified_time(&entry_path, epoch)?;
+    }
+    Ok(())
+}
+
 fn write_materialized_document(
     path: &Path,
     materialization: &HwpStreamMaterialization,
@@ -837,20 +877,7 @@ fn write_materialized_document(
         cfb.create_new_stream(stream_path)?.write_all(bytes)?;
     }
 
-    const SECONDS_FROM_CFB_TO_UNIX_EPOCH: u64 = 11_644_473_600;
-    let cfb_epoch = std::time::UNIX_EPOCH
-        .checked_sub(std::time::Duration::from_secs(
-            SECONDS_FROM_CFB_TO_UNIX_EPOCH,
-        ))
-        .expect("CFB epoch는 지원되는 SystemTime 범위");
-    let entry_paths = cfb
-        .walk()
-        .map(|entry| entry.path().to_path_buf())
-        .collect::<Vec<_>>();
-    for entry_path in entry_paths {
-        cfb.set_created_time(&entry_path, cfb_epoch)?;
-        cfb.set_modified_time(&entry_path, cfb_epoch)?;
-    }
+    pin_new_entry_times(&mut cfb, &BTreeSet::new())?;
     cfb.flush()?;
     Ok(())
 }
@@ -956,6 +983,10 @@ fn patch_source_container(
     materialization: &HwpStreamMaterialization,
 ) -> Result<()> {
     let mut cfb = cfb::open_rw(path)?;
+    let source_entries = cfb
+        .walk()
+        .map(|entry| entry.path().to_path_buf())
+        .collect::<BTreeSet<_>>();
 
     if plan.metadata_changed {
         replace_cfb_stream(
@@ -1017,6 +1048,7 @@ fn patch_source_container(
             replace_cfb_stream(&mut cfb, "/PrvImage", preview)?;
         }
     }
+    pin_new_entry_times(&mut cfb, &source_entries)?;
     cfb.flush()?;
     Ok(())
 }
