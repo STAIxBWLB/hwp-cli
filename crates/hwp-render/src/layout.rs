@@ -1155,6 +1155,7 @@ pub fn layout_document(
                     para_top.unwrap_or(content_bottom),
                     content_bottom,
                     body_width,
+                    (0.0, 0.0), // Top-level: a non-anchored shape's stored x/y is already page-absolute.
                     Some(&mut TableSplitCtx {
                         pages: &mut pages,
                         page_numbers: &mut page_numbers,
@@ -1376,6 +1377,7 @@ pub fn layout_document(
                 para_top.unwrap_or(content_bottom),
                 content_bottom,
                 body_width,
+                (0.0, 0.0), // Top-level: a non-anchored shape's stored x/y is already page-absolute.
                 Some(&mut TableSplitCtx {
                     pages: &mut pages,
                     page_numbers: &mut page_numbers,
@@ -2388,6 +2390,14 @@ fn layout_para_objects(
     anchor_top: f32,
     content_bottom: f32,
     avail_width: f32,
+    // The page-absolute origin of the *enclosing* shape, when this call lays out a
+    // paragraph reached recursively (via `layout_box_para_iter`, e.g. a text box's own
+    // nested paragraph_lists). A non-anchored `Generic` control's own stored `gso_shapes`
+    // x/y is page-absolute at the top level but relative to this origin when nested one
+    // level deeper (issue #255 / GG-26; `ContainerBox`'s own doc comment: "a container's
+    // child shapes are relative to the container's own origin",
+    // `crates/hwp-model/src/control.rs`). Top-level call sites pass `(0.0, 0.0)`, a no-op.
+    nested_origin: (f32, f32),
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
 ) -> (f32, bool) {
@@ -2798,7 +2808,11 @@ fn layout_para_objects(
                 } else {
                     0.0
                 };
-                // Move anchored shapes to the flow position without mutating IR.
+                // Move anchored shapes to the flow position without mutating IR. A
+                // non-anchored shape keeps its own stored x/y, but that value is only
+                // page-absolute at the top level; reached recursively (nested inside a
+                // parent shape's own paragraph_lists) it is relative to the parent's own
+                // origin and must have that origin added (issue #255 / GG-26).
                 let adjusted: Vec<hwp_model::ShapeGeom> = g
                     .gso_shapes
                     .iter()
@@ -2807,6 +2821,9 @@ fn layout_para_objects(
                         if s.anchored {
                             s2.x = (x * 100.0) as i32;
                             s2.y = ((object_y + top_offset) * 100.0) as i32;
+                        } else {
+                            s2.x += (nested_origin.0 * 100.0) as i32;
+                            s2.y += (nested_origin.1 * 100.0) as i32;
                         }
                         s2
                     })
@@ -4587,7 +4604,8 @@ fn layout_box_para_iter<'a>(
                 para_top.unwrap_or(content_bottom),
                 content_bottom,
                 width,
-                None, // Nested objects inside a cell/text box do not cross pages.
+                (origin_x, origin_y), // Nested shapes are relative to this box's own origin.
+                None,                 // Nested objects inside a cell/text box do not cross pages.
                 warnings,
             );
             content_bottom = objects_bottom;
