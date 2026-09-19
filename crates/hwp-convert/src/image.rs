@@ -954,7 +954,11 @@ mod tests {
         let mut doc = crate::from_markdown::from_markdown(md);
         let dir = std::env::temp_dir().join("hwp-seal-fallback-test");
         std::fs::create_dir_all(&dir).unwrap();
-        let png_path = dir.join("s.png");
+        // One file per call: tests run in parallel, and a shared path can be read while
+        // another test truncates it.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let png_path = dir.join(format!("s-{}-{n}.png", std::process::id()));
         std::fs::write(&png_path, make_square_png(96)).unwrap();
         insert_seal(&mut doc, anchor, &png_path, None, |_, _| None).unwrap();
         let pic = doc.sections[0]
