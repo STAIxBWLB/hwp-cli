@@ -203,6 +203,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   possible without committing or redistributing a Hancom-bundled font is recorded as a separate,
   still-open licence and acquisition finding below, and this declaration proceeds regardless of
   its outcome ([#256](https://github.com/STAIxBWLB/hwp-cli/issues/256)).
+- Genuine-font licence and acquisition finding (investigation only, D-16 - nothing pinned or
+  applied): Hancom's own published notice for 함초롬바탕/함초롬돋움 states the two faces are free
+  for individual and commercial users to use in any publication or work, and free to distribute,
+  but not to distribute or modify for a commercial purpose; Hancom hosts the files for free
+  download from its own support site. A local-only verifier asset, downloaded once into a
+  gitignored directory and never committed or shipped, reads as ordinary use under that notice and
+  not as the distribution the notice restricts, the same shape this project already uses for its
+  four pinned OFL substitutes. The notice does not name automated CI or release-verification
+  tooling as a use case, so whether an open-source project with commercial downstream users falls
+  under the "commercial purpose" restriction for this narrow, non-redistributing use is not
+  settled by the text and is left open, not decided here. Applying this finding, if it is ever
+  cleared, is a separate owner decision.
 
 ## [0.17.0]
 
