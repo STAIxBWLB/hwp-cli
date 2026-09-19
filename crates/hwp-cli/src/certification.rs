@@ -1673,7 +1673,19 @@ fn evaluate_document_rules(
         .map(|style| style.name.as_str())
         .collect();
     let mut used_rule = named_set_rule("used_styles", &policy.used_styles, &used_styles);
-    if stats.styles_used.len() != used_styles.len() {
+    // Flag only a raw index with no style-table entry at all (the genuine out-of-range
+    // condition), never a mere count mismatch between distinct raw indices and distinct style
+    // *names*. Two valid, in-range indices can legitimately share one style name (e.g. two merge
+    // inputs each defining their own "바탕글"/Normal style, appended without name
+    // deduplication by the general grafting tier) without either one being out of range; the
+    // prior `stats.styles_used.len() != used_styles.len()` comparison conflated that population
+    // mismatch with a real out-of-range reference (issue #255-adjacent P1_merge finding,
+    // `false_positive_population_mismatch` in 04.1-05-pseries-findings.md).
+    if stats
+        .styles_used
+        .iter()
+        .any(|index| document.header.styles.get(*index).is_none())
+    {
         used_rule.status = CheckStatus::Failed;
         used_rule
             .reason_codes
@@ -4387,6 +4399,82 @@ fn digest_pipe(mut pipe: impl Read) -> Result<PipeDigest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw_features_unknown() -> RawFeatures {
+        RawFeatures {
+            macros: FeaturePresence::Unknown,
+            external_references: FeaturePresence::Unknown,
+        }
+    }
+
+    fn find_rule<'a>(rules: &'a [RuleResult], id: &str) -> &'a RuleResult {
+        rules
+            .iter()
+            .find(|rule| rule.id == id)
+            .unwrap_or_else(|| panic!("no rule named {id}"))
+    }
+
+    /// Two merge inputs each define their own default style, both named "바탕글", landing at
+    /// distinct in-range style-table indices (0 and 1) in the grafted output - the exact shape of
+    /// P1_merge's real duplicate (04.1-05-pseries-findings.md's `false_positive_population_mismatch`).
+    /// Neither index is out of range, so the rule must not fire.
+    #[test]
+    fn used_styles_rule_ignores_duplicate_names_at_distinct_in_range_indices() {
+        let mut document = hwp_model::Document::default();
+        document.header.styles = vec![
+            hwp_model::Style {
+                name: "바탕글".to_string(),
+                ..Default::default()
+            },
+            hwp_model::Style {
+                name: "바탕글".to_string(),
+                ..Default::default()
+            },
+        ];
+        let mut stats = DocumentStats::default();
+        stats.styles_used.insert(0);
+        stats.styles_used.insert(1);
+
+        let policy = DocumentPolicy::default();
+        let rules = evaluate_document_rules(&policy, &document, &stats, raw_features_unknown());
+        let used_rule = find_rule(&rules, "used_styles");
+
+        assert_eq!(used_rule.status, CheckStatus::Passed);
+        assert!(
+            !used_rule
+                .reason_codes
+                .contains(&"style_reference_out_of_range".to_string()),
+            "two valid, in-range indices sharing one style name must not trip \
+             style_reference_out_of_range: {used_rule:?}"
+        );
+    }
+
+    /// A used raw style index with no style-table entry at all is the genuine out-of-range
+    /// condition the narrowed rule must still catch - the negative-direction proof that narrowing
+    /// the population comparison did not also weaken the gate.
+    #[test]
+    fn used_styles_rule_still_flags_a_genuinely_out_of_range_index() {
+        let mut document = hwp_model::Document::default();
+        document.header.styles = vec![hwp_model::Style {
+            name: "바탕글".to_string(),
+            ..Default::default()
+        }];
+        let mut stats = DocumentStats::default();
+        stats.styles_used.insert(0);
+        stats.styles_used.insert(5); // no style-table entry at index 5
+
+        let policy = DocumentPolicy::default();
+        let rules = evaluate_document_rules(&policy, &document, &stats, raw_features_unknown());
+        let used_rule = find_rule(&rules, "used_styles");
+
+        assert_eq!(used_rule.status, CheckStatus::Failed);
+        assert!(
+            used_rule
+                .reason_codes
+                .contains(&"style_reference_out_of_range".to_string()),
+            "a raw index with no style-table entry must still fail: {used_rule:?}"
+        );
+    }
 
     fn scratch(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
