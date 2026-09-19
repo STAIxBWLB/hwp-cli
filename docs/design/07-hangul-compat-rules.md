@@ -286,6 +286,16 @@ measured, so that half is inference and is marked as such in
 
 ---
 
+## I. Equation script grammar (mini-TeX): a bare ampersand is Hancom's own reserved token, not free text
+
+| # | Symptom | Cause | Fix | Ground truth |
+|---|---|---|---|---|
+| I1 | A literal `&` typed directly into a Hancom equation shows nothing on screen, both before and after reopening the file | Hancom's own equation grammar reserves a bare `&` as the matrix column-alignment token and produces no visible glyph outside a matrix context; this project's own tokenizer treats it identically, consuming it as whitespace. Hancom's own matrix template writes the same bare `&` (and `#` for the row break) as its column/row separators, unprompted | Wrapping the character in ASCII double quotes, `"&"`, made Hancom display a single literal `&` with the quotes stripped: Hancom's grammar treats a double-quoted span as literal text rather than a token stream. `tools/gen_effects_cases.py`'s `l1_equation_hwpx` now writes that quoted spelling so the regenerated L1 artifact shows a literal ampersand in genuine Hancom. The writer only serializes the caller-supplied script verbatim and never rewrites an ampersand; this project's own mini-TeX tokenizer (`crates/hwp-render/src/equation.rs:59`, the `'&'` arm of `tokenize`) does not parse the quoted-literal escape, so `hwp render`'s own raster of that script still differs from Hancom's, a known, unfixed gap in this project's renderer, out of this plan's scope | Owner-authored `equation-ampersand-groundtruth.hwpx`/`.hwp` (`fixtures/hwpx`, `fixtures/hwp5`; local, gitignored, saved 2026-09-19, Hancom 12.30.0 build 6446, macOS). This project's own reader (`.planning/.../checks/equation_scripts.py`) recomputed both stored scripts fresh from the saved bytes: equation 1 is the 3-character string `"&"` in both formats; equation 2, built from Hancom's own 2x2 matrix template (not hand-typed), is `{pmatrix{1&2#3&4}}`, confirming the bare `&`/`#` separators inside a matrix are Hancom's own output |
+
+**What remains open:** only the one escape spelling the owner tried (ASCII double quotes) is measured; whether Hancom accepts any other spelling for a literal ampersand is untested. The equation editor auto-converted straight quotes to curly quotes while the owner was typing; the owner corrected them back to ASCII before saving, so the measured escape is specifically the ASCII-quoted form `"&"`, never a curly-quoted one.
+
+---
+
 ## Overall lessons: why this project stakes everything on Hancom testing and ground truth
 
 1. **Lenient tools give false passes.** pyhwp and our own renderer can pass 100% while Hancom refuses
