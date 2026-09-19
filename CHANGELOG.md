@@ -144,10 +144,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `hwp edit --seal` and `hwp edit --merge-cells` now produce byte-identical output across
   repeated runs on the same input. The hwpx writer's appended-entry loop was missing the fixed
   zip entry timestamp its sibling rewritten-entry branch already pins (a new BinData entry, such
-  as a seal image, picked up the wall clock); the hwp5 writer's in-place edit path now re-pins
-  every CFB entry's created/modified time the same way the from-scratch compose path already
-  does. Confirmed with a real double regeneration of the whole checklist set about 13 seconds
-  apart: identical sha256 on every one of 46 published artifacts
+  as a seal image, picked up the wall clock); the hwp5 writer's in-place edit path now snapshots
+  the source container's own entry paths before editing and pins the fixed CFB epoch onto only
+  the entries the edit creates, leaving every entry that already existed in the source at its own
+  original timestamp. Confirmed with a real double regeneration of the whole checklist set about
+  13 seconds apart: identical sha256 on every one of 46 published artifacts
   ([#253](https://github.com/STAIxBWLB/hwp-cli/issues/253)).
 - Native render no longer counts a bookmark (`bokm`) or hyperlink (`%hlk`) control as an
   unsupported omission. A bookmark is an invisible marker by design; a hyperlink's text is
@@ -191,18 +192,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Known issues**
 
 - Native certification's page-geometry checks (`outside_page_bounds`, `possible_collision`) are
-  measured against a substituted OFL font on A4 (10 detections), O_notice_hwp (9 detections),
-  O_press_hwp (4 detections), L1 (1 detection), P1_merge (1 detection), P2_split_001
-  (1 detection), P5_set_cell_blank_line (1 detection), P6_set_cell_para (1 detection), A3
-  (2 detections), O_report_hwp (2 detections) and O_plan_hwp (2 detections), because these
-  documents request faces this project does not ship. A detection measured against a substituted
-  face is not certification evidence for that series - this is a statement about measurement
-  validity, not a claim that no defect exists. Every count above is re-measured at this commit
-  from each series' own fresh `hwp certify` report, not copied from an earlier record. Pinning the
-  genuine requested faces (함초롬바탕, 함초롬돋움) would remove the substitution; whether that is
-  possible without committing or redistributing a Hancom-bundled font is recorded as a separate,
-  still-open licence and acquisition finding below, and this declaration proceeds regardless of
-  its outcome ([#256](https://github.com/STAIxBWLB/hwp-cli/issues/256)).
+  measured against a substituted OFL font on A4 (46 detections across 10 pages), O_notice_hwp
+  (9 detections across 6 pages), O_press_hwp (4 detections across 4 pages), L1 (10 detections on
+  1 page), P1_merge (4 detections on 1 page), P2_split_001 (4 detections on 1 page),
+  P5_set_cell_blank_line (4 detections on 1 page), P6_set_cell_para (4 detections on 1 page), A3
+  (119 detections across 2 pages), O_report_hwp (3 detections across 2 pages) and O_plan_hwp
+  (3 detections across 2 pages), because these documents request faces this project does not
+  ship. A detection measured against a substituted face is not certification evidence for that
+  series - this is a statement about measurement validity, not a claim that no defect exists.
+  Every count above is a `DetectionReport.count` sum over every affected page, re-measured at
+  this commit from each series' own fresh `hwp certify` report, not copied from an earlier
+  record. Pinning the genuine requested faces (함초롬바탕, 함초롬돋움) would remove the
+  substitution; whether that is possible without committing or redistributing a Hancom-bundled
+  font is recorded as a separate, still-open licence and acquisition finding below, and this
+  declaration proceeds regardless of its outcome
+  ([#256](https://github.com/STAIxBWLB/hwp-cli/issues/256)).
 - Genuine-font licence and acquisition finding (investigation only, D-16 - nothing pinned or
   applied): Hancom's own published notice for 함초롬바탕/함초롬돋움 states the two faces are free
   for individual and commercial users to use in any publication or work, and free to distribute,
