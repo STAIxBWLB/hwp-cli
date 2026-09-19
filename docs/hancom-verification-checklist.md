@@ -214,7 +214,7 @@ actually uses is the only remaining frontal approach.
 
 | File | What it tests | How to check |
 |---|---|---|
-| `D1_도장.hwpx` | `edit --seal` floating (in front of text) seal placement | A red circle (18mm) **overlaps** the text "결재란: (인)" while the "(인)" text remains visible. Clicking the seal selects it as an object (a picture) |
+| `D1_도장.hwpx` | `edit --seal` floating (in front of text) seal placement | A red rim (18mm) **encircles** "(인)" in the text "결재란: (인)" and the "(인)" marker stays visible. Clicking the seal selects it as an object (a picture) |
 | `D2_도장.hwp` | The same feature through the hwp5 synthesis path | The same. **Opening with no corruption popup matters especially here** (hwp5 floating picture synthesis) |
 | `D3_사용자탭.hwpx` | The user tab definition round-trip (GC-4) | Body tab characters align to **left 30mm and center 80mm** with a dotted leader displayed. (Check that both tab definitions exist in Shape > Paragraph shape > Tab settings) |
 
