@@ -10,7 +10,9 @@
 #
 # The hwp binary and the delegated generator are stubbed (scripts/tests/stub-*),
 # so this runs in about a second and needs no release build. What is under test
-# is the gate's own control flow, which does not depend on real HWP bytes.
+# is the gate's own control flow, which does not depend on real HWP bytes. The
+# one exception is the font-manifest end-to-end check, which runs the debug
+# binary's certify on an emitted policy (HWP_REGRESSION_CERTIFY_BIN overrides).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -309,6 +311,115 @@ if [[ "$status" == '2' ]]; then
   pass 'the repository root is refused as a destination'
 else
   fail 'dest guard' "expected exit 2, got $status"
+fi
+
+# --- 8. the certification font manifest --------------------------------------
+# Without HWP_CERT_FONT_DIR the run says so loudly and the index records "none",
+# so a fontless set cannot pass as one certified against real fonts.
+if grep -q 'WARNING: HWP_CERT_FONT_DIR is not set' "$ROOT/baseline.log" \
+  && python3 - "$ROOT/baseline/current" "$INDEX_NAME" <<'PY'
+import glob
+import json
+import os
+import sys
+
+gen, index_name = sys.argv[1:3]
+assert json.load(open(os.path.join(gen, index_name)))["font_manifest"] == "none"
+assert not os.path.exists(os.path.join(gen, "fonts"))
+for policy in glob.glob(os.path.join(gen, "*.policy.json")):
+    assert "manifest" not in json.load(open(policy))["document"]["fonts"]
+PY
+then
+  pass 'without HWP_CERT_FONT_DIR the run warns and records font_manifest none'
+else
+  fail 'no font dir' 'no stderr warning, or the index does not record font_manifest none'
+fi
+
+# Synthetic font-like bytes: the gate only copies and hashes them. A non-font
+# file beside them must not be pinned.
+fontdir="$ROOT/cert-fonts"
+mkdir -p "$fontdir"
+printf 'synthetic font b\n' > "$fontdir/b-Regular.ttf"
+printf 'synthetic font a\n' > "$fontdir/a-Regular.otf"
+printf 'synthetic font c\n' > "$fontdir/c[wght].ttc"
+printf 'license text\n' > "$fontdir/OFL.txt"
+dest="$ROOT/fonts"
+mkdir -p "$dest"
+status="$(run_gate "$dest" HWP_CERT_FONT_DIR="$fontdir")"
+if [[ "$status" == '3' ]] && python3 - "$dest/current" "$INDEX_NAME" "$fontdir" <<'PY'
+import glob
+import hashlib
+import json
+import os
+import sys
+
+gen, index_name, source = sys.argv[1:4]
+expected = [
+    {"path": "fonts/" + name, "sha256": hashlib.sha256(open(os.path.join(source, name), "rb").read()).hexdigest()}
+    for name in ["a-Regular.otf", "b-Regular.ttf", "c[wght].ttc"]
+]
+assert json.load(open(os.path.join(gen, index_name)))["font_manifest"] == expected
+for pin in expected:
+    copied = os.path.join(gen, pin["path"])
+    assert os.path.isfile(copied) and not os.path.islink(copied)
+    assert hashlib.sha256(open(copied, "rb").read()).hexdigest() == pin["sha256"]
+assert sorted(os.listdir(os.path.join(gen, "fonts"))) == ["a-Regular.otf", "b-Regular.ttf", "c[wght].ttc"]
+policies = glob.glob(os.path.join(gen, "*.policy.json"))
+assert policies
+for policy in policies:
+    fonts = json.load(open(policy))["document"]["fonts"]
+    assert fonts == {"manifest": expected, "forbid_substitution": False}, policy
+PY
+then
+  pass 'HWP_CERT_FONT_DIR pins a sorted, sha256-correct manifest in every policy and the index'
+else
+  fail 'font manifest' "expected exit 3 with pinned fonts, got $status; see $dest.log"
+fi
+
+# certify refuses a manifest pinning the same bytes twice, so the gate refuses
+# such a directory before generating anything.
+cp "$fontdir/a-Regular.otf" "$fontdir/a-Copy.ttf"
+dest="$ROOT/fonts-dup"
+mkdir -p "$dest"
+status="$(run_gate "$dest" HWP_CERT_FONT_DIR="$fontdir")"
+if [[ "$status" == '2' && ! -e "$dest/current" ]]; then
+  pass 'a font directory holding duplicate bytes is refused with exit 2'
+else
+  fail 'duplicate fonts' "expected exit 2 and no current, got $status"
+fi
+rm "$fontdir/a-Copy.ttf"
+
+# End to end: the real binary accepts an emitted policy, snapshots the pinned
+# files and reaches the fonts rule with a non-empty resolution log. The stub
+# artifact is not a document, so a committed sample stands in beside a copy of
+# the policy. Synthetic bytes resolve nothing; the pins being accepted is the
+# point. scripts/check.sh and CI build target/debug/hwp before this runs.
+CERT_BIN="${HWP_REGRESSION_CERTIFY_BIN:-${CARGO_TARGET_DIR:-$REPO/target}/debug/hwp}"
+certdir="$ROOT/certify"
+mkdir -p "$certdir"
+if [[ ! -x "$CERT_BIN" ]]; then
+  fail 'certify end to end' "no hwp binary at $CERT_BIN; run cargo build -p hwp-cli first"
+else
+  cp -R "$ROOT/fonts/current/fonts" "$certdir/fonts"
+  cp "$REPO/fixtures/samples/report-tables.hwpx" "$certdir/sample.hwpx"
+  policy="$(find "$ROOT/fonts/current/" -maxdepth 1 -name '*.hwpx.policy.json' | head -1)"
+  cp "$policy" "$certdir/sample.hwpx.policy.json"
+  "$CERT_BIN" certify "$certdir/sample.hwpx" --policy "$certdir/sample.hwpx.policy.json" \
+    --report "$certdir/report" >"$certdir.log" 2>&1 || true
+  if python3 - "$certdir/report/report.json" <<'PY'
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+rules = [rule for rule in report["checks"]["rules"] if rule["id"] == "fonts"]
+assert len(rules) == 1, rules
+assert report["render"]["fonts"], "empty font resolution log"
+PY
+  then
+    pass 'hwp certify accepts an emitted policy and reaches the fonts rule'
+  else
+    fail 'certify end to end' "no report with a fonts rule and resolution log; see $certdir.log"
+  fi
 fi
 
 if [[ "$failures" -ne 0 ]]; then

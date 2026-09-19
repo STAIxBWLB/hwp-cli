@@ -47,6 +47,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `scripts/hancom-regression.sh` wrote certification policies with no font manifest, so
+  `hwp certify` resolved every face `missing` and the fonts rule failed on every artifact.
+  `HWP_CERT_FONT_DIR` now names the font files to pin: they are copied into the generation's
+  `fonts/` and every policy and the index carry the sorted path and SHA-256 list. Without it the run
+  warns on stderr and the index records `"font_manifest": "none"`.
 - HWPX write: a character shape whose underline shape is given only through the IR's legacy
   `underline_shape` field (the JSON IR path, `hwp new --from <ir.json>`) no longer collapses to a
   SOLID underline. `CharShape::underline_shape_code` now falls back to that field for an active

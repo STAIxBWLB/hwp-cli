@@ -37,6 +37,14 @@
 #             expected stage and a stable substring of the harness's own
 #             message. A listed case that fails at another stage, or with a
 #             different message, fails the run closed.
+#   HWP_CERT_FONT_DIR
+#             directory of font files (.ttf/.otf/.ttc) that hwp certify may
+#             render with. They are copied into <generation>/fonts/ and every
+#             emitted policy pins them in document.fonts.manifest (sorted paths
+#             plus sha256); the index records the same list as font_manifest.
+#             Unset, the run warns on stderr and records "font_manifest":
+#             "none": certify then resolves every face as missing. Unrelated to
+#             HWP_FONT_DIR, which this script sets for hwp5 lineseg computation.
 #   HWP_REGRESSION_GENERATOR
 #             path to the delegated generator (default
 #             tools/gen_verification_set.sh). For the self test only.
@@ -267,6 +275,52 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+# --- certification font set --------------------------------------------------
+# certify renders only with the font files its policy pins in
+# document.fonts.manifest, so a policy with no manifest resolves every face to
+# `missing`. With HWP_CERT_FONT_DIR set, its font files are copied into
+# <generation>/fonts/ (certify resolves manifest paths relative to the policy
+# and refuses ".." and hard links) and every policy pins them. Unset, the run
+# still publishes, but says loudly that its policies certify without fonts.
+FONT_MANIFEST_JSON='"none"'
+if [[ -n "${HWP_CERT_FONT_DIR:-}" ]]; then
+  FONT_MANIFEST_JSON="$(python3 - "$HWP_CERT_FONT_DIR" "$GEN/fonts" <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+source, target = sys.argv[1:3]
+if not os.path.isdir(source):
+    raise SystemExit("HWP_CERT_FONT_DIR is not a directory: " + source)
+os.mkdir(target, 0o755)
+manifest, seen = [], set()
+for name in sorted(os.listdir(source)):
+    path = os.path.join(source, name)
+    if not name.lower().endswith((".ttf", ".otf", ".ttc")) or not os.path.isfile(path):
+        continue
+    with open(path, "rb") as handle:
+        data = handle.read()
+    digest = hashlib.sha256(data).hexdigest()
+    # certify refuses a manifest pinning the same bytes twice.
+    if digest in seen:
+        raise SystemExit("HWP_CERT_FONT_DIR holds the same font bytes twice: " + name)
+    seen.add(digest)
+    fd = os.open(os.path.join(target, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    manifest.append({"path": "fonts/" + name, "sha256": digest})
+if not manifest:
+    raise SystemExit("HWP_CERT_FONT_DIR holds no .ttf/.otf/.ttc file: " + source)
+print(json.dumps(manifest, ensure_ascii=False))
+PY
+)" || { echo "HWP_CERT_FONT_DIR could not be pinned; nothing was generated." >&2; exit 2; }
+else
+  echo 'WARNING: HWP_CERT_FONT_DIR is not set. The generated policies pin no font' >&2
+  echo 'manifest, so hwp certify resolves every face as missing and the fonts rule' >&2
+  echo 'fails. The index records "font_manifest": "none".' >&2
+fi
 
 FAILED=0
 declare -a ROWS=()
@@ -821,8 +875,10 @@ import stat
 import sys
 from datetime import datetime, timezone
 
-schema, binary_json, gen, index_name, known_path, skip_path, excluded_by = sys.argv[1:8]
+schema, binary_json, gen, index_name, known_path, skip_path, excluded_by, fonts_json = sys.argv[1:9]
 binary = json.loads(binary_json)
+# A list of {path, sha256} pins under fonts/, or "none" without HWP_CERT_FONT_DIR.
+font_manifest = json.loads(fonts_json)
 
 
 # Create and write a file that must not already exist and must not be a
@@ -870,8 +926,13 @@ for line in sys.stdin:
             "schema_version": "1.0",
             "document": {
                 # The receipt attests a Hancom open. Font substitution on the
-                # verifier host must not decide that question.
-                "fonts": {"forbid_substitution": False},
+                # verifier host must not decide that question. The manifest
+                # is the only font set certify renders with.
+                "fonts": (
+                    {"manifest": font_manifest, "forbid_substitution": False}
+                    if font_manifest != "none"
+                    else {"forbid_substitution": False}
+                ),
                 # require_artifact_sha256 binds this receipt to this artifact:
                 # a receipt with no hash, or one carrying another artifacts
                 # hash, is refused instead of standing in for it.
@@ -935,6 +996,9 @@ index = {
     "artifacts": artifacts,
     "known_failures": known_failures,
     "skips": skips,
+    # Which fonts the policies pin for certify, or "none": a fontless set must
+    # not read as one certified against real fonts.
+    "font_manifest": font_manifest,
 }
 # Every child of the generation must be a regular file or the receipts
 # directory. A symlink here would publish a pointer to something outside the
@@ -948,6 +1012,13 @@ for entry in sorted(os.listdir(gen)):
         if not stat.S_ISDIR(info.st_mode) or os.listdir(child):
             raise SystemExit("receipts must be a fresh empty directory")
         continue
+    if entry == "fonts" and font_manifest != "none":
+        pinned = sorted(pin["path"][len("fonts/"):] for pin in font_manifest)
+        if not stat.S_ISDIR(info.st_mode) or sorted(os.listdir(child)) != pinned or not all(
+            stat.S_ISREG(os.lstat(os.path.join(child, name)).st_mode) for name in pinned
+        ):
+            raise SystemExit("fonts must hold exactly the pinned regular files")
+        continue
     if not stat.S_ISREG(info.st_mode):
         raise SystemExit("refusing to publish a non-regular file: " + entry)
 
@@ -959,7 +1030,9 @@ os.rename(index_tmp, os.path.join(gen, index_name))
 
 # Flush the whole generation before the caller renames it into place, so a
 # crash between publish and the next boot cannot leave named-but-empty files.
-for entry in sorted(os.listdir(gen)):
+for entry in sorted(os.listdir(gen)) + [
+    pin["path"] for pin in (font_manifest if font_manifest != "none" else [])
+]:
     child = os.path.join(gen, entry)
     if os.path.isfile(child):
         fd = os.open(child, os.O_RDONLY | os.O_NOFOLLOW)
@@ -972,7 +1045,8 @@ try:
     os.fsync(dir_fd)
 finally:
     os.close(dir_fd)
-' "$INDEX_SCHEMA" "$BINARY_JSON" "$GEN" "$INDEX_NAME" "$KNOWN_FILE" "$SKIP_FILE" "$KNOWN_FAILURE_VAR" || {
+' "$INDEX_SCHEMA" "$BINARY_JSON" "$GEN" "$INDEX_NAME" "$KNOWN_FILE" "$SKIP_FILE" "$KNOWN_FAILURE_VAR" \
+  "$FONT_MANIFEST_JSON" || {
   echo 'bundle assembly failed; the previous generation is untouched.' >&2
   exit 1
 }
@@ -1008,6 +1082,11 @@ echo "Published: $published artifact(s) in generation $(basename "$GEN_FINAL")"
 echo "Current: $CURRENT -> $(basename "$GEN_FINAL")"
 echo "Index: $CURRENT/$INDEX_NAME"
 echo "Receipts directory (empty): $CURRENT/receipts"
+if [[ "$FONT_MANIFEST_JSON" == '"none"' ]]; then
+  echo 'Font manifest: none (HWP_CERT_FONT_DIR unset; certify will find no fonts)'
+else
+  echo "Font manifest: $CURRENT/fonts (pinned in every policy)"
+fi
 echo
 echo 'After a real Hancom observation, write that artifact its receipt at the path'
 echo 'its index row names, then prove the binding with one command per artifact:'
