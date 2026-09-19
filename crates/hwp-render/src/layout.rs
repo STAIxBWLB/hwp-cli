@@ -965,7 +965,14 @@ pub fn layout_document(
                         c,
                         Control::SectionDef(_) | Control::Table(_) | Control::Picture(_)
                     ) || page_control_is_rendered(c)
-                        || [*b"cold", *b"head", *b"foot", *b"fn  ", *b"en  "]
+                        // `bokm` (bookmark) is an invisible marker by design (#254): omitting
+                        // it from the page is correct, so it must not count as an unsupported
+                        // omission. `%hlk` (hyperlink) is already drawn and styled by the
+                        // hyperlink range pass (shape.rs::hyperlink_ranges), so its field
+                        // control is not an omission either.
+                        || [
+                            *b"cold", *b"head", *b"foot", *b"fn  ", *b"en  ", *b"bokm", *b"%hlk",
+                        ]
                         .contains(&c.ctrl_id())
                         // 글상자(텍스트) + 도형(선/사각형/타원/호/다각형)은 렌더한다.
                         || matches!(c, Control::Generic(g)
@@ -6219,6 +6226,94 @@ mod certification_budget_tests {
         paragraph.controls = vec![picture];
         document.sections[0].paragraphs = vec![paragraph; 20_000];
         assert_budget_failure(&document, LayoutBudget::certification());
+    }
+}
+
+/// #254: the paragraph-level rendered-control predicate must classify a
+/// bookmark (`bokm`) or hyperlink (`%hlk`) control as rendered, because both
+/// are legitimately not separate page items - a bookmark is an invisible
+/// marker by design and a hyperlink's text is already styled by the
+/// hyperlink range pass (`shape.rs::hyperlink_ranges`). A negative control
+/// (a `ctrl_id` in none of the predicate's arms) proves the counter still
+/// fires for a genuinely unsupported control, so this change narrows the
+/// counter rather than disabling it.
+#[cfg(test)]
+mod control_classification_tests {
+    use super::*;
+    use hwp_model::GenericControl;
+
+    fn generic(ctrl_id: [u8; 4]) -> Control {
+        Control::Generic(GenericControl {
+            ctrl_id,
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    fn omitted_control_issue_present_for(ctrl_ids: &[[u8; 4]]) -> bool {
+        let mut document = hwp_convert::from_markdown("x");
+        document.sections[0].paragraphs[0].controls =
+            ctrl_ids.iter().map(|id| generic(*id)).collect();
+        let mut store = FontStore::new();
+        let mut warns = RenderIssueAccumulator::new();
+        let _ = layout_document(&document, &mut store, &mut warns);
+        warns
+            .finish()
+            .issues
+            .iter()
+            .any(|i| i.code == RenderIssueCode::UnsupportedControlOmitted)
+    }
+
+    fn omitted_control_issue_present(ctrl_id: [u8; 4]) -> bool {
+        omitted_control_issue_present_for(&[ctrl_id])
+    }
+
+    #[test]
+    fn 북마크_전용_문단은_생략_보고를_내지_않는다() {
+        assert!(
+            !omitted_control_issue_present(*b"bokm"),
+            "bookmark is an invisible marker by design; it must not be counted as omitted"
+        );
+    }
+
+    #[test]
+    fn 하이퍼링크_전용_문단은_생략_보고를_내지_않는다() {
+        assert!(
+            !omitted_control_issue_present(*b"%hlk"),
+            "a hyperlink's text is already drawn and styled by the hyperlink range pass; \
+             it must not be counted as omitted"
+        );
+    }
+
+    /// Guards against a widened fix: a control genuinely neither drawn nor
+    /// deliberately invisible must still increment the skipped-control
+    /// counter and still raise `UnsupportedControlOmitted`.
+    #[test]
+    fn 미지원_컨트롤은_여전히_생략_보고를_낸다() {
+        assert!(
+            omitted_control_issue_present(*b"zzzz"),
+            "a control in none of the predicate's arms must still count as omitted"
+        );
+    }
+
+    /// A paragraph mixing a now-classified-as-rendered control (bookmark) with
+    /// a genuinely unsupported one must still raise the issue: the narrowed
+    /// classification must not mask a real omission sitting alongside it.
+    #[test]
+    fn 북마크와_미지원_컨트롤이_섞인_문단은_여전히_생략_보고를_낸다() {
+        assert!(
+            omitted_control_issue_present_for(&[*b"bokm", *b"zzzz"]),
+            "a genuinely unsupported control must still be flagged even when a \
+             classified-as-rendered control shares the paragraph"
+        );
     }
 }
 
