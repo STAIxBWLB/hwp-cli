@@ -3816,4 +3816,42 @@ mod tests {
         hwp_convert::insert_seal(&mut fallback, "(인)", &png_path, None, |_, _| None).unwrap();
         assert_eq!(measured, fallback, "identical to the constant fallback");
     }
+
+    /// With no exact face the measurer answers `None` and the seal takes the width-class
+    /// estimate, whose offsets are pinned here: the same numbers on every host, and for
+    /// this D1 text equal to the placement measured with locally held genuine fonts.
+    #[test]
+    fn seal_fallback_offsets_are_host_independent() {
+        let dir = std::env::temp_dir().join("hwp-seal-host-independent");
+        let empty_fonts = dir.join("fonts");
+        std::fs::create_dir_all(&empty_fonts).unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend(96u32.to_be_bytes());
+        png.extend(96u32.to_be_bytes());
+        png.extend([0u8; 8]);
+        let png_path = dir.join("s.png");
+        std::fs::write(&png_path, &png).unwrap();
+
+        let mut doc = hwp_convert::from_markdown("결재란: (인)");
+        let mut measure =
+            seal_measurer_in(&doc, hwp_render::FontStore::new_isolated(), &empty_fonts);
+        hwp_convert::insert_seal(&mut doc, "(인)", &png_path, Some(18.0), |p, r| {
+            let m = measure(p, r);
+            assert!(m.is_none(), "no exact face -> no measured metrics");
+            m
+        })
+        .unwrap();
+        let pic = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                hwp_model::Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .unwrap();
+        // anchor_start 3730 + anchor_width 1610 / 2 - seal 5102 / 2; (line 1000 - 5102) / 2.
+        assert_eq!((pic.horz_offset, pic.vert_offset), (1984, -2051));
+    }
 }
