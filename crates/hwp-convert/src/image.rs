@@ -400,41 +400,72 @@ pub fn insert_image(
 /// 도장(직인) 기본 크기 20mm — 공공 실무 관례.
 const DEFAULT_SEAL_MM: f32 = 20.0;
 /// 앵커 오프셋 근사용 평균 글자 advance(HWPUNIT). 10pt 전각 ≈ 1000.
+/// **측정 메트릭이 없을 때의 폴백 전용** — 콜론·공백 같은 좁은 글자를 과대평가한다
+/// (D1 실측: 앵커가 좌측인데 horzOffset≈17666로 우측 이탈, #250 근본원인2). 실측
+/// 메트릭이 있으면 이 상수는 전혀 쓰이지 않는다(D-06).
 const AVG_CHAR_ADVANCE: i32 = 1000;
-/// 도장을 얹을 줄 높이 근사(HWPUNIT).
+/// 도장을 얹을 줄 높이 근사(HWPUNIT). **측정 메트릭이 없을 때의 폴백 전용** — 도장이
+/// 한 줄 높이라고 가정한다. 실측 메트릭이 있으면 이 상수는 전혀 쓰이지 않는다(D-06).
 const SEAL_LINE_HEIGHT: i32 = 1000;
 /// 도장 z-순서 — 본문·일반 개체 위(앞)에 겹치도록 크게 잡는다.
 const SEAL_Z_ORDER: u32 = 1000;
 
+/// 도장 배치를 위해 호출자(`hwp-cli`)가 실측해 넘기는 앵커 메트릭(HWPUNIT 단위).
+/// `hwp-convert`는 `hwp-render`에 의존하지 않으므로(project invariant 1) 이 실측은
+/// `hwp-cli`가 셰이핑 엔진을 거쳐 계산해 데이터로 넘긴다(D-06).
+#[derive(Debug, Clone, Copy)]
+pub struct SealAnchorMetrics {
+    /// 앵커 문구가 시작되는, 문단 기준 실측 가로 오프셋(HWPUNIT).
+    pub anchor_start: i32,
+    /// 앵커 문구 자체의 실측 너비(HWPUNIT).
+    pub anchor_width: i32,
+    /// 앵커가 놓인 줄의 실측 높이(HWPUNIT). 도장이 이보다 크면 세로 오프셋이 음수가
+    /// 되어 위아래 줄과 겹친다 — 이는 의도된 동작이며 보정하지 않는다(D-07).
+    pub line_height: i32,
+}
+
 /// 한 문단에서 앵커 문구 위에 도장을 **부유 배치**한다. 앵커 텍스트는 유지하고,
 /// gso 앵커 문자만 앵커 뒤에 삽입한다. 반환=삽입 여부.
 ///
-/// 위치는 문단 기준(vertRelTo/horzRelTo=PARA)이며, 앵커 문구의 대략적 오프셋으로
-/// 도장 중심을 맞춘다 — 정밀 배치는 실기 레이아웃에 의존하므로 근사값이다.
+/// 위치는 문단 기준(vertRelTo/horzRelTo=PARA)이며, 앵커 문구의 오프셋으로 도장
+/// 중심을 맞춘다. `metrics`가 있으면 실측값을(D-06), 없으면 이전과 동일한 상수
+/// 기반 근사값을 그대로 쓴다(폰트 없는 환경에서 동작 불변, CI 안전).
 fn insert_seal_in_para(
     para: &mut Paragraph,
     anchor: &str,
     seal_w: i32,
     seal_h: i32,
     name: &str,
+    metrics: Option<SealAnchorMetrics>,
 ) -> bool {
     let Some((cidx, wpos)) = find_match(&para.chars, anchor, 0) else {
         return false;
     };
-    // 가로 오프셋은 앵커 앞 **보이는 글자** 수로만 추정한다. wpos(wchar 위치)는 문단
-    // 선두의 구역/단 정의 컨트롤 문자(각 wchar_width=8, 화면 폭 0)를 포함해 값이 크게
-    // 부풀려지므로(D1 실측: 앵커가 좌측인데 horzOffset≈17666로 우측 이탈) 쓰지 않는다.
-    // Text 글자만 세어 대략적 advance로 환산한다(전각 10pt ≈ AVG_CHAR_ADVANCE).
-    let visible_before = para.chars[..cidx]
-        .iter()
-        .filter(|c| matches!(c, HwpChar::Text(_)))
-        .count() as i32;
-    let anchor_glyphs = anchor.chars().count() as i32;
-    // 앵커 문구 중앙에 도장 중심을 맞춘 문단 기준 오프셋(대략적).
-    let horz =
-        visible_before * AVG_CHAR_ADVANCE + anchor_glyphs * AVG_CHAR_ADVANCE / 2 - seal_w / 2;
-    // 줄 높이보다 큰 도장은 위로 밀어 줄 중앙에 오게 한다(음수=위로).
-    let vert = (SEAL_LINE_HEIGHT - seal_h) / 2;
+    let (horz, vert) = match metrics {
+        Some(m) => {
+            // 앵커 문구 중앙에 도장 중심을 맞춘 문단 기준 오프셋(실측).
+            let horz = m.anchor_start + m.anchor_width / 2 - seal_w / 2;
+            // 줄 높이보다 큰 도장은 위로 밀어 줄 중앙에 오게 한다(음수=위로).
+            // 위아래 줄과의 겹침은 보정하지 않는다(D-07) — 클램프 금지.
+            let vert = (m.line_height - seal_h) / 2;
+            (horz, vert)
+        }
+        None => {
+            // 가로 오프셋은 앵커 앞 **보이는 글자** 수로만 추정한다. wpos(wchar 위치)는
+            // 문단 선두의 구역/단 정의 컨트롤 문자(각 wchar_width=8, 화면 폭 0)를
+            // 포함해 값이 크게 부풀려지므로(D1 실측 참조) 쓰지 않는다. Text 글자만
+            // 세어 대략적 advance로 환산한다(전각 10pt ≈ AVG_CHAR_ADVANCE).
+            let visible_before = para.chars[..cidx]
+                .iter()
+                .filter(|c| matches!(c, HwpChar::Text(_)))
+                .count() as i32;
+            let anchor_glyphs = anchor.chars().count() as i32;
+            let horz = visible_before * AVG_CHAR_ADVANCE + anchor_glyphs * AVG_CHAR_ADVANCE / 2
+                - seal_w / 2;
+            let vert = (SEAL_LINE_HEIGHT - seal_h) / 2;
+            (horz, vert)
+        }
+    };
     let pic = Picture {
         common_data: Vec::new(),
         width: HwpUnit(seal_w.max(1)),
@@ -487,8 +518,9 @@ fn insert_seal_rec(
     seal_w: i32,
     seal_h: i32,
     name: &str,
+    metrics: Option<SealAnchorMetrics>,
 ) -> bool {
-    if insert_seal_in_para(para, anchor, seal_w, seal_h, name) {
+    if insert_seal_in_para(para, anchor, seal_w, seal_h, name, metrics) {
         return true;
     }
     for ctrl in &mut para.controls {
@@ -496,7 +528,7 @@ fn insert_seal_rec(
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        if insert_seal_rec(p, anchor, seal_w, seal_h, name) {
+                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, metrics) {
                             return true;
                         }
                     }
@@ -505,7 +537,7 @@ fn insert_seal_rec(
             Control::Generic(g) => {
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
-                        if insert_seal_rec(p, anchor, seal_w, seal_h, name) {
+                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, metrics) {
                             // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
                             g.hwpx_raw_xml = None;
                             return true;
@@ -525,11 +557,15 @@ fn insert_seal_rec(
 ///
 /// `size_mm`이 없으면 기본 20mm(도장 관례). 이미지 원본 비율을 유지한다(정사각 폴백).
 /// hwp5 writer가 빈-extras Picture에 floating 공통속성을 합성한다(검증된 경로 재사용).
+///
+/// `metrics`는 `hwp-cli`가 셰이핑으로 실측해 넘기는 앵커 위치·줄 높이(D-06). `None`이면
+/// 이전과 동일한 상수 기반 근사 배치로 폴백한다(폰트 없는 환경에서 동작 불변).
 pub fn insert_seal(
     doc: &mut Document,
     anchor: &str,
     path: &Path,
     size_mm: Option<f32>,
+    metrics: Option<SealAnchorMetrics>,
 ) -> Result<(), String> {
     let ext = ext_of(path)?;
     let data =
@@ -553,7 +589,7 @@ pub fn insert_seal(
         .sections
         .iter_mut()
         .flat_map(|s| &mut s.paragraphs)
-        .any(|p| insert_seal_rec(p, anchor, seal_w, seal_h, &name));
+        .any(|p| insert_seal_rec(p, anchor, seal_w, seal_h, &name, metrics));
     if !inserted {
         return Err(format!("앵커 {anchor:?}를 찾을 수 없습니다"));
     }
@@ -644,7 +680,7 @@ mod tests {
         png.extend([0u8; 8]);
         std::fs::write(&png_path, &png).unwrap();
 
-        insert_seal(&mut doc, "(인)", &png_path, None).unwrap();
+        insert_seal(&mut doc, "(인)", &png_path, None, None).unwrap();
 
         assert_eq!(doc.bin_streams.len(), 1);
         let para = &doc.sections[0].paragraphs[0];
@@ -691,7 +727,137 @@ mod tests {
             "앵커 ExtCtrl가 Picture를 가리켜야 한다"
         );
         // 없는 앵커·잘못된 크기는 오류.
-        assert!(insert_seal(&mut doc, "없음", &png_path, Some(15.0)).is_err());
-        assert!(insert_seal(&mut doc, "(인)", &png_path, Some(0.0)).is_err());
+        assert!(insert_seal(&mut doc, "없음", &png_path, Some(15.0), None).is_err());
+        assert!(insert_seal(&mut doc, "(인)", &png_path, Some(0.0), None).is_err());
+    }
+
+    fn make_square_png(px: u32) -> Vec<u8> {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend(px.to_be_bytes());
+        png.extend(px.to_be_bytes());
+        png.extend([0u8; 8]);
+        png
+    }
+
+    /// 실측 메트릭이 있으면(D-06) 도장 중심이 상수 근사가 아니라 실측 앵커
+    /// 위치·너비로 결정된다 — 줄보다 작은 도장(세로 오프셋 양수)인 경우.
+    #[test]
+    fn 도장_실측_메트릭_위치_정확() {
+        let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
+        let dir = std::env::temp_dir().join("hwp-seal-metrics-small-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_path = dir.join("s.png");
+        std::fs::write(&png_path, make_square_png(200)).unwrap();
+
+        let metrics = SealAnchorMetrics {
+            anchor_start: 500,
+            anchor_width: 800,
+            line_height: 2000,
+        };
+        insert_seal(&mut doc, "(인)", &png_path, Some(5.0), Some(metrics)).unwrap();
+
+        let pic = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .expect("Picture 존재");
+        let seal_w = pic.width.0;
+        let seal_h = pic.height.0;
+        let expected_horz = (metrics.anchor_start + metrics.anchor_width / 2 - seal_w / 2).max(0);
+        let expected_vert = (metrics.line_height - seal_h) / 2;
+        assert_eq!(
+            pic.horz_offset, expected_horz,
+            "실측 앵커 위치 기준 가로 오프셋"
+        );
+        assert_eq!(
+            pic.vert_offset, expected_vert,
+            "실측 줄 높이 기준 세로 오프셋"
+        );
+        assert!(pic.vert_offset > 0, "줄보다 작은 도장은 양수 세로 오프셋");
+    }
+
+    /// 실측 메트릭에서 도장이 앵커 줄보다 크면 세로 오프셋이 음수가 되어 위아래
+    /// 줄과 겹친다 — 이는 의도된 동작이며 클램프하지 않는다(D-07).
+    #[test]
+    fn 도장_실측_메트릭_줄보다_크면_세로오프셋_음수() {
+        let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
+        let dir = std::env::temp_dir().join("hwp-seal-metrics-tall-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_path = dir.join("s.png");
+        std::fs::write(&png_path, make_square_png(200)).unwrap();
+
+        let metrics = SealAnchorMetrics {
+            anchor_start: 3000,
+            anchor_width: 900,
+            line_height: 1200,
+        };
+        insert_seal(&mut doc, "(인)", &png_path, Some(18.0), Some(metrics)).unwrap();
+
+        let pic = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .expect("Picture 존재");
+        let seal_w = pic.width.0;
+        let seal_h = pic.height.0;
+        assert!(
+            seal_h > metrics.line_height,
+            "이 테스트의 전제: 도장이 줄보다 커야 한다"
+        );
+        let expected_horz = (metrics.anchor_start + metrics.anchor_width / 2 - seal_w / 2).max(0);
+        let expected_vert = (metrics.line_height - seal_h) / 2;
+        assert_eq!(pic.horz_offset, expected_horz);
+        assert_eq!(pic.vert_offset, expected_vert);
+        assert!(
+            pic.vert_offset < 0,
+            "줄보다 큰 도장은 음수 세로 오프셋(위아래 줄과 겹침, 클램프 금지)"
+        );
+    }
+
+    /// 메트릭이 없으면(폰트 스토어 없음·얼굴 미해결) 이전 상수 기반 근사식과
+    /// 동일한 값이 나와야 한다 — 폰트 없는 환경에서 동작 불변(CI 안전).
+    #[test]
+    fn 도장_메트릭_없으면_이전_상수식과_동일() {
+        let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
+        let dir = std::env::temp_dir().join("hwp-seal-fallback-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_path = dir.join("s.png");
+        std::fs::write(&png_path, make_square_png(96)).unwrap();
+
+        insert_seal(&mut doc, "(인)", &png_path, None, None).unwrap();
+
+        let pic = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .expect("Picture 존재");
+        let seal_w = pic.width.0;
+        let seal_h = pic.height.0;
+        // "결재란 (인) 끝"에서 "(인)" 앞의 보이는(Text) 글자 수 = "결재란 "(4글자).
+        let visible_before = 4;
+        let anchor_glyphs = "(인)".chars().count() as i32;
+        let expected_horz =
+            (visible_before * AVG_CHAR_ADVANCE + anchor_glyphs * AVG_CHAR_ADVANCE / 2 - seal_w / 2)
+                .max(0);
+        let expected_vert = (SEAL_LINE_HEIGHT - seal_h) / 2;
+        assert_eq!(
+            pic.horz_offset, expected_horz,
+            "이전 상수식과 같은 가로 오프셋"
+        );
+        assert_eq!(
+            pic.vert_offset, expected_vert,
+            "이전 상수식과 같은 세로 오프셋"
+        );
     }
 }
