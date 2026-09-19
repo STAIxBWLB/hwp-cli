@@ -602,7 +602,7 @@ pub struct EditArgs {
     /// Insert an image, "anchor=>path" or "anchor=>path@WxH" (mm): insert a picture after the anchor (repeatable)
     #[arg(long = "insert-image")]
     pub insert_image: Vec<String>,
-    /// Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text (repeatable)
+    /// Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text; use an image with a transparent background, since the seal floats in front of the text and an opaque background hides whatever is under it (repeatable)
     #[arg(long = "seal")]
     pub seal: Vec<String>,
     /// Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000")

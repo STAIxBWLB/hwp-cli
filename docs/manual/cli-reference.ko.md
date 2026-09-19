@@ -256,7 +256,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--create-bookmark` | `<CREATE_BOOKMARK>` |  | 책갈피 생성 "앵커=>이름" — 앵커 텍스트 뒤에 bokm 지점 표식 삽입 (반복 가능) |
 | `--create-hyperlink` | `<CREATE_HYPERLINK>` |  | 하이퍼링크 생성 "앵커=>URL" 또는 "앵커=>표시=>URL" — 앵커 뒤에 %hlk 삽입 (반복 가능) |
 | `--insert-image` | `<INSERT_IMAGE>` |  | 이미지 삽입 "앵커=>경로" 또는 "앵커=>경로@너비x높이"(mm) — 앵커 뒤에 그림 삽입 (반복 가능) |
-| `--seal` | `<SEAL>` |  | 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치 (반복 가능) |
+| `--seal` | `<SEAL>` |  | 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치. 도장은 글 앞에 떠서 겹치므로 배경이 불투명하면 아래 내용을 가린다 — 배경이 투명한 이미지를 쓸 것 (반복 가능) |
 | `--set-format` | `<SET_FORMAT>` |  | 글자 서식 "찾기:속성=값,..." (예: "제목:bold=on,size=16,color=#FF0000") (반복 가능) |
 | `--set-align` | `<SET_ALIGN>` |  | 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute) (반복 가능) |
 | `--insert-para` | `<INSERT_PARA>` |  | 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단. 앵커는 표 셀·중첩 표·캡션 안에서도 찾는다 (반복 가능) |

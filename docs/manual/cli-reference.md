@@ -256,7 +256,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--create-bookmark` | `<CREATE_BOOKMARK>` |  | Create a bookmark, "anchor=>name": insert a bokm marker after the anchor text (repeatable) |
 | `--create-hyperlink` | `<CREATE_HYPERLINK>` |  | Create a hyperlink, "anchor=>URL" or "anchor=>text=>URL": insert %hlk after the anchor (repeatable) |
 | `--insert-image` | `<INSERT_IMAGE>` |  | Insert an image, "anchor=>path" or "anchor=>path@WxH" (mm): insert a picture after the anchor (repeatable) |
-| `--seal` | `<SEAL>` |  | Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text (repeatable) |
+| `--seal` | `<SEAL>` |  | Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text; use an image with a transparent background, since the seal floats in front of the text and an opaque background hides whatever is under it (repeatable) |
 | `--set-format` | `<SET_FORMAT>` |  | Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000") (repeatable) |
 | `--set-align` | `<SET_ALIGN>` |  | Paragraph alignment, "find=alignment" (left/right/center/justify/distribute) (repeatable) |
 | `--insert-para` | `<INSERT_PARA>` |  | Insert a paragraph, "anchor=>text": after the paragraph containing the anchor; the anchor is also searched inside table cells, nested tables and captions (repeatable) |
