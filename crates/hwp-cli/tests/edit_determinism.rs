@@ -173,7 +173,7 @@ fn seal_edit_byte_stable_across_two_runs_hwp5() {
 
 /// The hwp5 in-place edit path's `--merge-cells` invocation (K2's generator command): rewrites
 /// an existing `/BodyText/Section0` stream in place via `patch_source_container`. Guards the
-/// same shared `pin_all_entry_times` helper from a second angle (existing-stream rewrite rather
+/// same shared `pin_new_entry_times` helper from a second angle (existing-stream rewrite rather
 /// than new-storage creation), font-independent (compares raw bytes, not glyph shapes).
 #[test]
 fn merge_cells_edit_byte_stable_across_two_runs_hwp5() {
@@ -188,4 +188,54 @@ fn merge_cells_edit_byte_stable_across_two_runs_hwp5() {
         &dir.join("out-b.hwp"),
         &["--merge-cells", "0:0:0:0:1"],
     );
+}
+
+/// The in-place path must pin only entries the edit creates, never the source's own entries
+/// (#253 review): a source storage with a non-epoch time keeps it through a `--seal` edit,
+/// while the `BinData` storage the seal creates is pinned to the CFB epoch. Fails if the
+/// in-place path goes back to pinning every entry.
+#[test]
+fn seal_edit_preserves_source_entry_times_hwp5() {
+    let dir = test_dir("hwp5-seal-times");
+    let md = write_md(&dir, "doc.md", APPROVAL_MD);
+    let base = dir.join("base.hwp");
+    new_from(&md, &base, &[]);
+
+    let source_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    {
+        let mut cfb = cfb::open_rw(&base).unwrap();
+        for path in ["/", "/BodyText"] {
+            cfb.set_created_time(path, source_time).unwrap();
+            cfb.set_modified_time(path, source_time).unwrap();
+        }
+        assert!(
+            !cfb.exists("/BinData"),
+            "base must not already hold a BinData storage"
+        );
+        cfb.flush().unwrap();
+    }
+
+    let png = dir.join("seal.png");
+    write_seal_png(&png);
+    let out = dir.join("out.hwp");
+    let status = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&out)
+        .args(["--seal", &format!("(인)=>{}@18mm", png.display())])
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp edit --seal failed");
+
+    let cfb = cfb::open(&out).unwrap();
+    for path in ["/", "/BodyText"] {
+        let entry = cfb.entry(path).unwrap();
+        assert_eq!(entry.created(), source_time, "{path} created time");
+        assert_eq!(entry.modified(), source_time, "{path} modified time");
+    }
+    let cfb_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(11_644_473_600);
+    let bin_data = cfb.entry("/BinData").unwrap();
+    assert_eq!(bin_data.created(), cfb_epoch, "new BinData created time");
+    assert_eq!(bin_data.modified(), cfb_epoch, "new BinData modified time");
 }
