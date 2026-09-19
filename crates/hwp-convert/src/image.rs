@@ -6,7 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use hwp_model::{BinRef, BinStream, Control, Document, HwpChar, HwpUnit, Paragraph, Picture};
+use hwp_model::{
+    BinRef, BinStream, CharShape, Control, Document, HwpChar, HwpUnit, Paragraph, Picture,
+};
 
 use crate::edit::{adjust_runs, find_match, utf16_len};
 use crate::field::{relink_ctrl_index, rev_payload};
@@ -399,14 +401,30 @@ pub fn insert_image(
 
 /// 도장(직인) 기본 크기 20mm — 공공 실무 관례.
 const DEFAULT_SEAL_MM: f32 = 20.0;
-/// 앵커 오프셋 근사용 평균 글자 advance(HWPUNIT). 10pt 전각 ≈ 1000.
-/// **측정 메트릭이 없을 때의 폴백 전용** — 콜론·공백 같은 좁은 글자를 과대평가한다
-/// (D1 실측: 앵커가 좌측인데 horzOffset≈17666로 우측 이탈, #250 근본원인2). 실측
-/// 메트릭이 있으면 이 상수는 전혀 쓰이지 않는다(D-06).
-const AVG_CHAR_ADVANCE: i32 = 1000;
-/// 도장을 얹을 줄 높이 근사(HWPUNIT). **측정 메트릭이 없을 때의 폴백 전용** — 도장이
-/// 한 줄 높이라고 가정한다. 실측 메트릭이 있으면 이 상수는 전혀 쓰이지 않는다(D-06).
-const SEAL_LINE_HEIGHT: i32 = 1000;
+/// Fallback advance classes for the seal anchor, in thousandths of the active char shape's
+/// base size (em). Used **only** when no measured metrics are available (no exact face on
+/// the host, CI); the measured path always wins when the document's fonts resolve (D-06).
+///
+/// Source: advances the measured path (`hwp-render` shaping) reports for the default
+/// template face with locally held genuine fonts, on anchor contexts mixing Hangul, spaces,
+/// digits, Latin letters and punctuation (body, table cell, 18pt heading); every class
+/// scaled exactly with base size. Ceiling: an estimate. Other faces differ by a few percent
+/// per class, Latin letters vary per glyph (0.29-0.73 em), and char-shape ratio and
+/// letter spacing are ignored.
+///
+/// Hangul, CJK and every other non-ASCII glyph: measured 0.97 em.
+const SEAL_EM_WIDE: i32 = 970;
+/// ASCII space: measured 0.5 em.
+const SEAL_EM_SPACE: i32 = 500;
+/// ASCII digits: measured 0.55 em.
+const SEAL_EM_DIGIT: i32 = 550;
+/// ASCII letters: 0.6 em, the face's per-letter average (measured 0.29-0.73 em).
+const SEAL_EM_LETTER: i32 = 600;
+/// Other ASCII punctuation: measured 0.32 em for `.,:()`.
+const SEAL_EM_PUNCT: i32 = 320;
+/// Base size used when a char shape is missing or has no size (10pt), as the measured
+/// path does for line height.
+const SEAL_DEFAULT_BASE: i32 = 1000;
 /// 도장 z-순서 — 본문·일반 개체 위(앞)에 겹치도록 크게 잡는다.
 const SEAL_Z_ORDER: u32 = 1000;
 
@@ -431,10 +449,11 @@ type SealMeasure<'a> = dyn FnMut(&Paragraph, (u32, u32)) -> Option<SealAnchorMet
 /// gso 앵커 문자만 앵커 뒤에 삽입한다. 반환=삽입 여부.
 ///
 /// Placement is paragraph-relative (vertRelTo/horzRelTo=PARA), centred on the anchor.
-/// `measure` supplies measured metrics for this paragraph (D-06); `None` keeps the previous
-/// constant-based approximation bit-for-bit (font-less environments, CI).
+/// `measure` supplies measured metrics for this paragraph (D-06); `None` falls back to
+/// [`estimate_anchor_metrics`] (font-less environments, CI).
 fn insert_seal_in_para(
     para: &mut Paragraph,
+    char_shapes: &[CharShape],
     anchor: &str,
     seal_w: i32,
     seal_h: i32,
@@ -446,32 +465,13 @@ fn insert_seal_in_para(
     };
     // Measure the very paragraph that receives the seal, before it is mutated, so the
     // metrics can never come from a different (e.g. enclosing) paragraph.
-    let metrics = measure(para, (wpos, wpos + utf16_len(anchor)));
-    let (horz, vert) = match metrics {
-        Some(m) => {
-            // 앵커 문구 중앙에 도장 중심을 맞춘 문단 기준 오프셋(실측).
-            let horz = m.anchor_start + m.anchor_width / 2 - seal_w / 2;
-            // 줄 높이보다 큰 도장은 위로 밀어 줄 중앙에 오게 한다(음수=위로).
-            // 위아래 줄과의 겹침은 보정하지 않는다(D-07) — 클램프 금지.
-            let vert = (m.line_height - seal_h) / 2;
-            (horz, vert)
-        }
-        None => {
-            // 가로 오프셋은 앵커 앞 **보이는 글자** 수로만 추정한다. wpos(wchar 위치)는
-            // 문단 선두의 구역/단 정의 컨트롤 문자(각 wchar_width=8, 화면 폭 0)를
-            // 포함해 값이 크게 부풀려지므로(D1 실측 참조) 쓰지 않는다. Text 글자만
-            // 세어 대략적 advance로 환산한다(전각 10pt ≈ AVG_CHAR_ADVANCE).
-            let visible_before = para.chars[..cidx]
-                .iter()
-                .filter(|c| matches!(c, HwpChar::Text(_)))
-                .count() as i32;
-            let anchor_glyphs = anchor.chars().count() as i32;
-            let horz = visible_before * AVG_CHAR_ADVANCE + anchor_glyphs * AVG_CHAR_ADVANCE / 2
-                - seal_w / 2;
-            let vert = (SEAL_LINE_HEIGHT - seal_h) / 2;
-            (horz, vert)
-        }
-    };
+    let m = measure(para, (wpos, wpos + utf16_len(anchor)))
+        .unwrap_or_else(|| estimate_anchor_metrics(para, (cidx, wpos), anchor, char_shapes));
+    // 앵커 문구 중앙에 도장 중심을 맞춘 문단 기준 오프셋.
+    let horz = m.anchor_start + m.anchor_width / 2 - seal_w / 2;
+    // 줄 높이보다 큰 도장은 위로 밀어 줄 중앙에 오게 한다(음수=위로).
+    // 위아래 줄과의 겹침은 보정하지 않는다(D-07) — 클램프 금지.
+    let vert = (m.line_height - seal_h) / 2;
     let pic = Picture {
         common_data: Vec::new(),
         width: HwpUnit(seal_w.max(1)),
@@ -517,16 +517,65 @@ fn insert_seal_in_para(
     true
 }
 
+/// Font-independent anchor metrics: per-character width class times the base size of the
+/// char shape active at that character. Only `Text` chars advance; controls (section/column
+/// definitions, gso anchors) have no width. Line height mirrors the measured path: the base
+/// size of the char shape active at the anchor start.
+fn estimate_anchor_metrics(
+    para: &Paragraph,
+    (cidx, wpos): (usize, u32),
+    anchor: &str,
+    char_shapes: &[CharShape],
+) -> SealAnchorMetrics {
+    let base_at = |w: u32| {
+        para.char_shape_runs
+            .iter()
+            .rev()
+            .find(|(pos, _)| *pos <= w)
+            .and_then(|(_, id)| char_shapes.get(id.0 as usize))
+            .map(|cs| cs.base_size)
+            .filter(|&b| b > 0)
+            .unwrap_or(SEAL_DEFAULT_BASE)
+    };
+    let end = (cidx + anchor.chars().count()).min(para.chars.len());
+    // Sums in HWPUNIT x 1000 so rounding happens once per span.
+    let (mut before, mut width, mut w) = (0i64, 0i64, 0u32);
+    for (i, c) in para.chars[..end].iter().enumerate() {
+        if let HwpChar::Text(ch) = c {
+            let em = match ch {
+                ' ' => SEAL_EM_SPACE,
+                '0'..='9' => SEAL_EM_DIGIT,
+                'A'..='Z' | 'a'..='z' => SEAL_EM_LETTER,
+                c if c.is_ascii() => SEAL_EM_PUNCT,
+                _ => SEAL_EM_WIDE,
+            };
+            let adv = i64::from(em) * i64::from(base_at(w));
+            if i < cidx {
+                before += adv;
+            } else {
+                width += adv;
+            }
+        }
+        w += c.wchar_width();
+    }
+    SealAnchorMetrics {
+        anchor_start: (before / 1000) as i32,
+        anchor_width: (width / 1000) as i32,
+        line_height: base_at(wpos),
+    }
+}
+
 /// 본문/표 셀/글상자 문단을 재귀로 훑어 첫 매칭에 도장을 부유 배치한다.
 fn insert_seal_rec(
     para: &mut Paragraph,
+    char_shapes: &[CharShape],
     anchor: &str,
     seal_w: i32,
     seal_h: i32,
     name: &str,
     measure: &mut SealMeasure<'_>,
 ) -> bool {
-    if insert_seal_in_para(para, anchor, seal_w, seal_h, name, measure) {
+    if insert_seal_in_para(para, char_shapes, anchor, seal_w, seal_h, name, measure) {
         return true;
     }
     for ctrl in &mut para.controls {
@@ -534,7 +583,7 @@ fn insert_seal_rec(
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, measure) {
+                        if insert_seal_rec(p, char_shapes, anchor, seal_w, seal_h, name, measure) {
                             return true;
                         }
                     }
@@ -543,7 +592,7 @@ fn insert_seal_rec(
             Control::Generic(g) => {
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
-                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, measure) {
+                        if insert_seal_rec(p, char_shapes, anchor, seal_w, seal_h, name, measure) {
                             // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
                             g.hwpx_raw_xml = None;
                             return true;
@@ -566,7 +615,7 @@ fn insert_seal_rec(
 ///
 /// `measure` is called once with the paragraph that actually receives the seal and the
 /// anchor's WCHAR range `[start, end)` in it; `hwp-cli` answers with shaped metrics (D-06).
-/// `None` falls back to the constant-based approximation (unchanged font-less behavior).
+/// `None` falls back to a font-independent width-class estimate (same result on every host).
 pub fn insert_seal(
     doc: &mut Document,
     anchor: &str,
@@ -592,11 +641,12 @@ pub fn insert_seal(
     }
     .max(1);
     let name = format!("seal{}.{ext}", doc.bin_streams.len() + 1);
+    let char_shapes = &doc.header.char_shapes;
     let inserted = doc
         .sections
         .iter_mut()
         .flat_map(|s| &mut s.paragraphs)
-        .any(|p| insert_seal_rec(p, anchor, seal_w, seal_h, &name, &mut measure));
+        .any(|p| insert_seal_rec(p, char_shapes, anchor, seal_w, seal_h, &name, &mut measure));
     if !inserted {
         return Err(format!("앵커 {anchor:?}를 찾을 수 없습니다"));
     }
@@ -900,18 +950,70 @@ mod tests {
         );
     }
 
-    /// 메트릭이 없으면(폰트 스토어 없음·얼굴 미해결) 이전 상수 기반 근사식과
-    /// 동일한 값이 나와야 한다 — 폰트 없는 환경에서 동작 불변(CI 안전).
-    #[test]
-    fn 도장_메트릭_없으면_이전_상수식과_동일() {
-        let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
+    fn seal_offsets(md: &str, anchor: &str) -> (i32, i32, i32, i32) {
+        let mut doc = crate::from_markdown::from_markdown(md);
         let dir = std::env::temp_dir().join("hwp-seal-fallback-test");
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = dir.join("s.png");
         std::fs::write(&png_path, make_square_png(96)).unwrap();
+        insert_seal(&mut doc, anchor, &png_path, None, |_, _| None).unwrap();
+        let pic = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p.clone()),
+                _ => None,
+            })
+            .expect("Picture 존재");
+        (pic.horz_offset, pic.vert_offset, pic.width.0, pic.height.0)
+    }
 
+    /// Without metrics the seal uses the width-class estimate, pinned bit-for-bit. This
+    /// replaced the old pin of the flat 1000-per-glyph constants (#250 root cause 2).
+    #[test]
+    fn seal_fallback_uses_width_classes() {
+        let (horz, vert, seal_w, seal_h) = seal_offsets("결재란 (인) 끝", "(인)");
+        let base = 1000; // default body char shape, 10pt
+        // "결재란 " = 3 wide + 1 space; "(인)" = punct + wide + punct.
+        let before = (3 * SEAL_EM_WIDE + SEAL_EM_SPACE) * base / 1000;
+        let width = (2 * SEAL_EM_PUNCT + SEAL_EM_WIDE) * base / 1000;
+        assert_eq!(
+            (before, width),
+            (3410, 1610),
+            "equals the genuine-font measurement"
+        );
+        assert_eq!(horz, (before + width / 2 - seal_w / 2).max(0));
+        assert_eq!(vert, (base - seal_h) / 2, "line height = active base size");
+    }
+
+    /// Narrow glyphs (space, digits, ASCII punctuation) advance less than full-width ones.
+    /// The old constant fallback counted every visible glyph as 1000 and put both seals at
+    /// the same offset.
+    #[test]
+    fn seal_fallback_narrow_chars_advance_less() {
+        let (wide, ..) = seal_offsets("결재란가나 (인)", "(인)");
+        let (narrow, ..) = seal_offsets("1. :ab (인)", "(인)");
+        assert!(narrow < wide, "narrow {narrow} must be left of wide {wide}");
+    }
+
+    /// The fallback depends only on the document: a larger char shape scales the advances
+    /// and the line height, and repeated runs give identical offsets.
+    #[test]
+    fn seal_fallback_scales_with_char_shape_and_is_deterministic() {
+        let md = "결재란: (인)";
+        let a = seal_offsets(md, "(인)");
+        assert_eq!(a, seal_offsets(md, "(인)"), "deterministic");
+
+        let mut doc = crate::from_markdown::from_markdown(md);
+        let para = &doc.sections[0].paragraphs[0];
+        let id = para.char_shape_runs[0].1.0 as usize;
+        doc.header.char_shapes[id].base_size = 2000;
+        let dir = std::env::temp_dir().join("hwp-seal-fallback-scale");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png_path = dir.join("s.png");
+        std::fs::write(&png_path, make_square_png(96)).unwrap();
         insert_seal(&mut doc, "(인)", &png_path, None, |_, _| None).unwrap();
-
         let pic = doc.sections[0].paragraphs[0]
             .controls
             .iter()
@@ -919,23 +1021,10 @@ mod tests {
                 Control::Picture(p) => Some(p),
                 _ => None,
             })
-            .expect("Picture 존재");
-        let seal_w = pic.width.0;
-        let seal_h = pic.height.0;
-        // "결재란 (인) 끝"에서 "(인)" 앞의 보이는(Text) 글자 수 = "결재란 "(4글자).
-        let visible_before = 4;
-        let anchor_glyphs = "(인)".chars().count() as i32;
-        let expected_horz =
-            (visible_before * AVG_CHAR_ADVANCE + anchor_glyphs * AVG_CHAR_ADVANCE / 2 - seal_w / 2)
-                .max(0);
-        let expected_vert = (SEAL_LINE_HEIGHT - seal_h) / 2;
-        assert_eq!(
-            pic.horz_offset, expected_horz,
-            "이전 상수식과 같은 가로 오프셋"
-        );
-        assert_eq!(
-            pic.vert_offset, expected_vert,
-            "이전 상수식과 같은 세로 오프셋"
-        );
+            .unwrap();
+        let (seal_w, seal_h) = (pic.width.0, pic.height.0);
+        // "결재란: " at 20pt = 2 x (3730 at 10pt); "(인)" = 2 x 1610.
+        assert_eq!(pic.horz_offset, 7460 + 1610 - seal_w / 2);
+        assert_eq!(pic.vert_offset, (2000 - seal_h) / 2);
     }
 }
