@@ -779,6 +779,61 @@ fn 부유_그림_배치_hwpx_방출() {
     assert_eq!(description, Some("제목 & <대체> 😀"));
 }
 
+/// A negative `<hp:pos>` offset is written in Hancom's unsigned 32-bit form (-2051 ->
+/// 4294965245, the D1 seal case), a non-negative one is unchanged, and reading the file
+/// back gives the signed value again.
+#[test]
+fn floating_picture_negative_offset_emits_unsigned_and_round_trips() {
+    use std::io::Write as _;
+    let dir = std::env::temp_dir().join("hwpx-neg-pos-offset");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::File::create(dir.join("g.png"))
+        .unwrap()
+        .write_all(VALID_PNG_1X1)
+        .unwrap();
+    let mut doc = hwp_convert::from_markdown_with(
+        "![alt](g.png)\n",
+        &hwp_convert::MarkdownImportOptions {
+            base_dir: Some(&dir),
+            preset: None,
+            ..Default::default()
+        },
+    );
+    for para in &mut doc.sections[0].paragraphs {
+        for c in &mut para.controls {
+            if let hwp_model::Control::Picture(p) = c {
+                p.treat_as_char = false;
+                p.vert_offset = -2051;
+                p.horz_offset = 1984;
+            }
+        }
+    }
+    let out = tmp("neg_pos_offset.hwpx");
+    hwpx::write_document(&doc, &out).unwrap();
+
+    let bytes = std::fs::read(&out).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut xml = String::new();
+    zip.by_name("Contents/section0.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    assert!(xml.contains(r#"vertOffset="4294965245""#), "{xml}");
+    assert!(xml.contains(r#"horzOffset="1984""#), "{xml}");
+    assert!(!xml.contains(r#"Offset="-"#), "no signed offsets: {xml}");
+
+    let reread = hwpx::read_document(&out).unwrap().document;
+    let offsets = reread.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Picture(p) => Some((p.vert_offset, p.horz_offset)),
+            _ => None,
+        });
+    assert_eq!(offsets, Some((-2051, 1984)));
+}
+
 /// GI-1/GI-2 왕복 (b): md(각주·취소선·순서목록·중첩) → hwpx 저장 → 재읽기 → md.
 #[test]
 fn markdown_각주_취소선_목록_hwpx_완전왕복() {

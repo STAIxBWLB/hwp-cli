@@ -1130,7 +1130,8 @@ fn generated_equation_props(g: &GenericControl, eq: &Equation) -> Vec<String> {
             let (treat, flow, overlap) = if eq.inline { (1, 1, 0) } else { (0, 0, 1) };
             format!(
                 r##"<hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="{flow}" allowOverlap="{overlap}" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/>"##,
-                eq.y, eq.x,
+                pos_offset(eq.y),
+                pos_offset(eq.x),
             )
         }
     };
@@ -1332,8 +1333,15 @@ fn page_num_pos_name(code: u8) -> &'static str {
     }
 }
 
+/// `<hp:pos>` vertOffset/horzOffset text: the unsigned 32-bit two's-complement form Hancom
+/// writes (-797 is stored as 4294966499). Non-negative values are unchanged.
+fn pos_offset(v: i32) -> u32 {
+    v as u32
+}
+
 /// gso 공통 헤더의 attr 비트 + 오프셋으로 `<hp:pos …/>` 를 만든다(⑱ 역매핑 — 쌍 대조 검증).
 fn gso_pos_xml(attr: u32, voff: i32, hoff: i32) -> String {
+    let (voff, hoff) = (pos_offset(voff), pos_offset(hoff));
     let treat = attr & 1;
     let vrel = ((attr >> 3) & 0x3) as u8;
     let valign = ((attr >> 5) & 0x7) as u8;
@@ -1655,7 +1663,8 @@ fn write_ir_shapes(
         };
         let pos = format!(
             r##"<hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{vrel}" horzRelTo="{hrel}" vertAlign="TOP" horzAlign="LEFT" vertOffset="{}" horzOffset="{}"/>"##,
-            s.y, s.x,
+            pos_offset(s.y),
+            pos_offset(s.x),
         );
         let text = if i == 0 { Some(g) } else { None };
         // hwpx-출신 ShapeGeom엔 z-order가 없어 도형 순서로 증가 부여(전부 0보다 개선).
@@ -1786,8 +1795,8 @@ fn write_table(
     let horz_rel = pl.map_or("PARA", |p| horz_rel_to_name(p.horz_rel_to));
     let vert_align = pl.map_or("TOP", |p| vert_align_name(p.vert_align));
     let horz_align = pl.map_or("LEFT", |p| horz_align_name(p.horz_align));
-    let vert_offset = pl.map_or(0, |p| p.vert_offset);
-    let horz_offset = pl.map_or(0, |p| p.horz_offset);
+    let vert_offset = pos_offset(pl.map_or(0, |p| p.vert_offset));
+    let horz_offset = pos_offset(pl.map_or(0, |p| p.horz_offset));
     // zOrder·outMargin도 원본 값 승계(픽스처 실측: zOrder 0~10, outMargin 141 —
     // 상수로 뭉개면 도형 겹침 순서·바깥 여백이 원본과 어긋난다). 합성 표는 기존 기본값.
     let z_order = pl.map_or(0, |p| p.z_order);
@@ -1933,7 +1942,11 @@ fn write_picture(
             contrast,
         );
     } else {
-        let (voff, hoff, zorder) = (pic.vert_offset, pic.horz_offset, pic.z_order);
+        let (voff, hoff, zorder) = (
+            pos_offset(pic.vert_offset),
+            pos_offset(pic.horz_offset),
+            pic.z_order,
+        );
         let _ = write!(
             out,
             r##"<hp:pic id="{id}" zOrder="{zorder}" numberingType="PICTURE" textWrap="IN_FRONT_OF_TEXT" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" href="" groupLevel="0" instid="{id}" reverse="0"><hp:offset x="0" y="0"/><hp:orgSz width="{w}" height="{h}"/><hp:curSz width="{w}" height="{h}"/><hp:flip horizontal="{flip_h}" vertical="{flip_v}"/><hp:rotationInfo angle="{angle}" centerX="{}" centerY="{}" rotateimage="1"/><hp:renderingInfo><hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/><hc:rotMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/></hp:renderingInfo><hc:img binaryItemIDRef="{item}" bright="{}" contrast="{}" effect="REAL_PIC" alpha="0"/><hp:imgRect><hc:pt0 x="0" y="0"/><hc:pt1 x="{w}" y="0"/><hc:pt2 x="{w}" y="{h}"/><hc:pt3 x="0" y="{h}"/></hp:imgRect><hp:imgClip left="{cl}" right="{cr}" top="{ct}" bottom="{cb}"/><hp:inMargin left="0" right="0" top="0" bottom="0"/><hp:imgDim dimwidth="{w}" dimheight="{h}"/><hp:sz width="{w}" widthRelTo="ABSOLUTE" height="{h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="0" allowOverlap="1" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="PARA" vertAlign="TOP" horzAlign="LEFT" vertOffset="{voff}" horzOffset="{hoff}"/><hp:outMargin left="0" right="0" top="0" bottom="0"/>{caption_xml}{description}</hp:pic>"##,
