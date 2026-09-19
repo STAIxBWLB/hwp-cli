@@ -807,7 +807,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         format!("--seal 형식은 \"앵커=>경로\" 또는 \"앵커=>경로@크기mm\" 입니다: {spec:?}")
                     })?;
                     let (path, size_mm) = parse_seal_size(rhs);
-                    hwp_convert::insert_seal(&mut doc, anchor, Path::new(path), size_mm)
+                    let measure = seal_measurer(&doc);
+                    hwp_convert::insert_seal(&mut doc, anchor, Path::new(path), size_mm, measure)
                         .map_err(|e| anyhow::anyhow!(e))?;
                     eprintln!("도장 날인: {anchor:?} 위에 {path:?}");
                     edits += 1;
@@ -1609,7 +1610,8 @@ fn apply_typed_operation(
             path,
             size_mm,
         } => {
-            hwp_convert::insert_seal(doc, anchor, path, *size_mm)
+            let measure = seal_measurer(doc);
+            hwp_convert::insert_seal(doc, anchor, path, *size_mm, measure)
                 .map_err(|error| anyhow::anyhow!(error))?;
             eprintln!("도장 날인: {anchor:?} 위에 {}", path.display());
             *edits += 1;
@@ -2032,6 +2034,102 @@ fn parse_seal_size(rhs: &str) -> (&str, Option<f32>) {
         }
     }
     (rhs, None)
+}
+
+/// Builds the anchor-measurement callback `insert_seal` calls on the paragraph that
+/// receives the seal (D-06). `hwp-convert` does not depend on `hwp-render` (invariant 1),
+/// so the shaping happens here and only the resulting numbers cross the boundary.
+///
+/// Host independence: the store sees system fonts plus the explicit font directory
+/// (`HWP_FONT_DIR`, default `fonts/`), but a measurement is kept only when every face used
+/// to shape the anchor line is the document's requested face. On any substitution,
+/// coverage fallback or missing face the callback returns `None` and `insert_seal` uses
+/// its constant fallback, so a host's substitute font never reaches the serialized seal
+/// offset, while a machine that has the document's own fonts installed still gets the
+/// measured placement (#250).
+fn seal_measurer(
+    doc: &hwp_model::Document,
+) -> impl FnMut(&hwp_model::Paragraph, (u32, u32)) -> Option<hwp_convert::SealAnchorMetrics> + use<>
+{
+    let font_dir =
+        std::path::PathBuf::from(std::env::var("HWP_FONT_DIR").unwrap_or_else(|_| "fonts".into()));
+    seal_measurer_in(doc, hwp_render::FontStore::new(), &font_dir)
+}
+
+fn seal_measurer_in(
+    doc: &hwp_model::Document,
+    mut store: hwp_render::FontStore,
+    font_dir: &std::path::Path,
+) -> impl FnMut(&hwp_model::Paragraph, (u32, u32)) -> Option<hwp_convert::SealAnchorMetrics> + use<>
+{
+    // Shaping reads only the header (fonts, char shapes); a header-only document avoids
+    // borrowing `doc` while `insert_seal` mutates it.
+    let shaping_doc = hwp_model::Document {
+        header: doc.header.clone(),
+        ..Default::default()
+    };
+    store.load_dir(font_dir);
+    move |para, range| measure_seal_anchor(&mut store, &shaping_doc, para, range)
+}
+
+/// Shapes the anchor's paragraph up to the anchor and the anchor itself with the
+/// renderer's own entry point (`shape_range`: active char-shape runs, per-language
+/// faces). Line height is the base size of the char shape active at the anchor start.
+fn measure_seal_anchor(
+    store: &mut hwp_render::FontStore,
+    doc: &hwp_model::Document,
+    para: &hwp_model::Paragraph,
+    (start, end): (u32, u32),
+) -> Option<hwp_convert::SealAnchorMetrics> {
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let before = seal_inline_width(hwp_render::shape::shape_range(
+        store,
+        doc,
+        para,
+        (0, start),
+        &mut warnings,
+    ))?;
+    let width = seal_inline_width(hwp_render::shape::shape_range(
+        store,
+        doc,
+        para,
+        (start, end),
+        &mut warnings,
+    ))?;
+    // Any shaping issue (e.g. a piece that failed to shape) means the widths undercount.
+    if !warnings.finish().issues.is_empty() || !seal_faces_exact(store) {
+        return None;
+    }
+    let shape_id = para
+        .char_shape_runs
+        .iter()
+        .rev()
+        .find(|(pos, _)| *pos <= start)
+        .map(|(_, id)| *id)?;
+    let base = doc.header.char_shapes.get(shape_id.0 as usize)?.base_size;
+    // pt -> HWPUNIT: 1pt = 100 HWPUNIT.
+    Some(hwp_convert::SealAnchorMetrics {
+        anchor_start: (before * 100.0).round() as i32,
+        anchor_width: (width * 100.0).round() as i32,
+        line_height: if base > 0 { base } else { 1000 },
+    })
+}
+
+/// Sum of run advances; `None` for a tab or line break, whose position needs full layout.
+fn seal_inline_width(items: Vec<hwp_render::shape::InlineItem>) -> Option<f32> {
+    items.iter().try_fold(0.0, |w, item| match item {
+        hwp_render::shape::InlineItem::Run(run) => Some(w + run.width_pt),
+        _ => None,
+    })
+}
+
+/// True only when every face resolution so far matched the requested family exactly.
+fn seal_faces_exact(store: &hwp_render::FontStore) -> bool {
+    store.resolutions_complete
+        && store
+            .resolutions
+            .iter()
+            .all(|r| r.outcome == hwp_render::FontResolutionOutcome::Matched)
 }
 
 /// 정렬 이름 → 코드(0=양쪽,1=왼쪽,2=오른쪽,3=가운데,4=배분,5=나눔).
@@ -3649,5 +3747,73 @@ mod tests {
             picture.common_data[0] ^= 1
         });
         assert_ne!(signature(&source), signature(&changed_scaffolding));
+    }
+
+    /// #259 review: a seal is measured only when every face matched the requested family
+    /// exactly. A substituted, coverage-substituted or missing face, or an incomplete
+    /// resolution log, sends `insert_seal` to its constant fallback, so the serialized
+    /// offset does not depend on the host's fonts.
+    #[test]
+    fn seal_measure_requires_exact_face_matches() {
+        use hwp_render::{FontResolution, FontResolutionOutcome as O};
+        let with = |outcomes: &[O], complete: bool| {
+            let mut store = hwp_render::FontStore::new_isolated();
+            store.resolutions = outcomes
+                .iter()
+                .map(|&outcome| FontResolution {
+                    requested: "함초롬바탕".into(),
+                    requested_bold: false,
+                    resolved: None,
+                    resolved_sha256: None,
+                    resolved_face_index: None,
+                    outcome,
+                })
+                .collect();
+            store.resolutions_complete = complete;
+            seal_faces_exact(&store)
+        };
+        assert!(with(&[O::Matched, O::Matched], true));
+        assert!(!with(&[O::Matched, O::Substituted], true));
+        assert!(!with(&[O::CoverageSubstituted], true));
+        assert!(!with(&[O::Missing], true));
+        assert!(!with(&[O::Matched], false));
+    }
+
+    /// #259 review: with no exact face available (an isolated store and a font directory
+    /// that lacks the document's face, so the result is the same on every host) the
+    /// measurer returns `None`, and the seal lands exactly where the constant fallback
+    /// puts it.
+    #[test]
+    fn seal_measurer_falls_back_without_the_requested_face() {
+        let dir = std::env::temp_dir().join("hwp-seal-no-fonts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty_fonts = dir.join("fonts");
+        std::fs::create_dir_all(&empty_fonts).unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend(96u32.to_be_bytes());
+        png.extend(96u32.to_be_bytes());
+        png.extend([0u8; 8]);
+        let png_path = dir.join("s.png");
+        std::fs::write(&png_path, &png).unwrap();
+
+        let source = hwp_convert::from_markdown("결재란 (인) 끝");
+        let mut measured = source.clone();
+        let mut calls = 0;
+        let mut measure =
+            seal_measurer_in(&source, hwp_render::FontStore::new_isolated(), &empty_fonts);
+        hwp_convert::insert_seal(&mut measured, "(인)", &png_path, None, |p, r| {
+            calls += 1;
+            let m = measure(p, r);
+            assert!(m.is_none(), "no exact face -> no measured metrics");
+            m
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+
+        let mut fallback = source.clone();
+        hwp_convert::insert_seal(&mut fallback, "(인)", &png_path, None, |_, _| None).unwrap();
+        assert_eq!(measured, fallback, "identical to the constant fallback");
     }
 }
