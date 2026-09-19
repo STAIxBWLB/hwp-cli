@@ -1464,6 +1464,117 @@ fn 글상자_내부_개요_번호_마커_렌더() {
     assert!(texts.contains(&"1."), "글상자 내부 개요 마커: {texts:?}");
 }
 
+/// Issue #255 / GG-26 (04.1-06-geometry-diagnosis.md group A3 page 1): a non-anchored
+/// `Generic` shape's stored x/y is page-absolute at the top level but relative to the
+/// *parent* shape's own origin when reached recursively - nested one level inside another
+/// shape's own `paragraph_lists`. This is font-independent: neither shape carries text, so
+/// no glyph shaping or font resolution is exercised.
+#[test]
+fn nested_non_anchored_shape_is_placed_at_parent_origin_plus_its_own_offset() {
+    use hwp_model::{Control, GenericControl, ParagraphList, ShapeGeom, ShapeKind};
+
+    let no_fill_no_border = |x: i32, y: i32, w: i32, h: i32| ShapeGeom {
+        kind: ShapeKind::Rect,
+        x,
+        y,
+        w,
+        h,
+        points: Vec::new(),
+        fill: 0xFFFF_FFFF,
+        fill_gradient: None,
+        border_color: 0xFFFF_FFFF,
+        border_width: 0,
+        round_ratio: 0,
+        border_style: 0,
+        arrow_start: 0,
+        arrow_end: 0,
+        anchored: false,
+        description: None,
+    };
+
+    // Inner shape (the A3-page-1 `id="25"` construct): stored at a small, deliberately
+    // negative-y offset *relative to the outer shape's own origin* - a legitimate nested
+    // coordinate, not itself out of range.
+    let mut inner_shape = no_fill_no_border(500, -700, 1000, 500);
+    inner_shape.border_width = 10; // Give it a stroke so `draw_ir_shapes` actually emits a Path.
+    inner_shape.border_color = 0;
+
+    let inner_para = hwp_model::Paragraph {
+        controls: vec![Control::Generic(GenericControl {
+            ctrl_id: *b"rect",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: vec![inner_shape],
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })],
+        ..hwp_model::Paragraph::default()
+    };
+
+    // Outer shape (the A3-page-1 `id="22"` attribution-box construct): a known,
+    // non-anchored, page-absolute origin (100.0pt, 200.0pt). No fill/border of its own,
+    // so it emits no Path and the test's single Path item is unambiguously the inner one.
+    let outer_shape = no_fill_no_border(10_000, 20_000, 5_000, 3_000);
+
+    let mut doc = hwp_convert::from_markdown("anchor\n");
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(GenericControl {
+            ctrl_id: *b"rect",
+            data: Vec::new(),
+            paragraph_lists: vec![ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![inner_para],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: vec![outer_shape],
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warnings);
+
+    let paths: Vec<_> = list.pages[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hwp_render::display::Item::Path { commands, .. } => Some(commands.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        paths.len(),
+        1,
+        "only the bordered inner shape should draw a path: {paths:?}"
+    );
+    let hwp_render::display::PathCmd::MoveTo(x, y) = paths[0][0] else {
+        panic!(
+            "expected the inner shape's path to start with MoveTo: {:?}",
+            paths[0][0]
+        );
+    };
+    // Outer origin (100.0pt, 200.0pt) plus the inner shape's own relative offset
+    // (5.0pt, -7.0pt) = (105.0pt, 193.0pt). The pre-fix renderer drew it at the raw
+    // relative offset alone (5.0pt, -7.0pt), off the parent box and, in the real
+    // document, off the page.
+    assert!(
+        (x - 105.0).abs() < 0.01 && (y - 193.0).abs() < 0.01,
+        "nested non-anchored shape must be placed at the parent's own origin plus its \
+         own relative offset, got ({x}, {y}), expected (105.0, 193.0)"
+    );
+}
+
 fn generic_control(
     ctrl_id: [u8; 4],
     data: Vec<u8>,
