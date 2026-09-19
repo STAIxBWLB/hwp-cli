@@ -1165,8 +1165,12 @@ fn process_package_with_appends(
         }
         limits.check_entry(name, data.len() as u64, None)?;
         output_total = limits.add_uncompressed_total(output_total, data.len() as u64)?;
+        // A freshly appended entry must not carry the wall clock either — same reasoning as the
+        // transformed-entry branch above (D-08 byte-stability): two identical edits seconds
+        // apart must not produce different bytes just because a new BinData entry was appended.
         let opts = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+            .compression_method(zip::CompressionMethod::Deflated)
+            .last_modified_time(zip::DateTime::default());
         zip.start_file(name, opts)?;
         zip.write_all(data)?;
     }
