@@ -88,6 +88,42 @@ fn write_seal_png(path: &Path) {
 }
 
 const APPROVAL_MD: &str = "# 결재 문서\n\n결재란: (인)\n";
+const TABLE_MD: &str = "| A | B |\n|---|---|\n| C | D |\n";
+
+/// Runs `hwp edit <base> -o <out> <edit_args...>` twice, with a deliberate gap between the two
+/// invocations, then asserts the two outputs are byte-identical.
+///
+/// The gap matters: the bug class this file targets (a DOS ZIP timestamp or a CFB entry time
+/// leaking the wall clock into freshly written container metadata) has coarse granularity (DOS
+/// ZIP time is 2-second granularity). Two invocations issued back-to-back can land in the same
+/// bucket even with the bug present, which would make the test pass vacuously regardless of the
+/// fix. Sleeping past that granularity makes an unfixed code path actually exercise a different
+/// "now" between the two runs.
+fn run_edit_twice_and_assert_stable(base: &Path, out_a: &Path, out_b: &Path, args: &[&str]) {
+    let status = hwp()
+        .arg("edit")
+        .arg(base)
+        .arg("-o")
+        .arg(out_a)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp edit -> {out_a:?} failed");
+
+    std::thread::sleep(std::time::Duration::from_millis(2_500));
+
+    let status = hwp()
+        .arg("edit")
+        .arg(base)
+        .arg("-o")
+        .arg(out_b)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp edit -> {out_b:?} failed");
+
+    assert_bytes_eq(out_a, out_b, &format!("{}: run A vs run B", args.join(" ")));
+}
 
 /// The hwpx appended-entry path (`crates/hwpx/src/patch.rs::process_package_with_appends`'s
 /// `appends` loop): `hwp edit --seal` appends a new BinData entry for the seal image. Before the
@@ -104,38 +140,52 @@ fn seal_edit_byte_stable_across_two_runs_hwpx() {
     write_seal_png(&png);
     let seal_arg = format!("(인)=>{}@18mm", png.display());
 
-    let out_a = dir.join("out-a.hwpx");
-    let out_b = dir.join("out-b.hwpx");
+    run_edit_twice_and_assert_stable(
+        &base,
+        &dir.join("out-a.hwpx"),
+        &dir.join("out-b.hwpx"),
+        &["--seal", &seal_arg],
+    );
+}
 
-    let mut runs = [&out_a, &out_b].into_iter();
-    let first = runs.next().unwrap();
-    let status = hwp()
-        .arg("edit")
-        .arg(&base)
-        .arg("-o")
-        .arg(first)
-        .args(["--seal", &seal_arg])
-        .status()
-        .unwrap();
-    assert!(status.success(), "hwp edit --seal -> {first:?} failed");
+/// The hwp5 in-place edit path (`crates/hwp5/src/write.rs::patch_source_container`): `hwp edit
+/// --seal` on a `.hwp` input creates a new `BinData` CFB storage for the seal image. Before the
+/// fix, `patch_source_container` never re-pinned CFB entry times the way the from-scratch
+/// compose path does, so a freshly created storage entry could carry the wall clock.
+#[test]
+fn seal_edit_byte_stable_across_two_runs_hwp5() {
+    let dir = test_dir("hwp5-seal");
+    let md = write_md(&dir, "doc.md", APPROVAL_MD);
+    let base = dir.join("base.hwp");
+    new_from(&md, &base, &[]);
 
-    // The bug this test targets is a DOS ZIP timestamp (2-second granularity) leaking the wall
-    // clock into a freshly appended entry. Two invocations issued back-to-back can land in the
-    // same 2-second bucket even with the bug present, which would make this test pass vacuously
-    // regardless of the fix. Sleep past that granularity so an unfixed appends loop is actually
-    // exercised with a different "now".
-    std::thread::sleep(std::time::Duration::from_millis(2_500));
+    let png = dir.join("seal.png");
+    write_seal_png(&png);
+    let seal_arg = format!("(인)=>{}@18mm", png.display());
 
-    let second = runs.next().unwrap();
-    let status = hwp()
-        .arg("edit")
-        .arg(&base)
-        .arg("-o")
-        .arg(second)
-        .args(["--seal", &seal_arg])
-        .status()
-        .unwrap();
-    assert!(status.success(), "hwp edit --seal -> {second:?} failed");
+    run_edit_twice_and_assert_stable(
+        &base,
+        &dir.join("out-a.hwp"),
+        &dir.join("out-b.hwp"),
+        &["--seal", &seal_arg],
+    );
+}
 
-    assert_bytes_eq(&out_a, &out_b, "hwpx --seal: run A vs run B");
+/// The hwp5 in-place edit path's `--merge-cells` invocation (K2's generator command): rewrites
+/// an existing `/BodyText/Section0` stream in place via `patch_source_container`. Guards the
+/// same shared `pin_all_entry_times` helper from a second angle (existing-stream rewrite rather
+/// than new-storage creation), font-independent (compares raw bytes, not glyph shapes).
+#[test]
+fn merge_cells_edit_byte_stable_across_two_runs_hwp5() {
+    let dir = test_dir("hwp5-merge-cells");
+    let md = write_md(&dir, "table.md", TABLE_MD);
+    let base = dir.join("base.hwp");
+    new_from(&md, &base, &[]);
+
+    run_edit_twice_and_assert_stable(
+        &base,
+        &dir.join("out-a.hwp"),
+        &dir.join("out-b.hwp"),
+        &["--merge-cells", "0:0:0:0:1"],
+    );
 }
