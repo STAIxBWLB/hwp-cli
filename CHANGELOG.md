@@ -64,8 +64,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   row, reported them as `table_cell_content_overflow` and kept the pre-edit page count (#245).
   Hancom's HWPX export shows the same shape with its declared minimum heights: most multi-paragraph
   cell text in `fixtures/samples/report-tables.hwpx` was clipped or painted over itself. The row
-  now grows to the cached text height, summed per run — a run ends where the cache restarts, which
-  is Hancom continuing the cell on a later page (#233) — and a continuation run is drawn below the
+  now grows to the cached text height, summed per run - a run ends where the cache restarts, which
+  is Hancom continuing the cell on a later page (#233) - and a continuation run is drawn below the
   previous line instead of over the paragraph's first run or being clipped at the row bottom.
   Measured content beyond that floor (a nested object, our own wrapping) still does not grow the row
   and is still reported. A grown row that no longer fits its page splits at cached line boundaries
@@ -138,6 +138,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   fields and the release gate that reads them, and the README tag comparison - by extracting each
   step out of the workflow file, so the harness cannot drift from what ships. `scripts/check.sh`
   and the CI `lint` job run it.
+
+**Known issues**
+
+- Native certification's page-geometry checks (`outside_page_bounds`, `possible_collision`) are
+  measured against a substituted OFL font on A4 (10 detections), O_notice_hwp (9 detections),
+  O_press_hwp (4 detections), L1 (1 detection), P1_merge (1 detection), P2_split_001
+  (1 detection), P5_set_cell_blank_line (1 detection), P6_set_cell_para (1 detection), A3
+  (2 detections), O_report_hwp (2 detections) and O_plan_hwp (2 detections), because these
+  documents request faces this project does not ship. A detection measured against a substituted
+  face is not certification evidence for that series - this is a statement about measurement
+  validity, not a claim that no defect exists. Every count above is re-measured at this commit
+  from each series' own fresh `hwp certify` report, not copied from an earlier record. Pinning the
+  genuine requested faces (함초롬바탕, 함초롬돋움) would remove the substitution; whether that is
+  possible without committing or redistributing a Hancom-bundled font is recorded as a separate,
+  still-open licence and acquisition finding below, and this declaration proceeds regardless of
+  its outcome ([#256](https://github.com/STAIxBWLB/hwp-cli/issues/256)).
 
 ## [0.17.0]
 
