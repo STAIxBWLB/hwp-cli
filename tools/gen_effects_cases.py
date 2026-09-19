@@ -1253,15 +1253,20 @@ def _attach_equation(p, script, width=4000, height=1300, inline=True):
 
 
 def l1_equation_hwpx(dest):
-    # 분수·근호·합·첨자 + XML 특수문자(<, &, >) — esc() ↔ 엔티티 해석의 짝을 실기로 검증.
+    # Fraction/root/sum/subscript + XML special chars (<, >) + Hancom's measured escape spelling
+    # (D-08/D-09, plan 04.1-04): a bare & is Hancom's own reserved column-alignment token and
+    # shows nothing outside a matrix; a literal & needs Hancom's measured ASCII-double-quote
+    # escape "&" to display. Also exercises the esc() <-> entity-decode round trip.
     scripts = [
         "a over b + sqrt {x^2 + y^2}",
         "sum from {i=1} to {n} i = {n(n+1)} over 2",
-        "x < y & y > z",
+        'x < y "&" y > z',
     ]
     ir = base_ir(
         "# 수식 실기 검증\n\n아래 문단 끝에 수식 3개가 글자처럼 들어간다.\n\n"
-        "수식 자리:\n\n분수·근호·합기호와 부등호(<)·앰퍼샌드(&)가 모두 보여야 한다.\n",
+        "수식 자리:\n\n분수·근호·합기호와 부등호(<)가 모두 보여야 하고, 세 번째 수식은 따옴표 없이 "
+        "리터럴 앰퍼샌드(&) 문자 하나로 보여야 한다(저장된 스크립트는 한글 실측 이스케이프 "
+        '"&"인데, 한글이 따옴표를 벗겨내고 그린다).\n',
         "l1",
     )
     p = find_para(ir, "수식 자리")
