@@ -118,6 +118,37 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
   catalog), [11-hwpx-structure-map.md](docs/design/11-hwpx-structure-map.md) (OWPML element catalog)
 - Check [12-feature-gaps.md](docs/design/12-feature-gaps.md) first for unimplemented features.
 
+## Code navigation (ripwire)
+
+`ripwire` (redhat-et/ripwire, installed in `~/.local/bin`; adopted 2026-09-19, see `dev/CLAUDE.md`)
+gives a ranked, deterministic call-graph map of this workspace in under two seconds. Map first, read
+only what it ranks; `layout.rs` alone is ~7,000 lines, so grep-and-read tours are the main token sink
+here.
+
+```bash
+ripwire . --for="<the change you are about to make, in words>"   # entry points, with a confidence attr
+ripwire . --callers=SYM      # who calls it            ripwire . --uses=SYM     # call sites as file:line
+ripwire . --impact=SYM       # transitive blast radius, tested/untested split
+ripwire . --situ             # after editing: changed symbols, blast radius, tests to run
+ripwire . --edit-check=SYM   # did the edit change a contract (arity, public surface)
+ripwire . --quality-delta    # the "am I done" checkpoint: what got WORSE vs HEAD (exit 2 = a
+                             # pre-existing symbol regressed materially; new-symbol rows are advisory)
+ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answer it
+```
+
+- Every answer opens with a legend comment block (`<!-- ... -->`, 2 to 4 KB); the data rows follow.
+  Counts are floors: name-based static extraction, ambiguous calls are listed as `declined`, and a
+  zero means "none found", never "none exists".
+- Known floors on this repo: `#[test]` functions read as `dead-code` in `--quality-delta` (no
+  in-process caller), and CLI-level tests that run the built binary are invisible to `tested=`.
+- `--quality-delta` is advisory here, not a CI gate: CI does not carry the binary. `scripts/check.sh`
+  stays the only gate. Do not add `.ripwire_quality_baseline` to a commit (it is pinned to one HEAD
+  and gitignored).
+- `.ripwire_notes` is committed: pin a hardware-verified gotcha with
+  `ripwire . --note-add="<path or symbol>: <text>"` when it is not yet in `docs/design/`;
+  `--recall` resurfaces it. Keep the formal record in `docs/design/07-hangul-compat-rules.md`.
+- CLI only. Do not start `--mcp`; its verb schemas would sit in every session's context.
+
 ## Invariants (do not break)
 
 1. **hwp-model depends on no other internal crate** (hub and spoke). `hwp5` and `hwpx` do not depend

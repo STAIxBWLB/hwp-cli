@@ -59,3 +59,6 @@ docs/spec/
 /.planning/
 # GSD dispatch sentinel, written per run by the executor harness.
 /.gsd/
+
+# ripwire quality-delta sidecar: pinned to one HEAD sha, self-heals when stale; never a repo artifact.
+/.ripwire_quality_baseline
