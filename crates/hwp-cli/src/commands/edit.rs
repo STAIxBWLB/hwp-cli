@@ -2040,22 +2040,25 @@ fn parse_seal_size(rhs: &str) -> (&str, Option<f32>) {
 /// receives the seal (D-06). `hwp-convert` does not depend on `hwp-render` (invariant 1),
 /// so the shaping happens here and only the resulting numbers cross the boundary.
 ///
-/// Host independence: the store is isolated (no system fonts) and loads only the explicit
-/// font directory (`HWP_FONT_DIR`, default `fonts/`). If any face used to shape the
-/// anchor line is not the document's requested face (substitution, coverage fallback or
-/// missing), the callback returns `None` and `insert_seal` uses its constant fallback, so
-/// the serialized seal offset never depends on which fonts the host happens to have.
+/// Host independence: the store sees system fonts plus the explicit font directory
+/// (`HWP_FONT_DIR`, default `fonts/`), but a measurement is kept only when every face used
+/// to shape the anchor line is the document's requested face. On any substitution,
+/// coverage fallback or missing face the callback returns `None` and `insert_seal` uses
+/// its constant fallback, so a host's substitute font never reaches the serialized seal
+/// offset, while a machine that has the document's own fonts installed still gets the
+/// measured placement (#250).
 fn seal_measurer(
     doc: &hwp_model::Document,
 ) -> impl FnMut(&hwp_model::Paragraph, (u32, u32)) -> Option<hwp_convert::SealAnchorMetrics> + use<>
 {
     let font_dir =
         std::path::PathBuf::from(std::env::var("HWP_FONT_DIR").unwrap_or_else(|_| "fonts".into()));
-    seal_measurer_in(doc, &font_dir)
+    seal_measurer_in(doc, hwp_render::FontStore::new(), &font_dir)
 }
 
 fn seal_measurer_in(
     doc: &hwp_model::Document,
+    mut store: hwp_render::FontStore,
     font_dir: &std::path::Path,
 ) -> impl FnMut(&hwp_model::Paragraph, (u32, u32)) -> Option<hwp_convert::SealAnchorMetrics> + use<>
 {
@@ -2065,7 +2068,6 @@ fn seal_measurer_in(
         header: doc.header.clone(),
         ..Default::default()
     };
-    let mut store = hwp_render::FontStore::new_isolated();
     store.load_dir(font_dir);
     move |para, range| measure_seal_anchor(&mut store, &shaping_doc, para, range)
 }
@@ -3777,9 +3779,10 @@ mod tests {
         assert!(!with(&[O::Matched], false));
     }
 
-    /// #259 review: the measurer never reads system fonts. With an explicit font directory
-    /// that lacks the document's face it returns `None` on every host, and the seal lands
-    /// exactly where the constant fallback puts it.
+    /// #259 review: with no exact face available (an isolated store and a font directory
+    /// that lacks the document's face, so the result is the same on every host) the
+    /// measurer returns `None`, and the seal lands exactly where the constant fallback
+    /// puts it.
     #[test]
     fn seal_measurer_falls_back_without_the_requested_face() {
         let dir = std::env::temp_dir().join("hwp-seal-no-fonts");
@@ -3798,7 +3801,8 @@ mod tests {
         let source = hwp_convert::from_markdown("결재란 (인) 끝");
         let mut measured = source.clone();
         let mut calls = 0;
-        let mut measure = seal_measurer_in(&source, &empty_fonts);
+        let mut measure =
+            seal_measurer_in(&source, hwp_render::FontStore::new_isolated(), &empty_fonts);
         hwp_convert::insert_seal(&mut measured, "(인)", &png_path, None, |p, r| {
             calls += 1;
             let m = measure(p, r);
