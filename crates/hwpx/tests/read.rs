@@ -585,6 +585,31 @@ fn 그림_zorder_보존() {
     assert_eq!(pic.horz_offset, 25510);
 }
 
+/// Hancom stores a negative `<hp:pos>` offset as its unsigned 32-bit two's complement:
+/// an owner-authored Hancom 12.30.0 (6446) file set to -2.81 mm stored
+/// `vertOffset="4294966499"` (= -797). The reader must map it back to -797.
+#[test]
+fn pos_reads_hancom_unsigned_negative_offset() {
+    let xml = r##"<?xml version="1.0"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:pic zOrder="1" reverse="0">
+        <hp:sz width="5102" height="5102"/>
+        <hp:pos treatAsChar="0" vertRelTo="PARA" horzRelTo="PAPER" vertOffset="4294966499" horzOffset="11739"/>
+        <hc:img binaryItemIDRef="image1"/>
+      </hp:pic>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+    let (section, _) = hwpx::read::section::parse_section(xml).unwrap();
+    let Some(Control::Picture(pic)) = section.paragraphs[0].controls.first() else {
+        panic!("picture control expected");
+    };
+    assert_eq!(pic.vert_offset, -797);
+    assert_eq!(pic.horz_offset, 11739);
+}
+
 /// hwpx 여백류(HWPUNIT)는 hwp5 PARA_SHAPE 단위(2배)로 저장돼야 한다.
 /// 정품 한라대 실측: hwpx left=1500 → hwp5 ml=3000. 줄간격은 2배 아님.
 #[test]

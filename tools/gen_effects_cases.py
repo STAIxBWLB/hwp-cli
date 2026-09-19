@@ -187,9 +187,7 @@ def _png_chunk(tag, data):
 
 
 def make_circle_png(size, rgb):
-    """size×size 8bit RGBA PNG에 채워진 원(도장용). 원 밖은 완전 투명(alpha=0) -
-    떠 있는 도장 그림이 앵커 위의 다른 내용을 가리지 않도록(#250 근본원인1, D-05).
-    원 안의 RGB 값·원 경계 판정·filter 0·압축 레벨은 이전 그대로(투명도만 바뀐다)."""
+    """Return an RGBA seal rim with a transparent interior and exterior."""
     r, g, b = rgb
     cx = cy = (size - 1) / 2.0
     rad = size / 2.0
@@ -197,7 +195,7 @@ def make_circle_png(size, rgb):
     for y in range(size):
         raw.append(0)  # 스캔라인 filter: none
         for x in range(size):
-            inside = (x - cx) ** 2 + (y - cy) ** 2 <= rad * rad
+            inside = (rad - 2) ** 2 <= (x - cx) ** 2 + (y - cy) ** 2 <= rad * rad
             raw += bytes((r, g, b, 255)) if inside else bytes((255, 255, 255, 0))
     ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)  # 8bit, colortype6=RGBA
     return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", ihdr)
