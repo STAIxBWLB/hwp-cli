@@ -36,7 +36,8 @@ The whole bundle is built inside one fresh generation directory and published as
 <destination>/
   current -> gen-<timestamp>     the published set
   gen-<timestamp>/               immutable: artifacts, per-artifact policies,
-                                 an empty receipts/ directory, and the index
+                                 an empty receipts/ directory, the index, and
+                                 fonts/ when HWP_CERT_FONT_DIR is set
 ```
 
 Nothing is written into `<destination>` itself except that generation directory and the `current`
@@ -71,6 +72,18 @@ normally and reported as "listed but passed", so a stale entry cannot outlive th
 Every exclusion is carried forward into the release verification block (phase 4, plan 04-05): **a run
 with exclusions is not a clean pass**, and the milestone is not clean until those issues close and
 the variable is unset.
+
+`HWP_CERT_FONT_DIR=/path/to/fonts` names the font files `hwp certify` may render the set with.
+`hwp certify` resolves fonts only from the files its policy pins, so the script copies every
+`.ttf`/`.otf`/`.ttc` in that directory into `gen-<timestamp>/fonts/` and writes the same sorted list
+of paths and SHA-256 hashes into each policy's `document.fonts.manifest` and into the index as
+`font_manifest`. Substitution stays allowed (`forbid_substitution: false`). A directory with no
+font file, with the same font bytes twice, or past certify's limits (128 fonts, 32 MiB each,
+128 MiB total) is refused before generation starts. Without the
+variable the run still publishes, but warns on stderr and records `"font_manifest": "none"`: its
+policies pin no fonts, so `hwp certify` reports every face `missing` and the fonts rule fails. Such
+a set is not evidence of certification against real fonts. `HWP_FONT_DIR`, which the script sets
+for hwp5 line-segment computation, is unrelated.
 
 ### Exit status
 
