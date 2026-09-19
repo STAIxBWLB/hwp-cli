@@ -424,23 +424,29 @@ pub struct SealAnchorMetrics {
     pub line_height: i32,
 }
 
+/// Anchor measurement callback: (matched paragraph, anchor WCHAR range) -> metrics.
+type SealMeasure<'a> = dyn FnMut(&Paragraph, (u32, u32)) -> Option<SealAnchorMetrics> + 'a;
+
 /// 한 문단에서 앵커 문구 위에 도장을 **부유 배치**한다. 앵커 텍스트는 유지하고,
 /// gso 앵커 문자만 앵커 뒤에 삽입한다. 반환=삽입 여부.
 ///
-/// 위치는 문단 기준(vertRelTo/horzRelTo=PARA)이며, 앵커 문구의 오프셋으로 도장
-/// 중심을 맞춘다. `metrics`가 있으면 실측값을(D-06), 없으면 이전과 동일한 상수
-/// 기반 근사값을 그대로 쓴다(폰트 없는 환경에서 동작 불변, CI 안전).
+/// Placement is paragraph-relative (vertRelTo/horzRelTo=PARA), centred on the anchor.
+/// `measure` supplies measured metrics for this paragraph (D-06); `None` keeps the previous
+/// constant-based approximation bit-for-bit (font-less environments, CI).
 fn insert_seal_in_para(
     para: &mut Paragraph,
     anchor: &str,
     seal_w: i32,
     seal_h: i32,
     name: &str,
-    metrics: Option<SealAnchorMetrics>,
+    measure: &mut SealMeasure<'_>,
 ) -> bool {
     let Some((cidx, wpos)) = find_match(&para.chars, anchor, 0) else {
         return false;
     };
+    // Measure the very paragraph that receives the seal, before it is mutated, so the
+    // metrics can never come from a different (e.g. enclosing) paragraph.
+    let metrics = measure(para, (wpos, wpos + utf16_len(anchor)));
     let (horz, vert) = match metrics {
         Some(m) => {
             // 앵커 문구 중앙에 도장 중심을 맞춘 문단 기준 오프셋(실측).
@@ -518,9 +524,9 @@ fn insert_seal_rec(
     seal_w: i32,
     seal_h: i32,
     name: &str,
-    metrics: Option<SealAnchorMetrics>,
+    measure: &mut SealMeasure<'_>,
 ) -> bool {
-    if insert_seal_in_para(para, anchor, seal_w, seal_h, name, metrics) {
+    if insert_seal_in_para(para, anchor, seal_w, seal_h, name, measure) {
         return true;
     }
     for ctrl in &mut para.controls {
@@ -528,7 +534,7 @@ fn insert_seal_rec(
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, metrics) {
+                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, measure) {
                             return true;
                         }
                     }
@@ -537,7 +543,7 @@ fn insert_seal_rec(
             Control::Generic(g) => {
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
-                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, metrics) {
+                        if insert_seal_rec(p, anchor, seal_w, seal_h, name, measure) {
                             // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
                             g.hwpx_raw_xml = None;
                             return true;
@@ -558,14 +564,15 @@ fn insert_seal_rec(
 /// `size_mm`이 없으면 기본 20mm(도장 관례). 이미지 원본 비율을 유지한다(정사각 폴백).
 /// hwp5 writer가 빈-extras Picture에 floating 공통속성을 합성한다(검증된 경로 재사용).
 ///
-/// `metrics`는 `hwp-cli`가 셰이핑으로 실측해 넘기는 앵커 위치·줄 높이(D-06). `None`이면
-/// 이전과 동일한 상수 기반 근사 배치로 폴백한다(폰트 없는 환경에서 동작 불변).
+/// `measure` is called once with the paragraph that actually receives the seal and the
+/// anchor's WCHAR range `[start, end)` in it; `hwp-cli` answers with shaped metrics (D-06).
+/// `None` falls back to the constant-based approximation (unchanged font-less behavior).
 pub fn insert_seal(
     doc: &mut Document,
     anchor: &str,
     path: &Path,
     size_mm: Option<f32>,
-    metrics: Option<SealAnchorMetrics>,
+    mut measure: impl FnMut(&Paragraph, (u32, u32)) -> Option<SealAnchorMetrics>,
 ) -> Result<(), String> {
     let ext = ext_of(path)?;
     let data =
@@ -589,7 +596,7 @@ pub fn insert_seal(
         .sections
         .iter_mut()
         .flat_map(|s| &mut s.paragraphs)
-        .any(|p| insert_seal_rec(p, anchor, seal_w, seal_h, &name, metrics));
+        .any(|p| insert_seal_rec(p, anchor, seal_w, seal_h, &name, &mut measure));
     if !inserted {
         return Err(format!("앵커 {anchor:?}를 찾을 수 없습니다"));
     }
@@ -680,7 +687,7 @@ mod tests {
         png.extend([0u8; 8]);
         std::fs::write(&png_path, &png).unwrap();
 
-        insert_seal(&mut doc, "(인)", &png_path, None, None).unwrap();
+        insert_seal(&mut doc, "(인)", &png_path, None, |_, _| None).unwrap();
 
         assert_eq!(doc.bin_streams.len(), 1);
         let para = &doc.sections[0].paragraphs[0];
@@ -727,8 +734,8 @@ mod tests {
             "앵커 ExtCtrl가 Picture를 가리켜야 한다"
         );
         // 없는 앵커·잘못된 크기는 오류.
-        assert!(insert_seal(&mut doc, "없음", &png_path, Some(15.0), None).is_err());
-        assert!(insert_seal(&mut doc, "(인)", &png_path, Some(0.0), None).is_err());
+        assert!(insert_seal(&mut doc, "없음", &png_path, Some(15.0), |_, _| None).is_err());
+        assert!(insert_seal(&mut doc, "(인)", &png_path, Some(0.0), |_, _| None).is_err());
     }
 
     fn make_square_png(px: u32) -> Vec<u8> {
@@ -756,7 +763,10 @@ mod tests {
             anchor_width: 800,
             line_height: 2000,
         };
-        insert_seal(&mut doc, "(인)", &png_path, Some(5.0), Some(metrics)).unwrap();
+        insert_seal(&mut doc, "(인)", &png_path, Some(5.0), |_, _| {
+            Some(metrics)
+        })
+        .unwrap();
 
         let pic = doc.sections[0].paragraphs[0]
             .controls
@@ -796,7 +806,10 @@ mod tests {
             anchor_width: 900,
             line_height: 1200,
         };
-        insert_seal(&mut doc, "(인)", &png_path, Some(18.0), Some(metrics)).unwrap();
+        insert_seal(&mut doc, "(인)", &png_path, Some(18.0), |_, _| {
+            Some(metrics)
+        })
+        .unwrap();
 
         let pic = doc.sections[0].paragraphs[0]
             .controls
@@ -822,6 +835,71 @@ mod tests {
         );
     }
 
+    /// The measure callback must see the paragraph that actually receives the seal. An
+    /// anchor inside a table cell is also in the enclosing paragraph's recursive
+    /// `plain_text()`; measuring that outer paragraph (the #259 review bug) would place
+    /// the seal with the wrong paragraph's metrics.
+    #[test]
+    fn seal_measures_the_cell_paragraph_it_inserts_into() {
+        let mut doc = crate::from_markdown::from_markdown(
+            "| 결재 | 담당 |\n|---|---|\n| 과장 | 홍길동 (인) |",
+        );
+        let png_path = std::env::temp_dir().join("hwp-seal-cell-test.png");
+        std::fs::write(&png_path, make_square_png(96)).unwrap();
+
+        // Premise: the anchor is reachable through an outer paragraph's recursive text
+        // but not in that paragraph's own character stream.
+        let outer_idx = doc.sections[0]
+            .paragraphs
+            .iter()
+            .position(|p| p.plain_text().contains("(인)"))
+            .expect("outer paragraph holds the table");
+        let outer_chars = doc.sections[0].paragraphs[outer_idx].chars.clone();
+        assert!(find_match(&outer_chars, "(인)", 0).is_none());
+
+        let mut measured: Vec<(Vec<HwpChar>, (u32, u32))> = Vec::new();
+        insert_seal(&mut doc, "(인)", &png_path, None, |p, range| {
+            measured.push((p.chars.clone(), range));
+            None
+        })
+        .unwrap();
+
+        assert_eq!(measured.len(), 1, "measured exactly once");
+        let (chars, range) = &measured[0];
+        assert_ne!(
+            chars, &outer_chars,
+            "must not measure the enclosing paragraph"
+        );
+        let (_, wpos) = find_match(chars, "(인)", 0).expect("measured paragraph owns the anchor");
+        assert_eq!(*range, (wpos, wpos + utf16_len("(인)")));
+
+        // The seal landed in the cell paragraph that was measured.
+        let Control::Table(t) = doc.sections[0].paragraphs[outer_idx]
+            .controls
+            .iter()
+            .find(|c| matches!(c, Control::Table(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let sealed = t
+            .cells
+            .iter()
+            .flat_map(|c| &c.paragraphs)
+            .find(|p| p.controls.iter().any(|c| matches!(c, Control::Picture(_))))
+            .expect("seal is in a cell paragraph");
+        let without_gso: Vec<HwpChar> = sealed
+            .chars
+            .iter()
+            .filter(|c| !matches!(c, HwpChar::ExtCtrl { code, .. } if *code == GSO_CODE))
+            .cloned()
+            .collect();
+        assert_eq!(
+            &without_gso, chars,
+            "measured paragraph == inserted paragraph"
+        );
+    }
+
     /// 메트릭이 없으면(폰트 스토어 없음·얼굴 미해결) 이전 상수 기반 근사식과
     /// 동일한 값이 나와야 한다 — 폰트 없는 환경에서 동작 불변(CI 안전).
     #[test]
@@ -832,7 +910,7 @@ mod tests {
         let png_path = dir.join("s.png");
         std::fs::write(&png_path, make_square_png(96)).unwrap();
 
-        insert_seal(&mut doc, "(인)", &png_path, None, None).unwrap();
+        insert_seal(&mut doc, "(인)", &png_path, None, |_, _| None).unwrap();
 
         let pic = doc.sections[0].paragraphs[0]
             .controls
