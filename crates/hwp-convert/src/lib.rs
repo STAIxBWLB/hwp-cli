@@ -68,7 +68,8 @@ pub use official::{
     profile, profiles,
 };
 pub use segment_id::{
-    SegmentPath, cell_id, control_id, paragraph_id, picture_id, run_id, table_id,
+    SegmentPath, canonical_char_shape_runs, cell_id, control_id, paragraph_id, picture_id, run_id,
+    table_id,
 };
 pub use structure::{delete_paragraph, insert_paragraph, text_in_unwritable_object};
 pub use style::{display_width, style_table, style_tables};

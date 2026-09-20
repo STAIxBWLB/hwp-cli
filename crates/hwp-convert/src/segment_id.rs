@@ -44,15 +44,36 @@
 //! crates and a silent divergence, so it is the one to look at first if a reader wonders why
 //! one rule exists twice.
 //!
-//! # Format-dependent fields are deliberately excluded
+//! # The rule: hash the semantic content, canonicalized; never the storage form
+//!
+//! This is the one sentence to carry over to the mirror. Everything below follows from it.
 //!
 //! Nothing that differs between the hwp5 and hwpx readers for the same content is hashed:
 //! `common_data`, `table_tail`, `header_tail`, control payload bytes and `BinRef` (an hwp5
 //! table index on one side, an hwpx manifest string on the other) all stay out, or the same
 //! document saved in the two formats would produce two different ids.
+//!
+//! Excluding fields is not enough on its own, because the two readers also store *equivalent*
+//! content in different shapes. Two such shapes are normalized before hashing:
+//!
+//! - [`canonical_char_shape_runs`] collapses a run whose shape id repeats the previous one and
+//!   keeps only the last run at any one position. HWPX already stores that form; HWP5 keeps
+//!   every `PARA_CHAR_SHAPE` entry.
+//! - `canonical_chars` drops the trailing `CharCtrl(13)` paragraph-break terminator. HWP5's
+//!   `PARA_TEXT` stores one; HWPX's `<hp:t>` does not.
+//!
+//! Neither reader is wrong - each is faithful to its own format - so the normalization lives
+//! here, next to the hashing. Changing a reader to suit the id rule would move a
+//! format-fidelity decision into a naming concern.
+//!
+//! The same rule cuts the other way for images: `picture_id` hashes the resolved image
+//! *payload* rather than finalizing from metadata, because the payload is the content and the
+//! metadata is only a description of it. Without it, an image replaced in place at the same
+//! size keeps its id.
 
 use hwp_model::control::{Cell, GenericControl, Picture, Table};
-use hwp_model::paragraph::{HwpChar, Paragraph};
+use hwp_model::ids::CharShapeId;
+use hwp_model::paragraph::{HwpChar, Paragraph, ctrl_char};
 use sha2::{Digest as _, Sha256};
 
 /// Hex characters kept from the SHA-256 digest. See the module doc for the arithmetic.
@@ -84,6 +105,48 @@ impl std::fmt::Display for SegmentPath {
     }
 }
 
+/// The paragraph's character-shape runs in canonical form: the run boundary list both readers
+/// agree on semantically.
+///
+/// The HWPX reader already stores this form - it suppresses a run whose shape id repeats the
+/// previous one and overwrites a run at the same WCHAR position
+/// (`crates/hwpx/src/read/section.rs`). The HWP5 reader preserves every `PARA_CHAR_SHAPE`
+/// entry verbatim (`crates/hwp5/src/body_text.rs`), redundant ones included. Both readers are
+/// right about their own format; normalizing here is what lets one document derive one set of
+/// ids whichever reader produced the IR.
+///
+/// Callers that emit run segments must number their runs off **this** list, not off
+/// `Paragraph::char_shape_runs`, or the run index in the path would itself be format-dependent.
+pub fn canonical_char_shape_runs(paragraph: &Paragraph) -> Vec<(u32, CharShapeId)> {
+    let mut out: Vec<(u32, CharShapeId)> = Vec::with_capacity(paragraph.char_shape_runs.len());
+    for &(at, shape) in &paragraph.char_shape_runs {
+        if out.last().is_some_and(|&(_, last)| last == shape) {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if last.0 == at => last.1 = shape,
+            _ => out.push((at, shape)),
+        }
+    }
+    out
+}
+
+/// The paragraph's characters in canonical form: without the trailing paragraph-break
+/// terminator.
+///
+/// HWP5's `PARA_TEXT` ends a paragraph with `CharCtrl(13)`; HWPX's `<hp:t>` does not store one.
+/// That terminator is storage framing, not content, so the same document read from the two
+/// formats would otherwise hash different character lists - and it sits at the end, so it would
+/// also lengthen the last run's slice on one side only.
+fn canonical_chars(paragraph: &Paragraph) -> &[HwpChar] {
+    match paragraph.chars.last() {
+        Some(HwpChar::CharCtrl(code)) if *code == ctrl_char::PARA_BREAK => {
+            &paragraph.chars[..paragraph.chars.len() - 1]
+        }
+        _ => &paragraph.chars,
+    }
+}
+
 /// The id of a paragraph segment (`kind: "para"`).
 pub fn paragraph_id(path: &SegmentPath, paragraph: &Paragraph) -> String {
     let mut hasher = new_hasher("para");
@@ -101,12 +164,10 @@ pub fn run_id(path: &SegmentPath, paragraph: &Paragraph, run_index: usize) -> St
     let mut hasher = new_hasher("run");
     hasher.update((paragraph.para_shape.0).to_le_bytes());
     hasher.update((paragraph.style.0).to_le_bytes());
-    match paragraph.char_shape_runs.get(run_index) {
+    let runs = canonical_char_shape_runs(paragraph);
+    match runs.get(run_index) {
         Some(&(start, shape)) => {
-            let end = paragraph
-                .char_shape_runs
-                .get(run_index + 1)
-                .map_or(u32::MAX, |&(next, _)| next);
+            let end = runs.get(run_index + 1).map_or(u32::MAX, |&(next, _)| next);
             hasher.update(shape.0.to_le_bytes());
             hash_chars(&mut hasher, run_chars(paragraph, start, end));
         }
@@ -143,9 +204,20 @@ pub fn cell_id(path: &SegmentPath, cell: &Cell) -> String {
 
 /// The id of an image segment (`kind: "image"`).
 ///
-/// `BinRef` is excluded on purpose: it is an hwp5 BinData index on one side and an hwpx
-/// manifest item string on the other, so hashing it would split the id by source format.
-pub fn picture_id(path: &SegmentPath, picture: &Picture) -> String {
+/// `image_data` is the picture's resolved payload, which the caller obtains with
+/// `Document::resolve_bin(&picture.bin_ref)`; pass `None` when it cannot be resolved. The bytes
+/// have to come in from outside because `Picture` holds only a *reference* to them, and
+/// resolving it here would mean traversing the `Document` - which these entry points must not
+/// do. This is the one place a caller hands over content, and even here the module decides the
+/// framing and everything else that is hashed.
+///
+/// The payload is hashed and `BinRef` is not, and that ordering is the point: `BinRef` is an
+/// hwp5 BinData index on one side and an hwpx manifest item string on the other, so hashing it
+/// would split the id by source format, while the bytes themselves are the same in both. And
+/// without the bytes an image swapped in place at the same size and placement would keep its
+/// id, so a persisted editor key would silently be accepted for a different image - exactly the
+/// drift the checksum exists to catch.
+pub fn picture_id(path: &SegmentPath, picture: &Picture, image_data: Option<&[u8]>) -> String {
     let mut hasher = new_hasher("image");
     hasher.update(picture.width.0.to_le_bytes());
     hasher.update(picture.height.0.to_le_bytes());
@@ -153,10 +225,32 @@ pub fn picture_id(path: &SegmentPath, picture: &Picture) -> String {
     hasher.update(picture.z_order.to_le_bytes());
     hasher.update(picture.vert_offset.to_le_bytes());
     hasher.update(picture.horz_offset.to_le_bytes());
+    // Semantic transforms: two segments showing the same bytes differently are not the same
+    // segment. All format-neutral - the readers agree on them.
+    hasher.update([picture.flip]);
+    hasher.update(picture.brightness.to_le_bytes());
+    hasher.update(picture.contrast.to_le_bytes());
+    hasher.update(picture.rotation.unwrap_or(0.0).to_bits().to_le_bytes());
+    match picture.crop {
+        Some(crop) => {
+            hasher.update([1u8]);
+            for edge in crop {
+                hasher.update(edge.to_bits().to_le_bytes());
+            }
+        }
+        None => hasher.update([0u8]),
+    }
     hash_field(
         &mut hasher,
         picture.description.as_deref().unwrap_or("").as_bytes(),
     );
+    match image_data {
+        Some(data) => {
+            hasher.update([1u8]);
+            hash_field(&mut hasher, data);
+        }
+        None => hasher.update([0u8]),
+    }
     join(hasher, path, None)
 }
 
@@ -211,12 +305,13 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
 fn hash_paragraph(hasher: &mut Sha256, paragraph: &Paragraph) {
     hasher.update(paragraph.para_shape.0.to_le_bytes());
     hasher.update(paragraph.style.0.to_le_bytes());
-    hasher.update((paragraph.char_shape_runs.len() as u64).to_le_bytes());
-    for &(start, shape) in &paragraph.char_shape_runs {
+    let runs = canonical_char_shape_runs(paragraph);
+    hasher.update((runs.len() as u64).to_le_bytes());
+    for &(start, shape) in &runs {
         hasher.update(start.to_le_bytes());
         hasher.update(shape.0.to_le_bytes());
     }
-    hash_chars(hasher, paragraph.chars.iter());
+    hash_chars(hasher, canonical_chars(paragraph).iter());
 }
 
 fn hash_cell(hasher: &mut Sha256, cell: &Cell) {
@@ -260,7 +355,7 @@ fn hash_chars<'a>(hasher: &mut Sha256, chars: impl Iterator<Item = &'a HwpChar>)
 /// The characters of `paragraph` whose WCHAR offsets fall in `[start, end)`.
 fn run_chars(paragraph: &Paragraph, start: u32, end: u32) -> impl Iterator<Item = &HwpChar> {
     let mut offset = 0u32;
-    paragraph.chars.iter().filter(move |ch| {
+    canonical_chars(paragraph).iter().filter(move |ch| {
         let at = offset;
         offset += ch.wchar_width();
         at >= start && at < end
@@ -276,6 +371,29 @@ mod tests {
         SegmentPath {
             section,
             indices: indices.to_vec(),
+        }
+    }
+
+    fn sample_picture() -> Picture {
+        Picture {
+            common_data: Vec::new(),
+            width: hwp_model::units::HwpUnit(100),
+            height: hwp_model::units::HwpUnit(200),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: Some("그림".into()),
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: None,
+            bin_ref: hwp_model::control::BinRef::Id(Default::default()),
+            extras: Vec::new(),
         }
     }
 
@@ -378,26 +496,7 @@ mod tests {
             caption: None,
             extras: Vec::new(),
         };
-        let picture = Picture {
-            common_data: Vec::new(),
-            width: hwp_model::units::HwpUnit(100),
-            height: hwp_model::units::HwpUnit(200),
-            treat_as_char: true,
-            z_order: 0,
-            vert_offset: 0,
-            horz_offset: 0,
-            description: Some("그림".into()),
-            crop: None,
-            flip: 0,
-            rotation: None,
-            brightness: 0,
-            contrast: 0,
-            effect_flags: 0,
-            effects_raw: Vec::new(),
-            caption: None,
-            bin_ref: hwp_model::control::BinRef::Id(Default::default()),
-            extras: Vec::new(),
-        };
+        let picture = sample_picture();
         let generic = |ctrl_id: [u8; 4]| GenericControl {
             ctrl_id,
             data: Vec::new(),
@@ -419,7 +518,7 @@ mod tests {
             run_id(&at, &para("문단", 1), 0),
             table_id(&at, &table),
             cell_id(&at, &cell),
-            picture_id(&at, &picture),
+            picture_id(&at, &picture, Some(b"image-bytes")),
             control_id(&at, &field),
             control_id(&at, &bookmark),
         ];
@@ -432,6 +531,103 @@ mod tests {
             7,
             "kinds must not collide at one path: {ids:?}"
         );
+    }
+
+    /// Redundant runs are storage form, not content: the HWP5 reader keeps them and the HWPX
+    /// reader does not, so hashing the raw list would split the id by source format.
+    #[test]
+    fn redundant_and_same_position_runs_are_canonicalized_away() {
+        let at = path(0, &[0]);
+        let mut plain = para("가나다라", 1);
+        plain.char_shape_runs = vec![(0, CharShapeId(1)), (2, CharShapeId(2))];
+
+        // A repeated shape id, as the HWP5 reader would store it.
+        let mut redundant = plain.clone();
+        redundant.char_shape_runs = vec![
+            (0, CharShapeId(1)),
+            (1, CharShapeId(1)),
+            (2, CharShapeId(2)),
+        ];
+        // Two runs at one position: the last one wins.
+        let mut overwritten = plain.clone();
+        overwritten.char_shape_runs = vec![
+            (0, CharShapeId(9)),
+            (0, CharShapeId(1)),
+            (2, CharShapeId(2)),
+        ];
+
+        assert_eq!(canonical_char_shape_runs(&plain).len(), 2);
+        assert_eq!(
+            canonical_char_shape_runs(&redundant),
+            canonical_char_shape_runs(&plain)
+        );
+        assert_eq!(
+            canonical_char_shape_runs(&overwritten),
+            canonical_char_shape_runs(&plain)
+        );
+        assert_eq!(paragraph_id(&at, &redundant), paragraph_id(&at, &plain));
+        assert_eq!(paragraph_id(&at, &overwritten), paragraph_id(&at, &plain));
+        // Run numbering follows the canonical list, so run 1 means the same run on both sides.
+        assert_eq!(run_id(&at, &redundant, 1), run_id(&at, &plain, 1));
+    }
+
+    /// HWP5's PARA_TEXT ends a paragraph with CharCtrl(13); HWPX stores no such terminator.
+    /// It is framing, not content.
+    #[test]
+    fn the_trailing_paragraph_break_is_not_content() {
+        let at = path(0, &[0]);
+        let without = para("문단", 1);
+        let mut with = without.clone();
+        with.chars.push(HwpChar::CharCtrl(ctrl_char::PARA_BREAK));
+        assert_eq!(paragraph_id(&at, &with), paragraph_id(&at, &without));
+        // It is only the *trailing* one: a line break inside the text is real content.
+        let mut inner = without.clone();
+        inner
+            .chars
+            .insert(1, HwpChar::CharCtrl(ctrl_char::LINE_BREAK));
+        assert_ne!(paragraph_id(&at, &inner), paragraph_id(&at, &without));
+    }
+
+    /// An image swapped in place must not keep its id. Metadata alone cannot tell the two
+    /// apart, which is why the resolved payload is hashed.
+    #[test]
+    fn an_image_id_follows_the_image_bytes_not_only_its_metadata() {
+        let at = path(0, &[0]);
+        let picture = sample_picture();
+        let red = b"\x89PNG-red-pixels".as_slice();
+        let blue = b"\x89PNG-blue-pixel".as_slice();
+        assert_eq!(red.len(), blue.len(), "same size, different bytes");
+
+        assert_ne!(
+            picture_id(&at, &picture, Some(red)),
+            picture_id(&at, &picture, Some(blue)),
+            "same dimensions and placement, different bytes: ids must differ"
+        );
+        assert_eq!(
+            picture_id(&at, &picture, Some(red)),
+            picture_id(&at, &picture, Some(red)),
+        );
+        assert_ne!(
+            picture_id(&at, &picture, Some(red)),
+            picture_id(&at, &picture, None),
+            "an unresolvable payload is not the same as a resolved one"
+        );
+
+        // Changes confined to the semantic transforms move the id too.
+        for tweak in [
+            |p: &mut Picture| p.flip = 1,
+            |p: &mut Picture| p.rotation = Some(90.0),
+            |p: &mut Picture| p.brightness = 20,
+            |p: &mut Picture| p.contrast = -20,
+            |p: &mut Picture| p.crop = Some([0.0, 0.0, 0.5, 0.5]),
+        ] {
+            let mut other = picture.clone();
+            tweak(&mut other);
+            assert_ne!(
+                picture_id(&at, &picture, Some(red)),
+                picture_id(&at, &other, Some(red)),
+            );
+        }
     }
 
     /// The separator is `.`, never `:`, and the checksum is 16 hex characters. Asserted on a
