@@ -1,6 +1,6 @@
-//! `hwp render` — 페이지 렌더링 (PNG/SVG/PDF).
+//! `hwp render` — 페이지 렌더링 (PNG/JPEG/SVG/PDF).
 //!
-//! PNG/SVG는 페이지별 파일(out-1.png …)로, PDF는 단일 멀티페이지 파일로 쓴다.
+//! PNG/JPEG/SVG는 페이지별 파일(out-1.png …)로, PDF는 단일 멀티페이지 파일로 쓴다.
 
 use std::fs::File;
 use std::io::{Read as _, Write as _};
@@ -11,8 +11,15 @@ use hwp_cli::certification::{
     RenderIssueReportEntry, canonical_render_issue_sha256, map_render_issue,
 };
 use hwp_cli::cli::{PasswordArgs, RenderFormat};
+use image::ImageEncoder as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+
+/// Fixed JPEG quality. D-10 fixes it deliberately so `render` carries no `--quality` flag and
+/// there is no flag combination to test. 90 is chosen for the regime a document page raster
+/// actually is — black text on white, where ringing around glyph edges shows first — while
+/// staying below the size blowup of near-lossless settings.
+const JPEG_QUALITY: u8 = 90;
 
 const RENDER_REPORT_SCHEMA_VERSION: &str = "1.0";
 const RENDER_REPORT_CONTRACT: &str = "hwp-render-report-v1";
@@ -120,7 +127,7 @@ fn run_with_report_with_options(
     };
 
     match format {
-        RenderFormat::Png => {
+        RenderFormat::Png | RenderFormat::Jpeg => {
             let total = hwp_render::count_pages(&doc, &opts);
             let selected = parse_pages(pages_spec, total)?;
             let result = hwp_render::render_document_pages(&doc, &opts, Some(&selected))?;
@@ -130,11 +137,15 @@ fn run_with_report_with_options(
             let mut dimensions = Vec::with_capacity(selected.len());
             for (&page_no, pixmap) in selected.iter().zip(&result.pages) {
                 let path = page_path(output, page_no, multi);
-                let png = pixmap.encode_png().map_err(|error| {
-                    anyhow::anyhow!("PNG 인코딩 실패 ({}): {error}", path.display())
+                let encoded = encode_raster(pixmap, format).map_err(|error| {
+                    anyhow::anyhow!(
+                        "{} 인코딩 실패 ({}): {error}",
+                        raster_format_name(format).to_ascii_uppercase(),
+                        path.display()
+                    )
                 })?;
                 dimensions.push((path.clone(), pixmap.width(), pixmap.height()));
-                outputs.push((path, png));
+                outputs.push((path, encoded));
             }
             if let Some(report_path) = report_path {
                 ensure_report_destination(
@@ -153,7 +164,7 @@ fn run_with_report_with_options(
                     input_report
                         .clone()
                         .expect("report path guarantees an input report"),
-                    "png",
+                    raster_format_name(format),
                     dpi,
                     result.total_pages,
                     selected,
@@ -507,6 +518,43 @@ pub(crate) fn write_render_bytes(
     )
 }
 
+/// Report/diagnostic name of a raster format. Only the raster arm calls this.
+fn raster_format_name(format: RenderFormat) -> &'static str {
+    match format {
+        RenderFormat::Jpeg => "jpeg",
+        _ => "png",
+    }
+}
+
+/// Encode one already-rendered page. Both arms consume the `Pixmap` the budgeted raster path
+/// produced (`MAX_RASTER_DIMENSION` / `MAX_RASTER_PIXELS` / `MAX_TOTAL_RASTER_PIXELS` are charged
+/// upstream in `hwp-render`), so no second raster path exists.
+fn encode_raster(pixmap: &tiny_skia::Pixmap, format: RenderFormat) -> anyhow::Result<Vec<u8>> {
+    match format {
+        RenderFormat::Jpeg => {
+            // JPEG carries no alpha, so composite onto opaque white first. The pixel source is
+            // `take_demultiplied()` (straight RGBA8); `data()` is premultiplied and would darken
+            // anti-aliased edges.
+            let (width, height) = (pixmap.width(), pixmap.height());
+            let rgba = pixmap.clone().take_demultiplied();
+            let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+            for px in rgba.chunks_exact(4) {
+                let a = f32::from(px[3]) / 255.0;
+                for &channel in &px[..3] {
+                    rgb.push((f32::from(channel) * a + 255.0 * (1.0 - a)).round() as u8);
+                }
+            }
+            let mut out = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY)
+                .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8)?;
+            Ok(out)
+        }
+        _ => pixmap
+            .encode_png()
+            .map_err(|error| anyhow::anyhow!("{error}")),
+    }
+}
+
 fn report(report: &hwp_render::RenderIssueReport) {
     for issue in report.info.iter().chain(&report.issues) {
         eprintln!("렌더: {issue}");
@@ -537,6 +585,7 @@ fn infer_format(output: &Path) -> RenderFormat {
     {
         Some("svg") => RenderFormat::Svg,
         Some("pdf") => RenderFormat::Pdf,
+        Some("jpg" | "jpeg") => RenderFormat::Jpeg,
         _ => RenderFormat::Png,
     }
 }
