@@ -423,8 +423,46 @@ impl SegmentRecorder {
         }
     }
 
-    /// The rows recorded so far.
-    pub(crate) fn finish(self) -> SegmentMap {
+    /// The rows recorded so far, one per (segment, page) pair.
+    ///
+    /// Coalescing happens here rather than at recording time because one segment can be
+    /// *drawn* more than once on one page: a cell whose content is split into two fragments
+    /// that both fit on the same page emits two spans (observed on
+    /// `fixtures/samples/report-tables.hwpx`). Those describe one place on one page, so their
+    /// boxes, ranges and counts are merged. Rows on **different** pages stay separate — that
+    /// is D-09 — and so a segment id still appears more than once in the set.
+    pub(crate) fn finish(mut self) -> SegmentMap {
+        let rows = std::mem::take(&mut self.map.rows);
+        let mut at: std::collections::HashMap<(usize, String), usize> =
+            std::collections::HashMap::new();
+        for row in rows {
+            match at.get(&(row.page, row.id.clone())) {
+                Some(&index) => {
+                    let existing: &mut SegmentRow = &mut self.map.rows[index];
+                    existing.bbox = match (existing.bbox, row.bbox) {
+                        (Some(a), Some(b)) => Some(BoxPt {
+                            x0: a.x0.min(b.x0),
+                            y0: a.y0.min(b.y0),
+                            x1: a.x1.max(b.x1),
+                            y1: a.y1.max(b.y1),
+                        }),
+                        (a, b) => a.or(b),
+                    };
+                    existing.chars = match (existing.chars, row.chars) {
+                        (Some(a), Some(b)) => Some(CharRange {
+                            start: a.start.min(b.start),
+                            end: a.end.max(b.end),
+                        }),
+                        (a, b) => a.or(b),
+                    };
+                    existing.item_count += row.item_count;
+                }
+                None => {
+                    at.insert((row.page, row.id.clone()), self.map.rows.len());
+                    self.map.rows.push(row);
+                }
+            }
+        }
         self.map
     }
 }
@@ -850,6 +888,38 @@ mod tests {
             bookmarks[0].chars,
             Some(CharRange { start: at, end: at }),
             "the range is the marker's own position"
+        );
+    }
+
+    /// One row per (segment, page) pair, even where the layout pass drew a cell in two
+    /// fragments that both landed on one page. Rows of one id on *different* pages stay
+    /// separate, so an id still repeats in the set — do not key a map by id alone.
+    #[test]
+    fn one_row_per_segment_and_page() {
+        let mut md = String::from("| 가 | 나 |\n|---|---|\n");
+        for i in 0..200 {
+            md.push_str(&format!("| {i} | 값 |\n"));
+        }
+        let (_, map) = lay_out(&hwp_convert::from_markdown(&md));
+        let mut keys: Vec<(usize, &str)> = map
+            .rows
+            .iter()
+            .map(|row| (row.page, row.id.as_str()))
+            .collect();
+        let total = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(total, keys.len(), "a (page, id) pair must appear once");
+        let mut ids: Vec<&str> = map.rows.iter().map(|row| row.id.as_str()).collect();
+        ids.sort_unstable();
+        let distinct = {
+            let mut d = ids.clone();
+            d.dedup();
+            d.len()
+        };
+        assert!(
+            distinct < ids.len(),
+            "a split table must report one id on more than one page"
         );
     }
 
