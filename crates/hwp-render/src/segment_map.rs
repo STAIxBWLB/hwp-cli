@@ -36,6 +36,46 @@
 //! from this set, so a consumer hit-testing an image or a field must resolve it through its
 //! enclosing paragraph's row and cannot expect a row of its own.
 //!
+//! **Nesting - the larger hole, and it is structural.** A paragraph inside a table cell
+//! produces no row, and a nested table and its cells produce none either. Only top-level
+//! paragraphs, and the outermost table with its own cells, are recorded. [`crate::layout`] has
+//! exactly ONE `begin_paragraph` call site, on the body paragraph loop; cell content is laid
+//! out by `layout_box_para_iter`, which opens no span, and `begin_table` is reachable only
+//! from the body control loop. So this is not an oversight in the recorder - nothing in the
+//! nested path ever calls it.
+//!
+//! To scale, on `fixtures/samples/report-tables.hwpx`: the envelope carries 222 paragraphs
+//! against this set's 40, 126 cells against 100, and 10 tables against 3. In a table-heavy
+//! document that is MOST paragraphs, not an edge case. A consumer resolves any of them
+//! through the enclosing top-level `cell` or `table` row, and
+//! `schemas/render-layout-v1.schema.json` says so in its published `kind` description - the
+//! subset is documented rather than silent. Closing it is its own plan: the path is already
+//! available as `child(base_path(), para_index)` and `layout_box_para_iter` never pushes a
+//! page, so the page ordinal stays correct, but it means threading
+//! `Option<&mut SegmentRecorder>` through call sites that mostly pass `None`, plus a sibling
+//! of `begin_paragraph` that does not clobber `para_path` for `bookmark()`.
+//!
+//! **Segments that produce nothing at all.** A row with an id and *nothing measured* joins to
+//! nothing: `hwp-convert` emits no envelope segment for whatever produced it, so the id has no
+//! counterpart in the envelope. ONE RULE, NOT TWO COINCIDENCES: it covers both the unanchored
+//! `bokm` control (no anchor character, no segment) and the completely empty paragraph (no
+//! characters, no segment), and it is applied once in [`SegmentRecorder::finish`] rather than
+//! case by case.
+//!
+//! "Nothing measured" is judged **only on the evidence the kind can carry**, which is why
+//! `table` and `cell` are exempt. Their [`SegmentRow::chars`] is `None` BY DESIGN - they span
+//! several source paragraphs, so no single paragraph's offsets describe them - so for them the
+//! rule would silently collapse to "has a box", which is a different rule. A borderless table
+//! whose cells are empty produces no display item, and dropping it would delete an ordinary
+//! HWP construct from the published geometry; both kinds also always have an envelope segment,
+//! so their ids never join to nothing. Adding a kind whose `chars` is structurally `None`
+//! means adding it to that exemption, not writing a new special case.
+//!
+//! Pinned by `a_bookmark_with_no_anchor_character_produces_no_row`,
+//! `an_empty_paragraph_produces_no_row` and
+//! `a_borderless_table_with_empty_cells_keeps_every_row`, and backstopped end to end by
+//! 05-06's cross-artifact join-key test, which is what found the empty-paragraph half.
+//!
 //! **Page furniture.** Page borders, column dividers, headers, footers, page numbers and note
 //! blocks carry no segment and produce no row. Borders and dividers are prepended after spans
 //! are resolved, so they cannot fall inside one. The rest are emitted at page finalization,
@@ -550,6 +590,21 @@ impl SegmentRecorder {
                 }
             }
         }
+        // "Segments that produce nothing at all" in the module doc: one rule covering both the
+        // unanchored bookmark and the empty paragraph, applied here rather than case by case.
+        //
+        // Judged only on the evidence the kind can carry. `table` and `cell` are exempt because
+        // their `chars` is `None` BY DESIGN - they span several source paragraphs, so no single
+        // paragraph's offsets describe them - which means the absence of characters is not
+        // evidence of an empty row for them, and the test would collapse to `bbox.is_some()`.
+        // A borderless table whose cells are empty produces no display item, and dropping it
+        // would delete an ordinary HWP construct from the published geometry. Both kinds also
+        // always have an envelope segment, so their ids never join to nothing.
+        self.map.rows.retain(|row| {
+            matches!(row.kind, kind::TABLE | kind::CELL)
+                || row.bbox.is_some()
+                || row.chars.is_some()
+        });
         self.map
     }
 }
@@ -1399,6 +1454,104 @@ mod tests {
         assert_eq!(map.rows[0].bbox.unwrap().x0, 10.0);
         assert_eq!(map.rows[0].bbox.unwrap().x1, 150.0);
         assert_eq!(map.rows[1].bbox.unwrap().x0, 300.0);
+    }
+
+    /// A borderless table whose cells are empty keeps every row, because `table` and `cell`
+    /// are exempt from the no-box-no-range drop.
+    ///
+    /// Their `chars` is `None` by design, so for them that rule would collapse to
+    /// `bbox.is_some()` - a different rule from the one it states. A borderless layout table
+    /// with empty cells is an ordinary HWP construct and produces no display item, so the
+    /// widened version deleted it from the published geometry: one emptied cell published 3
+    /// cell rows instead of 4, and emptying all four removed the `table` row as well, leaving
+    /// zero rows for a table that is really there.
+    ///
+    /// It also broke `render-layout-v1`'s own text. That schema says `box: null` means "this
+    /// segment produced no display item, by design"; with the widened rule, `box: null` became
+    /// reachable only for `bookmark`, so the emitter could no longer produce a state its own
+    /// schema documents. This case had no coverage before, which is why the widening went
+    /// unnoticed.
+    #[test]
+    fn a_borderless_table_with_empty_cells_keeps_every_row() {
+        // `cells_to_empty` = how many of the 2x2 table's cells lose their text and their
+        // border. Both counts are checked: one emptied cell was the reviewer's repro, all four
+        // is the case that also took the table row with it.
+        fn empty_cells(cells_to_empty: usize) -> (usize, usize) {
+            let mut doc = hwp_convert::from_markdown("| 가 | 나 |\n|---|---|\n| 1 | 2 |\n");
+            let mut touched = 0;
+            for para in &mut doc.sections[0].paragraphs {
+                for control in &mut para.controls {
+                    if let Control::Table(table) = control {
+                        for cell in table.cells.iter_mut().take(cells_to_empty) {
+                            for cell_para in &mut cell.paragraphs {
+                                cell_para.chars.clear();
+                                cell_para.line_segs.clear();
+                            }
+                            // A border fill id with no entry behind it: no background and no
+                            // stroked border, so the cell contributes no display item at all.
+                            cell.border_fill = hwp_model::BorderFillId(u16::MAX);
+                            touched += 1;
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                touched, cells_to_empty,
+                "the fixture must reach that many cells"
+            );
+            let (_, map) = lay_out(&doc);
+            (
+                rows_of(&map, kind::CELL).len(),
+                rows_of(&map, kind::TABLE).len(),
+            )
+        }
+
+        let full = empty_cells(0);
+        assert_eq!(full, (4, 1), "the untouched 2x2 table is the baseline");
+        assert_eq!(
+            empty_cells(1),
+            (4, 1),
+            "one borderless empty cell must still publish its own row"
+        );
+        assert_eq!(
+            empty_cells(4),
+            (4, 1),
+            "a wholly borderless empty table is still a table that is there"
+        );
+    }
+
+    /// An EMPTY paragraph produces no envelope segment either, so a row for it would carry an
+    /// id that joins to nothing - the same rule as the unanchored bookmark below.
+    ///
+    /// Found by 05-06's cross-artifact join-key test, which compares the two PUBLISHED
+    /// artifacts: `hwp cat --segments v2` emits nothing for a paragraph with no characters,
+    /// while the recorder was emitting a row for it with no box AND no character range. Such a
+    /// row measures nothing at all - it is an id, a kind and two nulls - and it made layout ids
+    /// stop being a subset of envelope ids on the committed sample.
+    #[test]
+    fn an_empty_paragraph_produces_no_row() {
+        let mut doc = hwp_convert::from_markdown("첫 문단.\n\n둘째 문단.\n");
+        // An empty paragraph between the two, exactly as the committed sample carries.
+        let para_shape = doc.sections[0].paragraphs[0].para_shape;
+        doc.sections[0].paragraphs.insert(
+            1,
+            hwp_model::Paragraph {
+                para_shape,
+                ..Default::default()
+            },
+        );
+        let (_, map) = lay_out(&doc);
+        assert!(
+            map.rows
+                .iter()
+                .all(|row| row.bbox.is_some() || row.chars.is_some()),
+            "a row with neither a box nor a range joins to nothing: {:?}",
+            map.rows
+                .iter()
+                .filter(|r| r.bbox.is_none() && r.chars.is_none())
+                .map(|r| (&r.id, r.kind))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// An unanchored `bokm` control produces no envelope segment, so a row for it would carry

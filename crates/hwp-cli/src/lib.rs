@@ -10,5 +10,6 @@ pub mod cli;
 pub mod document_spec;
 pub mod document_spec_v2;
 pub mod i18n;
+pub mod render_layout;
 pub mod segment_envelope;
 pub mod template_spec;

@@ -130,6 +130,7 @@ fn real_main() -> anyhow::Result<()> {
             dpi,
             format,
             report,
+            layout_json,
             font_dir,
             password,
         } => commands::render::run_with_password(
@@ -140,6 +141,7 @@ fn real_main() -> anyhow::Result<()> {
             format,
             font_dir,
             report.as_deref(),
+            layout_json.as_deref(),
             password,
         ),
         Cmd::Diff {

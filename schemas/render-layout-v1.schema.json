@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/render-layout-v1.schema.json",
+  "title": "hwp-render-layout-v1",
+  "description": "Per-page geometry for one `hwp render` invocation: where each source segment landed on the page. Written by `hwp render --layout-json <path>`, one file per invocation and not one per page, because JSON has no reason to be split the way PNG and SVG inherently are. The rows are read off the shared display list BEFORE any backend applies its own transform, so the same input yields a BYTE-IDENTICAL file under `--format png`, `--format svg` and `--format pdf`, and under any `--dpi`. That is a property of where the numbers come from, not a coincidence the tests happen to observe.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract", "truncated", "selected_pages", "pages"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "contract": { "const": "hwp-render-layout-v1" },
+    "truncated": {
+      "type": "boolean",
+      "description": "The document exceeded the recorder's span cap and recording stopped early, so this file's rows are an incomplete prefix of the document's geometry. Published rather than kept internal because an untrusted document drives the segment count: a consumer that cannot tell a capped row set from a complete one reads missing rows as missing geometry and concludes the renderer lost them. When this is true, an absent row means nothing at all."
+    },
+    "selected_pages": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1 },
+      "description": "The 1-based page numbers this invocation rendered, mirroring the render report's field of the same name. DELIBERATELY UNBOUNDED ABOVE: the ordinary render path applies no page budget - `LayoutBudget`'s 4096-page cap is on the certification path only - so any upper bound stated here would be a number the emitter can exceed, and a document long enough to exceed it would emit a file that fails this very schema. A consumer that needs a limit imposes its own; this field reports what was rendered. Rows are emitted for these pages only. It is carried so that `pages` holding no entry for page 3 is distinguishable from page 3 having been rendered and carrying no rows: without it, a `--pages 1-2` run and a page with no segments are the same document."
+    },
+    "pages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/page" },
+      "description": "One entry per selected page, in ascending page order. A selected page with no rows still appears, with an empty `rows` array."
+    }
+  },
+  "$defs": {
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page", "width_pt", "height_pt", "rows"],
+      "properties": {
+        "page": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The 1-based page number, on the same footing as `selected_pages` and as the render report's page numbers. Unbounded above for the reason `selected_pages` gives."
+        },
+        "width_pt": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "The page width in points. Carried per page rather than once per document because a document may change paper size at a section break, and because a consumer scaling a box to its own viewport should not need a second lookup to do it."
+        },
+        "height_pt": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "The page height in points, carried per page for the same reason as `width_pt`."
+        },
+        "rows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/row" },
+          "description": "This page's rows, in recording order. THE ROW ID IS NOT A KEY, AND NEITHER IS THE PAIR (page, id). This array carries no `uniqueItems` constraint and a consumer must not build an object map keyed by either. Three independent things make an id repeat. (1) A segment that flows across a page break yields one row per page it touches, each with its own box and its own character range. (2) A table that splits replays its header rows on the following page, so the same `cell` id is reported again there with a different box. (3) Two fragments of ONE cell that land in different columns of a multi-column section stay two separate rows ON THE SAME PAGE, because merging fragments requires adjacency and unioning these two would publish a single rectangle covering both columns and the gutter between them - a box over space the cell does not occupy. Case (3) is the one that gets silently dropped by a map keyed by (page, id), and it is the reason that pair is called out here rather than left to be discovered."
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "box", "source_chars"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The segment id. THIS IS THE ONLY JOIN KEY between this artifact and the segment envelope `hwp cat --with-segments --segments v2` publishes; the two artifacts' character ranges live in different coordinate spaces and must never be compared. Not unique within this file: see `rows` for the three reasons."
+        },
+        "kind": {
+          "enum": ["para", "table", "cell", "bookmark"],
+          "description": "THE LAYOUT ARTIFACT IS A DELIBERATE SUBSET OF THE ENVELOPE, JOINED TO IT BY SEGMENT ID. Two separate things make it a subset, and a consumer must size its expectations against BOTH. (1) BY KIND: only these four of the envelope's seven kinds produce a geometry row. A `run` has no separate geometry of its own, and an `image`'s and a `field`'s display items fold into the row of the paragraph that carries them - so a consumer hit-testing an image or a field resolves it through that enclosing paragraph's row. (2) BY NESTING, WHICH IS THE LARGER HOLE: a paragraph inside a table cell produces no row, and a NESTED table and its cells produce none either. Only top-level paragraphs, and the outermost table with its own cells, are recorded. The cause is structural rather than incidental - `layout.rs` has exactly one `begin_paragraph` call site, on the body paragraph loop, while cell content is laid out by `layout_box_para_iter`, which opens no span, and `begin_table` is reachable only from the body control loop. TO SCALE: on this repository's committed sample the envelope carries 222 paragraphs against this artifact's 40, 126 cells against 100, and 10 tables against 3. In a table-heavy document that is MOST paragraphs, not an edge case. A consumer resolves any of them through the enclosing top-level `cell` or `table` row. An absent row of any of these sorts is correct output under this version of the contract, not a defect, and a test demanding one would go red on a correct render."
+        },
+        "box": {
+          "description": "The union of this segment's own display items on this page. NULL means this segment produced no display item at all - a bookmark is invisible by design - and therefore has no rectangle. A zero-extent rectangle is never fabricated in its place: \"invisible\" and \"a dot at the origin\" are different claims, and the second is a measurement nobody made. Null here and null in `source_chars` mean different things and a consumer must not coalesce them into one rule.",
+          "anyOf": [{ "$ref": "#/$defs/box_pt" }, { "type": "null" }]
+        },
+        "source_chars": {
+          "description": "The source characters this row covers. NULL on `table` and `cell` rows, for a reason unrelated to a null `box`: those rows span several source paragraphs, so no single paragraph's offsets describe them. A null `box` says the segment is invisible; a null `source_chars` says the row's extent is not expressible in one paragraph's coordinates.",
+          "anyOf": [{ "$ref": "#/$defs/source_chars" }, { "type": "null" }]
+        }
+      }
+    },
+    "box_pt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x0", "y0", "x1", "y1"],
+      "description": "A bounding box in POINTS, WITH THE PAGE ORIGIN AT TOP-LEFT AND Y INCREASING DOWNWARD, AND NO DPI APPLIED TO ANY COORDINATE. The unit is part of this contract: it is read off the shared display list before the PDF backend's internal y-flip or the raster backend's dpi scale, which is why PNG, SVG and PDF publish one identical set of numbers. A consumer converts to pixels itself as `pt * dpi / 72`. One disclosed approximation applies to a box around text: its top and bottom come from the run's `size_pt`, not from the loaded font's ascent and descent. The approximation is consistent across all three backends - which is what makes the cross-backend identity meaningful - but the error scales with text size, so a selection overlay drawn from one of these boxes will sit slightly off on large headings. It is disclosed here rather than tightened because tightening it would put a font-dependent number into the one artifact whose entire test strategy is byte comparison, on a CI host that bundles no fonts, so the gate that would keep a tightened box correct cannot exist. A later release may widen these boxes to true ascent and descent.",
+      "properties": {
+        "x0": { "type": "number", "description": "Left edge, points from the page's left edge." },
+        "y0": { "type": "number", "description": "Top edge, points DOWN from the page's top edge." },
+        "x1": { "type": "number", "description": "Right edge, points from the page's left edge. Not guaranteed greater than `x0`: real geometry is legitimately flat in places, such as a zero-height rule or a degenerate empty line box." },
+        "y1": { "type": "number", "description": "Bottom edge, points DOWN from the page's top edge. Not guaranteed greater than `y0`, for the same reason as `x1`." }
+      }
+    },
+    "source_chars": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "description": "A half-open character range, `start` inclusive and `end` exclusive, IN UTF-16 CODE UNITS INTO THE SOURCE PARAGRAPH. THIS IS A DIFFERENT COORDINATE SPACE FROM THE SEGMENT ENVELOPE'S `char_range`, which holds Unicode scalar offsets into the envelope's own emitted markdown string. The two disagree on any document with a non-BMP character, a table or an image reference; nothing converts between them, and the field is named `source_chars` rather than `char_range` precisely so the two cannot be mistaken for each other at a glance. The segment id is the only join key between the two artifacts.",
+      "properties": {
+        "start": { "type": "integer", "minimum": 0, "description": "First UTF-16 code unit of the source paragraph this row covers." },
+        "end": { "type": "integer", "minimum": 0, "description": "One past the last UTF-16 code unit of the source paragraph this row covers." }
+      }
+    }
+  }
+}
