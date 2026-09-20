@@ -25,8 +25,11 @@
 //! nothing itself. `crates/hwp-render/src/segment_id.rs` carries a deliberate second copy of that
 //! rule, so changing what a kind hashes is a two-crate change.
 //!
-//! A run's range covers everything the run emitted, its own emphasis markers included, so no
-//! emitted byte inside a paragraph belongs to no run.
+//! A run's range covers everything the run emitted, its own emphasis markers included. That is a
+//! property, not an accident of the walk: excluding the markers would leave them belonging to no
+//! run at all, and the boundary the walk reads — after `close_span` has finished moving the
+//! previous span's whitespace outside its markers, and before the next span's opening marker is
+//! pushed — is the only offset in that sequence that does not shift under the move.
 //!
 //! Run segments are numbered off [`crate::segment_id::canonical_char_shape_runs`], never off
 //! `Paragraph::char_shape_runs`: `run_id` indexes the canonical list, so walking the raw list
@@ -42,13 +45,24 @@
 //! two levels mean inherited; different ids mean the segment sets it. The comparison inputs are
 //! published, not the comparison.
 //!
+//! The same rule decides the font face. A character shape names a font *id* per language slot;
+//! [`CharAttrs`] publishes those ids and the names they resolve to, side by side. D-05 exists so
+//! an editor can draw a toolbar state without a second query, and what a toolbar shows is a font
+//! name — an id alone would leave the editor resolving `DocHeader::fonts[slot][id]` itself, which
+//! is exactly the second query D-05 was written to avoid. Neither stands in for the other: the id
+//! is the document's own statement, the name is the convenience.
+//!
 //! # Declared limitations
 //!
 //! - **Unrecognized field kinds (gap catalog GF-1, GF-4).** `field` segments are discriminated by
-//!   [`crate::field::is_field_ctrl_id`]. GF-4 ("22 of 34 field kinds unrecognized") and GF-1
-//!   ("unknown fields fall back to `%unk`") are pre-existing and inherited here, not fixed: a
-//!   consumer is not entitled to read zero `field` segments as "this document has none", and a
-//!   reported `ctrl_id` may be the `%unk` fallback rather than the document's own kind.
+//!   [`crate::field::is_field_ctrl_id`], which today recognizes 33 of the 34 kinds in
+//!   specification table 128 — every kind but memo (`%%me`). **GF-4's own text is stale**: it
+//!   still says "22 of 34 field kinds unrecognized", a count from before the recognition list was
+//!   extended. What remains true is GF-1: only 12 kinds map to an OWPML type and 13 carry a kind
+//!   label, and the rest fall back to `%unk`/`UNKNOWN`. Both gaps are pre-existing and inherited
+//!   here, not fixed: a consumer is not entitled to read zero `field` segments as "this document
+//!   has none", and a reported `ctrl_id` may be the `%unk` fallback rather than the document's own
+//!   kind.
 //! - **Bookmarks are invisible by design (GG-25).** A `bokm` control emits no markdown, so a
 //!   `bookmark` segment is a point segment with `start == end`.
 //! - Bookmarks are `bokm` controls and not `%bmk` fields, which is why they are discriminated by
@@ -113,8 +127,11 @@ pub struct CharAttrs {
     /// Font id per language slot, in [`FACE_SLOTS`] order. Seven slots are published rather than
     /// one, because picking one would silently pick a language for the consumer.
     pub face_ids: [u16; 7],
-    /// The face name each slot's id resolves to in `DocHeader::fonts`, or `None` when it does
-    /// not resolve. A toolbar draws this without a second query (D-05).
+    /// The face name each slot's id resolves to in `DocHeader::fonts`, in the same slot order.
+    /// A toolbar draws this without the second query an id alone would force (D-05).
+    ///
+    /// `None` means **this document's font table does not answer for that slot** — the id is out
+    /// of range. It does not mean "no font", and a consumer must not read it as a default face.
     pub faces: [Option<String>; 7],
     /// Size in **points**. `CharShape::base_size` is HWPUNIT, where 1000 = 10pt.
     pub size_pt: f32,
@@ -179,10 +196,13 @@ pub struct Segment {
     /// Unicode scalar offset into the markdown, exclusive.
     pub end: usize,
     pub style: SegmentStyle,
-    /// The four-byte control id of a `field` or `bookmark` segment (`%clk`, `bokm`). See the
+    /// The four-byte control id of a `field` or `bookmark` segment (`%clk`, `bokm`), which is how
+    /// a consumer tells one generic control from another without re-reading the document. See the
     /// module doc on GF-1: a field's `ctrl_id` may be the `%unk` fallback.
     pub ctrl_id: Option<String>,
-    /// A bookmark's name, read by [`crate::bookmark::bookmark_name`].
+    /// A bookmark's name, read by [`crate::bookmark::bookmark_name`]. A bookmark segment without
+    /// it is not usable by an editor, which is why it is published rather than left to a second
+    /// query.
     pub name: Option<String>,
 }
 
@@ -809,6 +829,9 @@ mod tests {
         assert_eq!(direct.size_pt, 12.0, "base_size 1200 HWPUNIT is 12pt");
         assert_eq!(direct.color, "#1122EE");
         assert_eq!(direct.faces[0].as_deref(), Some("함초롬바탕"));
+        // The latin slot's id resolves in no font table here: null says "this document does not
+        // answer for that slot", never "the default face".
+        assert_eq!(direct.faces[1], None);
 
         // The plain shape: base_size 1000 reports exactly 10.
         let style = of(&segs, SegmentKind::Run)[0]
