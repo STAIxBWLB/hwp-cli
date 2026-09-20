@@ -17,6 +17,23 @@
 //! property dies quietly and the byte-identity tests would still pass on the day it happened,
 //! because both sides of each comparison would move together. Reviewing such a change against
 //! this paragraph is the only thing that catches it.
+//!
+//! # The second silent coupling: the font set
+//!
+//! The same fragility, in the same shape, applies to FONTS - and this one is a coupling
+//! between two call sites rather than a property of one function. The artifact describes the
+//! layout that was actually drawn ONLY because the recording pass in `commands::render` builds
+//! its `FontStore` exactly as `build_display_list` does for the png/svg/pdf paths:
+//! `FontStore::new()` plus `opts.font_dirs`, nothing else. Fonts decide line breaking, so a
+//! different font set is a different layout, and therefore different boxes.
+//!
+//! Nothing enforces the match. If a render path later switches to an isolated store
+//! (`render_document_*_isolated`, `FontStore::new_isolated`) or to a font manifest, the two
+//! diverge and THE JSON SILENTLY DESCRIBES A LAYOUT THAT WAS NEVER DRAWN - while every test
+//! still passes, because the byte-identity tests compare layout files to other layout files
+//! and never to the rendered image. Like the dpi case above, review against this paragraph is
+//! the only thing that catches it; a change to how either side builds its `FontStore` has to
+//! change both.
 
 use hwp_render::display::DisplayList;
 use hwp_render::segment_map::{BoxPt, SegmentMap, SegmentRow};

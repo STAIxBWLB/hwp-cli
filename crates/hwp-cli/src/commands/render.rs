@@ -489,6 +489,12 @@ fn write_layout(
     opts: &hwp_render::RenderOptions,
     selected: &[usize],
 ) -> anyhow::Result<()> {
+    // This store MUST match what `hwp_render::build_display_list` hands the png/svg/pdf paths
+    // - `FontStore::new()` plus `opts.font_dirs`, nothing else. Fonts decide line breaking, so
+    // a different font set is a different layout and different boxes, and the JSON would then
+    // describe a layout that was never drawn with every test still passing. See the "second
+    // silent coupling" section of `hwp_cli::render_layout`'s module doc before changing either
+    // side.
     let mut store = hwp_render::FontStore::new();
     for dir in &opts.font_dirs {
         store.load_dir(dir);

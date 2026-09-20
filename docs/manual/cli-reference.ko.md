@@ -145,7 +145,7 @@
 | `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
 | `--format` | `png` \| `svg` \| `pdf` \| `jpeg` \| `webp` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--report` | `<REPORT>` |  | 기계 판독 렌더 보고서(JSON)를 원자적으로 기록 |
-| `--layout-json` | `<LAYOUT_JSON>` |  | 쪽별 세그먼트 기하(hwp-render-layout-v1)를 원자적으로 기록. 상자는 쪽 좌상단을 원점으로 한 포인트 단위라 PNG·SVG·PDF와 모든 --dpi에서 동일한 파일이 나옴. 기록은 옵트인이라 이 플래그가 없으면 비용이 없음 |
+| `--layout-json` | `<LAYOUT_JSON>` |  | 쪽별 세그먼트 기하(hwp-render-layout-v1)를 원자적으로 기록. 상자는 쪽 좌상단을 원점으로 한 포인트 단위라 PNG·SVG·PDF와 모든 --dpi에서 동일한 파일이 나옴. 기록은 옵트인이며 비용은 비대칭: 이 플래그가 없으면 비용이 전혀 없고, 있으면 스팬 기록을 위해 문서를 한 번 더 배치하므로 렌더 시간이 대략 두 배가 됨 |
 | `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |

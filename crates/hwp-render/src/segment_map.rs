@@ -36,6 +36,25 @@
 //! from this set, so a consumer hit-testing an image or a field must resolve it through its
 //! enclosing paragraph's row and cannot expect a row of its own.
 //!
+//! **Nesting - the larger hole, and it is structural.** A paragraph inside a table cell
+//! produces no row, and a nested table and its cells produce none either. Only top-level
+//! paragraphs, and the outermost table with its own cells, are recorded. [`crate::layout`] has
+//! exactly ONE `begin_paragraph` call site, on the body paragraph loop; cell content is laid
+//! out by `layout_box_para_iter`, which opens no span, and `begin_table` is reachable only
+//! from the body control loop. So this is not an oversight in the recorder - nothing in the
+//! nested path ever calls it.
+//!
+//! To scale, on `fixtures/samples/report-tables.hwpx`: the envelope carries 222 paragraphs
+//! against this set's 40, 126 cells against 100, and 10 tables against 3. In a table-heavy
+//! document that is MOST paragraphs, not an edge case. A consumer resolves any of them
+//! through the enclosing top-level `cell` or `table` row, and
+//! `schemas/render-layout-v1.schema.json` says so in its published `kind` description - the
+//! subset is documented rather than silent. Closing it is its own plan: the path is already
+//! available as `child(base_path(), para_index)` and `layout_box_para_iter` never pushes a
+//! page, so the page ordinal stays correct, but it means threading
+//! `Option<&mut SegmentRecorder>` through call sites that mostly pass `None`, plus a sibling
+//! of `begin_paragraph` that does not clobber `para_path` for `bookmark()`.
+//!
 //! **Segments that produce nothing at all.** A row with an id and *nothing measured* joins to
 //! nothing: `hwp-convert` emits no envelope segment for whatever produced it, so the id has no
 //! counterpart in the envelope. ONE RULE, NOT TWO COINCIDENCES: it covers both the unanchored

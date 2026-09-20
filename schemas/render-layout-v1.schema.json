@@ -16,14 +16,12 @@
     "selected_pages": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 4096,
       "uniqueItems": true,
-      "items": { "type": "integer", "minimum": 1, "maximum": 4096 },
-      "description": "The 1-based page numbers this invocation rendered, mirroring the render report's field of the same name. Rows are emitted for these pages only. It is carried so that `pages` holding no entry for page 3 is distinguishable from page 3 having been rendered and carrying no rows: without it, a `--pages 1-2` run and a page with no segments are the same document."
+      "items": { "type": "integer", "minimum": 1 },
+      "description": "The 1-based page numbers this invocation rendered, mirroring the render report's field of the same name. DELIBERATELY UNBOUNDED ABOVE: the ordinary render path applies no page budget - `LayoutBudget`'s 4096-page cap is on the certification path only - so any upper bound stated here would be a number the emitter can exceed, and a document long enough to exceed it would emit a file that fails this very schema. A consumer that needs a limit imposes its own; this field reports what was rendered. Rows are emitted for these pages only. It is carried so that `pages` holding no entry for page 3 is distinguishable from page 3 having been rendered and carrying no rows: without it, a `--pages 1-2` run and a page with no segments are the same document."
     },
     "pages": {
       "type": "array",
-      "maxItems": 4096,
       "items": { "$ref": "#/$defs/page" },
       "description": "One entry per selected page, in ascending page order. A selected page with no rows still appears, with an empty `rows` array."
     }
@@ -37,8 +35,7 @@
         "page": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 4096,
-          "description": "The 1-based page number, on the same footing as `selected_pages` and as the render report's page numbers."
+          "description": "The 1-based page number, on the same footing as `selected_pages` and as the render report's page numbers. Unbounded above for the reason `selected_pages` gives."
         },
         "width_pt": {
           "type": "number",
@@ -69,7 +66,7 @@
         },
         "kind": {
           "enum": ["para", "table", "cell", "bookmark"],
-          "description": "THE LAYOUT ARTIFACT IS A DELIBERATE SUBSET OF THE ENVELOPE, JOINED TO IT BY SEGMENT ID: only these four of the envelope's seven kinds produce a geometry row. A `run` has no separate geometry of its own, and an `image`'s and a `field`'s display items fold into the row of the paragraph that carries them - so a consumer hit-testing an image or a field resolves it through that enclosing paragraph's row. An absent `run`, `image` or `field` row is correct output, not a defect, and a test demanding one would go red on a correct render."
+          "description": "THE LAYOUT ARTIFACT IS A DELIBERATE SUBSET OF THE ENVELOPE, JOINED TO IT BY SEGMENT ID. Two separate things make it a subset, and a consumer must size its expectations against BOTH. (1) BY KIND: only these four of the envelope's seven kinds produce a geometry row. A `run` has no separate geometry of its own, and an `image`'s and a `field`'s display items fold into the row of the paragraph that carries them - so a consumer hit-testing an image or a field resolves it through that enclosing paragraph's row. (2) BY NESTING, WHICH IS THE LARGER HOLE: a paragraph inside a table cell produces no row, and a NESTED table and its cells produce none either. Only top-level paragraphs, and the outermost table with its own cells, are recorded. The cause is structural rather than incidental - `layout.rs` has exactly one `begin_paragraph` call site, on the body paragraph loop, while cell content is laid out by `layout_box_para_iter`, which opens no span, and `begin_table` is reachable only from the body control loop. TO SCALE: on this repository's committed sample the envelope carries 222 paragraphs against this artifact's 40, 126 cells against 100, and 10 tables against 3. In a table-heavy document that is MOST paragraphs, not an edge case. A consumer resolves any of them through the enclosing top-level `cell` or `table` row. An absent row of any of these sorts is correct output under this version of the contract, not a defect, and a test demanding one would go red on a correct render."
         },
         "box": {
           "description": "The union of this segment's own display items on this page. NULL means this segment produced no display item at all - a bookmark is invisible by design - and therefore has no rectangle. A zero-extent rectangle is never fabricated in its place: \"invisible\" and \"a dot at the origin\" are different claims, and the second is a measurement nobody made. Null here and null in `source_chars` mean different things and a consumer must not coalesce them into one rule.",

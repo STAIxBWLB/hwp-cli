@@ -145,7 +145,7 @@ Render pages
 | `--dpi` | `<DPI>` | `96` | Resolution in DPI (finite, 36..=600) |
 | `--format` | `png` \| `svg` \| `pdf` \| `jpeg` \| `webp` |  | Output format (inferred from the extension when omitted) |
 | `--report` | `<REPORT>` |  | Write a closed machine-readable render report atomically |
-| `--layout-json` | `<LAYOUT_JSON>` |  | Write per-page segment geometry (hwp-render-layout-v1) atomically. Boxes are in points with the page origin at top-left, so the file is identical for PNG, SVG and PDF and at any --dpi. Recording is opt-in: a render without this flag pays nothing |
+| `--layout-json` | `<LAYOUT_JSON>` |  | Write per-page segment geometry (hwp-render-layout-v1) atomically. Boxes are in points with the page origin at top-left, so the file is identical for PNG, SVG and PDF and at any --dpi. Recording is opt-in, and the cost is asymmetric: a render without this flag pays nothing at all, while a render with it lays the document out a second time to record spans, roughly doubling render time |
 | `--font-dir` | `<FONT_DIR>` |  | Additional font directory (repeatable) |
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |

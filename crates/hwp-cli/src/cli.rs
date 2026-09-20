@@ -238,7 +238,9 @@ pub enum Cmd {
         report: Option<PathBuf>,
         /// Write per-page segment geometry (hwp-render-layout-v1) atomically. Boxes are in
         /// points with the page origin at top-left, so the file is identical for PNG, SVG and
-        /// PDF and at any --dpi. Recording is opt-in: a render without this flag pays nothing
+        /// PDF and at any --dpi. Recording is opt-in, and the cost is asymmetric: a render
+        /// without this flag pays nothing at all, while a render with it lays the document out
+        /// a second time to record spans, roughly doubling render time
         #[arg(long = "layout-json")]
         layout_json: Option<PathBuf>,
         /// Additional font directory (repeatable)

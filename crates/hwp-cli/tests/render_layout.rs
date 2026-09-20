@@ -213,6 +213,15 @@ fn the_load_bearing_descriptions_are_present_in_the_published_text() {
             "the four kinds are a subset",
             "THE LAYOUT ARTIFACT IS A DELIBERATE SUBSET OF THE ENVELOPE",
         ),
+        ("the nesting hole", "BY NESTING, WHICH IS THE LARGER HOLE"),
+        (
+            "the scale of the nesting hole",
+            "222 paragraphs against this artifact's 40",
+        ),
+        (
+            "the unbounded page numbering",
+            "DELIBERATELY UNBOUNDED ABOVE",
+        ),
         (
             "neither the id nor (page, id) is a key",
             "THE ROW ID IS NOT A KEY, AND NEITHER IS THE PAIR (page, id)",
@@ -268,6 +277,33 @@ fn the_schema_rejects_an_unknown_field_and_an_unpublished_kind() {
         !validator.is_valid(&bad_kind),
         "`run` produces no geometry row, so the kind enum must reject it"
     );
+}
+
+/// No upper bound may be placed on a page number or a page count.
+///
+/// The ordinary render path applies no page budget - `LayoutBudget`'s 4096-page cap is on the
+/// certification path only - so any `maximum` here is a number the emitter can exceed, and a
+/// long enough document would emit a file that fails this very schema. Clamping the emitter
+/// instead was rejected: it would drop pages with no signal, which is the exact failure
+/// `truncated` exists to prevent for rows.
+#[test]
+fn no_upper_bound_is_placed_on_a_page_number_or_page_count() {
+    let schema: serde_json::Value = serde_json::from_str(schema_text()).unwrap();
+    for (pointer, keyword) in [
+        ("/properties/selected_pages", "maxItems"),
+        ("/properties/selected_pages/items", "maximum"),
+        ("/properties/pages", "maxItems"),
+        ("/$defs/page/properties/page", "maximum"),
+    ] {
+        let node = schema
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("{pointer} must exist in the schema"));
+        assert!(
+            node.get(keyword).is_none(),
+            "{pointer} carries {keyword}; the ordinary render path has no page budget, so a \
+             bound here is one the emitter can exceed - the file would then fail its own schema"
+        );
+    }
 }
 
 /// The sample the cross-artifact join-key test uses is committed, so these tests fail loudly
