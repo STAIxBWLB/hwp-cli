@@ -64,8 +64,8 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
   parity gate; the script prints one word there, never both):
 
   ```
-  == check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=ran) ==
-  == check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=skipped) ==
+  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=ran) ==
+  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=skipped) ==
   ```
 
   Any other ending means the run failed; the script keeps going after a failing gate so one run reports all of them.

@@ -64,4 +64,4 @@ if [ "$fail" -ne 0 ]; then
     echo "== check: FAILED (위 게이트 중 실패 있음) =="
     exit 1
 fi
-echo "== check: OK (fmt/clippy/test/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=$parity_result) =="
+echo "== check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=$parity_result) =="
