@@ -370,6 +370,128 @@ else
 fi
 check "the release gate rejects a record whose gates did not all pass" "$rejected"
 
+# --- the --as-tag mode (#268) ---------------------------------------------------------------------
+# A tag commit is never the commit the readiness run evaluated, so tag mode binds them by ancestry
+# plus a release-only delta. These cases need real commits, so they run in a scratch repository and
+# point the gate at it with HWP_RELEASE_REPO.
+tagrepo="$tmp/tagrepo"
+mkdir -p "$tagrepo"
+(
+    cd "$tagrepo"
+    git init -q .
+    git config user.email selfcheck@example.invalid
+    git config user.name selfcheck
+    mkdir -p src
+    printf 'fn main() {}\n' >src/main.rs
+    printf 'version = "9.9.8"\n' >Cargo.toml
+    printf 'version = "9.9.8"\n' >Cargo.lock
+    printf '# Changelog\n' >CHANGELOG.md
+    git add -A && git commit -qm base
+) >/dev/null 2>&1
+base_sha="$(git -C "$tagrepo" rev-parse HEAD)"
+(
+    cd "$tagrepo"
+    printf 'version = "9.9.9"\n' >Cargo.toml
+    printf 'version = "9.9.9"\n' >Cargo.lock
+    printf '# Changelog\n\n## [9.9.9]\n' >CHANGELOG.md
+    git add -A && git commit -qm "chore(release): v9.9.9"
+) >/dev/null 2>&1
+release_sha="$(git -C "$tagrepo" rev-parse HEAD)"
+(
+    cd "$tagrepo"
+    printf 'fn main() { let _ = 1; }\n' >src/main.rs
+    git add -A && git commit -qm "feat: sneak a source change past the run"
+) >/dev/null 2>&1
+dirty_sha="$(git -C "$tagrepo" rev-parse HEAD)"
+
+# The record the tag-mode cases cite: same green record, evaluated_sha rewritten to the base commit.
+python3 - "$record_dir/green.json" "$record_dir/green-base.json" "$base_sha" <<'PYEOF'
+import json
+import sys
+
+src, dst, base = sys.argv[1:4]
+record = json.load(open(src, encoding="utf-8"))
+record["evaluated_sha"] = base
+json.dump(record, open(dst, "w", encoding="utf-8"))
+PYEOF
+
+HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$release_sha" --as-tag >/dev/null 2>&1
+check "tag mode accepts an evaluated ancestor whose delta is release-only" "$?"
+
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$dirty_sha" --as-tag >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "tag mode rejects a delta that touches a source file" "$rejected"
+
+# A path-only allowlist would accept this: the file is Cargo.toml, but the change is a dependency,
+# not a version bump, so it is code the readiness run never evaluated.
+(
+    cd "$tagrepo"
+    git checkout -q -b depbump "$release_sha"
+    printf 'version = "9.9.9"\nserde = "1"\n' >Cargo.toml
+    git add -A && git commit -qm "build: add a dependency after the run"
+) >/dev/null 2>&1
+depbump_sha="$(git -C "$tagrepo" rev-parse depbump)"
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$depbump_sha" --as-tag >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "tag mode rejects a manifest change that is not a version bump" "$rejected"
+
+# The same shape in the lock file, which a re-lock would produce.
+(
+    cd "$tagrepo"
+    git checkout -q -b relock "$release_sha"
+    printf 'version = "9.9.9"\n' >Cargo.toml
+    printf '[[package]]\nname = "dep"\nsource = "registry+https://example.invalid"\n' >Cargo.lock
+    git add -A && git commit -qm "build: re-lock after the run"
+) >/dev/null 2>&1
+relock_sha="$(git -C "$tagrepo" rev-parse relock)"
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$relock_sha" --as-tag >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "tag mode rejects a re-locked Cargo.lock" "$rejected"
+
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$release_sha" --as-tag >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "tag mode rejects a record that evaluated a commit outside this history" "$rejected"
+
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$release_sha" >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "without --as-tag the same pair is still refused by the equality check" "$rejected"
+
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$release_sha" --as-whatever >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "an unknown mode argument is refused" "$rejected"
+
 # --- 5. readme-pinned-tag ------------------------------------------------------------------------
 echo "-- readme-pinned-tag"
 readme="$tmp/readme"
