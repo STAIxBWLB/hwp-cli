@@ -719,6 +719,10 @@ mod tests {
         doc
     }
 
+    /// The paragraph-background colour the fixture below uses, distinctive enough to pick its
+    /// own rectangles back out of the display list.
+    const FILL_COLOR: u32 = 0x00EE_EEEE;
+
     fn bookmark_control() -> GenericControl {
         GenericControl {
             ctrl_id: *b"bokm",
@@ -772,7 +776,7 @@ mod tests {
             sides: [BorderLine::default(); 4],
             diagonal: BorderLine::default(),
             fill_type: 1,
-            bg_color: Some(0x00EE_EEEE),
+            bg_color: Some(FILL_COLOR),
             hatch: None,
             gradient: None,
             tail: Vec::new(),
@@ -868,6 +872,40 @@ mod tests {
             paras.len(),
             "each paragraph must own exactly its own background item"
         );
+
+        // The sharp assertion: the n-th paragraph's box contains the n-th fill and nothing of
+        // the next paragraph's. `bg_fill_item` emits the paragraph background as an
+        // `Item::Rect` in the fixture's fill colour, one per paragraph, in document order.
+        let mut fills: Vec<BoxPt> = list.pages[0]
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::Rect { fill, .. } if *fill == FILL_COLOR))
+            .filter_map(item_bounds)
+            .map(|b| BoxPt {
+                x0: b.0,
+                y0: b.1,
+                x1: b.2,
+                y1: b.3,
+            })
+            .collect();
+        fills.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        assert_eq!(fills.len(), paras.len(), "one background per paragraph");
+        let mut boxes: Vec<BoxPt> = paras.iter().filter_map(|row| row.bbox).collect();
+        boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        assert_eq!(boxes.len(), fills.len());
+        for (i, (bbox, fill)) in boxes.iter().zip(&fills).enumerate() {
+            assert!(
+                contains(*bbox, *fill),
+                "paragraph {i}'s box must contain its own fill: {bbox:?} vs {fill:?}"
+            );
+            if let Some(next) = fills.get(i + 1) {
+                assert!(
+                    bbox.y1 <= next.y0 + 0.01,
+                    "paragraph {i}'s box must not reach the next paragraph's fill: \
+                     {bbox:?} vs {next:?}"
+                );
+            }
+        }
     }
 
     /// The prepend test. A recorded index that was not corrected for the page border spliced
@@ -1250,6 +1288,60 @@ mod tests {
             "the first page's row stops where content stopped"
         );
         assert_eq!(map.rows[1].item_count, 2);
+    }
+
+    /// The third comparison in `items_inserted` is the one that must **stay** `>=`, and the
+    /// available mistake is changing all three because two needed it.
+    ///
+    /// A closed span whose `start_item` equals the insertion point genuinely begins after the
+    /// inserted item, so it shifts. That case is real: a paragraph whose only content is a
+    /// table opens the table's span at the paragraph's own first index, and the background fill
+    /// is inserted at exactly that index once the table has been laid out and its span closed.
+    /// With `>` there, the table would own the paragraph's background.
+    #[test]
+    fn an_insert_at_a_closed_spans_first_index_pushes_that_span_right() {
+        let para = Paragraph::default();
+        let table = hwp_model::control::Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: Default::default(),
+            table_tail: Vec::new(),
+            cells: Vec::new(),
+            caption: None,
+            extras: Vec::new(),
+        };
+        let mut rec = SegmentRecorder::new();
+        rec.begin_paragraph(0, 0, &para, &page_with(0));
+        rec.begin_table(0, &table, &page_with(0)); // the table starts at the paragraph's index 0
+        rec.end_segment(&page_with(2)); // and covers two items
+        rec.items_inserted(0, 1); // then the paragraph's background goes in at index 0
+        rec.end_segment(&page_with(3));
+        rec.resolve(&[page_with(3)]);
+        let map = rec.finish();
+        let table_row = map
+            .rows
+            .iter()
+            .find(|row| row.kind == kind::TABLE)
+            .expect("a table row");
+        let para_row = map
+            .rows
+            .iter()
+            .find(|row| row.kind == kind::PARA)
+            .expect("a paragraph row");
+        assert_eq!(
+            table_row.item_count, 2,
+            "the table keeps its own two items and does not acquire the fill"
+        );
+        assert_eq!(
+            para_row.item_count, 3,
+            "the paragraph owns the fill as well as the table"
+        );
     }
 
     /// The row cap has to bound **rows**. `resolve` drains the span list at the end of every
