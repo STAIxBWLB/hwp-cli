@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.18.0]
+
 **Added**
 
 - `scripts/hancom-regression.sh` regenerates every artifact
