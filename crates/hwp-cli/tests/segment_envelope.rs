@@ -449,8 +449,11 @@ fn the_v2_markdown_envelope_validates_against_the_published_schema() {
     );
 }
 
-/// The `--format json` carrier: the document IR beside the segments under the same two
-/// constants, so a consumer parses one value either way.
+/// F2. The `--format json` carrier: the document IR beside the segments AND the markdown the
+/// offsets index. The arm used to discard the markdown, which left every `char_range` pointing
+/// into a string the envelope did not hold - and silently shifted under `--with-header-footer`
+/// and `--with-hidden`, which the document IR ignores, so the offsets moved while everything
+/// the envelope carried stayed identical.
 #[test]
 fn the_v2_json_envelope_carries_the_document_beside_the_segments() {
     let value = v2_envelope(&sample(), "json");
@@ -458,10 +461,6 @@ fn the_v2_json_envelope_carries_the_document_beside_the_segments() {
         panic!("the schema rejected a real v2 json envelope: {e}");
     }
     assert_eq!(value["contract"], "hwp-segment-envelope-v2");
-    assert!(
-        value.get("markdown").is_none(),
-        "--format json carries `document`, not `markdown`"
-    );
     assert!(
         value["document"].is_object(),
         "the document IR must be present for --format json"
@@ -476,10 +475,102 @@ fn the_v2_json_envelope_carries_the_document_beside_the_segments() {
     );
 
     // The segments are the same ones the markdown envelope reports.
+    let markdown_envelope = v2_envelope(&sample(), "markdown");
     assert_eq!(
-        value["segments"],
-        v2_envelope(&sample(), "markdown")["segments"],
+        value["segments"], markdown_envelope["segments"],
         "the segment vector must not depend on the carrier format"
+    );
+    assert_eq!(
+        value["markdown"], markdown_envelope["markdown"],
+        "and neither does the string those segments index"
+    );
+}
+
+/// F2, the property that makes the envelope self-contained: every offset it publishes resolves
+/// against a string it actually carries, in the json form too. This fails if the json arm ever
+/// goes back to discarding the markdown - `char_range` would then index nothing at all.
+#[test]
+fn the_json_envelope_resolves_its_own_offsets() {
+    let value = v2_envelope(&sample(), "json");
+    let markdown = value["markdown"]
+        .as_str()
+        .expect("the json envelope must carry the markdown its offsets index");
+    let scalars: Vec<char> = markdown.chars().collect();
+    assert!(
+        !scalars.is_empty(),
+        "the carried markdown must not be empty"
+    );
+
+    let segments = value["segments"].as_array().expect("segments array");
+    assert!(!segments.is_empty(), "the sample must produce segments");
+    for s in segments {
+        let start = s["char_range"]["start"].as_u64().unwrap() as usize;
+        let end = s["char_range"]["end"].as_u64().unwrap() as usize;
+        assert!(
+            start <= end && end <= scalars.len(),
+            "char_range [{start},{end}) does not resolve against the {} scalars this envelope \
+             carries",
+            scalars.len()
+        );
+    }
+
+    // The text a segment resolves to is the text it resolves to in the markdown envelope: the
+    // two carriers publish one coordinate space, not two that happen to agree in length.
+    let slice = |env: &serde_json::Value, i: usize| -> String {
+        let md: Vec<char> = env["markdown"].as_str().unwrap().chars().collect();
+        let seg = &env["segments"][i];
+        let start = seg["char_range"]["start"].as_u64().unwrap() as usize;
+        let end = seg["char_range"]["end"].as_u64().unwrap() as usize;
+        md[start..end].iter().collect()
+    };
+    let markdown_envelope = v2_envelope(&sample(), "markdown");
+    for i in [0usize, 1, segments.len() / 2, segments.len() - 1] {
+        assert_eq!(
+            slice(&value, i),
+            slice(&markdown_envelope, i),
+            "segment {i} resolves to different text in the two carriers"
+        );
+    }
+}
+
+/// F2's flag dependency, which the discarded markdown turned into a silent trap: the text
+/// options shift the offsets, and the envelope now carries the string they shifted, so the two
+/// stay consistent instead of the offsets moving under an unchanged payload.
+#[test]
+fn the_json_envelope_offsets_follow_the_text_options_it_carries() {
+    let with_extras = run_cat(
+        &sample(),
+        &[
+            "--format",
+            "json",
+            "--with-segments",
+            "--segments",
+            "v2",
+            "--with-header-footer",
+            "--with-hidden",
+        ],
+    )
+    .expect("hwp cat --format json with the text options");
+    let with_extras: serde_json::Value = serde_json::from_slice(&with_extras).unwrap();
+    let plain = v2_envelope(&sample(), "json");
+
+    // Whether or not this sample has header/footer or hidden text, the invariant is the same:
+    // the carried markdown is the one the offsets index.
+    for env in [&plain, &with_extras] {
+        let scalars = env["markdown"].as_str().unwrap().chars().count();
+        for s in env["segments"].as_array().unwrap() {
+            let end = s["char_range"]["end"].as_u64().unwrap() as usize;
+            assert!(
+                end <= scalars,
+                "an offset escaped the markdown it is indexed against"
+            );
+        }
+    }
+    // The document IR ignores the text options, so it is identical either way - which is
+    // exactly why offsets computed against a discarded markdown were undetectable here.
+    assert_eq!(
+        plain["document"], with_extras["document"],
+        "the document IR is not affected by the text options"
     );
 }
 
@@ -642,4 +733,215 @@ fn the_same_document_yields_the_same_ids_from_hwp5_and_hwpx() {
         hwp5, hwpx,
         "hwp5 and hwpx readings of one document must yield identical segment ids"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Review round on PR #279: F1 - F6
+// ---------------------------------------------------------------------------
+
+/// The closed-schema structure, walked rather than read, and run by `cargo test` rather than by
+/// a human typing a one-liner. Every object definition must set `additionalProperties: false`
+/// and carry a non-empty `required` whose every member exists in `properties`.
+///
+/// Subschema keywords are skipped: an `if` / `then` / `else` / `dependentSchemas` / `allOf`
+/// body legitimately carries a bare `properties` fragment that constrains a few keys without
+/// being an object definition of its own.
+#[test]
+fn the_v2_schema_is_closed_at_every_object_level() {
+    const FRAGMENT_KEYWORDS: [&str; 7] = [
+        "if",
+        "then",
+        "else",
+        "dependentSchemas",
+        "allOf",
+        "anyOf",
+        "oneOf",
+    ];
+
+    fn walk(node: &serde_json::Value, path: &str, bad: &mut Vec<String>, levels: &mut usize) {
+        if let Some(map) = node.as_object() {
+            let is_object_definition = map.get("type") == Some(&serde_json::json!("object"))
+                || map.contains_key("properties");
+            if is_object_definition {
+                *levels += 1;
+                if map.get("additionalProperties") != Some(&serde_json::json!(false)) {
+                    bad.push(format!("{path}: not closed"));
+                }
+                match map.get("required").and_then(|r| r.as_array()) {
+                    None => bad.push(format!("{path}: no required array")),
+                    Some(required) if required.is_empty() => {
+                        bad.push(format!("{path}: empty required array"))
+                    }
+                    Some(required) => {
+                        for name in required {
+                            let name = name.as_str().unwrap_or_default();
+                            if map.get("properties").and_then(|p| p.get(name)).is_none() {
+                                bad.push(format!("{path}: required {name:?} is not a property"));
+                            }
+                        }
+                    }
+                }
+            }
+            for (k, v) in map {
+                if FRAGMENT_KEYWORDS.contains(&k.as_str()) {
+                    continue;
+                }
+                walk(v, &format!("{path}.{k}"), bad, levels);
+            }
+        } else if let Some(items) = node.as_array() {
+            for (i, v) in items.iter().enumerate() {
+                walk(v, &format!("{path}[{i}]"), bad, levels);
+            }
+        }
+    }
+
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/segment-envelope-v2.schema.json"
+    ))
+    .unwrap();
+    let (mut bad, mut levels) = (Vec::new(), 0usize);
+    walk(&schema, "$", &mut bad, &mut levels);
+    assert!(
+        bad.is_empty(),
+        "the schema is not closed:\n{}",
+        bad.join("\n")
+    );
+    assert!(
+        levels >= 7,
+        "expected every object level to be walked, saw only {levels}"
+    );
+}
+
+/// F1. The alignment field is three bits wide and the specification defines only 0..=5, so a
+/// hwp5 file can carry 6 or 7 and nothing clamps it on the way in
+/// (`hwp-model/src/header.rs` masks `& 0x7`, `hwp5/src/doc_info.rs` reads `attr1` verbatim).
+/// The emitter reports `unknown` for those rather than guessing a default. Before this round
+/// the schema's closed enum rejected exactly that, so a single reserved value anywhere in a
+/// document made a validating consumer reject the WHOLE envelope.
+///
+/// This drives a real `attr1` with bits 2-4 set to 6 through the real emitter and the real
+/// serializer, which is why the serializer lives in the library: no committed fixture carries
+/// a reserved alignment, so a fixture-driven test could not reach this at all.
+#[test]
+fn a_reserved_alignment_value_is_reported_and_still_validates() {
+    for reserved in [6u32, 7u32] {
+        let mut doc = hwp_model::Document::default();
+        doc.header.char_shapes.push(Default::default());
+        doc.header.para_shapes.push(hwp_model::header::ParaShape {
+            // bits 2-4 are the alignment; 6 and 7 are outside the specified 0..=5.
+            attr1: reserved << 2,
+            ..Default::default()
+        });
+        doc.sections.push(hwp_model::Section {
+            paragraphs: vec![hwp_model::Paragraph {
+                para_shape: hwp_model::ParaShapeId(0),
+                chars: "예약값".chars().map(hwp_model::HwpChar::Text).collect(),
+                char_shape_runs: vec![(0, hwp_model::CharShapeId(0))],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        let (markdown, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &Default::default())
+            .expect("emit the segment vector");
+        let envelope = hwp_cli::segment_envelope::envelope_v2(&markdown, &segs);
+
+        let reported: Vec<&str> = envelope["segments"]
+            .as_array()
+            .expect("segments")
+            .iter()
+            .filter_map(|s| s["direct"]["para"]["alignment"].as_str())
+            .collect();
+        assert!(
+            reported.contains(&"unknown"),
+            "alignment {reserved} must be reported as `unknown`, got {reported:?}"
+        );
+
+        if let Err(e) = v2_validator().validate(&envelope) {
+            panic!("the schema rejected a reserved alignment value {reserved}: {e}");
+        }
+    }
+}
+
+/// F6. `ctrl_id` and `name` describe themselves as belonging to particular kinds, and the
+/// schema enforces that rather than only asserting it: a description that claims a constraint
+/// the schema does not have is a claim no gate can keep true.
+#[test]
+fn ctrl_id_and_name_are_rejected_on_a_kind_that_cannot_carry_them() {
+    let validator = v2_validator();
+
+    let mut para_with_ctrl_id = representative_envelope();
+    para_with_ctrl_id["segments"][0]["ctrl_id"] = serde_json::json!("%clk");
+    assert_eq!(para_with_ctrl_id["segments"][0]["kind"], "para");
+    assert!(
+        !validator.is_valid(&para_with_ctrl_id),
+        "a para segment must not be allowed to carry a ctrl_id"
+    );
+
+    let mut field_with_name = representative_envelope();
+    let field = field_with_name["segments"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|s| s["kind"] == "field")
+        .expect("the fixture carries a field segment");
+    field["name"] = serde_json::json!("이름");
+    assert!(
+        !validator.is_valid(&field_with_name),
+        "only a bookmark carries a name"
+    );
+
+    // The legitimate carriers still validate, so the constraint is not merely a blanket ban.
+    assert!(
+        validator.is_valid(&representative_envelope()),
+        "field and bookmark segments must keep their ctrl_id and name"
+    );
+}
+
+/// F3. `--segments` selects the version of an envelope `--with-segments` turns on. Asking for a
+/// version without the switch used to print plain output with no envelope and no warning.
+#[test]
+fn the_segments_flag_requires_the_with_segments_switch() {
+    for format in ["markdown", "json", "csv"] {
+        let err = run_cat(&sample(), &["--format", format, "--segments", "v2"])
+            .expect_err("--segments without --with-segments must be refused");
+        assert!(
+            err.contains("--with-segments"),
+            "--format {format} must name the missing switch: {err}"
+        );
+    }
+    // The switch alone, and the switch with a version, both still work.
+    run_cat(&sample(), &["--format", "markdown", "--with-segments"]).expect("the switch alone");
+    run_cat(
+        &sample(),
+        &["--format", "json", "--with-segments", "--segments", "v2"],
+    )
+    .expect("the switch with a version");
+}
+
+/// F4. The `--preview` rejection ran before the version match, so it told a `--segments v2`
+/// user that the envelope is markdown-only - which this branch made false. The full sentence is
+/// pinned here, not a substring of it: asserting only the tail passed against the wrong message.
+#[test]
+fn the_preview_rejection_names_only_the_preview_conflict() {
+    for (format, version) in [("markdown", "v1"), ("markdown", "v2"), ("json", "v2")] {
+        let err = run_cat(
+            &sample(),
+            &[
+                "--format",
+                format,
+                "--with-segments",
+                "--segments",
+                version,
+                "--preview",
+            ],
+        )
+        .expect_err("--preview must be rejected");
+        let message = err.trim().trim_start_matches("Error: ").trim();
+        assert_eq!(
+            message, "--with-segments는 --preview와 함께 쓸 수 없습니다",
+            "the preview rejection must name only the preview conflict, and must not claim \
+             markdown-only for {format}/{version}"
+        );
+    }
 }

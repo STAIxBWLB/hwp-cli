@@ -99,7 +99,12 @@ pub enum Cmd {
         /// Segment envelope version for --with-segments. v1 is the pinned v0.8.x
         /// envelope (markdown only); v2 publishes the seven segment kinds, stable
         /// ids and per-segment style, and is accepted for markdown and json
-        #[arg(long = "segments", value_enum, default_value = "v1")]
+        #[arg(
+            long = "segments",
+            value_enum,
+            default_value = "v1",
+            requires = "with_segments"
+        )]
         segments: SegmentVersion,
         #[command(flatten)]
         password: PasswordArgs,

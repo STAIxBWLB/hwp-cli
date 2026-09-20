@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::format::{FileFormat, detect};
 use hwp_cli::cli::{PasswordArgs, SegmentVersion, TextFormat};
+use hwp_cli::segment_envelope::envelope_v2;
 
 /// Stable public refusal code for absent or invalid password credentials.
 pub const HWP_PASSWORD_REQUIRED_OR_INVALID: &str = "HWP_PASSWORD_REQUIRED_OR_INVALID";
@@ -240,64 +241,6 @@ pub fn load_document_with_options(
     }
 }
 
-/// The published v2 envelope contract, `schemas/segment-envelope-v2.schema.json`.
-const SEGMENT_ENVELOPE_SCHEMA_VERSION: &str = "1.0";
-const SEGMENT_ENVELOPE_CONTRACT: &str = "hwp-segment-envelope-v2";
-
-/// The two house constants plus the rendered segment vector. The caller adds either
-/// `markdown` or `document`; the schema requires exactly one of the two.
-fn envelope_v2(segments: &[hwp_convert::Segment]) -> serde_json::Value {
-    serde_json::json!({
-        "contract": SEGMENT_ENVELOPE_CONTRACT,
-        "schema_version": SEGMENT_ENVELOPE_SCHEMA_VERSION,
-        "segments": segments.iter().map(segment_json).collect::<Vec<_>>(),
-    })
-}
-
-/// Renders one typed segment. Nothing here re-derives a kind, an id or a style: this is a
-/// transcription of `hwp_convert::Segment` into the published field names.
-fn segment_json(s: &hwp_convert::Segment) -> serde_json::Value {
-    let mut v = serde_json::json!({
-        "id": s.id,
-        "kind": s.kind.as_str(),
-        "path": { "section": s.path.section, "indices": s.path.indices },
-        "char_range": { "start": s.start, "end": s.end },
-        "style": style_level_json(&s.style.style),
-        "direct": style_level_json(&s.style.direct),
-    });
-    // Omitted rather than null when absent: they exist only on field and bookmark segments.
-    if let Some(ctrl_id) = &s.ctrl_id {
-        v["ctrl_id"] = serde_json::Value::String(ctrl_id.clone());
-    }
-    if let Some(name) = &s.name {
-        v["name"] = serde_json::Value::String(name.clone());
-    }
-    v
-}
-
-/// One style level. A `null` is an explicitly absent block - an id that does not resolve in
-/// this document's header table - and never a fabricated default.
-fn style_level_json(level: &hwp_convert::StyleLevel) -> serde_json::Value {
-    serde_json::json!({
-        "char_shape_id": level.char_shape_id,
-        "para_shape_id": level.para_shape_id,
-        "char": level.char.as_ref().map(|c| serde_json::json!({
-            "face_ids": c.face_ids,
-            "faces": c.faces,
-            "size_pt": c.size_pt,
-            "bold": c.bold,
-            "italic": c.italic,
-            "color": c.color,
-        })),
-        "para": level.para.as_ref().map(|p| serde_json::json!({
-            "alignment": p.alignment,
-            "indent": p.indent,
-            "line_spacing_type": p.line_spacing_type,
-            "line_spacing": p.line_spacing,
-        })),
-    })
-}
-
 /// 본문 텍스트 추출.
 ///
 /// `preview`면 평문은 본문 파싱 없이 PrvText 미리보기만 출력하고, 보호 문서는 먼저 암호를
@@ -316,12 +259,12 @@ pub fn run(
     segments: Option<SegmentVersion>,
     password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
-    let with_segments = segments.is_some();
     if let Some(segments) = segments {
         if preview {
-            anyhow::bail!(
-                "--with-segments는 --format markdown 전용입니다 (--preview와 함께 쓸 수 없습니다)"
-            );
+            // Not version- or format-specific: --preview prints PrvText without parsing the
+            // body, so there is no emission run to record spans against, whichever envelope
+            // version and output format were asked for.
+            anyhow::bail!("--with-segments는 --preview와 함께 쓸 수 없습니다");
         }
         // D-03: v2 is published for markdown and json; v1 stays exactly what it is today,
         // markdown-only and byte-pinned, because there has never been a v1 json envelope and
@@ -369,19 +312,25 @@ pub fn run(
         TextFormat::Plain => print!("{}", doc.plain_text_with(&opts)),
         TextFormat::Markdown if segments == Some(SegmentVersion::V2) => {
             let (markdown, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &md_opts())?;
-            let mut envelope = envelope_v2(&segs);
-            envelope["markdown"] = serde_json::Value::String(markdown);
-            println!("{}", serde_json::to_string(&envelope)?);
+            println!("{}", serde_json::to_string(&envelope_v2(&markdown, &segs))?);
         }
-        TextFormat::Json if with_segments => {
-            // v2 only (the guard above rejects v1 here): the document IR sits beside the
-            // segments under the same two constants, so a consumer parses one value.
-            let (_, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &md_opts())?;
-            let mut envelope = envelope_v2(&segs);
+        TextFormat::Json if segments == Some(SegmentVersion::V2) => {
+            // Matched on the version, not on `with_segments`: if the guard above is ever
+            // relaxed, `--segments v1 --format json` must not silently fall into the v2 arm.
+            // The document IR sits beside the segments under the same two constants, so a
+            // consumer parses one value.
+            //
+            // The markdown is carried here as well, and `envelope_v2` takes it by argument so
+            // this arm cannot drop it: `char_range` indexes the markdown, so an envelope
+            // without it would publish offsets into a string it does not hold - and they would
+            // shift silently under --with-header-footer and --with-hidden, which the document
+            // IR ignores.
+            let (markdown, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &md_opts())?;
+            let mut envelope = envelope_v2(&markdown, &segs);
             envelope["document"] = serde_json::from_str(&hwp_convert::to_json(&doc, true, false)?)?;
             println!("{}", serde_json::to_string(&envelope)?);
         }
-        TextFormat::Markdown if with_segments => {
+        TextFormat::Markdown if segments == Some(SegmentVersion::V1) => {
             let (markdown, segments) = hwp_convert::to_markdown_with_segments(&doc, &md_opts())?;
             // 한 줄 컴팩트 JSON 봉투 + 개행. kind는 현재 항상 "para"(미래 확장용).
             let segments: Vec<serde_json::Value> = segments

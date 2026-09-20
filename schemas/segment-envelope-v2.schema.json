@@ -5,11 +5,7 @@
   "description": "The envelope `hwp cat --with-segments --segments v2` emits, for `--format markdown` and `--format json`. One segment ties a range of the emitted markdown to the IR node that produced it, so an editor can address what it displays. Ranges nest: a `run` lies inside its `para`, a `cell` inside its `table`, and siblings at one level do not overlap.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "contract", "segments"],
-  "oneOf": [
-    { "required": ["markdown"], "$comment": "--format markdown carries the text." },
-    { "required": ["document"], "$comment": "--format json carries the document IR instead." }
-  ],
+  "required": ["schema_version", "contract", "markdown", "segments"],
   "properties": {
     "schema_version": {
       "const": "1.0",
@@ -21,7 +17,7 @@
     },
     "markdown": {
       "type": "string",
-      "description": "The markdown `hwp cat --format markdown` emits for the same document, byte-identical: both come from one emission core, which the segment run only asks to record spans. Every `char_range` in `segments` indexes into THIS string. Present for `--format markdown`; for `--format json` the envelope carries `document` instead, and exactly one of the two is always present."
+      "description": "The markdown `hwp cat --format markdown` emits for the same document, byte-identical: both come from one emission core, which the segment run only asks to record spans. Every `char_range` in `segments` indexes into THIS string. It is carried in BOTH formats, `--format json` included: the offsets would otherwise index a string the envelope does not hold, and would silently shift with `--with-header-footer` and `--with-hidden` while everything the envelope carries stayed identical. The envelope resolves its own offsets."
     },
     "segments": {
       "type": "array",
@@ -29,7 +25,7 @@
       "items": { "$ref": "#/$defs/segment" }
     },
     "document": {
-      "description": "Present only for `--format json`: the document IR `hwp cat --format json` emits for the same document, unchanged, carried as a sibling of `segments` so a consumer parses one value rather than two from one stream. Absent for `--format markdown`, where `markdown` carries the text instead."
+      "description": "Present only for `--format json`: the document IR `hwp cat --format json` emits for the same document, unchanged, carried as a sibling of `segments` so a consumer parses one value rather than two from one stream. Absent for `--format markdown`. It is an addition to `markdown`, never a replacement for it: `char_range` resolves against `markdown` in this format too."
     }
   },
   "$defs": {
@@ -37,6 +33,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "path", "char_range", "style", "direct"],
+      "$comment": "`dependentSchemas` enforces what `ctrl_id` and `name` say about themselves. Without it the two descriptions would assert a constraint the schema does not have, and a `para` segment carrying a `ctrl_id` would validate.",
+      "dependentSchemas": {
+        "ctrl_id": { "properties": { "kind": { "enum": ["field", "bookmark"] } } },
+        "name": { "properties": { "kind": { "const": "bookmark" } } }
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -59,11 +60,11 @@
         },
         "ctrl_id": {
           "type": "string",
-          "description": "The four-byte control id, present ONLY on `field` and `bookmark` segments and omitted on every other kind. `%clk`, `%hlk`, `bokm`. On a field it may be the `%unk` fallback rather than the document's own kind; see `kind` for that limitation."
+          "description": "The four-byte control id, present ONLY on `field` and `bookmark` segments and omitted on every other kind - enforced, not merely stated: see this object's `dependentSchemas`. `%clk`, `%hlk`, `bokm`. On a field it may be the `%unk` fallback rather than the document's own kind; see `kind` for that limitation."
         },
         "name": {
           "type": "string",
-          "description": "A bookmark's name, present only on `bookmark` segments that carry one and omitted otherwise. Published rather than left to a second query, because a bookmark segment without it is not addressable by an editor."
+          "description": "A bookmark's name, present only on `bookmark` segments that carry one and omitted otherwise - enforced by this object's `dependentSchemas`. A bookmark without a name omits the key rather than carrying an empty one. Published rather than left to a second query, because a bookmark segment without it is not addressable by an editor."
         }
       }
     },
@@ -162,8 +163,8 @@
       "properties": {
         "alignment": {
           "type": "string",
-          "enum": ["justify", "left", "right", "center", "distribute", "divide"],
-          "description": "The decoded alignment as a name, never a bare integer."
+          "enum": ["justify", "left", "right", "center", "distribute", "divide", "unknown"],
+          "description": "The decoded alignment as a name, never a bare integer. `unknown` means the document named a RESERVED VALUE: the stored field is three bits wide and the specification defines only 0..=5, so a hwp5 file can carry 6 or 7 and nothing clamps it on the way in. It is reported rather than coerced to a default, because a file we did not write is untrusted input and guessing `justify` for it would put a value in the envelope the document never stated."
         },
         "indent": {
           "type": "integer",
