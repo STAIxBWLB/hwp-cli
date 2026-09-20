@@ -12,7 +12,9 @@
 //!
 //! A segment id is **not unique** in this set, and not only because of page splits: the header
 //! rows of a table that splits are replayed on the following page, so the same `cell` id is
-//! reported again with a different box. Do not key a map by id alone.
+//! reported again with a different box, and two fragments of one cell that land in different
+//! columns of a multi-column section stay separate rows rather than being unioned across the
+//! gutter. Do not key a map by id alone, and do not assume one row per (id, page) either.
 //!
 //! # Units and coordinate spaces
 //!
@@ -28,10 +30,18 @@
 //!
 //! # What has no row
 //!
-//! Items pushed outside the content loops carry no segment and produce no row, by construction
-//! rather than by accident: page borders, column dividers, headers, footers, page numbers and
-//! note blocks are all emitted outside the recorded spans. The furniture-exclusion test in this
-//! module pins that.
+//! **Kinds.** Only `para`, `table`, `cell` and `bookmark` produce rows. The envelope's other
+//! three kinds do not: a `run` has no separate geometry here, an `image`'s display item folds
+//! into the row of the paragraph that carries it, and a `field` does likewise. 05-06 publishes
+//! from this set, so a consumer hit-testing an image or a field must resolve it through its
+//! enclosing paragraph's row and cannot expect a row of its own.
+//!
+//! **Page furniture.** Page borders, column dividers, headers, footers, page numbers and note
+//! blocks carry no segment and produce no row. Borders and dividers are prepended after spans
+//! are resolved, so they cannot fall inside one. The rest are emitted at page finalization,
+//! which can happen while a paragraph span is still open, so the recorder is told where content
+//! ended ([`SegmentRecorder::content_end`]) and a span never reaches past that boundary. The
+//! furniture-exclusion tests in this module pin both halves.
 //!
 //! # Row count bound
 //!
@@ -172,6 +182,12 @@ pub(crate) struct SegmentRecorder {
     spans: Vec<Span>,
     /// Monotonic span identity, so a child can name a parent that has not closed yet.
     next_uid: usize,
+    /// Per page, the item count at which *content* ended and page furniture began. A span that
+    /// is still open when a page is finalized would otherwise run to `page.items.len()` and
+    /// swallow the note block, the note separator and the page number - inflating its box to
+    /// the page bottom and polluting its character range with `start_wchar` values from a
+    /// different source paragraph.
+    content_end: std::collections::HashMap<usize, usize>,
     map: SegmentMap,
 }
 
@@ -196,7 +212,21 @@ impl SegmentRecorder {
             open: Vec::new(),
             spans: Vec::new(),
             next_uid: 0,
+            content_end: std::collections::HashMap::new(),
             map: SegmentMap::default(),
+        }
+    }
+
+    /// Content on the page being filled has ended and page furniture is about to be emitted:
+    /// note blocks, the note separator, the page number. Call this immediately **before** that
+    /// furniture, at every page-finalization site. The first call for a page wins, so a
+    /// finalization sequence that emits furniture in several steps still records the boundary
+    /// before the first of them.
+    pub(crate) fn content_end(&mut self, page: &PageList) {
+        if self.enabled {
+            self.content_end
+                .entry(self.page)
+                .or_insert(page.items.len());
         }
     }
 
@@ -207,8 +237,11 @@ impl SegmentRecorder {
         }
     }
 
+    /// `resolve` drains `spans` at the end of every section, so counting spans alone would
+    /// reset the cap per section while `rows` — which can exceed the span count, one per page a
+    /// span touches — grew without a bound.
     fn full(&self) -> bool {
-        self.spans.len() + self.open.len() >= MAX_SEGMENT_ROWS
+        self.map.rows.len() + self.spans.len() + self.open.len() >= MAX_SEGMENT_ROWS
     }
 
     fn begin(&mut self, kind: &'static str, id: String, path: SegmentPath, page: &PageList) {
@@ -287,8 +320,14 @@ impl SegmentRecorder {
             self.map.truncated = true;
             return;
         }
+        // The envelope opens a bookmark segment only from a `BOOKMARK` control character that
+        // references this control (`crates/hwp-convert/src/markdown.rs`). An unanchored `bokm`
+        // produces no envelope segment, so a row for it would carry an id that joins to
+        // nothing.
+        let Some(at) = bookmark_anchor_offset(para, control_index) else {
+            return;
+        };
         let path = child(&self.para_path, control_index);
-        let at = control_wchar_offset(para, control_index);
         let uid = self.next_uid;
         self.next_uid += 1;
         self.spans.push(Span {
@@ -298,22 +337,36 @@ impl SegmentRecorder {
             start_item: 0,
             end_page: self.page,
             end_item: 0,
-            chars: at.map(|start| CharRange { start, end: start }),
+            chars: Some(CharRange { start: at, end: at }),
             uid,
             parent: None,
         });
     }
 
     /// `count` items were *inserted* at index `at` on the page being filled, rather than
-    /// appended: a paragraph background rectangle goes behind its own text. Every recorded
-    /// index at or after `at` on this page shifts by `count`. Appends need no such call.
+    /// appended: a paragraph background rectangle goes behind its own text.
+    ///
+    /// **The inserted item belongs to the span that is open**, which is why the boundary
+    /// comparisons are not uniform. `draw_para_bg_slice` inserts at the index captured when the
+    /// paragraph opened, and that one index is simultaneously the open paragraph's `start_item`
+    /// and the *previous* paragraph's exclusive `end_item`. Shifting both on equality would
+    /// push the fill out of the paragraph that owns it **and** pull it into the paragraph
+    /// before, so a published box would run down into the next paragraph while the fill itself
+    /// belonged to no row at all. So:
+    ///
+    /// - an open span's `start_item` shifts only when it is strictly after `at` (equality means
+    ///   the insert is this span's own first item);
+    /// - a closed span's `end_item` shifts only when it is strictly after `at` (equality means
+    ///   the insert lands after that span ended);
+    /// - a closed span's `start_item` shifts on equality, because an insert at its first index
+    ///   pushes the whole span right.
     pub(crate) fn items_inserted(&mut self, at: usize, count: usize) {
         if !self.enabled || count == 0 {
             return;
         }
         let page = self.page;
         for open in &mut self.open {
-            if open.start_page == page && open.start_item >= at {
+            if open.start_page == page && open.start_item > at {
                 open.start_item += count;
             }
         }
@@ -321,7 +374,7 @@ impl SegmentRecorder {
             if span.start_page == page && span.start_item >= at {
                 span.start_item += count;
             }
-            if span.end_page == page && span.end_item >= at {
+            if span.end_page == page && span.end_item > at {
                 span.end_item += count;
             }
         }
@@ -361,7 +414,13 @@ impl SegmentRecorder {
         if !self.enabled {
             return;
         }
-        debug_assert!(self.open.is_empty(), "a segment span was left open");
+        if !self.open.is_empty() {
+            // Only reachable on an abort: the layout pass returned early on an exhausted
+            // budget with spans still open. Their extent is unknown, so they are dropped and
+            // the map says the row set is incomplete rather than silently missing rows.
+            self.open.clear();
+            self.map.truncated = true;
+        }
         let spans = std::mem::take(&mut self.spans);
         // Direct children, so a paragraph's own character range excludes the glyphs of a table
         // laid out inside it: those belong to cell paragraphs and index a different string.
@@ -387,11 +446,19 @@ impl SegmentRecorder {
                 } else {
                     0
                 };
+                // Page furniture is emitted after content, so a span never reaches past the
+                // recorded content boundary even when it is still open at finalization.
+                let content_end = self
+                    .content_end
+                    .get(&page_index)
+                    .copied()
+                    .unwrap_or(page.items.len());
                 let hi = if page_index == span.end_page {
                     span.end_item
                 } else {
-                    page.items.len()
+                    content_end
                 }
+                .min(content_end)
                 .min(page.items.len());
                 if hi <= lo {
                     continue;
@@ -423,21 +490,39 @@ impl SegmentRecorder {
         }
     }
 
-    /// The rows recorded so far, one per (segment, page) pair.
+    /// The rows recorded so far, coalesced.
     ///
     /// Coalescing happens here rather than at recording time because one segment can be
     /// *drawn* more than once on one page: a cell whose content is split into two fragments
     /// that both fit on the same page emits two spans (observed on
     /// `fixtures/samples/report-tables.hwpx`). Those describe one place on one page, so their
-    /// boxes, ranges and counts are merged. Rows on **different** pages stay separate — that
-    /// is D-09 — and so a segment id still appears more than once in the set.
+    /// boxes, ranges and counts are merged.
+    ///
+    /// Only fragments that **touch** are merged. Two fragments of one cell in two different
+    /// columns of a multi-column section are separated by the gutter, and unioning them would
+    /// publish a box spanning both columns and the space between - a rectangle covering ground
+    /// the cell does not occupy. Those stay separate rows, so a (page, id) pair is *usually*
+    /// one row but is not guaranteed to be.
+    ///
+    /// Rows on **different** pages always stay separate - that is D-09 - so a segment id
+    /// appears more than once in the set either way. Do not key a map by id alone.
     pub(crate) fn finish(mut self) -> SegmentMap {
         let rows = std::mem::take(&mut self.map.rows);
         let mut at: std::collections::HashMap<(usize, String), usize> =
             std::collections::HashMap::new();
         for row in rows {
-            match at.get(&(row.page, row.id.clone())) {
-                Some(&index) => {
+            let mergeable = at
+                .get(&(row.page, row.id.clone()))
+                .copied()
+                .filter(|&index| {
+                    match (self.map.rows[index].bbox, row.bbox) {
+                        (Some(a), Some(b)) => touches(a, b),
+                        // A box-less row carries no geometry to contradict, so it merges.
+                        _ => true,
+                    }
+                });
+            match mergeable {
+                Some(index) => {
                     let existing: &mut SegmentRow = &mut self.map.rows[index];
                     existing.bbox = match (existing.bbox, row.bbox) {
                         (Some(a), Some(b)) => Some(BoxPt {
@@ -458,6 +543,8 @@ impl SegmentRecorder {
                     existing.item_count += row.item_count;
                 }
                 None => {
+                    // A non-touching fragment replaces the merge target, so a run of adjacent
+                    // fragments still collapses pairwise down the page.
                     at.insert((row.page, row.id.clone()), self.map.rows.len());
                     self.map.rows.push(row);
                 }
@@ -495,6 +582,19 @@ fn own_indices(
         own.retain(|index| *index < child_lo || *index >= child_hi);
     }
     own
+}
+
+/// How far apart two fragment boxes may sit and still be one place. `item_bounds` inflates a
+/// stroked path by half its width, so consecutive fragments of one cell overlap slightly rather
+/// than meeting exactly; a gutter between two columns is an order of magnitude wider.
+const FRAGMENT_TOUCH_PT: f32 = 0.5;
+
+/// Whether two fragment boxes overlap or meet on both axes.
+fn touches(a: BoxPt, b: BoxPt) -> bool {
+    a.x0 <= b.x1 + FRAGMENT_TOUCH_PT
+        && b.x0 <= a.x1 + FRAGMENT_TOUCH_PT
+        && a.y0 <= b.y1 + FRAGMENT_TOUCH_PT
+        && b.y0 <= a.y1 + FRAGMENT_TOUCH_PT
 }
 
 /// The union of every item's box, or `None` when no item has one.
@@ -547,13 +647,16 @@ fn child(path: &SegmentPath, index: usize) -> SegmentPath {
     }
 }
 
-/// The WCHAR offset of the extended-control character that points at `control_index`.
-fn control_wchar_offset(para: &Paragraph, control_index: usize) -> Option<u32> {
+/// The WCHAR offset of the `BOOKMARK` control character that references `control_index`, or
+/// `None` when the paragraph carries no such anchor.
+fn bookmark_anchor_offset(para: &Paragraph, control_index: usize) -> Option<u32> {
     let mut offset = 0u32;
     for ch in &para.chars {
         if matches!(
             ch,
-            HwpChar::ExtCtrl { ctrl_index: Some(index), .. } if *index as usize == control_index
+            HwpChar::ExtCtrl { code, ctrl_index: Some(index), .. }
+                if *code == hwp_model::paragraph::ctrl_char::BOOKMARK
+                    && *index as usize == control_index
         ) {
             return Some(offset);
         }
@@ -616,6 +719,22 @@ mod tests {
         doc
     }
 
+    fn bookmark_control() -> GenericControl {
+        GenericControl {
+            ctrl_id: *b"bokm",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }
+    }
+
     fn contains(outer: BoxPt, inner: BoxPt) -> bool {
         outer.x0 <= inner.x0 + 0.01
             && outer.y0 <= inner.y0 + 0.01
@@ -640,6 +759,115 @@ mod tests {
             .filter(|row| row.kind == kind)
             .cloned()
             .collect()
+    }
+
+    /// A document whose paragraphs carry a **filled** `ParaShape.border_fill_id`, so
+    /// `draw_para_bg_slice` actually inserts a rectangle into the middle of `page.items`. No
+    /// other test in the suite sets `border_fill_id`, which is why the insert-ownership defect
+    /// this fixture exists for went unnoticed.
+    fn with_paragraph_backgrounds(markdown: &str) -> Document {
+        let mut doc = hwp_convert::from_markdown(markdown);
+        doc.header.border_fills.push(BorderFill {
+            attr: 0,
+            sides: [BorderLine::default(); 4],
+            diagonal: BorderLine::default(),
+            fill_type: 1,
+            bg_color: Some(0x00EE_EEEE),
+            hatch: None,
+            gradient: None,
+            tail: Vec::new(),
+        });
+        let id = doc.header.border_fills.len() as u16;
+        for shape in &mut doc.header.para_shapes {
+            shape.border_fill_id = id;
+        }
+        doc
+    }
+
+    /// A paragraph forced across a page break **mid-paragraph** by its own cached line
+    /// geometry. `LineSeg::flags` bit 0 marks a page-first line, so the second line opens a new
+    /// page; that comes from the model, not from shaping, so the split happens whatever fonts
+    /// the host has. This is the only way to reach `layout.rs`'s mid-paragraph break band,
+    /// where the third `draw_para_bg_slice` call site and one page-finalization site live.
+    fn split_mid_paragraph(background: bool) -> Document {
+        let mut doc = if background {
+            with_paragraph_backgrounds("문단 하나.\n")
+        } else {
+            hwp_convert::from_markdown("문단 하나.\n")
+        };
+        let para = &mut doc.sections[0].paragraphs[0];
+        para.chars
+            .extend("가나다라마바사아자차카타파하".chars().map(HwpChar::Text));
+        let text_len = para.wchar_len();
+        let seg = |text_start: u32, flags: u32| hwp_model::paragraph::LineSeg {
+            text_start,
+            v_pos: 0,
+            line_height: 1_600,
+            text_height: 1_600,
+            baseline_gap: 1_300,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 40_000,
+            flags,
+        };
+        // Both lines are flagged page-first; the second one is therefore a hard page break
+        // reached in the middle of the paragraph.
+        para.line_segs = vec![seg(0, 0x1), seg(text_len / 2, 0x1)];
+        doc
+    }
+
+    /// The insert-ownership test. `draw_para_bg_slice` inserts a paragraph's background at the
+    /// index captured when the paragraph opened, and that one index is both the open
+    /// paragraph's first item and the previous paragraph's exclusive end. Treating the insert
+    /// as belonging to both pushed each fill out of its own paragraph and into the one above,
+    /// so a published box ran down into the next paragraph and the fill belonged to no row.
+    #[test]
+    fn a_paragraph_background_belongs_to_the_paragraph_it_fills() {
+        let (list, map) = lay_out(&with_paragraph_backgrounds(
+            "첫 문단입니다.\n\n둘째 문단입니다.\n\n셋째 문단입니다.\n",
+        ));
+        // The fixture really does insert: a filled background is one extra item per paragraph.
+        let plain = lay_out(&hwp_convert::from_markdown(
+            "첫 문단입니다.\n\n둘째 문단입니다.\n\n셋째 문단입니다.\n",
+        ));
+        assert!(
+            list.pages[0].items.len() > plain.0.pages[0].items.len(),
+            "the fixture must add background items, or this test proves nothing"
+        );
+
+        let paras: Vec<SegmentRow> = map
+            .page(0)
+            .filter(|row| row.kind == kind::PARA)
+            .cloned()
+            .collect();
+        assert!(paras.len() > 1, "more than one paragraph on the page");
+        // Consecutive paragraphs occupy disjoint bands. With the insert credited to both
+        // neighbours, each box grew down by the height of the next paragraph's fill.
+        for (i, a) in paras.iter().enumerate() {
+            for b in &paras[i + 1..] {
+                let (Some(x), Some(y)) = (a.bbox, b.bbox) else {
+                    continue;
+                };
+                assert!(
+                    !overlaps(x, y),
+                    "paragraph boxes must not overlap: {x:?} {y:?}"
+                );
+            }
+        }
+        // And the fill is inside some row rather than orphaned: every paragraph row covers
+        // strictly more items than the same paragraph covers without a background.
+        let plain_covered: usize = plain
+            .1
+            .page(0)
+            .filter(|row| row.kind == kind::PARA)
+            .map(|row| row.item_count)
+            .sum();
+        let covered: usize = paras.iter().map(|row| row.item_count).sum();
+        assert_eq!(
+            covered - plain_covered,
+            paras.len(),
+            "each paragraph must own exactly its own background item"
+        );
     }
 
     /// The prepend test. A recorded index that was not corrected for the page border spliced
@@ -851,19 +1079,7 @@ mod tests {
         let mut doc = hwp_convert::from_markdown("책갈피 문단.\n");
         let para = &mut doc.sections[0].paragraphs[0];
         let control_index = para.controls.len();
-        para.controls.push(Control::Generic(GenericControl {
-            ctrl_id: *b"bokm",
-            data: Vec::new(),
-            paragraph_lists: Vec::new(),
-            extras: Vec::new(),
-            raw_children: Vec::new(),
-            gso_shapes: Vec::new(),
-            equation: None,
-            column_def: None,
-            caption: None,
-            hwpx_raw_xml: None,
-            container_box: None,
-        }));
+        para.controls.push(Control::Generic(bookmark_control()));
         para.chars.insert(
             1,
             hwp_model::HwpChar::ExtCtrl {
@@ -891,9 +1107,11 @@ mod tests {
         );
     }
 
-    /// One row per (segment, page) pair, even where the layout pass drew a cell in two
-    /// fragments that both landed on one page. Rows of one id on *different* pages stay
-    /// separate, so an id still repeats in the set — do not key a map by id alone.
+    /// Fragments of one segment that land on one page and touch are one row, even where the
+    /// layout pass drew them separately. Rows of one id on *different* pages stay separate, so
+    /// an id still repeats in the set. (Non-touching fragments on one page also stay separate;
+    /// this single-column fixture has none, which is why the uniqueness assertion holds here
+    /// and is not a general guarantee - see `non_touching_fragments_are_not_merged_into_one_box`.)
     #[test]
     fn one_row_per_segment_and_page() {
         let mut md = String::from("| 가 | 나 |\n|---|---|\n");
@@ -920,6 +1138,212 @@ mod tests {
         assert!(
             distinct < ids.len(),
             "a split table must report one id on more than one page"
+        );
+    }
+
+    /// A paragraph split across pages owns its background slice on **every** page, including
+    /// the one drawn in the mid-paragraph break band (the third `draw_para_bg_slice` call site,
+    /// which used to drop its insert count). With the insert credited to the open span, that
+    /// site's report is a no-op on every input reachable today - no closed span sits after the
+    /// insertion point during the line loop - so this test pins the property rather than the
+    /// line; `#[must_use]` on `draw_para_bg_slice` is what stops a fourth site dropping it.
+    #[test]
+    fn the_mid_paragraph_background_slice_is_attributed_too() {
+        let (list, map) = lay_out(&split_mid_paragraph(true));
+        let plain = lay_out(&split_mid_paragraph(false));
+        assert!(
+            list.pages[0].items.len() > plain.0.pages[0].items.len(),
+            "the fixture must add a background slice on the first page"
+        );
+        let rows: Vec<SegmentRow> = map
+            .rows
+            .iter()
+            .filter(|row| row.kind == kind::PARA)
+            .cloned()
+            .collect();
+        assert!(
+            rows.len() > 1,
+            "the paragraph must reach more than one page, or this test proves nothing"
+        );
+        let covered: usize = rows.iter().map(|row| row.item_count).sum();
+        let plain_covered: usize = plain
+            .1
+            .rows
+            .iter()
+            .filter(|row| row.kind == kind::PARA)
+            .map(|row| row.item_count)
+            .sum();
+        assert_eq!(
+            covered - plain_covered,
+            list.pages.iter().map(|p| p.items.len()).sum::<usize>()
+                - plain.0.pages.iter().map(|p| p.items.len()).sum::<usize>(),
+            "every background slice must belong to the paragraph it fills"
+        );
+    }
+
+    /// A paragraph split across pages reports one range per page, and the ranges partition its
+    /// characters. Before the split fixture existed this test's `windows(2)` loop was empty and
+    /// both of its assertions were dead.
+    #[test]
+    fn a_split_paragraphs_ranges_are_disjoint_and_contiguous() {
+        let (_, map) = lay_out(&split_mid_paragraph(false));
+        let ranges: Vec<CharRange> = map
+            .rows
+            .iter()
+            .filter(|row| row.kind == kind::PARA)
+            .filter_map(|row| row.chars)
+            .collect();
+        assert!(
+            ranges.len() > 1,
+            "the split paragraph must report a range per page"
+        );
+        let mut ranges = ranges;
+        ranges.sort_by_key(|range| (range.start, range.end));
+        for pair in ranges.windows(2) {
+            assert!(pair[0].end <= pair[1].start, "ranges overlap: {pair:?}");
+            assert_eq!(pair[0].end, pair[1].start, "ranges have a hole: {pair:?}");
+        }
+    }
+
+    // --- recorder-level tests -------------------------------------------------------------
+    //
+    // The next few drive `SegmentRecorder` directly. The properties they pin depend on the
+    // order of the recorder's own calls, not on what a document happens to lay out, and a
+    // document that reaches them (a footnote block emitted mid-paragraph, a hundred thousand
+    // segments) is either font-dependent or too large to keep in the suite.
+
+    fn page_with(items: usize) -> PageList {
+        PageList {
+            width_pt: 595.0,
+            height_pt: 842.0,
+            items: (0..items)
+                .map(|i| Item::Rect {
+                    x: i as f32,
+                    y: i as f32,
+                    w: 1.0,
+                    h: 1.0,
+                    fill: 0,
+                })
+                .collect(),
+        }
+    }
+
+    /// Page furniture is emitted while a paragraph span is still open at a mid-paragraph page
+    /// break: the note block, the note separator and the page number all land after the
+    /// paragraph's content but before the page is pushed. Without the recorded content
+    /// boundary the span ran to `page.items.len()` and swallowed them, inflating its box to the
+    /// page bottom and polluting its character range with `start_wchar` values belonging to a
+    /// different source paragraph.
+    #[test]
+    fn furniture_emitted_at_a_page_break_stays_out_of_an_open_span() {
+        let para = Paragraph::default();
+        let mut rec = SegmentRecorder::new();
+        rec.begin_paragraph(0, 0, &para, &page_with(0));
+        rec.content_end(&page_with(3)); // three items of content ...
+        rec.page_pushed(); // ... then two of furniture, then the push
+        rec.end_segment(&page_with(2));
+        rec.resolve(&[page_with(5), page_with(2)]);
+        let map = rec.finish();
+        assert_eq!(map.rows.len(), 2, "one row per page touched");
+        assert_eq!(
+            map.rows[0].item_count, 3,
+            "the first page's row stops where content stopped"
+        );
+        assert_eq!(map.rows[1].item_count, 2);
+    }
+
+    /// The row cap has to bound **rows**. `resolve` drains the span list at the end of every
+    /// section, so a cap counting spans alone reset itself per section while the row set - one
+    /// row per page a span touches - grew without a bound, and `truncated` stayed false.
+    #[test]
+    fn the_cap_bounds_rows_and_survives_a_section_boundary() {
+        let para = Paragraph::default();
+        let mut rec = SegmentRecorder::new();
+        let filler = SegmentRow {
+            page: 0,
+            kind: kind::PARA,
+            id: String::new(),
+            bbox: None,
+            chars: None,
+            item_count: 0,
+        };
+        rec.map.rows = vec![filler; MAX_SEGMENT_ROWS];
+        // Spans are empty here, exactly as they are just after a section resolve.
+        assert!(rec.spans.is_empty());
+        rec.begin_paragraph(0, 0, &para, &page_with(0));
+        rec.end_segment(&page_with(1));
+        rec.resolve(&[page_with(1)]);
+        let map = rec.finish();
+        assert!(
+            map.rows.iter().all(|row| row.id.is_empty()),
+            "the capped paragraph must not have produced a row"
+        );
+        assert!(map.truncated, "and the map says the set is incomplete");
+    }
+
+    /// Two fragments of one cell in different columns of a multi-column section are separated
+    /// by the gutter. Unioning them would publish one box covering both columns and the space
+    /// between, which is ground the cell does not occupy, so they stay separate rows.
+    #[test]
+    fn non_touching_fragments_are_not_merged_into_one_box() {
+        let row = |x0: f32, x1: f32| SegmentRow {
+            page: 0,
+            kind: kind::CELL,
+            id: "abc.0.1.2".into(),
+            bbox: Some(BoxPt {
+                x0,
+                y0: 10.0,
+                x1,
+                y1: 20.0,
+            }),
+            chars: None,
+            item_count: 1,
+        };
+        let mut rec = SegmentRecorder::new();
+        // Two vertically adjacent fragments in one column, plus one across the gutter.
+        rec.map.rows = vec![row(10.0, 100.0), row(100.0, 150.0), row(300.0, 400.0)];
+        let map = rec.finish();
+        assert_eq!(map.rows.len(), 2, "touching merges, a gutter does not");
+        assert_eq!(map.rows[0].bbox.unwrap().x0, 10.0);
+        assert_eq!(map.rows[0].bbox.unwrap().x1, 150.0);
+        assert_eq!(map.rows[1].bbox.unwrap().x0, 300.0);
+    }
+
+    /// An unanchored `bokm` control produces no envelope segment, so a row for it would carry
+    /// an id that joins to nothing.
+    #[test]
+    fn a_bookmark_with_no_anchor_character_produces_no_row() {
+        let mut doc = hwp_convert::from_markdown("책갈피 문단.\n");
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Generic(bookmark_control()));
+        let (_, map) = lay_out(&doc);
+        assert!(
+            rows_of(&map, kind::BOOKMARK).is_empty(),
+            "no anchor character, no segment, no row"
+        );
+    }
+
+    /// The layout pass can return early on an exhausted budget. The pages it returns carry
+    /// content whose provenance was recorded, so the rows for them must be published too:
+    /// before, the in-progress section's spans were dropped on the floor and the caller got a
+    /// `DisplayList` with pages and a `SegmentMap` with nothing for them.
+    #[test]
+    fn an_aborted_layout_still_publishes_the_rows_it_recorded() {
+        let doc = split_mid_paragraph(false);
+        let mut store = FontStore::new();
+        let mut warnings = RenderIssueAccumulator::new();
+        warnings.set_page_limit(1); // the second page cannot be opened
+        let (list, map) =
+            crate::layout::layout_document_with_segments(&doc, &mut store, &mut warnings);
+        assert_eq!(list.pages.len(), 1, "the budget stopped the second page");
+        assert!(
+            !map.rows.is_empty(),
+            "the rows for the page that was returned must be published"
+        );
+        assert!(
+            map.rows.iter().all(|row| row.page < list.pages.len()),
+            "and every row must index a page the caller actually received"
         );
     }
 

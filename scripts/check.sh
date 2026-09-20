@@ -26,6 +26,8 @@ run $CARGO test --workspace
 run python3 -m unittest tools/test_pdf_parity.py
 run bash scripts/tests/hancom-regression.sh
 run bash scripts/check-structured-corpus.sh
+run bash scripts/check-crate-edges.sh
+run bash scripts/check-crate-edges.sh --self-test
 run bash scripts/check-claims.sh
 run bash scripts/check-claims.sh --self-test
 run bash scripts/check-doc-surface.sh

@@ -1019,6 +1019,7 @@ fn layout_document_inner(
             // 본문 넘침: 직전 콘텐츠가 본문 하한을 지났으면 새 페이지
             // (lineseg 없는 생성 문서의 기본 페이지네이션)
             if content_bottom > body_bottom && paras_on_page > 0 {
+                rec.content_end(&page);
                 render_page_notes(
                     doc,
                     store,
@@ -1032,6 +1033,10 @@ fn layout_document_inner(
                 page_notes.clear();
                 page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                 if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                    // The returned pages carry content whose provenance was recorded; publishing
+                    // them without resolving would silently drop it. Still-open spans are
+                    // dropped and `SegmentMap::truncated` says the set is incomplete.
+                    rec.resolve(&pages);
                     return DisplayList { pages };
                 }
                 content_bottom = body_top;
@@ -1044,6 +1049,7 @@ fn layout_document_inner(
             // 쪽 나누기 (PARA_HEADER break_type bit2 / hp:p pageBreak)
             // — 글상자만 있어 items가 비어도 문단을 거쳤으면 분할한다
             if para.header.break_type & 0x04 != 0 && paras_on_page > 0 {
+                rec.content_end(&page);
                 render_page_notes(
                     doc,
                     store,
@@ -1057,6 +1063,10 @@ fn layout_document_inner(
                 page_notes.clear();
                 page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                 if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                    // The returned pages carry content whose provenance was recorded; publishing
+                    // them without resolving would silently drop it. Still-open spans are
+                    // dropped and `SegmentMap::truncated` says the set is incomplete.
+                    rec.resolve(&pages);
                     return DisplayList { pages };
                 }
                 content_bottom = body_top;
@@ -1251,7 +1261,7 @@ fn layout_document_inner(
                     // Finish the current page/column background slice before
                     // crossing the boundary (GC-9), without drawing its lower edge.
                     if let Some(top) = bg_slice_top {
-                        draw_para_bg_slice(
+                        let inserted = draw_para_bg_slice(
                             doc,
                             &mut page,
                             para,
@@ -1264,11 +1274,13 @@ fn layout_document_inner(
                             false,
                             warnings,
                         );
+                        rec.items_inserted(bg_slice_insert, inserted);
                         bg_first_slice = false;
                     }
                     if page_break {
                         // A page starts in band zero.
                         col_band = 0;
+                        rec.content_end(&page);
                         render_page_notes(
                             doc,
                             store,
@@ -1282,6 +1294,10 @@ fn layout_document_inner(
                         page_notes.clear();
                         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                         if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                            // The returned pages carry content whose provenance was recorded; publishing
+                            // them without resolving would silently drop it. Still-open spans are
+                            // dropped and `SegmentMap::truncated` says the set is incomplete.
+                            rec.resolve(&pages);
                             return DisplayList { pages };
                         }
                         paras_on_page = 0;
@@ -1495,8 +1511,13 @@ fn layout_document_inner(
                 if end == next
                     && (content_bottom > body_top + 0.01 || page_limit < body_bottom - 0.01)
                 {
+                    rec.content_end(&page);
                     page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                     if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                        // The returned pages carry content whose provenance was recorded; publishing
+                        // them without resolving would silently drop it. Still-open spans are
+                        // dropped and `SegmentMap::truncated` says the set is incomplete.
+                        rec.resolve(&pages);
                         return DisplayList { pages };
                     }
                     content_bottom = body_top;
@@ -1525,8 +1546,13 @@ fn layout_document_inner(
                 content_bottom = (content_bottom + used).min(page_limit);
                 next = end;
                 if next < pending_endnotes.len() {
+                    rec.content_end(&page);
                     page_numbers.finish(doc, store, &mut page, &furniture, warnings);
                     if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                        // The returned pages carry content whose provenance was recorded; publishing
+                        // them without resolving would silently drop it. Still-open spans are
+                        // dropped and `SegmentMap::truncated` says the set is incomplete.
+                        rec.resolve(&pages);
                         return DisplayList { pages };
                     }
                     content_bottom = body_top;
@@ -1535,8 +1561,13 @@ fn layout_document_inner(
             }
             pending_endnotes.clear();
         }
+        rec.content_end(&page);
         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
         if !push_page_checked(&mut pages, &mut page, None, warnings, rec) {
+            // The returned pages carry content whose provenance was recorded; publishing
+            // them without resolving would silently drop it. Still-open spans are
+            // dropped and `SegmentMap::truncated` says the set is incomplete.
+            rec.resolve(&pages);
             return DisplayList { pages };
         }
 
@@ -1636,6 +1667,7 @@ impl TableSplitCtx<'_, '_> {
         warnings: &mut RenderIssueAccumulator,
         rec: &mut SegmentRecorder,
     ) -> bool {
+        rec.content_end(page);
         render_page_notes(
             doc,
             store,
@@ -4907,6 +4939,10 @@ struct ParaGeom {
 /// 삽입해 글자 뒤로 보내고, 테두리 선은 위에 얹는다. `left`/`width`는 이미 들여쓰기(geom)와
 /// 단 오프셋을 반영한 상자의 좌변/폭. 문단이 페이지를 걸치면 조각마다 이 함수가 호출되며,
 /// 걸친 경계쪽 상/하변 테두리는 `draw_top`/`draw_bottom`을 false로 주어 긋지 않는다(GC-9).
+/// `#[must_use]`: the return value is the insert count every caller has to hand to
+/// `SegmentRecorder::items_inserted`. Dropping it silently misattributes every item recorded
+/// after the insert on that page, so the compiler is made to object to a call that ignores it.
+#[must_use]
 #[allow(clippy::too_many_arguments)]
 fn draw_para_bg_slice(
     doc: &Document,

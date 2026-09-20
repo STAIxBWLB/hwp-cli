@@ -49,19 +49,31 @@ fn paths(
     )
 }
 
-/// A paragraph carrying a **redundant** character-shape run — one whose shape id repeats the
-/// previous one, the form the HWP5 reader stores and the HWPX reader does not. An input without
-/// one would pass against an implementation that omitted `canonical_char_shape_runs` entirely.
+/// A paragraph built so that **every** normalization in the rule is load-bearing on it. An
+/// input a normalization does not touch makes the case that depends on it vacuous: it would
+/// pass against an implementation that omitted the normalization entirely.
+///
+/// - `(0, CharShapeId(9))` before `(0, CharShapeId(1))` is two runs at one position, which the
+///   HWPX reader collapses by overwriting and the HWP5 reader does not. Drop the
+///   same-position arm and this paragraph's ids part company.
+/// - `(1, CharShapeId(1))` repeats the previous shape id, which the HWP5 reader stores and the
+///   HWPX reader suppresses.
+/// - the trailing `CharCtrl(13)` is HWP5's `PARA_TEXT` terminator, which HWPX does not store.
+///   It matters to the **last run's** slice as well as to the paragraph's character list, so
+///   without it a `run_chars` that forgot to canonicalize would look identical on both sides.
 fn paragraph_with_a_redundant_run() -> Paragraph {
-    Paragraph {
+    let mut para = Paragraph {
         chars: "가나다라".chars().map(HwpChar::Text).collect(),
         char_shape_runs: vec![
+            (0, CharShapeId(9)), // same position as the next entry: the last one wins
             (0, CharShapeId(1)),
             (1, CharShapeId(1)), // redundant: the canonicalization must drop this
             (2, CharShapeId(2)),
         ],
         ..Default::default()
-    }
+    };
+    para.chars.push(HwpChar::CharCtrl(ctrl_char::PARA_BREAK));
+    para
 }
 
 /// A paragraph carrying the trailing `CharCtrl(13)` paragraph-break terminator HWP5's
@@ -171,8 +183,10 @@ fn para_kind_agrees_across_both_implementations() {
 fn run_kind_agrees_across_both_implementations() {
     let para = paragraph_with_a_redundant_run();
     let (convert, render) = paths(0, &[4]);
-    // Run 1 of the *canonical* list. If either side numbered runs off the raw list, the
-    // redundant entry above would shift its index and the two ids would part company.
+    // Every run of the *canonical* list, the last one included. If either side numbered runs
+    // off the raw list, the redundant entry above would shift the index; if either side
+    // hashed the raw character list, the trailing paragraph-break terminator would lengthen
+    // the **last** run's slice on one side only.
     for run_index in 0..2 {
         assert_eq!(
             hwp_convert::run_id(&convert, &para, run_index),
@@ -267,9 +281,16 @@ fn the_canonical_run_list_agrees_across_both_implementations() {
         hwp_convert::canonical_char_shape_runs(&para),
         hwp_render::segment_id::canonical_char_shape_runs(&para),
     );
+    let runs = hwp_render::segment_id::canonical_char_shape_runs(&para);
     assert_eq!(
-        hwp_render::segment_id::canonical_char_shape_runs(&para).len(),
-        2,
-        "the redundant run must be collapsed, or this file's run case proves nothing",
+        runs,
+        vec![(0, CharShapeId(1)), (2, CharShapeId(2))],
+        "the redundant run must be collapsed and the same-position run overwritten, or the \
+         run case proves nothing: {runs:?}",
     );
+    // The paragraph really does carry the HWP5 terminator the character canonicalization drops.
+    assert!(matches!(
+        para.chars.last(),
+        Some(HwpChar::CharCtrl(code)) if *code == ctrl_char::PARA_BREAK
+    ));
 }
