@@ -83,6 +83,17 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/check-structured-corpus.sh
+      # CLAUDE.md invariant 1 as a gate: hwp-convert and hwp-render must stay off each
+      # other's normal dependency graph, which is the whole reason the segment id rule is
+      # duplicated rather than shared.
+      - name: Crate edges (hub-and-spoke invariant)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/check-crate-edges.sh
+      - name: Crate edges self-test
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/check-crate-edges.sh --self-test
       # The doc-surface gate compares the documented tool count against a live `hwp mcp`
       # tools/list session, so it needs a runnable binary; clippy only type-checks.
       - name: Build hwp (the doc-surface gate drives the real MCP server)

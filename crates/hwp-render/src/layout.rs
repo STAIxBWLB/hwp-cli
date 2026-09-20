@@ -27,6 +27,7 @@ use crate::error::RenderError;
 use crate::fonts::FontStore;
 use crate::footnote::{self, Note};
 use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
+use crate::segment_map::{SegmentMap, SegmentRecorder};
 use crate::shape::{InlineItem, shape_range_page};
 use crate::tab::TabStop;
 
@@ -846,10 +847,36 @@ pub fn layout_document(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) -> DisplayList {
+    layout_document_inner(doc, store, warnings, &mut SegmentRecorder::disabled())
+}
+
+/// Lays the document out **and** records where each source segment landed, as the
+/// per-(page, segment) rows of [`crate::segment_map`].
+///
+/// Separate from [`layout_document`] because recording is not free and an ordinary render has
+/// no use for it: an untrusted document drives the segment count (T-05-04-01). The returned
+/// boxes are read off the `DisplayList` before any backend transform, so PNG, SVG and PDF all
+/// describe the same geometry (D-07).
+pub fn layout_document_with_segments(
+    doc: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+) -> (DisplayList, SegmentMap) {
+    let mut rec = SegmentRecorder::new();
+    let list = layout_document_inner(doc, store, warnings, &mut rec);
+    (list, rec.finish())
+}
+
+fn layout_document_inner(
+    doc: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
+) -> DisplayList {
     let mut pages = Vec::new();
     let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
 
-    for section in &doc.sections {
+    for (section_index, section) in doc.sections.iter().enumerate() {
         // 이 구역의 첫 페이지 인덱스 — 구역 끝에서 쪽 테두리를 전 페이지에 소급 삽입한다.
         let section_first_page = pages.len();
         let page_def = section
@@ -956,7 +983,7 @@ pub fn layout_document(
         // 목록(번호/불릿) 카운터 — 구역 단위, 문서 순서로 진행.
         let mut list_state = crate::list::ListState::default();
 
-        for para in &section.paragraphs {
+        for (para_index, para) in section.paragraphs.iter().enumerate() {
             skipped_controls += para
                 .controls
                 .iter()
@@ -992,6 +1019,7 @@ pub fn layout_document(
             // 본문 넘침: 직전 콘텐츠가 본문 하한을 지났으면 새 페이지
             // (lineseg 없는 생성 문서의 기본 페이지네이션)
             if content_bottom > body_bottom && paras_on_page > 0 {
+                rec.content_end(&page);
                 render_page_notes(
                     doc,
                     store,
@@ -1004,7 +1032,11 @@ pub fn layout_document(
                 );
                 page_notes.clear();
                 page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                    // The returned pages carry content whose provenance was recorded; publishing
+                    // them without resolving would silently drop it. Still-open spans are
+                    // dropped and `SegmentMap::truncated` says the set is incomplete.
+                    rec.resolve(&pages);
                     return DisplayList { pages };
                 }
                 content_bottom = body_top;
@@ -1017,6 +1049,7 @@ pub fn layout_document(
             // 쪽 나누기 (PARA_HEADER break_type bit2 / hp:p pageBreak)
             // — 글상자만 있어 items가 비어도 문단을 거쳤으면 분할한다
             if para.header.break_type & 0x04 != 0 && paras_on_page > 0 {
+                rec.content_end(&page);
                 render_page_notes(
                     doc,
                     store,
@@ -1029,7 +1062,11 @@ pub fn layout_document(
                 );
                 page_notes.clear();
                 page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                    // The returned pages carry content whose provenance was recorded; publishing
+                    // them without resolving would silently drop it. Still-open spans are
+                    // dropped and `SegmentMap::truncated` says the set is incomplete.
+                    rec.resolve(&pages);
                     return DisplayList { pages };
                 }
                 content_bottom = body_top;
@@ -1040,6 +1077,9 @@ pub fn layout_document(
             }
             page_numbers.apply_controls(para, warnings);
             paras_on_page += 1;
+            // Opened after the page-break blocks above: note blocks and page numbers are
+            // emitted while finalizing the *previous* page and must stay outside this span.
+            rec.begin_paragraph(section_index, para_index, para, &page);
 
             // 본문 각주/미주 마커(윗첨자 번호)와 이 페이지에 속할 노트 수집.
             // Split footnotes into the page queue and endnotes into the section queue.
@@ -1172,6 +1212,7 @@ pub fn layout_document(
                         has_flow: &mut has_flow_in_current_band,
                     }),
                     warnings,
+                    rec,
                 );
                 content_bottom = objects_bottom;
                 // A fallback paragraph is one slice with both borders. If an
@@ -1182,7 +1223,7 @@ pub fn layout_document(
                     } else {
                         (bg_slice_insert, top, true)
                     };
-                    draw_para_bg_slice(
+                    let inserted = draw_para_bg_slice(
                         doc,
                         &mut page,
                         para,
@@ -1195,7 +1236,9 @@ pub fn layout_document(
                         true,
                         warnings,
                     );
+                    rec.items_inserted(slice_insert, inserted);
                 }
+                rec.end_segment(&page);
                 has_flow_in_current_band = true;
                 continue;
             }
@@ -1218,7 +1261,7 @@ pub fn layout_document(
                     // Finish the current page/column background slice before
                     // crossing the boundary (GC-9), without drawing its lower edge.
                     if let Some(top) = bg_slice_top {
-                        draw_para_bg_slice(
+                        let inserted = draw_para_bg_slice(
                             doc,
                             &mut page,
                             para,
@@ -1231,11 +1274,13 @@ pub fn layout_document(
                             false,
                             warnings,
                         );
+                        rec.items_inserted(bg_slice_insert, inserted);
                         bg_first_slice = false;
                     }
                     if page_break {
                         // A page starts in band zero.
                         col_band = 0;
+                        rec.content_end(&page);
                         render_page_notes(
                             doc,
                             store,
@@ -1248,7 +1293,11 @@ pub fn layout_document(
                         );
                         page_notes.clear();
                         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                        if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                        if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                            // The returned pages carry content whose provenance was recorded; publishing
+                            // them without resolving would silently drop it. Still-open spans are
+                            // dropped and `SegmentMap::truncated` says the set is incomplete.
+                            rec.resolve(&pages);
                             return DisplayList { pages };
                         }
                         paras_on_page = 0;
@@ -1394,6 +1443,7 @@ pub fn layout_document(
                     has_flow: &mut has_flow_in_current_band,
                 }),
                 warnings,
+                rec,
             );
             content_bottom = objects_bottom;
             // 마지막(또는 유일) 배경 조각: 하변 테두리 O, 상변은 첫 조각일 때만(=경계 안 걸침).
@@ -1403,7 +1453,7 @@ pub fn layout_document(
                 } else {
                     (bg_slice_insert, top, bg_first_slice)
                 };
-                draw_para_bg_slice(
+                let inserted = draw_para_bg_slice(
                     doc,
                     &mut page,
                     para,
@@ -1416,7 +1466,9 @@ pub fn layout_document(
                     true,
                     warnings,
                 );
+                rec.items_inserted(slice_insert, inserted);
             }
+            rec.end_segment(&page);
         }
         if skipped_controls > 0 {
             warnings.push(
@@ -1459,8 +1511,13 @@ pub fn layout_document(
                 if end == next
                     && (content_bottom > body_top + 0.01 || page_limit < body_bottom - 0.01)
                 {
+                    rec.content_end(&page);
                     page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                        // The returned pages carry content whose provenance was recorded; publishing
+                        // them without resolving would silently drop it. Still-open spans are
+                        // dropped and `SegmentMap::truncated` says the set is incomplete.
+                        rec.resolve(&pages);
                         return DisplayList { pages };
                     }
                     content_bottom = body_top;
@@ -1489,8 +1546,13 @@ pub fn layout_document(
                 content_bottom = (content_bottom + used).min(page_limit);
                 next = end;
                 if next < pending_endnotes.len() {
+                    rec.content_end(&page);
                     page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings) {
+                    if !push_page_checked(&mut pages, &mut page, Some((w, h)), warnings, rec) {
+                        // The returned pages carry content whose provenance was recorded; publishing
+                        // them without resolving would silently drop it. Still-open spans are
+                        // dropped and `SegmentMap::truncated` says the set is incomplete.
+                        rec.resolve(&pages);
                         return DisplayList { pages };
                     }
                     content_bottom = body_top;
@@ -1499,10 +1561,19 @@ pub fn layout_document(
             }
             pending_endnotes.clear();
         }
+        rec.content_end(&page);
         page_numbers.finish(doc, store, &mut page, &furniture, warnings);
-        if !push_page_checked(&mut pages, &mut page, None, warnings) {
+        if !push_page_checked(&mut pages, &mut page, None, warnings, rec) {
+            // The returned pages carry content whose provenance was recorded; publishing
+            // them without resolving would silently drop it. Still-open spans are
+            // dropped and `SegmentMap::truncated` says the set is incomplete.
+            rec.resolve(&pages);
             return DisplayList { pages };
         }
+
+        // Turn this section's spans into rows **before** any furniture is prepended: the
+        // prepends splice onto the front of `page.items` and would shift every recorded index.
+        rec.resolve(&pages);
 
         // Prepend the page border to every page in this section.
         if let Some(border) = &page_border {
@@ -1542,10 +1613,13 @@ fn push_page_checked(
     page: &mut PageList,
     next_dimensions: Option<(f32, f32)>,
     warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
 ) -> bool {
     if !warnings.charge_page() {
         return false;
     }
+    // The one place a page is pushed, and so the one place the recorder's page ordinal moves.
+    rec.page_pushed();
     let next = next_dimensions.map_or(
         PageList {
             width_pt: 0.0,
@@ -1591,7 +1665,9 @@ impl TableSplitCtx<'_, '_> {
         store: &mut FontStore,
         page: &mut PageList,
         warnings: &mut RenderIssueAccumulator,
+        rec: &mut SegmentRecorder,
     ) -> bool {
+        rec.content_end(page);
         render_page_notes(
             doc,
             store,
@@ -1605,7 +1681,7 @@ impl TableSplitCtx<'_, '_> {
         self.page_notes.clear();
         self.page_numbers
             .finish(doc, store, page, self.furniture, warnings);
-        if !push_page_checked(self.pages, page, Some(self.page_dims), warnings) {
+        if !push_page_checked(self.pages, page, Some(self.page_dims), warnings, rec) {
             return false;
         }
         *self.prev_v_pos = -1;
@@ -2400,15 +2476,22 @@ fn layout_para_objects(
     nested_origin: (f32, f32),
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
 ) -> (f32, bool) {
     let mut bottom = content_bottom;
     let mut object_y = anchor_top;
     // After a split, the returned cursor is relative to the final page.
     let mut page_split = false;
 
-    for control in &para.controls {
+    for (control_index, control) in para.controls.iter().enumerate() {
         match control {
+            // A bookmark is an invisible point marker by design (GG-25): it never reaches a
+            // display item, so it is recorded directly instead of as a span (D-08a).
+            Control::Generic(generic) if generic.ctrl_id == *b"bokm" => {
+                rec.bookmark(control_index, generic, para);
+            }
             Control::Table(table) => {
+                rec.begin_table(control_index, table, page);
                 // Measure a top caption before table planning so every fragment
                 // reserves the correct first-fragment offset. The table emitter
                 // places it after any page break selected by the planner.
@@ -2437,7 +2520,9 @@ fn layout_para_objects(
                     top_caption,
                     split.as_deref_mut(),
                     warnings,
+                    rec,
                 );
+                rec.end_segment(page);
                 if table_split {
                     // 쪽이 나뉐 뒤의 커서는 새 페이지 좌표 — 이전 페이지의
                     // page's bottom; doing so would create a blank page.
@@ -3019,6 +3104,7 @@ fn layout_table(
     mut top_caption: Option<CaptionPrelude>,
     mut split: Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
 ) -> (f32, bool, f32) {
     let cols = table.cols.max(1) as usize;
     let rows = table.rows.max(1) as usize;
@@ -3265,6 +3351,7 @@ fn layout_table(
             &mut top_caption,
             &mut split,
             warnings,
+            rec,
         )
     {
         return result;
@@ -3400,7 +3487,7 @@ fn layout_table(
             let Some(ctx) = split.as_deref_mut() else {
                 break;
             };
-            if !ctx.break_page(doc, store, page, warnings) {
+            if !ctx.break_page(doc, store, page, warnings, rec) {
                 break;
             }
             page_advanced = true;
@@ -3429,6 +3516,7 @@ fn layout_table(
                 data_top - header_h,
                 &mut header_ls,
                 warnings,
+                rec,
             );
         }
         draw_table_rows(
@@ -3445,6 +3533,7 @@ fn layout_table(
             data_top - row_prefix[rs],
             &mut cell_ls,
             warnings,
+            rec,
         );
         end_y = data_top + (row_prefix[re] - row_prefix[rs]);
         final_fragment_top = data_top - if with_header { header_h } else { 0.0 };
@@ -3499,6 +3588,7 @@ fn layout_table_cell_fragments(
     top_caption: &mut Option<CaptionPrelude>,
     split: &mut Option<&mut TableSplitCtx<'_, '_>>,
     warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
 ) -> Option<(f32, bool, f32)> {
     let (body_top, body_bottom, first_body_bottom) = {
         let ctx = split.as_deref()?;
@@ -3889,7 +3979,7 @@ fn layout_table_cell_fragments(
                         RenderIssueCode::TableRowTooTallClipped,
                         format!("cell row={row} fragment={group_index}"),
                     );
-                } else if !ctx.break_page(doc, store, page, warnings) {
+                } else if !ctx.break_page(doc, store, page, warnings, rec) {
                     return Some((cursor, page_advanced, final_fragment_top));
                 } else {
                     page_advanced = true;
@@ -3920,6 +4010,7 @@ fn layout_table_cell_fragments(
                     body_top,
                     &mut header_ls,
                     warnings,
+                    rec,
                 );
                 cursor = body_top + row_h[..header_rows].iter().sum::<f32>();
                 if cursor + part_height > body_bottom + 0.5 {
@@ -3965,6 +4056,7 @@ fn layout_table_cell_fragments(
                 // this one ends at a page boundary. Mirrors the break test above.
                 let closes_page = group_index + 1 == group_count
                     || cursor + part_height + next_part_height > current_bottom + 0.5;
+                rec.begin_cell(cell_index, cell, page);
                 draw_table_cell_fragment(
                     doc,
                     store,
@@ -3986,6 +4078,7 @@ fn layout_table_cell_fragments(
                     &mut cell_ls,
                     warnings,
                 );
+                rec.end_segment(page);
             }
             opened_page = false;
             cursor += part_height;
@@ -4150,6 +4243,7 @@ fn draw_table_rows(
     base_y: f32,
     cell_ls: &mut crate::list::ListState,
     warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
 ) {
     let cols = col_w.len();
     let rows = row_h.len();
@@ -4171,6 +4265,8 @@ fn draw_table_rows(
         }
         let ch: f32 = row_h[r..span_end].iter().sum();
 
+        rec.begin_cell(ci, cell, page);
+
         let border_fill = doc
             .header
             .border_fills
@@ -4179,6 +4275,7 @@ fn draw_table_rows(
         // 1) 배경
         if let Some(item) = border_fill.and_then(|bf| bg_fill_item(bf, cx, cy, cw, ch)) {
             if !warnings.charge_display_items(1) {
+                rec.end_segment(page);
                 return;
             }
             page.items.push(item);
@@ -4224,6 +4321,7 @@ fn draw_table_rows(
                 [true; 4],
             );
             if !warnings.charge_display_items(items.len()) {
+                rec.end_segment(page);
                 return;
             }
             page.items.extend(items);
@@ -4243,12 +4341,14 @@ fn draw_table_rows(
                 for (dx1, dy1, dx2, dy2) in dirs {
                     let items = crate::border::border_line_items(dx1, dy1, dx2, dy2, &bf.diagonal);
                     if !warnings.charge_display_items(items.len()) {
+                        rec.end_segment(page);
                         return;
                     }
                     page.items.extend(items);
                 }
             }
         }
+        rec.end_segment(page);
     }
 }
 
@@ -4607,6 +4707,9 @@ fn layout_box_para_iter<'a>(
                 (origin_x, origin_y), // Nested shapes are relative to this box's own origin.
                 None,                 // Nested objects inside a cell/text box do not cross pages.
                 warnings,
+                // A nested paragraph's indices name no path in the document's own tree, so
+                // recording here would attribute geometry to a segment that does not exist.
+                &mut SegmentRecorder::disabled(),
             );
             content_bottom = objects_bottom;
             if content_bottom > before_objects {
@@ -4836,6 +4939,10 @@ struct ParaGeom {
 /// 삽입해 글자 뒤로 보내고, 테두리 선은 위에 얹는다. `left`/`width`는 이미 들여쓰기(geom)와
 /// 단 오프셋을 반영한 상자의 좌변/폭. 문단이 페이지를 걸치면 조각마다 이 함수가 호출되며,
 /// 걸친 경계쪽 상/하변 테두리는 `draw_top`/`draw_bottom`을 false로 주어 긋지 않는다(GC-9).
+/// `#[must_use]`: the return value is the insert count every caller has to hand to
+/// `SegmentRecorder::items_inserted`. Dropping it silently misattributes every item recorded
+/// after the insert on that page, so the compiler is made to object to a call that ignores it.
+#[must_use]
 #[allow(clippy::too_many_arguments)]
 fn draw_para_bg_slice(
     doc: &Document,
@@ -4849,27 +4956,32 @@ fn draw_para_bg_slice(
     draw_top: bool,
     draw_bottom: bool,
     warnings: &mut RenderIssueAccumulator,
-) {
+) -> usize {
+    // How many items were *inserted* at `insert_idx` rather than appended. The caller feeds it
+    // to `SegmentRecorder::items_inserted`, because an insert shifts every later recorded index
+    // on this page; appends do not.
+    let mut inserted = 0usize;
     if bottom <= top || width <= 0.0 {
-        return;
+        return inserted;
     }
     let Some(ps) = doc.header.para_shapes.get(para.para_shape.0 as usize) else {
-        return;
+        return inserted;
     };
     // border_fill_id는 1-based(0 = 참조 없음).
     let Some(idx) = (ps.border_fill_id as usize).checked_sub(1) else {
-        return;
+        return inserted;
     };
     let Some(bf) = doc.header.border_fills.get(idx) else {
-        return;
+        return inserted;
     };
     // 배경(텍스트보다 뒤에 오도록 삽입).
     if let Some(item) = bg_fill_item(bf, left, top, width, bottom - top) {
         let ins = insert_idx.min(page.items.len());
         if !warnings.charge_display_items(1) {
-            return;
+            return inserted;
         }
         page.items.insert(ins, item);
+        inserted += 1;
     }
     // Left and right are always visible; page-split slices suppress internal top/bottom edges.
     let items = crate::border::border_rectangle_items(
@@ -4881,9 +4993,10 @@ fn draw_para_bg_slice(
         [true, true, draw_top, draw_bottom],
     );
     if !warnings.charge_display_items(items.len()) {
-        return;
+        return inserted;
     }
     page.items.extend(items);
+    inserted
 }
 
 fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
