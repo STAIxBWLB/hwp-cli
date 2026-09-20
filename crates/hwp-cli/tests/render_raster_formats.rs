@@ -157,3 +157,51 @@ fn output_extension_infers_the_format() {
         }
     }
 }
+
+/// A widened schema enum is not a guard until something emits the new values and validates them.
+/// `hwp render --report` declares the published `hwp-render-report-v1` contract, so a report
+/// naming a format the schema rejects would fail every consumer that validates the contract.
+#[test]
+fn jpeg_and_webp_reports_validate_against_the_published_schema() {
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/render-report-v1.schema.json"
+    ))
+    .expect("parse render report schema");
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .expect("build validator");
+
+    for (ext, format) in [("jpg", "jpeg"), ("webp", "webp")] {
+        let dir = out_dir(&format!("report-{format}"));
+        let report_path = dir.join("report.json");
+        let done = Command::new(env!("CARGO_BIN_EXE_hwp"))
+            .arg("render")
+            .args(["--dpi", DPI, "--format", format, "--report"])
+            .arg(&report_path)
+            .arg("-o")
+            .arg(dir.join(format!("out.{ext}")))
+            .arg(sample())
+            .output()
+            .expect("run hwp render --report");
+        assert!(
+            done.status.success(),
+            "hwp render --format {format} --report: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).expect("read report"))
+                .expect("parse report");
+        assert!(
+            validator.is_valid(&value),
+            "schema rejected the {format} render report: {value}"
+        );
+        assert_eq!(value["contract"], "hwp-render-report-v1");
+        assert_eq!(value["schema_version"], "1.0");
+        assert_eq!(
+            value["format"], format,
+            "the report must name the format that was actually encoded"
+        );
+    }
+}
