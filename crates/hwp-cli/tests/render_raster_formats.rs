@@ -105,8 +105,16 @@ fn webp_pages_are_pixel_identical_to_the_png_render() {
 #[test]
 fn identical_invocations_produce_byte_identical_files() {
     for (ext, format) in [("jpg", "jpeg"), ("webp", "webp")] {
-        let first = render(&out_dir(&format!("determinism-{format}-a")), ext, Some(format));
-        let second = render(&out_dir(&format!("determinism-{format}-b")), ext, Some(format));
+        let first = render(
+            &out_dir(&format!("determinism-{format}-a")),
+            ext,
+            Some(format),
+        );
+        let second = render(
+            &out_dir(&format!("determinism-{format}-b")),
+            ext,
+            Some(format),
+        );
         assert_eq!(first.len(), second.len(), "{format}: page count differs");
         for (a, b) in first.iter().zip(&second) {
             let (a_bytes, b_bytes) = (
