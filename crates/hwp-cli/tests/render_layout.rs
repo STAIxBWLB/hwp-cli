@@ -664,62 +664,107 @@ fn a_page_crossing_segments_ranges_are_disjoint_and_contiguous() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// D-09's shape, guaranteed on every host: one row per (segment, page), each with its own box
-/// and its own character range, and the id repeating across the two pages.
+/// D-09 end to end and non-vacuously on any host: a paragraph really is split across a page
+/// break, and the PUBLISHED artifact carries one row per (segment, page), each with its own box
+/// and its own character range.
 ///
-/// Synthetic because the real case is font-dependent and this one must not be. It drives the
-/// real serializer and the real published schema, so a change that collapsed a segment's two
-/// page rows into one - or that added a uniqueness constraint - fails here rather than
-/// silently on a host nobody runs.
+/// THIS TEST EXISTS BECAUSE THE FIXTURE PATH IS FONT-DEPENDENT. Its sibling above reads real
+/// pagination on the committed sample and cannot assert that any segment actually crossed a
+/// page, because where a break falls depends on shaping and CI bundles no fonts. Do not
+/// "simplify" this one back onto the fixture: that would make both tests vacuous together on
+/// exactly the host that runs them.
+///
+/// The split is forced the way 05-04 forces it - by the paragraph's own cached `LineSeg`
+/// geometry, where flag bit 0 marks a page-first line. That comes from the MODEL, not from
+/// shaping, so it happens whatever fonts the host has. Synthesizing a very long paragraph
+/// instead would have inherited the problem it solves: line count is shaping.
 #[test]
-fn the_artifact_carries_one_row_per_segment_and_page_for_a_page_crossing_segment() {
-    let page = || hwp_render::display::PageList {
-        width_pt: 595.0,
-        height_pt: 842.0,
-        items: Vec::new(),
+fn the_published_artifact_carries_one_row_per_segment_and_page_for_a_split_paragraph() {
+    let mut doc = hwp_convert::from_markdown("문단 하나.\n");
+    let para = &mut doc.sections[0].paragraphs[0];
+    para.chars.extend(
+        "가나다라마바사아자차카타파하"
+            .chars()
+            .map(hwp_model::HwpChar::Text),
+    );
+    let text_len = para.wchar_len();
+    let seg = |text_start: u32| hwp_model::paragraph::LineSeg {
+        text_start,
+        v_pos: 0,
+        line_height: 1_600,
+        text_height: 1_600,
+        baseline_gap: 1_300,
+        line_spacing: 0,
+        col_start: 0,
+        seg_width: 40_000,
+        // Both lines are flagged page-first, so the second is a hard break mid-paragraph.
+        flags: 0x1,
     };
-    let list = hwp_render::display::DisplayList {
-        pages: vec![page(), page()],
-    };
-    let part =
-        |page: usize, y0: f32, y1: f32, start: u32, end: u32| hwp_render::segment_map::SegmentRow {
-            page,
-            kind: hwp_render::segment_map::kind::PARA,
-            id: "abc.0.7".into(),
-            bbox: Some(hwp_render::segment_map::BoxPt {
-                x0: 85.0,
-                y0,
-                x1: 510.0,
-                y1,
-            }),
-            chars: Some(hwp_render::segment_map::CharRange { start, end }),
-            item_count: 1,
-        };
-    let map = hwp_render::segment_map::SegmentMap {
-        rows: vec![
-            part(0, 700.0, 780.0, 0, 120),
-            part(1, 100.0, 180.0, 120, 260),
-        ],
-        truncated: false,
-    };
-    let value = hwp_cli::render_layout::layout_json(&list, &map, &[1, 2]);
+    para.line_segs = vec![seg(0), seg(text_len / 2)];
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let (list, map) =
+        hwp_render::layout::layout_document_with_segments(&doc, &mut store, &mut warnings);
+    let selected: Vec<usize> = (1..=list.pages.len()).collect();
+    let value = hwp_cli::render_layout::layout_json(&list, &map, &selected);
+
     if let Err(error) = validator().validate(&value) {
-        panic!("the schema rejected a page-crossing segment: {error}");
+        panic!("a split paragraph's layout artifact failed the published schema: {error}");
     }
 
-    let rows: Vec<&serde_json::Value> = value["pages"]
-        .as_array()
-        .expect("pages")
-        .iter()
-        .flat_map(|p| p["rows"].as_array().expect("rows"))
-        .collect();
-    assert_eq!(rows.len(), 2, "one row per (segment, page)");
-    assert_eq!(rows[0]["id"], rows[1]["id"], "the id repeats across pages");
-    assert_ne!(rows[0]["box"], rows[1]["box"], "each row has its own box");
-    assert_eq!(
-        rows[0]["source_chars"]["end"], rows[1]["source_chars"]["start"],
-        "the two ranges are disjoint and contiguous"
+    let mut by_id: std::collections::BTreeMap<String, Vec<(u64, u64, serde_json::Value)>> =
+        Default::default();
+    for page in value["pages"].as_array().expect("pages") {
+        for row in page["rows"].as_array().expect("rows") {
+            if row["kind"] != "para" {
+                continue;
+            }
+            if let Some(range) = row["source_chars"].as_object() {
+                by_id
+                    .entry(row["id"].as_str().expect("id").to_string())
+                    .or_default()
+                    .push((
+                        range["start"].as_u64().expect("start"),
+                        range["end"].as_u64().expect("end"),
+                        row["box"].clone(),
+                    ));
+            }
+        }
+    }
+
+    let split: Vec<_> = by_id.iter().filter(|(_, r)| r.len() > 1).collect();
+    assert!(
+        !split.is_empty(),
+        "no paragraph was split, so this test asserted nothing. The break is driven by \
+         LineSeg flags from the model, not by shaping, so this failing means the model-driven \
+         break band in layout.rs moved - not that the host lacks fonts. Rows seen: {:?}",
+        by_id.keys().collect::<Vec<_>>()
     );
+
+    for (id, rows) in split {
+        let mut sorted = rows.clone();
+        sorted.sort_by_key(|(start, end, _)| (*start, *end));
+        for pair in sorted.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].0,
+                "ranges of {id} overlap: {:?} and {:?}",
+                (pair[0].0, pair[0].1),
+                (pair[1].0, pair[1].1)
+            );
+            assert_eq!(
+                pair[0].1,
+                pair[1].0,
+                "ranges of {id} have a hole between {:?} and {:?}",
+                (pair[0].0, pair[0].1),
+                (pair[1].0, pair[1].1)
+            );
+        }
+        assert_ne!(
+            sorted[0].2, sorted[1].2,
+            "each of {id}'s page rows must carry its own box, not a shared one"
+        );
+    }
 }
 
 /// The published artifact must survive an id repeating on ONE page, because two fragments of
