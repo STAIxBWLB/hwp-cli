@@ -90,6 +90,10 @@ pub enum RenderIssueCode {
     /// and the content is still drawn, so this is a geometry deviation rather
     /// than lost content.
     TableCellContentOverflow,
+    /// A body paragraph line is taller than the page's body box, so no page break can make it
+    /// fit. The line is still drawn, so this is a geometry deviation rather than lost content -
+    /// the same contract `TableCellContentOverflow` carries for a table cell.
+    ParagraphLineContentOverflow,
     TextBoxGeometryInvalidOmitted,
     ShapeDepthLimitOmitted,
     ShapeStyleInvalidOmitted,
@@ -132,6 +136,7 @@ impl RenderIssueCode {
             Self::TableRowTooTallClipped => "table_row_too_tall_clipped",
             Self::TableCellFragmentationIncomplete => "table_cell_fragmentation_incomplete",
             Self::TableCellContentOverflow => "table_cell_content_overflow",
+            Self::ParagraphLineContentOverflow => "paragraph_line_content_overflow",
             Self::TextBoxGeometryInvalidOmitted => "text_box_geometry_invalid_omitted",
             Self::ShapeDepthLimitOmitted => "shape_depth_limit_omitted",
             Self::ShapeStyleInvalidOmitted => "shape_style_invalid_omitted",
@@ -150,7 +155,8 @@ impl RenderIssueCode {
             Self::FontSubstituted
             | Self::FontSubsetFallback
             | Self::PictureEffectsUnsupported
-            | Self::TableCellContentOverflow => RenderIssueSeverity::Warning,
+            | Self::TableCellContentOverflow
+            | Self::ParagraphLineContentOverflow => RenderIssueSeverity::Warning,
             Self::ParseBudgetExceeded
             | Self::RenderExecutionFailed
             | Self::PaginationDriftDetected

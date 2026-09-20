@@ -4332,3 +4332,264 @@ fn endnotes_paginate_across_all_required_pages() {
         );
     }
 }
+
+/// The body box of the (single) section, in points: `(top, bottom)`.
+fn body_band(doc: &hwp_model::Document) -> (f32, f32) {
+    let page = doc.sections[0].section_def().unwrap().page.unwrap();
+    (
+        (page.margin_top.0 + page.margin_header.0) as f32 / 100.0,
+        (page.height.0 - page.margin_bottom.0 - page.margin_footer.0) as f32 / 100.0,
+    )
+}
+
+/// Every glyph baseline on each page, paired with its page index.
+fn baselines(list: &hwp_render::display::DisplayList) -> Vec<(usize, f32)> {
+    list.pages
+        .iter()
+        .enumerate()
+        .flat_map(|(i, page)| {
+            page.items.iter().filter_map(move |item| match item {
+                hwp_render::display::Item::Glyphs { y, .. } => Some((i, *y)),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// A document this tool generates carries no cached `LineSeg`s, so its paragraphs take
+/// layout's fallback band. That band had no page push of any kind (#282): a paragraph taller
+/// than the page was emitted in full below the page bottom, and pagination could only happen
+/// when the *next* paragraph started - so a document that is one long paragraph rendered to a
+/// single page with its content stacked tens of pages below it.
+///
+/// The line count here comes from markdown hard breaks (`"  \n"` → `LINE_BREAK`), which
+/// advance the baseline in `place_wrapped` without asking a font anything. Driving the break
+/// with long text instead would be driving line count through shaping, which is
+/// font-dependent, and CI bundles no fonts - the test would quietly prove nothing there.
+#[test]
+fn 캐시_없는_긴_문단은_쪽을_넘긴다() {
+    let md: String = (0..400).map(|i| format!("{i}번째 줄  \n")).collect();
+    let doc = hwp_convert::from_markdown(&md);
+
+    // The premises this test rests on, asserted rather than assumed.
+    assert_eq!(
+        doc.sections[0].paragraphs.len(),
+        1,
+        "the hard breaks must stay inside one paragraph"
+    );
+    let para = &doc.sections[0].paragraphs[0];
+    assert!(
+        para.line_segs.is_empty(),
+        "a generated paragraph must reach the fallback band, or this test proves nothing"
+    );
+    let breaks = para
+        .chars
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                hwp_model::HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
+            )
+        })
+        .count();
+    assert_eq!(breaks, 399, "the line count must come from the model");
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    let (body_top, body_bottom) = body_band(&doc);
+    // 400 lines of 16pt against a ~658pt body box: ~41 lines a page, so about ten pages.
+    assert!(
+        list.pages.len() > 1,
+        "one paragraph of 400 declared lines must paginate — got {} page(s)",
+        list.pages.len()
+    );
+    for (page, y) in baselines(&list) {
+        assert!(
+            y >= body_top && y <= body_bottom,
+            "a baseline at y={y} on page {page} is outside the body box \
+             ({body_top}..{body_bottom})"
+        );
+    }
+}
+
+/// A line taller than the body box itself cannot be rescued by any page break. It is still
+/// drawn - the deviation is reported rather than silently swallowed, the contract
+/// `table_cell_content_overflow` already carries for a table cell.
+#[test]
+fn 쪽보다_큰_줄은_보고된다() {
+    let mut doc = hwp_convert::from_markdown("한 줄  \n두 줄  \n세 줄\n");
+    let (body_top, body_bottom) = body_band(&doc);
+    // 500pt text → a 800pt line box, taller than the ~658pt body box. Declared in the model,
+    // so the overflow does not depend on what font the host resolves.
+    for shape in &mut doc.header.char_shapes {
+        shape.base_size = 50_000;
+    }
+    assert!(
+        500.0 * 1.6 > body_bottom - body_top,
+        "the fixture must declare a line taller than the body box"
+    );
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let _ = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    let report = warns.finish();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::ParagraphLineContentOverflow),
+        "an unfittable line must be reported: {:?}",
+        report.issues
+    );
+
+    // The same document at a size that fits reports nothing, so the assertion above is not
+    // satisfied by some unrelated always-on warning.
+    let fits = hwp_convert::from_markdown("한 줄  \n두 줄  \n세 줄\n");
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let _ = hwp_render::layout::layout_document(&fits, &mut store, &mut warns);
+    assert!(
+        !warns
+            .finish()
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::ParagraphLineContentOverflow),
+        "a paragraph that fits must not report an overflow"
+    );
+}
+
+/// The fallback band's break decision was `lines_on_page > 0`, which exempted the
+/// paragraph's *own* first line, and the band above it only breaks when the *previous*
+/// paragraph already passed the body bottom. A paragraph that began within a descent of the
+/// bottom therefore drew its first line into the footer margin. The whole paragraph now
+/// moves down instead, so a break is allowed before line 1 whenever the page it would leave
+/// behind carries something.
+///
+/// Line counts come from markdown hard breaks, not from shaping, for the reason
+/// `캐시_없는_긴_문단은_쪽을_넘긴다` states.
+#[test]
+fn 캐시_없는_문단의_첫_줄도_본문_안에_놓인다() {
+    let md: String = (0..200)
+        .map(|i| format!("{i}-가  \n{i}-나  \n{i}-다\n\n"))
+        .collect();
+    let doc = hwp_convert::from_markdown(&md);
+    assert_eq!(doc.sections[0].paragraphs.len(), 200);
+    assert!(
+        doc.sections[0]
+            .paragraphs
+            .iter()
+            .all(|p| p.line_segs.is_empty()),
+        "generated paragraphs must reach the fallback band, or this test proves nothing"
+    );
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    let (body_top, body_bottom) = body_band(&doc);
+    assert!(list.pages.len() > 1);
+    for (page, y) in baselines(&list) {
+        assert!(
+            y >= body_top && y <= body_bottom,
+            "a baseline at y={y} on page {page} is outside the body box \
+             ({body_top}..{body_bottom})"
+        );
+    }
+}
+
+/// A footnote belongs to the page its marker landed on. The band collects the paragraph's
+/// notes before laying it out, so a mid-paragraph break used to print every one of them on
+/// the page the paragraph *started* on. The notes now split at the break by the WCHAR offset
+/// of their anchor.
+///
+/// Asserted on the separator rule `render_page_notes` draws above a note block - a `Path`,
+/// not a glyph - so the test says the same thing on a host with no fonts.
+#[test]
+fn 쪼개진_문단의_각주는_마커가_놓인_쪽에_그려진다() {
+    let md: String = (0..400).map(|i| format!("{i}번째 줄  \n")).collect();
+    let mut doc = hwp_convert::from_markdown(&md);
+    let note_body = hwp_convert::from_markdown("각주내용")
+        .sections
+        .remove(0)
+        .paragraphs
+        .remove(0);
+    let para = &mut doc.sections[0].paragraphs[0];
+    let ctrl_index = para.controls.len() as u32;
+    // Anchored at the very end of the paragraph: its marker lands on the last page the
+    // paragraph occupies, never the first.
+    para.chars.push(hwp_model::HwpChar::ExtCtrl {
+        code: hwp_model::ctrl_char::FOOTNOTE_ENDNOTE,
+        ctrl_id: *b"fn  ",
+        payload: vec![0; 12],
+        ctrl_index: Some(ctrl_index),
+    });
+    para.controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"fn  ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![note_body],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }));
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    assert!(list.pages.len() > 1, "the paragraph must split");
+
+    // The body is plain text, so the only rule on any page is a note block's separator.
+    let rules: Vec<usize> = list
+        .pages
+        .iter()
+        .map(|page| {
+            page.items
+                .iter()
+                .filter(|item| matches!(item, hwp_render::display::Item::Path { .. }))
+                .count()
+        })
+        .collect();
+    let last = list.pages.len() - 1;
+    assert_eq!(
+        rules[0], 0,
+        "the note must not be drawn on the page the paragraph started on: {rules:?}"
+    );
+    assert_eq!(
+        rules[last], 1,
+        "the note belongs to the page its anchor landed on: {rules:?}"
+    );
+}
+
+/// `place_wrapped` keeps advancing the baseline after `charge_display_items` stops accepting
+/// items, so a wrap truncated by the display budget ends in a run of lines that carry
+/// nothing at all. Planning a page for each of those emitted a run of empty pages until the
+/// page budget ran out too. Truncation is now clean: the pages that exist carry content.
+#[test]
+fn 예산이_끊긴_폴백_문단은_빈_쪽을_만들지_않는다() {
+    let md: String = (0..400).map(|i| format!("{i}번째 줄  \n")).collect();
+    let doc = hwp_convert::from_markdown(&md);
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    warns.set_display_item_limit(50);
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    assert!(
+        warns.display_item_budget_exceeded(),
+        "the limit must actually bite, or this test proves nothing"
+    );
+    assert!(
+        list.pages.len() <= 2,
+        "a wrap truncated at 50 items cannot fill more than the page it started on: {} pages",
+        list.pages.len()
+    );
+}

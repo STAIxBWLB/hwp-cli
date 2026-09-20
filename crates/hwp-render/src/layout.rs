@@ -1084,11 +1084,19 @@ fn layout_document_inner(
             // 본문 각주/미주 마커(윗첨자 번호)와 이 페이지에 속할 노트 수집.
             // Split footnotes into the page queue and endnotes into the section queue.
             let marks = footnote::para_marks(&notes, para);
-            for note in footnote::para_notes(&notes, para) {
+            // Held with the WCHAR offset of each anchor rather than queued straight onto the
+            // page: the fallback band can break a page in the middle of this paragraph (#282),
+            // and a footnote belongs to the page its marker landed on. The cached band never
+            // breaks mid-paragraph, so it queues the whole set at once.
+            let mut para_foot_notes: Vec<(u32, &Note)> = Vec::new();
+            for (at, note) in footnote::para_notes(&notes, para) {
                 match note.kind {
-                    footnote::NoteKind::Foot => page_notes.push(note),
+                    footnote::NoteKind::Foot => para_foot_notes.push((at, note)),
                     footnote::NoteKind::End => pending_endnotes.push(note),
                 }
+            }
+            if !para.line_segs.is_empty() {
+                page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
             let geom = para_geometry(doc, para);
@@ -1116,6 +1124,8 @@ fn layout_document_inner(
 
             if para.line_segs.is_empty() {
                 // 폴백: 본문 폭에서 그리디 줄바꿈
+                // Set when the greedy wrap itself crossed a page boundary (#282).
+                let mut para_split = false;
                 if para.chars.is_empty() {
                     content_bottom += 16.0; // 빈 문단 높이 근사
                 } else {
@@ -1136,11 +1146,24 @@ fn layout_document_inner(
                     let avail = (body_width - geom.left - geom.right).max(4.0);
                     let baseline_y = content_bottom + geom.spacing_top + max_size * 1.2;
                     para_top = Some(content_bottom + geom.spacing_top);
+                    // A fallback paragraph carries no cached line geometry, so no line here can
+                    // declare a page boundary the way the cached band's `LineSeg` flags do.
+                    // Wrap into a scratch page first, then move whole lines onto real pages,
+                    // breaking where the next line's descent would cross the body bottom
+                    // (#282). Without this a paragraph taller than the page is emitted in full
+                    // below the page bottom and only the *next* paragraph paginates.
+                    let mut scratch = PageList {
+                        width_pt: w,
+                        height_pt: h,
+                        items: Vec::new(),
+                    };
                     // 마커는 줄상자 왼쪽에 놓고, 그 폭만큼 첫 줄 글자를 밀어낸다.
+                    // It goes into the scratch page too, so that if the first line moves to the
+                    // next page the marker moves with it instead of being left behind.
                     let mut marker_advance = 0.0;
                     if let Some(m) = &marker {
                         marker_advance = render_list_marker(
-                            &mut page,
+                            &mut scratch,
                             store,
                             doc,
                             m,
@@ -1172,20 +1195,143 @@ fn layout_document_inner(
                     // place_wrapped의 우변은 x0 + max_width라, 들여쓴 만큼 폭을 줄여야
                     // 문단 원래 오른쪽 끝(left + avail)이 유지된다.
                     let wrap_width = (left + avail - x0).max(1.0);
+                    let line_advance = max_size * 1.6;
+                    let descent = max_size * 0.4;
+                    let mut lines: Vec<(usize, f32)> = Vec::new();
                     let last_y = place_wrapped(
-                        &mut page,
+                        &mut scratch,
                         items,
                         x0,
                         baseline_y,
                         wrap_width,
-                        max_size * 1.6,
+                        line_advance,
                         &tabs,
                         first_delta,
                         &doc.header.border_fills,
+                        Some(&mut lines),
                         warnings,
                     );
-                    content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
+                    // The marker was pushed before the wrap, so the first line's recorded start
+                    // is past it. Pull it back to 0 so the marker travels with that line.
+                    if let Some(first) = lines.first_mut() {
+                        first.0 = 0;
+                    }
+                    let total_items = scratch.items.len();
+                    // `place_wrapped` keeps advancing the baseline after `charge_display_items`
+                    // stops accepting items, so a truncated wrap ends in a run of lines that
+                    // carry nothing. Planning a page for each of those emits blank pages.
+                    while lines.len() > 1
+                        && lines.last().is_some_and(|&(start, _)| start >= total_items)
+                    {
+                        lines.pop();
+                    }
+                    // A line taller than the body box itself cannot be rescued by any break.
+                    // It is still drawn, so this is a geometry deviation rather than lost
+                    // content - the same contract `TableCellContentOverflow` carries.
+                    if line_advance > body_bottom - body_top {
+                        warnings.push_once(
+                            RenderIssueCode::ParagraphLineContentOverflow,
+                            format!("{:.0}", line_advance - (body_bottom - body_top)),
+                        );
+                    }
+                    // Per line: where its items start in `scratch`, how far down it moves, and
+                    // - when it opens a new page - the paragraph WCHAR offset the new page
+                    // starts at, which decides how this paragraph's footnotes split. A line
+                    // only breaks when the page it would leave behind carries something:
+                    // otherwise the break pushes an empty page. That holds for the
+                    // paragraph's own first line too, so a fallback paragraph starting within
+                    // a descent of the body bottom moves down rather than drawing into the
+                    // margin.
+                    let mut plan: Vec<(usize, f32, Option<u32>)> = Vec::with_capacity(lines.len());
+                    let mut dy = 0.0f32;
+                    let mut lines_on_page = 0usize;
+                    let mut page_has_content = has_flow_in_current_band;
+                    for (i, &(start_item, baseline)) in lines.iter().enumerate() {
+                        let mut opens_page = None;
+                        if (lines_on_page > 0 || page_has_content)
+                            && baseline + dy + descent > body_bottom
+                        {
+                            dy = body_top + max_size * 1.2 - baseline;
+                            // The marker rides with line 0, so nothing of the paragraph
+                            // precedes a break there.
+                            opens_page = Some(if i == 0 {
+                                0
+                            } else {
+                                first_wchar_from(&scratch.items, start_item)
+                            });
+                            lines_on_page = 0;
+                            page_has_content = false;
+                        }
+                        lines_on_page += 1;
+                        plan.push((start_item, dy, opens_page));
+                    }
+                    para_split = plan.iter().any(|&(_, _, opens)| opens.is_some());
+                    let mut src = scratch.items.into_iter();
+                    let mut page_budget_spent = false;
+                    for (i, &(start_item, dy, opens_page)) in plan.iter().enumerate() {
+                        let end = plan.get(i + 1).map_or(total_items, |next| next.0);
+                        if let Some(cut) = opens_page {
+                            // Only the notes whose marker stayed on this page. The rest wait
+                            // for the page their marker moved to.
+                            let split = para_foot_notes
+                                .iter()
+                                .position(|&(at, _)| at >= cut)
+                                .unwrap_or(para_foot_notes.len());
+                            page_notes.extend(para_foot_notes.drain(..split).map(|(_, note)| note));
+                            rec.content_end(&page);
+                            render_page_notes(
+                                doc,
+                                store,
+                                &mut page,
+                                &page_notes,
+                                body_left,
+                                body_width,
+                                body_bottom,
+                                warnings,
+                            );
+                            page_notes.clear();
+                            page_numbers.finish(doc, store, &mut page, &furniture, warnings);
+                            if !push_page_checked(
+                                &mut pages,
+                                &mut page,
+                                Some((w, h)),
+                                warnings,
+                                rec,
+                            ) {
+                                page_budget_spent = true;
+                                break;
+                            }
+                            prev_v_pos = -1;
+                            col_band = 0;
+                            // The continuation is real flow on the new page: a later explicit
+                            // break must not be suppressed as "nothing on this page yet".
+                            paras_on_page = 1;
+                        }
+                        for item in src.by_ref().take(end.saturating_sub(start_item)) {
+                            page.items.push(if dy == 0.0 {
+                                item
+                            } else {
+                                translate_item(item, 0.0, dy)
+                            });
+                        }
+                    }
+                    if page_budget_spent {
+                        // The returned pages carry content whose provenance was recorded;
+                        // publishing them without resolving would silently drop it.
+                        rec.resolve(&pages);
+                        return DisplayList { pages };
+                    }
+                    let last_dy = plan.last().map_or(0.0, |&(_, dy, _)| dy);
+                    content_bottom = last_y + last_dy + descent + geom.spacing_bottom;
+                    if para_split {
+                        // The paragraph's remaining rows and any anchored object belong to the
+                        // page it ended on, not to the one it started on.
+                        para_top = Some(body_top);
+                    }
                 }
+                // Whatever the band did not hand to an earlier page belongs to the page the
+                // paragraph ended on.
+                page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
                 let (objects_bottom, objects_split) = layout_para_objects(
                     doc,
                     store,
@@ -1218,7 +1364,7 @@ fn layout_document_inner(
                 // A fallback paragraph is one slice with both borders. If an
                 // attached table split, approximate only its final-page slice.
                 if let Some(top) = para_top {
-                    let (slice_insert, slice_top, slice_first) = if objects_split {
+                    let (slice_insert, slice_top, slice_first) = if objects_split || para_split {
                         (0, body_top, false)
                     } else {
                         (bg_slice_insert, top, true)
@@ -1412,6 +1558,7 @@ fn layout_document_inner(
                     &tabs,
                     0.0, // 줄 오프셋은 x에 이미 반영됨.
                     &doc.header.border_fills,
+                    None,
                     warnings,
                 );
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
@@ -4527,6 +4674,7 @@ fn layout_box_para_iter<'a>(
                     &tabs,
                     first_delta,
                     &doc.header.border_fills,
+                    None,
                     warnings,
                 );
                 content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
@@ -4672,6 +4820,7 @@ fn layout_box_para_iter<'a>(
                     &tabs,
                     0.0, // 줄 오프셋은 x에 이미 반영됨.
                     &doc.header.border_fills,
+                    None,
                     warnings,
                 );
                 content_bottom = last_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0);
@@ -5398,9 +5547,32 @@ fn emphasis_mark(kind: u8, cx: f32, cy: f32, em: f32, color: u32) -> Vec<Item> {
     }
 }
 
+/// The paragraph WCHAR offset the first glyph run at or after `from` starts at.
+///
+/// `u32::MAX` when there is none: a break there leaves no anchored note on the later side,
+/// so every note the paragraph carries belongs to the page being finalized.
+fn first_wchar_from(items: &[Item], from: usize) -> u32 {
+    items
+        .get(from..)
+        .unwrap_or(&[])
+        .iter()
+        .find_map(|item| match item {
+            Item::Glyphs { run, .. } => Some(run.start_wchar),
+            _ => None,
+        })
+        .unwrap_or(u32::MAX)
+}
+
 /// Places inline items with greedy glyph-level wrapping at `max_width`.
 ///
 /// An infinite width disables wrapping. The return value is the final baseline.
+///
+/// `lines`, when given, receives one `(item index, baseline)` entry per line placed, the first
+/// one for the line that starts at `first_baseline_y`. The index is into `page.items` and is
+/// where that line's items begin, so a caller that has to move whole lines elsewhere - the
+/// fallback band's mid-paragraph page break (#282) - can slice them without re-deriving the
+/// wrap. Every other caller passes `None` rather than a throwaway `Vec`: this runs once per
+/// cell paragraph.
 #[allow(clippy::too_many_arguments)]
 fn place_wrapped(
     page: &mut PageList,
@@ -5412,9 +5584,13 @@ fn place_wrapped(
     tabs: &[TabStop],
     first_indent: f32,
     border_fills: &[BorderFill],
+    mut lines: Option<&mut Vec<(usize, f32)>>,
     warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let limit = x0 + max_width;
+    if let Some(lines) = lines.as_deref_mut() {
+        lines.push((page.items.len(), first_baseline_y));
+    }
     // 첫 줄만 들여쓰기/내어쓰기(first_indent). 이후 줄·줄바꿈은 x0(문단 좌여백)로 복귀.
     let mut x = x0 + first_indent;
     let mut y = first_baseline_y;
@@ -5469,6 +5645,9 @@ fn place_wrapped(
                             push_run(page, piece_x, y, piece, border_fills, warnings);
                         }
                         y += line_advance;
+                        if let Some(lines) = lines.as_deref_mut() {
+                            lines.push((page.items.len(), y));
+                        }
                         piece_x = x0;
                         acc = 0.0;
                         start = i;
@@ -5536,6 +5715,9 @@ fn place_wrapped(
             }
             InlineItem::LineBreak(_) => {
                 y += line_advance;
+                if let Some(lines) = lines.as_deref_mut() {
+                    lines.push((page.items.len(), y));
+                }
                 x = x0;
                 previous_no_break = false;
                 idx += 1;
@@ -6549,6 +6731,7 @@ mod tab_width_tests {
             tabs,
             0.0,
             &[],
+            None,
             &mut warns,
         );
         let xs = page
@@ -6594,6 +6777,7 @@ mod tab_width_tests {
             &tabs,
             0.0,
             &[],
+            None,
             &mut warns,
         );
         let xs: Vec<f32> = page
@@ -6636,6 +6820,7 @@ mod tab_width_tests {
             &[],
             0.0,
             &[],
+            None,
             &mut warns,
         );
 
@@ -6679,6 +6864,7 @@ mod tab_width_tests {
             &tabs,
             0.0,
             &[],
+            None,
             &mut warns,
         );
 
@@ -6748,6 +6934,7 @@ mod tab_width_tests {
             &tabs,
             0.0,
             &[],
+            None,
             &mut warns,
         );
 

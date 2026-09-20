@@ -85,8 +85,13 @@ pub fn para_marks(notes: &[Note], para: &Paragraph) -> HashMap<u32, u32> {
 }
 
 /// 이 문단이 앵커를 가진 노트들(하단 영역 렌더용, 본문 순서).
-pub fn para_notes<'a, 'n>(notes: &'a [Note<'n>], para: &Paragraph) -> Vec<&'a Note<'n>> {
+///
+/// Each entry carries the WCHAR offset of its anchor, measured the same way a placed glyph
+/// run's `start_wchar` is. A caller that breaks a page in the middle of a paragraph - the
+/// fallback layout band (#282) - needs it to decide which side of the break a note goes to.
+pub fn para_notes<'a, 'n>(notes: &'a [Note<'n>], para: &Paragraph) -> Vec<(u32, &'a Note<'n>)> {
     let mut out = Vec::new();
+    let mut at = 0u32;
     for ch in &para.chars {
         if let HwpChar::ExtCtrl {
             ctrl_index: Some(ci),
@@ -95,8 +100,9 @@ pub fn para_notes<'a, 'n>(notes: &'a [Note<'n>], para: &Paragraph) -> Vec<&'a No
             && let Some(Control::Generic(g)) = para.controls.get(*ci as usize)
             && let Some(n) = notes.iter().find(|n| std::ptr::eq(n.content, g))
         {
-            out.push(n);
+            out.push((at, n));
         }
+        at += ch.wchar_width();
     }
     out
 }
@@ -161,8 +167,13 @@ mod tests {
         assert_eq!(marks.get(&1), Some(&1)); // 미주1
         assert_eq!(marks.get(&2), Some(&2)); // 각주2
 
-        // 이 문단에 속한 노트 3개.
-        assert_eq!(para_notes(&notes, &para).len(), 3);
+        // 이 문단에 속한 노트 3개 — 앵커의 WCHAR 오프셋과 함께.
+        let anchored = para_notes(&notes, &para);
+        assert_eq!(anchored.len(), 3);
+        assert_eq!(
+            anchored.iter().map(|&(at, _)| at).collect::<Vec<_>>(),
+            vec![1, 10, 18]
+        );
     }
 
     /// 각주가 없는 문단은 빈 결과(회귀 안전).
