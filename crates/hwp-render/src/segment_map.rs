@@ -550,6 +550,14 @@ impl SegmentRecorder {
                 }
             }
         }
+        // A row with neither a box nor a character range measures nothing: an empty paragraph
+        // produces one, and `hwp-convert` emits no envelope segment for an empty paragraph, so
+        // the row's id joins to nothing. Same rule as
+        // `a_bookmark_with_no_anchor_character_produces_no_row`: no segment, no row. A bookmark
+        // keeps its range and so survives this.
+        self.map
+            .rows
+            .retain(|row| row.bbox.is_some() || row.chars.is_some());
         self.map
     }
 }
@@ -1399,6 +1407,40 @@ mod tests {
         assert_eq!(map.rows[0].bbox.unwrap().x0, 10.0);
         assert_eq!(map.rows[0].bbox.unwrap().x1, 150.0);
         assert_eq!(map.rows[1].bbox.unwrap().x0, 300.0);
+    }
+
+    /// An EMPTY paragraph produces no envelope segment either, so a row for it would carry an
+    /// id that joins to nothing - the same rule as the unanchored bookmark below.
+    ///
+    /// Found by 05-06's cross-artifact join-key test, which compares the two PUBLISHED
+    /// artifacts: `hwp cat --segments v2` emits nothing for a paragraph with no characters,
+    /// while the recorder was emitting a row for it with no box AND no character range. Such a
+    /// row measures nothing at all - it is an id, a kind and two nulls - and it made layout ids
+    /// stop being a subset of envelope ids on the committed sample.
+    #[test]
+    fn an_empty_paragraph_produces_no_row() {
+        let mut doc = hwp_convert::from_markdown("첫 문단.\n\n둘째 문단.\n");
+        // An empty paragraph between the two, exactly as the committed sample carries.
+        let para_shape = doc.sections[0].paragraphs[0].para_shape;
+        doc.sections[0].paragraphs.insert(
+            1,
+            hwp_model::Paragraph {
+                para_shape,
+                ..Default::default()
+            },
+        );
+        let (_, map) = lay_out(&doc);
+        assert!(
+            map.rows
+                .iter()
+                .all(|row| row.bbox.is_some() || row.chars.is_some()),
+            "a row with neither a box nor a range joins to nothing: {:?}",
+            map.rows
+                .iter()
+                .filter(|r| r.bbox.is_none() && r.chars.is_none())
+                .map(|r| (&r.id, r.kind))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// An unanchored `bokm` control produces no envelope segment, so a row for it would carry
