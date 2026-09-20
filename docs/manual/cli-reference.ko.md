@@ -142,7 +142,7 @@
 | `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
 | `--pages` | `<PAGES>` | `all` | 페이지 범위: "1", "1-3", "all" |
 | `--dpi` | `<DPI>` | `96` | 해상도 DPI (유한한 36..=600) |
-| `--format` | `png` \| `svg` \| `pdf` |  | 출력 포맷 (생략 시 확장자에서 추론) |
+| `--format` | `png` \| `svg` \| `pdf` \| `jpeg` \| `webp` |  | 출력 포맷 (생략 시 확장자에서 추론) |
 | `--report` | `<REPORT>` |  | 기계 판독 렌더 보고서(JSON)를 원자적으로 기록 |
 | `--font-dir` | `<FONT_DIR>` |  | 추가 폰트 디렉터리 (반복 가능) |
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |

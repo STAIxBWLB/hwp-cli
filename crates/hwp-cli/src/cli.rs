@@ -775,6 +775,11 @@ pub enum RenderFormat {
     Png,
     Svg,
     Pdf,
+    // No doc comments here: clap renders value_enum variants by name only and the KO overlay
+    // is keyed by (command, argument), so a variant doc comment would leak English into the
+    // Korean help. The formats are described on --format's help text instead.
+    Jpeg,
+    Webp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
