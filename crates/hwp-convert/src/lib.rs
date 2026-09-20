@@ -21,6 +21,7 @@ pub mod markdown;
 pub mod merge;
 pub mod odt;
 pub mod official;
+pub mod segment_id;
 pub mod structure;
 pub mod style;
 pub mod svg;
@@ -65,6 +66,9 @@ pub use odt::to_odt;
 pub use official::{
     HeadingNumbering, OfficialBodyFont, OfficialPreset, OfficialProfile, PageMarginOverrides,
     profile, profiles,
+};
+pub use segment_id::{
+    SegmentPath, cell_id, control_id, paragraph_id, picture_id, run_id, table_id,
 };
 pub use structure::{delete_paragraph, insert_paragraph, text_in_unwritable_object};
 pub use style::{display_width, style_table, style_tables};
