@@ -36,6 +36,17 @@
 //! from this set, so a consumer hit-testing an image or a field must resolve it through its
 //! enclosing paragraph's row and cannot expect a row of its own.
 //!
+//! **Segments that produce nothing at all.** A row carrying neither a box nor a character
+//! range measures nothing - it is an id, a kind and two nulls - and `hwp-convert` emits no
+//! envelope segment for whatever produced it, so its id would join to nothing. ONE RULE, NOT
+//! TWO COINCIDENCES: this covers both the unanchored `bokm` control (no anchor character, no
+//! segment) and the completely empty paragraph (no characters, no segment), and it is applied
+//! once in [`SegmentRecorder::finish`] rather than case by case. A new kind that can produce
+//! neither geometry nor text is covered by it automatically; do not add a second special case
+//! for it. Pinned by `a_bookmark_with_no_anchor_character_produces_no_row` and
+//! `an_empty_paragraph_produces_no_row`, and backstopped end to end by 05-06's cross-artifact
+//! join-key test, which is what found the empty-paragraph half.
+//!
 //! **Page furniture.** Page borders, column dividers, headers, footers, page numbers and note
 //! blocks carry no segment and produce no row. Borders and dividers are prepended after spans
 //! are resolved, so they cannot fall inside one. The rest are emitted at page finalization,
@@ -550,11 +561,9 @@ impl SegmentRecorder {
                 }
             }
         }
-        // A row with neither a box nor a character range measures nothing: an empty paragraph
-        // produces one, and `hwp-convert` emits no envelope segment for an empty paragraph, so
-        // the row's id joins to nothing. Same rule as
-        // `a_bookmark_with_no_anchor_character_produces_no_row`: no segment, no row. A bookmark
-        // keeps its range and so survives this.
+        // "Segments that produce nothing at all" in the module doc: one rule covering both the
+        // unanchored bookmark and the empty paragraph, applied here rather than case by case.
+        // A bookmark keeps its character range and so survives this.
         self.map
             .rows
             .retain(|row| row.bbox.is_some() || row.chars.is_some());
