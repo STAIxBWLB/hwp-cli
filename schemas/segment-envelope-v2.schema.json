@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/segment-envelope-v2.schema.json",
+  "title": "hwp-segment-envelope-v2",
+  "description": "The envelope `hwp cat --with-segments --segments v2` emits, for `--format markdown` and `--format json`. One segment ties a range of the emitted markdown to the IR node that produced it, so an editor can address what it displays. Ranges nest: a `run` lies inside its `para`, a `cell` inside its `table`, and siblings at one level do not overlap.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract", "markdown", "segments"],
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Version of this envelope contract. A field added, removed or renamed is a new major schema, because this envelope is closed."
+    },
+    "contract": {
+      "const": "hwp-segment-envelope-v2",
+      "description": "Names the contract so a consumer can tell this envelope from the v1 one, which carries neither constant."
+    },
+    "markdown": {
+      "type": "string",
+      "description": "The markdown `hwp cat --format markdown` emits for the same document, byte-identical: both come from one emission core, which the segment run only asks to record spans. Every `char_range` in `segments` indexes into THIS string.",
+      "$comment": "For `--format json` the document IR is carried in `document` instead, and `markdown` is absent; see that property."
+    },
+    "segments": {
+      "type": "array",
+      "description": "The segments, in a guaranteed order: `char_range.start` ascending, then `char_range.end` DESCENDING, then `path.indices` length (positional path depth) ascending. A container therefore precedes what it contains. The depth tie-break is not decoration: `end` descending settles the nested case but cannot settle two IDENTICAL ranges, and a cell holding exactly one run is exactly its run. A container's path is a prefix of what it contains, so the shorter path is the outer segment. SEGMENT IDS ARE NOT UNIQUE AND THIS ARRAY CARRIES NO UNIQUENESS CONSTRAINT: see the `id` property for the two reasons and for how a consumer groups the pieces of one run.",
+      "items": { "$ref": "#/$defs/segment" }
+    },
+    "document": {
+      "description": "Present only for `--format json`: the document IR `hwp cat --format json` emits for the same document, unchanged, carried as a sibling of `segments` so a consumer parses one value rather than two from one stream. Absent for `--format markdown`, where `markdown` carries the text instead."
+    }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "path", "char_range", "style", "direct"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "`<checksum>.<section>.<para>[.<child>...]`, derived from the IR and never read out of the source file, so the same document read from .hwp and from .hwpx yields the same id. SEGMENT IDS ARE NOT UNIQUE, for two independent reasons, and a consumer must not key a map on one. (1) A character-shape run that a block control interrupts - a table or a block equation anchored inside it, which is emitted after the paragraph's text - is reported ONCE PER CONTIGUOUS PIECE, every piece carrying the run's single id: the id identifies the run, not the range, and a consumer that wants the whole run GROUPS THE PIECES BY ID. (2) The sibling render geometry artifact repeats one id across every page a segment reaches. The leading checksum DETECTS ACCIDENTAL DRIFT - an insertion above a segment that shifts what the id refers to - AND IS NOT TAMPER EVIDENCE: it is not keyed, and anyone who can edit a segment can recompute it."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["para", "run", "table", "cell", "image", "field", "bookmark"],
+          "description": "What the emitted range is. `para` is a paragraph wherever it lives, including inside a table cell. A PARAGRAPH WHOSE CONTRIBUTION A BLOCK INTERRUPTED HAS NO SINGLE `para` SEGMENT, by design: the block resets the coordinate system and one range spanning the interruption would be a lie, so a consumer must not assume one `para` segment per paragraph. `bookmark` is a point marker that emits nothing, so its range is empty. A `field` COUNT IS A FLOOR, NEVER A CENSUS: field segments are discriminated by a recognition list covering 33 of the 34 kinds in specification table 128 (every kind but memo, `%%me`), and of those only 12 map to a named OWPML type and 13 to a specific kind label, the rest falling back to `%unk`/`UNKNOWN`. Zero `field` segments does not mean the document has none."
+        },
+        "path": { "$ref": "#/$defs/path" },
+        "char_range": { "$ref": "#/$defs/char_range" },
+        "style": {
+          "$ref": "#/$defs/style_level",
+          "description": "The level reached through the paragraph's style id to that style's own character and paragraph shapes. Equal ids across `style` and `direct` mean inherited; different ids mean the segment sets it. The envelope publishes the comparison inputs, never the comparison."
+        },
+        "direct": {
+          "$ref": "#/$defs/style_level",
+          "description": "The level reached through the shape ids the segment itself names. Never merged with `style`: HWP5 stores whole shapes keyed by id and records no per-attribute override flag, so a flattened value would destroy information and a synthesized 'explicit' flag would invent it."
+        },
+        "ctrl_id": {
+          "type": "string",
+          "description": "The four-byte control id, present ONLY on `field` and `bookmark` segments and omitted on every other kind. `%clk`, `%hlk`, `bokm`. On a field it may be the `%unk` fallback rather than the document's own kind; see `kind` for that limitation."
+        },
+        "name": {
+          "type": "string",
+          "description": "A bookmark's name, present only on `bookmark` segments that carry one and omitted otherwise. Published rather than left to a second query, because a bookmark segment without it is not addressable by an editor."
+        }
+      }
+    },
+    "path": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["section", "indices"],
+      "description": "The positional half of the id. There is deliberately no separate paragraph field: `indices[0]` is the paragraph only where a paragraph is what the path names, and a sibling `para` would be wrong for a nested segment whose own index is not a paragraph index.",
+      "properties": {
+        "section": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into the document's sections."
+        },
+        "indices": {
+          "type": "array",
+          "description": "Child indices from the section down to the segment; `indices[0]` is the paragraph. Its length is the positional path depth the segment order's last tie-break compares.",
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "char_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "description": "The range of the emitted text this segment covers. OFFSETS ARE UNICODE SCALAR OFFSETS INTO THIS ENVELOPE'S OWN `markdown` STRING - not bytes, not UTF-16 code units, and not offsets into the source document. The field is named `char_range` rather than `start`/`end` at the segment's top level precisely so it cannot be confused with the render layout artifact's source character range, which is a different coordinate space (UTF-16 into the source paragraph). The segment id is the only join key between the two artifacts; the two ranges must never be compared.",
+      "properties": {
+        "start": { "type": "integer", "minimum": 0, "description": "Inclusive." },
+        "end": { "type": "integer", "minimum": 0, "description": "Exclusive. Equals `start` for a `bookmark`, which emits nothing." }
+      }
+    },
+    "style_level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["char_shape_id", "para_shape_id", "char", "para"],
+      "description": "One of the two style levels: the shape ids it names and what they resolve to. A `null` here is an explicitly absent block and never a fabricated default a consumer could read as the document's own value.",
+      "properties": {
+        "char_shape_id": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "`null` when the level itself is unreachable (an unresolvable style id)."
+        },
+        "para_shape_id": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "`null` when the level itself is unreachable (an unresolvable style id)."
+        },
+        "char": {
+          "description": "`null` when the character-shape id does not resolve in this document's header table.",
+          "oneOf": [{ "$ref": "#/$defs/char_attrs" }, { "type": "null" }]
+        },
+        "para": {
+          "description": "`null` when the paragraph-shape id does not resolve in this document's header table.",
+          "oneOf": [{ "$ref": "#/$defs/para_attrs" }, { "type": "null" }]
+        }
+      }
+    },
+    "char_attrs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["face_ids", "faces", "size_pt", "bold", "italic", "color"],
+      "description": "The character attributes, in units a consumer cannot misread.",
+      "properties": {
+        "face_ids": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "description": "Font id per language slot, in slot order hangul, latin, hanja, japanese, other, symbol, user. Seven are published rather than one, because picking one would silently pick a language for the consumer.",
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "faces": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "description": "The face name each slot's id resolves to in the document's font table, in the same slot order. A `null` slot means THIS DOCUMENT'S FONT TABLE DOES NOT ANSWER FOR THAT SLOT - the id is out of range. It does not mean 'no font', and a consumer must not read it as a default face.",
+          "items": { "type": ["string", "null"] }
+        },
+        "size_pt": {
+          "type": "number",
+          "description": "Size in POINTS. The stored value is HWPUNIT, where 1000 = 10pt; the division happens here once."
+        },
+        "bold": { "type": "boolean", "description": "From the character shape's own bold predicate, not from a re-derived bit test." },
+        "italic": { "type": "boolean", "description": "From the character shape's own italic predicate." },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "description": "`#RRGGBB`. The stored value is a COLORREF (`0x00BBGGRR`) whose byte order is a trap for a web consumer, so it is decoded here exactly once."
+        }
+      }
+    },
+    "para_attrs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alignment", "indent", "line_spacing_type", "line_spacing"],
+      "description": "The paragraph attributes.",
+      "properties": {
+        "alignment": {
+          "type": "string",
+          "enum": ["justify", "left", "right", "center", "distribute", "divide"],
+          "description": "The decoded alignment as a name, never a bare integer."
+        },
+        "indent": {
+          "type": "integer",
+          "description": "HWPUNIT (1/7200 inch); negative means an outdent."
+        },
+        "line_spacing_type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "0 percent, 1 fixed, 2 margin-only, 3 at-least. It selects the unit of `line_spacing`."
+        },
+        "line_spacing": {
+          "type": "integer",
+          "description": "Its unit follows `line_spacing_type`: percent for type 0, HWPUNIT for type 1. The pair is published rather than a resolved number, because collapsing them loses the distinction."
+        }
+      }
+    }
+  }
+}
