@@ -5,7 +5,11 @@
   "description": "The envelope `hwp cat --with-segments --segments v2` emits, for `--format markdown` and `--format json`. One segment ties a range of the emitted markdown to the IR node that produced it, so an editor can address what it displays. Ranges nest: a `run` lies inside its `para`, a `cell` inside its `table`, and siblings at one level do not overlap.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "contract", "markdown", "segments"],
+  "required": ["schema_version", "contract", "segments"],
+  "oneOf": [
+    { "required": ["markdown"], "$comment": "--format markdown carries the text." },
+    { "required": ["document"], "$comment": "--format json carries the document IR instead." }
+  ],
   "properties": {
     "schema_version": {
       "const": "1.0",
@@ -17,8 +21,7 @@
     },
     "markdown": {
       "type": "string",
-      "description": "The markdown `hwp cat --format markdown` emits for the same document, byte-identical: both come from one emission core, which the segment run only asks to record spans. Every `char_range` in `segments` indexes into THIS string.",
-      "$comment": "For `--format json` the document IR is carried in `document` instead, and `markdown` is absent; see that property."
+      "description": "The markdown `hwp cat --format markdown` emits for the same document, byte-identical: both come from one emission core, which the segment run only asks to record spans. Every `char_range` in `segments` indexes into THIS string. Present for `--format markdown`; for `--format json` the envelope carries `document` instead, and exactly one of the two is always present."
     },
     "segments": {
       "type": "array",

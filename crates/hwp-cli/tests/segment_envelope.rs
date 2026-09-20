@@ -360,13 +360,16 @@ fn the_six_load_bearing_descriptions_are_published() {
             "the coordinate space",
             "UNICODE SCALAR OFFSETS INTO THIS ENVELOPE'S OWN `markdown` STRING",
         ),
-        ("the checksum is not tamper evidence", "IS NOT TAMPER EVIDENCE"),
-        ("the field-kind floor", "A `field` COUNT IS A FLOOR, NEVER A CENSUS"),
-        ("the repeating run id", "SEGMENT IDS ARE NOT UNIQUE"),
         (
-            "the interrupted paragraph",
-            "HAS NO SINGLE `para` SEGMENT",
+            "the checksum is not tamper evidence",
+            "IS NOT TAMPER EVIDENCE",
         ),
+        (
+            "the field-kind floor",
+            "A `field` COUNT IS A FLOOR, NEVER A CENSUS",
+        ),
+        ("the repeating run id", "SEGMENT IDS ARE NOT UNIQUE"),
+        ("the interrupted paragraph", "HAS NO SINGLE `para` SEGMENT"),
         ("the segment order", "`char_range.end` DESCENDING"),
     ] {
         assert!(
@@ -374,4 +377,269 @@ fn the_six_load_bearing_descriptions_are_published() {
             "the schema no longer states {what}: expected to find {sentence:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// v2: the CLI surface
+// ---------------------------------------------------------------------------
+
+/// The committed hwp5/hwpx pair of one document, used for the D-02 id-stability proof. Both
+/// files are committed under the narrow PDF-parity exception, so this never skips.
+fn parity_source(ext: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/pdf-parity/public/source")
+        .join(format!("public-safety-rfp-p1.{ext}"))
+}
+
+/// Runs `hwp cat`, returning stdout on success and stderr on failure.
+fn run_cat(file: &PathBuf, args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = hwp()
+        .arg("cat")
+        .arg(file)
+        .args(args)
+        .output()
+        .expect("run hwp cat");
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
+fn v2_envelope(file: &PathBuf, format: &str) -> serde_json::Value {
+    let stdout = run_cat(
+        file,
+        &["--format", format, "--with-segments", "--segments", "v2"],
+    )
+    .unwrap_or_else(|e| panic!("--segments v2 --format {format} failed: {e}"));
+    serde_json::from_slice(&stdout).expect("the v2 envelope parses")
+}
+
+/// A real `--segments v2` envelope validates against the published schema. This is the test the
+/// schema exists for: task 1's fixture pins the intended shape, this one pins that the CLI
+/// actually emits it.
+#[test]
+fn the_v2_markdown_envelope_validates_against_the_published_schema() {
+    let value = v2_envelope(&sample(), "markdown");
+    if let Err(e) = v2_validator().validate(&value) {
+        panic!("the schema rejected a real v2 markdown envelope: {e}");
+    }
+    assert_eq!(value["contract"], "hwp-segment-envelope-v2");
+    assert_eq!(value["schema_version"], "1.0");
+    assert!(
+        value["markdown"].is_string(),
+        "the markdown carrier must be present for --format markdown"
+    );
+    assert!(
+        value.get("document").is_none(),
+        "--format markdown must not carry the document IR"
+    );
+    let segments = value["segments"].as_array().expect("segments array");
+    assert!(
+        segments.len() > 100,
+        "the sample must produce a substantial segment vector, got {}",
+        segments.len()
+    );
+    // The v2 vector is nested, so it must carry more than the v1 paragraph-only one.
+    let v1: serde_json::Value =
+        serde_json::from_slice(&segments_stdout()).expect("parse the v1 envelope");
+    assert!(
+        segments.len() > v1["segments"].as_array().unwrap().len(),
+        "v2 must report runs and cells on top of the v1 paragraphs"
+    );
+}
+
+/// The `--format json` carrier: the document IR beside the segments under the same two
+/// constants, so a consumer parses one value either way.
+#[test]
+fn the_v2_json_envelope_carries_the_document_beside_the_segments() {
+    let value = v2_envelope(&sample(), "json");
+    if let Err(e) = v2_validator().validate(&value) {
+        panic!("the schema rejected a real v2 json envelope: {e}");
+    }
+    assert_eq!(value["contract"], "hwp-segment-envelope-v2");
+    assert!(
+        value.get("markdown").is_none(),
+        "--format json carries `document`, not `markdown`"
+    );
+    assert!(
+        value["document"].is_object(),
+        "the document IR must be present for --format json"
+    );
+
+    // The document IR is the one `--format json` emits on its own, unchanged.
+    let plain = run_cat(&sample(), &["--format", "json"]).expect("hwp cat --format json");
+    let plain: serde_json::Value = serde_json::from_slice(&plain).expect("parse the document IR");
+    assert_eq!(
+        value["document"], plain,
+        "the envelope must not alter the document IR it carries"
+    );
+
+    // The segments are the same ones the markdown envelope reports.
+    assert_eq!(
+        value["segments"],
+        v2_envelope(&sample(), "markdown")["segments"],
+        "the segment vector must not depend on the carrier format"
+    );
+}
+
+/// D-04, both spellings of the default. Neither `--with-segments` alone nor an explicit
+/// `--segments v1` may move a byte of the pinned v0.8.x envelope.
+#[test]
+fn the_v1_default_is_unchanged_however_it_is_spelled() {
+    let golden: &[u8] = include_bytes!("golden/segment-envelope-v1.json");
+    for args in [
+        &["--format", "markdown", "--with-segments"][..],
+        &[
+            "--format",
+            "markdown",
+            "--with-segments",
+            "--segments",
+            "v1",
+        ][..],
+    ] {
+        let fresh = run_cat(&sample(), args).unwrap_or_else(|e| panic!("hwp cat {args:?}: {e}"));
+        assert!(
+            fresh == golden,
+            "`hwp cat {args:?}` moved off the pinned v0.8.x bytes (fresh {} bytes, golden {})",
+            fresh.len(),
+            golden.len()
+        );
+    }
+}
+
+/// D-03: the v2 envelope is published for markdown and json, and for nothing else. A segment
+/// envelope over plain, html or csv has no consumer, so it is an explicit error rather than a
+/// silently empty or malformed output.
+#[test]
+fn the_v2_format_allow_list_is_markdown_and_json() {
+    for format in ["markdown", "json"] {
+        let out = run_cat(
+            &sample(),
+            &["--format", format, "--with-segments", "--segments", "v2"],
+        );
+        assert!(
+            out.is_ok(),
+            "--segments v2 --format {format} must be accepted"
+        );
+    }
+
+    for format in ["plain", "html", "csv"] {
+        let err = run_cat(
+            &sample(),
+            &["--format", format, "--with-segments", "--segments", "v2"],
+        )
+        .expect_err("--segments v2 must be rejected outside markdown and json");
+        assert!(
+            err.contains("--segments v2는 --format markdown 또는 json 전용입니다"),
+            "--format {format} rejection text changed: {err}"
+        );
+    }
+
+    // v1 is untouched: it never had a json form and this plan does not invent one.
+    let err = run_cat(
+        &sample(),
+        &["--format", "json", "--with-segments", "--segments", "v1"],
+    )
+    .expect_err("v1 stays markdown-only");
+    assert!(
+        err.contains("--with-segments는 --format markdown 전용입니다"),
+        "the v1 rejection text must not move: {err}"
+    );
+
+    // --preview is still incompatible with either version.
+    for version in ["v1", "v2"] {
+        let err = run_cat(
+            &sample(),
+            &[
+                "--format",
+                "markdown",
+                "--with-segments",
+                "--segments",
+                version,
+                "--preview",
+            ],
+        )
+        .expect_err("--preview must be rejected");
+        assert!(
+            err.contains("--preview와 함께 쓸 수 없습니다"),
+            "--preview rejection text changed for {version}: {err}"
+        );
+    }
+}
+
+/// The published order: `char_range.start` ascending, then `char_range.end` descending, then
+/// path depth ascending. The depth tie-break is asserted on a document that actually contains a
+/// cell whose range equals its run's, which is the only case `end` descending cannot settle —
+/// the test first proves that case occurs, so it cannot pass vacuously.
+#[test]
+fn the_v2_segment_order_is_the_one_the_schema_publishes() {
+    let value = v2_envelope(&sample(), "markdown");
+    let segments = value["segments"].as_array().expect("segments array");
+
+    let key = |s: &serde_json::Value| {
+        (
+            s["char_range"]["start"].as_u64().unwrap(),
+            s["char_range"]["end"].as_u64().unwrap(),
+            s["path"]["indices"].as_array().unwrap().len(),
+            s["kind"].as_str().unwrap().to_owned(),
+        )
+    };
+
+    let mut identical_range_pairs = 0;
+    for pair in segments.windows(2) {
+        let (a_start, a_end, a_depth, ref a_kind) = key(&pair[0]);
+        let (b_start, b_end, b_depth, _) = key(&pair[1]);
+        assert!(
+            a_start <= b_start,
+            "start must ascend: {a_start} > {b_start}"
+        );
+        if a_start == b_start {
+            assert!(
+                a_end >= b_end,
+                "end must descend within one start: {a_end} < {b_end}"
+            );
+            if a_end == b_end {
+                assert!(
+                    a_depth <= b_depth,
+                    "path depth must ascend within an identical range, so the container \
+                     precedes what it contains: {a_depth} > {b_depth}"
+                );
+                if a_kind == "cell" {
+                    identical_range_pairs += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        identical_range_pairs > 0,
+        "this sample must contain a cell whose range is exactly its run's, or the depth \
+         tie-break is asserted but never exercised"
+    );
+}
+
+/// D-02: ids come from the IR and are never read out of the file, so the same document read
+/// from .hwp and from .hwpx yields the same ids. Both inputs are committed, so a missing
+/// fixture fails this test rather than skipping it.
+#[test]
+fn the_same_document_yields_the_same_ids_from_hwp5_and_hwpx() {
+    let ids = |ext: &str| -> Vec<String> {
+        let value = v2_envelope(&parity_source(ext), "markdown");
+        value["segments"]
+            .as_array()
+            .expect("segments array")
+            .iter()
+            .map(|s| s["id"].as_str().expect("id").to_owned())
+            .collect()
+    };
+    let hwp5 = ids("hwp");
+    let hwpx = ids("hwpx");
+    assert!(
+        !hwp5.is_empty(),
+        "the parity source must produce segments, or this proves nothing"
+    );
+    assert_eq!(
+        hwp5, hwpx,
+        "hwp5 and hwpx readings of one document must yield identical segment ids"
+    );
 }

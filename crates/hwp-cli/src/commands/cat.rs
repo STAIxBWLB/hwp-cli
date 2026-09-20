@@ -12,7 +12,7 @@ use hwp_model::Document;
 use zeroize::Zeroizing;
 
 use crate::format::{FileFormat, detect};
-use hwp_cli::cli::{PasswordArgs, TextFormat};
+use hwp_cli::cli::{PasswordArgs, SegmentVersion, TextFormat};
 
 /// Stable public refusal code for absent or invalid password credentials.
 pub const HWP_PASSWORD_REQUIRED_OR_INVALID: &str = "HWP_PASSWORD_REQUIRED_OR_INVALID";
@@ -240,30 +240,100 @@ pub fn load_document_with_options(
     }
 }
 
+/// The published v2 envelope contract, `schemas/segment-envelope-v2.schema.json`.
+const SEGMENT_ENVELOPE_SCHEMA_VERSION: &str = "1.0";
+const SEGMENT_ENVELOPE_CONTRACT: &str = "hwp-segment-envelope-v2";
+
+/// The two house constants plus the rendered segment vector. The caller adds either
+/// `markdown` or `document`; the schema requires exactly one of the two.
+fn envelope_v2(segments: &[hwp_convert::Segment]) -> serde_json::Value {
+    serde_json::json!({
+        "contract": SEGMENT_ENVELOPE_CONTRACT,
+        "schema_version": SEGMENT_ENVELOPE_SCHEMA_VERSION,
+        "segments": segments.iter().map(segment_json).collect::<Vec<_>>(),
+    })
+}
+
+/// Renders one typed segment. Nothing here re-derives a kind, an id or a style: this is a
+/// transcription of `hwp_convert::Segment` into the published field names.
+fn segment_json(s: &hwp_convert::Segment) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "id": s.id,
+        "kind": s.kind.as_str(),
+        "path": { "section": s.path.section, "indices": s.path.indices },
+        "char_range": { "start": s.start, "end": s.end },
+        "style": style_level_json(&s.style.style),
+        "direct": style_level_json(&s.style.direct),
+    });
+    // Omitted rather than null when absent: they exist only on field and bookmark segments.
+    if let Some(ctrl_id) = &s.ctrl_id {
+        v["ctrl_id"] = serde_json::Value::String(ctrl_id.clone());
+    }
+    if let Some(name) = &s.name {
+        v["name"] = serde_json::Value::String(name.clone());
+    }
+    v
+}
+
+/// One style level. A `null` is an explicitly absent block - an id that does not resolve in
+/// this document's header table - and never a fabricated default.
+fn style_level_json(level: &hwp_convert::StyleLevel) -> serde_json::Value {
+    serde_json::json!({
+        "char_shape_id": level.char_shape_id,
+        "para_shape_id": level.para_shape_id,
+        "char": level.char.as_ref().map(|c| serde_json::json!({
+            "face_ids": c.face_ids,
+            "faces": c.faces,
+            "size_pt": c.size_pt,
+            "bold": c.bold,
+            "italic": c.italic,
+            "color": c.color,
+        })),
+        "para": level.para.as_ref().map(|p| serde_json::json!({
+            "alignment": p.alignment,
+            "indent": p.indent,
+            "line_spacing_type": p.line_spacing_type,
+            "line_spacing": p.line_spacing,
+        })),
+    })
+}
+
 /// 본문 텍스트 추출.
 ///
 /// `preview`면 평문은 본문 파싱 없이 PrvText 미리보기만 출력하고, 보호 문서는 먼저 암호를
 /// 인증한다. `with_header_footer`/`with_hidden`은
 /// 머리말·꼬리말/숨은 설명 포함 여부(기본 제외) — plain·markdown 경로에 일관되게 적용된다
-/// (html/json은 옵션 미대상). `with_segments`는 markdown 전용으로, markdown과 함께 각 출력
-/// 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 낸다.
+/// (html/json은 옵션 미대상). `segments`가 `Some`이면 각 출력 문자 범위의 원본 좌표를 한 줄
+/// JSON 봉투로 함께 내고, 그 값이 봉투 버전을 고른다 — v1은 markdown 전용으로 바이트가
+/// 고정된 v0.8.x 봉투(D-04), v2는 markdown과 json 두 포맷 전용(D-03)이며
+/// `schemas/segment-envelope-v2.schema.json`이 정본이다.
 pub fn run(
     path: &Path,
     format: TextFormat,
     preview: bool,
     with_header_footer: bool,
     with_hidden: bool,
-    with_segments: bool,
+    segments: Option<SegmentVersion>,
     password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
-    if with_segments {
+    let with_segments = segments.is_some();
+    if let Some(segments) = segments {
         if preview {
             anyhow::bail!(
                 "--with-segments는 --format markdown 전용입니다 (--preview와 함께 쓸 수 없습니다)"
             );
         }
-        if !matches!(format, TextFormat::Markdown) {
-            anyhow::bail!("--with-segments는 --format markdown 전용입니다");
+        // D-03: v2 is published for markdown and json; v1 stays exactly what it is today,
+        // markdown-only and byte-pinned, because there has never been a v1 json envelope and
+        // inventing one would be a fourth output shape no schema covers.
+        match segments {
+            SegmentVersion::V1 if !matches!(format, TextFormat::Markdown) => {
+                anyhow::bail!("--with-segments는 --format markdown 전용입니다");
+            }
+            SegmentVersion::V2 if !matches!(format, TextFormat::Markdown | TextFormat::Json) => {
+                anyhow::bail!("--segments v2는 --format markdown 또는 json 전용입니다");
+            }
+            _ => {}
         }
     }
     let password = resolve_password_args(password_args, path)?;
@@ -297,6 +367,20 @@ pub fn run(
     };
     match format {
         TextFormat::Plain => print!("{}", doc.plain_text_with(&opts)),
+        TextFormat::Markdown if segments == Some(SegmentVersion::V2) => {
+            let (markdown, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &md_opts())?;
+            let mut envelope = envelope_v2(&segs);
+            envelope["markdown"] = serde_json::Value::String(markdown);
+            println!("{}", serde_json::to_string(&envelope)?);
+        }
+        TextFormat::Json if with_segments => {
+            // v2 only (the guard above rejects v1 here): the document IR sits beside the
+            // segments under the same two constants, so a consumer parses one value.
+            let (_, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &md_opts())?;
+            let mut envelope = envelope_v2(&segs);
+            envelope["document"] = serde_json::from_str(&hwp_convert::to_json(&doc, true, false)?)?;
+            println!("{}", serde_json::to_string(&envelope)?);
+        }
         TextFormat::Markdown if with_segments => {
             let (markdown, segments) = hwp_convert::to_markdown_with_segments(&doc, &md_opts())?;
             // 한 줄 컴팩트 JSON 봉투 + 개행. kind는 현재 항상 "para"(미래 확장용).

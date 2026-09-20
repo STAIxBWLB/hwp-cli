@@ -91,11 +91,16 @@ pub enum Cmd {
         /// Also extract hidden comment text (default: excluded)
         #[arg(long = "with-hidden")]
         with_hidden: bool,
-        /// (markdown only) Emit the markdown together with the source coordinates
-        /// (section/paragraph) of each output character range, as a one-line JSON
-        /// envelope: {"markdown": ..., "segments": [...]}
+        /// Emit the output together with the source coordinates of each output
+        /// character range, as a one-line JSON envelope. Version selected by
+        /// --segments; v1 is markdown-only, v2 also accepts --format json
         #[arg(long = "with-segments")]
         with_segments: bool,
+        /// Segment envelope version for --with-segments. v1 is the pinned v0.8.x
+        /// envelope (markdown only); v2 publishes the seven segment kinds, stable
+        /// ids and per-segment style, and is accepted for markdown and json
+        #[arg(long = "segments", value_enum, default_value = "v1")]
+        segments: SegmentVersion,
         #[command(flatten)]
         password: PasswordArgs,
     },
@@ -709,6 +714,15 @@ pub enum InstallTarget {
     Codex,
     /// Active Amazon Quick Desktop profile under ~/.quickwork/
     AmazonQuick,
+}
+
+/// Version of the `--with-segments` envelope.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SegmentVersion {
+    /// The pinned v0.8.x envelope: one `para` segment per paragraph, markdown only.
+    V1,
+    /// The published v2 envelope, schemas/segment-envelope-v2.schema.json.
+    V2,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
