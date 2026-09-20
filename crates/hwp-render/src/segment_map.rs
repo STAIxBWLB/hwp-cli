@@ -28,6 +28,25 @@
 //! two must never be mixed: the **segment id is the only join key** between a geometry row and
 //! an envelope segment. See [`CharRange`].
 //!
+//! # The join key does not always resolve
+//!
+//! The id is the only join key, but it is **not guaranteed to have a counterpart**. A
+//! paragraph whose only content is a drawing control (`gso `) and which shapes no text of its
+//! own produces NO envelope segment at all, while this module records a row for it: the object
+//! is drawn, so the row has a real box, and the `finish()` drop rule below does not catch it
+//! because that rule only drops a row with neither a box nor a range.
+//!
+//! Measured across this repository's fixtures: `fixtures/samples/report-tables.hwpx`,
+//! `fixtures/pdf-parity/public/source/public-safety-rfp-p1.{hwp,hwpx}`, `work_report.hwp`,
+//! `bookmark.hwp`, `hello_world.hwp` and `minimal.hwpx` produce no unresolved ids;
+//! `annual_report.hwp` produces one of 10 rows, and `outline.hwp` - one page holding only a
+//! drawing - produces 1 row against an envelope of **zero** segments. So the property held on
+//! the single document 05-06's join-key test originally covered, and not in general.
+//!
+//! `schemas/render-layout-v1.schema.json` says this in its published `id` description, and
+//! tells a consumer to treat an unresolved id as geometry with no source range rather than as
+//! a defect. Closing it is https://github.com/STAIxBWLB/hwp-cli/issues/285.
+//!
 //! # What has no row
 //!
 //! **Kinds.** Only `para`, `table`, `cell` and `bookmark` produce rows. The envelope's other
@@ -142,8 +161,15 @@ pub struct SegmentRow {
     /// The union of this segment's own display items on this page, in points. `None` for a
     /// segment that produced no display item (D-08a).
     pub bbox: Option<BoxPt>,
-    /// The source characters this row covers. `None` on `table` and `cell` rows: they span
-    /// several source paragraphs, so no single paragraph's offsets describe them.
+    /// The source characters this row covers, or `None`.
+    ///
+    /// Two different things produce a `None`. Always on `table` and `cell` rows: they span
+    /// several source paragraphs, so no single paragraph's offsets describe them. Also on a
+    /// `para` row whose paragraph shapes no text of its own because its content is entirely an
+    /// anchored object - the paragraph carrying a table, or one holding only a drawing. That
+    /// second case is not rare: on `fixtures/samples/report-tables.hwpx`, 3 of the 40 published
+    /// `para` ids carry `None` here, and they are exactly the three table-anchoring
+    /// paragraphs. A consumer must check this on every kind, `para` included.
     pub chars: Option<CharRange>,
     /// How many display items this row's span covers on this page, nested child segments
     /// included. Diagnostic: it is a count, never an index — the indices themselves are

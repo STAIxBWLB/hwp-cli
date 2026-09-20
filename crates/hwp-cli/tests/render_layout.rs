@@ -200,7 +200,7 @@ fn the_load_bearing_descriptions_are_present_in_the_published_text() {
             "the coordinate-space contrast",
             "IN UTF-16 CODE UNITS INTO THE SOURCE PARAGRAPH",
         ),
-        ("the only join key", "THIS IS THE ONLY JOIN KEY"),
+        ("the only join key", "THE ONLY JOIN KEY"),
         (
             "the null box",
             "NULL means this segment produced no display item",
@@ -221,6 +221,22 @@ fn the_load_bearing_descriptions_are_present_in_the_published_text() {
         (
             "the unbounded page numbering",
             "DELIBERATELY UNBOUNDED ABOVE",
+        ),
+        (
+            "that the join is not guaranteed to resolve",
+            "THE JOIN IS NOT GUARANTEED TO RESOLVE",
+        ),
+        (
+            "what a consumer does with an unresolved id",
+            "MUST THEREFORE TREAT AN UNRESOLVED ID AS GEOMETRY WITH NO SOURCE RANGE, NOT AS A DEFECT",
+        ),
+        (
+            "that a para row can carry a null character range",
+            "TWO DIFFERENT THINGS PRODUCE A NULL HERE",
+        ),
+        (
+            "that null source_chars must be checked on para too",
+            "A consumer must null-check this field on EVERY kind, `para` included.",
         ),
         (
             "neither the id nor (page, id) is a key",
@@ -854,97 +870,170 @@ fn two_rows_of_one_id_on_one_page_survive_serialization_and_the_schema() {
 // The cross-artifact join key
 // ---------------------------------------------------------------------------
 
-/// Every id in a layout row is present in the envelope's id set for the same document.
+/// The cross-artifact join key, over every fixture this checkout has.
 ///
-/// This is the phase's only check that reads the two PUBLISHED artifacts. `hwp-convert` and
+/// This is the only check that reads the two PUBLISHED artifacts. `hwp-convert` and
 /// `hwp-render` derive ids independently by design - that is what keeps them off each other's
 /// dependency graph, and `scripts/check-crate-edges.sh` enforces it - so each crate carries its
 /// own copy of the id rule and the agreement is made by a test rather than by a shared code
-/// path. 05-04's per-kind equality test is the inner guard, comparing the two FUNCTIONS
-/// directly; it can pass while a serialization or path-building mistake still makes the
-/// published ids disagree. Without this outer backstop such a divergence passes every other
-/// test in the phase and reaches the editor, which persists those ids, as a published false
-/// claim.
+/// path. `segment_id_parity` is the inner guard, comparing the two FUNCTIONS directly; it can
+/// pass while a serialization or path-building mistake still makes the published ids disagree.
 ///
-/// The containment direction is deliberate. Layout ids are a SUBSET of envelope ids: the
-/// envelope carries segments that never reach the display list - point segments (D-08a) and
-/// anything the layout pass skips - and the reverse containment would be false on correct
-/// output.
+/// # What this asserts, and why it is not "no orphans"
+///
+/// A layout row id is NOT guaranteed to resolve in the envelope. A paragraph holding only a
+/// drawing control produces no envelope segment while the renderer draws it and records a row
+/// (issue #285). So the assertion here is the shape of an unresolved id, not its absence:
+/// every unresolved id must be a `para` row carrying `source_chars: null`, which is the known
+/// case. A `cell` orphan, a `table` orphan, or a `para` orphan that does carry a character
+/// range is a NEW divergence and fails.
+///
+/// Asserting "no orphans" would pin the defect in place and go red the day #285 closes.
+/// Asserting "orphans exist" would do the same in the other direction. This assertion is
+/// vacuously satisfied once #285 lands, which is the correct behaviour for a guard about a
+/// shape rather than a count.
+///
+/// # Coverage, and the trap in reading a green run
+///
+/// `fixtures/hwp5/` and `fixtures/hwpx/` are gitignored (CLAUDE.md's data policy), so ON CI
+/// THIS TEST SEES ONLY THE COMMITTED FIXTURES and the rest silently do not run - the #275
+/// shape, where a skipped case reports `ok`. The two documents that actually exhibit an
+/// unresolved id, `annual_report.hwp` and `outline.hwp`, are among the ones CI does not have.
+/// A green run here therefore means "the shape held wherever it could be checked on this
+/// host", never "the property holds for every document". The committed fixtures are asserted
+/// present rather than skipped, so the test cannot degrade to checking nothing at all, and the
+/// coverage it achieved is printed.
 #[test]
-fn every_layout_row_id_is_present_in_the_envelope_id_set() {
+fn an_unresolved_layout_row_id_is_always_a_para_row_with_no_character_range() {
+    // (path relative to the repo root, committed and therefore required)
+    const FIXTURES: [(&str, bool); 9] = [
+        ("fixtures/samples/report-tables.hwpx", true),
+        (
+            "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwp",
+            true,
+        ),
+        (
+            "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwpx",
+            true,
+        ),
+        ("fixtures/hwp5/annual_report.hwp", false),
+        ("fixtures/hwp5/outline.hwp", false),
+        ("fixtures/hwp5/work_report.hwp", false),
+        ("fixtures/hwp5/bookmark.hwp", false),
+        ("fixtures/hwp5/hello_world.hwp", false),
+        ("fixtures/hwpx/minimal.hwpx", false),
+    ];
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = temp_dir("joinkey");
-    let layout_path = dir.join("layout.json");
-    let out = dir.join("out.png");
+    let mut checked = Vec::new();
+    let mut absent = Vec::new();
 
-    let render = hwp()
-        .arg("render")
-        .arg(sample())
-        .arg("-o")
-        .arg(&out)
-        .args(["--format", "png"])
-        .arg("--layout-json")
-        .arg(&layout_path)
-        .output()
-        .expect("run hwp render --layout-json");
-    assert!(
-        render.status.success(),
-        "hwp render failed: {}",
-        String::from_utf8_lossy(&render.stderr)
-    );
+    for (relative, committed) in FIXTURES {
+        let input = root.join(relative);
+        if !input.is_file() {
+            assert!(
+                !committed,
+                "{relative} is committed and must be present; a skip here would make this \
+                 test report ok while checking nothing"
+            );
+            absent.push(relative);
+            continue;
+        }
 
-    let envelope_out = hwp()
-        .arg("cat")
-        .arg(sample())
-        .args([
-            "--format",
-            "markdown",
-            "--with-segments",
-            "--segments",
-            "v2",
-        ])
-        .output()
-        .expect("run hwp cat --with-segments --segments v2");
-    assert!(
-        envelope_out.status.success(),
-        "hwp cat --segments v2 failed: {}",
-        String::from_utf8_lossy(&envelope_out.stderr)
-    );
+        let layout_path = dir.join("layout.json");
+        let out = dir.join("out.png");
+        let render = hwp()
+            .arg("render")
+            .arg(&input)
+            .arg("-o")
+            .arg(&out)
+            .args(["--format", "png"])
+            .arg("--layout-json")
+            .arg(&layout_path)
+            .output()
+            .expect("run hwp render --layout-json");
+        assert!(
+            render.status.success(),
+            "hwp render failed on {relative}: {}",
+            String::from_utf8_lossy(&render.stderr)
+        );
 
-    let envelope: serde_json::Value =
-        serde_json::from_slice(&envelope_out.stdout).expect("the envelope is JSON");
-    let envelope_ids: std::collections::BTreeSet<&str> = envelope["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .map(|s| s["id"].as_str().expect("segment id"))
-        .collect();
-    assert!(
-        !envelope_ids.is_empty(),
-        "the envelope must carry segments, or this test asserts nothing"
-    );
+        let envelope_out = hwp()
+            .arg("cat")
+            .arg(&input)
+            .args([
+                "--format",
+                "markdown",
+                "--with-segments",
+                "--segments",
+                "v2",
+            ])
+            .output()
+            .expect("run hwp cat --with-segments --segments v2");
+        assert!(
+            envelope_out.status.success(),
+            "hwp cat --segments v2 failed on {relative}: {}",
+            String::from_utf8_lossy(&envelope_out.stderr)
+        );
 
-    let layout: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&layout_path).expect("layout file")).expect("JSON");
-    let layout_ids: std::collections::BTreeSet<&str> = layout["pages"]
-        .as_array()
-        .expect("pages")
-        .iter()
-        .flat_map(|p| p["rows"].as_array().expect("rows"))
-        .map(|r| r["id"].as_str().expect("row id"))
-        .collect();
-    assert!(
-        !layout_ids.is_empty(),
-        "the layout artifact must carry rows, or this test asserts nothing"
-    );
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&envelope_out.stdout).expect("the envelope is JSON");
+        let envelope_ids: std::collections::BTreeSet<&str> = envelope["segments"]
+            .as_array()
+            .expect("segments")
+            .iter()
+            .map(|s| s["id"].as_str().expect("segment id"))
+            .collect();
 
-    let orphans: Vec<&&str> = layout_ids.difference(&envelope_ids).collect();
+        let layout: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&layout_path).expect("layout file"))
+                .expect("JSON");
+        let rows: Vec<&serde_json::Value> = layout["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .flat_map(|p| p["rows"].as_array().expect("rows"))
+            .collect();
+
+        let mut unresolved = 0;
+        for row in &rows {
+            let id = row["id"].as_str().expect("row id");
+            if envelope_ids.contains(id) {
+                continue;
+            }
+            unresolved += 1;
+            assert_eq!(
+                row["kind"], "para",
+                "{relative}: an unresolved id must be a para row; {id} is a {} - that is a new \
+                 divergence, not the documented #285 case",
+                row["kind"]
+            );
+            assert_eq!(
+                row["source_chars"],
+                serde_json::Value::Null,
+                "{relative}: the unresolved para id {id} carries a character range, so it \
+                 shaped text and should have an envelope segment - a new divergence, not #285"
+            );
+        }
+        checked.push((relative, rows.len(), envelope_ids.len(), unresolved));
+        std::fs::remove_file(&layout_path).ok();
+    }
+
+    // Printed, not asserted: the counts move with the fixtures a checkout happens to have.
+    for (name, rows, envelope, unresolved) in &checked {
+        println!("join key: {name} rows={rows} envelope={envelope} unresolved={unresolved}");
+    }
+    if !absent.is_empty() {
+        println!(
+            "join key: NOT CHECKED (gitignored, absent here): {}",
+            absent.join(", ")
+        );
+    }
     assert!(
-        orphans.is_empty(),
-        "{} of {} layout row ids are absent from the envelope's id set, so \"keyed by segment \
-         id\" is false for the two published artifacts: {:?}",
-        orphans.len(),
-        layout_ids.len(),
-        &orphans[..orphans.len().min(8)]
+        checked.len() >= 3,
+        "the three committed fixtures must always be checked, only checked {}",
+        checked.len()
     );
     std::fs::remove_dir_all(&dir).ok();
 }
