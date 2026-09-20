@@ -140,7 +140,12 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "cat",
         "with_segments",
-        "(markdown 전용) markdown과 함께 각 출력 문자 범위의 원본 좌표(섹션/문단)를 한 줄 JSON 봉투로 출력 — {\"markdown\": ..., \"segments\": [...]}",
+        "각 출력 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 함께 출력. 버전은 --segments로 고른다 — v1은 markdown 전용, v2는 --format json도 받는다",
+    ),
+    (
+        "cat",
+        "segments",
+        "--with-segments 봉투 버전. v1은 바이트가 고정된 v0.8.x 봉투(markdown 전용), v2는 7종 세그먼트·안정 id·세그먼트별 스타일을 담고 markdown과 json에서 쓸 수 있다",
     ),
     // grep
     (

@@ -12,7 +12,8 @@ use hwp_model::Document;
 use zeroize::Zeroizing;
 
 use crate::format::{FileFormat, detect};
-use hwp_cli::cli::{PasswordArgs, TextFormat};
+use hwp_cli::cli::{PasswordArgs, SegmentVersion, TextFormat};
+use hwp_cli::segment_envelope::envelope_v2;
 
 /// Stable public refusal code for absent or invalid password credentials.
 pub const HWP_PASSWORD_REQUIRED_OR_INVALID: &str = "HWP_PASSWORD_REQUIRED_OR_INVALID";
@@ -245,25 +246,37 @@ pub fn load_document_with_options(
 /// `preview`면 평문은 본문 파싱 없이 PrvText 미리보기만 출력하고, 보호 문서는 먼저 암호를
 /// 인증한다. `with_header_footer`/`with_hidden`은
 /// 머리말·꼬리말/숨은 설명 포함 여부(기본 제외) — plain·markdown 경로에 일관되게 적용된다
-/// (html/json은 옵션 미대상). `with_segments`는 markdown 전용으로, markdown과 함께 각 출력
-/// 문자 범위의 원본 좌표를 한 줄 JSON 봉투로 낸다.
+/// (html/json은 옵션 미대상). `segments`가 `Some`이면 각 출력 문자 범위의 원본 좌표를 한 줄
+/// JSON 봉투로 함께 내고, 그 값이 봉투 버전을 고른다 — v1은 markdown 전용으로 바이트가
+/// 고정된 v0.8.x 봉투(D-04), v2는 markdown과 json 두 포맷 전용(D-03)이며
+/// `schemas/segment-envelope-v2.schema.json`이 정본이다.
 pub fn run(
     path: &Path,
     format: TextFormat,
     preview: bool,
     with_header_footer: bool,
     with_hidden: bool,
-    with_segments: bool,
+    segments: Option<SegmentVersion>,
     password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
-    if with_segments {
+    if let Some(segments) = segments {
         if preview {
-            anyhow::bail!(
-                "--with-segments는 --format markdown 전용입니다 (--preview와 함께 쓸 수 없습니다)"
-            );
+            // Not version- or format-specific: --preview prints PrvText without parsing the
+            // body, so there is no emission run to record spans against, whichever envelope
+            // version and output format were asked for.
+            anyhow::bail!("--with-segments는 --preview와 함께 쓸 수 없습니다");
         }
-        if !matches!(format, TextFormat::Markdown) {
-            anyhow::bail!("--with-segments는 --format markdown 전용입니다");
+        // D-03: v2 is published for markdown and json; v1 stays exactly what it is today,
+        // markdown-only and byte-pinned, because there has never been a v1 json envelope and
+        // inventing one would be a fourth output shape no schema covers.
+        match segments {
+            SegmentVersion::V1 if !matches!(format, TextFormat::Markdown) => {
+                anyhow::bail!("--with-segments는 --format markdown 전용입니다");
+            }
+            SegmentVersion::V2 if !matches!(format, TextFormat::Markdown | TextFormat::Json) => {
+                anyhow::bail!("--segments v2는 --format markdown 또는 json 전용입니다");
+            }
+            _ => {}
         }
     }
     let password = resolve_password_args(password_args, path)?;
@@ -297,7 +310,27 @@ pub fn run(
     };
     match format {
         TextFormat::Plain => print!("{}", doc.plain_text_with(&opts)),
-        TextFormat::Markdown if with_segments => {
+        TextFormat::Markdown if segments == Some(SegmentVersion::V2) => {
+            let (markdown, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &md_opts())?;
+            println!("{}", serde_json::to_string(&envelope_v2(&markdown, &segs))?);
+        }
+        TextFormat::Json if segments == Some(SegmentVersion::V2) => {
+            // Matched on the version, not on `with_segments`: if the guard above is ever
+            // relaxed, `--segments v1 --format json` must not silently fall into the v2 arm.
+            // The document IR sits beside the segments under the same two constants, so a
+            // consumer parses one value.
+            //
+            // The markdown is carried here as well, and `envelope_v2` takes it by argument so
+            // this arm cannot drop it: `char_range` indexes the markdown, so an envelope
+            // without it would publish offsets into a string it does not hold - and they would
+            // shift silently under --with-header-footer and --with-hidden, which the document
+            // IR ignores.
+            let (markdown, segs) = hwp_convert::to_markdown_with_segments_v2(&doc, &md_opts())?;
+            let mut envelope = envelope_v2(&markdown, &segs);
+            envelope["document"] = serde_json::from_str(&hwp_convert::to_json(&doc, true, false)?)?;
+            println!("{}", serde_json::to_string(&envelope)?);
+        }
+        TextFormat::Markdown if segments == Some(SegmentVersion::V1) => {
             let (markdown, segments) = hwp_convert::to_markdown_with_segments(&doc, &md_opts())?;
             // 한 줄 컴팩트 JSON 봉투 + 개행. kind는 현재 항상 "para"(미래 확장용).
             let segments: Vec<serde_json::Value> = segments

@@ -52,6 +52,7 @@ fn real_main() -> anyhow::Result<()> {
             with_header_footer,
             with_hidden,
             with_segments,
+            segments,
             password,
         } => commands::cat::run(
             &file,
@@ -59,7 +60,9 @@ fn real_main() -> anyhow::Result<()> {
             preview,
             with_header_footer,
             with_hidden,
-            with_segments,
+            // The switch and the version are two flags at the CLI and one value here:
+            // `None` is the envelope switched off.
+            with_segments.then_some(segments),
             password,
         ),
         Cmd::Convert {
