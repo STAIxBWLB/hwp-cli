@@ -1116,6 +1116,8 @@ fn layout_document_inner(
 
             if para.line_segs.is_empty() {
                 // 폴백: 본문 폭에서 그리디 줄바꿈
+                // Set when the greedy wrap itself crossed a page boundary (#282).
+                let mut para_split = false;
                 if para.chars.is_empty() {
                     content_bottom += 16.0; // 빈 문단 높이 근사
                 } else {
@@ -1172,19 +1174,115 @@ fn layout_document_inner(
                     // place_wrapped의 우변은 x0 + max_width라, 들여쓴 만큼 폭을 줄여야
                     // 문단 원래 오른쪽 끝(left + avail)이 유지된다.
                     let wrap_width = (left + avail - x0).max(1.0);
+                    let line_advance = max_size * 1.6;
+                    let descent = max_size * 0.4;
+                    // A fallback paragraph carries no cached line geometry, so no line here can
+                    // declare a page boundary the way the cached band's `LineSeg` flags do.
+                    // Wrap into a scratch page first, then move whole lines onto real pages,
+                    // breaking where the next line's descent would cross the body bottom
+                    // (#282). Without this a paragraph taller than the page is emitted in full
+                    // below the page bottom and only the *next* paragraph paginates.
+                    let mut scratch = PageList {
+                        width_pt: w,
+                        height_pt: h,
+                        items: Vec::new(),
+                    };
+                    let mut lines: Vec<(usize, f32)> = Vec::new();
                     let last_y = place_wrapped(
-                        &mut page,
+                        &mut scratch,
                         items,
                         x0,
                         baseline_y,
                         wrap_width,
-                        max_size * 1.6,
+                        line_advance,
                         &tabs,
                         first_delta,
                         &doc.header.border_fills,
+                        &mut lines,
                         warnings,
                     );
-                    content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
+                    // A line taller than the body box itself cannot be rescued by any break.
+                    // It is still drawn, so this is a geometry deviation rather than lost
+                    // content - the same contract `TableCellContentOverflow` carries.
+                    if line_advance > body_bottom - body_top {
+                        warnings.push_once(
+                            RenderIssueCode::ParagraphLineContentOverflow,
+                            format!("{:.0}", line_advance - (body_bottom - body_top)),
+                        );
+                    }
+                    // Per line: where its items start in `scratch`, how far down it moves, and
+                    // whether it opens a new page. The first line on a page never breaks -
+                    // that would push an empty page and orphan the list marker already drawn.
+                    let mut plan: Vec<(usize, f32, bool)> = Vec::with_capacity(lines.len());
+                    let mut dy = 0.0f32;
+                    let mut lines_on_page = 0usize;
+                    for &(start_item, baseline) in &lines {
+                        let mut opens_page = false;
+                        if lines_on_page > 0 && baseline + dy + descent > body_bottom {
+                            dy = body_top + max_size * 1.2 - baseline;
+                            opens_page = true;
+                            lines_on_page = 0;
+                        }
+                        lines_on_page += 1;
+                        plan.push((start_item, dy, opens_page));
+                    }
+                    para_split = plan.iter().any(|&(_, _, opens_page)| opens_page);
+                    let total_items = scratch.items.len();
+                    let mut src = scratch.items.into_iter();
+                    let mut page_budget_spent = false;
+                    for (i, &(start_item, dy, opens_page)) in plan.iter().enumerate() {
+                        let end = plan.get(i + 1).map_or(total_items, |next| next.0);
+                        if opens_page {
+                            rec.content_end(&page);
+                            render_page_notes(
+                                doc,
+                                store,
+                                &mut page,
+                                &page_notes,
+                                body_left,
+                                body_width,
+                                body_bottom,
+                                warnings,
+                            );
+                            page_notes.clear();
+                            page_numbers.finish(doc, store, &mut page, &furniture, warnings);
+                            if !push_page_checked(
+                                &mut pages,
+                                &mut page,
+                                Some((w, h)),
+                                warnings,
+                                rec,
+                            ) {
+                                page_budget_spent = true;
+                                break;
+                            }
+                            prev_v_pos = -1;
+                            col_band = 0;
+                            // The continuation is real flow on the new page: a later explicit
+                            // break must not be suppressed as "nothing on this page yet".
+                            paras_on_page = 1;
+                        }
+                        for item in src.by_ref().take(end.saturating_sub(start_item)) {
+                            page.items.push(if dy == 0.0 {
+                                item
+                            } else {
+                                translate_item(item, 0.0, dy)
+                            });
+                        }
+                    }
+                    if page_budget_spent {
+                        // The returned pages carry content whose provenance was recorded;
+                        // publishing them without resolving would silently drop it.
+                        rec.resolve(&pages);
+                        return DisplayList { pages };
+                    }
+                    let last_dy = plan.last().map_or(0.0, |&(_, dy, _)| dy);
+                    content_bottom = last_y + last_dy + descent + geom.spacing_bottom;
+                    if para_split {
+                        // The paragraph's remaining rows and any anchored object belong to the
+                        // page it ended on, not to the one it started on.
+                        para_top = Some(body_top);
+                    }
                 }
                 let (objects_bottom, objects_split) = layout_para_objects(
                     doc,
@@ -1218,7 +1316,7 @@ fn layout_document_inner(
                 // A fallback paragraph is one slice with both borders. If an
                 // attached table split, approximate only its final-page slice.
                 if let Some(top) = para_top {
-                    let (slice_insert, slice_top, slice_first) = if objects_split {
+                    let (slice_insert, slice_top, slice_first) = if objects_split || para_split {
                         (0, body_top, false)
                     } else {
                         (bg_slice_insert, top, true)
@@ -1412,6 +1510,7 @@ fn layout_document_inner(
                     &tabs,
                     0.0, // 줄 오프셋은 x에 이미 반영됨.
                     &doc.header.border_fills,
+                    &mut Vec::new(),
                     warnings,
                 );
                 content_bottom = last_y + (line_height_pt - baseline_gap_pt).max(0.0);
@@ -4527,6 +4626,7 @@ fn layout_box_para_iter<'a>(
                     &tabs,
                     first_delta,
                     &doc.header.border_fills,
+                    &mut Vec::new(),
                     warnings,
                 );
                 content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
@@ -4672,6 +4772,7 @@ fn layout_box_para_iter<'a>(
                     &tabs,
                     0.0, // 줄 오프셋은 x에 이미 반영됨.
                     &doc.header.border_fills,
+                    &mut Vec::new(),
                     warnings,
                 );
                 content_bottom = last_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0);
@@ -5401,6 +5502,11 @@ fn emphasis_mark(kind: u8, cx: f32, cy: f32, em: f32, color: u32) -> Vec<Item> {
 /// Places inline items with greedy glyph-level wrapping at `max_width`.
 ///
 /// An infinite width disables wrapping. The return value is the final baseline.
+///
+/// `lines` receives one `(item index, baseline)` entry per line placed, the first one for the
+/// line that starts at `first_baseline_y`. The index is into `page.items` and is where that
+/// line's items begin, so a caller that has to move whole lines elsewhere - the fallback
+/// band's mid-paragraph page break (#282) - can slice them without re-deriving the wrap.
 #[allow(clippy::too_many_arguments)]
 fn place_wrapped(
     page: &mut PageList,
@@ -5412,9 +5518,11 @@ fn place_wrapped(
     tabs: &[TabStop],
     first_indent: f32,
     border_fills: &[BorderFill],
+    lines: &mut Vec<(usize, f32)>,
     warnings: &mut RenderIssueAccumulator,
 ) -> f32 {
     let limit = x0 + max_width;
+    lines.push((page.items.len(), first_baseline_y));
     // 첫 줄만 들여쓰기/내어쓰기(first_indent). 이후 줄·줄바꿈은 x0(문단 좌여백)로 복귀.
     let mut x = x0 + first_indent;
     let mut y = first_baseline_y;
@@ -5469,6 +5577,7 @@ fn place_wrapped(
                             push_run(page, piece_x, y, piece, border_fills, warnings);
                         }
                         y += line_advance;
+                        lines.push((page.items.len(), y));
                         piece_x = x0;
                         acc = 0.0;
                         start = i;
@@ -5536,6 +5645,7 @@ fn place_wrapped(
             }
             InlineItem::LineBreak(_) => {
                 y += line_advance;
+                lines.push((page.items.len(), y));
                 x = x0;
                 previous_no_break = false;
                 idx += 1;
@@ -6549,6 +6659,7 @@ mod tab_width_tests {
             tabs,
             0.0,
             &[],
+            &mut Vec::new(),
             &mut warns,
         );
         let xs = page
@@ -6594,6 +6705,7 @@ mod tab_width_tests {
             &tabs,
             0.0,
             &[],
+            &mut Vec::new(),
             &mut warns,
         );
         let xs: Vec<f32> = page
@@ -6636,6 +6748,7 @@ mod tab_width_tests {
             &[],
             0.0,
             &[],
+            &mut Vec::new(),
             &mut warns,
         );
 
@@ -6679,6 +6792,7 @@ mod tab_width_tests {
             &tabs,
             0.0,
             &[],
+            &mut Vec::new(),
             &mut warns,
         );
 
@@ -6748,6 +6862,7 @@ mod tab_width_tests {
             &tabs,
             0.0,
             &[],
+            &mut Vec::new(),
             &mut warns,
         );
 

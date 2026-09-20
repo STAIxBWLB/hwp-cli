@@ -54,7 +54,7 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 State variables: `prev_v_pos=-1` (to detect a page reset), `content_bottom=body_top` (the flow
 cursor), `paras_on_page=0`, `page_notes: Vec<&Note>` and `list_state: ListState`.
 
-### 1.2 Page break rules (three triggers)
+### 1.2 Page break rules (four triggers)
 
 1. **Body overflow**: `content_bottom > body_bottom && paras_on_page>0` renders footnotes, adds the
    page furniture (`PageNumberState::finish`: header, footer and page number), pushes the page and
@@ -63,6 +63,13 @@ cursor), `paras_on_page=0`, `page_notes: Vec<&Note>` and `list_state: ListState`
 3. **A cached v_pos reset**: when drawing stored linesegs,
    `seg.v_pos < prev_v_pos && !page.items.is_empty()`. Genuine multi-page documents reset v_pos to 0
    on each page, so a decrease is treated as a page boundary.
+4. **A fallback line crossing the body bottom**: in the no-cache band, a line whose
+   `baseline + max_size*0.4` would pass `body_bottom` starts a new page, carrying the rest of the
+   paragraph with it. The first line on a page never triggers it - that would push an empty page and
+   orphan the list marker already drawn. This is the mid-paragraph break for documents this tool
+   generates, which carry no linesegs at all; without it such a paragraph was emitted in full below
+   the page bottom and only the *next* paragraph could paginate
+   ([#282](https://github.com/STAIxBWLB/hwp-cli/issues/282)).
 
 ### 1.3 Paragraph handling branches
 
@@ -73,7 +80,12 @@ Per paragraph, prepare `footnote::para_marks`/`para_notes` (collecting footnote 
   Otherwise the whole paragraph is shaped with `shape_range_notes` and broken greedily against
   `body_width` by `place_wrapped`. `baseline_y = content_bottom + spacing_top + max_size*1.2`, and
   `content_bottom = last_y + max_size*0.4 + spacing_bottom`. Center and right alignment are corrected
-  only when the content fits on one line.
+  only when the content fits on one line. The wrap runs into a scratch page that also collects one
+  `(item index, baseline)` entry per line, and whole lines are then moved onto real pages by trigger
+  4 above, each break going through `push_page_checked` so the segment recorder's page ordinal stays
+  derivable. A line taller than the body box itself cannot be rescued by any break: it is still
+  drawn, and the deviation is reported as `paragraph_line_content_overflow`, the contract
+  `table_cell_content_overflow` carries for a table cell.
 - **When `line_segs` exists (respecting the cache)**: each seg shapes the range
   `[text_start, next.text_start)` with `shape_range_notes`. The key coordinates:
 

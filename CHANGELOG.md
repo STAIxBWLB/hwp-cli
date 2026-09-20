@@ -10,6 +10,23 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- A paragraph taller than the remaining page never broke unless the document carried cached line
+  geometry. The `line_segs.is_empty()` fallback band in `crates/hwp-render/src/layout.rs` contained
+  no page push at all, so the paragraph was emitted in full onto the current page whatever its
+  height and pagination could only happen when the *next* paragraph started. Files saved by Hangul
+  were unaffected (they carry cached linesegs and take the other band); documents this tool
+  generates - `hwp new`, every template, `hwp convert` into HWP - carry none and were affected: one
+  104,000-character paragraph laid out to a single page with its content stacked 31 pages below it,
+  and nothing reported the overflow. The fallback band now breaks between lines, through
+  `push_page_checked` like every other page push, so a split paragraph records one geometry row per
+  page exactly as the cached path does. A line taller than the body box itself cannot be rescued by
+  any break: it is still drawn, and the deviation is reported as the new typed warning
+  `paragraph_line_content_overflow`, the contract `table_cell_content_overflow` already carries for
+  a table cell. The cached path is untouched - `fixtures/samples/report-tables.hwpx` publishes a
+  byte-identical layout artifact ([#282](https://github.com/STAIxBWLB/hwp-cli/issues/282)).
+
 ## [0.18.0]
 
 **Fixed**

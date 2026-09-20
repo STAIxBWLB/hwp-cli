@@ -4332,3 +4332,129 @@ fn endnotes_paginate_across_all_required_pages() {
         );
     }
 }
+
+/// The body box of the (single) section, in points: `(top, bottom)`.
+fn body_band(doc: &hwp_model::Document) -> (f32, f32) {
+    let page = doc.sections[0].section_def().unwrap().page.unwrap();
+    (
+        (page.margin_top.0 + page.margin_header.0) as f32 / 100.0,
+        (page.height.0 - page.margin_bottom.0 - page.margin_footer.0) as f32 / 100.0,
+    )
+}
+
+/// Every glyph baseline on each page, paired with its page index.
+fn baselines(list: &hwp_render::display::DisplayList) -> Vec<(usize, f32)> {
+    list.pages
+        .iter()
+        .enumerate()
+        .flat_map(|(i, page)| {
+            page.items.iter().filter_map(move |item| match item {
+                hwp_render::display::Item::Glyphs { y, .. } => Some((i, *y)),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// A document this tool generates carries no cached `LineSeg`s, so its paragraphs take
+/// layout's fallback band. That band had no page push of any kind (#282): a paragraph taller
+/// than the page was emitted in full below the page bottom, and pagination could only happen
+/// when the *next* paragraph started - so a document that is one long paragraph rendered to a
+/// single page with its content stacked tens of pages below it.
+///
+/// The line count here comes from markdown hard breaks (`"  \n"` → `LINE_BREAK`), which
+/// advance the baseline in `place_wrapped` without asking a font anything. Driving the break
+/// with long text instead would be driving line count through shaping, which is
+/// font-dependent, and CI bundles no fonts - the test would quietly prove nothing there.
+#[test]
+fn 캐시_없는_긴_문단은_쪽을_넘긴다() {
+    let md: String = (0..400).map(|i| format!("{i}번째 줄  \n")).collect();
+    let doc = hwp_convert::from_markdown(&md);
+
+    // The premises this test rests on, asserted rather than assumed.
+    assert_eq!(
+        doc.sections[0].paragraphs.len(),
+        1,
+        "the hard breaks must stay inside one paragraph"
+    );
+    let para = &doc.sections[0].paragraphs[0];
+    assert!(
+        para.line_segs.is_empty(),
+        "a generated paragraph must reach the fallback band, or this test proves nothing"
+    );
+    let breaks = para
+        .chars
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                hwp_model::HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
+            )
+        })
+        .count();
+    assert_eq!(breaks, 399, "the line count must come from the model");
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+
+    let (body_top, body_bottom) = body_band(&doc);
+    // 400 lines of 16pt against a ~658pt body box: ~41 lines a page, so about ten pages.
+    assert!(
+        list.pages.len() > 1,
+        "one paragraph of 400 declared lines must paginate — got {} page(s)",
+        list.pages.len()
+    );
+    for (page, y) in baselines(&list) {
+        assert!(
+            y >= body_top && y <= body_bottom,
+            "a baseline at y={y} on page {page} is outside the body box \
+             ({body_top}..{body_bottom})"
+        );
+    }
+}
+
+/// A line taller than the body box itself cannot be rescued by any page break. It is still
+/// drawn - the deviation is reported rather than silently swallowed, the contract
+/// `table_cell_content_overflow` already carries for a table cell.
+#[test]
+fn 쪽보다_큰_줄은_보고된다() {
+    let mut doc = hwp_convert::from_markdown("한 줄  \n두 줄  \n세 줄\n");
+    let (body_top, body_bottom) = body_band(&doc);
+    // 500pt text → a 800pt line box, taller than the ~658pt body box. Declared in the model,
+    // so the overflow does not depend on what font the host resolves.
+    for shape in &mut doc.header.char_shapes {
+        shape.base_size = 50_000;
+    }
+    assert!(
+        500.0 * 1.6 > body_bottom - body_top,
+        "the fixture must declare a line taller than the body box"
+    );
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let _ = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
+    let report = warns.finish();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::ParagraphLineContentOverflow),
+        "an unfittable line must be reported: {:?}",
+        report.issues
+    );
+
+    // The same document at a size that fits reports nothing, so the assertion above is not
+    // satisfied by some unrelated always-on warning.
+    let fits = hwp_convert::from_markdown("한 줄  \n두 줄  \n세 줄\n");
+    let mut warns = hwp_render::RenderIssueAccumulator::new();
+    let _ = hwp_render::layout::layout_document(&fits, &mut store, &mut warns);
+    assert!(
+        !warns
+            .finish()
+            .issues
+            .iter()
+            .any(|issue| issue.code == hwp_render::RenderIssueCode::ParagraphLineContentOverflow),
+        "a paragraph that fits must not report an overflow"
+    );
+}

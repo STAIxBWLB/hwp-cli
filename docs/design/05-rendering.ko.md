@@ -40,17 +40,18 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 
 상태 변수: `prev_v_pos=-1`(페이지 리셋 감지), `content_bottom=body_top`(흐름 커서), `paras_on_page=0`, `page_notes: Vec<&Note>`, `list_state: ListState`.
 
-### 1.2 페이지 나누기 규칙 (세 가지 트리거)
+### 1.2 페이지 나누기 규칙 (네 가지 트리거)
 
 1. **본문 넘침**: `content_bottom > body_bottom && paras_on_page>0` → 각주 렌더 + 페이지 가구(`PageNumberState::finish`: 머리/꼬리말·쪽번호) + 페이지 push, 상태 리셋.
 2. **명시 쪽 나누기**: `para.header.break_type & 0x04 != 0 && paras_on_page>0`.
 3. **캐시 v_pos 리셋**: 저장된 lineseg를 그릴 때 `seg.v_pos < prev_v_pos && !page.items.is_empty()` → 정품 멀티페이지는 페이지마다 v_pos가 0으로 리셋되므로 감소를 페이지 경계로 본다.
+4. **폴백 줄이 본문 하한을 넘을 때**: 캐시 없는 밴드에서 `baseline + max_size*0.4`가 `body_bottom`을 넘는 줄은 새 페이지를 열고 문단의 나머지를 데려간다. 페이지의 첫 줄은 트리거하지 않는다(빈 페이지가 생기고 이미 그린 목록 마커가 고아가 된다). lineseg가 아예 없는 우리 생성 문서의 문단 중간 나누기로, 이것이 없으면 그런 문단은 페이지 하단 아래로 통째로 그려지고 *다음* 문단에서만 쪽이 넘어갔다([#282](https://github.com/STAIxBWLB/hwp-cli/issues/282)).
 
 ### 1.3 문단 처리 분기
 
 문단별로 `footnote::para_marks/para_notes`(각주 마커/노트 수집), `tab::tab_stops`, `para_geometry`, `hyperlink_ranges`, `list_state.marker_for_render`를 준비한 뒤:
 
-- **`line_segs`가 비었을 때(폴백)**: 빈 문단이면 `content_bottom += 16.0`. 아니면 `shape_range_notes`로 전체 셰이핑 → `place_wrapped`로 `body_width` 기준 그리디 줄바꿈. `baseline_y = content_bottom + spacing_top + max_size*1.2`, `content_bottom = last_y + max_size*0.4 + spacing_bottom`. 정렬(가운데/오른쪽)은 한 줄에 들어갈 때만 보정.
+- **`line_segs`가 비었을 때(폴백)**: 빈 문단이면 `content_bottom += 16.0`. 아니면 `shape_range_notes`로 전체 셰이핑 → `place_wrapped`로 `body_width` 기준 그리디 줄바꿈. `baseline_y = content_bottom + spacing_top + max_size*1.2`, `content_bottom = last_y + max_size*0.4 + spacing_bottom`. 정렬(가운데/오른쪽)은 한 줄에 들어갈 때만 보정. 줄바꿈은 스크래치 페이지에서 수행하며 줄마다 `(item 인덱스, baseline)`을 함께 모으고, 위 트리거 4에 따라 줄 단위로 실제 페이지에 옮긴다. 모든 나누기는 `push_page_checked`를 거쳐 세그먼트 기록기의 페이지 서수가 유도 가능하게 유지된다. 본문 상자보다 큰 줄은 어떤 나누기로도 담을 수 없다 — 그대로 그리고 편차만 `paragraph_line_content_overflow`로 보고한다(표 셀의 `table_cell_content_overflow`와 같은 계약).
 - **`line_segs`가 있을 때(캐시 존중)**: 각 seg마다 `[text_start, next.text_start)` 구간을 `shape_range_notes`로 셰이핑. 핵심 좌표:
   ```
   stored_baseline = body_top + (seg.v_pos + seg.baseline_gap) / 100

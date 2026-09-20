@@ -1324,6 +1324,66 @@ mod tests {
         }
     }
 
+    /// A paragraph split across pages by the **fallback** band - the one a document this tool
+    /// generates takes, because it carries no cached `LineSeg`s (#282). The line count comes
+    /// from markdown hard breaks (`LINE_BREAK` control characters), which advance the baseline
+    /// without asking a font anything, so the split happens whatever fonts the host has.
+    fn fallback_split_paragraph() -> Document {
+        let md: String = (0..400).map(|i| format!("{i}번째 줄  \n")).collect();
+        let doc = hwp_convert::from_markdown(&md);
+        assert!(
+            doc.sections[0].paragraphs[0].line_segs.is_empty(),
+            "the fixture must reach the fallback band"
+        );
+        doc
+    }
+
+    /// The fallback band's split records geometry the same way the cached band's does: one row
+    /// per (segment, page), which is the shape `schemas/render-layout-v1.schema.json`
+    /// publishes. Before #282 the band never broke a page, so the paragraph produced a single
+    /// row whose box ran tens of pages below the page it sat on.
+    #[test]
+    fn a_fallback_split_paragraph_records_one_row_per_page() {
+        let (list, map) = lay_out(&fallback_split_paragraph());
+        assert!(
+            list.pages.len() > 1,
+            "the fixture must paginate, or this test proves nothing — got {} page(s)",
+            list.pages.len()
+        );
+        let rows = rows_of(&map, kind::PARA);
+        assert_eq!(
+            rows.len(),
+            list.pages.len(),
+            "one row per page the paragraph touches"
+        );
+        let ids: std::collections::BTreeSet<&str> =
+            rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids.len(), 1, "every row names the same paragraph: {ids:?}");
+        let pages: Vec<usize> = rows.iter().map(|row| row.page).collect();
+        assert_eq!(
+            pages,
+            (0..list.pages.len()).collect::<Vec<_>>(),
+            "the rows name consecutive pages"
+        );
+        // Each row's box stays inside the page it names. The published geometry is what an
+        // editor hit-tests against, and the defect published boxes 37 pages tall.
+        for row in &rows {
+            let Some(bbox) = row.bbox else { continue };
+            assert!(
+                bbox.y1 <= list.pages[row.page].height_pt,
+                "row on page {} runs past the page: {bbox:?}",
+                row.page
+            );
+        }
+        // The rows partition the paragraph's characters, exactly as the cached path's do.
+        let mut ranges: Vec<CharRange> = rows.iter().filter_map(|row| row.chars).collect();
+        assert_eq!(ranges.len(), rows.len(), "every row carries a range");
+        ranges.sort_by_key(|range| (range.start, range.end));
+        for pair in ranges.windows(2) {
+            assert!(pair[0].end <= pair[1].start, "ranges overlap: {pair:?}");
+        }
+    }
+
     // --- recorder-level tests -------------------------------------------------------------
     //
     // The next few drive `SegmentRecorder` directly. The properties they pin depend on the
