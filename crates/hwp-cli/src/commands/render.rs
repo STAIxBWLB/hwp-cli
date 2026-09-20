@@ -82,6 +82,7 @@ pub fn run_with_password(
     format: Option<RenderFormat>,
     font_dirs: Vec<PathBuf>,
     report_path: Option<&Path>,
+    layout_path: Option<&Path>,
     password_args: PasswordArgs,
 ) -> anyhow::Result<()> {
     let password = resolve_password_args(password_args, input)?;
@@ -93,6 +94,7 @@ pub fn run_with_password(
         format,
         font_dirs,
         report_path,
+        layout_path,
         &LoadOptions {
             password: password.as_ref(),
         },
@@ -108,6 +110,7 @@ fn run_with_report_with_options(
     format: Option<RenderFormat>,
     font_dirs: Vec<PathBuf>,
     report_path: Option<&Path>,
+    layout_path: Option<&Path>,
     options: &LoadOptions<'_>,
 ) -> anyhow::Result<()> {
     let dpi = validated_dpi(dpi)?;
@@ -150,13 +153,28 @@ fn run_with_report_with_options(
             if let Some(report_path) = report_path {
                 ensure_report_destination(
                     report_path,
+                    "렌더 보고서",
                     input,
                     outputs.iter().map(|(path, _)| path.as_path()),
+                )?;
+            }
+            if let Some(layout_path) = layout_path {
+                ensure_report_destination(
+                    layout_path,
+                    "레이아웃 JSON",
+                    input,
+                    outputs
+                        .iter()
+                        .map(|(path, _)| path.as_path())
+                        .chain(report_path),
                 )?;
             }
             publish_render_set(&outputs, input)?;
             for (path, width, height) in dimensions {
                 eprintln!("저장: {} ({}×{}px)", path.display(), width, height);
+            }
+            if let Some(layout_path) = layout_path {
+                write_layout(layout_path, &doc, &opts, &selected)?;
             }
             if let Some(report_path) = report_path {
                 write_report(
@@ -192,14 +210,29 @@ fn run_with_report_with_options(
             if let Some(report_path) = report_path {
                 ensure_report_destination(
                     report_path,
+                    "렌더 보고서",
                     input,
                     outputs.iter().map(|(path, _)| path.as_path()),
+                )?;
+            }
+            if let Some(layout_path) = layout_path {
+                ensure_report_destination(
+                    layout_path,
+                    "레이아웃 JSON",
+                    input,
+                    outputs
+                        .iter()
+                        .map(|(path, _)| path.as_path())
+                        .chain(report_path),
                 )?;
             }
             publish_render_set(&outputs, input)?;
             for &page_no in &selected {
                 let path = page_path(output, page_no, multi);
                 eprintln!("저장: {}", path.display());
+            }
+            if let Some(layout_path) = layout_path {
+                write_layout(layout_path, &doc, &opts, &selected)?;
             }
             if let Some(report_path) = report_path {
                 write_report(
@@ -224,7 +257,20 @@ fn run_with_report_with_options(
             let result = hwp_render::render_document_pdf(&doc, &opts, Some(&selected))?;
             report(&result.report);
             if let Some(report_path) = report_path {
-                ensure_report_destination(report_path, input, std::iter::once(output))?;
+                ensure_report_destination(
+                    report_path,
+                    "렌더 보고서",
+                    input,
+                    std::iter::once(output),
+                )?;
+            }
+            if let Some(layout_path) = layout_path {
+                ensure_report_destination(
+                    layout_path,
+                    "레이아웃 JSON",
+                    input,
+                    std::iter::once(output).chain(report_path),
+                )?;
             }
             write_render_bytes(output, input, &result.data)?;
             eprintln!(
@@ -233,6 +279,9 @@ fn run_with_report_with_options(
                 selected.len(),
                 result.data.len()
             );
+            if let Some(layout_path) = layout_path {
+                write_layout(layout_path, &doc, &opts, &selected)?;
+            }
             if let Some(report_path) = report_path {
                 write_report(
                     report_path,
@@ -424,21 +473,76 @@ fn write_report(
     Ok(())
 }
 
+/// Writes the layout artifact for the selected pages.
+///
+/// The recording layout pass is run HERE and only when the flag is present, because
+/// `layout_document_with_segments` is opt-in: every ordinary render entry point uses a
+/// disabled recorder, so a render without `--layout-json` pays nothing. It takes no dpi and
+/// knows no output format, which is why the bytes are identical across PNG, SVG, PDF and every
+/// `--dpi` by construction rather than by convention.
+///
+/// The pass's own warnings are discarded: the render that just ran reported the same issues
+/// from the same document, and re-reporting them would print every message twice.
+fn write_layout(
+    layout_path: &Path,
+    doc: &hwp_model::Document,
+    opts: &hwp_render::RenderOptions,
+    selected: &[usize],
+) -> anyhow::Result<()> {
+    let mut store = hwp_render::FontStore::new();
+    for dir in &opts.font_dirs {
+        store.load_dir(dir);
+    }
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let (list, map) =
+        hwp_render::layout::layout_document_with_segments(doc, &mut store, &mut warnings);
+    let bytes =
+        serde_json::to_vec_pretty(&hwp_cli::render_layout::layout_json(&list, &map, selected))?;
+    crate::commands::output::write_validated(
+        layout_path,
+        None,
+        |staged| {
+            let mut file = File::create(staged)?;
+            file.write_all(&bytes)?;
+            file.flush()?;
+            Ok(())
+        },
+        |staged, _| {
+            let written = std::fs::read(staged)?;
+            if written != bytes {
+                anyhow::bail!("레이아웃 JSON 검증 중 바이트 불일치: {}", staged.display());
+            }
+            let parsed: serde_json::Value = serde_json::from_slice(&written)
+                .map_err(|error| anyhow::anyhow!("레이아웃 JSON 검증 실패: {error}"))?;
+            if !parsed.is_object() {
+                anyhow::bail!("레이아웃 JSON이 JSON 객체가 아닙니다");
+            }
+            Ok(())
+        },
+    )?;
+    eprintln!("레이아웃 JSON 저장: {}", layout_path.display());
+    Ok(())
+}
+
+/// The destination vetting both `--report` and `--layout-json` route through: a published
+/// side file may never alias the input document or any render output, so it cannot clobber the
+/// thing it describes. `label` only names the artifact in the message; the rule is one rule.
 fn ensure_report_destination<'a>(
     report_path: &Path,
+    label: &str,
     input: &Path,
     outputs: impl IntoIterator<Item = &'a Path>,
 ) -> anyhow::Result<()> {
     if paths_alias(report_path, input) {
         anyhow::bail!(
-            "렌더 보고서 경로가 입력 문서를 덮어쓸 수 있어 거부합니다: {}",
+            "{label} 경로가 입력 문서를 덮어쓸 수 있어 거부합니다: {}",
             report_path.display()
         );
     }
     for output in outputs {
         if paths_alias(report_path, output) {
             anyhow::bail!(
-                "렌더 보고서 경로가 렌더 출력과 같거나 별칭이라 거부합니다: {}",
+                "{label} 경로가 렌더 출력과 같거나 별칭이라 거부합니다: {}",
                 report_path.display()
             );
         }

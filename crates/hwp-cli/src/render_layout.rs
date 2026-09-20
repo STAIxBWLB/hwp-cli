@@ -80,9 +80,7 @@ fn row_json(row: &SegmentRow) -> serde_json::Value {
 /// a fabricated zero-extent box: that is the one thing D-08a exists to prevent.
 fn box_json(b: BoxPt) -> Option<serde_json::Value> {
     let finite = [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite());
-    finite.then(|| {
-        serde_json::json!({ "x0": b.x0, "y0": b.y0, "x1": b.x1, "y1": b.y1 })
-    })
+    finite.then(|| serde_json::json!({ "x0": b.x0, "y0": b.y0, "x1": b.x1, "y1": b.y1 }))
 }
 
 #[cfg(test)]
