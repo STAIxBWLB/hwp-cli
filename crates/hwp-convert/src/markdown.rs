@@ -18,12 +18,19 @@
 
 use std::fs::OpenOptions;
 use std::io::{Error, ErrorKind, Write};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
 use hwp_model::list::ListState;
 use hwp_model::{
     Cell, CharShape, Control, Document, Equation, GenericControl, HwpChar, Paragraph, Table,
     TextOptions, ctrl_char,
+};
+
+use crate::segment::{RawSeg, Segment, SegmentKind, SegmentStyle, char_shape_id_at, summarize};
+use crate::segment_id::{
+    SegmentPath, canonical_char_shape_runs, cell_id, control_id, paragraph_id, picture_id, run_id,
+    table_id,
 };
 
 /// markdown 출력 옵션.
@@ -71,7 +78,7 @@ pub fn to_markdown(doc: &Document) -> String {
 /// [`to_markdown_with_segments`]와 공유하므로 markdown 문자열은 세그먼트 유무와
 /// 무관하게 바이트 단위로 동일함이 구조적으로 보장된다.
 pub fn to_markdown_with(doc: &Document, opts: &MarkdownOptions) -> std::io::Result<String> {
-    Ok(emit_markdown(doc, opts)?.0)
+    Ok(emit_markdown(doc, opts, false)?.0)
 }
 
 /// [`to_markdown_with`]와 같은 markdown을 내면서, 각 출력 문자 범위가 어느 원본 문단에서
@@ -84,7 +91,8 @@ pub fn to_markdown_with_segments(
     doc: &Document,
     opts: &MarkdownOptions,
 ) -> std::io::Result<(String, Vec<MarkdownSegment>)> {
-    emit_markdown(doc, opts)
+    let (markdown, segments, _) = emit_markdown(doc, opts, false)?;
+    Ok((markdown, segments))
 }
 
 /// markdown 방출 코어 — 문자열과 세그먼트 맵을 함께 만든다.
@@ -93,10 +101,11 @@ pub fn to_markdown_with_segments(
 /// 방출 순서: 섹션/문단 이중 루프에서 문단마다 방출 전후의 `out.len()`을 기록하고,
 /// 문서 끝 각주/미주 정의는 수집 시점의 문단 좌표에 귀속시킨다. 이후 [`cleanup_with_map`]으로
 /// 정리하며 삭제된 바이트만큼 오프셋을 재매핑하고, 마지막에 바이트→문자로 변환한다.
-fn emit_markdown(
+pub(crate) fn emit_markdown(
     doc: &Document,
     opts: &MarkdownOptions,
-) -> std::io::Result<(String, Vec<MarkdownSegment>)> {
+    v2: bool,
+) -> std::io::Result<(String, Vec<MarkdownSegment>, Vec<Segment>)> {
     let mut ctx = Ctx {
         media_dir: opts.media_dir,
         dir_name: opts
@@ -121,9 +130,13 @@ fn emit_markdown(
         end_n: 0,
         cur_section: 0,
         cur_para: 0,
+        v2,
+        path: SegmentPath::default(),
+        ctrl_index: 0,
+        ctrl_style: SegmentStyle::default(),
     };
 
-    let mut out = String::new();
+    let mut out = Body::default();
     // 원시 세그먼트: (섹션, 문단, byte_start, byte_end) — 방출 순서(= start 오름차순).
     let mut raw: Vec<(usize, usize, usize, usize)> = Vec::new();
 
@@ -137,10 +150,30 @@ fn emit_markdown(
             // 각주/미주가 수집될 때 귀속시킬 현재 문단 좌표를 갱신한다.
             ctx.cur_section = section_index;
             ctx.cur_para = para_index;
+            let path = SegmentPath {
+                section: section_index,
+                indices: vec![para_index],
+            };
+            if v2 {
+                ctx.path = path.clone();
+            }
             let start = out.len();
             render_paragraph(doc, para, &mut list_state, &mut ctx, &mut out);
             if out.len() > start {
                 raw.push((section_index, para_index, start, out.len()));
+                if v2 {
+                    let end = out.len();
+                    out.segs.push(RawSeg {
+                        kind: SegmentKind::Para,
+                        id: paragraph_id(&path, para),
+                        style: summarize(doc, para, char_shape_id_at(para, 0)),
+                        path,
+                        ctrl_id: None,
+                        name: None,
+                        start,
+                        end,
+                    });
+                }
             }
         }
     }
@@ -161,9 +194,142 @@ fn emit_markdown(
     ctx.persist_media()?;
 
     // cleanup으로 정리하며 삭제된 바이트만큼 세그먼트 오프셋을 재매핑하고 문자 단위로 변환.
-    let (cleaned, deletions) = cleanup_with_map(&out);
+    let (cleaned, deletions) = cleanup_with_map(&out.s);
     let segments = build_segments(&cleaned, &deletions, &raw);
-    Ok((cleaned, segments))
+    let v2_segments = if v2 {
+        finalize_v2(&cleaned, &deletions, out.segs)
+    } else {
+        Vec::new()
+    };
+    Ok((cleaned, segments, v2_segments))
+}
+
+/// A markdown buffer together with the v2 spans recorded into it.
+///
+/// Spans are byte offsets **into this buffer**. When the buffer's text is copied into a parent
+/// buffer - an inline fragment into the output, a block through [`append_block`], a cell into its
+/// row - [`Body::absorb`] carries the spans over, so one recording idiom serves every nesting
+/// level and no second emitter is needed.
+#[derive(Default)]
+struct Body {
+    s: String,
+    segs: Vec<RawSeg>,
+    /// The character-shape run being emitted, closed when the next one opens.
+    open_run: Option<RawSeg>,
+    /// Field spans opened at `FIELD_START` and closed at `FIELD_END`.
+    open_fields: Vec<RawSeg>,
+}
+
+impl Deref for Body {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.s
+    }
+}
+
+impl DerefMut for Body {
+    fn deref_mut(&mut self) -> &mut String {
+        &mut self.s
+    }
+}
+
+impl From<String> for Body {
+    fn from(s: String) -> Self {
+        Body {
+            s,
+            ..Default::default()
+        }
+    }
+}
+
+impl Body {
+    /// Rebases `segs` from a child buffer onto this one.
+    ///
+    /// `[lo, hi)` is the child range that actually reached the output - the rest was trimmed, and
+    /// an offset outside it clamps to the edge. `anchors` are ascending `(child offset, offset in
+    /// this buffer)` pairs, one per contiguous copied run: a single pair for a plain append, one
+    /// per line when the copy inserts an indent.
+    fn absorb(&mut self, segs: Vec<RawSeg>, lo: usize, hi: usize, anchors: &[(usize, usize)]) {
+        if segs.is_empty() || anchors.is_empty() {
+            return;
+        }
+        let map = |off: usize| -> usize {
+            let off = off.clamp(lo, hi);
+            let i = anchors.partition_point(|&(src, _)| src <= off);
+            let (src, dst) = anchors[i.saturating_sub(1)];
+            dst + off.saturating_sub(src)
+        };
+        for mut seg in segs {
+            seg.start = map(seg.start);
+            seg.end = map(seg.end).max(seg.start);
+            self.segs.push(seg);
+        }
+    }
+
+    /// Appends `text` verbatim and carries `segs`, whose offsets start at `lo` in the child.
+    fn absorb_append(&mut self, text: &str, segs: Vec<RawSeg>, lo: usize) {
+        let base = self.s.len();
+        self.s.push_str(text);
+        self.absorb(segs, lo, lo + text.len(), &[(lo, base)]);
+    }
+
+    /// Closes the open run at the cursor.
+    fn close_run(&mut self) {
+        self.close_run_at(self.s.len());
+    }
+
+    /// Closes the open run at `at`, which the run boundary logic places between the previous
+    /// run's closing emphasis marker and the next one's opening marker.
+    fn close_run_at(&mut self, at: usize) {
+        if let Some(mut seg) = self.open_run.take() {
+            seg.end = at.max(seg.start);
+            self.segs.push(seg);
+        }
+    }
+
+    /// Closes the innermost open field at the cursor.
+    fn close_field(&mut self) {
+        if let Some(mut seg) = self.open_fields.pop() {
+            seg.end = self.s.len();
+            self.segs.push(seg);
+        }
+    }
+
+    /// Closes everything still open, because a flush resets the offsets they were recorded in.
+    fn close_open(&mut self) {
+        self.close_run();
+        while !self.open_fields.is_empty() {
+            self.close_field();
+        }
+    }
+}
+
+/// The child path one index below `path` - the positional half of a nested segment's id.
+fn child(path: &SegmentPath, index: usize) -> SegmentPath {
+    let mut indices = path.indices.clone();
+    indices.push(index);
+    SegmentPath {
+        section: path.section,
+        indices,
+    }
+}
+
+/// Carries the v2 spans through the same cleanup remap and byte-to-scalar conversion
+/// [`build_segments`] performs for v1, so both vectors index the same string the same way.
+fn finalize_v2(cleaned: &str, deletions: &[(usize, usize)], raw: Vec<RawSeg>) -> Vec<Segment> {
+    let map = DeletionMap::new(deletions);
+    let clen = cleaned.len();
+    let at = |off: usize| floor_char_boundary(cleaned, map.remap(off).min(clen));
+    let mut bounds: Vec<usize> = raw.iter().flat_map(|s| [at(s.start), at(s.end)]).collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let char_bounds = bytes_to_chars(cleaned, &bounds);
+    crate::segment::finalize(raw, |off| {
+        let byte = at(off);
+        char_bounds[bounds
+            .binary_search(&byte)
+            .expect("경계는 bounds에 반드시 존재")]
+    })
 }
 
 /// Emits one footnote/endnote definition at the document end in GFM footnote syntax.
@@ -221,6 +387,16 @@ struct Ctx<'a> {
     /// 세그먼트 귀속용 — 현재 방출 중인 최상위 문단 좌표(메인 루프에서 문단마다 갱신).
     cur_section: usize,
     cur_para: usize,
+    /// v2 span recording. Off for the default path, which therefore keeps paying nothing beyond
+    /// the v1 `Vec` pushes it already carried.
+    v2: bool,
+    /// The id path of the paragraph being rendered; saved and restored around every recursion.
+    path: SegmentPath,
+    /// The index in `Paragraph::controls` of the control [`render_control`] is rendering.
+    ctrl_index: usize,
+    /// The two style levels at that control's character position, computed by the walk that has
+    /// the containing paragraph in hand.
+    ctrl_style: SegmentStyle,
 }
 
 impl Ctx<'_> {
@@ -635,7 +811,7 @@ fn render_paragraph(
     para: &Paragraph,
     list_state: &mut ListState,
     ctx: &mut Ctx,
-    out: &mut String,
+    out: &mut Body,
 ) {
     // 목록 번호는 문서 순서대로 모든 문단에 대해 갱신한다(빈 문단도 카운트 — 렌더와 동일).
     let marker = list_state.marker(doc, para);
@@ -651,75 +827,85 @@ fn render_paragraph(
     let fragments = render_fragments(doc, para, ctx);
 
     if let Some(level) = heading {
-        close_list_block(ctx, out);
-        emit_paragraph_fragments(&fragments, out, Some(&format!("{} ", "#".repeat(level))));
+        close_list_block(ctx, &mut out.s);
+        emit_paragraph_fragments(fragments, out, Some(&format!("{} ", "#".repeat(level))));
         return;
     }
 
     if marker.is_some() {
         let (ty, level, definition_id) = list_head(doc, para).unwrap_or((3, 1, 0));
         let number = list_state.current_number(doc, para);
-        emit_list_fragments(&fragments, ty, level, definition_id, number, ctx, out);
+        emit_list_fragments(fragments, ty, level, definition_id, number, ctx, out);
         return;
     }
 
-    close_list_block(ctx, out);
-    emit_paragraph_fragments(&fragments, out, None);
+    close_list_block(ctx, &mut out.s);
+    emit_paragraph_fragments(fragments, out, None);
 }
 
-/// 인라인과 블록을 문서 등장 순서대로 유지하는 중간 표현.
+/// 인라인과 블록을 문서 등장 순서대로 유지하는 중간 표현. 각 조각은 자기 문자열 좌표로
+/// 기록된 v2 스팬을 함께 들고 다니다가, 출력에 복사될 때 그 자리에서 재매핑된다.
 enum Fragment {
-    Inline(String),
-    Block(String),
+    Inline(Body),
+    Block(Body),
 }
 
-fn emit_paragraph_fragments(fragments: &[Fragment], out: &mut String, prefix: Option<&str>) {
+fn emit_paragraph_fragments(fragments: Vec<Fragment>, out: &mut Body, prefix: Option<&str>) {
     let mut prefix = prefix;
     for fragment in fragments {
         match fragment {
-            Fragment::Inline(text) => {
-                let text = text.trim();
+            Fragment::Inline(body) => {
+                let Body { s, segs, .. } = body;
+                let lo = s.len() - s.trim_start().len();
+                let text = s.trim();
                 if text.is_empty() {
                     continue;
                 }
                 if let Some(p) = prefix.take() {
-                    out.push_str(p);
+                    out.s.push_str(p);
                 }
-                out.push_str(text);
-                out.push_str("\n\n");
+                out.absorb_append(text, segs, lo);
+                out.s.push_str("\n\n");
             }
             Fragment::Block(block) => append_block(out, block, 0),
         }
     }
 }
 
-fn append_block(out: &mut String, block: &str, indent: usize) {
-    let block = block.trim_matches('\n');
-    if block.is_empty() {
+fn append_block(out: &mut Body, block: Body, indent: usize) {
+    let Body { s, segs, .. } = block;
+    let lo = s.len() - s.trim_start_matches('\n').len();
+    let text = s.trim_matches('\n');
+    if text.is_empty() {
         return;
     }
-    if !out.is_empty() && !out.ends_with("\n\n") {
-        out.push('\n');
+    if !out.s.is_empty() && !out.s.ends_with("\n\n") {
+        out.s.push('\n');
     }
     let pad = " ".repeat(indent);
-    for line in block.lines() {
+    let mut anchors = Vec::new();
+    let mut src = lo;
+    for line in text.lines() {
         if !line.is_empty() {
-            out.push_str(&pad);
+            out.s.push_str(&pad);
         }
-        out.push_str(line);
-        out.push('\n');
+        anchors.push((src, out.s.len()));
+        out.s.push_str(line);
+        out.s.push('\n');
+        src += line.len() + 1;
     }
-    out.push('\n');
+    out.s.push('\n');
+    out.absorb(segs, lo, lo + text.len(), &anchors);
 }
 
 fn emit_list_fragments(
-    fragments: &[Fragment],
+    fragments: Vec<Fragment>,
     ty: u8,
     level: u8,
     definition_id: u16,
     number: Option<u64>,
     ctx: &mut Ctx,
-    out: &mut String,
+    out: &mut Body,
 ) {
     // GFM ordered markers are digits only, so a numbered head always exports
     // the item's ordinal in digit form ("3."), whatever its engine mark
@@ -734,47 +920,61 @@ fn emit_list_fragments(
             .filter(|n| *n <= 999_999_999)
             .map_or_else(|| "-".to_string(), |n| format!("{n}."))
     };
-    let indent = prepare_list_level(ctx, ty, level, definition_id, &gfm_marker, out);
+    let indent = prepare_list_level(ctx, ty, level, definition_id, &gfm_marker, &mut out.s);
     let first_prefix = format!("{}{gfm_marker} ", " ".repeat(indent));
     let continuation = " ".repeat(indent + gfm_marker.chars().count() + 1);
     let mut emitted = false;
 
     for fragment in fragments {
         match fragment {
-            Fragment::Inline(text) => {
-                let text = text.trim();
+            Fragment::Inline(body) => {
+                let Body { s, segs, .. } = body;
+                let lo = s.len() - s.trim_start().len();
+                let text = s.trim();
                 if text.is_empty() {
                     continue;
                 }
+                let mut anchors = Vec::new();
                 if emitted {
-                    out.push('\n');
-                    push_indented_lines(out, &continuation, &continuation, text);
+                    out.s.push('\n');
+                    push_indented_lines(out, &continuation, &continuation, text, lo, &mut anchors);
                 } else {
-                    push_indented_lines(out, &first_prefix, &continuation, text);
+                    push_indented_lines(out, &first_prefix, &continuation, text, lo, &mut anchors);
                     emitted = true;
                 }
+                out.absorb(segs, lo, lo + text.len(), &anchors);
             }
             Fragment::Block(block) => {
                 if !emitted {
-                    out.push_str(&first_prefix);
-                    out.push('\n');
+                    out.s.push_str(&first_prefix);
+                    out.s.push('\n');
                     emitted = true;
                 }
                 append_block(out, block, continuation.len());
             }
         }
     }
-    if emitted && !out.ends_with('\n') {
-        out.push('\n');
+    if emitted && !out.s.ends_with('\n') {
+        out.s.push('\n');
     }
     ctx.last_was_list = emitted;
 }
 
-fn push_indented_lines(out: &mut String, first: &str, continuation: &str, text: &str) {
+/// 줄마다 접두사를 붙여 옮기며, 각 줄 시작의 `(원본, 대상)` 오프셋 쌍을 `anchors`에 쌓는다.
+fn push_indented_lines(
+    out: &mut Body,
+    first: &str,
+    continuation: &str,
+    text: &str,
+    mut src: usize,
+    anchors: &mut Vec<(usize, usize)>,
+) {
     for (i, line) in text.lines().enumerate() {
-        out.push_str(if i == 0 { first } else { continuation });
-        out.push_str(line);
-        out.push('\n');
+        out.s.push_str(if i == 0 { first } else { continuation });
+        anchors.push((src, out.s.len()));
+        out.s.push_str(line);
+        out.s.push('\n');
+        src += line.len() + 1;
     }
 }
 
@@ -853,13 +1053,24 @@ fn list_head(doc: &Document, para: &Paragraph) -> Option<(u8, u8, u16)> {
 /// 문단 내용을 인라인/블록 fragment로 등장 순서대로 렌더링한다.
 fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Fragment> {
     let mut fragments = Vec::new();
-    let mut body = String::new();
+    let mut body = Body::default();
     let mut wchar_pos = 0u32;
     let mut marks = Marks::default();
     // 현재 열린 강조 스팬의 body 인덱스. 스팬을 열 때만 갱신한다.
     let mut span = Span::default();
     // 하이퍼링크 필드 열림 상태(대상 URL). FIELD_START에서 채우고 FIELD_END에서 닫는다.
     let mut link_url: Option<String> = None;
+    // v2: 런 세그먼트는 **정규화된** 런 목록에서 번호를 매긴다 — `run_id`가 그 목록을
+    // 인덱싱하므로, 원시 `char_shape_runs`를 걸으면 조각의 본문과 id가 서로 다른 런을
+    // 가리키게 된다(hwp5 입력의 중복 런에서만 갈라져 눈에 띄지 않는다).
+    let runs = if ctx.v2 {
+        canonical_char_shape_runs(para)
+    } else {
+        Vec::new()
+    };
+    let mut next_run = 0usize;
+    // 강조 스팬 전환이 알려 준 런 경계 후보(없으면 현재 커서).
+    let mut boundary: Option<usize> = None;
 
     for ch in &para.chars {
         // 현재 위치의 문자 모양으로 효과 전환
@@ -874,11 +1085,24 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
             if want != marks {
                 close_span(&mut body, marks, span, ctx.html_mode);
                 span.open_at = body.len();
+                // 런 경계는 여기 — close_span이 직전 스팬의 공백을 마커 밖으로 재배치한
+                // **뒤**이자 새 여는 마커를 밀어 넣기 **전**이다. 그래서 두 런은 각자
+                // 자기 마커를 품고, 이전에 기록한 오프셋은 흔들리지 않는다.
+                boundary = Some(span.open_at);
                 body.push_str(&want.open(ctx.html_mode));
                 span.content_at = body.len();
                 marks = want;
             }
         }
+        if next_run < runs.len() && runs[next_run].0 <= wchar_pos {
+            let at = boundary.unwrap_or(body.s.len());
+            while next_run < runs.len() && runs[next_run].0 <= wchar_pos {
+                let shape = runs[next_run].1.0;
+                open_run_segment(doc, para, ctx, &mut body, next_run, shape, at);
+                next_run += 1;
+            }
+        }
+        boundary = None;
         match ch {
             HwpChar::Text(c) => {
                 if ctx.html_mode {
@@ -909,6 +1133,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
                             body.push(')');
                         }
                     }
+                    body.close_field();
                 } else if *code == ctrl_char::TAB {
                     body.push(' ');
                 }
@@ -919,6 +1144,11 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
                 if let Some(idx) = ctrl_index
                     && let Some(control) = para.controls.get(*idx as usize)
                 {
+                    if ctx.v2 {
+                        ctx.ctrl_index = *idx as usize;
+                        ctx.ctrl_style = summarize(doc, para, char_shape_id_at(para, wchar_pos));
+                        open_control_segment(ctx, &mut body, *code, control);
+                    }
                     if *code == ctrl_char::FIELD_START
                         && let Some(url) = crate::field::hyperlink_url(control)
                     {
@@ -957,22 +1187,92 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
         wchar_pos += ch.wchar_width();
     }
     close_span(&mut body, marks, span, ctx.html_mode);
+    body.close_open();
     flush_inline(&mut body, &mut fragments);
     fragments
 }
 
-fn flush_inline(body: &mut String, fragments: &mut Vec<Fragment>) {
-    if !body.is_empty() {
-        fragments.push(Fragment::Inline(std::mem::take(body)));
+/// 열려 있던 런을 닫고 새 런을 연다(v2 전용). id는 이 크레이트의 `segment_id` 진입점에서만
+/// 나오며 이 모듈은 아무것도 해시하지 않는다.
+fn open_run_segment(
+    doc: &Document,
+    para: &Paragraph,
+    ctx: &Ctx,
+    body: &mut Body,
+    index: usize,
+    shape: u16,
+    at: usize,
+) {
+    body.close_run_at(at);
+    body.open_run = Some(RawSeg {
+        kind: SegmentKind::Run,
+        id: run_id(&ctx.path, para, index),
+        path: child(&ctx.path, index),
+        style: summarize(doc, para, Some(shape)),
+        ctrl_id: None,
+        name: None,
+        start: at,
+        end: 0,
+    });
+}
+
+/// 필드/책갈피 세그먼트를 연다(v2 전용).
+///
+/// 둘은 `Control` 열거형에 자기 변형이 없고 **주인이 다르다**: 필드는 `field.rs`의
+/// ctrl-id 판별기가, 책갈피는 `bookmark.rs`가 가진다. 책갈피는 `%bmk` 필드가 아니라 `bokm`
+/// 컨트롤이므로 `is_field_ctrl_id`를 넓히지 않는다 — 넓히면 필드 판별기가 필드가 아닌 것에
+/// 참을 답하게 되고 Phase 6의 타입 연산이 그 거짓말을 물려받는다.
+fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control) {
+    let Control::Generic(g) = control else {
+        return;
+    };
+    let path = child(&ctx.path, ctx.ctrl_index);
+    let ctrl_id = Some(String::from_utf8_lossy(&g.ctrl_id).into_owned());
+    if code == ctrl_char::BOOKMARK && g.ctrl_id == *b"bokm" {
+        // 책갈피는 아무것도 방출하지 않는 지점 표식이다(GG-25) — start == end.
+        let at = body.s.len();
+        body.segs.push(RawSeg {
+            kind: SegmentKind::Bookmark,
+            id: control_id(&path, g),
+            path,
+            style: ctx.ctrl_style.clone(),
+            ctrl_id,
+            name: crate::bookmark::bookmark_name(control),
+            start: at,
+            end: at,
+        });
+    } else if code == ctrl_char::FIELD_START && crate::field::is_field_ctrl_id(&g.ctrl_id) {
+        body.open_fields.push(RawSeg {
+            kind: SegmentKind::Field,
+            id: control_id(&path, g),
+            path,
+            style: ctx.ctrl_style.clone(),
+            ctrl_id,
+            name: None,
+            start: body.s.len(),
+            end: 0,
+        });
+    }
+}
+
+fn flush_inline(body: &mut Body, fragments: &mut Vec<Fragment>) {
+    if !body.s.is_empty() {
+        // 플러시하면 좌표계가 초기화되므로 아직 열린 스팬을 여기서 닫는다.
+        body.close_open();
+        fragments.push(Fragment::Inline(Body {
+            s: std::mem::take(&mut body.s),
+            segs: std::mem::take(&mut body.segs),
+            ..Default::default()
+        }));
     }
 }
 
 fn push_block(
-    body: &mut String,
+    body: &mut Body,
     marks: &mut Marks,
     html: bool,
     fragments: &mut Vec<Fragment>,
-    block: String,
+    block: Body,
     span: Span,
 ) {
     close_marks(body, marks, span, html);
@@ -998,31 +1298,67 @@ fn render_control(
     control: &Control,
     code: u16,
     ctx: &mut Ctx,
-    body: &mut String,
+    body: &mut Body,
     marks: &mut Marks,
     fragments: &mut Vec<Fragment>,
     span: Span,
 ) {
     match control {
         Control::SectionDef(_) => {}
-        Control::Picture(pic) => match doc.resolve_bin(&pic.bin_ref) {
-            Some(data) => {
-                let r = ctx.image_ref(data);
-                body.push_str(&r);
+        Control::Picture(pic) => {
+            let start = body.s.len();
+            let data = doc.resolve_bin(&pic.bin_ref);
+            match data {
+                Some(data) => {
+                    let r = ctx.image_ref(data);
+                    body.push_str(&r);
+                }
+                None => body.push_str(if ctx.html_mode {
+                    "<!-- image -->"
+                } else {
+                    "![image]()"
+                }),
             }
-            None => body.push_str(if ctx.html_mode {
-                "<!-- image -->"
-            } else {
-                "![image]()"
-            }),
-        },
+            if ctx.v2 {
+                let path = child(&ctx.path, ctx.ctrl_index);
+                let end = body.s.len();
+                body.segs.push(RawSeg {
+                    kind: SegmentKind::Image,
+                    // 해석된 페이로드가 id에 들어간다 — 같은 자리에 같은 크기로 바꿔 끼운
+                    // 그림이 id를 유지하지 않도록.
+                    id: picture_id(&path, pic, data),
+                    path,
+                    style: ctx.ctrl_style.clone(),
+                    ctrl_id: None,
+                    name: None,
+                    start,
+                    end,
+                });
+            }
+        }
         Control::Table(table) => {
-            let mut block = String::new();
+            let mut block = Body::default();
+            let path = child(&ctx.path, ctx.ctrl_index);
+            let saved = std::mem::replace(&mut ctx.path, path.clone());
             // 병합 셀·셀 안 블록은 GFM 파이프 표로 표현 불가 → HTML 표 폴백.
             if ctx.html_mode || has_span(table) || has_block_content(table, ctx) {
                 render_html_table(doc, table, ctx, &mut block);
             } else {
                 render_gfm_table(doc, table, ctx, &mut block);
+            }
+            ctx.path = saved;
+            if ctx.v2 {
+                let end = block.s.len();
+                block.segs.push(RawSeg {
+                    kind: SegmentKind::Table,
+                    id: table_id(&path, table),
+                    path,
+                    style: ctx.ctrl_style.clone(),
+                    ctrl_id: None,
+                    name: None,
+                    start: 0,
+                    end,
+                });
             }
             push_block(body, marks, ctx.html_mode, fragments, block, span);
         }
@@ -1069,17 +1405,26 @@ fn render_control(
             {
                 return;
             }
+            let base = child(&ctx.path, ctx.ctrl_index);
+            let saved = std::mem::replace(&mut ctx.path, base.clone());
+            let mut seq = 0usize;
             for list in &g.paragraph_lists {
                 for p in &list.paragraphs {
+                    if ctx.v2 {
+                        ctx.path = child(&base, seq);
+                    }
+                    seq += 1;
                     for fragment in render_fragments(doc, p, ctx) {
                         match fragment {
                             Fragment::Inline(inline) => {
-                                let inline = inline.trim();
+                                let Body { s, segs, .. } = inline;
+                                let lo = s.len() - s.trim_start().len();
+                                let inline = s.trim();
                                 if !inline.is_empty() {
-                                    if !body.is_empty() && !body.ends_with([' ', '\n']) {
-                                        body.push(' ');
+                                    if !body.s.is_empty() && !body.s.ends_with([' ', '\n']) {
+                                        body.s.push(' ');
                                     }
-                                    body.push_str(inline);
+                                    body.absorb_append(inline, segs, lo);
                                 }
                             }
                             Fragment::Block(block) => {
@@ -1089,6 +1434,7 @@ fn render_control(
                     }
                 }
             }
+            ctx.path = saved;
         }
     }
 }
@@ -1097,7 +1443,7 @@ fn render_control(
 fn render_equation(
     eq: &Equation,
     ctx: &mut Ctx,
-    body: &mut String,
+    body: &mut Body,
     marks: &mut Marks,
     fragments: &mut Vec<Fragment>,
     span: Span,
@@ -1118,14 +1464,14 @@ fn render_equation(
             push_html_escaped(&mut block, c);
         }
         block.push_str("</code></div>");
-        push_block(body, marks, true, fragments, block, span);
+        push_block(body, marks, true, fragments, block.into(), span);
     } else {
         push_block(
             body,
             marks,
             false,
             fragments,
-            format!("$$\n{}\n$$", eq.script),
+            format!("$$\n{}\n$$", eq.script).into(),
             span,
         );
     }
@@ -1137,8 +1483,10 @@ fn note_text(doc: &Document, g: &GenericControl, ctx: &mut Ctx) -> String {
     for list in &g.paragraph_lists {
         for p in &list.paragraphs {
             for fragment in render_fragments(doc, p, ctx) {
+                // 각주/미주 정의는 문서 끝에 모이므로 v2 스팬은 버린다(v1과 같이 참조
+                // 문단에 귀속된다).
                 let text = match fragment {
-                    Fragment::Inline(text) | Fragment::Block(text) => text,
+                    Fragment::Inline(body) | Fragment::Block(body) => body.s,
                 };
                 let text = text.trim();
                 if !text.is_empty() {
@@ -1183,41 +1531,100 @@ fn paragraph_has_block(para: &Paragraph, ctx: &Ctx) -> bool {
 }
 
 /// GFM 파이프 표 (첫 행 헤더, 병합 없음).
-fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut String) {
+fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body) {
     let cols = table.cols.max(1) as usize;
-    let mut grid: Vec<Vec<String>> = Vec::new();
-    for cell in &table.cells {
+    let mut grid: Vec<Vec<Body>> = Vec::new();
+    for (cell_index, cell) in table.cells.iter().enumerate() {
         let row = cell.row as usize;
         while grid.len() <= row {
-            grid.push(vec![String::new(); cols]);
+            grid.push((0..cols).map(|_| Body::default()).collect());
         }
-        let mut text = String::new();
-        for p in &cell.paragraphs {
+        let mut text = Body::default();
+        let path = child(&ctx.path, cell_index);
+        let saved = std::mem::replace(&mut ctx.path, path.clone());
+        for (para_index, p) in cell.paragraphs.iter().enumerate() {
+            if ctx.v2 {
+                ctx.path = child(&path, para_index);
+            }
             for fragment in render_fragments(doc, p, ctx) {
-                let Fragment::Inline(inline) = fragment else {
+                let Fragment::Inline(body) = fragment else {
                     debug_assert!(false, "블록 셀은 HTML 표로 선분기되어야 함");
                     continue;
                 };
-                if !text.is_empty() && !inline.is_empty() {
-                    text.push(' ');
+                let Body { s, segs, .. } = body;
+                if !text.s.is_empty() && !s.is_empty() {
+                    text.s.push(' ');
                 }
-                text.push_str(inline.trim());
+                let lo = s.len() - s.trim_start().len();
+                text.absorb_append(s.trim(), segs, lo);
             }
         }
+        ctx.path = saved;
+        if ctx.v2 {
+            let end = text.s.len();
+            text.segs.push(RawSeg {
+                kind: SegmentKind::Cell,
+                id: cell_id(&path, cell),
+                style: cell_style(doc, cell),
+                path,
+                ctrl_id: None,
+                name: None,
+                start: 0,
+                end,
+            });
+        }
         if let Some(slot) = grid[row].get_mut(cell.col as usize) {
-            *slot = text.replace('|', "\\|").replace('\n', " ");
+            *slot = escape_gfm_cell(text);
         }
     }
-    out.push('\n');
-    for (i, row) in grid.iter().enumerate() {
-        out.push_str("| ");
-        out.push_str(&row.join(" | "));
-        out.push_str(" |\n");
+    out.s.push('\n');
+    for (i, row) in grid.into_iter().enumerate() {
+        out.s.push_str("| ");
+        for (c, cell) in row.into_iter().enumerate() {
+            if c > 0 {
+                out.s.push_str(" | ");
+            }
+            let Body { s, segs, .. } = cell;
+            out.absorb_append(&s, segs, 0);
+        }
+        out.s.push_str(" |\n");
         if i == 0 {
-            out.push_str(&format!("|{}\n", " --- |".repeat(cols)));
+            out.s.push_str(&format!("|{}\n", " --- |".repeat(cols)));
         }
     }
-    out.push('\n');
+    out.s.push('\n');
+}
+
+/// 셀 내용을 파이프 표에 안전하게 넣는다(`|` 이스케이프, 개행 → 공백). 길이가 바뀌는 것은
+/// `|` 이스케이프뿐이라, 스팬이 있을 때만 문자별 앵커를 쌓아 재매핑한다.
+fn escape_gfm_cell(cell: Body) -> Body {
+    if cell.segs.is_empty() {
+        return cell.s.replace('|', "\\|").replace('\n', " ").into();
+    }
+    let Body { s, segs, .. } = cell;
+    let mut out = Body::default();
+    let mut anchors = Vec::with_capacity(s.len());
+    for (at, c) in s.char_indices() {
+        anchors.push((at, out.s.len()));
+        match c {
+            '|' => out.s.push_str("\\|"),
+            '\n' => out.s.push(' '),
+            _ => out.s.push(c),
+        }
+    }
+    let len = s.len();
+    // 끝 경계도 앵커로 박는다 — 마지막 글자가 `|`면 길이가 늘어 한 바이트 어긋난다.
+    anchors.push((len, out.s.len()));
+    out.absorb(segs, 0, len, &anchors);
+    out
+}
+
+/// 셀의 두 스타일 층 — 첫 문단의 문단 스타일과 그 문단이 직접 지명하는 모양.
+fn cell_style(doc: &Document, cell: &Cell) -> SegmentStyle {
+    cell.paragraphs
+        .first()
+        .map(|p| summarize(doc, p, char_shape_id_at(p, 0)))
+        .unwrap_or_default()
 }
 
 /// HTML 표 — 병합 셀(colspan/rowspan)·셀 내 블록(중첩 표 포함)을 보존한다.
@@ -1227,26 +1634,28 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Stri
 /// 표는 행마다 한 줄(가독성 + 소비자의 행 단위 인용). 셀 안에 든 **중첩 표**(html_mode)는
 /// 개행 없이 통째로 한 줄로 직렬화해 바깥 행의 한 줄을 깨지 않게 한다 — 중첩 표의 모든 행이
 /// 바깥 행과 같은 한 줄에 얹히며, 그래도 `<tr` 수 == `</tr>` 수가 줄마다 성립한다.
-fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut String) {
+fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body) {
     let rows = table.rows.max(1) as usize;
     let cols = table.cols.max(1) as usize;
     // 셀 안 중첩 표는 html_mode에서 진입한다 — 이때만 개행 없는 한 줄 형태로 낸다.
     let nested = ctx.html_mode;
     // 병합 셀이 덮는 칸 표시 격자.
     let mut covered = vec![vec![false; cols]; rows];
-    out.push_str(if nested { "<table>" } else { "\n<table>\n" });
+    out.s
+        .push_str(if nested { "<table>" } else { "\n<table>\n" });
     for r in 0..rows {
-        out.push_str("<tr>");
+        out.s.push_str("<tr>");
         for c in 0..cols {
             if covered[r][c] {
                 continue; // 앞선 병합 셀이 덮은 칸
             }
-            let Some(cell) = table
+            let Some((cell_index, cell)) = table
                 .cells
                 .iter()
-                .find(|cell| cell.row as usize == r && cell.col as usize == c)
+                .enumerate()
+                .find(|(_, cell)| cell.row as usize == r && cell.col as usize == c)
             else {
-                out.push_str("<td></td>");
+                out.s.push_str("<td></td>");
                 continue;
             };
             for dr in 0..cell.row_span.max(1) as usize {
@@ -1264,35 +1673,62 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Str
             if cell.row_span > 1 {
                 attrs.push_str(&format!(" rowspan=\"{}\"", cell.row_span));
             }
+            let path = child(&ctx.path, cell_index);
+            let saved = std::mem::replace(&mut ctx.path, path.clone());
             let content = render_cell_html(doc, cell, ctx);
-            out.push_str(&format!("<td{attrs}>{content}</td>"));
+            ctx.path = saved;
+            let start = out.s.len();
+            out.s.push_str(&format!("<td{attrs}>"));
+            let Body { s, segs, .. } = content;
+            out.absorb_append(&s, segs, 0);
+            out.s.push_str("</td>");
+            if ctx.v2 {
+                let end = out.s.len();
+                out.segs.push(RawSeg {
+                    kind: SegmentKind::Cell,
+                    id: cell_id(&path, cell),
+                    style: cell_style(doc, cell),
+                    path,
+                    ctrl_id: None,
+                    name: None,
+                    start,
+                    end,
+                });
+            }
         }
         // 최상위 표만 행 뒤에 개행 — 중첩 표는 한 줄을 유지한다.
-        out.push_str(if nested { "</tr>" } else { "</tr>\n" });
+        out.s.push_str(if nested { "</tr>" } else { "</tr>\n" });
     }
-    out.push_str(if nested { "</table>" } else { "</table>\n\n" });
+    out.s
+        .push_str(if nested { "</table>" } else { "</table>\n\n" });
 }
 
 /// 셀 내용을 html_mode fragment로 렌더해 원래 순서를 보존한다.
-fn render_cell_html(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> String {
+fn render_cell_html(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> Body {
     let saved = ctx.html_mode;
     ctx.html_mode = true;
-    let mut content = String::new();
-    for p in &cell.paragraphs {
+    let cell_path = ctx.path.clone();
+    let mut content = Body::default();
+    for (para_index, p) in cell.paragraphs.iter().enumerate() {
+        if ctx.v2 {
+            ctx.path = child(&cell_path, para_index);
+        }
         for fragment in render_fragments(doc, p, ctx) {
-            let text = match fragment {
-                Fragment::Inline(text) | Fragment::Block(text) => text,
+            let Body { s, segs, .. } = match fragment {
+                Fragment::Inline(body) | Fragment::Block(body) => body,
             };
-            let text = text.trim();
+            let lo = s.len() - s.trim_start().len();
+            let text = s.trim();
             if text.is_empty() {
                 continue;
             }
-            if !content.is_empty() {
-                content.push_str("<br/>");
+            if !content.s.is_empty() {
+                content.s.push_str("<br/>");
             }
-            content.push_str(text);
+            content.absorb_append(text, segs, lo);
         }
     }
+    ctx.path = cell_path;
     ctx.html_mode = saved;
     content
 }
