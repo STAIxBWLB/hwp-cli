@@ -14,6 +14,17 @@
 #      that it is a run of the release-readiness workflow;
 #   4. that run's own record artifact says it evaluated the commit being released, and passed.
 #
+# Two modes, chosen by the caller rather than guessed:
+#   (default)  the commit-ish IS the evaluated commit. scripts/release.sh uses this before it
+#              bumps: the commit the release is being cut from must be the one the run evaluated.
+#   --as-tag   the commit-ish is a tag commit, which cannot be the evaluated commit: the release
+#              commit (version bump + changelog) is created after the run, and a squash merge
+#              creates another commit after that, so requiring equality here made the gate
+#              unsatisfiable for every release (#268). Instead the evaluated commit must be an
+#              ANCESTOR of the tagged commit, and the delta between them must touch only
+#              RELEASE_ONLY_PATHS - so no source change can enter a release after the run that
+#              vouches for it. Every other check is identical in both modes.
+#
 # Why 4 and not a head_sha comparison: release-readiness.yml checks out `inputs.ref`, which is
 # independent of the ref the run was dispatched from. A dispatch run's head_sha is the DISPATCH
 # ref's commit, so comparing it to the release commit checks the wrong thing in both directions -
@@ -44,15 +55,29 @@ RECORD_FILE="release-readiness-record.json"
 BEGIN_MARKER="<!-- verification:begin -->"
 END_MARKER="<!-- verification:end -->"
 
+# The only files a release commit may change after the readiness run that vouches for it.
+RELEASE_ONLY_PATHS="Cargo.toml Cargo.lock CHANGELOG.md"
+
 version="${1:-}"
 commitish="${2:-}"
+mode="${3:-}"
 changelog="${HWP_CHANGELOG:-CHANGELOG.md}"
 version="${version#v}"
 
 if [ -z "$version" ] || [ -z "$commitish" ]; then
-    echo "usage: scripts/check-verification-block.sh <version> <commit-ish>" >&2
+    echo "usage: scripts/check-verification-block.sh <version> <commit-ish> [--as-tag]" >&2
     exit 2
 fi
+case "$mode" in
+"" | --as-tag) ;;
+*)
+    echo "usage: scripts/check-verification-block.sh <version> <commit-ish> [--as-tag]" >&2
+    exit 2
+    ;;
+esac
+
+# HWP_RELEASE_REPO points the ancestry and delta checks at another checkout (tests only).
+git_repo() { git ${HWP_RELEASE_REPO:+-C "$HWP_RELEASE_REPO"} "$@"; }
 
 die() {
     echo "verification-block: $*" >&2
@@ -94,7 +119,7 @@ run_id="${run_url##*/}"
 if printf '%s' "$commitish" | grep -Eq '^[0-9a-f]{40}$'; then
     sha="$commitish"
 else
-    sha="$(git rev-parse --verify "${commitish}^{commit}" 2>/dev/null || true)"
+    sha="$(git_repo rev-parse --verify "${commitish}^{commit}" 2>/dev/null || true)"
     [ -n "$sha" ] || die "cannot resolve '$commitish' to a commit."
 fi
 
@@ -144,11 +169,13 @@ fi
 
 command -v python3 >/dev/null 2>&1 ||
     die "python3 is required to read the run record."
-python3 - "$record" "$sha" "$CONTRACT" "$run_id" "$head_sha" <<'PY' || exit 1
+evaluated_out="$(mktemp)"
+trap 'rm -f "$evaluated_out"; rm -rf "${tmpdir:-}"' EXIT
+python3 - "$record" "$sha" "$CONTRACT" "$run_id" "$head_sha" "$mode" "$evaluated_out" <<'PY' || exit 1
 import json
 import sys
 
-path, want_sha, contract, run_id, head_sha = sys.argv[1:6]
+path, want_sha, contract, run_id, head_sha, mode, evaluated_out = sys.argv[1:8]
 
 
 def die(message):
@@ -175,7 +202,11 @@ def field(name):
 if field("schema") != contract:
     die(f"the run record of run {run_id} declares schema {record['schema']!r}, not {contract!r}.")
 evaluated = field("evaluated_sha").lower()
-if evaluated != want_sha.lower():
+with open(evaluated_out, "w", encoding="utf-8") as handle:
+    handle.write(evaluated)
+# In --as-tag mode the shell checks ancestry and the release-only delta instead: a tag commit is
+# never the evaluated commit (#268).
+if mode != "--as-tag" and evaluated != want_sha.lower():
     die(
         f"readiness run {run_id} evaluated {evaluated}, but the commit being released is"
         f" {want_sha}.\n                    Dispatch release-readiness.yml against that commit"
@@ -214,4 +245,34 @@ if statuses.get("clean-tree") != "pass":
 print(f"verification-block: record OK (evaluated_sha {evaluated}, {len(gates)} gates, result pass)")
 PY
 
-echo "verification-block: OK for $version (run $run_id, evaluated_sha $sha, head_sha ${head_sha:-not queried})"
+evaluated="$(cat "$evaluated_out")"
+
+if [ "$mode" = --as-tag ]; then
+    # A tag commit is never the evaluated commit, so bind them the only way that stays true: the
+    # run must have evaluated an ancestor of the tag, and everything added since must be the
+    # release commit itself. Any other path in the delta is code the run never saw.
+    git_repo cat-file -e "${evaluated}^{commit}" 2>/dev/null ||
+        die "readiness run $run_id evaluated $evaluated, which this checkout does not have.
+                    Fetch the full history (actions/checkout fetch-depth: 0) and re-run."
+    git_repo merge-base --is-ancestor "$evaluated" "$sha" ||
+        die "readiness run $run_id evaluated $evaluated, which is not an ancestor of the tagged
+                    commit $sha. Cut the release from the commit the run evaluated."
+    delta="$(git_repo diff --name-only "$evaluated" "$sha")"
+    offenders=""
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        case " $RELEASE_ONLY_PATHS " in
+        *" $file "*) ;;
+        *) offenders="$offenders $file" ;;
+        esac
+    done <<<"$delta"
+    [ -z "$offenders" ] ||
+        die "the tagged commit $sha changes more than the release files since the evaluated commit
+                    $evaluated:$offenders
+                    Only $RELEASE_ONLY_PATHS may change after the readiness run."
+    echo "verification-block: OK for $version (run $run_id, evaluated_sha $evaluated is an ancestor
+                    of the tagged $sha, delta release-only, head_sha ${head_sha:-not queried})"
+    exit 0
+fi
+
+echo "verification-block: OK for $version (run $run_id, evaluated_sha $evaluated, head_sha ${head_sha:-not queried})"

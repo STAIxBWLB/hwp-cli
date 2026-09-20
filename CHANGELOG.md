@@ -12,6 +12,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [0.18.0]
 
+**Fixed**
+
+- The release tag gate could not be satisfied by any release. `.github/workflows/release.yml`
+  called `scripts/check-verification-block.sh` with the tagged commit, and that script required the
+  cited readiness run's `evaluated_sha` to equal it. A tag commit is never the evaluated commit: the
+  release commit is written after the run, and the squash merge writes another commit after that,
+  so the two could not match. The script now takes an explicit `--as-tag` mode, which requires the
+  evaluated commit to be an ancestor of the tagged commit and the delta between them to touch only
+  `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md`; the release workflow checks out full history and
+  passes that mode. `scripts/release.sh` keeps the strict equality it always had, because the commit
+  it checks really is the one the run evaluated. No check was removed, and there is still no
+  override flag: a source file appearing in the delta fails the gate exactly as a mismatched commit
+  did ([#268](https://github.com/STAIxBWLB/hwp-cli/issues/268)).
+
 **Added**
 
 - `scripts/hancom-regression.sh` regenerates every artifact

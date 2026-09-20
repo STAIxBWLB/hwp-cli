@@ -31,6 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The --as-tag gate asks whether the evaluated commit is an ancestor of the tag and what
+          # changed between them; neither question is answerable in a shallow clone.
+          fetch-depth: 0
       - name: Tagged commit has green CI
         env:
           GH_TOKEN: ${{ github.token }}
@@ -53,13 +57,15 @@ jobs:
 
       # Second half of the same gate: the release BODY must carry the marker-bounded
       # Verification block, and the release-readiness run it cites must be a successful run of
-      # release-readiness.yml against this very commit. scripts/release.sh runs the same script
-      # before it tags, so a release cannot acquire evidence between the branch and the tag.
+      # release-readiness.yml. A tag commit is never the commit that run evaluated - the release
+      # commit and the squash merge both come after it - so `--as-tag` binds them by ancestry plus
+      # a release-only delta instead of equality (#268). scripts/release.sh runs the same script in
+      # its own mode before it tags, so a release still cannot acquire evidence on the way.
       - name: Tagged version cites a verified readiness run
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/check-verification-block.sh "${GITHUB_REF_NAME#v}" "$GITHUB_SHA"
+        run: bash scripts/check-verification-block.sh "${GITHUB_REF_NAME#v}" "$GITHUB_SHA" --as-tag
 
   # Version gate — the tag must match the Cargo.toml [workspace.package] version.
   verify-version:
