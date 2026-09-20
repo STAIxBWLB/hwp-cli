@@ -22,6 +22,8 @@ pub mod list;
 mod page_number;
 pub mod pdf;
 pub mod png;
+pub mod segment_id;
+pub mod segment_map;
 pub mod shape;
 pub mod shape_draw;
 pub mod svg;
@@ -477,12 +479,7 @@ fn diagnose_pages(
                 let Some((x0, y0, x1, y1)) = *bounds else {
                     continue;
                 };
-                let outside = ![x0, y0, x1, y1].iter().all(|value| value.is_finite())
-                    || x0 < -0.01
-                    || y0 < -0.01
-                    || x1 > page.width_pt + 0.01
-                    || y1 > page.height_pt + 0.01;
-                if outside {
+                if crate::outside_page_bounds((x0, y0, x1, y1), page.width_pt, page.height_pt) {
                     outside_page_bounds_count += 1;
                     if outside_page_bounds.len() < MAX_GEOMETRY_FINDINGS_PER_PAGE {
                         outside_page_bounds.push(ItemBounds {
@@ -570,7 +567,32 @@ fn diagnose_pages(
     }
 }
 
-fn item_bounds(item: &display::Item) -> Option<(f32, f32, f32, f32)> {
+/// Whether a box escapes its page, within the tolerance `diagnose_pages` reports on.
+///
+/// `segment_map`'s own "every row's box lies inside its page" invariant calls this rather than
+/// carrying a second copy of the predicate: two copies would let the diagnostic and the
+/// published geometry disagree about what "on the page" means.
+pub(crate) fn outside_page_bounds(
+    (x0, y0, x1, y1): (f32, f32, f32, f32),
+    width_pt: f32,
+    height_pt: f32,
+) -> bool {
+    ![x0, y0, x1, y1].iter().all(|value| value.is_finite())
+        || x0 < -0.01
+        || y0 < -0.01
+        || x1 > width_pt + 0.01
+        || y1 > height_pt + 0.01
+}
+
+/// One display item's bounding box in points, page origin at top-left.
+///
+/// The glyph box is derived from `size_pt`, **not** from the font's ascent and descent: it
+/// spans `y - size_pt` to `y + size_pt * 0.25` around the baseline. That is inherited from this
+/// function's origin as a `diagnose_pages` heuristic, where an approximate box is enough to
+/// flag an item that escaped the page. A consumer that uses it for a selection overlay will see
+/// an error that scales with the text size. Tightening the box later is a far softer break than
+/// changing a unit, which is why `segment_map` ships it as-is.
+pub(crate) fn item_bounds(item: &display::Item) -> Option<(f32, f32, f32, f32)> {
     match item {
         display::Item::Glyphs { x, y, run } => Some((
             *x,
