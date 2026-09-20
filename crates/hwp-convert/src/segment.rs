@@ -6,7 +6,12 @@
 //! are `para`, `run`, `table`, `cell`, `image`, `field` and `bookmark`. Ranges nest: a `run`
 //! range lies inside its `para` range, a `cell` range inside its `table` range, and siblings at
 //! one level do not overlap. The vector is ordered by `start`, ties broken so the containing
-//! segment precedes the contained one.
+//! segment precedes the contained one — including where the two ranges are *identical*, which
+//! `end` alone cannot separate (a single-run cell is exactly its run); see [`finalize`].
+//!
+//! A paragraph is a paragraph wherever it lives. Paragraphs inside table cells and inside a
+//! `Generic` control's paragraph lists carry their own `para` segment, not only the top-level
+//! ones, or an editor could not address the paragraph in a cell.
 //!
 //! Offsets are **Unicode scalar** offsets into the cleaned markdown, not bytes — the same
 //! discipline [`crate::markdown::to_markdown_with_segments`] (v1) already uses: byte spans are
@@ -35,6 +40,28 @@
 //! `Paragraph::char_shape_runs`: `run_id` indexes the canonical list, so walking the raw list
 //! would give a run segment its text from one list and its id from another — and the two lists
 //! differ only on hwp5 input carrying a redundant or same-position shape run.
+//!
+//! ## A fragmented run: the one place an id repeats
+//!
+//! A block control anchored inside a run — a table, a block equation — is emitted *after* the
+//! paragraph's text, so the run's own emission is split in two around it. Such a run is reported
+//! **once per contiguous piece, every piece carrying the run's single id**. Three properties
+//! decide that, and none of the alternatives keeps all three:
+//!
+//! - *No emitted byte inside a paragraph belongs to no run.* Reporting only the first piece, and
+//!   leaving the text after the block unattributed, breaks it — and breaks it silently, which is
+//!   the failure mode this model exists to remove.
+//! - *A run does not contain a table.* One segment stretched from the first piece's start to the
+//!   last piece's end would swallow the block, and the table would be reported as nested inside
+//!   the run rather than beside it.
+//! - *The id rule does not change here.* Giving each piece its own id means extending the path
+//!   with a piece index, which is a change to what a run's id is — and `hwp-render` carries a
+//!   mirror of that rule pinned by a cross-crate equality test, so it is a two-crate change, not
+//!   a local one.
+//!
+//! So the id identifies the run, not the range, and a consumer that needs the whole run groups
+//! the pieces by id. This is the **only** case in which two segments share an id; 05-05's
+//! envelope must say so rather than assert ids are unique.
 //!
 //! # Style: two levels, side by side
 //!
@@ -187,7 +214,9 @@ pub struct SegmentStyle {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
     pub kind: SegmentKind,
-    /// Derived by [`crate::segment_id`]; never read out of the source file.
+    /// Derived by [`crate::segment_id`]; never read out of the source file. Unique per segment
+    /// with one documented exception: the pieces of a run a block control interrupted share the
+    /// run's id. See the module doc, "A fragmented run".
     pub id: String,
     /// The positional half of the id: section plus child indices.
     pub path: SegmentPath,
@@ -254,8 +283,16 @@ pub(crate) fn finalize(raw: Vec<RawSeg>, mut remap: impl FnMut(usize) -> usize) 
             })
         })
         .collect();
-    // Document order, with the container ahead of what it contains.
-    out.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    // Document order, with the container ahead of what it contains. `end` descending settles
+    // the nested case; where the two ranges are *identical* - a single-run cell is exactly its
+    // run - it cannot, so the depth of the positional path breaks the tie: a container's path is
+    // a prefix of what it contains, so the shorter path is the outer segment.
+    out.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then(b.end.cmp(&a.end))
+            .then(a.path.indices.len().cmp(&b.path.indices.len()))
+    });
     out
 }
 
@@ -905,6 +942,165 @@ mod tests {
         assert_eq!(seg.style.direct.para_shape_id, Some(99));
         assert_eq!(seg.style.direct.char, None);
         assert_eq!(seg.style.direct.para, None);
+    }
+
+    // ------------------------------------------- regressions found in review (PR #276)
+
+    /// A bookmark alone in its paragraph must survive. It is a point marker that emits nothing,
+    /// so the paragraph produces no text - and a bookmark that vanishes exactly when it is the
+    /// only thing addressable in its paragraph is the case a consumer most needs.
+    #[test]
+    fn a_bookmark_alone_in_its_paragraph_survives() {
+        let mut p = Paragraph {
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        let mut bokm = generic(*b"bokm");
+        bokm.raw_children = vec![hwp_model::opaque::OpaqueRecord {
+            tag: 0x0010 + 71,
+            data: crate::bookmark::make_bokm_ctrl_data("혼자"),
+            children: Vec::new(),
+        }];
+        attach(
+            &mut p,
+            ctrl_char::BOOKMARK,
+            *b"bokm",
+            Control::Generic(bokm),
+        );
+        let (_, segs) = emit(&doc_of(vec![para("앞 문단"), p, para("뒤 문단")]));
+        let bookmark = only(&segs, SegmentKind::Bookmark);
+        assert_eq!(bookmark.name.as_deref(), Some("혼자"));
+        assert_eq!(bookmark.start, bookmark.end);
+    }
+
+    /// A paragraph inside a table cell is a paragraph. Without its own `para` segment an editor
+    /// cannot address it, and "seven kinds" would hold only at the top level.
+    #[test]
+    fn a_paragraph_inside_a_cell_gets_its_own_para_segment() {
+        let mut p = para("표 앞");
+        attach(
+            &mut p,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(
+                vec![cell_of(0, 0, "머리"), cell_of(0, 1, "값")],
+                2,
+                1,
+            )),
+        );
+        let (md, segs) = emit(&doc_of(vec![p]));
+        let cells = of(&segs, SegmentKind::Cell);
+        assert_eq!(cells.len(), 2, "{segs:#?}");
+        for cell in &cells {
+            let inner: Vec<&Segment> = of(&segs, SegmentKind::Para)
+                .into_iter()
+                .filter(|p| p.start >= cell.start && p.end <= cell.end)
+                .collect();
+            assert_eq!(
+                inner.len(),
+                1,
+                "cell {:?} ({:?}) holds no paragraph of its own: {segs:#?}",
+                cell,
+                slice(&md, cell)
+            );
+        }
+        // Three paragraphs in all: the top-level one plus one per cell.
+        assert_eq!(of(&segs, SegmentKind::Para).len(), 3);
+    }
+
+    /// One character-shape run whose emission a block interrupts is reported once per contiguous
+    /// piece, the pieces sharing the run's id - see the module doc for why the id is shared
+    /// rather than split or the block swallowed.
+    #[test]
+    fn a_run_interrupted_by_a_block_is_reported_in_every_piece() {
+        let mut p = Paragraph {
+            chars: "앞".chars().map(HwpChar::Text).collect(),
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        attach(
+            &mut p,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell_of(0, 0, "칸")], 1, 1)),
+        );
+        p.chars.extend("뒤".chars().map(HwpChar::Text));
+        let (md, segs) = emit(&doc_of(vec![p]));
+        let runs: Vec<&Segment> = of(&segs, SegmentKind::Run)
+            .into_iter()
+            .filter(|r| r.path.indices == vec![0, 0])
+            .collect();
+        assert_eq!(runs.len(), 2, "both pieces of the run: {segs:#?}");
+        assert_eq!(runs[0].id, runs[1].id, "one run, so one id");
+        assert_eq!(slice(&md, runs[0]), "앞");
+        assert_eq!(slice(&md, runs[1]), "뒤");
+        // The block is not swallowed by the run that its anchor sits in.
+        let table = only(&segs, SegmentKind::Table);
+        assert!(runs[0].end <= table.start && runs[1].start >= table.end);
+    }
+
+    /// A control inside a cell must not overwrite the style captured at the outer control.
+    #[test]
+    fn an_outer_table_keeps_the_style_captured_at_its_own_control() {
+        let mut inner = para("그림 칸");
+        // The cell's paragraph names shape 1; the table's own paragraph names shape 0.
+        inner.char_shape_runs = vec![(0, CharShapeId(1))];
+        attach(
+            &mut inner,
+            ctrl_char::OBJECT,
+            *b"gso ",
+            Control::Picture(picture_of()),
+        );
+        let mut cell = cell_of(0, 0, "");
+        cell.paragraphs = vec![inner];
+        let mut p = para("표 앞");
+        attach(
+            &mut p,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell], 1, 1)),
+        );
+        let (_, segs) = emit(&doc_of(vec![p]));
+        let table = only(&segs, SegmentKind::Table);
+        assert_eq!(
+            table.style.direct.char_shape_id,
+            Some(0),
+            "the table's style must be the one at the table control, not a nested control's"
+        );
+    }
+
+    /// Identical ranges still order container first: a single-run cell produces a `cell` and a
+    /// `run` over exactly the same range, and `end` descending cannot separate them.
+    #[test]
+    fn a_container_precedes_a_contained_segment_of_the_same_range() {
+        let mut p = para("표 앞");
+        attach(
+            &mut p,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(
+                vec![cell_of(0, 0, "머리"), cell_of(0, 1, "값")],
+                2,
+                1,
+            )),
+        );
+        let (_, segs) = emit(&doc_of(vec![p]));
+        for pair in segs.windows(2) {
+            if pair[0].start == pair[1].start && pair[0].end == pair[1].end {
+                assert!(
+                    pair[0].path.indices.len() < pair[1].path.indices.len(),
+                    "equal ranges must order outer first: {:?} then {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+        // The pairing this guards actually occurs here.
+        assert!(
+            segs.windows(2)
+                .any(|w| w[0].start == w[1].start && w[0].end == w[1].end),
+            "expected at least one equal-range pair to exercise the tie-break: {segs:#?}"
+        );
     }
 
     /// COLORREF is 0x00BBGGRR, not 0x00RRGGBB.
