@@ -21,9 +21,12 @@
 #              commit (version bump + changelog) is created after the run, and a squash merge
 #              creates another commit after that, so requiring equality here made the gate
 #              unsatisfiable for every release (#268). Instead the evaluated commit must be an
-#              ANCESTOR of the tagged commit, and the delta between them must touch only
-#              RELEASE_ONLY_PATHS - so no source change can enter a release after the run that
-#              vouches for it. Every other check is identical in both modes.
+#              ANCESTOR of the tagged commit, and the delta between them must be a release commit
+#              and nothing else: only RELEASE_ONLY_PATHS may change, and inside the two manifests
+#              only `version = "..."` lines may change. A path-only allowlist was not enough - it
+#              would accept a dependency, feature, workspace-membership or locked-revision change
+#              to Cargo.toml/Cargo.lock and publish binaries built from code the run never saw.
+#              Every other check is identical in both modes.
 #
 # Why 4 and not a head_sha comparison: release-readiness.yml checks out `inputs.ref`, which is
 # independent of the ref the run was dispatched from. A dispatch run's head_sha is the DISPATCH
@@ -57,6 +60,8 @@ END_MARKER="<!-- verification:end -->"
 
 # The only files a release commit may change after the readiness run that vouches for it.
 RELEASE_ONLY_PATHS="Cargo.toml Cargo.lock CHANGELOG.md"
+# Of those, the two manifests may only carry version bumps: every changed line has to be one.
+VERSION_BUMP_ONLY_PATHS="Cargo.toml Cargo.lock"
 
 version="${1:-}"
 commitish="${2:-}"
@@ -270,6 +275,21 @@ if [ "$mode" = --as-tag ]; then
         die "the tagged commit $sha changes more than the release files since the evaluated commit
                     $evaluated:$offenders
                     Only $RELEASE_ONLY_PATHS may change after the readiness run."
+
+    # A path allowlist alone would accept a dependency bump, a feature change, a workspace-member
+    # change or a re-locked revision inside the manifests - code the run never evaluated. So every
+    # changed line in them must be a version line, which is all `scripts/release.sh` writes.
+    # No membership test here: an unchanged manifest simply produces an empty diff. (`$delta` is
+    # newline-separated, so a word-membership test on it silently matched nothing and skipped this.)
+    for file in $VERSION_BUMP_ONLY_PATHS; do
+        stray="$(git_repo diff --unified=0 "$evaluated" "$sha" -- "$file" |
+            grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' |
+            grep -vE '^[+-]version = "[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?"$' || true)"
+        [ -z "$stray" ] || die "the tagged commit $sha changes more than the version in $file since
+                    the evaluated commit $evaluated:
+$stray
+                    Only version lines may change there after the readiness run."
+    done
     echo "verification-block: OK for $version (run $run_id, evaluated_sha $evaluated is an ancestor
                     of the tagged $sha, delta release-only, head_sha ${head_sha:-not queried})"
     exit 0

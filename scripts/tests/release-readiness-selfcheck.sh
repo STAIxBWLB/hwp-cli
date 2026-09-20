@@ -384,6 +384,7 @@ mkdir -p "$tagrepo"
     mkdir -p src
     printf 'fn main() {}\n' >src/main.rs
     printf 'version = "9.9.8"\n' >Cargo.toml
+    printf 'version = "9.9.8"\n' >Cargo.lock
     printf '# Changelog\n' >CHANGELOG.md
     git add -A && git commit -qm base
 ) >/dev/null 2>&1
@@ -391,6 +392,7 @@ base_sha="$(git -C "$tagrepo" rev-parse HEAD)"
 (
     cd "$tagrepo"
     printf 'version = "9.9.9"\n' >Cargo.toml
+    printf 'version = "9.9.9"\n' >Cargo.lock
     printf '# Changelog\n\n## [9.9.9]\n' >CHANGELOG.md
     git add -A && git commit -qm "chore(release): v9.9.9"
 ) >/dev/null 2>&1
@@ -426,6 +428,42 @@ else
     rejected=0
 fi
 check "tag mode rejects a delta that touches a source file" "$rejected"
+
+# A path-only allowlist would accept this: the file is Cargo.toml, but the change is a dependency,
+# not a version bump, so it is code the readiness run never evaluated.
+(
+    cd "$tagrepo"
+    git checkout -q -b depbump "$release_sha"
+    printf 'version = "9.9.9"\nserde = "1"\n' >Cargo.toml
+    git add -A && git commit -qm "build: add a dependency after the run"
+) >/dev/null 2>&1
+depbump_sha="$(git -C "$tagrepo" rev-parse depbump)"
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$depbump_sha" --as-tag >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "tag mode rejects a manifest change that is not a version bump" "$rejected"
+
+# The same shape in the lock file, which a re-lock would produce.
+(
+    cd "$tagrepo"
+    git checkout -q -b relock "$release_sha"
+    printf 'version = "9.9.9"\n' >Cargo.toml
+    printf '[[package]]\nname = "dep"\nsource = "registry+https://example.invalid"\n' >Cargo.lock
+    git add -A && git commit -qm "build: re-lock after the run"
+) >/dev/null 2>&1
+relock_sha="$(git -C "$tagrepo" rev-parse relock)"
+if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green-base.json" \
+    HWP_RELEASE_REPO="$tagrepo" \
+    bash "$ROOT/scripts/check-verification-block.sh" 9.9.9 "$relock_sha" --as-tag >/dev/null 2>&1; then
+    rejected=1
+else
+    rejected=0
+fi
+check "tag mode rejects a re-locked Cargo.lock" "$rejected"
 
 if HWP_CHANGELOG="$changelog" HWP_READINESS_RECORD="$record_dir/green.json" \
     HWP_RELEASE_REPO="$tagrepo" \
