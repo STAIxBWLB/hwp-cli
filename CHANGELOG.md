@@ -10,6 +10,56 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.19.0]
+
+**Added**
+
+- `hwp cat --with-segments --segments v2` and `schemas/segment-envelope-v2.schema.json`: the v2
+  segment envelope as a closed, versioned contract (Draft 2020-12, `additionalProperties: false`
+  with an explicit `required` array at every nesting level). v2 emits seven kinds
+  (`para | run | table | cell | image | field | bookmark`), a derived segment id, a Unicode-scalar
+  `char_range` and a two-level style summary. The D-03 format allow-list accepts `v2` for
+  `--format markdown` and `--format json` and rejects it for `plain`, `html` and `csv`, where a
+  segment envelope has no consumer; for `--format json` the document IR sits beside the segments
+  under the same two constants, so a consumer parses one value either way
+  ([#279](https://github.com/STAIxBWLB/hwp-cli/pull/279)).
+
+  The default did not move (D-04). `--with-segments` with no `--segments` value, and
+  `--with-segments --segments v1`, both emit bytes identical to
+  `crates/hwp-cli/tests/golden/segment-envelope-v1.json` - a golden generated at `ac4b019`, before
+  a line of v2 code existed ([#274](https://github.com/STAIxBWLB/hwp-cli/pull/274)).
+
+- The v2 segment model itself, in `hwp-convert`: `crates/hwp-convert/src/segment.rs` carries the
+  segment type, its seven kinds and the finalizer that turns recorded byte spans into published
+  Unicode scalar offsets. The nested span instrumentation sits on the **one** existing emission
+  core rather than a second emitter - each buffer carries the spans recorded into it and rebases
+  them where its text is copied into its parent - so the markdown string is byte-identical with
+  and without segments as a structural property. Recording is off for the default path
+  ([#276](https://github.com/STAIxBWLB/hwp-cli/pull/276)).
+
+- `hwp render --layout-json <path>` and `schemas/render-layout-v1.schema.json`: per-page geometry
+  rows keyed by segment id, one file per invocation. Boxes are in points with the page origin at
+  top-left, read off the shared `DisplayList` before any backend transform, so `--format png`,
+  `svg` and `pdf` produce a byte-identical file, as do two different `--dpi` values. The
+  destination routes through the same vetting `--report` uses, so it cannot clobber the input, a
+  render output or the report beside it ([#281](https://github.com/STAIxBWLB/hwp-cli/pull/281)).
+
+  `hwp-render` derives the segment id itself through `crates/hwp-render/src/segment_id.rs`, a
+  deliberate second implementation mirroring `crates/hwp-convert/src/segment_id.rs` signature for
+  signature. The rule is duplicated rather than shared because invariant 1 keeps the two crates off
+  each other's dependency graph; `crates/hwp-cli/tests/segment_id_parity.rs` is the only thing that
+  makes the two copies agree, with one named case per envelope kind
+  ([#277](https://github.com/STAIxBWLB/hwp-cli/pull/277)).
+
+- `hwp render --format jpeg` and `--format webp`, inferred from the output extension too. Both
+  encode the same `Pixmap` the PNG path produces, so they sit downstream of the existing raster
+  budgets rather than opening a second raster path. JPEG composites onto opaque white from straight
+  RGBA8 at a quality fixed in one constant - there is deliberately no `--quality` flag; WebP is
+  lossless VP8L, the encoder's only mode. No new top-level dependency: `webp` is a feature of the
+  already-pinned `image` 0.25. Before this, `-o out.jpg` silently wrote PNG bytes under that name.
+  The MCP `render` tool still parses only `png|svg|pdf` and rejects the two new variants explicitly
+  ([#273](https://github.com/STAIxBWLB/hwp-cli/pull/273)).
+
 **Fixed**
 
 - A paragraph taller than the remaining page never broke unless the document carried cached line
@@ -26,6 +76,38 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `paragraph_line_content_overflow`, the contract `table_cell_content_overflow` already carries for
   a table cell. The cached path is untouched - `fixtures/samples/report-tables.hwpx` publishes a
   byte-identical layout artifact ([#282](https://github.com/STAIxBWLB/hwp-cli/issues/282)).
+
+  Three further defects in the same band, found reviewing that change. The break guard exempted the
+  paragraph's *own* first line, and the band above it only breaks when the *previous* paragraph
+  already passed the body bottom, so a fallback paragraph beginning within a descent of the bottom
+  still drew its first line into the footer margin; a line now breaks whenever the page it would
+  leave behind carries something, and the list marker travels with the line it belongs to. A
+  mid-paragraph break printed every one of that paragraph's footnotes on the page it *started* on,
+  because `page_notes` is filled before the band runs; `footnote::para_notes` now reports the WCHAR
+  offset of each anchor and a page is handed only the notes whose marker stayed on it. A wrap cut
+  off by the display-item budget ended in a run of lines carrying nothing and the plan opened a
+  page for each, so layout emitted blank pages until the page budget ran out too; those trailing
+  empty lines are dropped before planning
+  ([#287](https://github.com/STAIxBWLB/hwp-cli/pull/287)).
+
+**Documentation**
+
+- `render-layout-v1`'s join-key claim is now honest about its completeness. The published rule says
+  a layout row's id joins to the segment envelope; verification found that holds for
+  `report-tables.hwpx`, the one document the test covered, and fails where a paragraph holds only a
+  `gso ` drawing control and no text - `outline.hwp` emits zero envelope segments while the
+  renderer publishes a row. The schema and manual now state that a row id is not guaranteed to
+  resolve; the defect itself is tracked as
+  [#285](https://github.com/STAIxBWLB/hwp-cli/issues/285)
+  ([#286](https://github.com/STAIxBWLB/hwp-cli/pull/286)).
+
+- `docs/design/12-feature-gaps.md`: GF-4 undercounted the recognized field kinds by 21.
+  `is_field_ctrl_id` recognizes 33, not 12 - the 12 original kinds, the 19 `FIELD_REVISION_*`
+  kinds, `%cpr` and `%toc` - and only `%%me` is withheld, because its body pairs with the memo list
+  (GB-7) which is not emitted yet. The stale figure had been copied into a research document and
+  two execution briefings before an executor checked the code instead of the catalogue. GO-1 is
+  closed, and the row naming the `crate-edges` gate is added
+  ([#280](https://github.com/STAIxBWLB/hwp-cli/pull/280)).
 
 ## [0.18.0]
 
