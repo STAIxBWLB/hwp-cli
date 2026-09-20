@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.18.0]
+
 **Added**
 
 - `scripts/hancom-regression.sh` regenerates every artifact
@@ -96,7 +98,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   unnoticed. Nine stale counts and the previously undocumented `hwp dump` command are corrected
   with it.
 - `scripts/release_verification_block.sh` writes the `**Verification**` block into a version's
-  CHANGELOG section between `<!-- verification:begin -->` and `<!-- verification:end -->`, naming
+  CHANGELOG section between its `verification:begin` and `verification:end` HTML comments, naming
   the four excluded parity gates with the distances measured in `docs/design/21-pdf-parity.md`
   sections 4.5 and 4.6 and the release-readiness run URL. A rerun replaces exactly that region,
   so anything an editor added around it survives, and a missing, duplicated or unmarked block is
@@ -198,7 +200,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - Native certification's page-geometry checks (`outside_page_bounds`, `possible_collision`) are
   measured against a substituted OFL font on A4 (46 detections across 10 pages), O_notice_hwp
-  (9 detections across 6 pages), O_press_hwp (4 detections across 4 pages), L1 (10 detections on
+  (9 detections across 6 pages), O_press_hwp (4 detections across 4 pages), L1 (11 detections on
   1 page), P1_merge (4 detections on 1 page), P2_split_001 (4 detections on 1 page),
   P5_set_cell_blank_line (4 detections on 1 page), P6_set_cell_para (4 detections on 1 page), A3
   (119 detections across 2 pages), O_report_hwp (3 detections across 2 pages) and O_plan_hwp
