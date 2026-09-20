@@ -62,7 +62,7 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "description": "The segment id. THIS IS THE ONLY JOIN KEY between this artifact and the segment envelope `hwp cat --with-segments --segments v2` publishes; the two artifacts' character ranges live in different coordinate spaces and must never be compared. Not unique within this file: see `rows` for the three reasons."
+          "description": "The segment id, and THE ONLY JOIN KEY between this artifact and the segment envelope `hwp cat --with-segments --segments v2` publishes; the two artifacts' character ranges live in different coordinate spaces and must never be compared. Not unique within this file: see `rows` for the three reasons. THE JOIN IS NOT GUARANTEED TO RESOLVE: a row's id may have NO counterpart in the envelope. One cause is known - a paragraph whose only content is a drawing control (`gso `) and which shapes no text of its own produces no envelope segment at all, while the renderer draws the object and records a row for it. A CONSUMER MUST THEREFORE TREAT AN UNRESOLVED ID AS GEOMETRY WITH NO SOURCE RANGE, NOT AS A DEFECT, and must not assume every row can be traced back to text. Measured across this repository's fixtures: `report-tables.hwpx`, `public-safety-rfp-p1.hwp` and `.hwpx`, `work_report.hwp`, `bookmark.hwp`, `hello_world.hwp` and `minimal.hwpx` have no unresolved ids; `annual_report.hwp` has one of 10 rows, and `outline.hwp` - a single page holding only a drawing - publishes 1 row against an envelope of ZERO segments. Tracked as https://github.com/STAIxBWLB/hwp-cli/issues/285; until it closes, this is a documented property of the artifact rather than a bug a consumer should work around by discarding the row."
         },
         "kind": {
           "enum": ["para", "table", "cell", "bookmark"],
@@ -73,7 +73,7 @@
           "anyOf": [{ "$ref": "#/$defs/box_pt" }, { "type": "null" }]
         },
         "source_chars": {
-          "description": "The source characters this row covers. NULL on `table` and `cell` rows, for a reason unrelated to a null `box`: those rows span several source paragraphs, so no single paragraph's offsets describe them. A null `box` says the segment is invisible; a null `source_chars` says the row's extent is not expressible in one paragraph's coordinates.",
+          "description": "The source characters this row covers, or null. TWO DIFFERENT THINGS PRODUCE A NULL HERE, AND NEITHER IS THE REASON A `box` IS NULL. (1) Every `table` and `cell` row: they span several source paragraphs, so no single paragraph's offsets describe them. (2) A `para` row whose paragraph shapes NO TEXT OF ITS OWN because its content is entirely an anchored object - the paragraph that carries a table, or one holding only a drawing control. That case is not rare and is not confined to the other kinds: on this repository's committed `report-tables.hwpx`, 3 of the 40 published `para` ids carry a null here, and they are exactly the three table-anchoring paragraphs. A consumer must null-check this field on EVERY kind, `para` included. A null `box` says the segment is invisible; a null `source_chars` says this row's extent is not expressible in one paragraph's character offsets.",
           "anyOf": [{ "$ref": "#/$defs/source_chars" }, { "type": "null" }]
         }
       }
