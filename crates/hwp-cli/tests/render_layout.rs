@@ -470,3 +470,400 @@ fn a_render_without_the_flag_writes_no_layout_file() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------
+// D-08 and D-09, as structural properties of the published artifact
+// ---------------------------------------------------------------------------
+
+fn rows_of<'a>(value: &'a serde_json::Value, kind: &str) -> Vec<&'a serde_json::Value> {
+    value["pages"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .flat_map(|p| p["rows"].as_array().expect("rows"))
+        .filter(|r| r["kind"] == kind)
+        .collect()
+}
+
+fn bbox(row: &serde_json::Value) -> Option<[f64; 4]> {
+    let b = row["box"].as_object()?;
+    Some([
+        b["x0"].as_f64()?,
+        b["y0"].as_f64()?,
+        b["x1"].as_f64()?,
+        b["y1"].as_f64()?,
+    ])
+}
+
+/// D-08: a table document publishes `table` and `cell` rows, and every cell box on a page lies
+/// inside a table box on that page, so an editor hit-tests them directly.
+///
+/// The tolerance is a point, not zero: `item_bounds` inflates a stroked path by half its
+/// width, so a cell's border and its table's border touch by a fraction of a point by
+/// construction. Only a real escape is a misattribution.
+#[test]
+fn a_table_document_publishes_table_and_cell_rows_with_cells_inside_their_table() {
+    const SHARED_EDGE_PT: f64 = 1.0;
+    let value = layout_of(TABLE_MARKDOWN);
+    assert!(
+        !rows_of(&value, "table").is_empty(),
+        "a table document must publish a table row (D-08)"
+    );
+    assert!(
+        !rows_of(&value, "cell").is_empty(),
+        "a table document must publish cell rows (D-08)"
+    );
+
+    for page in value["pages"].as_array().expect("pages") {
+        let rows = page["rows"].as_array().expect("rows");
+        let tables: Vec<[f64; 4]> = rows
+            .iter()
+            .filter(|r| r["kind"] == "table")
+            .filter_map(bbox)
+            .collect();
+        for cell in rows.iter().filter(|r| r["kind"] == "cell") {
+            let Some(c) = bbox(cell) else { continue };
+            assert!(
+                tables.iter().any(|t| {
+                    t[0] <= c[0] + SHARED_EDGE_PT
+                        && t[1] <= c[1] + SHARED_EDGE_PT
+                        && t[2] + SHARED_EDGE_PT >= c[2]
+                        && t[3] + SHARED_EDGE_PT >= c[3]
+                }),
+                "cell {} at {c:?} lies inside no table box on its page",
+                cell["id"]
+            );
+        }
+    }
+}
+
+/// D-08a: an invisible segment publishes `box: null` and a character range, and NO row of a
+/// point-segment kind carries a zero-extent box.
+///
+/// The assertion is scoped to the point kinds rather than applied to every row on purpose.
+/// Real geometry is legitimately flat in places - a zero-height rule or divider, a degenerate
+/// empty line box - so a blanket "no zero-extent box anywhere" rule would go red on correct
+/// output. That corner is exactly where the D-08a guard gets quietly relaxed instead of the
+/// code being fixed; scoping it keeps the guard true and keeps it a guard.
+#[test]
+fn a_point_segment_has_a_range_and_no_fabricated_rectangle() {
+    let mut doc = hwp_convert::from_markdown("책갈피 문단.\n");
+    let para = &mut doc.sections[0].paragraphs[0];
+    let control_index = para.controls.len();
+    para.controls
+        .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"bokm",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }));
+    para.chars.insert(
+        1,
+        hwp_model::HwpChar::ExtCtrl {
+            code: hwp_model::paragraph::ctrl_char::BOOKMARK,
+            ctrl_id: *b"bokm",
+            payload: Vec::new(),
+            ctrl_index: Some(control_index as u32),
+        },
+    );
+
+    let mut store = hwp_render::FontStore::new();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let (list, map) =
+        hwp_render::layout::layout_document_with_segments(&doc, &mut store, &mut warnings);
+    let selected: Vec<usize> = (1..=list.pages.len()).collect();
+    let value = hwp_cli::render_layout::layout_json(&list, &map, &selected);
+
+    if let Err(error) = validator().validate(&value) {
+        panic!("a layout artifact carrying a point segment failed the schema: {error}");
+    }
+
+    let bookmarks = rows_of(&value, "bookmark");
+    assert_eq!(bookmarks.len(), 1, "one anchored bookmark, one row");
+    assert_eq!(
+        bookmarks[0]["box"],
+        serde_json::Value::Null,
+        "an invisible segment publishes box: null, never a rectangle"
+    );
+    assert!(
+        bookmarks[0]["source_chars"].is_object(),
+        "and it keeps its character range"
+    );
+
+    // Point kinds only. A flat box elsewhere is real geometry, not a fabrication.
+    for row in rows_of(&value, "bookmark") {
+        if let Some(b) = bbox(row) {
+            assert!(
+                b[0] != b[2] || b[1] != b[3],
+                "row {} carries a fabricated zero-extent box (D-08a)",
+                row["id"]
+            );
+        }
+    }
+}
+
+/// D-09: a segment crossing a page boundary appears once per (segment, page), each row with
+/// its own character range; those ranges are pairwise disjoint and their union is contiguous.
+///
+/// Driven over the committed sample, which does split segments across pages on this host, and
+/// asserted as a structural property rather than as a page count - it holds wherever the break
+/// lands, so no font decides it.
+///
+/// THIS TEST DELIBERATELY DOES NOT ASSERT THAT THE CASE WAS REACHED. Where a page break falls
+/// is font-dependent, and CI bundles no fonts, so a non-vacuity assertion here would be an
+/// assertion about the host's font set. What guarantees the code path is exercised on every
+/// host is its synthetic sibling below,
+/// `the_artifact_carries_one_row_per_segment_and_page_for_a_page_crossing_segment`, which
+/// builds the crossing directly. Neither test substitutes for the other: this one reads real
+/// pagination, that one guarantees the shape.
+#[test]
+fn a_page_crossing_segments_ranges_are_disjoint_and_contiguous() {
+    let dir = temp_dir("d09");
+    let bytes = render_layout_bytes(&dir, "png", "96", "all");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
+
+    let mut by_id: std::collections::BTreeMap<String, Vec<(u64, u64)>> = Default::default();
+    for page in value["pages"].as_array().expect("pages") {
+        for row in page["rows"].as_array().expect("rows") {
+            if let Some(range) = row["source_chars"].as_object() {
+                by_id
+                    .entry(row["id"].as_str().expect("id").to_string())
+                    .or_default()
+                    .push((
+                        range["start"].as_u64().expect("start"),
+                        range["end"].as_u64().expect("end"),
+                    ));
+            }
+        }
+    }
+
+    for (id, ranges) in by_id.iter().filter(|(_, r)| r.len() > 1) {
+        let mut sorted = ranges.clone();
+        sorted.sort_unstable();
+        for pair in sorted.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].0,
+                "ranges of {id} overlap: {:?} and {:?}",
+                pair[0],
+                pair[1]
+            );
+            assert_eq!(
+                pair[0].1, pair[1].0,
+                "ranges of {id} have a hole between {:?} and {:?}",
+                pair[0], pair[1]
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// D-09's shape, guaranteed on every host: one row per (segment, page), each with its own box
+/// and its own character range, and the id repeating across the two pages.
+///
+/// Synthetic because the real case is font-dependent and this one must not be. It drives the
+/// real serializer and the real published schema, so a change that collapsed a segment's two
+/// page rows into one - or that added a uniqueness constraint - fails here rather than
+/// silently on a host nobody runs.
+#[test]
+fn the_artifact_carries_one_row_per_segment_and_page_for_a_page_crossing_segment() {
+    let page = || hwp_render::display::PageList {
+        width_pt: 595.0,
+        height_pt: 842.0,
+        items: Vec::new(),
+    };
+    let list = hwp_render::display::DisplayList {
+        pages: vec![page(), page()],
+    };
+    let part =
+        |page: usize, y0: f32, y1: f32, start: u32, end: u32| hwp_render::segment_map::SegmentRow {
+            page,
+            kind: hwp_render::segment_map::kind::PARA,
+            id: "abc.0.7".into(),
+            bbox: Some(hwp_render::segment_map::BoxPt {
+                x0: 85.0,
+                y0,
+                x1: 510.0,
+                y1,
+            }),
+            chars: Some(hwp_render::segment_map::CharRange { start, end }),
+            item_count: 1,
+        };
+    let map = hwp_render::segment_map::SegmentMap {
+        rows: vec![
+            part(0, 700.0, 780.0, 0, 120),
+            part(1, 100.0, 180.0, 120, 260),
+        ],
+        truncated: false,
+    };
+    let value = hwp_cli::render_layout::layout_json(&list, &map, &[1, 2]);
+    if let Err(error) = validator().validate(&value) {
+        panic!("the schema rejected a page-crossing segment: {error}");
+    }
+
+    let rows: Vec<&serde_json::Value> = value["pages"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .flat_map(|p| p["rows"].as_array().expect("rows"))
+        .collect();
+    assert_eq!(rows.len(), 2, "one row per (segment, page)");
+    assert_eq!(rows[0]["id"], rows[1]["id"], "the id repeats across pages");
+    assert_ne!(rows[0]["box"], rows[1]["box"], "each row has its own box");
+    assert_eq!(
+        rows[0]["source_chars"]["end"], rows[1]["source_chars"]["start"],
+        "the two ranges are disjoint and contiguous"
+    );
+}
+
+/// The published artifact must survive an id repeating on ONE page, because two fragments of
+/// one cell in different columns of a multi-column section stay two rows rather than being
+/// unioned across the gutter.
+///
+/// This drives the real serializer and the real schema rather than leaving the rule as a
+/// comment. NO TEST IN THIS FILE MAY ASSUME ONE ROW PER (page, id): if you are about to add
+/// an assertion that groups rows by that pair, this is the case it silently drops.
+#[test]
+fn two_rows_of_one_id_on_one_page_survive_serialization_and_the_schema() {
+    let list = hwp_render::display::DisplayList {
+        pages: vec![hwp_render::display::PageList {
+            width_pt: 595.0,
+            height_pt: 842.0,
+            items: Vec::new(),
+        }],
+    };
+    let fragment = |x0: f32, x1: f32| hwp_render::segment_map::SegmentRow {
+        page: 0,
+        kind: hwp_render::segment_map::kind::CELL,
+        id: "abc.0.1.2".into(),
+        bbox: Some(hwp_render::segment_map::BoxPt {
+            x0,
+            y0: 10.0,
+            x1,
+            y1: 20.0,
+        }),
+        chars: None,
+        item_count: 1,
+    };
+    let map = hwp_render::segment_map::SegmentMap {
+        // One cell, two columns, a gutter between them.
+        rows: vec![fragment(10.0, 150.0), fragment(300.0, 400.0)],
+        truncated: false,
+    };
+    let value = hwp_cli::render_layout::layout_json(&list, &map, &[1]);
+    if let Err(error) = validator().validate(&value) {
+        panic!("the schema rejected two rows of one id on one page: {error}");
+    }
+    let rows = value["pages"][0]["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 2, "both column fragments must survive");
+    assert_eq!(rows[0]["id"], rows[1]["id"]);
+    assert_ne!(
+        rows[0]["box"], rows[1]["box"],
+        "the two fragments keep their own boxes rather than being unioned across the gutter"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The cross-artifact join key
+// ---------------------------------------------------------------------------
+
+/// Every id in a layout row is present in the envelope's id set for the same document.
+///
+/// This is the phase's only check that reads the two PUBLISHED artifacts. `hwp-convert` and
+/// `hwp-render` derive ids independently by design - that is what keeps them off each other's
+/// dependency graph, and `scripts/check-crate-edges.sh` enforces it - so each crate carries its
+/// own copy of the id rule and the agreement is made by a test rather than by a shared code
+/// path. 05-04's per-kind equality test is the inner guard, comparing the two FUNCTIONS
+/// directly; it can pass while a serialization or path-building mistake still makes the
+/// published ids disagree. Without this outer backstop such a divergence passes every other
+/// test in the phase and reaches the editor, which persists those ids, as a published false
+/// claim.
+///
+/// The containment direction is deliberate. Layout ids are a SUBSET of envelope ids: the
+/// envelope carries segments that never reach the display list - point segments (D-08a) and
+/// anything the layout pass skips - and the reverse containment would be false on correct
+/// output.
+#[test]
+fn every_layout_row_id_is_present_in_the_envelope_id_set() {
+    let dir = temp_dir("joinkey");
+    let layout_path = dir.join("layout.json");
+    let out = dir.join("out.png");
+
+    let render = hwp()
+        .arg("render")
+        .arg(sample())
+        .arg("-o")
+        .arg(&out)
+        .args(["--format", "png"])
+        .arg("--layout-json")
+        .arg(&layout_path)
+        .output()
+        .expect("run hwp render --layout-json");
+    assert!(
+        render.status.success(),
+        "hwp render failed: {}",
+        String::from_utf8_lossy(&render.stderr)
+    );
+
+    let envelope_out = hwp()
+        .arg("cat")
+        .arg(sample())
+        .args([
+            "--format",
+            "markdown",
+            "--with-segments",
+            "--segments",
+            "v2",
+        ])
+        .output()
+        .expect("run hwp cat --with-segments --segments v2");
+    assert!(
+        envelope_out.status.success(),
+        "hwp cat --segments v2 failed: {}",
+        String::from_utf8_lossy(&envelope_out.stderr)
+    );
+
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&envelope_out.stdout).expect("the envelope is JSON");
+    let envelope_ids: std::collections::BTreeSet<&str> = envelope["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .map(|s| s["id"].as_str().expect("segment id"))
+        .collect();
+    assert!(
+        !envelope_ids.is_empty(),
+        "the envelope must carry segments, or this test asserts nothing"
+    );
+
+    let layout: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&layout_path).expect("layout file")).expect("JSON");
+    let layout_ids: std::collections::BTreeSet<&str> = layout["pages"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .flat_map(|p| p["rows"].as_array().expect("rows"))
+        .map(|r| r["id"].as_str().expect("row id"))
+        .collect();
+    assert!(
+        !layout_ids.is_empty(),
+        "the layout artifact must carry rows, or this test asserts nothing"
+    );
+
+    let orphans: Vec<&&str> = layout_ids.difference(&envelope_ids).collect();
+    assert!(
+        orphans.is_empty(),
+        "{} of {} layout row ids are absent from the envelope's id set, so \"keyed by segment \
+         id\" is false for the two published artifacts: {:?}",
+        orphans.len(),
+        layout_ids.len(),
+        &orphans[..orphans.len().min(8)]
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
