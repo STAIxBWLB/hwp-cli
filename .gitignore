@@ -62,3 +62,4 @@ docs/spec/
 
 # ripwire quality-delta sidecar: pinned to one HEAD sha, self-heals when stale; never a repo artifact.
 /.ripwire_quality_baseline
+.agenthub/state/
