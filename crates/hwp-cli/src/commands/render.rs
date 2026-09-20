@@ -1,6 +1,6 @@
-//! `hwp render` — 페이지 렌더링 (PNG/JPEG/SVG/PDF).
+//! `hwp render` — 페이지 렌더링 (PNG/JPEG/WebP/SVG/PDF).
 //!
-//! PNG/JPEG/SVG는 페이지별 파일(out-1.png …)로, PDF는 단일 멀티페이지 파일로 쓴다.
+//! PNG/JPEG/WebP/SVG는 페이지별 파일(out-1.png …)로, PDF는 단일 멀티페이지 파일로 쓴다.
 
 use std::fs::File;
 use std::io::{Read as _, Write as _};
@@ -127,7 +127,7 @@ fn run_with_report_with_options(
     };
 
     match format {
-        RenderFormat::Png | RenderFormat::Jpeg => {
+        RenderFormat::Png | RenderFormat::Jpeg | RenderFormat::Webp => {
             let total = hwp_render::count_pages(&doc, &opts);
             let selected = parse_pages(pages_spec, total)?;
             let result = hwp_render::render_document_pages(&doc, &opts, Some(&selected))?;
@@ -522,6 +522,7 @@ pub(crate) fn write_render_bytes(
 fn raster_format_name(format: RenderFormat) -> &'static str {
     match format {
         RenderFormat::Jpeg => "jpeg",
+        RenderFormat::Webp => "webp",
         _ => "png",
     }
 }
@@ -547,6 +548,21 @@ fn encode_raster(pixmap: &tiny_skia::Pixmap, format: RenderFormat) -> anyhow::Re
             let mut out = Vec::new();
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY)
                 .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8)?;
+            Ok(out)
+        }
+        RenderFormat::Webp => {
+            // WebP carries alpha, so no white compositing: the straight RGBA8 buffer goes in as
+            // is. `image`'s WebP encoder is VP8L lossless only - that is the encoder's single
+            // mode, not a quality preference, so there is no knob to look for here.
+            let (width, height) = (pixmap.width(), pixmap.height());
+            let rgba = pixmap.clone().take_demultiplied();
+            let mut out = Vec::new();
+            image::codecs::webp::WebPEncoder::new_lossless(&mut out).write_image(
+                &rgba,
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )?;
             Ok(out)
         }
         _ => pixmap
@@ -586,6 +602,7 @@ fn infer_format(output: &Path) -> RenderFormat {
         Some("svg") => RenderFormat::Svg,
         Some("pdf") => RenderFormat::Pdf,
         Some("jpg" | "jpeg") => RenderFormat::Jpeg,
+        Some("webp") => RenderFormat::Webp,
         _ => RenderFormat::Png,
     }
 }

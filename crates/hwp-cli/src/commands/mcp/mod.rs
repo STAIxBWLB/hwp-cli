@@ -1268,7 +1268,7 @@ fn tool_render_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResul
         // The format argument above only parses png|svg|pdf, so these are unreachable through
         // the tool surface; the arm keeps that contract explicit rather than silently writing
         // PNG bytes under another name.
-        hwp_cli::cli::RenderFormat::Jpeg => {
+        hwp_cli::cli::RenderFormat::Jpeg | hwp_cli::cli::RenderFormat::Webp => {
             return Err("MCP 렌더는 png|svg|pdf만 지원합니다".into());
         }
         hwp_cli::cli::RenderFormat::Pdf => {

@@ -1,7 +1,8 @@
 //! `hwp render` raster format integration tests (EDT-03).
 //!
 //! Drives the built binary over the one committed sample and covers what the non-PNG raster
-//! formats actually promise: page dimensions equal to the PNG render at the same dpi and format
+//! formats actually promise: page dimensions equal to the PNG render at the same dpi, lossless
+//! WebP pixel identity with PNG, byte-stable output across two identical invocations, and format
 //! inference from the output extension. Nothing here asserts font-dependent output (glyphs, page
 //! counts) - the expected page count is derived from the PNG run, so the file is CI-safe on a host
 //! with no bundled fonts.
@@ -84,10 +85,54 @@ fn jpeg_pages_match_the_png_render_dimensions() {
 }
 
 #[test]
+fn webp_pages_are_pixel_identical_to_the_png_render() {
+    let png = render(&out_dir("webp-pixels-png"), "png", Some("png"));
+    let webp = render(&out_dir("webp-pixels-webp"), "webp", Some("webp"));
+    assert_eq!(png.len(), webp.len(), "one webp file per png page");
+    for (png, webp) in png.iter().zip(&webp) {
+        let (png, webp) = (decode(png), decode(webp));
+        assert_eq!(png.dimensions(), webp.dimensions());
+        // image's webp encoder is VP8L lossless only, and both sides come from the same layout
+        // pass, so the decoded buffers must be equal byte for byte.
+        assert_eq!(
+            png.as_raw(),
+            webp.as_raw(),
+            "lossless webp must decode to the same pixels as png"
+        );
+    }
+}
+
+#[test]
+fn identical_invocations_produce_byte_identical_files() {
+    for (ext, format) in [("jpg", "jpeg"), ("webp", "webp")] {
+        let first = render(&out_dir(&format!("determinism-{format}-a")), ext, Some(format));
+        let second = render(&out_dir(&format!("determinism-{format}-b")), ext, Some(format));
+        assert_eq!(first.len(), second.len(), "{format}: page count differs");
+        for (a, b) in first.iter().zip(&second) {
+            let (a_bytes, b_bytes) = (
+                std::fs::read(a).expect("read first run"),
+                std::fs::read(b).expect("read second run"),
+            );
+            assert_eq!(
+                a_bytes,
+                b_bytes,
+                "{format}: two identical invocations must produce byte-identical files ({} vs {})",
+                a.display(),
+                b.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn output_extension_infers_the_format() {
     // Without inference the `_ => RenderFormat::Png` catch-all would write PNG bytes under these
     // names, so the magic bytes are the assertion that matters.
-    for (ext, magic) in [("jpg", &b"\xFF\xD8"[..]), ("jpeg", &b"\xFF\xD8"[..])] {
+    for (ext, magic) in [
+        ("jpg", &b"\xFF\xD8"[..]),
+        ("jpeg", &b"\xFF\xD8"[..]),
+        ("webp", &b"RIFF"[..]),
+    ] {
         let files = render(&out_dir(&format!("infer-{ext}")), ext, None);
         for file in &files {
             let bytes = std::fs::read(file).expect("read rendered page");
@@ -97,6 +142,10 @@ fn output_extension_infers_the_format() {
                 file.display(),
                 &bytes[..magic.len().min(bytes.len())]
             );
+        }
+        if ext == "webp" {
+            let bytes = std::fs::read(&files[0]).expect("read rendered page");
+            assert_eq!(&bytes[8..12], b"WEBP", "RIFF container must be WEBP");
         }
     }
 }
