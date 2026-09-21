@@ -589,6 +589,24 @@ pub struct EditArgs {
     /// Output file path
     #[arg(short, long)]
     pub output: PathBuf,
+    /// Apply typed edit operations from a JSON file holding an edit-ops-v1 array
+    /// ("-" reads stdin). The file's string payloads are taken as data, so "=>",
+    /// "=", ":" and "@" inside them are kept verbatim instead of being parsed as
+    /// CLI separators. Mutually exclusive with the individual edit flags
+    #[arg(
+        long = "ops",
+        value_name = "FILE",
+        conflicts_with_all = [
+            "replace", "set_cell", "set_cell_by_label", "label_table", "set_field",
+            "set_meta", "create_field", "create_bookmark", "create_hyperlink",
+            "insert_image", "seal", "set_format", "set_align", "insert_para",
+            "insert_para_before", "delete_para", "add_row", "add_col", "delete_row",
+            "delete_col", "merge_cells", "split_cell", "add_table", "clone_table",
+            "set_para", "set_cell_para", "set_page", "delete_image", "delete_table",
+            "delete_field", "delete_bookmark", "style_tables",
+        ]
+    )]
+    pub ops: Option<PathBuf>,
     /// Replace text, "find=>replace" (repeatable; replaces every match)
     #[arg(long)]
     pub replace: Vec<String>,

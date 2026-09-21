@@ -339,6 +339,8 @@ impl EditPlan {
         let EditArgs {
             input,
             output,
+            // --ops는 from_ops 전용 — 개별 플래그 경로에서는 무의미하다.
+            ops: _,
             replace,
             set_cell,
             set_cell_by_label,
@@ -434,6 +436,31 @@ impl EditPlan {
                 allow_partial,
             },
         )
+    }
+
+    /// `--ops` 편집 계획: 연산 파일을 읽어 타입화된 작업 목록으로 정규화한다.
+    ///
+    /// 파일 읽기·스키마 검증·의미 제약 위반은 [`crate::edit_ops::load_ops`]가
+    /// 한국어 오류로 거부한다. `verify`/`allow_partial`는 개별 플래그 값을 그대로
+    /// 쓴다. `ops`는 `--ops`가 주어진 호출에서만 만들어지므로 Some이 보장된다.
+    pub fn from_ops(
+        args: EditArgs,
+    ) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf, Self)> {
+        let EditArgs {
+            input,
+            output,
+            ops,
+            verify,
+            allow_partial,
+            ..
+        } = args;
+        let ops = ops.expect("from_ops is only called when --ops is set");
+        let typed_operations = crate::edit_ops::load_ops(&ops)?;
+        Ok((
+            input,
+            output,
+            Self::from_typed(typed_operations, verify, allow_partial),
+        ))
     }
 
     pub(crate) fn from_typed(
