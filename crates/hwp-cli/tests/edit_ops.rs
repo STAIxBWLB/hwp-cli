@@ -189,3 +189,254 @@ fn tracer_ops_rejects_malformed() {
         "no output file may be created when the ops file is rejected"
     );
 }
+
+const KIND_COVERAGE_MD: &str = "# T\n\nintro para\n\n| 항목 | 수량 |\n|---|---|\n| 가 | 1 |\n";
+
+/// 최소 유효 PNG(시그니처+IHDR) — image_pixel_size가 치수를 읽고 writer가 바이트를
+/// 그대로 임베드한다(디코딩은 하지 않음; cli.rs write_min_png와 동일).
+fn write_min_png(path: &Path, w: u32, h: u32) {
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend([0, 0, 0, 13]);
+    png.extend(b"IHDR");
+    png.extend(w.to_be_bytes());
+    png.extend(h.to_be_bytes());
+    png.extend([8, 6, 0, 0, 0]); // bit depth/color type 등
+    png.extend([0, 0, 0, 0]); // CRC 자리(검증 안 함)
+    std::fs::write(path, &png).unwrap();
+}
+
+/// All 30 typed edit kinds through one flat `edit --ops` run (plan 06-02 W2-T1b).
+/// The kind-coverage fixture chains the paragraph-anchored kinds off each other,
+/// exercises the table kinds on the inserted 3x2 table, and deletes what it created
+/// (clone table, image, field, bookmark, doomed para). The run must exit success:
+/// every kind that fails to apply either aborts or pushes an unapplied entry, and a
+/// non-empty unapplied list exits nonzero before an output is published — that is
+/// the all-38-applied proxy for the kinds with no text-observable effect (set_meta,
+/// set_page, set_format/set_align/set_para, row/col surgery, set_cell_para,
+/// style_tables, delete_field, delete_bookmark). The text- and model-level
+/// assertions mirror the verified binary drive: replace payloads, field/hyperlink
+/// display text, the 라벨값/수정값 row on the first table, the untouched input form
+/// table as the second table, the clone removed, the doomed para gone, the inserted
+/// picture deleted from its anchor paragraph, and the seal left as a floating
+/// Picture with both image parts shipped in the package.
+#[test]
+fn kind_coverage_all_30() {
+    // Future renames of a typed edit kind fail loudly here.
+    const ALL_KINDS: [&str; 30] = [
+        "set_meta",
+        "set_page",
+        "insert_para",
+        "replace",
+        "create_field",
+        "set_field",
+        "create_bookmark",
+        "create_hyperlink",
+        "insert_image",
+        "seal",
+        "add_table",
+        "set_cell",
+        "set_cell_by_label",
+        "set_cell_para",
+        "add_row",
+        "add_col",
+        "merge_cells",
+        "split_cell",
+        "delete_row",
+        "delete_col",
+        "clone_table",
+        "delete_table",
+        "style_tables",
+        "set_format",
+        "set_align",
+        "set_para",
+        "delete_image",
+        "delete_field",
+        "delete_bookmark",
+        "delete_para",
+    ];
+
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/edit-ops/kind-coverage.json");
+    assert!(
+        fixture_path.exists(),
+        "kind-coverage fixture missing: {}",
+        fixture_path.display()
+    );
+    let fixture_value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&fixture_path).unwrap())
+            .expect("kind-coverage fixture must parse as JSON");
+    let ops: Vec<&str> = fixture_value
+        .as_array()
+        .expect("kind-coverage fixture must be an array")
+        .iter()
+        .map(|entry| entry["op"].as_str().expect("every op must carry a string tag"))
+        .collect();
+    assert!(
+        ops.len() >= 30,
+        "fixture must carry at least 30 ops, got {}",
+        ops.len()
+    );
+    let mut seen = ops;
+    seen.sort_unstable();
+    seen.dedup();
+    let mut expected = ALL_KINDS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        seen, expected,
+        "fixture op set must equal the 30 typed edit kinds"
+    );
+
+    // Schema gate mirrors load_ops: Draft 2020-12 against the committed schema.
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/edit-ops-v1.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap();
+    assert!(
+        validator.is_valid(&fixture_value),
+        "kind-coverage fixture must satisfy edit-ops-v1"
+    );
+
+    let dir = test_dir("kind-coverage");
+    // The verified input document: the markdown form table feeds the label preflight
+    // (set_cell_by_label resolves against the ORIGINAL input document) and survives
+    // untouched as the second table.
+    let md = dir.join("doc.md");
+    std::fs::write(&md, KIND_COVERAGE_MD).unwrap();
+    // insert_image/seal read their relative paths from the subprocess cwd.
+    write_min_png(&dir.join("logo.png"), 32, 24);
+    write_min_png(&dir.join("seal.png"), 24, 24);
+    let status = hwp()
+        .current_dir(&dir)
+        .args(["new", "--from"])
+        .arg("doc.md")
+        .arg("-o")
+        .arg("doc.hwpx")
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp new --from doc.md -o doc.hwpx failed");
+    // The fixture rides in the cwd like the image paths (harness path handling).
+    std::fs::copy(&fixture_path, dir.join("kind-coverage.json")).unwrap();
+
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .current_dir(&dir)
+        .args(["edit", "doc.hwpx", "-o"])
+        .arg(&output)
+        .args(["--ops", "kind-coverage.json"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run.status.success(),
+        "hwp edit --ops kind-coverage.json failed: {stderr}"
+    );
+    // Success itself is the all-applied guarantee (unapplied ops exit nonzero); these
+    // guards double-check no partial/publish-guard path let the run slip through.
+    assert!(
+        !stderr.contains("적용되지 않은") && !stderr.contains("게시하지 않습니다"),
+        "unapplied or unpublished edits must fail the run: {stderr}"
+    );
+    assert!(output.exists(), "the run must publish an output document");
+
+    let doc = hwpx::read_document(&output).unwrap().document;
+    let texts: Vec<String> = doc
+        .sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .map(|paragraph| paragraph.plain_text())
+        .collect();
+    assert!(
+        texts.iter().any(|text| text.contains("seed one c=d:e")),
+        "replace must rewrite the seeded payload verbatim, got {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("field anchor para변경값")),
+        "create_field + set_field must leave the field display text, got {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("hyperlink anchor para예시 링크")),
+        "create_hyperlink must leave its display text, got {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text.contains("doomed para")),
+        "delete_para must remove the doomed paragraph, got {texts:?}"
+    );
+
+    let tables: Vec<Table> = doc
+        .sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .flat_map(|paragraph| &paragraph.controls)
+        .filter_map(|control| match control {
+            Control::Table(table) => Some(table.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tables.len(),
+        2,
+        "add_table + clone_table + delete_table(index 1) must leave exactly two tables"
+    );
+    assert!(
+        table_has_text(&tables[0], "라벨값") && table_has_text(&tables[0], "수정값"),
+        "set_cell + set_cell_by_label must land on the first table"
+    );
+    let label_hits: usize = tables
+        .iter()
+        .map(|table| {
+            table
+                .cells
+                .iter()
+                .filter(|cell| {
+                    cell.paragraphs
+                        .iter()
+                        .any(|paragraph| paragraph.plain_text() == "라벨값")
+                })
+                .count()
+        })
+        .sum();
+    assert_eq!(
+        label_hits, 1,
+        "the cloned table must be gone — 라벨값 may appear in exactly one cell"
+    );
+    assert!(
+        table_has_text(&tables[1], "가") && table_has_text(&tables[1], "1"),
+        "the input form table must survive untouched as the second table"
+    );
+
+    // Model-level proxies for the image kinds: the inserted inline picture was
+    // deleted (no Picture left in the image-anchor paragraph), the seal floats as a
+    // Picture in its own anchor paragraph, and both image parts shipped in the
+    // package (read_document loads BinData/* into bin_streams).
+    let pictures_in = |needle: &str| -> usize {
+        doc.sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .filter(|paragraph| paragraph.plain_text().contains(needle))
+            .map(|paragraph| {
+                paragraph
+                    .controls
+                    .iter()
+                    .filter(|control| matches!(control, Control::Picture(_)))
+                    .count()
+            })
+            .sum()
+    };
+    assert_eq!(
+        pictures_in("image anchor para"),
+        0,
+        "delete_image must remove the inserted picture from its anchor paragraph"
+    );
+    assert!(
+        pictures_in("seal anchor para") >= 1,
+        "seal must leave a floating Picture in its anchor paragraph"
+    );
+    assert!(
+        doc.bin_streams.len() >= 2,
+        "insert_image and seal must ship their image parts in the package"
+    );
+}

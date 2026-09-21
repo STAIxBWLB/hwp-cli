@@ -1,0 +1,222 @@
+[
+  {
+    "op": "set_meta",
+    "key": "title",
+    "value": "w2-t1a"
+  },
+  {
+    "op": "set_page",
+    "width_mm": "210mm",
+    "height_mm": "297mm",
+    "margin_left_mm": "15mm",
+    "margin_right_mm": "15mm",
+    "margin_top_mm": "20mm",
+    "margin_bottom_mm": "20mm",
+    "orientation": "portrait"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "intro para",
+    "text": "seed one a=>b"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "seed one a=>b",
+    "text": "field anchor para"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "field anchor para",
+    "text": "bookmark anchor para"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "bookmark anchor para",
+    "text": "hyperlink anchor para"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "hyperlink anchor para",
+    "text": "image anchor para"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "image anchor para",
+    "text": "seal anchor para"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "seal anchor para",
+    "text": "table anchor para"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "table anchor para",
+    "text": "format anchor para"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "format anchor para",
+    "text": "doomed para"
+  },
+  {
+    "op": "replace",
+    "from": "a=>b",
+    "to": "c=d:e"
+  },
+  {
+    "op": "create_field",
+    "anchor": "field anchor para",
+    "name": "kind_field",
+    "value": "초기값"
+  },
+  {
+    "op": "set_field",
+    "name": "kind_field",
+    "value": "변경값"
+  },
+  {
+    "op": "create_bookmark",
+    "anchor": "bookmark anchor para",
+    "name": "kind_bm"
+  },
+  {
+    "op": "create_hyperlink",
+    "anchor": "hyperlink anchor para",
+    "display": "예시 링크",
+    "url": "https://example.com/kind-coverage"
+  },
+  {
+    "op": "insert_image",
+    "anchor": "image anchor para",
+    "path": "logo.png",
+    "width_mm": "20mm",
+    "height_mm": "15mm"
+  },
+  {
+    "op": "seal",
+    "anchor": "seal anchor para",
+    "path": "seal.png",
+    "size_mm": "18mm"
+  },
+  {
+    "op": "add_table",
+    "anchor": "table anchor para",
+    "rows": [
+      ["항목", "수량"],
+      ["가", "1"],
+      ["나", "2"]
+    ]
+  },
+  {
+    "op": "set_cell",
+    "table": 0,
+    "row": 1,
+    "col": 1,
+    "text": "수정값"
+  },
+  {
+    "op": "set_cell_by_label",
+    "label": "항목",
+    "text": "라벨값",
+    "table": 0
+  },
+  {
+    "op": "set_cell_para",
+    "table": 0,
+    "row": 1,
+    "col": 0,
+    "align": "center",
+    "line_spacing_pct": "160%"
+  },
+  {
+    "op": "add_row",
+    "table": 0,
+    "count": 1
+  },
+  {
+    "op": "add_col",
+    "table": 0,
+    "count": 1
+  },
+  {
+    "op": "merge_cells",
+    "table": 0,
+    "r1": 2,
+    "c1": 0,
+    "r2": 2,
+    "c2": 1
+  },
+  {
+    "op": "split_cell",
+    "table": 0,
+    "row": 2,
+    "col": 0
+  },
+  {
+    "op": "delete_row",
+    "table": 0,
+    "row": 2
+  },
+  {
+    "op": "delete_col",
+    "table": 0,
+    "col": 2
+  },
+  {
+    "op": "clone_table",
+    "source_table": 0,
+    "anchor": "format anchor para",
+    "text_mode": "keep"
+  },
+  {
+    "op": "delete_table",
+    "index": 1
+  },
+  {
+    "op": "style_tables",
+    "preset": "official"
+  },
+  {
+    "op": "set_format",
+    "pattern": "format anchor para",
+    "bold": "on",
+    "italic": "off",
+    "underline": "on",
+    "strike": "off",
+    "size": "16pt",
+    "color": "#1A2B3C"
+  },
+  {
+    "op": "set_align",
+    "pattern": "format anchor para",
+    "align": "center"
+  },
+  {
+    "op": "set_para",
+    "pattern": "format anchor para",
+    "line_spacing_pct": "160%",
+    "indent_mm": "10mm",
+    "left_mm": "0mm",
+    "right_mm": "0mm",
+    "top_mm": "2mm",
+    "bottom_mm": "2mm",
+    "align": "justify"
+  },
+  {
+    "op": "delete_image",
+    "anchor": "image anchor para"
+  },
+  {
+    "op": "delete_field",
+    "name": "kind_field"
+  },
+  {
+    "op": "delete_bookmark",
+    "name": "kind_bm"
+  },
+  {
+    "op": "delete_para",
+    "matching": "doomed para"
+  }
+]
