@@ -1,0 +1,12 @@
+[
+  {
+    "op": "insert_para",
+    "anchor": "intro",
+    "text": "seed a=>b"
+  },
+  {
+    "op": "replace",
+    "from": "a=>b",
+    "to": "c=d:e"
+  }
+]
