@@ -10,6 +10,29 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.19.1]
+
+**Changed**
+
+- The Homebrew formula speaks English. `brew install` and `brew upgrade` printed their caveats in
+  Korean and `brew info` / `brew search` showed a Korean `desc`; a tap's output is read by people
+  who never opened this repository, so both are English now. The `test do` fixture text stays
+  Korean on purpose - round-tripping a Korean document is what the binary is for
+  ([#291](https://github.com/STAIxBWLB/hwp-cli/pull/291)).
+
+**Fixed**
+
+- A release could finish green with `brew install hwp` still serving the previous version.
+  `release.yml`'s `update-formula` job opened the formula pull request, tried auto-merge, fell back
+  to an immediate merge, and on failure printed a warning and exited 0 - so an unmerged formula
+  left no failure anywhere, and the documented org-policy degrade (pull request creation refused)
+  had the same shape. This repository is the tap, so what Homebrew serves is `Formula/hwp.rb` on
+  main: the job now reads it back and requires it to name the released version, polling for five
+  minutes because auto-merge lands asynchronously, and fails with the link to the unmerged pull
+  request instead of a warning nobody reads. The happy path is unchanged - v0.19.0's formula pull
+  request was merged by the workflow 14 seconds after publish
+  ([#292](https://github.com/STAIxBWLB/hwp-cli/pull/292)).
+
 ## [0.19.0]
 
 **Added**
