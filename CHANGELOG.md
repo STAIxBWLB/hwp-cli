@@ -109,6 +109,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   closed, and the row naming the `crate-edges` gate is added
   ([#280](https://github.com/STAIxBWLB/hwp-cli/pull/280)).
 
+<!-- verification:begin -->
+**Verification**
+
+- Release-readiness run: https://github.com/STAIxBWLB/hwp-cli/actions/runs/35545933647
+- The private PDF-parity profile excludes four gates. The public one-page gate declares none
+  (docs/design/21-pdf-parity.md section 4.3), so these exclusions describe the private profile
+  only.
+- `fonts`: the document declares its dominant body face through a `substFont`, and the oracle
+  host did not have that face either, so our substitutions resolve to the same faces the oracle
+  embedded. The gate's `substitution_free` criterion is unreachable for this case by
+  construction (section 4.5).
+- `text`: 1/13 pages byte-equal; the differences are pagination, not characters. Page 4's only
+  diff is one line that crosses a page boundary (section 4.6).
+- `raster`: `bad_pixel_pct` 0.1418-0.2332, MAE 18.5-27.9, ink ratio 0.854-1.435, max abs dx/dy
+  40px (section 4.6).
+- `roi`: 3 of 4 pass; only the page-2 diagram region fails (precision 0.848, recall 0.892)
+  (section 4.6).
+- Provenance: these distances were measured by the private composite run of 2026-08-16, not by
+  the public one-page gate.
+<!-- verification:end -->
+
 ## [0.18.0]
 
 **Fixed**
