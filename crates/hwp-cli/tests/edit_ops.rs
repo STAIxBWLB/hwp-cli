@@ -670,3 +670,369 @@ fn unknown_kind_and_missing_tag() {
         );
     }
 }
+
+/// 미적용 bail 마커 접두어 (edit.rs: "적용되지 않은 편집 요청이 있습니다: {}
+/// (--allow-partial로 일치한 요청만 적용 가능)").
+const OPS_UNAPPLIED_MARKER: &str = "적용되지 않은 편집 요청이 있습니다";
+
+/// --allow-partial이 출력 전에 내보내는 미적용 경고 접두어 ("경고: 미적용 편집 요청: {request}").
+const OPS_UNAPPLIED_WARNING: &str = "미적용 편집 요청";
+
+/// set_cell 같은 표 종류 op의 apply-time 하드 abort 문구 — Err 반환으로 run 전체가
+/// 즉시 중단되며, unapplied push로 기록되지 않는다.
+fn table_missing_phrase(index: usize) -> String {
+    format!("표 #{index}를 찾을 수 없습니다")
+}
+
+const TABLE_MD: &str = "# T\n\ntable probe\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n";
+
+/// A base document carrying one markdown table (GFM import styles it at import
+/// time — the publish-guard re-styling probes below rely on that).
+fn table_base_for(name: &str) -> (PathBuf, PathBuf) {
+    let dir = test_dir(name);
+    let md = dir.join("doc.md");
+    std::fs::write(&md, TABLE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    (dir, base)
+}
+
+/// Layered failure semantics, layer 1 (D-03/D-04): a set_cell whose table index
+/// matches no table is an apply-time hard abort, not an unapplied entry. The
+/// default run exits nonzero with the 표 #N를 찾을 수 없습니다 abort and writes
+/// nothing; --allow-partial does NOT rescue it — the flag only downgrades unapplied
+/// pushes, and a table-kind target miss never becomes one. Verified deviation from
+/// the assigned expectation (unapplied bail marker / per-op warning): the bail layer
+/// sits after apply, and set_cell errors through `?` before ever reaching it. The
+/// unapplied layers themselves are exercised by unapplied_partial_semantics.
+#[test]
+fn layered_failure_semantics() {
+    let (dir, base) = new_base_for("layered-failure");
+    let ops = dir.join("ops.json");
+    std::fs::write(&ops, r#"[{"op":"set_cell","table":0,"row":0,"col":0,"text":"x"}]"#).unwrap();
+
+    let modes: [(&str, Vec<&str>); 2] =
+        [("default", Vec::new()), ("allow-partial", vec!["--allow-partial"])];
+    for (name, extra) in modes {
+        let output = dir.join(format!("{name}.out.hwpx"));
+        let report = hwp()
+            .arg("edit")
+            .arg(&base)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&ops)
+            .args(&extra)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&report.stderr);
+        assert!(
+            !report.status.success(),
+            "layer-1 target-miss ({name}) must exit nonzero: {stderr}"
+        );
+        assert!(
+            stderr.contains(table_missing_phrase(0).as_str()),
+            "layer-1 target-miss ({name}) must abort with the table-missing phrase: {stderr}"
+        );
+        assert!(
+            !stderr.contains(OPS_UNAPPLIED_MARKER),
+            "the unapplied bail layer must not fire for an apply-time abort ({name}): {stderr}"
+        );
+        assert!(
+            !output.exists(),
+            "layer-1 target-miss ({name}) must not produce an output file"
+        );
+    }
+}
+
+/// Layered failure semantics, layers 2-3 (D-05/D-06): the unapplied bail names the
+/// failing request; --allow-partial publishes the edits that DID apply, in array
+/// order, with a warning about the skipped one. The assigned fragment
+/// set_cell(table=5) actually aborts in BOTH modes (layer-1 hard abort, see
+/// layered_failure_semantics — verified deviation), so the order-holding demo pairs
+/// set_meta(title) with a second op whose target miss is an unapplied push (replace
+/// of an absent string): default exits nonzero naming that second op, and
+/// --allow-partial publishes with set_meta's title reread from the output, proving
+/// the first op applied even though the second failed.
+#[test]
+fn unapplied_partial_semantics() {
+    let (dir, base) = table_base_for("unapplied-partial");
+
+    // The assigned fragment: set_cell on a missing table aborts in both modes.
+    let cell_ops = dir.join("cell-ops.json");
+    std::fs::write(
+        &cell_ops,
+        r#"[{"op":"set_meta","key":"title","value":"partial-order"},{"op":"set_cell","table":5,"row":0,"col":0,"text":"x"}]"#,
+    )
+    .unwrap();
+    let modes: [(&str, Vec<&str>); 2] =
+        [("default", Vec::new()), ("allow-partial", vec!["--allow-partial"])];
+    for (name, extra) in modes {
+        let output = dir.join(format!("cell-{name}.out.hwpx"));
+        let report = hwp()
+            .arg("edit")
+            .arg(&base)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&cell_ops)
+            .args(&extra)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&report.stderr);
+        assert!(
+            !report.status.success(),
+            "set_cell(table=5) ({name}) must exit nonzero even with --allow-partial: {stderr}"
+        );
+        assert!(
+            stderr.contains(table_missing_phrase(5).as_str()),
+            "set_cell(table=5) ({name}) must abort at apply time: {stderr}"
+        );
+        assert!(
+            !output.exists(),
+            "set_cell(table=5) ({name}) must not produce an output file"
+        );
+    }
+
+    // The unapplied-push demo: a replace whose target string is absent is recorded
+    // unapplied instead of aborting.
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_meta","key":"title","value":"partial-order"},{"op":"replace","from":"absent-string","to":"replacement"}]"#,
+    )
+    .unwrap();
+
+    let default_out = dir.join("default.out.hwpx");
+    let report = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&default_out)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        !report.status.success(),
+        "the default run must bail on the unapplied second op: {stderr}"
+    );
+    assert!(
+        stderr.contains(OPS_UNAPPLIED_MARKER),
+        "the bail must carry the unapplied marker: {stderr}"
+    );
+    assert!(
+        stderr.contains(r#"replace from="absent-string" to="replacement""#),
+        "the bail must name the second op: {stderr}"
+    );
+    assert!(
+        !default_out.exists(),
+        "the unapplied bail must not produce an output file"
+    );
+
+    let partial_out = dir.join("partial.out.hwpx");
+    let report = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&partial_out)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--allow-partial")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        report.status.success(),
+        "--allow-partial must publish the matched edits: {stderr}"
+    );
+    assert!(
+        stderr.contains(OPS_UNAPPLIED_WARNING) && stderr.contains("absent-string"),
+        "the run must warn about the skipped second op: {stderr}"
+    );
+    let info = hwp()
+        .args(["info", "--json"])
+        .arg(&partial_out)
+        .output()
+        .unwrap();
+    let info: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&info.stdout)).expect("hwp info --json must parse");
+    assert_eq!(
+        info["metadata"]["title"], "partial-order",
+        "array order must hold: set_meta applied even though the following op failed"
+    );
+}
+
+/// D-08's re-styling exemption through the typed channel: style_tables-only ops on
+/// a document whose GFM table is styled at import time produce zero edits and are
+/// still published — the generic "no visible effect" publish guard exempts
+/// style_tables, so the run exits 0 with the 이미 적용되어 있습니다 no-op note.
+/// Re-running the same ops on that output stays exit 0 and byte-identical (D-08's
+/// byte-stability on a second run). The exemption is style_tables-specific: the
+/// same --allow-partial with a replace that matched nothing is still refused by the
+/// publish guard (verified probe).
+#[test]
+fn publish_guard_styletables_noop() {
+    let (dir, base) = table_base_for("styletables-noop");
+    let ops = dir.join("ops.json");
+    std::fs::write(&ops, r#"[{"op":"style_tables","preset":"official"}]"#).unwrap();
+
+    let run = |input: &Path, out: &Path| {
+        hwp()
+            .arg("edit")
+            .arg(input)
+            .arg("-o")
+            .arg(out)
+            .arg("--ops")
+            .arg(&ops)
+            .output()
+            .unwrap()
+    };
+    let run1_out = dir.join("run1.hwpx");
+    let run1 = run(&base, &run1_out);
+    let stderr1 = String::from_utf8_lossy(&run1.stderr);
+    assert!(
+        run1.status.success(),
+        "style_tables-only ops must publish despite zero non-style edits: {stderr1}"
+    );
+    assert!(
+        stderr1.contains("이미 적용되어 있습니다"),
+        "the GFM table is styled at import time, so run 1 is a recorded no-op: {stderr1}"
+    );
+    assert!(run1_out.exists(), "run 1 must publish an output document");
+
+    let run2_out = dir.join("run2.hwpx");
+    let run2 = run(&run1_out, &run2_out);
+    let stderr2 = String::from_utf8_lossy(&run2.stderr);
+    assert!(
+        run2.status.success(),
+        "the second style_tables run must stay exit 0: {stderr2}"
+    );
+    assert!(
+        stderr2.contains("이미 적용되어 있습니다"),
+        "the second run must record the same no-op note: {stderr2}"
+    );
+    assert_bytes_eq(&run1_out, &run2_out, "style_tables re-run must be byte-stable");
+
+    // The exemption is style_tables-specific: the same flag with a replace-only,
+    // nothing-matched plan is still refused by the publish guard.
+    let replace_ops = dir.join("replace-ops.json");
+    std::fs::write(
+        &replace_ops,
+        r#"[{"op":"replace","from":"absent-string","to":"replacement"}]"#,
+    )
+    .unwrap();
+    let refused = dir.join("refused.out.hwpx");
+    let report = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&refused)
+        .arg("--ops")
+        .arg(&replace_ops)
+        .arg("--allow-partial")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        !report.status.success(),
+        "a zero-edit replace plan must not be rescued by --allow-partial: {stderr}"
+    );
+    assert!(
+        stderr.contains("게시하지 않습니다"),
+        "the publish guard must refuse to publish a zero-edit replace plan: {stderr}"
+    );
+    assert!(
+        !refused.exists(),
+        "a refused plan must not produce an output file"
+    );
+}
+
+/// The verified error-phrase vocabulary for value-level constraints (D-09 fold-in):
+/// each malformed value exits nonzero with its Korean phrase, and which gate fired
+/// was verified by trial drive. (a) insert_image's paired-mm rule and (b) add_row's
+/// count lower bound are parser-level (the schema cannot encode them — usize min is
+/// 0 and units are free strings), so the into_typed phrases fire. (c) set_format's
+/// color and (d) clone_table's text_mode are SCHEMA enums, so the schema gate fires
+/// before the parser phrases ever could. (e) a % size passes the schema's free-form
+/// unit string and is rejected by the parser's pt/mm rule. Rejection tests never
+/// mutate: the one-paragraph base is enough and no output file may appear.
+#[test]
+fn value_vocabulary() {
+    let (dir, base) = new_base_for("value-vocabulary");
+    for (name, body, expected) in [
+        (
+            "insert-image-paired-mm",
+            r#"[{"op":"insert_image","anchor":"plain","path":"x.png","width_mm":"20mm"}]"#,
+            "insert_image는 유한한 width_mm와 height_mm를 함께 지정해야 합니다",
+        ),
+        (
+            "add-row-count-zero",
+            r#"[{"op":"add_row","table":0,"count":0}]"#,
+            "add_row: count는 1 이상이어야 합니다",
+        ),
+        (
+            "set-format-color",
+            r#"[{"op":"set_format","pattern":"plain","color":"not-a-color"}]"#,
+            OPS_SCHEMA_MARKER,
+        ),
+        (
+            "clone-table-text-mode",
+            r#"[{"op":"clone_table","source_table":0,"anchor":"plain","text_mode":"bogus"}]"#,
+            OPS_SCHEMA_MARKER,
+        ),
+        (
+            "set-format-size-percent",
+            r#"[{"op":"set_format","pattern":"plain","size":"50%"}]"#,
+            "크기 값은 pt 또는 mm 단위여야 합니다: \"50%\" (%는 절대 pt 기준이 없습니다)",
+        ),
+    ] {
+        let ops = dir.join(format!("{name}.json"));
+        std::fs::write(&ops, body).unwrap();
+        let output = dir.join(format!("{name}.out.hwpx"));
+        let report = hwp()
+            .arg("edit")
+            .arg(&base)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&ops)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&report.stderr);
+        assert!(
+            !report.status.success(),
+            "malformed value {name} must exit nonzero: {stderr}"
+        );
+        assert!(
+            stderr.contains(expected),
+            "malformed value {name} must carry its verified phrase: {stderr}"
+        );
+        assert!(
+            !output.exists(),
+            "malformed value {name} must not produce an output file"
+        );
+    }
+}
+
+/// The edit-ops-v1 contract is pinned by content hash (D-16), mirroring the
+/// document-spec-v1 pin in document_spec.rs: any schema edit — even a description
+/// tweak — must consciously update this constant. The schema is the shared contract
+/// for `hwp edit --ops` and the MCP edit tool's ops channel.
+#[test]
+fn schema_hash_frozen() {
+    use sha2::{Digest, Sha256};
+
+    let digest: [u8; 32] =
+        Sha256::digest(include_bytes!("../../../schemas/edit-ops-v1.schema.json")).into();
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        actual,
+        "8fb42a96f75e1473df1ee20af1f3a65315906f3e3f4c7366530cce474a27c937",
+        "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
+    );
+}
