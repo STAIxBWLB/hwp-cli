@@ -259,3 +259,31 @@ jobs:
             gh pr merge --squash "$branch" \
               || echo "::warning::merge the formula PR manually: https://github.com/$GITHUB_REPOSITORY/compare/main...$branch"
           fi
+
+      # The step above used to end on a warning and exit 0 whether or not the formula actually
+      # moved, so a release could finish green with `brew install hwp` still serving the previous
+      # version and nothing failing. This repository IS the tap, so what Homebrew serves is
+      # Formula/hwp.rb on main - read it back and require it to name the released version.
+      # Auto-merge is asynchronous (it lands once the PR's checks settle), hence the wait rather
+      # than a single read.
+      - name: The tap serves the released version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          for attempt in $(seq 1 30); do
+            served="$(gh api "repos/$GITHUB_REPOSITORY/contents/Formula/hwp.rb?ref=main" \
+              --jq '.content' | base64 -d \
+              | sed -n 's/^[[:space:]]*version "\([^"]*\)".*/\1/p' | head -1)"
+            if [ "$served" = "$ver" ]; then
+              echo "Formula/hwp.rb on main serves $served (attempt $attempt)"
+              exit 0
+            fi
+            echo "attempt $attempt: main still serves '${served:-<unreadable>}', want '$ver'"
+            sleep 10
+          done
+          echo "::error::the tap still serves '${served:-<unreadable>}' after the release of v$ver."
+          echo "::error::brew install/upgrade hwp would hand users the previous version."
+          echo "::error::merge the formula PR: https://github.com/$GITHUB_REPOSITORY/pulls"
+          exit 1
