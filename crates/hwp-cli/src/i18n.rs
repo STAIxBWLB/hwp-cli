@@ -660,6 +660,11 @@ pub const KO: &[(&str, &str, &str)] = &[
         "allow_partial",
         "일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패)",
     ),
+    (
+        "edit",
+        "ops",
+        "편집 연산 JSON 파일(edit-ops-v1 배열)로 일괄 적용 (\"-\"는 표준 입력; 개별 편집 플래그와 함께 쓸 수 없음)",
+    ),
     // fields / bookmarks / slots
     ("fields", "", "필드/누름틀 목록 표시 (이름·종류·값)"),
     ("fields", "file", "대상 HWP/HWPX 파일"),

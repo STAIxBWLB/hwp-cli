@@ -248,6 +248,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 |---|---|---|---|
 | `<INPUT>` |  |  | Input HWP/HWPX file |
 | `-o, --output` | `<OUTPUT>` |  | Output file path |
+| `--ops` | `<FILE>` |  | Apply typed edit operations from a JSON file holding an edit-ops-v1 array ("-" reads stdin). The file's string payloads are taken as data, so "=>", "=", ":" and "@" inside them are kept verbatim instead of being parsed as CLI separators. Mutually exclusive with the individual edit flags |
 | `--replace` | `<REPLACE>` |  | Replace text, "find=>replace" (repeatable; replaces every match) |
 | `--set-cell` | `<SET_CELL>` |  | Set a table cell, "table:row:col=value" (repeatable; 0-based indices) |
 | `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | Fill the value cell immediately right of a form label, "label=value" (repeatable) |

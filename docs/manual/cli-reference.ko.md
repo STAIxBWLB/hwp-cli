@@ -248,6 +248,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 |---|---|---|---|
 | `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
 | `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
+| `--ops` | `<FILE>` |  | 편집 연산 JSON 파일(edit-ops-v1 배열)로 일괄 적용 ("-"는 표준 입력; 개별 편집 플래그와 함께 쓸 수 없음) |
 | `--replace` | `<REPLACE>` |  | 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환) |
 | `--set-cell` | `<SET_CELL>` |  | 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스) |
 | `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | 양식 레이블의 값 셀 설정 "레이블=값" (반복 가능, 정확 일치) |
