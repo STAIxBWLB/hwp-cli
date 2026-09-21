@@ -1036,3 +1036,219 @@ fn schema_hash_frozen() {
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
+
+use std::io::Write as _;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// stdin 편집 완료 마커 접두어 (edit.rs: "편집 완료: {input} → {output}").
+const STDIN_DONE_MARKER: &str = "편집 완료:";
+
+/// read_bounded가 상한 초과 입력에 내보내는 bail 문구 (edit_ops.rs: cap =
+/// MAX_OPS_BYTES = 16 MiB가 십진 포맷으로 그대로 들어간다).
+const OPS_SIZE_LIMIT_MARKER: &str = "입력이 크기 제한(16777216바이트)을 초과했습니다";
+
+/// read_bounded가 읽기 실패(non-UTF-8 포함)에 내보내는 오류 접두어
+/// ("편집 연산 입력을 읽을 수 없습니다: {error}").
+const OPS_READ_ERROR_MARKER: &str = "편집 연산 입력을 읽을 수 없습니다";
+
+/// MAX_OPS_BYTES (edit_ops.rs) — integration tests cannot see pub(crate) consts.
+const MAX_OPS_BYTES: usize = 16 * 1024 * 1024;
+
+/// `hwp edit <doc> -o <out> --ops -`를 stdin 파이프로 스폰한다 (CLI argv 표기:
+/// stdin은 `-`로만 쓴다 — `--ops-stdin` 플래그는 존재하지 않는다).
+fn spawn_edit_stdin(base: &Path, out: &Path) -> std::process::Child {
+    hwp()
+        .arg("edit")
+        .arg(base)
+        .arg("-o")
+        .arg(out)
+        .arg("--ops")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hwp edit --ops -")
+}
+
+/// payload를 stdin에 기록하고 자식 종료를 수거한다. 자식이 상한 초과 등으로 조기
+/// 종료하면 남은 쓰기는 BrokenPipe — 허용하고 계속한다. 자식이 읽지 않아 부모가
+/// 영원히 막히는 회귀는 워치독이 grace 후 자식을 kill해 최악에도 테스트 실패로
+/// 전환한다 (D-16 no-hang guard).
+fn feed_stdin_and_collect(
+    mut child: std::process::Child,
+    payload: &[u8],
+    grace_secs: u64,
+) -> std::process::Output {
+    let done = Arc::new(AtomicBool::new(false));
+    let pid = child.id();
+    let watchdog_flag = Arc::clone(&done);
+    std::thread::spawn(move || {
+        for _ in 0..grace_secs {
+            if watchdog_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        if !watchdog_flag.load(Ordering::Relaxed) {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
+    });
+
+    let mut stdin = child.stdin.take().expect("stdin must be piped");
+    if let Err(error) = stdin.write_all(payload) {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "stdin write failed unexpectedly: {error}"
+        );
+    }
+    drop(stdin);
+    let output = child.wait_with_output().expect("collect hwp edit output");
+    done.store(true, Ordering::Relaxed);
+    output
+}
+
+/// The committed stdin fragment piped through `--ops -` is lossless end to end
+/// (D-05): insert_para seeds "seed a=>b" after the "intro" anchor, replace rewrites
+/// it to "seed c=d:e", and the run exits 0 with the 편집 완료 marker and no
+/// unapplied note. The notation is pinned too: `hwp edit --help` lists `--ops
+/// <FILE>` and there is no `--ops-stdin` flag — stdin is spelled `--ops -`.
+#[test]
+fn stdin_roundtrip_lossless() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/edit-ops/stdin-fragment.json");
+    assert!(fixture.exists(), "stdin fixture missing: {}", fixture.display());
+    let payload = std::fs::read(&fixture).unwrap();
+
+    let dir = test_dir("stdin-roundtrip");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# T\n\nintro\n\n").unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let out = dir.join("out.hwpx");
+    let child = spawn_edit_stdin(&base, &out);
+    let report = feed_stdin_and_collect(child, &payload, 60);
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        report.status.success(),
+        "hwp edit --ops - via stdin must succeed: {stderr}"
+    );
+    assert!(
+        stderr.contains(STDIN_DONE_MARKER),
+        "the stdin run must carry the success marker: {stderr}"
+    );
+    assert!(
+        !stderr.contains(OPS_UNAPPLIED_MARKER),
+        "the stdin run must not report unapplied edits: {stderr}"
+    );
+    assert!(out.exists(), "the stdin run must publish an output document");
+
+    let doc = hwpx::read_document(&out).unwrap().document;
+    let texts: Vec<String> = doc
+        .sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .map(|paragraph| paragraph.plain_text())
+        .collect();
+    assert!(
+        texts.iter().any(|text| text == "seed c=d:e"),
+        "the seeded insert plus replace must land as exactly seed c=d:e, got {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text.contains("a=>b")),
+        "the pre-replace payload must be fully rewritten, got {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "intro"),
+        "the anchor paragraph must survive, got {texts:?}"
+    );
+
+    // CLI 표기 고정: stdin은 `--ops -`로만 쓴다.
+    let help = hwp().args(["edit", "--help"]).output().unwrap();
+    let help_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+    assert!(
+        help_text.contains("--ops <FILE>"),
+        "hwp edit --help must list --ops <FILE>: {help_text}"
+    );
+    assert!(
+        !help_text.contains("--ops-stdin"),
+        "there is no --ops-stdin flag; stdin is spelled --ops -: {help_text}"
+    );
+}
+
+/// stdin input limits (D-02/D-16): (a) stdin over the 16 MiB cap terminates the
+/// process on its own (never a hang — the watchdog caps the wait and a signal kill
+/// fails the assert) with the size-limit phrase and no output file, and (b)
+/// non-UTF-8 stdin surfaces the read-error phrase instead of panicking. The
+/// oversized payload deliberately exceeds the cap+1 the child reads, so the tail
+/// write may hit a broken pipe — tolerated by the helper per the early-exit contract.
+#[test]
+fn stdin_limits() {
+    let dir = test_dir("stdin-limits");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# T\n\nlimits probe\n\n").unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    // (a) 16 MiB 상한 초과 stdin.
+    let mut payload = b"[".to_vec();
+    payload.extend(vec![b'x'; MAX_OPS_BYTES + 65536 - payload.len() - 1]);
+    payload.push(b']');
+    assert!(
+        payload.len() > MAX_OPS_BYTES,
+        "the oversized payload must exceed the cap"
+    );
+    let out = dir.join("oversized.out.hwpx");
+    let child = spawn_edit_stdin(&base, &out);
+    let report = feed_stdin_and_collect(child, &payload, 60);
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        !report.status.success(),
+        "oversized stdin must exit nonzero: {stderr}"
+    );
+    assert!(
+        report.status.code().is_some(),
+        "the process must terminate on its own, not be killed by a signal: {:?}",
+        report.status
+    );
+    assert!(
+        stderr.contains(OPS_SIZE_LIMIT_MARKER),
+        "oversized stdin must carry the size-limit phrase: {stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "oversized stdin must not produce an output file"
+    );
+
+    // (b) non-UTF-8 stdin — 패닉 없이 읽기 오류로 표면화.
+    let payload: Vec<u8> = [0xFF, 0xFE, 0x00, 0x01].repeat(1024);
+    let out = dir.join("bad-utf8.out.hwpx");
+    let child = spawn_edit_stdin(&base, &out);
+    let report = feed_stdin_and_collect(child, &payload, 60);
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        !report.status.success(),
+        "non-UTF-8 stdin must exit nonzero: {stderr}"
+    );
+    assert!(
+        stderr.contains(OPS_READ_ERROR_MARKER),
+        "non-UTF-8 stdin must surface the read-error phrase: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "non-UTF-8 input must never panic the child: {stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "non-UTF-8 stdin must not produce an output file"
+    );
+}
