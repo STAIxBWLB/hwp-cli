@@ -440,3 +440,233 @@ fn kind_coverage_all_30() {
         "insert_image and seal must ship their image parts in the package"
     );
 }
+
+/// load_ops가 스키마 위반을 만날 때 내보내는 bail 마커 접두어
+/// ("편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {instance_path}: {error}").
+const OPS_SCHEMA_MARKER: &str = "편집 연산이 edit-ops-v1 스키마를 벗어났습니다";
+
+const SHAPE_REJECT_MD: &str = "# T\n\nshape rejection probe\n";
+
+/// Rejection tests never reach mutation, so a one-paragraph doc is enough; each
+/// test synthesizes its own base document via `hwp new --from`.
+fn new_base_for(name: &str) -> (PathBuf, PathBuf) {
+    let dir = test_dir(name);
+    let md = dir.join("doc.md");
+    std::fs::write(&md, SHAPE_REJECT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    (dir, base)
+}
+
+/// Every named malformed fragment in the committed malformed-variants fixture must
+/// bail through the edit-ops-v1 schema gate: exit nonzero, the schema-violation
+/// marker on stderr, and no output file (D-01/D-02/D-09, D-10 MCP parity: the MCP
+/// edit tool feeds the same ops channel, so argv-only shapes must never slip
+/// through). The trailing variant pins the channel boundary itself: set_format's
+/// switch fields take structured values, not the CLI mini-language, so an ops file
+/// carrying an argv string like "bold=on,size=16" is a schema violation, never a
+/// silently applied format.
+#[test]
+fn ops_shape_rejections() {
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/edit-ops/malformed-variants.json");
+    assert!(
+        fixture_path.exists(),
+        "malformed-variants fixture missing: {}",
+        fixture_path.display()
+    );
+    let variants: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&fixture_path).unwrap())
+            .expect("malformed-variants fixture must parse as JSON");
+    let variants = variants
+        .as_object()
+        .expect("malformed-variants fixture must be an object keyed by variant name");
+    assert!(
+        !variants.is_empty(),
+        "malformed-variants fixture must name at least one fragment"
+    );
+
+    let (dir, base) = new_base_for("shape-reject");
+    for (name, fragment) in variants {
+        let ops = dir.join(format!("{name}.json"));
+        std::fs::write(&ops, serde_json::to_string(fragment).unwrap()).unwrap();
+        let output = dir.join(format!("{name}.out.hwpx"));
+        let report = hwp()
+            .arg("edit")
+            .arg(&base)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&ops)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&report.stderr);
+        assert!(
+            !report.status.success(),
+            "malformed variant {name} must exit nonzero: {stderr}"
+        );
+        assert!(
+            stderr.contains(OPS_SCHEMA_MARKER),
+            "malformed variant {name} must bail with the schema-violation marker: {stderr}"
+        );
+        assert!(
+            !output.exists(),
+            "malformed variant {name} must not produce an output file"
+        );
+    }
+
+    // The ops channel takes structured objects, not argv strings: a mini-language
+    // value in a typed switch field is a schema violation and must never be applied.
+    let ops = dir.join("mini-language.json");
+    std::fs::write(
+        &ops,
+        r#"{"op":"set_format","pattern":"p","bold":"bold=on,size=16"}"#,
+    )
+    .unwrap();
+    let output = dir.join("mini-language.out.hwpx");
+    let report = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        !report.status.success(),
+        "mini-language ops value must exit nonzero: {stderr}"
+    );
+    assert!(
+        stderr.contains(OPS_SCHEMA_MARKER),
+        "mini-language ops value must trip the schema gate (switch fields are typed): {stderr}"
+    );
+    assert!(
+        !output.exists(),
+        "mini-language ops value must not produce an output file"
+    );
+}
+
+/// `--ops` and `--replace` are exclusive invocation modes (D-07/D-08): passing both
+/// must exit nonzero with an error that names both flags and must not write an
+/// output document, and `hwp edit --help` must document `--ops` so the exclusive
+/// modes are discoverable.
+#[test]
+fn mixed_invocation_conflict() {
+    let (dir, base) = new_base_for("mixed-conflict");
+    let ops = dir.join("ops.json");
+    std::fs::write(&ops, r#"[{"op":"replace","from":"probe","to":"probe2"}]"#).unwrap();
+    let output = dir.join("out.hwpx");
+    let report = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--replace")
+        .arg("a=>b")
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&report.stdout),
+        String::from_utf8_lossy(&report.stderr)
+    );
+    assert!(
+        !report.status.success(),
+        "--ops plus --replace must conflict and exit nonzero: {combined}"
+    );
+    assert!(
+        combined.contains("--ops") && combined.contains("--replace"),
+        "the conflict error must name both flags: {combined}"
+    );
+    assert!(
+        !output.exists(),
+        "a conflicting invocation must not produce an output file"
+    );
+
+    let help = hwp().args(["edit", "--help"]).output().unwrap();
+    let help_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+    assert!(
+        help_text.contains("--ops"),
+        "hwp edit --help must document --ops: {help_text}"
+    );
+}
+
+/// An empty ops array is a schema violation, not a silent no-op (D-13/D-14): the
+/// root schema demands minItems 1, so `--ops []` must exit nonzero with the
+/// schema-violation marker and write nothing.
+#[test]
+fn empty_array_rejected() {
+    let (dir, base) = new_base_for("empty-array");
+    let ops = dir.join("empty.json");
+    std::fs::write(&ops, "[]").unwrap();
+    let output = dir.join("out.hwpx");
+    let report = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        !report.status.success(),
+        "an empty ops array must exit nonzero: {stderr}"
+    );
+    assert!(
+        stderr.contains(OPS_SCHEMA_MARKER),
+        "an empty ops array must trip the minItems schema gate: {stderr}"
+    );
+    assert!(
+        !output.exists(),
+        "an empty ops array must not produce an output file"
+    );
+}
+
+/// Unknown op kinds and entries without an op tag are schema violations
+/// (D-15/D-16): the per-kind oneOf matches no variant for "foo" and nothing at all
+/// for an untagged {}, so both must exit nonzero with the schema-violation marker
+/// and write nothing.
+#[test]
+fn unknown_kind_and_missing_tag() {
+    let (dir, base) = new_base_for("unknown-missing");
+    for (name, body) in [
+        ("unknown-kind", r#"[{"op":"foo"}]"#),
+        ("missing-tag", r#"[{}]"#),
+    ] {
+        let ops = dir.join(format!("{name}.json"));
+        std::fs::write(&ops, body).unwrap();
+        let output = dir.join(format!("{name}.out.hwpx"));
+        let report = hwp()
+            .arg("edit")
+            .arg(&base)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&ops)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&report.stderr);
+        assert!(
+            !report.status.success(),
+            "{name} ops fragment must exit nonzero: {stderr}"
+        );
+        assert!(
+            stderr.contains(OPS_SCHEMA_MARKER),
+            "{name} ops fragment must bail with the schema-violation marker: {stderr}"
+        );
+        assert!(
+            !output.exists(),
+            "{name} ops fragment must not produce an output file"
+        );
+    }
+}
