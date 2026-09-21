@@ -1,14 +1,17 @@
-# Homebrew formula — 저장소 자체가 tap 이다(별도 homebrew-* 저장소 없음).
+# Homebrew formula - this repository is the tap itself (there is no separate homebrew-* repo).
 #
 #   brew tap staixbwlb/hwp https://github.com/STAIxBWLB/hwp-cli
 #   brew install hwp
 #
-# 릴리스 아카이브(사전 빌드 바이너리)를 받아 설치하므로 Rust 툴체인이 필요 없다.
-# version/sha256 은 태그 푸시 때 release.yml 의 update-formula 잡이 자동 갱신한다
-# (손으로 고치지 말 것 — 다음 릴리스에서 덮어써진다).
+# It installs a prebuilt binary from the release archive, so no Rust toolchain is needed.
+# `version` and every `sha256` are rewritten by release.yml's update-formula job on a tag push
+# (do not edit them by hand - the next release overwrites them).
+#
+# The user-facing strings here (desc, caveats) are English: they are what Homebrew prints during
+# install and upgrade, and a tap's output is read by people who never opened this repository.
 class Hwp < Formula
-  # brew style: desc 는 formula 이름(hwp)으로 시작하면 안 된다.
-  desc "한글 문서(HWP 5.0·HWPX) 읽기·변환·렌더·편집 단일 바이너리"
+  # brew style: desc must not begin with the formula name (hwp).
+  desc "Read, convert, render and edit Hangul HWP 5.0 and HWPX documents"
   homepage "https://github.com/STAIxBWLB/hwp-cli"
   version "0.19.0"
   license any_of: ["MIT", "Apache-2.0"]
@@ -37,17 +40,18 @@ class Hwp < Formula
 
   def caveats
     <<~EOS
-      렌더링(render/convert -o *.pdf|png)에는 CJK 폰트가 필요하다:
+      Rendering (render/convert -o *.pdf|png) needs a CJK font:
         brew install --cask font-noto-sans-cjk-kr
-      또는 함초롬 폰트 디렉터리를 지정한다:
-        hwp render doc.hwp -o out.png --font-dir <폰트디렉터리>
-        HWP_FONT_DIR=<폰트디렉터리> hwp convert doc.hwp -o out.pdf
-      텍스트 추출·포맷 변환(cat/convert -o *.md|hwpx|json)은 폰트 없이 동작한다.
+      Or point at a Hamchorom font directory:
+        hwp render doc.hwp -o out.png --font-dir <font-dir>
+        HWP_FONT_DIR=<font-dir> hwp convert doc.hwp -o out.pdf
+      Text extraction and format conversion (cat/convert -o *.md|hwpx|json) need no fonts.
     EOS
   end
 
   test do
-    # 버전 출력 + 실제 문서 생성/재읽기까지 확인한다(바이너리만 놓고 통과하지 않게).
+    # Version output plus a real create/re-read round trip, so the test cannot pass on a binary
+    # that merely exists. The fixture text stays Korean: handling it is what this tool is for.
     assert_match version.to_s, shell_output("#{bin}/hwp --version")
     (testpath/"t.md").write("# 제목\n\n본문입니다.\n")
     system bin/"hwp", "new", "--from", testpath/"t.md", "-o", testpath/"t.hwpx"
