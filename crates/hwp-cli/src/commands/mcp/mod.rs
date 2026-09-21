@@ -15,6 +15,8 @@ pub use http::serve;
 pub use stdio::run;
 
 use authority::{checked_read_path, checked_write_path, font_dirs_for};
+// edit-ops 변환 계층(edit_ops.rs)이 insert_image/seal 경로 검사를 이 모듈과 공유한다 (D-10).
+pub(crate) use authority::checked_cli_read_path;
 
 use std::path::{Path, PathBuf};
 

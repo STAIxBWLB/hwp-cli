@@ -1,0 +1,420 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/edit-ops-v1.schema.json",
+  "title": "hwp-cli EditOps v1",
+  "description": "Contract for `hwp edit --ops <file.json>`: a flat, ordered array of typed edit operations, applied in order. Shape-only: exactly-one selectors, paired image sizes, count >= 1, and non-empty strings are enforced by the parser after this schema passes.",
+  "type": "array",
+  "minItems": 1,
+  "maxItems": 10000,
+  "items": { "$ref": "#/$defs/editOp" },
+  "$defs": {
+    "unit": { "type": "string", "pattern": "^\\d+(\\.\\d+)?(mm|pt|%)$" },
+    "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+    "switch": { "type": "string", "enum": ["on", "off"] },
+    "align": {
+      "type": "string",
+      "enum": [
+        "left",
+        "right",
+        "center",
+        "justify",
+        "both",
+        "distribute",
+        "divide",
+        "왼쪽",
+        "오른쪽",
+        "가운데",
+        "양쪽",
+        "배분",
+        "나눔"
+      ]
+    },
+    "orientation": {
+      "type": "string",
+      "enum": ["portrait", "landscape", "가로", "세로"]
+    },
+    "preset": {
+      "type": "string",
+      "enum": [
+        "official",
+        "gian",
+        "gongmun",
+        "report",
+        "bogoseo",
+        "plan",
+        "notice",
+        "minutes",
+        "press",
+        "기안",
+        "기안문",
+        "공문",
+        "공문서",
+        "보고",
+        "보고서",
+        "계획",
+        "계획서",
+        "사업계획",
+        "사업계획서",
+        "공고",
+        "공고문",
+        "고시",
+        "회의록",
+        "회의기록",
+        "보도",
+        "보도자료"
+      ]
+    },
+    "u16": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "usize": { "type": "integer", "minimum": 0 },
+    "editOp": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "from", "to"],
+          "properties": {
+            "op": { "const": "replace" },
+            "from": { "type": "string" },
+            "to": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table", "row", "col", "text"],
+          "properties": {
+            "op": { "const": "set_cell" },
+            "table": { "$ref": "#/$defs/usize" },
+            "row": { "$ref": "#/$defs/u16" },
+            "col": { "$ref": "#/$defs/u16" },
+            "text": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "label", "text"],
+          "properties": {
+            "op": { "const": "set_cell_by_label" },
+            "label": { "type": "string" },
+            "text": { "type": "string" },
+            "table": { "$ref": "#/$defs/usize" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor", "name"],
+          "properties": {
+            "op": { "const": "create_field" },
+            "anchor": { "type": "string" },
+            "name": { "type": "string" },
+            "value": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor", "name"],
+          "properties": {
+            "op": { "const": "create_bookmark" },
+            "anchor": { "type": "string" },
+            "name": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor", "url"],
+          "properties": {
+            "op": { "const": "create_hyperlink" },
+            "anchor": { "type": "string" },
+            "display": { "type": "string" },
+            "url": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor", "path"],
+          "description": "width_mm and height_mm are individually optional but must be given together (parser-enforced).",
+          "properties": {
+            "op": { "const": "insert_image" },
+            "anchor": { "type": "string" },
+            "path": { "type": "string" },
+            "width_mm": { "$ref": "#/$defs/unit" },
+            "height_mm": { "$ref": "#/$defs/unit" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor", "path"],
+          "properties": {
+            "op": { "const": "seal" },
+            "anchor": { "type": "string" },
+            "path": { "type": "string" },
+            "size_mm": { "$ref": "#/$defs/unit" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "name", "value"],
+          "properties": {
+            "op": { "const": "set_field" },
+            "name": { "type": "string" },
+            "value": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "key", "value"],
+          "properties": {
+            "op": { "const": "set_meta" },
+            "key": { "type": "string" },
+            "value": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "pattern"],
+          "properties": {
+            "op": { "const": "set_format" },
+            "pattern": { "type": "string" },
+            "bold": { "$ref": "#/$defs/switch" },
+            "italic": { "$ref": "#/$defs/switch" },
+            "underline": { "$ref": "#/$defs/switch" },
+            "strike": { "$ref": "#/$defs/switch" },
+            "size": { "$ref": "#/$defs/unit" },
+            "color": { "$ref": "#/$defs/color" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "pattern", "align"],
+          "properties": {
+            "op": { "const": "set_align" },
+            "pattern": { "type": "string" },
+            "align": { "$ref": "#/$defs/align" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor", "text"],
+          "properties": {
+            "op": { "const": "insert_para" },
+            "anchor": { "type": "string" },
+            "text": { "type": "string" },
+            "before": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "matching"],
+          "properties": {
+            "op": { "const": "delete_para" },
+            "matching": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table"],
+          "properties": {
+            "op": { "const": "add_row" },
+            "table": { "$ref": "#/$defs/usize" },
+            "at": { "$ref": "#/$defs/u16" },
+            "count": { "$ref": "#/$defs/usize" },
+            "template_row": { "$ref": "#/$defs/u16" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table"],
+          "properties": {
+            "op": { "const": "add_col" },
+            "table": { "$ref": "#/$defs/usize" },
+            "at": { "$ref": "#/$defs/u16" },
+            "count": { "$ref": "#/$defs/u16" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table", "row"],
+          "properties": {
+            "op": { "const": "delete_row" },
+            "table": { "$ref": "#/$defs/usize" },
+            "row": { "$ref": "#/$defs/u16" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table", "col"],
+          "properties": {
+            "op": { "const": "delete_col" },
+            "table": { "$ref": "#/$defs/usize" },
+            "col": { "$ref": "#/$defs/u16" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table", "r1", "c1", "r2", "c2"],
+          "properties": {
+            "op": { "const": "merge_cells" },
+            "table": { "$ref": "#/$defs/usize" },
+            "r1": { "$ref": "#/$defs/u16" },
+            "c1": { "$ref": "#/$defs/u16" },
+            "r2": { "$ref": "#/$defs/u16" },
+            "c2": { "$ref": "#/$defs/u16" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table", "row", "col"],
+          "properties": {
+            "op": { "const": "split_cell" },
+            "table": { "$ref": "#/$defs/usize" },
+            "row": { "$ref": "#/$defs/u16" },
+            "col": { "$ref": "#/$defs/u16" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor", "rows"],
+          "properties": {
+            "op": { "const": "add_table" },
+            "anchor": { "type": "string" },
+            "rows": {
+              "type": "array",
+              "items": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "source_table", "anchor"],
+          "properties": {
+            "op": { "const": "clone_table" },
+            "source_table": { "$ref": "#/$defs/usize" },
+            "anchor": { "type": "string" },
+            "text_mode": { "type": "string", "enum": ["blank", "keep"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "pattern"],
+          "description": "Paragraph props are flat on the entry; line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
+          "properties": {
+            "op": { "const": "set_para" },
+            "pattern": { "type": "string" },
+            "line_spacing_pct": { "$ref": "#/$defs/unit" },
+            "line_spacing_pt": { "$ref": "#/$defs/unit" },
+            "indent_mm": { "$ref": "#/$defs/unit" },
+            "left_mm": { "$ref": "#/$defs/unit" },
+            "right_mm": { "$ref": "#/$defs/unit" },
+            "top_mm": { "$ref": "#/$defs/unit" },
+            "bottom_mm": { "$ref": "#/$defs/unit" },
+            "align": { "$ref": "#/$defs/align" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "table", "row", "col"],
+          "description": "Paragraph props are flat on the entry; line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
+          "properties": {
+            "op": { "const": "set_cell_para" },
+            "table": { "$ref": "#/$defs/usize" },
+            "row": { "$ref": "#/$defs/u16" },
+            "col": { "$ref": "#/$defs/u16" },
+            "line_spacing_pct": { "$ref": "#/$defs/unit" },
+            "line_spacing_pt": { "$ref": "#/$defs/unit" },
+            "indent_mm": { "$ref": "#/$defs/unit" },
+            "left_mm": { "$ref": "#/$defs/unit" },
+            "right_mm": { "$ref": "#/$defs/unit" },
+            "top_mm": { "$ref": "#/$defs/unit" },
+            "bottom_mm": { "$ref": "#/$defs/unit" },
+            "align": { "$ref": "#/$defs/align" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op"],
+          "description": "Single page-setup object; all keys optional and merged into one PageProps.",
+          "properties": {
+            "op": { "const": "set_page" },
+            "width_mm": { "$ref": "#/$defs/unit" },
+            "height_mm": { "$ref": "#/$defs/unit" },
+            "margin_left_mm": { "$ref": "#/$defs/unit" },
+            "margin_right_mm": { "$ref": "#/$defs/unit" },
+            "margin_top_mm": { "$ref": "#/$defs/unit" },
+            "margin_bottom_mm": { "$ref": "#/$defs/unit" },
+            "orientation": { "$ref": "#/$defs/orientation" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "anchor"],
+          "properties": {
+            "op": { "const": "delete_image" },
+            "anchor": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op"],
+          "description": "Exactly one of index or anchor (parser-enforced).",
+          "properties": {
+            "op": { "const": "delete_table" },
+            "index": { "$ref": "#/$defs/usize" },
+            "anchor": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "name"],
+          "properties": {
+            "op": { "const": "delete_field" },
+            "name": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "name"],
+          "properties": {
+            "op": { "const": "delete_bookmark" },
+            "name": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "preset"],
+          "properties": {
+            "op": { "const": "style_tables" },
+            "preset": { "$ref": "#/$defs/preset" }
+          }
+        }
+      ]
+    }
+  }
+}
