@@ -27,7 +27,10 @@ fn read_ops_source(path: &Path) -> anyhow::Result<String> {
         return read_bounded(std::io::stdin(), MAX_OPS_BYTES);
     }
     let file = std::fs::File::open(path).map_err(|error| {
-        anyhow::anyhow!("편집 연산 파일을 열 수 없습니다: {} ({error})", path.display())
+        anyhow::anyhow!(
+            "편집 연산 파일을 열 수 없습니다: {} ({error})",
+            path.display()
+        )
     })?;
     read_bounded(std::io::BufReader::new(file), MAX_OPS_BYTES)
 }
@@ -54,10 +57,9 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     let raw = read_ops_source(path)?;
     let value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|error| anyhow::anyhow!("편집 연산 JSON을 해석할 수 없습니다: {error}"))?;
-    let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../schemas/edit-ops-v1.schema.json"
-    ))
-    .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
+            .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
     let validator = jsonschema::options()
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
@@ -311,24 +313,47 @@ impl OpsEntry {
     pub(crate) fn into_typed(self) -> Result<TypedEditOperation, String> {
         match self {
             OpsEntry::Replace { from, to } => Ok(TypedEditOperation::Replace { from, to }),
-            OpsEntry::SetCell { table, row, col, text } => {
-                Ok(TypedEditOperation::SetCell { table, row, col, text })
-            }
+            OpsEntry::SetCell {
+                table,
+                row,
+                col,
+                text,
+            } => Ok(TypedEditOperation::SetCell {
+                table,
+                row,
+                col,
+                text,
+            }),
             OpsEntry::SetCellByLabel { label, text, table } => {
                 Ok(TypedEditOperation::SetCellByLabel { label, text, table })
             }
-            OpsEntry::CreateField { anchor, name, value } => Ok(TypedEditOperation::CreateField {
+            OpsEntry::CreateField {
+                anchor,
+                name,
+                value,
+            } => Ok(TypedEditOperation::CreateField {
                 anchor,
                 name,
                 value: value.unwrap_or_default(),
             }),
-            OpsEntry::CreateBookmark { anchor, name } => Ok(TypedEditOperation::CreateBookmark { anchor, name }),
-            OpsEntry::CreateHyperlink { anchor, display, url } => Ok(TypedEditOperation::CreateHyperlink {
+            OpsEntry::CreateBookmark { anchor, name } => {
+                Ok(TypedEditOperation::CreateBookmark { anchor, name })
+            }
+            OpsEntry::CreateHyperlink {
+                anchor,
+                display,
+                url,
+            } => Ok(TypedEditOperation::CreateHyperlink {
                 anchor,
                 display: display.unwrap_or_else(|| url.clone()),
                 url,
             }),
-            OpsEntry::InsertImage { anchor, path, width_mm, height_mm } => {
+            OpsEntry::InsertImage {
+                anchor,
+                path,
+                width_mm,
+                height_mm,
+            } => {
                 let size_mm = match (width_mm.as_deref(), height_mm.as_deref()) {
                     (Some(width), Some(height)) => {
                         let width = string_error(parse_mm_f32(width))?;
@@ -349,14 +374,26 @@ impl OpsEntry {
                     size_mm,
                 })
             }
-            OpsEntry::Seal { anchor, path, size_mm } => Ok(TypedEditOperation::Seal {
+            OpsEntry::Seal {
+                anchor,
+                path,
+                size_mm,
+            } => Ok(TypedEditOperation::Seal {
                 anchor,
                 path: checked_cli_read_path(&path)?,
                 size_mm: string_error(size_mm.as_deref().map(parse_mm_f32).transpose())?,
             }),
             OpsEntry::SetField { name, value } => Ok(TypedEditOperation::SetField { name, value }),
             OpsEntry::SetMeta { key, value } => Ok(TypedEditOperation::SetMeta { key, value }),
-            OpsEntry::SetFormat { pattern, bold, italic, underline, strike, size, color } => {
+            OpsEntry::SetFormat {
+                pattern,
+                bold,
+                italic,
+                underline,
+                strike,
+                size,
+                color,
+            } => {
                 let format = hwp_convert::CharFormat {
                     bold: parse_switch(bold.as_deref())?,
                     italic: parse_switch(italic.as_deref())?,
@@ -379,18 +416,32 @@ impl OpsEntry {
                 pattern,
                 align: parse_align(&align).map_err(|error| error.to_string())?,
             }),
-            OpsEntry::InsertPara { anchor, text, before } => Ok(TypedEditOperation::InsertPara {
+            OpsEntry::InsertPara {
+                anchor,
+                text,
+                before,
+            } => Ok(TypedEditOperation::InsertPara {
                 anchor,
                 text,
                 before: before.unwrap_or(false),
             }),
             OpsEntry::DeletePara { matching } => Ok(TypedEditOperation::DeletePara { matching }),
-            OpsEntry::AddRow { table, at, count, template_row } => {
+            OpsEntry::AddRow {
+                table,
+                at,
+                count,
+                template_row,
+            } => {
                 let count = count.unwrap_or(1);
                 if count == 0 {
                     return Err("add_row: count는 1 이상이어야 합니다".to_string());
                 }
-                Ok(TypedEditOperation::AddRow { table, at, count, template_row })
+                Ok(TypedEditOperation::AddRow {
+                    table,
+                    at,
+                    count,
+                    template_row,
+                })
             }
             OpsEntry::AddCol { table, at, count } => {
                 let count = count.unwrap_or(1);
@@ -401,12 +452,30 @@ impl OpsEntry {
             }
             OpsEntry::DeleteRow { table, row } => Ok(TypedEditOperation::DeleteRow { table, row }),
             OpsEntry::DeleteCol { table, col } => Ok(TypedEditOperation::DeleteCol { table, col }),
-            OpsEntry::MergeCells { table, r1, c1, r2, c2 } => {
-                Ok(TypedEditOperation::MergeCells { table, r1, c1, r2, c2 })
+            OpsEntry::MergeCells {
+                table,
+                r1,
+                c1,
+                r2,
+                c2,
+            } => Ok(TypedEditOperation::MergeCells {
+                table,
+                r1,
+                c1,
+                r2,
+                c2,
+            }),
+            OpsEntry::SplitCell { table, row, col } => {
+                Ok(TypedEditOperation::SplitCell { table, row, col })
             }
-            OpsEntry::SplitCell { table, row, col } => Ok(TypedEditOperation::SplitCell { table, row, col }),
-            OpsEntry::AddTable { anchor, rows } => Ok(TypedEditOperation::AddTable { anchor, rows }),
-            OpsEntry::CloneTable { source_table, anchor, text_mode } => {
+            OpsEntry::AddTable { anchor, rows } => {
+                Ok(TypedEditOperation::AddTable { anchor, rows })
+            }
+            OpsEntry::CloneTable {
+                source_table,
+                anchor,
+                text_mode,
+            } => {
                 let text_mode = match text_mode.as_deref().map(str::trim) {
                     None | Some("") | Some("blank") => hwp_convert::CloneTextMode::Blank,
                     Some("keep") => hwp_convert::CloneTextMode::Keep,
@@ -414,7 +483,11 @@ impl OpsEntry {
                         return Err("clone_table: text_mode는 blank|keep 이어야 합니다".to_string());
                     }
                 };
-                Ok(TypedEditOperation::CloneTable { source_table, anchor, text_mode })
+                Ok(TypedEditOperation::CloneTable {
+                    source_table,
+                    anchor,
+                    text_mode,
+                })
             }
             OpsEntry::SetPara {
                 pattern,
@@ -489,17 +562,15 @@ impl OpsEntry {
                     margin_top: mm_opt(margin_top_mm)?,
                     margin_bottom: mm_opt(margin_bottom_mm)?,
                     landscape: match orientation.as_deref() {
-                        Some(value) => {
-                            Some(match value.trim().to_ascii_lowercase().as_str() {
-                                "landscape" | "가로" => true,
-                                "portrait" | "세로" => false,
-                                other => {
-                                    return Err(format!(
-                                        "알 수 없는 용지 방향: {other:?} (portrait/landscape)"
-                                    ));
-                                }
-                            })
-                        }
+                        Some(value) => Some(match value.trim().to_ascii_lowercase().as_str() {
+                            "landscape" | "가로" => true,
+                            "portrait" | "세로" => false,
+                            other => {
+                                return Err(format!(
+                                    "알 수 없는 용지 방향: {other:?} (portrait/landscape)"
+                                ));
+                            }
+                        }),
                         None => None,
                     },
                 };
@@ -590,11 +661,15 @@ mod tests {
     /// 크레이트 안에서 검사한다.
     #[test]
     fn checked_cli_read_path_rejects_parent_dir() {
-        let error = checked_cli_read_path("../outside/ops.json").expect_err("`..` must be rejected");
+        let error =
+            checked_cli_read_path("../outside/ops.json").expect_err("`..` must be rejected");
         assert!(
             error.contains("'..'를 포함한 입력 경로는 거부합니다"),
             "거부 오류 문구가 일치하지 않는다: {error}"
         );
-        assert!(error.contains("../outside/ops.json"), "오류에 경로가 있어야 한다: {error}");
+        assert!(
+            error.contains("../outside/ops.json"),
+            "오류에 경로가 있어야 한다: {error}"
+        );
     }
 }

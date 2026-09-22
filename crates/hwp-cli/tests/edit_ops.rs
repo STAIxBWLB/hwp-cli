@@ -25,7 +25,8 @@ fn test_dir(name: &str) -> PathBuf {
 }
 
 fn tracer_fixture() -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/edit-ops/tracer.json");
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/edit-ops/tracer.json");
     assert!(path.exists(), "tracer fixture missing: {}", path.display());
     path
 }
@@ -269,7 +270,11 @@ fn kind_coverage_all_30() {
         .as_array()
         .expect("kind-coverage fixture must be an array")
         .iter()
-        .map(|entry| entry["op"].as_str().expect("every op must carry a string tag"))
+        .map(|entry| {
+            entry["op"]
+                .as_str()
+                .expect("every op must carry a string tag")
+        })
         .collect();
     assert!(
         ops.len() >= 30,
@@ -287,10 +292,8 @@ fn kind_coverage_all_30() {
     );
 
     // Schema gate mirrors load_ops: Draft 2020-12 against the committed schema.
-    let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../schemas/edit-ops-v1.schema.json"
-    ))
-    .unwrap();
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json")).unwrap();
     let validator = jsonschema::options()
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
@@ -354,11 +357,15 @@ fn kind_coverage_all_30() {
         "replace must rewrite the seeded payload verbatim, got {texts:?}"
     );
     assert!(
-        texts.iter().any(|text| text.contains("field anchor para변경값")),
+        texts
+            .iter()
+            .any(|text| text.contains("field anchor para변경값")),
         "create_field + set_field must leave the field display text, got {texts:?}"
     );
     assert!(
-        texts.iter().any(|text| text.contains("hyperlink anchor para예시 링크")),
+        texts
+            .iter()
+            .any(|text| text.contains("hyperlink anchor para예시 링크")),
         "create_hyperlink must leave its display text, got {texts:?}"
     );
     assert!(
@@ -709,10 +716,16 @@ fn table_base_for(name: &str) -> (PathBuf, PathBuf) {
 fn layered_failure_semantics() {
     let (dir, base) = new_base_for("layered-failure");
     let ops = dir.join("ops.json");
-    std::fs::write(&ops, r#"[{"op":"set_cell","table":0,"row":0,"col":0,"text":"x"}]"#).unwrap();
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_cell","table":0,"row":0,"col":0,"text":"x"}]"#,
+    )
+    .unwrap();
 
-    let modes: [(&str, Vec<&str>); 2] =
-        [("default", Vec::new()), ("allow-partial", vec!["--allow-partial"])];
+    let modes: [(&str, Vec<&str>); 2] = [
+        ("default", Vec::new()),
+        ("allow-partial", vec!["--allow-partial"]),
+    ];
     for (name, extra) in modes {
         let output = dir.join(format!("{name}.out.hwpx"));
         let report = hwp()
@@ -765,8 +778,10 @@ fn unapplied_partial_semantics() {
         r#"[{"op":"set_meta","key":"title","value":"partial-order"},{"op":"set_cell","table":5,"row":0,"col":0,"text":"x"}]"#,
     )
     .unwrap();
-    let modes: [(&str, Vec<&str>); 2] =
-        [("default", Vec::new()), ("allow-partial", vec!["--allow-partial"])];
+    let modes: [(&str, Vec<&str>); 2] = [
+        ("default", Vec::new()),
+        ("allow-partial", vec!["--allow-partial"]),
+    ];
     for (name, extra) in modes {
         let output = dir.join(format!("cell-{name}.out.hwpx"));
         let report = hwp()
@@ -856,8 +871,8 @@ fn unapplied_partial_semantics() {
         .arg(&partial_out)
         .output()
         .unwrap();
-    let info: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&info.stdout)).expect("hwp info --json must parse");
+    let info: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&info.stdout))
+        .expect("hwp info --json must parse");
     assert_eq!(
         info["metadata"]["title"], "partial-order",
         "array order must hold: set_meta applied even though the following op failed"
@@ -913,7 +928,11 @@ fn publish_guard_styletables_noop() {
         stderr2.contains("이미 적용되어 있습니다"),
         "the second run must record the same no-op note: {stderr2}"
     );
-    assert_bytes_eq(&run1_out, &run2_out, "style_tables re-run must be byte-stable");
+    assert_bytes_eq(
+        &run1_out,
+        &run2_out,
+        "style_tables re-run must be byte-stable",
+    );
 
     // The exemption is style_tables-specific: the same flag with a replace-only,
     // nothing-matched plan is still refused by the publish guard.
@@ -1031,16 +1050,15 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual,
-        "8fb42a96f75e1473df1ee20af1f3a65315906f3e3f4c7366530cce474a27c937",
+        actual, "8fb42a96f75e1473df1ee20af1f3a65315906f3e3f4c7366530cce474a27c937",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
 
 use std::io::Write as _;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// stdin 편집 완료 마커 접두어 (edit.rs: "편집 완료: {input} → {output}").
@@ -1121,7 +1139,11 @@ fn feed_stdin_and_collect(
 fn stdin_roundtrip_lossless() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/edit-ops/stdin-fragment.json");
-    assert!(fixture.exists(), "stdin fixture missing: {}", fixture.display());
+    assert!(
+        fixture.exists(),
+        "stdin fixture missing: {}",
+        fixture.display()
+    );
     let payload = std::fs::read(&fixture).unwrap();
 
     let dir = test_dir("stdin-roundtrip");
@@ -1146,7 +1168,10 @@ fn stdin_roundtrip_lossless() {
         !stderr.contains(OPS_UNAPPLIED_MARKER),
         "the stdin run must not report unapplied edits: {stderr}"
     );
-    assert!(out.exists(), "the stdin run must publish an output document");
+    assert!(
+        out.exists(),
+        "the stdin run must publish an output document"
+    );
 
     let doc = hwpx::read_document(&out).unwrap().document;
     let texts: Vec<String> = doc
