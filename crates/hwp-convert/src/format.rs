@@ -206,6 +206,27 @@ fn restyle_range_at_inner(
     Ok(())
 }
 
+/// Address-driven entry point for a paragraph-style edit (EDT-05, 07-02): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`], converts `props` to IR units via
+/// [`to_ir_units`] (the same HWPUNIT scaling [`set_para_props`]'s pattern path applies), then
+/// calls the existing [`apply_para_props`] directly — no pattern search, no recursion into child
+/// controls (an address names exactly one paragraph). Returns `false` when the resolved path no
+/// longer names a paragraph or `props` is empty; this plan's ops never resize paragraph lists, so
+/// the former should not happen against a preflight-resolved target.
+pub fn apply_para_props_at(doc: &mut Document, path: &SegmentPath, props: &ParaProps) -> bool {
+    todo!()
+}
+
+/// Address-driven entry point for a paragraph-alignment edit (EDT-05, 07-02): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`] and applies the same attr1-bit mutation
+/// [`align_para`]'s pattern path performs, with no pattern search or recursion. Mirrors
+/// `align_para`'s 4-line mutation body directly rather than factoring it out, so the align-bit
+/// encoding stays in exactly one place per caller; a comment on both sides notes they must move
+/// together if that encoding ever changes.
+pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> bool {
+    todo!()
+}
+
 /// 위치 `pos`에서 활성인 char_shape id(= pos 이하 마지막 run).
 fn id_at(runs: &[(u32, CharShapeId)], pos: u32) -> CharShapeId {
     runs.iter()
@@ -778,6 +799,71 @@ mod tests {
             doc.sections[0].paragraphs[1].char_shape_runs, before_runs,
             "오류 후에도 char_shape_runs는 변경되지 않아야 함"
         );
+    }
+
+    /// `apply_para_props_at` changes only the addressed paragraph's `ParaShapeId`; the sibling
+    /// (identical-text) paragraph at a different path is untouched (07-02 Task 1).
+    #[test]
+    fn apply_para_props_at_주소_문단만_변경() {
+        let mut doc = from_markdown("같은 문단\n\n같은 문단\n");
+        let before_first = doc.sections[0].paragraphs[0].para_shape;
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        let props = ParaProps {
+            align: Some(3), // 가운데
+            ..ParaProps::default()
+        };
+        assert!(apply_para_props_at(&mut doc, &path, &props));
+        assert_eq!(
+            doc.sections[0].paragraphs[0].para_shape, before_first,
+            "sibling paragraph's ParaShapeId must be unchanged"
+        );
+        let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
+        assert_eq!(ps.alignment(), 3, "addressed paragraph must carry the new align");
+    }
+
+    /// A repeated identical `apply_para_props_at` does not grow `header.para_shapes` — it reuses
+    /// the same shape via `find_or_insert_para`, matching the pattern path's dedup guarantee.
+    #[test]
+    fn apply_para_props_at_중복_props는_shape_추가없음() {
+        let mut doc = from_markdown("문단\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let props = ParaProps {
+            align: Some(3),
+            ..ParaProps::default()
+        };
+        assert!(apply_para_props_at(&mut doc, &path, &props));
+        let after_first = doc.header.para_shapes.len();
+        assert!(apply_para_props_at(&mut doc, &path, &props));
+        assert_eq!(
+            doc.header.para_shapes.len(),
+            after_first,
+            "identical props must reuse the existing shape, not append a new one"
+        );
+    }
+
+    /// `set_para_align_at` sets alignment on the resolved paragraph only; the sibling paragraph
+    /// keeps its original alignment.
+    #[test]
+    fn set_para_align_at_주소_문단만_변경() {
+        let mut doc = from_markdown("같은 문단\n\n같은 문단\n");
+        let before_first = doc.sections[0].paragraphs[0].para_shape;
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        assert!(set_para_align_at(&mut doc, &path, 3));
+        assert_eq!(
+            doc.sections[0].paragraphs[0].para_shape, before_first,
+            "sibling paragraph's ParaShapeId must be unchanged"
+        );
+        let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
+        assert_eq!(ps.alignment(), 3);
     }
 
     #[test]
