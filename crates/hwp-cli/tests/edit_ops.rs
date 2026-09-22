@@ -448,6 +448,249 @@ fn kind_coverage_all_30() {
     );
 }
 
+// ── Phase 7 plan 07-01: addressed `set_format` tracer (EDT-05) ─────────────────────────
+
+/// Paragraphs 2 and 4 (0-based: 제목, 첫 문단, 같은 문단, 셋째 문단, 같은 문단) are identical
+/// text — the anchor-collision fixture success criterion 1 requires.
+const DUPLICATE_TEXT_MD: &str = "# 제목\n\n첫 문단\n\n같은 문단\n\n셋째 문단\n\n같은 문단\n";
+
+/// A single paragraph importing as three char-shape runs: "plain " (plain), "bold" (bold, from
+/// GFM `**bold**`), " tail" (plain).
+const RUN_RANGE_MD: &str = "# T\n\nplain **bold** tail\n";
+
+/// An addressed `set_format` targeting the SECOND of two identical-text paragraphs restyles only
+/// that paragraph; the first occurrence's `char_shape_runs` and text are unchanged (EDT-05
+/// success criterion 1, the anchor-collision proof — a first-match pattern search would hit the
+/// first occurrence instead and fail this test).
+#[test]
+fn addressed_set_format_hits_only_the_named_duplicate() {
+    let dir = test_dir("addr-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let first_before = before_doc.sections[0].paragraphs[2].clone();
+    assert_eq!(first_before.plain_text(), "같은 문단");
+    assert_eq!(before_doc.sections[0].paragraphs[4].plain_text(), "같은 문단");
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4}},"bold":"on"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_format must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let first_after = &after.sections[0].paragraphs[2];
+    assert_eq!(
+        first_after.char_shape_runs, first_before.char_shape_runs,
+        "the first (untouched) occurrence's runs must be unchanged"
+    );
+    assert_eq!(
+        first_after.plain_text(),
+        "같은 문단",
+        "the first occurrence's text must be unchanged"
+    );
+    let second_after = &after.sections[0].paragraphs[4];
+    let styled = second_after
+        .char_shape_runs
+        .iter()
+        .any(|(_, id)| after.header.char_shapes[id.0 as usize].is_bold());
+    assert!(styled, "the addressed (second) occurrence must be bold");
+}
+
+/// An addressed `set_format` naming a run with the run's own WCHAR sub-range restyles exactly
+/// that sub-range; the paragraph's text is byte-identical afterwards (formatting never touches
+/// `chars`), and only the addressed wchar positions carry the new attribute.
+#[test]
+fn addressed_run_range_restyles_the_named_sub_range_only() {
+    let dir = test_dir("addr-run-range");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, RUN_RANGE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before = hwpx::read_document(&base).unwrap().document;
+    let para = &before.sections[0].paragraphs[1];
+    assert_eq!(para.plain_text(), "plain bold tail");
+    let runs = hwp_convert::canonical_char_shape_runs(para);
+    assert_eq!(
+        runs.len(),
+        3,
+        "plain/bold/tail must import as three runs: {runs:?}"
+    );
+    assert_eq!(runs[1].0, 6, "run 1 (bold) must start at wchar 6: {runs:?}");
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1},"chars":[7,9]},"italic":"on"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed run-range set_format must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let para = &after.sections[0].paragraphs[1];
+    assert_eq!(
+        para.plain_text(),
+        "plain bold tail",
+        "formatting must never change the text"
+    );
+    let shapes = &after.header.char_shapes;
+    let mut pos = 0u32;
+    for ch in &para.chars {
+        let width = ch.wchar_width();
+        let id = para
+            .char_shape_runs
+            .iter()
+            .rev()
+            .find(|(p, _)| *p <= pos)
+            .map(|(_, id)| *id)
+            .unwrap();
+        let italic = shapes[id.0 as usize].is_italic();
+        if (7..9).contains(&pos) {
+            assert!(italic, "wchar {pos} inside the addressed [7,9) must be italic");
+        } else {
+            assert!(!italic, "wchar {pos} outside the addressed [7,9) must not be italic");
+        }
+        pos += width;
+    }
+}
+
+/// An address naming a run with no `chars` range applies to the whole run (D-01): the id
+/// identifies the run, not a range, so the op applies to the run and leaves it visually uniform.
+#[test]
+fn addressed_run_without_chars_covers_the_whole_run() {
+    let dir = test_dir("addr-whole-run");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, RUN_RANGE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r##"[{"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"color":"#0000ff"}]"##,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed whole-run set_format must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let para = &after.sections[0].paragraphs[1];
+    let shapes = &after.header.char_shapes;
+    let mut pos = 0u32;
+    for ch in &para.chars {
+        let width = ch.wchar_width();
+        let id = para
+            .char_shape_runs
+            .iter()
+            .rev()
+            .find(|(p, _)| *p <= pos)
+            .map(|(_, id)| *id)
+            .unwrap();
+        let colored = shapes[id.0 as usize].text_color == 0x00ff_0000;
+        if (6..10).contains(&pos) {
+            assert!(colored, "wchar {pos} inside run 1 [6,10) must carry the new color");
+        } else {
+            assert!(!colored, "wchar {pos} outside run 1 must not carry the new color");
+        }
+        pos += width;
+    }
+}
+
+/// After a successful addressed restyle, `run_id` re-derived at the same path differs from the
+/// checksum the preflight recorded before the edit — the before/after id-change mechanism 07-05
+/// will publish in the report, proven here first.
+#[test]
+fn addressed_edit_changes_the_run_id() {
+    let dir = test_dir("addr-id-change");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, RUN_RANGE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let path = hwp_convert::SegmentPath {
+        section: 0,
+        indices: vec![1],
+    };
+    let before_id = hwp_convert::run_id(&path, &before_doc.sections[0].paragraphs[1], 1);
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"strike":"on"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_format must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after_doc = hwpx::read_document(&output).unwrap().document;
+    let after_id = hwp_convert::run_id(&path, &after_doc.sections[0].paragraphs[1], 1);
+    assert_ne!(
+        before_id, after_id,
+        "the run id must change after the addressed edit"
+    );
+}
+
 /// load_ops가 스키마 위반을 만날 때 내보내는 bail 마커 접두어
 /// ("편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {instance_path}: {error}").
 const OPS_SCHEMA_MARKER: &str = "편집 연산이 edit-ops-v1 스키마를 벗어났습니다";
