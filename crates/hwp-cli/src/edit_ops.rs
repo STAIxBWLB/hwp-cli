@@ -561,8 +561,11 @@ impl OpsEntry {
                     margin_right: mm_opt(margin_right_mm)?,
                     margin_top: mm_opt(margin_top_mm)?,
                     margin_bottom: mm_opt(margin_bottom_mm)?,
+                    // No lowercasing here: the schema's `orientation` enum is
+                    // case-sensitive (WR-01), so this arm only ever sees the
+                    // exact-cased values already listed below.
                     landscape: match orientation.as_deref() {
-                        Some(value) => Some(match value.trim().to_ascii_lowercase().as_str() {
+                        Some(value) => Some(match value.trim() {
                             "landscape" | "가로" => true,
                             "portrait" | "세로" => false,
                             other => {

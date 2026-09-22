@@ -13,6 +13,7 @@
     "switch": { "type": "string", "enum": ["on", "off"] },
     "align": {
       "type": "string",
+      "description": "Case-sensitive: exact lowercase English tokens or Korean aliases only, unlike the --set-align CLI flag and MCP hwp_edit tool (both case-insensitive). This ops-file channel is a typed machine contract, so values are validated exactly as listed.",
       "enum": [
         "left",
         "right",
@@ -31,10 +32,12 @@
     },
     "orientation": {
       "type": "string",
+      "description": "Case-sensitive: exact lowercase English tokens or Korean aliases only, unlike the --set-page CLI flag and MCP hwp_edit tool (both case-insensitive). This ops-file channel is a typed machine contract, so values are validated exactly as listed.",
       "enum": ["portrait", "landscape", "가로", "세로"]
     },
     "preset": {
       "type": "string",
+      "description": "Case-sensitive: exact lowercase English tokens or Korean aliases only, unlike the --style-tables CLI flag and MCP hwp_edit tool (both case-insensitive via OfficialPreset::parse). This ops-file channel is a typed machine contract, so values are validated exactly as listed.",
       "enum": [
         "official",
         "gian",

@@ -1035,6 +1035,57 @@ fn value_vocabulary() {
     }
 }
 
+/// WR-01 regression: the edit-ops-v1 schema's `align`/`orientation`/`preset` enums
+/// are case-sensitive by design, unlike the equivalent CLI flags and the MCP
+/// `hwp_edit` tool (both lowercase their input before matching). An uppercase or
+/// mixed-case value in an ops file must be rejected at schema validation, not
+/// silently normalized — the schema is the single source of the value vocabulary
+/// for this channel.
+#[test]
+fn case_sensitive_enum_values_rejected() {
+    let (dir, base) = new_base_for("case-sensitive-enum");
+    for (name, body) in [
+        (
+            "set-align-uppercase",
+            r#"[{"op":"set_align","pattern":"plain","align":"LEFT"}]"#,
+        ),
+        (
+            "set-page-orientation-uppercase",
+            r#"[{"op":"set_page","orientation":"Landscape"}]"#,
+        ),
+        (
+            "style-tables-preset-uppercase",
+            r#"[{"op":"style_tables","preset":"OFFICIAL"}]"#,
+        ),
+    ] {
+        let ops = dir.join(format!("{name}.json"));
+        std::fs::write(&ops, body).unwrap();
+        let output = dir.join(format!("{name}.out.hwpx"));
+        let report = hwp()
+            .arg("edit")
+            .arg(&base)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&ops)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&report.stderr);
+        assert!(
+            !report.status.success(),
+            "uppercase enum value {name} must exit nonzero: {stderr}"
+        );
+        assert!(
+            stderr.contains(OPS_SCHEMA_MARKER),
+            "uppercase enum value {name} must be rejected at schema validation, not normalized: {stderr}"
+        );
+        assert!(
+            !output.exists(),
+            "uppercase enum value {name} must not produce an output file"
+        );
+    }
+}
+
 /// The edit-ops-v1 contract is pinned by content hash (D-16), mirroring the
 /// document-spec-v1 pin in document_spec.rs: any schema edit — even a description
 /// tweak — must consciously update this constant. The schema is the shared contract
@@ -1050,7 +1101,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "8fb42a96f75e1473df1ee20af1f3a65315906f3e3f4c7366530cce474a27c937",
+        actual, "3151f199cacdb4005e2748ba43cbf9856473f4828c5d2a7a776b6a1849cd2a78",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
