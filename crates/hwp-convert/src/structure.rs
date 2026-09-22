@@ -253,7 +253,10 @@ pub fn delete_paragraph(doc: &mut Document, matching: &str) -> usize {
 /// (section -> top-level paragraph -> table cell / generic-control paragraph list via `.get_mut()`
 /// only, same `raw_children` skip) but stops one step short: structural ops need to splice the
 /// *list* (insert/remove), not mutate the paragraph itself.
-fn list_at_mut<'d>(doc: &'d mut Document, path: &SegmentPath) -> Option<(&'d mut Vec<Paragraph>, usize)> {
+fn list_at_mut<'d>(
+    doc: &'d mut Document,
+    path: &SegmentPath,
+) -> Option<(&'d mut Vec<Paragraph>, usize)> {
     let section = doc.sections.get_mut(path.section)?;
     let indices = &path.indices;
     if indices.is_empty() {
@@ -343,12 +346,62 @@ fn list_identity(path: &SegmentPath) -> (usize, &[usize]) {
 /// beyond the destination list's length, computed AFTER accounting for the source's removal when
 /// both paths name the same list (T-07-11: a checked bound, never a silent clamp).
 pub fn move_paragraph(
-    _doc: &mut Document,
-    _from: &SegmentPath,
-    _to_list: &SegmentPath,
-    _to_index: usize,
+    doc: &mut Document,
+    from: &SegmentPath,
+    to_list: &SegmentPath,
+    to_index: usize,
 ) -> Result<(), String> {
-    // RED stub (07-03 Task 1 TDD): no-op success, real splice lands in the GREEN commit.
+    let same_list = list_identity(from) == list_identity(to_list);
+
+    {
+        let (src_list, src_idx) = list_at_mut(doc, from)
+            .ok_or_else(|| "이동할 문단 주소를 찾을 수 없습니다".to_string())?;
+        let Some(p) = src_list.get(src_idx) else {
+            return Err("이동할 문단 주소를 찾을 수 없습니다".to_string());
+        };
+        if p.controls
+            .iter()
+            .any(|c| matches!(c, Control::SectionDef(_)))
+        {
+            return Err("구역정의 문단은 이동할 수 없습니다".to_string());
+        }
+        if src_list.len() <= 1 {
+            return Err("리스트에 문단이 하나뿐이면 이동할 수 없습니다".to_string());
+        }
+    }
+
+    let dst_len = {
+        let (dst_list, _) = list_at_mut(doc, to_list)
+            .ok_or_else(|| "이동 대상 위치를 찾을 수 없습니다".to_string())?;
+        dst_list.len()
+    };
+    let effective_dst_len = if same_list { dst_len - 1 } else { dst_len };
+    if to_index > effective_dst_len {
+        return Err(format!(
+            "이동 대상 인덱스가 리스트 범위를 벗어났습니다 (index={to_index}, len={effective_dst_len})"
+        ));
+    }
+
+    let moved = {
+        let (src_list, src_idx) = list_at_mut(doc, from).expect("validated above");
+        src_list.remove(src_idx)
+    };
+    {
+        let (dst_list, _) = list_at_mut(doc, to_list).expect("validated above");
+        dst_list.insert(to_index, moved);
+    }
+
+    {
+        let (list, _) = list_at_mut(doc, to_list).expect("just inserted into this list");
+        crate::edit::fixup_last_para_flag(list);
+    }
+    if !same_list {
+        let (list, _) = list_at_mut(doc, from).expect("source list still exists");
+        crate::edit::fixup_last_para_flag(list);
+    }
+
+    crate::address::invalidate_ancestors(doc, from);
+    crate::address::invalidate_ancestors(doc, to_list);
     Ok(())
 }
 
@@ -358,21 +411,47 @@ pub fn move_paragraph(
 /// splice-and-fixup idiom; only the target-finding changes, from a text match to a resolved
 /// address.
 pub fn insert_paragraph_at(
-    _doc: &mut Document,
-    _at: &SegmentPath,
-    _before: bool,
-    _text: &str,
-    _shape: (ParaShapeId, StyleId, CharShapeId),
+    doc: &mut Document,
+    at: &SegmentPath,
+    before: bool,
+    text: &str,
+    shape: (ParaShapeId, StyleId, CharShapeId),
 ) -> Result<(), String> {
-    // RED stub (07-03 Task 1 TDD): no-op success, real splice lands in the GREEN commit.
+    let (list, idx) =
+        list_at_mut(doc, at).ok_or_else(|| "삽입 위치 주소를 찾을 수 없습니다".to_string())?;
+    if idx >= list.len() {
+        return Err("삽입 위치 주소를 찾을 수 없습니다".to_string());
+    }
+    let (ps, sty, cs) = shape;
+    let new = make_paragraph(text, ps, sty, cs);
+    let at_idx = if before { idx } else { idx + 1 };
+    list.insert(at_idx, new);
+    crate::edit::fixup_last_para_flag(list);
+    crate::address::invalidate_ancestors(doc, at);
     Ok(())
 }
 
 /// Deletes the paragraph at `at`. Keeps `delete_paragraph`'s two invariants for the one
 /// addressed paragraph: refuses on a section-definition paragraph, and refuses when its list
 /// would be left empty (a section/cell/caption with zero paragraphs is corruption to Hancom, A6).
-pub fn delete_paragraph_at(_doc: &mut Document, _at: &SegmentPath) -> Result<(), String> {
-    // RED stub (07-03 Task 1 TDD): no-op success, real removal lands in the GREEN commit.
+pub fn delete_paragraph_at(doc: &mut Document, at: &SegmentPath) -> Result<(), String> {
+    let (list, idx) =
+        list_at_mut(doc, at).ok_or_else(|| "삭제 위치 주소를 찾을 수 없습니다".to_string())?;
+    let Some(p) = list.get(idx) else {
+        return Err("삭제 위치 주소를 찾을 수 없습니다".to_string());
+    };
+    if p.controls
+        .iter()
+        .any(|c| matches!(c, Control::SectionDef(_)))
+    {
+        return Err("구역정의 문단은 삭제할 수 없습니다".to_string());
+    }
+    if list.len() <= 1 {
+        return Err("리스트에 문단이 하나뿐이면 삭제할 수 없습니다".to_string());
+    }
+    list.remove(idx);
+    crate::edit::fixup_last_para_flag(list);
+    crate::address::invalidate_ancestors(doc, at);
     Ok(())
 }
 
@@ -701,8 +780,7 @@ mod tests {
 
     #[test]
     fn move_paragraph_앵커_컨트롤도_함께_이동() {
-        let mut doc =
-            from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n\n마지막 문단");
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n\n마지막 문단");
         let table_para_idx = doc.sections[0]
             .paragraphs
             .iter()
@@ -719,7 +797,10 @@ mod tests {
         move_paragraph(&mut doc, &from, &to_list, 0).unwrap();
         let moved = &doc.sections[0].paragraphs[0];
         assert!(
-            moved.controls.iter().any(|c| matches!(c, Control::Table(_))),
+            moved
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Table(_))),
             "표 컨트롤이 이동한 문단에 그대로 있어야 함"
         );
     }
