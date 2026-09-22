@@ -1006,6 +1006,21 @@ fn value_vocabulary() {
             r#"[{"op":"set_format","pattern":"plain","size":"50%"}]"#,
             "크기 값은 pt 또는 mm 단위여야 합니다: \"50%\" (%는 절대 pt 기준이 없습니다)",
         ),
+        (
+            "insert-image-width-overflow",
+            r#"[{"op":"insert_image","anchor":"plain","path":"x.png","width_mm":"999999999999999999999999999999mm","height_mm":"10mm"}]"#,
+            "mm 값은 유한한 0..=5000 범위여야 합니다",
+        ),
+        (
+            "set-format-size-pt-overflow",
+            r#"[{"op":"set_format","pattern":"plain","size":"99999pt"}]"#,
+            "pt 값은 유한한 0..=1000 범위여야 합니다",
+        ),
+        (
+            "set-para-line-spacing-pct-overflow",
+            r#"[{"op":"set_para","pattern":"plain","line_spacing_pct":"99999%"}]"#,
+            "백분율 값은 유한한 0..=1000 범위여야 합니다",
+        ),
     ] {
         let ops = dir.join(format!("{name}.json"));
         std::fs::write(&ops, body).unwrap();

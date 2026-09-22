@@ -21,6 +21,16 @@ pub(crate) const MAX_OPS_BYTES: u64 = 16 * 1024 * 1024;
 /// 편집 연산 항목 수 상한. 스키마 maxItems와 같은 값 — 파싱 뒤 한 번 더 검사한다.
 pub(crate) const MAX_OPS_ITEMS: usize = 10_000;
 
+/// `*_mm` 필드의 상한 (WR-02). 스키마의 `unit` 패턴(`^\d+(\.\d+)?(mm|pt|%)$`)은 부호를
+/// 허용하지 않지만 자릿수는 제한하지 않고, f32 오버플로는 조용히 `inf`가 되므로(패닉
+/// 없이 `mm_to_hwpunit`이 `i32::MAX`로 saturate), 파서가 직접 유한·범위 검사를 한다.
+/// 5000mm(5m)는 어떤 실제 문서 치수(페이지·여백·이미지 크기)보다도 훨씬 크다.
+const MM_MAX: f32 = 5000.0;
+/// `*_pt` 필드(글자 크기, 고정 줄 간격)의 상한. 두 용례 모두 음수가 의미 없다.
+const PT_MAX: f32 = 1000.0;
+/// `*_pct` 필드(줄 간격 비율)의 상한. 음수 비율은 의미 없다.
+const PCT_MAX: f32 = 1000.0;
+
 /// 편집 연산 파일(`"-"`는 stdin)을 상한 안에서 UTF-8로 읽는다.
 fn read_ops_source(path: &Path) -> anyhow::Result<String> {
     if path.as_os_str() == "-" {
@@ -90,6 +100,9 @@ fn parse_mm_f32(value: &str) -> anyhow::Result<f32> {
         .ok_or_else(|| anyhow::anyhow!("mm 값은 mm로 끝나야 합니다: {value:?}"))?
         .parse()
         .with_context(|| format!("mm 값이 숫자가 아닙니다: {value:?}"))?;
+    if !mm.is_finite() || !(0.0..=MM_MAX).contains(&mm) {
+        anyhow::bail!("mm 값은 유한한 0..={MM_MAX} 범위여야 합니다: {value:?}");
+    }
     Ok(mm)
 }
 
@@ -106,6 +119,9 @@ pub(crate) fn parse_pct(value: &str) -> anyhow::Result<f32> {
         .ok_or_else(|| anyhow::anyhow!("백분율 값은 %로 끝나야 합니다: {value:?}"))?
         .parse()
         .with_context(|| format!("% 값이 숫자가 아닙니다: {value:?}"))?;
+    if !pct.is_finite() || !(0.0..=PCT_MAX).contains(&pct) {
+        anyhow::bail!("백분율 값은 유한한 0..={PCT_MAX} 범위여야 합니다: {value:?}");
+    }
     Ok(pct)
 }
 
@@ -113,19 +129,23 @@ pub(crate) fn parse_pct(value: &str) -> anyhow::Result<f32> {
 /// "%"는 절대 pt 기준이 없어 거부한다 (스키마 `unit` 문법과의 차이는 파서 강제).
 pub(crate) fn parse_pt(value: &str) -> anyhow::Result<f32> {
     let trimmed = value.trim();
-    if let Some(pt) = trimmed.strip_suffix("pt") {
-        let pt: f32 = pt
-            .parse()
-            .with_context(|| format!("pt 값이 숫자가 아닙니다: {value:?}"))?;
-        return Ok(pt);
-    }
-    if let Some(mm) = trimmed.strip_suffix("mm") {
+    let pt = if let Some(pt) = trimmed.strip_suffix("pt") {
+        pt.parse::<f32>()
+            .with_context(|| format!("pt 값이 숫자가 아닙니다: {value:?}"))?
+    } else if let Some(mm) = trimmed.strip_suffix("mm") {
         let mm: f32 = mm
             .parse()
             .with_context(|| format!("mm 값이 숫자가 아닙니다: {value:?}"))?;
-        return Ok(mm * 72.0 / 25.4);
+        mm * 72.0 / 25.4
+    } else {
+        anyhow::bail!(
+            "크기 값은 pt 또는 mm 단위여야 합니다: {value:?} (%는 절대 pt 기준이 없습니다)"
+        )
+    };
+    if !pt.is_finite() || !(0.0..=PT_MAX).contains(&pt) {
+        anyhow::bail!("pt 값은 유한한 0..={PT_MAX} 범위여야 합니다: {value:?}");
     }
-    anyhow::bail!("크기 값은 pt 또는 mm 단위여야 합니다: {value:?} (%는 절대 pt 기준이 없습니다)")
+    Ok(pt)
 }
 
 /// set_para/set_cell_para의 평면 문단 속성 원시 값 (스키마 필드 그대로). 두 op가
