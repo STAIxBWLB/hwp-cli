@@ -353,6 +353,26 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["op", "address"],
+          "description": "Raises the addressed paragraph's list level by one, within its existing numbering or bullet definition (A3). Levels 1..=7 only (8-10 is an HWPX-only list_level extension HWP 5.0 cannot represent); indenting at level 7, or a paragraph whose head_type is neither numbered nor bullet, fails loudly rather than clamping or inventing a list. Never creates or edits a numbering/bullet definition.",
+          "properties": {
+            "op": { "const": "indent_para" },
+            "address": { "$ref": "#/$defs/paragraphAddress" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "address"],
+          "description": "Lowers the addressed paragraph's list level by one, within its existing numbering or bullet definition (A3). Levels 1..=7 only; outdenting at level 1, or a paragraph whose head_type is neither numbered nor bullet, fails loudly rather than clamping or inventing a list. Never creates or edits a numbering/bullet definition.",
+          "properties": {
+            "op": { "const": "outdent_para" },
+            "address": { "$ref": "#/$defs/paragraphAddress" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["op", "table"],
           "properties": {
             "op": { "const": "add_row" },

@@ -191,7 +191,11 @@ fn tracer_ops_rejects_malformed() {
     );
 }
 
-const KIND_COVERAGE_MD: &str = "# T\n\nintro para\n\n| 항목 | 수량 |\n|---|---|\n| 가 | 1 |\n";
+// Paragraph 3 (0-based: T, intro para, table anchor, list para) is a numbered-list item at
+// head_level 1 — indent_para/outdent_para (07-04) need a real list item, which no other kind in
+// this fixture produces (insert_para's inline style/char cannot express head_type/numbering).
+const KIND_COVERAGE_MD: &str =
+    "# T\n\nintro para\n\n| 항목 | 수량 |\n|---|---|\n| 가 | 1 |\n\n1. list para\n";
 
 /// 최소 유효 PNG(시그니처+IHDR) — image_pixel_size가 치수를 읽고 writer가 바이트를
 /// 그대로 임베드한다(디코딩은 하지 않음; cli.rs write_min_png와 동일).
@@ -206,28 +210,31 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
     std::fs::write(path, &png).unwrap();
 }
 
-/// All 31 typed edit kinds through one flat `edit --ops` run (plan 06-02 W2-T1b).
+/// All 33 typed edit kinds through one flat `edit --ops` run (plan 06-02 W2-T1b).
 /// The kind-coverage fixture chains the paragraph-anchored kinds off each other,
 /// exercises the table kinds on the inserted 3x2 table, and deletes what it created
 /// (clone table, image, field, bookmark, doomed para). The run must exit success:
 /// every kind that fails to apply either aborts or pushes an unapplied entry, and a
 /// non-empty unapplied list exits nonzero before an output is published — that is
-/// the all-38-applied proxy for the kinds with no text-observable effect (set_meta,
-/// set_page, set_format/set_align/set_para, row/col surgery, set_cell_para,
-/// style_tables, delete_field, delete_bookmark). The text- and model-level
-/// assertions mirror the verified binary drive: replace payloads, field/hyperlink
-/// display text, the 라벨값/수정값 row on the first table, the untouched input form
-/// table as the second table, the clone removed, the doomed para gone, the inserted
-/// picture deleted from its anchor paragraph, and the seal left as a floating
-/// Picture with both image parts shipped in the package.
+/// the all-applied proxy for the kinds with no text-observable effect (set_meta,
+/// set_page, set_format/set_align/set_para, indent_para/outdent_para, row/col
+/// surgery, set_cell_para, style_tables, delete_field, delete_bookmark). The text-
+/// and model-level assertions mirror the verified binary drive: replace payloads,
+/// field/hyperlink display text, the 라벨값/수정값 row on the first table, the
+/// untouched input form table as the second table, the clone removed, the doomed
+/// para gone, the inserted picture deleted from its anchor paragraph, the seal left
+/// as a floating Picture with both image parts shipped in the package, and the
+/// indent/outdent round trip leaving the list paragraph back at its original level.
 #[test]
-fn kind_coverage_all_31() {
+fn kind_coverage_all_33() {
     // Future renames of a typed edit kind fail loudly here.
-    const ALL_KINDS: [&str; 31] = [
+    const ALL_KINDS: [&str; 33] = [
         "set_meta",
         "set_page",
         "insert_para",
         "move_para",
+        "indent_para",
+        "outdent_para",
         "replace",
         "create_field",
         "set_field",
@@ -278,8 +285,8 @@ fn kind_coverage_all_31() {
         })
         .collect();
     assert!(
-        ops.len() >= 31,
-        "fixture must carry at least 31 ops, got {}",
+        ops.len() >= 33,
+        "fixture must carry at least 33 ops, got {}",
         ops.len()
     );
     let mut seen = ops;
@@ -289,7 +296,7 @@ fn kind_coverage_all_31() {
     expected.sort_unstable();
     assert_eq!(
         seen, expected,
-        "fixture op set must equal the 31 typed edit kinds"
+        "fixture op set must equal the 33 typed edit kinds"
     );
 
     // Schema gate mirrors load_ops: Draft 2020-12 against the committed schema.
@@ -446,6 +453,27 @@ fn kind_coverage_all_31() {
     assert!(
         doc.bin_streams.len() >= 2,
         "insert_image and seal must ship their image parts in the package"
+    );
+
+    // Model-level proxy for indent_para/outdent_para: the round trip (indent then outdent on
+    // the same paragraph, near the top of the fixture) must leave "list para" back at its
+    // original head_level, and still a numbered list item (head_type unchanged).
+    let list_para = doc
+        .sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .find(|paragraph| paragraph.plain_text() == "list para")
+        .expect("list para must survive the batch");
+    let list_shape = &doc.header.para_shapes[list_para.para_shape.0 as usize];
+    assert_eq!(
+        list_shape.head_type(),
+        2,
+        "indent_para/outdent_para must not change head_type"
+    );
+    assert_eq!(
+        list_shape.head_level(),
+        1,
+        "an indent immediately followed by an outdent must round-trip to the original level"
     );
 }
 
@@ -2424,7 +2452,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "df578eb84024225e236a404c16fb4e526ab08763a191e5b04724415f21a14f73",
+        actual, "c0b9f544e2156514874d6a6b22c45e8b2f60ac47fde9bfa49b22cc70d9652645",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -3269,4 +3297,333 @@ fn cell_path_prefix(doc: &hwp_model::Document, row: u16, col: u16) -> Vec<usize>
         }
     }
     panic!("cell ({row},{col}) not found");
+}
+
+// ── Phase 7 plan 07-04: list indent/outdent (EDT-05) ────────────────────────────
+
+/// A numbered list of four level-1 items (0-based paragraphs 1..=4); items 2 and 4 carry
+/// identical text "같은 항목" for the anchor-collision proof. Paragraph 5 is a plain,
+/// non-list paragraph for the rejection case. Paragraph 0 is the "# T" heading — head_type 0,
+/// not a list item, but its plain-text render embeds a "1. " outline prefix (an unrelated
+/// heading-numbering feature), so paragraph 5 is the unambiguous non-list target instead.
+const INDENT_OUTDENT_MD: &str =
+    "# T\n\n1. 첫 항목\n\n2. 같은 항목\n\n3. 중간 항목\n\n4. 같은 항목\n\n일반 문단\n";
+
+/// `indent_para` on a numbered paragraph at level 2 produces level 3, and a following
+/// `outdent_para` brings it back to level 2 (behavior spec) — with no other attr1 bit disturbed
+/// along the way.
+#[test]
+fn indent_then_outdent_basic_level_shift() {
+    let dir = test_dir("indent-basic");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, INDENT_OUTDENT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let before_ps = before_doc.header.para_shapes
+        [before_doc.sections[0].paragraphs[1].para_shape.0 as usize]
+        .clone();
+    assert_eq!(before_ps.head_level(), 1);
+
+    // Two indents (1 -> 2 -> 3), then one outdent (3 -> 2), in one batch.
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}},
+          {"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}},
+          {"op":"outdent_para","address":{"at":{"section":0,"paragraph":1}}}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "indent/outdent batch must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let after_ps = &after.header.para_shapes[after.sections[0].paragraphs[1].para_shape.0 as usize];
+    assert_eq!(after_ps.head_level(), 2, "1 -> 2 -> 3 -> 2");
+    assert_eq!(
+        after_ps.head_type(),
+        before_ps.head_type(),
+        "head_type must not change"
+    );
+    let other_bits_before = before_ps.attr1 & !(0x7 << 25);
+    let other_bits_after = after_ps.attr1 & !(0x7 << 25);
+    assert_eq!(
+        other_bits_after, other_bits_before,
+        "no other attr1 bit may change"
+    );
+}
+
+/// Six successive indents from level 1 reach level 7; the seventh must fail the WHOLE batch
+/// (A3: fail loudly rather than clamp) with no output file.
+#[test]
+fn indent_para_at_top_of_range_fails_no_output() {
+    let dir = test_dir("indent-boundary");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, INDENT_OUTDENT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let one_indent = r#"{"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}}"#;
+    let ops_list = format!("[{}]", [one_indent; 7].join(","));
+    let ops = dir.join("ops.json");
+    std::fs::write(&ops, &ops_list).unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "the 7th indent (level 7 -> 8) must fail"
+    );
+    assert!(
+        !output.exists(),
+        "no output file may be created when a boundary op fails"
+    );
+}
+
+/// `outdent_para` at level 1 fails the same way as indent at level 7 — no output file.
+#[test]
+fn outdent_para_at_bottom_of_range_fails_no_output() {
+    let dir = test_dir("outdent-boundary");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, INDENT_OUTDENT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"outdent_para","address":{"at":{"section":0,"paragraph":1}}}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(!run.status.success(), "outdent at level 1 must fail");
+    assert!(
+        !output.exists(),
+        "no output file may be created when a boundary op fails"
+    );
+}
+
+/// Either op on a paragraph whose `head_type` is neither numbered nor bullet is rejected —
+/// never inventing a list — with no output file.
+#[test]
+fn indent_para_on_non_list_paragraph_rejected_no_output() {
+    let dir = test_dir("indent-non-list");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, INDENT_OUTDENT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    // Paragraph 5 = "일반 문단", not a list item.
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"indent_para","address":{"at":{"section":0,"paragraph":5}}}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "indent on a non-list paragraph must be rejected"
+    );
+    assert!(!output.exists());
+}
+
+/// An addressed indent on the SECOND of two identical-text list items changes only that one;
+/// the first item's `ParaShapeId` and `head_level` are unchanged (EDT-05 success criterion 1).
+#[test]
+fn addressed_indent_para_hits_only_the_named_duplicate() {
+    let dir = test_dir("indent-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, INDENT_OUTDENT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let first_before = before_doc.sections[0].paragraphs[2].clone();
+    assert_eq!(first_before.plain_text(), "같은 항목");
+    assert_eq!(
+        before_doc.sections[0].paragraphs[4].plain_text(),
+        "같은 항목"
+    );
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"indent_para","address":{"at":{"section":0,"paragraph":4}}}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed indent must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let first_after = &after.sections[0].paragraphs[2];
+    assert_eq!(
+        first_after.para_shape, first_before.para_shape,
+        "the first (untouched) occurrence's ParaShapeId must be unchanged"
+    );
+    let first_after_ps = &after.header.para_shapes[first_after.para_shape.0 as usize];
+    assert_eq!(
+        first_after_ps.head_level(),
+        1,
+        "the first occurrence's level must be unchanged"
+    );
+
+    let second_after = &after.sections[0].paragraphs[4];
+    let second_after_ps = &after.header.para_shapes[second_after.para_shape.0 as usize];
+    assert_eq!(
+        second_after_ps.head_level(),
+        2,
+        "the addressed (second) occurrence must be indented"
+    );
+}
+
+/// A repeated indent/outdent pair on the same paragraph reuses the same two `ParaShape` entries
+/// (level 1, level 2) through `find_or_insert_para` — the table grows by exactly one entry
+/// across four ops, not four.
+#[test]
+fn repeated_indent_outdent_pair_reuses_para_shapes() {
+    let dir = test_dir("indent-repeat");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, INDENT_OUTDENT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let before_len = before_doc.header.para_shapes.len();
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}},
+          {"op":"outdent_para","address":{"at":{"section":0,"paragraph":1}}},
+          {"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}},
+          {"op":"outdent_para","address":{"at":{"section":0,"paragraph":1}}}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "repeated indent/outdent must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.header.para_shapes.len(),
+        before_len + 1,
+        "only ONE new ParaShape (level 2) should be added across four ops"
+    );
+    let ps = &after.header.para_shapes[after.sections[0].paragraphs[1].para_shape.0 as usize];
+    assert_eq!(
+        ps.head_level(),
+        1,
+        "indent-outdent-indent-outdent must round-trip to level 1"
+    );
+}
+
+/// Neither op ever reads or writes a numbering/bullet definition — `header.numberings` stays
+/// byte-identical before and after.
+#[test]
+fn indent_outdent_never_touches_numbering_definitions() {
+    let dir = test_dir("indent-numbering-untouched");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, INDENT_OUTDENT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let before_numberings = before_doc.header.numberings.clone();
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "indent must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.header.numberings, before_numberings,
+        "no numbering definition may be created or edited"
+    );
 }

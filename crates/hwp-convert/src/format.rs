@@ -315,8 +315,9 @@ fn shift_head_level_at_inner(
     delta: i8,
     pshapes: &mut Vec<ParaShape>,
 ) -> Result<u8, String> {
-    let para = crate::address::paragraph_at_mut(doc, path)
-        .ok_or_else(|| "shift_head_level_at: 주소가 가리키는 문단을 찾을 수 없습니다".to_string())?;
+    let para = crate::address::paragraph_at_mut(doc, path).ok_or_else(|| {
+        "shift_head_level_at: 주소가 가리키는 문단을 찾을 수 없습니다".to_string()
+    })?;
     let ps = pshapes
         .get(para.para_shape.0 as usize)
         .cloned()
@@ -1076,9 +1077,58 @@ mod tests {
 
         let new_level = shift_head_level_at(&mut doc, &path, 1).expect("들여쓰기 성공해야 함");
         assert_eq!(new_level, 2);
-        let ps_after =
-            &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        let ps_after = &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
         assert_eq!(ps_after.head_level(), 2);
+    }
+
+    /// Indent at the top of the representable range (7) and outdent at the bottom (1) both fail
+    /// with a named error rather than clamping (A3); a failed op leaves the level unchanged.
+    #[test]
+    fn shift_head_level_at_경계에서_실패() {
+        let mut doc = from_markdown("1. 항목\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        for _ in 0..6 {
+            shift_head_level_at(&mut doc, &path, 1).unwrap();
+        }
+        let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        assert_eq!(ps.head_level(), 7);
+        let err = shift_head_level_at(&mut doc, &path, 1).unwrap_err();
+        assert!(
+            err.contains("범위"),
+            "경계 오류는 범위를 명시해야 함: {err}"
+        );
+        let ps_after = &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        assert_eq!(
+            ps_after.head_level(),
+            7,
+            "실패한 들여쓰기는 수준을 바꾸면 안 됨"
+        );
+
+        let mut doc2 = from_markdown("1. 항목\n");
+        let err2 = shift_head_level_at(&mut doc2, &path, -1).unwrap_err();
+        assert!(
+            err2.contains("범위"),
+            "경계 오류는 범위를 명시해야 함: {err2}"
+        );
+    }
+
+    /// A paragraph whose `head_type` is neither numbered nor bullet is rejected with its own
+    /// message naming that it is not a list item — never inventing one.
+    #[test]
+    fn shift_head_level_at_비목록_문단_거부() {
+        let mut doc = from_markdown("일반 문단\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let err = shift_head_level_at(&mut doc, &path, 1).unwrap_err();
+        assert!(
+            err.contains("목록 항목"),
+            "목록 항목이 아니라는 메시지여야 함: {err}"
+        );
     }
 
     #[test]

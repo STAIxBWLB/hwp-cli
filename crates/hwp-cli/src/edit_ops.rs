@@ -413,6 +413,12 @@ pub(crate) enum OpsEntry {
         address: AddressSpec,
         to: MoveToSpec,
     },
+    IndentPara {
+        address: AddressSpec,
+    },
+    OutdentPara {
+        address: AddressSpec,
+    },
     AddRow {
         table: usize,
         at: Option<u16>,
@@ -701,6 +707,14 @@ impl OpsEntry {
                     to_address,
                     before,
                 })
+            }
+            OpsEntry::IndentPara { address } => {
+                let address = address.into_address()?;
+                Ok(TypedEditOperation::IndentPara { address })
+            }
+            OpsEntry::OutdentPara { address } => {
+                let address = address.into_address()?;
+                Ok(TypedEditOperation::OutdentPara { address })
             }
             OpsEntry::AddRow {
                 table,

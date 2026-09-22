@@ -149,6 +149,16 @@ pub(crate) enum TypedEditOperation {
         /// `true` = before `to_address`'s paragraph, `false` = after.
         before: bool,
     },
+    /// Raises the addressed paragraph's list level by one, within its existing numbering or
+    /// bullet definition (A3). Address-only — there is no anchor/pattern alternative.
+    IndentPara {
+        address: hwp_convert::address::Address,
+    },
+    /// Lowers the addressed paragraph's list level by one, within its existing numbering or
+    /// bullet definition (A3). Address-only — there is no anchor/pattern alternative.
+    OutdentPara {
+        address: hwp_convert::address::Address,
+    },
     AddRow {
         table: usize,
         at: Option<u16>,
@@ -1538,7 +1548,9 @@ fn preflight_addressed_ops(
                 address: Some(address),
                 ..
             }
-            | TypedEditOperation::MoveParagraph { address, .. } => {
+            | TypedEditOperation::MoveParagraph { address, .. }
+            | TypedEditOperation::IndentPara { address }
+            | TypedEditOperation::OutdentPara { address } => {
                 Some((address, hwp_convert::address::Granularity::Paragraph))
             }
             _ => None,
@@ -2447,6 +2459,24 @@ fn apply_typed_operation(
                 .map_err(|error| anyhow::anyhow!(error))?;
             eprintln!("문단 이동(주소): {from_current} → {to_list} index={to_index}");
             offsets.record_move(&from_current, &to_list);
+            *edits += 1;
+        }
+        TypedEditOperation::IndentPara { .. } => {
+            let target =
+                resolved_target.expect("preflight_addressed_ops resolved every indent_para op");
+            let current_path = offsets.current_path(&target.path)?;
+            let new_level = hwp_convert::shift_head_level_at(doc, &current_path, 1)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!("문단 들여쓰기(주소): {current_path} → 수준 {new_level}");
+            *edits += 1;
+        }
+        TypedEditOperation::OutdentPara { .. } => {
+            let target =
+                resolved_target.expect("preflight_addressed_ops resolved every outdent_para op");
+            let current_path = offsets.current_path(&target.path)?;
+            let new_level = hwp_convert::shift_head_level_at(doc, &current_path, -1)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!("문단 내어쓰기(주소): {current_path} → 수준 {new_level}");
             *edits += 1;
         }
         TypedEditOperation::AddRow {

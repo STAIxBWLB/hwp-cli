@@ -8,6 +8,14 @@
     }
   },
   {
+    "op": "indent_para",
+    "address": { "at": { "section": 0, "paragraph": 3 } }
+  },
+  {
+    "op": "outdent_para",
+    "address": { "at": { "section": 0, "paragraph": 3 } }
+  },
+  {
     "op": "set_meta",
     "key": "title",
     "value": "w2-t1a"

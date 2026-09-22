@@ -306,10 +306,13 @@ impl ParaShape {
     /// `head_level`'s own doc comment). Writes into attr1 bits 25..=27 with a three-bit mask,
     /// touching no other bit, and keeps `list_level` consistent with what `head_level` reads
     /// back by updating it too when it is already `Some` (it always wins over the attr1 bits).
-    ///
-    /// TDD RED (Task 2, indent/outdent): stubbed as a no-op until the round-trip test proves it
-    /// wrong for the right reason.
-    pub fn set_head_level(&mut self, _level: u8) {}
+    pub fn set_head_level(&mut self, level: u8) {
+        let level = level.clamp(1, 7);
+        self.attr1 = (self.attr1 & !(0x7 << 25)) | (u32::from(level) << 25);
+        if self.list_level.is_some() {
+            self.list_level = Some(level);
+        }
+    }
 
     /// 한글 줄나눔 (bit7): true=KEEP_WORD(어절 단위), false=BREAK_WORD(글자 단위).
     pub fn break_non_latin_keep_word(&self) -> bool {
