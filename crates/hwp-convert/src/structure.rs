@@ -9,10 +9,12 @@
 //! 단일화됐다. 여기서는 문단 수준 편집만 둔다.
 
 use hwp_model::{
-    CharShapeId, Control, Document, HwpChar, ParaShapeId, Paragraph, StyleId, ctrl_char,
+    CharShapeId, Control, Document, GenericControl, HwpChar, ParaShapeId, Paragraph, StyleId,
+    ctrl_char,
 };
 
 use crate::edit::find_match;
+use crate::segment_id::SegmentPath;
 
 /// 텍스트로 최소 문단을 만든다(글자/문단 모양 상속). 빈 텍스트면 빈 문단.
 fn make_paragraph(
@@ -242,6 +244,136 @@ pub fn delete_paragraph(doc: &mut Document, matching: &str) -> usize {
         walk_para_lists(&mut section.paragraphs, &mut visit);
     }
     count
+}
+
+// ── Address-driven structural primitives (EDT-05, Phase 7 plan 07-03) ──────────────────
+
+/// Returns the mutable paragraph list containing the paragraph named by `path`, together with
+/// that paragraph's own local index within it. Mirrors `address::paragraph_at_mut`'s descent
+/// (section -> top-level paragraph -> table cell / generic-control paragraph list via `.get_mut()`
+/// only, same `raw_children` skip) but stops one step short: structural ops need to splice the
+/// *list* (insert/remove), not mutate the paragraph itself.
+fn list_at_mut<'d>(doc: &'d mut Document, path: &SegmentPath) -> Option<(&'d mut Vec<Paragraph>, usize)> {
+    let section = doc.sections.get_mut(path.section)?;
+    let indices = &path.indices;
+    if indices.is_empty() {
+        return None;
+    }
+    if indices.len() == 1 {
+        return Some((&mut section.paragraphs, indices[0]));
+    }
+    let mut para = section.paragraphs.get_mut(indices[0])?;
+    let mut i = 1;
+    loop {
+        let control = para.controls.get_mut(indices[i])?;
+        match control {
+            Control::Table(table) => {
+                let cell_index = *indices.get(i + 1)?;
+                let cell = table.cells.get_mut(cell_index)?;
+                let p_index = *indices.get(i + 2)?;
+                if i + 3 == indices.len() {
+                    return Some((&mut cell.paragraphs, p_index));
+                }
+                para = cell.paragraphs.get_mut(p_index)?;
+                i += 3;
+            }
+            Control::Generic(generic) if generic.raw_children.is_empty() => {
+                let seq = *indices.get(i + 1)?;
+                if i + 2 == indices.len() {
+                    return flat_list_at_mut(generic, seq);
+                }
+                para = flat_paragraph_step_mut(generic, seq)?;
+                i += 2;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The specific `ParagraphList` (and local index within it) that flat sequential index `seq`
+/// falls into, across `generic.paragraph_lists` concatenated in order — mirrors
+/// `address.rs::flat_paragraph`'s numbering, one level up (list, not paragraph).
+fn flat_list_at_mut(
+    generic: &mut GenericControl,
+    seq: usize,
+) -> Option<(&mut Vec<Paragraph>, usize)> {
+    let mut remaining = seq;
+    for list in &mut generic.paragraph_lists {
+        if remaining < list.paragraphs.len() {
+            return Some((&mut list.paragraphs, remaining));
+        }
+        remaining -= list.paragraphs.len();
+    }
+    None
+}
+
+/// The paragraph at flat index `seq`, for descending further below a generic control that is
+/// not `path`'s final step. Same numbering as [`flat_list_at_mut`].
+fn flat_paragraph_step_mut(generic: &mut GenericControl, seq: usize) -> Option<&mut Paragraph> {
+    let mut remaining = seq;
+    for list in &mut generic.paragraph_lists {
+        if remaining < list.paragraphs.len() {
+            return Some(&mut list.paragraphs[remaining]);
+        }
+        remaining -= list.paragraphs.len();
+    }
+    None
+}
+
+/// The list a path belongs to, as an equality key: section plus every index except the
+/// paragraph's own trailing one. Two paths with the same identity name the same containing list
+/// (planner decision 3's "list identity").
+fn list_identity(path: &SegmentPath) -> (usize, &[usize]) {
+    let n = path.indices.len();
+    (path.section, &path.indices[..n.saturating_sub(1)])
+}
+
+/// Moves the paragraph at `from` to index `to_index` of the list identified by `to_list` (only
+/// `to_list`'s containing list matters — its own trailing index is not used; the caller supplies
+/// `to_index` directly, already folding in `before`/`after` positioning). The SAME `Paragraph`
+/// value is removed and re-spliced, never cloned, so `instance_id` survives unchanged — this is
+/// exactly what distinguishes a move from a copy. Do not call `reassign_para_ids` or any clone
+/// helper here; those exist for `clone_table`'s deep-copy case, not for a move. A moved
+/// paragraph's anchored controls (tables, pictures) travel with it automatically, since the
+/// whole `Paragraph` value moves and `controls` is never touched.
+///
+/// Refuses when: the source paragraph carries `Control::SectionDef` (matching
+/// `delete_paragraph`'s existing invariant — relocating a section's own definition paragraph is
+/// exactly as unsafe as deleting it); the source list would be left empty; or `to_index` lands
+/// beyond the destination list's length, computed AFTER accounting for the source's removal when
+/// both paths name the same list (T-07-11: a checked bound, never a silent clamp).
+pub fn move_paragraph(
+    _doc: &mut Document,
+    _from: &SegmentPath,
+    _to_list: &SegmentPath,
+    _to_index: usize,
+) -> Result<(), String> {
+    // RED stub (07-03 Task 1 TDD): no-op success, real splice lands in the GREEN commit.
+    Ok(())
+}
+
+/// Inserts a paragraph before or after `at`, carrying caller-supplied shape ids rather than
+/// inheriting the anchor's template (D-08: a creating op carries its own properties, since a
+/// later op can never address content this one just created). Mirrors [`insert_paragraph`]'s
+/// splice-and-fixup idiom; only the target-finding changes, from a text match to a resolved
+/// address.
+pub fn insert_paragraph_at(
+    _doc: &mut Document,
+    _at: &SegmentPath,
+    _before: bool,
+    _text: &str,
+    _shape: (ParaShapeId, StyleId, CharShapeId),
+) -> Result<(), String> {
+    // RED stub (07-03 Task 1 TDD): no-op success, real splice lands in the GREEN commit.
+    Ok(())
+}
+
+/// Deletes the paragraph at `at`. Keeps `delete_paragraph`'s two invariants for the one
+/// addressed paragraph: refuses on a section-definition paragraph, and refuses when its list
+/// would be left empty (a section/cell/caption with zero paragraphs is corruption to Hancom, A6).
+pub fn delete_paragraph_at(_doc: &mut Document, _at: &SegmentPath) -> Result<(), String> {
+    // RED stub (07-03 Task 1 TDD): no-op success, real removal lands in the GREEN commit.
+    Ok(())
 }
 
 #[cfg(test)]
@@ -539,5 +671,101 @@ mod tests {
             })
             .expect("개체 없음");
         assert_eq!(g.paragraph_lists[0].paragraphs.len(), 1, "안쪽 IR 불변");
+    }
+
+    // ── move_paragraph / insert_paragraph_at / delete_paragraph_at (07-03 Task 1) ─────────
+
+    #[test]
+    fn move_paragraph_문단_이동_id_보존() {
+        let mut doc = from_markdown("첫 문단\n\n둘째 문단\n\n셋째 문단");
+        doc.sections[0].paragraphs[2].header.instance_id = 777;
+        let from = SegmentPath {
+            section: 0,
+            indices: vec![2],
+        };
+        let to_list = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        move_paragraph(&mut doc, &from, &to_list, 0).unwrap();
+        let n: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
+        assert_eq!(n, 3, "길이 불변");
+        let moved = &doc.sections[0].paragraphs[0];
+        assert!(
+            moved.plain_text().contains("셋째"),
+            "맨 앞으로 이동: {:?}",
+            moved.plain_text()
+        );
+        assert_eq!(moved.header.instance_id, 777, "instance_id 불변(복제 아님)");
+    }
+
+    #[test]
+    fn move_paragraph_앵커_컨트롤도_함께_이동() {
+        let mut doc =
+            from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n\n마지막 문단");
+        let table_para_idx = doc.sections[0]
+            .paragraphs
+            .iter()
+            .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+            .expect("표를 가진 문단이 있어야 함");
+        let from = SegmentPath {
+            section: 0,
+            indices: vec![table_para_idx],
+        };
+        let to_list = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        move_paragraph(&mut doc, &from, &to_list, 0).unwrap();
+        let moved = &doc.sections[0].paragraphs[0];
+        assert!(
+            moved.controls.iter().any(|c| matches!(c, Control::Table(_))),
+            "표 컨트롤이 이동한 문단에 그대로 있어야 함"
+        );
+    }
+
+    #[test]
+    fn delete_paragraph_at_단일_문단_리스트는_거부() {
+        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
+        let top_idx = doc.sections[0]
+            .paragraphs
+            .iter()
+            .position(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))))
+            .expect("표를 가진 문단이 있어야 함");
+        let ctrl_idx = doc.sections[0].paragraphs[top_idx]
+            .controls
+            .iter()
+            .position(|c| matches!(c, Control::Table(_)))
+            .expect("표 컨트롤 인덱스");
+        let at = SegmentPath {
+            section: 0,
+            indices: vec![top_idx, ctrl_idx, 0, 0],
+        };
+        let err = delete_paragraph_at(&mut doc, &at).unwrap_err();
+        assert!(err.contains("하나뿐"), "{err}");
+    }
+
+    #[test]
+    fn insert_paragraph_at_전달된_모양을_적용한다() {
+        let mut doc = from_markdown("이웃 문단");
+        let at = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let shape = (ParaShapeId(7), StyleId(3), CharShapeId(5));
+        insert_paragraph_at(&mut doc, &at, false, "새 문단", shape).unwrap();
+        assert_eq!(doc.sections[0].paragraphs.len(), 2, "삽입됨");
+        let inserted = &doc.sections[0].paragraphs[1];
+        assert_eq!(inserted.para_shape, ParaShapeId(7), "전달된 para_shape");
+        assert_eq!(inserted.style, StyleId(3), "전달된 style");
+        assert_eq!(
+            inserted.char_shape_runs[0].1,
+            CharShapeId(5),
+            "전달된 char_shape (이웃 상속 아님)"
+        );
+        assert_ne!(
+            inserted.para_shape, doc.sections[0].paragraphs[0].para_shape,
+            "이웃과 다른 값이어야 상속이 아님을 증명"
+        );
     }
 }
