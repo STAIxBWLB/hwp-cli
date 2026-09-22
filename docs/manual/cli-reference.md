@@ -283,6 +283,8 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--style-tables` | `<STYLE_TABLES>` |  | Style every eligible table (header shade/bold/center, content-proportional widths) under an official-document preset: official, report, plan, notice, minutes, or press. Skips single-column tables (frame blocks); byte-stable when applied twice |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
+| `--report` | `<FILE>` |  | Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched, and the segment ids it changed as before/after pairs. Unlike "hwp compose --report" (a bare flag printing to stdout), this one takes a file path, matching --loss-report's shape |
+| `--dry-run` |  |  | Apply the whole batch in memory and run the real writer and verifier, but publish no output file; prints the edit-report-v1 report to stdout unless --report is also given |
 
 ## `hwp fields`
 
