@@ -21,14 +21,16 @@ pub(crate) const MAX_OPS_BYTES: u64 = 16 * 1024 * 1024;
 /// 편집 연산 항목 수 상한. 스키마 maxItems와 같은 값 — 파싱 뒤 한 번 더 검사한다.
 pub(crate) const MAX_OPS_ITEMS: usize = 10_000;
 
-/// `*_mm` 필드의 상한 (WR-02). 스키마의 `unit` 패턴(`^\d+(\.\d+)?(mm|pt|%)$`)은 부호를
-/// 허용하지 않지만 자릿수는 제한하지 않고, f32 오버플로는 조용히 `inf`가 되므로(패닉
-/// 없이 `mm_to_hwpunit`이 `i32::MAX`로 saturate), 파서가 직접 유한·범위 검사를 한다.
-/// 5000mm(5m)는 어떤 실제 문서 치수(페이지·여백·이미지 크기)보다도 훨씬 크다.
+/// Upper bound for `*_mm` fields (WR-02). The schema's `unit` pattern
+/// (`^\d+(\.\d+)?(mm|pt|%)$`) forbids a sign but does not cap the digit count, and an
+/// f32 overflow silently yields `inf` (no panic: `mm_to_hwpunit` then saturates to
+/// `i32::MAX`), so the parser checks finiteness and range itself. 5000mm (5m) is far
+/// beyond any real document dimension — page, margin or image size.
 const MM_MAX: f32 = 5000.0;
-/// `*_pt` 필드(글자 크기, 고정 줄 간격)의 상한. 두 용례 모두 음수가 의미 없다.
+/// Upper bound for `*_pt` fields (font size, fixed line spacing). A negative value is
+/// meaningless for both.
 const PT_MAX: f32 = 1000.0;
-/// `*_pct` 필드(줄 간격 비율)의 상한. 음수 비율은 의미 없다.
+/// Upper bound for `*_pct` fields (line-spacing ratio). A negative ratio is meaningless.
 const PCT_MAX: f32 = 1000.0;
 
 /// 편집 연산 파일(`"-"`는 stdin)을 상한 안에서 UTF-8로 읽는다.
