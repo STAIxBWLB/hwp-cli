@@ -127,9 +127,27 @@ pub(crate) enum TypedEditOperation {
         anchor: String,
         text: String,
         before: bool,
+        /// Address selector (D-12), alternative to `anchor`.
+        address: Option<hwp_convert::address::Address>,
+        /// Inline paragraph-shape properties for the new paragraph itself (D-08) — reuses
+        /// `SetPara`'s `ParaProps`, not a new property vocabulary.
+        style: Option<hwp_convert::ParaProps>,
+        /// Inline char-format properties for the new paragraph's own run (D-08) — reuses
+        /// `SetFormat`'s `CharFormat`.
+        char: Option<CharFormat>,
     },
     DeletePara {
         matching: String,
+        /// Address selector (D-12), alternative to `matching`.
+        address: Option<hwp_convert::address::Address>,
+    },
+    /// Moves the paragraph at `address` to before/after the paragraph named by `to_address`
+    /// (D-17: both must resolve to the same section — checked during preflight, not here).
+    MoveParagraph {
+        address: hwp_convert::address::Address,
+        to_address: hwp_convert::address::Address,
+        /// `true` = before `to_address`'s paragraph, `false` = after.
+        before: bool,
     },
     AddRow {
         table: usize,
@@ -225,6 +243,7 @@ impl TypedEditOperation {
                 | Self::Seal { .. }
                 | Self::InsertPara { .. }
                 | Self::DeletePara { .. }
+                | Self::MoveParagraph { .. }
                 | Self::AddRow { .. }
                 | Self::AddCol { .. }
                 | Self::DeleteRow { .. }
@@ -695,24 +714,39 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // aborts on any failure (Task 1 decision 6) — no `&& !plan.allow_partial` here, unlike the
     // label preflight above.
     let resolved_addresses = preflight_addressed_ops(plan, &doc)?;
-    let conflicts = detect_conflicts(plan, &doc, &resolved_addresses);
+    // Sibling pass: resolves move_para's DESTINATION reference (preflight_addressed_ops already
+    // covers its SOURCE address above), same D-04/D-06 always-abort discipline.
+    let resolved_move_destinations = preflight_move_destinations(plan, &doc)?;
+    let conflicts = detect_conflicts(plan, &doc, &resolved_addresses, &resolved_move_destinations);
     if !conflicts.is_empty() {
         anyhow::bail!(
-            "길이를 바꿀 수 있는 연산과 이후 run 범위 연산이 같은 문단을 가리켜 충돌합니다:\n{}",
+            "주소 지정 편집이 서로 충돌합니다:\n{}",
             conflicts
                 .iter()
-                .map(|conflict| format!(
-                    "op[{}]이 문단 {}의 길이를 바꿀 수 있어 op[{}]의 고정된 run 범위가 무효화됩니다",
-                    conflict.earlier_index, conflict.paragraph, conflict.later_index
-                ))
+                .map(|conflict| match conflict.kind {
+                    ConflictKind::LengthChange => format!(
+                        "op[{}]이 문단 {}의 길이를 바꿀 수 있어 op[{}]의 고정된 run 범위가 무효화됩니다",
+                        conflict.earlier_index, conflict.paragraph, conflict.later_index
+                    ),
+                    ConflictKind::Removal => format!(
+                        "op[{}]이 문단 {}을(를) 제거하여 op[{}]이 같은 주소(또는 그 하위 경로)를 가리킬 수 없습니다",
+                        conflict.earlier_index, conflict.paragraph, conflict.later_index
+                    ),
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         );
     }
     let mut resolved_addresses = resolved_addresses.into_iter();
+    let mut resolved_move_destinations = resolved_move_destinations.into_iter();
     let mut resolved_label_edits = label_preflight.resolved.into_iter();
     let mut edits = 0usize;
     let mut unapplied = label_preflight.unapplied;
+    // Per-list index-drift tracker (planner decision 3): threaded through the apply loop below
+    // so an addressed insert_para/delete_para/move_para computes its CURRENT index from its
+    // preflight-resolved ORIGINAL index plus whatever earlier structural ops in this batch have
+    // already done to the same list.
+    let mut offsets = IndexOffsets::default();
     // 구조 편집(문단/행 추가·삭제·이미지 삽입)은 합성 경로로 써야 한다 — 삽입 문단/행
     // 불변식 + 그림 도형 레코드 합성(빈-extras Picture)이 적용되도록.
     let structural = plan.operations.iter().any(EditOperation::is_structural)
@@ -1289,6 +1323,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut unapplied,
             &mut resolved_label_edits,
             &mut resolved_addresses,
+            &mut resolved_move_destinations,
+            &mut offsets,
         )?;
     }
 
@@ -1493,7 +1529,18 @@ fn preflight_addressed_ops(
             | TypedEditOperation::Replace {
                 address: Some(address),
                 ..
-            } => Some((address, hwp_convert::address::Granularity::Paragraph)),
+            }
+            | TypedEditOperation::InsertPara {
+                address: Some(address),
+                ..
+            }
+            | TypedEditOperation::DeletePara {
+                address: Some(address),
+                ..
+            }
+            | TypedEditOperation::MoveParagraph { address, .. } => {
+                Some((address, hwp_convert::address::Granularity::Paragraph))
+            }
             _ => None,
         };
         let Some((address, granularity)) = target else {
@@ -1520,31 +1567,247 @@ fn preflight_addressed_ops(
     Ok(resolved)
 }
 
-/// A pair the widened preflight rejects (07-02, T-07-26): `earlier_index` can change
-/// `paragraph`'s WCHAR length, and `later_index` addresses a run range inside that same
-/// paragraph, whose `[w_start, w_end)` was resolved against the PRE-BATCH paragraph (D-06) and
-/// would no longer describe the mutated one (planner decision 1).
+/// Resolves `move_para`'s DESTINATION reference address (`to_address`) for every op in the
+/// batch — a sibling pass to [`preflight_addressed_ops`], which already covers `move_para`'s
+/// SOURCE `address`. One slot per `plan.typed_operations` entry, `Some` only for
+/// `MoveParagraph`, consumed in the same lockstep the apply loop already uses for
+/// `resolved_addresses`/`resolved_label_edits`. Same D-04/D-06 discipline: resolved against
+/// `doc` as loaded, always aborts on any failure.
+fn preflight_move_destinations(
+    plan: &EditPlan,
+    doc: &hwp_model::Document,
+) -> anyhow::Result<Vec<Option<hwp_convert::address::ResolvedTarget>>> {
+    let mut resolved = Vec::with_capacity(plan.typed_operations.len());
+    let mut failures = Vec::new();
+    for (index, operation) in plan.typed_operations.iter().enumerate() {
+        let TypedEditOperation::MoveParagraph {
+            address,
+            to_address,
+            ..
+        } = operation
+        else {
+            resolved.push(None);
+            continue;
+        };
+        // D-17: source and destination must name the same section — rejected here, never
+        // attempted (it would inherit the G1 section re-emission failure mode nothing tests).
+        if address.section != to_address.section {
+            failures.push(format!(
+                "op[{index}] move_para: 원본 구역({})과 대상 구역({})이 다릅니다 — 구역 간 이동은 지원하지 않습니다",
+                address.section, to_address.section
+            ));
+            resolved.push(None);
+            continue;
+        }
+        match hwp_convert::address::resolve(
+            doc,
+            to_address,
+            hwp_convert::address::Granularity::Paragraph,
+        ) {
+            Ok(target) => resolved.push(Some(target)),
+            Err(error) => {
+                failures.push(format!(
+                    "op[{index}] to.{} — {error}",
+                    describe_address(to_address)
+                ));
+                resolved.push(None);
+            }
+        }
+    }
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "이동 대상 주소를 해석할 수 없는 편집 연산이 있습니다:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(resolved)
+}
+
+/// Per-list running index delta for addressed structural ops (planner decision 3, T-07-10/
+/// T-07-11). Keys on list identity — the resolved path above the paragraph's own index: the
+/// section for a top-level list, or the chain down to the containing cell/control for a nested
+/// one — so a delete/insert/move in one list never perturbs a sibling list's indices. Owned by
+/// `execute()`, threaded through the apply loop. Only address-driven `insert_para`/`delete_para`/
+/// `move_para` read and update it: pattern-form structural ops are unaddressed and always
+/// re-search the current document by content, so they carry no tracked offset.
+#[derive(Default)]
+struct IndexOffsets(std::collections::HashMap<(usize, Vec<usize>), i64>);
+
+impl IndexOffsets {
+    fn list_id(path: &hwp_convert::SegmentPath) -> (usize, Vec<usize>) {
+        (path.section, list_prefix(path).to_vec())
+    }
+
+    /// The CURRENT index of the paragraph resolved (during preflight) at `original_path`,
+    /// against the pre-batch document: its original trailing index plus its list's accumulated
+    /// delta so far. Checked (T-07-11): an internal error aborts the run rather than clamping.
+    fn current_index(&self, original_path: &hwp_convert::SegmentPath) -> anyhow::Result<usize> {
+        let original = *original_path
+            .indices
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("내부 오류: 빈 주소 경로"))?;
+        let delta = self
+            .0
+            .get(&Self::list_id(original_path))
+            .copied()
+            .unwrap_or(0);
+        let current = i64::try_from(original)
+            .ok()
+            .and_then(|original| original.checked_add(delta))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "내부 오류: 문단 오프셋 계산이 범위를 벗어났습니다 (원래={original}, delta={delta})"
+                )
+            })?;
+        usize::try_from(current).map_err(|_| {
+            anyhow::anyhow!(
+                "내부 오류: 문단 오프셋 계산이 음수 인덱스를 만들었습니다 (원래={original}, delta={delta})"
+            )
+        })
+    }
+
+    /// `original_path` with its trailing index replaced by [`Self::current_index`]'s result.
+    fn current_path(
+        &self,
+        original_path: &hwp_convert::SegmentPath,
+    ) -> anyhow::Result<hwp_convert::SegmentPath> {
+        let current = self.current_index(original_path)?;
+        let mut indices = original_path.indices.clone();
+        *indices
+            .last_mut()
+            .expect("checked non-empty in current_index") = current;
+        Ok(hwp_convert::SegmentPath {
+            section: original_path.section,
+            indices,
+        })
+    }
+
+    fn record_insert(&mut self, list_path: &hwp_convert::SegmentPath) {
+        *self.0.entry(Self::list_id(list_path)).or_insert(0) += 1;
+    }
+
+    fn record_delete(&mut self, list_path: &hwp_convert::SegmentPath) {
+        *self.0.entry(Self::list_id(list_path)).or_insert(0) -= 1;
+    }
+
+    /// A same-list move nets to zero for the list's OWN running delta (the list's total length
+    /// is unchanged); a cross-list move debits the source list and credits the destination.
+    /// (Known limitation, out of this plan's tested scope: a same-list move does not correct
+    /// the delta of paragraphs strictly BETWEEN its source and destination, since this tracker
+    /// is a single scalar per list, not a full per-position remap — see 07-03-SUMMARY.)
+    fn record_move(
+        &mut self,
+        from_path: &hwp_convert::SegmentPath,
+        to_list: &hwp_convert::SegmentPath,
+    ) {
+        let src = Self::list_id(from_path);
+        let dst = Self::list_id(to_list);
+        if src != dst {
+            *self.0.entry(src).or_insert(0) -= 1;
+            *self.0.entry(dst).or_insert(0) += 1;
+        }
+    }
+}
+
+/// The list a path belongs to: section plus every index except the paragraph's own trailing
+/// one. Two paths with the same identity name the same containing list.
+fn list_prefix(path: &hwp_convert::SegmentPath) -> &[usize] {
+    let n = path.indices.len();
+    &path.indices[..n.saturating_sub(1)]
+}
+
+/// The insertion index `hwp_convert::move_paragraph` expects for `to_ref`'s reference paragraph
+/// and `before`/`after` positioning, given that the SAME call is about to remove `from`.
+/// `move_paragraph` interprets its `to_index` against the destination list state AFTER the
+/// source's removal (structure.rs Task 1), so a same-list move whose source sits before the
+/// reference must pre-compensate by one: the reference's own live position shifts down when the
+/// paragraph ahead of it disappears.
+fn move_to_index(
+    from: &hwp_convert::SegmentPath,
+    to_ref: &hwp_convert::SegmentPath,
+    before: bool,
+) -> usize {
+    let same_list = from.section == to_ref.section && list_prefix(from) == list_prefix(to_ref);
+    let src_idx = *from.indices.last().expect("non-empty path");
+    let ref_idx = *to_ref.indices.last().expect("non-empty path");
+    let adjusted_ref_idx = if same_list && src_idx < ref_idx {
+        ref_idx - 1
+    } else {
+        ref_idx
+    };
+    if before {
+        adjusted_ref_idx
+    } else {
+        adjusted_ref_idx + 1
+    }
+}
+
+/// The `(ParaShapeId, StyleId, CharShapeId)` template an addressed `insert_para` inherits by
+/// default when the op carries no `style`/`char` override — the anchor paragraph's OWN current
+/// shape, mirroring what the legacy pattern-form `insert_paragraph` already inherits via
+/// `structure::para_template`. `None` only if `path` no longer resolves (should not happen
+/// post-preflight; the caller treats it as an internal error).
+fn default_shape_at(
+    doc: &mut hwp_model::Document,
+    path: &hwp_convert::SegmentPath,
+) -> Option<(
+    hwp_model::ParaShapeId,
+    hwp_model::StyleId,
+    hwp_model::CharShapeId,
+)> {
+    let para = hwp_convert::address::paragraph_at_mut(doc, path)?;
+    Some((
+        para.para_shape,
+        para.style,
+        para.char_shape_runs
+            .first()
+            .map_or(hwp_model::CharShapeId(0), |run| run.1),
+    ))
+}
+
+/// A pair the widened preflight rejects (07-02 length-change clause, T-07-26; 07-03 removal
+/// clause, T-07-12): `earlier_index` either changes `paragraph`'s length or removes it outright,
+/// and `later_index` targets `paragraph` (or, for the removal clause, a path beneath it) in a
+/// way whose fixed offsets or existence assumption D-06 froze against the PRE-BATCH document and
+/// that no longer holds once `earlier_index` applies.
 struct LengthChangeConflict {
     earlier_index: usize,
     later_index: usize,
     paragraph: hwp_convert::SegmentPath,
+    kind: ConflictKind,
 }
 
-/// Widens the preflight to reject a batch pairing a length-changing op on a paragraph with a
-/// later run-range op inside that same paragraph (planner decisions 1-2, T-07-26). "Can change
-/// the length" (decision 2): an addressed `replace` on that paragraph, or a pattern-form
-/// `replace` whose `from` string occurs in that paragraph in the ORIGINAL document — the
-/// pattern-form arm is a deliberate over-approximation (a batch could in principle be harmless
-/// because an even earlier op already removed the match); rejecting it anyway matches D-07's own
-/// rationale that an overlapping pair is a composition bug, not an intent.
+/// Which of [`detect_conflicts`]'s two clauses produced a [`LengthChangeConflict`] — reported
+/// separately only so `execute()`'s single shared error block can phrase each line accurately;
+/// both kinds still share the one `anyhow::bail!` call site (planner decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictKind {
+    LengthChange,
+    Removal,
+}
+
+/// Widens the preflight to reject an incoherent batch. **Two clauses, one function, one error
+/// path** (planner decision 2) — do not split this into a second conflict mechanism:
 ///
-/// The removal clause (`delete_para`, `move_para`'s source) is added in 07-03 alongside the op
-/// that creates that hazard — this function is deliberately incomplete today, not accidentally
-/// narrow.
+/// 1. **Length-change clause (07-02, T-07-26):** a length-changing op on a paragraph (an
+///    addressed `replace`, or a pattern-form `replace` whose `from` string occurs in that
+///    paragraph in the ORIGINAL document — the pattern-form arm is a deliberate
+///    over-approximation, since a batch could in principle be harmless if an even earlier op
+///    already removed the match) paired with a LATER run-range op inside that same paragraph.
+/// 2. **Removal clause (07-03, T-07-12):** an op that REMOVES its target (`delete_para`, or
+///    `move_para`'s source) paired with a LATER op whose resolved target is the SAME path or a
+///    path BENEATH it (nested inside the removed paragraph, e.g. a table cell it contained).
+///
+/// Both share the SAME always-abort behavior (D-07): a batch tripping either clause is rejected
+/// during preflight, 0 ops applied, no output file, `--allow-partial` ignored. Two
+/// NON-destructive ops on one address that cannot change its length (e.g. `set_align` then
+/// `set_para`) are NOT a conflict under either clause — they compose in array order, Phase 6
+/// D-01's existing semantics; do not widen either clause to cover that case.
 fn detect_conflicts(
     plan: &EditPlan,
     doc: &hwp_model::Document,
     resolved: &[Option<hwp_convert::address::ResolvedTarget>],
+    resolved_move_destinations: &[Option<hwp_convert::address::ResolvedTarget>],
 ) -> Vec<LengthChangeConflict> {
     let mut conflicts = Vec::new();
     for (earlier_index, operation) in plan.typed_operations.iter().enumerate() {
@@ -1588,11 +1851,64 @@ fn detect_conflicts(
                     earlier_index,
                     later_index,
                     paragraph: target.path.clone(),
+                    kind: ConflictKind::LengthChange,
                 });
             }
         }
     }
+
+    // Removal clause (07-03, T-07-12, planner decision 2): an op that removes its target
+    // (`delete_para`'s address, or `move_para`'s source) paired with a LATER op whose resolved
+    // target is that same path or a path beneath it. A later `move_para` counts on EITHER its
+    // source or its destination reference — either one landing on removed content is the same
+    // composition bug.
+    for (earlier_index, operation) in plan.typed_operations.iter().enumerate() {
+        let removes = matches!(
+            operation,
+            TypedEditOperation::DeletePara {
+                address: Some(_),
+                ..
+            } | TypedEditOperation::MoveParagraph { .. }
+        );
+        if !removes {
+            continue;
+        }
+        let Some(removed_path) = resolved.get(earlier_index).and_then(|t| t.as_ref()) else {
+            continue;
+        };
+        for later_index in (earlier_index + 1)..plan.typed_operations.len() {
+            let later_targets = [
+                resolved.get(later_index).and_then(|t| t.as_ref()),
+                resolved_move_destinations
+                    .get(later_index)
+                    .and_then(|t| t.as_ref()),
+            ];
+            for target in later_targets.into_iter().flatten() {
+                if path_is_same_or_beneath(&removed_path.path, &target.path) {
+                    conflicts.push(LengthChangeConflict {
+                        earlier_index,
+                        later_index,
+                        paragraph: removed_path.path.clone(),
+                        kind: ConflictKind::Removal,
+                    });
+                }
+            }
+        }
+    }
+
     conflicts
+}
+
+/// `other` is `removed`'s own path, or nested beneath it (removed's index chain is a strict or
+/// non-strict prefix of `other`'s, in the same section) — the removal clause's "same path or a
+/// path beneath it" test.
+fn path_is_same_or_beneath(
+    removed: &hwp_convert::SegmentPath,
+    other: &hwp_convert::SegmentPath,
+) -> bool {
+    removed.section == other.section
+        && removed.indices.len() <= other.indices.len()
+        && other.indices[..removed.indices.len()] == removed.indices[..]
 }
 
 /// Every paragraph path (mirroring `address::resolve`'s path convention), anywhere in `doc`
@@ -1787,6 +2103,7 @@ fn record_effect(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_typed_operation(
     operation: &TypedEditOperation,
     doc: &mut hwp_model::Document,
@@ -1794,12 +2111,20 @@ fn apply_typed_operation(
     unapplied: &mut Vec<String>,
     resolved_label_edits: &mut dyn Iterator<Item = Option<ResolvedLabelEdit>>,
     resolved_addresses: &mut dyn Iterator<Item = Option<hwp_convert::address::ResolvedTarget>>,
+    resolved_move_destinations: &mut dyn Iterator<
+        Item = Option<hwp_convert::address::ResolvedTarget>,
+    >,
+    offsets: &mut IndexOffsets,
 ) -> anyhow::Result<()> {
     // One slot per `plan.typed_operations` entry (`preflight_addressed_ops`), consumed in
     // lockstep with this loop regardless of operation kind so the position alignment holds.
     let resolved_target = resolved_addresses
         .next()
         .expect("resolved_addresses is aligned 1:1 with typed_operations");
+    // Same lockstep contract, for move_para's destination reference (preflight_move_destinations).
+    let resolved_move_destination = resolved_move_destinations
+        .next()
+        .expect("resolved_move_destinations is aligned 1:1 with typed_operations");
     match operation {
         TypedEditOperation::Replace { from, to, address } => {
             if from.is_empty() || from == to {
@@ -1809,14 +2134,16 @@ fn apply_typed_operation(
             if address.is_some() {
                 let target = resolved_target
                     .expect("preflight_addressed_ops resolved every addressed replace op");
-                let count = hwp_convert::replace_text_at(doc, &target.path, from, to);
+                // Structural drift (planner decision 3): an earlier insert/delete/move in this
+                // batch may have shifted this paragraph's position since preflight resolved it.
+                let current_path = offsets.current_path(&target.path)?;
+                let count = hwp_convert::replace_text_at(doc, &current_path, from, to);
                 if count == 0 {
                     unapplied.push(format!(
-                        "replace address={} from={from:?} to={to:?}",
-                        target.path
+                        "replace address={current_path} from={from:?} to={to:?}"
                     ));
                 } else {
-                    eprintln!("치환(주소): {} {from:?} → {to:?} ({count}건)", target.path);
+                    eprintln!("치환(주소): {current_path} {from:?} → {to:?} ({count}건)");
                     *edits += 1;
                 }
             } else {
@@ -1976,9 +2303,12 @@ fn apply_typed_operation(
                 else {
                     anyhow::bail!("set_format 주소는 run 단위여야 합니다");
                 };
-                hwp_convert::restyle_range_at(doc, &target.path, w_start, w_end, format)
+                // Structural drift (planner decision 3): the paragraph's own list position may
+                // have shifted; w_start/w_end stay valid, they are content offsets WITHIN it.
+                let current_path = offsets.current_path(&target.path)?;
+                hwp_convert::restyle_range_at(doc, &current_path, w_start, w_end, format)
                     .map_err(|error| anyhow::anyhow!(error))?;
-                eprintln!("글자 서식(주소): {} [{w_start}, {w_end})", target.path);
+                eprintln!("글자 서식(주소): {current_path} [{w_start}, {w_end})");
                 *edits += 1;
             } else {
                 let before = doc.clone();
@@ -2005,11 +2335,12 @@ fn apply_typed_operation(
             if address.is_some() {
                 let target = resolved_target
                     .expect("preflight_addressed_ops resolved every addressed set_align op");
-                if hwp_convert::set_para_align_at(doc, &target.path, *align) {
-                    eprintln!("문단 정렬(주소): {} = {align}", target.path);
+                let current_path = offsets.current_path(&target.path)?;
+                if hwp_convert::set_para_align_at(doc, &current_path, *align) {
+                    eprintln!("문단 정렬(주소): {current_path} = {align}");
                     *edits += 1;
                 } else {
-                    unapplied.push(format!("set_align address={} align={align}", target.path));
+                    unapplied.push(format!("set_align address={current_path} align={align}"));
                 }
             } else {
                 let before = doc.clone();
@@ -2032,8 +2363,43 @@ fn apply_typed_operation(
             anchor,
             text,
             before,
+            address,
+            style,
+            char,
         } => {
-            if hwp_convert::insert_paragraph(doc, anchor, text, *before) {
+            if address.is_some() {
+                let target = resolved_target
+                    .expect("preflight_addressed_ops resolved every addressed insert_para op");
+                let current_path = offsets.current_path(&target.path)?;
+                let base_shape = default_shape_at(doc, &current_path).ok_or_else(|| {
+                    anyhow::anyhow!("내부 오류: 삽입 앵커 문단을 찾을 수 없습니다: {current_path}")
+                })?;
+                hwp_convert::insert_paragraph_at(doc, &current_path, *before, text, base_shape)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                let anchor_idx = *current_path.indices.last().expect("non-empty path");
+                let new_idx = if *before { anchor_idx } else { anchor_idx + 1 };
+                let mut new_indices = current_path.indices.clone();
+                *new_indices.last_mut().expect("non-empty path") = new_idx;
+                let new_path = hwp_convert::SegmentPath {
+                    section: current_path.section,
+                    indices: new_indices,
+                };
+                if let Some(style) = style {
+                    hwp_convert::apply_para_props_at(doc, &new_path, style);
+                }
+                if let Some(char_fmt) = char {
+                    let wlen = hwp_convert::address::paragraph_at_mut(doc, &new_path)
+                        .map(|p| p.wchar_len())
+                        .unwrap_or(0);
+                    if wlen > 0 {
+                        hwp_convert::restyle_range_at(doc, &new_path, 0, wlen, char_fmt)
+                            .map_err(|error| anyhow::anyhow!(error))?;
+                    }
+                }
+                eprintln!("문단 삽입(주소): {current_path} before={before} text={text:?}");
+                offsets.record_insert(&current_path);
+                *edits += 1;
+            } else if hwp_convert::insert_paragraph(doc, anchor, text, *before) {
                 eprintln!("문단 삽입: {anchor:?}, before={before}, text={text:?}");
                 *edits += 1;
             } else {
@@ -2041,18 +2407,47 @@ fn apply_typed_operation(
                 unapplied.push(format!("insert_para anchor={anchor:?}"));
             }
         }
-        TypedEditOperation::DeletePara { matching } => {
-            let count = hwp_convert::delete_paragraph(doc, matching);
-            if count == 0 {
-                eprintln!(
-                    "{}",
-                    paragraph_miss_message(doc, matching, "삭제 대상 문단")
-                );
-                unapplied.push(format!("delete_para matching={matching:?}"));
+        TypedEditOperation::DeletePara { matching, address } => {
+            if address.is_some() {
+                let target = resolved_target
+                    .expect("preflight_addressed_ops resolved every addressed delete_para op");
+                let current_path = offsets.current_path(&target.path)?;
+                hwp_convert::delete_paragraph_at(doc, &current_path)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                eprintln!("문단 삭제(주소): {current_path}");
+                offsets.record_delete(&current_path);
+                *edits += 1;
             } else {
-                eprintln!("문단 삭제: {matching:?} ({count}건)");
-                *edits += count;
+                let count = hwp_convert::delete_paragraph(doc, matching);
+                if count == 0 {
+                    eprintln!(
+                        "{}",
+                        paragraph_miss_message(doc, matching, "삭제 대상 문단")
+                    );
+                    unapplied.push(format!("delete_para matching={matching:?}"));
+                } else {
+                    eprintln!("문단 삭제: {matching:?} ({count}건)");
+                    *edits += count;
+                }
             }
+        }
+        TypedEditOperation::MoveParagraph { before, .. } => {
+            let target = resolved_target
+                .expect("preflight_addressed_ops resolved every move_para source address");
+            let to_target = resolved_move_destination
+                .expect("preflight_move_destinations resolved every move_para destination");
+            let from_current = offsets.current_path(&target.path)?;
+            let to_ref_current = offsets.current_path(&to_target.path)?;
+            let to_index = move_to_index(&from_current, &to_ref_current, *before);
+            let to_list = hwp_convert::SegmentPath {
+                section: to_ref_current.section,
+                indices: to_ref_current.indices.clone(),
+            };
+            hwp_convert::move_paragraph(doc, &from_current, &to_list, to_index)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!("문단 이동(주소): {from_current} → {to_list} index={to_index}");
+            offsets.record_move(&from_current, &to_list);
+            *edits += 1;
         }
         TypedEditOperation::AddRow {
             table,
@@ -2139,11 +2534,12 @@ fn apply_typed_operation(
             if address.is_some() {
                 let target = resolved_target
                     .expect("preflight_addressed_ops resolved every addressed set_para op");
-                if hwp_convert::apply_para_props_at(doc, &target.path, props) {
-                    eprintln!("문단 모양(주소): {}", target.path);
+                let current_path = offsets.current_path(&target.path)?;
+                if hwp_convert::apply_para_props_at(doc, &current_path, props) {
+                    eprintln!("문단 모양(주소): {current_path}");
                     *edits += 1;
                 } else {
-                    unapplied.push(format!("set_para address={}", target.path));
+                    unapplied.push(format!("set_para address={current_path}"));
                 }
             } else {
                 let before = doc.clone();

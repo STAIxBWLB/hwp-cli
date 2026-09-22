@@ -206,7 +206,7 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
     std::fs::write(path, &png).unwrap();
 }
 
-/// All 30 typed edit kinds through one flat `edit --ops` run (plan 06-02 W2-T1b).
+/// All 31 typed edit kinds through one flat `edit --ops` run (plan 06-02 W2-T1b).
 /// The kind-coverage fixture chains the paragraph-anchored kinds off each other,
 /// exercises the table kinds on the inserted 3x2 table, and deletes what it created
 /// (clone table, image, field, bookmark, doomed para). The run must exit success:
@@ -221,12 +221,13 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
 /// picture deleted from its anchor paragraph, and the seal left as a floating
 /// Picture with both image parts shipped in the package.
 #[test]
-fn kind_coverage_all_30() {
+fn kind_coverage_all_31() {
     // Future renames of a typed edit kind fail loudly here.
-    const ALL_KINDS: [&str; 30] = [
+    const ALL_KINDS: [&str; 31] = [
         "set_meta",
         "set_page",
         "insert_para",
+        "move_para",
         "replace",
         "create_field",
         "set_field",
@@ -277,8 +278,8 @@ fn kind_coverage_all_30() {
         })
         .collect();
     assert!(
-        ops.len() >= 30,
-        "fixture must carry at least 30 ops, got {}",
+        ops.len() >= 31,
+        "fixture must carry at least 31 ops, got {}",
         ops.len()
     );
     let mut seen = ops;
@@ -288,7 +289,7 @@ fn kind_coverage_all_30() {
     expected.sort_unstable();
     assert_eq!(
         seen, expected,
-        "fixture op set must equal the 30 typed edit kinds"
+        "fixture op set must equal the 31 typed edit kinds"
     );
 
     // Schema gate mirrors load_ops: Draft 2020-12 against the committed schema.
@@ -2209,7 +2210,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "c0627659a5c8126a487eae9fdbf418bc49562a52cc8ddc47e92e4c8c77ce01a1",
+        actual, "27fc04e29bf3d4e9c13f02732945d2cec3e8c034ce601bc48769bd1f56c69e79",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2435,4 +2436,623 @@ fn stdin_limits() {
         !out.exists(),
         "non-UTF-8 stdin must not produce an output file"
     );
+}
+
+// ── Phase 7 plan 07-03: structural addressed ops and batch index drift (EDT-05) ────────
+
+/// Eight distinct top-level paragraphs (`# T` heading at index 0, seven body paragraphs at
+/// indices 1..7) so a drift test can assert on exact text rather than a re-derived index — an
+/// implementation that naively re-indexes fails these assertions instead of silently passing.
+const DRIFT_MD: &str = "# T\n\nalpha\n\nbravo\n\ncharlie\n\ndelta\n\necho\n\nfoxtrot\n\ngolf\n";
+
+fn drift_base(dir: &Path) -> PathBuf {
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DRIFT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    base
+}
+
+fn plain_texts(doc: &hwp_model::Document) -> Vec<String> {
+    doc.sections[0]
+        .paragraphs
+        .iter()
+        .map(|p| p.plain_text())
+        .collect()
+}
+
+/// `[delete_para at original 3 ("charlie"), set_para at original 6 ("foxtrot")]`: the tracker
+/// must restyle "foxtrot" (the paragraph whose ORIGINAL index was 6), not "delta" (the paragraph
+/// that slides into live index 6 after the delete) — a naive re-index bug asserts on text, so it
+/// fails here instead of silently passing (D-06, planner decision 3, Pitfall 1).
+#[test]
+fn drift_delete_then_set_para_targets_the_original_index() {
+    let dir = test_dir("drift-delete-set-para");
+    let base = drift_base(&dir);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"delete_para","address":{"at":{"section":0,"paragraph":3}}},
+          {"op":"set_para","address":{"at":{"section":0,"paragraph":6}},"align":"center"}
+        ]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "drift batch must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        plain_texts(&after),
+        vec!["1. T", "alpha", "bravo", "delta", "echo", "foxtrot", "golf"],
+        "charlie must be gone, every other paragraph must survive in order"
+    );
+    let foxtrot = after.sections[0]
+        .paragraphs
+        .iter()
+        .find(|p| p.plain_text() == "foxtrot")
+        .unwrap();
+    let ps = &after.header.para_shapes[foxtrot.para_shape.0 as usize];
+    assert_eq!(
+        ps.alignment(),
+        3,
+        "set_para must have restyled the paragraph whose ORIGINAL index was 6 (foxtrot)"
+    );
+    let delta = after.sections[0]
+        .paragraphs
+        .iter()
+        .find(|p| p.plain_text() == "delta")
+        .unwrap();
+    let delta_ps = &after.header.para_shapes[delta.para_shape.0 as usize];
+    assert_ne!(
+        delta_ps.alignment(),
+        3,
+        "delta (which slid into live index 6) must NOT have been restyled"
+    );
+}
+
+/// `[insert_para before original 2 ("bravo"), delete_para at original 5 ("echo")]`: the tracker
+/// must delete "echo" (the paragraph whose ORIGINAL index was 5), not "delta" (whatever a naive
+/// re-index would land on) — asserted on the exact resulting text sequence.
+#[test]
+fn drift_insert_then_delete_targets_the_original_index() {
+    let dir = test_dir("drift-insert-delete");
+    let base = drift_base(&dir);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"insert_para","address":{"at":{"section":0,"paragraph":2}},"before":true,"text":"NEW"},
+          {"op":"delete_para","address":{"at":{"section":0,"paragraph":5}}}
+        ]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "drift batch must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        plain_texts(&after),
+        vec![
+            "1. T", "alpha", "NEW", "bravo", "charlie", "delta", "foxtrot", "golf"
+        ],
+        "NEW must land before bravo and echo (original index 5) must be the one deleted"
+    );
+}
+
+/// `[delete_para at X, set_para at X]`: the removal clause (07-03, T-07-12) rejects this during
+/// preflight — 0 ops applied, no output file, both op indices named in the error.
+#[test]
+fn destructive_conflict_delete_then_set_para_same_address_is_rejected() {
+    let dir = test_dir("destructive-delete-set-para");
+    let base = drift_base(&dir);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"delete_para","address":{"at":{"section":0,"paragraph":3}}},
+          {"op":"set_para","address":{"at":{"section":0,"paragraph":3}},"align":"center"}
+        ]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "delete then set_para on the same address must be rejected"
+    );
+    assert!(!output.exists(), "no output file may be written");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("op[0]"), "error must name op 0: {stderr}");
+    assert!(stderr.contains("op[1]"), "error must name op 1: {stderr}");
+}
+
+/// `[move_para from X, set_format inside X]`: the removal clause treats a `move_para`'s source
+/// exactly like `delete_para`'s target — a later op addressing inside the same paragraph is
+/// rejected the same way.
+#[test]
+fn destructive_conflict_move_source_then_set_format_inside_is_rejected() {
+    let dir = test_dir("destructive-move-set-format");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, RUN_RANGE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"move_para","address":{"at":{"section":0,"paragraph":1}},"to":{"address":{"at":{"section":0,"paragraph":0}},"position":"after"}},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"italic":"on"}
+        ]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "move source then set_format inside it must be rejected"
+    );
+    assert!(!output.exists(), "no output file may be written");
+}
+
+/// `[set_align at X, set_para at X]`: two non-destructive paragraph-level ops on one address
+/// compose in array order (Phase 6 D-01) — the removal clause must not widen to reject this.
+#[test]
+fn non_destructive_paragraph_ops_on_one_address_still_compose() {
+    let dir = test_dir("non-destructive-para-compose");
+    let base = drift_base(&dir);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"set_align","address":{"at":{"section":0,"paragraph":1}},"align":"center"},
+          {"op":"set_para","address":{"at":{"section":0,"paragraph":1}},"line_spacing_pct":"160%"}
+        ]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "two non-destructive addressed ops on one paragraph must both apply: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after = hwpx::read_document(&output).unwrap().document;
+    let para = &after.sections[0].paragraphs[1];
+    let ps = &after.header.para_shapes[para.para_shape.0 as usize];
+    assert_eq!(ps.alignment(), 3, "set_align must have applied");
+    assert_eq!(
+        ps.line_spacing, 160,
+        "set_para's line_spacing_pct must also have applied"
+    );
+}
+
+/// An addressed `insert_para` targeting the SECOND of two identical-text paragraphs inserts
+/// beside that one; the first occurrence is untouched (EDT-05 success criterion 1). A first-match
+/// implementation would insert next to the first occurrence instead and fail this test.
+#[test]
+fn addressed_insert_para_hits_beside_the_named_duplicate() {
+    let dir = test_dir("addr-insert-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"insert_para","address":{"at":{"section":0,"paragraph":4}},"before":false,"text":"NEW BESIDE SECOND"}]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed insert_para must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after = hwpx::read_document(&output).unwrap().document;
+    let texts = plain_texts(&after);
+    assert_eq!(texts.len(), 6, "one paragraph inserted: {texts:?}");
+    assert_eq!(
+        texts[2], "같은 문단",
+        "the first occurrence must be untouched at its original index: {texts:?}"
+    );
+    assert_eq!(
+        texts[4], "같은 문단",
+        "the second occurrence must still be at its own index: {texts:?}"
+    );
+    assert_eq!(
+        texts[5], "NEW BESIDE SECOND",
+        "the new paragraph must land right after the SECOND occurrence, not the first: {texts:?}"
+    );
+}
+
+/// An addressed `delete_para` targeting the SECOND of two identical-text paragraphs deletes only
+/// that one; the first occurrence survives (EDT-05 success criterion 1).
+#[test]
+fn addressed_delete_para_hits_only_the_named_duplicate() {
+    let dir = test_dir("addr-delete-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"delete_para","address":{"at":{"section":0,"paragraph":4}}}]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed delete_para must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after = hwpx::read_document(&output).unwrap().document;
+    let texts = plain_texts(&after);
+    assert_eq!(
+        texts,
+        vec!["1. 제목", "첫 문단", "같은 문단", "셋째 문단"],
+        "only the SECOND occurrence must be removed, the first survives at its own index: {texts:?}"
+    );
+}
+
+/// An addressed `move_para` targeting the SECOND of two identical-text paragraphs moves only
+/// that one — verified by `instance_id` identity, not index arithmetic, so the assertion is
+/// exact regardless of how the move shifts surrounding indices. A first-match implementation
+/// would move the FIRST occurrence's `instance_id` instead and fail these assertions.
+#[test]
+fn addressed_move_para_hits_only_the_named_duplicate() {
+    // hwp5 output specifically: instance_id uniqueness (compat rule A8) is a synthesis-write-path
+    // guarantee; hwpx output does not assign the same meaningful non-zero ids, so an hwpx round
+    // trip cannot prove this identity claim.
+    let dir = test_dir("addr-move-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwp");
+    new_from(&md, &base);
+
+    let before = hwp5::read_document(&base).unwrap().document;
+    let first_id = before.sections[0].paragraphs[2].header.instance_id;
+    let second_id = before.sections[0].paragraphs[4].header.instance_id;
+    assert_ne!(first_id, second_id, "fixture sanity: distinct instance ids");
+
+    let output = dir.join("out.hwp");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"move_para","address":{"at":{"section":0,"paragraph":4}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"after"}}]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed move_para must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwp5::read_document(&output).unwrap().document;
+    let paras = &after.sections[0].paragraphs;
+    assert_eq!(paras.len(), 5, "move never changes the paragraph count");
+
+    let first_after = paras
+        .iter()
+        .find(|p| p.header.instance_id == first_id)
+        .expect("the FIRST occurrence must survive with its own instance_id");
+    assert_eq!(
+        first_after.plain_text(),
+        "같은 문단",
+        "the first occurrence's text is unchanged"
+    );
+
+    let second_index = paras
+        .iter()
+        .position(|p| p.header.instance_id == second_id)
+        .expect("the SECOND occurrence must survive with its own instance_id");
+    assert_eq!(
+        paras[second_index].plain_text(),
+        "같은 문단",
+        "the moved paragraph's text is unchanged"
+    );
+    assert_eq!(
+        paras[second_index - 1].plain_text(),
+        "첫 문단",
+        "the SECOND occurrence must land right after its destination reference (첫 문단)"
+    );
+}
+
+/// `move_para` to a `to.address` naming a DIFFERENT section is rejected during preflight, never
+/// attempted — the rejection names both sections (D-17).
+#[test]
+fn move_para_cross_section_is_rejected_naming_both_sections() {
+    let dir = test_dir("move-cross-section");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DRIFT_MD).unwrap();
+    let single = dir.join("single.hwpx");
+    new_from(&md, &single);
+    let mut doc = hwpx::read_document(&single).unwrap().document;
+    doc.sections.push(doc.sections[0].clone());
+    let json = hwp_convert::to_json(&doc, false, true).unwrap();
+    let json_path = dir.join("two-section.json");
+    std::fs::write(&json_path, json).unwrap();
+    let base = dir.join("base.hwpx");
+    let status = hwp()
+        .args(["new", "--from"])
+        .arg(&json_path)
+        .arg("-o")
+        .arg(&base)
+        .status()
+        .unwrap();
+    assert!(status.success(), "two-section fixture build must succeed");
+
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"move_para","address":{"at":{"section":0,"paragraph":1}},"to":{"address":{"at":{"section":1,"paragraph":1}},"position":"after"}}]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a cross-section move_para must be rejected"
+    );
+    assert!(!output.exists(), "no output file may be written");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains('0') && stderr.contains('1'),
+        "the rejection must name both sections (0 and 1): {stderr}"
+    );
+}
+
+/// The nested-list drift proof (07-03 Task 3 action 4): the per-list offset tracker's key
+/// derivation for a NESTED list (a table cell's paragraph list) is a distinct code path from a
+/// top-level list's — a flat-only test suite cannot exercise it. Built in two invocations because
+/// nested lists cannot get more than one paragraph directly from markdown import: the first grows
+/// one cell's paragraph list to three (pattern-form inserts, so the setup itself does not depend
+/// on address-driven drift tracking), the second runs the same two-op drift shape as the flat
+/// tests, addressing the cell's paragraphs by `id` (the `at` form is top-level only, D-05).
+#[test]
+fn nested_list_drift_targets_the_original_index() {
+    let dir = test_dir("nested-drift");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# T\n\n| 가 | 나 |\n|---|---|\n| 셀시작 | 2 |\n").unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    // Invocation 1: grow cell (1,0)'s paragraph list from 1 to 3, pattern-form (unaddressed).
+    let grown = dir.join("grown.hwpx");
+    let setup_ops = dir.join("setup-ops.json");
+    std::fs::write(
+        &setup_ops,
+        r#"[
+          {"op":"insert_para","anchor":"셀시작","text":"셀중간","before":false},
+          {"op":"insert_para","anchor":"셀중간","text":"셀끝","before":false}
+        ]"#,
+    )
+    .unwrap();
+    let setup_run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&grown)
+        .arg("--ops")
+        .arg(&setup_ops)
+        .output()
+        .unwrap();
+    assert!(
+        setup_run.status.success(),
+        "nested-list setup must succeed: {}",
+        String::from_utf8_lossy(&setup_run.stderr)
+    );
+
+    let grown_doc = hwpx::read_document(&grown).unwrap().document;
+    let cell_prefix = cell_path_prefix(&grown_doc, 1, 0);
+    let cell = grown_doc.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => t.cells.iter().find(|c| c.row == 1 && c.col == 0),
+            _ => None,
+        })
+        .expect("cell (1,0) must exist");
+    assert_eq!(
+        cell.paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect::<Vec<_>>(),
+        vec!["셀시작", "셀중간", "셀끝"],
+        "setup must grow the cell to exactly these three paragraphs in order"
+    );
+
+    let mut path0 = cell_prefix.clone();
+    path0.push(0);
+    let id0 = hwp_convert::paragraph_id(
+        &hwp_convert::SegmentPath {
+            section: 0,
+            indices: path0,
+        },
+        &cell.paragraphs[0],
+    );
+    let mut path2 = cell_prefix.clone();
+    path2.push(2);
+    let id2 = hwp_convert::paragraph_id(
+        &hwp_convert::SegmentPath {
+            section: 0,
+            indices: path2,
+        },
+        &cell.paragraphs[2],
+    );
+
+    // Invocation 2: the actual drift proof — delete local index 0, restyle local index 2 (both
+    // addressed by id against this invocation's OWN original document, the grown one).
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        format!(
+            r#"[
+              {{"op":"delete_para","address":{{"id":"{id0}"}}}},
+              {{"op":"set_para","address":{{"id":"{id2}"}},"align":"right"}}
+            ]"#
+        ),
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&grown)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "nested-list drift batch must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let after_cell = after.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => t.cells.iter().find(|c| c.row == 1 && c.col == 0),
+            _ => None,
+        })
+        .expect("cell (1,0) must exist");
+    assert_eq!(
+        after_cell
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect::<Vec<_>>(),
+        vec!["셀중간", "셀끝"],
+        "셀시작 (local index 0) must be gone, 셀끝 (local index 2) survives, both in order"
+    );
+    // Table cells default to CENTER alignment on import (confirmed empirically): the
+    // set_para call below uses "right" specifically so the restyled paragraph is observably
+    // different from that shared default, discriminating "was restyled" from "was already
+    // this way".
+    let ending = &after_cell.paragraphs[1];
+    assert_eq!(ending.plain_text(), "셀끝");
+    let ps = &after.header.para_shapes[ending.para_shape.0 as usize];
+    assert_eq!(
+        ps.alignment(),
+        2,
+        "set_para must have restyled 셀끝 (ORIGINAL local index 2), not 셀중간 (which slid into local index 1)"
+    );
+    let middle = &after_cell.paragraphs[0];
+    let middle_ps = &after.header.para_shapes[middle.para_shape.0 as usize];
+    assert_eq!(
+        middle_ps.alignment(),
+        3,
+        "셀중간 (which slid into local index 1) must keep the cell default (center), not be restyled"
+    );
+}
+
+/// The path to the cell `(row, col)` of the FIRST table in the document's top-level list, as a
+/// `SegmentPath` prefix (`[top_para_idx, ctrl_idx, cell_idx]`) — everything above the cell's own
+/// paragraph-list index. Mirrors how a real caller would resolve a nested address: locate the
+/// structural position once, then address individual paragraphs inside it by id.
+fn cell_path_prefix(doc: &hwp_model::Document, row: u16, col: u16) -> Vec<usize> {
+    for (top_idx, para) in doc.sections[0].paragraphs.iter().enumerate() {
+        for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
+            if let Control::Table(table) = ctrl
+                && let Some(cell_idx) = table
+                    .cells
+                    .iter()
+                    .position(|c| c.row == row && c.col == col)
+            {
+                return vec![top_idx, ctrl_idx, cell_idx];
+            }
+        }
+    }
+    panic!("cell ({row},{col}) not found");
 }
