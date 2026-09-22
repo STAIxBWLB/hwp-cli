@@ -706,6 +706,217 @@ fn addressed_edit_changes_the_run_id() {
     );
 }
 
+// ── Phase 7 plan 07-01 Task 3: address preflight failure modes ─────────────────────────
+
+/// A batch whose op carries a stale checksum exits non-zero, writes no output file, and its
+/// error names the op index, the id, the expected checksum and the found checksum (D-03/D-04,
+/// CONTEXT.md's Specific Ideas wording: `op[2] id a1b2.0.3.1, expected checksum a1b2, found
+/// c9d4`).
+#[test]
+fn addressed_stale_checksum_aborts_the_whole_batch() {
+    let dir = test_dir("addr-stale");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, RUN_RANGE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let path = hwp_convert::SegmentPath {
+        section: 0,
+        indices: vec![1],
+    };
+    let real_id = hwp_convert::run_id(&path, &before_doc.sections[0].paragraphs[1], 1);
+    let (real_checksum, rest) = real_id.split_once('.').unwrap();
+    let stale_checksum = "0000000000000000";
+    assert_ne!(real_checksum, stale_checksum, "fixture sanity");
+    let stale_id = format!("{stale_checksum}.{rest}");
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        format!(r#"[{{"op":"set_format","address":{{"id":"{stale_id}"}},"bold":"on"}}]"#),
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a stale checksum must abort the batch"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("op[0]"),
+        "stderr must name the op index: {stderr}"
+    );
+    assert!(
+        stderr.contains(&stale_id),
+        "stderr must name the id the caller wrote: {stderr}"
+    );
+    assert!(
+        stderr.contains(stale_checksum),
+        "stderr must name the expected (caller's) checksum: {stderr}"
+    );
+    assert!(
+        stderr.contains(real_checksum),
+        "stderr must name the found (actual) checksum: {stderr}"
+    );
+    assert!(
+        !output.exists(),
+        "no output file may be created when an address is stale"
+    );
+}
+
+/// A batch with three bad addresses reports all three in one error block, each with its op
+/// index, rather than failing on the first (D-04).
+#[test]
+fn addressed_preflight_names_every_failure_at_once() {
+    let (dir, base) = new_base_for("addr-multi-fail");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":90,"run":0}},"bold":"on"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":91,"run":0}},"bold":"on"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":92,"run":0}},"bold":"on"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(!run.status.success(), "three bad addresses must abort");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    for index in 0..3 {
+        assert!(
+            stderr.contains(&format!("op[{index}]")),
+            "stderr must name op[{index}] among all three failures: {stderr}"
+        );
+    }
+    assert!(!output.exists());
+}
+
+/// Every address failure mode behaves identically with `--allow-partial` present — address
+/// preflight failures are Phase 6 D-09's structural layer, never softened by it (Task 1
+/// decision 6, A5).
+#[test]
+fn addressed_preflight_ignores_allow_partial() {
+    let (dir, base) = new_base_for("addr-allow-partial");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":99,"run":0}},"bold":"on"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--allow-partial")
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "--allow-partial must not rescue an address preflight failure"
+    );
+    assert!(!output.exists());
+}
+
+/// A `chars` pair whose end exceeds the named run's boundary is rejected with the run's own
+/// boundary in the message.
+#[test]
+fn addressed_chars_outside_the_run_is_rejected() {
+    let dir = test_dir("addr-chars-oob");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, RUN_RANGE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    // run 1 ("bold") spans wchar [6, 10) — see addressed_run_range_restyles_the_named_sub_range_only.
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1},"chars":[6,11]},"italic":"on"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "chars past the run's own boundary must be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains('6') && stderr.contains("10"),
+        "stderr must name the run's own [6, 10) boundary: {stderr}"
+    );
+    assert!(!output.exists());
+}
+
+/// A `set_para`-shaped entry (paragraph granularity) is not available until 07-02, so this
+/// asserts the granularity rule at the schema layer directly: a `paragraphAddress` instance
+/// carrying `chars` must fail schema validation (D-11).
+#[test]
+fn paragraph_granularity_rejects_a_char_range() {
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json")).unwrap();
+    let defs = schema
+        .get("$defs")
+        .expect("schema must carry $defs")
+        .clone();
+    // A wrapper document whose root schema is a $ref straight into the original $defs bag —
+    // the standard way to validate an instance against one $defs entry directly.
+    let wrapped = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/$defs/paragraphAddress",
+        "$defs": defs,
+    });
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&wrapped)
+        .unwrap();
+
+    let with_chars: serde_json::Value =
+        serde_json::from_str(r#"{"at":{"section":0,"paragraph":3},"chars":[0,1]}"#).unwrap();
+    assert!(
+        !validator.is_valid(&with_chars),
+        "a paragraphAddress instance carrying chars must fail schema validation"
+    );
+
+    let without_chars: serde_json::Value =
+        serde_json::from_str(r#"{"at":{"section":0,"paragraph":3}}"#).unwrap();
+    assert!(
+        validator.is_valid(&without_chars),
+        "sanity: a plain paragraphAddress without chars must validate"
+    );
+}
+
 /// load_ops가 스키마 위반을 만날 때 내보내는 bail 마커 접두어
 /// ("편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {instance_path}: {error}").
 const OPS_SCHEMA_MARKER: &str = "편집 연산이 edit-ops-v1 스키마를 벗어났습니다";
