@@ -1502,6 +1502,45 @@ fn wchar_drift_negative_control_different_paragraphs_are_accepted() {
     );
 }
 
+/// Two NON-destructive addressed ops on ONE paragraph (`set_align` then a run-range
+/// `set_format`) still compose in array order — `detect_conflicts` only ever treats a `replace`
+/// as length-changing, so an earlier `set_align`/`set_para` on the same paragraph must never
+/// trip the widened predicate.
+#[test]
+fn non_destructive_ops_on_one_paragraph_still_compose() {
+    let dir = test_dir("addr-non-destructive-compose");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, WCHAR_DRIFT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let output = dir.join("out.hwpx");
+    let (success, stderr) = run_wchar_drift_batch(
+        &base,
+        &output,
+        r#"[
+          {"op":"set_align","address":{"at":{"section":0,"paragraph":1}},"align":"center"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"italic":"on"}
+        ]"#,
+        &[],
+    );
+    assert!(
+        success,
+        "two non-destructive addressed ops on one paragraph must both apply: {stderr}"
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let para = &after.sections[0].paragraphs[1];
+    let ps = &after.header.para_shapes[para.para_shape.0 as usize];
+    assert_eq!(ps.alignment(), 3, "set_align must have applied");
+    let shapes = &after.header.char_shapes;
+    let styled = para
+        .char_shape_runs
+        .iter()
+        .any(|(_, id)| shapes[id.0 as usize].is_italic());
+    assert!(styled, "run-range set_format must have applied");
+}
+
 /// load_ops가 스키마 위반을 만날 때 내보내는 bail 마커 접두어
 /// ("편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {instance_path}: {error}").
 const OPS_SCHEMA_MARKER: &str = "편집 연산이 edit-ops-v1 스키마를 벗어났습니다";
