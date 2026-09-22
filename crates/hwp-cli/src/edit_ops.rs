@@ -265,7 +265,13 @@ fn parse_segment_id(id: &str) -> Result<(String, usize, Vec<usize>), String> {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum OpsEntry {
     Replace {
+        /// Always required — unlike `pattern` on `set_para`/`set_align`, `from` is never purely
+        /// a selector, it is always the matched substring (Task 3's WCHAR-drift fixture depends
+        /// on this: an addressed replace still narrows a substring, not the whole paragraph).
         from: String,
+        /// Narrows the from/to match from the whole document (default) to inside one paragraph
+        /// (D-12). Additive, not an alternative to `from`.
+        address: Option<AddressSpec>,
         to: String,
     },
     SetCell {
@@ -323,7 +329,8 @@ pub(crate) enum OpsEntry {
         color: Option<String>,
     },
     SetAlign {
-        pattern: String,
+        pattern: Option<String>,
+        address: Option<AddressSpec>,
         align: String,
     },
     InsertPara {
@@ -375,7 +382,8 @@ pub(crate) enum OpsEntry {
         text_mode: Option<String>,
     },
     SetPara {
-        pattern: String,
+        pattern: Option<String>,
+        address: Option<AddressSpec>,
         line_spacing_pct: Option<String>,
         line_spacing_pt: Option<String>,
         indent_mm: Option<String>,
@@ -431,7 +439,10 @@ impl OpsEntry {
     /// MCP `tool_edit` 경계와 같다.
     pub(crate) fn into_typed(self) -> Result<TypedEditOperation, String> {
         match self {
-            OpsEntry::Replace { from, to } => Ok(TypedEditOperation::Replace { from, to }),
+            OpsEntry::Replace { from, address, to } => {
+                let address = address.map(AddressSpec::into_address).transpose()?;
+                Ok(TypedEditOperation::Replace { from, to, address })
+            }
             OpsEntry::SetCell {
                 table,
                 row,
@@ -544,10 +555,25 @@ impl OpsEntry {
                     address,
                 })
             }
-            OpsEntry::SetAlign { pattern, align } => Ok(TypedEditOperation::SetAlign {
+            OpsEntry::SetAlign {
                 pattern,
-                align: parse_align(&align).map_err(|error| error.to_string())?,
-            }),
+                address,
+                align,
+            } => {
+                if pattern.is_some() == address.is_some() {
+                    return Err(if pattern.is_some() {
+                        "set_align 항목은 pattern과 address 중 하나만 지정해야 합니다".to_string()
+                    } else {
+                        "set_align 항목에 pattern 또는 address가 필요합니다".to_string()
+                    });
+                }
+                let address = address.map(AddressSpec::into_address).transpose()?;
+                Ok(TypedEditOperation::SetAlign {
+                    pattern: pattern.unwrap_or_default(),
+                    align: parse_align(&align).map_err(|error| error.to_string())?,
+                    address,
+                })
+            }
             OpsEntry::InsertPara {
                 anchor,
                 text,
@@ -623,6 +649,7 @@ impl OpsEntry {
             }
             OpsEntry::SetPara {
                 pattern,
+                address,
                 line_spacing_pct,
                 line_spacing_pt,
                 indent_mm,
@@ -631,22 +658,33 @@ impl OpsEntry {
                 top_mm,
                 bottom_mm,
                 align,
-            } => Ok(TypedEditOperation::SetPara {
-                pattern,
-                props: para_props(
-                    "set_para",
-                    RawParaProps {
-                        line_spacing_pct,
-                        line_spacing_pt,
-                        indent_mm,
-                        left_mm,
-                        right_mm,
-                        top_mm,
-                        bottom_mm,
-                        align,
-                    },
-                )?,
-            }),
+            } => {
+                if pattern.is_some() == address.is_some() {
+                    return Err(if pattern.is_some() {
+                        "set_para 항목은 pattern과 address 중 하나만 지정해야 합니다".to_string()
+                    } else {
+                        "set_para 항목에 pattern 또는 address가 필요합니다".to_string()
+                    });
+                }
+                let address = address.map(AddressSpec::into_address).transpose()?;
+                Ok(TypedEditOperation::SetPara {
+                    pattern: pattern.unwrap_or_default(),
+                    props: para_props(
+                        "set_para",
+                        RawParaProps {
+                            line_spacing_pct,
+                            line_spacing_pt,
+                            indent_mm,
+                            left_mm,
+                            right_mm,
+                            top_mm,
+                            bottom_mm,
+                            align,
+                        },
+                    )?,
+                    address,
+                })
+            }
             OpsEntry::SetCellPara {
                 table,
                 row,

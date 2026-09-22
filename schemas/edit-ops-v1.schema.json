@@ -124,9 +124,14 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["op", "from", "to"],
+          "description": "address optionally narrows the from/to match-and-replace from the whole document (default) to inside one paragraph (D-12); from is required either way, unlike pattern on set_para/set_align, since it is always the matched substring, never purely a selector.",
           "properties": {
             "op": { "const": "replace" },
             "from": { "type": "string" },
+            "address": {
+              "$ref": "#/$defs/paragraphAddress",
+              "description": "Paragraph granularity — a run-range address here is a schema violation (D-11). Narrows from/to matching to inside the addressed paragraph only."
+            },
             "to": { "type": "string" }
           }
         },
@@ -249,10 +254,15 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["op", "pattern", "align"],
+          "required": ["op", "align"],
+          "description": "Exactly one of pattern (anchor-text selector) or address (paragraph granularity, D-12) is required (parser-enforced).",
           "properties": {
             "op": { "const": "set_align" },
             "pattern": { "type": "string" },
+            "address": {
+              "$ref": "#/$defs/paragraphAddress",
+              "description": "Paragraph granularity — a run-range address here is a schema violation (D-11)."
+            },
             "align": { "$ref": "#/$defs/align" }
           }
         },
@@ -370,11 +380,15 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["op", "pattern"],
-          "description": "Paragraph props are flat on the entry; line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
+          "required": ["op"],
+          "description": "Exactly one of pattern (anchor-text selector) or address (paragraph granularity, D-12) is required (parser-enforced). Paragraph props are flat on the entry; line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
           "properties": {
             "op": { "const": "set_para" },
             "pattern": { "type": "string" },
+            "address": {
+              "$ref": "#/$defs/paragraphAddress",
+              "description": "Paragraph granularity — a run-range address here is a schema violation (D-11)."
+            },
             "line_spacing_pct": { "$ref": "#/$defs/unit" },
             "line_spacing_pt": { "$ref": "#/$defs/unit" },
             "indent_mm": { "$ref": "#/$defs/unit" },

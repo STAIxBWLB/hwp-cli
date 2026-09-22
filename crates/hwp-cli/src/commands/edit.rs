@@ -62,6 +62,10 @@ pub(crate) enum TypedEditOperation {
     Replace {
         from: String,
         to: String,
+        /// Narrows the from/to match from the whole document (default) to inside one paragraph
+        /// (D-12) — additive, not an alternative to `from` (unlike `pattern` on
+        /// `SetPara`/`SetAlign`): `from` is always the matched substring here.
+        address: Option<hwp_convert::address::Address>,
     },
     SetCell {
         table: usize,
@@ -116,6 +120,8 @@ pub(crate) enum TypedEditOperation {
     SetAlign {
         pattern: String,
         align: u8,
+        /// Address selector (D-12), alternative to `pattern`.
+        address: Option<hwp_convert::address::Address>,
     },
     InsertPara {
         anchor: String,
@@ -169,6 +175,8 @@ pub(crate) enum TypedEditOperation {
         pattern: String,
         /// Paragraph shape converted up to HWPUNIT/pt×100 units (same units as the CLI `parse_para_props`).
         props: hwp_convert::ParaProps,
+        /// Address selector (D-12), alternative to `pattern`.
+        address: Option<hwp_convert::address::Address>,
     },
     /// Paragraph shape for every paragraph of one cell, addressed like `set_cell` (0-based).
     SetCellPara {
@@ -495,18 +503,24 @@ impl EditPlan {
                 .collect::<anyhow::Result<Vec<_>>>()?;
             return Ok(Some(pairs));
         }
+        // T-07-06: an addressed replace must never take this package-preserving fast path — it
+        // never loads the document, so it cannot run the address preflight or scope the rewrite
+        // to one paragraph. Only an all-pattern-form batch is eligible.
         if self.operations.is_empty()
-            && self
-                .typed_operations
-                .iter()
-                .all(|operation| matches!(operation, TypedEditOperation::Replace { .. }))
+            && self.typed_operations.iter().all(|operation| {
+                matches!(operation, TypedEditOperation::Replace { address: None, .. })
+            })
         {
             return Ok(Some(
                 self.typed_operations
                     .iter()
                     .map(|operation| match operation {
-                        TypedEditOperation::Replace { from, to } => (from.clone(), to.clone()),
-                        _ => unreachable!("all로 Replace 여부를 확인함"),
+                        TypedEditOperation::Replace {
+                            from,
+                            to,
+                            address: None,
+                        } => (from.clone(), to.clone()),
+                        _ => unreachable!("all로 Replace(주소 없음) 여부를 확인함"),
                     })
                     .collect(),
             ));
@@ -681,6 +695,20 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // aborts on any failure (Task 1 decision 6) — no `&& !plan.allow_partial` here, unlike the
     // label preflight above.
     let resolved_addresses = preflight_addressed_ops(plan, &doc)?;
+    let conflicts = detect_conflicts(plan, &doc, &resolved_addresses);
+    if !conflicts.is_empty() {
+        anyhow::bail!(
+            "길이를 바꿀 수 있는 연산과 이후 run 범위 연산이 같은 문단을 가리켜 충돌합니다:\n{}",
+            conflicts
+                .iter()
+                .map(|conflict| format!(
+                    "op[{}]이 문단 {}의 길이를 바꿀 수 있어 op[{}]의 고정된 run 범위가 무효화됩니다",
+                    conflict.earlier_index, conflict.paragraph, conflict.later_index
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
     let mut resolved_addresses = resolved_addresses.into_iter();
     let mut resolved_label_edits = label_preflight.resolved.into_iter();
     let mut edits = 0usize;
@@ -1449,15 +1477,30 @@ fn preflight_addressed_ops(
     let mut resolved = Vec::with_capacity(plan.typed_operations.len());
     let mut failures = Vec::new();
     for (index, operation) in plan.typed_operations.iter().enumerate() {
-        let TypedEditOperation::SetFormat {
-            address: Some(address),
-            ..
-        } = operation
-        else {
+        let target = match operation {
+            TypedEditOperation::SetFormat {
+                address: Some(address),
+                ..
+            } => Some((address, hwp_convert::address::Granularity::Run)),
+            TypedEditOperation::SetPara {
+                address: Some(address),
+                ..
+            }
+            | TypedEditOperation::SetAlign {
+                address: Some(address),
+                ..
+            }
+            | TypedEditOperation::Replace {
+                address: Some(address),
+                ..
+            } => Some((address, hwp_convert::address::Granularity::Paragraph)),
+            _ => None,
+        };
+        let Some((address, granularity)) = target else {
             resolved.push(None);
             continue;
         };
-        match hwp_convert::address::resolve(doc, address, hwp_convert::address::Granularity::Run) {
+        match hwp_convert::address::resolve(doc, address, granularity) {
             Ok(target) => resolved.push(Some(target)),
             Err(error) => {
                 failures.push(format!(
@@ -1475,6 +1518,162 @@ fn preflight_addressed_ops(
         );
     }
     Ok(resolved)
+}
+
+/// A pair the widened preflight rejects (07-02, T-07-26): `earlier_index` can change
+/// `paragraph`'s WCHAR length, and `later_index` addresses a run range inside that same
+/// paragraph, whose `[w_start, w_end)` was resolved against the PRE-BATCH paragraph (D-06) and
+/// would no longer describe the mutated one (planner decision 1).
+struct LengthChangeConflict {
+    earlier_index: usize,
+    later_index: usize,
+    paragraph: hwp_convert::SegmentPath,
+}
+
+/// Widens the preflight to reject a batch pairing a length-changing op on a paragraph with a
+/// later run-range op inside that same paragraph (planner decisions 1-2, T-07-26). "Can change
+/// the length" (decision 2): an addressed `replace` on that paragraph, or a pattern-form
+/// `replace` whose `from` string occurs in that paragraph in the ORIGINAL document — the
+/// pattern-form arm is a deliberate over-approximation (a batch could in principle be harmless
+/// because an even earlier op already removed the match); rejecting it anyway matches D-07's own
+/// rationale that an overlapping pair is a composition bug, not an intent.
+///
+/// The removal clause (`delete_para`, `move_para`'s source) is added in 07-03 alongside the op
+/// that creates that hazard — this function is deliberately incomplete today, not accidentally
+/// narrow.
+fn detect_conflicts(
+    plan: &EditPlan,
+    doc: &hwp_model::Document,
+    resolved: &[Option<hwp_convert::address::ResolvedTarget>],
+) -> Vec<LengthChangeConflict> {
+    let mut conflicts = Vec::new();
+    for (earlier_index, operation) in plan.typed_operations.iter().enumerate() {
+        let TypedEditOperation::Replace { from, to, address } = operation else {
+            continue;
+        };
+        if from.is_empty() || from == to {
+            // A no-op replace never reaches hwp_convert::replace_text/replace_text_at (see the
+            // apply arm) — it cannot change any paragraph's length.
+            continue;
+        }
+        let length_changing_paths: Vec<hwp_convert::SegmentPath> = if address.is_some() {
+            resolved
+                .get(earlier_index)
+                .and_then(|target| target.as_ref())
+                .map(|target| vec![target.path.clone()])
+                .unwrap_or_default()
+        } else {
+            paragraph_paths_containing(doc, from)
+        };
+        if length_changing_paths.is_empty() {
+            continue;
+        }
+        for (later_index, later_operation) in plan
+            .typed_operations
+            .iter()
+            .enumerate()
+            .skip(earlier_index + 1)
+        {
+            let TypedEditOperation::SetFormat {
+                address: Some(_), ..
+            } = later_operation
+            else {
+                continue;
+            };
+            let Some(target) = resolved.get(later_index).and_then(|t| t.as_ref()) else {
+                continue;
+            };
+            if length_changing_paths.contains(&target.path) {
+                conflicts.push(LengthChangeConflict {
+                    earlier_index,
+                    later_index,
+                    paragraph: target.path.clone(),
+                });
+            }
+        }
+    }
+    conflicts
+}
+
+/// Every paragraph path (mirroring `address::resolve`'s path convention), anywhere in `doc`
+/// (body, table cells, generic-control paragraph lists), whose OWN text — never a descendant
+/// paragraph's, which lives in a separate `Paragraph` value under `para.controls` — contains
+/// `pattern`. Read-only counterpart to `hwp_convert::replace_text`'s recursion, used only by
+/// `detect_conflicts`'s pattern-form over-approximation arm.
+fn paragraph_paths_containing(
+    doc: &hwp_model::Document,
+    pattern: &str,
+) -> Vec<hwp_convert::SegmentPath> {
+    if pattern.is_empty() {
+        return Vec::new();
+    }
+    let mut paths = Vec::new();
+    for (section_index, section) in doc.sections.iter().enumerate() {
+        for (para_index, para) in section.paragraphs.iter().enumerate() {
+            collect_paragraph_paths_containing(
+                para,
+                pattern,
+                hwp_convert::SegmentPath {
+                    section: section_index,
+                    indices: vec![para_index],
+                },
+                &mut paths,
+            );
+        }
+    }
+    paths
+}
+
+fn collect_paragraph_paths_containing(
+    para: &hwp_model::Paragraph,
+    pattern: &str,
+    path: hwp_convert::SegmentPath,
+    out: &mut Vec<hwp_convert::SegmentPath>,
+) {
+    if paragraph_own_text_contains(para, pattern) {
+        out.push(path.clone());
+    }
+    for (ctrl_index, ctrl) in para.controls.iter().enumerate() {
+        match ctrl {
+            hwp_model::Control::Table(table) => {
+                for (cell_index, cell) in table.cells.iter().enumerate() {
+                    for (p_index, p) in cell.paragraphs.iter().enumerate() {
+                        let mut child = path.clone();
+                        child.indices.extend([ctrl_index, cell_index, p_index]);
+                        collect_paragraph_paths_containing(p, pattern, child, out);
+                    }
+                }
+            }
+            hwp_model::Control::Generic(generic) if generic.raw_children.is_empty() => {
+                let mut seq = 0usize;
+                for list in &generic.paragraph_lists {
+                    for p in &list.paragraphs {
+                        let mut child = path.clone();
+                        child.indices.extend([ctrl_index, seq]);
+                        collect_paragraph_paths_containing(p, pattern, child, out);
+                        seq += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A conservative, own-text-only substring check for one paragraph (never recurses into nested
+/// controls): concatenates this paragraph's own `Text` characters and looks for `pattern` inside
+/// them. Coarser than `hwp_convert`'s internal `find_match` (may match across what that treats as
+/// a control-character boundary) but never leaks a descendant paragraph's text into its
+/// ancestor's check — the over-approximation planner decision 2 accepts is deliberately
+/// per-paragraph, not per-subtree.
+fn paragraph_own_text_contains(para: &hwp_model::Paragraph, pattern: &str) -> bool {
+    let mut text = String::new();
+    for ch in &para.chars {
+        if let hwp_model::HwpChar::Text(c) = ch {
+            text.push(*c);
+        }
+    }
+    text.contains(pattern)
 }
 
 /// Op-index-and-address prefix for a preflight failure message (D-04): reconstructs the id/at
@@ -1602,21 +1801,36 @@ fn apply_typed_operation(
         .next()
         .expect("resolved_addresses is aligned 1:1 with typed_operations");
     match operation {
-        TypedEditOperation::Replace { from, to } => {
+        TypedEditOperation::Replace { from, to, address } => {
             if from.is_empty() || from == to {
                 unapplied.push(format!("replace from={from:?} to={to:?}"));
                 return Ok(());
             }
-            let before = doc.clone();
-            let count = hwp_convert::replace_text(doc, from, to, true);
-            eprintln!("치환: {from:?} → {to:?} ({count}건)");
-            record_effect(
-                &before,
-                doc,
-                format!("replace from={from:?} to={to:?}"),
-                edits,
-                unapplied,
-            );
+            if address.is_some() {
+                let target = resolved_target
+                    .expect("preflight_addressed_ops resolved every addressed replace op");
+                let count = hwp_convert::replace_text_at(doc, &target.path, from, to);
+                if count == 0 {
+                    unapplied.push(format!(
+                        "replace address={} from={from:?} to={to:?}",
+                        target.path
+                    ));
+                } else {
+                    eprintln!("치환(주소): {} {from:?} → {to:?} ({count}건)", target.path);
+                    *edits += 1;
+                }
+            } else {
+                let before = doc.clone();
+                let count = hwp_convert::replace_text(doc, from, to, true);
+                eprintln!("치환: {from:?} → {to:?} ({count}건)");
+                record_effect(
+                    &before,
+                    doc,
+                    format!("replace from={from:?} to={to:?}"),
+                    edits,
+                    unapplied,
+                );
+            }
         }
         TypedEditOperation::SetCell {
             table,
@@ -1783,20 +1997,35 @@ fn apply_typed_operation(
                 }
             }
         }
-        TypedEditOperation::SetAlign { pattern, align } => {
-            let before = doc.clone();
-            let count = hwp_convert::set_para_align(doc, pattern, *align);
-            if count == 0 {
-                unapplied.push(format!("set_align pattern={pattern:?}"));
+        TypedEditOperation::SetAlign {
+            pattern,
+            align,
+            address,
+        } => {
+            if address.is_some() {
+                let target = resolved_target
+                    .expect("preflight_addressed_ops resolved every addressed set_align op");
+                if hwp_convert::set_para_align_at(doc, &target.path, *align) {
+                    eprintln!("문단 정렬(주소): {} = {align}", target.path);
+                    *edits += 1;
+                } else {
+                    unapplied.push(format!("set_align address={} align={align}", target.path));
+                }
             } else {
-                eprintln!("문단 정렬: {pattern:?} = {align} ({count}건)");
-                record_effect(
-                    &before,
-                    doc,
-                    format!("set_align pattern={pattern:?}"),
-                    edits,
-                    unapplied,
-                );
+                let before = doc.clone();
+                let count = hwp_convert::set_para_align(doc, pattern, *align);
+                if count == 0 {
+                    unapplied.push(format!("set_align pattern={pattern:?}"));
+                } else {
+                    eprintln!("문단 정렬: {pattern:?} = {align} ({count}건)");
+                    record_effect(
+                        &before,
+                        doc,
+                        format!("set_align pattern={pattern:?}"),
+                        edits,
+                        unapplied,
+                    );
+                }
             }
         }
         TypedEditOperation::InsertPara {
@@ -1902,20 +2131,35 @@ fn apply_typed_operation(
             eprintln!("표 복제: 표{source_table} → {anchor:?} 뒤 ({mode})");
             *edits += 1;
         }
-        TypedEditOperation::SetPara { pattern, props } => {
-            let before = doc.clone();
-            let count = hwp_convert::set_para_props(doc, pattern, props);
-            if count == 0 {
-                unapplied.push(format!("set_para pattern={pattern:?}"));
+        TypedEditOperation::SetPara {
+            pattern,
+            props,
+            address,
+        } => {
+            if address.is_some() {
+                let target = resolved_target
+                    .expect("preflight_addressed_ops resolved every addressed set_para op");
+                if hwp_convert::apply_para_props_at(doc, &target.path, props) {
+                    eprintln!("문단 모양(주소): {}", target.path);
+                    *edits += 1;
+                } else {
+                    unapplied.push(format!("set_para address={}", target.path));
+                }
             } else {
-                eprintln!("문단 모양: {pattern:?} ({count}건)");
-                record_effect(
-                    &before,
-                    doc,
-                    format!("set_para pattern={pattern:?}"),
-                    edits,
-                    unapplied,
-                );
+                let before = doc.clone();
+                let count = hwp_convert::set_para_props(doc, pattern, props);
+                if count == 0 {
+                    unapplied.push(format!("set_para pattern={pattern:?}"));
+                } else {
+                    eprintln!("문단 모양: {pattern:?} ({count}건)");
+                    record_effect(
+                        &before,
+                        doc,
+                        format!("set_para pattern={pattern:?}"),
+                        edits,
+                        unapplied,
+                    );
+                }
             }
         }
         TypedEditOperation::SetCellPara {

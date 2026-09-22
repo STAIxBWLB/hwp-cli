@@ -857,7 +857,11 @@ mod tests {
             "sibling paragraph's ParaShapeId must be unchanged"
         );
         let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
-        assert_eq!(ps.alignment(), 3, "addressed paragraph must carry the new align");
+        assert_eq!(
+            ps.alignment(),
+            3,
+            "addressed paragraph must carry the new align"
+        );
     }
 
     /// A repeated identical `apply_para_props_at` does not grow `header.para_shapes` — it reuses

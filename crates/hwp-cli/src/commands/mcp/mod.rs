@@ -1342,6 +1342,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::Replace {
             from: required_item_str(item, "replace", "from")?.to_string(),
             to: required_item_str(item, "replace", "to")?.to_string(),
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "set_cell")? {
@@ -1456,6 +1458,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
                 "align",
             )?)
             .map_err(|error| error.to_string())?,
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "insert_para")? {
@@ -1566,6 +1570,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetPara {
             pattern: required_item_str(item, "set_para", "pattern")?.to_string(),
             props: para_props_item(item, "set_para")?,
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "set_cell_para")? {

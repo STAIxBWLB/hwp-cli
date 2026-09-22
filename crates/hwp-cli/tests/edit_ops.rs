@@ -917,6 +917,228 @@ fn paragraph_granularity_rejects_a_char_range() {
     );
 }
 
+// ── Phase 7 plan 07-02: paragraph-granularity addressed ops (Task 2) ───────────────────
+
+/// An ops file with `{"op":"set_para","address":{...}}` validates and applies — basic
+/// schema/parser/apply-arm plumbing proof. The duplicate-text anchor-collision proof for
+/// `set_para` lives in Task 3.
+#[test]
+fn addressed_set_para_applies_via_address() {
+    let (dir, base) = new_base_for("addr-set-para-basic");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_para","address":{"at":{"section":0,"paragraph":1}},"align":"center"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_para must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after = hwpx::read_document(&output).unwrap().document;
+    let para = &after.sections[0].paragraphs[1];
+    let ps = &after.header.para_shapes[para.para_shape.0 as usize];
+    assert_eq!(ps.alignment(), 3, "가운데 정렬(3)이 적용되어야 함");
+}
+
+/// Same plumbing proof for `set_align`.
+#[test]
+fn addressed_set_align_applies_via_address() {
+    let (dir, base) = new_base_for("addr-set-align-basic");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_align","address":{"at":{"section":0,"paragraph":1}},"align":"right"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_align must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after = hwpx::read_document(&output).unwrap().document;
+    let para = &after.sections[0].paragraphs[1];
+    let ps = &after.header.para_shapes[para.para_shape.0 as usize];
+    assert_eq!(ps.alignment(), 2, "오른쪽 정렬(2)이 적용되어야 함");
+}
+
+/// Same plumbing proof for `replace`.
+#[test]
+fn addressed_replace_applies_via_address() {
+    let (dir, base) = new_base_for("addr-replace-basic");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"probe","to":"REPLACED"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed replace must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].plain_text(),
+        "shape rejection REPLACED"
+    );
+}
+
+/// `replace` requires `from` even when `address` narrows the search to one paragraph — unlike
+/// `pattern` on `set_para`/`set_align`, `from` is always the matched substring here, never purely
+/// a selector `address` can fully replace (rejected at the schema layer: `from` stays required).
+#[test]
+fn replace_requires_from_even_with_address() {
+    let (dir, base) = new_base_for("addr-replace-no-from");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"replace","address":{"at":{"section":0,"paragraph":1}},"to":"REPLACED"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "replace with address but no from must be rejected"
+    );
+    assert!(!output.exists());
+}
+
+/// `set_para` with both `pattern` and `address` is rejected before anything applies (D-12).
+#[test]
+fn set_para_rejects_pattern_and_address_together() {
+    let (dir, base) = new_base_for("addr-set-para-both");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_para","pattern":"shape","address":{"at":{"section":0,"paragraph":1}},"align":"center"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "set_para with both pattern and address must be rejected"
+    );
+    assert!(!output.exists());
+}
+
+/// `set_para` with neither `pattern` nor `address` is rejected the same way.
+#[test]
+fn set_para_rejects_neither_pattern_nor_address() {
+    let (dir, base) = new_base_for("addr-set-para-neither");
+    let ops = dir.join("ops.json");
+    std::fs::write(&ops, r#"[{"op":"set_para","align":"center"}]"#).unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "set_para with neither pattern nor address must be rejected"
+    );
+    assert!(!output.exists());
+}
+
+/// The core `detect_conflicts` proof: an addressed `replace` that shortens paragraph 0 followed
+/// by an addressed run-range `set_format` inside that same paragraph is rejected during
+/// preflight, with no output file. Task 3 adds the char_shape_runs-untouched assertion,
+/// `--allow-partial` variant, pattern-form variant and the different-paragraph negative control.
+#[test]
+fn detect_conflicts_rejects_length_change_before_run_range() {
+    let dir = test_dir("addr-conflict-basic");
+    let md = dir.join("doc.md");
+    // A run split at "bold" gives set_format a run-range target inside paragraph 0; replacing
+    // "plain" (5 wchars) with "x" (1 wchar) shortens the paragraph before that op would run.
+    std::fs::write(&md, "# T\n\nplain **bold** tail\n").unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"plain","to":"x"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"bold":"on"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a length-changing replace before a same-paragraph run-range op must be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("op[0]") && stderr.contains("op[1]"),
+        "stderr must name both op indices: {stderr}"
+    );
+    assert!(!output.exists());
+}
+
 /// load_ops가 스키마 위반을 만날 때 내보내는 bail 마커 접두어
 /// ("편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {instance_path}: {error}").
 const OPS_SCHEMA_MARKER: &str = "편집 연산이 edit-ops-v1 스키마를 벗어났습니다";
@@ -1585,7 +1807,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "88958d4e3c64b32ec838ad51ae061542b57b5170c2b2300f0a78c7d84863ec13",
+        actual, "c0627659a5c8126a487eae9fdbf418bc49562a52cc8ddc47e92e4c8c77ce01a1",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
