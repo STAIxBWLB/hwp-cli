@@ -711,6 +711,15 @@ pub struct EditArgs {
     /// Publish the matched edits even if some requests found no target (default: fail if any is unapplied)
     #[arg(long = "allow-partial")]
     pub allow_partial: bool,
+    /// Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched,
+    /// and the segment ids it changed as before/after pairs. Unlike "hwp compose --report" (a
+    /// bare flag printing to stdout), this one takes a file path, matching --loss-report's shape
+    #[arg(long, value_name = "FILE")]
+    pub report: Option<PathBuf>,
+    /// Apply the whole batch in memory and run the real writer and verifier, but publish no
+    /// output file; prints the edit-report-v1 report to stdout unless --report is also given
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
 }
 
 /// `hwp skill` subcommand.

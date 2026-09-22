@@ -666,6 +666,16 @@ pub const KO: &[(&str, &str, &str)] = &[
         "ops",
         "편집 연산 JSON 파일(edit-ops-v1 배열)로 일괄 적용 (\"-\"는 표준 입력; 개별 편집 플래그와 함께 쓸 수 없음)",
     ),
+    (
+        "edit",
+        "report",
+        "각 연산의 상태·건드린 조각 수·변경된 segment id(전/후 쌍)를 담은 edit-report-v1 JSON 파일을 이 경로에 씀 — \"hwp compose --report\"(표준 출력으로만 찍는 플래그)와 달리 파일 경로를 받으며, --loss-report와 같은 모양",
+    ),
+    (
+        "edit",
+        "dry_run",
+        "배치 전체를 메모리에서 실제 writer·검증 경로로 적용하되 출력 파일은 게시하지 않음. --report가 없으면 edit-report-v1 보고서를 표준 출력에 찍음",
+    ),
     // fields / bookmarks / slots
     ("fields", "", "필드/누름틀 목록 표시 (이름·종류·값)"),
     ("fields", "file", "대상 HWP/HWPX 파일"),

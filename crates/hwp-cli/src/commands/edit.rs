@@ -13,6 +13,7 @@ use std::path::Path;
 use anyhow::Context;
 use hwp_cli::cli::EditArgs;
 use hwp_convert::{CharFormat, ImageSize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::commands::cat::load_document;
@@ -317,6 +318,17 @@ pub struct EditPlan {
     typed_operations: Vec<TypedEditOperation>,
     verify: bool,
     allow_partial: bool,
+    /// EDT-06 (D-14): when set, the write-dispatch step swaps `write_validated`/
+    /// `write_with_private_input_snapshot(..., Publish)` for `validate_without_publish`/
+    /// `..., ValidateOnly`. Every other step (preflight, the apply loop, report construction)
+    /// runs identically, which is what makes the dry-run report truthful. `false` for MCP
+    /// (`from_typed`) and every caller that never asked for it — D-16 keeps this off the MCP
+    /// surface this phase.
+    dry_run: bool,
+    /// EDT-06 (D-15): when set, `run()` writes the `edit-report-v1` JSON here — including on
+    /// an aborted run (see [`EditAbort`]), so a caller can diagnose why nothing applied instead
+    /// of receiving only an error string. `None` for MCP (`from_typed`).
+    report: Option<std::path::PathBuf>,
 }
 
 struct ResolvedLabelEdit {
@@ -343,7 +355,136 @@ pub struct EditReport {
     pub applied: usize,
     pub warnings: Vec<String>,
     pub preservation: hwp_model::PreservationReport,
+    /// EDT-06: one outcome per `plan.typed_operations` entry, in array order (D-01). Empty for
+    /// a run that used only the individual CLI edit flags (`plan.operations`) — the report's
+    /// per-op detail is anchored to the `--ops` typed channel, where "op" and segment-id
+    /// concepts are already well-defined (D-02/D-13); the legacy flags have no equivalent.
+    pub ops: Vec<OpOutcome>,
+    /// D-14: true for a `--dry-run` report. A dry-run and a real run of the same batch produce
+    /// reports that differ only in this field.
+    pub dry_run: bool,
 }
+
+/// Which of the `edit-ops-v1` `op` enum this outcome describes — spelled the same way
+/// `OpsEntry`'s `#[serde(tag = "op", rename_all = "snake_case")]` spells it (D-03 field-name
+/// symmetry), so a consumer never has to learn a second vocabulary for the same op kinds.
+fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
+    match operation {
+        TypedEditOperation::Replace { .. } => "replace",
+        TypedEditOperation::SetCell { .. } => "set_cell",
+        TypedEditOperation::SetCellByLabel { .. } => "set_cell_by_label",
+        TypedEditOperation::CreateField { .. } => "create_field",
+        TypedEditOperation::CreateBookmark { .. } => "create_bookmark",
+        TypedEditOperation::CreateHyperlink { .. } => "create_hyperlink",
+        TypedEditOperation::InsertImage { .. } => "insert_image",
+        TypedEditOperation::Seal { .. } => "seal",
+        TypedEditOperation::SetField { .. } => "set_field",
+        TypedEditOperation::SetMeta { .. } => "set_meta",
+        TypedEditOperation::SetFormat { .. } => "set_format",
+        TypedEditOperation::SetAlign { .. } => "set_align",
+        TypedEditOperation::InsertPara { .. } => "insert_para",
+        TypedEditOperation::DeletePara { .. } => "delete_para",
+        TypedEditOperation::MoveParagraph { .. } => "move_para",
+        TypedEditOperation::IndentPara { .. } => "indent_para",
+        TypedEditOperation::OutdentPara { .. } => "outdent_para",
+        TypedEditOperation::AddRow { .. } => "add_row",
+        TypedEditOperation::AddCol { .. } => "add_col",
+        TypedEditOperation::DeleteRow { .. } => "delete_row",
+        TypedEditOperation::DeleteCol { .. } => "delete_col",
+        TypedEditOperation::MergeCells { .. } => "merge_cells",
+        TypedEditOperation::SplitCell { .. } => "split_cell",
+        TypedEditOperation::AddTable { .. } => "add_table",
+        TypedEditOperation::CloneTable { .. } => "clone_table",
+        TypedEditOperation::SetPara { .. } => "set_para",
+        TypedEditOperation::SetCellPara { .. } => "set_cell_para",
+        TypedEditOperation::SetPage { .. } => "set_page",
+        TypedEditOperation::DeleteImage { .. } => "delete_image",
+        TypedEditOperation::DeleteTable { .. } => "delete_table",
+        TypedEditOperation::DeleteField { .. } => "delete_field",
+        TypedEditOperation::DeleteBookmark { .. } => "delete_bookmark",
+        TypedEditOperation::StyleTables { .. } => "style_tables",
+    }
+}
+
+/// One `edit-report-v1` `changed` entry (D-13): both ids per change, `null` on either side
+/// marking a creation or a removal.
+#[derive(Debug, Clone, Serialize)]
+pub struct IdPair {
+    before: Option<String>,
+    after: Option<String>,
+}
+
+/// `edit-report-v1` `ops[].status` (D-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpStatus {
+    Applied,
+    Failed,
+}
+
+/// One `edit-report-v1` `ops[]` entry: what one addressed or unaddressed op in the batch did.
+#[derive(Debug, Clone, Serialize)]
+pub struct OpOutcome {
+    index: usize,
+    op: String,
+    status: OpStatus,
+    pieces_touched: usize,
+    changed: Vec<IdPair>,
+    reason: Option<String>,
+}
+
+/// `edit-report-v1`'s wire shape (schema_version/contract first, D-15's house convention) — a
+/// thin serialization view over [`EditReport`], which also carries fields (`warnings`,
+/// `preservation`) that are not part of the published report contract.
+#[derive(Debug, Serialize)]
+struct EditReportV1<'a> {
+    schema_version: &'static str,
+    contract: &'static str,
+    output: &'a str,
+    dry_run: bool,
+    ops: &'a [OpOutcome],
+    applied_count: usize,
+    failed_count: usize,
+}
+
+impl EditReportV1<'_> {
+    fn from_report(report: &EditReport) -> EditReportV1<'_> {
+        let applied_count = report
+            .ops
+            .iter()
+            .filter(|op| op.status == OpStatus::Applied)
+            .count();
+        let failed_count = report.ops.len() - applied_count;
+        EditReportV1 {
+            schema_version: "1.0",
+            contract: "hwp-edit-report-v1",
+            output: &report.output,
+            dry_run: report.dry_run,
+            ops: &report.ops,
+            applied_count,
+            failed_count,
+        }
+    }
+}
+
+/// EDT-06: carries a fully-populated [`EditReport`] alongside an aborted `execute()` run
+/// (unapplied requests without `--allow-partial`, or zero applicable edits) so `run()` can still
+/// write `--report`'s file — a caller diagnosing why nothing applied needs the `ops` array, not
+/// only an error string. `Display` reproduces exactly the message the old bare `anyhow::bail!`
+/// produced, so existing callers that match on the error text see no change.
+#[derive(Debug)]
+struct EditAbort {
+    report: EditReport,
+    reason: String,
+}
+
+impl std::fmt::Display for EditAbort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reason)
+    }
+}
+
+impl std::error::Error for EditAbort {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputFormat {
@@ -415,6 +556,8 @@ impl EditPlan {
             style_tables,
             verify,
             allow_partial,
+            report,
+            dry_run,
         } = args;
 
         let mut operations = Vec::new();
@@ -474,6 +617,8 @@ impl EditPlan {
                 typed_operations: Vec::new(),
                 verify,
                 allow_partial,
+                dry_run,
+                report,
             },
         )
     }
@@ -492,6 +637,8 @@ impl EditPlan {
             ops,
             verify,
             allow_partial,
+            report,
+            dry_run,
             ..
         } = args;
         let ops = ops.expect("from_ops is only called when --ops is set");
@@ -499,10 +646,19 @@ impl EditPlan {
         Ok((
             input,
             output,
-            Self::from_typed(typed_operations, verify, allow_partial),
+            Self {
+                operations: Vec::new(),
+                typed_operations,
+                verify,
+                allow_partial,
+                dry_run,
+                report,
+            },
         ))
     }
 
+    /// Used by the MCP `tool_edit` boundary only — `dry_run`/`report` stay off that surface this
+    /// phase (D-16), so this constructor always builds a plan with neither set.
     pub(crate) fn from_typed(
         operations: Vec<TypedEditOperation>,
         verify: bool,
@@ -513,6 +669,8 @@ impl EditPlan {
             typed_operations: operations,
             verify,
             allow_partial,
+            dry_run: false,
+            report: None,
         }
     }
 
@@ -661,10 +819,58 @@ fn parse_clone_table_spec(spec: &str) -> anyhow::Result<CloneTableSpec> {
 }
 
 pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
-    let report = execute(input, output, plan)?;
-    crate::commands::convert::print_warnings(&report.warnings);
-    crate::commands::preservation::print_report(&report.preservation);
-    eprintln!("편집 완료: {} → {}", input.display(), output.display());
+    match execute(input, output, plan) {
+        Ok(report) => {
+            emit_edit_report(plan, &report)?;
+            crate::commands::convert::print_warnings(&report.warnings);
+            crate::commands::preservation::print_report(&report.preservation);
+            if plan.dry_run {
+                eprintln!(
+                    "편집 dry-run 완료: {} (출력 파일은 게시하지 않음)",
+                    input.display()
+                );
+            } else {
+                eprintln!("편집 완료: {} → {}", input.display(), output.display());
+            }
+            Ok(())
+        }
+        Err(err) => {
+            // EDT-06/D-14: an aborted run still leaves a diagnosable artifact when `--report`
+            // was given — write it, then propagate the SAME error `err` carries (EditAbort's
+            // Display reproduces the original bail! message verbatim).
+            if let Some(abort) = err.downcast_ref::<EditAbort>() {
+                emit_edit_report(plan, &abort.report)?;
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Writes `--report <path>`'s file (staged, per `write_loss_report`'s precedent — T-07-24), or
+/// prints the report to stdout when `--dry-run` was given without `--report`, mirroring
+/// `template.rs`'s `print_report || dry_run` idiom. A no-op when neither was requested.
+fn emit_edit_report(plan: &EditPlan, report: &EditReport) -> anyhow::Result<()> {
+    let report_v1 = EditReportV1::from_report(report);
+    if let Some(path) = &plan.report {
+        let bytes = serde_json::to_vec_pretty(&report_v1)?;
+        crate::commands::output::write_validated(
+            path,
+            None,
+            |staged| {
+                std::fs::write(staged, &bytes)?;
+                Ok(())
+            },
+            |staged, _| {
+                let written = std::fs::read(staged)?;
+                if written != bytes {
+                    anyhow::bail!("편집 보고서 검증 중 바이트 불일치: {}", staged.display());
+                }
+                Ok(())
+            },
+        )?;
+    } else if plan.dry_run {
+        println!("{}", serde_json::to_string_pretty(&report_v1)?);
+    }
     Ok(())
 }
 
@@ -687,17 +893,26 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             crate::format::FileFormat::Hwpx
         )
     {
-        let report = crate::commands::output::write_validated(
-            output,
-            Some(input),
-            |staged| patch_replacements_staged(input, staged, &pairs, plan.allow_partial),
-            |staged, _| {
-                if plan.verify {
-                    verify_output(staged, None)?;
-                }
-                Ok(())
-            },
-        )?;
+        let writer =
+            |staged: &Path| patch_replacements_staged(input, staged, &pairs, plan.allow_partial);
+        let verifier = |staged: &Path, _: &_| {
+            if plan.verify {
+                verify_output(staged, None)?;
+            }
+            Ok(())
+        };
+        // D-14: this fast path publishes on its own (it never goes through the write-dispatch
+        // section below), so it needs its own dry-run gate.
+        let report = if plan.dry_run {
+            crate::commands::output::validate_without_publish(
+                output,
+                Some(input),
+                writer,
+                verifier,
+            )?
+        } else {
+            crate::commands::output::write_validated(output, Some(input), writer, verifier)?
+        };
         for (entry, n) in &report.counts {
             eprintln!("치환(패키지 보존): {entry} ({n}건)");
         }
@@ -706,6 +921,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             applied: report.applied_requests,
             warnings: report.warnings,
             preservation: hwp_model::PreservationReport::new(),
+            // This fast path batches every pattern-form replace into one package-surgical patch
+            // with only an aggregate count (`report.applied_requests`) — no per-op breakdown to
+            // report, so `ops` stays empty (consistent with the individual-flag path below).
+            ops: Vec::new(),
+            dry_run: plan.dry_run,
         });
     }
 
@@ -747,6 +967,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 .join("\n")
         );
     }
+    // EDT-06: kept alongside the consuming iterators below for post-hoc report construction —
+    // one random-access slot per `plan.typed_operations` entry, `Some` only where preflight
+    // resolved a target, exactly mirroring `resolved_addresses`/`resolved_move_destinations`.
+    let resolved_addresses_for_report = resolved_addresses.clone();
+    let resolved_move_destinations_for_report = resolved_move_destinations.clone();
     let mut resolved_addresses = resolved_addresses.into_iter();
     let mut resolved_move_destinations = resolved_move_destinations.into_iter();
     let mut resolved_label_edits = label_preflight.resolved.into_iter();
@@ -757,6 +982,12 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // preflight-resolved ORIGINAL index plus whatever earlier structural ops in this batch have
     // already done to the same list.
     let mut offsets = IndexOffsets::default();
+    // EDT-06/D-13: the document state addresses were resolved against (D-06) — the "before"
+    // reference for re-deriving every touched paragraph/run's id once the typed-op loop below
+    // has mutated `doc`. Only cloned when there is a typed op to report on; cloned ONCE (not
+    // per-op) and read via `&mut` reborrows since `paragraph_at_mut` needs mutable access even
+    // though every use here is read-only.
+    let mut doc_before_typed_ops = (!plan.typed_operations.is_empty()).then(|| doc.clone());
     // 구조 편집(문단/행 추가·삭제·이미지 삽입)은 합성 경로로 써야 한다 — 삽입 문단/행
     // 불변식 + 그림 도형 레코드 합성(빈-extras Picture)이 적용되도록.
     let structural = plan.operations.iter().any(EditOperation::is_structural)
@@ -1325,7 +1556,25 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             }
         }
     }
-    for operation in &plan.typed_operations {
+    // EDT-06: one outcome per `plan.typed_operations` entry, populated as this loop runs —
+    // reusing the SAME `edits`/`unapplied` accounting the stderr summary uses (before/after
+    // deltas around each call), not a second, independently-derived count.
+    let mut ops_outcomes: Vec<OpOutcome> = Vec::with_capacity(plan.typed_operations.len());
+    for (index, operation) in plan.typed_operations.iter().enumerate() {
+        let target_before = resolved_addresses_for_report[index].clone();
+        let to_target_before = resolved_move_destinations_for_report[index].clone();
+        // Snapshot BEFORE calling apply_typed_operation: for a structural op (insert_para/
+        // move_para), this call's own `offsets.record_insert`/`record_move` below would
+        // otherwise self-shift the very anchor/reference path we need — capturing it now is
+        // the SAME state `apply_typed_operation` itself reads internally when it runs this op.
+        let target_current_path = target_before
+            .as_ref()
+            .and_then(|target| offsets.current_path(&target.path).ok());
+        let to_target_current_path = to_target_before
+            .as_ref()
+            .and_then(|target| offsets.current_path(&target.path).ok());
+        let edits_before = edits;
+        let unapplied_before = unapplied.len();
         apply_typed_operation(
             operation,
             &mut doc,
@@ -1336,23 +1585,95 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut resolved_move_destinations,
             &mut offsets,
         )?;
+        let op = typed_op_kind(operation).to_string();
+        if unapplied.len() > unapplied_before {
+            ops_outcomes.push(OpOutcome {
+                index,
+                op,
+                status: OpStatus::Failed,
+                pieces_touched: 0,
+                changed: Vec::new(),
+                reason: unapplied.last().cloned(),
+            });
+            continue;
+        }
+        if edits == edits_before {
+            // `set_cell_by_label` whose label was already found unresolvable during
+            // `preflight_label_edits` (which runs BEFORE this loop, so its miss is already
+            // baked into `unapplied_before`) returns early without touching `edits` or
+            // `unapplied` on ITS OWN call — the only op kind not covered by the
+            // "advanced edits xor pushed unapplied" invariant every other arm keeps. Report it
+            // honestly as failed rather than silently claiming success.
+            ops_outcomes.push(OpOutcome {
+                index,
+                op,
+                status: OpStatus::Failed,
+                pieces_touched: 0,
+                changed: Vec::new(),
+                reason: Some("적용되지 않음 (사전 검증 단계에서 이미 확인됨)".to_string()),
+            });
+            continue;
+        }
+        let changed = report_changed_ids(
+            operation,
+            target_before.as_ref(),
+            target_current_path.as_ref(),
+            to_target_current_path.as_ref(),
+            doc_before_typed_ops.as_mut(),
+            &mut doc,
+        );
+        let pieces_touched = changed.len().max(1);
+        ops_outcomes.push(OpOutcome {
+            index,
+            op,
+            status: OpStatus::Applied,
+            pieces_touched,
+            changed,
+            reason: None,
+        });
     }
 
     if !unapplied.is_empty() && !plan.allow_partial {
-        anyhow::bail!(
+        let reason = format!(
             "적용되지 않은 편집 요청이 있습니다: {} (--allow-partial로 일치한 요청만 적용 가능)",
             unapplied.join(", ")
         );
+        return Err(EditAbort {
+            report: EditReport {
+                output: output.display().to_string(),
+                applied: edits,
+                warnings: Vec::new(),
+                preservation: hwp_model::PreservationReport::new(),
+                ops: ops_outcomes,
+                dry_run: plan.dry_run,
+            },
+            reason,
+        }
+        .into());
     }
     // `--style-tables` on an already-styled document legitimately produces zero edits and a
     // document equal to the original: that IS D-08's guarantee, and refusing to publish would
     // make the second of two identical runs fail. Every other operation still has to change
     // something to earn an output.
     if !requested_style_tables && (edits == 0 || doc == original_doc) {
-        anyhow::bail!(
-            "적용 가능한 편집이 없어 출력을 게시하지 않습니다 \
+        // EDT-06: still leave a diagnosable artifact when `--report`/`--dry-run` was given (a
+        // caller needs `ops` to see WHY nothing applied, not just this error string) — write
+        // it BEFORE this guard aborts, per the plan's own instruction, rather than after
+        // `execute()` has already returned an opaque `Err`.
+        return Err(EditAbort {
+            report: EditReport {
+                output: output.display().to_string(),
+                applied: edits,
+                warnings: Vec::new(),
+                preservation: hwp_model::PreservationReport::new(),
+                ops: ops_outcomes,
+                dry_run: plan.dry_run,
+            },
+            reason: "적용 가능한 편집이 없어 출력을 게시하지 않습니다 \
              (--replace/--set-cell/--set-field/--set-meta 등 요청 확인)"
-        );
+                .to_string(),
+        }
+        .into());
     }
 
     let mut warnings = unapplied
@@ -1392,17 +1713,33 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         }
         Ok(())
     };
+    // D-14: dry-run applies the WHOLE batch above exactly like a real run, then routes the
+    // write through the same staged verifier `hwp compose --dry-run`/`hwp template --dry-run`
+    // already use, discarding instead of publishing — every other step is unchanged, which is
+    // what makes the dry-run report truthful about target misses and resulting ids.
+    let snapshot_mode = if plan.dry_run {
+        crate::commands::output::SnapshotOutputMode::ValidateOnly
+    } else {
+        crate::commands::output::SnapshotOutputMode::Publish
+    };
     let writer_report =
         if output_format == OutputFormat::Hwp && original_doc.meta.source_format == "hwp5" {
             let (_, report) = crate::commands::output::write_with_private_input_snapshot(
                 output,
                 input,
                 hwp_cli::certification::MAX_INPUT_BYTES,
-                crate::commands::output::SnapshotOutputMode::Publish,
+                snapshot_mode,
                 |snapshot, staged, _| write_staged(snapshot, staged),
                 verify_staged,
             )?;
             report
+        } else if plan.dry_run {
+            crate::commands::output::validate_without_publish(
+                output,
+                Some(input),
+                |staged| write_staged(input, staged),
+                verify_staged,
+            )?
         } else {
             crate::commands::output::write_validated(
                 output,
@@ -1417,6 +1754,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         applied: edits,
         warnings,
         preservation: writer_report.preservation,
+        ops: ops_outcomes,
+        dry_run: plan.dry_run,
     })
 }
 
@@ -1775,6 +2114,155 @@ fn default_shape_at(
             .first()
             .map_or(hwp_model::CharShapeId(0), |run| run.1),
     ))
+}
+
+/// EDT-06/D-13: the `changed` id pairs for one successfully-applied addressed op, computed right
+/// after it mutated `doc`. `target_before`/`to_target_before` are the op's preflight-resolved
+/// target(s) (`None` for an op with no address, which reports no ids — there is nothing to
+/// re-key). `target_current_path`/`to_target_current_path` are `IndexOffsets::current_path`
+/// snapshots taken BEFORE this op's own call to `apply_typed_operation` — required, not merely
+/// convenient: a structural op's own `record_insert`/`record_move` (called INSIDE that same
+/// `apply_typed_operation` call) would otherwise have already self-shifted the very anchor/
+/// reference path being resolved here, corrupting exactly the lookup this function needs.
+/// `doc_before_typed_ops` is the document state addresses were resolved against (D-06), needed
+/// to re-derive the pre-batch run-id list for the run-split cascade (Pitfall 2).
+///
+/// Structural ops (`insert_para`/`delete_para`/`move_para`) are handled directly here, using the
+/// SAME private helpers (`move_to_index`, `list_prefix`) their own `apply_typed_operation` arms
+/// use — correct as long as no LATER op in the same batch further disturbs the SAME list, a
+/// known, documented limitation shared with the `IndexOffsets` scalar model itself (see its own
+/// doc comment on `record_move`). Every non-structural addressed kind uses
+/// `target_current_path` directly (already correct for any EARLIER structural op in the batch,
+/// since none of these kinds change list length themselves).
+fn report_changed_ids(
+    operation: &TypedEditOperation,
+    target_before: Option<&hwp_convert::address::ResolvedTarget>,
+    target_current_path: Option<&hwp_convert::SegmentPath>,
+    to_target_current_path: Option<&hwp_convert::SegmentPath>,
+    doc_before_typed_ops: Option<&mut hwp_model::Document>,
+    doc: &mut hwp_model::Document,
+) -> Vec<IdPair> {
+    let Some(target) = target_before else {
+        return Vec::new();
+    };
+    match operation {
+        TypedEditOperation::DeletePara {
+            address: Some(_), ..
+        } => {
+            // The removed paragraph no longer exists anywhere to re-derive an id from — D-13's
+            // null-after case, reported directly rather than through a (necessarily failing)
+            // lookup.
+            vec![IdPair {
+                before: Some(target.before_id.clone()),
+                after: None,
+            }]
+        }
+        TypedEditOperation::InsertPara {
+            address: Some(_),
+            before,
+            ..
+        } => {
+            let Some(anchor_path) = target_current_path else {
+                return Vec::new();
+            };
+            let Some(&anchor_idx) = anchor_path.indices.last() else {
+                return Vec::new();
+            };
+            let new_idx = if *before { anchor_idx } else { anchor_idx + 1 };
+            let mut new_indices = anchor_path.indices.clone();
+            *new_indices.last_mut().expect("non-empty path") = new_idx;
+            let new_path = hwp_convert::SegmentPath {
+                section: anchor_path.section,
+                indices: new_indices,
+            };
+            let Some(paragraph) = hwp_convert::address::paragraph_at_mut(doc, &new_path) else {
+                return Vec::new();
+            };
+            // D-13's null-before case: the created paragraph did not exist before the batch.
+            vec![IdPair {
+                before: None,
+                after: Some(hwp_convert::paragraph_id(&new_path, paragraph)),
+            }]
+        }
+        TypedEditOperation::MoveParagraph { before, .. } => {
+            let (Some(from_current), Some(to_ref_current)) =
+                (target_current_path, to_target_current_path)
+            else {
+                return Vec::new();
+            };
+            let to_index = move_to_index(from_current, to_ref_current, *before);
+            let mut moved_indices = list_prefix(to_ref_current).to_vec();
+            moved_indices.push(to_index);
+            let moved_path = hwp_convert::SegmentPath {
+                section: to_ref_current.section,
+                indices: moved_indices,
+            };
+            let Some(paragraph) = hwp_convert::address::paragraph_at_mut(doc, &moved_path) else {
+                return Vec::new();
+            };
+            // The paragraph itself is spliced, not re-created (structure::move_paragraph never
+            // clones), so its instance_id and content are unchanged — only its path, and
+            // therefore its id STRING, moves.
+            vec![IdPair {
+                before: Some(target.before_id.clone()),
+                after: Some(hwp_convert::paragraph_id(&moved_path, paragraph)),
+            }]
+        }
+        _ => {
+            // Every other addressed kind (SetFormat, SetPara, SetAlign, Replace(addressed),
+            // IndentPara, OutdentPara): none of these change list length, so the paragraph's
+            // OWN position is unaffected by THIS op — `target_current_path` already reflects
+            // drift from any earlier structural op in the batch, which is exactly correct here.
+            let Some(current_path) = target_current_path else {
+                return Vec::new();
+            };
+            let Some(paragraph) = hwp_convert::address::paragraph_at_mut(doc, current_path) else {
+                return Vec::new();
+            };
+            let after_para_id = hwp_convert::paragraph_id(current_path, paragraph);
+            let mut changed = Vec::new();
+            if after_para_id != target.before_id {
+                changed.push(IdPair {
+                    before: Some(target.before_id.clone()),
+                    after: Some(after_para_id),
+                });
+            }
+            // Pitfall 2 / must_haves.truths: a run-range op cascades id changes to every LATER
+            // run in the paragraph, not only the one it targeted, because a run split shifts
+            // every later run's canonical index. Zipped by position, null-padded on whichever
+            // side is shorter (a split GROWS the run count; nothing here ever shrinks it).
+            if let hwp_convert::address::TargetKind::Run { .. } = target.kind {
+                let before_runs: Vec<String> = doc_before_typed_ops
+                    .and_then(|before_doc| {
+                        hwp_convert::address::paragraph_at_mut(before_doc, &target.path)
+                    })
+                    .map(|p| {
+                        hwp_convert::canonical_char_shape_runs(p)
+                            .iter()
+                            .enumerate()
+                            .map(|(i, _)| hwp_convert::run_id(&target.path, p, i))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let after_runs: Vec<String> = hwp_convert::canonical_char_shape_runs(paragraph)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| hwp_convert::run_id(current_path, paragraph, i))
+                    .collect();
+                for i in 0..before_runs.len().max(after_runs.len()) {
+                    let b = before_runs.get(i).cloned();
+                    let a = after_runs.get(i).cloned();
+                    if b != a {
+                        changed.push(IdPair {
+                            before: b,
+                            after: a,
+                        });
+                    }
+                }
+            }
+            changed
+        }
+    }
 }
 
 /// A pair the widened preflight rejects (07-02 length-change clause, T-07-26; 07-03 removal

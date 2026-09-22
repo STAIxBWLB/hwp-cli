@@ -2457,6 +2457,618 @@ fn schema_hash_frozen() {
     );
 }
 
+// ── Phase 7 plan 07-05: edit report and dry-run (EDT-06) ───────────────────────
+
+/// D-15's own frozen-hash pin, beside `schema_hash_frozen` above: any edit to
+/// `edit-report-v1.schema.json` — even a description tweak — must consciously update this
+/// constant.
+#[test]
+fn edit_report_schema_hash_frozen() {
+    use sha2::{Digest, Sha256};
+
+    let digest: [u8; 32] = Sha256::digest(include_bytes!(
+        "../../../schemas/edit-report-v1.schema.json"
+    ))
+    .into();
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        actual, "7a46444e7f1bab92d17502dc606cc99408885f1334bf2d0f9d652de33632a699",
+        "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
+    );
+}
+
+fn edit_report_v1_validator() -> jsonschema::Validator {
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap()
+}
+
+/// A single addressed `set_format` run: the report has exactly one `applied` op entry with a
+/// non-empty `changed` array (the paragraph's own before/after id pair), and validates against
+/// `edit-report-v1.schema.json`.
+#[test]
+fn addressed_set_format_report_has_before_after_ids() {
+    let dir = test_dir("report-set-format");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4,"run":0}},"bold":"on"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_format with --report must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    let validator = edit_report_v1_validator();
+    assert!(
+        validator.is_valid(&report),
+        "report must validate against edit-report-v1: {report}"
+    );
+    assert_eq!(report["contract"], "hwp-edit-report-v1");
+    assert_eq!(report["dry_run"], false);
+    assert_eq!(report["applied_count"], 1);
+    assert_eq!(report["failed_count"], 0);
+    let ops = report["ops"].as_array().unwrap();
+    assert_eq!(ops.len(), 1, "one op in, one outcome out: {ops:?}");
+    assert_eq!(ops[0]["index"], 0);
+    assert_eq!(ops[0]["op"], "set_format");
+    assert_eq!(ops[0]["status"], "applied");
+    let changed = ops[0]["changed"].as_array().unwrap();
+    assert!(
+        !changed.is_empty(),
+        "a single addressed set_format must report a non-empty changed array: {changed:?}"
+    );
+    for pair in changed {
+        assert!(
+            pair["before"].is_string() && pair["after"].is_string(),
+            "a same-paragraph restyle changes an EXISTING segment, neither side is a creation/removal: {pair}"
+        );
+        assert_ne!(
+            pair["before"], pair["after"],
+            "a changed pair must actually differ: {pair}"
+        );
+    }
+}
+
+/// A run-range `set_format` that splits a run reports the touched paragraph's OWN id change AND
+/// the id change of every LATER run in the paragraph — not only the run it targeted (Pitfall 2 /
+/// the plan's own prohibition 3). Reuses `addressed_run_range_restyles_the_named_sub_range_only`'s
+/// fixture: restyling `run:1` (`"bold"`, wchar `[6,10)`) at `chars:[7,9]` splits it into three
+/// pieces, shifting the canonical index — and therefore the id — of the trailing `" tail"` run.
+#[test]
+fn addressed_run_split_report_cascades_later_run_ids() {
+    let dir = test_dir("report-run-split");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, RUN_RANGE_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let before_para = &before_doc.sections[0].paragraphs[1];
+    let before_runs = hwp_convert::canonical_char_shape_runs(before_para);
+    assert_eq!(
+        before_runs.len(),
+        3,
+        "plain/bold/tail must start as three runs"
+    );
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1},"chars":[7,9]},"italic":"on"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "run-split set_format with --report must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after_doc = hwpx::read_document(&output).unwrap().document;
+    let after_para = &after_doc.sections[0].paragraphs[1];
+    let after_runs = hwp_convert::canonical_char_shape_runs(after_para);
+    assert!(
+        after_runs.len() > before_runs.len(),
+        "restyling a sub-range of run 1 must split it into more runs: before={} after={}",
+        before_runs.len(),
+        after_runs.len()
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert!(
+        edit_report_v1_validator().is_valid(&report),
+        "report must validate against edit-report-v1: {report}"
+    );
+    let changed = report["ops"][0]["changed"].as_array().unwrap();
+    // The paragraph's own pair, plus at least one pair per run whose canonical index moved
+    // (every run from the split point onward) — never just the one pair a targeted-only report
+    // would produce.
+    assert!(
+        changed.len() >= 3,
+        "a run split must cascade to the paragraph AND every later run, not one pair: {changed:?}"
+    );
+}
+
+/// An addressed `insert_para` reports the newly-created paragraph's own id with a null `before`
+/// (D-13's creation case) — it did not exist before the batch.
+#[test]
+fn addressed_insert_para_report_marks_creation_with_null_before() {
+    let dir = test_dir("report-insert-para");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"insert_para","address":{"at":{"section":0,"paragraph":4}},"before":false,"text":"NEW BESIDE SECOND"}]"#,
+    )
+    .unwrap();
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed insert_para with --report must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert!(
+        edit_report_v1_validator().is_valid(&report),
+        "report must validate against edit-report-v1: {report}"
+    );
+    let changed = report["ops"][0]["changed"].as_array().unwrap();
+    assert_eq!(
+        changed.len(),
+        1,
+        "insert_para creates exactly one new paragraph: {changed:?}"
+    );
+    assert!(
+        changed[0]["before"].is_null(),
+        "a creation must report a null before: {}",
+        changed[0]
+    );
+    assert!(
+        changed[0]["after"].is_string(),
+        "the created paragraph's after id must be present: {}",
+        changed[0]
+    );
+}
+
+/// An addressed `delete_para` reports the removed paragraph's before id with a null `after`
+/// (D-13's removal case) — it no longer exists after the batch.
+#[test]
+fn addressed_delete_para_report_marks_removal_with_null_after() {
+    let dir = test_dir("report-delete-para");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"delete_para","address":{"at":{"section":0,"paragraph":4}}}]"#,
+    )
+    .unwrap();
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed delete_para with --report must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert!(
+        edit_report_v1_validator().is_valid(&report),
+        "report must validate against edit-report-v1: {report}"
+    );
+    let changed = report["ops"][0]["changed"].as_array().unwrap();
+    assert_eq!(
+        changed.len(),
+        1,
+        "delete_para removes exactly one paragraph: {changed:?}"
+    );
+    assert!(
+        changed[0]["before"].is_string(),
+        "the removed paragraph's before id must be present: {}",
+        changed[0]
+    );
+    assert!(
+        changed[0]["after"].is_null(),
+        "a removal must report a null after: {}",
+        changed[0]
+    );
+}
+
+/// A batch pairing one op that applies with one pattern-form op that matches nothing, under
+/// `--allow-partial`, reports the first as applied and the second as failed with a populated
+/// reason; `failed_count` counts it, matching the stderr summary's own accounting.
+#[test]
+fn failed_op_under_allow_partial_reports_status_failed() {
+    let dir = test_dir("report-failed-op");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"set_align","address":{"at":{"section":0,"paragraph":4}},"align":"right"},
+          {"op":"set_align","pattern":"NO_SUCH_TEXT_ANYWHERE","align":"left"}
+        ]"#,
+    )
+    .unwrap();
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--allow-partial")
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "a partially-matched batch under --allow-partial must still succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert!(
+        edit_report_v1_validator().is_valid(&report),
+        "report must validate against edit-report-v1: {report}"
+    );
+    assert_eq!(report["applied_count"], 1);
+    assert_eq!(report["failed_count"], 1);
+    let ops = report["ops"].as_array().unwrap();
+    assert_eq!(ops[0]["status"], "applied");
+    assert_eq!(ops[1]["status"], "failed");
+    assert!(
+        ops[1]["reason"].is_string() && !ops[1]["reason"].as_str().unwrap().is_empty(),
+        "a failed op must carry a populated reason: {}",
+        ops[1]
+    );
+    assert_eq!(ops[1]["pieces_touched"], 0);
+    assert!(ops[1]["changed"].as_array().unwrap().is_empty());
+}
+
+/// A run whose only op matches nothing still writes `--report`'s file when given, even though
+/// `execute()` itself errors — a caller diagnosing why nothing applied needs the `ops` array, not
+/// only the error string.
+#[test]
+fn zero_edit_run_still_writes_report() {
+    let dir = test_dir("report-zero-edit");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_align","pattern":"NO_SUCH_TEXT_ANYWHERE","align":"left"}]"#,
+    )
+    .unwrap();
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "zero applicable edits must still fail the command overall"
+    );
+    assert!(
+        !output.exists(),
+        "a failed run must not publish an output file"
+    );
+    assert!(
+        report_path.exists(),
+        "the --report file must exist even though the run aborted: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert!(
+        edit_report_v1_validator().is_valid(&report),
+        "report must validate against edit-report-v1: {report}"
+    );
+    assert_eq!(report["applied_count"], 0);
+    assert_eq!(report["failed_count"], 1);
+    assert_eq!(report["ops"][0]["status"], "failed");
+}
+
+/// The SAME zero-edit case, but reached via the second guard: `--allow-partial` clears the
+/// unapplied-requests bail, so the run must instead abort on "no applicable edits" — and still
+/// write the report.
+#[test]
+fn zero_edit_run_under_allow_partial_still_writes_report() {
+    let dir = test_dir("report-zero-edit-allow-partial");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_align","pattern":"NO_SUCH_TEXT_ANYWHERE","align":"left"}]"#,
+    )
+    .unwrap();
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--allow-partial")
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "zero applicable edits must fail even under --allow-partial"
+    );
+    assert!(!output.exists());
+    assert!(report_path.exists());
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert_eq!(report["applied_count"], 0);
+    assert_eq!(report["failed_count"], 1);
+}
+
+/// `--dry-run` writes neither the output file nor anything at the destination path, and prints
+/// the `edit-report-v1` report to stdout when no `--report` path was given.
+#[test]
+fn dry_run_writes_no_output_file_and_prints_report_to_stdout() {
+    let dir = test_dir("dry-run-no-output");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4,"run":0}},"bold":"on"}]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "dry-run of an applicable batch must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        !output.exists(),
+        "--dry-run must not write an output file at the destination path"
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!("--dry-run stdout must be the edit-report-v1 JSON: {e}: {stdout}")
+    });
+    assert!(edit_report_v1_validator().is_valid(&report));
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["applied_count"], 1);
+}
+
+/// A dry-run over an EXISTING destination leaves that file's bytes unchanged (T-07-21: dry-run
+/// must never publish its staged output).
+#[test]
+fn dry_run_over_existing_destination_leaves_bytes_unchanged() {
+    let dir = test_dir("dry-run-existing-dest");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let output = dir.join("out.hwpx");
+    // A plausible pre-existing destination: a real hwpx file with different bytes than the
+    // dry-run would ever have produced (a straight copy of the input, not the edited output).
+    std::fs::copy(&base, &output).unwrap();
+    let existing_bytes = std::fs::read(&output).unwrap();
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4,"run":0}},"bold":"on"}]"#,
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "dry-run over an existing destination must still succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after_bytes = std::fs::read(&output).unwrap();
+    assert_eq!(
+        existing_bytes, after_bytes,
+        "a dry-run must leave an existing destination's bytes completely unchanged"
+    );
+}
+
+/// A dry-run report and a real-run report of the SAME batch differ only in `dry_run` — the
+/// entire preflight/apply-loop/id-derivation path is shared, so `--dry-run` never has to lie
+/// about target misses or resulting ids (D-14).
+#[test]
+fn dry_run_report_matches_real_run_report_except_dry_run_field() {
+    let dir = test_dir("dry-run-vs-real");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4,"run":0}},"bold":"on"}]"#,
+    )
+    .unwrap();
+
+    let dry_output = dir.join("dry.hwpx");
+    let dry_report_path = dir.join("dry-report.json");
+    let dry_run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&dry_output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--dry-run")
+        .arg("--report")
+        .arg(&dry_report_path)
+        .output()
+        .unwrap();
+    assert!(
+        dry_run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+
+    let real_output = dir.join("real.hwpx");
+    let real_report_path = dir.join("real-report.json");
+    let real_run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&real_output)
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--report")
+        .arg(&real_report_path)
+        .output()
+        .unwrap();
+    assert!(
+        real_run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&real_run.stderr)
+    );
+
+    let mut dry_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&dry_report_path).unwrap()).unwrap();
+    let mut real_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&real_report_path).unwrap()).unwrap();
+    assert_eq!(
+        dry_report["dry_run"], true,
+        "the dry-run report must say so: {dry_report}"
+    );
+    assert_eq!(
+        real_report["dry_run"], false,
+        "the real-run report must say so: {real_report}"
+    );
+    // Normalize the two known-divergent fields (dry_run itself, and output — the two runs wrote
+    // to different paths) before comparing the rest of the report byte-for-byte.
+    dry_report["dry_run"] = serde_json::Value::Null;
+    real_report["dry_run"] = serde_json::Value::Null;
+    dry_report["output"] = serde_json::Value::Null;
+    real_report["output"] = serde_json::Value::Null;
+    assert_eq!(
+        dry_report, real_report,
+        "a dry-run report and a real-run report of the same batch must differ only in dry_run/output"
+    );
+}
+
 use std::io::Write as _;
 use std::process::Stdio;
 use std::sync::Arc;
