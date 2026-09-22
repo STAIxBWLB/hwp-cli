@@ -118,6 +118,32 @@
       "$ref": "#/$defs/address",
       "description": "An address at run granularity. chars is OPTIONAL: an address naming a run with no chars applies to the whole run (D-01) — the id/at identifies the run, not a range. chars narrows the op to a WCHAR sub-range of that run when given."
     },
+    "paraPropsFields": {
+      "type": "object",
+      "properties": {
+        "line_spacing_pct": { "$ref": "#/$defs/unit" },
+        "line_spacing_pt": { "$ref": "#/$defs/unit" },
+        "indent_mm": { "$ref": "#/$defs/unit" },
+        "left_mm": { "$ref": "#/$defs/unit" },
+        "right_mm": { "$ref": "#/$defs/unit" },
+        "top_mm": { "$ref": "#/$defs/unit" },
+        "bottom_mm": { "$ref": "#/$defs/unit" },
+        "align": { "$ref": "#/$defs/align" }
+      },
+      "description": "Shared paragraph-shape property fields (D-08): flat on set_para/set_cell_para via allOf+unevaluatedProperties, and nested as insert_para's own style object. One spelling per concept — line_spacing_pct and line_spacing_pt stay mutually exclusive (parser-enforced)."
+    },
+    "charPropsFields": {
+      "type": "object",
+      "properties": {
+        "bold": { "$ref": "#/$defs/switch" },
+        "italic": { "$ref": "#/$defs/switch" },
+        "underline": { "$ref": "#/$defs/switch" },
+        "strike": { "$ref": "#/$defs/switch" },
+        "size": { "$ref": "#/$defs/unit" },
+        "color": { "$ref": "#/$defs/color" }
+      },
+      "description": "Shared character-format property fields (D-08): flat on set_format via allOf+unevaluatedProperties, and nested as insert_para's own char object. One spelling per concept."
+    },
     "editOp": {
       "oneOf": [
         {
@@ -236,20 +262,19 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "unevaluatedProperties": false,
           "required": ["op"],
-          "description": "Exactly one of pattern (anchor-text selector) or address (id/at selector, D-12) is required (parser-enforced).",
-          "properties": {
-            "op": { "const": "set_format" },
-            "pattern": { "type": "string" },
-            "address": { "$ref": "#/$defs/runAddress" },
-            "bold": { "$ref": "#/$defs/switch" },
-            "italic": { "$ref": "#/$defs/switch" },
-            "underline": { "$ref": "#/$defs/switch" },
-            "strike": { "$ref": "#/$defs/switch" },
-            "size": { "$ref": "#/$defs/unit" },
-            "color": { "$ref": "#/$defs/color" }
-          }
+          "description": "Exactly one of pattern (anchor-text selector) or address (id/at selector, D-12) is required (parser-enforced). Char-format props are flat on the entry via the shared charPropsFields definition (D-08).",
+          "allOf": [
+            { "$ref": "#/$defs/charPropsFields" },
+            {
+              "properties": {
+                "op": { "const": "set_format" },
+                "pattern": { "type": "string" },
+                "address": { "$ref": "#/$defs/runAddress" }
+              }
+            }
+          ]
         },
         {
           "type": "object",
@@ -269,21 +294,52 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["op", "anchor", "text"],
+          "required": ["op", "text"],
+          "description": "Exactly one of anchor (text-anchor selector) or address (paragraph granularity, D-12) is required (parser-enforced). style/char optionally set the new paragraph's own properties inline (D-08), reusing paraPropsFields/charPropsFields — a later op can never address content this one just created (D-06), so a creating op carries its own properties instead of a follow-up style op.",
           "properties": {
             "op": { "const": "insert_para" },
             "anchor": { "type": "string" },
+            "address": {
+              "$ref": "#/$defs/paragraphAddress",
+              "description": "Paragraph granularity — a run-range address here is a schema violation (D-11)."
+            },
             "text": { "type": "string" },
-            "before": { "type": "boolean" }
+            "before": { "type": "boolean" },
+            "style": { "$ref": "#/$defs/paraPropsFields" },
+            "char": { "$ref": "#/$defs/charPropsFields" }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["op", "matching"],
+          "required": ["op"],
+          "description": "Exactly one of matching (anchor-text selector) or address (paragraph granularity, D-12) is required (parser-enforced).",
           "properties": {
             "op": { "const": "delete_para" },
-            "matching": { "type": "string" }
+            "matching": { "type": "string" },
+            "address": {
+              "$ref": "#/$defs/paragraphAddress",
+              "description": "Paragraph granularity — a run-range address here is a schema violation (D-11)."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "address", "to"],
+          "description": "Moves the paragraph at address to a position relative to the paragraph named in to (D-17: source and destination must name the same section — a cross-section destination is rejected during preflight with a named error, not attempted).",
+          "properties": {
+            "op": { "const": "move_para" },
+            "address": { "$ref": "#/$defs/paragraphAddress" },
+            "to": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["address", "position"],
+              "properties": {
+                "address": { "$ref": "#/$defs/paragraphAddress" },
+                "position": { "type": "string", "enum": ["before", "after"] }
+              }
+            }
           }
         },
         {
@@ -379,45 +435,39 @@
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "unevaluatedProperties": false,
           "required": ["op"],
-          "description": "Exactly one of pattern (anchor-text selector) or address (paragraph granularity, D-12) is required (parser-enforced). Paragraph props are flat on the entry; line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
-          "properties": {
-            "op": { "const": "set_para" },
-            "pattern": { "type": "string" },
-            "address": {
-              "$ref": "#/$defs/paragraphAddress",
-              "description": "Paragraph granularity — a run-range address here is a schema violation (D-11)."
-            },
-            "line_spacing_pct": { "$ref": "#/$defs/unit" },
-            "line_spacing_pt": { "$ref": "#/$defs/unit" },
-            "indent_mm": { "$ref": "#/$defs/unit" },
-            "left_mm": { "$ref": "#/$defs/unit" },
-            "right_mm": { "$ref": "#/$defs/unit" },
-            "top_mm": { "$ref": "#/$defs/unit" },
-            "bottom_mm": { "$ref": "#/$defs/unit" },
-            "align": { "$ref": "#/$defs/align" }
-          }
+          "description": "Exactly one of pattern (anchor-text selector) or address (paragraph granularity, D-12) is required (parser-enforced). Paragraph props are flat on the entry via the shared paraPropsFields definition (D-08); line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
+          "allOf": [
+            { "$ref": "#/$defs/paraPropsFields" },
+            {
+              "properties": {
+                "op": { "const": "set_para" },
+                "pattern": { "type": "string" },
+                "address": {
+                  "$ref": "#/$defs/paragraphAddress",
+                  "description": "Paragraph granularity — a run-range address here is a schema violation (D-11)."
+                }
+              }
+            }
+          ]
         },
         {
           "type": "object",
-          "additionalProperties": false,
+          "unevaluatedProperties": false,
           "required": ["op", "table", "row", "col"],
-          "description": "Paragraph props are flat on the entry; line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
-          "properties": {
-            "op": { "const": "set_cell_para" },
-            "table": { "$ref": "#/$defs/usize" },
-            "row": { "$ref": "#/$defs/u16" },
-            "col": { "$ref": "#/$defs/u16" },
-            "line_spacing_pct": { "$ref": "#/$defs/unit" },
-            "line_spacing_pt": { "$ref": "#/$defs/unit" },
-            "indent_mm": { "$ref": "#/$defs/unit" },
-            "left_mm": { "$ref": "#/$defs/unit" },
-            "right_mm": { "$ref": "#/$defs/unit" },
-            "top_mm": { "$ref": "#/$defs/unit" },
-            "bottom_mm": { "$ref": "#/$defs/unit" },
-            "align": { "$ref": "#/$defs/align" }
-          }
+          "description": "Paragraph props are flat on the entry via the shared paraPropsFields definition (D-08); line_spacing_pct and line_spacing_pt are mutually exclusive (parser-enforced).",
+          "allOf": [
+            { "$ref": "#/$defs/paraPropsFields" },
+            {
+              "properties": {
+                "op": { "const": "set_cell_para" },
+                "table": { "$ref": "#/$defs/usize" },
+                "row": { "$ref": "#/$defs/u16" },
+                "col": { "$ref": "#/$defs/u16" }
+              }
+            }
+          ]
         },
         {
           "type": "object",

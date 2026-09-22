@@ -1467,11 +1467,17 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             anchor: required_item_str(item, "insert_para", "anchor")?.to_string(),
             text: required_item_str(item, "insert_para", "text")?.to_string(),
             before: optional_item_bool(item, "insert_para", "before")?.unwrap_or(false),
+            // MCP exposure of the address/style/char selectors is out of Phase 7 scope (D-16).
+            address: None,
+            style: None,
+            char: None,
         });
     }
     for item in arg_array(args, "delete_para")? {
         operations.push(Op::DeletePara {
             matching: required_item_str(item, "delete_para", "matching")?.to_string(),
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "add_row")? {

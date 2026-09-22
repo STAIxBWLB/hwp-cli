@@ -150,9 +150,12 @@ pub(crate) fn parse_pt(value: &str) -> anyhow::Result<f32> {
     Ok(pt)
 }
 
-/// set_para/set_cell_para의 평면 문단 속성 원시 값 (스키마 필드 그대로). 두 op가
-/// 같은 8개 필드를 공유하며, 단위 문자열 해석은 [`para_props`]가 맡는다.
-struct RawParaProps {
+/// set_para/set_cell_para의 평면 문단 속성 원시 값, 그리고 insert_para.style의 중첩
+/// 객체(D-08, 스키마 `paraPropsFields` $def와 같은 필드셋 — 개념당 한 표기)로도 그대로
+/// 역직렬화된다. 단위 문자열 해석은 [`para_props`]가 맡는다.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawParaProps {
     line_spacing_pct: Option<String>,
     line_spacing_pt: Option<String>,
     indent_mm: Option<String>,
@@ -161,6 +164,44 @@ struct RawParaProps {
     top_mm: Option<String>,
     bottom_mm: Option<String>,
     align: Option<String>,
+}
+
+/// set_format의 평면 문자 서식 원시 값, 그리고 insert_para.char의 중첩 객체(D-08,
+/// 스키마 `charPropsFields` $def와 같은 필드셋)로도 그대로 역직렬화된다.
+/// `#[serde(flatten)]`은 쓰지 않는다(06-01: 편집 연산 파일은 평면 태그 항목의 평면
+/// 배열이어야 한다) — `set_format`의 개별 필드는 그대로 두고, [`char_format`]이 두
+/// 사용처의 변환 로직을 하나로 모은다.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawCharProps {
+    bold: Option<String>,
+    italic: Option<String>,
+    underline: Option<String>,
+    strike: Option<String>,
+    size: Option<String>,
+    color: Option<String>,
+}
+
+/// [`RawCharProps`] → `CharFormat`. `set_format`(평면 필드)과 `insert_para.char`(중첩
+/// 객체) 양쪽이 이 한 함수를 거친다 — 오류 문구도 하나로 공유한다.
+fn char_format(raw: RawCharProps) -> Result<hwp_convert::CharFormat, String> {
+    Ok(hwp_convert::CharFormat {
+        bold: parse_switch(raw.bold.as_deref())?,
+        italic: parse_switch(raw.italic.as_deref())?,
+        underline: parse_switch(raw.underline.as_deref())?,
+        strike: parse_switch(raw.strike.as_deref())?,
+        size_pt: match raw.size.as_deref() {
+            Some(value) => Some(string_error(parse_pt(value))?),
+            None => None,
+        },
+        color: match raw.color.as_deref() {
+            Some(value) => Some(
+                parse_color(value)
+                    .ok_or_else(|| format!("char.color를 해석할 수 없습니다: {value:?}"))?,
+            ),
+            None => None,
+        },
+    })
 }
 
 /// Maximum index-chain depth an `id` address's path may carry (T-07-03), mirroring
@@ -259,6 +300,15 @@ fn parse_segment_id(id: &str) -> Result<(String, usize, Vec<usize>), String> {
     Ok((checksum, section, indices))
 }
 
+/// `move_para.to` — a reference address plus `before`/`after` positioning (D-17 planner
+/// decision 1). `position`'s before/after validity is checked in [`OpsEntry::into_typed`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MoveToSpec {
+    address: AddressSpec,
+    position: String,
+}
+
 /// 스키마 항목 그대로의 원시 표현 — 단위·색·정렬·스위치는 문자열로 받고
 /// [`OpsEntry::into_typed`]에서 해석한다. 알 수 없는 키는 거부한다.
 #[derive(Debug, Deserialize)]
@@ -334,12 +384,24 @@ pub(crate) enum OpsEntry {
         align: String,
     },
     InsertPara {
-        anchor: String,
+        /// Exactly one of anchor or address is required — the same D-12 selector shape
+        /// SetPara/SetAlign already use.
+        anchor: Option<String>,
+        address: Option<AddressSpec>,
         text: String,
         before: Option<bool>,
+        /// Inline paragraph-shape properties for the new paragraph itself (D-08).
+        style: Option<RawParaProps>,
+        /// Inline char-format properties for the new paragraph's own run (D-08).
+        char: Option<RawCharProps>,
     },
     DeletePara {
-        matching: String,
+        matching: Option<String>,
+        address: Option<AddressSpec>,
+    },
+    MovePara {
+        address: AddressSpec,
+        to: MoveToSpec,
     },
     AddRow {
         table: usize,
@@ -532,22 +594,14 @@ impl OpsEntry {
                         "set_format 항목에 pattern 또는 address가 필요합니다".to_string()
                     });
                 }
-                let format = hwp_convert::CharFormat {
-                    bold: parse_switch(bold.as_deref())?,
-                    italic: parse_switch(italic.as_deref())?,
-                    underline: parse_switch(underline.as_deref())?,
-                    strike: parse_switch(strike.as_deref())?,
-                    size_pt: match size.as_deref() {
-                        Some(value) => Some(string_error(parse_pt(value))?),
-                        None => None,
-                    },
-                    color: match color.as_deref() {
-                        Some(value) => Some(parse_color(value).ok_or_else(|| {
-                            format!("set_format.color를 해석할 수 없습니다: {value:?}")
-                        })?),
-                        None => None,
-                    },
-                };
+                let format = char_format(RawCharProps {
+                    bold,
+                    italic,
+                    underline,
+                    strike,
+                    size,
+                    color,
+                })?;
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 Ok(TypedEditOperation::SetFormat {
                     pattern: pattern.unwrap_or_default(),
@@ -576,14 +630,66 @@ impl OpsEntry {
             }
             OpsEntry::InsertPara {
                 anchor,
+                address,
                 text,
                 before,
-            } => Ok(TypedEditOperation::InsertPara {
-                anchor,
-                text,
-                before: before.unwrap_or(false),
-            }),
-            OpsEntry::DeletePara { matching } => Ok(TypedEditOperation::DeletePara { matching }),
+                style,
+                char,
+            } => {
+                if anchor.is_some() == address.is_some() {
+                    return Err(if anchor.is_some() {
+                        "insert_para 항목은 anchor와 address 중 하나만 지정해야 합니다".to_string()
+                    } else {
+                        "insert_para 항목에 anchor 또는 address가 필요합니다".to_string()
+                    });
+                }
+                let address = address.map(AddressSpec::into_address).transpose()?;
+                let style = style
+                    .map(|raw| para_props("insert_para", raw))
+                    .transpose()?;
+                let char = char.map(char_format).transpose()?;
+                Ok(TypedEditOperation::InsertPara {
+                    anchor: anchor.unwrap_or_default(),
+                    text,
+                    before: before.unwrap_or(false),
+                    address,
+                    style,
+                    char,
+                })
+            }
+            OpsEntry::DeletePara { matching, address } => {
+                if matching.is_some() == address.is_some() {
+                    return Err(if matching.is_some() {
+                        "delete_para 항목은 matching과 address 중 하나만 지정해야 합니다"
+                            .to_string()
+                    } else {
+                        "delete_para 항목에 matching 또는 address가 필요합니다".to_string()
+                    });
+                }
+                let address = address.map(AddressSpec::into_address).transpose()?;
+                Ok(TypedEditOperation::DeletePara {
+                    matching: matching.unwrap_or_default(),
+                    address,
+                })
+            }
+            OpsEntry::MovePara { address, to } => {
+                let address = address.into_address()?;
+                let to_address = to.address.into_address()?;
+                let before = match to.position.as_str() {
+                    "before" => true,
+                    "after" => false,
+                    other => {
+                        return Err(format!(
+                            "move_para.to.position은 before 또는 after여야 합니다: {other:?}"
+                        ));
+                    }
+                };
+                Ok(TypedEditOperation::MoveParagraph {
+                    address,
+                    to_address,
+                    before,
+                })
+            }
             OpsEntry::AddRow {
                 table,
                 at,

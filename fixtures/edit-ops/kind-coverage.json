@@ -1,5 +1,13 @@
 [
   {
+    "op": "move_para",
+    "address": { "at": { "section": 0, "paragraph": 1 } },
+    "to": {
+      "address": { "at": { "section": 0, "paragraph": 0 } },
+      "position": "after"
+    }
+  },
+  {
     "op": "set_meta",
     "key": "title",
     "value": "w2-t1a"

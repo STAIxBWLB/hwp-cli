@@ -78,7 +78,10 @@ pub use segment_id::{
     SegmentPath, canonical_char_shape_runs, cell_id, control_id, paragraph_id, picture_id, run_id,
     table_id,
 };
-pub use structure::{delete_paragraph, insert_paragraph, text_in_unwritable_object};
+pub use structure::{
+    delete_paragraph, delete_paragraph_at, insert_paragraph, insert_paragraph_at, move_paragraph,
+    text_in_unwritable_object,
+};
 pub use style::{display_width, style_table, style_tables};
 
 /// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).
