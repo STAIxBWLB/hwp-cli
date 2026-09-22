@@ -1139,6 +1139,369 @@ fn detect_conflicts_rejects_length_change_before_run_range() {
     assert!(!output.exists());
 }
 
+// ── Phase 7 plan 07-02 Task 3: duplicate-text proofs and WCHAR-drift aborts ────────────
+
+/// Addressed `set_para` on the SECOND of two identical paragraphs changes that paragraph's
+/// `ParaShapeId` only; the first occurrence is untouched. Targets the second occurrence
+/// deliberately, so a first-match implementation fails this test.
+#[test]
+fn addressed_set_para_hits_only_the_named_duplicate() {
+    let dir = test_dir("addr-set-para-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let first_before = before_doc.sections[0].paragraphs[2].clone();
+    let second_before_shape = before_doc.sections[0].paragraphs[4].para_shape;
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_para","address":{"at":{"section":0,"paragraph":4}},"align":"center"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_para must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let first_after = &after.sections[0].paragraphs[2];
+    assert_eq!(
+        first_after.para_shape, first_before.para_shape,
+        "the first (untouched) occurrence's ParaShapeId must be unchanged"
+    );
+    assert_eq!(first_after.plain_text(), "같은 문단");
+    let second_after = &after.sections[0].paragraphs[4];
+    assert_ne!(
+        second_after.para_shape, second_before_shape,
+        "the addressed (second) occurrence's ParaShapeId must change"
+    );
+    let ps = &after.header.para_shapes[second_after.para_shape.0 as usize];
+    assert_eq!(ps.alignment(), 3, "가운데 정렬이 적용되어야 함");
+}
+
+/// Same anchor-collision proof for `set_align`.
+#[test]
+fn addressed_set_align_hits_only_the_named_duplicate() {
+    let dir = test_dir("addr-set-align-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let first_before_shape = before_doc.sections[0].paragraphs[2].para_shape;
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_align","address":{"at":{"section":0,"paragraph":4}},"align":"right"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_align must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let first_after = &after.sections[0].paragraphs[2];
+    assert_eq!(
+        first_after.para_shape, first_before_shape,
+        "the first (untouched) occurrence's ParaShapeId must be unchanged"
+    );
+    let second_after = &after.sections[0].paragraphs[4];
+    let ps = &after.header.para_shapes[second_after.para_shape.0 as usize];
+    assert_eq!(ps.alignment(), 2, "오른쪽 정렬이 적용되어야 함");
+}
+
+/// Same anchor-collision proof for `replace`: rewrites text inside the SECOND occurrence only;
+/// the first still reads the original string. Also the T-07-06 proof that the addressed replace
+/// never took the replace-only package-preserving fast path — that path replaces every match
+/// document-wide, so it would have changed the first occurrence too.
+#[test]
+fn addressed_replace_hits_only_the_named_duplicate() {
+    let dir = test_dir("addr-replace-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"replace","address":{"at":{"section":0,"paragraph":4}},"from":"같은","to":"바뀐"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed replace must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[2].plain_text(),
+        "같은 문단",
+        "the first (untouched) occurrence's text must be unchanged"
+    );
+    assert_eq!(
+        after.sections[0].paragraphs[4].plain_text(),
+        "바뀐 문단",
+        "the addressed (second) occurrence must be rewritten"
+    );
+}
+
+/// A `set_para` entry whose `address` carries a `chars` range fails schema validation (D-11) —
+/// `paragraphAddress` forbids `chars`, and the reader must never silently ignore the extra depth.
+#[test]
+fn set_para_rejects_a_char_range_address() {
+    let (dir, base) = new_base_for("addr-set-para-chars");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_para","address":{"at":{"section":0,"paragraph":1},"chars":[0,1]},"align":"center"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a paragraphAddress carrying chars must fail schema validation"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains(OPS_SCHEMA_MARKER),
+        "stderr must name the schema-violation marker: {stderr}"
+    );
+    assert!(!output.exists());
+}
+
+/// A single paragraph importing as three char-shape runs: "plain " (plain), "bold" (bold), " tail"
+/// (plain) — run 1 ("bold") spans wchar [6, 10). Two such paragraphs, so the negative control has
+/// a second, untouched target for the run-range op.
+const WCHAR_DRIFT_MD: &str = "# T\n\nplain **bold** tail\n\nanother plain **bold** tail\n";
+
+/// Runs `hwp edit --ops` and returns (exit success, stderr). Shared by the four WCHAR-drift
+/// scenarios below; `extra_args` carries `--allow-partial` for the variant that proves the
+/// rejection ignores it.
+fn run_wchar_drift_batch(
+    base: &Path,
+    output: &Path,
+    ops_json: &str,
+    extra_args: &[&str],
+) -> (bool, String) {
+    let ops_path = output.with_extension("ops.json");
+    std::fs::write(&ops_path, ops_json).unwrap();
+    let mut cmd = hwp();
+    cmd.arg("edit")
+        .arg(base)
+        .arg("-o")
+        .arg(output)
+        .arg("--ops")
+        .arg(&ops_path)
+        .args(extra_args);
+    let run = cmd.output().unwrap();
+    (
+        run.status.success(),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    )
+}
+
+/// The core WCHAR-drift proof (T-07-26): an addressed `replace` on paragraph 1 shrinks it (5
+/// wchars "plain" -> 1 wchar "x"), followed by an addressed run-range `set_format` naming run 1
+/// ("bold") in that SAME paragraph, whose `[6, 10)` was resolved against the pre-batch paragraph.
+/// Rejected during preflight: no output file, and the INPUT document's `char_shape_runs` for
+/// paragraph 1 is byte-identical to what it was before the run — asserting only on the error
+/// would also pass an implementation that mutates before erroring, which this must catch.
+#[test]
+fn wchar_drift_batch_is_rejected_with_the_run_table_untouched() {
+    let dir = test_dir("addr-wchar-drift-base");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, WCHAR_DRIFT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_runs = hwpx::read_document(&base).unwrap().document.sections[0].paragraphs[1]
+        .char_shape_runs
+        .clone();
+
+    let output = dir.join("out.hwpx");
+    let (success, stderr) = run_wchar_drift_batch(
+        &base,
+        &output,
+        r#"[
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"plain","to":"x"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"italic":"on"}
+        ]"#,
+        &[],
+    );
+    assert!(
+        !success,
+        "a length-changing replace before a same-paragraph run-range op must be rejected: {stderr}"
+    );
+    assert!(!output.exists(), "no output file may be written");
+
+    let after_runs = hwpx::read_document(&base).unwrap().document.sections[0].paragraphs[1]
+        .char_shape_runs
+        .clone();
+    assert_eq!(
+        after_runs, before_runs,
+        "the INPUT document's char_shape_runs must be byte-identical after the rejected run"
+    );
+}
+
+/// The identical batch with `--allow-partial`: address preflight failures (staleness, conflict)
+/// are Phase 6 D-09's structural layer, never softened by it.
+#[test]
+fn wchar_drift_batch_ignores_allow_partial() {
+    let dir = test_dir("addr-wchar-drift-partial");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, WCHAR_DRIFT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_runs = hwpx::read_document(&base).unwrap().document.sections[0].paragraphs[1]
+        .char_shape_runs
+        .clone();
+
+    let output = dir.join("out.hwpx");
+    let (success, stderr) = run_wchar_drift_batch(
+        &base,
+        &output,
+        r#"[
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"plain","to":"x"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"italic":"on"}
+        ]"#,
+        &["--allow-partial"],
+    );
+    assert!(
+        !success,
+        "--allow-partial must not rescue a length-change conflict: {stderr}"
+    );
+    assert!(!output.exists());
+
+    let after_runs = hwpx::read_document(&base).unwrap().document.sections[0].paragraphs[1]
+        .char_shape_runs
+        .clone();
+    assert_eq!(after_runs, before_runs);
+}
+
+/// The pattern-form variant: the earlier `replace` carries no address at all (whole-document
+/// search), but its `from` occurs in the same paragraph the later run-range op addresses — the
+/// over-approximated arm of the predicate (planner decision 2) must reject this too, not only the
+/// addressed form.
+#[test]
+fn wchar_drift_batch_rejects_the_pattern_form_replace_too() {
+    let dir = test_dir("addr-wchar-drift-pattern");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, WCHAR_DRIFT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let output = dir.join("out.hwpx");
+    let (success, stderr) = run_wchar_drift_batch(
+        &base,
+        &output,
+        r#"[
+          {"op":"replace","from":"plain","to":"x"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":1}},"italic":"on"}
+        ]"#,
+        &[],
+    );
+    assert!(
+        !success,
+        "a pattern-form replace whose from occurs in the run-range op's paragraph must be rejected: {stderr}"
+    );
+    assert!(!output.exists());
+}
+
+/// The negative control: a length-changing replace on paragraph 1 and a run-range op inside a
+/// DIFFERENT paragraph (3) are accepted, and both effects apply — proving the predicate is not a
+/// blanket rejection of every batch containing a replace.
+#[test]
+fn wchar_drift_negative_control_different_paragraphs_are_accepted() {
+    let dir = test_dir("addr-wchar-drift-negative");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, WCHAR_DRIFT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let output = dir.join("out.hwpx");
+    let (success, stderr) = run_wchar_drift_batch(
+        &base,
+        &output,
+        r#"[
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"plain","to":"x"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":2,"run":1}},"italic":"on"}
+        ]"#,
+        &[],
+    );
+    assert!(
+        success,
+        "a replace and a run-range op on DIFFERENT paragraphs must both apply: {stderr}"
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].plain_text(),
+        "x bold tail",
+        "paragraph 1's replace must have applied"
+    );
+    let para2 = &after.sections[0].paragraphs[2];
+    let shapes = &after.header.char_shapes;
+    let styled = para2
+        .char_shape_runs
+        .iter()
+        .any(|(_, id)| shapes[id.0 as usize].is_italic());
+    assert!(
+        styled,
+        "paragraph 2's run-range set_format must have applied"
+    );
+}
+
 /// load_ops가 스키마 위반을 만날 때 내보내는 bail 마커 접두어
 /// ("편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {instance_path}: {error}").
 const OPS_SCHEMA_MARKER: &str = "편집 연산이 edit-ops-v1 스키마를 벗어났습니다";
