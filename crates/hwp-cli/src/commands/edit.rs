@@ -109,6 +109,9 @@ pub(crate) enum TypedEditOperation {
     SetFormat {
         pattern: String,
         format: CharFormat,
+        /// Address selector (D-12), alternative to `pattern`. `None` when the op used
+        /// `pattern`; the pattern-only path is unchanged in that case.
+        address: Option<hwp_convert::address::Address>,
     },
     SetAlign {
         pattern: String,
@@ -674,6 +677,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             label_preflight.unapplied.join(", ")
         );
     }
+    // D-06: resolves every address against the document AS LOADED, before op 1 applies. Always
+    // aborts on any failure (Task 1 decision 6) — no `&& !plan.allow_partial` here, unlike the
+    // label preflight above.
+    let resolved_addresses = preflight_addressed_ops(plan, &doc)?;
+    let mut resolved_addresses = resolved_addresses.into_iter();
     let mut resolved_label_edits = label_preflight.resolved.into_iter();
     let mut edits = 0usize;
     let mut unapplied = label_preflight.unapplied;
@@ -1252,6 +1260,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut edits,
             &mut unapplied,
             &mut resolved_label_edits,
+            &mut resolved_addresses,
         )?;
     }
 
@@ -1426,6 +1435,62 @@ fn preflight_label_edits(
     })
 }
 
+/// Resolves every addressed target in `plan.typed_operations` against `doc` **as loaded** (D-06:
+/// never against a state any earlier op in the batch may have produced), returning one slot per
+/// entry so the apply loop can consume it in lockstep with `plan.typed_operations`, exactly as it
+/// consumes `resolved_label_edits`. Sibling of `preflight_label_edits`, same insertion point
+/// (right after `load_document`/`original_doc`), but never softened by `--allow-partial`:
+/// staleness (D-03), an unresolvable path (D-04) and an out-of-range `chars` (A5) are Phase 6
+/// D-09's structural layer.
+fn preflight_addressed_ops(
+    plan: &EditPlan,
+    doc: &hwp_model::Document,
+) -> anyhow::Result<Vec<Option<hwp_convert::address::ResolvedTarget>>> {
+    let mut resolved = Vec::with_capacity(plan.typed_operations.len());
+    let mut failures = Vec::new();
+    for (index, operation) in plan.typed_operations.iter().enumerate() {
+        let TypedEditOperation::SetFormat {
+            address: Some(address),
+            ..
+        } = operation
+        else {
+            resolved.push(None);
+            continue;
+        };
+        match hwp_convert::address::resolve(doc, address, hwp_convert::address::Granularity::Run) {
+            Ok(target) => resolved.push(Some(target)),
+            Err(error) => {
+                failures.push(format!(
+                    "op[{index}] {} — {error}",
+                    describe_address(address)
+                ));
+                resolved.push(None);
+            }
+        }
+    }
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "주소를 해석할 수 없는 편집 연산이 있습니다:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(resolved)
+}
+
+/// Op-index-and-address prefix for a preflight failure message (D-04): reconstructs the id/at
+/// form the caller wrote, so an error names the op index, the address and the reason without
+/// echoing any document text (T-07-04).
+fn describe_address(address: &hwp_convert::address::Address) -> String {
+    let path = std::iter::once(address.section.to_string())
+        .chain(address.indices.iter().map(ToString::to_string))
+        .collect::<Vec<_>>()
+        .join(".");
+    match &address.checksum {
+        Some(checksum) => format!("id {checksum}.{path}"),
+        None => format!("at {path}"),
+    }
+}
+
 struct PatchReport {
     counts: BTreeMap<String, usize>,
     applied_requests: usize,
@@ -1529,7 +1594,13 @@ fn apply_typed_operation(
     edits: &mut usize,
     unapplied: &mut Vec<String>,
     resolved_label_edits: &mut dyn Iterator<Item = Option<ResolvedLabelEdit>>,
+    resolved_addresses: &mut dyn Iterator<Item = Option<hwp_convert::address::ResolvedTarget>>,
 ) -> anyhow::Result<()> {
+    // One slot per `plan.typed_operations` entry (`preflight_addressed_ops`), consumed in
+    // lockstep with this loop regardless of operation kind so the position alignment holds.
+    let resolved_target = resolved_addresses
+        .next()
+        .expect("resolved_addresses is aligned 1:1 with typed_operations");
     match operation {
         TypedEditOperation::Replace { from, to } => {
             if from.is_empty() || from == to {
@@ -1679,20 +1750,37 @@ fn apply_typed_operation(
                 unapplied,
             );
         }
-        TypedEditOperation::SetFormat { pattern, format } => {
-            let before = doc.clone();
-            let count = hwp_convert::set_char_format(doc, pattern, format);
-            if count == 0 {
-                unapplied.push(format!("set_format pattern={pattern:?}"));
+        TypedEditOperation::SetFormat {
+            pattern,
+            format,
+            address,
+        } => {
+            if address.is_some() {
+                let target = resolved_target
+                    .expect("preflight_addressed_ops resolved every addressed set_format op");
+                let hwp_convert::address::TargetKind::Run { w_start, w_end, .. } = target.kind
+                else {
+                    anyhow::bail!("set_format 주소는 run 단위여야 합니다");
+                };
+                hwp_convert::restyle_range_at(doc, &target.path, w_start, w_end, format)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                eprintln!("글자 서식(주소): {} [{w_start}, {w_end})", target.path);
+                *edits += 1;
             } else {
-                eprintln!("글자 서식: {pattern:?} ({count}건)");
-                record_effect(
-                    &before,
-                    doc,
-                    format!("set_format pattern={pattern:?}"),
-                    edits,
-                    unapplied,
-                );
+                let before = doc.clone();
+                let count = hwp_convert::set_char_format(doc, pattern, format);
+                if count == 0 {
+                    unapplied.push(format!("set_format pattern={pattern:?}"));
+                } else {
+                    eprintln!("글자 서식: {pattern:?} ({count}건)");
+                    record_effect(
+                        &before,
+                        doc,
+                        format!("set_format pattern={pattern:?}"),
+                        edits,
+                        unapplied,
+                    );
+                }
             }
         }
         TypedEditOperation::SetAlign { pattern, align } => {

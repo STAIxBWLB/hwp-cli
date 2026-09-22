@@ -8,6 +8,7 @@
 use hwp_model::{CharShape, CharShapeId, Control, Document, ParaShape, ParaShapeId, Paragraph};
 
 use crate::edit::{find_match, utf16_len};
+use crate::segment_id::SegmentPath;
 
 /// 글자 모양 변경 요청. None인 항목은 기존 값 유지.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -117,6 +118,18 @@ fn restyle_range(
     if w_end <= w_start {
         return;
     }
+    // Invariant: a caller must never push a starting boundary beyond the paragraph's own
+    // length. `restyle_range_at` re-checks this against the CURRENT paragraph before calling in
+    // (a batch's earlier op may have shortened the paragraph since the range was resolved — see
+    // its own doc comment); this is the release-build backstop for any future caller that
+    // bypasses it. Symmetric with the existing `w_end < para_len` end-boundary guard below.
+    if w_start >= para_len {
+        return;
+    }
+    debug_assert!(
+        w_start < para_len,
+        "restyle_range: w_start must be inside the paragraph"
+    );
     let start_id = id_at(runs, w_start);
     let end_id = id_at(runs, w_end);
     // 범위 경계 보강(없을 때만).
@@ -135,6 +148,62 @@ fn restyle_range(
         }
     }
     normalize_runs(runs);
+}
+
+/// Address-driven entry point for a run-range char-format edit (EDT-05): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`], re-checks the requested `[w_start,
+/// w_end)` against that paragraph's CURRENT WCHAR length before mutating anything — a batch's
+/// earlier op may have shortened the paragraph since the resolver saw it (planner decision 5;
+/// `replace_in_chars` splices `para.chars` and calls `adjust_runs`, so the premise that a
+/// paragraph's length never changes this phase is false) — then calls the existing private
+/// [`restyle_range`] with the resolved pair (no pattern search) and performs the same
+/// invalidation tail [`restyle_para`] already does on a touched paragraph.
+///
+/// Checks both ends explicitly: `w_start >= current_len` OR `w_end > current_len` both fail. A
+/// stale `w_end` that still fits would otherwise silently over-apply the format past what the
+/// caller addressed, since `restyle_range`'s own selection loop is `*p >= w_start && *p < w_end`.
+pub fn restyle_range_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    w_start: u32,
+    w_end: u32,
+    fmt: &CharFormat,
+) -> Result<(), String> {
+    let mut shapes = std::mem::take(&mut doc.header.char_shapes);
+    let result = restyle_range_at_inner(doc, path, w_start, w_end, fmt, &mut shapes);
+    doc.header.char_shapes = shapes;
+    if result.is_ok() {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    result
+}
+
+fn restyle_range_at_inner(
+    doc: &mut Document,
+    path: &SegmentPath,
+    w_start: u32,
+    w_end: u32,
+    fmt: &CharFormat,
+    shapes: &mut Vec<CharShape>,
+) -> Result<(), String> {
+    let para = crate::address::paragraph_at_mut(doc, path)
+        .ok_or_else(|| "restyle_range_at: 주소가 가리키는 문단을 찾을 수 없습니다".to_string())?;
+    let current_len = para.wchar_len();
+    if w_start >= current_len || w_end > current_len {
+        return Err(format!(
+            "restyle_range_at: 요청 범위 [{w_start}, {w_end})가 현재 문단 길이 {current_len}을 벗어났습니다"
+        ));
+    }
+    restyle_range(
+        &mut para.char_shape_runs,
+        w_start,
+        w_end,
+        shapes,
+        fmt,
+        current_len,
+    );
+    para.line_segs.clear();
+    Ok(())
 }
 
 /// 위치 `pos`에서 활성인 char_shape id(= pos 이하 마지막 run).
@@ -675,6 +744,40 @@ mod tests {
         assert!(shapes[runs[1].1.0 as usize].is_bold());
         // 첫 run은 항상 pos 0.
         assert_eq!(runs[0].0, 0);
+    }
+
+    /// `restyle_range_at`'s apply-time guard (T-07-26): a range resolved against the paragraph
+    /// BEFORE it was shortened must error, not corrupt `char_shape_runs`. Asserting only on the
+    /// error would pass against an implementation that errors after mutating — so this asserts
+    /// `char_shape_runs` is byte-identical to what it was before the call too.
+    #[test]
+    fn restyle_range_at_주소_적용시점_경계_재검사() {
+        let mut doc = from_markdown("첫 문단\n\n둘째 문단입니다길게씀\n");
+        let path = crate::segment_id::SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        let original_len = doc.sections[0].paragraphs[1].wchar_len();
+        // 범위는 원래 길이 기준으로는 유효했다 — 이후 문단이 짧아진 상황을 흉내낸다.
+        let w_end = original_len;
+        doc.sections[0].paragraphs[1].chars.truncate(3);
+        let before_runs = doc.sections[0].paragraphs[1].char_shape_runs.clone();
+
+        let result = restyle_range_at(
+            &mut doc,
+            &path,
+            0,
+            w_end,
+            &CharFormat {
+                bold: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err(), "짧아진 문단을 벗어난 범위는 오류여야 함");
+        assert_eq!(
+            doc.sections[0].paragraphs[1].char_shape_runs, before_runs,
+            "오류 후에도 char_shape_runs는 변경되지 않아야 함"
+        );
     }
 
     #[test]

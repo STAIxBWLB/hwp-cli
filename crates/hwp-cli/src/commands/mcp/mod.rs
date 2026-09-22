@@ -1443,6 +1443,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetFormat {
             pattern: required_item_str(item, "set_format", "pattern")?.to_string(),
             format,
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "set_align")? {

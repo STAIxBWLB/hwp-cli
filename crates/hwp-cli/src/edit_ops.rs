@@ -163,6 +163,102 @@ struct RawParaProps {
     align: Option<String>,
 }
 
+/// Maximum index-chain depth an `id` address's path may carry (T-07-03), mirroring
+/// `hwp_convert::address::MAX_ADDRESS_INDICES`. Documents nest far shallower; the resolver
+/// iterates rather than recurses over the chain, so this bounds parse-time work here.
+const MAX_ADDRESS_INDICES: usize = hwp_convert::address::MAX_ADDRESS_INDICES;
+
+/// `$defs.addressPath` — a raw positional address naming a top-level paragraph (D-12/D-05).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AddressPathSpec {
+    section: usize,
+    paragraph: usize,
+    run: Option<usize>,
+}
+
+/// `$defs.address` — mirrors the schema's `id` XOR `at` plus optional `chars` shape; the
+/// exactly-one-of check and the `id`-string parse both happen in [`AddressSpec::into_address`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AddressSpec {
+    id: Option<String>,
+    at: Option<AddressPathSpec>,
+    chars: Option<[u32; 2]>,
+}
+
+impl AddressSpec {
+    /// 의미 제약(`id`/`at` 중 하나만)과 `id` 문자열 파싱을 여기서 강제한다 — 스키마는
+    /// 모양만 검사한다(D-10 계약과 같은 2단 구조).
+    fn into_address(self) -> Result<hwp_convert::address::Address, String> {
+        match (self.id, self.at) {
+            (Some(_), Some(_)) => {
+                Err("address 항목은 id와 at 중 하나만 지정해야 합니다".to_string())
+            }
+            (None, None) => Err("address 항목에 id 또는 at가 필요합니다".to_string()),
+            (Some(id), None) => {
+                let (checksum, section, indices) = parse_segment_id(&id)?;
+                Ok(hwp_convert::address::Address {
+                    section,
+                    indices,
+                    checksum: Some(checksum),
+                    chars: self.chars.map(|[s, e]| (s, e)),
+                })
+            }
+            (None, Some(at)) => {
+                let mut indices = vec![at.paragraph];
+                if let Some(run) = at.run {
+                    indices.push(run);
+                }
+                Ok(hwp_convert::address::Address {
+                    section: at.section,
+                    indices,
+                    checksum: None,
+                    chars: self.chars.map(|[s, e]| (s, e)),
+                })
+            }
+        }
+    }
+}
+
+/// `<checksum>.<section>.<index>[.<index>...]` 형태의 segment id를 체크섬·섹션·인덱스
+/// 체인으로 나눈다(`segment_id.rs`의 `join()`이 만드는 정확히 그 모양). 32개 초과
+/// 인덱스와 정수가 아닌 성분을 한국어 오류로 거부한다(T-07-03).
+fn parse_segment_id(id: &str) -> Result<(String, usize, Vec<usize>), String> {
+    let mut parts = id.split('.');
+    let checksum = parts
+        .next()
+        .filter(|s| {
+            s.len() == 16
+                && s.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        })
+        .ok_or_else(|| format!("id의 체크섬 형식이 올바르지 않습니다: {id:?}"))?
+        .to_string();
+    let rest: Vec<&str> = parts.collect();
+    if rest.is_empty() {
+        return Err(format!("id에 위치 경로가 없습니다: {id:?}"));
+    }
+    if rest.len() > MAX_ADDRESS_INDICES + 1 {
+        return Err(format!(
+            "id의 위치 경로가 상한({MAX_ADDRESS_INDICES}개)을 초과했습니다: {id:?}"
+        ));
+    }
+    let numbers = rest
+        .iter()
+        .map(|s| {
+            s.parse::<usize>()
+                .map_err(|_| format!("id의 위치 값이 정수가 아닙니다: {id:?}"))
+        })
+        .collect::<Result<Vec<usize>, String>>()?;
+    let section = numbers[0];
+    let indices = numbers[1..].to_vec();
+    if indices.is_empty() {
+        return Err(format!("id에 문단 경로가 없습니다: {id:?}"));
+    }
+    Ok((checksum, section, indices))
+}
+
 /// 스키마 항목 그대로의 원시 표현 — 단위·색·정렬·스위치는 문자열로 받고
 /// [`OpsEntry::into_typed`]에서 해석한다. 알 수 없는 키는 거부한다.
 #[derive(Debug, Deserialize)]
@@ -217,7 +313,8 @@ pub(crate) enum OpsEntry {
         value: String,
     },
     SetFormat {
-        pattern: String,
+        pattern: Option<String>,
+        address: Option<AddressSpec>,
         bold: Option<String>,
         italic: Option<String>,
         underline: Option<String>,
@@ -409,6 +506,7 @@ impl OpsEntry {
             OpsEntry::SetMeta { key, value } => Ok(TypedEditOperation::SetMeta { key, value }),
             OpsEntry::SetFormat {
                 pattern,
+                address,
                 bold,
                 italic,
                 underline,
@@ -416,6 +514,13 @@ impl OpsEntry {
                 size,
                 color,
             } => {
+                if pattern.is_some() == address.is_some() {
+                    return Err(if pattern.is_some() {
+                        "set_format 항목은 pattern과 address 중 하나만 지정해야 합니다".to_string()
+                    } else {
+                        "set_format 항목에 pattern 또는 address가 필요합니다".to_string()
+                    });
+                }
                 let format = hwp_convert::CharFormat {
                     bold: parse_switch(bold.as_deref())?,
                     italic: parse_switch(italic.as_deref())?,
@@ -432,7 +537,12 @@ impl OpsEntry {
                         None => None,
                     },
                 };
-                Ok(TypedEditOperation::SetFormat { pattern, format })
+                let address = address.map(AddressSpec::into_address).transpose()?;
+                Ok(TypedEditOperation::SetFormat {
+                    pattern: pattern.unwrap_or_default(),
+                    format,
+                    address,
+                })
             }
             OpsEntry::SetAlign { pattern, align } => Ok(TypedEditOperation::SetAlign {
                 pattern,

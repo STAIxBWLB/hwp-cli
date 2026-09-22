@@ -69,6 +69,55 @@
     },
     "u16": { "type": "integer", "minimum": 0, "maximum": 65535 },
     "usize": { "type": "integer", "minimum": 0 },
+    "segmentId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}(\\.[0-9]+){1,32}$",
+      "description": "A segment id: a 16-hex-character checksum (segment_id.rs's checksum width) followed by 1 to 32 dot-separated positional indices (section, then the nesting chain down to the paragraph, with a trailing run index appended for a run-granularity address — the same shape segment_id.rs::run_id emits)."
+    },
+    "addressPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["section", "paragraph"],
+      "description": "A raw positional address naming a TOP-LEVEL paragraph only ({\"section\":0,\"paragraph\":3} means doc.sections[0].paragraphs[3]). A paragraph nested inside a table cell or a generic control has no `at` spelling; it is addressed by `id`, whose path already carries the full index chain.",
+      "properties": {
+        "section": { "$ref": "#/$defs/u16" },
+        "paragraph": { "type": "integer", "minimum": 0, "maximum": 1048575 },
+        "run": { "$ref": "#/$defs/u16" }
+      }
+    },
+    "charRange": {
+      "type": "array",
+      "description": "A [start, end) WCHAR sub-range, in UTF-16 code units absolute within the source paragraph (A1) — the same coordinate space `restyle_range` already takes, matching render-layout-v1's source_chars and document_split.rs's ParagraphAddress.wchar_offset. This is a DIFFERENT coordinate space from segment-envelope-v2's char_range (Unicode scalars into the rendered markdown); nothing converts between them, so a caller holding a char_range from `hwp cat --segments v2` must convert before composing this field.",
+      "items": { "type": "integer", "minimum": 0, "maximum": 1048575 },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "address": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A target address: exactly one of id (a checksummed segment id, drift-checked at apply time) or at (a raw positional path, no drift check). chars optionally narrows to a WCHAR sub-range; see paragraphAddress/runAddress for the per-op granularity rules (D-11).",
+      "properties": {
+        "id": { "$ref": "#/$defs/segmentId" },
+        "at": { "$ref": "#/$defs/addressPath" },
+        "chars": { "$ref": "#/$defs/charRange" }
+      },
+      "oneOf": [{ "required": ["id"] }, { "required": ["at"] }]
+    },
+    "paragraphAddress": {
+      "allOf": [
+        { "$ref": "#/$defs/address" },
+        { "not": { "required": ["chars"] } },
+        {
+          "if": { "required": ["at"] },
+          "then": { "properties": { "at": { "not": { "required": ["run"] } } } }
+        }
+      ],
+      "description": "An address restricted to paragraph granularity: chars and at.run are forbidden — a paragraph-level op rejects a run-range address as a schema violation rather than ignoring the extra depth (D-11)."
+    },
+    "runAddress": {
+      "$ref": "#/$defs/address",
+      "description": "An address at run granularity. chars is OPTIONAL: an address naming a run with no chars applies to the whole run (D-01) — the id/at identifies the run, not a range. chars narrows the op to a WCHAR sub-range of that run when given."
+    },
     "editOp": {
       "oneOf": [
         {
@@ -183,10 +232,12 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["op", "pattern"],
+          "required": ["op"],
+          "description": "Exactly one of pattern (anchor-text selector) or address (id/at selector, D-12) is required (parser-enforced).",
           "properties": {
             "op": { "const": "set_format" },
             "pattern": { "type": "string" },
+            "address": { "$ref": "#/$defs/runAddress" },
             "bold": { "$ref": "#/$defs/switch" },
             "italic": { "$ref": "#/$defs/switch" },
             "underline": { "$ref": "#/$defs/switch" },

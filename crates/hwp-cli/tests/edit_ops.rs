@@ -473,12 +473,15 @@ fn addressed_set_format_hits_only_the_named_duplicate() {
     let before_doc = hwpx::read_document(&base).unwrap().document;
     let first_before = before_doc.sections[0].paragraphs[2].clone();
     assert_eq!(first_before.plain_text(), "같은 문단");
-    assert_eq!(before_doc.sections[0].paragraphs[4].plain_text(), "같은 문단");
+    assert_eq!(
+        before_doc.sections[0].paragraphs[4].plain_text(),
+        "같은 문단"
+    );
 
     let ops = dir.join("ops.json");
     std::fs::write(
         &ops,
-        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4}},"bold":"on"}]"#,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4,"run":0}},"bold":"on"}]"#,
     )
     .unwrap();
     let output = dir.join("out.hwpx");
@@ -580,9 +583,15 @@ fn addressed_run_range_restyles_the_named_sub_range_only() {
             .unwrap();
         let italic = shapes[id.0 as usize].is_italic();
         if (7..9).contains(&pos) {
-            assert!(italic, "wchar {pos} inside the addressed [7,9) must be italic");
+            assert!(
+                italic,
+                "wchar {pos} inside the addressed [7,9) must be italic"
+            );
         } else {
-            assert!(!italic, "wchar {pos} outside the addressed [7,9) must not be italic");
+            assert!(
+                !italic,
+                "wchar {pos} outside the addressed [7,9) must not be italic"
+            );
         }
         pos += width;
     }
@@ -635,9 +644,15 @@ fn addressed_run_without_chars_covers_the_whole_run() {
             .unwrap();
         let colored = shapes[id.0 as usize].text_color == 0x00ff_0000;
         if (6..10).contains(&pos) {
-            assert!(colored, "wchar {pos} inside run 1 [6,10) must carry the new color");
+            assert!(
+                colored,
+                "wchar {pos} inside run 1 [6,10) must carry the new color"
+            );
         } else {
-            assert!(!colored, "wchar {pos} outside run 1 must not carry the new color");
+            assert!(
+                !colored,
+                "wchar {pos} outside run 1 must not carry the new color"
+            );
         }
         pos += width;
     }
@@ -1359,7 +1374,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "3151f199cacdb4005e2748ba43cbf9856473f4828c5d2a7a776b6a1849cd2a78",
+        actual, "88958d4e3c64b32ec838ad51ae061542b57b5170c2b2300f0a78c7d84863ec13",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
