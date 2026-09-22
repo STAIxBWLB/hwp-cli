@@ -5,7 +5,10 @@
 //! shape를 append하는 건 안전하다 — writer가 ID_MAPPINGS 카운트를 `.len()`에서
 //! 자동 유도한다. 편집한 문단의 줄 배치는 비워(낡음) writer가 재합성하게 한다.
 
-use hwp_model::{CharShape, CharShapeId, Control, Document, ParaShape, ParaShapeId, Paragraph};
+use hwp_model::{
+    CharShape, CharShapeId, Control, Document, FaceName, LANG_COUNT, ParaShape, ParaShapeId,
+    Paragraph,
+};
 
 use crate::edit::{find_match, utf16_len};
 use crate::segment_id::SegmentPath;
@@ -21,6 +24,9 @@ pub struct CharFormat {
     pub size_pt: Option<f32>,
     /// 글자색 COLORREF(0x00BBGGRR).
     pub color: Option<u32>,
+    /// 글꼴 이름(A2) — 하나의 이름을 7개 언어 슬롯 전부에 균일하게 쓴다
+    /// (`find_or_insert_face`를 통해 `header.fonts`에서 찾거나 추가).
+    pub font: Option<String>,
 }
 
 impl CharFormat {
@@ -31,6 +37,7 @@ impl CharFormat {
             && self.strike.is_none()
             && self.size_pt.is_none()
             && self.color.is_none()
+            && self.font.is_none()
     }
 }
 
@@ -335,6 +342,27 @@ pub(crate) fn find_or_insert(shapes: &mut Vec<CharShape>, cs: CharShape) -> Char
     }
     shapes.push(cs);
     CharShapeId((shapes.len() - 1) as u16)
+}
+
+/// `find_or_insert` one level up, against a single language slot of `header.fonts`: reuse an
+/// existing `FaceName` by exact name match, or append one with default metadata otherwise.
+fn find_or_insert_face(fonts: &mut Vec<FaceName>, name: &str) -> u16 {
+    if let Some(i) = fonts.iter().position(|f| f.name == name) {
+        return i as u16;
+    }
+    fonts.push(FaceName {
+        name: name.to_string(),
+        ..FaceName::default()
+    });
+    (fonts.len() - 1) as u16
+}
+
+/// One font name -> a face id per language slot (A2: uniform across all seven), each resolved
+/// through [`find_or_insert_face`] against that slot's own table. Called ONCE per addressed or
+/// pattern-form format op (not per matched run) so a batch never re-scans the font table more
+/// than once per distinct name.
+fn resolve_font_faces(fonts: &mut [Vec<FaceName>; LANG_COUNT], name: &str) -> [u16; LANG_COUNT] {
+    std::array::from_fn(|slot| find_or_insert_face(&mut fonts[slot], name))
 }
 
 /// `pattern`을 가진 문단의 정렬을 바꾼다(본문·표 셀·글상자 재귀).
@@ -745,6 +773,7 @@ mod tests {
                 strike: Some(true),
                 size_pt: Some(16.0),
                 color: Some(0x0000_00FF),
+                font: None,
             },
         );
         assert!(cs.is_bold() && cs.is_italic() && cs.has_underline() && cs.has_strike());
@@ -776,6 +805,46 @@ mod tests {
         let id2 = find_or_insert(&mut shapes, a); // 동일 → 재사용
         assert_eq!(id2, CharShapeId(1));
         assert_eq!(shapes.len(), 2);
+    }
+
+    #[test]
+    fn find_or_insert_face_반복은_재사용() {
+        let mut fonts = vec![FaceName::default()];
+        let id1 = find_or_insert_face(&mut fonts, "맑은 고딕");
+        assert_eq!(fonts.len(), 2, "새 이름은 1개만 추가");
+        let id2 = find_or_insert_face(&mut fonts, "맑은 고딕");
+        assert_eq!(id1, id2, "같은 이름은 같은 id로 재사용");
+        assert_eq!(fonts.len(), 2, "반복 설정은 테이블을 키우지 않음");
+    }
+
+    /// TDD RED (Task 1, font-face): `set_char_format`이 `fmt.font`를 아직 반영하지 않는
+    /// 단계에서는 이 단언이 실패해야 한다 — `apply_format`/`restyle_range`가 글꼴을
+    /// 실제로 적용하도록 배선한 뒤에야 통과한다.
+    #[test]
+    fn set_char_format_글꼴_7슬롯_균일_적용() {
+        let mut doc = from_markdown::from_markdown("글꼴 테스트 문단입니다.");
+        let n = set_char_format(
+            &mut doc,
+            "테스트",
+            &CharFormat {
+                font: Some("맑은 고딕".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(n, 1);
+        let para = &doc.sections[0].paragraphs[0];
+        let styled = para
+            .char_shape_runs
+            .iter()
+            .find_map(|(_, id)| {
+                let cs = &doc.header.char_shapes[id.0 as usize];
+                (cs.face_ids[0] != 0).then_some(cs)
+            })
+            .expect("글꼴이 적용된 run이 있어야 함");
+        for slot in 0..hwp_model::LANG_COUNT {
+            let face = &doc.header.fonts[slot][styled.face_ids[slot] as usize];
+            assert_eq!(face.name, "맑은 고딕", "슬롯 {slot}이 균일하게 설정되어야 함");
+        }
     }
 
     #[test]
