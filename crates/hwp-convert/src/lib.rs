@@ -49,6 +49,7 @@ pub use field::{
 pub use format::{
     CharFormat, PageProps, ParaProps, apply_para_props_at, restyle_range_at, set_cell_para_props,
     set_char_format, set_page_def, set_para_align, set_para_align_at, set_para_props,
+    shift_head_level_at,
 };
 pub use frames::{
     FrameFields, compatibility_warnings, leading_frames, parse_field, parse_frame_fields,

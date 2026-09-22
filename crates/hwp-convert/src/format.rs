@@ -287,6 +287,62 @@ pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> b
     applied
 }
 
+/// Address-driven entry point for list indent/outdent (EDT-05, 07-04): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`] and moves its `head_level` by `delta`
+/// (+1 for `indent_para`, -1 for `outdent_para`) WITHIN the paragraph's existing numbering or
+/// bullet definition — never reading or writing the definition's `RawEntry` itself, which stays
+/// opaque. Refuses when the paragraph is not a list item (`head_type` neither numbered(2) nor
+/// bullet(3)) and when the resulting level would leave 1..=7 (A3: HWP5's attr1-bit range;
+/// 8..=10 is an HWPX-only `list_level` extension this op does not reach) — both boundaries fail
+/// loudly rather than clamp. Returns the new level on success.
+pub fn shift_head_level_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    delta: i8,
+) -> Result<u8, String> {
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let result = shift_head_level_at_inner(doc, path, delta, &mut pshapes);
+    doc.header.para_shapes = pshapes;
+    if result.is_ok() {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    result
+}
+
+fn shift_head_level_at_inner(
+    doc: &mut Document,
+    path: &SegmentPath,
+    delta: i8,
+    pshapes: &mut Vec<ParaShape>,
+) -> Result<u8, String> {
+    let para = crate::address::paragraph_at_mut(doc, path)
+        .ok_or_else(|| "shift_head_level_at: 주소가 가리키는 문단을 찾을 수 없습니다".to_string())?;
+    let ps = pshapes
+        .get(para.para_shape.0 as usize)
+        .cloned()
+        .unwrap_or_default();
+    let head_type = ps.head_type();
+    if head_type != 2 && head_type != 3 {
+        return Err(
+            "shift_head_level_at: 목록 항목(번호 매기기 또는 글머리표)이 아닌 문단입니다"
+                .to_string(),
+        );
+    }
+    let current = ps.head_level();
+    let new_level = i16::from(current) + i16::from(delta);
+    if !(1..=7).contains(&new_level) {
+        return Err(format!(
+            "shift_head_level_at: 목록 수준이 범위(1..=7)를 벗어났습니다: 현재={current}, 요청={new_level}"
+        ));
+    }
+    let new_level = new_level as u8;
+    let mut new_ps = ps;
+    new_ps.set_head_level(new_level);
+    para.para_shape = find_or_insert_para(pshapes, new_ps);
+    para.line_segs.clear();
+    Ok(new_level)
+}
+
 /// 위치 `pos`에서 활성인 char_shape id(= pos 이하 마지막 run).
 fn id_at(runs: &[(u32, CharShapeId)], pos: u32) -> CharShapeId {
     runs.iter()
@@ -1002,6 +1058,27 @@ mod tests {
         );
         let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
         assert_eq!(ps.alignment(), 3);
+    }
+
+    /// `shift_head_level_at(+1)` must raise a numbered list item's `head_level` from 1 to 2.
+    /// Fails while `ParaShape::set_head_level` is still the Task-2 RED no-op stub.
+    #[test]
+    fn shift_head_level_at_들여쓰기로_수준_증가() {
+        let mut doc = from_markdown("1. 첫 항목\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let ps_before =
+            doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize].clone();
+        assert_eq!(ps_before.head_type(), 2, "번호 매기기 목록이어야 함");
+        assert_eq!(ps_before.head_level(), 1, "최상위 항목은 수준 1에서 시작");
+
+        let new_level = shift_head_level_at(&mut doc, &path, 1).expect("들여쓰기 성공해야 함");
+        assert_eq!(new_level, 2);
+        let ps_after =
+            &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        assert_eq!(ps_after.head_level(), 2);
     }
 
     #[test]
