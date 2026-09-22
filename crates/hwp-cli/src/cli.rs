@@ -640,7 +640,7 @@ pub struct EditArgs {
     /// Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text; use an image with a transparent background, since the seal floats in front of the text and an opaque background hides whatever is under it (repeatable)
     #[arg(long = "seal")]
     pub seal: Vec<String>,
-    /// Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000")
+    /// Character formatting, "find:property=value,..." (properties: bold|italic|underline|strike|size|color|font; for example "Title:bold=on,size=16,color=#FF0000,font=Noto Sans")
     #[arg(long = "set-format")]
     pub set_format: Vec<String>,
     /// Paragraph alignment, "find=alignment" (left/right/center/justify/distribute)

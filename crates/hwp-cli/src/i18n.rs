@@ -552,7 +552,8 @@ pub const KO: &[(&str, &str, &str)] = &[
     (
         "edit",
         "set_format",
-        "글자 서식 \"찾기:속성=값,...\" (예: \"제목:bold=on,size=16,color=#FF0000\")",
+        "글자 서식 \"찾기:속성=값,...\" (속성: bold|italic|underline|strike|size|color|font; \
+         예: \"제목:bold=on,size=16,color=#FF0000,font=맑은 고딕\")",
     ),
     (
         "edit",

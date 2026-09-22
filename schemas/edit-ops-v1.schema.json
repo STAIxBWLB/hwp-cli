@@ -11,6 +11,13 @@
     "unit": { "type": "string", "pattern": "^\\d+(\\.\\d+)?(mm|pt|%)$" },
     "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
     "switch": { "type": "string", "enum": ["on", "off"] },
+    "fontName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+      "description": "A font face name (A2): written uniformly into all seven language slots via find-or-insert against the document's font table (find_or_insert_face). Non-empty; control characters are rejected (T-07-17)."
+    },
     "align": {
       "type": "string",
       "description": "Case-sensitive: exact lowercase English tokens or Korean aliases only, unlike the --set-align CLI flag and MCP hwp_edit tool (both case-insensitive). This ops-file channel is a typed machine contract, so values are validated exactly as listed.",
@@ -140,7 +147,8 @@
         "underline": { "$ref": "#/$defs/switch" },
         "strike": { "$ref": "#/$defs/switch" },
         "size": { "$ref": "#/$defs/unit" },
-        "color": { "$ref": "#/$defs/color" }
+        "color": { "$ref": "#/$defs/color" },
+        "font": { "$ref": "#/$defs/fontName" }
       },
       "description": "Shared character-format property fields (D-08): flat on set_format via allOf+unevaluatedProperties, and nested as insert_para's own char object. One spelling per concept."
     },

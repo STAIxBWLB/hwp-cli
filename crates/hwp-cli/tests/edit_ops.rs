@@ -520,6 +520,220 @@ fn addressed_set_format_hits_only_the_named_duplicate() {
     assert!(styled, "the addressed (second) occurrence must be bold");
 }
 
+// ── Phase 7 plan 07-04: font face char property (EDT-05) ───────────────────────
+
+/// A `set_format` carrying `font` resolves through `find_or_insert_face`: a NEW name appends
+/// exactly one `FaceName` per language slot, and setting the SAME new name again later in the
+/// SAME batch (a different paragraph) reuses the entry instead of growing the table again.
+#[test]
+fn addressed_set_format_font_appends_once_per_batch_on_repeat() {
+    let dir = test_dir("addr-font-repeat");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let before_lens: Vec<usize> = before_doc
+        .header
+        .fonts
+        .iter()
+        .map(|slot| slot.len())
+        .collect();
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":1,"run":0}},"font":"새글꼴"},
+          {"op":"set_format","address":{"at":{"section":0,"paragraph":3,"run":0}},"font":"새글꼴"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed set_format font must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    for (slot, before_len) in before_lens.into_iter().enumerate() {
+        assert_eq!(
+            after.header.fonts[slot].len(),
+            before_len + 1,
+            "slot {slot}: a repeated new name within one batch must append exactly once"
+        );
+        assert_eq!(
+            after.header.fonts[slot].last().unwrap().name,
+            "새글꼴",
+            "slot {slot}: the appended entry must carry the requested name"
+        );
+    }
+}
+
+/// The argv `--set-format` mini-language and the ops-file `set_format` kind accept the same
+/// `font` property and produce a byte-identical resulting `CharShape` sequence — one value
+/// vocabulary across the two surfaces.
+#[test]
+fn set_format_font_argv_and_ops_surfaces_agree() {
+    let dir = test_dir("font-two-surfaces");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let via_argv = dir.join("via-argv.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&via_argv)
+        .args(["--set-format", "첫 문단:font=맑은 고딕"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "argv --set-format font must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","pattern":"첫 문단","font":"맑은 고딕"}]"#,
+    )
+    .unwrap();
+    let via_ops = dir.join("via-ops.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&via_ops)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "ops-file set_format font must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let argv_doc = hwpx::read_document(&via_argv).unwrap().document;
+    let ops_doc = hwpx::read_document(&via_ops).unwrap().document;
+    let argv_shapes: Vec<_> = argv_doc.sections[0].paragraphs[1]
+        .char_shape_runs
+        .iter()
+        .map(|(_, id)| argv_doc.header.char_shapes[id.0 as usize].clone())
+        .collect();
+    let ops_shapes: Vec<_> = ops_doc.sections[0].paragraphs[1]
+        .char_shape_runs
+        .iter()
+        .map(|(_, id)| ops_doc.header.char_shapes[id.0 as usize].clone())
+        .collect();
+    assert_eq!(
+        argv_shapes, ops_shapes,
+        "argv and ops-file font surfaces must agree on the resulting CharShape"
+    );
+}
+
+/// An empty font name is rejected at the schema layer (`fontName` `minLength: 1`) before
+/// anything applies — no output file is created.
+#[test]
+fn set_format_font_empty_name_rejected_no_output() {
+    let dir = test_dir("font-empty-name");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","pattern":"첫 문단","font":""}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(!run.status.success(), "an empty font name must be rejected");
+    assert!(
+        !output.exists(),
+        "no output file may be created when font is empty"
+    );
+}
+
+/// An addressed font set on the SECOND of two identical-text paragraphs leaves the first
+/// occurrence's `char_shape_runs` unchanged (EDT-05 success criterion 1, mirrors the bold proof
+/// above).
+#[test]
+fn addressed_set_format_font_hits_only_the_named_duplicate() {
+    let dir = test_dir("addr-font-duplicate");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+
+    let before_doc = hwpx::read_document(&base).unwrap().document;
+    let first_before = before_doc.sections[0].paragraphs[2].clone();
+    assert_eq!(first_before.plain_text(), "같은 문단");
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":4,"run":0}},"font":"고딕체"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "addressed font set must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    let first_after = &after.sections[0].paragraphs[2];
+    assert_eq!(
+        first_after.char_shape_runs, first_before.char_shape_runs,
+        "the first (untouched) occurrence's runs must be unchanged"
+    );
+    let second_after = &after.sections[0].paragraphs[4];
+    let font_applied = second_after.char_shape_runs.iter().any(|(_, id)| {
+        let cs = &after.header.char_shapes[id.0 as usize];
+        after.header.fonts[0][cs.face_ids[0] as usize].name == "고딕체"
+    });
+    assert!(
+        font_applied,
+        "the addressed (second) occurrence must carry the new font"
+    );
+}
+
 /// An addressed `set_format` naming a run with the run's own WCHAR sub-range restyles exactly
 /// that sub-range; the paragraph's text is byte-identical afterwards (formatting never touches
 /// `chars`), and only the addressed wchar positions carry the new attribute.
@@ -2210,7 +2424,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "27fc04e29bf3d4e9c13f02732945d2cec3e8c034ce601bc48769bd1f56c69e79",
+        actual, "df578eb84024225e236a404c16fb4e526ab08763a191e5b04724415f21a14f73",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

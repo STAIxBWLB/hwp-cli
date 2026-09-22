@@ -2731,6 +2731,12 @@ fn parse_char_format(attrs: &str) -> anyhow::Result<CharFormat> {
             "color" | "색" => {
                 fmt.color = Some(parse_color(v).with_context(|| format!("color 값: {v:?}"))?);
             }
+            "font" | "글꼴" => {
+                if v.is_empty() {
+                    anyhow::bail!("font 값이 비어 있습니다");
+                }
+                fmt.font = Some(v.to_string());
+            }
             other => anyhow::bail!("알 수 없는 서식 속성: {other:?}"),
         }
     }

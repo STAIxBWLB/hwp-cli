@@ -180,6 +180,7 @@ pub(crate) struct RawCharProps {
     strike: Option<String>,
     size: Option<String>,
     color: Option<String>,
+    font: Option<String>,
 }
 
 /// [`RawCharProps`] → `CharFormat`. `set_format`(평면 필드)과 `insert_para.char`(중첩
@@ -199,6 +200,14 @@ fn char_format(raw: RawCharProps) -> Result<hwp_convert::CharFormat, String> {
                 parse_color(value)
                     .ok_or_else(|| format!("char.color를 해석할 수 없습니다: {value:?}"))?,
             ),
+            None => None,
+        },
+        // Schema minLength/pattern already reject an empty or control-character name (T-07-17);
+        // this is the parser's own belt-and-suspenders check, matching the house discipline of
+        // every other field here re-validating past the schema's shape-only guarantee.
+        font: match raw.font.as_deref() {
+            Some("") => return Err("char.font는 비어 있을 수 없습니다".to_string()),
+            Some(value) => Some(value.to_string()),
             None => None,
         },
     })
@@ -377,6 +386,7 @@ pub(crate) enum OpsEntry {
         strike: Option<String>,
         size: Option<String>,
         color: Option<String>,
+        font: Option<String>,
     },
     SetAlign {
         pattern: Option<String>,
@@ -586,6 +596,7 @@ impl OpsEntry {
                 strike,
                 size,
                 color,
+                font,
             } => {
                 if pattern.is_some() == address.is_some() {
                     return Err(if pattern.is_some() {
@@ -601,6 +612,7 @@ impl OpsEntry {
                     strike,
                     size,
                     color,
+                    font,
                 })?;
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 Ok(TypedEditOperation::SetFormat {

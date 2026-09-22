@@ -50,11 +50,17 @@ pub fn set_char_format(doc: &mut Document, pattern: &str, fmt: &CharFormat) -> u
     let Document {
         header, sections, ..
     } = doc;
+    // Resolved ONCE per call, not per matched run — find_or_insert_face is idempotent on a
+    // repeat name, so re-resolving per run would only waste cycles, never change the result.
+    let resolved_font = fmt
+        .font
+        .as_deref()
+        .map(|name| resolve_font_faces(&mut header.fonts, name));
     let shapes = &mut header.char_shapes;
     let mut n = 0;
     for section in sections.iter_mut() {
         for para in &mut section.paragraphs {
-            n += restyle_para(para, pattern, fmt, shapes);
+            n += restyle_para(para, pattern, fmt, resolved_font, shapes);
         }
     }
     n
@@ -64,6 +70,7 @@ fn restyle_para(
     para: &mut Paragraph,
     pattern: &str,
     fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
     shapes: &mut Vec<CharShape>,
 ) -> usize {
     let pat_w = utf16_len(pattern);
@@ -78,6 +85,7 @@ fn restyle_para(
             wpos + pat_w,
             shapes,
             fmt,
+            resolved_font,
             para_len,
         );
         para.line_segs.clear();
@@ -90,7 +98,7 @@ fn restyle_para(
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        n += restyle_para(p, pattern, fmt, shapes);
+                        n += restyle_para(p, pattern, fmt, resolved_font, shapes);
                     }
                 }
             }
@@ -98,7 +106,7 @@ fn restyle_para(
                 let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        n += restyle_para(p, pattern, fmt, shapes);
+                        n += restyle_para(p, pattern, fmt, resolved_font, shapes);
                     }
                 }
                 if n > before {
@@ -120,6 +128,7 @@ fn restyle_range(
     w_end: u32,
     shapes: &mut Vec<CharShape>,
     fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
     para_len: u32,
 ) {
     if w_end <= w_start {
@@ -151,7 +160,7 @@ fn restyle_range(
     for (p, id) in runs.iter_mut() {
         if *p >= w_start && *p < w_end {
             let base = shapes.get(id.0 as usize).cloned().unwrap_or_default();
-            *id = find_or_insert(shapes, apply_format(base, fmt));
+            *id = find_or_insert(shapes, apply_format(base, fmt, resolved_font));
         }
     }
     normalize_runs(runs);
@@ -176,8 +185,14 @@ pub fn restyle_range_at(
     w_end: u32,
     fmt: &CharFormat,
 ) -> Result<(), String> {
+    // Resolved ONCE, before char_shapes is taken out (a different DocHeader field — no borrow
+    // conflict), mirroring set_char_format's own resolve-once discipline.
+    let resolved_font = fmt
+        .font
+        .as_deref()
+        .map(|name| resolve_font_faces(&mut doc.header.fonts, name));
     let mut shapes = std::mem::take(&mut doc.header.char_shapes);
-    let result = restyle_range_at_inner(doc, path, w_start, w_end, fmt, &mut shapes);
+    let result = restyle_range_at_inner(doc, path, w_start, w_end, fmt, resolved_font, &mut shapes);
     doc.header.char_shapes = shapes;
     if result.is_ok() {
         crate::address::invalidate_ancestors(doc, path);
@@ -191,6 +206,7 @@ fn restyle_range_at_inner(
     w_start: u32,
     w_end: u32,
     fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
     shapes: &mut Vec<CharShape>,
 ) -> Result<(), String> {
     let para = crate::address::paragraph_at_mut(doc, path)
@@ -207,6 +223,7 @@ fn restyle_range_at_inner(
         w_end,
         shapes,
         fmt,
+        resolved_font,
         current_len,
     );
     para.line_segs.clear();
@@ -299,7 +316,11 @@ fn normalize_runs(runs: &mut Vec<(u32, CharShapeId)>) {
 }
 
 /// base 모양에 요청 서식을 적용한 새 모양(요청 항목만 바꿈).
-fn apply_format(mut cs: CharShape, fmt: &CharFormat) -> CharShape {
+fn apply_format(
+    mut cs: CharShape,
+    fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
+) -> CharShape {
     if let Some(b) = fmt.bold {
         toggle(&mut cs.attr, 1 << 1, b);
     }
@@ -324,6 +345,9 @@ fn apply_format(mut cs: CharShape, fmt: &CharFormat) -> CharShape {
     }
     if let Some(c) = fmt.color {
         cs.text_color = c;
+    }
+    if let Some(ids) = resolved_font {
+        cs.face_ids = ids;
     }
     cs
 }
@@ -775,6 +799,7 @@ mod tests {
                 color: Some(0x0000_00FF),
                 font: None,
             },
+            None,
         );
         assert!(cs.is_bold() && cs.is_italic() && cs.has_underline() && cs.has_strike());
         assert_eq!(cs.base_size, 1600);
@@ -786,6 +811,7 @@ mod tests {
                 bold: Some(false),
                 ..Default::default()
             },
+            None,
         );
         assert!(
             !off.is_bold() && off.is_italic(),
@@ -817,9 +843,8 @@ mod tests {
         assert_eq!(fonts.len(), 2, "반복 설정은 테이블을 키우지 않음");
     }
 
-    /// TDD RED (Task 1, font-face): `set_char_format`이 `fmt.font`를 아직 반영하지 않는
-    /// 단계에서는 이 단언이 실패해야 한다 — `apply_format`/`restyle_range`가 글꼴을
-    /// 실제로 적용하도록 배선한 뒤에야 통과한다.
+    /// `set_char_format`으로 글꼴을 설정하면 매칭된 run의 `CharShape.face_ids`가 7개 언어
+    /// 슬롯 전부에 같은 face id를 가리켜야 한다(A2).
     #[test]
     fn set_char_format_글꼴_7슬롯_균일_적용() {
         let mut doc = from_markdown::from_markdown("글꼴 테스트 문단입니다.");
@@ -843,7 +868,10 @@ mod tests {
             .expect("글꼴이 적용된 run이 있어야 함");
         for slot in 0..hwp_model::LANG_COUNT {
             let face = &doc.header.fonts[slot][styled.face_ids[slot] as usize];
-            assert_eq!(face.name, "맑은 고딕", "슬롯 {slot}이 균일하게 설정되어야 함");
+            assert_eq!(
+                face.name, "맑은 고딕",
+                "슬롯 {slot}이 균일하게 설정되어야 함"
+            );
         }
     }
 
@@ -861,6 +889,7 @@ mod tests {
                 bold: Some(true),
                 ..Default::default()
             },
+            None,
             12, // para_len
         );
         assert_eq!(runs.len(), 3, "경계 분할: {runs:?}");
