@@ -214,7 +214,23 @@ fn restyle_range_at_inner(
 /// longer names a paragraph or `props` is empty; this plan's ops never resize paragraph lists, so
 /// the former should not happen against a preflight-resolved target.
 pub fn apply_para_props_at(doc: &mut Document, path: &SegmentPath, props: &ParaProps) -> bool {
-    todo!()
+    if props.is_empty() {
+        return false;
+    }
+    let props = to_ir_units(props);
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let applied = match crate::address::paragraph_at_mut(doc, path) {
+        Some(para) => {
+            apply_para_props(para, &props, &mut pshapes);
+            true
+        }
+        None => false,
+    };
+    doc.header.para_shapes = pshapes;
+    if applied {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    applied
 }
 
 /// Address-driven entry point for a paragraph-alignment edit (EDT-05, 07-02): resolves the target
@@ -224,7 +240,27 @@ pub fn apply_para_props_at(doc: &mut Document, path: &SegmentPath, props: &ParaP
 /// encoding stays in exactly one place per caller; a comment on both sides notes they must move
 /// together if that encoding ever changes.
 pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> bool {
-    todo!()
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let applied = match crate::address::paragraph_at_mut(doc, path) {
+        Some(para) => {
+            // Mirrors align_para's 4-line mutation body (format.rs, `align_para`) — the two must
+            // move together if the align-bit encoding (attr1 bits 2..4) ever changes.
+            let mut ps = pshapes
+                .get(para.para_shape.0 as usize)
+                .cloned()
+                .unwrap_or_default();
+            ps.attr1 = (ps.attr1 & !(0x7 << 2)) | ((u32::from(align) & 0x7) << 2);
+            para.para_shape = find_or_insert_para(&mut pshapes, ps);
+            para.line_segs.clear();
+            true
+        }
+        None => false,
+    };
+    doc.header.para_shapes = pshapes;
+    if applied {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    applied
 }
 
 /// 위치 `pos`에서 활성인 char_shape id(= pos 이하 마지막 run).

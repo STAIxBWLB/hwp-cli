@@ -246,7 +246,18 @@ fn replace_in_chars(para: &mut Paragraph, from: &str, to: &str, budget: &mut usi
 /// document-wide walk). Returns the number of replacements made in that paragraph: 0 when `from`
 /// is empty, the address does not resolve, or no match was found.
 pub fn replace_text_at(doc: &mut Document, path: &SegmentPath, from: &str, to: &str) -> usize {
-    todo!()
+    if from.is_empty() {
+        return 0;
+    }
+    let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
+        return 0;
+    };
+    let mut budget = usize::MAX;
+    let count = replace_in_chars(para, from, to, &mut budget);
+    if count > 0 {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    count
 }
 
 /// 연속된 Text 문자열에서 `start_idx` 이후 `from`의 첫 위치를 찾는다.
