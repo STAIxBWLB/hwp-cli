@@ -4669,6 +4669,121 @@ mod tests {
         }
     }
 
+    /// Runs the CLI `--ops` channel in-process: the same `load_ops` + typed plan + `execute`
+    /// path `hwp edit --ops` takes, minus argv parsing. The equivalence tests assert the MCP
+    /// surface lands byte-identical output to this.
+    fn run_cli_ops_channel(source: &Path, ops_json: &str, cli_out: &Path, case: &str) {
+        let ops_path = temp_file(&format!("{case}-ops.json"));
+        std::fs::write(&ops_path, ops_json).unwrap();
+        let ops = crate::edit_ops::load_ops(&ops_path).expect("ops 로드");
+        let plan = crate::commands::edit::EditPlan::from_typed(ops, true, false);
+        crate::commands::edit::execute(source, cli_out, &plan).expect("CLI --ops 편집");
+        let _ = std::fs::remove_file(&ops_path);
+    }
+
+    /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
+    /// through the CLI `--ops` channel — the two surfaces share one engine, not two parsers.
+    #[test]
+    fn mcp_typed_move_para_matches_the_cli_ops_channel() {
+        let source = temp_file("typed-move-para-source.hwpx");
+        let mcp_out = temp_file("typed-move-para-mcp.hwpx");
+        let cli_out = temp_file("typed-move-para-cli.hwpx");
+        create_hwpx(&source, "첫째 문단\n\n둘째 문단\n\n셋째 문단\n");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "move_para": [{
+                    "address": {"at": {"section": 0, "paragraph": 0}},
+                    "to": {"address": {"at": {"section": 0, "paragraph": 2}}, "position": "after"}
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP move_para 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"move_para","address":{"at":{"section":0,"paragraph":0}},"to":{"address":{"at":{"section":0,"paragraph":2}},"position":"after"}}]"#,
+            &cli_out,
+            "typed-move-para",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 move_para 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let texts: Vec<String> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["둘째 문단", "셋째 문단", "첫째 문단"],
+            "문단 0이 문단 2 뒤로 이동해야 한다"
+        );
+
+        // An unknown to.position is an error naming the offending value, and nothing is written.
+        let bad_position_out = temp_file("typed-move-para-bad-position.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": bad_position_out,
+                "move_para": [{
+                    "address": {"at": {"section": 0, "paragraph": 0}},
+                    "to": {"address": {"at": {"section": 0, "paragraph": 2}}, "position": "inside"}
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("inside"),
+            "position 오류가 값을 이름지어야 한다: {error}"
+        );
+        assert!(
+            !bad_position_out.exists(),
+            "position 오류 시 출력을 쓰면 안 된다"
+        );
+
+        // An address carrying both id and at is an error, and nothing is written.
+        let bad_address_out = temp_file("typed-move-para-bad-address.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": bad_address_out,
+                "move_para": [{
+                    "address": {"id": "0000000000000000.0.0", "at": {"section": 0, "paragraph": 0}},
+                    "to": {"address": {"at": {"section": 0, "paragraph": 2}}, "position": "after"}
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("id와 at 중 하나만"),
+            "id+at 병기 오류: {error}"
+        );
+        assert!(
+            !bad_address_out.exists(),
+            "address 오류 시 출력을 쓰면 안 된다"
+        );
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &bad_position_out,
+            &bad_address_out,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     #[test]
     fn mcp_typed_delete_image_round_trip() {
         let source = temp_file("typed-delete-image-source.hwpx");
