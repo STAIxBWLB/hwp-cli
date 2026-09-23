@@ -1711,6 +1711,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations,
         true,
         arg_bool(args, "allow_partial", false)?,
+        false,
+        None,
     );
     let report = crate::commands::edit::execute(&input, &output, &plan)
         .map_err(|error| format!("{error:#}"))?;
@@ -4827,12 +4829,196 @@ mod tests {
     /// path `hwp edit --ops` takes, minus argv parsing. The equivalence tests assert the MCP
     /// surface lands byte-identical output to this.
     fn run_cli_ops_channel(source: &Path, ops_json: &str, cli_out: &Path, case: &str) {
+        run_cli_ops_channel_full(source, ops_json, cli_out, false, None, case);
+    }
+
+    /// `run_cli_ops_channel` with the CLI's `--dry-run`/`--report` flags threaded in: after
+    /// `execute` it writes the report artifact through `emit_edit_report`, exactly what `run()`
+    /// does for `hwp edit --ops --report` (D-12 equivalence tests compare against this file).
+    fn run_cli_ops_channel_full(
+        source: &Path,
+        ops_json: &str,
+        cli_out: &Path,
+        dry_run: bool,
+        report_path: Option<&Path>,
+        case: &str,
+    ) {
         let ops_path = temp_file(&format!("{case}-ops.json"));
         std::fs::write(&ops_path, ops_json).unwrap();
         let ops = crate::edit_ops::load_ops(&ops_path).expect("ops 로드");
-        let plan = crate::commands::edit::EditPlan::from_typed(ops, true, false);
-        crate::commands::edit::execute(source, cli_out, &plan).expect("CLI --ops 편집");
+        let plan = crate::commands::edit::EditPlan::from_typed(
+            ops,
+            true,
+            false,
+            dry_run,
+            report_path.map(Path::to_path_buf),
+        );
+        let report = crate::commands::edit::execute(source, cli_out, &plan).expect("CLI --ops 편집");
+        if report_path.is_some() {
+            crate::commands::edit::emit_edit_report(&plan, &report).expect("CLI --ops 보고서");
+        }
         let _ = std::fs::remove_file(&ops_path);
+    }
+
+    fn edit_report_v1_validator() -> jsonschema::Validator {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../../schemas/edit-report-v1.schema.json"
+        ))
+        .unwrap();
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap()
+    }
+
+    /// D-12: an MCP `hwp_edit` carrying a `report` path writes the same `edit-report-v1`
+    /// artifact the CLI `--ops --report` channel writes for the same ops (equal once the
+    /// output path is normalized); `dry_run` previews without publishing an output document
+    /// and the response reports `dry_run` plus one `ops` entry per op — the single-element
+    /// boundary answered explicitly (edge probe: empty). A `report` path outside the MCP
+    /// write authority is refused before any document is loaded.
+    #[test]
+    fn mcp_typed_edit_report_matches_the_cli_report() {
+        let source = temp_file("typed-edit-report-source.hwpx");
+        let mcp_out = temp_file("typed-edit-report-mcp.hwpx");
+        let cli_out = temp_file("typed-edit-report-cli.hwpx");
+        let mcp_report_path = temp_file("typed-edit-report-mcp.json");
+        let cli_report_path = temp_file("typed-edit-report-cli.json");
+        create_hwpx(&source, "앞 문단\n\n같은 문장 끝\n\n같은 문장 끝\n");
+
+        let content = tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "report": mcp_report_path,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP report 편집");
+        let response: Value =
+            serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            response["dry_run"], false,
+            "응답이 dry_run 키를 실어야 한다: {response}"
+        );
+        assert_eq!(
+            response["ops"].as_array().map(Vec::len),
+            Some(1),
+            "응답이 op당 하나의 ops 항목을 실어야 한다: {response}"
+        );
+
+        run_cli_ops_channel_full(
+            &source,
+            r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":2,"run":0},"chars":[0,2]},"bold":"on"}]"#,
+            &cli_out,
+            false,
+            Some(&cli_report_path),
+            "typed-edit-report",
+        );
+
+        let validator = edit_report_v1_validator();
+        let mut mcp_report: Value =
+            serde_json::from_slice(&std::fs::read(&mcp_report_path).unwrap()).unwrap();
+        let mut cli_report: Value =
+            serde_json::from_slice(&std::fs::read(&cli_report_path).unwrap()).unwrap();
+        assert!(
+            validator.is_valid(&mcp_report),
+            "MCP 보고서가 edit-report-v1 스키마를 만족해야 한다: {mcp_report}"
+        );
+        assert!(
+            validator.is_valid(&cli_report),
+            "CLI 보고서가 edit-report-v1 스키마를 만족해야 한다: {cli_report}"
+        );
+        // The output path is the one field the schema allows to differ between the two
+        // surfaces (each writes to its own -o target); normalize it before comparing.
+        mcp_report["output"] = Value::Null;
+        cli_report["output"] = Value::Null;
+        assert_eq!(
+            mcp_report, cli_report,
+            "MCP와 CLI --ops --report의 보고서가 다르다"
+        );
+
+        // dry_run: the response reports it, and no output document is published. A
+        // single-entry op array yields exactly one entry in the response ops array.
+        let dry_out = temp_file("typed-edit-report-dry.hwpx");
+        let content = tool_edit(
+            &json!({
+                "input": source,
+                "output": dry_out,
+                "dry_run": true,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP dry-run 편집");
+        let response: Value =
+            serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            response["dry_run"], true,
+            "dry-run 응답의 dry_run 키가 true여야 한다: {response}"
+        );
+        assert_eq!(
+            response["ops"].as_array().map(Vec::len),
+            Some(1),
+            "단일 op 배열은 정확히 하나의 ops 항목을 돌려줘야 한다: {response}"
+        );
+        assert!(
+            !dry_out.exists(),
+            "dry-run은 출력 문서를 쓰면 안 된다"
+        );
+
+        // A report path outside the MCP write authority is refused before any document is
+        // loaded (T-09-01): the refusal surfaces as an error and nothing is written.
+        let root = temp_file("typed-edit-report-root");
+        std::fs::create_dir_all(&root).unwrap();
+        let scoped_source = root.join("source.hwpx");
+        let scoped_out = root.join("out.hwpx");
+        create_hwpx(&scoped_source, "본문\n");
+        let outside_report = temp_file("typed-edit-report-outside.json");
+        let error = tool_edit(
+            &json!({
+                "input": scoped_source,
+                "output": scoped_out,
+                "report": outside_report,
+                "set_format": [{"pattern": "본문", "bold": true}]
+            }),
+            &ctx_with_roots(vec![root.canonicalize().unwrap()]),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("거부"),
+            "write authority 밖 report 경로는 거부 오류여야 한다: {error}"
+        );
+        assert!(
+            !outside_report.exists(),
+            "거부된 report 경로에 파일이 있으면 안 된다"
+        );
+        assert!(
+            !scoped_out.exists(),
+            "report 거부 시 출력 문서를 쓰면 안 된다"
+        );
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &mcp_report_path,
+            &cli_report_path,
+            &dry_out,
+            &outside_report,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
