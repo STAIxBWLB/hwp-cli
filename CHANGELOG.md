@@ -10,9 +10,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.19.2]
+
 **Added**
 
-- Table placement switch (#296). Markdown-authored tables were always emitted with "treat as
+- Table placement switch
+  ([#296](https://github.com/STAIxBWLB/hwp-cli/issues/296),
+  [#298](https://github.com/STAIxBWLB/hwp-cli/pull/298)). Markdown-authored tables were always
+  emitted with "treat as
   character" (글자처럼 취급) on, and an inline table is placed as one character - it cannot
   split across a page boundary, so a long table or one landing at the bottom of a page
   overflowed instead of continuing on the next page. `hwp new --from <md> --table-placement
