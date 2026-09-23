@@ -509,6 +509,30 @@ fn ops_entry_item(
     entry.into_typed()
 }
 
+/// Reads one typed-edit item's optional `address` selector (D-12). Shared by every `tool_edit`
+/// arm the CLI `--ops` channel can address; `operation` names the caller's array in every error
+/// message. The value is deserialized through the ops channel's own `edit_ops` types, so the
+/// id-XOR-at rule, the 16-hex checksum parse and the index-chain depth bound are inherited,
+/// never re-derived here: `AddressSpec`'s fields and its `into_address` conversion are private
+/// to `edit_ops`, so the address rides the delete_para entry's optional-address slot through
+/// `OpsEntry::into_typed` and is lifted back out. The entry is converted, never executed.
+fn optional_address(
+    item: &Value,
+    operation: &str,
+) -> Result<Option<hwp_convert::address::Address>, String> {
+    let Some(raw) = item.get("address") else {
+        return Ok(None);
+    };
+    let entry: crate::edit_ops::OpsEntry =
+        serde_json::from_value(json!({"op": "delete_para", "address": raw.clone()}))
+            .map_err(|error| format!("{operation}.address가 올바르지 않습니다: {error}"))?;
+    match entry.into_typed() {
+        Ok(crate::commands::edit::TypedEditOperation::DeletePara { address, .. }) => Ok(address),
+        Ok(_) => unreachable!("delete_para는 항상 TypedEditOperation::DeletePara로 변환된다"),
+        Err(error) => Err(format!("{operation}.address가 올바르지 않습니다: {error}")),
+    }
+}
+
 // ---- 도구 핸들러 ----
 
 fn tool_info(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
@@ -1360,8 +1384,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::Replace {
             from: required_item_str(item, "replace", "from")?.to_string(),
             to: required_item_str(item, "replace", "to")?.to_string(),
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "replace")?,
         });
     }
     for item in arg_array(args, "set_cell")? {
@@ -1463,8 +1486,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetFormat {
             pattern: required_item_str(item, "set_format", "pattern")?.to_string(),
             format,
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "set_format")?,
         });
     }
     for item in arg_array(args, "set_align")? {
@@ -1476,8 +1498,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
                 "align",
             )?)
             .map_err(|error| error.to_string())?,
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "set_align")?,
         });
     }
     for item in arg_array(args, "insert_para")? {
@@ -1485,8 +1506,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             anchor: required_item_str(item, "insert_para", "anchor")?.to_string(),
             text: required_item_str(item, "insert_para", "text")?.to_string(),
             before: optional_item_bool(item, "insert_para", "before")?.unwrap_or(false),
-            // MCP exposure of the address/style/char selectors is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "insert_para")?,
+            // The style/char selectors stay out of MCP scope (D-16).
             style: None,
             char: None,
         });
@@ -1494,8 +1515,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     for item in arg_array(args, "delete_para")? {
         operations.push(Op::DeletePara {
             matching: required_item_str(item, "delete_para", "matching")?.to_string(),
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "delete_para")?,
         });
     }
     for item in arg_array(args, "add_row")? {
@@ -1594,8 +1614,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetPara {
             pattern: required_item_str(item, "set_para", "pattern")?.to_string(),
             props: para_props_item(item, "set_para")?,
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "set_para")?,
         });
     }
     for item in arg_array(args, "set_cell_para")? {
@@ -2317,8 +2336,18 @@ fn tool_defs() -> Vec<Value> {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
                 "replace": {"type": "array", "items": {"type": "object", "properties": {
-                    "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["from", "to"]},
-                    "description": "텍스트 치환(모든 일치)"},
+                    "from": {"type": "string"}, "to": {"type": "string"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 치환 범위를 해당 문단으로 좁힌다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["from", "to"]},
+                    "description": "텍스트 치환(모든 일치; address 지정 시 해당 문단 안만)"},
                 "set_cell": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"}, "row": {"type": "integer"},
                     "col": {"type": "integer"}, "text": {"type": "string"}},
@@ -2354,19 +2383,55 @@ fn tool_defs() -> Vec<Value> {
                     "pattern": {"type": "string"}, "bold": {"type": "boolean"},
                     "italic": {"type": "boolean"}, "underline": {"type": "boolean"},
                     "strike": {"type": "boolean"}, "size": {"type": "number", "description": "pt"},
-                    "color": {"type": "string", "description": "#RRGGBB 또는 색이름"}},
-                    "required": ["pattern"]}, "description": "글자 서식(매칭 텍스트)"},
+                    "color": {"type": "string", "description": "#RRGGBB 또는 색이름"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 run/범위만 서식한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["pattern"]}, "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위)"},
                 "set_align": {"type": "array", "items": {"type": "object", "properties": {
                     "pattern": {"type": "string"},
-                    "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute", "divide"]}},
-                    "required": ["pattern", "align"]}, "description": "문단 정렬(매칭 문단)"},
+                    "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute", "divide"]},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 정렬한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["pattern", "align"]}, "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단)"},
                 "insert_para": {"type": "array", "items": {"type": "object", "properties": {
                     "anchor": {"type": "string"}, "text": {"type": "string"},
-                    "before": {"type": "boolean", "description": "true면 앵커 문단 앞(기본 뒤)"}},
-                    "required": ["anchor", "text"]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속)"},
+                    "before": {"type": "boolean", "description": "true면 앵커 문단 앞(기본 뒤)"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 anchor 텍스트 대신 해당 문단 앞/뒤에 삽입한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["anchor", "text"]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준)"},
                 "delete_para": {"type": "array", "items": {"type": "object", "properties": {
-                    "matching": {"type": "string"}},
-                    "required": ["matching"]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지)"},
+                    "matching": {"type": "string"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 matching 대신 해당 문단을 삭제한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["matching"]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단)"},
                 "add_row": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"},
                     "at": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "삽입 경계(생략 시 끝, 0-기반)"},
@@ -2411,9 +2476,18 @@ fn tool_defs() -> Vec<Value> {
                     "right_mm": {"type": "number"}, "top_mm": {"type": "number"},
                     "bottom_mm": {"type": "number"},
                     "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute"],
-                        "description": "문단 정렬"}},
+                        "description": "문단 정렬"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 모양을 바꾼다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
                     "required": ["pattern"]},
-                    "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
+                    "description": "문단모양(매칭 문단; address 지정 시 해당 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
                 "set_cell_para": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer", "minimum": 0, "description": "0-기반 표 인덱스(재귀 순서)"},
                     "row": {"type": "integer", "minimum": 0}, "col": {"type": "integer", "minimum": 0},
@@ -5059,10 +5133,7 @@ mod tests {
             &ctx(),
         )
         .unwrap_err();
-        assert!(
-            !drift_out.exists(),
-            "체크섬 불일치 시 출력을 쓰면 안 된다"
-        );
+        assert!(!drift_out.exists(), "체크섬 불일치 시 출력을 쓰면 안 된다");
 
         // Omitting address keeps today's pattern-based behavior: both duplicates are restyled.
         let pattern_out = temp_file("typed-set-format-pattern-only.hwpx");
@@ -5086,7 +5157,14 @@ mod tests {
             );
         }
 
-        for path in [&source, &mcp_out, &cli_out, &both_out, &drift_out, &pattern_out] {
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &both_out,
+            &drift_out,
+            &pattern_out,
+        ] {
             let _ = std::fs::remove_file(path);
         }
     }

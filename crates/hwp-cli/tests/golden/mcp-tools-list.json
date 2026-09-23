@@ -422,9 +422,47 @@
           "type": "array"
         },
         "delete_para": {
-          "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지)",
+          "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단)",
           "items": {
             "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자(선택) — 지정 시 matching 대신 해당 문단을 삭제한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "run": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "chars": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "matching": {
                 "type": "string"
               }
@@ -552,9 +590,47 @@
           "type": "array"
         },
         "insert_para": {
-          "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속)",
+          "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준)",
           "items": {
             "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자(선택) — 지정 시 anchor 텍스트 대신 해당 문단 앞/뒤에 삽입한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "run": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "chars": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "anchor": {
                 "type": "string"
               },
@@ -766,9 +842,47 @@
           "type": "string"
         },
         "replace": {
-          "description": "텍스트 치환(모든 일치)",
+          "description": "텍스트 치환(모든 일치; address 지정 시 해당 문단 안만)",
           "items": {
             "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자(선택) — 지정 시 치환 범위를 해당 문단으로 좁힌다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "run": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "chars": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "from": {
                 "type": "string"
               },
@@ -807,9 +921,47 @@
           "type": "array"
         },
         "set_align": {
-          "description": "문단 정렬(매칭 문단)",
+          "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단)",
           "items": {
             "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 정렬한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "run": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "chars": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "align": {
                 "enum": [
                   "left",
@@ -965,9 +1117,47 @@
           "type": "array"
         },
         "set_format": {
-          "description": "글자 서식(매칭 텍스트)",
+          "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위)",
           "items": {
             "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 run/범위만 서식한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "run": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "chars": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "bold": {
                 "type": "boolean"
               },
@@ -1052,9 +1242,47 @@
           "type": "object"
         },
         "set_para": {
-          "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬",
+          "description": "문단모양(매칭 문단; address 지정 시 해당 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬",
           "items": {
             "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 모양을 바꾼다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "run": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "chars": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "align": {
                 "description": "문단 정렬",
                 "enum": [
