@@ -33,6 +33,28 @@ fn sample() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx")
 }
 
+/// D-08's sibling-parity pin for EDT-01's contract: the segment-envelope-v2 schema is pinned by
+/// content hash, matching the pins edit-ops-v1 and edit-report-v1 already carry in edit_ops.rs.
+/// Any schema edit — even a description tweak — must consciously update this constant, because
+/// hwp-editor parses this contract from a separate repository and silent drift is an API break.
+#[test]
+fn schema_hash_frozen() {
+    use sha2::{Digest, Sha256};
+
+    let digest: [u8; 32] = Sha256::digest(include_bytes!(
+        "../../../schemas/segment-envelope-v2.schema.json"
+    ))
+    .into();
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        actual, "d14dc7eb589107dfc1061de6bb11e30cafeb6612562c1899fbb4b14806683de5",
+        "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
+    );
+}
+
 /// Raw stdout of the default `--with-segments` run.
 fn segments_stdout() -> Vec<u8> {
     let out = hwp()
