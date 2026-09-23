@@ -553,6 +553,113 @@
           },
           "type": "array"
         },
+        "move_para": {
+          "description": "문단 이동: address 문단을 to.address 문단의 before/after로(같은 구역 안)",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "run": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "chars": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "to": {
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "additionalProperties": false,
+                    "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                    "properties": {
+                      "at": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "paragraph": {
+                            "type": "integer"
+                          },
+                          "run": {
+                            "type": "integer"
+                          },
+                          "section": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "section",
+                          "paragraph"
+                        ],
+                        "type": "object"
+                      },
+                      "chars": {
+                        "items": {
+                          "type": "integer"
+                        },
+                        "maxItems": 2,
+                        "minItems": 2,
+                        "type": "array"
+                      },
+                      "id": {
+                        "description": "체크섬 segment id(hwp cat --with-segments)",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "position": {
+                    "enum": [
+                      "before",
+                      "after"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "address",
+                  "position"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "address",
+              "to"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "output": {
           "type": "string"
         },

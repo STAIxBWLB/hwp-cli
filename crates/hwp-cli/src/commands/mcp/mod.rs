@@ -491,6 +491,24 @@ fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<
         .transpose()
 }
 
+/// Deserializes one MCP typed-edit item into the ops channel's own [`crate::edit_ops::OpsEntry`]
+/// by injecting the `op` tag, then converts it with `into_typed` — the identical validation the
+/// CLI `--ops` channel runs (D-12). No address, checksum or index-chain parsing lives in this
+/// module; `edit_ops` owns all of it.
+fn ops_entry_item(
+    item: &Value,
+    op: &str,
+) -> Result<crate::commands::edit::TypedEditOperation, String> {
+    let mut value = item.clone();
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| format!("{op} 항목은 객체여야 합니다"))?;
+    object.insert("op".to_string(), Value::String(op.to_string()));
+    let entry: crate::edit_ops::OpsEntry = serde_json::from_value(value)
+        .map_err(|error| format!("{op} 항목이 올바르지 않습니다: {error}"))?;
+    entry.into_typed()
+}
+
 // ---- 도구 핸들러 ----
 
 fn tool_info(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
@@ -1588,6 +1606,14 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             props: para_props_item(item, "set_cell_para")?,
         });
     }
+    // move_para/indent_para/outdent_para ride the ops channel's own OpsEntry deserialization
+    // (D-12): no address parsing is re-derived here. Ordering note: MCP groups operations by
+    // kind, so ordering ACROSS kinds follows the arm order in this function rather than caller
+    // order, while order WITHIN one kind's array is the caller's (Phase 6 D-01; the cross-kind
+    // divergence from the CLI --ops flat array is a known limitation, planner decision 4).
+    for item in arg_array(args, "move_para")? {
+        operations.push(ops_entry_item(item, "move_para")?);
+    }
     // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
     if let Some(item) = args.get("set_page") {
         if !item.is_object() {
@@ -2394,6 +2420,30 @@ fn tool_defs() -> Vec<Value> {
                         "description": "문단 정렬"}},
                     "required": ["table", "row", "col"]},
                     "description": "셀 문단모양(앵커 없이 그 셀의 모든 문단): 줄간격·들여쓰기·여백(mm)·정렬. 한 번의 실행에서 set_cell 뒤에 적용된다"},
+                "move_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }},
+                    "to": {"type": "object", "additionalProperties": false, "properties": {
+                        "address": {"type": "object", "additionalProperties": false,
+                            "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                            "properties": {
+                                "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                                "at": {"type": "object", "additionalProperties": false,
+                                    "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                    "required": ["section", "paragraph"]},
+                                "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                            }},
+                        "position": {"type": "string", "enum": ["before", "after"]}},
+                        "required": ["address", "position"]}},
+                    "required": ["address", "to"]},
+                    "description": "문단 이동: address 문단을 to.address 문단의 before/after로(같은 구역 안)"},
                 "set_page": {"type": "object", "properties": {
                     "width_mm": {"type": "number"}, "height_mm": {"type": "number"},
                     "margin_left_mm": {"type": "number"}, "margin_right_mm": {"type": "number"},
@@ -4695,7 +4745,7 @@ mod tests {
                 "input": source,
                 "output": mcp_out,
                 "move_para": [{
-                    "address": {"at": {"section": 0, "paragraph": 0}},
+                    "address": {"at": {"section": 0, "paragraph": 1}},
                     "to": {"address": {"at": {"section": 0, "paragraph": 2}}, "position": "after"}
                 }]
             }),
@@ -4705,7 +4755,7 @@ mod tests {
 
         run_cli_ops_channel(
             &source,
-            r#"[{"op":"move_para","address":{"at":{"section":0,"paragraph":0}},"to":{"address":{"at":{"section":0,"paragraph":2}},"position":"after"}}]"#,
+            r#"[{"op":"move_para","address":{"at":{"section":0,"paragraph":1}},"to":{"address":{"at":{"section":0,"paragraph":2}},"position":"after"}}]"#,
             &cli_out,
             "typed-move-para",
         );
@@ -4723,8 +4773,8 @@ mod tests {
             .collect();
         assert_eq!(
             texts,
-            vec!["둘째 문단", "셋째 문단", "첫째 문단"],
-            "문단 0이 문단 2 뒤로 이동해야 한다"
+            vec!["첫째 문단", "셋째 문단", "둘째 문단"],
+            "문단 1이 문단 2 뒤로 이동해야 한다"
         );
 
         // An unknown to.position is an error naming the offending value, and nothing is written.
