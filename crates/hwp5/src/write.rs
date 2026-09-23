@@ -3372,6 +3372,26 @@ fn emit_section_def(def: &SectionDef) -> RecordNode {
     }
 }
 
+/// 표 셀 그리드에서 (전체 너비, 전체 높이) 합산 — 병합 셀은 건너뛰고 열/행 최대값을 더한다
+/// (HWPX writer의 그리드 추정과 같은 규칙, write/section.rs write_table).
+fn table_grid_totals(table: &Table) -> (i32, i32) {
+    let mut col_w = vec![0i64; table.cols.max(1) as usize];
+    let mut row_h = vec![0i64; table.rows.max(1) as usize];
+    for cell in &table.cells {
+        let (c, r) = (cell.col as usize, cell.row as usize);
+        if cell.col_span == 1 && c < col_w.len() {
+            col_w[c] = col_w[c].max(i64::from(cell.width.0));
+        }
+        if cell.row_span == 1 && r < row_h.len() {
+            row_h[r] = row_h[r].max(i64::from(cell.height.0));
+        }
+    }
+    (
+        col_w.iter().sum::<i64>() as i32,
+        row_h.iter().sum::<i64>() as i32,
+    )
+}
+
 fn emit_table(
     table: &Table,
     synthesize: bool,
@@ -3391,8 +3411,16 @@ fn emit_table(
         w.write_u32(pl.synth_attr());
         w.write_i32(pl.vert_offset);
         w.write_i32(pl.horz_offset);
-        w.write_i32(pl.width); // <hp:sz> — 병합 셀 합산보다 정확
-        w.write_i32(pl.height);
+        // #296: converter가 합성한 placement는 width/height가 0(미측정)이다 — 0을 그대로
+        // 쓰면 한글에서 개체가 깔끔히 접히므로, HWPX writer의 >0 필터와 같은 규칙으로
+        // 셀 그리드 합산에 폴백한다(아래 placement-free 분기와 같은 값).
+        let (width, height) = if pl.width > 0 && pl.height > 0 {
+            (pl.width, pl.height)
+        } else {
+            table_grid_totals(table)
+        };
+        w.write_i32(width); // <hp:sz> — 병합 셀 합산보다 정확
+        w.write_i32(height);
         w.write_i32(pl.z_order);
         for m in pl.out_margins {
             w.write_u16(m);
@@ -3410,22 +3438,12 @@ fn emit_table(
         w.write_u16(0); // desc_len = 0
     } else {
         // md 출신: 셀 크기로 계산한 떠 있는 표본값(기존 동작 유지).
-        let mut col_w = vec![0i64; table.cols.max(1) as usize];
-        let mut row_h = vec![0i64; table.rows.max(1) as usize];
-        for cell in &table.cells {
-            let (c, r) = (cell.col as usize, cell.row as usize);
-            if cell.col_span == 1 && c < col_w.len() {
-                col_w[c] = col_w[c].max(i64::from(cell.width.0));
-            }
-            if cell.row_span == 1 && r < row_h.len() {
-                row_h[r] = row_h[r].max(i64::from(cell.height.0));
-            }
-        }
+        let (total_w, total_h) = table_grid_totals(table);
         w.write_u32(0x082A_2210); // 속성 (표본값)
         w.write_u32(0); // 세로 오프셋
         w.write_u32(0); // 가로 오프셋
-        w.write_i32(col_w.iter().sum::<i64>() as i32);
-        w.write_i32(row_h.iter().sum::<i64>() as i32);
+        w.write_i32(total_w);
+        w.write_i32(total_h);
         w.write_u32(0); // z-order
         for _ in 0..4 {
             w.write_u16(283); // 바깥 여백 (표본값)

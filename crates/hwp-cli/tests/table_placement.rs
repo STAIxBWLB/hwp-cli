@@ -354,6 +354,88 @@ fn compose_v2_tables_placement() {
     assert!(tables[0].contains(r#"flowWithText="0""#), "{}", tables[0]);
 }
 
+#[test]
+fn hwp5_출력도_표_치수를_채운다() {
+    // Codex review P1: placement가 채워진 표를 .hwp로 쓸 때 width/height 0이 그대로
+    // 나가면 한글에서 개체가 접힌다 — writer가 셀 그리드 합산으로 폴백해야 한다.
+    let md = md_source("hwp5dims");
+    let hwp5_out = tmp("hwp5dims.hwp");
+    run(&[
+        "new",
+        "-o",
+        hwp5_out.to_str().unwrap(),
+        "--from",
+        md.to_str().unwrap(),
+        "--table-placement",
+        "floating",
+    ]);
+    let as_hwpx = tmp("hwp5dims.hwpx");
+    run(&[
+        "convert",
+        hwp5_out.to_str().unwrap(),
+        "-o",
+        as_hwpx.to_str().unwrap(),
+    ]);
+    let xml = section_xml(&as_hwpx);
+    let mut rest = xml.as_str();
+    let mut checked = 0;
+    while let Some(at) = rest.find("<hp:tbl ") {
+        let after = &rest[at..];
+        let sz = after.find("<hp:sz ").expect("tbl의 hp:sz");
+        let end = after[sz..].find("/>").expect("hp:sz 종료");
+        let tag = &after[sz..sz + end];
+        let width: i64 = tag
+            .split(r#"width=""#)
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .and_then(|s| s.parse().ok())
+            .expect("width 값");
+        assert!(width > 0, "0 너비 표 개체 금지: {tag}");
+        checked += 1;
+        rest = &after[sz + end..];
+    }
+    assert_eq!(checked, 2, "표 2개 검사");
+}
+
+#[test]
+fn json_입력도_placement를_적용() {
+    // Codex review P2: --from doc.json --table-placement가 조용히 무시되면 안 된다.
+    let md = md_source("jsonsrc");
+    let json = tmp("jsonsrc.json");
+    run(&[
+        "new",
+        "-o",
+        tmp("jsonsrc.hwpx").to_str().unwrap(),
+        "--from",
+        md.to_str().unwrap(),
+    ]);
+    run(&[
+        "convert",
+        tmp("jsonsrc.hwpx").to_str().unwrap(),
+        "-o",
+        json.to_str().unwrap(),
+    ]);
+    let out = tmp("jsonsrc-floating.hwpx");
+    run(&[
+        "new",
+        "-o",
+        out.to_str().unwrap(),
+        "--from",
+        json.to_str().unwrap(),
+        "--table-placement",
+        "floating",
+    ]);
+    let xml = section_xml(&out);
+    let tables = pos_attrs_after(&xml, "tbl");
+    assert_eq!(tables.len(), 2, "표 2개");
+    for pos in &tables {
+        assert!(
+            pos.contains(r#"treatAsChar="0""#),
+            "JSON 입력 표도 전환: {pos}"
+        );
+    }
+}
+
 /// 부유 표 렌더 스모크 — 페이지가 생성되고 빈 페이지가 아니다(전부 흰 픽셀이면 실패).
 /// write/section.rs:1350의 blank-page 실패 모드를 잡는다. 폰트 비의존.
 #[test]
