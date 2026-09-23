@@ -1282,7 +1282,7 @@ fn table_placement_matches(t: &hwp_model::Table, tp: crate::from_markdown::Table
     let placement_ok = t
         .placement
         .as_ref()
-        .is_some_and(|p| p.treat_as_char == !floating && p.flow_with_text == !floating);
+        .is_some_and(|p| p.treat_as_char != floating && p.flow_with_text != floating);
     let raw_ok = common_data_placement_matches(&t.common_data, !floating);
     placement_ok && raw_ok
 }
