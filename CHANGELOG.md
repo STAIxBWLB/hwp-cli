@@ -10,6 +10,42 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.20.0]
+
+**Added**
+
+- Typed edit-ops channel: `hwp edit <in> -o <out> --ops <file>` applies a flat JSON array of
+  typed operations under `schemas/edit-ops-v1.schema.json` (33 kinds, Draft 2020-12,
+  `additionalProperties: false`). The array is validated against the schema and preflighted
+  against the document before any write, so a malformed op or an address that no longer matches
+  aborts the whole run instead of half-applying
+  ([#297](https://github.com/STAIxBWLB/hwp-cli/pull/297)).
+
+- Addressed editing: ops that target existing content take an `address` selector - a segment id
+  from `hwp cat --with-segments`, a `section:paragraph` coordinate, or a run range inside a
+  paragraph - and a stale address is rejected up front rather than editing whatever happens to
+  sit there now. This lands EDT-05 alongside the channel itself
+  ([#297](https://github.com/STAIxBWLB/hwp-cli/pull/297)).
+
+- `hwp edit --report <file>` and `--dry-run`: an `edit-report-v1` JSON record of every applied
+  and rejected op, and a dry run that goes through the real writer and reports what would change
+  without writing the output. `edit-ops-v1` and `edit-report-v1` are both hash-pinned in
+  `crates/hwp-cli/tests/edit_ops.rs` (EDT-06)
+  ([#297](https://github.com/STAIxBWLB/hwp-cli/pull/297)).
+
+- MCP `hwp_edit` parity with the typed ops channel: the three new kinds (`move_para`,
+  `indent_para`, `outdent_para`), the optional `address` selector on the six existing arms, and
+  `report` / `dry_run` equivalents producing byte-equal edit-report-v1 artifacts. The MCP arms
+  deserialize the same `Op` union the CLI ops channel builds, so the two surfaces cannot drift;
+  the tool count stays at 22
+  ([#305](https://github.com/STAIxBWLB/hwp-cli/pull/305)).
+
+- Frozen SHA-256 hash pins for `schemas/segment-envelope-v2.schema.json` and
+  `schemas/render-layout-v1.schema.json`, matching the pins `edit-ops-v1` and `edit-report-v1`
+  already carried: all four editor-facing schemas now fail the test suite the moment their bytes
+  move, the deliberate-change gate hwp-editor's engine adoption relies on
+  ([#303](https://github.com/STAIxBWLB/hwp-cli/pull/303)).
+
 ## [0.19.2]
 
 **Added**
