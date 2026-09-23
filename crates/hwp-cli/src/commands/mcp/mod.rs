@@ -1614,6 +1614,12 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     for item in arg_array(args, "move_para")? {
         operations.push(ops_entry_item(item, "move_para")?);
     }
+    for item in arg_array(args, "indent_para")? {
+        operations.push(ops_entry_item(item, "indent_para")?);
+    }
+    for item in arg_array(args, "outdent_para")? {
+        operations.push(ops_entry_item(item, "outdent_para")?);
+    }
     // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
     if let Some(item) = args.get("set_page") {
         if !item.is_object() {
@@ -2444,6 +2450,30 @@ fn tool_defs() -> Vec<Value> {
                         "required": ["address", "position"]}},
                     "required": ["address", "to"]},
                     "description": "문단 이동: address 문단을 to.address 문단의 before/after로(같은 구역 안)"},
+                "indent_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["address"]},
+                    "description": "목록 문단 수준 한 단계 내리기(들여쓰기, head level 1..=7, 비목록 문단은 오류)"},
+                "outdent_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["address"]},
+                    "description": "목록 문단 수준 한 단계 올리기(내어쓰기, head level 1..=7, 비목록 문단은 오류)"},
                 "set_page": {"type": "object", "properties": {
                     "width_mm": {"type": "number"}, "height_mm": {"type": "number"},
                     "margin_left_mm": {"type": "number"}, "margin_right_mm": {"type": "number"},
@@ -4871,8 +4901,8 @@ mod tests {
             "MCP와 CLI --ops의 indent_para 출력 바이트가 다르다"
         );
         let doc = load_document(&mcp_out).unwrap();
-        let para_shape = &doc.header.para_shapes
-            [doc.sections[0].paragraphs[1].para_shape.0 as usize];
+        let para_shape =
+            &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
         assert_eq!(para_shape.head_level(), 2, "level 1 → 2");
 
         // outdent at head level 1: loud error, no output document.
@@ -4921,7 +4951,10 @@ mod tests {
             &ctx(),
         )
         .unwrap_err();
-        assert!(!non_list_out.exists(), "비목록 indent는 출력을 쓰면 안 된다");
+        assert!(
+            !non_list_out.exists(),
+            "비목록 indent는 출력을 쓰면 안 된다"
+        );
 
         for path in [
             &source,
