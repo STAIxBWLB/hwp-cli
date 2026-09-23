@@ -133,7 +133,45 @@ fn request_full(addr: &str, method: &str, path: &str, body: &[u8]) -> (u16, Stri
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse().ok())
         .expect("상태 줄을 해석하지 못했습니다");
-    (status, headers, raw[split + 4..].to_vec())
+    // tiny_http switches to chunked framing once a response outgrows its inline
+    // threshold (tools/list crossed it when hwp_edit's schema grew in Phase 9).
+    // The client must de-chunk rather than assume Content-Length.
+    let body = if headers
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case("transfer-encoding: chunked"))
+    {
+        dechunk(&raw[split + 4..])
+    } else {
+        raw[split + 4..].to_vec()
+    };
+    (status, headers, body)
+}
+
+/// Collapses HTTP/1.1 chunked transfer framing into the message body.
+fn dechunk(raw: &[u8]) -> Vec<u8> {
+    let mut body = Vec::new();
+    let mut rest = raw;
+    while !rest.is_empty() {
+        let line_end = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .expect("chunk 크기 줄이 없습니다");
+        let size_text =
+            std::str::from_utf8(&rest[..line_end]).expect("chunk 크기가 UTF-8이 아닙니다");
+        let size =
+            usize::from_str_radix(size_text.trim(), 16).expect("chunk 크기가 hex가 아닙니다");
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            break;
+        }
+        assert!(
+            rest.len() >= size + 2,
+            "chunk 본문이 크기만큼 오지 않았습니다"
+        );
+        body.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+    body
 }
 
 fn rpc(addr: &str, payload: &str) -> (u16, serde_json::Value) {

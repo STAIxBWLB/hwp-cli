@@ -491,6 +491,48 @@ fn optional_item_f32(item: &Value, operation: &str, key: &str) -> Result<Option<
         .transpose()
 }
 
+/// Deserializes one MCP typed-edit item into the ops channel's own [`crate::edit_ops::OpsEntry`]
+/// by injecting the `op` tag, then converts it with `into_typed` — the identical validation the
+/// CLI `--ops` channel runs (D-12). No address, checksum or index-chain parsing lives in this
+/// module; `edit_ops` owns all of it.
+fn ops_entry_item(
+    item: &Value,
+    op: &str,
+) -> Result<crate::commands::edit::TypedEditOperation, String> {
+    let mut value = item.clone();
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| format!("{op} 항목은 객체여야 합니다"))?;
+    object.insert("op".to_string(), Value::String(op.to_string()));
+    let entry: crate::edit_ops::OpsEntry = serde_json::from_value(value)
+        .map_err(|error| format!("{op} 항목이 올바르지 않습니다: {error}"))?;
+    entry.into_typed()
+}
+
+/// Reads one typed-edit item's optional `address` selector (D-12). Shared by every `tool_edit`
+/// arm the CLI `--ops` channel can address; `operation` names the caller's array in every error
+/// message. The value is deserialized through the ops channel's own `edit_ops` types, so the
+/// id-XOR-at rule, the 16-hex checksum parse and the index-chain depth bound are inherited,
+/// never re-derived here: `AddressSpec`'s fields and its `into_address` conversion are private
+/// to `edit_ops`, so the address rides the delete_para entry's optional-address slot through
+/// `OpsEntry::into_typed` and is lifted back out. The entry is converted, never executed.
+fn optional_address(
+    item: &Value,
+    operation: &str,
+) -> Result<Option<hwp_convert::address::Address>, String> {
+    let Some(raw) = item.get("address") else {
+        return Ok(None);
+    };
+    let entry: crate::edit_ops::OpsEntry =
+        serde_json::from_value(json!({"op": "delete_para", "address": raw.clone()}))
+            .map_err(|error| format!("{operation}.address가 올바르지 않습니다: {error}"))?;
+    match entry.into_typed() {
+        Ok(crate::commands::edit::TypedEditOperation::DeletePara { address, .. }) => Ok(address),
+        Ok(_) => unreachable!("delete_para는 항상 TypedEditOperation::DeletePara로 변환된다"),
+        Err(error) => Err(format!("{operation}.address가 올바르지 않습니다: {error}")),
+    }
+}
+
 // ---- 도구 핸들러 ----
 
 fn tool_info(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
@@ -1334,6 +1376,13 @@ fn tool_grep(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
 fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
+    // D-12: the CLI --ops channel's dry-run and report flags, resolved up front. `report` is a
+    // client-supplied write path, so it goes through the same checked_write_path authority gate
+    // `output` uses (T-09-01) before any document is loaded.
+    let dry_run = arg_bool(args, "dry_run", false)?;
+    let report_path = arg_str_opt(args, "report")?
+        .map(|raw| checked_write_path(ctx, raw))
+        .transpose()?;
     use crate::commands::edit::TypedEditOperation as Op;
 
     let mut operations = Vec::new();
@@ -1342,8 +1391,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::Replace {
             from: required_item_str(item, "replace", "from")?.to_string(),
             to: required_item_str(item, "replace", "to")?.to_string(),
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "replace")?,
         });
     }
     for item in arg_array(args, "set_cell")? {
@@ -1445,8 +1493,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetFormat {
             pattern: required_item_str(item, "set_format", "pattern")?.to_string(),
             format,
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "set_format")?,
         });
     }
     for item in arg_array(args, "set_align")? {
@@ -1458,8 +1505,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
                 "align",
             )?)
             .map_err(|error| error.to_string())?,
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "set_align")?,
         });
     }
     for item in arg_array(args, "insert_para")? {
@@ -1467,8 +1513,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             anchor: required_item_str(item, "insert_para", "anchor")?.to_string(),
             text: required_item_str(item, "insert_para", "text")?.to_string(),
             before: optional_item_bool(item, "insert_para", "before")?.unwrap_or(false),
-            // MCP exposure of the address/style/char selectors is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "insert_para")?,
+            // The style/char selectors stay out of MCP scope (D-16).
             style: None,
             char: None,
         });
@@ -1476,8 +1522,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     for item in arg_array(args, "delete_para")? {
         operations.push(Op::DeletePara {
             matching: required_item_str(item, "delete_para", "matching")?.to_string(),
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "delete_para")?,
         });
     }
     for item in arg_array(args, "add_row")? {
@@ -1576,8 +1621,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetPara {
             pattern: required_item_str(item, "set_para", "pattern")?.to_string(),
             props: para_props_item(item, "set_para")?,
-            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
-            address: None,
+            address: optional_address(item, "set_para")?,
         });
     }
     for item in arg_array(args, "set_cell_para")? {
@@ -1587,6 +1631,20 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             col: required_item_u16(item, "set_cell_para", "col")?,
             props: para_props_item(item, "set_cell_para")?,
         });
+    }
+    // move_para/indent_para/outdent_para ride the ops channel's own OpsEntry deserialization
+    // (D-12): no address parsing is re-derived here. Ordering note: MCP groups operations by
+    // kind, so ordering ACROSS kinds follows the arm order in this function rather than caller
+    // order, while order WITHIN one kind's array is the caller's (Phase 6 D-01; the cross-kind
+    // divergence from the CLI --ops flat array is a known limitation, planner decision 4).
+    for item in arg_array(args, "move_para")? {
+        operations.push(ops_entry_item(item, "move_para")?);
+    }
+    for item in arg_array(args, "indent_para")? {
+        operations.push(ops_entry_item(item, "indent_para")?);
+    }
+    for item in arg_array(args, "outdent_para")? {
+        operations.push(ops_entry_item(item, "outdent_para")?);
     }
     // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
     if let Some(item) = args.get("set_page") {
@@ -1656,13 +1714,33 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         });
     }
 
+    let wants_report = report_path.is_some();
     let plan = crate::commands::edit::EditPlan::from_typed(
         operations,
         true,
         arg_bool(args, "allow_partial", false)?,
+        dry_run,
+        report_path,
     );
-    let report = crate::commands::edit::execute(&input, &output, &plan)
-        .map_err(|error| format!("{error:#}"))?;
+    let report = crate::commands::edit::execute(&input, &output, &plan).map_err(|error| {
+        // D-12 abort-path parity (Task 2 decision, Option A, 2026-09-24): an aborted batch
+        // still emits the edit-report-v1 artifact when a report path was given, exactly what
+        // run() does for the CLI --report path. The write is best-effort — the client's
+        // primary signal is the abort reason, so a report-write failure never masks it.
+        if wants_report
+            && let Some(abort) = error.downcast_ref::<crate::commands::edit::EditAbort>()
+        {
+            let _ = crate::commands::edit::emit_edit_report(&plan, &abort.report);
+        }
+        format!("{error:#}")
+    })?;
+    // The response below is built from the EditReport the engine returned, never from the
+    // request the client sent (T-09-09); the report file is the same edit-report-v1 artifact
+    // the CLI --report flag writes, written through the same emit_edit_report run() uses.
+    if wants_report {
+        crate::commands::edit::emit_edit_report(&plan, &report)
+            .map_err(|error| format!("{error:#}"))?;
+    }
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
             "input": input,
@@ -1670,6 +1748,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             "applied": report.applied,
             "warnings": report.warnings,
             "preservation": report.preservation,
+            "ops": report.ops,
+            "dry_run": report.dry_run,
         }))
         .unwrap_or_default(),
     )])
@@ -2284,9 +2364,21 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
+                "report": {"type": "string", "description": "편집 보고서(edit-report-v1 JSON)를 쓸 경로(선택) — CLI --report와 같은 산출물"},
+                "dry_run": {"type": "boolean", "description": "true면 출력 문서를 게시하지 않고 적용 결과만 보고한다 — CLI --dry-run과 동일"},
                 "replace": {"type": "array", "items": {"type": "object", "properties": {
-                    "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["from", "to"]},
-                    "description": "텍스트 치환(모든 일치)"},
+                    "from": {"type": "string"}, "to": {"type": "string"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 치환 범위를 해당 문단으로 좁힌다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["from", "to"]},
+                    "description": "텍스트 치환(모든 일치; address 지정 시 해당 문단 안만)"},
                 "set_cell": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"}, "row": {"type": "integer"},
                     "col": {"type": "integer"}, "text": {"type": "string"}},
@@ -2322,19 +2414,55 @@ fn tool_defs() -> Vec<Value> {
                     "pattern": {"type": "string"}, "bold": {"type": "boolean"},
                     "italic": {"type": "boolean"}, "underline": {"type": "boolean"},
                     "strike": {"type": "boolean"}, "size": {"type": "number", "description": "pt"},
-                    "color": {"type": "string", "description": "#RRGGBB 또는 색이름"}},
-                    "required": ["pattern"]}, "description": "글자 서식(매칭 텍스트)"},
+                    "color": {"type": "string", "description": "#RRGGBB 또는 색이름"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 run/범위만 서식한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["pattern"]}, "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위)"},
                 "set_align": {"type": "array", "items": {"type": "object", "properties": {
                     "pattern": {"type": "string"},
-                    "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute", "divide"]}},
-                    "required": ["pattern", "align"]}, "description": "문단 정렬(매칭 문단)"},
+                    "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute", "divide"]},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 정렬한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["pattern", "align"]}, "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단)"},
                 "insert_para": {"type": "array", "items": {"type": "object", "properties": {
                     "anchor": {"type": "string"}, "text": {"type": "string"},
-                    "before": {"type": "boolean", "description": "true면 앵커 문단 앞(기본 뒤)"}},
-                    "required": ["anchor", "text"]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속)"},
+                    "before": {"type": "boolean", "description": "true면 앵커 문단 앞(기본 뒤)"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 anchor 텍스트 대신 해당 문단 앞/뒤에 삽입한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["anchor", "text"]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준)"},
                 "delete_para": {"type": "array", "items": {"type": "object", "properties": {
-                    "matching": {"type": "string"}},
-                    "required": ["matching"]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지)"},
+                    "matching": {"type": "string"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 matching 대신 해당 문단을 삭제한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["matching"]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단)"},
                 "add_row": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"},
                     "at": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "삽입 경계(생략 시 끝, 0-기반)"},
@@ -2379,9 +2507,18 @@ fn tool_defs() -> Vec<Value> {
                     "right_mm": {"type": "number"}, "top_mm": {"type": "number"},
                     "bottom_mm": {"type": "number"},
                     "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute"],
-                        "description": "문단 정렬"}},
+                        "description": "문단 정렬"},
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 모양을 바꾼다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
                     "required": ["pattern"]},
-                    "description": "문단모양(매칭 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
+                    "description": "문단모양(매칭 문단; address 지정 시 해당 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
                 "set_cell_para": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer", "minimum": 0, "description": "0-기반 표 인덱스(재귀 순서)"},
                     "row": {"type": "integer", "minimum": 0}, "col": {"type": "integer", "minimum": 0},
@@ -2394,6 +2531,54 @@ fn tool_defs() -> Vec<Value> {
                         "description": "문단 정렬"}},
                     "required": ["table", "row", "col"]},
                     "description": "셀 문단모양(앵커 없이 그 셀의 모든 문단): 줄간격·들여쓰기·여백(mm)·정렬. 한 번의 실행에서 set_cell 뒤에 적용된다"},
+                "move_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }},
+                    "to": {"type": "object", "additionalProperties": false, "properties": {
+                        "address": {"type": "object", "additionalProperties": false,
+                            "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                            "properties": {
+                                "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                                "at": {"type": "object", "additionalProperties": false,
+                                    "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                    "required": ["section", "paragraph"]},
+                                "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                            }},
+                        "position": {"type": "string", "enum": ["before", "after"]}},
+                        "required": ["address", "position"]}},
+                    "required": ["address", "to"]},
+                    "description": "문단 이동: address 문단을 to.address 문단의 before/after로(같은 구역 안)"},
+                "indent_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["address"]},
+                    "description": "목록 문단 수준 한 단계 내리기(들여쓰기, head level 1..=7, 비목록 문단은 오류)"},
+                "outdent_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
+                                "required": ["section", "paragraph"]},
+                            "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+                        }}},
+                    "required": ["address"]},
+                    "description": "목록 문단 수준 한 단계 올리기(내어쓰기, head level 1..=7, 비목록 문단은 오류)"},
                 "set_page": {"type": "object", "properties": {
                     "width_mm": {"type": "number"}, "height_mm": {"type": "number"},
                     "margin_left_mm": {"type": "number"}, "margin_right_mm": {"type": "number"},
@@ -4665,6 +4850,631 @@ mod tests {
             assert_eq!(ps.alignment(), 3, "가운데 정렬");
         }
         for path in [&source, &mcp_out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Runs the CLI `--ops` channel in-process: the same `load_ops` + typed plan + `execute`
+    /// path `hwp edit --ops` takes, minus argv parsing. The equivalence tests assert the MCP
+    /// surface lands byte-identical output to this.
+    fn run_cli_ops_channel(source: &Path, ops_json: &str, cli_out: &Path, case: &str) {
+        run_cli_ops_channel_full(source, ops_json, cli_out, false, None, case);
+    }
+
+    /// `run_cli_ops_channel` with the CLI's `--dry-run`/`--report` flags threaded in: after
+    /// `execute` it writes the report artifact through `emit_edit_report`, exactly what `run()`
+    /// does for `hwp edit --ops --report` (D-12 equivalence tests compare against this file).
+    fn run_cli_ops_channel_full(
+        source: &Path,
+        ops_json: &str,
+        cli_out: &Path,
+        dry_run: bool,
+        report_path: Option<&Path>,
+        case: &str,
+    ) {
+        let ops_path = temp_file(&format!("{case}-ops.json"));
+        std::fs::write(&ops_path, ops_json).unwrap();
+        let ops = crate::edit_ops::load_ops(&ops_path).expect("ops 로드");
+        let plan = crate::commands::edit::EditPlan::from_typed(
+            ops,
+            true,
+            false,
+            dry_run,
+            report_path.map(Path::to_path_buf),
+        );
+        let report =
+            crate::commands::edit::execute(source, cli_out, &plan).expect("CLI --ops 편집");
+        if report_path.is_some() {
+            crate::commands::edit::emit_edit_report(&plan, &report).expect("CLI --ops 보고서");
+        }
+        let _ = std::fs::remove_file(&ops_path);
+    }
+
+    fn edit_report_v1_validator() -> jsonschema::Validator {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../../schemas/edit-report-v1.schema.json"
+        ))
+        .unwrap();
+        jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap()
+    }
+
+    /// D-12: an MCP `hwp_edit` carrying a `report` path writes the same `edit-report-v1`
+    /// artifact the CLI `--ops --report` channel writes for the same ops (equal once the
+    /// output path is normalized); `dry_run` previews without publishing an output document
+    /// and the response reports `dry_run` plus one `ops` entry per op — the single-element
+    /// boundary answered explicitly (edge probe: empty). A `report` path outside the MCP
+    /// write authority is refused before any document is loaded.
+    #[test]
+    fn mcp_typed_edit_report_matches_the_cli_report() {
+        let source = temp_file("typed-edit-report-source.hwpx");
+        let mcp_out = temp_file("typed-edit-report-mcp.hwpx");
+        let cli_out = temp_file("typed-edit-report-cli.hwpx");
+        let mcp_report_path = temp_file("typed-edit-report-mcp.json");
+        let cli_report_path = temp_file("typed-edit-report-cli.json");
+        create_hwpx(&source, "앞 문단\n\n같은 문장 끝\n\n같은 문장 끝\n");
+
+        let content = tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "report": mcp_report_path,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP report 편집");
+        let response: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            response["dry_run"], false,
+            "응답이 dry_run 키를 실어야 한다: {response}"
+        );
+        assert_eq!(
+            response["ops"].as_array().map(Vec::len),
+            Some(1),
+            "응답이 op당 하나의 ops 항목을 실어야 한다: {response}"
+        );
+
+        run_cli_ops_channel_full(
+            &source,
+            r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":2,"run":0},"chars":[0,2]},"bold":"on"}]"#,
+            &cli_out,
+            false,
+            Some(&cli_report_path),
+            "typed-edit-report",
+        );
+
+        let validator = edit_report_v1_validator();
+        let mut mcp_report: Value =
+            serde_json::from_slice(&std::fs::read(&mcp_report_path).unwrap()).unwrap();
+        let mut cli_report: Value =
+            serde_json::from_slice(&std::fs::read(&cli_report_path).unwrap()).unwrap();
+        assert!(
+            validator.is_valid(&mcp_report),
+            "MCP 보고서가 edit-report-v1 스키마를 만족해야 한다: {mcp_report}"
+        );
+        assert!(
+            validator.is_valid(&cli_report),
+            "CLI 보고서가 edit-report-v1 스키마를 만족해야 한다: {cli_report}"
+        );
+        // The output path is the one field the schema allows to differ between the two
+        // surfaces (each writes to its own -o target); normalize it before comparing.
+        mcp_report["output"] = Value::Null;
+        cli_report["output"] = Value::Null;
+        assert_eq!(
+            mcp_report, cli_report,
+            "MCP와 CLI --ops --report의 보고서가 다르다"
+        );
+
+        // dry_run: the response reports it, and no output document is published. A
+        // single-entry op array yields exactly one entry in the response ops array.
+        let dry_out = temp_file("typed-edit-report-dry.hwpx");
+        let content = tool_edit(
+            &json!({
+                "input": source,
+                "output": dry_out,
+                "dry_run": true,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP dry-run 편집");
+        let response: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            response["dry_run"], true,
+            "dry-run 응답의 dry_run 키가 true여야 한다: {response}"
+        );
+        assert_eq!(
+            response["ops"].as_array().map(Vec::len),
+            Some(1),
+            "단일 op 배열은 정확히 하나의 ops 항목을 돌려줘야 한다: {response}"
+        );
+        assert!(!dry_out.exists(), "dry-run은 출력 문서를 쓰면 안 된다");
+
+        // A report path outside the MCP write authority is refused before any document is
+        // loaded (T-09-01): the refusal surfaces as an error and nothing is written.
+        let root = temp_file("typed-edit-report-root");
+        std::fs::create_dir_all(&root).unwrap();
+        let scoped_source = root.join("source.hwpx");
+        let scoped_out = root.join("out.hwpx");
+        create_hwpx(&scoped_source, "본문\n");
+        let outside_report = temp_file("typed-edit-report-outside.json");
+        let error = tool_edit(
+            &json!({
+                "input": scoped_source,
+                "output": scoped_out,
+                "report": outside_report,
+                "set_format": [{"pattern": "본문", "bold": true}]
+            }),
+            &ctx_with_roots(vec![root.canonicalize().unwrap()]),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("거부"),
+            "write authority 밖 report 경로는 거부 오류여야 한다: {error}"
+        );
+        assert!(
+            !outside_report.exists(),
+            "거부된 report 경로에 파일이 있으면 안 된다"
+        );
+        assert!(
+            !scoped_out.exists(),
+            "report 거부 시 출력 문서를 쓰면 안 된다"
+        );
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &mcp_report_path,
+            &cli_report_path,
+            &dry_out,
+            &outside_report,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-12 abort-path parity (Task 2 decision, Option A): an aborted MCP batch with a
+    /// `report` path still leaves a valid `edit-report-v1` file on disk — the same
+    /// diagnosable artifact the CLI `--report` path writes on an abort — and the call still
+    /// returns the abort error with no output document published.
+    #[test]
+    fn mcp_typed_edit_abort_still_writes_the_report() {
+        let source = temp_file("typed-edit-abort-source.hwpx");
+        let mcp_out = temp_file("typed-edit-abort-mcp.hwpx");
+        let report_path = temp_file("typed-edit-abort-report.json");
+        create_hwpx(&source, "있는 본문\n");
+
+        // A pattern that matches nothing is an unapplied request; without allow_partial the
+        // batch aborts (the same EditAbort path the CLI --ops channel takes).
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "report": report_path,
+                "set_format": [{"pattern": "없는 문구", "bold": true}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("적용되지 않은 편집 요청이 있습니다"),
+            "중단 사유는 CLI와 같은 문구여야 한다: {error}"
+        );
+        assert!(!mcp_out.exists(), "중단된 배치는 출력 문서를 쓰면 안 된다");
+
+        let report: Value = serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert!(
+            edit_report_v1_validator().is_valid(&report),
+            "중단 경로의 보고서도 edit-report-v1 스키마를 만족해야 한다: {report}"
+        );
+        assert_eq!(report["applied_count"], 0);
+        assert_eq!(report["failed_count"], 1);
+        let ops = report["ops"].as_array().unwrap();
+        assert_eq!(ops.len(), 1, "한 op, 한 outcome: {ops:?}");
+        assert_eq!(ops[0]["status"], "failed");
+        assert!(
+            ops[0]["reason"].is_string(),
+            "실패한 op는 reason을 실어야 한다: {ops:?}"
+        );
+
+        for path in [&source, &mcp_out, &report_path] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
+    /// through the CLI `--ops` channel — the two surfaces share one engine, not two parsers.
+    #[test]
+    fn mcp_typed_move_para_matches_the_cli_ops_channel() {
+        let source = temp_file("typed-move-para-source.hwpx");
+        let mcp_out = temp_file("typed-move-para-mcp.hwpx");
+        let cli_out = temp_file("typed-move-para-cli.hwpx");
+        create_hwpx(&source, "첫째 문단\n\n둘째 문단\n\n셋째 문단\n");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "move_para": [{
+                    "address": {"at": {"section": 0, "paragraph": 1}},
+                    "to": {"address": {"at": {"section": 0, "paragraph": 2}}, "position": "after"}
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP move_para 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"move_para","address":{"at":{"section":0,"paragraph":1}},"to":{"address":{"at":{"section":0,"paragraph":2}},"position":"after"}}]"#,
+            &cli_out,
+            "typed-move-para",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 move_para 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let texts: Vec<String> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["첫째 문단", "셋째 문단", "둘째 문단"],
+            "문단 1이 문단 2 뒤로 이동해야 한다"
+        );
+
+        // An unknown to.position is an error naming the offending value, and nothing is written.
+        let bad_position_out = temp_file("typed-move-para-bad-position.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": bad_position_out,
+                "move_para": [{
+                    "address": {"at": {"section": 0, "paragraph": 0}},
+                    "to": {"address": {"at": {"section": 0, "paragraph": 2}}, "position": "inside"}
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("inside"),
+            "position 오류가 값을 이름지어야 한다: {error}"
+        );
+        assert!(
+            !bad_position_out.exists(),
+            "position 오류 시 출력을 쓰면 안 된다"
+        );
+
+        // An address carrying both id and at is an error, and nothing is written.
+        let bad_address_out = temp_file("typed-move-para-bad-address.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": bad_address_out,
+                "move_para": [{
+                    "address": {"id": "0000000000000000.0.0", "at": {"section": 0, "paragraph": 0}},
+                    "to": {"address": {"at": {"section": 0, "paragraph": 2}}, "position": "after"}
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("id와 at 중 하나만"),
+            "id+at 병기 오류: {error}"
+        );
+        assert!(
+            !bad_address_out.exists(),
+            "address 오류 시 출력을 쓰면 안 된다"
+        );
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &bad_position_out,
+            &bad_address_out,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// D-12: `indent_para`/`outdent_para` over MCP reach the same engine the CLI `--ops`
+    /// channel drives — byte-identical output on the success path, and the head-level
+    /// boundary failures (1 and 7) surface as MCP errors with no output written.
+    #[test]
+    fn mcp_typed_indent_outdent_matches_the_cli_ops_channel() {
+        // Same fixture shape as the ops-channel indent tests: paragraph 1 is a level-1
+        // numbered item; paragraph 5 is a plain non-list paragraph.
+        const LIST_MD: &str =
+            "# T\n\n1. 첫 항목\n\n2. 같은 항목\n\n3. 중간 항목\n\n4. 같은 항목\n\n일반 문단\n";
+        let source = temp_file("typed-indent-outdent-source.hwpx");
+        let mcp_out = temp_file("typed-indent-outdent-mcp.hwpx");
+        let cli_out = temp_file("typed-indent-outdent-cli.hwpx");
+        create_hwpx(&source, LIST_MD);
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "indent_para": [{"address": {"at": {"section": 0, "paragraph": 1}}}]
+            }),
+            &ctx(),
+        )
+        .expect("MCP indent_para 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}}]"#,
+            &cli_out,
+            "typed-indent-outdent",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 indent_para 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let para_shape =
+            &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
+        assert_eq!(para_shape.head_level(), 2, "level 1 → 2");
+
+        // outdent at head level 1: loud error, no output document.
+        let outdent_out = temp_file("typed-outdent-boundary.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": outdent_out,
+                "outdent_para": [{"address": {"at": {"section": 0, "paragraph": 1}}}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            !outdent_out.exists(),
+            "level 1 outdent은 출력을 쓰면 안 된다: {error}"
+        );
+
+        // indent at head level 7: the seventh indent of one item must fail the whole call.
+        let seven: Vec<serde_json::Value> = (0..7)
+            .map(|_| json!({"address": {"at": {"section": 0, "paragraph": 1}}}))
+            .collect();
+        let indent_out = temp_file("typed-indent-boundary.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": indent_out,
+                "indent_para": seven
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            !indent_out.exists(),
+            "level 7 indent는 출력을 쓰면 안 된다: {error}"
+        );
+
+        // indent on a non-list paragraph is a loud error, not a silent no-op.
+        let non_list_out = temp_file("typed-indent-non-list.hwpx");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": non_list_out,
+                "indent_para": [{"address": {"at": {"section": 0, "paragraph": 5}}}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            !non_list_out.exists(),
+            "비목록 indent는 출력을 쓰면 안 된다"
+        );
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &outdent_out,
+            &indent_out,
+            &non_list_out,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// D-12: an addressed `set_format` over MCP restyles only the addressed run range and lands
+    /// byte-identical output to the CLI `--ops` channel; an invalid address aborts the whole
+    /// call with zero operations applied and no output document written.
+    #[test]
+    fn mcp_typed_addressed_set_format_matches_the_cli_ops_channel() {
+        // Paragraphs 1 and 2 carry identical plain text; the address must hit ONLY the second
+        // paragraph's [0,2) sub-range.
+        let source = temp_file("typed-addressed-set-format-source.hwpx");
+        let mcp_out = temp_file("typed-addressed-set-format-mcp.hwpx");
+        let cli_out = temp_file("typed-addressed-set-format-cli.hwpx");
+        create_hwpx(&source, "앞 문단\n\n같은 문장 끝\n\n같은 문장 끝\n");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP addressed set_format 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":2,"run":0},"chars":[0,2]},"bold":"on"}]"#,
+            &cli_out,
+            "typed-addressed-set-format",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 addressed set_format 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let bold_of = |index: usize| {
+            doc.sections[0].paragraphs[index]
+                .char_shape_runs
+                .iter()
+                .map(|(_, id)| doc.header.char_shapes[id.0 as usize].is_bold())
+                .collect::<Vec<bool>>()
+        };
+        assert!(
+            bold_of(1).iter().all(|bold| !bold),
+            "첫 번째 중복 문단은 서식이 바뀌면 안 된다"
+        );
+        assert!(
+            bold_of(2).iter().any(|bold| *bold),
+            "두 번째 중복 문단의 앞 범위만 bold여야 한다"
+        );
+
+        // id and at together: the whole call aborts with nothing applied, nothing written.
+        let both_out = temp_file("typed-address-id-and-at.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": both_out,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"id": "0000000000000000.0.2.0", "at": {"section": 0, "paragraph": 2, "run": 0}},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("id와 at 중 하나만"),
+            "id+at 병기 오류: {error}"
+        );
+        assert!(!both_out.exists(), "address 오류 시 출력을 쓰면 안 된다");
+
+        // A checksum that does not match the addressed paragraph aborts the batch the same way.
+        let drift_out = temp_file("typed-address-checksum-drift.hwpx");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": drift_out,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"id": "0000000000000000.0.2.0"},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(!drift_out.exists(), "체크섬 불일치 시 출력을 쓰면 안 된다");
+
+        // Omitting address keeps today's pattern-based behavior: both duplicates are restyled.
+        let pattern_out = temp_file("typed-set-format-pattern-only.hwpx");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": pattern_out,
+                "set_format": [{"pattern": "같은 문장 끝", "bold": true}]
+            }),
+            &ctx(),
+        )
+        .expect("pattern-only set_format 편집");
+        let doc = load_document(&pattern_out).unwrap();
+        for index in [1, 2] {
+            assert!(
+                doc.sections[0].paragraphs[index]
+                    .char_shape_runs
+                    .iter()
+                    .any(|(_, id)| doc.header.char_shapes[id.0 as usize].is_bold()),
+                "address 생략 시 두 중복 문단 모두 bold여야 한다"
+            );
+        }
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &both_out,
+            &drift_out,
+            &pattern_out,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Edge probe (ordering): within one `hwp_edit` op kind, MCP applies the caller's array
+    /// entries in the order given — the same sequence through the CLI `--ops` flat array must
+    /// land byte-identical output (Phase 6 D-01 within-kind semantics).
+    #[test]
+    fn mcp_typed_within_kind_ordering_matches_the_cli_ops_channel() {
+        let source = temp_file("typed-ordering-source.hwpx");
+        let mcp_out = temp_file("typed-ordering-mcp.hwpx");
+        let cli_out = temp_file("typed-ordering-cli.hwpx");
+        create_hwpx(&source, "사과\n");
+
+        // The second replace only matches because the first one ran: 순서가 뒤집히면 "배상"이
+        // 아니라 "배"가 된다.
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "replace": [
+                    {"from": "사과", "to": "배"},
+                    {"from": "배", "to": "배상"}
+                ]
+            }),
+            &ctx(),
+        )
+        .expect("MCP ordered replace 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"replace","from":"사과","to":"배"},{"op":"replace","from":"배","to":"배상"}]"#,
+            &cli_out,
+            "typed-ordering",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 순차 replace 출력 바이트가 다르다"
+        );
+        assert!(
+            load_document(&mcp_out)
+                .unwrap()
+                .plain_text()
+                .contains("배상"),
+            "두 번째 replace가 첫 번째의 결과 위에서 실행되어야 한다"
+        );
+
+        for path in [&source, &mcp_out, &cli_out] {
             let _ = std::fs::remove_file(path);
         }
     }

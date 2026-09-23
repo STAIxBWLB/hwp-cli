@@ -334,13 +334,13 @@ pub struct EditPlan {
     /// EDT-06 (D-14): when set, the write-dispatch step swaps `write_validated`/
     /// `write_with_private_input_snapshot(..., Publish)` for `validate_without_publish`/
     /// `..., ValidateOnly`. Every other step (preflight, the apply loop, report construction)
-    /// runs identically, which is what makes the dry-run report truthful. `false` for MCP
-    /// (`from_typed`) and every caller that never asked for it — D-16 keeps this off the MCP
-    /// surface this phase.
+    /// runs identically, which is what makes the dry-run report truthful. `false` for every
+    /// caller that never asked for it.
     dry_run: bool,
     /// EDT-06 (D-15): when set, `run()` writes the `edit-report-v1` JSON here — including on
     /// an aborted run (see [`EditAbort`]), so a caller can diagnose why nothing applied instead
-    /// of receiving only an error string. `None` for MCP (`from_typed`).
+    /// of receiving only an error string. The MCP `tool_edit` boundary (D-12) writes the same
+    /// artifact through [`emit_edit_report`].
     report: Option<std::path::PathBuf>,
 }
 
@@ -485,10 +485,12 @@ impl EditReportV1<'_> {
 /// (unapplied requests without `--allow-partial`, or zero applicable edits) so `run()` can still
 /// write `--report`'s file — a caller diagnosing why nothing applied needs the `ops` array, not
 /// only an error string. `Display` reproduces exactly the message the old bare `anyhow::bail!`
-/// produced, so existing callers that match on the error text see no change.
+/// produced, so existing callers that match on the error text see no change. `pub(crate)` since
+/// D-12 (Task 2 decision, Option A, 2026-09-24): the MCP `tool_edit` error path downcasts to
+/// this and writes the same report artifact the CLI writes on an aborted batch.
 #[derive(Debug)]
-struct EditAbort {
-    report: EditReport,
+pub(crate) struct EditAbort {
+    pub(crate) report: EditReport,
     reason: String,
 }
 
@@ -679,20 +681,24 @@ impl EditPlan {
         ))
     }
 
-    /// Used by the MCP `tool_edit` boundary only — `dry_run`/`report` stay off that surface this
-    /// phase (D-16), so this constructor always builds a plan with neither set.
+    /// Used by the MCP `tool_edit` boundary only. Since D-12 (Phase 9) the MCP surface carries
+    /// `dry_run` and `report` with the same semantics as the CLI `--ops` channel, so both come
+    /// in as parameters threaded into the struct literal exactly the way [`Self::from_ops`]
+    /// threads them — one plan type, one execution path, no MCP-only fields.
     pub(crate) fn from_typed(
         operations: Vec<TypedEditOperation>,
         verify: bool,
         allow_partial: bool,
+        dry_run: bool,
+        report: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             operations: Vec::new(),
             typed_operations: operations,
             verify,
             allow_partial,
-            dry_run: false,
-            report: None,
+            dry_run,
+            report,
         }
     }
 
@@ -870,8 +876,10 @@ pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
 
 /// Writes `--report <path>`'s file (staged, per `write_loss_report`'s precedent — T-07-24), or
 /// prints the report to stdout when `--dry-run` was given without `--report`, mirroring
-/// `template.rs`'s `print_report || dry_run` idiom. A no-op when neither was requested.
-fn emit_edit_report(plan: &EditPlan, report: &EditReport) -> anyhow::Result<()> {
+/// `template.rs`'s `print_report || dry_run` idiom. A no-op when neither was requested. The MCP
+/// `tool_edit` boundary (D-12) calls this only when its `report` argument was given, so the
+/// stdout branch never fires there — stdout is the MCP protocol channel.
+pub(crate) fn emit_edit_report(plan: &EditPlan, report: &EditReport) -> anyhow::Result<()> {
     let report_v1 = EditReportV1::from_report(report);
     if let Some(path) = &plan.report {
         let bytes = serde_json::to_vec_pretty(&report_v1)?;
