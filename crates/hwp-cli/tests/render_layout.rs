@@ -28,6 +28,29 @@ fn schema_text() -> &'static str {
     include_str!("../../../schemas/render-layout-v1.schema.json")
 }
 
+/// D-08's sibling-parity pin for the render layout contract: the render-layout-v1 schema is
+/// pinned by content hash, matching the pins edit-ops-v1 and edit-report-v1 already carry in
+/// edit_ops.rs. Any schema edit — even a description tweak — must consciously update this
+/// constant, because hwp-editor parses this contract from a separate repository and silent
+/// drift is an API break.
+#[test]
+fn schema_hash_frozen() {
+    use sha2::{Digest, Sha256};
+
+    let digest: [u8; 32] = Sha256::digest(include_bytes!(
+        "../../../schemas/render-layout-v1.schema.json"
+    ))
+    .into();
+    let actual = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        actual, "f10bf56cbcf9bfb0a67f2baeba30944423921119c17427e7308934bab8a22802",
+        "render-layout-v1.schema.json changed — update the pinned contract hash consciously"
+    );
+}
+
 fn sample() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx")
 }
