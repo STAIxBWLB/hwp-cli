@@ -4834,6 +4834,107 @@ mod tests {
         }
     }
 
+    /// D-12: `indent_para`/`outdent_para` over MCP reach the same engine the CLI `--ops`
+    /// channel drives — byte-identical output on the success path, and the head-level
+    /// boundary failures (1 and 7) surface as MCP errors with no output written.
+    #[test]
+    fn mcp_typed_indent_outdent_matches_the_cli_ops_channel() {
+        // Same fixture shape as the ops-channel indent tests: paragraph 1 is a level-1
+        // numbered item; paragraph 5 is a plain non-list paragraph.
+        const LIST_MD: &str =
+            "# T\n\n1. 첫 항목\n\n2. 같은 항목\n\n3. 중간 항목\n\n4. 같은 항목\n\n일반 문단\n";
+        let source = temp_file("typed-indent-outdent-source.hwpx");
+        let mcp_out = temp_file("typed-indent-outdent-mcp.hwpx");
+        let cli_out = temp_file("typed-indent-outdent-cli.hwpx");
+        create_hwpx(&source, LIST_MD);
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "indent_para": [{"address": {"at": {"section": 0, "paragraph": 1}}}]
+            }),
+            &ctx(),
+        )
+        .expect("MCP indent_para 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"indent_para","address":{"at":{"section":0,"paragraph":1}}}]"#,
+            &cli_out,
+            "typed-indent-outdent",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 indent_para 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let para_shape = &doc.header.para_shapes
+            [doc.sections[0].paragraphs[1].para_shape.0 as usize];
+        assert_eq!(para_shape.head_level(), 2, "level 1 → 2");
+
+        // outdent at head level 1: loud error, no output document.
+        let outdent_out = temp_file("typed-outdent-boundary.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": outdent_out,
+                "outdent_para": [{"address": {"at": {"section": 0, "paragraph": 1}}}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            !outdent_out.exists(),
+            "level 1 outdent은 출력을 쓰면 안 된다: {error}"
+        );
+
+        // indent at head level 7: the seventh indent of one item must fail the whole call.
+        let seven: Vec<serde_json::Value> = (0..7)
+            .map(|_| json!({"address": {"at": {"section": 0, "paragraph": 1}}}))
+            .collect();
+        let indent_out = temp_file("typed-indent-boundary.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": indent_out,
+                "indent_para": seven
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            !indent_out.exists(),
+            "level 7 indent는 출력을 쓰면 안 된다: {error}"
+        );
+
+        // indent on a non-list paragraph is a loud error, not a silent no-op.
+        let non_list_out = temp_file("typed-indent-non-list.hwpx");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": non_list_out,
+                "indent_para": [{"address": {"at": {"section": 0, "paragraph": 5}}}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(!non_list_out.exists(), "비목록 indent는 출력을 쓰면 안 된다");
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &outdent_out,
+            &indent_out,
+            &non_list_out,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     #[test]
     fn mcp_typed_delete_image_round_trip() {
         let source = temp_file("typed-delete-image-source.hwpx");
