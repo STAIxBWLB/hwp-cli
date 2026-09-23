@@ -46,6 +46,7 @@ Show file information: format, version, properties and stream list
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
+| `--body-stats` |  |  | Also parse the body and report table placement counts (tables/inline/floating). Off by default: plain info works on files whose body no longer parses |
 
 ## `hwp cat`
 
@@ -174,6 +175,7 @@ Create a new document
 | `--notice-head` | `<NOTICE_HEAD>` |  | Notice (공고문) header block "key=value" (keys: 기관명\|공고번호; repeatable) |
 | `--notice-foot` | `<NOTICE_FOOT>` |  | Notice (공고문) footer block "key=value" (keys: 공고일자\|발신명의; repeatable) |
 | `--press-head` | `<PRESS_HEAD>` |  | Press release (보도자료) header block "key=value" (keys: 기관명\|보도시점\|배포일\| 담당부서\|담당자\|연락처; repeatable) |
+| `--table-placement` | `inline` \| `floating` |  | Table placement: inline keeps "treat as character" (글자처럼 취급), floating anchors each table to its paragraph so a long table can split across pages. Applies to every table the input produces; pictures are unaffected. Omit to keep the historical default (no explicit placement) |
 
 ## `hwp compose`
 
@@ -281,6 +283,8 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with hwp fields) |
 | `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks) |
 | `--style-tables` | `<STYLE_TABLES>` |  | Style every eligible table (header shade/bold/center, content-proportional widths) under an official-document preset: official, report, plan, notice, minutes, or press. Skips single-column tables (frame blocks); byte-stable when applied twice |
+| `--table-placement` | `inline` \| `floating` |  | Set table placement: inline restores "treat as character" (글자처럼 취급), floating anchors the table to its paragraph so it can split across pages. Applies to every table, or to one table with --table. Byte-stable when applied twice |
+| `--table` | `<TABLE>` |  | Restrict --table-placement to this zero-based recursive table index (same addressing as --label-table) |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
 | `--report` | `<FILE>` |  | Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched, and the segment ids it changed as before/after pairs. Unlike "hwp compose --report" (a bare flag printing to stdout), this one takes a file path, matching --loss-report's shape |

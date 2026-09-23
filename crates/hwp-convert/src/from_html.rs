@@ -46,6 +46,9 @@ pub struct HtmlImportOptions<'a> {
     /// md-mixed path, fnref markers inside fragments are reattached to these as real
     /// footnote anchors (#47). None (standalone HTML) keeps the plain-text marker behavior.
     pub(crate) note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
+    /// Table placement switch (#296), threaded through from MarkdownImportOptions on the
+    /// md-mixed path. None keeps the historical default (placement=None).
+    pub(crate) table_placement: Option<crate::from_markdown::TablePlacement>,
 }
 
 /// Fragment parse failure. `Sandbox` (image reference outside the MCP `--root` sandbox, #56)
@@ -168,6 +171,7 @@ pub(crate) fn parse_fragment(
         sandbox_error: None,
         list_error: None,
         note_bodies: opts.note_bodies,
+        table_placement: opts.table_placement,
         warnings: Vec::new(),
         in_cell_depth: 0,
         cs_rules: HashMap::new(),
@@ -268,6 +272,8 @@ struct Parser<'a> {
     list_error: Option<String>,
     /// GFM footnote definition bodies for fnref marker reattachment (None on the standalone path).
     note_bodies: Option<&'a HashMap<String, Vec<Paragraph>>>,
+    /// Table placement switch (#296) — applied to every table this parse emits.
+    table_placement: Option<crate::from_markdown::TablePlacement>,
     warnings: Vec<String>,
     in_cell_depth: u32,
     // contract v2 style round-trip — <style> rule storage and restoration caches.
@@ -793,6 +799,17 @@ impl Parser<'_> {
             caption: None,
             cells,
             extras: Vec::new(),
+        };
+        // #296: explicit placement fills `placement`; the writer's `synthesized` check then
+        // no longer applies, so the synthesized attr defaults (pageBreak=CELL,
+        // repeatHeader=1 → attr 0b110) are set explicitly (same as from_markdown).
+        let table = match self.table_placement {
+            Some(tp) => Table {
+                placement: Some(tp.gso_placement()),
+                attr: 0b110,
+                ..table
+            },
+            None => table,
         };
         // Final gate — the 5-rule invariant measured from genuine files (area tiling, row-major,
         // row_cell_counts, etc.).

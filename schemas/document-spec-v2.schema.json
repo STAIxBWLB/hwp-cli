@@ -12,6 +12,13 @@
       "type": "array",
       "maxItems": 1000,
       "items": { "$ref": "#/$defs/visual" }
+    },
+    "tables": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "placement": { "type": "string", "enum": ["inline", "floating"] }
+      }
     }
   },
   "$defs": {

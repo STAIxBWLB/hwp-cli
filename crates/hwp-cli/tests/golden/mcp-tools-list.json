@@ -1142,6 +1142,14 @@
           },
           "type": "array"
         },
+        "table_placement": {
+          "description": "표 배치(#296): inline=글자처럼 취급(기본), floating=문단 고정으로 긴 표가 페이지를 넘어 나뉨. 입력이 만드는 모든 표에 적용, 그림은 영향 없음",
+          "enum": [
+            "inline",
+            "floating"
+          ],
+          "type": "string"
+        },
         "template": {
           "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능",
           "type": "string"

@@ -11,6 +11,8 @@ pub struct NewOptions {
     /// Document frames (`--doc-head`/`--doc-foot`/...), parsed via [`Self::with_frames`]
     /// (GONG-03, D-01).
     pub frames: hwp_convert::FrameFields,
+    /// Table placement switch (#296, `--table-placement`). None keeps the historical default.
+    pub table_placement: Option<hwp_convert::TablePlacement>,
 }
 
 impl NewOptions {
@@ -53,6 +55,7 @@ impl NewOptions {
             margins,
             strict,
             frames: hwp_convert::FrameFields::default(),
+            table_placement: None,
         })
     }
 
@@ -271,6 +274,7 @@ pub fn execute(
                     preset,
                     page_margins: options.margins,
                     frames: Some(&options.frames),
+                    table_placement: options.table_placement,
                 },
             )
             .map_err(|e| anyhow::anyhow!("markdown 가져오기 실패: {e}"))?;
@@ -285,6 +289,7 @@ pub fn execute(
                 preset,
                 page_margins: options.margins,
                 frames: Some(&options.frames),
+                table_placement: options.table_placement,
             },
         ),
     };

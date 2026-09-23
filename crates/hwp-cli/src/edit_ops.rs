@@ -509,6 +509,12 @@ pub(crate) enum OpsEntry {
     StyleTables {
         preset: String,
     },
+    /// #296 표 배치 전환. `placement`는 "inline"|"floating", `table`은 0-기반 재귀 표
+    /// 인덱스(생략 시 모든 표).
+    SetTablePlacement {
+        placement: String,
+        table: Option<usize>,
+    },
 }
 
 impl OpsEntry {
@@ -896,6 +902,18 @@ impl OpsEntry {
             OpsEntry::StyleTables { preset } => Ok(TypedEditOperation::StyleTables {
                 preset: hwp_convert::OfficialPreset::parse(&preset)?,
             }),
+            OpsEntry::SetTablePlacement { placement, table } => {
+                let placement = match placement.as_str() {
+                    "inline" => hwp_convert::TablePlacement::Inline,
+                    "floating" => hwp_convert::TablePlacement::Floating,
+                    other => {
+                        return Err(format!(
+                            "set_table_placement의 placement는 inline|floating 중 하나여야 합니다: {other}"
+                        ));
+                    }
+                };
+                Ok(TypedEditOperation::SetTablePlacement { placement, table })
+            }
         }
     }
 }

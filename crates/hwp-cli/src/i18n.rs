@@ -116,6 +116,11 @@ pub const KO: &[(&str, &str, &str)] = &[
     ("info", "", "파일 정보 표시: 포맷/버전/속성/스트림 목록"),
     ("info", "file", "대상 HWP/HWPX 파일"),
     ("info", "json", "JSON으로 출력"),
+    (
+        "info",
+        "body_stats",
+        "본문을 파싱해 표 배치 수(전체/인라인/부유)도 출력. 기본은 컨테이너만 읽음(본문이 깨진 파일도 진단 가능)",
+    ),
     // cat
     ("cat", "", "텍스트 추출"),
     ("cat", "file", "대상 HWP/HWPX 파일"),
@@ -366,6 +371,11 @@ pub const KO: &[(&str, &str, &str)] = &[
         "new",
         "press_head",
         "보도자료 머리 블록 \"키=값\" (키: 기관명|보도시점|배포일|담당부서|담당자|연락처, 반복 가능)",
+    ),
+    (
+        "new",
+        "table_placement",
+        "표 배치: inline은 글자처럼 취급(기존 동작), floating은 문단에 고정해 긴 표가 페이지를 넘어 나뉠 수 있게 함. 입력이 만드는 모든 표에 적용, 그림은 영향 없음. 생략 시 기존 기본(명시적 배치 없음)",
     ),
     // compose
     (
@@ -654,6 +664,16 @@ pub const KO: &[(&str, &str, &str)] = &[
         "edit",
         "style_tables",
         "공문서 프리셋으로 모든 적용 대상 표 스타일링(헤더 셰이딩·굵게·가운데 정렬, 내용비례 폭) — official|report|plan|notice|minutes|press. 1열 표(테두리 블록)는 건너뜀. 두 번 적용해도 바이트 동일",
+    ),
+    (
+        "edit",
+        "table_placement",
+        "표 배치 설정: inline은 글자처럼 취급 복원, floating은 문단 고정으로 긴 표가 페이지를 넘어 나뉠 수 있게 함. 모든 표 또는 --table로 한 표만. 두 번 적용해도 바이트 동일",
+    ),
+    (
+        "edit",
+        "table",
+        "--table-placement를 이 0-기반 재귀 표 인덱스 하나로 제한 (--label-table과 같은 주소 체계)",
     ),
     ("edit", "verify", "쓰기 후 재읽기로 검증"),
     (

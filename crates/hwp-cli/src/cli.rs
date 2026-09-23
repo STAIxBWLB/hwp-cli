@@ -73,6 +73,10 @@ pub enum Cmd {
         /// Print as JSON
         #[arg(long)]
         json: bool,
+        /// Also parse the body and report table placement counts (tables/inline/floating).
+        /// Off by default: plain info works on files whose body no longer parses
+        #[arg(long = "body-stats")]
+        body_stats: bool,
     },
 
     /// Extract text
@@ -311,6 +315,12 @@ pub enum Cmd {
         /// 담당부서|담당자|연락처; repeatable)
         #[arg(long = "press-head")]
         press_head: Vec<String>,
+        /// Table placement: inline keeps "treat as character" (글자처럼 취급), floating anchors
+        /// each table to its paragraph so a long table can split across pages. Applies to every
+        /// table the input produces; pictures are unaffected. Omit to keep the historical
+        /// default (no explicit placement)
+        #[arg(long = "table-placement")]
+        table_placement: Option<TablePlacementArg>,
     },
 
     /// Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)
@@ -603,7 +613,7 @@ pub struct EditArgs {
             "insert_para_before", "delete_para", "add_row", "add_col", "delete_row",
             "delete_col", "merge_cells", "split_cell", "add_table", "clone_table",
             "set_para", "set_cell_para", "set_page", "delete_image", "delete_table",
-            "delete_field", "delete_bookmark", "style_tables",
+            "delete_field", "delete_bookmark", "style_tables", "table_placement", "table",
         ]
     )]
     pub ops: Option<PathBuf>,
@@ -705,6 +715,15 @@ pub struct EditArgs {
     /// single-column tables (frame blocks); byte-stable when applied twice
     #[arg(long = "style-tables", value_parser = parse_preset_arg)]
     pub style_tables: Option<PresetArg>,
+    /// Set table placement: inline restores "treat as character" (글자처럼 취급), floating anchors
+    /// the table to its paragraph so it can split across pages. Applies to every table, or to
+    /// one table with --table. Byte-stable when applied twice
+    #[arg(long = "table-placement")]
+    pub table_placement: Option<TablePlacementArg>,
+    /// Restrict --table-placement to this zero-based recursive table index (same addressing as
+    /// --label-table)
+    #[arg(long = "table", requires = "table_placement")]
+    pub table: Option<usize>,
     /// Verify by re-reading after writing
     #[arg(long)]
     pub verify: bool,
@@ -785,6 +804,26 @@ pub enum ConvertFormat {
     Txt,
     Csv,
     Docx,
+}
+
+/// Table object placement for `--table-placement` (#296). `inline` keeps the historical
+/// "글자처럼 취급" behaviour; `floating` anchors the table to its paragraph so it can
+/// split across pages.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TablePlacementArg {
+    // No doc comments: clap renders value_enum variants by name only and the KO overlay is
+    // keyed by (command, argument), so a variant doc comment would leak English into KO help.
+    Inline,
+    Floating,
+}
+
+impl TablePlacementArg {
+    pub const fn canonical(self) -> hwp_convert::TablePlacement {
+        match self {
+            Self::Inline => hwp_convert::TablePlacement::Inline,
+            Self::Floating => hwp_convert::TablePlacement::Floating,
+        }
+    }
 }
 
 /// Canonical official-document profile parsed by the converter's shared alias registry.
