@@ -9,6 +9,8 @@
 
 use hwp_model::{CharShapeId, Control, Document, HwpChar, Paragraph};
 
+use crate::segment_id::SegmentPath;
+
 /// A writable form-cell coordinate discovered without changing the document.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct FormCellCandidate {
@@ -233,6 +235,27 @@ fn replace_in_chars(para: &mut Paragraph, from: &str, to: &str, budget: &mut usi
         count += 1;
         *budget -= 1;
         start = char_idx + to_chars;
+    }
+    count
+}
+
+/// Address-driven entry point for a text-replace edit (EDT-05, 07-02): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`] and applies the same per-paragraph rewrite
+/// [`replace_in_chars`] performs, scoped to that one paragraph — no recursion into child table
+/// cells / generic controls (an address names exactly one paragraph, unlike [`replace_in_para`]'s
+/// document-wide walk). Returns the number of replacements made in that paragraph: 0 when `from`
+/// is empty, the address does not resolve, or no match was found.
+pub fn replace_text_at(doc: &mut Document, path: &SegmentPath, from: &str, to: &str) -> usize {
+    if from.is_empty() {
+        return 0;
+    }
+    let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
+        return 0;
+    };
+    let mut budget = usize::MAX;
+    let count = replace_in_chars(para, from, to, &mut budget);
+    if count > 0 {
+        crate::address::invalidate_ancestors(doc, path);
     }
     count
 }
@@ -2273,6 +2296,36 @@ fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `replace_text_at` rewrites matches inside the resolved paragraph only; an identical
+    /// string in a sibling paragraph is untouched, and the returned count reflects only the
+    /// addressed paragraph (07-02 Task 1).
+    #[test]
+    fn replace_text_at_주소_문단만_변경() {
+        let mut doc = crate::from_markdown::from_markdown("같은 문단\n\n같은 문단\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        let n = replace_text_at(&mut doc, &path, "같은", "다른");
+        assert_eq!(n, 1);
+        assert_eq!(doc.sections[0].paragraphs[0].plain_text(), "같은 문단");
+        assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "다른 문단");
+    }
+
+    /// An address that does not resolve to a paragraph returns 0 and mutates nothing.
+    #[test]
+    fn replace_text_at_없는_주소는_0() {
+        let mut doc = crate::from_markdown::from_markdown("문단\n");
+        let before = doc.clone();
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![99],
+        };
+        let n = replace_text_at(&mut doc, &path, "문단", "다른");
+        assert_eq!(n, 0);
+        assert_eq!(doc, before);
+    }
 
     #[test]
     fn add_table_앵커_뒤_삽입() {

@@ -1,0 +1,20 @@
+[
+  {
+    "op": "replace",
+    "from": "a=>b",
+    "to": "c=d:e"
+  },
+  {
+    "op": "set_cell",
+    "table": 0,
+    "row": 1,
+    "col": 0,
+    "text": "111"
+  },
+  {
+    "op": "insert_para",
+    "anchor": "generated edit ops tracer fixture",
+    "text": "inserted before the anchor: tracer",
+    "before": true
+  }
+]

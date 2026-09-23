@@ -20,6 +20,9 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+# edit-ops-v1 스키마 검증기(D-10): `hwp edit --ops` 파일 경계가 런타임에 스키마를
+# 검사하는 데 사용. dev 전용이었다가 런타임으로 승격 — 트리에 새 의존성은 없다.
+jsonschema = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 getrandom = { workspace = true }
@@ -47,7 +50,6 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 zip = { workspace = true }
-jsonschema = { workspace = true }
 # 보호 비트 픽스처 합성 전용 (테스트에서 FileHeader 속성 DWORD를 패치). 이미
 # 워크스페이스 의존성이자 hwp5의 직접 의존성이라 트리에 새 코드가 추가되지 않고,
 # dev 전용이라 출시 바이너리에는 들어가지 않는다.

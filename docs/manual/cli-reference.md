@@ -248,6 +248,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 |---|---|---|---|
 | `<INPUT>` |  |  | Input HWP/HWPX file |
 | `-o, --output` | `<OUTPUT>` |  | Output file path |
+| `--ops` | `<FILE>` |  | Apply typed edit operations from a JSON file holding an edit-ops-v1 array ("-" reads stdin). The file's string payloads are taken as data, so "=>", "=", ":" and "@" inside them are kept verbatim instead of being parsed as CLI separators. Mutually exclusive with the individual edit flags |
 | `--replace` | `<REPLACE>` |  | Replace text, "find=>replace" (repeatable; replaces every match) |
 | `--set-cell` | `<SET_CELL>` |  | Set a table cell, "table:row:col=value" (repeatable; 0-based indices) |
 | `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | Fill the value cell immediately right of a form label, "label=value" (repeatable) |
@@ -259,7 +260,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--create-hyperlink` | `<CREATE_HYPERLINK>` |  | Create a hyperlink, "anchor=>URL" or "anchor=>text=>URL": insert %hlk after the anchor (repeatable) |
 | `--insert-image` | `<INSERT_IMAGE>` |  | Insert an image, "anchor=>path" or "anchor=>path@WxH" (mm): insert a picture after the anchor (repeatable) |
 | `--seal` | `<SEAL>` |  | Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text; use an image with a transparent background, since the seal floats in front of the text and an opaque background hides whatever is under it (repeatable) |
-| `--set-format` | `<SET_FORMAT>` |  | Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000") (repeatable) |
+| `--set-format` | `<SET_FORMAT>` |  | Character formatting, "find:property=value,..." (properties: bold\|italic\|underline\|strike\|size\|color\|font; for example "Title:bold=on,size=16,color=#FF0000,font=Noto Sans") (repeatable) |
 | `--set-align` | `<SET_ALIGN>` |  | Paragraph alignment, "find=alignment" (left/right/center/justify/distribute) (repeatable) |
 | `--insert-para` | `<INSERT_PARA>` |  | Insert a paragraph, "anchor=>text": after the paragraph containing the anchor; the anchor is also searched inside table cells, nested tables and captions (repeatable) |
 | `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | Insert a paragraph before, "anchor=>text": before the paragraph containing the anchor; the anchor is also searched inside table cells, nested tables and captions (repeatable) |
@@ -282,6 +283,8 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--style-tables` | `<STYLE_TABLES>` |  | Style every eligible table (header shade/bold/center, content-proportional widths) under an official-document preset: official, report, plan, notice, minutes, or press. Skips single-column tables (frame blocks); byte-stable when applied twice |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
+| `--report` | `<FILE>` |  | Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched, and the segment ids it changed as before/after pairs. Unlike "hwp compose --report" (a bare flag printing to stdout), this one takes a file path, matching --loss-report's shape |
+| `--dry-run` |  |  | Apply the whole batch in memory and run the real writer and verifier, but publish no output file; prints the edit-report-v1 report to stdout unless --report is also given |
 
 ## `hwp fields`
 

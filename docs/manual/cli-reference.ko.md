@@ -248,6 +248,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 |---|---|---|---|
 | `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
 | `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
+| `--ops` | `<FILE>` |  | 편집 연산 JSON 파일(edit-ops-v1 배열)로 일괄 적용 ("-"는 표준 입력; 개별 편집 플래그와 함께 쓸 수 없음) |
 | `--replace` | `<REPLACE>` |  | 텍스트 치환 "찾기=>바꾸기" (반복 가능, 모든 일치 치환) |
 | `--set-cell` | `<SET_CELL>` |  | 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스) |
 | `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | 양식 레이블의 값 셀 설정 "레이블=값" (반복 가능, 정확 일치) |
@@ -259,7 +260,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--create-hyperlink` | `<CREATE_HYPERLINK>` |  | 하이퍼링크 생성 "앵커=>URL" 또는 "앵커=>표시=>URL" — 앵커 뒤에 %hlk 삽입 (반복 가능) |
 | `--insert-image` | `<INSERT_IMAGE>` |  | 이미지 삽입 "앵커=>경로" 또는 "앵커=>경로@너비x높이"(mm) — 앵커 뒤에 그림 삽입 (반복 가능) |
 | `--seal` | `<SEAL>` |  | 도장 날인 "앵커=>경로" 또는 "앵커=>경로@크기mm" — 앵커 문구 위에 도장 부유 배치. 도장은 글 앞에 떠서 겹치므로 배경이 불투명하면 아래 내용을 가린다 — 배경이 투명한 이미지를 쓸 것 (반복 가능) |
-| `--set-format` | `<SET_FORMAT>` |  | 글자 서식 "찾기:속성=값,..." (예: "제목:bold=on,size=16,color=#FF0000") (반복 가능) |
+| `--set-format` | `<SET_FORMAT>` |  | 글자 서식 "찾기:속성=값,..." (속성: bold\|italic\|underline\|strike\|size\|color\|font; 예: "제목:bold=on,size=16,color=#FF0000,font=맑은 고딕") (반복 가능) |
 | `--set-align` | `<SET_ALIGN>` |  | 문단 정렬 "찾기=정렬" (left/right/center/justify/distribute) (반복 가능) |
 | `--insert-para` | `<INSERT_PARA>` |  | 문단 삽입 "앵커=>텍스트" — 앵커가 있는 문단 뒤에 새 문단. 앵커는 표 셀·중첩 표·캡션 안에서도 찾는다 (반복 가능) |
 | `--insert-para-before` | `<INSERT_PARA_BEFORE>` |  | 문단 삽입(앞) "앵커=>텍스트" — 앵커가 있는 문단 앞에 새 문단. 앵커는 표 셀·중첩 표·캡션 안에서도 찾는다 (반복 가능) |
@@ -282,6 +283,8 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--style-tables` | `<STYLE_TABLES>` |  | 공문서 프리셋으로 모든 적용 대상 표 스타일링(헤더 셰이딩·굵게·가운데 정렬, 내용비례 폭) — official\|report\|plan\|notice\|minutes\|press. 1열 표(테두리 블록)는 건너뜀. 두 번 적용해도 바이트 동일 |
 | `--verify` |  |  | 쓰기 후 재읽기로 검증 |
 | `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
+| `--report` | `<FILE>` |  | 각 연산의 상태·건드린 조각 수·변경된 segment id(전/후 쌍)를 담은 edit-report-v1 JSON 파일을 이 경로에 씀 — "hwp compose --report"(표준 출력으로만 찍는 플래그)와 달리 파일 경로를 받으며, --loss-report와 같은 모양 |
+| `--dry-run` |  |  | 배치 전체를 메모리에서 실제 writer·검증 경로로 적용하되 출력 파일은 게시하지 않음. --report가 없으면 edit-report-v1 보고서를 표준 출력에 찍음 |
 
 ## `hwp fields`
 

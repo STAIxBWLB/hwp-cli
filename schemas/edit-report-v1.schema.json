@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.dev/schemas/edit-report-v1.schema.json",
+  "title": "hwp-edit-report-v1",
+  "description": "Machine-readable account of what `hwp edit --report <path>` (and `--dry-run`) did: every op's status, how many IR pieces it touched, and the segment ids it changed as before/after pairs. Content-free — no paragraph text, no replacement strings and no user-supplied patterns (T-07-22).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract",
+    "output",
+    "dry_run",
+    "ops",
+    "applied_count",
+    "failed_count"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "contract": { "const": "hwp-edit-report-v1" },
+    "output": { "type": "string" },
+    "dry_run": {
+      "type": "boolean",
+      "description": "true when this report came from --dry-run: every op applied against an in-memory copy of the document through the same preflight, apply loop and staged writer/verifier a real run uses, but no output file was published (D-14). A dry-run report and a real-run report of the same batch differ only in this field."
+    },
+    "ops": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/opOutcome" }
+    },
+    "applied_count": { "type": "integer", "minimum": 0 },
+    "failed_count": { "type": "integer", "minimum": 0 }
+  },
+  "$defs": {
+    "opOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "op", "status", "pieces_touched", "changed", "reason"],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "This op's position in the --ops batch array (Phase 6 D-01 array order)."
+        },
+        "op": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The op kind, spelled the same way edit-ops-v1's own \"op\" field spells it (Phase 6 D-03)."
+        },
+        "status": { "enum": ["applied", "failed"] },
+        "pieces_touched": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many IR nodes this op actually mutated: the number of canonical runs whose shape id changed for a run-range char-format op, the number of segment ids (paragraph and/or run) an addressed op's own target touched otherwise, and never less than 1 for an applied op — an \"applied: 1\" summary must never hide a multi-piece write (D-02)."
+        },
+        "changed": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": { "$ref": "#/$defs/idPair" },
+          "description": "Before/after segment id pairs this op changed (D-13). Empty for an op with no address (a text-anchor/pattern match, which has no segment id to report) or one that changed nothing identifiable. A run-range char-format op that splits a run reports the touched paragraph's OWN id change AND the id change of every LATER run in that paragraph, not only the run it targeted — splitting a run shifts every later run's canonical index and therefore its id, even though that run's own text and shape are untouched; reporting only the targeted run's pair would leave a consumer re-keying against ids that no longer exist."
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "description": "Populated only when status is \"failed\"; null when applied."
+        }
+      }
+    },
+    "idPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before", "after"],
+      "properties": {
+        "before": {
+          "type": ["string", "null"],
+          "description": "The segment id before this op applied. null marks a creation — the segment did not exist before the batch."
+        },
+        "after": {
+          "type": ["string", "null"],
+          "description": "The segment id after this op applied. null marks a removal — the segment no longer exists after the batch."
+        }
+      }
+    }
+  }
+}

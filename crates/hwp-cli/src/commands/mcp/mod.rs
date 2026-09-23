@@ -15,6 +15,8 @@ pub use http::serve;
 pub use stdio::run;
 
 use authority::{checked_read_path, checked_write_path, font_dirs_for};
+// edit-ops 변환 계층(edit_ops.rs)이 insert_image/seal 경로 검사를 이 모듈과 공유한다 (D-10).
+pub(crate) use authority::checked_cli_read_path;
 
 use std::path::{Path, PathBuf};
 
@@ -1340,6 +1342,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::Replace {
             from: required_item_str(item, "replace", "from")?.to_string(),
             to: required_item_str(item, "replace", "to")?.to_string(),
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "set_cell")? {
@@ -1441,6 +1445,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetFormat {
             pattern: required_item_str(item, "set_format", "pattern")?.to_string(),
             format,
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "set_align")? {
@@ -1452,6 +1458,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
                 "align",
             )?)
             .map_err(|error| error.to_string())?,
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "insert_para")? {
@@ -1459,11 +1467,17 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             anchor: required_item_str(item, "insert_para", "anchor")?.to_string(),
             text: required_item_str(item, "insert_para", "text")?.to_string(),
             before: optional_item_bool(item, "insert_para", "before")?.unwrap_or(false),
+            // MCP exposure of the address/style/char selectors is out of Phase 7 scope (D-16).
+            address: None,
+            style: None,
+            char: None,
         });
     }
     for item in arg_array(args, "delete_para")? {
         operations.push(Op::DeletePara {
             matching: required_item_str(item, "delete_para", "matching")?.to_string(),
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "add_row")? {
@@ -1562,6 +1576,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         operations.push(Op::SetPara {
             pattern: required_item_str(item, "set_para", "pattern")?.to_string(),
             props: para_props_item(item, "set_para")?,
+            // MCP exposure of the address selector is out of Phase 7 scope (D-16).
+            address: None,
         });
     }
     for item in arg_array(args, "set_cell_para")? {

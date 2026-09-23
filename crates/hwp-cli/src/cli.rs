@@ -589,6 +589,24 @@ pub struct EditArgs {
     /// Output file path
     #[arg(short, long)]
     pub output: PathBuf,
+    /// Apply typed edit operations from a JSON file holding an edit-ops-v1 array
+    /// ("-" reads stdin). The file's string payloads are taken as data, so "=>",
+    /// "=", ":" and "@" inside them are kept verbatim instead of being parsed as
+    /// CLI separators. Mutually exclusive with the individual edit flags
+    #[arg(
+        long = "ops",
+        value_name = "FILE",
+        conflicts_with_all = [
+            "replace", "set_cell", "set_cell_by_label", "label_table", "set_field",
+            "set_meta", "create_field", "create_bookmark", "create_hyperlink",
+            "insert_image", "seal", "set_format", "set_align", "insert_para",
+            "insert_para_before", "delete_para", "add_row", "add_col", "delete_row",
+            "delete_col", "merge_cells", "split_cell", "add_table", "clone_table",
+            "set_para", "set_cell_para", "set_page", "delete_image", "delete_table",
+            "delete_field", "delete_bookmark", "style_tables",
+        ]
+    )]
+    pub ops: Option<PathBuf>,
     /// Replace text, "find=>replace" (repeatable; replaces every match)
     #[arg(long)]
     pub replace: Vec<String>,
@@ -622,7 +640,7 @@ pub struct EditArgs {
     /// Stamp a seal, "anchor=>path" or "anchor=>path@size" (mm): float the seal over the anchor text; use an image with a transparent background, since the seal floats in front of the text and an opaque background hides whatever is under it (repeatable)
     #[arg(long = "seal")]
     pub seal: Vec<String>,
-    /// Character formatting, "find:property=value,..." (for example "Title:bold=on,size=16,color=#FF0000")
+    /// Character formatting, "find:property=value,..." (properties: bold|italic|underline|strike|size|color|font; for example "Title:bold=on,size=16,color=#FF0000,font=Noto Sans")
     #[arg(long = "set-format")]
     pub set_format: Vec<String>,
     /// Paragraph alignment, "find=alignment" (left/right/center/justify/distribute)
@@ -693,6 +711,15 @@ pub struct EditArgs {
     /// Publish the matched edits even if some requests found no target (default: fail if any is unapplied)
     #[arg(long = "allow-partial")]
     pub allow_partial: bool,
+    /// Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched,
+    /// and the segment ids it changed as before/after pairs. Unlike "hwp compose --report" (a
+    /// bare flag printing to stdout), this one takes a file path, matching --loss-report's shape
+    #[arg(long, value_name = "FILE")]
+    pub report: Option<PathBuf>,
+    /// Apply the whole batch in memory and run the real writer and verifier, but publish no
+    /// output file; prints the edit-report-v1 report to stdout unless --report is also given
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
 }
 
 /// `hwp skill` subcommand.

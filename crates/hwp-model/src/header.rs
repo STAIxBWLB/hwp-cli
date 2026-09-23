@@ -301,6 +301,19 @@ impl ParaShape {
             .clamp(1, 10)
     }
 
+    /// Sets `head_level` to `level` (1..=7 — the HWP5-representable range attr1's three level
+    /// bits cover; HWPX's separate 8..=10 `list_level` extension is untouched here, see
+    /// `head_level`'s own doc comment). Writes into attr1 bits 25..=27 with a three-bit mask,
+    /// touching no other bit, and keeps `list_level` consistent with what `head_level` reads
+    /// back by updating it too when it is already `Some` (it always wins over the attr1 bits).
+    pub fn set_head_level(&mut self, level: u8) {
+        let level = level.clamp(1, 7);
+        self.attr1 = (self.attr1 & !(0x7 << 25)) | (u32::from(level) << 25);
+        if self.list_level.is_some() {
+            self.list_level = Some(level);
+        }
+    }
+
     /// 한글 줄나눔 (bit7): true=KEEP_WORD(어절 단위), false=BREAK_WORD(글자 단위).
     pub fn break_non_latin_keep_word(&self) -> bool {
         (self.attr1 >> 7) & 1 != 0
@@ -629,5 +642,45 @@ mod char_effect_tests {
             11,
             "bits win over the field"
         );
+    }
+}
+
+#[cfg(test)]
+mod para_shape_tests {
+    use super::*;
+
+    /// `set_head_level` round-trips through `head_level` and touches only attr1 bits 25..=27
+    /// (07-04 Task 2, A3). A no-op stub fails this on both counts.
+    #[test]
+    fn set_head_level_왕복과_다른_비트_보존() {
+        let mut ps = ParaShape {
+            // Healthy body (0x180) + left align (bit2) + head_type=번호(2, bits 23~24).
+            attr1: 0x180 | (1 << 2) | (2 << 23),
+            ..ParaShape::default()
+        };
+        let before_non_level_bits = ps.attr1 & !(0x7 << 25);
+        ps.set_head_level(5);
+        assert_eq!(ps.head_level(), 5, "설정한 수준을 그대로 읽어야 함");
+        assert_eq!(
+            ps.attr1 & !(0x7 << 25),
+            before_non_level_bits,
+            "수준 비트(25..=27) 외의 다른 attr1 비트는 바뀌면 안 됨"
+        );
+        // list_level이 None이면 손대지 않는다(HWP5 네이티브 문서의 통상 상태).
+        assert_eq!(ps.list_level, None);
+    }
+
+    /// `list_level`이 이미 `Some`인 경우(HWPX 8..=10 확장이 관여했던 문서) `set_head_level`이
+    /// 함께 갱신해 `head_level`이 읽어오는 값과 계속 일치해야 한다.
+    #[test]
+    fn set_head_level_list_level이_있으면_함께_갱신() {
+        let mut ps = ParaShape {
+            attr1: 0x180 | (1 << 2) | (2 << 23) | (3 << 25),
+            list_level: Some(3),
+            ..ParaShape::default()
+        };
+        ps.set_head_level(4);
+        assert_eq!(ps.head_level(), 4);
+        assert_eq!(ps.list_level, Some(4), "list_level도 함께 갱신되어야 함");
     }
 }

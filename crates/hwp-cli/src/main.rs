@@ -8,6 +8,7 @@
 #![recursion_limit = "256"]
 
 mod commands;
+mod edit_ops;
 mod format;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -289,8 +290,13 @@ fn real_main() -> anyhow::Result<()> {
             report,
         ),
         Cmd::Edit(args) => {
-            let (input, output, plan) = commands::edit::EditPlan::from_args(args);
-            commands::edit::run(&input, &output, &plan)
+            if args.ops.is_some() {
+                let (input, output, plan) = commands::edit::EditPlan::from_ops(args)?;
+                commands::edit::run(&input, &output, &plan)
+            } else {
+                let (input, output, plan) = commands::edit::EditPlan::from_args(args);
+                commands::edit::run(&input, &output, &plan)
+            }
         }
         Cmd::Fields { file, json } => commands::fields::run(&file, json),
         Cmd::Bookmarks { file, json } => commands::bookmarks::run(&file, json),

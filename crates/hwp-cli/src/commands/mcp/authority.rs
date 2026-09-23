@@ -318,6 +318,22 @@ pub(super) fn checked_write_path(ctx: &dyn FileAuthority, raw: &str) -> Result<P
     Ok(sandbox_compatible_mcp_write_path(&authorized))
 }
 
+/// CLI 편집 연산(ops) 경계의 읽기 경로 검사 (D-10): `..` 구성요소를 거부하고 존재
+/// 확인(canonicalize)을 한다. MCP `--root` 인가 개념이 없는 CLI 계층용 — 루트 포함
+/// 검사는 없으며 권한은 파일 시스템에 그대로 위임한다.
+pub(crate) fn checked_cli_read_path(raw: &str) -> Result<PathBuf, String> {
+    let path = Path::new(raw);
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!("'..'를 포함한 입력 경로는 거부합니다: {raw}"));
+    }
+    let canonical = canonicalize_mcp_path(path)
+        .map_err(|error| format!("경로를 확인할 수 없습니다: {raw} ({error})"))?;
+    Ok(sandbox_compatible_mcp_path(&canonical))
+}
+
 pub(super) fn font_dirs_for(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<PathBuf>, String> {
     let mut dirs = ctx.font_dirs().to_vec();
     if let Some(d) = arg_str_opt(args, "font_dir")? {

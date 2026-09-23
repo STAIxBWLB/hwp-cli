@@ -5,9 +5,13 @@
 //! shape를 append하는 건 안전하다 — writer가 ID_MAPPINGS 카운트를 `.len()`에서
 //! 자동 유도한다. 편집한 문단의 줄 배치는 비워(낡음) writer가 재합성하게 한다.
 
-use hwp_model::{CharShape, CharShapeId, Control, Document, ParaShape, ParaShapeId, Paragraph};
+use hwp_model::{
+    CharShape, CharShapeId, Control, Document, FaceName, LANG_COUNT, ParaShape, ParaShapeId,
+    Paragraph,
+};
 
 use crate::edit::{find_match, utf16_len};
+use crate::segment_id::SegmentPath;
 
 /// 글자 모양 변경 요청. None인 항목은 기존 값 유지.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -20,6 +24,9 @@ pub struct CharFormat {
     pub size_pt: Option<f32>,
     /// 글자색 COLORREF(0x00BBGGRR).
     pub color: Option<u32>,
+    /// 글꼴 이름(A2) — 하나의 이름을 7개 언어 슬롯 전부에 균일하게 쓴다
+    /// (`find_or_insert_face`를 통해 `header.fonts`에서 찾거나 추가).
+    pub font: Option<String>,
 }
 
 impl CharFormat {
@@ -30,6 +37,7 @@ impl CharFormat {
             && self.strike.is_none()
             && self.size_pt.is_none()
             && self.color.is_none()
+            && self.font.is_none()
     }
 }
 
@@ -42,11 +50,17 @@ pub fn set_char_format(doc: &mut Document, pattern: &str, fmt: &CharFormat) -> u
     let Document {
         header, sections, ..
     } = doc;
+    // Resolved ONCE per call, not per matched run — find_or_insert_face is idempotent on a
+    // repeat name, so re-resolving per run would only waste cycles, never change the result.
+    let resolved_font = fmt
+        .font
+        .as_deref()
+        .map(|name| resolve_font_faces(&mut header.fonts, name));
     let shapes = &mut header.char_shapes;
     let mut n = 0;
     for section in sections.iter_mut() {
         for para in &mut section.paragraphs {
-            n += restyle_para(para, pattern, fmt, shapes);
+            n += restyle_para(para, pattern, fmt, resolved_font, shapes);
         }
     }
     n
@@ -56,6 +70,7 @@ fn restyle_para(
     para: &mut Paragraph,
     pattern: &str,
     fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
     shapes: &mut Vec<CharShape>,
 ) -> usize {
     let pat_w = utf16_len(pattern);
@@ -70,6 +85,7 @@ fn restyle_para(
             wpos + pat_w,
             shapes,
             fmt,
+            resolved_font,
             para_len,
         );
         para.line_segs.clear();
@@ -82,7 +98,7 @@ fn restyle_para(
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        n += restyle_para(p, pattern, fmt, shapes);
+                        n += restyle_para(p, pattern, fmt, resolved_font, shapes);
                     }
                 }
             }
@@ -90,7 +106,7 @@ fn restyle_para(
                 let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        n += restyle_para(p, pattern, fmt, shapes);
+                        n += restyle_para(p, pattern, fmt, resolved_font, shapes);
                     }
                 }
                 if n > before {
@@ -112,11 +128,24 @@ fn restyle_range(
     w_end: u32,
     shapes: &mut Vec<CharShape>,
     fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
     para_len: u32,
 ) {
     if w_end <= w_start {
         return;
     }
+    // Invariant: a caller must never push a starting boundary beyond the paragraph's own
+    // length. `restyle_range_at` re-checks this against the CURRENT paragraph before calling in
+    // (a batch's earlier op may have shortened the paragraph since the range was resolved — see
+    // its own doc comment); this is the release-build backstop for any future caller that
+    // bypasses it. Symmetric with the existing `w_end < para_len` end-boundary guard below.
+    if w_start >= para_len {
+        return;
+    }
+    debug_assert!(
+        w_start < para_len,
+        "restyle_range: w_start must be inside the paragraph"
+    );
     let start_id = id_at(runs, w_start);
     let end_id = id_at(runs, w_end);
     // 범위 경계 보강(없을 때만).
@@ -131,10 +160,188 @@ fn restyle_range(
     for (p, id) in runs.iter_mut() {
         if *p >= w_start && *p < w_end {
             let base = shapes.get(id.0 as usize).cloned().unwrap_or_default();
-            *id = find_or_insert(shapes, apply_format(base, fmt));
+            *id = find_or_insert(shapes, apply_format(base, fmt, resolved_font));
         }
     }
     normalize_runs(runs);
+}
+
+/// Address-driven entry point for a run-range char-format edit (EDT-05): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`], re-checks the requested `[w_start,
+/// w_end)` against that paragraph's CURRENT WCHAR length before mutating anything — a batch's
+/// earlier op may have shortened the paragraph since the resolver saw it (planner decision 5;
+/// `replace_in_chars` splices `para.chars` and calls `adjust_runs`, so the premise that a
+/// paragraph's length never changes this phase is false) — then calls the existing private
+/// [`restyle_range`] with the resolved pair (no pattern search) and performs the same
+/// invalidation tail [`restyle_para`] already does on a touched paragraph.
+///
+/// Checks both ends explicitly: `w_start >= current_len` OR `w_end > current_len` both fail. A
+/// stale `w_end` that still fits would otherwise silently over-apply the format past what the
+/// caller addressed, since `restyle_range`'s own selection loop is `*p >= w_start && *p < w_end`.
+pub fn restyle_range_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    w_start: u32,
+    w_end: u32,
+    fmt: &CharFormat,
+) -> Result<(), String> {
+    // Resolved ONCE, before char_shapes is taken out (a different DocHeader field — no borrow
+    // conflict), mirroring set_char_format's own resolve-once discipline.
+    let resolved_font = fmt
+        .font
+        .as_deref()
+        .map(|name| resolve_font_faces(&mut doc.header.fonts, name));
+    let mut shapes = std::mem::take(&mut doc.header.char_shapes);
+    let result = restyle_range_at_inner(doc, path, w_start, w_end, fmt, resolved_font, &mut shapes);
+    doc.header.char_shapes = shapes;
+    if result.is_ok() {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    result
+}
+
+fn restyle_range_at_inner(
+    doc: &mut Document,
+    path: &SegmentPath,
+    w_start: u32,
+    w_end: u32,
+    fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
+    shapes: &mut Vec<CharShape>,
+) -> Result<(), String> {
+    let para = crate::address::paragraph_at_mut(doc, path)
+        .ok_or_else(|| "restyle_range_at: 주소가 가리키는 문단을 찾을 수 없습니다".to_string())?;
+    let current_len = para.wchar_len();
+    if w_start >= current_len || w_end > current_len {
+        return Err(format!(
+            "restyle_range_at: 요청 범위 [{w_start}, {w_end})가 현재 문단 길이 {current_len}을 벗어났습니다"
+        ));
+    }
+    restyle_range(
+        &mut para.char_shape_runs,
+        w_start,
+        w_end,
+        shapes,
+        fmt,
+        resolved_font,
+        current_len,
+    );
+    para.line_segs.clear();
+    Ok(())
+}
+
+/// Address-driven entry point for a paragraph-style edit (EDT-05, 07-02): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`], converts `props` to IR units via
+/// [`to_ir_units`] (the same HWPUNIT scaling [`set_para_props`]'s pattern path applies), then
+/// calls the existing [`apply_para_props`] directly — no pattern search, no recursion into child
+/// controls (an address names exactly one paragraph). Returns `false` when the resolved path no
+/// longer names a paragraph or `props` is empty; this plan's ops never resize paragraph lists, so
+/// the former should not happen against a preflight-resolved target.
+pub fn apply_para_props_at(doc: &mut Document, path: &SegmentPath, props: &ParaProps) -> bool {
+    if props.is_empty() {
+        return false;
+    }
+    let props = to_ir_units(props);
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let applied = match crate::address::paragraph_at_mut(doc, path) {
+        Some(para) => {
+            apply_para_props(para, &props, &mut pshapes);
+            true
+        }
+        None => false,
+    };
+    doc.header.para_shapes = pshapes;
+    if applied {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    applied
+}
+
+/// Address-driven entry point for a paragraph-alignment edit (EDT-05, 07-02): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`] and applies the same attr1-bit mutation
+/// [`align_para`]'s pattern path performs, with no pattern search or recursion. Mirrors
+/// `align_para`'s 4-line mutation body directly rather than factoring it out, so the align-bit
+/// encoding stays in exactly one place per caller; a comment on both sides notes they must move
+/// together if that encoding ever changes.
+pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> bool {
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let applied = match crate::address::paragraph_at_mut(doc, path) {
+        Some(para) => {
+            // Mirrors align_para's 4-line mutation body (format.rs, `align_para`) — the two must
+            // move together if the align-bit encoding (attr1 bits 2..4) ever changes.
+            let mut ps = pshapes
+                .get(para.para_shape.0 as usize)
+                .cloned()
+                .unwrap_or_default();
+            ps.attr1 = (ps.attr1 & !(0x7 << 2)) | ((u32::from(align) & 0x7) << 2);
+            para.para_shape = find_or_insert_para(&mut pshapes, ps);
+            para.line_segs.clear();
+            true
+        }
+        None => false,
+    };
+    doc.header.para_shapes = pshapes;
+    if applied {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    applied
+}
+
+/// Address-driven entry point for list indent/outdent (EDT-05, 07-04): resolves the target
+/// paragraph via [`crate::address::paragraph_at_mut`] and moves its `head_level` by `delta`
+/// (+1 for `indent_para`, -1 for `outdent_para`) WITHIN the paragraph's existing numbering or
+/// bullet definition — never reading or writing the definition's `RawEntry` itself, which stays
+/// opaque. Refuses when the paragraph is not a list item (`head_type` neither numbered(2) nor
+/// bullet(3)) and when the resulting level would leave 1..=7 (A3: HWP5's attr1-bit range;
+/// 8..=10 is an HWPX-only `list_level` extension this op does not reach) — both boundaries fail
+/// loudly rather than clamp. Returns the new level on success.
+pub fn shift_head_level_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    delta: i8,
+) -> Result<u8, String> {
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let result = shift_head_level_at_inner(doc, path, delta, &mut pshapes);
+    doc.header.para_shapes = pshapes;
+    if result.is_ok() {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    result
+}
+
+fn shift_head_level_at_inner(
+    doc: &mut Document,
+    path: &SegmentPath,
+    delta: i8,
+    pshapes: &mut Vec<ParaShape>,
+) -> Result<u8, String> {
+    let para = crate::address::paragraph_at_mut(doc, path).ok_or_else(|| {
+        "shift_head_level_at: 주소가 가리키는 문단을 찾을 수 없습니다".to_string()
+    })?;
+    let ps = pshapes
+        .get(para.para_shape.0 as usize)
+        .cloned()
+        .unwrap_or_default();
+    let head_type = ps.head_type();
+    if head_type != 2 && head_type != 3 {
+        return Err(
+            "shift_head_level_at: 목록 항목(번호 매기기 또는 글머리표)이 아닌 문단입니다"
+                .to_string(),
+        );
+    }
+    let current = ps.head_level();
+    let new_level = i16::from(current) + i16::from(delta);
+    if !(1..=7).contains(&new_level) {
+        return Err(format!(
+            "shift_head_level_at: 목록 수준이 범위(1..=7)를 벗어났습니다: 현재={current}, 요청={new_level}"
+        ));
+    }
+    let new_level = new_level as u8;
+    let mut new_ps = ps;
+    new_ps.set_head_level(new_level);
+    para.para_shape = find_or_insert_para(pshapes, new_ps);
+    para.line_segs.clear();
+    Ok(new_level)
 }
 
 /// 위치 `pos`에서 활성인 char_shape id(= pos 이하 마지막 run).
@@ -166,7 +373,11 @@ fn normalize_runs(runs: &mut Vec<(u32, CharShapeId)>) {
 }
 
 /// base 모양에 요청 서식을 적용한 새 모양(요청 항목만 바꿈).
-fn apply_format(mut cs: CharShape, fmt: &CharFormat) -> CharShape {
+fn apply_format(
+    mut cs: CharShape,
+    fmt: &CharFormat,
+    resolved_font: Option<[u16; LANG_COUNT]>,
+) -> CharShape {
     if let Some(b) = fmt.bold {
         toggle(&mut cs.attr, 1 << 1, b);
     }
@@ -192,6 +403,9 @@ fn apply_format(mut cs: CharShape, fmt: &CharFormat) -> CharShape {
     if let Some(c) = fmt.color {
         cs.text_color = c;
     }
+    if let Some(ids) = resolved_font {
+        cs.face_ids = ids;
+    }
     cs
 }
 
@@ -209,6 +423,27 @@ pub(crate) fn find_or_insert(shapes: &mut Vec<CharShape>, cs: CharShape) -> Char
     }
     shapes.push(cs);
     CharShapeId((shapes.len() - 1) as u16)
+}
+
+/// `find_or_insert` one level up, against a single language slot of `header.fonts`: reuse an
+/// existing `FaceName` by exact name match, or append one with default metadata otherwise.
+fn find_or_insert_face(fonts: &mut Vec<FaceName>, name: &str) -> u16 {
+    if let Some(i) = fonts.iter().position(|f| f.name == name) {
+        return i as u16;
+    }
+    fonts.push(FaceName {
+        name: name.to_string(),
+        ..FaceName::default()
+    });
+    (fonts.len() - 1) as u16
+}
+
+/// One font name -> a face id per language slot (A2: uniform across all seven), each resolved
+/// through [`find_or_insert_face`] against that slot's own table. Called ONCE per addressed or
+/// pattern-form format op (not per matched run) so a batch never re-scans the font table more
+/// than once per distinct name.
+fn resolve_font_faces(fonts: &mut [Vec<FaceName>; LANG_COUNT], name: &str) -> [u16; LANG_COUNT] {
+    std::array::from_fn(|slot| find_or_insert_face(&mut fonts[slot], name))
 }
 
 /// `pattern`을 가진 문단의 정렬을 바꾼다(본문·표 셀·글상자 재귀).
@@ -619,7 +854,9 @@ mod tests {
                 strike: Some(true),
                 size_pt: Some(16.0),
                 color: Some(0x0000_00FF),
+                font: None,
             },
+            None,
         );
         assert!(cs.is_bold() && cs.is_italic() && cs.has_underline() && cs.has_strike());
         assert_eq!(cs.base_size, 1600);
@@ -631,6 +868,7 @@ mod tests {
                 bold: Some(false),
                 ..Default::default()
             },
+            None,
         );
         assert!(
             !off.is_bold() && off.is_italic(),
@@ -653,6 +891,48 @@ mod tests {
     }
 
     #[test]
+    fn find_or_insert_face_반복은_재사용() {
+        let mut fonts = vec![FaceName::default()];
+        let id1 = find_or_insert_face(&mut fonts, "맑은 고딕");
+        assert_eq!(fonts.len(), 2, "새 이름은 1개만 추가");
+        let id2 = find_or_insert_face(&mut fonts, "맑은 고딕");
+        assert_eq!(id1, id2, "같은 이름은 같은 id로 재사용");
+        assert_eq!(fonts.len(), 2, "반복 설정은 테이블을 키우지 않음");
+    }
+
+    /// `set_char_format`으로 글꼴을 설정하면 매칭된 run의 `CharShape.face_ids`가 7개 언어
+    /// 슬롯 전부에 같은 face id를 가리켜야 한다(A2).
+    #[test]
+    fn set_char_format_글꼴_7슬롯_균일_적용() {
+        let mut doc = from_markdown::from_markdown("글꼴 테스트 문단입니다.");
+        let n = set_char_format(
+            &mut doc,
+            "테스트",
+            &CharFormat {
+                font: Some("맑은 고딕".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(n, 1);
+        let para = &doc.sections[0].paragraphs[0];
+        let styled = para
+            .char_shape_runs
+            .iter()
+            .find_map(|(_, id)| {
+                let cs = &doc.header.char_shapes[id.0 as usize];
+                (cs.face_ids[0] != 0).then_some(cs)
+            })
+            .expect("글꼴이 적용된 run이 있어야 함");
+        for slot in 0..hwp_model::LANG_COUNT {
+            let face = &doc.header.fonts[slot][styled.face_ids[slot] as usize];
+            assert_eq!(
+                face.name, "맑은 고딕",
+                "슬롯 {slot}이 균일하게 설정되어야 함"
+            );
+        }
+    }
+
+    #[test]
     fn restyle_range_부분범위() {
         // runs=[(0,id0)], 범위 [3,6)에 굵게 적용 → [(0,0),(3,new),(6,0)].
         let mut shapes = vec![CharShape::default()];
@@ -666,6 +946,7 @@ mod tests {
                 bold: Some(true),
                 ..Default::default()
             },
+            None,
             12, // para_len
         );
         assert_eq!(runs.len(), 3, "경계 분할: {runs:?}");
@@ -675,6 +956,179 @@ mod tests {
         assert!(shapes[runs[1].1.0 as usize].is_bold());
         // 첫 run은 항상 pos 0.
         assert_eq!(runs[0].0, 0);
+    }
+
+    /// `restyle_range_at`'s apply-time guard (T-07-26): a range resolved against the paragraph
+    /// BEFORE it was shortened must error, not corrupt `char_shape_runs`. Asserting only on the
+    /// error would pass against an implementation that errors after mutating — so this asserts
+    /// `char_shape_runs` is byte-identical to what it was before the call too.
+    #[test]
+    fn restyle_range_at_주소_적용시점_경계_재검사() {
+        let mut doc = from_markdown("첫 문단\n\n둘째 문단입니다길게씀\n");
+        let path = crate::segment_id::SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        let original_len = doc.sections[0].paragraphs[1].wchar_len();
+        // 범위는 원래 길이 기준으로는 유효했다 — 이후 문단이 짧아진 상황을 흉내낸다.
+        let w_end = original_len;
+        doc.sections[0].paragraphs[1].chars.truncate(3);
+        let before_runs = doc.sections[0].paragraphs[1].char_shape_runs.clone();
+
+        let result = restyle_range_at(
+            &mut doc,
+            &path,
+            0,
+            w_end,
+            &CharFormat {
+                bold: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err(), "짧아진 문단을 벗어난 범위는 오류여야 함");
+        assert_eq!(
+            doc.sections[0].paragraphs[1].char_shape_runs, before_runs,
+            "오류 후에도 char_shape_runs는 변경되지 않아야 함"
+        );
+    }
+
+    /// `apply_para_props_at` changes only the addressed paragraph's `ParaShapeId`; the sibling
+    /// (identical-text) paragraph at a different path is untouched (07-02 Task 1).
+    #[test]
+    fn apply_para_props_at_주소_문단만_변경() {
+        let mut doc = from_markdown("같은 문단\n\n같은 문단\n");
+        let before_first = doc.sections[0].paragraphs[0].para_shape;
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        let props = ParaProps {
+            align: Some(3), // 가운데
+            ..ParaProps::default()
+        };
+        assert!(apply_para_props_at(&mut doc, &path, &props));
+        assert_eq!(
+            doc.sections[0].paragraphs[0].para_shape, before_first,
+            "sibling paragraph's ParaShapeId must be unchanged"
+        );
+        let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
+        assert_eq!(
+            ps.alignment(),
+            3,
+            "addressed paragraph must carry the new align"
+        );
+    }
+
+    /// A repeated identical `apply_para_props_at` does not grow `header.para_shapes` — it reuses
+    /// the same shape via `find_or_insert_para`, matching the pattern path's dedup guarantee.
+    #[test]
+    fn apply_para_props_at_중복_props는_shape_추가없음() {
+        let mut doc = from_markdown("문단\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let props = ParaProps {
+            align: Some(3),
+            ..ParaProps::default()
+        };
+        assert!(apply_para_props_at(&mut doc, &path, &props));
+        let after_first = doc.header.para_shapes.len();
+        assert!(apply_para_props_at(&mut doc, &path, &props));
+        assert_eq!(
+            doc.header.para_shapes.len(),
+            after_first,
+            "identical props must reuse the existing shape, not append a new one"
+        );
+    }
+
+    /// `set_para_align_at` sets alignment on the resolved paragraph only; the sibling paragraph
+    /// keeps its original alignment.
+    #[test]
+    fn set_para_align_at_주소_문단만_변경() {
+        let mut doc = from_markdown("같은 문단\n\n같은 문단\n");
+        let before_first = doc.sections[0].paragraphs[0].para_shape;
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        assert!(set_para_align_at(&mut doc, &path, 3));
+        assert_eq!(
+            doc.sections[0].paragraphs[0].para_shape, before_first,
+            "sibling paragraph's ParaShapeId must be unchanged"
+        );
+        let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[1].para_shape.0 as usize];
+        assert_eq!(ps.alignment(), 3);
+    }
+
+    /// `shift_head_level_at(+1)` must raise a numbered list item's `head_level` from 1 to 2.
+    /// Fails while `ParaShape::set_head_level` is still the Task-2 RED no-op stub.
+    #[test]
+    fn shift_head_level_at_들여쓰기로_수준_증가() {
+        let mut doc = from_markdown("1. 첫 항목\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let ps_before =
+            doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize].clone();
+        assert_eq!(ps_before.head_type(), 2, "번호 매기기 목록이어야 함");
+        assert_eq!(ps_before.head_level(), 1, "최상위 항목은 수준 1에서 시작");
+
+        let new_level = shift_head_level_at(&mut doc, &path, 1).expect("들여쓰기 성공해야 함");
+        assert_eq!(new_level, 2);
+        let ps_after = &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        assert_eq!(ps_after.head_level(), 2);
+    }
+
+    /// Indent at the top of the representable range (7) and outdent at the bottom (1) both fail
+    /// with a named error rather than clamping (A3); a failed op leaves the level unchanged.
+    #[test]
+    fn shift_head_level_at_경계에서_실패() {
+        let mut doc = from_markdown("1. 항목\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        for _ in 0..6 {
+            shift_head_level_at(&mut doc, &path, 1).unwrap();
+        }
+        let ps = &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        assert_eq!(ps.head_level(), 7);
+        let err = shift_head_level_at(&mut doc, &path, 1).unwrap_err();
+        assert!(
+            err.contains("범위"),
+            "경계 오류는 범위를 명시해야 함: {err}"
+        );
+        let ps_after = &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        assert_eq!(
+            ps_after.head_level(),
+            7,
+            "실패한 들여쓰기는 수준을 바꾸면 안 됨"
+        );
+
+        let mut doc2 = from_markdown("1. 항목\n");
+        let err2 = shift_head_level_at(&mut doc2, &path, -1).unwrap_err();
+        assert!(
+            err2.contains("범위"),
+            "경계 오류는 범위를 명시해야 함: {err2}"
+        );
+    }
+
+    /// A paragraph whose `head_type` is neither numbered nor bullet is rejected with its own
+    /// message naming that it is not a list item — never inventing one.
+    #[test]
+    fn shift_head_level_at_비목록_문단_거부() {
+        let mut doc = from_markdown("일반 문단\n");
+        let path = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let err = shift_head_level_at(&mut doc, &path, 1).unwrap_err();
+        assert!(
+            err.contains("목록 항목"),
+            "목록 항목이 아니라는 메시지여야 함: {err}"
+        );
     }
 
     #[test]
