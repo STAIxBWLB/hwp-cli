@@ -165,6 +165,14 @@ npm ci
 npx wrangler deploy
 ```
 
+**Confirm the checkout actually moved before deploying.** A `git pull | tail` pipeline hides
+a failed pull behind tail's exit status (this exact shape once deployed a stale v0.16.1
+checkout while the operator believed v0.19.1 was going out — the give-away in the log is
+wrangler answering "Image already exists remotely, skipping push" / "no changes" for a deploy
+that was supposed to change the image). Run the pull un-piped, check `git log -1` names the
+commit you mean to deploy, and treat a no-op wrangler diff on a version-bump deploy as a stop
+signal, not as success.
+
 The image is built from the published release tarball, so a deploy downloads a binary rather than
 compiling one: the build finishes in seconds and the image is 129 MB. Moving to a new `hwp` release
 means bumping `HWP_VERSION` and `HWP_SHA256` together in `container/Dockerfile.slim` - the checksum
