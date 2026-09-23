@@ -485,10 +485,12 @@ impl EditReportV1<'_> {
 /// (unapplied requests without `--allow-partial`, or zero applicable edits) so `run()` can still
 /// write `--report`'s file — a caller diagnosing why nothing applied needs the `ops` array, not
 /// only an error string. `Display` reproduces exactly the message the old bare `anyhow::bail!`
-/// produced, so existing callers that match on the error text see no change.
+/// produced, so existing callers that match on the error text see no change. `pub(crate)` since
+/// D-12 (Task 2 decision, Option A, 2026-09-24): the MCP `tool_edit` error path downcasts to
+/// this and writes the same report artifact the CLI writes on an aborted batch.
 #[derive(Debug)]
-struct EditAbort {
-    report: EditReport,
+pub(crate) struct EditAbort {
+    pub(crate) report: EditReport,
     reason: String,
 }
 

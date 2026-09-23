@@ -1722,8 +1722,18 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         dry_run,
         report_path,
     );
-    let report = crate::commands::edit::execute(&input, &output, &plan)
-        .map_err(|error| format!("{error:#}"))?;
+    let report = crate::commands::edit::execute(&input, &output, &plan).map_err(|error| {
+        // D-12 abort-path parity (Task 2 decision, Option A, 2026-09-24): an aborted batch
+        // still emits the edit-report-v1 artifact when a report path was given, exactly what
+        // run() does for the CLI --report path. The write is best-effort — the client's
+        // primary signal is the abort reason, so a report-write failure never masks it.
+        if wants_report
+            && let Some(abort) = error.downcast_ref::<crate::commands::edit::EditAbort>()
+        {
+            let _ = crate::commands::edit::emit_edit_report(&plan, &abort.report);
+        }
+        format!("{error:#}")
+    })?;
     // The response below is built from the EditReport the engine returned, never from the
     // request the client sent (T-09-09); the report file is the same edit-report-v1 artifact
     // the CLI --report flag writes, written through the same emit_edit_report run() uses.
@@ -5034,6 +5044,55 @@ mod tests {
             let _ = std::fs::remove_file(path);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-12 abort-path parity (Task 2 decision, Option A): an aborted MCP batch with a
+    /// `report` path still leaves a valid `edit-report-v1` file on disk — the same
+    /// diagnosable artifact the CLI `--report` path writes on an abort — and the call still
+    /// returns the abort error with no output document published.
+    #[test]
+    fn mcp_typed_edit_abort_still_writes_the_report() {
+        let source = temp_file("typed-edit-abort-source.hwpx");
+        let mcp_out = temp_file("typed-edit-abort-mcp.hwpx");
+        let report_path = temp_file("typed-edit-abort-report.json");
+        create_hwpx(&source, "있는 본문\n");
+
+        // A pattern that matches nothing is an unapplied request; without allow_partial the
+        // batch aborts (the same EditAbort path the CLI --ops channel takes).
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "report": report_path,
+                "set_format": [{"pattern": "없는 문구", "bold": true}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("적용되지 않은 편집 요청이 있습니다"),
+            "중단 사유는 CLI와 같은 문구여야 한다: {error}"
+        );
+        assert!(!mcp_out.exists(), "중단된 배치는 출력 문서를 쓰면 안 된다");
+
+        let report: Value = serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert!(
+            edit_report_v1_validator().is_valid(&report),
+            "중단 경로의 보고서도 edit-report-v1 스키마를 만족해야 한다: {report}"
+        );
+        assert_eq!(report["applied_count"], 0);
+        assert_eq!(report["failed_count"], 1);
+        let ops = report["ops"].as_array().unwrap();
+        assert_eq!(ops.len(), 1, "한 op, 한 outcome: {ops:?}");
+        assert_eq!(ops[0]["status"], "failed");
+        assert!(
+            ops[0]["reason"].is_string(),
+            "실패한 op는 reason을 실어야 한다: {ops:?}"
+        );
+
+        for path in [&source, &mcp_out, &report_path] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
