@@ -510,6 +510,10 @@
           },
           "type": "array"
         },
+        "dry_run": {
+          "description": "true면 출력 문서를 게시하지 않고 적용 결과만 보고한다 — CLI --dry-run과 동일",
+          "type": "boolean"
+        },
         "indent_para": {
           "description": "목록 문단 수준 한 단계 내리기(들여쓰기, head level 1..=7, 비목록 문단은 오류)",
           "items": {
@@ -897,6 +901,10 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "report": {
+          "description": "편집 보고서(edit-report-v1 JSON)를 쓸 경로(선택) — CLI --report와 같은 산출물",
+          "type": "string"
         },
         "seal": {
           "description": "앵커 문구 위에 도장 이미지 부유 배치",

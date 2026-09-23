@@ -1376,6 +1376,13 @@ fn tool_grep(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
 fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
+    // D-12: the CLI --ops channel's dry-run and report flags, resolved up front. `report` is a
+    // client-supplied write path, so it goes through the same checked_write_path authority gate
+    // `output` uses (T-09-01) before any document is loaded.
+    let dry_run = arg_bool(args, "dry_run", false)?;
+    let report_path = arg_str_opt(args, "report")?
+        .map(|raw| checked_write_path(ctx, raw))
+        .transpose()?;
     use crate::commands::edit::TypedEditOperation as Op;
 
     let mut operations = Vec::new();
@@ -1707,15 +1714,23 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         });
     }
 
+    let wants_report = report_path.is_some();
     let plan = crate::commands::edit::EditPlan::from_typed(
         operations,
         true,
         arg_bool(args, "allow_partial", false)?,
-        false,
-        None,
+        dry_run,
+        report_path,
     );
     let report = crate::commands::edit::execute(&input, &output, &plan)
         .map_err(|error| format!("{error:#}"))?;
+    // The response below is built from the EditReport the engine returned, never from the
+    // request the client sent (T-09-09); the report file is the same edit-report-v1 artifact
+    // the CLI --report flag writes, written through the same emit_edit_report run() uses.
+    if wants_report {
+        crate::commands::edit::emit_edit_report(&plan, &report)
+            .map_err(|error| format!("{error:#}"))?;
+    }
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&json!({
             "input": input,
@@ -1723,6 +1738,8 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             "applied": report.applied,
             "warnings": report.warnings,
             "preservation": report.preservation,
+            "ops": report.ops,
+            "dry_run": report.dry_run,
         }))
         .unwrap_or_default(),
     )])
@@ -2337,6 +2354,8 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
+                "report": {"type": "string", "description": "편집 보고서(edit-report-v1 JSON)를 쓸 경로(선택) — CLI --report와 같은 산출물"},
+                "dry_run": {"type": "boolean", "description": "true면 출력 문서를 게시하지 않고 적용 결과만 보고한다 — CLI --dry-run과 동일"},
                 "replace": {"type": "array", "items": {"type": "object", "properties": {
                     "from": {"type": "string"}, "to": {"type": "string"},
                     "address": {"type": "object", "additionalProperties": false,
@@ -4853,7 +4872,8 @@ mod tests {
             dry_run,
             report_path.map(Path::to_path_buf),
         );
-        let report = crate::commands::edit::execute(source, cli_out, &plan).expect("CLI --ops 편집");
+        let report =
+            crate::commands::edit::execute(source, cli_out, &plan).expect("CLI --ops 편집");
         if report_path.is_some() {
             crate::commands::edit::emit_edit_report(&plan, &report).expect("CLI --ops 보고서");
         }
@@ -4900,8 +4920,7 @@ mod tests {
             &ctx(),
         )
         .expect("MCP report 편집");
-        let response: Value =
-            serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        let response: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(
             response["dry_run"], false,
             "응답이 dry_run 키를 실어야 한다: {response}"
@@ -4960,8 +4979,7 @@ mod tests {
             &ctx(),
         )
         .expect("MCP dry-run 편집");
-        let response: Value =
-            serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        let response: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(
             response["dry_run"], true,
             "dry-run 응답의 dry_run 키가 true여야 한다: {response}"
@@ -4971,10 +4989,7 @@ mod tests {
             Some(1),
             "단일 op 배열은 정확히 하나의 ops 항목을 돌려줘야 한다: {response}"
         );
-        assert!(
-            !dry_out.exists(),
-            "dry-run은 출력 문서를 쓰면 안 된다"
-        );
+        assert!(!dry_out.exists(), "dry-run은 출력 문서를 쓰면 안 된다");
 
         // A report path outside the MCP write authority is refused before any document is
         // loaded (T-09-01): the refusal surfaces as an error and nothing is written.
