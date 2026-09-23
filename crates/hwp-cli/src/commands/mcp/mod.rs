@@ -4968,6 +4968,179 @@ mod tests {
         }
     }
 
+    /// D-12: an addressed `set_format` over MCP restyles only the addressed run range and lands
+    /// byte-identical output to the CLI `--ops` channel; an invalid address aborts the whole
+    /// call with zero operations applied and no output document written.
+    #[test]
+    fn mcp_typed_addressed_set_format_matches_the_cli_ops_channel() {
+        // Paragraphs 1 and 2 carry identical plain text; the address must hit ONLY the second
+        // paragraph's [0,2) sub-range.
+        let source = temp_file("typed-addressed-set-format-source.hwpx");
+        let mcp_out = temp_file("typed-addressed-set-format-mcp.hwpx");
+        let cli_out = temp_file("typed-addressed-set-format-cli.hwpx");
+        create_hwpx(&source, "앞 문단\n\n같은 문장 끝\n\n같은 문장 끝\n");
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP addressed set_format 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"set_format","address":{"at":{"section":0,"paragraph":2,"run":0},"chars":[0,2]},"bold":"on"}]"#,
+            &cli_out,
+            "typed-addressed-set-format",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 addressed set_format 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let bold_of = |index: usize| {
+            doc.sections[0].paragraphs[index]
+                .char_shape_runs
+                .iter()
+                .map(|(_, id)| doc.header.char_shapes[id.0 as usize].is_bold())
+                .collect::<Vec<bool>>()
+        };
+        assert!(
+            bold_of(1).iter().all(|bold| !bold),
+            "첫 번째 중복 문단은 서식이 바뀌면 안 된다"
+        );
+        assert!(
+            bold_of(2).iter().any(|bold| *bold),
+            "두 번째 중복 문단의 앞 범위만 bold여야 한다"
+        );
+
+        // id and at together: the whole call aborts with nothing applied, nothing written.
+        let both_out = temp_file("typed-address-id-and-at.hwpx");
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": both_out,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"id": "0000000000000000.0.2.0", "at": {"section": 0, "paragraph": 2, "run": 0}},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("id와 at 중 하나만"),
+            "id+at 병기 오류: {error}"
+        );
+        assert!(!both_out.exists(), "address 오류 시 출력을 쓰면 안 된다");
+
+        // A checksum that does not match the addressed paragraph aborts the batch the same way.
+        let drift_out = temp_file("typed-address-checksum-drift.hwpx");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": drift_out,
+                "set_format": [{
+                    "pattern": "같은 문장 끝",
+                    "address": {"id": "0000000000000000.0.2.0"},
+                    "bold": true
+                }]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            !drift_out.exists(),
+            "체크섬 불일치 시 출력을 쓰면 안 된다"
+        );
+
+        // Omitting address keeps today's pattern-based behavior: both duplicates are restyled.
+        let pattern_out = temp_file("typed-set-format-pattern-only.hwpx");
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": pattern_out,
+                "set_format": [{"pattern": "같은 문장 끝", "bold": true}]
+            }),
+            &ctx(),
+        )
+        .expect("pattern-only set_format 편집");
+        let doc = load_document(&pattern_out).unwrap();
+        for index in [1, 2] {
+            assert!(
+                doc.sections[0].paragraphs[index]
+                    .char_shape_runs
+                    .iter()
+                    .any(|(_, id)| doc.header.char_shapes[id.0 as usize].is_bold()),
+                "address 생략 시 두 중복 문단 모두 bold여야 한다"
+            );
+        }
+
+        for path in [&source, &mcp_out, &cli_out, &both_out, &drift_out, &pattern_out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Edge probe (ordering): within one `hwp_edit` op kind, MCP applies the caller's array
+    /// entries in the order given — the same sequence through the CLI `--ops` flat array must
+    /// land byte-identical output (Phase 6 D-01 within-kind semantics).
+    #[test]
+    fn mcp_typed_within_kind_ordering_matches_the_cli_ops_channel() {
+        let source = temp_file("typed-ordering-source.hwpx");
+        let mcp_out = temp_file("typed-ordering-mcp.hwpx");
+        let cli_out = temp_file("typed-ordering-cli.hwpx");
+        create_hwpx(&source, "사과\n");
+
+        // The second replace only matches because the first one ran: 순서가 뒤집히면 "배상"이
+        // 아니라 "배"가 된다.
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "replace": [
+                    {"from": "사과", "to": "배"},
+                    {"from": "배", "to": "배상"}
+                ]
+            }),
+            &ctx(),
+        )
+        .expect("MCP ordered replace 편집");
+
+        run_cli_ops_channel(
+            &source,
+            r#"[{"op":"replace","from":"사과","to":"배"},{"op":"replace","from":"배","to":"배상"}]"#,
+            &cli_out,
+            "typed-ordering",
+        );
+
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 순차 replace 출력 바이트가 다르다"
+        );
+        assert!(
+            load_document(&mcp_out)
+                .unwrap()
+                .plain_text()
+                .contains("배상"),
+            "두 번째 replace가 첫 번째의 결과 위에서 실행되어야 한다"
+        );
+
+        for path in [&source, &mcp_out, &cli_out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     #[test]
     fn mcp_typed_delete_image_round_trip() {
         let source = temp_file("typed-delete-image-source.hwpx");
