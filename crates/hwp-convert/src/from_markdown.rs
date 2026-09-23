@@ -104,6 +104,44 @@ pub(crate) fn validate_authored_list_item(start: u32, item: u32) -> Result<(), S
     Ok(())
 }
 
+/// Table object placement (배치) — whether a table is laid out inline with the text flow
+/// ("글자처럼 취급", treatAsChar=1) or floats anchored to its paragraph (treatAsChar=0).
+/// Only floating tables can split across pages; an inline table is placed as one character
+/// and cannot divide (write/section.rs GE-8 note).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablePlacement {
+    Inline,
+    Floating,
+}
+
+impl TablePlacement {
+    /// The `GsoPlacement` value set for a synthesized (md/HTML-origin) table. The inline set
+    /// reproduces exactly what the HWPX writer falls back to for `placement=None`, so an
+    /// explicit `Inline` is byte-identical to the default HWPX output; it also fixes the
+    /// hwp5 writer's floating fallback for None. Floating follows the writer's documented
+    /// floating convention (treatAsChar=0, flowWithText=0 — Hancom renders allowOverlap=1
+    /// from the treat bit). Width/height 0 lets the writer fall back to the computed totals.
+    pub(crate) fn gso_placement(self) -> hwp_model::GsoPlacement {
+        let floating = self == Self::Floating;
+        hwp_model::GsoPlacement {
+            treat_as_char: !floating,
+            affect_line_spacing: false,
+            flow_with_text: !floating,
+            hold_anchor: false,
+            vert_rel_to: 2, // PARA
+            horz_rel_to: 3, // PARA
+            vert_align: 0,
+            horz_align: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            z_order: 0,
+            width: 0,
+            height: 0,
+            out_margins: [283; 4],
+        }
+    }
+}
+
 /// Markdown import options.
 #[derive(Default)]
 pub struct MarkdownImportOptions<'a> {
@@ -123,6 +161,9 @@ pub struct MarkdownImportOptions<'a> {
     /// Document frames (`--doc-head`/`--doc-foot`/...), if any were supplied (GONG-03, D-01).
     /// `None`/empty keeps today's output unchanged.
     pub frames: Option<&'a FrameFields>,
+    /// Table placement for every table the converter emits (#296). `None` keeps today's
+    /// behaviour (inline in HWPX, the hwp5 writer's floating fallback in .hwp).
+    pub table_placement: Option<TablePlacement>,
 }
 
 #[cfg(test)]
@@ -611,6 +652,7 @@ fn from_markdown_inner(
         heading_numbering: opts
             .preset
             .map_or(HeadingNumbering::Section, OfficialPreset::heading_numbering),
+        table_placement: opts.table_placement,
         ..Builder::default()
     };
     for event in &events {
@@ -866,6 +908,9 @@ struct Builder {
     // Additional fonts restored from `<style>` rules in HTML blocks (contract v2 — extended across all slots).
     extra_fonts: Vec<FaceName>,
     in_image_suppress: bool, // suppresses alt text when image embedding succeeds
+    // Table placement switch (#296) — applied to every table this build emits. None keeps
+    // the historical default (placement=None on the Table).
+    table_placement: Option<TablePlacement>,
 }
 
 /// One list level (frame). Created per `Start(List)`; items use this head para shape.
@@ -1161,6 +1206,7 @@ impl Builder {
             bin_seed: self.bin_streams.len(),
             // fnref markers inside the fragment reattach to the pre-collected GFM bodies (#47).
             note_bodies: Some(&self.note_bodies),
+            table_placement: self.table_placement,
         };
         let parsed = crate::from_html::parse_fragment(&html, &opts);
         match parsed {
@@ -1651,6 +1697,7 @@ impl Builder {
                         &mut self.extra_para_shapes,
                         &mut self.extra_border_fills,
                         &mut self.extra_char_shapes,
+                        self.table_placement,
                     ));
                 }
             }
@@ -1905,6 +1952,7 @@ fn table_paragraph(
     para_shapes: &mut Vec<ParaShape>,
     border_fills: &mut Vec<BorderFill>,
     char_shapes: &mut Vec<CharShape>,
+    table_placement: Option<TablePlacement>,
 ) -> Paragraph {
     let rows = tb.rows.len().max(1);
     let cols = tb.rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
@@ -1958,6 +2006,14 @@ fn table_paragraph(
         cells,
         extras: Vec::new(),
     };
+    // #296: an explicit placement switch fills `placement`. That flips the writer's
+    // `synthesized` check (common_data empty && placement none), so the synthesized attr
+    // defaults (pageBreak=CELL, repeatHeader=1 → attr 0b110) must be set explicitly here
+    // to keep today's rendering behaviour.
+    if let Some(tp) = table_placement {
+        table.placement = Some(tp.gso_placement());
+        table.attr = 0b110;
+    }
 
     // D-07: every GFM table gets header shading/centering + content-proportional widths. A GFM
     // table always has exactly one header row (row 0), so header detection is free.
@@ -2028,6 +2084,86 @@ mod tests {
                 c.list_attr
             );
         }
+    }
+
+    /// #296: default keeps placement=None (writer fallback decides, HWPX output unchanged).
+    #[test]
+    fn 표_배치_기본은_none() {
+        use hwp_model::Control;
+        let doc = from_markdown("| 가 |\n|----|\n| 1 |\n");
+        let table = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음");
+        assert!(table.placement.is_none());
+        assert_eq!(table.attr, 0);
+    }
+
+    /// #296: explicit floating/inline fill placement; attr carries the synthesized defaults
+    /// (pageBreak=CELL, repeatHeader=1) the writer's `synthesized` fallback would have given.
+    #[test]
+    fn 표_배치_스위치() {
+        use hwp_model::Control;
+        let table_of = |tp: TablePlacement| {
+            let doc = from_markdown_with(
+                "| 가 |\n|----|\n| 1 |\n",
+                &MarkdownImportOptions {
+                    table_placement: Some(tp),
+                    ..Default::default()
+                },
+            );
+            doc.sections[0]
+                .paragraphs
+                .iter()
+                .flat_map(|p| &p.controls)
+                .find_map(|c| match c {
+                    Control::Table(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .expect("표 없음")
+        };
+        let floating = table_of(TablePlacement::Floating);
+        let fl = floating.placement.expect("placement");
+        assert!(!fl.treat_as_char);
+        assert!(!fl.flow_with_text);
+        assert_eq!(fl.vert_rel_to, 2, "vertRelTo=PARA");
+        assert_eq!(fl.horz_rel_to, 3, "horzRelTo=PARA");
+        assert_eq!(floating.attr, 0b110);
+        let inline = table_of(TablePlacement::Inline);
+        let il = inline.placement.expect("placement");
+        assert!(il.treat_as_char);
+        assert!(il.flow_with_text);
+        assert_eq!(inline.attr, 0b110);
+    }
+
+    /// #296: HTML-block tables on the md-mixed path honour the same switch.
+    #[test]
+    fn 표_배치_html_블록() {
+        use hwp_model::Control;
+        let doc = from_markdown_with(
+            "<table><tr><td>1</td></tr></table>\n",
+            &MarkdownImportOptions {
+                table_placement: Some(TablePlacement::Floating),
+                ..Default::default()
+            },
+        );
+        let table = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("표 없음");
+        let pl = table.placement.as_ref().expect("placement");
+        assert!(!pl.treat_as_char);
+        assert!(!pl.flow_with_text);
     }
 
     /// GI-1/GI-2 round-trip (a): footnotes, strikethrough, ordered list (start), and nesting are preserved across md → IR → md.

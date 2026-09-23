@@ -1838,6 +1838,7 @@ fn tool_new(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String>
         "notice_foot",
         "press_head",
         "template",
+        "table_placement",
     ];
     if let Some(unknown) = object.keys().find(|key| !ALLOWED.contains(&key.as_str())) {
         return Err(format!("알 수 없는 hwp_new 인자: {unknown}"));
@@ -1958,6 +1959,19 @@ fn tool_new(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String>
     )
     .map_err(|error| format!("{error:#}"))?
     .with_template_frames(template_defaults.as_ref());
+    let table_placement = arg_str_opt(args, "table_placement")?
+        .map(|value| match value {
+            "inline" => Ok(hwp_convert::TablePlacement::Inline),
+            "floating" => Ok(hwp_convert::TablePlacement::Floating),
+            other => Err(format!(
+                "table_placement는 inline|floating 중 하나여야 합니다: {other}"
+            )),
+        })
+        .transpose()?;
+    let options = crate::commands::new::NewOptions {
+        table_placement,
+        ..options
+    };
     let report = crate::commands::new::execute(&output, input, &metadata, &options)
         .map_err(|error| format!("{error:#}"))?;
     Ok(vec![text_content(
@@ -2448,7 +2462,8 @@ fn tool_defs() -> Vec<Value> {
                 "press_head": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
                     "required": ["key", "value"]}, "description": "보도자료 머리(기관명|보도시점|배포일|담당부서|담당자|연락처); markdown·template과 함께 사용 가능"},
-                "template": {"type": "string", "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능"}
+                "template": {"type": "string", "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능"},
+                "table_placement": {"type": "string", "enum": ["inline", "floating"], "description": "표 배치(#296): inline=글자처럼 취급(기본), floating=문단 고정으로 긴 표가 페이지를 넘어 나뉨. 입력이 만드는 모든 표에 적용, 그림은 영향 없음"}
             }, "required": ["output"]}
         }),
         json!({

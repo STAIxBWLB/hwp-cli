@@ -59,6 +59,14 @@ numbering.
 A **single item is a plain paragraph**: when a list would contain exactly one item, write
 it as an unmarked paragraph instead.
 
+**Table placement.** Markdown tables are generated with "treat as character" (글자처럼 취급)
+on, which places each table as one character — it cannot split across a page boundary, so a
+long table or one landing near the bottom of a page overflows instead of continuing on the
+next page. When the recipient requires splitting (심의요청서-type forms with long tables),
+generate with `hwp new --from <md> --table-placement floating`, or flip an existing file with
+`hwp edit in.hwpx -o out.hwpx --table-placement floating` (`--table <n>` targets one table).
+`hwp info <file> --body-stats` reports the current inline/floating counts.
+
 ## 2. Per-document recipes
 
 All six types share the same markdown skeleton under `templates/` (exported next to this

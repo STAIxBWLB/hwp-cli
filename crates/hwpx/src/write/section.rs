@@ -1801,9 +1801,12 @@ fn write_table(
     // 상수로 뭉개면 도형 겹침 순서·바깥 여백이 원본과 어긋난다). 합성 표는 기존 기본값.
     let z_order = pl.map_or(0, |p| p.z_order);
     let om = pl.map_or([283u16; 4], |p| p.out_margins);
+    // 부유 표(treatAsChar=0)는 allowOverlap=1 — gso_pos_xml의 정품 실측 규칙과 같은 값
+    // (:1352). 부유에 0을 주면 한글이 개체를 배치하지 못하는 경우가 있다.
+    let allow_overlap = u32::from(treat_as_char == 0);
     let _ = write!(
         out,
-        r##"<hp:tbl id="{}" zOrder="{z_order}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="{page_break}" repeatHeader="{repeat_header}" rowCnt="{}" colCnt="{}" cellSpacing="{}" borderFillIDRef="{}" noAdjust="{no_adjust}"><hp:sz width="{sz_w}" widthRelTo="ABSOLUTE" height="{sz_h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="{treat_as_char}" affectLSpacing="{affect_lspacing}" flowWithText="{flow_with_text}" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{vert_rel}" horzRelTo="{horz_rel}" vertAlign="{vert_align}" horzAlign="{horz_align}" vertOffset="{vert_offset}" horzOffset="{horz_offset}"/><hp:outMargin left="{}" right="{}" top="{}" bottom="{}"/>"##,
+        r##"<hp:tbl id="{}" zOrder="{z_order}" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="{page_break}" repeatHeader="{repeat_header}" rowCnt="{}" colCnt="{}" cellSpacing="{}" borderFillIDRef="{}" noAdjust="{no_adjust}"><hp:sz width="{sz_w}" widthRelTo="ABSOLUTE" height="{sz_h}" heightRelTo="ABSOLUTE" protect="0"/><hp:pos treatAsChar="{treat_as_char}" affectLSpacing="{affect_lspacing}" flowWithText="{flow_with_text}" allowOverlap="{allow_overlap}" holdAnchorAndSO="0" vertRelTo="{vert_rel}" horzRelTo="{horz_rel}" vertAlign="{vert_align}" horzAlign="{horz_align}" vertOffset="{vert_offset}" horzOffset="{horz_offset}"/><hp:outMargin left="{}" right="{}" top="{}" bottom="{}"/>"##,
         ids.next(),
         table.rows,
         table.cols,

@@ -11,6 +11,8 @@ pub struct NewOptions {
     /// Document frames (`--doc-head`/`--doc-foot`/...), parsed via [`Self::with_frames`]
     /// (GONG-03, D-01).
     pub frames: hwp_convert::FrameFields,
+    /// Table placement switch (#296, `--table-placement`). None keeps the historical default.
+    pub table_placement: Option<hwp_convert::TablePlacement>,
 }
 
 impl NewOptions {
@@ -53,6 +55,7 @@ impl NewOptions {
             margins,
             strict,
             frames: hwp_convert::FrameFields::default(),
+            table_placement: None,
         })
     }
 
@@ -256,7 +259,14 @@ pub fn execute(
                     "--doc-head/--doc-foot 등 프레임 플래그는 markdown 입력 전용입니다 (JSON IR은 헤더 포함)"
                 );
             }
-            hwp_convert::from_json(text).map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?
+            // JSON IR 입력도 --table-placement를 존중한다 (#296): IR 문서는 converter를
+            // 거치지 않으므로 deserialize 뒤 편집 프리미티브로 일괄 적용한다.
+            let mut doc = hwp_convert::from_json(text)
+                .map_err(|e| anyhow::anyhow!("JSON IR 파싱 실패: {e}"))?;
+            if let Some(tp) = options.table_placement {
+                hwp_convert::set_table_placement(&mut doc, None, tp);
+            }
+            doc
         }
         NewInput::Markdown {
             text,
@@ -271,6 +281,7 @@ pub fn execute(
                     preset,
                     page_margins: options.margins,
                     frames: Some(&options.frames),
+                    table_placement: options.table_placement,
                 },
             )
             .map_err(|e| anyhow::anyhow!("markdown 가져오기 실패: {e}"))?;
@@ -285,6 +296,7 @@ pub fn execute(
                 preset,
                 page_margins: options.margins,
                 frames: Some(&options.frames),
+                table_placement: options.table_placement,
             },
         ),
     };

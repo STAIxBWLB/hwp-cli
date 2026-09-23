@@ -46,6 +46,7 @@
 |---|---|---|---|
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
+| `--body-stats` |  |  | 본문을 파싱해 표 배치 수(전체/인라인/부유)도 출력. 기본은 컨테이너만 읽음(본문이 깨진 파일도 진단 가능) |
 
 ## `hwp cat`
 
@@ -174,6 +175,7 @@
 | `--notice-head` | `<NOTICE_HEAD>` |  | 공고문 머리 블록 "키=값" (키: 기관명\|공고번호, 반복 가능) |
 | `--notice-foot` | `<NOTICE_FOOT>` |  | 공고문 꼬리 블록 "키=값" (키: 공고일자\|발신명의, 반복 가능) |
 | `--press-head` | `<PRESS_HEAD>` |  | 보도자료 머리 블록 "키=값" (키: 기관명\|보도시점\|배포일\|담당부서\|담당자\|연락처, 반복 가능) |
+| `--table-placement` | `inline` \| `floating` |  | 표 배치: inline은 글자처럼 취급(기존 동작), floating은 문단에 고정해 긴 표가 페이지를 넘어 나뉠 수 있게 함. 입력이 만드는 모든 표에 적용, 그림은 영향 없음. 생략 시 기존 기본(명시적 배치 없음) |
 
 ## `hwp compose`
 
@@ -281,6 +283,8 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--delete-field` | `<DELETE_FIELD>` |  | 필드 삭제 "이름" (반복 가능; 이름은 hwp fields로 확인) |
 | `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | 책갈피 삭제 "이름" (반복 가능; 이름은 hwp bookmarks로 확인) |
 | `--style-tables` | `<STYLE_TABLES>` |  | 공문서 프리셋으로 모든 적용 대상 표 스타일링(헤더 셰이딩·굵게·가운데 정렬, 내용비례 폭) — official\|report\|plan\|notice\|minutes\|press. 1열 표(테두리 블록)는 건너뜀. 두 번 적용해도 바이트 동일 |
+| `--table-placement` | `inline` \| `floating` |  | 표 배치 설정: inline은 글자처럼 취급 복원, floating은 문단 고정으로 긴 표가 페이지를 넘어 나뉠 수 있게 함. 모든 표 또는 --table로 한 표만. 두 번 적용해도 바이트 동일 |
+| `--table` | `<TABLE>` |  | --table-placement를 이 0-기반 재귀 표 인덱스 하나로 제한 (--label-table과 같은 주소 체계) |
 | `--verify` |  |  | 쓰기 후 재읽기로 검증 |
 | `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
 | `--report` | `<FILE>` |  | 각 연산의 상태·건드린 조각 수·변경된 segment id(전/후 쌍)를 담은 edit-report-v1 JSON 파일을 이 경로에 씀 — "hwp compose --report"(표준 출력으로만 찍는 플래그)와 달리 파일 경로를 받으며, --loss-report와 같은 모양 |

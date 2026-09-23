@@ -98,15 +98,36 @@ fn print_metadata(meta: &Metadata) {
     }
 }
 
-pub fn run(path: &Path, as_json: bool) -> anyhow::Result<()> {
+pub fn run(path: &Path, as_json: bool, body_stats: bool) -> anyhow::Result<()> {
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&info_json(path)?)?);
+        let mut out = info_json(path)?;
+        if body_stats {
+            let (total, inline, floating) = body_table_stats(path)?;
+            out["body"] = json!({
+                "tables": total,
+                "tables_inline": inline,
+                "tables_floating": floating,
+            });
+        }
+        println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
     match detect(path)? {
-        FileFormat::Hwp5 => info_hwp5_text(path),
-        FileFormat::Hwpx => info_hwpx_text(path),
+        FileFormat::Hwp5 => info_hwp5_text(path)?,
+        FileFormat::Hwpx => info_hwpx_text(path)?,
     }
+    if body_stats {
+        let (total, inline, floating) = body_table_stats(path)?;
+        println!("표:     {total}개 (인라인 {inline}, 부유 {floating})");
+    }
+    Ok(())
+}
+
+/// `--body-stats` (#296): 본문을 파싱해 표 배치(글자처럼 취급) 수를 센다. 기본 info는
+/// 컨테이너 계층만 읽는 계약(모듈 주석 참조)이라 opt-in 플래그로만 동작한다.
+fn body_table_stats(path: &Path) -> anyhow::Result<(usize, usize, usize)> {
+    let mut doc = crate::commands::cat::load_document(path)?;
+    Ok(hwp_convert::table_placement_stats(&mut doc))
 }
 
 fn info_hwp5_text(path: &Path) -> anyhow::Result<()> {

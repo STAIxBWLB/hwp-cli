@@ -53,6 +53,10 @@ enum EditOperation {
     DeleteField(Vec<String>),
     DeleteBookmark(Vec<String>),
     StyleTables(hwp_convert::OfficialPreset),
+    SetTablePlacement {
+        placement: hwp_convert::TablePlacement,
+        table: Option<usize>,
+    },
 }
 
 /// MCP처럼 이미 구조화된 호출자가 CLI mini-language를 거치지 않고 전달하는 편집.
@@ -242,6 +246,12 @@ pub(crate) enum TypedEditOperation {
         #[allow(dead_code)]
         preset: hwp_convert::OfficialPreset,
     },
+    /// #296: 표 배치 전환(글자처럼 취급 on/off). `table`은 0-기반 재귀 표 인덱스,
+    /// None이면 문서의 모든 표.
+    SetTablePlacement {
+        placement: hwp_convert::TablePlacement,
+        table: Option<usize>,
+    },
 }
 
 impl TypedEditOperation {
@@ -267,6 +277,8 @@ impl TypedEditOperation {
                 | Self::DeleteTable { .. }
                 | Self::DeleteField { .. }
                 | Self::DeleteBookmark { .. }
+                // 배치 전환은 레이아웃을 바꾸므로 합성 쓰기 경로를 강제한다.
+                | Self::SetTablePlacement { .. }
         )
     }
 }
@@ -290,7 +302,8 @@ impl EditOperation {
             | Self::DeleteImage(_)
             | Self::DeleteTable(_)
             | Self::DeleteField(_)
-            | Self::DeleteBookmark(_) => true,
+            | Self::DeleteBookmark(_)
+            | Self::SetTablePlacement { .. } => true,
             Self::Replace(_)
             | Self::SetCell(_)
             | Self::SetCellByLabel { .. }
@@ -403,6 +416,7 @@ fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
         TypedEditOperation::DeleteField { .. } => "delete_field",
         TypedEditOperation::DeleteBookmark { .. } => "delete_bookmark",
         TypedEditOperation::StyleTables { .. } => "style_tables",
+        TypedEditOperation::SetTablePlacement { .. } => "set_table_placement",
     }
 }
 
@@ -554,6 +568,8 @@ impl EditPlan {
             delete_field,
             delete_bookmark,
             style_tables,
+            table_placement,
+            table,
             verify,
             allow_partial,
             report,
@@ -607,6 +623,12 @@ impl EditPlan {
         add!(DeleteBookmark, delete_bookmark);
         if let Some(preset) = style_tables {
             operations.push(EditOperation::StyleTables(preset.canonical()));
+        }
+        if let Some(placement) = table_placement {
+            operations.push(EditOperation::SetTablePlacement {
+                placement: placement.canonical(),
+                table,
+            });
         }
 
         (
@@ -999,15 +1021,19 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // import time regardless of preset, per plan 03) is a legitimate no-op, not a failure — its
     // output is EXPECTED to equal its input byte-for-byte. The generic "no visible effect"
     // publish guard below must not treat that as an error the way it does for a --replace/
-    // --set-* request that silently matched nothing.
-    let requested_style_tables = plan
-        .operations
-        .iter()
-        .any(|op| matches!(op, EditOperation::StyleTables(_)))
-        || plan
-            .typed_operations
-            .iter()
-            .any(|op| matches!(op, TypedEditOperation::StyleTables { .. }));
+    // --set-* request that silently matched nothing. `--table-placement` (#296) follows the
+    // same contract: reapplying an already-applied placement is a byte-identical no-op.
+    let requested_idempotent_table_op = plan.operations.iter().any(|op| {
+        matches!(
+            op,
+            EditOperation::StyleTables(_) | EditOperation::SetTablePlacement { .. }
+        )
+    }) || plan.typed_operations.iter().any(|op| {
+        matches!(
+            op,
+            TypedEditOperation::StyleTables { .. } | TypedEditOperation::SetTablePlacement { .. }
+        )
+    });
 
     for operation in &plan.operations {
         match operation {
@@ -1554,6 +1580,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     edits += changed;
                 }
             }
+            EditOperation::SetTablePlacement { placement, table } => {
+                apply_table_placement_op(&mut doc, *placement, *table, &mut edits, &mut unapplied);
+            }
         }
     }
     // EDT-06: one outcome per `plan.typed_operations` entry, populated as this loop runs —
@@ -1655,7 +1684,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // document equal to the original: that IS D-08's guarantee, and refusing to publish would
     // make the second of two identical runs fail. Every other operation still has to change
     // something to earn an output.
-    if !requested_style_tables && (edits == 0 || doc == original_doc) {
+    if !requested_idempotent_table_op && (edits == 0 || doc == original_doc) {
         // EDT-06: still leave a diagnosable artifact when `--report`/`--dry-run` was given (a
         // caller needs `ops` to see WHY nothing applied, not just this error string) — write
         // it BEFORE this guard aborts, per the plan's own instruction, rather than after
@@ -3162,8 +3191,39 @@ fn apply_typed_operation(
                 *edits += changed;
             }
         }
+        TypedEditOperation::SetTablePlacement { placement, table } => {
+            apply_table_placement_op(doc, *placement, *table, edits, unapplied);
+        }
     }
     Ok(())
+}
+
+/// #296 표 배치 전환의 공용 적용 — CLI(`--table-placement`)와 typed(--ops/MCP) 경로가 같은
+/// 계정 규칙을 쓴다: 대상 표가 없으면 미적용, 이미 요청 배치면 성공 no-op(재적용 바이트 안정).
+fn apply_table_placement_op(
+    doc: &mut hwp_model::Document,
+    placement: hwp_convert::TablePlacement,
+    table: Option<usize>,
+    edits: &mut usize,
+    unapplied: &mut Vec<String>,
+) {
+    let name = match placement {
+        hwp_convert::TablePlacement::Inline => "inline",
+        hwp_convert::TablePlacement::Floating => "floating",
+    };
+    match hwp_convert::set_table_placement(doc, table, placement) {
+        None => {
+            eprintln!("경고: 배치를 바꿀 표를 찾지 못했습니다 (table={table:?})");
+            unapplied.push(format!(
+                "set_table_placement placement={name} table={table:?}"
+            ));
+        }
+        Some(0) => eprintln!("표 배치({name}): 이미 적용되어 있습니다"),
+        Some(changed) => {
+            eprintln!("표 배치({name}): {changed}개");
+            *edits += changed;
+        }
+    }
 }
 
 fn write_output(

@@ -39,7 +39,11 @@ fn real_main() -> anyhow::Result<()> {
         Err(error) => error.exit(),
     };
     match cli.cmd {
-        Cmd::Info { file, json } => commands::info::run(&file, json),
+        Cmd::Info {
+            file,
+            json,
+            body_stats,
+        } => commands::info::run(&file, json, body_stats),
         Cmd::Dump {
             file,
             stream,
@@ -217,6 +221,7 @@ fn real_main() -> anyhow::Result<()> {
             notice_head,
             notice_foot,
             press_head,
+            table_placement,
         } => {
             if list_templates {
                 commands::skill::print_template_list();
@@ -252,6 +257,10 @@ fn real_main() -> anyhow::Result<()> {
                 &press_head,
             )?
             .with_template_frames(template_defaults.as_ref());
+            let options = commands::new::NewOptions {
+                table_placement: table_placement.map(hwp_cli::cli::TablePlacementArg::canonical),
+                ..options
+            };
             match embedded {
                 Some(text) => commands::new::run_embedded(&output, text, &set_meta, &options),
                 None => commands::new::run(&output, from.as_deref(), &set_meta, &options),

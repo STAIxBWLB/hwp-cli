@@ -40,6 +40,36 @@ pub struct DocumentSpecV2 {
     pub document: DocumentSpec,
     #[serde(default)]
     pub visuals: Vec<VisualSpec>,
+    /// Document-level table defaults (#296). `placement` rewrites the placement of every
+    /// table the v1 document produced (v1 compiles tables inline) — floating lets a long
+    /// table split across pages.
+    #[serde(default)]
+    pub tables: TableDefaultsSpec,
+}
+
+/// Document-level table defaults (#296). Every key is optional; omitted keys keep the
+/// v1-compiled values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TableDefaultsSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<TablePlacementSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TablePlacementSpec {
+    Inline,
+    Floating,
+}
+
+impl TablePlacementSpec {
+    fn canonical(self) -> hwp_convert::TablePlacement {
+        match self {
+            Self::Inline => hwp_convert::TablePlacement::Inline,
+            Self::Floating => hwp_convert::TablePlacement::Floating,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -245,6 +275,10 @@ pub fn compile_spec_v2(
         report: base_report,
     } = document_spec::compile_spec(&spec.document, base_dir, output, dry_run, false, roots)?;
     validate_v2(spec, base_dir, &document)?;
+    // #296: document-level table placement applies to every table the v1 compile produced.
+    if let Some(placement) = spec.tables.placement {
+        hwp_convert::set_table_placement(&mut document, None, placement.canonical());
+    }
 
     let mut reports = Vec::with_capacity(spec.visuals.len());
     let mut assets = AssetStore::new(base_dir, roots);
@@ -1623,7 +1657,7 @@ mod tests {
             ),
             (
                 include_bytes!("../../../schemas/document-spec-v2.schema.json").as_slice(),
-                "d14b6f7bc8a3753a8a2c0e39431ac20ae86be38ceffdf649c804dec3905be746",
+                "2e8480db8430a6e8e567a835580025f2edb01e4c53c3921c4e2c5f47a4707ca3",
             ),
             (
                 include_bytes!("../../../schemas/document-report-v2.schema.json").as_slice(),

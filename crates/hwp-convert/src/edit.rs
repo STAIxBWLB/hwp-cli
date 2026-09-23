@@ -1199,12 +1199,150 @@ pub(crate) fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
 }
 
 /// 읽기 전용 변형([`table_dims`]) — 내용을 바꾸지 않으므로 `hwpx_raw_xml`을 지우지 않는다.
-fn with_nth_table_readonly<R, F: FnOnce(&mut hwp_model::Table) -> R>(
+pub(crate) fn with_nth_table_readonly<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     doc: &mut Document,
     index: usize,
     f: F,
 ) -> Option<R> {
     walk_nth_table_root(doc, index, false, f)
+}
+
+/// #296: 표 배치 요약 — (전체, 인라인, 부유). `placement`를 reader가 채운 표(hwp5/hwpx
+/// 출신)는 그 값을 따르고, 합성 표(placement=None)는 HWPX writer의 폴백과 같은 인라인으로
+/// 센다. 읽기 전용 walker라 문서를 바꾸지 않는다.
+pub fn table_placement_stats(doc: &mut Document) -> (usize, usize, usize) {
+    let (mut total, mut inline, mut floating) = (0usize, 0usize, 0usize);
+    let mut i = 0usize;
+    while let Some(treat) = with_nth_table_readonly(doc, i, |t| {
+        t.placement
+            .as_ref()
+            .map(|p| p.treat_as_char)
+            .unwrap_or_else(|| {
+                if t.common_data.len() >= 4 {
+                    u32::from_le_bytes([
+                        t.common_data[0],
+                        t.common_data[1],
+                        t.common_data[2],
+                        t.common_data[3],
+                    ]) & 1
+                        == 1
+                } else {
+                    true // 합성 표 — writer 기본값(inline)과 동일
+                }
+            })
+    }) {
+        total += 1;
+        if treat {
+            inline += 1;
+        } else {
+            floating += 1;
+        }
+        i += 1;
+    }
+    (total, inline, floating)
+}
+
+/// #296: 표 배치(글자처럼 취급) 전환. `index`는 문서 등장 순서 0-기반 재귀 인덱스
+/// (`--label-table`과 같은 주소 체계), None이면 문서의 모든 표. 대상 표가 하나도
+/// 없으면 None(미적용), 있으면 실제로 값이 바뀐 표 수 Some(n) — 이미 요청된 배치인
+/// 표는 건드리지 않으므로 재적용은 no-op이다(바이트 안정).
+pub fn set_table_placement(
+    doc: &mut Document,
+    index: Option<usize>,
+    placement: crate::from_markdown::TablePlacement,
+) -> Option<usize> {
+    let mut found = 0usize;
+    let mut changed = 0usize;
+    let mut i = 0usize;
+    loop {
+        let target = index.unwrap_or(i);
+        let needs =
+            with_nth_table_readonly(doc, target, |t| !table_placement_matches(t, placement));
+        match needs {
+            None => break, // 그 인덱스의 표가 없다 — 탐색 종료
+            Some(false) => found += 1,
+            Some(true) => {
+                let did = with_nth_table(doc, target, |t| apply_table_placement(t, placement))
+                    .unwrap_or(false);
+                found += 1;
+                changed += usize::from(did);
+            }
+        }
+        if index.is_some() {
+            break;
+        }
+        i += 1;
+    }
+    (found > 0).then_some(changed)
+}
+
+/// 표가 요청된 배치와 이미 일치하는지 — placement와 hwp5 원본 common_data 비트 모두 검사.
+fn table_placement_matches(t: &hwp_model::Table, tp: crate::from_markdown::TablePlacement) -> bool {
+    let floating = tp == crate::from_markdown::TablePlacement::Floating;
+    let placement_ok = t
+        .placement
+        .as_ref()
+        .is_some_and(|p| p.treat_as_char != floating && p.flow_with_text != floating);
+    let raw_ok = common_data_placement_matches(&t.common_data, !floating);
+    placement_ok && raw_ok
+}
+
+/// hwp5 공통 속성(common_data)의 배치 비트가 `treat`와 일치하는지. attr은 [0..4] LE,
+/// bit0=글자처럼 취급, bit13=본문과 어울림(GsoPlacement::synth_attr와 같은 레이아웃).
+/// common_data가 없는 합성 표는 비트 검사를 통과한 것으로 본다(placement가 전부다).
+fn common_data_placement_matches(common_data: &[u8], treat: bool) -> bool {
+    if common_data.len() < 4 {
+        return true;
+    }
+    let attr = u32::from_le_bytes([
+        common_data[0],
+        common_data[1],
+        common_data[2],
+        common_data[3],
+    ]);
+    (attr & 1 == u32::from(treat)) && ((attr >> 13) & 1 == u32::from(treat))
+}
+
+/// 실제 변환 — `table_placement_matches`가 false일 때만 호출한다. 값이 이미 맞는 필드는
+/// 건드리지 않는다(재적용 바이트 안정).
+fn apply_table_placement(
+    t: &mut hwp_model::Table,
+    tp: crate::from_markdown::TablePlacement,
+) -> bool {
+    let floating = tp == crate::from_markdown::TablePlacement::Floating;
+    let (treat, flow) = (!floating, !floating);
+    let mut changed = false;
+    match &mut t.placement {
+        Some(pl) => {
+            if pl.treat_as_char != treat || pl.flow_with_text != flow {
+                pl.treat_as_char = treat;
+                pl.flow_with_text = flow;
+                changed = true;
+            }
+        }
+        None => {
+            // 합성 표(md 출신): placement를 채우면 writer의 synthesized 폴백( pageBreak=CELL,
+            // repeatHeader=1 )이 꺼지므로 그 기본값을 attr(0b110)로 명시한다.
+            t.placement = Some(tp.gso_placement());
+            t.attr |= 0b110;
+            changed = true;
+        }
+    }
+    // hwp5 출신은 writer가 raw common_data를 우선하므로 배치 비트도 함께 패치한다.
+    if t.common_data.len() >= 4 {
+        let attr = u32::from_le_bytes([
+            t.common_data[0],
+            t.common_data[1],
+            t.common_data[2],
+            t.common_data[3],
+        ]);
+        let patched = (attr & !0b10_0000_0000_0001) | u32::from(treat) | (u32::from(flow) << 13);
+        if patched != attr {
+            t.common_data[..4].copy_from_slice(&patched.to_le_bytes());
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn walk_nth_table_root<R, F: FnOnce(&mut hwp_model::Table) -> R>(

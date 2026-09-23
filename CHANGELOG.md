@@ -10,6 +10,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- Table placement switch (#296). Markdown-authored tables were always emitted with "treat as
+  character" (글자처럼 취급) on, and an inline table is placed as one character - it cannot
+  split across a page boundary, so a long table or one landing at the bottom of a page
+  overflowed instead of continuing on the next page. `hwp new --from <md> --table-placement
+  floating` anchors every generated table to its paragraph (`treatAsChar="0"
+  flowWithText="0" allowOverlap="1"`), `hwp edit <in> -o <out> --table-placement
+  <inline|floating> [--table <n>]` rewrites an existing document (one zero-based recursive
+  table index, or every table), and the same op is available in edit-ops JSON as
+  `set_table_placement` and in DocumentSpec v2 as the document-level `tables.placement` key.
+  MCP `hwp_new` accepts `table_placement` too. Pictures are untouched, and omitting the flag
+  keeps output byte-identical to before. `hwp info --body-stats` reports the table
+  inline/floating counts without unzipping.
+
 ## [0.19.1]
 
 **Changed**
