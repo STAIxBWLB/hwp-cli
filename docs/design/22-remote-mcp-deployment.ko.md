@@ -265,7 +265,7 @@ tool argument, path, 문서 내용, token을 담지 않는다. doc 20 §7의 요
 |---|---|
 | `initialize` | Worker가 난수 session 식별자를 만들고 principal과 그 식별자로 Durable Object 이름을 정한다. container가 기동해 readiness 확인을 통과하면 response에 `Mcp-Session-Id`를 실어 보낸다 |
 | 이후 호출 | 같은 header가 같은 object에 도달하므로 같은 microVM, 같은 workspace, 같은 process를 사용한다 |
-| 30분 유휴 | container class가 instance를 정지시킨다. object가 session을 dead로 표시하므로 다음 호출은 `404`가 되고 client가 재초기화한다 |
+| 3분 유휴 | container class가 instance를 정지시킨다. object가 session을 dead로 표시하므로 다음 호출은 `404`가 되고 client가 재초기화한다 |
 | `DELETE /mcp` | container를 종료하고 session을 dead로 표시하며 alarm을 해제한 뒤 `204`를 반환한다. 멱등하다 |
 | 최대 수명 8시간 | alarm이 session을 종료시켜 재초기화를 강제한다. doc 20 §7의 요구사항이다 |
 | deadline 초과 | 기본 120초, rendering과 conversion과 certification은 300초다. Worker가 요청을 중단하고 container를 종료한 뒤 timeout을 반환한다 |

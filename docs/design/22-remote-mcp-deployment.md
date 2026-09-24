@@ -268,7 +268,7 @@ audit table holds no tool arguments, paths, document content, or tokens, as doc 
 |---|---|
 | `initialize` | The Worker mints a random session identifier and derives the Durable Object name from the principal and that identifier. The container starts, the readiness probe passes, and the response carries `Mcp-Session-Id` |
 | Later calls | The same header reaches the same object, therefore the same microVM, workspace, and process |
-| Idle 30 minutes | The container class stops the instance. The object marks the session dead, so the next call returns `404` and the client reinitializes |
+| Idle 3 minutes | The container class stops the instance. The object marks the session dead, so the next call returns `404` and the client reinitializes |
 | `DELETE /mcp` | Terminates the container, marks the session dead, cancels the alarm, and returns `204`. Idempotent |
 | Maximum lifetime 8 hours | An alarm terminates the session, which forces reinitialization as doc 20 §7 requires |
 | Deadline exceeded | 120 seconds by default and 300 seconds for rendering, conversion, and certification. The Worker aborts, terminates the container, and returns a timeout |
