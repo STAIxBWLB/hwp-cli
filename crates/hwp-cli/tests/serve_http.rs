@@ -318,6 +318,47 @@ fn serve_files_roundtrip_and_name_rules() {
     assert_eq!(entries, ["a.bin"], "workspace에 예상 밖 파일이 있습니다");
 }
 
+/// `store_file` answers 413 from the declared Content-Length alone, before it
+/// opens the body — so the per-file cap is testable without a 64 MiB upload.
+/// The workspace cap is not reachable this way: it is computed from actual
+/// on-disk usage (`workspace_bytes`), so tripping it would require writing
+/// ~256 MiB for real. Per-file cap only.
+#[test]
+fn serve_files_caps() {
+    let server = spawn("files-caps", true);
+    let addr = &server.addr;
+
+    // MAX_FILE_BYTES(64 MiB) + 1 을 Content-Length로 선언만 하고 본문은 보지 않는다.
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let head = format!(
+        "POST /files/too-big.bin HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        64 * 1024 * 1024 + 1
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    // tiny_http은 Request drop 시 선언된 본문을 끝까지 비우므로, 쓰기 방향을 닫아
+    // EOF를 알려야 서버가 drain을 마치고 다음 요청을 받는다(업로드 중단과 동일).
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let status = String::from_utf8_lossy(&raw)
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .expect("상태 줄을 해석하지 못했습니다");
+    assert_eq!(status, 413, "선언 길이 초과 업로드가 거부되지 않았습니다");
+    assert!(
+        !server.root.join("too-big.bin").exists(),
+        "거부된 업로드가 workspace에 남았습니다"
+    );
+
+    // 거부 뒤에도 서버는 정상 동작해야 한다.
+    let (status, _) = request(addr, "POST", "/files/ok.bin", b"fine");
+    assert_eq!(status, 200);
+    assert_eq!(std::fs::read(server.root.join("ok.bin")).unwrap(), b"fine");
+}
+
 #[test]
 fn serve_refuses_to_start_without_a_usable_root() {
     let missing_root = Command::new(env!("CARGO_BIN_EXE_hwp"))
