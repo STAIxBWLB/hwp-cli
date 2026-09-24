@@ -33,7 +33,7 @@ ARG HWP_PLATFORM=linux/arm64
 
 ARG HWP_VERSION=v0.20.0
 ARG HWP_TARGET=aarch64-unknown-linux-gnu
-ARG HWP_SHA256=22b89bf5b30f5a11fcb52e8fce476f10e2c375dd08fa574cbc7cb2cdf212332c
+ARG HWP_SHA256=ffa137b2d22b4553431754deb336acb562e5fca17d6ece61166b4c2cd7ff6101
 
 # Fetch stage. ADD downloads over the builder's own network stack, so no curl and
 # no CA bundle are ever installed; keeping it in a discarded stage also keeps the
