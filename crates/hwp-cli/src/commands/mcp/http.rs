@@ -7,7 +7,7 @@
 //! stdio adapter와 같은 protocol core를 공유하므로 도구 의미론이 갈라지지 않는다.
 
 use std::fs::File;
-use std::io::{self, Cursor, Read as _};
+use std::io::{self, Cursor, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +25,33 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_WORKSPACE_BYTES: u64 = 256 * 1024 * 1024;
 
 type Body = Response<Cursor<Vec<u8>>>;
+
+/// 본문을 읽지 않고 끝내는 경로의 응답을 본다.
+///
+/// tiny_http은 `Request` drop 시 선언된 `Content-Length`의 미수신분을 EOF까지
+/// 읽어 버린다(`EqualReader::drop`). 본문을 읽지 않는 경로에서 그대로 응답하면
+/// drain이 수신 루프 위에서 실행되어, 헤더만 보내고 전송을 멈춘 클라이언트 하나가
+/// 단일 스레드 서버 전체를 멈춘다(#310). drain이 응답 전송 뒤 별도 스레드에서
+/// 일어나도록 응답을 떼어 낸다. 선언 길이가 극단적이면 drain의 버퍼 할당
+/// (`vec![0; remaining]`)이 패닉할 수 있으므로 스레드 안에서 잡는다.
+/// 본문을 끝까지 읽은 경로는 이 함수가 아니라 `request.respond`를 그대로 쓴다.
+fn respond_detached<R>(request: Request, response: Response<R>) -> Result<(), io::Error>
+where
+    R: Read + Send + 'static,
+{
+    if request.body_length().is_some_and(|n| n > 0) {
+        std::thread::spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Err(error) = request.respond(response) {
+                    eprintln!("hwp serve: 응답 전송 실패: {error}");
+                }
+            }));
+        });
+        Ok(())
+    } else {
+        request.respond(response)
+    }
+}
 
 fn plain(status: u16, body: &str) -> Body {
     Response::from_string(body).with_status_code(status)
@@ -122,7 +149,7 @@ pub fn serve(
     // incoming_requests()는 accept에서 막혀 종료 신호를 알아채지 못하므로, 짧은
     // timeout으로 받아 처리 중인 요청은 끝까지 마친 뒤 루프를 빠져나온다.
     while !SHUTDOWN.load(Ordering::SeqCst) {
-        let mut request = match server.recv_timeout(ACCEPT_POLL) {
+        let request = match server.recv_timeout(ACCEPT_POLL) {
             Ok(Some(request)) => request,
             Ok(None) => continue,
             Err(error) => {
@@ -133,17 +160,16 @@ pub fn serve(
         let path = request.url().split('?').next().unwrap_or("").to_string();
         let method = request.method().clone();
         let result = match (&method, path.as_str()) {
-            (Method::Get, "/healthz") => request.respond(plain(200, "ok")),
-            (Method::Post, "/mcp") => {
-                let response = handle_mcp(&mut request, &ctx);
-                request.respond(response)
-            }
+            (Method::Get, "/healthz") => respond_detached(request, plain(200, "ok")),
+            (Method::Post, "/mcp") => handle_mcp(request, &ctx),
             // server push가 없으므로 SSE stream을 제공하지 않는다.
-            (_, "/mcp") => request.respond(empty(405).with_header(header("Allow", "POST"))),
+            (_, "/mcp") => {
+                respond_detached(request, empty(405).with_header(header("Allow", "POST")))
+            }
             _ if files && path.starts_with("/files/") => {
                 handle_files(request, &method, &path["/files/".len()..], &canonical_root)
             }
-            _ => request.respond(plain(404, "not found")),
+            _ => respond_detached(request, plain(404, "not found")),
         };
         if let Err(error) = result {
             eprintln!("hwp serve: 응답 전송 실패: {error}");
@@ -153,13 +179,14 @@ pub fn serve(
     Ok(())
 }
 
-fn handle_mcp(request: &mut Request, ctx: &LocalFsContext) -> Body {
+fn handle_mcp(request: Request, ctx: &LocalFsContext) -> Result<(), io::Error> {
     if request
         .body_length()
         .is_some_and(|n| n > MAX_REQUEST_LINE_BYTES)
     {
-        return plain(413, "request body too large");
+        return respond_detached(request, plain(413, "request body too large"));
     }
+    let mut request = request;
     let mut body = Zeroizing::new(Vec::new());
     let capped = (MAX_REQUEST_LINE_BYTES as u64).saturating_add(1);
     if request
@@ -168,65 +195,71 @@ fn handle_mcp(request: &mut Request, ctx: &LocalFsContext) -> Body {
         .read_to_end(&mut body)
         .is_err()
     {
-        return plain(400, "cannot read request body");
+        return request.respond(plain(400, "cannot read request body"));
     }
     if body.len() > MAX_REQUEST_LINE_BYTES {
-        return plain(413, "request body too large");
+        return request.respond(plain(413, "request body too large"));
     }
     let Ok(line) = std::str::from_utf8(&body) else {
-        return plain(400, "request body is not valid UTF-8");
+        return request.respond(plain(400, "request body is not valid UTF-8"));
     };
-    match handle_request(line.trim(), ctx) {
+    let response = match handle_request(line.trim(), ctx) {
         Some(response) => {
             Response::from_string(response).with_header(header("Content-Type", "application/json"))
         }
         // 알림은 프로토콜 응답이 없다.
         None => empty(202),
-    }
+    };
+    request.respond(response)
 }
 
 fn handle_files(
-    mut request: Request,
+    request: Request,
     method: &Method,
     name: &str,
     root: &Path,
 ) -> Result<(), io::Error> {
     if !valid_file_name(name) {
-        return request.respond(plain(400, "invalid file name"));
+        return respond_detached(request, plain(400, "invalid file name"));
     }
     let target = root.join(name);
     match method {
-        Method::Post => {
-            let response = store_file(&mut request, &target, root);
-            request.respond(response)
-        }
+        Method::Post => store_file(request, &target, root),
         Method::Get => match File::open(&target) {
-            Ok(file) => request.respond(
+            Ok(file) => respond_detached(
+                request,
                 Response::from_file(file)
                     .with_header(header("Content-Type", "application/octet-stream")),
             ),
-            Err(_) => request.respond(plain(404, "not found")),
+            Err(_) => respond_detached(request, plain(404, "not found")),
         },
-        _ => request.respond(empty(405).with_header(header("Allow", "GET, POST"))),
+        _ => respond_detached(
+            request,
+            empty(405).with_header(header("Allow", "GET, POST")),
+        ),
     }
 }
 
-fn store_file(request: &mut Request, target: &Path, root: &Path) -> Body {
+fn store_file(request: Request, target: &Path, root: &Path) -> Result<(), io::Error> {
     let declared = request.body_length().map(|n| n as u64);
     if declared.is_some_and(|n| n > MAX_FILE_BYTES) {
-        return plain(413, "file too large");
+        return respond_detached(request, plain(413, "file too large"));
     }
     // 받기 전에 workspace 총량을 확인한다.
     // ponytail: 단일 스레드 루프라 이 사전 확인과 쓰기 사이에 경합이 없다.
     // 동시 처리를 도입하면 잠금 아래에서 다시 확인해야 한다.
     let used = workspace_bytes(root).unwrap_or(0);
     if used.saturating_add(declared.unwrap_or(0)) > MAX_WORKSPACE_BYTES {
-        return plain(413, "workspace quota exceeded");
+        return respond_detached(request, plain(413, "workspace quota exceeded"));
     }
 
+    let mut request = request;
     let mut file = match File::create(target) {
         Ok(file) => file,
-        Err(error) => return plain(500, &format!("cannot create file: {error}")),
+        Err(error) => {
+            // 본문을 아직 읽지 않았으므로 drain이 수신 루프를 막지 않게 떼어 낸다.
+            return respond_detached(request, plain(500, &format!("cannot create file: {error}")));
+        }
     };
     let capped = MAX_FILE_BYTES.saturating_add(1);
     let written = io::copy(&mut request.as_reader().take(capped), &mut file);
@@ -236,7 +269,7 @@ fn store_file(request: &mut Request, target: &Path, root: &Path) -> Body {
         let _ = std::fs::remove_file(target);
         plain(413, message)
     };
-    match written {
+    let response = match written {
         Err(error) => {
             let _ = std::fs::remove_file(target);
             plain(500, &format!("cannot write file: {error}"))
@@ -246,7 +279,8 @@ fn store_file(request: &mut Request, target: &Path, root: &Path) -> Body {
             discard("workspace quota exceeded")
         }
         Ok(_) => empty(200),
-    }
+    };
+    request.respond(response)
 }
 
 /// `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`

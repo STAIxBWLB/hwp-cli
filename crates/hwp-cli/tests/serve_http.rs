@@ -336,17 +336,13 @@ fn serve_files_caps() {
     );
     stream.write_all(head.as_bytes()).unwrap();
     stream.flush().unwrap();
-    // tiny_http은 Request drop 시 선언된 본문을 끝까지 비우므로, 쓰기 방향을 닫아
-    // EOF를 알려야 서버가 drain을 마치고 다음 요청을 받는다(업로드 중단과 동일).
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).unwrap();
-    let status = String::from_utf8_lossy(&raw)
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .expect("상태 줄을 해석하지 못했습니다");
+    // half-close 하지 않는다. tiny_http은 Request drop 시 선언된 본문을 끝까지
+    // 비우는데, 거부 응답은 drain을 별도 스레드로 떼어 낸 뒤 바로 전송되므로
+    // (#310) EOF 없이도 413이 도착하고 수신 루프는 다음 요청을 받는다.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let (status, _) = read_response(&stream).unwrap();
     assert_eq!(status, 413, "선언 길이 초과 업로드가 거부되지 않았습니다");
     assert!(
         !server.root.join("too-big.bin").exists(),
@@ -357,6 +353,104 @@ fn serve_files_caps() {
     let (status, _) = request(addr, "POST", "/files/ok.bin", b"fine");
     assert_eq!(status, 200);
     assert_eq!(std::fs::read(server.root.join("ok.bin")).unwrap(), b"fine");
+}
+
+/// Reads one response without waiting for connection close: header block, then
+/// exactly `Content-Length` body bytes. Reject responses are always identity-
+/// framed, and the caller's read timeout bounds a wedged server.
+fn read_response(stream: &TcpStream) -> std::io::Result<(u16, Vec<u8>)> {
+    let mut reader = BufReader::new(stream);
+    let mut status = None;
+    let mut content_length = None;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            break;
+        }
+        if status.is_none() {
+            status = trimmed
+                .split_whitespace()
+                .nth(1)
+                .and_then(|c| c.parse().ok());
+        } else if let Some(length) = trimmed
+            .split_once(':')
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, value)| value.trim().parse().ok())
+        {
+            content_length = Some(length);
+        }
+    }
+    let mut body = vec![0; content_length.unwrap_or(0)];
+    reader.read_exact(&mut body)?;
+    Ok((status.unwrap_or(0), body))
+}
+
+/// Regression for #310. tiny_http drains the declared-but-unread body when a
+/// `Request` drops, and that drain used to run on the single-threaded serve
+/// loop: one client declaring a large Content-Length and stalling wedged the
+/// whole server. The reject response must go out and the loop must keep
+/// answering — with no half-close from the client to end the drain.
+#[test]
+fn serve_survives_declared_length_stall() {
+    let server = spawn("stall", false);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+
+    // 64 MiB + 1을 선언하고 아무것도 보내지 않은 채 소켓을 연다. half-close도
+    // 하지 않으므로 서버 측 drain에는 EOF가 오지 않는다.
+    let mut staller = TcpStream::connect(addr).unwrap();
+    staller.set_read_timeout(Some(timeout)).unwrap();
+    let head = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n",
+        64 * 1024 * 1024 + 1
+    );
+    staller.write_all(head.as_bytes()).unwrap();
+    staller.flush().unwrap();
+
+    // drain은 수신 루프가 아니라 떼어 낸 스레드에서 멈추므로 413은 도착한다.
+    let (status, _) = read_response(&staller).unwrap();
+    assert_eq!(status, 413, "stalled 요청의 413이 도착하지 않았습니다");
+
+    // 수신 루프는 살아 있어야 한다: 새 연결이 bounded time 안에 응답받는다.
+    // 클라이언트 read timeout이 상한이다 — wedged 서버는 hang이 아니라 실패가 된다.
+    let mut follow = TcpStream::connect(addr).unwrap();
+    follow.set_read_timeout(Some(timeout)).unwrap();
+    follow
+        .write_all(
+            format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+    follow.flush().unwrap();
+    let (status, body) = read_response(&follow).unwrap();
+    assert_eq!(status, 200, "stall 뒤 healthz가 응답하지 않았습니다");
+    assert_eq!(body, b"ok");
+
+    // 극단적인 선언 길이는 drain의 버퍼 할당이 패닉할 수 있는데, 떼어 낸
+    // 스레드 안에서 잡히므로 프로세스는 살아 남아야 한다.
+    let mut extreme = TcpStream::connect(addr).unwrap();
+    extreme.set_read_timeout(Some(timeout)).unwrap();
+    extreme
+        .write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n",
+                u64::MAX
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    extreme.shutdown(std::net::Shutdown::Write).unwrap();
+    let (status, _) = read_response(&extreme).unwrap();
+    assert_eq!(status, 413);
+
+    let (status, body) = request(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200, "극단 선언 뒤 서버가 죽었습니다");
+    assert_eq!(body, b"ok");
 }
 
 #[test]
