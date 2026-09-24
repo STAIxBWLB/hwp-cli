@@ -133,45 +133,16 @@ fn request_full(addr: &str, method: &str, path: &str, body: &[u8]) -> (u16, Stri
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse().ok())
         .expect("상태 줄을 해석하지 못했습니다");
-    // tiny_http switches to chunked framing once a response outgrows its inline
-    // threshold (tools/list crossed it when hwp_edit's schema grew in Phase 9).
-    // The client must de-chunk rather than assume Content-Length.
-    let body = if headers
-        .lines()
-        .any(|line| line.eq_ignore_ascii_case("transfer-encoding: chunked"))
-    {
-        dechunk(&raw[split + 4..])
-    } else {
-        raw[split + 4..].to_vec()
-    };
+    // 모든 응답은 identity framing이다(issue #312 D2): `Content-Length`와
+    // `Connection: close`를 항상 실어 나른다. chunked 응답은 없다.
+    assert!(
+        !headers
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("transfer-encoding: chunked")),
+        "응답이 chunked로 왔습니다: {headers}"
+    );
+    let body = raw[split + 4..].to_vec();
     (status, headers, body)
-}
-
-/// Collapses HTTP/1.1 chunked transfer framing into the message body.
-fn dechunk(raw: &[u8]) -> Vec<u8> {
-    let mut body = Vec::new();
-    let mut rest = raw;
-    while !rest.is_empty() {
-        let line_end = rest
-            .windows(2)
-            .position(|w| w == b"\r\n")
-            .expect("chunk 크기 줄이 없습니다");
-        let size_text =
-            std::str::from_utf8(&rest[..line_end]).expect("chunk 크기가 UTF-8이 아닙니다");
-        let size =
-            usize::from_str_radix(size_text.trim(), 16).expect("chunk 크기가 hex가 아닙니다");
-        rest = &rest[line_end + 2..];
-        if size == 0 {
-            break;
-        }
-        assert!(
-            rest.len() >= size + 2,
-            "chunk 본문이 크기만큼 오지 않았습니다"
-        );
-        body.extend_from_slice(&rest[..size]);
-        rest = &rest[size + 2..];
-    }
-    body
 }
 
 fn rpc(addr: &str, payload: &str) -> (u16, serde_json::Value) {
@@ -336,9 +307,8 @@ fn serve_files_caps() {
     );
     stream.write_all(head.as_bytes()).unwrap();
     stream.flush().unwrap();
-    // half-close 하지 않는다. tiny_http은 Request drop 시 선언된 본문을 끝까지
-    // 비우는데, 거부 응답은 drain을 별도 스레드로 떼어 낸 뒤 바로 전송되므로
-    // (#310) EOF 없이도 413이 도착하고 수신 루프는 다음 요청을 받는다.
+    // half-close 하지 않는다. 서버는 선언 길이만 보고 거부하므로(이슈 설계)
+    // EOF 없이도 413이 도착하고, 남은 본문은 linger가 상한 안에서 버린다(D6).
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
@@ -390,11 +360,11 @@ fn read_response(stream: &TcpStream) -> std::io::Result<(u16, Vec<u8>)> {
     Ok((status.unwrap_or(0), body))
 }
 
-/// Regression for #310. tiny_http drains the declared-but-unread body when a
-/// `Request` drops, and that drain used to run on the single-threaded serve
-/// loop: one client declaring a large Content-Length and stalling wedged the
-/// whole server. The reject response must go out and the loop must keep
-/// answering — with no half-close from the client to end the drain.
+/// Regression for #310 and the abort range of issue #312. The reject response must
+/// go out and the loop must keep answering — with no half-close from the client to
+/// end any drain. Extreme declared lengths cover both allocation paths: 2^50 was the
+/// verified `memory allocation failed` abort on main (uncatchable, exit 134), 2^63
+/// the catchable `capacity overflow` path, and `u64::MAX` the original #310 probe.
 #[test]
 fn serve_survives_declared_length_stall() {
     let server = spawn("stall", false);
@@ -402,7 +372,8 @@ fn serve_survives_declared_length_stall() {
     let timeout = std::time::Duration::from_secs(5);
 
     // 64 MiB + 1을 선언하고 아무것도 보내지 않은 채 소켓을 연다. half-close도
-    // 하지 않으므로 서버 측 drain에는 EOF가 오지 않는다.
+    // 하지 않는다. 서버는 선언 길이만 보고 413으로 거부하므로(이슈 설계) 대기
+    // 클라이언트의 연결 스레드만 응답을 받고, 수신 루프는 계속 답한다.
     let mut staller = TcpStream::connect(addr).unwrap();
     staller.set_read_timeout(Some(timeout)).unwrap();
     let head = format!(
@@ -411,8 +382,6 @@ fn serve_survives_declared_length_stall() {
     );
     staller.write_all(head.as_bytes()).unwrap();
     staller.flush().unwrap();
-
-    // drain은 수신 루프가 아니라 떼어 낸 스레드에서 멈추므로 413은 도착한다.
     let (status, _) = read_response(&staller).unwrap();
     assert_eq!(status, 413, "stalled 요청의 413이 도착하지 않았습니다");
 
@@ -430,26 +399,220 @@ fn serve_survives_declared_length_stall() {
     let (status, body) = read_response(&follow).unwrap();
     assert_eq!(status, 200, "stall 뒤 healthz가 응답하지 않았습니다");
     assert_eq!(body, b"ok");
+}
 
-    // 극단적인 선언 길이는 drain의 버퍼 할당이 패닉할 수 있는데, 떼어 낸
-    // 스레드 안에서 잡히므로 프로세스는 살아 남아야 한다.
-    let mut extreme = TcpStream::connect(addr).unwrap();
-    extreme.set_read_timeout(Some(timeout)).unwrap();
-    extreme
+/// AC1 (issue #312). Extreme declared lengths — 2^50, 2^63 and `u64::MAX` — each
+/// with a 3-byte body and a half-close, all get 413, and the server answers
+/// `/healthz` afterwards. On main, 2^50 aborted the process with `memory
+/// allocation of 1125899906842624 bytes failed` (exit 134, uncatchable).
+#[test]
+fn serve_survives_extreme_declared_lengths() {
+    let server = spawn("extreme", false);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+
+    for length in [1u64 << 50, 1u64 << 63, u64::MAX] {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(timeout)).unwrap();
+        let head =
+            format!("POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {length}\r\n\r\n",);
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(b"abc").unwrap();
+        stream.flush().unwrap();
+        // half-close: 본문을 다 보냈다는 신호. 서버는 선언 길이(1 MiB)를 넘는
+        // 요청을 읽기 전에 거부한다.
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let (status, body) = read_response(&stream).unwrap();
+        assert_eq!(status, 413, "선언 길이 {length} 가 거부되지 않았습니다");
+        assert_eq!(
+            body, b"request body too large",
+            "선언 길이 {length} 의 본문"
+        );
+    }
+
+    let (status, body) = request(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200, "극단 선언 뒤 서버가 죽었습니다");
+    assert_eq!(body, b"ok");
+}
+
+/// AC2 (issue #312). A request whose header block exceeds the 16 KiB head cap gets
+/// 431, and the server stays up. On main, an unbounded header line buffer let a
+/// 64 MiB header line push tiny_http to 70 MB RSS.
+#[test]
+fn serve_rejects_an_oversized_head_with_431() {
+    let server = spawn("head-cap", false);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+
+    // 16 KiB를 넘는 헤더 한 줄. 서버는 덩어리 스캔이라 버퍼 크기만큼만 읽고
+    // 상한에서 431로 끊는다(D4).
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    let header = format!("X-Pad: {}\r\n", "x".repeat(64 * 1024));
+    stream
+        .write_all(format!("POST /mcp HTTP/1.1\r\nHost: {addr}\r\n{header}\r\n").as_bytes())
+        .unwrap();
+    stream.flush().unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let (status, _) = read_response(&stream).unwrap();
+    assert_eq!(status, 431, "16 KiB 초과 헤드가 거부되지 않았습니다");
+
+    let (status, body) = request(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200, "헤드 초과 뒤 서버가 죽었습니다");
+    assert_eq!(body, b"ok");
+}
+
+/// AC3 (issue #312). `Transfer-Encoding: chunked` gets 411, disagreeing
+/// `Content-Length` fields get 400, and a non-decimal value gets 400 — including
+/// `+7`, which `u64::from_str` would otherwise accept.
+#[test]
+fn serve_rejects_non_content_length_framing() {
+    let server = spawn("framing", false);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+
+    let exchanges: [(&str, u16); 4] = [
+        (
+            "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            411,
+        ),
+        (
+            "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 5\r\nContent-Length: 7\r\n\r\n",
+            400,
+        ),
+        (
+            "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0x10\r\n\r\n",
+            400,
+        ),
+        (
+            "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: +7\r\n\r\n",
+            400,
+        ),
+    ];
+    for (head, expected) in exchanges {
+        let head = head.replace("{addr}", addr);
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(timeout)).unwrap();
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let (status, _) = read_response(&stream).unwrap();
+        assert_eq!(status, expected, "요청 헤드: {head:?}");
+    }
+
+    let (status, body) = request(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200, "framing 거부 뒤 서버가 죽었습니다");
+    assert_eq!(body, b"ok");
+}
+
+/// AC4 (issue #312). An upload with `Expect: 100-continue` receives the interim
+/// 100, then 200, and the stored content matches — with no half-close: the client
+/// waits for the interim response before sending the body, which is the point of
+/// the expectation.
+#[test]
+fn serve_files_expect_continue_roundtrip() {
+    let server = spawn("expect-continue", true);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+    let payload = b"expect-continue-body";
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    stream
         .write_all(
             format!(
-                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n",
-                u64::MAX
+                "POST /files/expect.bin HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n",
+                payload.len()
             )
             .as_bytes(),
         )
         .unwrap();
-    extreme.shutdown(std::net::Shutdown::Write).unwrap();
-    let (status, _) = read_response(&extreme).unwrap();
-    assert_eq!(status, 413);
+    stream.flush().unwrap();
 
+    // interim 100이 먼저 온다.
+    let interim = read_response(&stream).unwrap();
+    assert_eq!(interim.0, 100, "interim 100이 오지 않았습니다");
+
+    // 그제서야 본문을 보낸다.
+    stream.write_all(payload).unwrap();
+    stream.flush().unwrap();
+    let (status, _) = read_response(&stream).unwrap();
+    assert_eq!(status, 200, "100-continue 업로드가 완료되지 않았습니다");
+    assert_eq!(
+        std::fs::read(server.root.join("expect.bin")).unwrap(),
+        payload,
+        "저장된 내용이 다릅니다"
+    );
+}
+
+/// AC5 (issue #312). Every response carries `Connection: close` and
+/// `Content-Length`, and a second request pipelined on the same connection is not
+/// answered — one request per connection (D2).
+#[test]
+fn serve_sends_close_per_request_and_ignores_pipelining() {
+    let server = spawn("close", false);
+    let addr = &server.addr;
+
+    // /healthz 응답에 프레이밍 헤더가 모두 온다.
+    let (status, headers, _) = request_full(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200);
+    let lowered = headers.to_ascii_lowercase();
+    assert!(lowered.contains("connection: close"), "{headers}");
+    assert!(lowered.contains("content-length: 2"), "{headers}");
+
+    // 같은 연결에 이어 쓴 두 번째 요청은 답하지 않는다. 서버가 연결을 닫으므로
+    // EOF가 온다.
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .write_all(
+            format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+    stream
+        .write_all(
+            format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+    stream.flush().unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let text = String::from_utf8_lossy(&raw);
+    assert_eq!(
+        text.matches("HTTP/1.1 200 OK").count(),
+        1,
+        "두 번째 요청까지 답했습니다: {text:?}"
+    );
+}
+
+/// AC6 (issue #312). While one connection holds an incomplete request head, a
+/// `/healthz` request on another connection returns within 1 s — no shared
+/// blocking.
+#[test]
+fn serve_answers_healthz_while_another_head_is_incomplete() {
+    let server = spawn("incomplete-head", false);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+
+    // 헤드를 절반만 보내고 빈 줄 없이 소켓을 열어 둔다.
+    let mut holder = TcpStream::connect(addr).unwrap();
+    holder.set_read_timeout(Some(timeout)).unwrap();
+    holder
+        .write_all(b"POST /mcp HTTP/1.1\r\nContent-Length: 5\r\n")
+        .unwrap();
+    holder.flush().unwrap();
+
+    let start = std::time::Instant::now();
     let (status, body) = request(addr, "GET", "/healthz", b"");
-    assert_eq!(status, 200, "극단 선언 뒤 서버가 죽었습니다");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "healthz가 1초 안에 오지 않았습니다"
+    );
+    assert_eq!(status, 200);
     assert_eq!(body, b"ok");
 }
 
@@ -561,4 +724,132 @@ fn serve_inline_transfer_roundtrip() {
         info["isError"], false,
         "왕복한 문서를 읽지 못했습니다: {info}"
     );
+}
+
+/// Regression for the hand-rolled framing (issue #312 review): the body may
+/// arrive in a separate write well after the head, and the client does not
+/// half-close — it sends exactly Content-Length bytes and waits. The adapter
+/// must not wait for one more byte (tiny_http's EqualReader stopped at the
+/// declared length; a raw stream does not EOF until the client closes).
+#[test]
+fn serve_mcp_accepts_a_body_written_after_the_head() {
+    let server = spawn("delayed-mcp", false);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+    let payload = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#;
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    stream
+        .write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n",
+                payload.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    stream.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    stream.write_all(payload.as_bytes()).unwrap();
+    stream.flush().unwrap();
+
+    let (status, body) = read_response(&stream).unwrap();
+    assert_eq!(status, 200, "지연된 본문이 처리되지 않았습니다");
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(value["result"]["tools"].is_array(), "{value}");
+}
+
+/// Same as above, for `POST /files`: the upload lands intact even when the
+/// body follows the head by 300 ms with no half-close.
+#[test]
+fn serve_files_accepts_a_body_written_after_the_head() {
+    let server = spawn("delayed-files", true);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+    let payload = b"delayed-body-roundtrip";
+
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    stream
+        .write_all(
+            format!(
+                "POST /files/delayed.bin HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n",
+                payload.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    stream.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    stream.write_all(payload).unwrap();
+    stream.flush().unwrap();
+
+    let (status, _) = read_response(&stream).unwrap();
+    assert_eq!(status, 200, "지연된 업로드가 완료되지 않았습니다");
+    assert_eq!(
+        std::fs::read(server.root.join("delayed.bin")).unwrap(),
+        payload,
+        "저장된 내용이 다릅니다"
+    );
+}
+
+/// A short body with the client half-closing its sending side is a protocol
+/// error, not a truncated success: `/mcp` and `/files` answer 400 and no
+/// partial file survives.
+#[test]
+fn serve_rejects_a_short_body_with_400() {
+    let server = spawn("short-body", true);
+    let addr = &server.addr;
+    let timeout = std::time::Duration::from_secs(5);
+
+    for (path, declared) in [("/mcp", 64u64), ("/files/short.bin", 64u64)] {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(timeout)).unwrap();
+        stream
+            .write_all(
+                format!(
+                    "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {declared}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        // 선언보다 적게 본내고 half-close: 본문이 여기서 끝이다.
+        stream.write_all(b"abc").unwrap();
+        stream.flush().unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let (status, body) = read_response(&stream).unwrap();
+        assert_eq!(status, 400, "{path} 의 짧은 본문이 거부되지 않았습니다");
+        assert_eq!(
+            body, b"request body shorter than declared",
+            "{path} 의 본문"
+        );
+    }
+    assert!(
+        !server.root.join("short.bin").exists(),
+        "짧은 업로드의 잔여 파일이 남았습니다"
+    );
+
+    let (status, body) = request(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200, "짧은 본문 거부 뒤 서버가 죽었습니다");
+    assert_eq!(body, b"ok");
+}
+
+/// A large `GET /files` response must arrive byte-exact — about 8 MiB, past
+/// every socket and copy buffer boundary. Guards against truncated responses.
+#[test]
+fn serve_files_get_delivers_a_large_file_byte_exact() {
+    let server = spawn("large-get", true);
+    let addr = &server.addr;
+
+    // 결정론적 패턴으로 채운 8 MiB + 17바이트.
+    let total = 8 * 1024 * 1024 + 17;
+    let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+    let (status, _) = request(addr, "POST", "/files/big.bin", &payload);
+    assert_eq!(status, 200, "대용량 업로드가 실패했습니다");
+
+    let (status, body) = request(addr, "GET", "/files/big.bin", b"");
+    assert_eq!(status, 200);
+    assert_eq!(body.len(), payload.len(), "응답이 잘렸습니다");
+    assert_eq!(body, payload, "응답 바이트가 다릅니다");
 }

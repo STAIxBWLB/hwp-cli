@@ -1,103 +1,75 @@
 //! HTTP adapter: Streamable-HTTP style `POST /mcp` for container deployment.
 //!
-//! 이 서버는 private hop이다. 신뢰된 edge(Cloudflare Worker, AgentCore runtime)가
-//! TLS 종단·인증·origin 검증·body 제한을 이미 수행한 뒤에야 요청이 도달한다
-//! (docs/design/22-remote-mcp-deployment.md §3.2, §4).
+//! This server is a private hop. A trusted edge (Cloudflare Worker, AgentCore
+//! runtime) terminates TLS and performs auth, origin checks and body limits
+//! before a request ever arrives (docs/design/22-remote-mcp-deployment.md
+//! §3.2, §4).
 //!
-//! stdio adapter와 같은 protocol core를 공유하므로 도구 의미론이 갈라지지 않는다.
+//! It shares the same protocol core as the stdio adapter, so tool semantics
+//! cannot drift apart.
+//!
+//! Every request gets its own connection, closed after the response (issue
+//! #312 D2): every response carries `Connection: close` and an exact
+//! `Content-Length`; there is no keep-alive and no pipelining. That removes
+//! the drain / desync / idle-timeout classes of bugs instead of bounding them.
 
 use std::fs::File;
-use std::io::{self, Cursor, Read};
-use std::net::SocketAddr;
+use std::io::{self, BufReader, Read};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
-use tiny_http::{Header, Method, Request, Response, Server};
 use zeroize::Zeroizing;
 
-use super::authority::{LocalFsContext, canonicalize_mcp_path};
+use super::authority::{FileAuthority, LocalFsContext, canonicalize_mcp_path};
+use super::wire::{Head, Reject, linger, read_head, write_continue, write_response};
 use super::{MAX_REQUEST_LINE_BYTES, handle_request};
 
-/// `--files` 업로드 한 건의 상한.
+/// Cap on a single `--files` upload.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-/// workspace 전체 사용량 상한.
+/// Cap on total workspace usage.
 const MAX_WORKSPACE_BYTES: u64 = 256 * 1024 * 1024;
+/// Cap on live connection threads (D5). Excess connections are closed without
+/// a response.
+const MAX_CONNECTIONS: usize = 32;
+/// Socket read/write timeout (D5).
+const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
-type Body = Response<Cursor<Vec<u8>>>;
-
-/// 본문을 읽지 않고 끝내는 경로의 응답을 본다.
-///
-/// tiny_http은 `Request` drop 시 선언된 `Content-Length`의 미수신분을 EOF까지
-/// 읽어 버린다(`EqualReader::drop`). 본문을 읽지 않는 경로에서 그대로 응답하면
-/// drain이 수신 루프 위에서 실행되어, 헤더만 보내고 전송을 멈춘 클라이언트 하나가
-/// 단일 스레드 서버 전체를 멈춘다(#310). drain이 응답 전송 뒤 별도 스레드에서
-/// 일어나도록 응답을 떼어 낸다. 선언 길이가 극단적이면 drain의 버퍼 할당
-/// (`vec![0; remaining]`)이 패닉할 수 있으므로 스레드 안에서 잡는다.
-/// 본문을 끝까지 읽은 경로는 이 함수가 아니라 `request.respond`를 그대로 쓴다.
-fn respond_detached<R>(request: Request, response: Response<R>) -> Result<(), io::Error>
-where
-    R: Read + Send + 'static,
-{
-    if request.body_length().is_some_and(|n| n > 0) {
-        std::thread::spawn(move || {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Err(error) = request.respond(response) {
-                    eprintln!("hwp serve: 응답 전송 실패: {error}");
-                }
-            }));
-        });
-        Ok(())
-    } else {
-        request.respond(response)
-    }
-}
-
-fn plain(status: u16, body: &str) -> Body {
-    Response::from_string(body).with_status_code(status)
-}
-
-fn empty(status: u16) -> Body {
-    Response::from_data(Vec::new()).with_status_code(status)
-}
-
-fn header(name: &str, value: &str) -> Header {
-    // 호출부가 상수만 넘기므로 실패할 수 없다.
-    Header::from_bytes(name.as_bytes(), value.as_bytes())
-        .expect("정적 헤더 이름/값은 항상 유효하다")
-}
-
-/// 종료 신호를 받았는지 나타낸다. 시그널 핸들러가 유일한 기록자다.
+/// Set by the signal handler, the only writer. Means a shutdown was requested.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-/// accept 대기 주기. 종료 신호를 알아채기까지의 최대 지연이기도 하다.
-const ACCEPT_POLL: Duration = Duration::from_millis(200);
+/// Shutdown poll interval; also the worst-case delay before a signal is seen.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(200);
 
-/// 시그널 핸들러. async-signal-safe 한 연산만 수행한다.
+/// Signal handler. Performs only async-signal-safe operations.
 ///
-/// 첫 신호는 정상 종료를 요청하므로 처리 중인 요청이 끝날 때까지 기다린다. 두 번째
-/// 신호는 즉시 종료로 처리한다. 긴 도구 호출 도중에도 빠져나갈 수 있어야 하기
-/// 때문이다.
+/// The first signal requests a graceful shutdown, so in-flight requests run to
+/// completion. The second is treated as an immediate exit, because a long tool
+/// call must not trap the process.
 #[cfg(unix)]
 extern "C" fn on_terminate(_signal: libc::c_int) {
     if SHUTDOWN.swap(true, Ordering::SeqCst) {
-        // SAFETY: `_exit`는 async-signal-safe 하다. atexit 처리기를 건너뛰지만
-        // 이 서버는 종료 시점에 flush할 상태를 들고 있지 않다.
+        // SAFETY: `_exit` is async-signal-safe. It skips atexit handlers, but
+        // this server holds no state that must be flushed at exit.
         unsafe { libc::_exit(130) };
     }
 }
 
-/// SIGTERM·SIGINT를 받으면 수신 루프가 빠져나오도록 등록한다.
+/// Registers SIGTERM/SIGINT so the accept loop can break out.
 ///
-/// 컨테이너에서 이 프로세스는 대개 PID 1이 되는데, 커널은 기본 처리 방식을 가진
-/// 시그널을 PID 1에 전달하지 않는다. 즉 핸들러를 등록하지 않으면 SIGTERM이 조용히
-/// 버려지고, 유휴 컨테이너를 그렇게 정지시키는 플랫폼은 이 프로세스를 영영 멈추지
-/// 못한다. Cloudflare Containers에서 컨테이너 9개가 종료되지 않고 약 4시간 동안
-/// 남아 있던 원인이 이것이었다.
+/// In a container this process usually runs as PID 1, and the kernel does not
+/// deliver default-disposition signals to PID 1. Without a handler SIGTERM is
+/// silently discarded, and a platform that stops idle containers that way can
+/// never stop this process. This was why nine containers on Cloudflare
+/// Containers stayed up for about four hours.
 #[cfg(unix)]
 fn install_signal_handlers() {
-    // SAFETY: 핸들러는 async-signal-safe 한 연산만 수행한다(위 주석 참고).
-    // libc::signal 자체도 이 시점에는 다른 스레드가 없어 경합하지 않는다.
+    // SAFETY: the handler performs only async-signal-safe operations (see the
+    // comment above), and no other threads exist at this point to race
+    // libc::signal itself.
     unsafe {
         let handler = on_terminate as *const () as libc::sighandler_t;
         libc::signal(libc::SIGTERM, handler);
@@ -105,15 +77,16 @@ fn install_signal_handlers() {
     }
 }
 
-/// Windows에는 대응하는 시그널이 없다. 콘솔 종료는 기존 동작 그대로 둔다.
+/// Windows has no equivalent signals. Console close keeps its existing
+/// behavior.
 #[cfg(not(unix))]
 fn install_signal_handlers() {}
 
-/// HTTP JSON-RPC 서버. 요청을 한 번에 하나씩 처리한다.
+/// HTTP JSON-RPC server.
 ///
-/// container 하나가 MCP session 하나를 담당하므로 순차 처리가 곧 올바른 동작이다.
-// ponytail: 단일 스레드 루프 — 긴 도구 호출은 /healthz까지 지연시킨다. 한 프로세스가
-// 여러 session을 담당해야 하는 날이 오면 doc 22 §4의 선택지 1로 뒤집는다.
+/// One container serves one MCP session. `/mcp` and `/files` are handled one
+/// at a time under a single dispatch lock (doc 22 §3.2). `/healthz` answers
+/// without the lock so a long tool call never delays readiness.
 pub fn serve(
     addr: SocketAddr,
     root: PathBuf,
@@ -134,162 +107,332 @@ pub fn serve(
     }
     let ctx = LocalFsContext::new(font_dirs, vec![canonical_root.clone()]);
 
-    let server = Server::http(addr)
+    let listener = TcpListener::bind(addr)
         .map_err(|error| anyhow::anyhow!("{addr} 에 바인드할 수 없습니다: {error}"))?;
-    let bound = server
-        .server_addr()
-        .to_ip()
-        .ok_or_else(|| anyhow::anyhow!("수신 주소를 확인할 수 없습니다"))?;
-    // 실제 바인드된 주소를 한 줄로 알린다(--addr 의 포트 0을 쓸 때 필요).
-    // stdout은 도구 출력 전용이므로 운영 로그는 stderr로 보낸다.
+    let bound = listener
+        .local_addr()
+        .map_err(|error| anyhow::anyhow!("수신 주소를 확인할 수 없습니다: {error}"))?;
+    // Announce the actually bound address (needed with --addr port 0).
+    // stdout is reserved for tool output, so operational logs go to stderr.
     eprintln!("hwp serve: listening on http://{bound}");
 
     install_signal_handlers();
 
-    // incoming_requests()는 accept에서 막혀 종료 신호를 알아채지 못하므로, 짧은
-    // timeout으로 받아 처리 중인 요청은 끝까지 마친 뒤 루프를 빠져나온다.
-    while !SHUTDOWN.load(Ordering::SeqCst) {
-        let request = match server.recv_timeout(ACCEPT_POLL) {
-            Ok(Some(request)) => request,
-            Ok(None) => continue,
-            Err(error) => {
-                eprintln!("hwp serve: 연결 수신 실패: {error}");
-                continue;
-            }
-        };
-        let path = request.url().split('?').next().unwrap_or("").to_string();
-        let method = request.method().clone();
-        let result = match (&method, path.as_str()) {
-            (Method::Get, "/healthz") => respond_detached(request, plain(200, "ok")),
-            (Method::Post, "/mcp") => handle_mcp(request, &ctx),
-            // server push가 없으므로 SSE stream을 제공하지 않는다.
-            (_, "/mcp") => {
-                respond_detached(request, empty(405).with_header(header("Allow", "POST")))
-            }
-            _ if files && path.starts_with("/files/") => {
-                handle_files(request, &method, &path["/files/".len()..], &canonical_root)
-            }
-            _ => respond_detached(request, plain(404, "not found")),
-        };
-        if let Err(error) = result {
-            eprintln!("hwp serve: 응답 전송 실패: {error}");
-        }
+    let dispatch = Arc::new(Mutex::new(()));
+    // A blocking accept(2) cannot notice the shutdown signal, so a dedicated
+    // thread accepts while this thread polls SHUTDOWN. The listener stays
+    // blocking on purpose: on BSD-derived systems accept(2) gives the new
+    // socket "the same properties of socket", and std does not clear the flag,
+    // so a non-blocking listener would hand every connection socket to its
+    // handler in non-blocking mode and break read/write timeouts there.
+    {
+        let dispatch = Arc::clone(&dispatch);
+        thread::spawn(move || accept_loop(listener, Arc::new(ctx), files, &dispatch));
     }
+
+    while !SHUTDOWN.load(Ordering::SeqCst) {
+        thread::sleep(SHUTDOWN_POLL);
+    }
+    // Wait for the in-flight dispatch to release the lock (D8). The accept
+    // thread is left blocked in accept(2); process exit reaps it.
+    let _guard = dispatch
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     eprintln!("hwp serve: shutting down");
     Ok(())
 }
 
-fn handle_mcp(request: Request, ctx: &LocalFsContext) -> Result<(), io::Error> {
-    if request
-        .body_length()
-        .is_some_and(|n| n > MAX_REQUEST_LINE_BYTES)
-    {
-        return respond_detached(request, plain(413, "request body too large"));
+/// Accepts connections and spawns one thread per connection.
+fn accept_loop(
+    listener: TcpListener,
+    ctx: Arc<LocalFsContext>,
+    files: bool,
+    dispatch: &Arc<Mutex<()>>,
+) {
+    let live = Arc::new(AtomicUsize::new(0));
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if SHUTDOWN.load(Ordering::SeqCst) {
+                    drop(stream);
+                    break;
+                }
+                if live.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    // Connection cap (D5): close without answering.
+                    drop(stream);
+                    continue;
+                }
+                live.fetch_add(1, Ordering::SeqCst);
+                let ctx = Arc::clone(&ctx);
+                let dispatch = Arc::clone(dispatch);
+                let slot = ConnectionSlot(Arc::clone(&live));
+                thread::spawn(move || {
+                    let _slot = slot;
+                    handle_connection(stream, &ctx, files, &dispatch);
+                });
+            }
+            Err(_) => {
+                if SHUTDOWN.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+        }
     }
-    let mut request = request;
+}
+
+/// Returns the connection slot to the pool even when the handler panics, so 32
+/// panics cannot exhaust `MAX_CONNECTIONS` and wedge the process into dropping
+/// every new connection, `/healthz` included.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn handle_connection(stream: TcpStream, ctx: &LocalFsContext, files: bool, dispatch: &Mutex<()>) {
+    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+    let mut writer = match stream.try_clone() {
+        Ok(writer) => writer,
+        Err(_) => return,
+    };
+    let mut reader = BufReader::with_capacity(8192, stream);
+
+    let head = match read_head(&mut reader) {
+        Ok(head) => head,
+        Err(reject) => {
+            answer_reject(&mut writer, reject);
+            return;
+        }
+    };
+
+    route_request(&head, reader, &mut writer, ctx, files, dispatch);
+}
+
+/// Route matching keeps the existing surface: `/healthz`, `POST /mcp`, other
+/// methods on `/mcp` (405 `Allow: POST`), `/files/{name}` when `--files` is on
+/// (405 `Allow: GET, POST`), and 404.
+fn route_request(
+    head: &Head,
+    mut reader: BufReader<TcpStream>,
+    writer: &mut TcpStream,
+    ctx: &LocalFsContext,
+    files: bool,
+    dispatch: &Mutex<()>,
+) {
+    let path = head.path.as_str();
+    let result = match (head.method.as_str(), path) {
+        ("GET", "/healthz") => write_plain(writer, 200, "ok"),
+        ("POST", "/mcp") => {
+            let guard = lock_dispatch(dispatch);
+            let result = handle_mcp(head, &mut reader, writer, ctx);
+            drop(guard);
+            result
+        }
+        // No server push, so no SSE stream.
+        (_, "/mcp") => {
+            let mut body: &[u8] = b"";
+            write_response(writer, 405, &[("Allow", "POST")], &mut body, 0)
+        }
+        _ if files && path.starts_with("/files/") => {
+            let guard = lock_dispatch(dispatch);
+            let result = handle_files(head, &mut reader, writer, &path["/files/".len()..], ctx);
+            drop(guard);
+            result
+        }
+        _ => write_plain(writer, 404, "not found"),
+    };
+    if let Err(error) = result {
+        eprintln!("hwp serve: 응답 전송 실패: {error}");
+        return;
+    }
+    // The response went out but the declared body may not have been read in
+    // full; close gracefully (D6).
+    linger_if_needed(head, writer);
+}
+
+/// Writes one text body as the response.
+fn write_plain(writer: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
+    let len = message.len() as u64;
+    let mut body: &[u8] = message.as_bytes();
+    write_response(writer, status, &[], &mut body, len)
+}
+
+/// The dispatch lock (D5). The main thread waits on the same lock at shutdown.
+fn lock_dispatch(dispatch: &Mutex<()>) -> impl Drop + '_ {
+    dispatch
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn answer_reject(writer: &mut TcpStream, reject: Reject) {
+    let status = reject.status;
+    let message = match status {
+        411 => "length required",
+        431 => "request header fields too large",
+        _ => "bad request",
+    };
+    if let Err(error) = write_plain(writer, status, message) {
+        eprintln!("hwp serve: 거부 응답 전송 실패: {error}");
+        return;
+    }
+    // A Reject path never read the body, so close gracefully (D6). Body bytes
+    // that followed the head may still be unread; discard up to the cap only.
+    linger(writer, u64::MAX);
+}
+
+/// Graceful close for paths where the handler may not have read the whole
+/// body (D6).
+///
+/// The unread remainder stays on the socket. This layer cannot know exactly
+/// how many bytes the handler consumed through `take`, so the declared length
+/// is passed as the bound. linger itself is capped at 2 MiB / 2 seconds, so a
+/// well-behaved client (body already sent, waiting for the status) sees the
+/// status instead of a reset, while a stalled client only ties up its own
+/// connection thread.
+fn linger_if_needed(head: &Head, writer: &TcpStream) {
+    linger(writer, head.content_length);
+}
+
+/// Handles one `/mcp` body. The handler reads exactly the declared length
+/// (issue design: the handler takes `take(content_length)`), so a
+/// well-behaved client that sends its body without half-closing and waits for
+/// the status still gets its response (AC4). Leftover bytes are discarded by
+/// `linger` (D6).
+fn handle_mcp(
+    head: &Head,
+    reader: &mut impl Read,
+    writer: &mut TcpStream,
+    ctx: &LocalFsContext,
+) -> io::Result<()> {
+    if head.content_length > MAX_REQUEST_LINE_BYTES as u64 {
+        return write_plain(writer, 413, "request body too large");
+    }
+    if head.expect_continue {
+        write_continue(writer)?;
+    }
     let mut body = Zeroizing::new(Vec::new());
-    let capped = (MAX_REQUEST_LINE_BYTES as u64).saturating_add(1);
-    if request
-        .as_reader()
-        .take(capped)
-        .read_to_end(&mut body)
-        .is_err()
-    {
-        return request.respond(plain(400, "cannot read request body"));
-    }
-    if body.len() > MAX_REQUEST_LINE_BYTES {
-        return request.respond(plain(413, "request body too large"));
+    let read = reader.take(head.content_length).read_to_end(&mut body);
+    match read {
+        Err(_) => return write_plain(writer, 400, "cannot read request body"),
+        Ok(_) if (body.len() as u64) < head.content_length => {
+            return write_plain(writer, 400, "request body shorter than declared");
+        }
+        Ok(_) => {}
     }
     let Ok(line) = std::str::from_utf8(&body) else {
-        return request.respond(plain(400, "request body is not valid UTF-8"));
+        return write_plain(writer, 400, "request body is not valid UTF-8");
     };
-    let response = match handle_request(line.trim(), ctx) {
-        Some(response) => {
-            Response::from_string(response).with_header(header("Content-Type", "application/json"))
-        }
-        // 알림은 프로토콜 응답이 없다.
-        None => empty(202),
+    let Some(response) = handle_request(line.trim(), ctx) else {
+        // Notifications have no protocol response.
+        return write_response(writer, 202, &[], &mut io::empty(), 0);
     };
-    request.respond(response)
+    let len = response.len() as u64;
+    let mut response = response.as_bytes();
+    write_response(
+        writer,
+        200,
+        &[("Content-Type", "application/json")],
+        &mut response,
+        len,
+    )
 }
 
 fn handle_files(
-    request: Request,
-    method: &Method,
+    head: &Head,
+    reader: &mut impl Read,
+    writer: &mut TcpStream,
     name: &str,
-    root: &Path,
-) -> Result<(), io::Error> {
+    ctx: &LocalFsContext,
+) -> io::Result<()> {
     if !valid_file_name(name) {
-        return respond_detached(request, plain(400, "invalid file name"));
+        return write_plain(writer, 400, "invalid file name");
     }
+    let root = ctx.roots().first().expect("--root 는 항상 설정된다");
     let target = root.join(name);
-    match method {
-        Method::Post => store_file(request, &target, root),
-        Method::Get => match File::open(&target) {
-            Ok(file) => respond_detached(
-                request,
-                Response::from_file(file)
-                    .with_header(header("Content-Type", "application/octet-stream")),
-            ),
-            Err(_) => respond_detached(request, plain(404, "not found")),
+    match head.method.as_str() {
+        "POST" => store_file(head, reader, writer, &target, root),
+        "GET" => match File::open(&target) {
+            Ok(file) => {
+                let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                write_response(
+                    writer,
+                    200,
+                    &[("Content-Type", "application/octet-stream")],
+                    &mut &file,
+                    len,
+                )
+            }
+            Err(_) => write_plain(writer, 404, "not found"),
         },
-        _ => respond_detached(
-            request,
-            empty(405).with_header(header("Allow", "GET, POST")),
-        ),
+        _ => {
+            let mut body: &[u8] = b"";
+            write_response(writer, 405, &[("Allow", "GET, POST")], &mut body, 0)
+        }
     }
 }
 
-fn store_file(request: Request, target: &Path, root: &Path) -> Result<(), io::Error> {
-    let declared = request.body_length().map(|n| n as u64);
-    if declared.is_some_and(|n| n > MAX_FILE_BYTES) {
-        return respond_detached(request, plain(413, "file too large"));
+fn store_file(
+    head: &Head,
+    reader: &mut impl Read,
+    writer: &mut TcpStream,
+    target: &Path,
+    root: &Path,
+) -> io::Result<()> {
+    let declared = head.content_length;
+    if declared > MAX_FILE_BYTES {
+        return write_plain(writer, 413, "file too large");
     }
-    // 받기 전에 workspace 총량을 확인한다.
-    // ponytail: 단일 스레드 루프라 이 사전 확인과 쓰기 사이에 경합이 없다.
-    // 동시 처리를 도입하면 잠금 아래에서 다시 확인해야 한다.
+    // Check total workspace usage before receiving. Under the dispatch lock
+    // this pre-check and the write cannot race.
     let used = workspace_bytes(root).unwrap_or(0);
-    if used.saturating_add(declared.unwrap_or(0)) > MAX_WORKSPACE_BYTES {
-        return respond_detached(request, plain(413, "workspace quota exceeded"));
+    if used.saturating_add(declared) > MAX_WORKSPACE_BYTES {
+        return write_plain(writer, 413, "workspace quota exceeded");
     }
 
-    let mut request = request;
+    if head.expect_continue {
+        write_continue(writer)?;
+    }
     let mut file = match File::create(target) {
         Ok(file) => file,
         Err(error) => {
-            // 본문을 아직 읽지 않았으므로 drain이 수신 루프를 막지 않게 떼어 낸다.
-            return respond_detached(request, plain(500, &format!("cannot create file: {error}")));
+            return write_plain(writer, 500, &format!("cannot create file: {error}"));
         }
     };
-    let capped = MAX_FILE_BYTES.saturating_add(1);
-    let written = io::copy(&mut request.as_reader().take(capped), &mut file);
+    // Read exactly the declared length: a well-behaved client sends precisely
+    // that many bytes and then waits for the response without half-closing,
+    // so waiting for one more byte would deadlock (or time out into a 500).
+    let written = io::copy(&mut reader.take(declared), &mut file);
     drop(file);
 
-    let discard = |message: &str| -> Body {
+    let mut discard = |status: u16, message: &'static str| -> io::Result<()> {
         let _ = std::fs::remove_file(target);
-        plain(413, message)
+        write_plain(writer, status, message)
     };
-    let response = match written {
-        Err(error) => {
+    match written {
+        Err(_) => {
             let _ = std::fs::remove_file(target);
-            plain(500, &format!("cannot write file: {error}"))
+            write_plain(writer, 500, "cannot write file")
         }
-        Ok(count) if count > MAX_FILE_BYTES => discard("file too large"),
+        Ok(count) if count < declared => discard(400, "request body shorter than declared"),
         Ok(_) if workspace_bytes(root).unwrap_or(0) > MAX_WORKSPACE_BYTES => {
-            discard("workspace quota exceeded")
+            discard(413, "workspace quota exceeded")
         }
-        Ok(_) => empty(200),
-    };
-    request.respond(response)
+        Ok(_) => write_response(writer, 200, &[], &mut io::empty(), 0),
+    }
 }
 
 /// `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
 ///
-/// 허용 문자에 `/`와 선행 `.`이 없으므로 `root.join(name)`은 root를 벗어날 수 없다.
+/// The allowed set has no `/` and no leading `.`, so `root.join(name)` cannot
+/// escape the root.
 ///
-/// percent-escape는 의도적으로 복호하지 않는다. 허용 문자 집합이 이미 URL-safe라
-/// 정상적인 이름은 인코딩이 필요 없고, 복호를 하면 `%2e%2e` 같은 입력이 traversal로
-/// 되살아난다. 인코딩된 이름은 `%`에서 걸려 그대로 거부된다.
+/// Percent-escapes are intentionally not decoded: the allowed set is already
+/// URL-safe, so legitimate names never need encoding, and decoding would
+/// resurrect inputs like `%2e%2e` as traversal. Encoded names fail at `%` and
+/// are rejected as-is.
 fn valid_file_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > 128 {

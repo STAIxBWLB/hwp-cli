@@ -37,7 +37,7 @@ libc = { workspace = true }
 encoding_rs = { workspace = true }
 resvg = { workspace = true }
 zeroize = { workspace = true }
-tiny_http = { workspace = true }
+httparse = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
