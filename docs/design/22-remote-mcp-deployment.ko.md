@@ -21,7 +21,7 @@ delivery issue가 activation record가 된다.
 | 질문 | 결정 |
 |---|---|
 | 문서 처리는 어디에서 실행하는가 | container 안에서 동작하는 native `hwp serve` HTTP mode. `hwp mcp`를 shell-out하는 bridge도 아니고 wasm도 아니다 |
-| HTTP dependency (doc 20 §8) | 동기 방식 `tiny_http`. workspace의 no-tokio, no-SDK 기조를 유지한다 |
+| HTTP dependency (doc 20 §8) | close-per-request server 위에 동기 방식 `httparse` 헤드 parsing. workspace의 no-tokio, no-SDK 기조를 유지한다 |
 | service는 어디에서 실행하는가 | 하나의 binary를 공유하는 두 tier. **Tier A**는 Cloudflare Workers + Containers, **Tier B**는 Amazon Quick Suite connector 뒤의 AWS Bedrock AgentCore |
 | token은 누가 발행하는가 | Tier A는 `@cloudflare/workers-oauth-provider`를 사용해 Worker 자신이 발행하며 Google은 upstream IdP다. Tier B는 Amazon Cognito가 발행하며 Google은 federated IdP다 |
 | 첫 구현의 file 전송 방식 | doc 20 §3.2의 artifact model이 아니라 session workspace. §7에 amendment로 기록한다 |
@@ -156,9 +156,11 @@ gate를 충족한다.
 **선택지 2: SDK 없이 async HTTP stack만 사용.** 선택지 1의 tokio 비용은 그대로 치르면서
 hand-written protocol core를 유지하므로, 선택지 1의 적합성 이점을 전혀 얻지 못한다.
 
-**선택지 3: `tiny_http` 기반 동기 server.** 유지보수되는 작은 dependency 하나를 thread 모델로
-사용하며 async runtime이 없다. 기존 protocol core를 그대로 재사용하고, 블로킹 문서 작업이 request
-thread 위에서 자연스럽게 실행된다.
+**선택지 3: 최소 HTTP primitive 위의 동기 server.** 유지보수되는 작은 dependency 하나를 thread
+모델로 사용하며 async runtime이 없다. 기존 protocol core를 그대로 재사용하고, 블로킹 문서 작업이
+request thread 위에서 자연스럽게 실행된다. 처음에는 `tiny_http`를 골랐으나, issue #310
+(`EqualReader::drop`이 읽지 않은 body를 무제한 drain)과 issue #312에서 요청 헤드 parsing만
+담당하는 `httparse`로 교체했고, close-per-request framing은 adapter가 소유한다.
 
 ### 4.2 결정
 
@@ -169,8 +171,12 @@ framework를 재발명하지 않고도 통과하는 경우에만 no-tokio 기조
 origin 검증은 edge의 책임이다. streaming은 명시적으로 제공하지 않는다. cancellation은 edge의
 deadline과 뒤이은 container 종료로 처리한다.
 
-`TcpListener`를 직접 parsing하는 대신 `tiny_http`를 고른 이유는, doc 20 §8이 custom parsing보다
-유지보수되는 HTTP primitive를 선호하기 때문이다.
+`TcpListener`를 완전히 직접 parsing하는 대신 `httparse`를 고른 이유는, doc 20 §8이 custom
+parsing보다 유지보수되는 HTTP primitive를 선호하기 때문이다. 유지보수되는 parser가 헤드 문법을
+담당하고, adapter는 이 문서가 나열하는 framing 결정(D2-D8)만 소유한다. 최초의 `tiny_http`
+선택은 이 gate를 실제로 통과하지 못했다. request drop 시 무제한 drain(#310), 무제한 헤더 라인
+버퍼, 선언 길이 기반 allocation abort가 모두 doc 20 §8이 dependency가 책임져야 할 parsing
+동작이었다.
 
 **재검토 조건.** client가 SSE나 resumable stream을 요구하거나, 하나의 process가 여러 session을
 동시에 담당해야 하는 상황이 오면 이 결정은 선택지 1로 뒤집히며, 새 기록이 이 절을 대체한다.
