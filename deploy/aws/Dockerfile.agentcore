@@ -31,7 +31,7 @@
 # binary, which AgentCore rejects. Override only to test another architecture.
 ARG HWP_PLATFORM=linux/arm64
 
-ARG HWP_VERSION=v0.19.2
+ARG HWP_VERSION=v0.20.0
 ARG HWP_TARGET=aarch64-unknown-linux-gnu
 ARG HWP_SHA256=22b89bf5b30f5a11fcb52e8fce476f10e2c375dd08fa574cbc7cb2cdf212332c
 
