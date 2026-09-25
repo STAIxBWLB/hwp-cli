@@ -346,7 +346,7 @@ A의 셀프서비스 client에는 dynamic registration이 필요하다.
   `Content-Length`로만 framing하고 `Transfer-Encoding`이 있으면 `411`로 답한다. AWS는
   `InvokeAgentRuntime`이 `/mcp`로 전달하는 body를 어떻게 framing하는지 문서화하지 않았다. 첫 runtime
   배포 뒤, Quick connector를 등록하기 전에 `InvokeAgentRuntime`으로 `initialize`와 `tools/list`를
-  보낸다. 도구 22개가 돌아오면 framing이 확인된 것이다. `411`이나 `length required` body가 오면(AWS
+  보낸다. 정상적인 `tools/list` 결과가 오면 framing이 확인된 것이다. `411`이나 `length required` body가 오면(AWS
   계층이 container의 status를 감쌀 수 있다) chunked 전달이므로, go-live 전에 chunked request
   decoding을 먼저 넣어야 한다.
 

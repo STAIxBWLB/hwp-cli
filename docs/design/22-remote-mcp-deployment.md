@@ -351,7 +351,7 @@ administrative act, whereas Tier A's self-service clients need it.
   `Content-Length` only and answers `411` to any `Transfer-Encoding`, and AWS does not document how
   `InvokeAgentRuntime` frames the body it forwards to `/mcp`. After the first runtime deploy and
   before the Quick connector is registered, send `initialize` and `tools/list` through
-  `InvokeAgentRuntime`. A 22-tool result confirms the framing. A `411`, or a `length required`
+  `InvokeAgentRuntime`. A normal `tools/list` result confirms the framing. A `411`, or a `length required`
   body (the AWS layer may wrap the container's status), means chunked forwarding, and chunked
   request decoding must land before go-live.
 
