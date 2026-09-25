@@ -133,8 +133,8 @@ fn request_full(addr: &str, method: &str, path: &str, body: &[u8]) -> (u16, Stri
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse().ok())
         .expect("상태 줄을 해석하지 못했습니다");
-    // 모든 응답은 identity framing이다(issue #312 D2): `Content-Length`와
-    // `Connection: close`를 항상 실어 나른다. chunked 응답은 없다.
+    // Every response uses identity framing (issue #312 D2): it always carries
+    // `Content-Length` and `Connection: close`, and is never chunked.
     assert!(
         !headers
             .lines()
@@ -182,7 +182,7 @@ fn serve_speaks_the_same_protocol_as_stdio() {
     assert_eq!(value["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(value["result"]["serverInfo"]["name"], "hwp-cli");
 
-    // 알림에는 프로토콜 응답이 없다.
+    // Notifications have no protocol response.
     let (status, body) = request(
         addr,
         "POST",
@@ -225,7 +225,7 @@ fn serve_runs_tools_inside_the_root() {
     );
     assert_eq!(result["isError"], false, "hwp_info: {result}");
 
-    // --root 밖 쓰기는 stdio와 동일하게 거부된다.
+    // Writes outside --root are refused, the same as over stdio.
     let outside = std::env::temp_dir().join("hwp-serve-escape.hwpx");
     let result = call_tool(
         addr,
@@ -241,12 +241,12 @@ fn serve_rejects_oversized_and_unsupported_requests() {
     let server = spawn("limits", false);
     let addr = &server.addr;
 
-    // 1 MiB 초과 본문은 파싱 전에 거부한다.
+    // A body over 1 MiB is refused before parsing.
     let oversized = vec![b'x'; 1024 * 1024 + 1];
     let (status, _) = request(addr, "POST", "/mcp", &oversized);
     assert_eq!(status, 413);
 
-    // server push가 없으므로 SSE stream을 제공하지 않는다.
+    // No server push, so no SSE stream.
     let (status, headers, _) = request_full(addr, "GET", "/mcp", b"");
     assert_eq!(status, 405);
     assert!(
@@ -257,7 +257,7 @@ fn serve_rejects_oversized_and_unsupported_requests() {
     let (status, _) = request(addr, "GET", "/nope", b"");
     assert_eq!(status, 404);
 
-    // --files 없이는 파일 라우트가 존재하지 않는다.
+    // Without --files the file routes do not exist.
     let (status, _) = request(addr, "POST", "/files/a.bin", b"data");
     assert_eq!(status, 404);
 }
@@ -276,7 +276,7 @@ fn serve_files_roundtrip_and_name_rules() {
     let (status, _) = request(addr, "GET", "/files/missing.bin", b"");
     assert_eq!(status, 404);
 
-    // 허용 문자에 `/`와 선행 `.`이 없으므로 traversal이 성립하지 않는다.
+    // The allowed set has no `/` and no leading `.`, so traversal cannot form.
     for name in [".hidden", "-dash", "%2e%2e", "%ED%95%9C.hwpx"] {
         let (status, _) = request(addr, "POST", &format!("/files/{name}"), b"data");
         assert_eq!(status, 400, "이름 {name} 이 거부되지 않았습니다");
@@ -288,8 +288,8 @@ fn serve_files_roundtrip_and_name_rules() {
         .collect();
     assert_eq!(entries, ["a.bin"], "workspace에 예상 밖 파일이 있습니다");
 
-    // 디렉터리는 Unix에서 열리기는 하지만 보낼 본문이 없다. 200에 메타데이터
-    // 길이를 약속하고 본문을 끊는 대신 404로 답한다.
+    // A directory opens on Unix but has no body to send: answer 404 instead
+    // of promising its metadata length under 200 and cutting the body.
     std::fs::create_dir(server.root.join("sub")).unwrap();
     let (status, _) = request(addr, "GET", "/files/sub", b"");
     assert_eq!(status, 404, "디렉터리가 파일처럼 응답되었습니다");
@@ -305,7 +305,7 @@ fn serve_files_caps() {
     let server = spawn("files-caps", true);
     let addr = &server.addr;
 
-    // MAX_FILE_BYTES(64 MiB) + 1 을 Content-Length로 선언만 하고 본문은 보지 않는다.
+    // Declare MAX_FILE_BYTES (64 MiB) + 1 as Content-Length and send no body.
     let mut stream = TcpStream::connect(addr).unwrap();
     let head = format!(
         "POST /files/too-big.bin HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
@@ -313,8 +313,8 @@ fn serve_files_caps() {
     );
     stream.write_all(head.as_bytes()).unwrap();
     stream.flush().unwrap();
-    // half-close 하지 않는다. 서버는 선언 길이만 보고 거부하므로(이슈 설계)
-    // EOF 없이도 413이 도착하고, 남은 본문은 linger가 상한 안에서 버린다(D6).
+    // No half-close. The server refuses on the declared length alone, so the
+    // 413 arrives without EOF and linger discards the rest within its caps (D6).
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
@@ -325,7 +325,7 @@ fn serve_files_caps() {
         "거부된 업로드가 workspace에 남았습니다"
     );
 
-    // 거부 뒤에도 서버는 정상 동작해야 한다.
+    // The server must keep working after the refusal.
     let (status, _) = request(addr, "POST", "/files/ok.bin", b"fine");
     assert_eq!(status, 200);
     assert_eq!(std::fs::read(server.root.join("ok.bin")).unwrap(), b"fine");
@@ -377,9 +377,10 @@ fn serve_survives_declared_length_stall() {
     let addr = &server.addr;
     let timeout = std::time::Duration::from_secs(5);
 
-    // 64 MiB + 1을 선언하고 아무것도 보내지 않은 채 소켓을 연다. half-close도
-    // 하지 않는다. 서버는 선언 길이만 보고 413으로 거부하므로(이슈 설계) 대기
-    // 클라이언트의 연결 스레드만 응답을 받고, 수신 루프는 계속 답한다.
+    // Declare 64 MiB + 1, send nothing and keep the socket open, with no
+    // half-close. The server refuses with 413 on the declared length alone, so
+    // only the waiting client's connection thread is involved and the accept
+    // loop keeps answering.
     let mut staller = TcpStream::connect(addr).unwrap();
     staller.set_read_timeout(Some(timeout)).unwrap();
     let head = format!(
@@ -391,8 +392,9 @@ fn serve_survives_declared_length_stall() {
     let (status, _) = read_response(&staller).unwrap();
     assert_eq!(status, 413, "stalled 요청의 413이 도착하지 않았습니다");
 
-    // 수신 루프는 살아 있어야 한다: 새 연결이 bounded time 안에 응답받는다.
-    // 클라이언트 read timeout이 상한이다 — wedged 서버는 hang이 아니라 실패가 된다.
+    // The accept loop must stay alive: a new connection is answered in bounded
+    // time. The client read timeout is the bound, so a wedged server fails the
+    // test instead of hanging it.
     let mut follow = TcpStream::connect(addr).unwrap();
     follow.set_read_timeout(Some(timeout)).unwrap();
     follow
@@ -425,8 +427,8 @@ fn serve_survives_extreme_declared_lengths() {
         stream.write_all(head.as_bytes()).unwrap();
         stream.write_all(b"abc").unwrap();
         stream.flush().unwrap();
-        // half-close: 본문을 다 보냈다는 신호. 서버는 선언 길이(1 MiB)를 넘는
-        // 요청을 읽기 전에 거부한다.
+        // Half-close: the body is complete. The server refuses a declared length
+        // over 1 MiB before reading it.
         stream.shutdown(std::net::Shutdown::Write).unwrap();
         let (status, body) = read_response(&stream).unwrap();
         assert_eq!(status, 413, "선언 길이 {length} 가 거부되지 않았습니다");
@@ -450,8 +452,8 @@ fn serve_rejects_an_oversized_head_with_431() {
     let addr = &server.addr;
     let timeout = std::time::Duration::from_secs(5);
 
-    // 16 KiB를 넘는 헤더 한 줄. 서버는 덩어리 스캔이라 버퍼 크기만큼만 읽고
-    // 상한에서 431로 끊는다(D4).
+    // One header line over 16 KiB. The server scans chunk by chunk, holds at
+    // most one buffer beyond the cap, and answers 431 there (D4).
     let mut stream = TcpStream::connect(addr).unwrap();
     stream.set_read_timeout(Some(timeout)).unwrap();
     let header = format!("X-Pad: {}\r\n", "x".repeat(64 * 1024));
@@ -535,11 +537,11 @@ fn serve_files_expect_continue_roundtrip() {
         .unwrap();
     stream.flush().unwrap();
 
-    // interim 100이 먼저 온다.
+    // The interim 100 arrives first.
     let interim = read_response(&stream).unwrap();
     assert_eq!(interim.0, 100, "interim 100이 오지 않았습니다");
 
-    // 그제서야 본문을 보낸다.
+    // Only then send the body.
     stream.write_all(payload).unwrap();
     stream.flush().unwrap();
     let (status, _) = read_response(&stream).unwrap();
@@ -559,7 +561,7 @@ fn serve_sends_close_per_request_and_ignores_pipelining() {
     let server = spawn("close", false);
     let addr = &server.addr;
 
-    // /healthz 응답에 프레이밍 헤더가 모두 온다.
+    // The /healthz response carries both framing headers.
     let (status, headers, _) = request_full(addr, "GET", "/healthz", b"");
     assert_eq!(status, 200);
     let lowered = headers.to_ascii_lowercase();
@@ -570,8 +572,8 @@ fn serve_sends_close_per_request_and_ignores_pipelining() {
         "{headers}"
     );
 
-    // 같은 연결에 이어 쓴 두 번째 요청은 답하지 않는다. 서버가 연결을 닫으므로
-    // EOF가 온다.
+    // A second request written on the same connection is not answered: the
+    // server closes the connection, so the client sees EOF.
     let mut stream = TcpStream::connect(addr).unwrap();
     stream
         .write_all(
@@ -608,7 +610,7 @@ fn serve_answers_healthz_while_another_head_is_incomplete() {
     let addr = &server.addr;
     let timeout = std::time::Duration::from_secs(5);
 
-    // 헤드를 절반만 보내고 빈 줄 없이 소켓을 열어 둔다.
+    // Send half a head, with no empty line, and keep the socket open.
     let mut holder = TcpStream::connect(addr).unwrap();
     holder.set_read_timeout(Some(timeout)).unwrap();
     holder
@@ -824,7 +826,7 @@ fn serve_rejects_a_short_body_with_400() {
                 .as_bytes(),
             )
             .unwrap();
-        // 선언보다 적게 보내고 half-close: 본문이 여기서 끝이다.
+        // Send less than declared and half-close: the body ends here.
         stream.write_all(b"abc").unwrap();
         stream.flush().unwrap();
         stream.shutdown(std::net::Shutdown::Write).unwrap();
@@ -852,7 +854,7 @@ fn serve_files_get_delivers_a_large_file_byte_exact() {
     let server = spawn("large-get", true);
     let addr = &server.addr;
 
-    // 결정론적 패턴으로 채운 8 MiB + 17바이트.
+    // 8 MiB + 17 bytes of a deterministic pattern.
     let total = 8 * 1024 * 1024 + 17;
     let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
     let (status, _) = request(addr, "POST", "/files/big.bin", &payload);
@@ -953,7 +955,7 @@ fn serve_answers_mcp_while_another_body_stalls() {
         )
         .unwrap();
     staller.flush().unwrap();
-    // 서버가 헤드를 받고 본문 읽기에 들어갈 시간을 준다.
+    // Give the server time to take the head and start reading the body.
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let start = std::time::Instant::now();

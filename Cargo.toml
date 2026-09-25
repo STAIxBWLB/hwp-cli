@@ -42,8 +42,9 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # `hwp serve` HTTP adapter (issue #312, decision record in doc 22 §4) — a
 # synchronous thread model, so no tokio. httparse owns request-head parsing
 # only; the adapter owns close-per-request framing. tiny_http 0.12 was replaced
-# because EqualReader::drop drains unboundedly (#252) and its unbounded header
-# line buffer plus declared-length allocation could abort the process.
+# because EqualReader::drop drains unboundedly (tiny-http/tiny-http#252) and its
+# unbounded header line buffer plus declared-length allocation could abort the
+# process.
 httparse = "1"
 
 # Rendering
