@@ -13,24 +13,24 @@ class Hwp < Formula
   # brew style: desc must not begin with the formula name (hwp).
   desc "Read, convert, render and edit Hangul HWP 5.0 and HWPX documents"
   homepage "https://github.com/STAIxBWLB/hwp-cli"
-  version "0.20.0"
+  version "0.20.1"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
     on_arm do
       url "https://github.com/STAIxBWLB/hwp-cli/releases/download/v#{version}/hwp-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "75d97556a2b8e7ff5db4c77626d141be0d19faf2f364e9f8043c5d7a9e236257"
+      sha256 "3f97d7915548b547843e7e7ff5eb8e7a305f04298b7a36facf5cfee003d45b5a"
     end
     on_intel do
       url "https://github.com/STAIxBWLB/hwp-cli/releases/download/v#{version}/hwp-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "ac7d8259b7f57a823c681b920355a38829b5b2a90abcef3e57696f04e4402dc4"
+      sha256 "a69e908f644475f407ce06578305af86ac793f5a97d2a0d687e860ca3c3d509e"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/STAIxBWLB/hwp-cli/releases/download/v#{version}/hwp-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "ab41363d153a0c97f50b90582d459df6e1fada88105b57922e67f71946e75d9c"
+      sha256 "9166b7cfdb439106c32423e0807ff76e4f1b9b5c395343a02de614292d9f6c5b"
     end
   end
 
