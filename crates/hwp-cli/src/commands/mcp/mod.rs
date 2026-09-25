@@ -9,6 +9,7 @@
 mod authority;
 mod http;
 mod stdio;
+mod wire;
 
 pub use authority::FileAuthority;
 pub use http::serve;

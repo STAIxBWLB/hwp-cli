@@ -21,7 +21,7 @@ delivery issue가 activation record가 된다.
 | 질문 | 결정 |
 |---|---|
 | 문서 처리는 어디에서 실행하는가 | container 안에서 동작하는 native `hwp serve` HTTP mode. `hwp mcp`를 shell-out하는 bridge도 아니고 wasm도 아니다 |
-| HTTP dependency (doc 20 §8) | 동기 방식 `tiny_http`. workspace의 no-tokio, no-SDK 기조를 유지한다 |
+| HTTP dependency (doc 20 §8) | close-per-request server 위에 동기 방식 `httparse` 헤드 parsing. workspace의 no-tokio, no-SDK 기조를 유지한다 |
 | service는 어디에서 실행하는가 | 하나의 binary를 공유하는 두 tier. **Tier A**는 Cloudflare Workers + Containers, **Tier B**는 Amazon Quick Suite connector 뒤의 AWS Bedrock AgentCore |
 | token은 누가 발행하는가 | Tier A는 `@cloudflare/workers-oauth-provider`를 사용해 Worker 자신이 발행하며 Google은 upstream IdP다. Tier B는 Amazon Cognito가 발행하며 Google은 federated IdP다 |
 | 첫 구현의 file 전송 방식 | doc 20 §3.2의 artifact model이 아니라 session workspace. §7에 amendment로 기록한다 |
@@ -106,8 +106,9 @@ adapter가 강제하는 규칙은 다음과 같다.
 - `/files` route에서는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`에 일치하는 이름만 받고, root 아래로
   해석하며, 파일 하나를 64 MiB로 workspace 전체를 256 MiB로 제한하고, 제한을 넘으면 부분 업로드
   파일을 삭제한다.
-- 요청을 한 번에 하나씩 처리한다. container 하나가 MCP session 하나를 담당하므로 악용할 동시성도
-  없고 framing이 뒤섞일 여지도 없다.
+- `/mcp`와 `/files` 요청은 dispatch lock 하나 아래에서 한 번에 하나씩 처리한다. container 하나가
+  MCP session 하나를 담당하므로 악용할 동시성도 없고 framing이 뒤섞일 여지도 없다. `/healthz`는
+  lock 밖에서 답하므로 긴 도구 호출이 readiness를 늦추지 않는다.
 
 ### 3.3 Remote-safe inline content
 
@@ -156,9 +157,11 @@ gate를 충족한다.
 **선택지 2: SDK 없이 async HTTP stack만 사용.** 선택지 1의 tokio 비용은 그대로 치르면서
 hand-written protocol core를 유지하므로, 선택지 1의 적합성 이점을 전혀 얻지 못한다.
 
-**선택지 3: `tiny_http` 기반 동기 server.** 유지보수되는 작은 dependency 하나를 thread 모델로
-사용하며 async runtime이 없다. 기존 protocol core를 그대로 재사용하고, 블로킹 문서 작업이 request
-thread 위에서 자연스럽게 실행된다.
+**선택지 3: 최소 HTTP primitive 위의 동기 server.** 유지보수되는 작은 dependency 하나를 thread
+모델로 사용하며 async runtime이 없다. 기존 protocol core를 그대로 재사용하고, 블로킹 문서 작업이
+request thread 위에서 자연스럽게 실행된다. 처음에는 `tiny_http`를 골랐으나, issue #310
+(`EqualReader::drop`이 읽지 않은 body를 무제한 drain)과 issue #312에서 요청 헤드 parsing만
+담당하는 `httparse`로 교체했고, close-per-request framing은 adapter가 소유한다.
 
 ### 4.2 결정
 
@@ -169,8 +172,12 @@ framework를 재발명하지 않고도 통과하는 경우에만 no-tokio 기조
 origin 검증은 edge의 책임이다. streaming은 명시적으로 제공하지 않는다. cancellation은 edge의
 deadline과 뒤이은 container 종료로 처리한다.
 
-`TcpListener`를 직접 parsing하는 대신 `tiny_http`를 고른 이유는, doc 20 §8이 custom parsing보다
-유지보수되는 HTTP primitive를 선호하기 때문이다.
+`TcpListener`를 완전히 직접 parsing하는 대신 `httparse`를 고른 이유는, doc 20 §8이 custom
+parsing보다 유지보수되는 HTTP primitive를 선호하기 때문이다. 유지보수되는 parser가 헤드 문법을
+담당하고, adapter는 issue #312가 기록한 framing 결정(D2-D8)만 소유한다. 최초의 `tiny_http`
+선택은 이 gate를 실제로 통과하지 못했다. request drop 시 무제한 drain(#310), 무제한 헤더 라인
+버퍼, 선언 길이 기반 allocation abort가 모두 doc 20 §8이 dependency가 책임져야 할 parsing
+동작이었다.
 
 **재검토 조건.** client가 SSE나 resumable stream을 요구하거나, 하나의 process가 여러 session을
 동시에 담당해야 하는 상황이 오면 이 결정은 선택지 1로 뒤집히며, 새 기록이 이 절을 대체한다.
@@ -265,7 +272,7 @@ tool argument, path, 문서 내용, token을 담지 않는다. doc 20 §7의 요
 |---|---|
 | `initialize` | Worker가 난수 session 식별자를 만들고 principal과 그 식별자로 Durable Object 이름을 정한다. container가 기동해 readiness 확인을 통과하면 response에 `Mcp-Session-Id`를 실어 보낸다 |
 | 이후 호출 | 같은 header가 같은 object에 도달하므로 같은 microVM, 같은 workspace, 같은 process를 사용한다 |
-| 30분 유휴 | container class가 instance를 정지시킨다. object가 session을 dead로 표시하므로 다음 호출은 `404`가 되고 client가 재초기화한다 |
+| 3분 유휴 | container class가 instance를 정지시킨다. object가 session을 dead로 표시하므로 다음 호출은 `404`가 되고 client가 재초기화한다 |
 | `DELETE /mcp` | container를 종료하고 session을 dead로 표시하며 alarm을 해제한 뒤 `204`를 반환한다. 멱등하다 |
 | 최대 수명 8시간 | alarm이 session을 종료시켜 재초기화를 강제한다. doc 20 §7의 요구사항이다 |
 | deadline 초과 | 기본 120초, rendering과 conversion과 certification은 300초다. Worker가 요청을 중단하고 container를 종료한 뒤 timeout을 반환한다 |

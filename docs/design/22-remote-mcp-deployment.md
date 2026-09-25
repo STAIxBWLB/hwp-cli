@@ -20,7 +20,7 @@ accompanies it is the activation record.
 | Question | Decision |
 |---|---|
 | Where does document work run? | A native `hwp serve` HTTP mode inside a container, not a bridge that shells out to `hwp mcp`, and not wasm |
-| HTTP dependency (doc 20 §8) | Synchronous `tiny_http`, keeping the workspace's no-tokio, no-SDK stance |
+| HTTP dependency (doc 20 §8) | Synchronous `httparse` head parsing with a close-per-request server, keeping the workspace's no-tokio, no-SDK stance |
 | Where does the service run? | Two tiers sharing one binary: **Tier A** Cloudflare Workers + Containers, **Tier B** AWS Bedrock AgentCore behind an Amazon Quick Suite connector |
 | Who issues tokens? | Tier A: the Worker itself, via `@cloudflare/workers-oauth-provider`, with Google as upstream IdP. Tier B: Amazon Cognito, with Google as a federated IdP |
 | File transfer in the first implementation | Session workspace, not the doc 20 §3.2 artifact model. Recorded as an amendment in §7 |
@@ -106,8 +106,9 @@ Rules the adapter enforces:
 - On the `/files` routes, accept a name matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, resolve it
   under the root, cap one file at 64 MiB and the workspace at 256 MiB, and unlink a partial upload
   when a cap is breached.
-- Handle one request at a time. One container serves one MCP session, so there is no concurrency
-  to exploit and no interleaving to corrupt.
+- Handle `/mcp` and `/files` requests one at a time under a single dispatch lock. One container
+  serves one MCP session, so there is no concurrency to exploit and no interleaving to corrupt.
+  `/healthz` answers outside the lock, so a long tool call never delays readiness.
 
 ### 3.3 Remote-safe inline content
 
@@ -158,9 +159,12 @@ discipline throughout.
 **Option 2: an async HTTP stack without the SDK.** Pays the tokio cost of option 1 while keeping
 the hand-written protocol core, so it buys none of option 1's conformance benefit.
 
-**Option 3: a synchronous server on `tiny_http`.** One small maintained dependency, a thread-based
-model, no async runtime. The existing protocol core is reused unchanged, and blocking document work
-runs naturally on the request thread.
+**Option 3: a synchronous server on a minimal HTTP primitive.** One small maintained dependency,
+a thread-based model, no async runtime. The existing protocol core is reused unchanged, and
+blocking document work runs naturally on the request thread. The primitive was `tiny_http` at
+first; issue #310 (its `EqualReader::drop` drains an unread body unboundedly) and issue #312
+replaced it with `httparse`, which parses the request head only, while the adapter owns
+close-per-request framing.
 
 ### 4.2 Decision
 
@@ -171,8 +175,12 @@ most five routes, unreachable except through the trusted edge, so hostile-input 
 slow-client defense, and origin validation are the edge's responsibility. Streaming is explicitly
 not offered. Cancellation is the edge's deadline followed by container termination.
 
-`tiny_http` is chosen over hand-rolled `TcpListener` parsing because doc 20 §8 prefers maintained
-HTTP primitives over custom parsing.
+`httparse` over fully hand-rolled `TcpListener` parsing keeps doc 20 §8's preference for
+maintained HTTP primitives over custom parsing: the maintained parser owns head syntax, and the
+adapter owns only the framing decisions issue #312 records (D2-D8). The initial `tiny_http`
+choice failed that gate in practice — its unbounded drain on request drop (#310), unbounded
+header-line buffering, and declared-length allocation abort were exactly the parsing behavior
+doc 20 §8 makes the dependency's job to get right.
 
 **Revisit trigger.** If a client requires SSE or resumable streams, or if one process must ever
 host multiple sessions concurrently, this decision flips to option 1 and a new record supersedes
@@ -268,7 +276,7 @@ audit table holds no tool arguments, paths, document content, or tokens, as doc 
 |---|---|
 | `initialize` | The Worker mints a random session identifier and derives the Durable Object name from the principal and that identifier. The container starts, the readiness probe passes, and the response carries `Mcp-Session-Id` |
 | Later calls | The same header reaches the same object, therefore the same microVM, workspace, and process |
-| Idle 30 minutes | The container class stops the instance. The object marks the session dead, so the next call returns `404` and the client reinitializes |
+| Idle 3 minutes | The container class stops the instance. The object marks the session dead, so the next call returns `404` and the client reinitializes |
 | `DELETE /mcp` | Terminates the container, marks the session dead, cancels the alarm, and returns `204`. Idempotent |
 | Maximum lifetime 8 hours | An alarm terminates the session, which forces reinitialization as doc 20 §7 requires |
 | Deadline exceeded | 120 seconds by default and 300 seconds for rendering, conversion, and certification. The Worker aborts, terminates the container, and returns a timeout |

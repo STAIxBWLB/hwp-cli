@@ -16,13 +16,18 @@ use clap::{CommandFactory, FromArgMatches};
 use hwp_cli::cli::{Cli, Cmd};
 use hwp_cli::i18n;
 
+/// Stack for every thread that runs a command or an MCP tool call, including
+/// each `hwp serve` connection thread. Deep document nesting recurses in the
+/// parsers, so a default 2 MiB thread would abort the process there.
+const WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
+
 fn main() -> anyhow::Result<()> {
     // clap derive가 만드는 명령 트리 생성/파싱은 디버그 빌드에서 프레임이 커져
     // Windows 기본 main 스레드 스택(1MB)을 넘는다(실기 CI 확정). 모든 작업을
     // 큰 스택의 워커 스레드에서 실행해 플랫폼·빌드 프로파일 차이를 흡수한다.
     let worker = std::thread::Builder::new()
         .name("hwp-main".to_string())
-        .stack_size(32 * 1024 * 1024)
+        .stack_size(WORKER_STACK_BYTES)
         .spawn(real_main)?;
     match worker.join() {
         Ok(result) => result,
