@@ -6,6 +6,10 @@
 > (`.gitignore`로 제외 — 로컬 전용). 아래 출처에서 받아 같은 경로에 두면 렌더/PDF 테스트가
 > 동작하고, 없으면 해당 테스트는 자동으로 **skip**된다. 이 README와 `golden/README.md`만 커밋한다.
 >
+> skip된 테스트도 `ok`로 보고되므로 `scripts/check.sh`가 요약 줄에 그 수를 센다
+> (`skipped-for-missing-fixtures=N`, 목록은 `target/fixture-skips.log`).
+> `HWP_REQUIRE_FIXTURES=1`이면 이런 skip이 모두 실패가 된다(#275).
+>
 > **예외: `samples/`는 커밋한다** — 저장소 소유자 자신의 문서를 익명화한 테스트 샘플로,
 > 테스트가 하드 의존한다(skip 없음).
 

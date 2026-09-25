@@ -60,15 +60,25 @@ HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus
 scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/doc/release gates
 ```
 
-- A successful run ends with exactly one of these two lines (the last field reports the public
-  parity gate; the script prints one word there, never both):
+- A successful run ends with exactly one of these two lines (the `public-parity` field reports the
+  public parity gate; the script prints one word there, never both; `<N>` is always a number,
+  `0` included):
 
   ```
-  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=ran) ==
-  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/public-parity=skipped) ==
+  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=ran) skipped-for-missing-fixtures=<N> ==
+  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=skipped) skipped-for-missing-fixtures=<N> ==
   ```
 
   Any other ending means the run failed; the script keeps going after a failing gate so one run reports all of them.
+- **What a green run covers** (#275): tests that need a local-only fixture (`fixtures/hwp5/`,
+  `fixtures/hwpx/`, `fixtures/pdf-parity/private/`) skip without it and still report `ok`.
+  `skipped-for-missing-fixtures=<N>` counts those skips (listed in `target/fixture-skips.log`), so
+  a green run with N > 0 did **not** check what those tests check - invariant 2's identity gate
+  among them. `HWP_REQUIRE_FIXTURES=1 scripts/check.sh` turns every such skip into a failure.
+  CI and the release-readiness workflow have no fixtures by the data policy, so they do not set
+  it (it would always fail) and only print the count; the strict local run is a release-readiness
+  checklist item instead. New fixture guards go through
+  `crates/hwp-cli/tests/common/fixture_skip.rs` (`fixture_missing`), never a bare `exists()`.
 - **Run it before reporting a task complete, and paste the output.** For a partial run during development,
   call the single command directly (clippy only, test only) - but the full script is what gates the PR.
 - When a test fails, fix the code, not the test. Do not skip, delete, or weaken a gate to make a run pass.

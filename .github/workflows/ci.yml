@@ -134,6 +134,13 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/tests/release-readiness-selfcheck.sh
+      # #275: proves the fixture-skip tally moves (absent path -> one line, present -> none,
+      # HWP_REQUIRE_FIXTURES=1 -> failure), and that the invariant-2 gate's skip is counted here,
+      # where fixtures/hwp5 is absent by the data policy.
+      - name: Fixture skip accounting self test
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/tests/fixture-skip-accounting.sh
 
   pdf-parity:
     name: pdf-parity
@@ -259,5 +266,20 @@ jobs:
           exit 1
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
+      # fixtures/hwp5 and fixtures/hwpx are gitignored (data policy), so this run is reduced in
+      # scope; print by how much (#275). HWP_REQUIRE_FIXTURES is deliberately not set: without the
+      # fixtures it would always fail. The strict run is a local pre-release item in
+      # docs/release-readiness.md.
       - name: Test
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          export HWP_FIXTURE_SKIP_LOG="$RUNNER_TEMP/fixture-skips.log"
+          rm -f "$HWP_FIXTURE_SKIP_LOG"
+          status=0
+          cargo test --workspace || status=$?
+          skipped=0
+          if [ -f "$HWP_FIXTURE_SKIP_LOG" ]; then
+            skipped="$(wc -l <"$HWP_FIXTURE_SKIP_LOG" | tr -d ' ')"
+          fi
+          echo "skipped-for-missing-fixtures=$skipped"
+          exit "$status"

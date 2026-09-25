@@ -23,13 +23,24 @@ const ALL: &[&str] = &[
     "annual_report.hwp",
 ];
 
-/// fixture 바이너리는 저장소에서 제외된다(로컬 전용). 없으면 `true`(스킵).
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
+/// Fixture binaries are not in the repository (local only). `true` means skip, and the skip is
+/// counted (#275).
+#[track_caller]
 fn skip_if_no_fixtures() -> bool {
-    if fixture("hello_world.hwp").exists() {
-        return false;
-    }
-    eprintln!("스킵: fixtures 없음 (fixtures/hwp5/) — fixtures/README.md 참고");
-    true
+    fixture_skip::fixture_missing(&fixture("hello_world.hwp"))
+}
+
+/// The #275 accounting probe: guards the path `scripts/tests/fixture-skip-accounting.sh` names in
+/// `HWP_FIXTURE_SKIP_PROBE`, exactly as a fixture guard would, so the script can drive both the
+/// absent and the present case on any checkout. The guard is the whole test.
+#[test]
+#[ignore = "driven by scripts/tests/fixture-skip-accounting.sh"]
+fn fixture_skip_accounting_probe() {
+    let probe = std::env::var_os("HWP_FIXTURE_SKIP_PROBE").expect("HWP_FIXTURE_SKIP_PROBE");
+    fixture_skip::fixture_missing(std::path::Path::new(&probe));
 }
 
 #[test]

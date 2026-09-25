@@ -14,17 +14,15 @@ fn fixture(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// fixture 문서는 저장소에 없으므로(로컬 전용 — fixtures/README.md) 없으면 건너뛴다.
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
+/// Fixture documents are not in the repository (local only - fixtures/README.md), so a missing
+/// one is skipped, and the skip is counted (#275).
+#[track_caller]
 fn fixture_or_skip(rel: &str) -> Option<PathBuf> {
     let p = fixture(rel);
-    if !p.exists() {
-        eprintln!(
-            "스킵: fixture 없음 ({}) — fixtures/README.md 참고",
-            p.display()
-        );
-        return None;
-    }
-    Some(p)
+    (!fixture_skip::fixture_missing(&p)).then_some(p)
 }
 
 /// 어두운 픽셀(텍스트) 수를 센다.

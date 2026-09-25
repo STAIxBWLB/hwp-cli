@@ -7,6 +7,10 @@
 > them at the same paths to enable the render and PDF tests; without them those tests **skip**
 > automatically. Only this README and `golden/README.md` are committed.
 >
+> A skip still reports `ok`, so `scripts/check.sh` counts them on its summary line
+> (`skipped-for-missing-fixtures=N`, listed in `target/fixture-skips.log`), and
+> `HWP_REQUIRE_FIXTURES=1` turns every such skip into a failure (#275).
+>
 > **Exception: `samples/` is committed**, being anonymized test samples of the repository owner's own
 > documents, which the tests depend on hard (no skipping).
 

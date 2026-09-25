@@ -10,6 +10,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- `scripts/check.sh` now says how much of the suite a green run skipped. Tests that need a
+  local-only fixture (`fixtures/hwp5/`, `fixtures/hwpx/`, `fixtures/pdf-parity/private/`) return
+  early without it and report `ok`, so the same OK line used to cover a different set of tests
+  with and without the fixtures, and CI (which has none by the data policy) was a reduced-scope
+  run nobody could see. Every such guard now reports through one shared helper, and the summary
+  line always ends with `skipped-for-missing-fixtures=N`, `0` included; the skips are listed in
+  `target/fixture-skips.log`. `HWP_REQUIRE_FIXTURES=1` turns each skip into a failure; the
+  default is unchanged. CI and the release-readiness workflow print the count but do not set the
+  flag (without fixtures it would always fail); a local strict run is a new release-readiness
+  checklist line instead. `scripts/tests/fixture-skip-accounting.sh` proves the count moves and
+  runs in `check.sh` and the CI `lint` job
+  ([#275](https://github.com/STAIxBWLB/hwp-cli/issues/275)).
+
 ## [1.0.0]
 
 1.0.0 closes the project's first milestone, shipped across 0.8.7 to 0.20.2: fidelity fixes and

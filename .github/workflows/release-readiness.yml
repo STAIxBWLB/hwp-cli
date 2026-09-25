@@ -330,9 +330,22 @@ jobs:
           test_fonts="$font_root/extracted/usr/share/fonts/truetype/nanum"
           test -d "$test_fonts" || exit 1
           printf '<fontconfig><include ignore_missing="yes">/etc/fonts/fonts.conf</include><dir>%s</dir></fontconfig>\n' "$test_fonts" >"$font_root/fonts.conf"
-          HWP_FONT_DIR="$test_fonts" FONTCONFIG_FILE="$font_root/fonts.conf" \
+          # #275: this clean checkout has no fixtures/hwp5 or fixtures/hwpx (data policy), so the
+          # run is reduced in scope; the log says by how much. HWP_REQUIRE_FIXTURES is not set
+          # here (it would always fail): the fixtures-required line covers the strict run.
+          skip_log="$RUNNER_TEMP/gates/test-workspace/fixture-skips"
+          HWP_FIXTURE_SKIP_LOG="$skip_log" HWP_FONT_DIR="$test_fonts" FONTCONFIG_FILE="$font_root/fonts.conf" \
             cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
-          exit "${PIPESTATUS[0]}"
+          status="${PIPESTATUS[0]}"
+          skipped=0
+          if [ -f "$skip_log" ]; then
+            skipped="$(wc -l <"$skip_log" | tr -d ' ')"
+          elif [ ! -f crates/hwp-cli/tests/common/fixture_skip.rs ]; then
+            # A ref from before the accounting existed writes no log; 0 would be a false claim.
+            skipped="unknown (the evaluated ref predates #275)"
+          fi
+          echo "skipped-for-missing-fixtures=$skipped" | tee -a "$RUNNER_TEMP/gates/test-workspace/log"
+          exit "$status"
 
       - name: Gate test-workspace
         id: gate-test-workspace
@@ -560,6 +573,29 @@ jobs:
           GATES_FILE="$(mktemp)"
           printf '%s\t%s\t%s\n' hancom-receipt 'n/a' \
             'the hancom-verification-receipt-v1 receipts are recorded by the owner opening each artifact in Hancom Office and are kept privately outside the repository; CI has no Hancom oracle, so this gate cannot run here and is not a pass' \
+            >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      # Checklist lines 39-43. Not applicable in CI (#275): fixtures/hwp5 and fixtures/hwpx are
+      # gitignored by the data policy, so a clean checkout has none and HWP_REQUIRE_FIXTURES=1
+      # would always fail here. The line is the maintainer's local strict run; this run only
+      # prints its own skip count (the test-workspace log).
+      - name: Gate fixtures-required
+        id: gate-fixtures-required
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The ledger is this controller step's own file: it exists only while this step
+          # runs, and the entries leave it as a step output the runner holds, so nothing
+          # that runs later can reach them.
+          GATES_FILE="$(mktemp)"
+          printf '%s\t%s\t%s\n' fixtures-required 'n/a' \
+            'fixtures/hwp5 and fixtures/hwpx are gitignored by the data policy, so this clean checkout has none and HWP_REQUIRE_FIXTURES=1 would always fail here; the evidence for this line is the local HWP_REQUIRE_FIXTURES=1 scripts/check.sh run made before the release, and the test-workspace log prints the skipped-for-missing-fixtures count of this run, so this gate cannot run here and is not a pass' \
             >>"$GATES_FILE"
           {
             echo "entry<<GATE_ENTRY_EOF"
@@ -913,6 +949,7 @@ jobs:
           GATE_RELEASE_ARCHIVE_FONTS: ${{ steps.gate-release-archive-fonts.outputs.entry }}
           GATE_INDEPENDENT_ORACLE: ${{ steps.oracle.outputs.entry }}
           GATE_HANCOM_RECEIPT: ${{ steps.gate-hancom-receipt.outputs.entry }}
+          GATE_FIXTURES_REQUIRED: ${{ steps.gate-fixtures-required.outputs.entry }}
           GATE_RELEASE_COPY_CLAIMS: ${{ steps.gate-release-copy-claims.outputs.entry }}
           GATE_DOC_SURFACE: ${{ steps.gate-doc-surface.outputs.entry }}
           GATE_README_PINNED_TAG: ${{ steps.gate-readme-pinned-tag.outputs.entry }}
@@ -964,6 +1001,7 @@ jobs:
               "tool-count",
               "skill-coverage",
               "hwpx-skill-parity",
+              "fixtures-required",
           ]
 
           # docs/design/21-pdf-parity.md sections 4.5 and 4.6. These describe the private

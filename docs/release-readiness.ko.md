@@ -37,6 +37,11 @@
       [design/23-hwpx-skill-absorption](design/23-hwpx-skill-absorption.ko.md)의 패리티
       매트릭스 — 퇴역(RET-01, 2026-08-27 종료)이 무엇을 대체했는지 남긴 기록 — 와 여전히
       맞는지 확인
+- [ ] 로컬 전용 픽스처(`fixtures/hwp5/`, `fixtures/hwpx/`, `fixtures/pdf-parity/private/`)를 둔
+      상태에서 로컬 `HWP_REQUIRE_FIXTURES=1 scripts/check.sh` 통과. CI와 준비 점검 워크플로는
+      데이터 정책상 이 픽스처가 없으므로 이 플래그를 설정하지 않고(항상 실패한다)
+      `skipped-for-missing-fixtures=N`만 출력한다. 녹색 CI가 검증한 범위는 그 N개 스킵을 뺀
+      나머지다(#275)
 
 릴리스는 7종 스모크 픽스처가 모든 실제 문서 형태를 커버한다거나, 한컴 픽셀 동등성을 제공한다거나,
 플랫폼 간 래스터 바이트가 동일함을 증명한다고 주장해서는 안 된다.
