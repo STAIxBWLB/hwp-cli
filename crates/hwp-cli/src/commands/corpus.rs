@@ -36,13 +36,13 @@ const FROZEN_FONT_REVISION: &str = "2796410152d4f9524b68ed46e69c1b60f8e0f7c3";
 const FROZEN_FONT_SOURCE_URL: &str = "https://raw.githubusercontent.com/google/fonts/2796410152d4f9524b68ed46e69c1b60f8e0f7c3/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf";
 #[cfg(test)]
 const FROZEN_MANIFEST_SCHEMA_SHA256: &str =
-    "b8057de94b15deebceb58f014071d57d96fd9bb61603d9cbc2fd94a4398b3b3a";
+    "eb168b4386e8fa35c84608410a29886281e6b08974407ed88bfa6be9dd589ea8";
 #[cfg(test)]
 const FROZEN_RUN_SCHEMA_SHA256: &str =
-    "f6b4ada36bb9151fadb5233770a6a235c106a815c7eb8567237c871deb5f10b5";
+    "c31a67c546874cdec4488d48277e3f35f1d526c4fca871e35a4361a220d889ec";
 #[cfg(test)]
 const FROZEN_ARTIFACT_SCHEMA_SHA256: &str =
-    "8735bbe43e21a40bbcf4d20f61c0b886414ffcd5c4d0c690635e191334800ef7";
+    "fe5da12a6e6b2cad2a2a98d17f8ba84fe515b9b2f9bc8857baf9a5fc7b620f36";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_CASES: usize = 32;
 const MAX_REQUIRED_TEXT: usize = 64;

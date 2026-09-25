@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/certification-report-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/certification-report-v1.schema.json",
   "title": "hwp-certification-report-v1",
   "type": "object",
   "additionalProperties": false,

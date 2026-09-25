@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/segment-envelope-v2.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/segment-envelope-v2.schema.json",
   "title": "hwp-segment-envelope-v2",
   "description": "The envelope `hwp cat --with-segments --segments v2` emits, for `--format markdown` and `--format json`. One segment ties a range of the emitted markdown to the IR node that produced it, so an editor can address what it displays. Ranges nest: a `run` lies inside its `para`, a `cell` inside its `table`, and siblings at one level do not overlap.",
   "type": "object",

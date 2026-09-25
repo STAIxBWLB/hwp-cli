@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/template-data-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/template-data-v1.schema.json",
   "title": "hwp-cli TemplateData v1",
   "type": "object",
   "additionalProperties": false,

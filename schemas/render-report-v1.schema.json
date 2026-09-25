@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/render-report-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/render-report-v1.schema.json",
   "title": "hwp-render-report-v1",
   "type": "object",
   "additionalProperties": false,

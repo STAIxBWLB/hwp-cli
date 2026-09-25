@@ -46,7 +46,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "f10bf56cbcf9bfb0a67f2baeba30944423921119c17427e7308934bab8a22802",
+        actual, "e1a0d22f11d0168cf44de274fe1741ffc6bf5867c65ea53b7299e4a12ef7df8f",
         "render-layout-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

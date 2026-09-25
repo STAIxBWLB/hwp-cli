@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/edit-report-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/edit-report-v1.schema.json",
   "title": "hwp-edit-report-v1",
   "description": "Machine-readable account of what `hwp edit --report <path>` (and `--dry-run`) did: every op's status, how many IR pieces it touched, and the segment ids it changed as before/after pairs. Content-free — no paragraph text, no replacement strings and no user-supplied patterns (T-07-22).",
   "type": "object",

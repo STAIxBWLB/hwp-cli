@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/hancom-verification-receipt-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/hancom-verification-receipt-v1.schema.json",
   "title": "hwp-hancom-verification-receipt-v1",
   "description": "Content-free attestation that a Hancom Office application opened a document without repair or damage warnings. Carries only the application label, result, timestamp, verifier identity and an optional content hash — never document text, paths or payloads.",
   "type": "object",

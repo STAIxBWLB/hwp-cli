@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.local/schemas/pdf-parity-scorecard-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/pdf-parity-scorecard-v1.schema.json",
   "title": "hwp PDF parity per-case scorecard v1",
   "type": "object",
   "additionalProperties": false,

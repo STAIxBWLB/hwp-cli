@@ -50,7 +50,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "d14dc7eb589107dfc1061de6bb11e30cafeb6612562c1899fbb4b14806683de5",
+        actual, "ec3908483af39c480469a67c040c4ea45f37e4bbf92dae7ef32997ae9c79fa3c",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
