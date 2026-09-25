@@ -10,6 +10,35 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `render-layout-v1` now records geometry for the whole body table tree, at any depth: the
+  paragraphs inside a table cell, a table nested in one, and that table's cells and their
+  paragraphs. Before, only body paragraphs and the outermost table with its own cells had rows, so
+  on `fixtures/samples/report-tables.hwpx` the envelope carried 222 paragraphs against the
+  artifact's 40, 126 cells against 100 and 10 tables against 3. The artifact now publishes 182,
+  112 and 9 against the envelope's 218, 126 and 10 (the #285 entry below takes four paragraphs out
+  of the envelope); the 36 paragraphs, 14 cells and one table left over are exactly a drawing
+  object's text (a text box) and the table inside it, which stay out by contract and are named in
+  the schema's `kind` description. A bookmark inside a cell is recorded under its cell-relative
+  path. A split cell paragraph's rows partition its characters: its list marker, redrawn at the
+  head of every fragment, is kept in the box but left out of `source_chars`. Every row published
+  before is published unchanged, and rendered PNG, SVG and PDF bytes do not change
+  ([#283](https://github.com/STAIxBWLB/hwp-cli/issues/283)).
+
+- The layout artifact and the segment envelope now join by id in both directions. A paragraph that
+  emits no markdown text but is still drawn - one holding only a `gso ` drawing object, or only
+  whitespace - is published in `--segments v2` as a point `para` segment (`char_range.start ==
+  char_range.end`) where its text would be, so its geometry row resolves: `outline.hwp` had
+  published a row against an envelope of zero segments. An empty paragraph right after a list no
+  longer claims the blank line closing the list block as its content, and the paragraph anchoring
+  an object that drew nothing, such as a borderless table with empty cells, keeps its geometry row.
+  The markdown itself is byte-identical. The join-key test now asserts equality in both directions
+  on every `.hwp` and `.hwpx` a host has under `fixtures/hwp5` and `fixtures/hwpx`, not only on the
+  committed sample; `render-layout-v1.schema.json` and `segment-envelope-v2.schema.json` change in
+  descriptions only, and their content-hash pins move with them
+  ([#285](https://github.com/STAIxBWLB/hwp-cli/issues/285)).
+
 ## [1.0.0]
 
 1.0.0 closes the project's first milestone, shipped across 0.8.7 to 0.20.2: fidelity fixes and

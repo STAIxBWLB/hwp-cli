@@ -28,58 +28,46 @@
 //! two must never be mixed: the **segment id is the only join key** between a geometry row and
 //! an envelope segment. See [`CharRange`].
 //!
-//! # The join key does not always resolve
+//! # The join is total, in both directions
 //!
-//! The id is the only join key, but it is **not guaranteed to have a counterpart**. A
-//! paragraph whose only content is a drawing control (`gso `) and which shapes no text of its
-//! own produces NO envelope segment at all, while this module records a row for it: the object
-//! is drawn, so the row has a real box, and the `finish()` drop rule below does not catch it
-//! because that rule only drops a row with neither a box nor a range.
+//! Within the subset below, every row's id names an envelope segment and every envelope
+//! `para`, `table`, `cell` and `bookmark` segment has a row. The two crates derive ids
+//! independently, so this holds because both sides follow the same rules, not because they
+//! share code, and the cross-artifact join test in `crates/hwp-cli/tests/render_layout.rs`
+//! checks it on every document the host has.
 //!
-//! Measured across this repository's fixtures: `fixtures/samples/report-tables.hwpx`,
-//! `fixtures/pdf-parity/public/source/public-safety-rfp-p1.{hwp,hwpx}`, `work_report.hwp`,
-//! `bookmark.hwp`, `hello_world.hwp` and `minimal.hwpx` produce no unresolved ids;
-//! `annual_report.hwp` produces one of 10 rows, and `outline.hwp` - one page holding only a
-//! drawing - produces 1 row against an envelope of **zero** segments. So the property held on
-//! the single document 05-06's join-key test originally covered, and not in general.
+//! A paragraph that shapes no text but is still drawn used to break it (#285): one holding
+//! only a drawing object (`gso `) got a row with a real box and no envelope segment at all
+//! (`outline.hwp`, one page holding only a drawing, had a row against an envelope of zero
+//! segments). The envelope now publishes a point `para` segment for it, and for a paragraph of
+//! whitespace, which this module records as shaped text.
 //!
-//! `schemas/render-layout-v1.schema.json` says this in its published `id` description, and
-//! tells a consumer to treat an unresolved id as geometry with no source range rather than as
-//! a defect. Closing it is https://github.com/STAIxBWLB/hwp-cli/issues/285.
-//!
-//! # What has no row
+//! # What has a row
 //!
 //! **Kinds.** Only `para`, `table`, `cell` and `bookmark` produce rows. The envelope's other
 //! three kinds do not: a `run` has no separate geometry here, an `image`'s display item folds
-//! into the row of the paragraph that carries it, and a `field` does likewise. 05-06 publishes
-//! from this set, so a consumer hit-testing an image or a field must resolve it through its
-//! enclosing paragraph's row and cannot expect a row of its own.
+//! into the row of the paragraph that carries it, and a `field` does likewise. A consumer
+//! hit-testing an image or a field resolves it through its enclosing paragraph's row.
 //!
-//! **Nesting - the larger hole, and it is structural.** A paragraph inside a table cell
-//! produces no row, and a nested table and its cells produce none either. Only top-level
-//! paragraphs, and the outermost table with its own cells, are recorded. [`crate::layout`] has
-//! exactly ONE `begin_paragraph` call site, on the body paragraph loop; cell content is laid
-//! out by `layout_box_para_iter`, which opens no span, and `begin_table` is reachable only
-//! from the body control loop. So this is not an oversight in the recorder - nothing in the
-//! nested path ever calls it.
+//! **Places: the body and its table tree, at any depth.** A body paragraph opens its span in
+//! the body loop ([`SegmentRecorder::begin_paragraph`]); a table and its cells open theirs
+//! wherever the table is laid out, and a cell's paragraphs open theirs in
+//! `layout_box_para_iter` ([`SegmentRecorder::begin_cell_paragraph`]), whose objects - a
+//! nested table, a bookmark - then nest under that span. Each path is built the way the
+//! envelope builds it, one `child(base_path(), index)` at a time (#283).
 //!
-//! To scale, on `fixtures/samples/report-tables.hwpx`: the envelope carries 222 paragraphs
-//! against this set's 40, 126 cells against 100, and 10 tables against 3. In a table-heavy
-//! document that is MOST paragraphs, not an edge case. A consumer resolves any of them
-//! through the enclosing top-level `cell` or `table` row, and
-//! `schemas/render-layout-v1.schema.json` says so in its published `kind` description - the
-//! subset is documented rather than silent. Closing it is its own plan: the path is already
-//! available as `child(base_path(), para_index)` and `layout_box_para_iter` never pushes a
-//! page, so the page ordinal stays correct, but it means threading
-//! `Option<&mut SegmentRecorder>` through call sites that mostly pass `None`, plus a sibling
-//! of `begin_paragraph` that does not clobber `para_path` for `bookmark()`.
+//! Everything else `layout_box_para_iter` lays out passes it no recorder, and each call site
+//! says why: the text of a drawing object, which the envelope numbers across all of the
+//! object's lists in a way these boxes do not reproduce; captions and notes, which have no
+//! envelope segment; headers and footers, which the default envelope excludes; and the
+//! measurement pass, which draws on a scratch page. Such content resolves through the
+//! enclosing paragraph's row, whose span contains it.
 //!
-//! **Segments that produce nothing at all.** A row with an id and *nothing measured* joins to
-//! nothing: `hwp-convert` emits no envelope segment for whatever produced it, so the id has no
-//! counterpart in the envelope. ONE RULE, NOT TWO COINCIDENCES: it covers both the unanchored
-//! `bokm` control (no anchor character, no segment) and the completely empty paragraph (no
-//! characters, no segment), and it is applied once in [`SegmentRecorder::finish`] rather than
-//! case by case.
+//! **Segments that produce nothing at all.** A paragraph row with *nothing measured* - no box
+//! and no range - would join to nothing: `hwp-convert` emits no envelope segment for the
+//! completely empty paragraph, nor for the unanchored `bokm` control (no anchor character, no
+//! segment). ONE RULE, NOT TWO COINCIDENCES: it is applied once in
+//! [`SegmentRecorder::finish`] rather than case by case.
 //!
 //! "Nothing measured" is judged **only on the evidence the kind can carry**, which is why
 //! `table` and `cell` are exempt. Their [`SegmentRow::chars`] is `None` BY DESIGN - they span
@@ -88,12 +76,15 @@
 //! whose cells are empty produces no display item, and dropping it would delete an ordinary
 //! HWP construct from the published geometry; both kinds also always have an envelope segment,
 //! so their ids never join to nothing. Adding a kind whose `chars` is structurally `None`
-//! means adding it to that exemption, not writing a new special case.
+//! means adding it to that exemption, not writing a new special case. A paragraph that holds
+//! an object (a table, a picture, an equation, a drawing) is exempt for the same reason, once:
+//! the envelope always has a segment for it, so the paragraph anchoring that borderless table
+//! keeps one row even though nothing it holds was drawn.
 //!
 //! Pinned by `a_bookmark_with_no_anchor_character_produces_no_row`,
 //! `an_empty_paragraph_produces_no_row` and
-//! `a_borderless_table_with_empty_cells_keeps_every_row`, and backstopped end to end by
-//! 05-06's cross-artifact join-key test, which is what found the empty-paragraph half.
+//! `a_borderless_table_with_empty_cells_keeps_every_row`, and backstopped end to end by the
+//! cross-artifact join-key test, which is what found the empty-paragraph half.
 //!
 //! **Page furniture.** Page borders, column dividers, headers, footers, page numbers and note
 //! blocks carry no segment and produce no row. Borders and dividers are prepended after spans
@@ -113,6 +104,7 @@
 use crate::display::{Item, PageList};
 use crate::item_bounds;
 use crate::segment_id::{self, SegmentPath};
+use hwp_model::Control;
 use hwp_model::control::{Cell, GenericControl, Table};
 use hwp_model::paragraph::{HwpChar, Paragraph};
 
@@ -167,9 +159,10 @@ pub struct SegmentRow {
     /// several source paragraphs, so no single paragraph's offsets describe them. Also on a
     /// `para` row whose paragraph shapes no text of its own because its content is entirely an
     /// anchored object - the paragraph carrying a table, or one holding only a drawing. That
-    /// second case is not rare: on `fixtures/samples/report-tables.hwpx`, 3 of the 40 published
-    /// `para` ids carry `None` here, and they are exactly the three table-anchoring
-    /// paragraphs. A consumer must check this on every kind, `para` included.
+    /// second case is not rare: on `fixtures/samples/report-tables.hwpx`, 9 of the 182
+    /// published `para` ids carry `None` here, and they are exactly the nine table-anchoring
+    /// paragraphs, six of them inside cells. A consumer must check this on every kind, `para`
+    /// included.
     pub chars: Option<CharRange>,
     /// How many display items this row's span covers on this page, nested child segments
     /// included. Diagnostic: it is a count, never an index — the indices themselves are
@@ -200,6 +193,9 @@ struct OpenSpan {
     path: SegmentPath,
     start_page: usize,
     start_item: usize,
+    /// Where source text begins on `start_page`: items before it are a list marker, which is
+    /// drawn but is no character of the paragraph. `start_item` unless told otherwise.
+    chars_from: usize,
     parent: Option<usize>,
     /// The span cap was already reached when this span opened, so closing it records nothing.
     /// It still occupies the stack, because `end_segment` pops by position.
@@ -212,6 +208,8 @@ struct Span {
     id: String,
     start_page: usize,
     start_item: usize,
+    /// See [`OpenSpan::chars_from`].
+    chars_from: usize,
     end_page: usize,
     end_item: usize,
     chars: Option<CharRange>,
@@ -254,6 +252,9 @@ pub(crate) struct SegmentRecorder {
     /// the page bottom and polluting its character range with `start_wchar` values from a
     /// different source paragraph.
     content_end: std::collections::HashMap<usize, usize>,
+    /// Ids of paragraphs holding an object (see [`holds_object`]), which `finish` keeps a row
+    /// for even when nothing was measured.
+    objects: std::collections::HashSet<String>,
     map: SegmentMap,
 }
 
@@ -267,9 +268,10 @@ impl SegmentRecorder {
         }
     }
 
-    /// A no-op recorder. Every ordinary render and every nested or scratch-page layout pass
-    /// uses one: a nested paragraph's indices do not name a path in the document's own tree,
-    /// so recording there would attribute geometry to a segment that does not exist.
+    /// A no-op recorder. Every ordinary render uses one, and so does every layout pass whose
+    /// paragraphs this module does not record - a scratch or measurement page, page furniture,
+    /// a caption, a drawing object's text (see `layout_box_para_iter`'s callers) - because
+    /// recording there would attribute geometry to a segment that has no row by contract.
     pub(crate) fn disabled() -> Self {
         Self {
             enabled: false,
@@ -279,6 +281,7 @@ impl SegmentRecorder {
             spans: Vec::new(),
             next_uid: 0,
             content_end: std::collections::HashMap::new(),
+            objects: std::collections::HashSet::new(),
             map: SegmentMap::default(),
         }
     }
@@ -326,6 +329,7 @@ impl SegmentRecorder {
             path,
             start_page: self.page,
             start_item: page.items.len(),
+            chars_from: page.items.len(),
             parent,
             dropped,
         });
@@ -346,8 +350,32 @@ impl SegmentRecorder {
             section,
             indices: vec![para_index],
         };
-        let path = self.para_path.clone();
+        self.begin_para(self.para_path.clone(), para, page);
+    }
+
+    /// Opens the span of a paragraph inside the open cell: `para_index` indexes
+    /// `Cell::paragraphs`, so the path is the envelope's own `child(cell_path, para_index)`.
+    ///
+    /// Unlike [`Self::begin_paragraph`] it leaves `para_path` alone: that is the body
+    /// paragraph's path, and [`Self::bookmark`] resolves against the innermost open paragraph
+    /// span instead, so a bookmark in a cell keeps its cell-relative path.
+    pub(crate) fn begin_cell_paragraph(
+        &mut self,
+        para_index: usize,
+        para: &Paragraph,
+        page: &PageList,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        self.begin_para(child(self.base_path(), para_index), para, page);
+    }
+
+    fn begin_para(&mut self, path: SegmentPath, para: &Paragraph, page: &PageList) {
         let id = segment_id::paragraph_id(&path, para);
+        if holds_object(para) {
+            self.objects.insert(id.clone());
+        }
         self.begin(kind::PARA, id, path, page);
     }
 
@@ -393,7 +421,15 @@ impl SegmentRecorder {
         let Some(at) = bookmark_anchor_offset(para, control_index) else {
             return;
         };
-        let path = child(&self.para_path, control_index);
+        // `para` is the innermost open paragraph: a cell's paragraph when the bookmark is in a
+        // cell, the body paragraph otherwise.
+        let para_path = self
+            .open
+            .iter()
+            .rev()
+            .find(|open| open.kind == kind::PARA)
+            .map_or(&self.para_path, |open| &open.path);
+        let path = child(para_path, control_index);
         let uid = self.next_uid;
         self.next_uid += 1;
         self.spans.push(Span {
@@ -401,6 +437,7 @@ impl SegmentRecorder {
             id: segment_id::control_id(&path, control),
             start_page: self.page,
             start_item: 0,
+            chars_from: 0,
             end_page: self.page,
             end_item: 0,
             chars: Some(CharRange { start: at, end: at }),
@@ -431,18 +468,35 @@ impl SegmentRecorder {
             return;
         }
         let page = self.page;
+        // `chars_from` is a start-side index and shifts under the same comparison as
+        // `start_item`.
         for open in &mut self.open {
             if open.start_page == page && open.start_item > at {
                 open.start_item += count;
+            }
+            if open.start_page == page && open.chars_from > at {
+                open.chars_from += count;
             }
         }
         for span in &mut self.spans {
             if span.start_page == page && span.start_item >= at {
                 span.start_item += count;
             }
+            if span.start_page == page && span.chars_from >= at {
+                span.chars_from += count;
+            }
             if span.end_page == page && span.end_item > at {
                 span.end_item += count;
             }
+        }
+    }
+
+    /// A list marker was just drawn at the head of the innermost open span: its glyphs are
+    /// synthesized, `start_wchar` 0, and name no character of the paragraph, so the span's
+    /// source range starts after them. Its box still includes the marker.
+    pub(crate) fn marker_drawn(&mut self, page: &PageList) {
+        if let Some(open) = self.open.last_mut().filter(|_| self.enabled) {
+            open.chars_from = page.items.len();
         }
     }
 
@@ -462,6 +516,7 @@ impl SegmentRecorder {
             id: open.id,
             start_page: open.start_page,
             start_item: open.start_item,
+            chars_from: open.chars_from,
             end_page: self.page,
             end_item: page.items.len(),
             chars: None,
@@ -529,7 +584,12 @@ impl SegmentRecorder {
                 if hi <= lo {
                     continue;
                 }
-                let own = own_indices(&spans, &children[index], page_index, lo, hi);
+                let source_lo = if page_index == span.start_page {
+                    lo.max(span.chars_from)
+                } else {
+                    lo
+                };
+                let own = own_indices(&spans, &children[index], page_index, source_lo, hi);
                 self.map.rows.push(SegmentRow {
                     page: page_index,
                     kind: span.kind,
@@ -626,10 +686,31 @@ impl SegmentRecorder {
         // A borderless table whose cells are empty produces no display item, and dropping it
         // would delete an ordinary HWP construct from the published geometry. Both kinds also
         // always have an envelope segment, so their ids never join to nothing.
-        self.map.rows.retain(|row| {
+        //
+        // A paragraph holding an object is exempt the same way, once: the envelope always has
+        // a segment for it (the object's markup, or a point for a drawing - #285), so dropping
+        // its only row when the object drew nothing - the paragraph anchoring that borderless
+        // empty table - would leave an envelope id with no geometry. It keeps ONE unmeasured
+        // row only when it has no measured one, so a cell fragment that drew none of it on a
+        // continuation page does not publish an extra empty row.
+        let measured = |row: &SegmentRow| {
             matches!(row.kind, kind::TABLE | kind::CELL)
                 || row.bbox.is_some()
                 || row.chars.is_some()
+        };
+        let objects_measured: std::collections::HashSet<String> = self
+            .map
+            .rows
+            .iter()
+            .filter(|row| self.objects.contains(&row.id) && measured(row))
+            .map(|row| row.id.clone())
+            .collect();
+        let mut kept = std::collections::HashSet::new();
+        self.map.rows.retain(|row| {
+            measured(row)
+                || (self.objects.contains(&row.id)
+                    && !objects_measured.contains(&row.id)
+                    && kept.insert(row.id.clone()))
         });
         self.map
     }
@@ -726,6 +807,16 @@ fn child(path: &SegmentPath, index: usize) -> SegmentPath {
         section: path.section,
         indices,
     }
+}
+
+/// Whether `para` holds an object the envelope addresses without any text: a table, a picture,
+/// an equation (each always emits markup) or a drawing object (a point segment, #285).
+fn holds_object(para: &Paragraph) -> bool {
+    para.controls.iter().any(|control| match control {
+        Control::Table(_) | Control::Picture(_) => true,
+        Control::Generic(g) => g.ctrl_id == *b"gso " || g.equation.is_some(),
+        _ => false,
+    })
 }
 
 /// The WCHAR offset of the `BOOKMARK` control character that references `control_index`, or
@@ -1431,6 +1522,68 @@ mod tests {
         assert_eq!(map.rows[1].item_count, 2);
     }
 
+    /// A glyph run with no font behind it: `char_range` reads only `text` and `start_wchar`.
+    fn glyphs(start_wchar: u32, text: &str) -> Item {
+        Item::Glyphs {
+            x: 10.0,
+            y: 20.0,
+            run: crate::shape::ShapedRun {
+                font: std::sync::Arc::new(crate::fonts::LoadedFont {
+                    data: std::sync::Arc::new(Vec::new()),
+                    index: 0,
+                    family: String::new(),
+                }),
+                size_pt: 10.0,
+                x_scale: 1.0,
+                color: 0,
+                bold: false,
+                italic: false,
+                underline_kind: 0,
+                underline_shape: 0,
+                strike: false,
+                strike_shape: 0,
+                emphasis: 0,
+                underline_color: 0xFFFF_FFFF,
+                shade_color: 0xFFFF_FFFF,
+                shadow: None,
+                shadow_gap: (0, 0),
+                outline: false,
+                emboss: false,
+                engrave: false,
+                border_fill_id: 0,
+                glyphs: Vec::new(),
+                width_pt: 10.0,
+                text: text.into(),
+                start_wchar,
+            },
+        }
+    }
+
+    /// A list marker is the paragraph's - inside its box and its item count - but it is
+    /// synthesized text at `start_wchar` 0, no character of the paragraph. A split cell
+    /// paragraph redraws it at the head of every fragment, so counting it put each fragment's
+    /// range back at 0 and the rows of one paragraph overlapped (D-09), on the committed
+    /// sample's `.0.47.0.30.1`: `(0,18) (0,36) (0,61)` instead of `(0,18) (18,36) (36,61)`.
+    #[test]
+    fn a_list_marker_is_in_the_box_but_not_in_the_source_range() {
+        let para = Paragraph::default();
+        let mut rec = SegmentRecorder::new();
+        let mut page = page_with(0);
+        rec.begin_paragraph(0, 0, &para, &page);
+        page.items.push(glyphs(0, "•"));
+        rec.marker_drawn(&page);
+        page.items.push(glyphs(18, "가나다"));
+        rec.end_segment(&page);
+        rec.resolve(&[page]);
+        let map = rec.finish();
+        assert_eq!(map.rows.len(), 1);
+        assert_eq!(map.rows[0].chars, Some(CharRange { start: 18, end: 21 }));
+        assert_eq!(
+            map.rows[0].item_count, 2,
+            "the marker still belongs to the row"
+        );
+    }
+
     /// The third comparison in `items_inserted` is the one that must **stay** `>=`, and the
     /// available mistake is changing all three because two needed it.
     ///
@@ -1542,6 +1695,28 @@ mod tests {
         assert_eq!(map.rows[1].bbox.unwrap().x0, 300.0);
     }
 
+    /// The 2x2 table with `cells_to_empty` of its cells stripped of their text and their
+    /// border.
+    fn borderless_empty_table(cells_to_empty: usize) -> Document {
+        let mut doc = table_markdown();
+        let mut touched = 0;
+        for cell in first_table(&mut doc).cells.iter_mut().take(cells_to_empty) {
+            for cell_para in &mut cell.paragraphs {
+                cell_para.chars.clear();
+                cell_para.line_segs.clear();
+            }
+            // A border fill id with no entry behind it: no background and no stroked border,
+            // so the cell contributes no display item at all.
+            cell.border_fill = hwp_model::BorderFillId(u16::MAX);
+            touched += 1;
+        }
+        assert_eq!(
+            touched, cells_to_empty,
+            "the fixture must reach that many cells"
+        );
+        doc
+    }
+
     /// A borderless table whose cells are empty keeps every row, because `table` and `cell`
     /// are exempt from the no-box-no-range drop.
     ///
@@ -1563,29 +1738,7 @@ mod tests {
         // border. Both counts are checked: one emptied cell was the reviewer's repro, all four
         // is the case that also took the table row with it.
         fn empty_cells(cells_to_empty: usize) -> (usize, usize) {
-            let mut doc = hwp_convert::from_markdown("| 가 | 나 |\n|---|---|\n| 1 | 2 |\n");
-            let mut touched = 0;
-            for para in &mut doc.sections[0].paragraphs {
-                for control in &mut para.controls {
-                    if let Control::Table(table) = control {
-                        for cell in table.cells.iter_mut().take(cells_to_empty) {
-                            for cell_para in &mut cell.paragraphs {
-                                cell_para.chars.clear();
-                                cell_para.line_segs.clear();
-                            }
-                            // A border fill id with no entry behind it: no background and no
-                            // stroked border, so the cell contributes no display item at all.
-                            cell.border_fill = hwp_model::BorderFillId(u16::MAX);
-                            touched += 1;
-                        }
-                    }
-                }
-            }
-            assert_eq!(
-                touched, cells_to_empty,
-                "the fixture must reach that many cells"
-            );
-            let (_, map) = lay_out(&doc);
+            let (_, map) = lay_out(&borderless_empty_table(cells_to_empty));
             (
                 rows_of(&map, kind::CELL).len(),
                 rows_of(&map, kind::TABLE).len(),
@@ -1676,6 +1829,263 @@ mod tests {
             map.rows.iter().all(|row| row.page < list.pages.len()),
             "and every row must index a page the caller actually received"
         );
+    }
+
+    // --- the cross-artifact join, on documents built here ----------------------------------
+    //
+    // `crates/hwp-cli/tests/render_layout.rs` checks the join on the published artifacts of
+    // every fixture a host has; most of those are gitignored, so these build each case the
+    // join depends on and run it everywhere.
+
+    /// Path depth of an id: `<checksum>.<section>.<indices...>`.
+    fn depth(id: &str) -> usize {
+        id.split('.').count() - 2
+    }
+
+    /// Whether `indices` lies in the body's table tree: every control step on the way down
+    /// (path lengths 2, 5, 8, ...) is a table. A drawing object's text runs through some other
+    /// control, and has no row by contract.
+    fn in_table_tree(indices: &[usize], tables: &std::collections::HashSet<Vec<usize>>) -> bool {
+        (2..indices.len())
+            .step_by(3)
+            .all(|len| tables.contains(&indices[..len]))
+    }
+
+    /// Both directions of the join on one document: row ids that name no envelope segment, and
+    /// envelope `para`/`table`/`cell`/`bookmark` ids in the table tree that have no row.
+    fn join_orphans(doc: &Document) -> (Vec<String>, Vec<String>) {
+        use hwp_convert::SegmentKind;
+        let (_, map) = lay_out(doc);
+        let (_, segments) =
+            hwp_convert::to_markdown_with_segments_v2(doc, &Default::default()).expect("no IO");
+        let tables: std::collections::HashSet<Vec<usize>> = segments
+            .iter()
+            .filter(|s| s.kind == SegmentKind::Table)
+            .map(|s| s.path.indices.clone())
+            .collect();
+        let envelope: std::collections::HashSet<&str> =
+            segments.iter().map(|s| s.id.as_str()).collect();
+        let rows: std::collections::HashSet<&str> =
+            map.rows.iter().map(|row| row.id.as_str()).collect();
+        let mut layout_orphans: Vec<String> = rows
+            .iter()
+            .filter(|id| !envelope.contains(*id))
+            .map(|id| id.to_string())
+            .collect();
+        layout_orphans.sort();
+        let envelope_orphans = segments
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.kind,
+                    SegmentKind::Para
+                        | SegmentKind::Table
+                        | SegmentKind::Cell
+                        | SegmentKind::Bookmark
+                ) && in_table_tree(&s.path.indices, &tables)
+                    && !rows.contains(s.id.as_str())
+            })
+            .map(|s| s.id.clone())
+            .collect();
+        (layout_orphans, envelope_orphans)
+    }
+
+    fn assert_joins(doc: &Document, what: &str) {
+        let (layout, envelope) = join_orphans(doc);
+        assert!(
+            layout.is_empty() && envelope.is_empty(),
+            "{what}: rows naming no envelope segment {layout:?}; envelope segments with no row \
+             {envelope:?}"
+        );
+    }
+
+    /// Appends an extended-control character bound to `control`, the way a real file anchors
+    /// one.
+    fn attach(para: &mut Paragraph, code: u16, control: Control) {
+        para.chars.push(HwpChar::ExtCtrl {
+            code,
+            ctrl_id: control.ctrl_id(),
+            payload: Vec::new(),
+            ctrl_index: Some(para.controls.len() as u32),
+        });
+        para.controls.push(control);
+    }
+
+    fn table_markdown() -> Document {
+        hwp_convert::from_markdown("| 가 | 나 |\n|---|---|\n| 1 | 2 |\n")
+    }
+
+    fn first_table(doc: &mut Document) -> &mut Table {
+        doc.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|para| para.controls.iter_mut())
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("the fixture carries a table")
+    }
+
+    /// A drawing object: a rectangle when `drawn`, otherwise a `gso ` with nothing the renderer
+    /// can draw.
+    fn drawing(drawn: bool) -> Control {
+        let mut control = bookmark_control();
+        control.ctrl_id = *b"gso ";
+        if drawn {
+            control.gso_shapes.push(hwp_model::ShapeGeom {
+                kind: hwp_model::ShapeKind::Rect,
+                x: 1_000,
+                y: 1_000,
+                w: 2_000,
+                h: 2_000,
+                points: Vec::new(),
+                fill: 0,
+                fill_gradient: None,
+                border_color: 0,
+                border_width: 10,
+                round_ratio: 0,
+                border_style: 0,
+                arrow_start: 0,
+                arrow_end: 0,
+                anchored: false,
+                description: None,
+            });
+        }
+        Control::Generic(control)
+    }
+
+    /// #283: a cell's paragraphs, a table nested in one, the nested table's cells and their
+    /// paragraphs all have rows, under exactly the paths the envelope gives them.
+    #[test]
+    fn cell_paragraphs_and_nested_tables_join_the_envelope_both_ways() {
+        let mut doc = table_markdown();
+        let inner = first_table(&mut doc).clone();
+        attach(
+            &mut first_table(&mut doc).cells[0].paragraphs[0],
+            hwp_model::paragraph::ctrl_char::OBJECT,
+            Control::Table(inner),
+        );
+        let (_, map) = lay_out(&doc);
+        for (kind, at) in [
+            (kind::PARA, 4),  // a paragraph in a cell
+            (kind::TABLE, 5), // the table nested in it
+            (kind::CELL, 6),  // a cell of the nested table
+            (kind::PARA, 7),  // a paragraph in that cell
+        ] {
+            assert!(
+                map.rows
+                    .iter()
+                    .any(|row| row.kind == kind && depth(&row.id) == at),
+                "no {kind} row at depth {at}: {:?}",
+                map.rows.iter().map(|r| &r.id).collect::<Vec<_>>()
+            );
+        }
+        assert_joins(&doc, "a nested table");
+    }
+
+    /// A bookmark in a cell is recorded under its cell paragraph's path, not the body
+    /// paragraph's: `begin_cell_paragraph` leaves `para_path` alone, and `bookmark` resolves
+    /// against the innermost open paragraph.
+    #[test]
+    fn a_bookmark_inside_a_cell_keeps_its_cell_relative_path() {
+        let mut doc = table_markdown();
+        attach(
+            &mut first_table(&mut doc).cells[1].paragraphs[0],
+            hwp_model::paragraph::ctrl_char::BOOKMARK,
+            Control::Generic(bookmark_control()),
+        );
+        let (_, map) = lay_out(&doc);
+        let bookmarks = rows_of(&map, kind::BOOKMARK);
+        assert_eq!(bookmarks.len(), 1, "one anchored bookmark, one row");
+        assert_eq!(
+            depth(&bookmarks[0].id),
+            5,
+            "[para, table, cell, cell paragraph, bookmark]: {}",
+            bookmarks[0].id
+        );
+        assert_joins(&doc, "a bookmark in a cell");
+    }
+
+    /// #285: a paragraph that shapes no text but is drawn has a row, and the envelope a point
+    /// `para` segment for it - a drawing alone in the body or in a cell, a drawing the renderer
+    /// cannot draw, and a paragraph of whitespace.
+    #[test]
+    fn a_drawn_paragraph_without_text_joins_the_envelope_both_ways() {
+        for (what, drawn, in_cell) in [
+            ("a drawing alone", true, false),
+            ("a drawing alone in a cell", true, true),
+            ("a drawing that draws nothing", false, false),
+        ] {
+            let mut doc = table_markdown();
+            let mut para = Paragraph {
+                para_shape: doc.sections[0].paragraphs[0].para_shape,
+                ..Default::default()
+            };
+            attach(
+                &mut para,
+                hwp_model::paragraph::ctrl_char::OBJECT,
+                drawing(drawn),
+            );
+            let id = if in_cell {
+                let cell = &mut first_table(&mut doc).cells[0];
+                cell.paragraphs.push(para);
+                None
+            } else {
+                doc.sections[0].paragraphs.push(para);
+                Some(doc.sections[0].paragraphs.len() - 1)
+            };
+            let (_, map) = lay_out(&doc);
+            if let Some(index) = id {
+                let row = map
+                    .rows
+                    .iter()
+                    .find(|row| {
+                        depth(&row.id) == 1 && row.id.split('.').nth(2) == Some(&index.to_string())
+                    })
+                    .unwrap_or_else(|| panic!("{what}: the paragraph must have a row"));
+                assert_eq!(row.bbox.is_some(), drawn, "{what}: {row:?}");
+                assert_eq!(row.chars, None, "{what}: it shapes no text");
+            }
+            assert_joins(&doc, what);
+        }
+
+        let mut doc = hwp_convert::from_markdown("첫 문단.\n\n둘째 문단.\n");
+        let para = &mut doc.sections[0].paragraphs[1];
+        para.chars.retain(|ch| !matches!(ch, HwpChar::Text(_)));
+        para.chars.extend("   ".chars().map(HwpChar::Text));
+        assert_joins(&doc, "a paragraph of whitespace");
+    }
+
+    /// The paragraph anchoring a borderless table with empty cells draws nothing, but the
+    /// envelope has a segment for it (the table's markup), so it keeps its row.
+    #[test]
+    fn the_paragraph_anchoring_a_borderless_empty_table_keeps_its_row() {
+        let doc = borderless_empty_table(4);
+        let (_, map) = lay_out(&doc);
+        assert!(
+            rows_of(&map, kind::PARA)
+                .iter()
+                .any(|row| row.bbox.is_none() && row.chars.is_none()),
+            "the anchoring paragraph's row measures nothing and must survive anyway"
+        );
+        assert_joins(&doc, "a borderless empty table");
+    }
+
+    /// An empty paragraph just after a list draws nothing and has no envelope segment: the
+    /// blank line emitted at its position closes the list block, and is not its content.
+    #[test]
+    fn an_empty_paragraph_after_a_list_joins_the_envelope() {
+        let mut doc = hwp_convert::from_markdown("- 항목\n\n뒤 문단\n");
+        let para_shape = doc.sections[0].paragraphs[1].para_shape;
+        doc.sections[0].paragraphs.insert(
+            1,
+            Paragraph {
+                para_shape,
+                ..Default::default()
+            },
+        );
+        assert_joins(&doc, "an empty paragraph after a list");
     }
 
     /// Recording is opt-in: an ordinary render records nothing at all.

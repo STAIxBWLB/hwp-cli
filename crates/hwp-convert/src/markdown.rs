@@ -158,12 +158,17 @@ pub(crate) fn emit_markdown(
                 ctx.path = path.clone();
             }
             let start = out.len();
-            render_paragraph(doc, para, &mut list_state, &mut ctx, &mut out);
+            let own = render_paragraph(doc, para, &mut list_state, &mut ctx, &mut out);
             if out.len() > start {
                 raw.push((section_index, para_index, start, out.len()));
-                if v2 {
-                    let end = out.len();
-                    out.segs.push(para_segment(doc, para, path, start, end));
+            }
+            if v2 {
+                // A paragraph that emitted nothing of its own - only the blank line closing
+                // the list block above it - starts where that separator ends, so it gets no
+                // range (the separator belongs to no segment) and at most a point.
+                let start = if own { start } else { out.len() };
+                if let Some(seg) = para_segment(doc, para, path, start, out.len()) {
+                    out.segs.push(seg);
                 }
             }
         }
@@ -797,13 +802,15 @@ fn close_marks(body: &mut String, marks: &mut Marks, span: Span, html: bool) {
     *marks = Marks::default();
 }
 
+/// Returns whether the paragraph emitted content of its own, as opposed to nothing or only a
+/// list-block separator.
 fn render_paragraph(
     doc: &Document,
     para: &Paragraph,
     list_state: &mut ListState,
     ctx: &mut Ctx,
     out: &mut Body,
-) {
+) -> bool {
     // 목록 번호는 문서 순서대로 모든 문단에 대해 갱신한다(빈 문단도 카운트 — 렌더와 동일).
     let marker = list_state.marker(doc, para);
     // 개요 스타일 → 헤딩
@@ -816,22 +823,24 @@ fn render_paragraph(
         .filter(|n| (1..=6).contains(n));
 
     let fragments = render_fragments(doc, para, ctx);
+    let own = fragments.iter().any(Fragment::emits);
 
     if let Some(level) = heading {
         close_list_block(ctx, &mut out.s);
         emit_paragraph_fragments(fragments, out, Some(&format!("{} ", "#".repeat(level))));
-        return;
+        return own;
     }
 
     if marker.is_some() {
         let (ty, level, definition_id) = list_head(doc, para).unwrap_or((3, 1, 0));
         let number = list_state.current_number(doc, para);
         emit_list_fragments(fragments, ty, level, definition_id, number, ctx, out);
-        return;
+        return own;
     }
 
     close_list_block(ctx, &mut out.s);
     emit_paragraph_fragments(fragments, out, None);
+    own
 }
 
 /// 인라인과 블록을 문서 등장 순서대로 유지하는 중간 표현. 각 조각은 자기 문자열 좌표로
@@ -839,6 +848,17 @@ fn render_paragraph(
 enum Fragment {
     Inline(Body),
     Block(Body),
+}
+
+impl Fragment {
+    /// Whether the emitters copy any of this fragment to the output: they skip an inline
+    /// fragment that trims to nothing, and a block that is only newlines.
+    fn emits(&self) -> bool {
+        match self {
+            Fragment::Inline(body) => !body.s.trim().is_empty(),
+            Fragment::Block(body) => !body.s.trim_matches('\n').is_empty(),
+        }
+    }
 }
 
 fn emit_paragraph_fragments(fragments: Vec<Fragment>, out: &mut Body, prefix: Option<&str>) {
@@ -1200,14 +1220,22 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
 
 /// 한 문단의 `para` 세그먼트(v2 전용). 최상위 문단뿐 아니라 표 셀·`Generic` 문단 리스트
 /// 안의 문단에도 붙는다 — 셀 안 문단을 지목할 수 없으면 "일곱 종류"가 최상위에서만 참이 된다.
+///
+/// `[start, end)` is what the paragraph emitted. Nothing emitted means no segment, unless the
+/// renderer still draws the paragraph (see [`drawn_without_text`]): then it is a point at
+/// `start`, so the render layout artifact's row for it has an id to join to (#285).
 fn para_segment(
     doc: &Document,
     para: &Paragraph,
     path: SegmentPath,
     start: usize,
     end: usize,
-) -> RawSeg {
-    RawSeg {
+) -> Option<RawSeg> {
+    let point = end == start;
+    if end < start || (point && !drawn_without_text(para)) {
+        return None;
+    }
+    Some(RawSeg {
         kind: SegmentKind::Para,
         id: paragraph_id(&path, para),
         style: summarize(doc, para, char_shape_id_at(para, 0)),
@@ -1216,7 +1244,18 @@ fn para_segment(
         name: None,
         start,
         end,
-    }
+        point,
+    })
+}
+
+/// Whether the renderer draws something for a paragraph whose markdown is empty: text that is
+/// all whitespace, which it shapes, or a drawing object (`gso `), which it draws.
+fn drawn_without_text(para: &Paragraph) -> bool {
+    para.chars.iter().any(|ch| matches!(ch, HwpChar::Text(_)))
+        || para
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::Generic(g) if g.ctrl_id == *b"gso "))
 }
 
 /// 열려 있던 런을 닫고 새 런을 연다(v2 전용). id는 이 크레이트의 `segment_id` 진입점에서만
@@ -1240,6 +1279,7 @@ fn open_run_segment(
         name: None,
         start: at,
         end: 0,
+        point: false,
     });
 }
 
@@ -1267,6 +1307,7 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             name: crate::bookmark::bookmark_name(control),
             start: at,
             end: at,
+            point: false,
         });
     } else if code == ctrl_char::FIELD_START && crate::field::is_field_ctrl_id(&g.ctrl_id) {
         body.open_fields.push(RawSeg {
@@ -1278,6 +1319,7 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             name: None,
             start: body.s.len(),
             end: 0,
+            point: false,
         });
     }
 }
@@ -1362,6 +1404,7 @@ fn render_control(
                     name: None,
                     start,
                     end,
+                    point: false,
                 });
             }
         }
@@ -1390,6 +1433,7 @@ fn render_control(
                     name: None,
                     start: 0,
                     end,
+                    point: false,
                 });
             }
             push_block(body, marks, ctx.html_mode, fragments, block, span);
@@ -1469,11 +1513,12 @@ fn render_control(
                     }
                     // 블록이 중간에 플러시했다면 좌표계가 초기화되어 이 문단의 기여가
                     // 연속이 아니다 — 그때는 문단 세그먼트를 내지 않는다.
-                    if ctx.v2 && body.s.len() > para_start {
-                        let para_path = ctx.path.clone();
-                        let end = body.s.len();
-                        body.segs
-                            .push(para_segment(doc, p, para_path, para_start, end));
+                    if ctx.v2
+                        && body.s.len() > para_start
+                        && let Some(seg) =
+                            para_segment(doc, p, ctx.path.clone(), para_start, body.s.len())
+                    {
+                        body.segs.push(seg);
                     }
                 }
             }
@@ -1602,11 +1647,10 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body
                 let lo = s.len() - s.trim_start().len();
                 text.absorb_append(s.trim(), segs, lo);
             }
-            if ctx.v2 && text.s.len() > para_start {
-                let para_path = ctx.path.clone();
-                let end = text.s.len();
-                text.segs
-                    .push(para_segment(doc, p, para_path, para_start, end));
+            if ctx.v2
+                && let Some(seg) = para_segment(doc, p, ctx.path.clone(), para_start, text.s.len())
+            {
+                text.segs.push(seg);
             }
         }
         ctx.path = saved;
@@ -1621,6 +1665,7 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body
                 name: None,
                 start: 0,
                 end,
+                point: false,
             });
         }
         if let Some(slot) = grid[row].get_mut(cell.col as usize) {
@@ -1743,6 +1788,7 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Bod
                     name: None,
                     start,
                     end,
+                    point: false,
                 });
             }
         }
@@ -1779,12 +1825,10 @@ fn render_cell_html(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> Body {
             }
             content.absorb_append(text, segs, lo);
         }
-        if ctx.v2 && content.s.len() > para_start {
-            let path = ctx.path.clone();
-            let end = content.s.len();
-            content
-                .segs
-                .push(para_segment(doc, p, path, para_start, end));
+        if ctx.v2
+            && let Some(seg) = para_segment(doc, p, ctx.path.clone(), para_start, content.s.len())
+        {
+            content.segs.push(seg);
         }
     }
     ctx.path = cell_path;

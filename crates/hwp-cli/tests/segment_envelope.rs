@@ -50,7 +50,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "ec3908483af39c480469a67c040c4ea45f37e4bbf92dae7ef32997ae9c79fa3c",
+        actual, "353e8672bc82eaebab335ab7fb1648b9f9edec42c2154c1ef9d94cbf3829e613",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -370,12 +370,12 @@ fn the_v2_schema_rejects_an_unknown_field() {
     );
 }
 
-/// Each of the six load-bearing descriptions is published in the schema, because a consumer
-/// reads the schema and not this repository's design docs. A test rather than a review note:
-/// a description deleted during a later edit is exactly the kind of silent loss this phase has
+/// Each load-bearing description is published in the schema, because a consumer reads the
+/// schema and not this repository's design docs. A test rather than a review note: a
+/// description deleted during a later edit is exactly the kind of silent loss this phase has
 /// produced before.
 #[test]
-fn the_six_load_bearing_descriptions_are_published() {
+fn the_load_bearing_descriptions_are_published() {
     let schema = include_str!("../../../schemas/segment-envelope-v2.schema.json");
     for (what, sentence) in [
         (
@@ -392,6 +392,10 @@ fn the_six_load_bearing_descriptions_are_published() {
         ),
         ("the repeating run id", "SEGMENT IDS ARE NOT UNIQUE"),
         ("the interrupted paragraph", "HAS NO SINGLE `para` SEGMENT"),
+        (
+            "the textless point paragraph",
+            "A `para` SEGMENT CAN ADDRESS NO TEXT",
+        ),
         ("the segment order", "`char_range.end` DESCENDING"),
     ] {
         assert!(
