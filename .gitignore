@@ -50,7 +50,6 @@
 /docs/*.pdf
 /docs/*.hwp
 /docs/*.png
-!/docs/*-rendered.visual-check.*.png
 /docs/spec.txt
 target/diagnostic-corpus/
 tools/__pycache__/
