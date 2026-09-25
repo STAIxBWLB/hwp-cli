@@ -106,8 +106,9 @@ Rules the adapter enforces:
 - On the `/files` routes, accept a name matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, resolve it
   under the root, cap one file at 64 MiB and the workspace at 256 MiB, and unlink a partial upload
   when a cap is breached.
-- Handle one request at a time. One container serves one MCP session, so there is no concurrency
-  to exploit and no interleaving to corrupt.
+- Handle `/mcp` and `/files` requests one at a time under a single dispatch lock. One container
+  serves one MCP session, so there is no concurrency to exploit and no interleaving to corrupt.
+  `/healthz` answers outside the lock, so a long tool call never delays readiness.
 
 ### 3.3 Remote-safe inline content
 
@@ -176,7 +177,7 @@ not offered. Cancellation is the edge's deadline followed by container terminati
 
 `httparse` over fully hand-rolled `TcpListener` parsing keeps doc 20 §8's preference for
 maintained HTTP primitives over custom parsing: the maintained parser owns head syntax, and the
-adapter owns only the framing decisions this document enumerates (D2-D8). The initial `tiny_http`
+adapter owns only the framing decisions issue #312 records (D2-D8). The initial `tiny_http`
 choice failed that gate in practice — its unbounded drain on request drop (#310), unbounded
 header-line buffering, and declared-length allocation abort were exactly the parsing behavior
 doc 20 §8 makes the dependency's job to get right.

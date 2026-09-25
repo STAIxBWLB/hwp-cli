@@ -10,6 +10,29 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Security**
+
+- One request could kill `hwp serve`. tiny_http 0.12 drained an unread request body into a buffer
+  sized from the client's `Content-Length`, so a 413 for a body declaring 2^50 bytes was followed
+  by `memory allocation of 1125899906842624 bytes failed` and exit 134 - an abort no
+  `catch_unwind` can stop. The adapter now reads at most the capped body and discards any
+  unread remainder through a bounded lingering close (2 MiB, 2 s); 2^50, 2^63 and `u64::MAX`
+  all get 413 and the server keeps answering. The same crate also buffered a header line without
+  limit (64 MiB took the process to 70 MB RSS) and set no socket timeouts
+  ([#312](https://github.com/STAIxBWLB/hwp-cli/issues/312),
+  [#313](https://github.com/STAIxBWLB/hwp-cli/pull/313)).
+
+**Changed**
+
+- `hwp serve` drops `tiny_http` (and `ascii`, `chunked_transfer`, `httpdate` with it) for a
+  synchronous close-per-request server on `std::net` + `httparse`. Every response carries an exact
+  `Content-Length` and `Connection: close`; there is no keep-alive or pipelining. Request bodies
+  are framed by `Content-Length` only: any `Transfer-Encoding` gets 411, and a non-decimal or
+  disagreeing `Content-Length` gets 400. The request head is capped at 16 KiB and 64 headers
+  (431), sockets get 30 s read/write timeouts, and live connections are capped at 32. `/healthz`
+  now answers outside the dispatch lock, so a long tool call no longer delays readiness
+  ([#313](https://github.com/STAIxBWLB/hwp-cli/pull/313)).
+
 ## [0.20.0]
 
 **Added**

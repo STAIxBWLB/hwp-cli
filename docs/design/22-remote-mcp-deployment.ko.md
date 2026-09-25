@@ -106,8 +106,9 @@ adapter가 강제하는 규칙은 다음과 같다.
 - `/files` route에서는 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`에 일치하는 이름만 받고, root 아래로
   해석하며, 파일 하나를 64 MiB로 workspace 전체를 256 MiB로 제한하고, 제한을 넘으면 부분 업로드
   파일을 삭제한다.
-- 요청을 한 번에 하나씩 처리한다. container 하나가 MCP session 하나를 담당하므로 악용할 동시성도
-  없고 framing이 뒤섞일 여지도 없다.
+- `/mcp`와 `/files` 요청은 dispatch lock 하나 아래에서 한 번에 하나씩 처리한다. container 하나가
+  MCP session 하나를 담당하므로 악용할 동시성도 없고 framing이 뒤섞일 여지도 없다. `/healthz`는
+  lock 밖에서 답하므로 긴 도구 호출이 readiness를 늦추지 않는다.
 
 ### 3.3 Remote-safe inline content
 
@@ -173,7 +174,7 @@ deadline과 뒤이은 container 종료로 처리한다.
 
 `TcpListener`를 완전히 직접 parsing하는 대신 `httparse`를 고른 이유는, doc 20 §8이 custom
 parsing보다 유지보수되는 HTTP primitive를 선호하기 때문이다. 유지보수되는 parser가 헤드 문법을
-담당하고, adapter는 이 문서가 나열하는 framing 결정(D2-D8)만 소유한다. 최초의 `tiny_http`
+담당하고, adapter는 issue #312가 기록한 framing 결정(D2-D8)만 소유한다. 최초의 `tiny_http`
 선택은 이 gate를 실제로 통과하지 못했다. request drop 시 무제한 drain(#310), 무제한 헤더 라인
 버퍼, 선언 길이 기반 allocation abort가 모두 doc 20 §8이 dependency가 책임져야 할 parsing
 동작이었다.
