@@ -10,6 +10,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.1.0]
+
+**Compatibility**
+
+- Every change below is additive or a loosening under the 1.0 SemVer scope. Consumers that pin
+  schema hashes should know three schemas changed: `render-layout-v1` and `segment-envelope-v2`
+  changed in descriptions only, and `render-report-v1` lost upper bounds and gained three issue
+  codes, so every report that validated before still validates. The v2 envelope now carries a
+  point `para` segment (`char_range.start == char_range.end`) for a drawn paragraph with no text,
+  and no longer carries a segment for the blank line that closes a list; the markdown output is
+  byte-identical.
+
 **Added**
 
 - MCP `hwp_edit` accepts an address-only selector on `set_format`, `set_align`, `set_para`,
