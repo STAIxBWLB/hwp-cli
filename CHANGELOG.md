@@ -10,17 +10,31 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.0.0]
+
+1.0.0 closes the project's first milestone, shipped across 0.8.7 to 0.20.2: fidelity fixes and
+the input gate, native official-document authoring in place of the retired `hwpx` skill,
+`merge`/`split`/`compare`, the hwp-editor engine surface, and the remote MCP service. From this
+release hwp-cli follows Semantic Versioning; the README's Versioning section lists what it covers.
+
+**Compatibility**
+
+- `@hwp-editor/server` 1.0.0 refuses any hwp at or above 1.0.0: its engine range ended at the next
+  major version by design. Use `@hwp-editor/*` 1.1.0 or later with hwp-cli 1.x
+  ([STAIxBWLB/hwp-editor#30](https://github.com/STAIxBWLB/hwp-editor/pull/30)).
+
 **Security**
 
 - A small HWPX file could pin a CPU for close to a minute. quick-xml 0.40 checked each attribute
   of a start tag for duplicates by scanning every earlier name on that tag, so one tag with many
-  attributes cost time quadratic in their count (RUSTSEC-2026-0194). On the v0.20.2 release binary,
-  a 554 KB file with one 160,000-attribute paragraph tag kept `hwp cat` busy for 49 s; the same
-  reach exists through `hwp serve`, which holds its dispatch lock for the whole call. quick-xml is now
-  0.41.0, where that file reads in 0.02 s with byte-identical output. The same release fixes
-  unbounded namespace-declaration allocation in `NsReader` (RUSTSEC-2026-0195), which hwp-cli uses
-  only in a test. anyhow (1.0.104) and memmap2 (0.9.11) move to their patch releases for the
-  unsoundness advisories RUSTSEC-2026-0190 and RUSTSEC-2026-0186.
+  attributes cost time quadratic in their count (RUSTSEC-2026-0194). On the v0.20.2 release
+  binary, a 554 KB file with one 160,000-attribute paragraph tag kept `hwp cat` busy for 49 s; the
+  same reach exists through `hwp serve`, which holds its dispatch lock for the whole call.
+  quick-xml is now 0.41.0, where that file reads in 0.02 s with byte-identical output. The same
+  release fixes unbounded namespace-declaration allocation in `NsReader` (RUSTSEC-2026-0195), which
+  hwp-cli uses only in a test. anyhow (1.0.104) and memmap2 (0.9.11) move to their patch releases
+  for the unsoundness advisories RUSTSEC-2026-0190 and RUSTSEC-2026-0186
+  ([#334](https://github.com/STAIxBWLB/hwp-cli/pull/334)).
 
 **Changed**
 
@@ -30,7 +44,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   the `$id` line changed in each file, but every schema's SHA-256 changed with it, so a consumer
   that pins schema hashes or matches `$id` strings must update. The `$id` values are identifiers,
   not fetch addresses; nothing in hwp-cli resolves them
-  ([#302](https://github.com/STAIxBWLB/hwp-cli/issues/302)).
+  ([#302](https://github.com/STAIxBWLB/hwp-cli/issues/302),
+  [#335](https://github.com/STAIxBWLB/hwp-cli/pull/335)).
 
 ## [0.20.2]
 

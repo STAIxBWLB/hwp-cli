@@ -32,8 +32,8 @@ typed render-issue hash, font identity가 일치해야 통과한다. 렌더 hash
 - run contract: `hwp-structured-corpus-run-v1`
 - artifact contract: `hwp-structured-corpus-artifacts-v1`
 - manifest/run/artifact schema SHA-256: `eb168b4386e8fa35c84608410a29886281e6b08974407ed88bfa6be9dd589ea8`,
-  `416466f0c197ec31c64ed76035d3a7b34dbb694c08c459605c9eccfface22706`,
-  `3f9effe9df788304ae39bd3f1f460a40bf4b979016d5bc4c5599db386d577c23`
+  `c31a67c546874cdec4488d48277e3f35f1d526c4fca871e35a4361a220d889ec`,
+  `fe5da12a6e6b2cad2a2a98d17f8ba84fe515b9b2f9bc8857baf9a5fc7b620f36`
 - policy SHA-256: `2da9ef212ac3c5e10c85229d62e307e0c29a8e06a848e47feb039db1fd09fdb8`
 - font: Google Fonts Noto Sans KR at revision `2796410152d4f9524b68ed46e69c1b60f8e0f7c3`
 - font SHA-256: `194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252`

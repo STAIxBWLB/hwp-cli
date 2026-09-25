@@ -94,10 +94,10 @@ The numbered catalog of unimplemented features, each with its code and specifica
 difficulty estimate, is [docs/design/12-feature-gaps.md](docs/design/12-feature-gaps.md). That file
 is the detailed source; the list below is only the shape of the work.
 
-1. **Editor engine surface** What an embeddable editor needs and this binary does not yet expose: a
-   versioned fine-grained segment envelope, render-side layout geometry for hit-testing, jpeg/webp
-   raster output, and a typed JSON edit-ops channel with addressed operations and edit feedback
-   (the GO series).
+1. **Property fidelity and render precision** The two open Hangul compatibility items (a text-box
+   frame lost on round-trip, and vertical overflow in synthesized multi-page documents; GG-1 and
+   GG-2), the remaining Regime-A PDF parity distance on text, raster and region comparisons (issue
+   #110), and Hancom confirmation of justified alignment (GG-3).
 2. **Specification coverage** The HWP 5.0 rev1.3 body has been reconstructed as reviewable Markdown
    (§1 to §4.4) and audited against the implementation; the errata that audit produced are
    catalogued in [19 §1](docs/design/19-hwp5-spec-supplement.md). Still outstanding: the OWPML /
@@ -123,7 +123,7 @@ The default location is `~/.local/bin` (if it is not on PATH, the script says so
 location or version with arguments or environment variables:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.20.2
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.0.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -168,7 +168,7 @@ to bump:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v0.20.2 --dir ./bin
+  | sh -s -- --tag v1.0.0 --dir ./bin
 ```
 
 Run this from the build command (or a `prebuild` script) so the binary exists before the platform
@@ -593,6 +593,19 @@ are absent the corresponding tests skip rather than fail.
 Two checklists sit outside the automated gates because they need Hancom Office on real hardware:
 [docs/hancom-verification-checklist.md](docs/hancom-verification-checklist.md) for verifying written
 files, and [docs/release-readiness.md](docs/release-readiness.md) for the pre-release gate.
+
+## Versioning
+
+hwp-cli follows [Semantic Versioning](https://semver.org) from 1.0.0. A breaking change to any of
+the following needs a new major version:
+
+- the `hwp` CLI's commands, flags and exit codes;
+- the MCP tools' names and arguments, over stdio and `hwp serve`;
+- the published JSON Schemas in [`schemas/`](schemas). Each schema also carries its own version in
+  its file name (`edit-ops-v1`, `segment-envelope-v2`): an incompatible change ships as a new file.
+
+Not covered: the wording of human-facing messages and `--help` text, rendered pixels, and the exact
+bytes of written files.
 
 ## Contributing
 
