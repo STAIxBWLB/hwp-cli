@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "hwp-cli Rust Workspace",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "output": "hwp-cli-rendered.html",
+    "viewBox": [1376, 648],
+    "repository": {
+      "url": "https://github.com/STAIxBWLB/hwp-cli",
+      "provider": "github",
+      "revision": "41a1c555747b338efe265f87cb6dca06b223cad7"
+    },
+    "views": [
+      {
+        "id": "read-path",
+        "label": "Read and convert path",
+        "focus": ["user", "cli", "codecs", "model", "convert", "fs"],
+        "note": "From hwp/hwpx input to IR and converted artifacts."
+      },
+      {
+        "id": "render-path",
+        "label": "Render path",
+        "focus": ["model", "render", "fs"],
+        "note": "IR to glyph shaping, layout and PNG/SVG/PDF publishing."
+      },
+      {
+        "id": "mcp-path",
+        "label": "MCP deployment",
+        "focus": ["cli", "mcp", "edge", "fs"],
+        "note": "22-tool stdio server and the POST /mcp edge hop."
+      }
+    ],
+    "legend": {
+      "mode": "all"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Users / AI Agents",
+      "sublabel": "CLI + MCP clients",
+      "pos": [40, 330],
+      "size": [130, 60],
+      "sources": [
+        { "path": "crates/hwp-cli/src/cli.rs", "line": 68, "label": "clap derive Cmd enum" }
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "hwp CLI Entry",
+      "sublabel": "crates/hwp-cli, clap derive",
+      "tag": "26 commands",
+      "pos": [250, 330],
+      "size": [160, 64],
+      "sources": [
+        { "path": "crates/hwp-cli/src/cli.rs", "line": 68, "end_line": 580, "label": "26-variant Cmd enum" },
+        { "path": "crates/hwp-cli/src/main.rs", "line": 1, "label": "hwp binary entrypoint" }
+      ]
+    },
+    {
+      "id": "codecs",
+      "type": "backend",
+      "label": "Document Codecs",
+      "sublabel": "hwp5 + hwpx crates",
+      "tag": "CFB + OWPML",
+      "pos": [250, 110],
+      "size": [160, 60],
+      "sources": [
+        { "path": "crates/hwp5/src/lib.rs", "line": 1, "label": "CFB record stream codec" },
+        { "path": "crates/hwpx/src/lib.rs", "line": 1, "label": "OWPML package codec" }
+      ]
+    },
+    {
+      "id": "model",
+      "type": "backend",
+      "label": "hwp-model IR",
+      "sublabel": "sections, paragraphs",
+      "tag": "shared document model",
+      "pos": [480, 330],
+      "size": [150, 60],
+      "sources": [
+        { "path": "crates/hwp-model/src/lib.rs", "line": 1, "label": "L1 semantic IR, serde only" }
+      ]
+    },
+    {
+      "id": "render",
+      "type": "backend",
+      "label": "hwp-render",
+      "sublabel": "rustybuzz, tiny-skia",
+      "tag": "PNG/SVG/PDF",
+      "pos": [695, 110],
+      "size": [170, 60],
+      "sources": [
+        { "path": "crates/hwp-render/src/lib.rs", "line": 1, "label": "IR to PNG/SVG/PDF pipeline" }
+      ]
+    },
+    {
+      "id": "convert",
+      "type": "backend",
+      "label": "hwp-convert",
+      "sublabel": "markdown/HTML/DOCX/ODT + lint",
+      "tag": "10 lint rules",
+      "pos": [695, 330],
+      "size": [170, 64],
+      "sources": [
+        { "path": "crates/hwp-convert/src/lint.rs", "line": 76, "end_line": 85, "label": "10 stable rule ids" },
+        { "path": "crates/hwp-convert/src/official.rs", "line": 9, "label": "6 official-document profiles" }
+      ]
+    },
+    {
+      "id": "fs",
+      "type": "database",
+      "label": "Local Filesystem",
+      "sublabel": "hwp/hwpx in, artifacts out",
+      "tag": "atomic report publish",
+      "pos": [930, 330],
+      "size": [150, 60],
+      "sources": [
+        { "path": "crates/hwp-cli/src/certification.rs", "line": 2964, "label": "atomic write_artifact staging" }
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "MCP Server",
+      "sublabel": "22 tools, no MCP SDK",
+      "tag": "stdio + HTTP",
+      "pos": [250, 500],
+      "size": [160, 60],
+      "sources": [
+        { "path": "crates/hwp-cli/src/commands/mcp/mod.rs", "line": 2302, "label": "tool_defs: 22 tool table" },
+        { "path": "crates/hwp-cli/src/commands/mcp/stdio.rs", "line": 4, "label": "per-call password zeroize" },
+        { "path": "crates/hwp-cli/src/commands/mcp/authority.rs", "line": 273, "label": "checked_read_path / checked_write_path" }
+      ]
+    },
+    {
+      "id": "edge",
+      "type": "cloud",
+      "label": "Remote Edge",
+      "sublabel": "Cloudflare TLS/auth",
+      "tag": "POST /mcp",
+      "pos": [40, 500],
+      "size": [130, 60],
+      "sources": [
+        { "path": "crates/hwp-cli/src/commands/mcp/http.rs", "line": 1, "label": "close-per-request POST /mcp adapter" },
+        { "path": "crates/hwp-cli/src/commands/mcp/wire.rs", "line": 1, "label": "httparse head parsing, bounded framing" },
+        { "path": "docs/design/22-remote-mcp-deployment.md", "line": 85, "label": "private hop behind a trusted edge" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Single Rust binary - no Hancom Office / COM",
+      "wraps": ["cli", "codecs", "model", "render", "convert", "mcp"],
+      "pad": 14
+    },
+    {
+      "kind": "security-group",
+      "label": "Checked paths: refusal before any file IO",
+      "wraps": ["mcp"],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-to-cli",
+      "from": "user",
+      "to": "cli",
+      "label": "hwp",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "cli-to-codecs",
+      "from": "cli",
+      "to": "codecs",
+      "label": "read + write",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": -70
+    },
+    {
+      "id": "codecs-to-model",
+      "from": "codecs",
+      "to": "model",
+      "label": "build IR",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [440, 240]
+    },
+    {
+      "id": "cli-to-model",
+      "from": "cli",
+      "to": "model",
+      "label": "IR",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "cli-to-convert",
+      "from": "cli",
+      "to": "convert",
+      "label": "serialize",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [[330, 445], [780, 445]]
+    },
+    {
+      "id": "cli-to-mcp",
+      "from": "cli",
+      "to": "mcp",
+      "label": "hwp mcp / serve",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [260, 408]
+    },
+    {
+      "id": "mcp-to-fs",
+      "from": "mcp",
+      "to": "fs",
+      "label": "checked IO",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "labelAt": [700, 570]
+    },
+    {
+      "id": "model-to-convert",
+      "from": "model",
+      "to": "convert",
+      "label": "IR out",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "convert-to-fs",
+      "from": "convert",
+      "to": "fs",
+      "label": "write",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "model-to-render",
+      "from": "model",
+      "to": "render",
+      "label": "render",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [670, 250]
+    },
+    {
+      "id": "render-to-fs",
+      "from": "render",
+      "to": "fs",
+      "label": "PNG/SVG/PDF",
+      "fromSide": "right",
+      "toSide": "top",
+      "labelAt": [935, 140]
+    },
+    {
+      "id": "user-to-edge",
+      "from": "user",
+      "to": "edge",
+      "label": "POST /mcp",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [105, 404]
+    },
+    {
+      "id": "edge-to-mcp",
+      "from": "edge",
+      "to": "mcp",
+      "label": "hop",
+      "fromSide": "right",
+      "toSide": "left"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Core pipeline",
+      "items": [
+        "6-crate workspace at v0.20.1, edition 2024: hwp-cli entry plus hwp-model, hwp5, hwpx, hwp-convert, hwp-render",
+        "Codecs build the shared hwp-model IR; every format surface reads from it",
+        "The hwp5/hwpx codecs write hwp/hwpx back from the IR; hwp5 re-serialization stays byte-exact"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Formats and rules",
+      "items": [
+        "Reads to plain/markdown/HTML/JSON/CSV; writes DOCX, ODT, hwp, hwpx",
+        "Renders PNG/SVG/PDF with subset-embedded selectable fonts (pdf-writer)",
+        "26 commands including lint (10 rules), certify, corpus gate"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "MCP and trust",
+      "items": [
+        "22-tool stdio MCP server; per-call passwords zeroized before the next request",
+        "hwp serve: close-per-request POST /mcp on httparse behind a trusted edge, 1MiB cap",
+        "Checked paths refuse anything outside --root before any file IO"
+      ]
+    }
+  ]
+}
