@@ -23,12 +23,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   ([#317](https://github.com/STAIxBWLB/hwp-cli/issues/317),
   [#323](https://github.com/STAIxBWLB/hwp-cli/pull/323)).
 
-- Nested tables made layout time double per level. Each table cell was laid out once to measure
-  its height and again to draw it, and a nested table repeated both passes one level down. In
-  release, conversion to HWP5 took 7.5 s for 18 nested tables and `hwp render` was slower at every
-  measured depth; in a debug build, 30 levels ran past a 90-second test limit. The measure pass is now memoized per cell for the duration
-  of one document layout: 30 and 42 levels render in under a second even in a debug build, and 59
-  fixture and corpus documents render byte-identical (PDF and layout geometry)
+- A few-KB HWPX file could pin a CPU for hours. Table layout measured every cell in a scratch pass
+  and then drew it, and a nested table repeated both passes one level down, so layout time doubled
+  per nesting level: in `hwp render`, `hwp convert` to PDF or HWP5, and the MCP `hwp_render` and
+  `hwp_convert` tools, where `hwp serve` held its dispatch lock until the edge deadline. In release,
+  conversion to HWP5 took 7.5 s for 18 nested tables, and at 16 levels `hwp render` took 3.7 s
+  against conversion's 1.9 s; in a debug build, 30 levels ran past a 90-second test limit. The
+  measure pass is now memoized per cell for the duration of one document layout: 30 and 42 levels
+  render in under a second even in a debug build, and 59 fixture and corpus documents render
+  byte-identical (PDF and layout geometry)
   ([#321](https://github.com/STAIxBWLB/hwp-cli/issues/321),
   [#325](https://github.com/STAIxBWLB/hwp-cli/pull/325)).
 
@@ -39,6 +42,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   process exit then interrupted, leaving a truncated file with no cleanup. The lock is now held
   until exit. A failed `100 Continue` write also removes the upload file it had just created
   ([#319](https://github.com/STAIxBWLB/hwp-cli/pull/319)).
+
+**Documentation**
+
+- Doc 22 section 6.3 lists a Tier B go-live check: `hwp serve` answers `411` to any
+  `Transfer-Encoding` request body, and AWS does not document how `InvokeAgentRuntime` frames the
+  body it forwards, so after the first AgentCore deploy and before the Quick connector is
+  registered, a `tools/list` call through the runtime must return the tools rather than `411` or a
+  `length required` body ([#318](https://github.com/STAIxBWLB/hwp-cli/issues/318),
+  [#322](https://github.com/STAIxBWLB/hwp-cli/pull/322)).
 
 ## [0.20.1]
 
