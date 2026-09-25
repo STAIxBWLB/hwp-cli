@@ -177,7 +177,15 @@ pub(super) fn write_response(
     ));
     out.write_all(head.as_bytes())?;
     out.flush()?;
-    io::copy(&mut body.take(len), out)?;
+    // A body shorter than the promised length breaks the framing contract;
+    // report it instead of letting the client wait for bytes that never come.
+    let sent = io::copy(&mut body.take(len), out)?;
+    if sent < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("response body ended at {sent} of {len} bytes"),
+        ));
+    }
     out.flush()
 }
 
@@ -435,6 +443,14 @@ mod tests {
         write_response(&mut out, 200, &[], &mut body, 4).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.ends_with("\r\n\r\n0123"), "{text}");
+    }
+
+    #[test]
+    fn write_response_reports_a_body_shorter_than_len() {
+        let mut out = Vec::new();
+        let mut body: &[u8] = b"abc";
+        let error = write_response(&mut out, 200, &[], &mut body, 5).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
