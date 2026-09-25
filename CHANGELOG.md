@@ -10,22 +10,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.20.2]
+
 **Fixed**
 
 - A small HWPX file could crash any command that read it. The section reader recurses once per
   nesting level, and a stack overflow aborts instead of unwinding: 12,800 nested tables (272 KB)
   aborted `hwp cat` in release, and one upload plus `hwp_read` aborted `hwp serve`. A section nested
-  deeper than 256 XML elements (about 42 nested tables; real documents peak near 17) is now refused
-  with an error naming the bound, before the recursive parse runs. The bound also keeps default
-  2 MiB threads safe, which overflowed near 100 nested tables in debug
-  ([#317](https://github.com/STAIxBWLB/hwp-cli/issues/317)).
+  deeper than 256 XML elements (about 42 nested tables; the local corpus peaks at depth 17) is now
+  refused with an error naming the bound, before the recursive parse runs. The bound also keeps
+  default 2 MiB threads safe, which overflowed near 100 nested tables in debug
+  ([#317](https://github.com/STAIxBWLB/hwp-cli/issues/317),
+  [#323](https://github.com/STAIxBWLB/hwp-cli/pull/323)).
 
 - Nested tables made layout time double per level. Each table cell was laid out once to measure
-  its height and again to draw it, and a nested table repeated both passes one level down, so
-  `hwp render` and conversion to HWP5 took 7.5 s for 18 nested tables and never finished for 30.
-  The measure pass is now memoized per cell for the duration of one document layout, so the same
-  30-level document renders in under a second, and every fixture renders byte-identical
-  ([#321](https://github.com/STAIxBWLB/hwp-cli/issues/321)).
+  its height and again to draw it, and a nested table repeated both passes one level down. In
+  release, conversion to HWP5 took 7.5 s for 18 nested tables and `hwp render` was slower still;
+  30 levels ran past a 90-second limit. The measure pass is now memoized per cell for the duration
+  of one document layout: 30 and 42 levels render in under a second even in a debug build, and 59
+  fixture and corpus documents render byte-identical (PDF and layout geometry)
+  ([#321](https://github.com/STAIxBWLB/hwp-cli/issues/321),
+  [#325](https://github.com/STAIxBWLB/hwp-cli/pull/325)).
 
 ## [0.20.1]
 
