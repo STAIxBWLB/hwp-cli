@@ -84,9 +84,9 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 [docs/design/12-feature-gaps.ko.md](docs/design/12-feature-gaps.ko.md)에 있다. 그 파일이 상세
 정본이고, 아래 목록은 작업의 윤곽만 보여준다.
 
-1. **에디터 엔진 표면** 임베드형 에디터가 필요로 하지만 이 바이너리가 아직 노출하지 않는 것들이다.
-   버전이 부여된 세밀한 세그먼트 봉투, 히트 테스트용 렌더 측 배치 좌표, jpeg/webp 래스터 출력,
-   그리고 주소 지정 연산과 편집 피드백을 갖춘 typed JSON 편집 연산 채널이 여기에 속한다(GO 계열).
+1. **속성 충실도와 렌더 정밀도** 한글 호환 규칙에 남은 두 미해결 항목(왕복 시 글상자 틀 소실,
+   합성한 여러 쪽 문서의 세로 넘침), text·raster·영역 비교에 남은 Regime-A PDF parity 거리, 양쪽
+   정렬이 여기에 속한다(GG 계열).
 2. **스펙 커버리지** HWP 5.0 rev1.3 본문은 검수 가능한 Markdown으로 재구성하고(§1~§4.4) 구현과
    대조하는 감사를 마쳤으며, 그 감사가 찾아낸 정오 항목은
    [19 §1](docs/design/19-hwp5-spec-supplement.ko.md)에 정리했다. 남은 과제는 OWPML / KS X 6101,
@@ -110,7 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 기본 위치는 `~/.local/bin`이다(PATH에 없으면 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v0.20.2
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.0.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -152,7 +152,7 @@ RHEL/CentOS 7+ 및 그 이후 배포판에서 그대로 돌아간다. 빌드 러
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v0.20.2 --dir ./bin
+  | sh -s -- --tag v1.0.0 --dir ./bin
 ```
 
 플랫폼이 배포 번들을 수집하기 전에 바이너리가 있어야 하므로(Vercel `includeFiles`, Next.js
@@ -554,6 +554,18 @@ ubuntu `lint` 잡에서 한 번만 실행하고, `cargo test --workspace`는 **u
 한글(한컴오피스) 실기가 필요해 자동 게이트 바깥에 두는 점검표가 두 개 있다. 작성한 파일을 실기에서
 검증하는 [docs/hancom-verification-checklist.ko.md](docs/hancom-verification-checklist.ko.md)와
 릴리스 직전 게이트인 [docs/release-readiness.ko.md](docs/release-readiness.ko.md)다.
+
+## 버전 정책
+
+hwp-cli는 1.0.0부터 [유의적 버전](https://semver.org/lang/ko/)을 따른다. 다음 중 하나라도
+호환되지 않게 바뀌면 주 버전을 올린다.
+
+- `hwp` CLI의 명령, 플래그, 종료 코드
+- stdio와 `hwp serve`로 노출하는 MCP 도구의 이름과 인자
+- [`schemas/`](schemas)에 게시한 JSON 스키마. 스키마마다 파일 이름에 자체 버전이 있어
+  (`edit-ops-v1`, `segment-envelope-v2`) 호환되지 않는 변경은 새 파일로 나온다.
+
+사람이 읽는 메시지와 `--help` 문구, 렌더링 픽셀, 써낸 파일의 정확한 바이트는 대상이 아니다.
 
 ## 기여
 
