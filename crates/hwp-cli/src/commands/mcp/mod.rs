@@ -5096,6 +5096,75 @@ mod tests {
         }
     }
 
+    /// #332: a replace-only hwpx -> hwpx batch runs on the package-preserving fast path. Its MCP
+    /// report now carries one applied outcome per replace (it used to report `applied_count: 0`
+    /// with empty `ops`) and still equals the CLI `--ops --report` report for the same batch.
+    #[test]
+    fn mcp_fast_path_replace_report_matches_the_cli_report() {
+        let source = temp_file("fast-replace-report-source.hwpx");
+        let mcp_out = temp_file("fast-replace-report-mcp.hwpx");
+        let cli_out = temp_file("fast-replace-report-cli.hwpx");
+        let mcp_report_path = temp_file("fast-replace-report-mcp.json");
+        let cli_report_path = temp_file("fast-replace-report-cli.json");
+        create_hwpx(&source, "첫 문단\n\n같은 문단\n");
+
+        let content = tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "report": mcp_report_path,
+                "replace": [
+                    {"from": "첫 문단", "to": "FIRST"},
+                    {"from": "같은 문단", "to": "SAME"}
+                ]
+            }),
+            &ctx(),
+        )
+        .expect("MCP 치환 편집");
+        let response: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            response["ops"].as_array().map(Vec::len),
+            Some(2),
+            "{response}"
+        );
+
+        run_cli_ops_channel_full(
+            &source,
+            r#"[{"op":"replace","from":"첫 문단","to":"FIRST"},{"op":"replace","from":"같은 문단","to":"SAME"}]"#,
+            &cli_out,
+            false,
+            Some(&cli_report_path),
+            "fast-replace-report",
+        );
+
+        let mut mcp_report: Value =
+            serde_json::from_slice(&std::fs::read(&mcp_report_path).unwrap()).unwrap();
+        let mut cli_report: Value =
+            serde_json::from_slice(&std::fs::read(&cli_report_path).unwrap()).unwrap();
+        assert!(
+            edit_report_v1_validator().is_valid(&mcp_report),
+            "{mcp_report}"
+        );
+        assert_eq!(mcp_report["applied_count"], 2, "{mcp_report}");
+        assert_eq!(mcp_report["failed_count"], 0, "{mcp_report}");
+        mcp_report["output"] = Value::Null;
+        cli_report["output"] = Value::Null;
+        assert_eq!(
+            mcp_report, cli_report,
+            "MCP와 CLI --ops --report의 보고서가 다르다"
+        );
+
+        for path in [
+            &source,
+            &mcp_out,
+            &cli_out,
+            &mcp_report_path,
+            &cli_report_path,
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
     /// through the CLI `--ops` channel — the two surfaces share one engine, not two parsers.
     #[test]

@@ -14,6 +14,7 @@ Notes on the HWP 5.0 format specification material used when working on the pars
 | [manual/amazon-quick-desktop.md](manual/amazon-quick-desktop.md) | Amazon Quick Desktop setup, end-to-end verification, agent instructions, and troubleshooting |
 | [design/22-remote-mcp-deployment.md](design/22-remote-mcp-deployment.md) | Remote MCP deployment design: the shared `hwp serve` HTTP adapter and the Cloudflare and AgentCore hosting tiers |
 | [design/23-hwpx-skill-absorption.md](design/23-hwpx-skill-absorption.md) | Parity record of the retired downstream `hwpx` skill against the native commands |
+| [architecture/](architecture/) | Interactive architecture map of the workspace and the MCP deployment path: open `hwp-cli-rendered.html` in a browser. Generated from `hwp-cli.architecture.json` with Archify; the `visual-check` files are its browser evidence |
 | [release-readiness.md](release-readiness.md) | Pre-release gate checklist |
 | [hancom-verification-checklist.md](hancom-verification-checklist.md) | Checklist for verifying files in Hancom Office |
 

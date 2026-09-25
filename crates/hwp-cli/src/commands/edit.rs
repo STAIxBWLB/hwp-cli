@@ -923,8 +923,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             crate::format::FileFormat::Hwpx
         )
     {
-        let writer =
-            |staged: &Path| patch_replacements_staged(input, staged, &pairs, plan.allow_partial);
+        let writer = |staged: &Path| patch_replacements_staged(input, staged, output, &pairs, plan);
         let verifier = |staged: &Path, _: &_| {
             if plan.verify {
                 verify_output(staged, None)?;
@@ -951,10 +950,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             applied: report.applied_requests,
             warnings: report.warnings,
             preservation: hwp_model::PreservationReport::new(),
-            // This fast path batches every pattern-form replace into one package-surgical patch
-            // with only an aggregate count (`report.applied_requests`) — no per-op breakdown to
-            // report, so `ops` stays empty (consistent with the individual-flag path below).
-            ops: Vec::new(),
+            // One outcome per typed replace, equal to the apply loop's for the same batch (#332).
+            ops: report.ops,
             dry_run: plan.dry_run,
         });
     }
@@ -2547,13 +2544,53 @@ struct PatchReport {
     counts: BTreeMap<String, usize>,
     applied_requests: usize,
     warnings: Vec<String>,
+    ops: Vec<OpOutcome>,
+}
+
+/// The unapplied-request label a pattern-form typed `replace` records; also its failed
+/// `OpOutcome.reason`, so the fast path and the apply loop report the same string (#332).
+fn replace_request(from: &str, to: &str) -> String {
+    format!("replace from={from:?} to={to:?}")
+}
+
+/// #332: the fast path's `edit-report-v1` ops, one per typed replace, equal to what the apply
+/// loop reports for a pattern-form replace: no resolved address, so `changed` is empty and an
+/// applied op touches `changed.len().max(1)` = 1 piece. The per-entry match counts are not
+/// used, since the apply loop does not report them either. Empty for the legacy `--replace`
+/// flags, which carry no per-op outcomes on either path.
+fn fast_path_outcomes(
+    plan: &EditPlan,
+    pairs: &[(String, String)],
+    matched: &[bool],
+) -> Vec<OpOutcome> {
+    if plan.typed_operations.is_empty() {
+        return Vec::new();
+    }
+    pairs
+        .iter()
+        .zip(matched)
+        .enumerate()
+        .map(|(index, ((from, to), &matched))| OpOutcome {
+            index,
+            op: "replace".to_string(),
+            status: if matched {
+                OpStatus::Applied
+            } else {
+                OpStatus::Failed
+            },
+            pieces_touched: usize::from(matched),
+            changed: Vec::new(),
+            reason: (!matched).then(|| replace_request(from, to)),
+        })
+        .collect()
 }
 
 fn patch_replacements_staged(
     input: &Path,
     staged: &Path,
+    output: &Path,
     pairs: &[(String, String)],
-    allow_partial: bool,
+    plan: &EditPlan,
 ) -> anyhow::Result<PatchReport> {
     let parent = staged.parent().context("임시 출력 작업공간이 없습니다")?;
     let mut current = input.to_path_buf();
@@ -2561,17 +2598,26 @@ fn patch_replacements_staged(
     let mut applied_requests = 0usize;
     let mut totals = BTreeMap::new();
     let mut warnings = Vec::new();
+    // One flag per pair. Without --allow-partial the first unapplied request still decides the
+    // abort message, but the loop runs every pair so the abort report has every op's status,
+    // as the apply loop's EditAbort report does.
+    let mut matched = Vec::with_capacity(pairs.len());
+    let mut first_unapplied: Option<String> = None;
 
     for (index, (from, to)) in pairs.iter().enumerate() {
         if from.is_empty() || from == to {
-            if allow_partial {
+            matched.push(false);
+            if plan.allow_partial {
                 warnings.push(format!("미적용 편집 요청: --replace {from:?}=>{to:?}"));
-                continue;
+            } else {
+                first_unapplied.get_or_insert_with(|| {
+                    format!(
+                        "적용되지 않은 편집 요청이 있습니다: --replace {from:?}=>{to:?} \
+                         (--allow-partial로 일치한 요청만 적용 가능)"
+                    )
+                });
             }
-            anyhow::bail!(
-                "적용되지 않은 편집 요청이 있습니다: --replace {from:?}=>{to:?} \
-                 (--allow-partial로 일치한 요청만 적용 가능)"
-            );
+            continue;
         }
         let next = parent.join(format!(".hwp-replace-step-{index}.hwpx"));
         let counts = hwpx::patch::replace_texts(&current, &next, &[(from.clone(), to.clone())])?;
@@ -2580,16 +2626,20 @@ fn patch_replacements_staged(
             .filter(|(entry, _)| entry.starts_with("Contents/section") && entry.ends_with(".xml"))
             .map(|(_, count)| *count)
             .sum::<usize>();
+        matched.push(matches > 0);
         if matches == 0 {
             let _ = fs::remove_file(&next);
-            if allow_partial {
+            if plan.allow_partial {
                 warnings.push(format!("미적용 편집 요청: --replace {from:?}=>{to:?}"));
-                continue;
+            } else {
+                first_unapplied.get_or_insert_with(|| {
+                    format!(
+                        "적용되지 않은 편집 요청이 있습니다: --replace {from:?}=>{to:?} \
+                         (런 분절 교차 매칭은 미지원, --allow-partial로 일치한 요청만 적용 가능)"
+                    )
+                });
             }
-            anyhow::bail!(
-                "적용되지 않은 편집 요청이 있습니다: --replace {from:?}=>{to:?} \
-                 (런 분절 교차 매칭은 미지원, --allow-partial로 일치한 요청만 적용 가능)"
-            );
+            continue;
         }
         for (entry, count) in counts {
             *totals.entry(entry).or_insert(0) += count;
@@ -2602,16 +2652,39 @@ fn patch_replacements_staged(
         applied_requests += 1;
     }
 
+    let ops = fast_path_outcomes(plan, pairs, &matched);
+    // EDT-06/D-14 on the fast path: every abort below carries the report, so `--report` (CLI)
+    // and `report` (MCP) still get a diagnosable artifact, as on the apply-loop path.
+    let abort = |reason: String| -> anyhow::Error {
+        EditAbort {
+            report: EditReport {
+                output: output.display().to_string(),
+                applied: applied_requests,
+                warnings: Vec::new(),
+                preservation: hwp_model::PreservationReport::new(),
+                ops: ops.clone(),
+                dry_run: plan.dry_run,
+            },
+            reason,
+        }
+        .into()
+    };
+    if let Some(reason) = first_unapplied {
+        return Err(abort(reason));
+    }
     if applied_requests == 0 {
-        anyhow::bail!("적용 가능한 편집이 없어 출력을 게시하지 않습니다");
+        return Err(abort(
+            "적용 가능한 편집이 없어 출력을 게시하지 않습니다".to_string(),
+        ));
     }
     let original = load_document(input)?;
     let final_doc = load_document(&current)?;
     if semantic_signature(&original) == semantic_signature(&final_doc) {
-        anyhow::bail!(
+        return Err(abort(
             "순차 치환의 최종 결과가 원문과 같아 출력을 게시하지 않습니다 \
              (상쇄되는 --replace 요청 확인)"
-        );
+                .to_string(),
+        ));
     }
     fs::rename(&current, staged).with_context(|| {
         format!(
@@ -2623,6 +2696,7 @@ fn patch_replacements_staged(
         counts: totals,
         applied_requests,
         warnings,
+        ops,
     })
 }
 
@@ -2665,7 +2739,7 @@ fn apply_typed_operation(
     match operation {
         TypedEditOperation::Replace { from, to, address } => {
             if from.is_empty() || from == to {
-                unapplied.push(format!("replace from={from:?} to={to:?}"));
+                unapplied.push(replace_request(from, to));
                 return Ok(());
             }
             if address.is_some() {
@@ -2687,13 +2761,7 @@ fn apply_typed_operation(
                 let before = doc.clone();
                 let count = hwp_convert::replace_text(doc, from, to, true);
                 eprintln!("치환: {from:?} → {to:?} ({count}건)");
-                record_effect(
-                    &before,
-                    doc,
-                    format!("replace from={from:?} to={to:?}"),
-                    edits,
-                    unapplied,
-                );
+                record_effect(&before, doc, replace_request(from, to), edits, unapplied);
             }
         }
         TypedEditOperation::SetCell {

@@ -12,6 +12,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `hwp edit --report` and the MCP `edit` tool's `report` now list one outcome per op for a
+  replace-only HWPX-to-HWPX batch. That batch shape takes the package-preserving fast path, which
+  used to report an empty `ops` array and `applied_count: 0` however many replaces matched, and
+  wrote no report at all when it aborted. Each replace now gets the same status and failure
+  reason the in-memory edit path reports for the same batch, including on an abort. The output
+  file bytes and the error messages are unchanged
+  ([#332](https://github.com/STAIxBWLB/hwp-cli/issues/332)).
+
 - `render-layout-v1` now records geometry for the whole body table tree, at any depth: the
   paragraphs inside a table cell, a table nested in one, and that table's cells and their
   paragraphs. Before, only body paragraphs and the outermost table with its own cells had rows, so
