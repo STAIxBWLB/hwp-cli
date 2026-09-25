@@ -127,13 +127,13 @@
       "id": "mcp",
       "type": "backend",
       "label": "MCP Server",
-      "sublabel": "22 tools, serde_json only",
+      "sublabel": "22 tools, no MCP SDK",
       "tag": "stdio + HTTP",
       "pos": [250, 500],
       "size": [160, 60],
       "sources": [
         { "path": "crates/hwp-cli/src/commands/mcp/mod.rs", "line": 2302, "label": "tool_defs: 22 tool table" },
-        { "path": "crates/hwp-cli/src/commands/mcp/stdio.rs", "line": 9, "label": "per-call password zeroize" },
+        { "path": "crates/hwp-cli/src/commands/mcp/stdio.rs", "line": 4, "label": "per-call password zeroize" },
         { "path": "crates/hwp-cli/src/commands/mcp/authority.rs", "line": 273, "label": "checked_read_path / checked_write_path" }
       ]
     },
@@ -288,7 +288,7 @@
       "items": [
         "6-crate workspace at v0.20.1, edition 2024: hwp-cli entry plus hwp-model, hwp5, hwpx, hwp-convert, hwp-render",
         "Codecs build the shared hwp-model IR; every format surface reads from it",
-        "hwp-convert also serializes hwp/hwpx targets, keeping round-trips binary-exact"
+        "The hwp5/hwpx codecs write hwp/hwpx back from the IR; hwp5 re-serialization stays byte-exact"
       ]
     },
     {
