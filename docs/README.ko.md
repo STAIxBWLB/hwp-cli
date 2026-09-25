@@ -14,6 +14,7 @@
 | [manual/amazon-quick-desktop.ko.md](manual/amazon-quick-desktop.ko.md) | Amazon Quick Desktop 설정, end-to-end 검증, 에이전트 지침, 문제 해결 |
 | [design/22-remote-mcp-deployment.ko.md](design/22-remote-mcp-deployment.ko.md) | Remote MCP deployment 설계: 공유 `hwp serve` HTTP adapter와 Cloudflare·AgentCore 호스팅 tier |
 | [design/23-hwpx-skill-absorption.ko.md](design/23-hwpx-skill-absorption.ko.md) | 퇴역한 다운스트림 `hwpx` 스킬과 네이티브 명령의 패리티 기록 |
+| [architecture/](architecture/) | 워크스페이스와 MCP 배포 경로를 담은 대화형 아키텍처 지도. `hwp-cli-rendered.html`을 브라우저로 연다. `hwp-cli.architecture.json`에서 Archify로 생성했고, `visual-check` 파일은 그 브라우저 검증 기록이다 |
 | [release-readiness.ko.md](release-readiness.ko.md) | 릴리스 전 게이트 체크리스트 |
 | [hancom-verification-checklist.ko.md](hancom-verification-checklist.ko.md) | 한글 실기 검증 체크리스트 |
 

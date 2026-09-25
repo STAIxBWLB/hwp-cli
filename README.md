@@ -569,8 +569,11 @@ Hancom Office.
 | `hwp5` | HWP 5.0 binary reader/writer (CFB container, record streams, compression) |
 | `hwpx` | HWPX reader/writer (ZIP package, OWPML XML) |
 | `hwp-convert` | IR ↔ markdown / HTML / JSON, in-memory editing, field scanning |
-| `hwp-render` | IR → PNG / SVG / PDF renderer, line layout synthesis, shaping, font subsetting and embedding, render diff |
+| `hwp-render` | IR → PNG / SVG / PDF / JPEG / WebP renderer and layout geometry, line layout synthesis, shaping, font subsetting and embedding, render diff |
 | `hwp-cli` | The `hwp` binary (CLI and MCP server) |
+
+An interactive map of these crates and the MCP deployment path is in
+[docs/architecture/](docs/architecture/): open `hwp-cli-rendered.html` in a browser.
 
 ## Development and testing
 
