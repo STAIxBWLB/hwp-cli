@@ -152,7 +152,15 @@ pub struct FontStore {
     /// 기계 판독 가능한 해석 결과. 같은 요청은 캐시되므로 한 번만 기록된다.
     pub resolutions: Vec<FontResolution>,
     pub resolutions_complete: bool,
+    /// Table-cell content heights from the layout measure pass, for one document
+    /// layout at a time (#321). The layout owns the lifetime: it clears this on
+    /// entry and exit, since the keys are cell addresses inside that document.
+    pub(crate) measured_cells: HashMap<MeasuredCell, f32>,
 }
+
+/// A table cell's measure-pass input: its address in the document being laid
+/// out, the content width and the page size, as `f32` bits.
+pub(crate) type MeasuredCell = (usize, u32, u32, u32);
 
 impl FontStore {
     pub fn new() -> Self {
@@ -175,6 +183,7 @@ impl FontStore {
             issues: RenderIssueAccumulator::new(),
             resolutions: Vec::new(),
             resolutions_complete: true,
+            measured_cells: HashMap::new(),
         }
     }
 

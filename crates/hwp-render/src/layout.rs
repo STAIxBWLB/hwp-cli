@@ -873,6 +873,21 @@ fn layout_document_inner(
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
 ) -> DisplayList {
+    // Memoized cell heights are keyed by addresses inside `doc`; never let one
+    // document's entries answer for another's, and do not keep them past the
+    // borrow (#321).
+    store.measured_cells.clear();
+    let list = layout_document_pages(doc, store, warnings, rec);
+    store.measured_cells.clear();
+    list
+}
+
+fn layout_document_pages(
+    doc: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
+) -> DisplayList {
     let mut pages = Vec::new();
     let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
 
@@ -3310,9 +3325,22 @@ fn layout_table(
             .iter()
             .sum();
         let (ml, mr, mt, mb) = cell_margins(table, cell);
+        let content_w = (cw - ml - mr).max(4.0);
+        // The measure pass is a pure function of the cell, its width and the page
+        // size, so a repeat returns the memoized height (#321). Without this, a
+        // nested table re-measured its cells inside the parent's draw pass as well,
+        // and layout time doubled per nesting level.
+        let measured_key = (
+            std::ptr::from_ref(cell) as usize,
+            content_w.to_bits(),
+            page.width_pt.to_bits(),
+            page.height_pt.to_bits(),
+        );
         // 빈 셀은 스크래치 레이아웃(할당+셰이핑)을 생략 — 내용 높이 0(여백 mt+mb는 아래서 반영).
         let content_h = if cell.paragraphs.is_empty() {
             0.0
+        } else if let Some(&memoized) = store.measured_cells.get(&measured_key) {
+            memoized
         } else {
             let mut scratch = PageList {
                 width_pt: page.width_pt,
@@ -3320,18 +3348,20 @@ fn layout_table(
                 items: Vec::new(),
             };
             let mut scratch_warn = RenderIssueAccumulator::new();
-            layout_box_paragraphs(
+            let measured = layout_box_paragraphs(
                 doc,
                 store,
                 &mut scratch,
                 &cell.paragraphs,
                 0.0,
                 0.0,
-                (cw - ml - mr).max(4.0),
+                content_w,
                 &mut scratch_warn,
                 None, // 측정 패스: 마커 미표시(counter 미증가)
                 None,
-            )
+            );
+            store.measured_cells.insert(measured_key, measured);
+            measured
         };
         content_h_by_cell.push(content_h);
         let needed = content_h + mt + mb;

@@ -20,6 +20,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   2 MiB threads safe, which overflowed near 100 nested tables in debug
   ([#317](https://github.com/STAIxBWLB/hwp-cli/issues/317)).
 
+- Nested tables made layout time double per level. Each table cell was laid out once to measure
+  its height and again to draw it, and a nested table repeated both passes one level down, so
+  `hwp render` and conversion to HWP5 took 7.5 s for 18 nested tables and never finished for 30.
+  The measure pass is now memoized per cell for the duration of one document layout, so the same
+  30-level document renders in under a second, and every fixture renders byte-identical
+  ([#321](https://github.com/STAIxBWLB/hwp-cli/issues/321)).
+
 ## [0.20.1]
 
 **Security**
