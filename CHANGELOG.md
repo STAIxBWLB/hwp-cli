@@ -10,6 +10,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- MCP `hwp_edit` accepts an address-only selector on `set_format`, `set_align`, `set_para`,
+  `insert_para` and `delete_para`: `pattern`, `anchor` or `matching` may be left out when
+  `address` is given, and the call writes the same output as the same op on the CLI `--ops`
+  channel. An item with neither selector is still rejected, now in the ops channel's wording.
+  Giving both stays accepted as in 1.0, with the address choosing the target, although the ops
+  channel requires exactly one: rejecting the combination on MCP would break existing callers.
+  The published input schema states the rule as an `anyOf` of `required` sets on those five items
+  ([#331](https://github.com/STAIxBWLB/hwp-cli/issues/331)).
+
 ## [1.0.0]
 
 1.0.0 closes the project's first milestone, shipped across 0.8.7 to 0.20.2: fidelity fixes and
