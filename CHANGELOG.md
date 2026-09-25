@@ -12,6 +12,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `hwp edit --report` and the MCP `edit` tool's `report` now list one outcome per op for a
+  replace-only HWPX-to-HWPX batch. That batch shape takes the package-preserving fast path, which
+  used to report an empty `ops` array and `applied_count: 0` however many replaces matched, and
+  wrote no report at all when it aborted. Each replace now gets the same status and failure
+  reason the in-memory edit path reports for the same batch, including on an abort. The output
+  file bytes and the error messages are unchanged
+  ([#332](https://github.com/STAIxBWLB/hwp-cli/issues/332)).
 - A render report could fail its own published schema in three ways, all reachable by ordinary
   `hwp render --report` runs ([#284](https://github.com/STAIxBWLB/hwp-cli/issues/284)):
   - `total_pages` and `selected_pages` were capped at 4,096 while the render path applies no page
