@@ -23,6 +23,10 @@
 # To move to a new release, bump HWP_VERSION and HWP_SHA256 together. The sha256 is
 # published beside the tarball as hwp-<version>-<target>.sha256, and a mismatch fails
 # the build, which is the point.
+#
+# Since v0.20.1 `hwp serve` answers 411 to any Transfer-Encoding request body. Before
+# the first Tier B runtime goes live, confirm AgentCore forwards /mcp with
+# Content-Length (issue #318); chunked forwarding would fail every call.
 
 # The platform is pinned, and through an ARG of our own name rather than buildkit's
 # predefined TARGETPLATFORM, which buildkit overrides so a default there would do
@@ -31,9 +35,9 @@
 # binary, which AgentCore rejects. Override only to test another architecture.
 ARG HWP_PLATFORM=linux/arm64
 
-ARG HWP_VERSION=v0.20.0
+ARG HWP_VERSION=v0.20.1
 ARG HWP_TARGET=aarch64-unknown-linux-gnu
-ARG HWP_SHA256=ffa137b2d22b4553431754deb336acb562e5fca17d6ece61166b4c2cd7ff6101
+ARG HWP_SHA256=c1418d82c3f2517893f79ddbcfbb870cc61492416279ba1e66af66a1d3ebe46c
 
 # Fetch stage. ADD downloads over the builder's own network stack, so no curl and
 # no CA bundle are ever installed; keeping it in a discarded stage also keeps the
