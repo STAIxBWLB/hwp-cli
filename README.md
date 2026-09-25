@@ -95,9 +95,9 @@ difficulty estimate, is [docs/design/12-feature-gaps.md](docs/design/12-feature-
 is the detailed source; the list below is only the shape of the work.
 
 1. **Property fidelity and render precision** The two open Hangul compatibility items (a text-box
-   frame lost on round-trip, and vertical overflow in synthesized multi-page documents), the
-   remaining Regime-A PDF parity distance on text, raster and region comparisons, and justified
-   alignment (the GG series).
+   frame lost on round-trip, and vertical overflow in synthesized multi-page documents; GG-1 and
+   GG-2), the remaining Regime-A PDF parity distance on text, raster and region comparisons (issue
+   #110), and Hancom confirmation of justified alignment (GG-3).
 2. **Specification coverage** The HWP 5.0 rev1.3 body has been reconstructed as reviewable Markdown
    (§1 to §4.4) and audited against the implementation; the errata that audit produced are
    catalogued in [19 §1](docs/design/19-hwp5-spec-supplement.md). Still outstanding: the OWPML /

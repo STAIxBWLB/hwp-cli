@@ -12,7 +12,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [1.0.0]
 
-1.0.0 closes the project's first milestone, shipped across 0.11.0 to 0.20.2: fidelity fixes and
+1.0.0 closes the project's first milestone, shipped across 0.8.7 to 0.20.2: fidelity fixes and
 the input gate, native official-document authoring in place of the retired `hwpx` skill,
 `merge`/`split`/`compare`, the hwp-editor engine surface, and the remote MCP service. From this
 release hwp-cli follows Semantic Versioning; the README's Versioning section lists what it covers.
