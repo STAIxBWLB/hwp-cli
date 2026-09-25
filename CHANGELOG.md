@@ -10,6 +10,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- A small HWPX file could crash any command that read it. The section reader recurses once per
+  nesting level, and a stack overflow aborts instead of unwinding: 12,800 nested tables (272 KB)
+  aborted `hwp cat` in release, and one upload plus `hwp_read` aborted `hwp serve`. A section nested
+  deeper than 256 XML elements (about 42 nested tables; real documents peak near 17) is now refused
+  with an error naming the bound, before the recursive parse runs. The bound also keeps default
+  2 MiB threads safe, which overflowed near 100 nested tables in debug
+  ([#317](https://github.com/STAIxBWLB/hwp-cli/issues/317)).
+
 ## [0.20.1]
 
 **Security**
