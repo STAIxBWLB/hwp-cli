@@ -111,8 +111,9 @@ Mac without Docker:
 
 ```bash
 ssh yjlee@172.16.229.33
-# one-time: install Node 22+ (fnm or the distribution package), clone the repo
-cd ~/hwp-cli/deploy/cloudflare
+# one-time: install Node 22+ (fnm or the distribution package), clone the repo into
+# ~/hwp-cli-deploy (the deploy checkout; nothing else builds from it)
+cd ~/hwp-cli-deploy/deploy/cloudflare
 ```
 
 Store credentials once, readable only by you:
@@ -159,7 +160,10 @@ are already set, so a first deploy is just:
 
 ```bash
 ssh yjlee@172.16.229.33
-cd ~/hwp-cli/deploy/cloudflare        # clone the repo here if it is not present
+cd ~/hwp-cli-deploy                   # the deploy checkout; clone the repo here if missing
+git fetch origin && git merge --ff-only origin/main
+git log -1 --oneline                  # must name the commit you mean to deploy
+cd deploy/cloudflare
 set -a && . ~/.config/hwp-mcp-deploy.env && set +a
 npm ci
 npx wrangler deploy
@@ -169,9 +173,10 @@ npx wrangler deploy
 a failed pull behind tail's exit status (this exact shape once deployed a stale v0.16.1
 checkout while the operator believed v0.19.1 was going out — the give-away in the log is
 wrangler answering "Image already exists remotely, skipping push" / "no changes" for a deploy
-that was supposed to change the image). Run the pull un-piped, check `git log -1` names the
-commit you mean to deploy, and treat a no-op wrangler diff on a version-bump deploy as a stop
-signal, not as success.
+that was supposed to change the image). The checkout's local `main` has no upstream, so a bare
+`git pull` fails; fetch and fast-forward un-piped as above, check `git log -1` names the commit you
+mean to deploy, and treat a no-op wrangler diff on a version-bump deploy as a stop signal, not as
+success. A real version-bump deploy pushes a new image digest.
 
 The image is built from the published release tarball, so a deploy downloads a binary rather than
 compiling one: the build finishes in seconds and the image is 129 MB. Moving to a new `hwp` release
