@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/render-layout-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/render-layout-v1.schema.json",
   "title": "hwp-render-layout-v1",
   "description": "Per-page geometry for one `hwp render` invocation: where each source segment landed on the page. Written by `hwp render --layout-json <path>`, one file per invocation and not one per page, because JSON has no reason to be split the way PNG and SVG inherently are. The rows are read off the shared display list BEFORE any backend applies its own transform, so the same input yields a BYTE-IDENTICAL file under `--format png`, `--format svg` and `--format pdf`, and under any `--dpi`. That is a property of where the numbers come from, not a coincidence the tests happen to observe.",
   "type": "object",

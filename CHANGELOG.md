@@ -22,6 +22,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   only in a test. anyhow (1.0.104) and memmap2 (0.9.11) move to their patch releases for the
   unsoundness advisories RUSTSEC-2026-0190 and RUSTSEC-2026-0186.
 
+**Changed**
+
+- Every published JSON Schema now carries its `$id` on a host the project controls:
+  `https://hwp-cli.staix.net/schemas/<file name>`. Before, 22 schemas used `hwp-cli.dev`, a domain
+  registered by an unrelated party since 2014, 6 used `hwp-cli.local` and 1 used `halla.ai`. Only
+  the `$id` line changed in each file, but every schema's SHA-256 changed with it, so a consumer
+  that pins schema hashes or matches `$id` strings must update. The `$id` values are identifiers,
+  not fetch addresses; nothing in hwp-cli resolves them
+  ([#302](https://github.com/STAIxBWLB/hwp-cli/issues/302)).
+
 ## [0.20.2]
 
 **Security**

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/preservation-report-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/preservation-report-v1.schema.json",
   "title": "hwp-preservation-report-v1",
   "description": "Typed, content-free preservation ledger emitted by hwp convert --loss-report and the native writers. Reports carry only stable codes, resource classes, dispositions and aggregate counts — never paths, entry names, text or hashes.",
   "type": "object",

@@ -2936,15 +2936,15 @@ source:
         .expect("TemplateReport schema JSON");
         assert_eq!(
             spec_schema["$id"],
-            "https://hwp-cli.dev/schemas/template-spec-v1.schema.json"
+            "https://hwp-cli.staix.net/schemas/template-spec-v1.schema.json"
         );
         assert_eq!(
             data_schema["$id"],
-            "https://hwp-cli.dev/schemas/template-data-v1.schema.json"
+            "https://hwp-cli.staix.net/schemas/template-data-v1.schema.json"
         );
         assert_eq!(
             report_schema["$id"],
-            "https://hwp-cli.dev/schemas/template-report-v1.schema.json"
+            "https://hwp-cli.staix.net/schemas/template-report-v1.schema.json"
         );
         assert_eq!(
             spec_schema["properties"]["variables"]["maxProperties"],
@@ -3001,15 +3001,15 @@ source:
         for (bytes, expected) in [
             (
                 include_bytes!("../../../schemas/template-spec-v1.schema.json").as_slice(),
-                "590b9ac7dd2b30d1f8fafc4e087adf3117a831f9e38de39267a102141c549039",
+                "268fc0cbb9881510d40b533b32342cbd7d5b106dc529f819f53ba1415a9e3337",
             ),
             (
                 include_bytes!("../../../schemas/template-data-v1.schema.json").as_slice(),
-                "484bc86d01dcba17122507fad250791f88235be4dd933c12c721ef7b46eea298",
+                "a1dbc498f5d5d2099ee0496a86b6e38fa3cdf535149b2436da7b23021f269989",
             ),
             (
                 include_bytes!("../../../schemas/template-report-v1.schema.json").as_slice(),
-                "aa2f011e02a52b29d07a458f84875e512cf1b1c80e6f2edea40ce756d436f705",
+                "e0297c1157f4cccd7f27ce74707b266aaa1b7b8f00c92b776426116f49e826dd",
             ),
         ] {
             assert_eq!(sha256_hex(bytes), expected);

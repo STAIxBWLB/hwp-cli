@@ -1620,11 +1620,11 @@ mod tests {
         .expect("DocumentReport v2 schema JSON");
         assert_eq!(
             spec_schema["$id"],
-            "https://hwp-cli.dev/schemas/document-spec-v2.schema.json"
+            "https://hwp-cli.staix.net/schemas/document-spec-v2.schema.json"
         );
         assert_eq!(
             report_schema["$id"],
-            "https://hwp-cli.dev/schemas/document-report-v2.schema.json"
+            "https://hwp-cli.staix.net/schemas/document-report-v2.schema.json"
         );
         assert_eq!(
             spec_schema["properties"]["visuals"]["maxItems"],
@@ -1653,15 +1653,15 @@ mod tests {
         for (bytes, expected) in [
             (
                 include_bytes!("../../../schemas/document-spec-v1.schema.json").as_slice(),
-                "1607cb19c9068306da8c76ba6ebee4ae8e5c6d650490fc0737dadd1a08b9ed1b",
+                "ecba7d532ae96b8f8ac79007c04d41f3b9b2fa65e5d9a2d914965529d24e5ca2",
             ),
             (
                 include_bytes!("../../../schemas/document-spec-v2.schema.json").as_slice(),
-                "2e8480db8430a6e8e567a835580025f2edb01e4c53c3921c4e2c5f47a4707ca3",
+                "9e930fb72e0ab3bfc0f44d33fa00e0166c3fce4ab5c5da7f85c128bb9cc145a8",
             ),
             (
                 include_bytes!("../../../schemas/document-report-v2.schema.json").as_slice(),
-                "0474ac0a6c3c5cfff4d33bd11259b26169a676a078be5952ab83e2839f54090b",
+                "45c20f499a6df18e25890b6fbd8cedb61f2f06ce519207fe49ac079e96989821",
             ),
         ] {
             assert_eq!(sha256_hex(bytes), expected);

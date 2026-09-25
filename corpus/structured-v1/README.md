@@ -36,7 +36,7 @@ Fixed inputs:
 - run contract: `hwp-structured-corpus-run-v1`
 - artifact contract: `hwp-structured-corpus-artifacts-v1`
 - manifest, run and artifact schema SHA-256:
-  `b8057de94b15deebceb58f014071d57d96fd9bb61603d9cbc2fd94a4398b3b3a`,
+  `eb168b4386e8fa35c84608410a29886281e6b08974407ed88bfa6be9dd589ea8`,
   `416466f0c197ec31c64ed76035d3a7b34dbb694c08c459605c9eccfface22706`,
   `3f9effe9df788304ae39bd3f1f460a40bf4b979016d5bc4c5599db386d577c23`
 - policy SHA-256: `2da9ef212ac3c5e10c85229d62e307e0c29a8e06a848e47feb039db1fd09fdb8`

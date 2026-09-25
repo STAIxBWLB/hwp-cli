@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/edit-ops-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/edit-ops-v1.schema.json",
   "title": "hwp-cli EditOps v1",
   "description": "Contract for `hwp edit --ops <file.json>`: a flat, ordered array of typed edit operations, applied in order. Shape-only: exactly-one selectors, paired image sizes, count >= 1, and non-empty strings are enforced by the parser after this schema passes.",
   "type": "array",

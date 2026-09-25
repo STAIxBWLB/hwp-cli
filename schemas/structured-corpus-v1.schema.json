@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.local/schemas/structured-corpus-v1.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/structured-corpus-v1.schema.json",
   "title": "hwp structured corpus manifest v1",
   "type": "object",
   "additionalProperties": false,

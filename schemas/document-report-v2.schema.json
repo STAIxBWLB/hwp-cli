@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://hwp-cli.dev/schemas/document-report-v2.schema.json",
+  "$id": "https://hwp-cli.staix.net/schemas/document-report-v2.schema.json",
   "title": "hwp-cli DocumentSpec v2 compose report",
   "type": "object",
   "additionalProperties": false,
