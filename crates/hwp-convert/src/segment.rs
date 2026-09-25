@@ -13,6 +13,16 @@
 //! `Generic` control's paragraph lists carry their own `para` segment, not only the top-level
 //! ones, or an editor could not address the paragraph in a cell.
 //!
+//! A paragraph that emits nothing has no `para` segment - with one exception (#285). A body or
+//! table-cell paragraph that emits no markdown but that the renderer still draws, because it
+//! holds a drawing object (`gso `) or whitespace text the markdown trims away, is published as
+//! a **point** `para` segment (`start == end`) at the position its text would occupy. The render
+//! layout artifact records a geometry row for such a paragraph, joined by id; an envelope with
+//! no segment for it left that row's id resolving to nothing. The empty range is how the
+//! envelope already spells "no text" (a bookmark), so no field changes, and the markdown does
+//! not change either. Only the paragraph's OWN emission decides this: a blank line that closes
+//! the list block above an empty paragraph is a separator, not that paragraph's content.
+//!
 //! Offsets are **Unicode scalar** offsets into the cleaned markdown, not bytes — the same
 //! discipline [`crate::markdown::to_markdown_with_segments`] (v1) already uses: byte spans are
 //! recorded during emission, remapped through the cleanup deletion map, and converted to scalars
@@ -142,7 +152,8 @@ impl SegmentKind {
     /// Whether a zero-width range is meaningful for this kind.
     ///
     /// A bookmark is a point marker and emits nothing; an empty table cell still exists as a
-    /// cell. Every other kind is dropped when its range collapses to nothing.
+    /// cell. Every other kind is dropped when its range collapses to nothing - except a `para`
+    /// deliberately recorded as a point, which carries [`RawSeg::point`] instead (#285).
     fn may_be_empty(self) -> bool {
         matches!(self, SegmentKind::Bookmark | SegmentKind::Cell)
     }
@@ -247,6 +258,9 @@ pub(crate) struct RawSeg {
     pub name: Option<String>,
     pub start: usize,
     pub end: usize,
+    /// Recorded as a point on purpose - a `para` that emitted no text but is still drawn - so
+    /// [`finalize`] keeps it even though its kind is dropped when a range collapses.
+    pub point: bool,
 }
 
 /// The markdown of [`crate::markdown::to_markdown_with`], plus the v2 segment vector.
@@ -271,7 +285,7 @@ pub(crate) fn finalize(raw: Vec<RawSeg>, mut remap: impl FnMut(usize) -> usize) 
         .filter_map(|seg| {
             let start = remap(seg.start);
             let end = remap(seg.end).max(start);
-            (end > start || seg.kind.may_be_empty()).then_some(Segment {
+            (end > start || seg.kind.may_be_empty() || seg.point).then_some(Segment {
                 kind: seg.kind,
                 id: seg.id,
                 path: seg.path,
@@ -1101,6 +1115,96 @@ mod tests {
                 .any(|w| w[0].start == w[1].start && w[0].end == w[1].end),
             "expected at least one equal-range pair to exercise the tie-break: {segs:#?}"
         );
+    }
+
+    /// #285: a paragraph that emits no markdown but is drawn - a drawing object alone, or only
+    /// whitespace - is a POINT `para` segment where its text would be, in the body and in a
+    /// cell, and the markdown is unchanged by it.
+    #[test]
+    fn a_drawn_paragraph_without_text_is_a_point_para_segment() {
+        let drawing = || {
+            let mut p = para("");
+            attach(
+                &mut p,
+                ctrl_char::OBJECT,
+                *b"gso ",
+                Control::Generic(generic(*b"gso ")),
+            );
+            p
+        };
+        let mut cell = cell_of(0, 0, "값");
+        cell.paragraphs.push(drawing());
+        let mut host = para("표");
+        attach(
+            &mut host,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell], 1, 1)),
+        );
+        let doc = doc_of(vec![
+            para("앞 문단"),
+            drawing(),
+            para("   "),
+            host,
+            para(""),
+        ]);
+        let (md, segs) = emit(&doc);
+        assert_eq!(
+            md,
+            to_markdown_with(&doc, &MarkdownOptions::default()).unwrap(),
+            "a point segment changes nothing in the markdown"
+        );
+        let paras = of(&segs, SegmentKind::Para);
+        let points: Vec<&[usize]> = paras
+            .iter()
+            .filter(|s| s.start == s.end)
+            .map(|s| s.path.indices.as_slice())
+            .collect();
+        assert_eq!(
+            points,
+            vec![&[1][..], &[2], &[3, 0, 0, 1]],
+            "the drawing, the whitespace and the drawing in a cell are points; the empty \
+             paragraph draws nothing and has no segment: {segs:#?}"
+        );
+        let first = paras.iter().find(|s| s.path.indices == [0]).unwrap();
+        let drawn = paras.iter().find(|s| s.path.indices == [1]).unwrap();
+        assert!(
+            drawn.start >= first.end,
+            "a point sits where its text would be, after the paragraph before it"
+        );
+    }
+
+    /// An empty paragraph right after a list has no `para` segment. The blank line emitted at
+    /// its position closes the list block - the markdown is the same without the paragraph -
+    /// so it is a separator, not the paragraph's content; it used to be published as the
+    /// paragraph's whole range.
+    #[test]
+    fn a_list_closing_blank_line_is_not_an_empty_paragraphs_content() {
+        let without = crate::from_markdown("- 항목\n\n뒤 문단\n");
+        let mut with = without.clone();
+        let para_shape = with.sections[0].paragraphs[1].para_shape;
+        with.sections[0].paragraphs.insert(
+            1,
+            Paragraph {
+                para_shape,
+                ..Default::default()
+            },
+        );
+        let (md, segs) = emit(&with);
+        assert!(
+            md.starts_with("- 항목\n\n"),
+            "the fixture must open with a list block, or no separator is emitted: {md:?}"
+        );
+        assert_eq!(
+            md,
+            emit(&without).0,
+            "the blank line is the list block's separator, emitted either way"
+        );
+        let paths: Vec<&[usize]> = of(&segs, SegmentKind::Para)
+            .iter()
+            .map(|s| s.path.indices.as_slice())
+            .collect();
+        assert_eq!(paths, vec![&[0][..], &[2]], "{segs:#?}");
     }
 
     /// COLORREF is 0x00BBGGRR, not 0x00RRGGBB.

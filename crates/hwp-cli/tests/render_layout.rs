@@ -49,7 +49,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "e1a0d22f11d0168cf44de274fe1741ffc6bf5867c65ea53b7299e4a12ef7df8f",
+        actual, "a00a18ec339fa0dcadbd21e78cda5736a392c7f20dfb06eedccc0cb5d2e44ce0",
         "render-layout-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -239,26 +239,31 @@ fn the_load_bearing_descriptions_are_present_in_the_published_text() {
             "the four kinds are a subset",
             "THE LAYOUT ARTIFACT IS A DELIBERATE SUBSET OF THE ENVELOPE",
         ),
-        ("the nesting hole", "BY NESTING, WHICH IS THE LARGER HOLE"),
         (
-            "the scale of the nesting hole",
-            "222 paragraphs against this artifact's 40",
+            "that cells and nested tables are covered",
+            "AT ANY NESTING DEPTH",
+        ),
+        ("what has no row by place", "the text of a drawing object"),
+        (
+            "that the join is total within the subset",
+            "WITHIN THAT SUBSET THE JOIN IS TOTAL IN BOTH DIRECTIONS",
         ),
         (
             "the unbounded page numbering",
             "DELIBERATELY UNBOUNDED ABOVE",
         ),
+        ("that every row id resolves", "EVERY ROW'S ID RESOLVES"),
         (
-            "that the join is not guaranteed to resolve",
-            "THE JOIN IS NOT GUARANTEED TO RESOLVE",
+            "what an unresolved id is",
+            "An id that does not resolve is a defect to report",
         ),
         (
-            "what a consumer does with an unresolved id",
-            "MUST THEREFORE TREAT AN UNRESOLVED ID AS GEOMETRY WITH NO SOURCE RANGE, NOT AS A DEFECT",
+            "that a paragraph which drew nothing keeps one row",
+            "keeps exactly ONE row with a null `box` and a null `source_chars`",
         ),
         (
             "that a para row can carry a null character range",
-            "TWO DIFFERENT THINGS PRODUCE A NULL HERE",
+            "THREE DIFFERENT THINGS PRODUCE A NULL HERE",
         ),
         (
             "that null source_chars must be checked on para too",
@@ -896,7 +901,70 @@ fn two_rows_of_one_id_on_one_page_survive_serialization_and_the_schema() {
 // The cross-artifact join key
 // ---------------------------------------------------------------------------
 
-/// The cross-artifact join key, over every fixture this checkout has.
+/// Both directions of the join between one document's two published artifacts.
+///
+/// Returns the row ids that name no envelope segment, and the envelope `para`, `table`, `cell`
+/// and `bookmark` ids that lie in the body's table tree and have no row. "The body's table
+/// tree" is the subset `render-layout-v1`'s `kind` description publishes: every control step
+/// on a segment's path (path lengths 2, 5, 8, ...) is a table. A drawing object's text runs
+/// through some other control, and has no row by contract.
+fn join_orphans(
+    layout: &serde_json::Value,
+    envelope: &serde_json::Value,
+) -> (Vec<String>, Vec<String>) {
+    let segments = envelope["segments"].as_array().expect("segments");
+    let path = |s: &serde_json::Value| -> Vec<u64> {
+        s["path"]["indices"]
+            .as_array()
+            .expect("path indices")
+            .iter()
+            .map(|index| index.as_u64().expect("index"))
+            .collect()
+    };
+    let tables: std::collections::HashSet<Vec<u64>> = segments
+        .iter()
+        .filter(|s| s["kind"] == "table")
+        .map(path)
+        .collect();
+    let envelope_ids: std::collections::HashSet<&str> = segments
+        .iter()
+        .map(|s| s["id"].as_str().expect("segment id"))
+        .collect();
+    let row_ids: std::collections::BTreeSet<&str> = layout["pages"]
+        .as_array()
+        .expect("pages")
+        .iter()
+        .flat_map(|p| p["rows"].as_array().expect("rows"))
+        .map(|row| row["id"].as_str().expect("row id"))
+        .collect();
+
+    let layout_orphans = row_ids
+        .iter()
+        .filter(|id| !envelope_ids.contains(*id))
+        .map(|id| id.to_string())
+        .collect();
+    let envelope_orphans = segments
+        .iter()
+        .filter(|s| {
+            matches!(
+                s["kind"].as_str(),
+                Some("para" | "table" | "cell" | "bookmark")
+            )
+        })
+        .filter(|s| {
+            let indices = path(s);
+            (2..indices.len())
+                .step_by(3)
+                .all(|len| tables.contains(&indices[..len]))
+        })
+        .map(|s| s["id"].as_str().expect("segment id"))
+        .filter(|id| !row_ids.contains(id))
+        .map(str::to_string)
+        .collect();
+    (layout_orphans, envelope_orphans)
+}
+
+/// The cross-artifact join is total, in both directions, on every document this checkout has.
 ///
 /// This is the only check that reads the two PUBLISHED artifacts. `hwp-convert` and
 /// `hwp-render` derive ids independently by design - that is what keeps them off each other's
@@ -905,91 +973,127 @@ fn two_rows_of_one_id_on_one_page_survive_serialization_and_the_schema() {
 /// path. `segment_id_parity` is the inner guard, comparing the two FUNCTIONS directly; it can
 /// pass while a serialization or path-building mistake still makes the published ids disagree.
 ///
-/// # What this asserts, and why it is not "no orphans"
+/// # What this asserts
 ///
-/// A layout row id is NOT guaranteed to resolve in the envelope. A paragraph holding only a
-/// drawing control produces no envelope segment while the renderer draws it and records a row
-/// (issue #285). So the assertion here is the shape of an unresolved id, not its absence:
-/// every unresolved id must be a `para` row carrying `source_chars: null`, which is the known
-/// case. A `cell` orphan, a `table` orphan, or a `para` orphan that does carry a character
-/// range is a NEW divergence and fails.
-///
-/// Asserting "no orphans" would pin the defect in place and go red the day #285 closes.
-/// Asserting "orphans exist" would do the same in the other direction. This assertion is
-/// vacuously satisfied once #285 lands, which is the correct behaviour for a guard about a
-/// shape rather than a count.
+/// EQUALITY over the subset `render-layout-v1` publishes, not containment: every layout row id
+/// names an envelope segment (#285: a paragraph that shapes no text but is drawn is a point
+/// `para` segment there), and every envelope `para`, `table`, `cell` and `bookmark` segment in
+/// the body's table tree has a row (#283: cell paragraphs and nested tables at any depth). Any
+/// new divergence, in either direction, on any document covered here fails it. The unit-level
+/// twin, `segment_map`'s `*_join_the_envelope_*` tests, builds each case the join depends on so
+/// it runs on every host.
 ///
 /// # Coverage, and the trap in reading a green run
 ///
 /// `fixtures/hwp5/` and `fixtures/hwpx/` are gitignored (CLAUDE.md's data policy), so ON CI
-/// THIS TEST SEES ONLY THE COMMITTED FIXTURES and the rest do not run - the #275 shape, where
-/// a skipped case reports `ok`; each absent one is now counted in `scripts/check.sh`'s
-/// `skipped-for-missing-fixtures` tally. The two documents that actually exhibit an
-/// unresolved id, `annual_report.hwp` and `outline.hwp`, are among the ones CI does not have.
-/// A green run here therefore means "the shape held wherever it could be checked on this
-/// host", never "the property holds for every document". The committed fixtures are asserted
-/// present rather than skipped, so the test cannot degrade to checking nothing at all, and the
-/// coverage it achieved is printed.
+/// THIS TEST SEES ONLY THE COMMITTED FIXTURES and the rest silently do not run - the #275
+/// shape, where a skipped case reports `ok`. Every `.hwp` and `.hwpx` a checkout does have in
+/// those two directories is covered, not a fixed list, so a developer host checks all of them.
+/// A green run means "the join held on every document this host has", and the coverage it
+/// achieved is printed; an absent fixture directory is also counted in `scripts/check.sh`'s
+/// `skipped-for-missing-fixtures` tally (#275). The committed fixtures are asserted present rather than skipped, so
+/// the test cannot degrade to checking nothing at all.
+///
+/// Opt-in soak, never on CI: `HWP_CORPUS_DIR=<dir>` adds every `.hwp` and `.hwpx` in that
+/// directory, the convention the other corpus tests use. A corpus document that does not open
+/// (encrypted, say) is skipped and counted; every one that opens must join. Corpus documents are
+/// labelled by index only, so a private corpus is never named in the output.
+///
+/// ```text
+/// HWP_CORPUS_DIR=~/Documents/hwp_samples cargo test -p hwp-cli --test render_layout \
+///     the_layout_and_the_envelope_join -- --nocapture
+/// ```
 #[test]
-fn an_unresolved_layout_row_id_is_always_a_para_row_with_no_character_range() {
-    // (path relative to the repo root, committed and therefore required)
-    const FIXTURES: [(&str, bool); 9] = [
-        ("fixtures/samples/report-tables.hwpx", true),
-        (
-            "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwp",
-            true,
-        ),
-        (
-            "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwpx",
-            true,
-        ),
-        ("fixtures/hwp5/annual_report.hwp", false),
-        ("fixtures/hwp5/outline.hwp", false),
-        ("fixtures/hwp5/work_report.hwp", false),
-        ("fixtures/hwp5/bookmark.hwp", false),
-        ("fixtures/hwp5/hello_world.hwp", false),
-        ("fixtures/hwpx/minimal.hwpx", false),
+fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
+    const COMMITTED: [&str; 3] = [
+        "fixtures/samples/report-tables.hwpx",
+        "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwp",
+        "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwpx",
     ];
 
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let dir = temp_dir("joinkey");
-    let mut checked = Vec::new();
-    let mut absent = Vec::new();
+    /// Where a document comes from. A corpus document is never named in the output: the
+    /// corpus is private, so its label is its index alone.
+    #[derive(PartialEq)]
+    enum Source {
+        Checkout,
+        Corpus,
+    }
 
-    for (relative, committed) in FIXTURES {
-        let input = root.join(relative);
-        if committed {
-            assert!(
-                input.is_file(),
-                "{relative} is committed and must be present; a skip here would make this \
-                 test report ok while checking nothing"
-            );
-        } else if fixture_skip::fixture_missing(&input) {
-            absent.push(relative);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let listed = |dir: &std::path::Path| -> Option<Vec<PathBuf>> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path.extension().is_some_and(|e| {
+                        e.eq_ignore_ascii_case("hwp") || e.eq_ignore_ascii_case("hwpx")
+                    })
+            })
+            .collect();
+        found.sort();
+        Some(found)
+    };
+    let mut documents: Vec<(String, PathBuf, Source)> = COMMITTED
+        .iter()
+        .map(|path| (path.to_string(), root.join(path), Source::Checkout))
+        .collect();
+    let mut absent = Vec::new();
+    for dir in ["fixtures/hwp5", "fixtures/hwpx"] {
+        // An absent fixture directory is logged to the skip tally (#275), so a checkout that
+        // lacks it shows the reduced scope instead of passing as a full run.
+        if fixture_skip::fixture_missing(&root.join(dir)) {
+            absent.push(dir);
             continue;
         }
+        match listed(&root.join(dir)) {
+            Some(found) => documents.extend(found.into_iter().map(|path| {
+                let label = format!("{dir}/{}", path.file_name().unwrap().to_string_lossy());
+                (label, path, Source::Checkout)
+            })),
+            None => absent.push(dir),
+        }
+    }
+    // Opt-in, the repository's `HWP_CORPUS_DIR` convention: the genuine corpus is never
+    // committed, so CI never sees this and a host without it skips it silently.
+    if let Some(corpus) = std::env::var_os("HWP_CORPUS_DIR") {
+        let found = listed(std::path::Path::new(&corpus))
+            .expect("HWP_CORPUS_DIR is set, so it must be a readable directory");
+        documents.extend(
+            found
+                .into_iter()
+                .enumerate()
+                .map(|(i, path)| (format!("HWP_CORPUS_DIR #{i}"), path, Source::Corpus)),
+        );
+    }
+
+    let dir = temp_dir("joinkey");
+    let mut checked = Vec::new();
+    let mut unreadable = 0;
+    let mut divergent = Vec::new();
+    for (label, input, source) in &documents {
+        let relative = label;
+        assert!(
+            input.is_file(),
+            "{relative} is committed and must be present; a skip here would make this test \
+             report ok while checking nothing"
+        );
 
         let layout_path = dir.join("layout.json");
-        let out = dir.join("out.png");
         let render = hwp()
             .arg("render")
-            .arg(&input)
+            .arg(input)
             .arg("-o")
-            .arg(&out)
+            .arg(dir.join("out.png"))
             .args(["--format", "png"])
             .arg("--layout-json")
             .arg(&layout_path)
             .output()
             .expect("run hwp render --layout-json");
-        assert!(
-            render.status.success(),
-            "hwp render failed on {relative}: {}",
-            String::from_utf8_lossy(&render.stderr)
-        );
-
         let envelope_out = hwp()
             .arg("cat")
-            .arg(&input)
+            .arg(input)
             .args([
                 "--format",
                 "markdown",
@@ -999,6 +1103,18 @@ fn an_unresolved_layout_row_id_is_always_a_para_row_with_no_character_range() {
             ])
             .output()
             .expect("run hwp cat --with-segments --segments v2");
+        // A corpus holds encrypted and otherwise unreadable files by design; whether they
+        // open is other tests' business, and this one checks the join of what does open.
+        if *source == Source::Corpus && !(render.status.success() && envelope_out.status.success())
+        {
+            unreadable += 1;
+            continue;
+        }
+        assert!(
+            render.status.success(),
+            "hwp render failed on {relative}: {}",
+            String::from_utf8_lossy(&render.stderr)
+        );
         assert!(
             envelope_out.status.success(),
             "hwp cat --segments v2 failed on {relative}: {}",
@@ -1007,61 +1123,47 @@ fn an_unresolved_layout_row_id_is_always_a_para_row_with_no_character_range() {
 
         let envelope: serde_json::Value =
             serde_json::from_slice(&envelope_out.stdout).expect("the envelope is JSON");
-        let envelope_ids: std::collections::BTreeSet<&str> = envelope["segments"]
-            .as_array()
-            .expect("segments")
-            .iter()
-            .map(|s| s["id"].as_str().expect("segment id"))
-            .collect();
-
         let layout: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&layout_path).expect("layout file"))
                 .expect("JSON");
-        let rows: Vec<&serde_json::Value> = layout["pages"]
-            .as_array()
-            .expect("pages")
-            .iter()
-            .flat_map(|p| p["rows"].as_array().expect("rows"))
-            .collect();
-
-        let mut unresolved = 0;
-        for row in &rows {
-            let id = row["id"].as_str().expect("row id");
-            if envelope_ids.contains(id) {
-                continue;
-            }
-            unresolved += 1;
-            assert_eq!(
-                row["kind"], "para",
-                "{relative}: an unresolved id must be a para row; {id} is a {} - that is a new \
-                 divergence, not the documented #285 case",
-                row["kind"]
-            );
-            assert_eq!(
-                row["source_chars"],
-                serde_json::Value::Null,
-                "{relative}: the unresolved para id {id} carries a character range, so it \
-                 shaped text and should have an envelope segment - a new divergence, not #285"
-            );
+        assert_eq!(
+            layout["truncated"], false,
+            "{relative}: a capped row set is allowed to miss rows, so the join says nothing"
+        );
+        let (layout_orphans, envelope_orphans) = join_orphans(&layout, &envelope);
+        if !layout_orphans.is_empty() || !envelope_orphans.is_empty() {
+            divergent.push(format!(
+                "{relative}: rows naming no envelope segment {layout_orphans:?}; envelope \
+                 segments with no row {envelope_orphans:?}"
+            ));
         }
-        checked.push((relative, rows.len(), envelope_ids.len(), unresolved));
+        checked.push(relative.as_str());
         std::fs::remove_file(&layout_path).ok();
     }
+    std::fs::remove_dir_all(&dir).ok();
 
-    // Printed, not asserted: the counts move with the fixtures a checkout happens to have.
-    for (name, rows, envelope, unresolved) in &checked {
-        println!("join key: {name} rows={rows} envelope={envelope} unresolved={unresolved}");
-    }
+    println!(
+        "join key: checked {} document(s): {}",
+        checked.len(),
+        checked.join(", ")
+    );
     if !absent.is_empty() {
         println!(
             "join key: NOT CHECKED (gitignored, absent here): {}",
             absent.join(", ")
         );
     }
+    if unreadable > 0 {
+        println!("join key: {unreadable} HWP_CORPUS_DIR document(s) did not open and were skipped");
+    }
     assert!(
-        checked.len() >= 3,
-        "the three committed fixtures must always be checked, only checked {}",
+        divergent.is_empty(),
+        "the two artifacts no longer join totally:\n{}",
+        divergent.join("\n")
+    );
+    assert!(
+        checked.len() >= COMMITTED.len(),
+        "the committed fixtures must always be checked, only checked {}",
         checked.len()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }

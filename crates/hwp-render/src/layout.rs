@@ -2883,6 +2883,12 @@ fn layout_para_objects(
                         None,
                         0,
                         None,
+                        // A drawing object's text has no geometry row by contract
+                        // (`schemas/render-layout-v1.schema.json`, `kind`): the envelope numbers
+                        // it `[para, control, n]` across all of the object's lists, which this
+                        // box's own index does not reproduce once a linked box splits it into
+                        // columns. It resolves through the enclosing paragraph's row.
+                        None,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -2996,6 +3002,7 @@ fn layout_para_objects(
                             None,
                             0,
                             None,
+                            None, // Drawing-object text: no row, as for the text box above.
                         );
                         flow_end = flow_end.max(inner);
                     } else {
@@ -3025,6 +3032,9 @@ fn layout_para_objects(
                                 Some(&mut box_list_state),
                                 None,
                                 0,
+                                None,
+                                // Drawing-object text: no row, as for the text box above. Laid
+                                // out per list here, so the index restarts at every list.
                                 None,
                             );
                             flow_end = flow_end.max(inner);
@@ -3096,6 +3106,7 @@ fn layout_para_objects(
                         None,
                         0,
                         None,
+                        None, // Drawing-object text: no row, as for the text box above.
                     );
                     flow_end = flow_end.max(inner);
                 }
@@ -4254,6 +4265,7 @@ fn layout_table_cell_fragments(
                     closes_page,
                     &mut cell_ls,
                     warnings,
+                    rec,
                 );
                 rec.end_segment(page);
             }
@@ -4297,6 +4309,7 @@ fn draw_table_cell_fragment(
     closes_page: bool,
     cell_ls: &mut crate::list::ListState,
     warnings: &mut RenderIssueAccumulator,
+    rec: &mut SegmentRecorder,
 ) {
     let c = cell.col as usize;
     if c >= col_w.len() {
@@ -4353,6 +4366,7 @@ fn draw_table_cell_fragment(
             // The fragment's content bottom bounds `para_shift`: a paragraph
             // the flow floor pushes down may never be drawn outside the cell.
             Some(cy + ch - mb),
+            Some(rec),
         );
     }
 
@@ -4485,6 +4499,7 @@ fn draw_table_rows(
             // Same bound as the fragment emitter: a floor-pushed paragraph
             // must stay inside the cell instead of running into the row below.
             Some(cy + ch - mb),
+            Some(rec),
         );
 
         // 3) Borders (left, right, top, bottom).
@@ -4565,6 +4580,11 @@ fn layout_box_paragraphs(
         page_number,
         0,
         None,
+        // This wrapper serves headers, footers, notes, captions and the cell measurement pass.
+        // The first four have no segment in the envelope `--segments v2` emits by default
+        // (notes and captions never, headers and footers unless asked for), so a row would join
+        // to nothing, and a measurement page is scratch that no page ever receives.
+        None,
     )
 }
 
@@ -4623,13 +4643,21 @@ fn layout_box_para_iter<'a>(
     page_number: Option<u32>,
     v_origin: i32,
     content_limit: Option<f32>,
+    // `Some` only for a table cell's paragraphs, whose paths the recorder derives from the open
+    // cell. Every other box passes `None`, each call site saying why.
+    mut rec: Option<&mut SegmentRecorder>,
 ) -> f32 {
     let mut content_bottom = origin_y;
     // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
     let mut flow_floor = origin_y;
-    for (para, selection) in paras {
+    // Enumerated before the `Empty` skip: the index is the paragraph's own position in the
+    // cell, which is what the envelope's path component for it is.
+    for (para_index, (para, selection)) in paras.enumerate() {
         if matches!(selection, BoxParaSelection::Empty) {
             continue;
+        }
+        if let Some(rec) = rec.as_deref_mut() {
+            rec.begin_cell_paragraph(para_index, para, page);
         }
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
@@ -4672,6 +4700,9 @@ fn layout_box_para_iter<'a>(
                         (left, baseline_y, max_size),
                         warnings,
                     );
+                    if let Some(rec) = rec.as_deref_mut() {
+                        rec.marker_drawn(page);
+                    }
                 }
                 // 첫 줄 들여쓰기/내어쓰기 — 본문 폴백 경로와 같은 규칙
                 // (wrap 폭 미차감 — 좁은 셀 폭주 방지). 비정상 큰 양수는 방어 캡.
@@ -4813,6 +4844,12 @@ fn layout_box_para_iter<'a>(
                             (box_x, baseline_y, size),
                             warnings,
                         );
+                        // Every fragment of a split cell paragraph redraws its marker, so
+                        // without this each fragment's range would reach back to 0 and the
+                        // paragraph's rows would overlap (D-09).
+                        if let Some(rec) = rec.as_deref_mut() {
+                            rec.marker_drawn(page);
+                        }
                     }
                 }
                 // col_start는 좌여백만 담으므로 들여쓰기/내어쓰기는 여기서 준다.
@@ -4874,6 +4911,7 @@ fn layout_box_para_iter<'a>(
         };
         if render_objects {
             let before_objects = content_bottom;
+            let mut disabled = SegmentRecorder::disabled();
             let (objects_bottom, _no_split) = layout_para_objects(
                 doc,
                 store,
@@ -4886,14 +4924,20 @@ fn layout_box_para_iter<'a>(
                 (origin_x, origin_y), // Nested shapes are relative to this box's own origin.
                 None,                 // Nested objects inside a cell/text box do not cross pages.
                 warnings,
-                // A nested paragraph's indices name no path in the document's own tree, so
-                // recording here would attribute geometry to a segment that does not exist.
-                &mut SegmentRecorder::disabled(),
+                // A cell paragraph's own tables and bookmarks nest under its open span; any
+                // other box records nothing, so neither do its objects.
+                match rec.as_deref_mut() {
+                    Some(rec) => rec,
+                    None => &mut disabled,
+                },
             );
             content_bottom = objects_bottom;
             if content_bottom > before_objects {
                 flow_floor = flow_floor.max(content_bottom);
             }
+        }
+        if let Some(rec) = rec.as_deref_mut() {
+            rec.end_segment(page);
         }
 
         // End of a paragraph: the next one may not start above what this one
