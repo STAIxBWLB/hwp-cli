@@ -14,7 +14,7 @@
 //! the drain / desync / idle-timeout classes of bugs instead of bounding them.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -166,15 +166,26 @@ fn accept_loop(
                 let ctx = Arc::clone(&ctx);
                 let dispatch = Arc::clone(dispatch);
                 let slot = ConnectionSlot(Arc::clone(&live));
-                thread::spawn(move || {
-                    let _slot = slot;
-                    handle_connection(stream, &ctx, files, &dispatch);
-                });
+                // Tool calls run on this thread, so it gets `main`'s stack.
+                let spawned = thread::Builder::new()
+                    .stack_size(crate::WORKER_STACK_BYTES)
+                    .spawn(move || {
+                        let _slot = slot;
+                        handle_connection(stream, &ctx, files, &dispatch);
+                    });
+                // On failure the closure drops: the connection closes and the
+                // slot returns. The accept thread must not panic here.
+                if let Err(error) = spawned {
+                    eprintln!("hwp serve: 연결 스레드를 만들 수 없습니다: {error}");
+                }
             }
-            Err(_) => {
+            Err(error) => {
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     break;
                 }
+                eprintln!("hwp serve: 연결 수신 실패: {error}");
+                // A persistent error (EMFILE) would otherwise spin this loop.
+                thread::sleep(SHUTDOWN_POLL);
             }
         }
     }
@@ -199,6 +210,11 @@ fn handle_connection(stream: TcpStream, ctx: &LocalFsContext, files: bool, dispa
         Err(_) => return,
     };
     let mut reader = BufReader::with_capacity(8192, stream);
+    // A connect-and-close with no bytes (a TCP readiness probe) or an idle
+    // timeout is not a request: close without an answer or a log line.
+    if !matches!(reader.fill_buf(), Ok(bytes) if !bytes.is_empty()) {
+        return;
+    }
 
     let head = match read_head(&mut reader) {
         Ok(head) => head,
@@ -216,31 +232,24 @@ fn handle_connection(stream: TcpStream, ctx: &LocalFsContext, files: bool, dispa
 /// (405 `Allow: GET, POST`), and 404.
 fn route_request(
     head: &Head,
-    mut reader: BufReader<TcpStream>,
+    reader: BufReader<TcpStream>,
     writer: &mut TcpStream,
     ctx: &LocalFsContext,
     files: bool,
     dispatch: &Mutex<()>,
 ) {
+    // Handlers read the body only through this `take`, so its limit afterwards
+    // is exactly the declared remainder still unread on the socket.
+    let mut body = reader.take(head.content_length);
     let path = head.path.as_str();
     let result = match (head.method.as_str(), path) {
         ("GET", "/healthz") => write_plain(writer, 200, "ok"),
-        ("POST", "/mcp") => {
-            let guard = lock_dispatch(dispatch);
-            let result = handle_mcp(head, &mut reader, writer, ctx);
-            drop(guard);
-            result
-        }
+        ("POST", "/mcp") => handle_mcp(head, &mut body, writer, ctx, dispatch),
         // No server push, so no SSE stream.
-        (_, "/mcp") => {
-            let mut body: &[u8] = b"";
-            write_response(writer, 405, &[("Allow", "POST")], &mut body, 0)
-        }
+        (_, "/mcp") => write_response(writer, 405, &[("Allow", "POST")], &mut io::empty(), 0),
         _ if files && path.starts_with("/files/") => {
-            let guard = lock_dispatch(dispatch);
-            let result = handle_files(head, &mut reader, writer, &path["/files/".len()..], ctx);
-            drop(guard);
-            result
+            let _guard = lock_dispatch(dispatch);
+            handle_files(head, &mut body, writer, &path["/files/".len()..], ctx)
         }
         _ => write_plain(writer, 404, "not found"),
     };
@@ -248,16 +257,21 @@ fn route_request(
         eprintln!("hwp serve: 응답 전송 실패: {error}");
         return;
     }
-    // The response went out but the declared body may not have been read in
-    // full; close gracefully (D6).
-    linger_if_needed(head, writer);
+    // Discard whatever the handler left unread, bounded (D6).
+    linger(writer, body.limit());
 }
 
 /// Writes one text body as the response.
 fn write_plain(writer: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
     let len = message.len() as u64;
     let mut body: &[u8] = message.as_bytes();
-    write_response(writer, status, &[], &mut body, len)
+    write_response(
+        writer,
+        status,
+        &[("Content-Type", "text/plain; charset=utf-8")],
+        &mut body,
+        len,
+    )
 }
 
 /// The dispatch lock (D5). The main thread waits on the same lock at shutdown.
@@ -283,29 +297,20 @@ fn answer_reject(writer: &mut TcpStream, reject: Reject) {
     linger(writer, u64::MAX);
 }
 
-/// Graceful close for paths where the handler may not have read the whole
-/// body (D6).
-///
-/// The unread remainder stays on the socket. This layer cannot know exactly
-/// how many bytes the handler consumed through `take`, so the declared length
-/// is passed as the bound. linger itself is capped at 2 MiB / 2 seconds, so a
-/// well-behaved client (body already sent, waiting for the status) sees the
-/// status instead of a reset, while a stalled client only ties up its own
-/// connection thread.
-fn linger_if_needed(head: &Head, writer: &TcpStream) {
-    linger(writer, head.content_length);
-}
-
-/// Handles one `/mcp` body. The handler reads exactly the declared length
-/// (issue design: the handler takes `take(content_length)`), so a
+/// Handles one `/mcp` body. `reader` stops at the declared length, so a
 /// well-behaved client that sends its body without half-closing and waits for
-/// the status still gets its response (AC4). Leftover bytes are discarded by
-/// `linger` (D6).
+/// the status still gets its response (AC4).
+///
+/// The body is read before the dispatch lock: a client that stalls its body
+/// parks only its own connection thread, not every `/mcp` and `/files`
+/// request. The lock then covers the tool call and the response write, so
+/// shutdown still waits for an in-flight call to answer (D8).
 fn handle_mcp(
     head: &Head,
     reader: &mut impl Read,
     writer: &mut TcpStream,
     ctx: &LocalFsContext,
+    dispatch: &Mutex<()>,
 ) -> io::Result<()> {
     if head.content_length > MAX_REQUEST_LINE_BYTES as u64 {
         return write_plain(writer, 413, "request body too large");
@@ -314,7 +319,7 @@ fn handle_mcp(
         write_continue(writer)?;
     }
     let mut body = Zeroizing::new(Vec::new());
-    let read = reader.take(head.content_length).read_to_end(&mut body);
+    let read = reader.read_to_end(&mut body);
     match read {
         Err(_) => return write_plain(writer, 400, "cannot read request body"),
         Ok(_) if (body.len() as u64) < head.content_length => {
@@ -325,7 +330,17 @@ fn handle_mcp(
     let Ok(line) = std::str::from_utf8(&body) else {
         return write_plain(writer, 400, "request body is not valid UTF-8");
     };
-    let Some(response) = handle_request(line.trim(), ctx) else {
+    let _guard = lock_dispatch(dispatch);
+    // The protocol core keeps no state between calls, so a tool that panics
+    // leaves nothing half-updated: answer 500 instead of resetting the
+    // connection. A stack overflow aborts regardless; see the thread stack.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle_request(line.trim(), ctx)
+    }));
+    let Ok(outcome) = outcome else {
+        return write_plain(writer, 500, "internal error");
+    };
+    let Some(response) = outcome else {
         // Notifications have no protocol response.
         return write_response(writer, 202, &[], &mut io::empty(), 0);
     };
@@ -354,18 +369,17 @@ fn handle_files(
     let target = root.join(name);
     match head.method.as_str() {
         "POST" => store_file(head, reader, writer, &target, root),
-        "GET" => match File::open(&target) {
-            Ok(file) => {
-                let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-                write_response(
-                    writer,
-                    200,
-                    &[("Content-Type", "application/octet-stream")],
-                    &mut &file,
-                    len,
-                )
-            }
-            Err(_) => write_plain(writer, 404, "not found"),
+        // A directory opens on Unix too; only a regular file has a body whose
+        // length the response can promise.
+        "GET" => match File::open(&target).and_then(|file| Ok((file.metadata()?, file))) {
+            Ok((meta, file)) if meta.is_file() => write_response(
+                writer,
+                200,
+                &[("Content-Type", "application/octet-stream")],
+                &mut &file,
+                meta.len(),
+            ),
+            _ => write_plain(writer, 404, "not found"),
         },
         _ => {
             let mut body: &[u8] = b"";
@@ -389,22 +403,31 @@ fn store_file(
     // this pre-check and the write cannot race.
     let used = workspace_bytes(root).unwrap_or(0);
     if used.saturating_add(declared) > MAX_WORKSPACE_BYTES {
+        // Within the per-file cap, take the body before answering. A client
+        // that writes the whole body before reading (the Worker's buffered
+        // forward) would otherwise outlast linger's 2 s bound and see a reset
+        // instead of this 413. An `Expect: 100-continue` client has not sent
+        // the body and will not (D7).
+        if !head.expect_continue {
+            let _ = io::copy(reader, &mut io::sink());
+        }
         return write_plain(writer, 413, "workspace quota exceeded");
     }
 
-    if head.expect_continue {
-        write_continue(writer)?;
-    }
     let mut file = match File::create(target) {
         Ok(file) => file,
         Err(error) => {
             return write_plain(writer, 500, &format!("cannot create file: {error}"));
         }
     };
-    // Read exactly the declared length: a well-behaved client sends precisely
-    // that many bytes and then waits for the response without half-closing,
-    // so waiting for one more byte would deadlock (or time out into a 500).
-    let written = io::copy(&mut reader.take(declared), &mut file);
+    // Invite the body only once it has somewhere to go (D7).
+    if head.expect_continue {
+        write_continue(writer)?;
+    }
+    // `reader` stops at the declared length: a well-behaved client sends
+    // precisely that many bytes and then waits for the response without
+    // half-closing, so waiting for one more byte would deadlock.
+    let written = io::copy(reader, &mut file);
     drop(file);
 
     let mut discard = |status: u16, message: &'static str| -> io::Result<()> {

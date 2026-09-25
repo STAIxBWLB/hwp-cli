@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 /// Request header count cap (D4). Also the httparse parser buffer size.
 const MAX_HEADERS: usize = 64;
-/// Cap on the bytes linger discards (D6).
+/// Cap on the bytes linger discards (D6), strays after the declared body
+/// included.
 const MAX_LINGER_BYTES: u64 = 2 * 1024 * 1024;
 /// Cap on how long linger holds the socket (D6).
 const LINGER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -204,6 +205,7 @@ pub(super) fn linger(stream: &TcpStream, remaining: u64) {
     };
     let deadline = Instant::now() + LINGER_TIMEOUT;
     let mut left = remaining.min(MAX_LINGER_BYTES);
+    let mut discarded = 0u64;
     let mut buffer = [0u8; 8192];
     loop {
         let now = Instant::now();
@@ -218,7 +220,14 @@ pub(super) fn linger(stream: &TcpStream, remaining: u64) {
         let _ = discard.set_read_timeout(Some(wait));
         match discard.read(&mut buffer) {
             Ok(0) => break,
-            Ok(n) => left = left.saturating_sub(n as u64),
+            Ok(n) => {
+                left = left.saturating_sub(n as u64);
+                discarded += n as u64;
+                // A client still streaming past the cap is not sending strays.
+                if discarded >= MAX_LINGER_BYTES {
+                    break;
+                }
+            }
             Err(_) => break,
         }
     }
@@ -490,6 +499,24 @@ mod tests {
         assert!(
             matches!(read, Ok(0)),
             "the client must see EOF after the write half closes: {read:?}"
+        );
+    }
+
+    #[test]
+    fn linger_stops_at_the_byte_cap_on_a_client_that_keeps_sending() {
+        let (server, mut client) = socket_pair();
+        let sender = std::thread::spawn(move || {
+            let chunk = [0u8; 64 * 1024];
+            while client.write_all(&chunk).is_ok() {}
+        });
+        let start = Instant::now();
+        linger(&server, u64::MAX);
+        let elapsed = start.elapsed();
+        drop(server);
+        sender.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "linger must stop once 2 MiB are discarded, took {elapsed:?}"
         );
     }
 

@@ -287,6 +287,12 @@ fn serve_files_roundtrip_and_name_rules() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(entries, ["a.bin"], "workspace에 예상 밖 파일이 있습니다");
+
+    // 디렉터리는 Unix에서 열리기는 하지만 보낼 본문이 없다. 200에 메타데이터
+    // 길이를 약속하고 본문을 끊는 대신 404로 답한다.
+    std::fs::create_dir(server.root.join("sub")).unwrap();
+    let (status, _) = request(addr, "GET", "/files/sub", b"");
+    assert_eq!(status, 404, "디렉터리가 파일처럼 응답되었습니다");
 }
 
 /// `store_file` answers 413 from the declared Content-Length alone, before it
@@ -559,6 +565,10 @@ fn serve_sends_close_per_request_and_ignores_pipelining() {
     let lowered = headers.to_ascii_lowercase();
     assert!(lowered.contains("connection: close"), "{headers}");
     assert!(lowered.contains("content-length: 2"), "{headers}");
+    assert!(
+        lowered.contains("content-type: text/plain; charset=utf-8"),
+        "{headers}"
+    );
 
     // 같은 연결에 이어 쓴 두 번째 요청은 답하지 않는다. 서버가 연결을 닫으므로
     // EOF가 온다.
@@ -814,7 +824,7 @@ fn serve_rejects_a_short_body_with_400() {
                 .as_bytes(),
             )
             .unwrap();
-        // 선언보다 적게 본내고 half-close: 본문이 여기서 끝이다.
+        // 선언보다 적게 보내고 half-close: 본문이 여기서 끝이다.
         stream.write_all(b"abc").unwrap();
         stream.flush().unwrap();
         stream.shutdown(std::net::Shutdown::Write).unwrap();
@@ -852,4 +862,132 @@ fn serve_files_get_delivers_a_large_file_byte_exact() {
     assert_eq!(status, 200);
     assert_eq!(body.len(), payload.len(), "응답이 잘렸습니다");
     assert_eq!(body, payload, "응답 바이트가 다릅니다");
+}
+
+/// Tool calls run on the connection thread, so it needs the same 32 MiB stack
+/// `main` gives every other command. On a default 2 MiB thread a document with
+/// 200 nested tables overflowed the stack and aborted the whole process
+/// (SIGABRT, uncatchable), while `hwp mcp` and `hwp cat` read it fine.
+#[test]
+fn serve_reads_deeply_nested_tables_without_overflowing() {
+    let server = spawn("nested", false);
+    let addr = &server.addr;
+    let flat = server.root.join("flat.hwpx");
+    let result = call_tool(
+        addr,
+        "hwp_new",
+        serde_json::json!({
+            "output": flat.to_str().unwrap(),
+            "markdown": "| a | b |\n|---|---|\n| 1 | 2 |",
+        }),
+    );
+    assert_eq!(result["isError"], false, "hwp_new: {result}");
+
+    let deep = server.root.join("deep.hwpx");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&flat).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&deep).unwrap());
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().to_string();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        if name == "Contents/section0.xml" {
+            bytes = nest_first_table(&String::from_utf8(bytes).unwrap(), 200).into_bytes();
+        }
+        let method = if name == "mimetype" {
+            zip::CompressionMethod::Stored
+        } else {
+            zip::CompressionMethod::Deflated
+        };
+        writer
+            .start_file(
+                &name,
+                zip::write::SimpleFileOptions::default().compression_method(method),
+            )
+            .unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap();
+
+    let result = call_tool(
+        addr,
+        "hwp_read",
+        serde_json::json!({"path": deep.to_str().unwrap()}),
+    );
+    assert_eq!(result["isError"], false, "hwp_read: {result}");
+    let (status, _) = request(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200, "깊은 중첩 표 뒤 서버가 죽었습니다");
+}
+
+/// Wraps the section's only table into its own first cell until `depth`
+/// tables nest.
+fn nest_first_table(section: &str, depth: usize) -> String {
+    let start = section.find("<hp:tbl").expect("표가 없습니다");
+    let end = section.find("</hp:tbl>").expect("표 끝이 없습니다") + "</hp:tbl>".len();
+    let table = &section[start..end];
+    let marker = r#"<hp:t xml:space="preserve">a</hp:t>"#;
+    assert_eq!(
+        table.matches(marker).count(),
+        1,
+        "첫 셀 표식이 하나가 아닙니다"
+    );
+    let mut nested = String::new();
+    for _ in 0..depth {
+        nested = table.replace(marker, &format!("{nested}{marker}"));
+    }
+    format!("{}{nested}{}", &section[..start], &section[end..])
+}
+
+/// A client that declares a `/mcp` body and then stalls parks only its own
+/// connection thread: the body is read before the dispatch lock, so another
+/// request is answered at once instead of after the 30 s read timeout.
+#[test]
+fn serve_answers_mcp_while_another_body_stalls() {
+    let server = spawn("body-stall", false);
+    let addr = &server.addr;
+
+    let mut staller = TcpStream::connect(addr).unwrap();
+    staller
+        .write_all(
+            format!("POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 50\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+    staller.flush().unwrap();
+    // 서버가 헤드를 받고 본문 읽기에 들어갈 시간을 준다.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let start = std::time::Instant::now();
+    let (status, value) = rpc(addr, r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#);
+    assert_eq!(status, 200);
+    assert!(value["result"]["tools"].is_array(), "{value}");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "멈춘 본문이 다른 /mcp 요청을 {:?} 막았습니다",
+        start.elapsed()
+    );
+    drop(staller);
+}
+
+/// A connect-and-close with no bytes (a TCP readiness probe) is not a request:
+/// the server closes without writing a response.
+#[test]
+fn serve_closes_an_empty_connection_without_answering() {
+    let server = spawn("probe", false);
+    let addr = &server.addr;
+
+    let mut probe = TcpStream::connect(addr).unwrap();
+    probe.shutdown(std::net::Shutdown::Write).unwrap();
+    probe
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut raw = Vec::new();
+    probe.read_to_end(&mut raw).unwrap();
+    assert!(
+        raw.is_empty(),
+        "빈 연결에 응답했습니다: {:?}",
+        String::from_utf8_lossy(&raw)
+    );
+
+    let (status, _) = request(addr, "GET", "/healthz", b"");
+    assert_eq!(status, 200);
 }
