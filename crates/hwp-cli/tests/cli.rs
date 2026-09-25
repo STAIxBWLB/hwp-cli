@@ -25,6 +25,30 @@ fn skip_if_no_fixtures() -> bool {
     true
 }
 
+/// `hwp render` applies no page budget, so no upper bound may return on the report's page
+/// fields: a bound there is one a correct report can exceed (#284, the same rule
+/// `render-layout-v1` follows).
+#[test]
+fn render_report_places_no_upper_bound_on_page_numbers_or_counts() {
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/render-report-v1.schema.json"
+    ))
+    .unwrap();
+    for (pointer, keyword) in [
+        ("/properties/total_pages", "maximum"),
+        ("/properties/selected_pages", "maxItems"),
+        ("/properties/selected_pages/items", "maximum"),
+    ] {
+        let node = schema
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("{pointer} must exist in the schema"));
+        assert!(
+            node.get(keyword).is_none(),
+            "{pointer} carries {keyword}; the render path has no page budget"
+        );
+    }
+}
+
 #[test]
 fn render_report_is_closed_hashed_and_schema_validated() {
     let input = tmp("hwp_cli_render_report_input.hwpx");
@@ -86,6 +110,16 @@ fn render_report_is_closed_hashed_and_schema_validated() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(value["input"]["sha256"], input_hash);
+
+    // The render path has no page budget, so a report for a document past the old 4096 cap must
+    // still validate against its own schema (#284).
+    let mut long = value.clone();
+    long["total_pages"] = serde_json::json!(5000);
+    long["selected_pages"] = serde_json::json!((1..=5000).collect::<Vec<u32>>());
+    assert!(
+        validator.is_valid(&long),
+        "a 5000-page report must validate: the schema carries a page bound the emitter can exceed"
+    );
     assert!(!value.to_string().contains(input.to_string_lossy().as_ref()));
     assert!(
         !value

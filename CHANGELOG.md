@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- A render report for a document longer than 4,096 pages failed its own published schema:
+  `render-report-v1` capped `total_pages` and `selected_pages` at 4,096 while the render path
+  applies no page budget. Both are now unbounded, as `render-layout-v1` already was, and the schema
+  says why. No other bound in the report is reachable by the emitter: `dpi` is validated to its
+  36-600 range, the font list is truncated at 512, issue and info entries are one per code, and
+  samples stop at 4 per code ([#284](https://github.com/STAIxBWLB/hwp-cli/issues/284)).
+
 ## [1.0.0]
 
 1.0.0 closes the project's first milestone, shipped across 0.8.7 to 0.20.2: fidelity fixes and
