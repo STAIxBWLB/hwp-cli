@@ -534,6 +534,27 @@ fn optional_address(
     }
 }
 
+/// Reads the legacy text selector (`pattern`, `anchor` or `matching`) of the five arms that also
+/// take an `address` (#331). With an address it is optional: address-only yields the empty
+/// selector `OpsEntry::into_typed` produces for the same op on the CLI `--ops` channel, so both
+/// surfaces build the identical `TypedEditOperation`. Both together stay accepted, as in MCP 1.0
+/// (the address picks the target), although the ops channel rejects that combination; aligning
+/// MCP with the ops channel's exactly-one rule would break existing callers, so it waits for 2.0.
+fn legacy_selector_item(
+    item: &Value,
+    operation: &str,
+    key: &str,
+    has_address: bool,
+) -> Result<String, String> {
+    match optional_item_str(item, operation, key)? {
+        Some(value) => Ok(value.to_string()),
+        None if has_address => Ok(String::new()),
+        None => Err(format!(
+            "{operation} 항목에 {key} 또는 address가 필요합니다"
+        )),
+    }
+}
+
 // ---- 도구 핸들러 ----
 
 fn tool_info(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
@@ -1491,39 +1512,43 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
                     .ok_or_else(|| format!("set_format.color를 해석할 수 없습니다: {value:?}"))?,
             );
         }
+        let address = optional_address(item, "set_format")?;
         operations.push(Op::SetFormat {
-            pattern: required_item_str(item, "set_format", "pattern")?.to_string(),
+            pattern: legacy_selector_item(item, "set_format", "pattern", address.is_some())?,
             format,
-            address: optional_address(item, "set_format")?,
+            address,
         });
     }
     for item in arg_array(args, "set_align")? {
+        let address = optional_address(item, "set_align")?;
         operations.push(Op::SetAlign {
-            pattern: required_item_str(item, "set_align", "pattern")?.to_string(),
+            pattern: legacy_selector_item(item, "set_align", "pattern", address.is_some())?,
             align: crate::commands::edit::parse_align(required_item_str(
                 item,
                 "set_align",
                 "align",
             )?)
             .map_err(|error| error.to_string())?,
-            address: optional_address(item, "set_align")?,
+            address,
         });
     }
     for item in arg_array(args, "insert_para")? {
+        let address = optional_address(item, "insert_para")?;
         operations.push(Op::InsertPara {
-            anchor: required_item_str(item, "insert_para", "anchor")?.to_string(),
+            anchor: legacy_selector_item(item, "insert_para", "anchor", address.is_some())?,
             text: required_item_str(item, "insert_para", "text")?.to_string(),
             before: optional_item_bool(item, "insert_para", "before")?.unwrap_or(false),
-            address: optional_address(item, "insert_para")?,
+            address,
             // The style/char selectors stay out of MCP scope (D-16).
             style: None,
             char: None,
         });
     }
     for item in arg_array(args, "delete_para")? {
+        let address = optional_address(item, "delete_para")?;
         operations.push(Op::DeletePara {
-            matching: required_item_str(item, "delete_para", "matching")?.to_string(),
-            address: optional_address(item, "delete_para")?,
+            matching: legacy_selector_item(item, "delete_para", "matching", address.is_some())?,
+            address,
         });
     }
     for item in arg_array(args, "add_row")? {
@@ -1619,10 +1644,11 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         });
     }
     for item in arg_array(args, "set_para")? {
+        let address = optional_address(item, "set_para")?;
         operations.push(Op::SetPara {
-            pattern: required_item_str(item, "set_para", "pattern")?.to_string(),
+            pattern: legacy_selector_item(item, "set_para", "pattern", address.is_some())?,
             props: para_props_item(item, "set_para")?,
-            address: optional_address(item, "set_para")?,
+            address,
         });
     }
     for item in arg_array(args, "set_cell_para")? {
@@ -2361,7 +2387,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_edit",
-            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패.",
+            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 하나 이상이 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 이전과 같이 address가 대상을 정한다.",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
@@ -2425,7 +2451,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "required": ["pattern"]}, "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위)"},
+                    "anyOf": [{"required": ["pattern"]}, {"required": ["address"]}]}, "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위, pattern 생략 가능)"},
                 "set_align": {"type": "array", "items": {"type": "object", "properties": {
                     "pattern": {"type": "string"},
                     "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute", "divide"]},
@@ -2438,7 +2464,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "required": ["pattern", "align"]}, "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단)"},
+                    "required": ["align"], "anyOf": [{"required": ["pattern"]}, {"required": ["address"]}]}, "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단, pattern 생략 가능)"},
                 "insert_para": {"type": "array", "items": {"type": "object", "properties": {
                     "anchor": {"type": "string"}, "text": {"type": "string"},
                     "before": {"type": "boolean", "description": "true면 앵커 문단 앞(기본 뒤)"},
@@ -2451,7 +2477,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "required": ["anchor", "text"]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준)"},
+                    "required": ["text"], "anyOf": [{"required": ["anchor"]}, {"required": ["address"]}]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준, anchor 생략 가능)"},
                 "delete_para": {"type": "array", "items": {"type": "object", "properties": {
                     "matching": {"type": "string"},
                     "address": {"type": "object", "additionalProperties": false,
@@ -2463,7 +2489,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "required": ["matching"]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단)"},
+                    "anyOf": [{"required": ["matching"]}, {"required": ["address"]}]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단, matching 생략 가능)"},
                 "add_row": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"},
                     "at": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "삽입 경계(생략 시 끝, 0-기반)"},
@@ -2518,8 +2544,8 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "required": ["pattern"]},
-                    "description": "문단모양(매칭 문단; address 지정 시 해당 문단): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
+                    "anyOf": [{"required": ["pattern"]}, {"required": ["address"]}]},
+                    "description": "문단모양(매칭 문단; address 지정 시 해당 문단, pattern 생략 가능): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
                 "set_cell_para": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer", "minimum": 0, "description": "0-기반 표 인덱스(재귀 순서)"},
                     "row": {"type": "integer", "minimum": 0}, "col": {"type": "integer", "minimum": 0},
@@ -5497,6 +5523,155 @@ mod tests {
         ] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// #331: on the five legacy-selector arms an address-only MCP item lands byte-identical
+    /// output to the same op on the CLI `--ops` channel; the legacy-only form still matches the
+    /// CLI's legacy op; the MCP-only legacy+address combination stays accepted with the address
+    /// picking the target (same bytes as address-only); neither selector is rejected with
+    /// nothing written.
+    #[test]
+    fn mcp_typed_address_only_legacy_arms_match_the_cli_ops_channel() {
+        let source = temp_file("typed-address-only-source.hwpx");
+        // Paragraphs 1 and 2 carry the same text, so only an address can tell them apart.
+        create_hwpx(&source, "앞 문단\n\n같은 문장 끝\n\n같은 문장 끝\n");
+        let para = json!({"at": {"section": 0, "paragraph": 2}});
+        let run = json!({"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]});
+        // (arm, selector key, MCP non-selector fields, address, CLI non-selector fields)
+        let cases = [
+            (
+                "set_format",
+                "pattern",
+                json!({"bold": true}),
+                &run,
+                json!({"bold": "on"}),
+            ),
+            (
+                "set_align",
+                "pattern",
+                json!({"align": "center"}),
+                &para,
+                json!({"align": "center"}),
+            ),
+            (
+                "insert_para",
+                "anchor",
+                json!({"text": "새 문단"}),
+                &para,
+                json!({"text": "새 문단"}),
+            ),
+            ("delete_para", "matching", json!({}), &para, json!({})),
+            (
+                "set_para",
+                "pattern",
+                json!({"line_spacing_pct": 130}),
+                &para,
+                json!({"line_spacing_pct": "130%"}),
+            ),
+        ];
+        let with = |base: &Value, extra: &[(&str, Value)]| {
+            let mut value = base.clone();
+            for (key, item) in extra {
+                value[*key] = item.clone();
+            }
+            value
+        };
+        let mcp_edit = |arm: &str, item: Value, out: &Path| {
+            tool_edit(
+                &json!({"input": source, "output": out, arm: [item]}),
+                &ctx(),
+            )
+        };
+        // The published item schema must agree with the code on every form.
+        let edit_schema = tool_defs()
+            .into_iter()
+            .find(|tool| tool["name"] == "hwp_edit")
+            .unwrap()["inputSchema"]
+            .clone();
+        let schema = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&edit_schema)
+            .unwrap();
+        let fits = |arm: &str, item: &Value| {
+            schema.is_valid(&json!({"input": "in.hwpx", "output": "out.hwpx", arm: [item]}))
+        };
+        let selector = json!("같은 문장 끝");
+        for (arm, key, fields, address, cli_fields) in cases {
+            let address_item = with(&fields, &[("address", address.clone())]);
+            let both_item = with(&address_item, &[(key, selector.clone())]);
+            let legacy_item = with(&fields, &[(key, selector.clone())]);
+            for item in [&address_item, &both_item, &legacy_item] {
+                assert!(fits(arm, item), "{arm}: 스키마가 {item}을 받아야 한다");
+            }
+            assert!(
+                !fits(arm, &fields),
+                "{arm}: 스키마가 선택자 없는 항목을 거부해야 한다"
+            );
+
+            let out = |form: &str| temp_file(&format!("typed-address-only-{arm}-{form}.hwpx"));
+            let (address_out, both_out, legacy_out, neither_out) =
+                (out("address"), out("both"), out("legacy"), out("neither"));
+            let (cli_address_out, cli_legacy_out) = (out("cli-address"), out("cli-legacy"));
+
+            mcp_edit(arm, address_item, &address_out)
+                .unwrap_or_else(|error| panic!("{arm} address-only: {error}"));
+            let cli_address = with(
+                &cli_fields,
+                &[("op", json!(arm)), ("address", address.clone())],
+            );
+            run_cli_ops_channel(
+                &source,
+                &json!([cli_address]).to_string(),
+                &cli_address_out,
+                &format!("typed-address-only-{arm}-address"),
+            );
+            assert_eq!(
+                std::fs::read(&address_out).unwrap(),
+                std::fs::read(&cli_address_out).unwrap(),
+                "{arm}: address-only MCP 출력이 CLI --ops와 다르다"
+            );
+
+            mcp_edit(arm, both_item, &both_out)
+                .unwrap_or_else(|error| panic!("{arm} {key}+address: {error}"));
+            assert_eq!(
+                std::fs::read(&both_out).unwrap(),
+                std::fs::read(&address_out).unwrap(),
+                "{arm}: {key}+address는 address가 대상을 정해야 한다"
+            );
+
+            mcp_edit(arm, legacy_item, &legacy_out)
+                .unwrap_or_else(|error| panic!("{arm} {key}-only: {error}"));
+            let cli_legacy = with(&cli_fields, &[("op", json!(arm)), (key, selector.clone())]);
+            run_cli_ops_channel(
+                &source,
+                &json!([cli_legacy]).to_string(),
+                &cli_legacy_out,
+                &format!("typed-address-only-{arm}-legacy"),
+            );
+            assert_eq!(
+                std::fs::read(&legacy_out).unwrap(),
+                std::fs::read(&cli_legacy_out).unwrap(),
+                "{arm}: {key}-only MCP 출력이 CLI --ops와 다르다"
+            );
+
+            let error = mcp_edit(arm, fields.clone(), &neither_out).unwrap_err();
+            assert!(
+                error.contains(&format!("{arm} 항목에 {key} 또는 address가 필요합니다")),
+                "{arm}: 선택자 없는 항목은 거부해야 한다: {error}"
+            );
+            assert!(!neither_out.exists(), "{arm}: 거부 시 출력을 쓰면 안 된다");
+
+            for path in [
+                &address_out,
+                &both_out,
+                &legacy_out,
+                &cli_address_out,
+                &cli_legacy_out,
+            ] {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        let _ = std::fs::remove_file(&source);
     }
 
     /// Edge probe (ordering): within one `hwp_edit` op kind, MCP applies the caller's array
