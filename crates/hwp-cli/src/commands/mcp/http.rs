@@ -135,9 +135,13 @@ pub fn serve(
     }
     // Wait for the in-flight dispatch to release the lock (D8). The accept
     // thread is left blocked in accept(2); process exit reaps it.
-    let _guard = dispatch
+    let guard = dispatch
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Hold the lock until the process exits: a connection thread queued on it
+    // would otherwise take it once `serve` returns and start a tool call or an
+    // upload that exit then cuts off mid-write.
+    std::mem::forget(guard);
     eprintln!("hwp serve: shutting down");
     Ok(())
 }
@@ -239,7 +243,9 @@ fn route_request(
     dispatch: &Mutex<()>,
 ) {
     // Handlers read the body only through this `take`, so its limit afterwards
-    // is exactly the declared remainder still unread on the socket.
+    // is the declared remainder they did not consume. Part of it may already
+    // sit in the BufReader rather than on the socket; linger then waits for
+    // bytes that never come, which its 2 s deadline bounds.
     let mut body = reader.take(head.content_length);
     let path = head.path.as_str();
     let result = match (head.method.as_str(), path) {
@@ -421,8 +427,12 @@ fn store_file(
         }
     };
     // Invite the body only once it has somewhere to go (D7).
-    if head.expect_continue {
-        write_continue(writer)?;
+    if head.expect_continue
+        && let Err(error) = write_continue(writer)
+    {
+        drop(file);
+        let _ = std::fs::remove_file(target);
+        return Err(error);
     }
     // `reader` stops at the declared length: a well-behaved client sends
     // precisely that many bytes and then waits for the response without
