@@ -12,7 +12,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [0.20.2]
 
-**Fixed**
+**Security**
 
 - A small HWPX file could crash any command that read it. The section reader recurses once per
   nesting level, and a stack overflow aborts instead of unwinding: 12,800 nested tables (272 KB)
@@ -25,12 +25,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - Nested tables made layout time double per level. Each table cell was laid out once to measure
   its height and again to draw it, and a nested table repeated both passes one level down. In
-  release, conversion to HWP5 took 7.5 s for 18 nested tables and `hwp render` was slower still;
-  30 levels ran past a 90-second limit. The measure pass is now memoized per cell for the duration
+  release, conversion to HWP5 took 7.5 s for 18 nested tables and `hwp render` was slower at every
+  measured depth; in a debug build, 30 levels ran past a 90-second test limit. The measure pass is now memoized per cell for the duration
   of one document layout: 30 and 42 levels render in under a second even in a debug build, and 59
   fixture and corpus documents render byte-identical (PDF and layout geometry)
   ([#321](https://github.com/STAIxBWLB/hwp-cli/issues/321),
   [#325](https://github.com/STAIxBWLB/hwp-cli/pull/325)).
+
+**Fixed**
+
+- `hwp serve` shutdown could cut a request off mid-write. After SIGTERM, a connection queued on the
+  dispatch lock could take it once the server loop returned and start a tool call or an upload that
+  process exit then interrupted, leaving a truncated file with no cleanup. The lock is now held
+  until exit. A failed `100 Continue` write also removes the upload file it had just created
+  ([#319](https://github.com/STAIxBWLB/hwp-cli/pull/319)).
 
 ## [0.20.1]
 
