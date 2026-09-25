@@ -10,6 +10,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp edit --report` and the MCP `edit` tool's `report` now list one outcome per op for a
+  replace-only HWPX-to-HWPX batch. That batch shape takes the package-preserving fast path, which
+  used to report an empty `ops` array and `applied_count: 0` however many replaces matched, and
+  wrote no report at all when it aborted. Each replace now gets the same status and failure
+  reason the in-memory edit path reports for the same batch, including on an abort. The output
+  file bytes and the error messages are unchanged
+  ([#332](https://github.com/STAIxBWLB/hwp-cli/issues/332)).
+
 ## [1.0.0]
 
 1.0.0 closes the project's first milestone, shipped across 0.8.7 to 0.20.2: fidelity fixes and
