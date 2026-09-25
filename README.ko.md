@@ -531,8 +531,11 @@ edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, ten
 | `hwp5` | HWP 5.0 바이너리 reader/writer (CFB 컨테이너 + 레코드 스트림 + 압축) |
 | `hwpx` | HWPX reader/writer (ZIP 패키지 + OWPML XML) |
 | `hwp-convert` | IR ↔ markdown / HTML / JSON, 인메모리 편집, 필드 스캔 |
-| `hwp-render` | IR → PNG / SVG / PDF 렌더러, 줄 배치 합성, 셰이핑, 폰트 서브셋·임베드, 렌더 diff |
+| `hwp-render` | IR → PNG / SVG / PDF / JPEG / WebP 렌더러와 배치 좌표, 줄 배치 합성, 셰이핑, 폰트 서브셋·임베드, 렌더 diff |
 | `hwp-cli` | `hwp` 바이너리 (CLI + MCP 서버) |
+
+이 크레이트들과 MCP 배포 경로를 담은 대화형 아키텍처 지도는
+[docs/architecture/](docs/architecture/)에 있다. `hwp-cli-rendered.html`을 브라우저로 연다.
 
 ## 개발과 테스트
 

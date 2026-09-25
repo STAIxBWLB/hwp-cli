@@ -10,7 +10,7 @@
     "repository": {
       "url": "https://github.com/STAIxBWLB/hwp-cli",
       "provider": "github",
-      "revision": "41a1c555747b338efe265f87cb6dca06b223cad7"
+      "revision": "982c3e63557546b8721009405d87d5b6af7c64de"
     },
     "views": [
       {
@@ -23,7 +23,7 @@
         "id": "render-path",
         "label": "Render path",
         "focus": ["model", "render", "fs"],
-        "note": "IR to glyph shaping, layout and PNG/SVG/PDF publishing."
+        "note": "IR to glyph shaping, layout, page output and layout geometry."
       },
       {
         "id": "mcp-path",
@@ -91,11 +91,12 @@
       "type": "backend",
       "label": "hwp-render",
       "sublabel": "rustybuzz, tiny-skia",
-      "tag": "PNG/SVG/PDF",
+      "tag": "PNG/SVG/PDF/JPEG/WebP",
       "pos": [695, 110],
       "size": [170, 60],
       "sources": [
-        { "path": "crates/hwp-render/src/lib.rs", "line": 1, "label": "IR to PNG/SVG/PDF pipeline" }
+        { "path": "crates/hwp-render/src/lib.rs", "line": 1, "label": "IR to page raster/vector pipeline" },
+        { "path": "crates/hwp-render/src/segment_map.rs", "line": 1, "label": "render-layout-v1 geometry rows" }
       ]
     },
     {
@@ -141,7 +142,7 @@
       "id": "edge",
       "type": "cloud",
       "label": "Remote Edge",
-      "sublabel": "Cloudflare TLS/auth",
+      "sublabel": "Cloudflare OAuth/PAT",
       "tag": "POST /mcp",
       "pos": [40, 500],
       "size": [130, 60],
@@ -258,7 +259,7 @@
       "id": "render-to-fs",
       "from": "render",
       "to": "fs",
-      "label": "PNG/SVG/PDF",
+      "label": "pages + layout",
       "fromSide": "right",
       "toSide": "top",
       "labelAt": [935, 140]
@@ -286,9 +287,9 @@
       "dot": "cyan",
       "title": "Core pipeline",
       "items": [
-        "6-crate workspace at v0.20.1, edition 2024: hwp-cli entry plus hwp-model, hwp5, hwpx, hwp-convert, hwp-render",
+        "6-crate workspace at v1.0.0, edition 2024; SemVer covers the CLI, MCP tools and schemas",
         "Codecs build the shared hwp-model IR; every format surface reads from it",
-        "The hwp5/hwpx codecs write hwp/hwpx back from the IR; hwp5 re-serialization stays byte-exact"
+        "hwp5 re-serialization stays byte-exact; HWPX parsing is depth-bounded on quick-xml 0.41"
       ]
     },
     {
@@ -296,8 +297,8 @@
       "title": "Formats and rules",
       "items": [
         "Reads to plain/markdown/HTML/JSON/CSV; writes DOCX, ODT, hwp, hwpx",
-        "Renders PNG/SVG/PDF with subset-embedded selectable fonts (pdf-writer)",
-        "26 commands including lint (10 rules), certify, corpus gate"
+        "Renders PNG/SVG/PDF/JPEG/WebP plus layout geometry JSON for editors",
+        "26 commands incl. lint (10 rules); schema ids on hwp-cli.staix.net"
       ]
     },
     {
@@ -306,7 +307,7 @@
       "items": [
         "22-tool stdio MCP server; per-call passwords zeroized before the next request",
         "hwp serve: close-per-request POST /mcp on httparse behind a trusted edge, 1MiB cap",
-        "Checked paths refuse anything outside --root before any file IO"
+        "Tier A live on v1.0.0; checked paths refuse IO outside --root"
       ]
     }
   ]

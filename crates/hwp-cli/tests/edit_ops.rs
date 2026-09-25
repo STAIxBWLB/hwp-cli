@@ -3069,6 +3069,92 @@ fn dry_run_report_matches_real_run_report_except_dry_run_field() {
     );
 }
 
+/// #332: a replace-only batch on hwpx -> hwpx takes the package-preserving fast path, whose
+/// report must carry the same per-op outcomes the apply loop reports for the same batch (forced
+/// here by an `.hwp` output): on a partial success under `--allow-partial`, and on the abort
+/// without it, where the fast path used to write no report at all.
+#[test]
+fn fast_path_replace_report_matches_the_apply_loop_report() {
+    let dir = test_dir("report-fast-path");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"replace","from":"첫 문단","to":"FIRST"},
+          {"op":"replace","from":"NO_SUCH_TEXT_ANYWHERE","to":"X"},
+          {"op":"replace","from":"같은 문단","to":"SAME"}
+        ]"#,
+    )
+    .unwrap();
+    let run = |output: &str, extra: &[&str]| {
+        let report_path = dir.join(format!("{output}.json"));
+        let run = hwp()
+            .arg("edit")
+            .arg(&base)
+            .arg("-o")
+            .arg(dir.join(output))
+            .arg("--ops")
+            .arg(&ops)
+            .args(extra)
+            .arg("--report")
+            .arg(&report_path)
+            .output()
+            .unwrap();
+        let mut report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap_or_else(|e| {
+                panic!(
+                    "{output}: --report must be written: {e}: {}",
+                    String::from_utf8_lossy(&run.stderr)
+                )
+            }))
+            .unwrap();
+        assert!(
+            edit_report_v1_validator().is_valid(&report),
+            "{output}: report must validate against edit-report-v1: {report}"
+        );
+        report["output"] = serde_json::Value::Null;
+        (run, report)
+    };
+
+    // --allow-partial: both paths publish, and op 1 is the one failed op.
+    let (fast, fast_report) = run("partial-fast.hwpx", &["--allow-partial"]);
+    let (slow, slow_report) = run("partial-slow.hwp", &["--allow-partial"]);
+    let fast_stderr = String::from_utf8_lossy(&fast.stderr);
+    assert!(fast.status.success(), "{fast_stderr}");
+    assert!(
+        slow.status.success(),
+        "{}",
+        String::from_utf8_lossy(&slow.stderr)
+    );
+    assert!(
+        fast_stderr.contains("치환(패키지 보존)"),
+        "a replace-only hwpx batch must take the package-preserving fast path: {fast_stderr}"
+    );
+    assert_eq!(fast_report["applied_count"], 2, "{fast_report}");
+    assert_eq!(fast_report["failed_count"], 1, "{fast_report}");
+    assert_eq!(fast_report["ops"][1]["status"], "failed", "{fast_report}");
+    assert_eq!(
+        fast_report, slow_report,
+        "the fast path must report what the apply loop reports for the same batch"
+    );
+
+    // Without --allow-partial both paths abort; the fast path's abort still writes the report.
+    let (fast, fast_report) = run("abort-fast.hwpx", &[]);
+    let (slow, slow_report) = run("abort-slow.hwp", &[]);
+    let fast_stderr = String::from_utf8_lossy(&fast.stderr);
+    assert!(!fast.status.success() && !slow.status.success());
+    assert!(
+        fast_stderr.contains("런 분절 교차 매칭은 미지원"),
+        "the abort must come from the fast path: {fast_stderr}"
+    );
+    assert!(!dir.join("abort-fast.hwpx").exists());
+    assert_eq!(fast_report, slow_report);
+}
+
 use std::io::Write as _;
 use std::process::Stdio;
 use std::sync::Arc;
