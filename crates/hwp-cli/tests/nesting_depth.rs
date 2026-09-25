@@ -89,3 +89,72 @@ fn hwp_cat_refuses_a_deep_file_instead_of_aborting() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Runs `hwp <args>` and fails the test if it has not exited within `limit`,
+/// killing it so an exponential run cannot hang the suite.
+fn run_within(args: &[&std::ffi::OsStr], limit: std::time::Duration) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + limit;
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("hwp {args:?} 가 {limit:?} 안에 끝나지 않았습니다");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    child.wait_with_output().unwrap()
+}
+
+/// Nested-table layout must not double per level (#321). Every table cell was
+/// laid out once to measure its height and again to draw it, and a nested
+/// table repeated both passes one level down, so 30 levels meant 2^30 cell
+/// layouts: `render` and conversion to HWP5 (which lays out for line
+/// segments) never finished. 30 levels is element depth 184, inside #317's
+/// bound. The limit is generous for a debug build on a loaded CI runner.
+#[test]
+fn nested_table_layout_finishes_in_bounded_time() {
+    let dir = tmp_dir("layout-time");
+    let flat = flat_table(&dir);
+    let deep = dir.join("deep.hwpx");
+    write_nested_tables(&flat, 30, &deep);
+    let limit = std::time::Duration::from_secs(90);
+
+    let png = dir.join("deep.png");
+    let rendered = run_within(
+        &[
+            "render".as_ref(),
+            deep.as_os_str(),
+            "-o".as_ref(),
+            png.as_os_str(),
+        ],
+        limit,
+    );
+    assert!(
+        rendered.status.success(),
+        "render: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+
+    let hwp5 = dir.join("deep.hwp");
+    let converted = run_within(
+        &[
+            "convert".as_ref(),
+            deep.as_os_str(),
+            "-o".as_ref(),
+            hwp5.as_os_str(),
+        ],
+        limit,
+    );
+    assert!(
+        converted.status.success(),
+        "convert: {}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
