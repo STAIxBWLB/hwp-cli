@@ -10,22 +10,47 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
-**Fixed**
+## [0.20.2]
+
+**Security**
 
 - A small HWPX file could crash any command that read it. The section reader recurses once per
   nesting level, and a stack overflow aborts instead of unwinding: 12,800 nested tables (272 KB)
   aborted `hwp cat` in release, and one upload plus `hwp_read` aborted `hwp serve`. A section nested
-  deeper than 256 XML elements (about 42 nested tables; real documents peak near 17) is now refused
-  with an error naming the bound, before the recursive parse runs. The bound also keeps default
-  2 MiB threads safe, which overflowed near 100 nested tables in debug
-  ([#317](https://github.com/STAIxBWLB/hwp-cli/issues/317)).
+  deeper than 256 XML elements (about 42 nested tables; the local corpus peaks at depth 17, 2 nested
+  tables) is now refused with an error naming the bound, before the recursive parse runs. The bound
+  also keeps default 2 MiB threads safe, which overflowed near 100 nested tables in debug
+  ([#317](https://github.com/STAIxBWLB/hwp-cli/issues/317),
+  [#323](https://github.com/STAIxBWLB/hwp-cli/pull/323)).
 
-- Nested tables made layout time double per level. Each table cell was laid out once to measure
-  its height and again to draw it, and a nested table repeated both passes one level down, so
-  `hwp render` and conversion to HWP5 took 7.5 s for 18 nested tables and never finished for 30.
-  The measure pass is now memoized per cell for the duration of one document layout, so the same
-  30-level document renders in under a second, and every fixture renders byte-identical
-  ([#321](https://github.com/STAIxBWLB/hwp-cli/issues/321)).
+- A few-KB HWPX file could pin a CPU for hours. Table layout measured every cell in a scratch pass
+  and then drew it, and a nested table repeated both passes one level down, so layout time doubled
+  per nesting level: in `hwp render`, `hwp convert` to PDF or HWP5, and the MCP `hwp_render` and
+  `hwp_convert` tools, where `hwp serve` held its dispatch lock until the edge deadline killed the
+  container, or indefinitely with no edge in front. In release, conversion to HWP5 took 7.5 s for 18
+  nested tables, and at 16 levels `hwp render` took 3.7 s against conversion's 1.9 s; in a debug
+  build, 30 levels ran past a 90-second test limit. The measure pass is now memoized per cell for
+  the duration of one document layout: 30 and 42 levels render in under a second even in a debug
+  build, and 59 fixture and corpus documents render byte-identical (PDF and layout geometry)
+  ([#321](https://github.com/STAIxBWLB/hwp-cli/issues/321),
+  [#325](https://github.com/STAIxBWLB/hwp-cli/pull/325)).
+
+**Fixed**
+
+- `hwp serve` shutdown could cut a request off mid-write. After SIGTERM or SIGINT, a connection
+  queued on the dispatch lock could take it once the server loop returned and start a tool call or
+  an upload that process exit then interrupted, leaving a truncated file with no cleanup. The lock
+  is now held until exit. A failed `100 Continue` write also removes the upload file it had just
+  created ([#319](https://github.com/STAIxBWLB/hwp-cli/pull/319)).
+
+**Documentation**
+
+- Doc 22 section 6.3 lists a Tier B go-live check: `hwp serve` answers `411` to any
+  `Transfer-Encoding` request body, and AWS does not document how `InvokeAgentRuntime` frames the
+  body it forwards, so after the first AgentCore deploy and before the Quick connector is
+  registered, a `tools/list` call through the runtime must return the tools rather than `411` or a
+  `length required` body ([#318](https://github.com/STAIxBWLB/hwp-cli/issues/318),
+  [#322](https://github.com/STAIxBWLB/hwp-cli/pull/322)).
 
 ## [0.20.1]
 
