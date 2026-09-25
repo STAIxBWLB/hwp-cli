@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [0.20.1]
+
 **Security**
 
 - One request could kill `hwp serve`. tiny_http 0.12 drained an unread request body into a buffer
@@ -20,6 +22,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   all get 413 and the server keeps answering. The same crate also buffered a header line without
   limit (64 MiB took the process to 70 MB RSS) and set no socket timeouts
   ([#312](https://github.com/STAIxBWLB/hwp-cli/issues/312),
+  [#313](https://github.com/STAIxBWLB/hwp-cli/pull/313)).
+
+- One stalled client could wedge `hwp serve`. A client that declared a request body and sent
+  nothing kept the single-threaded loop draining it, so every later request, `/healthz` included,
+  went unanswered ([#310](https://github.com/STAIxBWLB/hwp-cli/issues/310)). v0.20.0's loop is
+  gone: each connection has its own thread with 30 s socket timeouts, and a reject path discards
+  the unread body through the bounded lingering close
+  ([#311](https://github.com/STAIxBWLB/hwp-cli/pull/311),
   [#313](https://github.com/STAIxBWLB/hwp-cli/pull/313)).
 
 **Changed**
