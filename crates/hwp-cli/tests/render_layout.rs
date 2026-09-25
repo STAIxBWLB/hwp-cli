@@ -46,7 +46,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "3cbc4d9c8072021977ddf21b8b6c60faefc3fca3911aaaad500400981c0609f7",
+        actual, "a00a18ec339fa0dcadbd21e78cda5736a392c7f20dfb06eedccc0cb5d2e44ce0",
         "render-layout-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -255,8 +255,12 @@ fn the_load_bearing_descriptions_are_present_in_the_published_text() {
             "An id that does not resolve is a defect to report",
         ),
         (
+            "that a paragraph which drew nothing keeps one row",
+            "keeps exactly ONE row with a null `box` and a null `source_chars`",
+        ),
+        (
             "that a para row can carry a null character range",
-            "TWO DIFFERENT THINGS PRODUCE A NULL HERE",
+            "THREE DIFFERENT THINGS PRODUCE A NULL HERE",
         ),
         (
             "that null source_chars must be checked on para too",
@@ -985,6 +989,16 @@ fn join_orphans(
 /// A green run means "the join held on every document this host has", and the coverage it
 /// achieved is printed. The committed fixtures are asserted present rather than skipped, so
 /// the test cannot degrade to checking nothing at all.
+///
+/// Opt-in soak, never on CI: `HWP_CORPUS_DIR=<dir>` adds every `.hwp` and `.hwpx` in that
+/// directory, the convention the other corpus tests use. A corpus document that does not open
+/// (encrypted, say) is skipped and counted; every one that opens must join. Corpus documents are
+/// labelled by index only, so a private corpus is never named in the output.
+///
+/// ```text
+/// HWP_CORPUS_DIR=~/Documents/hwp_samples cargo test -p hwp-cli --test render_layout \
+///     the_layout_and_the_envelope_join -- --nocapture
+/// ```
 #[test]
 fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
     const COMMITTED: [&str; 3] = [
@@ -993,29 +1007,63 @@ fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
         "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwpx",
     ];
 
+    /// Where a document comes from. A corpus document is never named in the output: the
+    /// corpus is private, so its label is its index alone.
+    #[derive(PartialEq)]
+    enum Source {
+        Checkout,
+        Corpus,
+    }
+
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut documents: Vec<String> = COMMITTED.iter().map(|path| path.to_string()).collect();
-    let mut absent = Vec::new();
-    for (dir, ext) in [("fixtures/hwp5", "hwp"), ("fixtures/hwpx", "hwpx")] {
-        let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
-            absent.push(dir);
-            continue;
-        };
-        let mut found: Vec<String> = entries
+    let listed = |dir: &std::path::Path| -> Option<Vec<PathBuf>> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+            .ok()?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == ext))
-            .map(|path| format!("{dir}/{}", path.file_name().unwrap().to_string_lossy()))
+            .filter(|path| {
+                path.is_file()
+                    && path.extension().is_some_and(|e| {
+                        e.eq_ignore_ascii_case("hwp") || e.eq_ignore_ascii_case("hwpx")
+                    })
+            })
             .collect();
         found.sort();
-        documents.extend(found);
+        Some(found)
+    };
+    let mut documents: Vec<(String, PathBuf, Source)> = COMMITTED
+        .iter()
+        .map(|path| (path.to_string(), root.join(path), Source::Checkout))
+        .collect();
+    let mut absent = Vec::new();
+    for dir in ["fixtures/hwp5", "fixtures/hwpx"] {
+        match listed(&root.join(dir)) {
+            Some(found) => documents.extend(found.into_iter().map(|path| {
+                let label = format!("{dir}/{}", path.file_name().unwrap().to_string_lossy());
+                (label, path, Source::Checkout)
+            })),
+            None => absent.push(dir),
+        }
+    }
+    // Opt-in, the repository's `HWP_CORPUS_DIR` convention: the genuine corpus is never
+    // committed, so CI never sees this and a host without it skips it silently.
+    if let Some(corpus) = std::env::var_os("HWP_CORPUS_DIR") {
+        let found = listed(std::path::Path::new(&corpus))
+            .expect("HWP_CORPUS_DIR is set, so it must be a readable directory");
+        documents.extend(
+            found
+                .into_iter()
+                .enumerate()
+                .map(|(i, path)| (format!("HWP_CORPUS_DIR #{i}"), path, Source::Corpus)),
+        );
     }
 
     let dir = temp_dir("joinkey");
     let mut checked = Vec::new();
+    let mut unreadable = 0;
     let mut divergent = Vec::new();
-    for relative in &documents {
-        let input = root.join(relative);
+    for (label, input, source) in &documents {
+        let relative = label;
         assert!(
             input.is_file(),
             "{relative} is committed and must be present; a skip here would make this test \
@@ -1025,7 +1073,7 @@ fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
         let layout_path = dir.join("layout.json");
         let render = hwp()
             .arg("render")
-            .arg(&input)
+            .arg(input)
             .arg("-o")
             .arg(dir.join("out.png"))
             .args(["--format", "png"])
@@ -1033,14 +1081,9 @@ fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
             .arg(&layout_path)
             .output()
             .expect("run hwp render --layout-json");
-        assert!(
-            render.status.success(),
-            "hwp render failed on {relative}: {}",
-            String::from_utf8_lossy(&render.stderr)
-        );
         let envelope_out = hwp()
             .arg("cat")
-            .arg(&input)
+            .arg(input)
             .args([
                 "--format",
                 "markdown",
@@ -1050,6 +1093,18 @@ fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
             ])
             .output()
             .expect("run hwp cat --with-segments --segments v2");
+        // A corpus holds encrypted and otherwise unreadable files by design; whether they
+        // open is other tests' business, and this one checks the join of what does open.
+        if *source == Source::Corpus && !(render.status.success() && envelope_out.status.success())
+        {
+            unreadable += 1;
+            continue;
+        }
+        assert!(
+            render.status.success(),
+            "hwp render failed on {relative}: {}",
+            String::from_utf8_lossy(&render.stderr)
+        );
         assert!(
             envelope_out.status.success(),
             "hwp cat --segments v2 failed on {relative}: {}",
@@ -1087,6 +1142,9 @@ fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
             "join key: NOT CHECKED (gitignored, absent here): {}",
             absent.join(", ")
         );
+    }
+    if unreadable > 0 {
+        println!("join key: {unreadable} HWP_CORPUS_DIR document(s) did not open and were skipped");
     }
     assert!(
         divergent.is_empty(),

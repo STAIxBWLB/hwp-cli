@@ -50,7 +50,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "353e8672bc82eaebab335ab7fb1648b9f9edec42c2154c1ef9d94cbf3829e613",
+        actual, "f4d74837c3d63a5a39fd49ea40eb05ef887427930c6644f15335cb389858e1ba",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -395,6 +395,10 @@ fn the_load_bearing_descriptions_are_published() {
         (
             "the textless point paragraph",
             "A `para` SEGMENT CAN ADDRESS NO TEXT",
+        ),
+        (
+            "that a point paragraph is placed by its path",
+            "A POINT `para` IS PLACED BY ITS `path`, NOT BY RANGE CONTAINMENT",
         ),
         ("the segment order", "`char_range.end` DESCENDING"),
     ] {

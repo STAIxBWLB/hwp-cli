@@ -76,15 +76,25 @@
 //! whose cells are empty produces no display item, and dropping it would delete an ordinary
 //! HWP construct from the published geometry; both kinds also always have an envelope segment,
 //! so their ids never join to nothing. Adding a kind whose `chars` is structurally `None`
-//! means adding it to that exemption, not writing a new special case. A paragraph that holds
-//! an object (a table, a picture, an equation, a drawing) is exempt for the same reason, once:
-//! the envelope always has a segment for it, so the paragraph anchoring that borderless table
-//! keeps one row even though nothing it holds was drawn.
+//! means adding it to that exemption, not writing a new special case.
+//!
+//! A paragraph the envelope ALWAYS has a segment for - one with any text, or one holding an
+//! object (a table, a picture, an equation, a drawing) - is exempt for the same reason, once.
+//! Two ordinary things make such a paragraph draw nothing: its object drew nothing (the
+//! paragraph anchoring that borderless empty table), or every line of a cell paragraph was
+//! clipped at the cell's edge, which `layout_box_para_iter` does to a line that a shift would
+//! push out of the cell and reports as `table_cell_content_overflow`. Either way the paragraph
+//! keeps exactly ONE row, and only when it has no measured row anywhere: `box` null (nothing
+//! was drawn, so no rectangle is invented - D-08a) and `chars` null (it drew none of its
+//! characters, so it claims none, and the ranges of a paragraph's rows still partition what was
+//! drawn). A partially clipped paragraph publishes the rows of the lines it drew, as before.
 //!
 //! Pinned by `a_bookmark_with_no_anchor_character_produces_no_row`,
-//! `an_empty_paragraph_produces_no_row` and
-//! `a_borderless_table_with_empty_cells_keeps_every_row`, and backstopped end to end by the
-//! cross-artifact join-key test, which is what found the empty-paragraph half.
+//! `an_empty_paragraph_produces_no_row`,
+//! `a_borderless_table_with_empty_cells_keeps_every_row`,
+//! `a_fully_clipped_cell_paragraph_keeps_one_empty_row` and
+//! `a_partially_clipped_cell_paragraph_publishes_the_lines_it_drew`, and backstopped end to end
+//! by the cross-artifact join-key test, which is what found the empty-paragraph half.
 //!
 //! **Page furniture.** Page borders, column dividers, headers, footers, page numbers and note
 //! blocks carry no segment and produce no row. Borders and dividers are prepended after spans
@@ -252,9 +262,9 @@ pub(crate) struct SegmentRecorder {
     /// the page bottom and polluting its character range with `start_wchar` values from a
     /// different source paragraph.
     content_end: std::collections::HashMap<usize, usize>,
-    /// Ids of paragraphs holding an object (see [`holds_object`]), which `finish` keeps a row
-    /// for even when nothing was measured.
-    objects: std::collections::HashSet<String>,
+    /// Ids of paragraphs the envelope always has a segment for (see [`has_envelope_segment`]),
+    /// which `finish` keeps one row for even when nothing was measured.
+    segmented: std::collections::HashSet<String>,
     map: SegmentMap,
 }
 
@@ -281,7 +291,7 @@ impl SegmentRecorder {
             spans: Vec::new(),
             next_uid: 0,
             content_end: std::collections::HashMap::new(),
-            objects: std::collections::HashSet::new(),
+            segmented: std::collections::HashSet::new(),
             map: SegmentMap::default(),
         }
     }
@@ -373,8 +383,8 @@ impl SegmentRecorder {
 
     fn begin_para(&mut self, path: SegmentPath, para: &Paragraph, page: &PageList) {
         let id = segment_id::paragraph_id(&path, para);
-        if holds_object(para) {
-            self.objects.insert(id.clone());
+        if has_envelope_segment(para) {
+            self.segmented.insert(id.clone());
         }
         self.begin(kind::PARA, id, path, page);
     }
@@ -687,29 +697,29 @@ impl SegmentRecorder {
         // would delete an ordinary HWP construct from the published geometry. Both kinds also
         // always have an envelope segment, so their ids never join to nothing.
         //
-        // A paragraph holding an object is exempt the same way, once: the envelope always has
-        // a segment for it (the object's markup, or a point for a drawing - #285), so dropping
-        // its only row when the object drew nothing - the paragraph anchoring that borderless
-        // empty table - would leave an envelope id with no geometry. It keeps ONE unmeasured
-        // row only when it has no measured one, so a cell fragment that drew none of it on a
-        // continuation page does not publish an extra empty row.
+        // A paragraph the envelope always has a segment for (any text, or an object) is exempt
+        // the same way, once: dropping its only row when it drew nothing - its object drew
+        // nothing, or every line of it was clipped at a cell's edge - would leave an envelope id
+        // with no geometry. It keeps ONE unmeasured row, and only when it has no measured one,
+        // so a cell fragment that drew none of it on a continuation page, or a partially
+        // clipped paragraph, publishes no extra empty row.
         let measured = |row: &SegmentRow| {
             matches!(row.kind, kind::TABLE | kind::CELL)
                 || row.bbox.is_some()
                 || row.chars.is_some()
         };
-        let objects_measured: std::collections::HashSet<String> = self
+        let segmented_measured: std::collections::HashSet<String> = self
             .map
             .rows
             .iter()
-            .filter(|row| self.objects.contains(&row.id) && measured(row))
+            .filter(|row| self.segmented.contains(&row.id) && measured(row))
             .map(|row| row.id.clone())
             .collect();
         let mut kept = std::collections::HashSet::new();
         self.map.rows.retain(|row| {
             measured(row)
-                || (self.objects.contains(&row.id)
-                    && !objects_measured.contains(&row.id)
+                || (self.segmented.contains(&row.id)
+                    && !segmented_measured.contains(&row.id)
                     && kept.insert(row.id.clone()))
         });
         self.map
@@ -809,14 +819,17 @@ fn child(path: &SegmentPath, index: usize) -> SegmentPath {
     }
 }
 
-/// Whether `para` holds an object the envelope addresses without any text: a table, a picture,
-/// an equation (each always emits markup) or a drawing object (a point segment, #285).
-fn holds_object(para: &Paragraph) -> bool {
-    para.controls.iter().any(|control| match control {
-        Control::Table(_) | Control::Picture(_) => true,
-        Control::Generic(g) => g.ctrl_id == *b"gso " || g.equation.is_some(),
-        _ => false,
-    })
+/// Whether the envelope always has a `para` segment for `para`, wherever this module records
+/// it: any text (a range, or a point when it is only whitespace), or an object the envelope
+/// addresses without text - a table, a picture, an equation (each always emits markup) or a
+/// drawing object (a point, #285).
+fn has_envelope_segment(para: &Paragraph) -> bool {
+    para.chars.iter().any(|ch| matches!(ch, HwpChar::Text(_)))
+        || para.controls.iter().any(|control| match control {
+            Control::Table(_) | Control::Picture(_) => true,
+            Control::Generic(g) => g.ctrl_id == *b"gso " || g.equation.is_some(),
+            _ => false,
+        })
 }
 
 /// The WCHAR offset of the `BOOKMARK` control character that references `control_index`, or
@@ -2070,6 +2083,124 @@ mod tests {
             "the anchoring paragraph's row measures nothing and must survive anyway"
         );
         assert_joins(&doc, "a borderless empty table");
+    }
+
+    /// Cell 0 of the table holding its one-line fallback paragraph (no cached geometry, so it
+    /// flows) and then a cached paragraph whose two lines Hancom stored at the top of the cell.
+    /// The flow floor pushes the cached paragraph down below the first one by about one line,
+    /// and `cell_height` - the stored row height, which a cached cell never grows past its own
+    /// cache - decides how much of it stays inside the cell: `layout_box_para_iter` clips, and
+    /// does not draw, every shifted line that would cross the cell's bottom edge. Positions come
+    /// from the cached `LineSeg`s and the character shape's size, not from shaping, so no font
+    /// decides where the edge falls.
+    fn shifted_cell(cell_height: i32) -> (Document, String) {
+        let mut doc = table_markdown();
+        let cell = &mut first_table(&mut doc).cells[0];
+        let mut cached = cell.paragraphs[0].clone();
+        cached.chars.retain(|ch| !matches!(ch, HwpChar::Text(_)));
+        let text_start = cached.wchar_len();
+        cached.chars.extend("첫줄둘째".chars().map(HwpChar::Text));
+        let seg = |text_start: u32, v_pos: i32| hwp_model::paragraph::LineSeg {
+            text_start,
+            v_pos,
+            line_height: 1_000,
+            text_height: 1_000,
+            baseline_gap: 850,
+            line_spacing: 0,
+            col_start: 0,
+            seg_width: 4_000,
+            flags: 0,
+        };
+        cached.line_segs = vec![seg(text_start, 0), seg(text_start + 2, 1_000)];
+        cell.paragraphs.push(cached);
+        cell.height = hwp_model::units::HwpUnit(cell_height);
+        let (para_index, control_index) = first_table_at(&doc);
+        let cell_path = SegmentPath {
+            section: 0,
+            indices: vec![para_index, control_index, 0, 1],
+        };
+        let para = first_table(&mut doc).cells[0].paragraphs[1].clone();
+        (doc, segment_id::paragraph_id(&cell_path, &para))
+    }
+
+    /// (body paragraph index, control index) of the first table.
+    fn first_table_at(doc: &Document) -> (usize, usize) {
+        doc.sections[0]
+            .paragraphs
+            .iter()
+            .enumerate()
+            .find_map(|(p, para)| {
+                para.controls
+                    .iter()
+                    .position(|control| matches!(control, Control::Table(_)))
+                    .map(|c| (p, c))
+            })
+            .expect("the fixture carries a table")
+    }
+
+    fn lay_out_reporting_overflow(doc: &Document) -> (SegmentMap, bool) {
+        let mut store = FontStore::new();
+        let mut warnings = RenderIssueAccumulator::new();
+        let (_, map) = crate::layout::layout_document_with_segments(doc, &mut store, &mut warnings);
+        let overflow =
+            warnings.finish().issues.iter().any(|issue| {
+                issue.code == crate::issues::RenderIssueCode::TableCellContentOverflow
+            });
+        (map, overflow)
+    }
+
+    /// A cell paragraph with text, every line of which was clipped at the cell's edge, drew
+    /// nothing - but the envelope has its text segment, so it keeps exactly one row: no box,
+    /// because nothing was drawn and none is invented (D-08a), and no range, because it drew
+    /// none of its characters. It used to publish no row at all, which the merge-gate review
+    /// measured as an envelope id with no geometry in 15 of 50 real documents.
+    #[test]
+    fn a_fully_clipped_cell_paragraph_keeps_one_empty_row() {
+        let (doc, id) = shifted_cell(100);
+        let (map, overflow) = lay_out_reporting_overflow(&doc);
+        assert!(
+            overflow,
+            "the fixture must clip, or this test proves nothing"
+        );
+        let rows: Vec<&SegmentRow> = map.rows.iter().filter(|row| row.id == id).collect();
+        assert_eq!(rows.len(), 1, "exactly one row: {rows:?}");
+        assert_eq!(rows[0].kind, kind::PARA);
+        assert_eq!(
+            rows[0].bbox, None,
+            "nothing was drawn, and no box is invented"
+        );
+        assert_eq!(rows[0].chars, None, "it drew none of its characters");
+        assert_joins(&doc, "a fully clipped cell paragraph");
+    }
+
+    /// A partially clipped cell paragraph publishes the row of the lines it drew, exactly as
+    /// before: one row, its box, and a range covering its first line only - no extra empty row
+    /// for the clipped line.
+    #[test]
+    fn a_partially_clipped_cell_paragraph_publishes_the_lines_it_drew() {
+        let (doc, id) = shifted_cell(3_300);
+        let (map, overflow) = lay_out_reporting_overflow(&doc);
+        assert!(
+            overflow,
+            "the second line must be clipped, or this test proves nothing"
+        );
+        let rows: Vec<&SegmentRow> = map.rows.iter().filter(|row| row.id == id).collect();
+        assert_eq!(rows.len(), 1, "one row, for the line it drew: {rows:?}");
+        assert!(rows[0].bbox.is_some(), "the first line was drawn: {rows:?}");
+        let (p, c) = first_table_at(&doc);
+        let Control::Table(table) = &doc.sections[0].paragraphs[p].controls[c] else {
+            unreachable!("first_table_at found it")
+        };
+        let first_line = table.cells[0].paragraphs[1].line_segs[0].text_start;
+        assert_eq!(
+            rows[0].chars,
+            Some(CharRange {
+                start: first_line,
+                end: first_line + 2,
+            }),
+            "the range covers the first line only"
+        );
+        assert_joins(&doc, "a partially clipped cell paragraph");
     }
 
     /// An empty paragraph just after a list draws nothing and has no envelope segment: the

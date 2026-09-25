@@ -30,7 +30,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   object's text (a text box) and the table inside it, which stay out by contract and are named in
   the schema's `kind` description. A bookmark inside a cell is recorded under its cell-relative
   path. A split cell paragraph's rows partition its characters: its list marker, redrawn at the
-  head of every fragment, is kept in the box but left out of `source_chars`. Every row published
+  head of every fragment, is kept in the box but left out of `source_chars`. A paragraph the
+  envelope has a segment for that drew nothing keeps exactly one row, with a null `box` and a
+  null `source_chars`, so its id still joins: a cell paragraph every line of which was clipped at
+  the cell's edge (reported as `table_cell_content_overflow`), or one whose object drew nothing;
+  a partially clipped paragraph publishes the rows of the lines it drew. Every row published
   before is published unchanged, and rendered PNG, SVG and PDF bytes do not change
   ([#283](https://github.com/STAIxBWLB/hwp-cli/issues/283)).
 
@@ -43,8 +47,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   an object that drew nothing, such as a borderless table with empty cells, keeps its geometry row.
   The markdown itself is byte-identical. The join-key test now asserts equality in both directions
   on every `.hwp` and `.hwpx` a host has under `fixtures/hwp5` and `fixtures/hwpx`, not only on the
-  committed sample; `render-layout-v1.schema.json` and `segment-envelope-v2.schema.json` change in
-  descriptions only, and their content-hash pins move with them
+  committed sample, and over `HWP_CORPUS_DIR` as an opt-in soak that CI never runs. A point `para`
+  is placed by its `path`, not by the ranges around it, and the envelope schema says so.
+  `render-layout-v1.schema.json` and `segment-envelope-v2.schema.json` change in descriptions only,
+  and their content-hash pins move with them
   ([#285](https://github.com/STAIxBWLB/hwp-cli/issues/285)).
 
 ## [1.0.0]
