@@ -120,6 +120,34 @@ fn render_report_is_closed_hashed_and_schema_validated() {
         validator.is_valid(&long),
         "a 5000-page report must validate: the schema carries a page bound the emitter can exceed"
     );
+
+    // Every issue code the renderer can emit, with its own severity and stage, must validate:
+    // the three WMF codes were emitted but missing from the schema (#284 review), and one entry
+    // per non-info code must fit the issues array.
+    let entry = |code: &hwp_render::RenderIssueCode| {
+        serde_json::json!({
+            "code": code.as_str(),
+            "severity": code.severity().as_str(),
+            "stage": code.stage().as_str(),
+            "count": 1,
+            "sample_sha256": ["0".repeat(64)],
+            "samples_complete": true,
+        })
+    };
+    let (info, issues): (Vec<_>, Vec<_>) = hwp_render::RenderIssueCode::ALL
+        .iter()
+        .partition(|code| code.severity() == hwp_render::RenderIssueSeverity::Info);
+    let mut every_code = value.clone();
+    every_code["issues"] = serde_json::json!(issues.into_iter().map(entry).collect::<Vec<_>>());
+    every_code["info"] = serde_json::json!(info.into_iter().map(entry).collect::<Vec<_>>());
+    let errors: Vec<String> = validator
+        .iter_errors(&every_code)
+        .map(|error| format!("{} at {}", error, error.instance_path))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the report schema rejects a code the renderer emits: {errors:?}"
+    );
     assert!(!value.to_string().contains(input.to_string_lossy().as_ref()));
     assert!(
         !value
