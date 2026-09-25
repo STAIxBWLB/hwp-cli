@@ -161,9 +161,8 @@ are already set, so a first deploy is just:
 ```bash
 ssh yjlee@172.16.229.33
 cd ~/hwp-cli-deploy                   # the deploy checkout; clone the repo here if missing
-git fetch origin && git merge --ff-only origin/main
-git log -1 --oneline                  # must name the commit you mean to deploy
-cd deploy/cloudflare
+git switch main && git fetch origin && git merge --ff-only origin/main && git log -1 --oneline
+cd deploy/cloudflare                  # go on only if the line above names the commit to deploy
 set -a && . ~/.config/hwp-mcp-deploy.env && set +a
 npm ci
 npx wrangler deploy
@@ -173,10 +172,12 @@ npx wrangler deploy
 a failed pull behind tail's exit status (this exact shape once deployed a stale v0.16.1
 checkout while the operator believed v0.19.1 was going out — the give-away in the log is
 wrangler answering "Image already exists remotely, skipping push" / "no changes" for a deploy
-that was supposed to change the image). The checkout's local `main` has no upstream, so a bare
-`git pull` fails; fetch and fast-forward un-piped as above, check `git log -1` names the commit you
-mean to deploy, and treat a no-op wrangler diff on a version-bump deploy as a stop signal, not as
-success. A real version-bump deploy pushes a new image digest.
+that was supposed to change the image). The checkout's local `main` may have no upstream (the
+current one does not), so a bare `git pull` can fail; fetch and fast-forward un-piped as above.
+The git steps are chained, so a failed switch, fetch or merge prints no `git log` line: stop there.
+Check that `git log -1` names the commit you mean to deploy, and treat a no-op wrangler diff on a
+version-bump deploy as a stop signal, not as success. A real version-bump deploy pushes a new image
+digest.
 
 The image is built from the published release tarball, so a deploy downloads a binary rather than
 compiling one: the build finishes in seconds and the image is 129 MB. Moving to a new `hwp` release
