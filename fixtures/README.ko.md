@@ -7,8 +7,8 @@
 > 동작하고, 없으면 해당 테스트는 자동으로 **skip**된다. 이 README와 `golden/README.md`만 커밋한다.
 >
 > skip된 테스트도 `ok`로 보고되므로 `scripts/check.sh`가 요약 줄에 그 수를 센다
-> (`skipped-for-missing-fixtures=N`, 목록은 `target/fixture-skips.log`).
-> `HWP_REQUIRE_FIXTURES=1`이면 이런 skip이 모두 실패가 된다(#275).
+> (`skipped-for-missing-fixtures=N (optional=M)`, 목록은 `target/fixture-skips.log`).
+> `HWP_REQUIRE_FIXTURES=1`이면 아래 선택 세트를 뺀 skip이 모두 실패가 된다(#275).
 >
 > **예외: `samples/`는 커밋한다** — 저장소 소유자 자신의 문서를 익명화한 테스트 샘플로,
 > 테스트가 하드 의존한다(skip 없음).
@@ -46,6 +46,19 @@
 ## hwpx/
 
 - `minimal.hwpx` — hwpx MCP 서버로 생성한 최소 문서 (한/영/숫자 혼합 3문단)
+
+## 현재 보유하지 않은 정답지 세트
+
+`crates/hwp-render/tests/render.rs`는 한글로 저장한 문서 4개를 더 전제로 작성되어 있으나, 저장소
+소유자가 현재 보유하지 않고 출처도 여기에 기록되어 있지 않다. 이 세트는 **선택(optional)**이다.
+없으면 테스트가 skip되고 그 skip은 `optional=M`에 집계되며, `HWP_REQUIRE_FIXTURES=1`도 실패로
+만들지 않는다.
+
+- `hwp5/multicol.hwp`, `hwpx/multicol.hwpx` — 2단 본문. 단 사이 쪽 흐름을 검증한다. 단 넘김을
+  쪽 넘김으로 오인하면 안 되며(5쪽이 아니라 3쪽), 1쪽에 좌·우 단이 나란히 그려져야 한다.
+- `hwp5/equation.hwp`, `hwpx/equation.hwpx` — 실제 한글 수식 스크립트(다행 `#`·분수·첨자·근호·
+  그리스 문자). 두 포맷 모두 조판하는지(hwp5는 eqed 파싱, HWPX는 `hp:equation` 캡처), 잉크량이
+  비슷한지 검증한다.
 
 ## 대형 corpus
 

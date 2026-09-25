@@ -61,12 +61,12 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
 ```
 
 - A successful run ends with exactly one of these two lines (the `public-parity` field reports the
-  public parity gate; the script prints one word there, never both; `<N>` is always a number,
-  `0` included):
+  public parity gate; the script prints one word there, never both; `<N>` and `<M>` are always
+  numbers, `0` included):
 
   ```
-  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=ran) skipped-for-missing-fixtures=<N> ==
-  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=skipped) skipped-for-missing-fixtures=<N> ==
+  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=ran) skipped-for-missing-fixtures=<N> (optional=<M>) ==
+  == check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=skipped) skipped-for-missing-fixtures=<N> (optional=<M>) ==
   ```
 
   Any other ending means the run failed; the script keeps going after a failing gate so one run reports all of them.
@@ -74,7 +74,9 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
   `fixtures/hwpx/`, `fixtures/pdf-parity/private/`) skip without it and still report `ok`.
   `skipped-for-missing-fixtures=<N>` counts those skips (listed in `target/fixture-skips.log`), so
   a green run with N > 0 did **not** check what those tests check - invariant 2's identity gate
-  among them. `HWP_REQUIRE_FIXTURES=1 scripts/check.sh` turns every such skip into a failure.
+  among them. `HWP_REQUIRE_FIXTURES=1 scripts/check.sh` turns every such skip into a failure,
+  except the `<M>` optional ones: ground-truth sets `fixtures/README.md` lists as not currently
+  held (guarded by `optional_fixture_missing`), which stay counted but never fail the run.
   CI and the release-readiness workflow have no fixtures by the data policy, so they do not set
   it (it would always fail) and only print the count; the strict local run is a release-readiness
   checklist item instead. New fixture guards go through

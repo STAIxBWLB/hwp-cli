@@ -16,8 +16,9 @@
 
 # 테스트용 hwp/hwpx 문서는 저장소에 동봉하지 않는다(로컬 전용 — fixtures/README.md의 출처에서 받아 배치).
 # 없으면 관련 테스트는 자동 skip된다.
-/fixtures/hwp5/
-/fixtures/hwpx/
+# No trailing slash: a symlinked fixture directory must be ignored too (#275).
+/fixtures/hwp5
+/fixtures/hwpx
 
 # PDF parity corpus is local by default. Only the narrow public source/recipe/manifest/scoreboard
 # allowlist below may be committed; oracle exports and private corpus data stay ignored.

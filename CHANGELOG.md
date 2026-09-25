@@ -17,12 +17,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   early without it and report `ok`, so the same OK line used to cover a different set of tests
   with and without the fixtures, and CI (which has none by the data policy) was a reduced-scope
   run nobody could see. Every such guard now reports through one shared helper, and the summary
-  line always ends with `skipped-for-missing-fixtures=N`, `0` included; the skips are listed in
-  `target/fixture-skips.log`. `HWP_REQUIRE_FIXTURES=1` turns each skip into a failure; the
-  default is unchanged. CI and the release-readiness workflow print the count but do not set the
-  flag (without fixtures it would always fail); a local strict run is a new release-readiness
-  checklist line instead. `scripts/tests/fixture-skip-accounting.sh` proves the count moves and
-  runs in `check.sh` and the CI `lint` job
+  line always ends with `skipped-for-missing-fixtures=N (optional=M)`, `0` included; the skips
+  are listed in `target/fixture-skips.log`. `HWP_REQUIRE_FIXTURES=1` turns each skip into a
+  failure; the default is unchanged. Four ground-truth sets the owner does not currently hold
+  (the multicol and equation documents in `fixtures/README.md`) are optional: they are counted
+  in N, again in M, and never fail the strict run. CI and the release-readiness workflow print
+  the count but do not set the flag (without fixtures it would always fail); a local strict run
+  is a new release-readiness checklist line instead. `scripts/tests/fixture-skip-accounting.sh`
+  proves the count moves and runs in `check.sh` and the CI `lint` job. The `.gitignore` entries
+  for `fixtures/hwp5` and `fixtures/hwpx` now also ignore a symlinked fixture directory
   ([#275](https://github.com/STAIxBWLB/hwp-cli/issues/275)).
 
 ## [1.0.0]

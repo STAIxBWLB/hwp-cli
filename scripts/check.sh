@@ -18,9 +18,10 @@ target_dir="${CARGO_TARGET_DIR:-target}"
 # #275: a test that skips because a local-only fixture (fixtures/hwp5, fixtures/hwpx, ...) is
 # absent still reports `ok`. Each such skip appends one line to this file
 # (crates/hwp-cli/tests/common/fixture_skip.rs), and the summary line always prints the count,
-# zero included, so a reduced-scope run cannot pass for a full one. Test binaries run from their
-# crate directory, so the path must be absolute. HWP_REQUIRE_FIXTURES=1 turns the skips into
-# failures instead.
+# zero included, so a reduced-scope run cannot pass for a full one; `optional=M` is the part of N
+# that is ground-truth sets fixtures/README.md lists as not currently held. Test binaries run from
+# their crate directory, so the path must be absolute. HWP_REQUIRE_FIXTURES=1 turns the required
+# skips into failures instead.
 mkdir -p "$target_dir"
 skip_log="$(cd "$target_dir" && pwd)/fixture-skips.log"
 rm -f "$skip_log"
@@ -73,13 +74,17 @@ else
 fi
 
 skipped=0
+optional=0
 if [ -f "$skip_log" ]; then
-    skipped="$(wc -l <"$skip_log" | tr -d ' ')"
-    echo "== fixture skips: $skipped, one line each in $skip_log (HWP_REQUIRE_FIXTURES=1 fails them)"
+    skipped="$(awk 'END {print NR}' "$skip_log")"
+    optional="$(awk -F'\t' '$3 == "optional" {n++} END {print n+0}' "$skip_log")"
+    echo "== fixture skips: $skipped ($optional optional), one line each in $skip_log" \
+        "(HWP_REQUIRE_FIXTURES=1 fails the required ones)"
 fi
+tally="skipped-for-missing-fixtures=$skipped (optional=$optional)"
 
 if [ "$fail" -ne 0 ]; then
-    echo "== check: FAILED (위 게이트 중 실패 있음) skipped-for-missing-fixtures=$skipped =="
+    echo "== check: FAILED (위 게이트 중 실패 있음) $tally =="
     exit 1
 fi
-echo "== check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=$parity_result) skipped-for-missing-fixtures=$skipped =="
+echo "== check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=$parity_result) $tally =="

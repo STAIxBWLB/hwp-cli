@@ -337,14 +337,16 @@ jobs:
           HWP_FIXTURE_SKIP_LOG="$skip_log" HWP_FONT_DIR="$test_fonts" FONTCONFIG_FILE="$font_root/fonts.conf" \
             cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
           status="${PIPESTATUS[0]}"
-          skipped=0
+          tally="skipped-for-missing-fixtures=0 (optional=0)"
           if [ -f "$skip_log" ]; then
-            skipped="$(wc -l <"$skip_log" | tr -d ' ')"
+            skipped="$(awk 'END {print NR}' "$skip_log")"
+            optional="$(awk -F'\t' '$3 == "optional" {n++} END {print n+0}' "$skip_log")"
+            tally="skipped-for-missing-fixtures=$skipped (optional=$optional)"
           elif [ ! -f crates/hwp-cli/tests/common/fixture_skip.rs ]; then
             # A ref from before the accounting existed writes no log; 0 would be a false claim.
-            skipped="unknown (the evaluated ref predates #275)"
+            tally="skipped-for-missing-fixtures=unknown (the evaluated ref predates #275)"
           fi
-          echo "skipped-for-missing-fixtures=$skipped" | tee -a "$RUNNER_TEMP/gates/test-workspace/log"
+          echo "$tally" | tee -a "$RUNNER_TEMP/gates/test-workspace/log"
           exit "$status"
 
       - name: Gate test-workspace

@@ -37,10 +37,10 @@ package upload or release publication.
       [design/23-hwpx-skill-absorption](design/23-hwpx-skill-absorption.md) — the parity record of
       what the retirement (RET-01, closed 2026-08-27) replaced
 - [ ] `HWP_REQUIRE_FIXTURES=1 scripts/check.sh` passes locally with the local-only fixtures in
-      place (`fixtures/hwp5/`, `fixtures/hwpx/`, `fixtures/pdf-parity/private/`). CI and the
-      readiness workflow have none of them by the data policy, so they do not set the flag (it
-      would always fail); they print `skipped-for-missing-fixtures=N`, and a green CI run covers
-      only what those N skips leave (#275)
+      place (`fixtures/hwp5/`, `fixtures/hwpx/`, `fixtures/pdf-parity/private/`; the optional
+      sets in `fixtures/README.md` are only counted). CI and the readiness workflow have none by
+      the data policy, so they do not set the flag (it would always fail); they print
+      `skipped-for-missing-fixtures=N (optional=M)`: green CI covers what N skips leave (#275)
 
 The release must not claim that the seven smoke fixtures cover every real document form, provide
 Hancom pixel parity, or prove cross-platform-identical raster bytes.

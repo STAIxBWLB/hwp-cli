@@ -35,12 +35,18 @@ fn skip_if_no_fixtures() -> bool {
 
 /// The #275 accounting probe: guards the path `scripts/tests/fixture-skip-accounting.sh` names in
 /// `HWP_FIXTURE_SKIP_PROBE`, exactly as a fixture guard would, so the script can drive both the
-/// absent and the present case on any checkout. The guard is the whole test.
+/// absent and the present case on any checkout; `HWP_FIXTURE_SKIP_PROBE_OPTIONAL=1` guards it as an
+/// optional fixture instead. The guard is the whole test.
 #[test]
 #[ignore = "driven by scripts/tests/fixture-skip-accounting.sh"]
 fn fixture_skip_accounting_probe() {
     let probe = std::env::var_os("HWP_FIXTURE_SKIP_PROBE").expect("HWP_FIXTURE_SKIP_PROBE");
-    fixture_skip::fixture_missing(std::path::Path::new(&probe));
+    let probe = std::path::Path::new(&probe);
+    if std::env::var_os("HWP_FIXTURE_SKIP_PROBE_OPTIONAL").is_some_and(|v| v == "1") {
+        fixture_skip::optional_fixture_missing(probe);
+    } else {
+        fixture_skip::fixture_missing(probe);
+    }
 }
 
 #[test]

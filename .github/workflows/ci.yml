@@ -278,8 +278,10 @@ jobs:
           status=0
           cargo test --workspace || status=$?
           skipped=0
+          optional=0
           if [ -f "$HWP_FIXTURE_SKIP_LOG" ]; then
-            skipped="$(wc -l <"$HWP_FIXTURE_SKIP_LOG" | tr -d ' ')"
+            skipped="$(awk 'END {print NR}' "$HWP_FIXTURE_SKIP_LOG")"
+            optional="$(awk -F'\t' '$3 == "optional" {n++} END {print n+0}' "$HWP_FIXTURE_SKIP_LOG")"
           fi
-          echo "skipped-for-missing-fixtures=$skipped"
+          echo "skipped-for-missing-fixtures=$skipped (optional=$optional)"
           exit "$status"
