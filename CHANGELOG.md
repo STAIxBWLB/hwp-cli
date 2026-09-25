@@ -10,6 +10,35 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- MCP `hwp_edit` accepts an address-only selector on `set_format`, `set_align`, `set_para`,
+  `insert_para` and `delete_para`: `pattern`, `anchor` or `matching` may be left out when
+  `address` is given, and the call writes the same output as the same op on the CLI `--ops`
+  channel. An item with neither selector is still rejected, now in the ops channel's wording.
+  Giving both stays accepted as in 1.0, with the address choosing the target, although the ops
+  channel requires exactly one: rejecting the combination on MCP would break existing callers.
+  The published input schema states the rule as an `anyOf` of `required` sets on those five items
+  ([#331](https://github.com/STAIxBWLB/hwp-cli/issues/331)).
+
+**Changed**
+
+- `scripts/check.sh` now says how much of the suite a green run skipped. Tests that need a
+  local-only fixture (`fixtures/hwp5/`, `fixtures/hwpx/`, `fixtures/pdf-parity/private/`) return
+  early without it and report `ok`, so the same OK line used to cover a different set of tests
+  with and without the fixtures, and CI (which has none by the data policy) was a reduced-scope
+  run nobody could see. Every such guard now reports through one shared helper, and the summary
+  line always ends with `skipped-for-missing-fixtures=N (optional=M)`, `0` included; the skips
+  are listed in `target/fixture-skips.log`. `HWP_REQUIRE_FIXTURES=1` turns each skip into a
+  failure; the default is unchanged. Four ground-truth sets the owner does not currently hold
+  (the multicol and equation documents in `fixtures/README.md`) are optional: they are counted
+  in N, again in M, and never fail the strict run. CI and the release-readiness workflow print
+  the count but do not set the flag (without fixtures it would always fail); a local strict run
+  is a new release-readiness checklist line instead. `scripts/tests/fixture-skip-accounting.sh`
+  proves the count moves and runs in `check.sh` and the CI `lint` job. The `.gitignore` entries
+  for `fixtures/hwp5` and `fixtures/hwpx` now also ignore a symlinked fixture directory
+  ([#275](https://github.com/STAIxBWLB/hwp-cli/issues/275)).
+
 **Fixed**
 
 - `hwp edit --report` and the MCP `edit` tool's `report` now list one outcome per op for a
@@ -19,6 +48,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   reason the in-memory edit path reports for the same batch, including on an abort. The output
   file bytes and the error messages are unchanged
   ([#332](https://github.com/STAIxBWLB/hwp-cli/issues/332)).
+- A render report could fail its own published schema in three ways, all reachable by ordinary
+  `hwp render --report` runs ([#284](https://github.com/STAIxBWLB/hwp-cli/issues/284)):
+  - `total_pages` and `selected_pages` were capped at 4,096 while the render path applies no page
+    budget. Both are now unbounded, as `render-layout-v1` already was, and the schema says why.
+  - The renderer emits three WMF issue codes (`wmf_parse_invalid_placeholder`,
+    `wmf_unsupported_record_omitted`, `wmf_budget_exceeded`) that the schema's code enum never
+    listed, so a report for a document with an unsupported or damaged WMF picture was invalid. They
+    are now in the enum with their severity and stage, the `issues` and `info` arrays no longer
+    carry a count cap (they hold one entry per code), and a test validates every code the
+    renderer can emit against the schema.
+  - An issue merged into a channel that was already at its recording cap left a bucket with
+    `count: 0`, below the schema's minimum of 1. It is now dropped, and the log is marked
+    incomplete as before.
 
 - `render-layout-v1` now records geometry for the whole body table tree, at any depth: the
   paragraphs inside a table cell, a table nested in one, and that table's cells and their

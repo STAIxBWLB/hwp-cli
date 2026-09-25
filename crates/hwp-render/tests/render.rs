@@ -14,17 +14,23 @@ fn fixture(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// fixture 문서는 저장소에 없으므로(로컬 전용 — fixtures/README.md) 없으면 건너뛴다.
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
+/// Fixture documents are not in the repository (local only - fixtures/README.md), so a missing
+/// one is skipped, and the skip is counted (#275).
+#[track_caller]
 fn fixture_or_skip(rel: &str) -> Option<PathBuf> {
     let p = fixture(rel);
-    if !p.exists() {
-        eprintln!(
-            "스킵: fixture 없음 ({}) — fixtures/README.md 참고",
-            p.display()
-        );
-        return None;
-    }
-    Some(p)
+    (!fixture_skip::fixture_missing(&p)).then_some(p)
+}
+
+/// [`fixture_or_skip`] for a ground-truth set fixtures/README.md lists as not currently held
+/// (multicol, equation): still counted, but `HWP_REQUIRE_FIXTURES=1` does not fail it.
+#[track_caller]
+fn optional_fixture_or_skip(rel: &str) -> Option<PathBuf> {
+    let p = fixture(rel);
+    (!fixture_skip::optional_fixture_missing(&p)).then_some(p)
 }
 
 /// 어두운 픽셀(텍스트) 수를 센다.
@@ -107,7 +113,7 @@ fn 다단_2단_렌더() {
     // multicol.hwp/.hwpx = 한글 2단 본문(정답지). 단 넘김을 페이지 넘김으로 오인하던 버그를
     // 고쳐 5쪽이 아니라 3쪽(2단×2쪽 + 잔여 1쪽)이 되고, 1쪽에 좌·우 단이 나란히 그려져야 한다.
     for rel in ["hwp5/multicol.hwp", "hwpx/multicol.hwpx"] {
-        let Some(path) = fixture_or_skip(rel) else {
+        let Some(path) = optional_fixture_or_skip(rel) else {
             continue;
         };
         let doc = if rel.ends_with(".hwp") {
@@ -640,8 +646,8 @@ fn 수식_조판_렌더() {
 #[test]
 fn 수식_정답지_렌더() {
     let (Some(hp), Some(hx)) = (
-        fixture_or_skip("hwp5/equation.hwp"),
-        fixture_or_skip("hwpx/equation.hwpx"),
+        optional_fixture_or_skip("hwp5/equation.hwp"),
+        optional_fixture_or_skip("hwpx/equation.hwpx"),
     ) else {
         return;
     };

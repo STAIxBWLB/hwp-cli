@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 
 use hwp5::record::{RecordHeader, RecordNode, ScanMode, scan_stream, tag};
 
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
 fn corpus_dir() -> Option<PathBuf> {
     std::env::var_os("HWP_CORPUS_DIR").map(PathBuf::from)
 }
@@ -213,7 +216,7 @@ fn no_corpus_document_carries_a_protection_bit_this_phase_starts_refusing() {
     let mut scanned: Vec<PathBuf> = corpus.as_deref().map(all_hwp_files).unwrap_or_default();
 
     let fixtures_dir = fixtures_hwp5_dir();
-    if fixtures_dir.is_dir() {
+    if !fixture_skip::fixture_missing(&fixtures_dir) {
         scanned.extend(all_hwp_files(&fixtures_dir));
     }
 

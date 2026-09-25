@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Forbidden-claim lint over release-facing copy (docs/release-readiness.md lines 26-27, 40-41).
+# Forbidden-claim lint over release-facing copy (docs/release-readiness.md lines 26-27, 45-46).
 #
 #   scripts/check-claims.sh              scan the working tree
 #   scripts/check-claims.sh --self-test  prove the pattern, the negation rule and the allowlist
@@ -47,18 +47,18 @@ CLAIM_SHAPES = [
     (r"한컴(\s*오피스)?\s*(parity|패리티)", "한컴 parity"),
     (r"한글\s*(parity|패리티)", "한글 parity"),
     (r"한컴(과|와)\s*(완전히\s*)?(똑같|동일)", "한컴과 동일"),
-    # readiness line 40: "provide Hancom pixel parity"
+    # readiness line 45: "provide Hancom pixel parity"
     (r"pixel[-\s]*(level[-\s]*)?parity", "pixel parity"),
     (r"parity\s+at\s+the\s+pixel\s+level", "parity at the pixel level"),
     (r"픽셀\s*(수준|단위)?\s*패리티", "픽셀 패리티"),
     (r"픽셀\s*(수준|단위)(으로|로)?\s*(똑같|동일)", "픽셀 수준으로 동일"),
-    # readiness line 40: "cover every real document form"
+    # readiness line 45: "cover every real document form"
     (r"(full|complete|total)\s+coverage", "full coverage"),
     (r"cover(s|ed|ing)?\s+(every|all)\s+(real[-\s]+)?document\s+(form|type|shape)s?",
      "covers every real document form"),
     (r"(완전|전체)\s*(하게\s*)?커버", "완전 커버"),
     (r"모든\s*(실제\s*)?문서\s*(형식|형태|유형)", "모든 실제 문서 형식"),
-    # readiness line 41: "prove cross-platform-identical raster bytes"
+    # readiness line 46: "prove cross-platform-identical raster bytes"
     (r"cross[-\s]platform[-\s]*identical\s+raster", "cross-platform identical raster"),
     (r"(byte|pixel)[-\s]*identical\s+raster", "byte-identical raster"),
     (r"identical\s+raster\s+bytes", "identical raster bytes"),

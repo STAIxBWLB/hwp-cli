@@ -12,6 +12,9 @@
 
 use std::path::PathBuf;
 
+#[path = "common/fixture_skip.rs"]
+mod fixture_skip;
+
 /// The published v1 contract, compiled into the test.
 fn validator() -> jsonschema::Validator {
     let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -987,7 +990,8 @@ fn join_orphans(
 /// shape, where a skipped case reports `ok`. Every `.hwp` and `.hwpx` a checkout does have in
 /// those two directories is covered, not a fixed list, so a developer host checks all of them.
 /// A green run means "the join held on every document this host has", and the coverage it
-/// achieved is printed. The committed fixtures are asserted present rather than skipped, so
+/// achieved is printed; an absent fixture directory is also counted in `scripts/check.sh`'s
+/// `skipped-for-missing-fixtures` tally (#275). The committed fixtures are asserted present rather than skipped, so
 /// the test cannot degrade to checking nothing at all.
 ///
 /// Opt-in soak, never on CI: `HWP_CORPUS_DIR=<dir>` adds every `.hwp` and `.hwpx` in that
@@ -1037,6 +1041,12 @@ fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
         .collect();
     let mut absent = Vec::new();
     for dir in ["fixtures/hwp5", "fixtures/hwpx"] {
+        // An absent fixture directory is logged to the skip tally (#275), so a checkout that
+        // lacks it shows the reduced scope instead of passing as a full run.
+        if fixture_skip::fixture_missing(&root.join(dir)) {
+            absent.push(dir);
+            continue;
+        }
         match listed(&root.join(dir)) {
             Some(found) => documents.extend(found.into_iter().map(|path| {
                 let label = format!("{dir}/{}", path.file_name().unwrap().to_string_lossy());
