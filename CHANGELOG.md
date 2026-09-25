@@ -19,6 +19,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   reason the in-memory edit path reports for the same batch, including on an abort. The output
   file bytes and the error messages are unchanged
   ([#332](https://github.com/STAIxBWLB/hwp-cli/issues/332)).
+- A render report could fail its own published schema in three ways, all reachable by ordinary
+  `hwp render --report` runs ([#284](https://github.com/STAIxBWLB/hwp-cli/issues/284)):
+  - `total_pages` and `selected_pages` were capped at 4,096 while the render path applies no page
+    budget. Both are now unbounded, as `render-layout-v1` already was, and the schema says why.
+  - The renderer emits three WMF issue codes (`wmf_parse_invalid_placeholder`,
+    `wmf_unsupported_record_omitted`, `wmf_budget_exceeded`) that the schema's code enum never
+    listed, so a report for a document with an unsupported or damaged WMF picture was invalid. They
+    are now in the enum with their severity and stage, the `issues` and `info` arrays no longer
+    carry a count cap (they hold one entry per code), and a test validates every code the
+    renderer can emit against the schema.
+  - An issue merged into a channel that was already at its recording cap left a bucket with
+    `count: 0`, below the schema's minimum of 1. It is now dropped, and the log is marked
+    incomplete as before.
 
 ## [1.0.0]
 

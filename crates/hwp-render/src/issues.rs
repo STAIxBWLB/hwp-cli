@@ -109,6 +109,47 @@ pub enum RenderIssueCode {
 }
 
 impl RenderIssueCode {
+    /// Every code, in declaration order. The published `render-report-v1` schema's code enum
+    /// is tested against this list, so a new variant must be added here as well (the
+    /// exhaustive match in `all_lists_every_code` fails to compile until it is).
+    pub const ALL: [RenderIssueCode; 35] = [
+        Self::ParseBudgetExceeded,
+        Self::RenderExecutionFailed,
+        Self::PaginationDriftDetected,
+        Self::FontMatched,
+        Self::FontSubstituted,
+        Self::FontMissing,
+        Self::FontManifestLoadFailed,
+        Self::FontResolutionBudgetExceeded,
+        Self::ShapingFailed,
+        Self::PageDefinitionFallback,
+        Self::PageControlPayloadOmitted,
+        Self::PageNumberFormatFallback,
+        Self::PageNumberPositionOmitted,
+        Self::PageNumberShapingOmitted,
+        Self::UnsupportedControlOmitted,
+        Self::ImageSizeMissingOmitted,
+        Self::ImageDataMissingOmitted,
+        Self::ImageDecodePlaceholder,
+        Self::ImageDecodeBudgetExceeded,
+        Self::PictureEffectsUnsupported,
+        Self::InvalidTableCellOmitted,
+        Self::TableSplitAcrossPages,
+        Self::TableRowTooTallClipped,
+        Self::TableCellFragmentationIncomplete,
+        Self::TableCellContentOverflow,
+        Self::ParagraphLineContentOverflow,
+        Self::TextBoxGeometryInvalidOmitted,
+        Self::ShapeDepthLimitOmitted,
+        Self::ShapeStyleInvalidOmitted,
+        Self::ShapeGeometryInvalidOmitted,
+        Self::FontSubsetFallback,
+        Self::LayoutBudgetExceeded,
+        Self::WmfParseInvalidPlaceholder,
+        Self::WmfUnsupportedRecordOmitted,
+        Self::WmfBudgetExceeded,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ParseBudgetExceeded => "parse_budget_exceeded",
@@ -427,22 +468,13 @@ impl RenderIssueAccumulator {
     pub fn absorb(&mut self, report: RenderIssueReport) {
         self.complete &= report.complete;
         for summary in report.info.into_iter().chain(report.issues) {
-            let target = if summary.severity == RenderIssueSeverity::Info {
-                &mut self.info
-            } else {
-                &mut self.issues
-            };
-            let bucket = target.entry(summary.code).or_insert_with(|| Bucket {
-                count: 0,
-                sample_sha256: Vec::new(),
-                samples_complete: true,
-            });
-            let channel_count = if summary.severity == RenderIssueSeverity::Info {
+            let info = summary.severity == RenderIssueSeverity::Info;
+            let channel_count = if info {
                 &mut self.info_count
             } else {
                 &mut self.issue_count
             };
-            let limit = if summary.severity == RenderIssueSeverity::Info {
+            let limit = if info {
                 MAX_RECORDED_INFO
             } else {
                 MAX_RECORDED_ISSUES
@@ -452,8 +484,24 @@ impl RenderIssueAccumulator {
             if accepted != summary.count {
                 self.complete = false;
             }
-            bucket.count = bucket.count.saturating_add(accepted);
+            // A bucket records at least one occurrence (the report schema's `count` minimum is 1),
+            // so a summary the full channel cannot accept leaves no empty bucket behind, as
+            // `push` already guarantees.
+            if accepted == 0 {
+                continue;
+            }
             *channel_count = channel_count.saturating_add(accepted);
+            let target = if info {
+                &mut self.info
+            } else {
+                &mut self.issues
+            };
+            let bucket = target.entry(summary.code).or_insert_with(|| Bucket {
+                count: 0,
+                sample_sha256: Vec::new(),
+                samples_complete: true,
+            });
+            bucket.count = bucket.count.saturating_add(accepted);
             bucket.samples_complete &= summary.samples_complete;
             for sample in summary.sample_sha256 {
                 if !bucket.sample_sha256.contains(&sample) {
@@ -525,6 +573,90 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn all_lists_every_code() {
+        // Exhaustive on purpose: a new variant stops this compiling until it is handled here,
+        // which is the prompt to add it to `RenderIssueCode::ALL` too.
+        fn listed(code: RenderIssueCode) -> bool {
+            match code {
+                RenderIssueCode::ParseBudgetExceeded
+                | RenderIssueCode::RenderExecutionFailed
+                | RenderIssueCode::PaginationDriftDetected
+                | RenderIssueCode::FontMatched
+                | RenderIssueCode::FontSubstituted
+                | RenderIssueCode::FontMissing
+                | RenderIssueCode::FontManifestLoadFailed
+                | RenderIssueCode::FontResolutionBudgetExceeded
+                | RenderIssueCode::ShapingFailed
+                | RenderIssueCode::PageDefinitionFallback
+                | RenderIssueCode::PageControlPayloadOmitted
+                | RenderIssueCode::PageNumberFormatFallback
+                | RenderIssueCode::PageNumberPositionOmitted
+                | RenderIssueCode::PageNumberShapingOmitted
+                | RenderIssueCode::UnsupportedControlOmitted
+                | RenderIssueCode::ImageSizeMissingOmitted
+                | RenderIssueCode::ImageDataMissingOmitted
+                | RenderIssueCode::ImageDecodePlaceholder
+                | RenderIssueCode::ImageDecodeBudgetExceeded
+                | RenderIssueCode::PictureEffectsUnsupported
+                | RenderIssueCode::InvalidTableCellOmitted
+                | RenderIssueCode::TableSplitAcrossPages
+                | RenderIssueCode::TableRowTooTallClipped
+                | RenderIssueCode::TableCellFragmentationIncomplete
+                | RenderIssueCode::TableCellContentOverflow
+                | RenderIssueCode::ParagraphLineContentOverflow
+                | RenderIssueCode::TextBoxGeometryInvalidOmitted
+                | RenderIssueCode::ShapeDepthLimitOmitted
+                | RenderIssueCode::ShapeStyleInvalidOmitted
+                | RenderIssueCode::ShapeGeometryInvalidOmitted
+                | RenderIssueCode::FontSubsetFallback
+                | RenderIssueCode::LayoutBudgetExceeded
+                | RenderIssueCode::WmfParseInvalidPlaceholder
+                | RenderIssueCode::WmfUnsupportedRecordOmitted
+                | RenderIssueCode::WmfBudgetExceeded => RenderIssueCode::ALL.contains(&code),
+            }
+        }
+        for (index, code) in RenderIssueCode::ALL.iter().enumerate() {
+            assert!(listed(*code));
+            assert_eq!(*code as usize, index, "ALL must follow declaration order");
+        }
+    }
+
+    #[test]
+    fn absorb_into_a_full_channel_leaves_no_empty_bucket() {
+        // The report schema requires count >= 1, so a summary the full channel cannot accept
+        // must not leave a zero-count bucket behind (#284 review).
+        let mut source = RenderIssueAccumulator::new();
+        source.push(RenderIssueCode::FontMissing, b"face");
+        let report = source.finish();
+
+        // Fill the issue channel to its cap with another code, keeping finish()'s invariant that
+        // the channel count equals the sum of its buckets.
+        let mut full = RenderIssueAccumulator::new();
+        full.issues.insert(
+            RenderIssueCode::ShapingFailed,
+            Bucket {
+                count: MAX_RECORDED_ISSUES,
+                sample_sha256: Vec::new(),
+                samples_complete: true,
+            },
+        );
+        full.issue_count = MAX_RECORDED_ISSUES;
+        full.absorb(report);
+        let merged = full.finish();
+        assert!(merged.issues.iter().all(|issue| issue.count >= 1));
+        assert!(
+            !merged
+                .issues
+                .iter()
+                .any(|issue| issue.code == RenderIssueCode::FontMissing)
+        );
+        assert!(
+            !merged.complete,
+            "the dropped occurrence marks the log incomplete"
+        );
+    }
+
     use super::*;
 
     #[test]
