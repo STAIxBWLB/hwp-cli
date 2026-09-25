@@ -14,6 +14,9 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+#[path = "common/nested_tables.rs"]
+mod nested_tables;
+
 /// The 22 tools the MCP surface publishes; must agree with `cli_surface.rs`.
 const EXPECTED_TOOLS: [&str; 22] = [
     "hwp_certify",
@@ -866,12 +869,13 @@ fn serve_files_get_delivers_a_large_file_byte_exact() {
     assert_eq!(body, payload, "응답 바이트가 다릅니다");
 }
 
-/// Tool calls run on the connection thread, so it needs the same 32 MiB stack
-/// `main` gives every other command. On a default 2 MiB thread a document with
-/// 200 nested tables overflowed the stack and aborted the whole process
-/// (SIGABRT, uncatchable), while `hwp mcp` and `hwp cat` read it fine.
+/// A document nested past the section parser's depth bound (#317) is refused
+/// with a tool error, and the server keeps answering. 200 nested tables once
+/// overflowed a 2 MiB connection thread and aborted the whole process
+/// (SIGABRT, uncatchable); connection threads now also run on `main`'s 32 MiB
+/// stack, but the bound is what keeps the parser from recursing that deep.
 #[test]
-fn serve_reads_deeply_nested_tables_without_overflowing() {
+fn serve_refuses_deeply_nested_tables_and_stays_up() {
     let server = spawn("nested", false);
     let addr = &server.addr;
     let flat = server.root.join("flat.hwpx");
@@ -880,64 +884,25 @@ fn serve_reads_deeply_nested_tables_without_overflowing() {
         "hwp_new",
         serde_json::json!({
             "output": flat.to_str().unwrap(),
-            "markdown": "| a | b |\n|---|---|\n| 1 | 2 |",
+            "markdown": nested_tables::TABLE_MARKDOWN,
         }),
     );
     assert_eq!(result["isError"], false, "hwp_new: {result}");
 
     let deep = server.root.join("deep.hwpx");
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(&flat).unwrap()).unwrap();
-    let mut writer = zip::ZipWriter::new(std::fs::File::create(&deep).unwrap());
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_string();
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).unwrap();
-        if name == "Contents/section0.xml" {
-            bytes = nest_first_table(&String::from_utf8(bytes).unwrap(), 200).into_bytes();
-        }
-        let method = if name == "mimetype" {
-            zip::CompressionMethod::Stored
-        } else {
-            zip::CompressionMethod::Deflated
-        };
-        writer
-            .start_file(
-                &name,
-                zip::write::SimpleFileOptions::default().compression_method(method),
-            )
-            .unwrap();
-        writer.write_all(&bytes).unwrap();
-    }
-    writer.finish().unwrap();
-
+    nested_tables::write_nested_tables(&flat, 200, &deep);
     let result = call_tool(
         addr,
         "hwp_read",
         serde_json::json!({"path": deep.to_str().unwrap()}),
     );
-    assert_eq!(result["isError"], false, "hwp_read: {result}");
+    assert_eq!(
+        result["isError"], true,
+        "깊은 중첩이 거부되지 않았습니다: {result}"
+    );
+    assert!(result.to_string().contains("256"), "{result}");
     let (status, _) = request(addr, "GET", "/healthz", b"");
     assert_eq!(status, 200, "깊은 중첩 표 뒤 서버가 죽었습니다");
-}
-
-/// Wraps the section's only table into its own first cell until `depth`
-/// tables nest.
-fn nest_first_table(section: &str, depth: usize) -> String {
-    let start = section.find("<hp:tbl").expect("표가 없습니다");
-    let end = section.find("</hp:tbl>").expect("표 끝이 없습니다") + "</hp:tbl>".len();
-    let table = &section[start..end];
-    let marker = r#"<hp:t xml:space="preserve">a</hp:t>"#;
-    assert_eq!(
-        table.matches(marker).count(),
-        1,
-        "첫 셀 표식이 하나가 아닙니다"
-    );
-    let mut nested = String::new();
-    for _ in 0..depth {
-        nested = table.replace(marker, &format!("{nested}{marker}"));
-    }
-    format!("{}{nested}{}", &section[..start], &section[end..])
 }
 
 /// A client that declares a `/mcp` body and then stalls parks only its own

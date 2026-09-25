@@ -87,7 +87,41 @@ pub fn extract_section_root_xmlns(xml: &str) -> Vec<String> {
     out
 }
 
+/// Deepest element nesting a section may have (#317). One nested table adds six
+/// levels (`p > run > tbl > tr > tc > subList`), so this admits about 42 nested
+/// tables; the local corpus peaks at depth 17. The recursive parser needs about
+/// 19 KiB of stack per table level in a debug build and overflows a default
+/// 2 MiB thread near 100 levels. A stack overflow aborts instead of unwinding,
+/// so the bound protects every caller, not only the CLI's 32 MiB thread.
+const MAX_ELEMENT_DEPTH: usize = 256;
+
+/// Refuses a section nested deeper than [`MAX_ELEMENT_DEPTH`] before the
+/// recursive parse runs. Malformed XML is left to that parser, so its error
+/// message is unchanged.
+// ponytail: a second event pass per section; count inside the parser if section
+// parsing ever shows up in a profile.
+fn check_element_depth(xml: &str) -> Result<()> {
+    let mut reader = Reader::from_str(xml);
+    let mut depth = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(_)) => {
+                depth += 1;
+                if depth > MAX_ELEMENT_DEPTH {
+                    return Err(HwpxError::PackageLimit(format!(
+                        "섹션 XML 요소 중첩 깊이가 상한 {MAX_ELEMENT_DEPTH}을 넘습니다 (표·글상자·묶음 개체가 너무 깊게 중첩됨)"
+                    )));
+                }
+            }
+            Ok(Event::End(_)) => depth = depth.saturating_sub(1),
+            Ok(Event::Eof) | Err(_) => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
 pub fn parse_section(xml: &str) -> Result<(Section, Vec<String>)> {
+    check_element_depth(xml)?;
     let mut reader = Reader::from_str(xml);
     let mut section = Section::default();
     let mut warnings = Vec::new();
@@ -1814,6 +1848,29 @@ fn parse_linesegs(reader: &mut XmlReader<'_>, para: &mut Paragraph) -> Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+
+    fn nested(depth: usize) -> String {
+        format!("{}{}", "<a>".repeat(depth), "</a>".repeat(depth))
+    }
+
+    #[test]
+    fn a_section_at_the_depth_bound_parses() {
+        assert!(parse_section(&nested(MAX_ELEMENT_DEPTH)).is_ok());
+    }
+
+    #[test]
+    fn a_section_past_the_depth_bound_is_refused() {
+        let error = parse_section(&nested(MAX_ELEMENT_DEPTH + 1)).unwrap_err();
+        assert!(
+            matches!(error, HwpxError::PackageLimit(ref message) if message.contains("256")),
+            "{error}"
+        );
+    }
 }
 
 #[cfg(test)]
