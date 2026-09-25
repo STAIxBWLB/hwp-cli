@@ -14,14 +14,15 @@ fn fixture(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// fixture 문서는 저장소에 없으므로(로컬 전용 — fixtures/README.md) 없으면 None → 테스트 skip.
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
+/// Fixture documents are not in the repository (local only - fixtures/README.md), so a missing
+/// one yields `None` and the test skips; the skip is counted (#275).
+#[track_caller]
 fn load_or_skip(rel: &str) -> Option<hwp_model::Document> {
     let p = fixture(rel);
-    if !p.exists() {
-        eprintln!(
-            "스킵: fixture 없음 ({}) — fixtures/README.md 참고",
-            p.display()
-        );
+    if fixture_skip::fixture_missing(&p) {
         return None;
     }
     Some(hwp5::read_document(&p).unwrap().document)

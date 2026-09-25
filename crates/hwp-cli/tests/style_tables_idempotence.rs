@@ -16,6 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "common/fixture_skip.rs"]
+mod fixture_skip;
+
 fn hwp() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hwp"))
 }
@@ -456,8 +459,7 @@ fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
     let source = Path::new(
         "../../fixtures/pdf-parity/private/complex-proposal-body-v2/source/complex-proposal-body-v2.hwpx",
     );
-    if !source.exists() {
-        eprintln!("skip: private parity fixture absent (gitignored corpus)");
+    if fixture_skip::fixture_missing(source) {
         return;
     }
     let dir = test_dir("opaque-container");

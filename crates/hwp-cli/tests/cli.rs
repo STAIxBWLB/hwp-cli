@@ -16,13 +16,14 @@ fn fixture(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-/// fixture 바이너리는 저장소에서 제외된다(로컬 전용). 없으면 `true`(스킵).
+#[path = "common/fixture_skip.rs"]
+mod fixture_skip;
+
+/// Fixture binaries are not in the repository (local only). `true` means skip, and the skip is
+/// counted (#275).
+#[track_caller]
 fn skip_if_no_fixtures() -> bool {
-    if fixture("hwpx/minimal.hwpx").exists() {
-        return false;
-    }
-    eprintln!("스킵: fixtures 없음 — fixtures/README.md 참고");
-    true
+    fixture_skip::fixture_missing(&fixture("hwpx/minimal.hwpx"))
 }
 
 /// `hwp render` applies no page budget, so no upper bound may return on the report's page
@@ -1760,8 +1761,7 @@ fn 변환_글상자_텍스트_필드_보존() {
         return;
     }
     let src = fixture("hwp5/work_report.hwp");
-    if !src.exists() {
-        eprintln!("스킵: work_report.hwp 없음");
+    if fixture_skip::fixture_missing(&src) {
         return;
     }
     let out = tmp("hwp_cli_textbox.hwpx");
@@ -1798,8 +1798,7 @@ fn 변환_장식_도형_보존() {
         return;
     }
     let src = fixture("hwp5/annual_report.hwp");
-    if !src.exists() {
-        eprintln!("스킵: annual_report.hwp 없음");
+    if fixture_skip::fixture_missing(&src) {
         return;
     }
     let out = tmp("hwp_cli_shapes.hwpx");
@@ -1865,8 +1864,7 @@ fn 변환_완전_왕복_hwp_hwpx_hwp() {
         return;
     }
     let src = fixture("hwp5/work_report.hwp");
-    if !src.exists() {
-        eprintln!("스킵: work_report.hwp 없음");
+    if fixture_skip::fixture_missing(&src) {
         return;
     }
     let mid = tmp("hwp_cli_rt.hwpx");
@@ -3256,8 +3254,7 @@ fn grep_match_and_no_match_exit_codes() {
 fn convert_docx_structure_and_textutil() {
     // hwp→docx — the OPC parts and body must survive (GJ-1).
     let src = fixture("samples/report-tables.hwpx");
-    if !src.exists() {
-        eprintln!("스킵: 샘플 없음");
+    if fixture_skip::fixture_missing(&src) {
         return;
     }
     let out = tmp("s_tier_docx.docx");

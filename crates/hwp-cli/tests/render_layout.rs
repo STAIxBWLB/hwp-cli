@@ -12,6 +12,9 @@
 
 use std::path::PathBuf;
 
+#[path = "common/fixture_skip.rs"]
+mod fixture_skip;
+
 /// The published v1 contract, compiled into the test.
 fn validator() -> jsonschema::Validator {
     let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -919,8 +922,9 @@ fn two_rows_of_one_id_on_one_page_survive_serialization_and_the_schema() {
 /// # Coverage, and the trap in reading a green run
 ///
 /// `fixtures/hwp5/` and `fixtures/hwpx/` are gitignored (CLAUDE.md's data policy), so ON CI
-/// THIS TEST SEES ONLY THE COMMITTED FIXTURES and the rest silently do not run - the #275
-/// shape, where a skipped case reports `ok`. The two documents that actually exhibit an
+/// THIS TEST SEES ONLY THE COMMITTED FIXTURES and the rest do not run - the #275 shape, where
+/// a skipped case reports `ok`; each absent one is now counted in `scripts/check.sh`'s
+/// `skipped-for-missing-fixtures` tally. The two documents that actually exhibit an
 /// unresolved id, `annual_report.hwp` and `outline.hwp`, are among the ones CI does not have.
 /// A green run here therefore means "the shape held wherever it could be checked on this
 /// host", never "the property holds for every document". The committed fixtures are asserted
@@ -954,12 +958,13 @@ fn an_unresolved_layout_row_id_is_always_a_para_row_with_no_character_range() {
 
     for (relative, committed) in FIXTURES {
         let input = root.join(relative);
-        if !input.is_file() {
+        if committed {
             assert!(
-                !committed,
+                input.is_file(),
                 "{relative} is committed and must be present; a skip here would make this \
                  test report ok while checking nothing"
             );
+        } else if fixture_skip::fixture_missing(&input) {
             absent.push(relative);
             continue;
         }

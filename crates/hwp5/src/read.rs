@@ -1175,6 +1175,12 @@ fn normalize_password_candidate_error(_error: Hwp5Error) -> Hwp5Error {
     Hwp5Error::Encrypted
 }
 
+// Declared here rather than inside `bounded_tests`: a `#[path]` in an inline module resolves
+// through a `read/bounded_tests/` directory that does not exist.
+#[cfg(test)]
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
 #[cfg(test)]
 mod bounded_tests {
     use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -2080,9 +2086,10 @@ mod bounded_tests {
             max_records: 200_000,
             max_record_depth: 128,
         };
-        // fixtures/hwp5/*.hwp 는 gitignore(로컬 전용)라 CI에는 없다. 없으면 skip한다.
-        if !fixture("hello_world.hwp").exists() || !fixture("annual_report.hwp").exists() {
-            eprintln!("skip: fixtures/hwp5 부재");
+        // fixtures/hwp5/*.hwp is gitignored (local only), so CI has none: skip, counted (#275).
+        if fixture_skip::fixture_missing(&fixture("hello_world.hwp"))
+            || fixture_skip::fixture_missing(&fixture("annual_report.hwp"))
+        {
             return;
         }
         let empty = BoundedReadSnapshot::open(&fixture("hello_world.hwp"), generous).unwrap();

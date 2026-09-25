@@ -8,15 +8,15 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// fixture 바이너리는 저장소에서 제외된다(로컬 전용 — `fixtures/README.md`). 없으면
-/// `true`를 반환하고 스킵 메시지를 출력한다(테스트는 `return`). fixture는 전부-또는-전무로
-/// 준비되므로 대표 파일 하나만 확인한다.
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
+/// Fixture binaries are not in the repository (local only - `fixtures/README.md`). `true` means
+/// skip (the test returns), and the skip is counted (#275). Fixtures are provisioned all or
+/// nothing, so one representative file is checked.
+#[track_caller]
 fn skip_if_no_fixtures() -> bool {
-    if fixture("hello_world.hwp").exists() {
-        return false;
-    }
-    eprintln!("스킵: fixtures 없음 (fixtures/hwp5/) — fixtures/README.md 참고");
-    true
+    fixture_skip::fixture_missing(&fixture("hello_world.hwp"))
 }
 
 const ALL_FIXTURES: &[&str] = &[
