@@ -26,6 +26,30 @@ fn skip_if_no_fixtures() -> bool {
     fixture_skip::fixture_missing(&fixture("hwpx/minimal.hwpx"))
 }
 
+/// `hwp render` applies no page budget, so no upper bound may return on the report's page
+/// fields: a bound there is one a correct report can exceed (#284, the same rule
+/// `render-layout-v1` follows).
+#[test]
+fn render_report_places_no_upper_bound_on_page_numbers_or_counts() {
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/render-report-v1.schema.json"
+    ))
+    .unwrap();
+    for (pointer, keyword) in [
+        ("/properties/total_pages", "maximum"),
+        ("/properties/selected_pages", "maxItems"),
+        ("/properties/selected_pages/items", "maximum"),
+    ] {
+        let node = schema
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("{pointer} must exist in the schema"));
+        assert!(
+            node.get(keyword).is_none(),
+            "{pointer} carries {keyword}; the render path has no page budget"
+        );
+    }
+}
+
 #[test]
 fn render_report_is_closed_hashed_and_schema_validated() {
     let input = tmp("hwp_cli_render_report_input.hwpx");
@@ -87,6 +111,44 @@ fn render_report_is_closed_hashed_and_schema_validated() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(value["input"]["sha256"], input_hash);
+
+    // The render path has no page budget, so a report for a document past the old 4096 cap must
+    // still validate against its own schema (#284).
+    let mut long = value.clone();
+    long["total_pages"] = serde_json::json!(5000);
+    long["selected_pages"] = serde_json::json!((1..=5000).collect::<Vec<u32>>());
+    assert!(
+        validator.is_valid(&long),
+        "a 5000-page report must validate: the schema carries a page bound the emitter can exceed"
+    );
+
+    // Every issue code the renderer can emit, with its own severity and stage, must validate:
+    // the three WMF codes were emitted but missing from the schema (#284 review), and one entry
+    // per non-info code must fit the issues array.
+    let entry = |code: &hwp_render::RenderIssueCode| {
+        serde_json::json!({
+            "code": code.as_str(),
+            "severity": code.severity().as_str(),
+            "stage": code.stage().as_str(),
+            "count": 1,
+            "sample_sha256": ["0".repeat(64)],
+            "samples_complete": true,
+        })
+    };
+    let (info, issues): (Vec<_>, Vec<_>) = hwp_render::RenderIssueCode::ALL
+        .iter()
+        .partition(|code| code.severity() == hwp_render::RenderIssueSeverity::Info);
+    let mut every_code = value.clone();
+    every_code["issues"] = serde_json::json!(issues.into_iter().map(entry).collect::<Vec<_>>());
+    every_code["info"] = serde_json::json!(info.into_iter().map(entry).collect::<Vec<_>>());
+    let errors: Vec<String> = validator
+        .iter_errors(&every_code)
+        .map(|error| format!("{} at {}", error, error.instance_path))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the report schema rejects a code the renderer emits: {errors:?}"
+    );
     assert!(!value.to_string().contains(input.to_string_lossy().as_ref()));
     assert!(
         !value

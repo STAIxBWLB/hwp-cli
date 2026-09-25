@@ -36,13 +36,17 @@
     },
     "format": { "enum": ["png", "svg", "pdf", "jpeg", "webp"] },
     "dpi": { "type": "number", "minimum": 36, "maximum": 600 },
-    "total_pages": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "total_pages": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Deliberately unbounded, like selected_pages: the render path carries no page budget, so any cap here is one a correct report could exceed and then fail its own schema."
+    },
     "selected_pages": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 4096,
       "uniqueItems": true,
-      "items": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      "items": { "type": "integer", "minimum": 1 },
+      "description": "Deliberately unbounded in length and value, for the same reason as total_pages."
     },
     "font_coverage": {
       "type": "object",
@@ -64,15 +68,15 @@
     },
     "issues": {
       "type": "array",
-      "maxItems": 32,
       "items": { "$ref": "#/$defs/renderIssueNonInfo" },
-      "uniqueItems": true
+      "uniqueItems": true,
+      "description": "One entry per issue code, so the code enum already bounds its length; a separate count cap would have to track every new code."
     },
     "info": {
       "type": "array",
-      "maxItems": 32,
       "items": { "$ref": "#/$defs/renderIssueInfo" },
-      "uniqueItems": true
+      "uniqueItems": true,
+      "description": "One entry per info code, bounded the same way as issues."
     },
     "issue_count": { "type": "integer", "minimum": 0 },
     "info_count": { "type": "integer", "minimum": 0 },
@@ -148,7 +152,10 @@
             "shape_style_invalid_omitted",
             "shape_geometry_invalid_omitted",
             "font_subset_fallback",
-            "layout_budget_exceeded"
+            "layout_budget_exceeded",
+            "wmf_parse_invalid_placeholder",
+            "wmf_unsupported_record_omitted",
+            "wmf_budget_exceeded"
           ]
         },
         "severity": { "enum": ["info", "warning", "incomplete", "fatal"] },
@@ -165,7 +172,7 @@
       },
       "oneOf": [
         { "properties": { "code": { "const": "parse_budget_exceeded" }, "severity": { "const": "fatal" }, "stage": { "const": "input_parse" } } },
-        { "properties": { "code": { "enum": ["render_execution_failed", "pagination_drift_detected", "layout_budget_exceeded"] }, "severity": { "const": "fatal" }, "stage": { "const": "layout" } } },
+        { "properties": { "code": { "enum": ["render_execution_failed", "pagination_drift_detected", "layout_budget_exceeded", "wmf_budget_exceeded"] }, "severity": { "const": "fatal" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "const": "font_matched" }, "severity": { "const": "info" }, "stage": { "const": "font_resolution" } } },
         { "properties": { "code": { "const": "table_split_across_pages" }, "severity": { "const": "info" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "const": "font_substituted" }, "severity": { "const": "warning" }, "stage": { "const": "font_resolution" } } },
@@ -173,7 +180,7 @@
         { "properties": { "code": { "const": "font_manifest_load_failed" }, "severity": { "const": "fatal" }, "stage": { "const": "font_resolution" } } },
         { "properties": { "code": { "const": "font_resolution_budget_exceeded" }, "severity": { "const": "fatal" }, "stage": { "const": "font_resolution" } } },
         { "properties": { "code": { "enum": ["shaping_failed", "page_number_shaping_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "shaping" } } },
-        { "properties": { "code": { "enum": ["page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "invalid_table_cell_omitted", "table_cell_fragmentation_incomplete", "table_row_too_tall_clipped", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "layout" } } },
+        { "properties": { "code": { "enum": ["page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "invalid_table_cell_omitted", "table_cell_fragmentation_incomplete", "table_row_too_tall_clipped", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted", "wmf_parse_invalid_placeholder", "wmf_unsupported_record_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "const": "image_decode_placeholder" }, "severity": { "const": "incomplete" }, "stage": { "const": "rasterization" } } },
         { "properties": { "code": { "const": "picture_effects_unsupported" }, "severity": { "const": "warning" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "enum": ["table_cell_content_overflow", "paragraph_line_content_overflow"] }, "severity": { "const": "warning" }, "stage": { "const": "layout" } } },
