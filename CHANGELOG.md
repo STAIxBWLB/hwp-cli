@@ -10,6 +10,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Security**
+
+- A small HWPX file could pin a CPU for close to a minute. quick-xml 0.40 checked each attribute
+  of a start tag for duplicates by scanning every earlier name on that tag, so one tag with many
+  attributes cost time quadratic in their count (RUSTSEC-2026-0194). On the v0.20.2 release binary,
+  a 554 KB file with one 160,000-attribute paragraph tag kept `hwp cat` busy for 49 s; the same
+  reach exists through `hwp serve`, which holds its dispatch lock for the whole call. quick-xml is now
+  0.41.0, where that file reads in 0.02 s with byte-identical output. The same release fixes
+  unbounded namespace-declaration allocation in `NsReader` (RUSTSEC-2026-0195), which hwp-cli uses
+  only in a test. anyhow (1.0.104) and memmap2 (0.9.11) move to their patch releases for the
+  unsoundness advisories RUSTSEC-2026-0190 and RUSTSEC-2026-0186.
+
 ## [0.20.2]
 
 **Security**
