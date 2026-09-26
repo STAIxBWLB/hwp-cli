@@ -23,13 +23,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `render-layout-v1` and `segment-envelope-v2` changed in descriptions only, so their pinned
   hashes moved and everything that validated before still validates. The content of both
   artifacts changed, which the 1.0 SemVer scope does not cover: the layout artifact gains rows
-  for the text of drawing objects, and the v2 envelope gains point `para` segments (below). One
-  published value changes instead of being added, the one exception to 1.1.0's "every row
-  published before is published unchanged": a paragraph holding a text box used to report the
-  text box's own characters as its `source_chars`, offsets into a different paragraph's string
-  (on `report-tables.hwpx`, the paragraph holding its text box claimed `0..213`). It now claims
-  none of them. The old value was wrong. Markdown, the v1 envelope and rendered PNG, SVG and PDF
-  bytes are byte-identical.
+  for the text of drawing objects, and the v2 envelope gains point `para` segments (below). Two
+  published values also change instead of being added, and both were wrong before. In the layout
+  artifact, a paragraph holding a text box used to report the text box's own characters as its
+  `source_chars`, offsets into a different paragraph's string (on `report-tables.hwpx`, the
+  paragraph holding its text box claimed `0..213`); it now claims none of them, which revises
+  1.1.0's "every row published before is published unchanged". In the v2 envelope, a text-box
+  paragraph that a table or block equation interrupts, and whose text after the block is longer
+  than the paragraph's own start offset, used to get a `para` range read off the wrong buffer:
+  it started at the paragraph's offset in the buffer before the block, so it covered only the
+  tail of the text after the block. It is now a point at the start of its contribution. Markdown,
+  the v1 envelope and rendered PNG, SVG and PDF bytes are byte-identical.
 
 **Security**
 

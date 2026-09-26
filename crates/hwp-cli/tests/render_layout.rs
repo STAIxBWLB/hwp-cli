@@ -961,9 +961,9 @@ fn join_orphans(
 /// names an envelope segment (#285: a paragraph that shapes no text but is drawn is a point
 /// `para` segment there), and every envelope `para`, `table`, `cell` and `bookmark` segment
 /// has a row (#283: cell paragraphs and nested tables at any depth; #350: the text of drawing
-/// objects and the tables inside it, with no place excluded). Any new divergence, in either direction, on any document covered here fails it. The unit-level
-/// twin, `segment_map`'s `*_join_the_envelope_*` tests, builds each case the join depends on so
-/// it runs on every host.
+/// objects and the tables inside it, with no place excluded). Any new divergence, in either
+/// direction, on any document covered here fails it. The unit-level twin, `segment_map`'s
+/// `*_join_the_envelope_*` tests, builds each case the join depends on so it runs on every host.
 ///
 /// # Coverage, and the trap in reading a green run
 ///

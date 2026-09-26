@@ -2577,7 +2577,8 @@ mod tests {
 
     /// Text the renderer never lays out - a text box whose geometry header is too short to
     /// place it, or an object kind no arm draws - still has one unmeasured row per paragraph,
-    /// its table included, so the join stays total.
+    /// its table included, so the join stays total. The object carries two lists, so the
+    /// numbering must run across them: the second list's paragraph is `n = 2`, not 0.
     #[test]
     fn drawing_text_the_renderer_skips_still_has_rows() {
         let template = prose().sections[0].paragraphs[1].clone();
@@ -2588,7 +2589,10 @@ mod tests {
                 hwp_model::paragraph::ctrl_char::OBJECT,
                 Control::Table(first_table(&mut table_markdown()).clone()),
             );
-            vec![vec![text_like(&template, "가"), with_table]]
+            vec![
+                vec![text_like(&template, "가"), with_table],
+                vec![text_like(&template, "다")],
+            ]
         };
         let Control::Generic(mut short) = text_box(text()) else {
             unreachable!("text_box builds a generic control")
@@ -2609,6 +2613,12 @@ mod tests {
                 rows.iter().any(|row| depth(&row.id) == 3)
                     && rows.iter().all(|row| row.bbox.is_none()),
                 "{what}: unmeasured rows under the object: {:?}",
+                map.rows
+            );
+            assert_eq!(
+                rows_under(&map, &format!("0.{at}.0.2")).len(),
+                1,
+                "{what}: the second list's paragraph is numbered on from the first list: {:?}",
                 map.rows
             );
             assert_joins(&doc, what);
