@@ -407,8 +407,12 @@ impl FillRun<'_> {
 /// One field a text pass found in a segment of unfilled text.
 struct Candidate {
     key: String,
-    /// The text it covers. A later candidate overlapping an accepted one is dropped.
-    span: Range<usize>,
+    /// The pattern's match, for messages.
+    matched: Range<usize>,
+    /// The text it rewrites, or would rewrite (an unchecked box claims its `□`). A later
+    /// candidate whose claim overlaps an accepted one is dropped, so `□기타(   )` fills both
+    /// the box and the blank.
+    claim: Range<usize>,
     /// Byte ranges of the segment with their replacements, in order.
     edits: Vec<(Range<usize>, String)>,
     /// Fills it counts. A box left unchecked counts 0 and still matched.
@@ -436,14 +440,14 @@ fn segment_candidates(
     }
     let mut accepted: Vec<Candidate> = Vec::new();
     for candidate in found {
-        let span = &candidate.span;
+        let claim = &candidate.claim;
         if accepted
             .iter()
-            .any(|a| a.span.start < span.end && span.start < a.span.end)
+            .any(|a| a.claim.start < claim.end && claim.start < a.claim.end)
         {
             warnings.push(format!(
                 "{:?}: 먼저 채운 자리와 겹쳐 {:?} 값을 쓰지 않습니다",
-                &seg[span.clone()],
+                &seg[candidate.matched.clone()],
                 candidate.key
             ));
             continue;
@@ -462,7 +466,8 @@ fn slot_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidat
             let value = values.get(&key)?.clone();
             Some(Candidate {
                 key,
-                span: token.range.clone(),
+                matched: token.range.clone(),
+                claim: token.range.clone(),
                 edits: vec![(token.range, value)],
                 fills: 1,
                 warning: None,
@@ -512,7 +517,8 @@ fn inline_candidates(
         }
         found.push(Candidate {
             key,
-            span: inline.label.start..inline.value.end.max(inline.separator.end),
+            matched: inline.label.start..inline.value.end.max(inline.separator.end),
+            claim: inline.separator.start..inline.value.end.max(inline.separator.end),
             edits,
             fills: 1,
             warning,
@@ -542,7 +548,8 @@ fn paren_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candida
         let blank = prefix.end() + 1..whole.end() - suffix.len() - 1;
         found.push(Candidate {
             key,
-            span: whole.range(),
+            matched: whole.range(),
+            claim: blank.clone(),
             edits: vec![(blank, value.clone())],
             fills: 1,
             warning: None,
@@ -562,14 +569,13 @@ fn checkbox_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Cand
         let Some(value) = values.get(&key) else {
             continue;
         };
+        let bx = whole.start()..whole.start() + '□'.len_utf8();
         found.push(if is_truthy_checkbox(value) {
             Candidate {
                 key,
-                span: whole.range(),
-                edits: vec![(
-                    whole.start()..whole.start() + '□'.len_utf8(),
-                    "☑".to_string(),
-                )],
+                matched: whole.range(),
+                claim: bx.clone(),
+                edits: vec![(bx, "☑".to_string())],
                 fills: 1,
                 warning: None,
             }
@@ -577,7 +583,8 @@ fn checkbox_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Cand
             // Found and deliberately left unchecked: matched, not missing.
             Candidate {
                 key,
-                span: whole.range(),
+                matched: whole.range(),
+                claim: bx,
                 edits: Vec::new(),
                 fills: 0,
                 warning: Some(format!(
@@ -601,10 +608,12 @@ fn annotation_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Ca
         let Some(value) = values.get(&key) else {
             continue;
         };
+        let blank = label.end()..whole.end() - 1;
         found.push(Candidate {
             key,
-            span: whole.range(),
-            edits: vec![(label.end()..whole.end() - 1, format!(": {value}"))],
+            matched: whole.range(),
+            claim: blank.clone(),
+            edits: vec![(blank, format!(": {value}"))],
             fills: 1,
             warning: None,
         });
@@ -1265,6 +1274,34 @@ mod tests {
             "{fill:?}"
         );
         assert!(doc.plain_text().contains("구분\t☑신규 □변경"));
+    }
+
+    /// Overlap is judged on what a candidate rewrites, so `□기타(   )` checks the box and fills
+    /// the blank, as kordoc does; a falsy value leaves the box and still fills the blank.
+    #[test]
+    fn a_checkbox_with_a_blank_fills_both() {
+        let mut doc = from_markdown("| □기타(    ) |\n|---|\n| x |\n");
+        let fill = fill_form_fields(&mut doc, &values(&[("기타", "v")])).unwrap();
+        assert!(
+            doc.plain_text().contains("☑기타(v)"),
+            "{}",
+            doc.plain_text()
+        );
+        assert_eq!(fill.counts["기타"], 2, "{fill:?}");
+        assert!(
+            !fill.warnings.iter().any(|w| w.contains("겹쳐")),
+            "{fill:?}"
+        );
+
+        let mut doc = from_markdown("| □동의(  )함 |\n|---|\n| x |\n");
+        let fill =
+            fill_form_fields(&mut doc, &values(&[("동의함", "예"), ("동의", "아니오")])).unwrap();
+        assert!(
+            doc.plain_text().contains("□동의(예)함"),
+            "{}",
+            doc.plain_text()
+        );
+        assert!(fill.unmatched.is_empty(), "{fill:?}");
     }
 
     /// A blank inline value keeps a space before a following label.
