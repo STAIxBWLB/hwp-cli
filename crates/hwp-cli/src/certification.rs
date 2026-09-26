@@ -5530,6 +5530,40 @@ exit 2"#,
         assert!(validator.is_valid(&value), "schema rejected {value}");
     }
 
+    /// Certification lays out through the same `layout_document` as `hwp render`, so every code
+    /// the renderer emits, one entry each with its own severity and stage, must fit
+    /// `render.issues`/`render.info` (#347: the WMF codes were missing, and both arrays were
+    /// capped below the code count).
+    #[test]
+    fn report_admits_one_entry_per_render_issue_code() {
+        let entry = |code: &hwp_render::RenderIssueCode| {
+            serde_json::json!({
+                "code": code.as_str(),
+                "severity": code.severity().as_str(),
+                "stage": code.stage().as_str(),
+                "count": 1,
+                "sample_sha256": ["0".repeat(64)],
+                "samples_complete": true,
+            })
+        };
+        let (info, issues): (Vec<_>, Vec<_>) = hwp_render::RenderIssueCode::ALL
+            .iter()
+            .partition(|code| code.severity() == hwp_render::RenderIssueSeverity::Info);
+        let mut value = passing_report_value();
+        value["render"]["issues"] =
+            serde_json::json!(issues.into_iter().map(entry).collect::<Vec<_>>());
+        value["render"]["info"] =
+            serde_json::json!(info.into_iter().map(entry).collect::<Vec<_>>());
+        let errors: Vec<String> = certification_report_validator()
+            .iter_errors(&value)
+            .map(|error| format!("{} at {}", error, error.instance_path))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the certification report schema rejects a code the renderer emits: {errors:?}"
+        );
+    }
+
     #[test]
     fn report_with_passed_evidence_sections_validates_against_the_updated_schema() {
         let mut value = passing_report_value();

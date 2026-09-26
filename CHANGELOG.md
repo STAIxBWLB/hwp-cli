@@ -10,6 +10,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- A certification report could fail its own published schema, the gap #284 closed in
+  `render-report-v1`: certification lays pages out through the same renderer, and
+  `certification-report-v1` never listed the three WMF issue codes (`wmf_parse_invalid_placeholder`,
+  `wmf_unsupported_record_omitted`, `wmf_budget_exceeded`) and capped `render.issues` at 24
+  entries and `render.info` at one, below the 33 non-info and two info codes the renderer emits.
+  The codes are now in the enum with their severity and stage, and both arrays lose the count
+  cap. The change only loosens the schema, so every report that validated before still
+  validates, and a test validates one entry per renderer code against it. The `issues`/`info`
+  descriptions in both report schemas now say that one entry per code is an emitter guarantee,
+  not something the schema enforces
+  ([#347](https://github.com/STAIxBWLB/hwp-cli/issues/347),
+  [#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+
 ## [1.1.0]
 
 **Compatibility**
