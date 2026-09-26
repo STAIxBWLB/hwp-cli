@@ -93,12 +93,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
     publishes the input unchanged.
   - As in kordoc, a non-empty value cell and the inline text after `라벨:` are overwritten. The
     inline text ends at a comma, semicolon, line end, the next `라벨:` on the line or 100
-    characters. Each overwritten cell and inline text is named in the warnings. A cell that holds
+    characters, and at brackets that are not its own: the matching closer of a bracket the label
+    sits in stays (`(한문:   )`), and so does a bracketed note that ends the value (`(서명/인)`,
+    `홍길동 (대리)`); a bracket with text after it is content (`(주)제주한라`)
+    ([#367](https://github.com/STAIxBWLB/hwp-cli/issues/367)). Each overwritten cell and inline text is named in the warnings. A cell that holds
     a field, picture or table is never written (kordoc never removed markup), and neither is a
     value cell whose requested slot, blank or checkbox a text edit fills: a slot and a label on
     one place fill it once, and when two keys reach one place the first keeps it, with a warning.
     Every edit is found on the unfilled text, so a value is inserted literally and never filled
-    again, and a blank inline value keeps a space before a following label.
+    again, and a blank inline value keeps one space before the text that follows it, unless that
+    is a closing bracket.
   - Each edit splices only the text it replaces, so the value keeps the char shape of that text,
     not of the label or colon. Inserted text follows the IR rules: CRLF and LF become line
     breaks, a tab the tab control. The path goes through the IR and writes hwpx the way

@@ -506,8 +506,17 @@ fn inline_candidates(
             .then(|| format!("\"{label}:\" 뒤의 기존 내용을 {key:?} 값으로 덮어씁니다: {old:?}"));
         let mut edits = Vec::new();
         if inline.value.is_empty() {
-            // A blank value keeps a space before a following label.
-            let space = if inline.before_label { " " } else { "" };
+            // A blank value keeps one space before the text that follows it on the line (a
+            // label, a bracketed note), but not before a closer: `(한문: 李英俊)`.
+            let space = match seg[inline.value.end..].chars().next() {
+                Some(ch)
+                    if !matches!(ch, '\n' | ',' | ';')
+                        && !BRACKETS.iter().any(|(_, close)| *close == ch) =>
+                {
+                    " "
+                }
+                _ => "",
+            };
             edits.push((inline.separator.clone(), format!(": {value}{space}")));
         } else {
             if &seg[inline.separator.clone()] != ": " {
@@ -627,10 +636,114 @@ struct InlineLabel {
     /// The colon and the whitespace around it.
     separator: Range<usize>,
     /// kordoc's value: up to a comma, semicolon, line end or 100 characters. It also stops at
-    /// the next `라벨:` on the line, so filling one label never deletes the next (#365 review).
+    /// the next `라벨:` on the line, so filling one label never deletes the next (#365 review),
+    /// and at brackets that are not its own (#367): the matching closer of a bracket the label
+    /// sits in, and a bracketed note that ends the value.
     value: Range<usize>,
-    /// The value was cut short by a following `라벨:`.
-    before_label: bool,
+}
+
+/// Bracket pairs an inline value does not run across (#367).
+const BRACKETS: [(char, char); 6] = [
+    ('(', ')'),
+    ('（', '）'),
+    ('[', ']'),
+    ('［', '］'),
+    ('「', '」'),
+    ('『', '』'),
+];
+
+/// Shorten `end` to `at` (a byte offset in `seg`), dropping the whitespace before it.
+fn cut_value(seg: &str, start: usize, end: &mut usize, at: usize) {
+    if at < *end {
+        *end = start + seg[start..at].trim_end().len();
+    }
+}
+
+/// Whether byte `at` of the segment lies inside a `{{slot}}`, where brackets are name text.
+fn in_slot(slots: &[hwp_model::SlotToken<'_>], at: usize) -> bool {
+    let i = slots.partition_point(|slot| slot.range.start <= at);
+    i > 0 && slots[i - 1].range.contains(&at)
+}
+
+/// The byte offset of `close` matching a bracket opened before `start`, skipping brackets that
+/// open and close inside `seg[start..end]`: `(소속: 인공지능학과(야간))`.
+fn matching_closer(
+    seg: &str,
+    start: usize,
+    end: usize,
+    close: char,
+    slots: &[hwp_model::SlotToken<'_>],
+) -> Option<usize> {
+    let mut inner: Vec<char> = Vec::new();
+    for (i, ch) in seg[start..end].char_indices() {
+        if in_slot(slots, start + i) {
+            continue;
+        }
+        if let Some(&(_, closer)) = BRACKETS.iter().find(|(opener, _)| *opener == ch) {
+            inner.push(closer);
+        } else if inner.last() == Some(&ch) {
+            inner.pop();
+        } else if inner.is_empty() && ch == close {
+            return Some(start + i);
+        }
+    }
+    None
+}
+
+/// The byte offset of the outermost bracket opened in `seg[start..end]` and not closed there:
+/// its group runs past the value (into the next label, as in `성명:  (한문:  )`).
+fn unclosed_opener(
+    seg: &str,
+    start: usize,
+    end: usize,
+    slots: &[hwp_model::SlotToken<'_>],
+) -> Option<usize> {
+    let mut open: Vec<(char, usize)> = Vec::new();
+    for (i, ch) in seg[start..end].char_indices() {
+        if in_slot(slots, start + i) {
+            continue;
+        }
+        if let Some(&(_, closer)) = BRACKETS.iter().find(|(opener, _)| *opener == ch) {
+            open.push((closer, start + i));
+        } else if open.last().is_some_and(|&(closer, _)| closer == ch) {
+            open.pop();
+        }
+    }
+    open.first().map(|&(_, at)| at)
+}
+
+/// The byte offset where a bracketed note ending `seg[start..end]` begins: a balanced group
+/// at the value start or right after whitespace (`(서명/인)`, `홍길동 (대리)`). A group glued
+/// to the text before it, or with text after it, is content (`(주)제주한라`).
+fn trailing_note(
+    seg: &str,
+    start: usize,
+    end: usize,
+    slots: &[hwp_model::SlotToken<'_>],
+) -> Option<usize> {
+    let value = seg[start..end].trim_end();
+    let mut openers: Vec<char> = Vec::new();
+    for (i, ch) in value.char_indices().rev() {
+        if in_slot(slots, start + i) {
+            if openers.is_empty() {
+                return None;
+            }
+            continue;
+        }
+        if let Some(&(opener, _)) = BRACKETS.iter().find(|(_, closer)| *closer == ch) {
+            openers.push(opener);
+        } else if openers.last() == Some(&ch) {
+            openers.pop();
+            if openers.is_empty() {
+                let before = &value[..i];
+                return (before.is_empty() || before.ends_with(char::is_whitespace))
+                    .then_some(start + i);
+            }
+        } else if openers.is_empty() {
+            return None;
+        }
+    }
+    None
 }
 
 fn inline_labels(seg: &str) -> Vec<InlineLabel> {
@@ -639,15 +752,34 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
     let slots = hwp_model::slot_tokens(seg);
     let next_labels: Vec<Range<usize>> = NEXT_LABEL.find_iter(seg).map(|m| m.range()).collect();
     let mut next_at = 0usize;
+    // Closers of the brackets open before the current label, innermost last, kept with a
+    // forward cursor like the lists above.
+    let mut open: Vec<char> = Vec::new();
+    let mut scanned = 0usize;
     let mut labels = Vec::new();
     let mut at = 0usize;
     while let Some(caps) = INLINE_HEAD.captures_at(seg, at) {
         let (Some(whole), Some(label)) = (caps.get(0), caps.get(1)) else {
             break;
         };
+        for ch in seg[scanned..label.start()].chars() {
+            if let Some(&(_, close)) = BRACKETS.iter().find(|(opener, _)| *opener == ch) {
+                open.push(close);
+            } else if ch == '\n' {
+                open.clear();
+            } else if open.last() == Some(&ch) {
+                open.pop();
+            }
+        }
+        scanned = label.start();
         // `라벨:` inside a slot name (`{{기간: 시작}}`) is part of the slot.
         let before = slots.partition_point(|slot| slot.range.start <= label.start());
         if before > 0 && slots[before - 1].range.contains(&label.start()) {
+            at = whole.end();
+            continue;
+        }
+        // `https://` is a URL, not a label: `//` right after the colon (`비고: // 없음` is a label).
+        if whole.as_str().ends_with([':', '：']) && seg[whole.end()..].starts_with("//") {
             at = whole.end();
             continue;
         }
@@ -664,7 +796,6 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
         {
             next_at += 1;
         }
-        let mut before_label = false;
         if let Some(next) = next_labels.get(next_at).filter(|next| next.start < end) {
             // The pattern takes at most 10 letters, so a longer label matches mid-word: cut
             // before the whole word, never inside the next label.
@@ -672,21 +803,32 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
                 + seg[start..next.start]
                     .trim_end_matches(is_label_letter)
                     .len();
-            end = start + seg[start..cut].trim_end().len();
-            before_label = true;
+            cut_value(seg, start, &mut end, cut);
+        }
+        // A label inside a bracket owns the text up to that bracket's closer: `(한문: 李英俊)`.
+        if let Some(&close) = open.last()
+            && let Some(at) = matching_closer(seg, start, end, close, &slots)
+        {
+            cut_value(seg, start, &mut end, at);
+        }
+        // A bracket the value opens but does not close belongs to what follows the value.
+        if let Some(at) = unclosed_opener(seg, start, end, &slots) {
+            cut_value(seg, start, &mut end, at);
+        }
+        // A bracketed note that ends the value is not the value: `(서명/인)`, `홍길동 (대리)`.
+        while let Some(at) = trailing_note(seg, start, end, &slots) {
+            cut_value(seg, start, &mut end, at);
         }
         // A slot later in the value is a field of its own. One right after the label is the
         // label's value, which the slot fills.
         let later = slots.partition_point(|slot| slot.range.start <= start);
         if let Some(slot) = slots.get(later).filter(|slot| slot.range.start < end) {
-            end = start + seg[start..slot.range.start].trim_end().len();
-            before_label = false;
+            cut_value(seg, start, &mut end, slot.range.start);
         }
         labels.push(InlineLabel {
             label: label.range(),
             separator: label.end()..start,
             value: start..end,
-            before_label,
         });
         at = end.max(whole.end());
     }
@@ -1312,6 +1454,83 @@ mod tests {
         assert_eq!(doc.plain_text().trim(), "성명: 홍길동 연락처: 010");
     }
 
+    /// #367: an inline value stops at brackets that are not its own, so a fill keeps them.
+    #[test]
+    fn inline_values_keep_brackets() {
+        let fill_line = |line: &str, pairs: &[(&str, &str)]| {
+            let mut doc = from_markdown(&format!("{line}\n"));
+            let fill = fill_form_fields(&mut doc, &values(pairs)).unwrap();
+            (doc.plain_text().trim().to_string(), fill)
+        };
+
+        let (text, fill) = fill_line(
+            "성명 :        (한문:          )",
+            &[("성명", "홍길동"), ("한문", "洪吉童")],
+        );
+        assert_eq!(text, "성명: 홍길동 (한문: 洪吉童)");
+        assert_eq!(fill.counts["성명"], 1);
+        assert_eq!(fill.counts["한문"], 1);
+
+        let (text, fill) = fill_line("(한문: 李英俊)", &[("한문", "李英俊")]);
+        assert_eq!(text, "(한문: 李英俊)");
+        assert!(fill.warnings.is_empty(), "{fill:?}");
+        let (text, _) = fill_line("(한문: 李英俊)", &[("한문", "洪吉童")]);
+        assert_eq!(text, "(한문: 洪吉童)");
+
+        let (text, _) = fill_line("성명:          (서명/인)", &[("성명", "홍길동")]);
+        assert_eq!(text, "성명: 홍길동 (서명/인)");
+        let (text, _) = fill_line("담당: 홍길동 (대리)", &[("담당", "이영준")]);
+        assert_eq!(text, "담당: 이영준 (대리)");
+        let (text, _) = fill_line("소속: 제주한라대학교(본교)", &[("소속", "본부")]);
+        assert_eq!(
+            text, "소속: 본부",
+            "a glued bracket stays part of the value"
+        );
+
+        let (text, _) = fill_line(
+            "（한문：    ） [담당:  ]",
+            &[("한문", "洪"), ("담당", "李")],
+        );
+        assert_eq!(text, "（한문: 洪） [담당: 李]");
+    }
+
+    /// #367 review: the enclosing closer is the matching one, a note must end the value, and
+    /// brackets inside a slot or after `https:` are not the form's.
+    #[test]
+    fn inline_bracket_rules_keep_content_and_urls() {
+        let fill_line = |line: &str, pairs: &[(&str, &str)]| {
+            let mut doc = from_markdown(&format!("{line}\n"));
+            let fill = fill_form_fields(&mut doc, &values(pairs)).unwrap();
+            (doc.plain_text().trim().to_string(), fill)
+        };
+
+        let (text, _) = fill_line("(소속: 인공지능학과(야간))", &[("소속", "본부")]);
+        assert_eq!(text, "(소속: 본부)");
+
+        let (text, fill) = fill_line("상호: (주)제주한라", &[("상호", "(주)제주한라")]);
+        assert_eq!(text, "상호: (주)제주한라");
+        assert!(fill.warnings.is_empty(), "{fill:?}");
+        let (text, _) = fill_line("전화: (064) 741-7400", &[("전화", "010-1234-5678")]);
+        assert_eq!(text, "전화: 010-1234-5678");
+
+        let (text, _) = fill_line("성명: {{이름 (한글)}}", &[("성명", "홍길동")]);
+        assert_eq!(text, "성명: 홍길동");
+
+        let line = "홈페이지: 제주한라대 (https://www.chu.ac.kr)";
+        let fields = scan_form_fields(&from_markdown(&format!("{line}\n")));
+        assert!(!fields.iter().any(|f| f.key == "https"), "{fields:?}");
+        let (text, _) = fill_line(line, &[("홈페이지", "본교")]);
+        assert_eq!(text, "홈페이지: 본교 (https://www.chu.ac.kr)");
+        let (text, _) = fill_line("비고: // 해당 없음", &[("비고", "없음")]);
+        assert_eq!(text, "비고: 없음");
+
+        let (text, _) = fill_line(
+            "「성명:  」 『소속:  』 ［직위:  ］",
+            &[("성명", "洪"), ("소속", "본부"), ("직위", "교수")],
+        );
+        assert_eq!(text, "「성명: 洪」 『소속: 본부』 ［직위: 교수］");
+    }
+
     /// Replacing different inline text is warned; the same text is not.
     #[test]
     fn an_inline_overwrite_is_warned() {
@@ -1348,6 +1567,6 @@ mod tests {
         let seg = "ab:x, ".repeat(20_000);
         let labels = inline_labels(&seg);
         assert_eq!(labels.len(), 20_000);
-        assert!(labels.iter().all(|label| !label.before_label));
+        assert!(labels.iter().all(|label| label.value.len() == 1));
     }
 }
