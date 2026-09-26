@@ -348,6 +348,9 @@ struct ResolvedLabelEdit {
     text: String,
     candidate: hwp_convert::FormCellCandidate,
     request: String,
+    /// #358: the normalized label, resolved again right before the write
+    /// ([`check_label_target`]).
+    label: String,
 }
 
 struct LabelEditRequest {
@@ -1089,6 +1092,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let Some(resolved) = resolved else {
                         continue;
                     };
+                    check_label_target(&mut doc, &resolved)?;
                     let before = doc.clone();
                     hwp_convert::set_cell(
                         &mut doc,
@@ -1593,6 +1597,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // reusing the SAME `edits`/`unapplied` accounting the stderr summary uses (before/after
     // deltas around each call), not a second, independently-derived count.
     let mut ops_outcomes: Vec<OpOutcome> = Vec::with_capacity(plan.typed_operations.len());
+    let address_lists = addresses_by_list(
+        &resolved_addresses_for_report,
+        &resolved_move_destinations_for_report,
+    );
     for (index, operation) in plan.typed_operations.iter().enumerate() {
         let target_before = resolved_addresses_for_report[index].clone();
         let to_target_before = resolved_move_destinations_for_report[index].clone();
@@ -1610,13 +1618,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         // `offsets`. If it adds or removes anything along a later addressed op's path, that
         // address would silently land on a different paragraph, so the batch is refused instead.
         let later_shapes = if target_before.is_none() {
-            later_address_shapes(
-                index,
-                &resolved_addresses_for_report,
-                &resolved_move_destinations_for_report,
-                &offsets,
-                &doc,
-            )?
+            later_address_shapes(index, &address_lists, &offsets, &doc)?
         } else {
             Vec::new()
         };
@@ -1640,7 +1642,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             anyhow::bail!(
                 "op[{index}] {op}이(가) op[{}] {}의 주소({})가 지나는 문단·개체 목록을 바꿉니다. \
                  주소는 배치 적용 전 문서 기준이라 이 순서로는 다른 문단을 편집하게 됩니다 \
-                 (주소 없는 연산을 뒤로 옮기거나, 주소 형식으로 쓰거나, 두 번의 hwp edit로 나누세요)",
+                 (주소 없는 연산을 뒤로 옮기거나, 주소 형식으로 쓰거나, 편집을 두 번으로 나누세요. \
+                 MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
                 moved.later,
                 typed_op_kind(&plan.typed_operations[moved.later]),
                 moved.original
@@ -1908,6 +1911,7 @@ fn preflight_label_edits(
                     text: request.text,
                     candidate: *candidate,
                     request: "set_cell_by_label".to_string(),
+                    label: request.label,
                 }));
             }
             many => anyhow::bail!(
@@ -2166,9 +2170,10 @@ fn shift_through_splices(splices: &[Splice], section: usize, indices: &mut [usiz
 /// #358: the length of every sequence `path` indexes into, from the section's paragraph list down
 /// to the list holding the paragraph itself (a paragraph's controls, a table's cells, a cell's
 /// paragraphs, a generic control's flat paragraph sequence), following `address::resolve`'s
-/// descent. An op that adds to or removes from any of them changes the shape (no edit op adds and
-/// removes in one sequence at once), so an unchanged shape means the path still names the same
-/// paragraph. A change after the path's own index changes it too: the check is conservative.
+/// descent. An op that adds to or removes from any of them changes the shape. A change after the
+/// path's own index changes it too, so the check is conservative. One gap: an op that replaces a
+/// sequence's elements one for one (`set_cell` rewriting a cell's paragraphs without changing
+/// their number) keeps the shape, and the path then names the new paragraph at that position.
 fn path_shape(doc: &hwp_model::Document, path: &hwp_convert::SegmentPath) -> Vec<usize> {
     use hwp_model::Control;
 
@@ -2222,36 +2227,49 @@ struct LaterAddressShape {
     shape: Vec<usize>,
 }
 
-/// #358: for each list a later addressed op (after `index`) points into, the op that points there
-/// first, its preflight path, the path it names now, and that path's [`path_shape`]. One entry per
-/// list: every path into the same list has the same shape.
-fn later_address_shapes(
-    index: usize,
+/// #358: every address in the batch (op targets and `move_para` destinations), grouped by the
+/// list it points into as the document is before the batch, each group in op order. Two paths
+/// into one list map to one list at any point in the batch, and have one [`path_shape`].
+fn addresses_by_list(
     resolved: &[Option<hwp_convert::address::ResolvedTarget>],
     resolved_move_destinations: &[Option<hwp_convert::address::ResolvedTarget>],
+) -> Vec<Vec<(usize, hwp_convert::SegmentPath)>> {
+    let mut lists = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for (index, targets) in resolved.iter().zip(resolved_move_destinations).enumerate() {
+        for target in [targets.0, targets.1].into_iter().flatten() {
+            lists
+                .entry((target.path.section, list_prefix(&target.path).to_vec()))
+                .or_default()
+                .push((index, target.path.clone()));
+        }
+    }
+    lists.into_values().collect()
+}
+
+/// #358: for each list an addressed op after `index` points into, the first such op, its
+/// preflight path, the path it names now, and that path's [`path_shape`].
+fn later_address_shapes(
+    index: usize,
+    lists: &[Vec<(usize, hwp_convert::SegmentPath)>],
     offsets: &IndexOffsets,
     doc: &hwp_model::Document,
 ) -> anyhow::Result<Vec<LaterAddressShape>> {
-    // ponytail: rescans every later op for each op with no address, quadratic in a mixed batch's
-    // length; keep a per-list suffix index if 10,000-op mixed batches get slow.
-    let mut lists = std::collections::HashSet::new();
+    // ponytail: one pass over every list per op with no address, times the splices so far; keep
+    // a per-list cursor if batches with thousands of distinct lists get slow.
     let mut shapes = Vec::new();
-    for later in (index + 1)..resolved.len() {
-        for target in [&resolved[later], &resolved_move_destinations[later]]
-            .into_iter()
-            .flatten()
-        {
-            let current = offsets.current_path(&target.path)?;
-            if lists.insert((current.section, list_prefix(&current).to_vec())) {
-                let shape = path_shape(doc, &current);
-                shapes.push(LaterAddressShape {
-                    later,
-                    original: target.path.clone(),
-                    current,
-                    shape,
-                });
-            }
-        }
+    for list in lists {
+        let first_later = list.partition_point(|(op, _)| *op <= index);
+        let Some((later, original)) = list.get(first_later) else {
+            continue;
+        };
+        let current = offsets.current_path(original)?;
+        let shape = path_shape(doc, &current);
+        shapes.push(LaterAddressShape {
+            later: *later,
+            original: original.clone(),
+            current,
+            shape,
+        });
     }
     Ok(shapes)
 }
@@ -2907,6 +2925,30 @@ fn patch_replacements_staged(
     })
 }
 
+/// #358: a label edit names its cell by table index, row and column, resolved at preflight. An
+/// earlier op in the batch that adds, removes or reorders tables, or rows and columns of this
+/// one, can make that a cell of another table, or another cell. The edit is refused unless the
+/// label, looked up again in the table at that index, still resolves to the same cell.
+fn check_label_target(
+    doc: &mut hwp_model::Document,
+    resolved: &ResolvedLabelEdit,
+) -> anyhow::Result<()> {
+    let candidate = resolved.candidate;
+    let now = hwp_convert::find_form_cells_by_label(doc, &resolved.label, Some(candidate.table));
+    if !now.contains(&candidate) {
+        anyhow::bail!(
+            "set_cell_by_label: 앞선 연산이 표의 순서나 구성을 바꿔, 사전 검증에서 찾은 셀(표{} ({},{}))이 \
+             더 이상 레이블 {:?}의 값 칸이 아닙니다 (레이블 편집을 표를 바꾸는 연산보다 앞에 두거나, \
+             편집을 두 번으로 나누세요. MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
+            resolved.candidate.table,
+            resolved.candidate.row,
+            resolved.candidate.col,
+            resolved.label
+        );
+    }
+    Ok(())
+}
+
 fn record_effect(
     before: &hwp_model::Document,
     after: &hwp_model::Document,
@@ -2996,6 +3038,7 @@ fn apply_typed_operation(
             let Some(resolved) = resolved else {
                 return Ok(());
             };
+            check_label_target(doc, &resolved)?;
             let before = doc.clone();
             hwp_convert::set_cell(
                 doc,

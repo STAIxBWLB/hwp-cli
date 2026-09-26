@@ -4384,6 +4384,115 @@ fn move_para_into_a_cell_of_a_later_table() {
     assert_eq!(cell_texts(&after, 1, 1), vec!["2", "table probe"]);
 }
 
+/// The mirror of `move_para_into_a_cell_of_a_later_table`: a cell paragraph moved out to the body
+/// before its own table. The insertion shifts the table's body index, and the move fixes up the
+/// cell at the shifted path. Before, it looked the cell up at the old path and panicked.
+#[test]
+fn move_para_out_of_a_cell_to_before_its_own_table() {
+    let (dir, base) = table_base_for("move-out-of-cell");
+    // A cell keeps at least one paragraph, so give cell (0,1) a second one to move.
+    let grown = dir.join("grown.hwpx");
+    let (setup, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        r#"[{"op":"insert_para","anchor":"나","text":"NEW"}]"#,
+    );
+    assert!(success, "{stderr}");
+    std::fs::rename(&setup, &grown).unwrap();
+    let before = hwpx::read_document(&grown).unwrap().document;
+    assert_eq!(cell_texts(&before, 0, 1), vec!["나", "NEW"]);
+    let mut indices = cell_path_prefix(&before, 0, 1);
+    let host = indices[0];
+    let Control::Table(table) = &before.sections[0].paragraphs[host].controls[indices[1]] else {
+        panic!("not a table");
+    };
+    let moved = &table.cells[indices[2]].paragraphs[1];
+    indices.push(1);
+    let id = hwp_convert::paragraph_id(
+        &hwp_convert::SegmentPath {
+            section: 0,
+            indices,
+        },
+        moved,
+    );
+
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &grown,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"id":"{id}"}},"to":{{"address":{{"at":{{"section":0,"paragraph":{host}}}}},"position":"before"}}}}]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(plain_texts(&after)[host], "NEW");
+    assert!(matches!(
+        after.sections[0].paragraphs[host + 1].controls.first(),
+        Some(Control::Table(_))
+    ));
+    assert_eq!(cell_texts(&after, 0, 1), vec!["나"]);
+}
+
+/// A destination inside the paragraph being moved has nowhere to go: `move_para` of a table's
+/// host paragraph into one of its own cells is an error, and nothing is written.
+#[test]
+fn move_para_into_its_own_cell_is_refused() {
+    let (dir, base) = table_base_for("move-into-own-cell");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let host = cell_path_prefix(&before, 1, 1)[0];
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"at":{{"section":0,"paragraph":{host}}}}},"to":{{"address":{{"id":"{id}"}},"position":"after"}}}}]"#
+        ),
+    );
+    assert!(!success, "{stderr}");
+    assert!(!output.exists());
+    assert!(stderr.contains("그 문단 안의 위치"), "{stderr}");
+}
+
+/// Two one-row forms, "성명" then "주소".
+const TWO_FORMS_MD: &str =
+    "# F\n\n| 성명 |  |\n|---|---|\n| x | y |\n\nmid\n\n| 주소 |  |\n|---|---|\n| z | w |\n";
+
+/// A label edit names its cell by table index, row and column at preflight. An earlier op that
+/// reorders the tables (here, moving the "주소" form above the "성명" form) would make that index
+/// name the other form, so the edit is refused instead of writing into "성명". Before, it wrote
+/// there and exited 0. The same ops in the other order apply.
+#[test]
+fn label_edit_after_a_table_reorder_is_refused() {
+    let dir = test_dir("label-edit-reorder");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, TWO_FORMS_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let move_address_form = r#"{"op":"move_para","address":{"at":{"section":0,"paragraph":3}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}}"#;
+    let fill_address = r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#;
+
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!("[{move_address_form},{fill_address}]"),
+    );
+    assert!(!success, "{stderr}");
+    assert!(!output.exists());
+    assert!(stderr.contains("set_cell_by_label"), "{stderr}");
+
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!("[{fill_address},{move_address_form}]"),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        plain_texts(&after),
+        vec!["1. F", "주소\tSEOUL\nz\tw\n", "성명\t\nx\ty\n", "mid"]
+    );
+}
+
 /// An op with no address (pattern, anchor or index form) that adds or removes a paragraph in the
 /// list a later addressed op points into is refused, naming both ops: the tracker cannot follow
 /// it, and the address would land on a different paragraph. Nothing is written. The same ops in

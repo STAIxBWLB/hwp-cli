@@ -350,7 +350,9 @@ fn list_identity(path: &SegmentPath) -> (usize, &[usize]) {
 /// `to_list` names the destination as the document is before the move. When the destination list
 /// is nested under a later paragraph of the source's list (a cell of a table further down), the
 /// source's removal shifts that paragraph up by one, and the destination is found at its shifted
-/// path (#358).
+/// path. The other way round, when the source is nested under a paragraph of the destination list
+/// at or after `to_index` (a cell paragraph moved out before its own table), the insertion shifts
+/// the source's path, and the source list is fixed up at its shifted path (#358).
 pub fn move_paragraph(
     doc: &mut Document,
     from: &SegmentPath,
@@ -417,12 +419,22 @@ pub fn move_paragraph(
         let (list, _) = list_at_mut(doc, &dst).expect("just inserted into this list");
         crate::edit::fixup_last_para_flag(list);
     }
+    let dst_depth = dst.indices.len() - 1;
+    let mut src = from.clone();
+    if !same_list
+        && from.section == dst.section
+        && from.indices.len() > dst.indices.len()
+        && from.indices[..dst_depth] == dst.indices[..dst_depth]
+        && from.indices[dst_depth] >= to_index
+    {
+        src.indices[dst_depth] += 1;
+    }
     if !same_list {
-        let (list, _) = list_at_mut(doc, from).expect("source list still exists");
+        let (list, _) = list_at_mut(doc, &src).expect("source list still exists");
         crate::edit::fixup_last_para_flag(list);
     }
 
-    crate::address::invalidate_ancestors(doc, from);
+    crate::address::invalidate_ancestors(doc, &src);
     crate::address::invalidate_ancestors(doc, &dst);
     Ok(())
 }
