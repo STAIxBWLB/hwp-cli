@@ -2282,6 +2282,7 @@ mod tests {
         assert_eq!(pic.width.0, 96 * 7200 / 96, "자연 크기(96px→7200)");
         // The alt text of a successfully embedded image is suppressed.
         assert!(!doc.plain_text().contains("대체텍스트"), "alt 억제");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// GI-3: missing files, remote URLs, and relative paths (no base) keep the alt text after a warning.
@@ -2308,6 +2309,7 @@ mod tests {
         let d3 = from_markdown("![상대alt](fig.png)\n");
         assert!(d3.bin_streams.is_empty());
         assert!(d3.plain_text().contains("상대alt"), "기준없음은 alt 보존");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// GI-3 round-trip: image data is preserved on re-export through md(image)→IR→#8 exporter (media_dir).
@@ -2339,6 +2341,7 @@ mod tests {
         let extracted = std::fs::read(media.join("image1.png")).expect("추출 이미지");
         assert_eq!(extracted, orig, "추출 이미지 바이트 == 원본(무손실)");
         let _ = std::fs::remove_dir_all(&media);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #56: with sandbox roots set, an image reference resolving outside every root (absolute

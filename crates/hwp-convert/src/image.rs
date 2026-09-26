@@ -720,6 +720,7 @@ mod tests {
 
         // 없는 앵커는 오류.
         assert!(insert_image(&mut doc, "없는앵커", &png_path, ImageSize::Natural).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// insert_seal이 앵커 문단에 **부유** Picture를 만들고 앵커 텍스트를 유지한다.
@@ -786,6 +787,7 @@ mod tests {
         // 없는 앵커·잘못된 크기는 오류.
         assert!(insert_seal(&mut doc, "없음", &png_path, Some(15.0), |_, _| None).is_err());
         assert!(insert_seal(&mut doc, "(인)", &png_path, Some(0.0), |_, _| None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn make_square_png(px: u32) -> Vec<u8> {
@@ -842,6 +844,7 @@ mod tests {
             "실측 줄 높이 기준 세로 오프셋"
         );
         assert!(pic.vert_offset > 0, "줄보다 작은 도장은 양수 세로 오프셋");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 실측 메트릭에서 도장이 앵커 줄보다 크면 세로 오프셋이 음수가 되어 위아래
@@ -887,6 +890,7 @@ mod tests {
             pic.vert_offset < 0,
             "줄보다 큰 도장은 음수 세로 오프셋(위아래 줄과 겹침, 클램프 금지)"
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The measure callback must see the paragraph that actually receives the seal. An
@@ -953,20 +957,22 @@ mod tests {
             &without_gso, chars,
             "measured paragraph == inserted paragraph"
         );
+        let _ = std::fs::remove_file(&png_path);
     }
 
     fn seal_offsets(md: &str, anchor: &str) -> (i32, i32, i32, i32) {
         let mut doc = crate::from_markdown::from_markdown(md);
-        let dir =
-            std::env::temp_dir().join(format!("hwp-seal-fallback-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
         // One file per call: tests run in parallel, and a shared path can be read while
         // another test truncates it.
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let png_path = dir.join(format!("s-{}-{n}.png", std::process::id()));
+        let png_path = std::env::temp_dir().join(format!(
+            "hwp-seal-fallback-test-{}-{n}.png",
+            std::process::id()
+        ));
         std::fs::write(&png_path, make_square_png(96)).unwrap();
         insert_seal(&mut doc, anchor, &png_path, None, |_, _| None).unwrap();
+        let _ = std::fs::remove_file(&png_path);
         let pic = doc.sections[0]
             .paragraphs
             .iter()
@@ -1037,5 +1043,6 @@ mod tests {
         // "결재란: " at 20pt = 2 x (3730 at 10pt); "(인)" = 2 x 1610.
         assert_eq!(pic.horz_offset, 7460 + 1610 - seal_w / 2);
         assert_eq!(pic.vert_offset, (2000 - seal_h) / 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3469,6 +3469,7 @@ mod tests {
         // SUN_LEN (~104 bytes), which a long TMPDIR reaches (#349).
         let fifo_path = dir.join("fifo.hwpx");
         let c_path = std::ffi::CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: CString::new rejected interior NULs, and c_path outlives the call.
         assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
         let err = write_validated(
             &fifo_path,

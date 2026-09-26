@@ -58,10 +58,10 @@ fn dist01_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn tmp(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("hwp-cli-para-break-corpus-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join(name)
+    std::env::temp_dir().join(format!(
+        "hwp-cli-para-break-corpus-{}-{name}",
+        std::process::id()
+    ))
 }
 
 /// attr1 bits 5-7 (breakLatinWord + breakNonLatinWord) and 16-19
@@ -147,4 +147,5 @@ fn genuine_distribution_document_break_setting_survives_conversion() {
         mismatches.is_empty(),
         "breakSetting bits diverged after round trip: {mismatches:?}"
     );
+    let _ = std::fs::remove_file(&out);
 }

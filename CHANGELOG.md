@@ -20,7 +20,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Fixed**
 
 - Two test runs at the same time, for example `scripts/check.sh` in two worktrees, no longer
-  collide: every test temp path now carries the process id, where 41 sites used a fixed name.
+  collide: every test temp path now has a per-process name (the process id, or the nanosecond
+  timestamp some sites already used), where 41 sites used a fixed name. Those 41 sites also
+  remove what they wrote when the test passes; a failed test leaves its files for debugging.
   The special-file destination test uses a FIFO instead of a Unix socket, so a long `TMPDIR` no
   longer fails it on the socket path length limit
   ([#349](https://github.com/STAIxBWLB/hwp-cli/issues/349)).

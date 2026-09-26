@@ -334,9 +334,11 @@ jobs:
           # run is reduced in scope; the log says by how much. HWP_REQUIRE_FIXTURES is not set
           # here (it would always fail): the fixtures-required line covers the strict run.
           skip_log="$RUNNER_TEMP/gates/test-workspace/fixture-skips"
+          # `shell: bash` runs with -e, so the failure is caught here; otherwise the step would end
+          # before the tally below is printed.
+          status=0
           HWP_FIXTURE_SKIP_LOG="$skip_log" HWP_FONT_DIR="$test_fonts" FONTCONFIG_FILE="$font_root/fonts.conf" \
-            cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log"
-          status="${PIPESTATUS[0]}"
+            cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/gates/test-workspace/log" || status=$?
           tally="skipped-for-missing-fixtures=0 (optional=0)"
           if [ -f "$skip_log" ]; then
             skipped="$(awk 'END {print NR}' "$skip_log")"

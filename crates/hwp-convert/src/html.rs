@@ -765,6 +765,7 @@ mod tests {
             crate::base64::encode(&png)
         );
         assert!(html.contains(&expect), "data URI 임베드: {html}");
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

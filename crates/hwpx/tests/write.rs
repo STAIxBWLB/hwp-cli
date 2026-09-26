@@ -19,10 +19,11 @@ fn skip_if_no_fixtures() -> bool {
     fixture_skip::fixture_missing(&fixture("minimal.hwpx"))
 }
 
-fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("hwpx-write-tests-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join(name)
+#[path = "../../hwp-cli/tests/common/temp_path.rs"]
+mod temp_path;
+
+fn tmp(name: &str) -> temp_path::TempPath {
+    temp_path::TempPath::new("hwpx-write-tests", name)
 }
 
 /// A complete 1x1 transparent PNG, including valid CRCs and an IEND chunk.
@@ -698,6 +699,7 @@ fn md_이미지_코드_hwpx_왕복() {
             .any(|(_, id)| code_ids.contains(&id.0))),
         "코드 run 왕복"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// GE-9: 부유(글 앞) 그림의 세로/가로 오프셋·z-order가 hwpx `<hp:pos>`/zOrder에
@@ -778,6 +780,7 @@ fn 부유_그림_배치_hwpx_방출() {
             _ => None,
         });
     assert_eq!(description, Some("제목 & <대체> 😀"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A negative `<hp:pos>` offset is written in Hancom's unsigned 32-bit form (-2051 ->
@@ -833,6 +836,7 @@ fn floating_picture_negative_offset_emits_unsigned_and_round_trips() {
             _ => None,
         });
     assert_eq!(offsets, Some((-2051, 1984)));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// GI-1/GI-2 왕복 (b): md(각주·취소선·순서목록·중첩) → hwpx 저장 → 재읽기 → md.
@@ -2903,7 +2907,7 @@ fn 왕복_secpr_tabpr_raw() {
     assert_eq!(reread.header.tab_stops, doc.header.tab_stops);
 
     // zip 슬라이스 수준: 입력과 출력의 secPr/tabProperties가 바이트 동일.
-    let slice = |path: &PathBuf, entry: &str, open: &str, close: &str| {
+    let slice = |path: &std::path::Path, entry: &str, open: &str, close: &str| {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
         let mut s = String::new();
         zip.by_name(entry).unwrap().read_to_string(&mut s).unwrap();
@@ -3130,6 +3134,7 @@ fn 그림_변환_보정_속성_hwpx_왕복() {
         .expect("picture");
     assert_eq!(pic.brightness, 100);
     assert_eq!(pic.contrast, -100);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// GG-7: HWPX round-trips border-fill gradients through `header.xml`.

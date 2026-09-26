@@ -1894,13 +1894,7 @@ mod tests {
     fn 이미지_기본은_빈참조() {
         let mut doc = from_markdown("사진: 여기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "사진:",
-            &write_temp("md_img_none.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "사진:", "md_img_none.png", &png);
         let md = to_markdown(&doc);
         assert!(md.contains("![image]()"), "빈 참조 유지: {md}");
     }
@@ -1910,13 +1904,7 @@ mod tests {
     fn 이미지_media_dir_추출() {
         let mut doc = from_markdown("사진: 여기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "사진:",
-            &write_temp("md_img_extract.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "사진:", "md_img_extract.png", &png);
 
         let dir = unique_dir("md_media_extract");
         // 추출 전에는 디렉터리가 없어야 한다(지연 생성 확인).
@@ -1962,20 +1950,8 @@ mod tests {
         // 두 이미지가 순서대로 image1/image2로 번호 매겨진다.
         let mut doc = from_markdown("첫 사진: 여기\n\n둘 사진: 저기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "첫 사진:",
-            &write_temp("md_cnt1.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
-        crate::image::insert_image(
-            &mut doc,
-            "둘 사진:",
-            &write_temp("md_cnt2.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "첫 사진:", "md_cnt1.png", &png);
+        insert_temp_image(&mut doc, "둘 사진:", "md_cnt2.png", &png);
         let dir = unique_dir("md_media_counter");
         let md = to_markdown_with(
             &doc,
@@ -1997,13 +1973,7 @@ mod tests {
     fn 이미지_media_prefix() {
         let mut doc = from_markdown("사진: 여기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "사진:",
-            &write_temp("md_img_prefix.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "사진:", "md_img_prefix.png", &png);
         let dir = unique_dir("md_media_prefix");
         let md = to_markdown_with(
             &doc,
@@ -2025,13 +1995,7 @@ mod tests {
     fn 이미지_경로를_markdown에_안전하게_인코딩() {
         let mut doc = from_markdown("사진: 여기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "사진:",
-            &write_temp("md_img_escaped.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "사진:", "md_img_escaped.png", &png);
         let dir = unique_dir("md_media_escaped");
         let md = to_markdown_with(
             &doc,
@@ -2053,13 +2017,7 @@ mod tests {
     fn 이미지_충돌은_덮어쓰지_않고_동일파일만_재사용() {
         let mut doc = from_markdown("사진: 여기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "사진:",
-            &write_temp("md_img_collision.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "사진:", "md_img_collision.png", &png);
         let dir = unique_dir("md_media_collision");
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("image1.png");
@@ -2093,20 +2051,8 @@ mod tests {
     fn 이미지_충돌은_새파일_기록_전에_선검사() {
         let mut doc = from_markdown("첫 사진: 여기\n\n둘 사진: 저기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "첫 사진:",
-            &write_temp("md_preflight1.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
-        crate::image::insert_image(
-            &mut doc,
-            "둘 사진:",
-            &write_temp("md_preflight2.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "첫 사진:", "md_preflight1.png", &png);
+        insert_temp_image(&mut doc, "둘 사진:", "md_preflight2.png", &png);
         let dir = unique_dir("md_media_preflight");
         std::fs::create_dir_all(dir.join("image2.png")).unwrap();
 
@@ -2739,13 +2685,7 @@ mod tests {
     fn html_표_이미지_경로_속성_이스케이프() {
         let mut doc = from_markdown("사진: 여기");
         let png = png_bytes();
-        crate::image::insert_image(
-            &mut doc,
-            "사진:",
-            &write_temp("md_html_attr.png", &png),
-            crate::image::ImageSize::Natural,
-        )
-        .unwrap();
+        insert_temp_image(&mut doc, "사진:", "md_html_attr.png", &png);
         let cell_para = doc.sections[0].paragraphs.remove(0);
         let mut parent = Paragraph::default();
         insert_table(&mut parent, one_cell_table(cell_para, 2, 2));
@@ -3308,12 +3248,13 @@ mod tests {
         png
     }
 
-    fn write_temp(name: &str, data: &[u8]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("hwp-md-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join(name);
+    /// Inserts `data` as an image at `anchor` through a per-process temp file, removed once the
+    /// image is read (#349).
+    fn insert_temp_image(doc: &mut Document, anchor: &str, name: &str, data: &[u8]) {
+        let p = std::env::temp_dir().join(format!("hwp-md-test-{}-{name}", std::process::id()));
         std::fs::write(&p, data).unwrap();
-        p
+        crate::image::insert_image(doc, anchor, &p, crate::image::ImageSize::Natural).unwrap();
+        let _ = std::fs::remove_file(&p);
     }
 
     fn unique_dir(stem: &str) -> std::path::PathBuf {

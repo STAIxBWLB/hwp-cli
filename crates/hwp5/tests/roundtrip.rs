@@ -13,9 +13,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("hwp5-write-tests-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join(name)
+    std::env::temp_dir().join(format!("hwp5-write-tests-{}-{name}", std::process::id()))
 }
 
 #[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
@@ -70,6 +68,7 @@ fn 전체_fixture_바이트_동일_왕복() {
         }
         // FileHeader: EncryptVersion=4 + 압축 플래그 (한글 호환 필수)
         assert!(ours.file_header().is_compressed(), "{name}");
+        let _ = std::fs::remove_file(&out);
     }
 }
 
@@ -115,5 +114,6 @@ fn 전체_fixture_의미_왕복() {
                 .sum::<usize>()
         };
         assert_eq!(segs(&doc2), segs(&doc), "{name}: lineseg 수");
+        let _ = std::fs::remove_file(&out);
     }
 }
