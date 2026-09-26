@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Compatibility**
+
+- MCP `hwp_edit` now refuses a text selector (`pattern`, `anchor` or `matching`) together with
+  `address` on `set_format`, `set_align`, `insert_para`, `delete_para` and `set_para`, as
+  `hwp edit --ops` already does, with the ops channel's error; the published input schema states
+  the rule as a `oneOf`. This narrows an MCP argument combination in a minor release, a
+  deliberate one-time exception to the SemVer policy in the README (owner decision). Migrate by
+  sending `address` alone ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+
 ## [1.2.0]
 
 **Compatibility**

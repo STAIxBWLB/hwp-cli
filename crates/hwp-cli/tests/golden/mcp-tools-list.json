@@ -175,7 +175,7 @@
     "name": "hwp_render"
   },
   {
-    "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 하나 이상이 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 이전과 같이 address가 대상을 정한다.",
+    "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -422,9 +422,9 @@
           "type": "array"
         },
         "delete_para": {
-          "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단, matching 생략 가능)",
+          "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단, matching과 address 중 하나만 지정)",
           "items": {
-            "anyOf": [
+            "oneOf": [
               {
                 "required": [
                   "matching"
@@ -603,9 +603,9 @@
           "type": "array"
         },
         "insert_para": {
-          "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준, anchor 생략 가능)",
+          "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준, anchor와 address 중 하나만 지정)",
           "items": {
-            "anyOf": [
+            "oneOf": [
               {
                 "required": [
                   "anchor"
@@ -949,9 +949,9 @@
           "type": "array"
         },
         "set_align": {
-          "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단, pattern 생략 가능)",
+          "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단, pattern과 address 중 하나만 지정)",
           "items": {
-            "anyOf": [
+            "oneOf": [
               {
                 "required": [
                   "pattern"
@@ -1156,9 +1156,9 @@
           "type": "array"
         },
         "set_format": {
-          "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위, pattern 생략 가능)",
+          "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위, pattern과 address 중 하나만 지정)",
           "items": {
-            "anyOf": [
+            "oneOf": [
               {
                 "required": [
                   "pattern"
@@ -1290,9 +1290,9 @@
           "type": "object"
         },
         "set_para": {
-          "description": "문단모양(매칭 문단; address 지정 시 해당 문단, pattern 생략 가능): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬",
+          "description": "문단모양(매칭 문단; address 지정 시 해당 문단, pattern과 address 중 하나만 지정): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬",
           "items": {
-            "anyOf": [
+            "oneOf": [
               {
                 "required": [
                   "pattern"

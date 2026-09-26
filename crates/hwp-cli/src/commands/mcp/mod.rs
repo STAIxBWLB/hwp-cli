@@ -535,24 +535,20 @@ fn optional_address(
 }
 
 /// Reads the legacy text selector (`pattern`, `anchor` or `matching`) of the five arms that also
-/// take an `address` (#331). With an address it is optional: address-only yields the empty
-/// selector `OpsEntry::into_typed` produces for the same op on the CLI `--ops` channel, so both
-/// surfaces build the identical `TypedEditOperation`. Both together stay accepted, as in MCP 1.0
-/// (the address picks the target), although the ops channel rejects that combination; aligning
-/// MCP with the ops channel's exactly-one rule would break existing callers, so it waits for 2.0.
+/// take an `address` (#331). The arms follow the CLI `--ops` channel's exactly-one rule through
+/// the shared `edit_ops::exactly_one_selector` (#350): the selector and the address together, or
+/// neither, are refused with the ops channel's text. Address-only yields the empty selector
+/// `OpsEntry::into_typed` produces for the same op, so both surfaces build the identical
+/// `TypedEditOperation`.
 fn legacy_selector_item(
     item: &Value,
     operation: &str,
     key: &str,
     has_address: bool,
 ) -> Result<String, String> {
-    match optional_item_str(item, operation, key)? {
-        Some(value) => Ok(value.to_string()),
-        None if has_address => Ok(String::new()),
-        None => Err(format!(
-            "{operation} 항목에 {key} 또는 address가 필요합니다"
-        )),
-    }
+    let selector = optional_item_str(item, operation, key)?;
+    crate::edit_ops::exactly_one_selector(operation, key, selector.is_some(), has_address)?;
+    Ok(selector.unwrap_or_default().to_string())
 }
 
 // ---- 도구 핸들러 ----
@@ -2409,7 +2405,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_edit",
-            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 하나 이상이 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 이전과 같이 address가 대상을 정한다.",
+            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
@@ -2473,7 +2469,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "anyOf": [{"required": ["pattern"]}, {"required": ["address"]}]}, "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위, pattern 생략 가능)"},
+                    "oneOf": [{"required": ["pattern"]}, {"required": ["address"]}]}, "description": "글자 서식(매칭 텍스트; address 지정 시 해당 run/범위, pattern과 address 중 하나만 지정)"},
                 "set_align": {"type": "array", "items": {"type": "object", "properties": {
                     "pattern": {"type": "string"},
                     "align": {"type": "string", "enum": ["left", "right", "center", "justify", "distribute", "divide"]},
@@ -2486,7 +2482,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "required": ["align"], "anyOf": [{"required": ["pattern"]}, {"required": ["address"]}]}, "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단, pattern 생략 가능)"},
+                    "required": ["align"], "oneOf": [{"required": ["pattern"]}, {"required": ["address"]}]}, "description": "문단 정렬(매칭 문단; address 지정 시 해당 문단, pattern과 address 중 하나만 지정)"},
                 "insert_para": {"type": "array", "items": {"type": "object", "properties": {
                     "anchor": {"type": "string"}, "text": {"type": "string"},
                     "before": {"type": "boolean", "description": "true면 앵커 문단 앞(기본 뒤)"},
@@ -2499,7 +2495,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "required": ["text"], "anyOf": [{"required": ["anchor"]}, {"required": ["address"]}]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준, anchor 생략 가능)"},
+                    "required": ["text"], "oneOf": [{"required": ["anchor"]}, {"required": ["address"]}]}, "description": "문단 삽입(앵커 문단 앞/뒤, 모양 상속; address 지정 시 해당 문단 기준, anchor와 address 중 하나만 지정)"},
                 "delete_para": {"type": "array", "items": {"type": "object", "properties": {
                     "matching": {"type": "string"},
                     "address": {"type": "object", "additionalProperties": false,
@@ -2511,7 +2507,7 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "anyOf": [{"required": ["matching"]}, {"required": ["address"]}]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단, matching 생략 가능)"},
+                    "oneOf": [{"required": ["matching"]}, {"required": ["address"]}]}, "description": "매칭 텍스트가 든 문단 삭제(최소 1문단 유지; address 지정 시 해당 문단, matching과 address 중 하나만 지정)"},
                 "add_row": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer"},
                     "at": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "삽입 경계(생략 시 끝, 0-기반)"},
@@ -2566,8 +2562,8 @@ fn tool_defs() -> Vec<Value> {
                                 "required": ["section", "paragraph"]},
                             "chars": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
                         }}},
-                    "anyOf": [{"required": ["pattern"]}, {"required": ["address"]}]},
-                    "description": "문단모양(매칭 문단; address 지정 시 해당 문단, pattern 생략 가능): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
+                    "oneOf": [{"required": ["pattern"]}, {"required": ["address"]}]},
+                    "description": "문단모양(매칭 문단; address 지정 시 해당 문단, pattern과 address 중 하나만 지정): 줄간격(비율% 또는 고정pt)·들여쓰기·여백(mm)·정렬"},
                 "set_cell_para": {"type": "array", "items": {"type": "object", "properties": {
                     "table": {"type": "integer", "minimum": 0, "description": "0-기반 표 인덱스(재귀 순서)"},
                     "row": {"type": "integer", "minimum": 0}, "col": {"type": "integer", "minimum": 0},
@@ -5085,7 +5081,6 @@ mod tests {
                 "output": mcp_out,
                 "report": mcp_report_path,
                 "set_format": [{
-                    "pattern": "같은 문장 끝",
                     "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
                     "bold": true
                 }]
@@ -5144,7 +5139,6 @@ mod tests {
                 "output": dry_out,
                 "dry_run": true,
                 "set_format": [{
-                    "pattern": "같은 문장 끝",
                     "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
                     "bold": true
                 }]
@@ -5643,7 +5637,6 @@ mod tests {
                 "input": source,
                 "output": mcp_out,
                 "set_format": [{
-                    "pattern": "같은 문장 끝",
                     "address": {"at": {"section": 0, "paragraph": 2, "run": 0}, "chars": [0, 2]},
                     "bold": true
                 }]
@@ -5688,7 +5681,6 @@ mod tests {
                 "input": source,
                 "output": both_out,
                 "set_format": [{
-                    "pattern": "같은 문장 끝",
                     "address": {"id": "0000000000000000.0.2.0", "at": {"section": 0, "paragraph": 2, "run": 0}},
                     "bold": true
                 }]
@@ -5704,12 +5696,11 @@ mod tests {
 
         // A checksum that does not match the addressed paragraph aborts the batch the same way.
         let drift_out = temp_file("typed-address-checksum-drift.hwpx");
-        tool_edit(
+        let error = tool_edit(
             &json!({
                 "input": source,
                 "output": drift_out,
                 "set_format": [{
-                    "pattern": "같은 문장 끝",
                     "address": {"id": "0000000000000000.0.2.0"},
                     "bold": true
                 }]
@@ -5717,6 +5708,10 @@ mod tests {
             &ctx(),
         )
         .unwrap_err();
+        assert!(
+            error.contains("체크섬이 일치하지 않습니다"),
+            "체크섬 불일치 오류: {error}"
+        );
         assert!(!drift_out.exists(), "체크섬 불일치 시 출력을 쓰면 안 된다");
 
         // Omitting address keeps today's pattern-based behavior: both duplicates are restyled.
@@ -5755,9 +5750,8 @@ mod tests {
 
     /// #331: on the five legacy-selector arms an address-only MCP item lands byte-identical
     /// output to the same op on the CLI `--ops` channel; the legacy-only form still matches the
-    /// CLI's legacy op; the MCP-only legacy+address combination stays accepted with the address
-    /// picking the target (same bytes as address-only); neither selector is rejected with
-    /// nothing written.
+    /// CLI's legacy op; legacy+address is refused by the item schema and by `tool_edit` with the
+    /// `--ops` channel's own error (#350); neither selector is rejected with nothing written.
     #[test]
     fn mcp_typed_address_only_legacy_arms_match_the_cli_ops_channel() {
         let source = temp_file("typed-address-only-source.hwpx");
@@ -5828,9 +5822,13 @@ mod tests {
             let address_item = with(&fields, &[("address", address.clone())]);
             let both_item = with(&address_item, &[(key, selector.clone())]);
             let legacy_item = with(&fields, &[(key, selector.clone())]);
-            for item in [&address_item, &both_item, &legacy_item] {
+            for item in [&address_item, &legacy_item] {
                 assert!(fits(arm, item), "{arm}: 스키마가 {item}을 받아야 한다");
             }
+            assert!(
+                !fits(arm, &both_item),
+                "{arm}: 스키마가 {key}+address 항목을 거부해야 한다"
+            );
             assert!(
                 !fits(arm, &fields),
                 "{arm}: 스키마가 선택자 없는 항목을 거부해야 한다"
@@ -5859,13 +5857,33 @@ mod tests {
                 "{arm}: address-only MCP 출력이 CLI --ops와 다르다"
             );
 
-            mcp_edit(arm, both_item, &both_out)
-                .unwrap_or_else(|error| panic!("{arm} {key}+address: {error}"));
-            assert_eq!(
-                std::fs::read(&both_out).unwrap(),
-                std::fs::read(&address_out).unwrap(),
-                "{arm}: {key}+address는 address가 대상을 정해야 한다"
+            // legacy+address: MCP refuses it with the exact error the CLI `--ops` channel
+            // gives for the same item, and writes nothing.
+            let cli_both = with(
+                &cli_fields,
+                &[
+                    ("op", json!(arm)),
+                    ("address", address.clone()),
+                    (key, selector.clone()),
+                ],
             );
+            let ops_path = temp_file(&format!("typed-address-only-{arm}-cli-both-ops.json"));
+            std::fs::write(&ops_path, json!([cli_both]).to_string()).unwrap();
+            let cli_error = crate::edit_ops::load_ops(&ops_path)
+                .err()
+                .unwrap_or_else(|| panic!("{arm}: CLI --ops가 {key}+address를 거부해야 한다"))
+                .to_string();
+            let _ = std::fs::remove_file(&ops_path);
+            assert!(
+                cli_error.contains("중 하나만 지정해야 합니다"),
+                "{arm}: CLI --ops의 {key}+address 오류: {cli_error}"
+            );
+            let error = mcp_edit(arm, both_item, &both_out).unwrap_err();
+            assert_eq!(
+                error, cli_error,
+                "{arm}: {key}+address는 CLI --ops와 같은 오류로 거부해야 한다"
+            );
+            assert!(!both_out.exists(), "{arm}: 거부 시 출력을 쓰면 안 된다");
 
             mcp_edit(arm, legacy_item, &legacy_out)
                 .unwrap_or_else(|error| panic!("{arm} {key}-only: {error}"));
@@ -5881,14 +5899,6 @@ mod tests {
                 std::fs::read(&cli_legacy_out).unwrap(),
                 "{arm}: {key}-only MCP 출력이 CLI --ops와 다르다"
             );
-            // The selector alone picks a different target than the address, so the
-            // "both == address-only" check above really shows the address winning.
-            assert_ne!(
-                std::fs::read(&legacy_out).unwrap(),
-                std::fs::read(&address_out).unwrap(),
-                "{arm}: {key}-only 출력이 address-only와 같으면 both 검증이 무의미하다"
-            );
-
             let error = mcp_edit(arm, fields.clone(), &neither_out).unwrap_err();
             assert!(
                 error.contains(&format!("{arm} 항목에 {key} 또는 address가 필요합니다")),
