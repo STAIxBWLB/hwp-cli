@@ -2475,7 +2475,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "f081dac397d6d0bc9776e9fa3f6b3a9d76e330b595d5ea9224c037db8d9b6d70",
+        actual, "eadf17b0c09e77189fc26f9b90cb9145146b3eacd8cdde60691a484216a4a8b5",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2813,11 +2813,19 @@ fn failed_op_under_allow_partial_reports_status_failed() {
 fn failed_op_reason_carries_no_request_text() {
     let dir = test_dir("report-reason-content-free");
     let md = dir.join("doc.md");
-    std::fs::write(&md, DUPLICATE_TEXT_MD).unwrap();
+    // A one-column table after the paragraphs: a vertical form ("소속" over "학교") that
+    // `set_cell_by_label` resolves, and that `style_tables` skips as unstyleable.
+    std::fs::write(
+        &md,
+        format!("{DUPLICATE_TEXT_MD}\n| 소속 |\n|---|\n| 학교 |\n"),
+    )
+    .unwrap();
     let base = dir.join("base.hwpx");
     new_from(&md, &base);
-    // Every failing op below carries its own "LEAK-" string; the first op applies so the
-    // batch publishes under --allow-partial.
+    // Every failing op below carries its own "LEAK-" string, or fails by changing nothing;
+    // the first op applies so the batch publishes under --allow-partial. An addressed
+    // `set_align` cannot fail softly (preflight resolves the paragraph, and applying an
+    // alignment it already has still counts as applied), so it is not listed.
     let cases = [
         (r#"{"op":"set_meta","key":"title","value":"applied"}"#, None),
         (
@@ -2887,6 +2895,41 @@ fn failed_op_reason_carries_no_request_text() {
         (
             r#"{"op":"delete_bookmark","name":"LEAK-delbookmark-name"}"#,
             Some("delete_bookmark: no match"),
+        ),
+        (
+            r#"{"op":"set_meta","key":"title","value":"applied"}"#,
+            Some("set_meta: no change"),
+        ),
+        // The first set_cell rewrites the cell into its edited form, even with the same text;
+        // a repeat, and the label edit of the same cell, then change nothing.
+        (
+            r#"{"op":"set_cell","table":0,"row":1,"col":0,"text":"학교"}"#,
+            None,
+        ),
+        (
+            r#"{"op":"set_cell","table":0,"row":1,"col":0,"text":"학교"}"#,
+            Some("set_cell: no change"),
+        ),
+        (
+            r#"{"op":"set_cell_by_label","label":"소속","text":"학교"}"#,
+            Some("set_cell_by_label: no change"),
+        ),
+        (
+            r#"{"op":"set_cell_para","table":0,"row":1,"col":0}"#,
+            Some("set_cell_para: no change"),
+        ),
+        (r#"{"op":"set_page"}"#, Some("set_page: no change")),
+        (
+            r#"{"op":"set_para","address":{"at":{"section":0,"paragraph":2}}}"#,
+            Some("set_para: paragraph not found at the address, or no change"),
+        ),
+        (
+            r#"{"op":"style_tables","preset":"official"}"#,
+            Some("style_tables: no styleable table"),
+        ),
+        (
+            r#"{"op":"set_table_placement","placement":"inline","table":9}"#,
+            Some("set_table_placement: table not found"),
         ),
     ];
     let ops = dir.join("ops.json");

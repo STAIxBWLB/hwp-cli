@@ -13,10 +13,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Compatibility**
 
 - A failed op's `reason` in `edit-report-v1` (`hwp edit --report` and `--dry-run`, and the MCP
-  `hwp_edit` report and response `ops`) is now a fixed `<op>: <cause>` label such as
-  `replace: no match`, instead of a copy of the request. The schema's shape is unchanged; only
-  its descriptions changed, which moves the hash for consumers that pin it. The label's wording
-  is not covered by SemVer beyond being a string, so match on `op` and `status`, not on it.
+  `hwp_edit` report and response `ops`) is now a fixed, content-free label, usually
+  `<op>: <cause>` such as `replace: no match`, instead of a copy of the request. An op whose miss
+  preflight already reported keeps its fixed notice. The schema's shape is unchanged; only the
+  `reason` description changed, which moves the hash for consumers that pin it. The label's
+  wording is not covered by SemVer beyond being a string, so match on `op` and `status`, not on
+  it.
 
 **Security**
 
