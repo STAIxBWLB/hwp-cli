@@ -4107,6 +4107,55 @@ mod tests {
         }
     }
 
+    /// #376: a part anchor in the first paragraph fills through MCP `parts` for both formats, and
+    /// the output keeps the template's section definition.
+    #[test]
+    fn mcp_fill_parts_into_the_first_paragraph_keeps_the_section_definition() {
+        let section_def = |path: &Path| {
+            crate::commands::cat::load_document(path).unwrap().sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .find_map(|control| match control {
+                    hwp_model::Control::SectionDef(section) => Some(section.clone()),
+                    _ => None,
+                })
+        };
+        let part = temp_file("fill-parts-first-part.md");
+        std::fs::write(&part, "부분\n").unwrap();
+        for ext in ["hwpx", "hwp"] {
+            let template = temp_file(&format!("fill-parts-first-template.{ext}"));
+            create_hwpx(&template, "{{본문}}\n\n메일: {{x}}");
+            let out = temp_file(&format!("fill-parts-first-out.{ext}"));
+            let result = tool_fill(
+                &json!({
+                    "input": template,
+                    "output": out,
+                    "values": {"x": "v"},
+                    "parts": {"본문": part.display().to_string()}
+                }),
+                &ctx(),
+            );
+            result.unwrap_or_else(|error| panic!("{ext}: {error}"));
+            let plain = crate::commands::cat::load_document(&out)
+                .unwrap()
+                .plain_text();
+            assert!(
+                plain.contains("부분") && plain.contains("메일: v"),
+                "{plain}"
+            );
+            let expected = section_def(&template);
+            assert!(
+                expected.is_some(),
+                "{ext}: the template has a section definition"
+            );
+            assert_eq!(section_def(&out), expected, "{ext}");
+            for path in [&template, &out] {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        let _ = std::fs::remove_file(&part);
+    }
+
     /// #364: `forms` adds the form fields to `hwp_slots` and fills them in `hwp_fill`.
     #[test]
     fn mcp_slots_and_fill_forms() {
