@@ -4513,7 +4513,13 @@ fn label_edit_after_a_table_change_is_refused() {
         let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{change},{fill}]"));
         assert!(!success, "{change}: {stderr}");
         assert!(!output.exists(), "{change}");
-        assert!(stderr.contains("set_cell_by_label이"), "{change}: {stderr}");
+        // The label edit is the op after the change ops; the first change op is blamed.
+        let label_index = change.matches(r#""op""#).count();
+        assert!(
+            stderr.contains(&format!("op[{label_index}] set_cell_by_label이"))
+                && stderr.contains("op[0] "),
+            "{change}: {stderr}"
+        );
 
         let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{fill},{change}]"));
         assert!(success, "{change}: {stderr}");

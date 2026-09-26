@@ -1090,12 +1090,14 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let Some(resolved) = resolved else {
                         continue;
                     };
-                    // #358: only --replace and --set-cell run before this, and --set-cell can
-                    // drop a table nested in the cell it rewrites, which renumbers later tables.
+                    // #358: only --replace, --set-cell and earlier label edits run before this,
+                    // and a cell write can drop a table nested in the cell it rewrites, which
+                    // renumbers later tables.
                     if table_count(&doc) != tables_at_preflight {
                         anyhow::bail!(
-                            "--set-cell-by-label: 앞선 --set-cell이 셀 안의 표를 지워, 사전 검증에서 찾은 \
-                             칸(표{} ({},{}))이 다른 표의 칸일 수 있습니다 (편집을 두 번으로 나누세요)",
+                            "--set-cell-by-label: 앞선 셀 쓰기(--set-cell 또는 앞선 --set-cell-by-label)가 \
+                             셀 안의 표를 지워, 사전 검증에서 찾은 칸(표{} ({},{}))이 다른 표의 칸일 수 있습니다 \
+                             (편집을 두 번으로 나누세요)",
                             resolved.candidate.table,
                             resolved.candidate.row,
                             resolved.candidate.col
@@ -1646,7 +1648,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             anyhow::bail!(
                 "op[{changed}] {}이(가) 표를 더하거나 빼거나, 표의 행·열을 바꾸거나, 표가 든 문단을 옮겨, \
                  op[{index}] set_cell_by_label이 사전 검증에서 찾은 칸(표{} ({},{}))이 다른 칸일 수 있습니다 \
-                 (레이블 편집을 앞에 두거나, 편집을 두 번으로 나누세요. \
+                 (op[{index}]을(를) op[{changed}]보다 앞에 두거나, 편집을 두 번으로 나누세요. \
                  MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
                 typed_op_kind(&plan.typed_operations[changed]),
                 resolved.candidate.table,

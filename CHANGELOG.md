@@ -26,11 +26,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   whose path it changes is now refused. So is a `set_cell_by_label` after an op that adds or
   removes a table (a `set_cell` that rewrites a cell holding one included), moves a paragraph
   holding one, or changes any table's rows, columns or merges, and a `--set-cell-by-label` after a
-  `--set-cell` that dropped a nested table (#358, below). The checks are conservative: a change
-  after the addressed paragraph in the same list, or to a table other than the form, is refused
-  too, although such a batch used to apply correctly. Put the other op after the addressed and
-  label ones, address it, or split the edit in two. MCP `hwp_edit` applies op kinds in a fixed
-  order, so there the remedy is two calls.
+  cell write (`--set-cell` or an earlier label edit) that dropped a nested table (#358, below).
+  The checks are conservative: a change after the addressed paragraph in the same list, or to a
+  table other than the form, is refused too, although such a batch used to apply correctly. Put
+  the other op after the addressed and label ones, give an op with no address an address (this
+  only answers the first check), or split the edit in two. MCP `hwp_edit` applies op kinds in a
+  fixed order, so there the remedy is two calls.
 - The bytes of `certification-report-v1.schema.json` and `render-report-v1.schema.json` changed,
   for consumers that pin schema hashes. `render-report-v1` changed in descriptions only;
   `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
@@ -155,7 +156,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
     its label, or rewrote a cell holding a nested table wrote the value into another form or
     another cell. A label edit after any op that adds or removes a table, moves a paragraph
     holding one, or changes a table's rows, columns or merges is now refused (on the flag channel,
-    where only `--replace` and `--set-cell` run first, after a `--set-cell` that dropped a table).
+    where only `--replace`, `--set-cell` and earlier label edits run first, after a cell write that
+    dropped a table).
   - `move_para` into a cell or text box below its source, in the same list, panicked, and so did
     the reverse, a cell paragraph moved out to before its own table. Both now find the
     destination and the source where the other half of the move left them, and a destination
