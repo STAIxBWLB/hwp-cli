@@ -394,6 +394,14 @@ v0.10.0부터 `--preset`과 문서 틀 플래그는 거부되지 않고 템플�
 처리하며, `--allow-partial`을 주지 않는 한 아무것도 쓰지 않는다. `--allow-partial`이면 하나도
 일치하지 않아도 입력을 그대로 게시하고 건수 0을 보고한다.
 
+**양식 필드** 한국 공문서 양식에는 슬롯이 거의 없다. `hwp slots --forms`는 레이블 셀(성명, 연락처
+등), 본문의 `라벨: 값`, 슬롯을 키·레이블·출처·신뢰도·등장 횟수와 함께 나열한다. `hwp fill --forms`는
+같은 `--data`/`--set` 값으로 이들을 한 번에 채운다. 레이블 셀 옆이나 아래 칸, 본문 라벨 뒤 텍스트,
+`학년(  )반` 빈칸, `□동의` 확인란, `(비고:   )` 빈칸이 대상이다. 키는 공백·쌍점·괄호를 무시하고
+비교하며, `--json`에 `unmatched` 키가 추가된다. 규칙은 [kordoc](https://github.com/chrisryugj/kordoc)
+(MIT)에서 이식했다. 이 경로는 IR을 거치므로 구역 XML은 `hwp edit`와 같은 방식으로 다시 쓰고,
+나머지 패키지 엔트리는 바이트 단위로 복사한다.
+
 **린트** `hwp lint`는 `.md`, `.hwp`, `.hwpx` 파일에(또는 `-`로 표준 입력의 markdown에) 10개 규칙을
 적용한다. 표기법 규칙 7개(날짜 `2026. 8. 20.`, 시각, 금액, `붙임:`의 쌍점과 번호, 마무리 `끝.`,
 문장부호), 장식 기호(`■ ▶ ▲ ◆ ● ※`. 공문서에서는 `□ ○`나 중첩 목록으로 써야 한다)를 잡는 규칙
@@ -599,7 +607,8 @@ hwp-cli는 1.0.0부터 [유의적 버전](https://semver.org/lang/ko/)을 따른
 파생물)를 동봉하지 않고 공식 배포처 링크만 제공한다([docs/README.ko.md](docs/README.ko.md) 참고).
 
 테스트 픽스처 일부는 [hahnlee/hwp-rs](https://github.com/hahnlee/hwp-rs)(Apache-2.0)에서 가져왔다.
-`fixtures/README.md`와 루트 `NOTICE` 참고.
+`fixtures/README.md`와 루트 `NOTICE` 참고. `hwp slots --forms`·`hwp fill --forms`의 양식 필드 규칙은
+[chrisryugj/kordoc](https://github.com/chrisryugj/kordoc)(MIT)에서 이식했다. 루트 `NOTICE` 참고.
 
 ## 라이선스
 

@@ -10,6 +10,7 @@ pub mod document_split;
 pub mod docx;
 pub mod edit;
 pub mod field;
+pub mod form;
 pub mod format;
 pub mod frames;
 pub mod from_html;
@@ -47,6 +48,7 @@ pub use field::{
     FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, list_fields,
     replace_slots, scan_placeholders, set_field,
 };
+pub use form::{FormField, FormFieldSource, fill_form_fields, scan_form_fields};
 pub use format::{
     CharFormat, PageProps, ParaProps, apply_para_props_at, restyle_range_at, set_cell_para_props,
     set_char_format, set_page_def, set_para_align, set_para_align_at, set_para_props,

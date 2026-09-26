@@ -33,13 +33,12 @@ pub fn normalize_form_label(label: &str) -> String {
 
 /// Find writable form cells for a matching label.
 ///
-/// Table indices use the same recursive document order as [`set_cell`]. This
-/// intentionally calls the readonly table walker so discovery cannot clear
-/// opaque HWPX XML or otherwise mutate the document. A label may address the
-/// immediately adjacent cell, or the first data cell directly below a label in
-/// a complete table header row. An empty or matching `{{label}}` cell is an
-/// explicit form-value marker, so it keeps adjacent-form precedence even when
-/// a later row makes the first row look like a complete header.
+/// Table indices use the same recursive document order as [`set_cell`]. A
+/// label may address the immediately adjacent cell, or the first data cell
+/// directly below a label in a complete table header row. An empty or matching
+/// `{{label}}` cell is an explicit form-value marker, so it keeps adjacent-form
+/// precedence even when a later row makes the first row look like a complete
+/// header.
 pub fn find_form_cells_by_label(
     doc: &mut Document,
     label: &str,
@@ -50,46 +49,77 @@ pub fn find_form_cells_by_label(
         return Vec::new();
     }
 
-    let mut candidates = Vec::new();
+    let mut candidates: Vec<FormCellCandidate> =
+        walk_form_cells(doc, table, |visible, adjacent, below| {
+            if normalize_form_label(visible) != wanted {
+                return None;
+            }
+            // A matching placeholder is part of the documented form-value
+            // layout, not a second column heading. Prefer it before the
+            // complete-header rule; this preserves the legacy adjacent form
+            // contract without treating a multi-column header as a form.
+            let target = match (adjacent, below) {
+                (Some(adjacent), Some(_)) if is_explicit_form_value(adjacent, &wanted) => {
+                    FormTarget::Adjacent
+                }
+                (_, Some(_)) => FormTarget::Below,
+                (Some(_), None) => FormTarget::Adjacent,
+                (None, None) => return None,
+            };
+            Some(((), target))
+        })
+        .into_iter()
+        .map(|(_, candidate)| candidate)
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
+/// The neighbour of a label cell that a form policy writes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FormTarget {
+    /// The cell to the right, in the same row.
+    Adjacent,
+    /// In a complete header row, the first data cell below.
+    Below,
+}
+
+/// The table walk every label finder shares ([`find_form_cells_by_label`] and
+/// the form fill). For every table in recursive document order, `pick` sees
+/// each cell's visible text, its span-aware right neighbour and, when row 0 is
+/// a complete header, the first data cell below it, and names the neighbour to
+/// write together with a tag of its own. Readonly: discovery cannot clear opaque
+/// HWPX XML or otherwise mutate the document.
+pub(crate) fn walk_form_cells<T>(
+    doc: &mut Document,
+    table: Option<usize>,
+    mut pick: impl FnMut(
+        &str,
+        Option<&hwp_model::Cell>,
+        Option<&hwp_model::Cell>,
+    ) -> Option<(T, FormTarget)>,
+) -> Vec<(T, FormCellCandidate)> {
+    let mut out = Vec::new();
     let mut table_index = 0usize;
     loop {
         let found = with_nth_table_readonly(doc, table_index, |current| {
             if table.is_some_and(|scope| scope != table_index) {
                 return Vec::new();
             }
+            let header_is_complete = current
+                .cells
+                .iter()
+                .filter(|cell| cell.row == 0)
+                .all(|cell| !normalize_form_label(&cell_text(cell)).is_empty());
             let mut matches = Vec::new();
-            let header_is_complete =
-                current
-                    .cells
-                    .iter()
-                    .filter(|cell| cell.row == 0)
-                    .all(|cell| {
-                        !normalize_form_label(
-                            &cell
-                                .paragraphs
-                                .iter()
-                                .map(Paragraph::plain_text)
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        )
-                        .is_empty()
-                    });
             for label_cell in &current.cells {
-                let visible = label_cell
-                    .paragraphs
-                    .iter()
-                    .map(Paragraph::plain_text)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if normalize_form_label(&visible) != wanted {
-                    continue;
-                }
                 let right_col = label_cell.col.saturating_add(label_cell.col_span);
                 let adjacent = current
                     .cells
                     .iter()
                     .find(|cell| cell.row == label_cell.row && cell.col == right_col);
-                let header = if header_is_complete && label_cell.row == 0 {
+                let below = if header_is_complete && label_cell.row == 0 {
                     let first_data_row = label_cell.row.saturating_add(label_cell.row_span);
                     current
                         .cells
@@ -98,25 +128,22 @@ pub fn find_form_cells_by_label(
                 } else {
                     None
                 };
-
-                // A matching placeholder is part of the documented form-value
-                // layout, not a second column heading. Prefer it before the
-                // complete-header rule; this preserves the legacy adjacent form
-                // contract without treating a multi-column header as a form.
-                let target = match (adjacent, header) {
-                    (Some(adjacent), Some(_)) if is_explicit_form_value(adjacent, &wanted) => {
-                        Some(adjacent)
-                    }
-                    (_, Some(header)) => Some(header),
-                    (Some(adjacent), None) => Some(adjacent),
-                    (None, None) => None,
+                let Some((tag, target)) = pick(&cell_text(label_cell), adjacent, below) else {
+                    continue;
+                };
+                let target = match target {
+                    FormTarget::Adjacent => adjacent,
+                    FormTarget::Below => below,
                 };
                 if let Some(target) = target {
-                    matches.push(FormCellCandidate {
-                        table: table_index,
-                        row: target.row,
-                        col: target.col,
-                    });
+                    matches.push((
+                        tag,
+                        FormCellCandidate {
+                            table: table_index,
+                            row: target.row,
+                            col: target.col,
+                        },
+                    ));
                 }
             }
             matches
@@ -124,22 +151,23 @@ pub fn find_form_cells_by_label(
         let Some(found) = found else {
             break;
         };
-        candidates.extend(found);
+        out.extend(found);
         table_index += 1;
     }
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates
+    out
 }
 
-fn is_explicit_form_value(cell: &hwp_model::Cell, wanted: &str) -> bool {
-    let visible = cell
-        .paragraphs
+/// A cell's visible text: its paragraphs' plain text joined by `\n`.
+pub(crate) fn cell_text(cell: &hwp_model::Cell) -> String {
+    cell.paragraphs
         .iter()
         .map(Paragraph::plain_text)
         .collect::<Vec<_>>()
-        .join("\n");
-    let normalized = normalize_form_label(&visible);
+        .join("\n")
+}
+
+fn is_explicit_form_value(cell: &hwp_model::Cell, wanted: &str) -> bool {
+    let normalized = normalize_form_label(&cell_text(cell));
     let tokens = hwp_model::slot_tokens(&normalized);
     normalized.is_empty()
         || matches!(tokens.as_slice(), [token]

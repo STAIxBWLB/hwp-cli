@@ -1880,9 +1880,13 @@
     "name": "hwp_diff"
   },
   {
-    "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환. 이름은 중괄호·제어문자를 뺀 임의 텍스트이며 `{{ name }}`의 안쪽 공백은 제거(hwp_fill과 같은 문법).",
+    "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환. 이름은 중괄호·제어문자를 뺀 임의 텍스트이며 `{{ name }}`의 안쪽 공백은 제거(hwp_fill과 같은 문법). forms=true면 한국 공문서 양식 필드(레이블 셀·본문 \"라벨: 값\"·자리표시자)를 fields [{key, label, source, confidence, occurrences, required}]로 추가.",
     "inputSchema": {
       "properties": {
+        "forms": {
+          "description": "true면 양식 필드(fields)도 반환; 기본 false",
+          "type": "boolean"
+        },
         "path": {
           "type": "string"
         }
@@ -1900,6 +1904,10 @@
       "properties": {
         "allow_partial": {
           "description": "미발견 키가 있어도 일치한 값만 게시(하나도 없으면 입력을 그대로 게시하고 건수 0 보고); 기본 false",
+          "type": "boolean"
+        },
+        "forms": {
+          "description": "true면 values로 양식 필드(레이블 셀 옆·아래 칸, \"라벨: 값\", 빈칸, 확인란)도 채우고 unmatched를 보고(hwpx, parts와 함께 불가); 기본 false",
           "type": "boolean"
         },
         "input": {

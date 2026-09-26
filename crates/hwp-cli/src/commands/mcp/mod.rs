@@ -718,8 +718,13 @@ fn tool_slots(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, Strin
         .iter()
         .map(|p| json!({ "name": p.name, "occurrences": p.occurrences }))
         .collect();
+    let mut result = json!({ "placeholders": items });
+    if arg_bool(args, "forms", false)? {
+        result["fields"] =
+            crate::commands::slots::form_fields_json(&hwp_convert::scan_form_fields(&doc));
+    }
     Ok(vec![text_content(
-        &serde_json::to_string_pretty(&json!({ "placeholders": items })).unwrap_or_default(),
+        &serde_json::to_string_pretty(&result).unwrap_or_default(),
     )])
 }
 
@@ -743,7 +748,18 @@ fn tool_fill(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         .collect();
     // parts(선택): {앵커이름: 부분 파일 경로} — 부분(md+HTML) 블록을 앵커 문단에 이식.
     let parts_obj = args.get("parts").and_then(Value::as_object);
-    let report = if let Some(parts) = parts_obj {
+    let forms = arg_bool(args, "forms", false)?;
+    let report = if forms && parts_obj.is_some() {
+        return Err("forms와 parts는 함께 쓸 수 없습니다".into());
+    } else if forms {
+        crate::commands::fill::execute_forms(
+            &input,
+            &output,
+            &values,
+            arg_bool(args, "allow_partial", false)?,
+        )
+        .map_err(|error| format!("{error:#}"))?
+    } else if let Some(parts) = parts_obj {
         if parts.is_empty() && values.is_empty() {
             return Err("values와 parts가 모두 비어 있습니다".into());
         }
@@ -761,6 +777,7 @@ fn tool_fill(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             &set,
             None,
             arg_bool(args, "allow_partial", false)?,
+            false,
             ctx.roots(),
         )
         .map_err(|error| format!("{error:#}"))?
@@ -2750,9 +2767,10 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_slots",
-            "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환. 이름은 중괄호·제어문자를 뺀 임의 텍스트이며 `{{ name }}`의 안쪽 공백은 제거(hwp_fill과 같은 문법).",
+            "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환. 이름은 중괄호·제어문자를 뺀 임의 텍스트이며 `{{ name }}`의 안쪽 공백은 제거(hwp_fill과 같은 문법). forms=true면 한국 공문서 양식 필드(레이블 셀·본문 \"라벨: 값\"·자리표시자)를 fields [{key, label, source, confidence, occurrences, required}]로 추가.",
             "inputSchema": {"type": "object", "properties": {
-                "path": {"type": "string"}
+                "path": {"type": "string"},
+                "forms": {"type": "boolean", "description": "true면 양식 필드(fields)도 반환; 기본 false"}
             }, "required": ["path"]}
         }),
         json!({
@@ -2764,7 +2782,8 @@ fn tool_defs() -> Vec<Value> {
                     "description": "{자리표시자이름: 값} 객체"},
                 "parts": {"type": "object", "additionalProperties": {"type": "string"},
                     "description": "{앵커이름: 부분 파일 경로(md+HTML)} 객체 — 앵커 문단을 부분 블록으로 교체"},
-                "allow_partial": {"type": "boolean", "description": "미발견 키가 있어도 일치한 값만 게시(하나도 없으면 입력을 그대로 게시하고 건수 0 보고); 기본 false"}
+                "allow_partial": {"type": "boolean", "description": "미발견 키가 있어도 일치한 값만 게시(하나도 없으면 입력을 그대로 게시하고 건수 0 보고); 기본 false"},
+                "forms": {"type": "boolean", "description": "true면 values로 양식 필드(레이블 셀 옆·아래 칸, \"라벨: 값\", 빈칸, 확인란)도 채우고 unmatched를 보고(hwpx, parts와 함께 불가); 기본 false"}
             }, "required": ["input", "output", "values"]}
         }),
         json!({
@@ -4083,6 +4102,57 @@ mod tests {
         assert!(plain.contains("부분 본문입니다."), "{plain}");
         assert!(plain.contains("가로병합"), "{plain}");
         for path in [&template, &part, &out] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// #364: `forms` adds the form fields to `hwp_slots` and fills them in `hwp_fill`.
+    #[test]
+    fn mcp_slots_and_fill_forms() {
+        let template = temp_file("forms-template.hwpx");
+        create_hwpx(&template, "{{제목}}\n\n| 성명 | |\n|---|---|\n| 주소 | |\n");
+        let slots = tool_slots(&json!({"path": template, "forms": true}), &ctx()).unwrap();
+        let slots: Value = serde_json::from_str(slots[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(slots["placeholders"][0]["name"], "제목");
+        let fields = slots["fields"].as_array().unwrap();
+        assert!(
+            fields
+                .iter()
+                .any(|f| f["key"] == "성명" && f["source"] == "formLabel"),
+            "{slots}"
+        );
+
+        let out = temp_file("forms-out.hwpx");
+        let result = tool_fill(
+            &json!({
+                "input": template,
+                "output": out,
+                "values": {"제목": "신청서", "성명": "홍길동", "없는키": "x"},
+                "allow_partial": true,
+                "forms": true
+            }),
+            &ctx(),
+        )
+        .expect("forms fill");
+        let report: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(report["mode"], "forms");
+        assert_eq!(report["counts"]["성명"], 1);
+        assert_eq!(report["unmatched"], json!(["없는키"]));
+        let plain = crate::commands::cat::load_document(&out)
+            .unwrap()
+            .plain_text();
+        assert!(
+            plain.contains("신청서") && plain.contains("성명\t홍길동"),
+            "{plain}"
+        );
+
+        let refused = tool_fill(
+            &json!({"input": template, "output": out, "values": {"성명": "x"},
+                    "parts": {"a": "b.md"}, "forms": true}),
+            &ctx(),
+        );
+        assert!(refused.is_err());
+        for path in [&template, &out] {
             let _ = std::fs::remove_file(path);
         }
     }

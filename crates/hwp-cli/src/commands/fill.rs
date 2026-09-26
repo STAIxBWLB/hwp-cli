@@ -7,6 +7,9 @@
 //! (3) **부분(part) 채우기** — `--set name=@part.md` 또는 `--data`의 `parts` 맵이 있으면
 //! `{{name}}`만 담긴 앵커 문단을 부분 파일(md+HTML 혼합, 계약 docs/design/18)의 블록으로
 //! 교체한다(IR 경로, .hwp/.hwpx 모두 — Maru 부분별 작성·조합 워크플로).
+//! (4) **양식 채우기** (`--forms`, hwpx) — slots and Korean form fields (label cells, inline
+//! `라벨: 값`, blanks, checkboxes; `hwp_convert::fill_form_fields`) in one IR pass, written the
+//! way `hwp edit` writes hwpx: sections re-serialized, every other entry raw-copied.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,6 +37,7 @@ pub fn run(
     data: Option<&Path>,
     json: bool,
     allow_partial: bool,
+    forms: bool,
 ) -> anyhow::Result<()> {
     let data_value: Option<serde_json::Value> = match data {
         Some(d) => {
@@ -58,7 +62,15 @@ pub fn run(
         None => None,
     };
 
-    let report = execute(input, output, set, data_value.as_ref(), allow_partial, &[])?;
+    let report = execute(
+        input,
+        output,
+        set,
+        data_value.as_ref(),
+        allow_partial,
+        forms,
+        &[],
+    )?;
     crate::commands::preservation::print_report(&report.preservation);
 
     if json {
@@ -86,6 +98,7 @@ pub fn execute(
     set: &[String],
     data_value: Option<&serde_json::Value>,
     allow_partial: bool,
+    forms: bool,
     roots: &[PathBuf],
 ) -> anyhow::Result<FillReport> {
     // 데이터에 `tables`가 (객체 항목의) 비어있지 않은 배열이면 IR 기반 표 채우기로 분기.
@@ -121,6 +134,9 @@ pub fn execute(
             Some(literal) => plain_set.push(format!("{k}=@{literal}")), // '@@' → 리터럴
             None => plain_set.push(pair.clone()),
         }
+    }
+    if forms && (has_tables || !part_paths.is_empty()) {
+        anyhow::bail!("--forms는 parts(부분 채우기)·tables(표 채우기)와 함께 쓸 수 없습니다");
     }
     if !part_paths.is_empty() {
         if has_tables {
@@ -177,7 +193,70 @@ pub fn execute(
         );
     }
 
+    if forms {
+        return execute_forms(input, output, &values, allow_partial);
+    }
     execute_values(input, output, &values, allow_partial)
+}
+
+/// `--forms`: fill the slots and Korean form fields of an hwpx template in one IR pass, then
+/// write it the way `hwp edit` writes hwpx (sections re-serialized, other entries raw-copied).
+/// Counts are per key as the caller spelled it; a key that matched nothing fails the fill
+/// unless `allow_partial`, and then a fill that changed nothing publishes the input unchanged.
+pub fn execute_forms(
+    input: &Path,
+    output: &Path,
+    values: &BTreeMap<String, String>,
+    allow_partial: bool,
+) -> anyhow::Result<FillReport> {
+    if values.is_empty() {
+        anyhow::bail!("치환 값이 없습니다");
+    }
+    if crate::format::detect(input)? != crate::format::FileFormat::Hwpx {
+        anyhow::bail!(
+            "{}: 양식 채우기(--forms)는 HWPX 입력 전용입니다",
+            input.display()
+        );
+    }
+    let original = load_document(input)?;
+    let mut doc = original.clone();
+    let counts = hwp_convert::fill_form_fields(&mut doc, values)
+        .map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
+    let missing: Vec<String> = counts
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !missing.is_empty() && !allow_partial {
+        anyhow::bail!(
+            "요청한 자리표시자·양식 필드를 찾지 못했습니다: {} \
+             (--allow-partial로 일치한 값만 적용 가능)",
+            missing.join(", ")
+        );
+    }
+
+    // Nothing changed: publish the input as it is, like a zero-match placeholder fill.
+    let writer_report = if doc == original {
+        publish_unchanged(input, output, &original)?
+    } else {
+        write_ir_fill(input, output, &original, &doc, false, true)?
+    };
+    let mut warnings = writer_report.warnings;
+    let preservation = writer_report.preservation;
+    if !missing.is_empty() {
+        warnings.push(format!("미치환 키: {}", missing.join(", ")));
+    }
+    let total = counts.values().sum();
+    Ok(FillReport {
+        output: output.display().to_string(),
+        mode: "forms",
+        replaced: total,
+        counts,
+        filled: total,
+        rows_added: 0,
+        warnings,
+        preservation,
+    })
 }
 
 pub fn execute_values(
@@ -485,7 +564,7 @@ fn fill_tables_ir(
     let writer_report = if doc == original {
         publish_unchanged(input, output, &original)?
     } else {
-        write_ir_fill(input, output, &original, &doc, added > 0)?
+        write_ir_fill(input, output, &original, &doc, added > 0, false)?
     };
     warnings.extend(writer_report.warnings);
 
@@ -665,7 +744,7 @@ fn fill_parts_ir(
     let writer_report = if doc == original {
         publish_unchanged(input, output, &original)?
     } else {
-        write_ir_fill(input, output, &original, &doc, true)?
+        write_ir_fill(input, output, &original, &doc, true, false)?
     };
     warnings.extend(writer_report.warnings);
 
@@ -800,9 +879,14 @@ fn write_ir_fill(
     original: &hwp_model::Document,
     edited: &hwp_model::Document,
     structural: bool,
+    surgical_hwpx: bool,
 ) -> anyhow::Result<hwp_model::WriteReport> {
     let write_staged = |source: &Path, staged: &Path| {
-        let mut report = write_table_fill(Some((source, original)), edited, staged, structural)?;
+        let mut report = if surgical_hwpx {
+            crate::commands::edit::write_hwpx_surgical(source, original, edited, staged)?
+        } else {
+            write_table_fill(Some((source, original)), edited, staged, structural)?
+        };
         report
             .preservation
             .extend(crate::commands::preservation::inspect_same_format_container(source, staged)?);
@@ -861,13 +945,22 @@ pub fn report_json(report: &FillReport) -> serde_json::Value {
             "warnings": report.warnings,
         })
     } else {
-        serde_json::json!({
+        let mut json = serde_json::json!({
             "output": report.output,
             "mode": report.mode,
             "replaced": report.replaced,
             "counts": report.counts,
             "warnings": report.warnings,
-        })
+        });
+        if report.mode == "forms" {
+            json["unmatched"] = report
+                .counts
+                .iter()
+                .filter(|(_, count)| **count == 0)
+                .map(|(name, _)| name.as_str())
+                .collect();
+        }
+        json
     }
 }
 

@@ -94,6 +94,9 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   `--allow-partial`은 일치한 부분만 발행 (하나도 없으면 입력 그대로, 건수 0). 슬롯 이름은
   중괄호·제어문자를 뺀 임의 텍스트이며, `{{ name }}`의 공백과 요청한 이름의 앞뒤 공백은
   제거하고, 값은 그대로 삽입합니다. 먼저 `hwp slots`로 슬롯을 확인하세요.
+  `--forms`는 같은 값으로 한국 공문서 양식 필드도 채웁니다 (hwpx): 레이블 셀 옆·아래 칸,
+  본문의 `라벨: 값`, `라벨(  )` 빈칸, `□항목` 확인란, `(라벨:  )` 빈칸. 키는 공백·쌍점·괄호를
+  무시하고 비교하며, `--json`에 `unmatched`가 추가됩니다.
 - `hwp compose {spec.json|yaml} -o {output}` — DocumentSpec v1/v2로부터의 결정적 조립.
   `--dry-run`은 쓰기 없이 검증만; `--report`는 실행 보고서를 JSON으로 출력.
 - `hwp template {template} --data {data} -o {output}` — TemplateSpec/Data v1로부터의
@@ -104,7 +107,9 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   PNG/SVG는 페이지당 파일 하나; PDF는 단일 다중 페이지 파일. CJK 폰트 필요.
   보호 입력은 `--password` 또는 `--password-stdin`을 받습니다.
 - `hwp fields {file} [--json]` / `hwp bookmarks {file} [--json]` / `hwp slots {file} [--json]`
-  — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열.
+  — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열. `hwp slots --forms`는
+  한국 공문서 양식 필드(레이블 셀, 본문의 `라벨: 값`)를 키·레이블·출처·신뢰도·등장 횟수·필수
+  여부와 함께 추가.
 - `hwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
   유효하면 종료 코드 0.
 - `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:

@@ -98,6 +98,9 @@ syntax (used by `fill`, `slots` and the template tools).
   0). A slot name is any text without braces or control characters; `{{ name }}` padding
   and requested names are trimmed, and values are inserted literally. List slots first with
   `hwp slots`.
+  `--forms` also fills Korean form fields from the same values (hwpx): the cell next to or below
+  a label cell, inline `라벨: 값`, `라벨(  )` blanks, `□옵션` checkboxes, `(라벨:  )` blanks;
+  keys match with spaces, colons and parentheses ignored, and `--json` adds `unmatched`.
 - `hwp compose {spec.json|yaml} -o {output}` — deterministic composition from DocumentSpec
   v1/v2. `--dry-run` validates without writing; `--report` prints the run report as JSON.
 - `hwp template {template} --data {data} -o {output}` — typed native HWP/HWPX generation from
@@ -108,7 +111,9 @@ syntax (used by `fill`, `slots` and the template tools).
   PNG/SVG write one file per page; PDF writes a single multi-page file. Needs CJK fonts.
   Protected inputs accept `--password` or `--password-stdin`.
 - `hwp fields {file} [--json]` / `hwp bookmarks {file} [--json]` / `hwp slots {file} [--json]`
-  — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots.
+  — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots. `hwp slots
+  --forms` adds Korean form fields (label cells, inline `라벨: 값`) with key, label, source,
+  confidence, occurrences and required.
 - `hwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
   parsing); exit code 0 when valid.
 - `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:

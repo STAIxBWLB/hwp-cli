@@ -322,6 +322,7 @@ List `{{name}}` text placeholders (template slots; a name is any text without br
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
+| `--forms` |  |  | Also list Korean form fields - label cells, inline "label: value" and the slots - with key, label, source, confidence, occurrences and required (JSON "fields"; kordoc rules) |
 
 ## `hwp fill`
 
@@ -337,6 +338,7 @@ Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, 
 | `--data` | `<DATA>` |  | JSON object file mapping slot name to value (bulk fill; names are trimmed like `{{ name }}`; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows) |
 | `--json` |  |  | Print the replacement summary as JSON ({output, replaced, counts}) |
 | `--allow-partial` |  |  | Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced). If none matched, the input is published unchanged with every count 0 |
+| `--forms` |  |  | Also fill Korean form fields from the same values (hwpx): the cell next to or below a label cell, inline "label: value", "label( )" blanks, "□option" checkboxes and "(label: )" blanks. Keys match with spaces, colons and parentheses ignored; the report adds "unmatched" |
 
 ## `hwp validate`
 

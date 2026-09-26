@@ -444,6 +444,9 @@ pub enum Cmd {
         /// Print as JSON
         #[arg(long)]
         json: bool,
+        /// Also list Korean form fields - label cells, inline "label: value" and the slots - with key, label, source, confidence, occurrences and required (JSON "fields"; kordoc rules)
+        #[arg(long)]
+        forms: bool,
     },
 
     /// Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, in hwpx; package preserved; values are literal)
@@ -465,6 +468,9 @@ pub enum Cmd {
         /// Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced). If none matched, the input is published unchanged with every count 0
         #[arg(long = "allow-partial")]
         allow_partial: bool,
+        /// Also fill Korean form fields from the same values (hwpx): the cell next to or below a label cell, inline "label: value", "label(  )" blanks, "□option" checkboxes and "(label:  )" blanks. Keys match with spaces, colons and parentheses ignored; the report adds "unmatched"
+        #[arg(long)]
+        forms: bool,
     },
 
     /// Structural validation (mimetype, required entries, XML parsing); exit code 0 when valid
