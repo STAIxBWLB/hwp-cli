@@ -778,8 +778,8 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
             at = whole.end();
             continue;
         }
-        // `https://` is a URL, not a label.
-        if seg[whole.end()..].starts_with("//") {
+        // `https://` is a URL, not a label: `//` right after the colon (`비고: // 없음` is a label).
+        if whole.as_str().ends_with([':', '：']) && seg[whole.end()..].starts_with("//") {
             at = whole.end();
             continue;
         }
@@ -1521,6 +1521,8 @@ mod tests {
         assert!(!fields.iter().any(|f| f.key == "https"), "{fields:?}");
         let (text, _) = fill_line(line, &[("홈페이지", "본교")]);
         assert_eq!(text, "홈페이지: 본교 (https://www.chu.ac.kr)");
+        let (text, _) = fill_line("비고: // 해당 없음", &[("비고", "없음")]);
+        assert_eq!(text, "비고: 없음");
 
         let (text, _) = fill_line(
             "「성명:  」 『소속:  』 ［직위:  ］",
