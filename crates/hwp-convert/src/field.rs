@@ -9,6 +9,8 @@
 //! IR을 바꾸지 않고 온디맨드로 파싱한다(리더/writer/왕복 무영향). 채우기는 값 영역만
 //! 교체하고 char_shape_run을 보정한다 — 쓰기는 편집 경로(write_hwp_edited)를 거친다.
 
+use std::collections::BTreeMap;
+
 use hwp_model::opaque::OpaqueRecord;
 use hwp_model::{CharShapeId, Control, Document, GenericControl, HwpChar, Paragraph};
 
@@ -410,7 +412,7 @@ pub struct PlaceholderInfo {
 /// Separate from form fields ([`list_fields`]): these are plain-text template slots. The
 /// grammar is [`hwp_model::slot_tokens`], the one `hwp fill` matches with. Only contiguous text
 /// inside one paragraph is scanned, so a slot never spans a control character or a line break.
-/// Fill a slot with [`replace_slot`].
+/// Fill slots with [`replace_slots`].
 pub fn scan_placeholders(doc: &Document) -> Vec<PlaceholderInfo> {
     let mut out: Vec<PlaceholderInfo> = Vec::new();
     for section in &doc.sections {
@@ -421,43 +423,105 @@ pub fn scan_placeholders(doc: &Document) -> Vec<PlaceholderInfo> {
     out
 }
 
-/// Replace every spelling of slot `name` (`{{name}}`, `{{ name }}`, ...) with `value` in the
-/// body, table cells and text boxes. Returns the number of tokens replaced.
-pub fn replace_slot(doc: &mut Document, name: &str, value: &str) -> usize {
-    let mut spellings = std::collections::BTreeSet::new();
-    for section in &doc.sections {
-        for para in &section.paragraphs {
-            for_each_text_segment(para, &mut |seg| {
-                for token in hwp_model::slot_tokens(seg) {
-                    if token.name == name {
-                        spellings.insert(seg[token.range].to_string());
-                    }
-                }
-            });
+/// Replace every requested `{{ name }}` of the body, table cells and text boxes with its value
+/// in one pass over the original text: a value is literal and never scanned again, and each
+/// token is filled once whatever its spelling. Keys are trimmed like names
+/// ([`hwp_model::slot_lookup`]). Returns the count per key as the caller spelled it, every key
+/// included.
+pub fn replace_slots(
+    doc: &mut Document,
+    values: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, usize>, String> {
+    let lookup = hwp_model::slot_lookup(values)?;
+    let mut counts: BTreeMap<String, usize> = values.keys().map(|k| (k.clone(), 0)).collect();
+    for section in &mut doc.sections {
+        for para in &mut section.paragraphs {
+            replace_slots_in(para, &lookup, &mut counts);
         }
     }
-    spellings
-        .iter()
-        .map(|spelling| crate::replace_text(doc, spelling, value, true))
-        .sum()
+    Ok(counts)
+}
+
+/// [`replace_slots`] on `para` and its nested paragraphs. Returns whether anything changed, so
+/// a text box on the way drops its now stale raw XML.
+fn replace_slots_in(
+    para: &mut Paragraph,
+    lookup: &BTreeMap<&str, (&str, &String)>,
+    counts: &mut BTreeMap<String, usize>,
+) -> bool {
+    let mut edits = Vec::new();
+    for (start, seg) in text_segments(para) {
+        for token in hwp_model::slot_tokens(&seg) {
+            if let Some((key, value)) = lookup.get(token.name) {
+                let from = start + seg[..token.range.start].chars().count();
+                let to = from + seg[token.range.clone()].chars().count();
+                edits.push((from..to, (*value).clone()));
+                *counts.entry((*key).to_string()).or_default() += 1;
+            }
+        }
+    }
+    let mut changed = !edits.is_empty();
+    crate::edit::splice_edits(para, edits);
+    for ctrl in &mut para.controls {
+        match ctrl {
+            Control::Table(table) => {
+                for cell in &mut table.cells {
+                    for p in &mut cell.paragraphs {
+                        changed |= replace_slots_in(p, lookup, counts);
+                    }
+                }
+            }
+            Control::Generic(generic) => {
+                let mut inner = false;
+                for list in &mut generic.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        inner |= replace_slots_in(p, lookup, counts);
+                    }
+                }
+                if inner {
+                    // The object's content changed, so its raw XML is stale.
+                    generic.hwpx_raw_xml = None;
+                }
+                changed |= inner;
+            }
+            _ => {}
+        }
+    }
+    changed
 }
 
 /// Hand `f` each run of contiguous text characters of `para` and of its nested paragraphs.
 fn for_each_text_segment(para: &Paragraph, f: &mut impl FnMut(&str)) {
-    let mut seg = String::new();
-    for ch in &para.chars {
-        match ch {
-            HwpChar::Text(c) => seg.push(*c),
-            _ => {
-                f(&seg);
-                seg.clear();
-            }
-        }
+    for (_, seg) in text_segments(para) {
+        f(&seg);
     }
-    f(&seg);
     for ctrl in &para.controls {
         for_each_nested(ctrl, &mut |p| for_each_text_segment(p, f));
     }
+}
+
+/// The runs of contiguous text characters in `para` itself (not its nested paragraphs), each
+/// with the index of its first character in `para.chars`. Any other character ends a run.
+pub(crate) fn text_segments(para: &Paragraph) -> Vec<(usize, String)> {
+    let mut segments = Vec::new();
+    let mut seg = String::new();
+    let mut start = 0usize;
+    for (i, ch) in para.chars.iter().enumerate() {
+        match ch {
+            HwpChar::Text(c) => {
+                if seg.is_empty() {
+                    start = i;
+                }
+                seg.push(*c);
+            }
+            _ if !seg.is_empty() => segments.push((start, std::mem::take(&mut seg))),
+            _ => {}
+        }
+    }
+    if !seg.is_empty() {
+        segments.push((start, seg));
+    }
+    segments
 }
 
 fn scan_segment(seg: &str, out: &mut Vec<PlaceholderInfo>) {
@@ -939,6 +1003,30 @@ mod tests {
         assert_eq!(map.get("기관명"), Some(&2));
         assert_eq!(map.get("제목"), Some(&1));
         assert_eq!(slots.len(), 2);
+    }
+
+    /// One pass: values are literal (no chaining), each spelling of a name is filled once,
+    /// keys are trimmed like names, and counts stay under the caller's key (#362).
+    #[test]
+    fn replace_slots_is_one_literal_pass() {
+        let mut doc = crate::from_markdown::from_markdown(
+            "{{a}} {{ a }} {{b}} / {{성 명}} {{사업명(국문)}}\n\n| {{ b }} |\n|---|\n",
+        );
+        let values = BTreeMap::from([
+            ("a".to_string(), "{{b}}".to_string()),
+            ("b".to_string(), "B".to_string()),
+            (" 성 명 ".to_string(), "홍길동".to_string()),
+            ("사업명(국문)".to_string(), "X".to_string()),
+            ("없음".to_string(), "Y".to_string()),
+        ]);
+        let counts = replace_slots(&mut doc, &values).unwrap();
+        assert_eq!(counts["a"], 2);
+        assert_eq!(counts["b"], 2);
+        assert_eq!(counts[" 성 명 "], 1);
+        assert_eq!(counts["없음"], 0);
+        let text = doc.plain_text();
+        assert!(text.contains("{{b}} {{b}} B / 홍길동 X"), "{text}");
+        assert!(text.contains("\nB"), "the cell slot is filled: {text}");
     }
 
     #[test]

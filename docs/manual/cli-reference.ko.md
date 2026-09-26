@@ -314,7 +314,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 ## `hwp slots`
 
-`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록 표시
+`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록 표시 (이름은 중괄호·제어문자를 뺀 임의 텍스트, 중괄호 안 공백은 제거)
 
 **사용법:** `hwp slots [OPTIONS] <FILE>`
 
@@ -325,7 +325,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
 ## `hwp fill`
 
-충실도 보존 템플릿 채우기 (hwpx의 `{{name}}` 치환, 패키지 보존)
+충실도 보존 템플릿 채우기 (hwpx의 `{{name}}`·공백을 넣은 `{{ name }}` 치환, 패키지 보존, 값은 그대로 삽입)
 
 **사용법:** `hwp fill [OPTIONS] --output <OUTPUT> <INPUT>`
 
@@ -334,7 +334,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `<INPUT>` |  |  | 입력 HWPX 템플릿 |
 | `-o, --output` | `<OUTPUT>` |  | 출력 파일 경로 |
 | `--set` | `<SET>` |  | 자리표시자 채우기 "이름=값" (반복 가능; `{{이름}}` 치환, 공백을 넣은 `{{ 이름 }}`도 포함). "이름=@부분.md"이면 `{{이름}}` 앵커 문단을 부분 파일(md+HTML 표 블록, 계약 docs/design/18)로 교체 — 대규모 문서의 부분별 조합. "@@"는 리터럴 '@' |
-| `--data` | `<DATA>` |  | 이름→값 JSON 객체 파일 (일괄 채우기; "parts": {"이름": "경로"} 부분 파일 교체, "tables": [...] 표 행 채우기) |
+| `--data` | `<DATA>` |  | 자리표시자 이름→값 JSON 객체 파일 (일괄 채우기; 이름은 `{{ 이름 }}`처럼 앞뒤 공백 제거; "parts": {"이름": "경로"} 부분 파일 교체, "tables": [...] 표 행 채우기) |
 | `--json` |  |  | 치환 요약을 JSON으로 출력 ({output, replaced, counts}) |
 | `--allow-partial` |  |  | 일부 요청이 자리를 찾지 못해도 일치한 값만 게시 (기본: 하나라도 미치환이면 실패). 하나도 일치하지 않으면 입력을 그대로 게시하고 모든 건수를 0으로 보고 |
 

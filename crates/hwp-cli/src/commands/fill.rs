@@ -196,6 +196,10 @@ pub fn execute_values(
         );
     }
 
+    // Every requested slot the IR sees in the input must be accounted for by the raw-XML pass.
+    // Counting the original tokens, rather than rescanning the output, keeps a value that
+    // itself spells a slot literal (#362).
+    let expected = expected_slot_counts(&load_document(input)?, values)?;
     let mut report_warnings = Vec::new();
     let counts = crate::commands::output::write_validated(
         output,
@@ -225,11 +229,10 @@ pub fn execute_values(
             }
 
             ensure_valid_document(staged)?;
-            let staged_doc = load_document(staged)?;
-            let unresolved: Vec<String> = hwp_convert::scan_placeholders(&staged_doc)
-                .into_iter()
-                .filter(|slot| values.contains_key(&slot.name))
-                .map(|slot| slot.name)
+            let unresolved: Vec<&str> = expected
+                .iter()
+                .filter(|(key, found)| counts.get(*key).copied().unwrap_or(0) < **found)
+                .map(|(key, _)| key.as_str())
                 .collect();
             if !unresolved.is_empty() && !allow_partial {
                 anyhow::bail!(
@@ -260,6 +263,52 @@ pub fn execute_values(
         warnings: report_warnings,
         preservation: hwp_model::PreservationReport::new(),
     })
+}
+
+/// How many tokens of each requested slot `doc` holds, keyed by the caller's spelling.
+fn expected_slot_counts(
+    doc: &hwp_model::Document,
+    values: &BTreeMap<String, String>,
+) -> anyhow::Result<BTreeMap<String, usize>> {
+    let slots = hwp_convert::scan_placeholders(doc);
+    let lookup = hwp_model::slot_lookup(values).map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
+    Ok(lookup
+        .into_iter()
+        .map(|(name, (key, _))| {
+            let found = slots
+                .iter()
+                .find(|slot| slot.name == name)
+                .map_or(0, |slot| slot.occurrences);
+            (key.to_string(), found)
+        })
+        .collect())
+}
+
+/// `--allow-partial` with nothing to change on an IR path: publish the input unchanged, as the
+/// placeholder path does, when the output is the input's own format. A different output format
+/// still goes through the writer, which converts.
+fn publish_unchanged(
+    input: &Path,
+    output: &Path,
+) -> anyhow::Result<Option<hwp_model::WriteReport>> {
+    let same_format = match crate::format::detect(input)? {
+        crate::format::FileFormat::Hwpx => "hwpx",
+        crate::format::FileFormat::Hwp5 => "hwp",
+    };
+    let output_ext = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    if output_ext.as_deref() != Some(same_format) {
+        return Ok(None);
+    }
+    crate::commands::output::write_validated(
+        output,
+        Some(input),
+        |staged| Ok(std::fs::write(staged, std::fs::read(input)?)?),
+        |staged, _| ensure_valid_document(staged),
+    )?;
+    Ok(Some(hwp_model::WriteReport::new()))
 }
 
 /// 데이터 구동 표 채우기. `data`는 다음 형태:
@@ -309,9 +358,11 @@ fn fill_tables_ir(
             .ok_or_else(|| anyhow::anyhow!("--set 형식은 name=value 여야 합니다: {pair}"))?;
         fields.insert(k.to_string(), v.to_string());
     }
-    for (k, v) in &fields {
-        let count = hwp_convert::replace_slot(&mut doc, k, v);
-        if count == 0 {
+    // One literal pass (#362): a value that spells a slot is not filled again.
+    let field_counts = hwp_convert::replace_slots(&mut doc, &fields)
+        .map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
+    for (k, count) in &field_counts {
+        if *count == 0 {
             unmatched_fields.push(k.clone());
         }
         filled += count;
@@ -376,7 +427,7 @@ fn fill_tables_ir(
             unmatched_fields.join(", ")
         );
     }
-    if doc == original {
+    if doc == original && !allow_partial {
         anyhow::bail!("적용 가능한 표/자리표시자 변경이 없어 출력을 게시하지 않습니다");
     }
     if !unmatched_fields.is_empty() {
@@ -386,7 +437,15 @@ fn fill_tables_ir(
         ));
     }
 
-    let writer_report = write_ir_fill(input, output, &original, &doc, added > 0)?;
+    let unchanged = if doc == original {
+        publish_unchanged(input, output)?
+    } else {
+        None
+    };
+    let writer_report = match unchanged {
+        Some(report) => report,
+        None => write_ir_fill(input, output, &original, &doc, added > 0)?,
+    };
     warnings.extend(writer_report.warnings);
 
     Ok(FillReport {
@@ -448,17 +507,63 @@ fn fill_parts_ir(
             .ok_or_else(|| anyhow::anyhow!("--set 형식은 name=value 여야 합니다: {pair}"))?;
         fields.insert(k.to_string(), v.to_string());
     }
-    for (k, v) in &fields {
-        let count = hwp_convert::replace_slot(&mut doc, k, v);
-        if count == 0 {
+    // Two part names for one anchor would splice the same paragraph twice.
+    hwp_model::slot_lookup(part_paths).map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
+    // 2) Anchor paragraphs, found on the unfilled document so that a field value spelling
+    //    `{{name}}` is never taken for one (#362): values are literal.
+    let mut anchors: Vec<(usize, usize, &String)> = Vec::new(); // (section, paragraph, part)
+    for (section_index, section) in doc.sections.iter().enumerate() {
+        for (para_index, para) in section.paragraphs.iter().enumerate() {
+            let text = paragraph_text(para);
+            let text = text.trim();
+            let tokens = hwp_model::slot_tokens(text);
+            for name in part_paths.keys() {
+                let name_str = name.trim();
+                if matches!(tokens.as_slice(), [token]
+                    if token.name == name_str && token.range == (0..text.len()))
+                {
+                    anchors.push((section_index, para_index, name));
+                } else if tokens.iter().any(|token| token.name == name_str) {
+                    // 앵커 문단은 자리표시자만으로 구성돼야 한다 — 문장 중간의
+                    // {{name}}은 블록 교체가 성립하지 않으므로 필드 치환으로 안내.
+                    let anchor = format!("{{{{{name}}}}}");
+                    if !allow_partial {
+                        anyhow::bail!(
+                            "부분 앵커 문단은 자리표시자만 담겨 있어야 합니다: {anchor} \
+                             (문장 중간의 {anchor}는 fields 경로 사용)"
+                        );
+                    }
+                    warnings.push(format!(
+                        "부분 앵커가 문장 중간에 있어 건드리지 않습니다: {anchor}"
+                    ));
+                }
+            }
+        }
+    }
+
+    // 3) fields, in one literal pass. Paragraph counts do not change, so the anchors stay put.
+    let field_counts = hwp_convert::replace_slots(&mut doc, &fields)
+        .map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
+    for (k, count) in &field_counts {
+        if *count == 0 {
             unmatched.push(k.clone());
         }
         filled += count;
     }
 
-    // 2) parts: 앵커 문단 → 부분 블록 교체.
+    // 4) parts: 앵커 문단 → 부분 블록 교체. A part with no anchor is not imported.
     let mut counts = BTreeMap::new();
+    let mut blocks_by_name: BTreeMap<&String, Vec<hwp_model::Paragraph>> = BTreeMap::new();
     for (name, path) in part_paths {
+        let hits = anchors.iter().filter(|(.., part)| *part == name).count();
+        if hits == 0 {
+            if !allow_partial {
+                anyhow::bail!("부분 앵커를 찾지 못했습니다: {{{{{name}}}}}");
+            }
+            unmatched.push(name.clone());
+            counts.insert(name.clone(), 0);
+            continue;
+        }
         let md = std::fs::read_to_string(path)
             .with_context(|| format!("부분 파일 읽기 실패: {}", path.display()))?;
         // `roots` binds image references inside the part file (MCP `--root`, #56): an
@@ -484,46 +589,16 @@ fn fill_parts_ir(
             .with_context(|| format!("부분 문서 정규화(hwpx 왕복) 실패: {}", path.display()))?;
         let blocks = hwp_convert::merge::part_paragraphs(&mut doc, &part)
             .map_err(|e| anyhow::anyhow!("부분 이식 실패 ({}): {e}", path.display()))?;
-        let anchor = format!("{{{{{name}}}}}");
-        let mut hits = 0usize;
-        for section in &mut doc.sections {
-            let mut i = 0usize;
-            while i < section.paragraphs.len() {
-                let text = paragraph_text(&section.paragraphs[i]);
-                let tokens = hwp_model::slot_tokens(text.trim());
-                if tokens.len() == 1
-                    && tokens[0].name == name.as_str()
-                    && tokens[0].range == (0..text.trim().len())
-                {
-                    section.paragraphs.splice(i..=i, blocks.iter().cloned());
-                    hits += 1;
-                    i += blocks.len();
-                } else if tokens.iter().any(|token| token.name == name.as_str()) {
-                    // 앵커 문단은 자리표시자만으로 구성돼야 한다 — 문장 중간의
-                    // {{name}}은 블록 교체가 성립하지 않으므로 필드 치환으로 안내.
-                    if !allow_partial {
-                        anyhow::bail!(
-                            "부분 앵커 문단은 자리표시자만 담겨 있어야 합니다: {anchor} \
-                             (문장 중간의 {anchor}는 fields 경로 사용)"
-                        );
-                    }
-                    warnings.push(format!(
-                        "부분 앵커가 문장 중간에 있어 건드리지 않습니다: {anchor}"
-                    ));
-                    i += 1;
-                } else {
-                    i += 1;
-                }
-            }
-        }
-        if hits == 0 {
-            if !allow_partial {
-                anyhow::bail!("부분 앵커를 찾지 못했습니다: {anchor}");
-            }
-            unmatched.push(name.clone());
-        }
+        blocks_by_name.insert(name, blocks);
         counts.insert(name.clone(), hits);
         filled += hits;
+    }
+    // Back to front, so the earlier anchors keep their paragraph indices.
+    for (section_index, para_index, name) in anchors.iter().rev() {
+        let blocks = &blocks_by_name[name];
+        doc.sections[*section_index]
+            .paragraphs
+            .splice(*para_index..=*para_index, blocks.iter().cloned());
     }
 
     if !unmatched.is_empty() && !allow_partial {
@@ -533,14 +608,22 @@ fn fill_parts_ir(
             unmatched.join(", ")
         );
     }
-    if doc == original {
+    if doc == original && !allow_partial {
         anyhow::bail!("적용 가능한 부분/자리표시자 변경이 없어 출력을 게시하지 않습니다");
     }
     if !unmatched.is_empty() {
         warnings.push(format!("미치환 자리표시자: {}", unmatched.join(", ")));
     }
 
-    let writer_report = write_ir_fill(input, output, &original, &doc, true)?;
+    let unchanged = if doc == original {
+        publish_unchanged(input, output)?
+    } else {
+        None
+    };
+    let writer_report = match unchanged {
+        Some(report) => report,
+        None => write_ir_fill(input, output, &original, &doc, true)?,
+    };
     warnings.extend(writer_report.warnings);
 
     Ok(FillReport {

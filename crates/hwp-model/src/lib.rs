@@ -45,7 +45,7 @@ pub use preservation::{
     PRESERVATION_REPORT_CONTRACT, PreservationCode, PreservationDisposition, PreservationEvent,
     PreservationReport, PreservationResourceKind, WriteReport,
 };
-pub use slot::{SlotToken, is_slot_name_char, slot_tokens};
+pub use slot::{SlotToken, is_slot_name_char, slot_lookup, slot_tokens};
 pub use text::TextOptions;
 pub use units::{
     HwpUnit, filetime_to_iso8601_utc, filetime_to_korean_kst, iso8601_utc_to_filetime,

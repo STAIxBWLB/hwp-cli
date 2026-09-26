@@ -314,3 +314,177 @@ fn allow_partial_publishes_a_zero_match_fill() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Run `hwp fill <template> <args> -o <out>` and return the output.
+fn fill(template: &Path, out: &Path, args: &[&str]) -> std::process::Output {
+    hwp()
+        .arg("fill")
+        .arg(template)
+        .args(args)
+        .arg("-o")
+        .arg(out)
+        .output()
+        .unwrap()
+}
+
+/// A name is any text without braces or control characters, the rule TemplateSpec bindings
+/// accept, and requested keys are trimmed like names (#362).
+#[test]
+fn names_with_spaces_and_punctuation_are_listed_and_filled() {
+    let (dir, created) = template(
+        "wide-names",
+        "{{성 명}} / {{사업명(국문)}} / {{가·나}} / {{기간: 시작}} / {{a/b}} / {{ 제목 }}\n",
+    );
+    let reported = reported_slots(&created);
+    let expected: BTreeSet<String> = [
+        "성 명",
+        "사업명(국문)",
+        "가·나",
+        "기간: 시작",
+        "a/b",
+        "제목",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    assert_eq!(reported, expected);
+
+    let data = dir.join("data.json");
+    std::fs::write(
+        &data,
+        r#"{"성 명": "1", "사업명(국문)": "2", "가·나": "3", "기간: 시작": "4", "a/b": "5", " 제목 ": "6"}"#,
+    )
+    .unwrap();
+    let filled = dir.join("filled.hwpx");
+    let data_arg = data.display().to_string();
+    let run = fill(&created, &filled, &["--data", &data_arg, "--json"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(
+        report["counts"][" 제목 "], 1,
+        "counted under the caller's key: {report}"
+    );
+    assert_eq!(document_text(&filled).trim(), "1 / 2 / 3 / 4 / 5 / 6");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Values are literal on every path: a value that spells a slot is neither filled again nor
+/// reported as a slot left behind, and a field value spelling a part anchor is not one (#362).
+#[test]
+fn values_are_literal_on_every_path() {
+    // Default (raw XML) path.
+    let (dir, created) = template("literal", "{{a}} {{b}}\n\n| 품목 |\n|---|\n| |\n");
+    let out = dir.join("default.hwpx");
+    let run = fill(&created, &out, &["--set", "a={{b}}", "--set", "b=B"]);
+    assert!(
+        run.status.success(),
+        "default path refused a literal value\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(document_text(&out).contains("{{b}} B"));
+
+    // Tables (IR) path.
+    let data = dir.join("tables.json");
+    std::fs::write(
+        &data,
+        r#"{"fields": {"a": "{{b}}", "b": "B"}, "tables": [{"table": 0, "rows": [["노트북"]]}]}"#,
+    )
+    .unwrap();
+    let out = dir.join("tables.hwpx");
+    let data_arg = data.display().to_string();
+    let run = fill(&created, &out, &["--data", &data_arg]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(document_text(&out).contains("{{b}} B"));
+
+    // Parts (IR) path.
+    let (parts_dir, parts_template) =
+        template("literal-parts", "{{a}} {{b}}\n\n{{c}}\n\n{{본문}}\n");
+    let part = parts_dir.join("part.md");
+    std::fs::write(&part, "부분 본문\n").unwrap();
+    let out = parts_dir.join("parts.hwpx");
+    let part_arg = format!("본문=@{}", part.display());
+    let run = fill(
+        &parts_template,
+        &out,
+        &[
+            "--set",
+            "a={{b}}",
+            "--set",
+            "b=B",
+            "--set",
+            "c={{본문}}",
+            "--set",
+            &part_arg,
+        ],
+    );
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let text = document_text(&out);
+    assert!(text.contains("{{b}} B"), "{text}");
+    assert!(
+        text.contains("{{본문}}") && text.matches("부분 본문").count() == 1,
+        "a value spelling the anchor stays literal: {text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&parts_dir);
+}
+
+/// `--allow-partial` publishes the input unchanged on a zero total on the IR paths too (#362).
+#[test]
+fn allow_partial_publishes_a_zero_match_ir_fill() {
+    let (dir, created) = template("zero-ir", "제목\n\n| 품목 |\n|---|\n| |\n");
+
+    let data = dir.join("tables.json");
+    std::fs::write(
+        &data,
+        r#"{"없음": "x", "tables": [{"table": 0, "rows": []}]}"#,
+    )
+    .unwrap();
+    let data_arg = data.display().to_string();
+    let out = dir.join("tables.hwpx");
+    let run = fill(&created, &out, &["--data", &data_arg]);
+    assert!(!run.status.success(), "without --allow-partial it fails");
+    assert!(!out.exists());
+    let run = fill(&created, &out, &["--data", &data_arg, "--allow-partial"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&out).unwrap(),
+        std::fs::read(&created).unwrap()
+    );
+
+    let part = dir.join("part.md");
+    std::fs::write(&part, "부분\n").unwrap();
+    let part_arg = format!("본문=@{}", part.display());
+    let out = dir.join("parts.hwpx");
+    let run = fill(&created, &out, &["--set", &part_arg]);
+    assert!(!run.status.success(), "without --allow-partial it fails");
+    let run = fill(&created, &out, &["--set", &part_arg, "--allow-partial"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&out).unwrap(),
+        std::fs::read(&created).unwrap()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

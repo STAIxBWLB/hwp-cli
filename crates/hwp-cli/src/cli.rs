@@ -437,7 +437,7 @@ pub enum Cmd {
         json: bool,
     },
 
-    /// List `{{name}}` text placeholders (template slots)
+    /// List `{{name}}` text placeholders (template slots; a name is any text without braces or control characters, padding inside the braces trimmed)
     Slots {
         /// Target HWP/HWPX file
         file: PathBuf,
@@ -446,7 +446,7 @@ pub enum Cmd {
         json: bool,
     },
 
-    /// Fidelity-preserving template fill (replace `{{name}}` in hwpx, package preserved)
+    /// Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, in hwpx; package preserved; values are literal)
     Fill {
         /// Input HWPX template
         input: PathBuf,
@@ -456,7 +456,7 @@ pub enum Cmd {
         /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`, padded `{{ name }}` too). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@'
         #[arg(long)]
         set: Vec<String>,
-        /// JSON object file mapping name to value (bulk fill; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows)
+        /// JSON object file mapping slot name to value (bulk fill; names are trimmed like `{{ name }}`; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows)
         #[arg(long)]
         data: Option<PathBuf>,
         /// Print the replacement summary as JSON ({output, replaced, counts})

@@ -2750,7 +2750,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_slots",
-            "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환.",
+            "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환. 이름은 중괄호·제어문자를 뺀 임의 텍스트이며 `{{ name }}`의 안쪽 공백은 제거(hwp_fill과 같은 문법).",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"}
             }, "required": ["path"]}

@@ -1380,11 +1380,7 @@ fn fill_zero_or_partial_match_preserves_destination_by_default() {
             .success()
     );
 
-    for sets in [
-        vec!["없는키=값"],
-        vec!["수신=홍길동", "없는키=값"],
-        vec!["수신={{수신}}"],
-    ] {
+    for sets in [vec!["없는키=값"], vec!["수신=홍길동", "없는키=값"]] {
         std::fs::write(&destination, b"EXISTING DESTINATION").unwrap();
         let mut command = hwp();
         command
@@ -1433,6 +1429,24 @@ fn fill_zero_or_partial_match_preserves_destination_by_default() {
         report.contains("\"warnings\"") && report.contains("없는키"),
         "기계 판독 경고: {report}"
     );
+
+    // A value is literal (#362): `수신={{수신}}` replaces the original token with text that
+    // spells it, which is a completed fill, not an unresolved slot.
+    let literal = hwp()
+        .arg("fill")
+        .arg(&template)
+        .arg("-o")
+        .arg(&destination)
+        .args(["--set", "수신={{수신}}"])
+        .output()
+        .unwrap();
+    assert!(
+        literal.status.success(),
+        "a value spelling its own slot is literal: {}",
+        String::from_utf8_lossy(&literal.stderr)
+    );
+    let text = hwp().arg("cat").arg(&destination).output().unwrap();
+    assert!(String::from_utf8_lossy(&text.stdout).contains("{{수신}} 귀하"));
 
     for path in [&md, &template, &destination] {
         let _ = std::fs::remove_file(path);

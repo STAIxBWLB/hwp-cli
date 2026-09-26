@@ -12,6 +12,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Compatibility**
 
+- `hwp slots` (and MCP `hwp_slots`) lists more slots: a name may now hold spaces and punctuation
+  (`{{성 명}}`, `{{사업명(국문)}}`, `{{기간: 시작}}`), and a slot after a stray `{{`
+  (`{{ {{이름}}`) is listed. These were not reported before, and `hwp fill` fills them now
+  ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
 - A failed op's `reason` in `edit-report-v1` (`hwp edit --report` and `--dry-run`, and the MCP
   `hwp_edit` report and response `ops`) is now a fixed, content-free label, usually
   `<op>: <cause>` such as `replace: no match`, instead of a copy of the request. An op whose miss
@@ -81,17 +85,26 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Fixed**
 
 - `hwp fill` now fills every slot `hwp slots` lists. Both commands, the MCP `hwp_slots` and
-  `hwp_fill` tools, the `--data` table and part fills and `hwp template` read a slot with one
-  grammar (`hwp_model::slot_tokens`): `{{`, optional whitespace, the name, optional whitespace,
-  `}}`. A padded `{{ 제목 }}` used to be listed as `제목` and then refused by
+  `hwp_fill` tools, the `--data` table and part fills, part anchors and `hwp template` read a
+  slot with one grammar (`hwp_model::slot_tokens`): `{{`, a name, `}}`. The name is any text
+  without braces or control characters, the rule TemplateSpec bindings already accept, trimmed of
+  surrounding whitespace. A padded `{{ 제목 }}` used to be listed as `제목` and then refused by
   `fill --set 제목=...`; it is now filled, split across runs or not, and the whole token is
-  replaced. Replacement is one pass, so a value that itself contains a slot is no longer filled
-  again by a later name. `hwp slots` also lists a slot that follows a stray `{{` (`{{ {{이름}}`),
-  which `fill` already filled ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
-- `hwp fill --allow-partial` (and MCP `hwp_fill` with `allow_partial`) now publishes when no
-  requested name is a slot: the output is the input unchanged, and the `--json` report gives
-  every count as 0. Without the flag such a fill still fails and publishes nothing
+  replaced. Requested names are trimmed the same way (`" 제목 "` fills `{{제목}}`), counts stay
+  under the name as given, and two requested names that trim to one slot are refused
   ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
+- Fill values are literal on every path. The default fill, the `--data` table and part fills
+  and `hwp template` replace each requested token of the original text once, in one pass, so a
+  value that itself spells a slot (`a={{b}}`) is neither filled again by a later name nor, on the
+  default path, reported as a slot left behind: that check now counts the original tokens the
+  fill replaced instead of rescanning the output. On the part fill, anchors are found before any
+  field is filled, so a field value spelling `{{anchor}}` is not spliced, and a part with no
+  anchor is no longer imported ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
+- `hwp fill --allow-partial` (and MCP `hwp_fill` with `allow_partial`) now publishes when nothing
+  matched, on the default path and on the `--data` table and part fills: the output is the input
+  unchanged (the part and table fills still convert when the output extension names the other
+  format), and the `--json` report gives every count as 0. Without the flag such a fill still
+  fails and publishes nothing ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
 - A certification report could fail its own published schema in six ways
   ([#347](https://github.com/STAIxBWLB/hwp-cli/issues/347)). Four were schema gaps, now loosened:
   - Certification lays pages out through the same renderer as `hwp render`, but
