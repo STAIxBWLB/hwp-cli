@@ -56,6 +56,9 @@
 #   3  published, but NOT a clean pass: known failures and/or skips are present
 #      and the index says `"clean": false`. A caller must not read 3 as a pass.
 set -uo pipefail
+# Under pipefail, `printf ... | grep -q` can read a match as a miss: grep -q exits on the
+# first match, printf still writing gets SIGPIPE (141), and the pipeline fails (#368).
+# Membership tests below let grep read all of its input (`grep ... >/dev/null`) instead.
 
 # HWP_REGRESSION_REPO is a seam for scripts/tests/hancom-regression.sh only: it
 # runs a patched copy of this file from a temporary directory and must still
@@ -381,7 +384,7 @@ case_of() {
 
 has_outcome() {
   [[ ${#OUTCOMES[@]} -eq 0 ]] && return 1
-  printf '%s\n' "${OUTCOMES[@]}" | cut -f1 | grep -qxF "$1"
+  printf '%s\n' "${OUTCOMES[@]}" | cut -f1 | grep -xF "$1" >/dev/null
 }
 
 outcome() {
@@ -750,7 +753,9 @@ fi
 # GA-2 distribution-document read. The source is a genuine corpus document; it is
 # never copied into the destination and its path never reaches the index.
 if [[ -n "${HWP_CORPUS_DIR:-}" && -d "${HWP_CORPUS_DIR:-}" ]]; then
-  distdoc="$(find "$HWP_CORPUS_DIR" -type f -name 'dist-*.hwp' 2>/dev/null | sort | head -1)"
+  # head -1 can SIGPIPE sort, and find fails on an unreadable directory; under set -e and
+  # pipefail either would abort the run with 141 or 1 instead of choosing no document.
+  distdoc="$(find "$HWP_CORPUS_DIR" -type f -name 'dist-*.hwp' 2>/dev/null | sort | head -1 || true)"
   if [[ -n "$distdoc" ]]; then
     emit P4_distdoc_read "$STAGE/P4_distdoc.hwpx" \
       "$HWP" convert "$distdoc" -o "$STAGE/P4_distdoc.hwpx"
@@ -786,7 +791,7 @@ if [[ "$LEGACY_STATUS" -ne 0 ]]; then
   for delegated_case in A1 A2 A3 A4 A5 A6 B1 B2 B3 B4 B5 \
     C1 C2 C3 C4 C5 C6 C7 C8 C9 D1 D2 D3 H1 H2 I1 J1 K1 K2 K3 L1; do
     if [[ ${#OUTCOMES[@]} -gt 0 ]] && printf '%s\n' "${OUTCOMES[@]}" \
-      | grep -qE "^${delegated_case}"$'\t'"(failed|known_failure)$"; then
+      | grep -E "^${delegated_case}"$'\t'"(failed|known_failure)$" >/dev/null; then
       legacy_failures=$((legacy_failures + 1))
     fi
   done
@@ -812,7 +817,7 @@ for expected_case in "${EXPECTED_CASES[@]}"; do
 done
 for recorded_case in ${OUTCOMES[@]+"${OUTCOMES[@]}"}; do
   recorded_case="${recorded_case%%$'\t'*}"
-  if ! printf '%s\n' "${EXPECTED_CASES[@]}" | grep -qxF "$recorded_case"; then
+  if ! printf '%s\n' "${EXPECTED_CASES[@]}" | grep -xF "$recorded_case" >/dev/null; then
     FAILED=1
     REPORT+=("FAIL  $recorded_case  reported an outcome but is not in the expected-case manifest")
   fi
@@ -826,7 +831,7 @@ for excluded_id in ${EXCLUDE[@]+"${EXCLUDE[@]}"}; do
     [[ "${recorded%%$'\t'*}" == "$excluded_id" ]] && excluded_seen=1
   done
   [[ "$excluded_seen" -eq 1 ]] && continue
-  if [[ ${#ROWS[@]} -gt 0 ]] && printf '%s\n' "${ROWS[@]}" | cut -f1 | grep -qxF "$excluded_id"; then
+  if [[ ${#ROWS[@]} -gt 0 ]] && printf '%s\n' "${ROWS[@]}" | cut -f1 | grep -xF "$excluded_id" >/dev/null; then
     REPORT+=("listed but passed  $excluded_id  remove it from $KNOWN_FAILURE_VAR")
   else
     REPORT+=("listed but not run  $excluded_id  the case never reported a result")
