@@ -488,3 +488,156 @@ fn allow_partial_publishes_a_zero_match_ir_fill() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Copy an hwpx package with `find` replaced by `replace` in `Contents/section0.xml`.
+fn rewrite_section0(from: &Path, to: &Path, find: &str, replace: &str) {
+    use std::io::{Read, Write};
+    use zip::write::SimpleFileOptions;
+    let mut source = zip::ZipArchive::new(std::fs::File::open(from).unwrap()).unwrap();
+    let mut out = zip::ZipWriter::new(std::fs::File::create(to).unwrap());
+    for i in 0..source.len() {
+        let mut entry = source.by_index(i).unwrap();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if entry.name() == "Contents/section0.xml" {
+            let xml = String::from_utf8(data).unwrap();
+            assert!(xml.contains(find), "{find} not in the section");
+            data = xml.replace(find, replace).into_bytes();
+        }
+        let method = if entry.name() == "mimetype" {
+            zip::CompressionMethod::Stored
+        } else {
+            zip::CompressionMethod::Deflated
+        };
+        out.start_file(
+            entry.name(),
+            SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        out.write_all(&data).unwrap();
+    }
+    out.finish().unwrap();
+}
+
+/// A name `hwp slots` lists is filled although the XML escapes it: `&`, `<`, `>`, `"` and a
+/// numeric character reference (#363 review).
+#[test]
+fn escaped_names_are_listed_and_filled() {
+    let (dir, created) = template("escaped", "{{R&D 과제명}} / {{a<1> \"b\"}} / {{가나}}\n");
+    let marked = dir.join("marked.hwpx");
+    rewrite_section0(&created, &marked, "{{가나}}", "{{&#44032;나}}");
+    let reported = reported_slots(&marked);
+    let expected: BTreeSet<String> = ["R&D 과제명", "a<1> \"b\"", "가나"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(reported, expected);
+
+    let data = dir.join("data.json");
+    std::fs::write(
+        &data,
+        serde_json::json!({"R&D 과제명": "1", "a<1> \"b\"": "2", "가나": "3"}).to_string(),
+    )
+    .unwrap();
+    let filled = dir.join("filled.hwpx");
+    let data_arg = data.display().to_string();
+    let run = fill(&marked, &filled, &["--data", &data_arg]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(document_text(&filled).trim(), "1 / 2 / 3");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two keys that trim to one slot are accepted with equal values, each counted once for the
+/// token, and refused with different values.
+#[test]
+fn keys_naming_one_slot_need_equal_values() {
+    let (dir, created) = template("same-slot", "{{제목}}\n");
+    let data = dir.join("same.json");
+    std::fs::write(&data, r#"{" 제목": "A", "제목": "A"}"#).unwrap();
+    let data_arg = data.display().to_string();
+    let out = dir.join("same.hwpx");
+    let run = fill(&created, &out, &["--data", &data_arg, "--json"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(report["counts"], serde_json::json!({" 제목": 1, "제목": 1}));
+    assert_eq!(report["replaced"], 1, "one token: {report}");
+
+    std::fs::write(&data, r#"{" 제목": "A", "제목": "B"}"#).unwrap();
+    let run = fill(&created, &dir.join("differ.hwpx"), &["--data", &data_arg]);
+    assert!(!run.status.success());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--allow-partial` with nothing to change on the IR path: `.hwp` to `.hwp` publishes the input
+/// byte for byte; a different output format still goes through the writer, which converts.
+#[test]
+fn zero_match_ir_fill_publishes_hwp_unchanged_or_converts() {
+    let (dir, created) = template("zero-hwp", "제목\n\n| 품목 |\n|---|\n| |\n");
+    let hwp5 = dir.join("template.hwp");
+    let run = hwp()
+        .arg("convert")
+        .arg(&created)
+        .args(["--to", "hwp", "-o"])
+        .arg(&hwp5)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let data = dir.join("tables.json");
+    std::fs::write(
+        &data,
+        r#"{"없음": "x", "tables": [{"table": 0, "rows": []}]}"#,
+    )
+    .unwrap();
+    let data_arg = data.display().to_string();
+
+    let same = dir.join("same.hwp");
+    let run = fill(&hwp5, &same, &["--data", &data_arg, "--allow-partial"]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(std::fs::read(&same).unwrap(), std::fs::read(&hwp5).unwrap());
+
+    let converted = dir.join("converted.hwp");
+    let run = fill(
+        &created,
+        &converted,
+        &["--data", &data_arg, "--allow-partial"],
+    );
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let info = hwp()
+        .args(["info", "--json"])
+        .arg(&converted)
+        .output()
+        .unwrap();
+    let info: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
+    assert_eq!(
+        info["format"], "hwp5",
+        "the writer converted the hwpx input"
+    );
+    assert_eq!(
+        document_text(&converted).trim(),
+        document_text(&created).trim()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

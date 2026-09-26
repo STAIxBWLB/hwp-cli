@@ -50,21 +50,44 @@ pub fn slot_tokens(text: &str) -> Vec<SlotToken<'_>> {
     tokens
 }
 
-/// Index requested slot values by slot name: each key trimmed the way a name is, mapped to the
-/// key as the caller spelled it (the one to count under) and its value. A key that trims to
-/// nothing names no slot and is left out. Two keys naming one slot are refused, since only one
-/// value could win.
-pub fn slot_lookup<V>(values: &BTreeMap<String, V>) -> Result<BTreeMap<&str, (&str, &V)>, String> {
-    let mut lookup = BTreeMap::new();
+/// One requested slot: every key that names it, as the caller spelled them (each is counted
+/// for the tokens the slot fills), and its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotRequest<'a, V> {
+    pub keys: Vec<&'a str>,
+    pub value: &'a V,
+}
+
+/// Index requested slot values by slot name, each key trimmed the way a name is. A key that
+/// trims to nothing names no slot and is left out. Keys that name one slot are accepted when
+/// their values are equal and refused when they differ, since only one value could win.
+pub fn slot_lookup<V: PartialEq>(
+    values: &BTreeMap<String, V>,
+) -> Result<BTreeMap<&str, SlotRequest<'_, V>>, String> {
+    let mut lookup: BTreeMap<&str, SlotRequest<'_, V>> = BTreeMap::new();
     for (key, value) in values {
         let name = key.trim();
         if name.is_empty() {
             continue;
         }
-        if let Some((other, _)) = lookup.insert(name, (key.as_str(), value)) {
-            return Err(format!(
-                "two requested names are the same slot once trimmed: {other:?}, {key:?}"
-            ));
+        match lookup.get_mut(name) {
+            Some(request) if request.value == value => request.keys.push(key),
+            Some(request) => {
+                return Err(format!(
+                    "two requested names are the same slot once trimmed, with different values: \
+                     {:?}, {key:?}",
+                    request.keys[0]
+                ));
+            }
+            None => {
+                lookup.insert(
+                    name,
+                    SlotRequest {
+                        keys: vec![key.as_str()],
+                        value,
+                    },
+                );
+            }
         }
     }
     Ok(lookup)
@@ -113,12 +136,14 @@ mod tests {
     }
 
     #[test]
-    fn lookup_trims_keys_and_refuses_two_keys_for_one_slot() {
+    fn lookup_trims_keys_and_refuses_only_conflicting_values() {
         let values = BTreeMap::from([(" 제목 ".to_string(), 1), ("  ".to_string(), 2)]);
         let lookup = slot_lookup(&values).unwrap();
         assert_eq!(lookup.len(), 1);
-        assert_eq!(lookup["제목"], (" 제목 ", &1));
-        let values = BTreeMap::from([(" 제목".to_string(), 1), ("제목".to_string(), 2)]);
-        assert!(slot_lookup(&values).is_err());
+        assert_eq!(lookup["제목"].keys, [" 제목 "]);
+        let same = BTreeMap::from([(" 제목".to_string(), 1), ("제목".to_string(), 1)]);
+        assert_eq!(slot_lookup(&same).unwrap()["제목"].keys, [" 제목", "제목"]);
+        let differ = BTreeMap::from([(" 제목".to_string(), 1), ("제목".to_string(), 2)]);
+        assert!(slot_lookup(&differ).is_err());
     }
 }

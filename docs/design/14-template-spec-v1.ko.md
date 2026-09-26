@@ -10,7 +10,7 @@ DocumentSpec v1은 고정된 채이며 유일한 네이티브 재생성 대상�
 
 | 스키마 | SHA-256 |
 |---|---|
-| TemplateSpec v1 | `268fc0cbb9881510d40b533b32342cbd7d5b106dc529f819f53ba1415a9e3337` |
+| TemplateSpec v1 | `f9285b9e39d7983382357a5c9b255a8d6c43687e240a936c6ed7cae27122bc19` |
 | TemplateData v1 | `a1dbc498f5d5d2099ee0496a86b6e38fa3cdf535149b2436da7b23021f269989` |
 | TemplateReport v1 | `e0297c1157f4cccd7f27ce74707b266aaa1b7b8f00c92b776426116f49e826dd` |
 

@@ -67,16 +67,26 @@ pub fn fill_placeholders_with_limits(
     Ok(counts)
 }
 
-/// Requested slots by trimmed name: the key as the caller spelled it, which counts are kept
-/// under, and the value escaped once for XML character data.
-type SlotValues<'a> = BTreeMap<&'a str, (&'a str, String)>;
+/// Requested slots by trimmed name: the keys that name each, as the caller spelled them (each
+/// counted per token filled), and the value escaped once for XML character data.
+type SlotValues<'a> = BTreeMap<&'a str, (Vec<&'a str>, String)>;
 
 fn escaped_slots(values: &BTreeMap<String, String>) -> Result<SlotValues<'_>> {
     let lookup = hwp_model::slot_lookup(values).map_err(|error| placeholder_error(&error))?;
     Ok(lookup
         .into_iter()
-        .map(|(name, (key, value))| (name, (key, xml_escape(value))))
+        .map(|(name, request)| (name, (request.keys, xml_escape(request.value))))
         .collect())
+}
+
+/// A raw-XML token's name as `hwp slots` reads it from the IR: entity and character references
+/// decoded (`R&amp;D` is `R&D`, `&#44032;` is `가`), then trimmed. A malformed reference is left
+/// as written.
+fn xml_slot_name(raw: &str) -> std::borrow::Cow<'_, str> {
+    match quick_xml::escape::unescape(raw) {
+        Ok(std::borrow::Cow::Owned(name)) => std::borrow::Cow::Owned(name.trim().to_string()),
+        _ => std::borrow::Cow::Borrowed(raw),
+    }
 }
 
 /// Replace every requested slot token of `text` in one pass, so a value that itself looks like
@@ -89,13 +99,15 @@ fn replace_slots(
     let mut out = String::with_capacity(text.len());
     let mut at = 0usize;
     for token in hwp_model::slot_tokens(text) {
-        let Some((key, value)) = slots.get(token.name) else {
+        let Some((keys, value)) = slots.get(xml_slot_name(token.name).as_ref()) else {
             continue;
         };
         out.push_str(&text[at..token.range.start]);
         out.push_str(value);
         at = token.range.end;
-        *counts.entry((*key).to_string()).or_default() += 1;
+        for key in keys {
+            *counts.entry((*key).to_string()).or_default() += 1;
+        }
     }
     out.push_str(&text[at..]);
     out
@@ -267,7 +279,7 @@ fn coalesce_split_placeholders(xml: &mut String, names: &[&str]) {
         };
 
         for token in hwp_model::slot_tokens(&joined) {
-            if !names.contains(&token.name) {
+            if !names.contains(&xml_slot_name(token.name).as_ref()) {
                 continue;
             }
             let needle = &joined[token.range.clone()];
@@ -440,7 +452,7 @@ fn append_placeholder_text(
 fn reject_placeholder_outside_text(text: &str, needles: &SlotValues<'_>) -> Result<()> {
     if hwp_model::slot_tokens(text)
         .iter()
-        .any(|token| needles.contains_key(token.name))
+        .any(|token| needles.contains_key(xml_slot_name(token.name).as_ref()))
     {
         return Err(placeholder_error(
             "requested placeholder occurs outside a text node",
@@ -2208,10 +2220,52 @@ mod coalesce_tests {
         assert_eq!(out, "A B C {{a/b}}");
         assert_eq!(counts[" 사업명(국문) "], 1);
         assert_eq!(counts["성 명"], 1);
+        let same = BTreeMap::from([
+            ("a".to_string(), "1".to_string()),
+            (" a".to_string(), "1".to_string()),
+        ]);
+        let mut counts = BTreeMap::new();
+        replace_slots("{{a}}", &escaped_slots(&same).unwrap(), &mut counts);
+        assert_eq!(
+            (counts["a"], counts[" a"]),
+            (1, 1),
+            "both keys name the slot"
+        );
         let clash = BTreeMap::from([
-            ("a".to_string(), String::new()),
-            (" a".to_string(), String::new()),
+            ("a".to_string(), "1".to_string()),
+            (" a".to_string(), "2".to_string()),
         ]);
         assert!(escaped_slots(&clash).is_err());
+    }
+
+    /// Raw-XML names are matched the way the IR reads them: entity and character references
+    /// decoded (#363 review), in the fill, the split-run coalescing, the TemplateSpec text fill
+    /// and its outside-text refusal.
+    #[test]
+    fn escaped_names_match_their_decoded_spelling() {
+        let name = "R&D <1> \"b\" 가";
+        let values = BTreeMap::from([(name.to_string(), "X&Y".to_string())]);
+        let slots = escaped_slots(&values).unwrap();
+
+        let mut counts = BTreeMap::new();
+        let raw = "{{R&amp;D &lt;1&gt; &quot;b&quot; &#44032;}} 끝";
+        assert_eq!(replace_slots(raw, &slots, &mut counts), "X&amp;Y 끝");
+        assert_eq!(counts[name], 1);
+
+        const SPLIT: &str = r#"<hp:p id="1"><hp:run charPrIDRef="0"><hp:t xml:space="preserve">{{R&amp;D &lt;1</hp:t></hp:run><hp:run charPrIDRef="1"><hp:t xml:space="preserve">&gt; &quot;b&quot; &#xAC00;}}</hp:t></hp:run></hp:p>"#;
+        let mut xml = SPLIT.to_string();
+        coalesce_split_placeholders(&mut xml, &[name]);
+        let mut counts = BTreeMap::new();
+        let filled = replace_slots(&xml, &slots, &mut counts);
+        assert!(filled.contains("X&amp;Y"), "{filled}");
+        assert_eq!(counts[name], 1);
+
+        let text = r#"<hp:p xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:run><hp:t>{{R&amp;D &lt;1&gt; &quot;b&quot; &#44032;}}</hp:t></hp:run></hp:p>"#;
+        let mut counts = BTreeMap::new();
+        let out = replace_text_placeholders(text, &values, &mut counts).unwrap();
+        assert!(out.contains("<hp:t>X&amp;Y</hp:t>"), "{out}");
+        let markup = r#"<hp:p xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" name="{{R&amp;D &lt;1&gt; &quot;b&quot; &#44032;}}"><hp:run><hp:t>x</hp:t></hp:run></hp:p>"#;
+        let error = replace_text_placeholders(markup, &values, &mut BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains("outside a text node"), "{error}");
     }
 }

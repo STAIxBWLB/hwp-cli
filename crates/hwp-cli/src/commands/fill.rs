@@ -196,10 +196,7 @@ pub fn execute_values(
         );
     }
 
-    // Every requested slot the IR sees in the input must be accounted for by the raw-XML pass.
-    // Counting the original tokens, rather than rescanning the output, keeps a value that
-    // itself spells a slot literal (#362).
-    let expected = expected_slot_counts(&load_document(input)?, values)?;
+    hwp_model::slot_lookup(values).map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
     let mut report_warnings = Vec::new();
     let counts = crate::commands::output::write_validated(
         output,
@@ -229,11 +226,7 @@ pub fn execute_values(
             }
 
             ensure_valid_document(staged)?;
-            let unresolved: Vec<&str> = expected
-                .iter()
-                .filter(|(key, found)| counts.get(*key).copied().unwrap_or(0) < **found)
-                .map(|(key, _)| key.as_str())
-                .collect();
+            let unresolved = leftover_slots(&load_document(staged)?, values, counts)?;
             if !unresolved.is_empty() && !allow_partial {
                 anyhow::bail!(
                     "치환 후에도 요청한 자리표시자가 남아 있습니다: {}",
@@ -252,7 +245,7 @@ pub fn execute_values(
     if !missing.is_empty() {
         report_warnings.push(format!("미치환 자리표시자: {}", missing.join(", ")));
     }
-    let total = counts.values().sum();
+    let total = replaced_total(values, &counts);
     Ok(FillReport {
         output: output.display().to_string(),
         mode: "placeholders",
@@ -265,32 +258,54 @@ pub fn execute_values(
     })
 }
 
-/// How many tokens of each requested slot `doc` holds, keyed by the caller's spelling.
-fn expected_slot_counts(
+/// Requested keys whose slot the filled document still shows (read through the IR, as
+/// `hwp slots` does) more often than the inserted values spell it themselves. Values are
+/// literal, so `a={{b}}` legitimately leaves one `{{b}}` per `a` it filled; anything beyond that
+/// is an original token the fill missed, wherever else a count was credited.
+fn leftover_slots(
     doc: &hwp_model::Document,
     values: &BTreeMap<String, String>,
-) -> anyhow::Result<BTreeMap<String, usize>> {
-    let slots = hwp_convert::scan_placeholders(doc);
+    counts: &BTreeMap<String, usize>,
+) -> anyhow::Result<Vec<String>> {
     let lookup = hwp_model::slot_lookup(values).map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
-    Ok(lookup
+    let mut spelled: BTreeMap<&str, usize> = BTreeMap::new();
+    for request in lookup.values() {
+        let filled = counts.get(request.keys[0]).copied().unwrap_or(0);
+        for token in hwp_model::slot_tokens(request.value) {
+            *spelled.entry(token.name).or_default() += filled;
+        }
+    }
+    Ok(hwp_convert::scan_placeholders(doc)
         .into_iter()
-        .map(|(name, (key, _))| {
-            let found = slots
-                .iter()
-                .find(|slot| slot.name == name)
-                .map_or(0, |slot| slot.occurrences);
-            (key.to_string(), found)
+        .filter_map(|slot| {
+            let request = lookup.get(slot.name.as_str())?;
+            let allowed = spelled.get(slot.name.as_str()).copied().unwrap_or(0);
+            (slot.occurrences > allowed).then(|| request.keys[0].to_string())
         })
         .collect())
 }
 
+/// Tokens replaced, each counted once although every key naming its slot reports it.
+fn replaced_total(values: &BTreeMap<String, String>, counts: &BTreeMap<String, usize>) -> usize {
+    match hwp_model::slot_lookup(values) {
+        Ok(lookup) => lookup
+            .values()
+            .map(|request| counts.get(request.keys[0]).copied().unwrap_or(0))
+            .sum(),
+        Err(_) => counts.values().sum(),
+    }
+}
+
 /// `--allow-partial` with nothing to change on an IR path: publish the input unchanged, as the
-/// placeholder path does, when the output is the input's own format. A different output format
-/// still goes through the writer, which converts.
+/// placeholder path does. When the output is the input's own format, the published bytes are a
+/// private, size-bound snapshot of the input, checked to still read as `original`, the document
+/// the fill examined. Another output format makes the fill a plain conversion, so it goes
+/// through `hwp convert` (the fill writer's re-read check does not hold across formats).
 fn publish_unchanged(
     input: &Path,
     output: &Path,
-) -> anyhow::Result<Option<hwp_model::WriteReport>> {
+    original: &hwp_model::Document,
+) -> anyhow::Result<hwp_model::WriteReport> {
     let same_format = match crate::format::detect(input)? {
         crate::format::FileFormat::Hwpx => "hwpx",
         crate::format::FileFormat::Hwp5 => "hwp",
@@ -300,15 +315,37 @@ fn publish_unchanged(
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
     if output_ext.as_deref() != Some(same_format) {
-        return Ok(None);
+        let report = crate::commands::convert::execute(
+            input,
+            output,
+            None,
+            false,
+            None,
+            false,
+            false,
+            &crate::commands::convert::MdOpts::default(),
+            Vec::new(),
+        )?;
+        let mut written = hwp_model::WriteReport::new();
+        written.warnings = report.warnings;
+        written.preservation = report.preservation;
+        return Ok(written);
     }
-    crate::commands::output::write_validated(
+    crate::commands::output::write_with_private_input_snapshot(
         output,
-        Some(input),
-        |staged| Ok(std::fs::write(staged, std::fs::read(input)?)?),
+        input,
+        hwp_cli::certification::MAX_INPUT_BYTES,
+        crate::commands::output::SnapshotOutputMode::Publish,
+        |snapshot, staged, _| {
+            if load_document(snapshot)? != *original {
+                anyhow::bail!("입력 파일이 fill 도중 바뀌어 게시하지 않습니다");
+            }
+            std::fs::write(staged, std::fs::read(snapshot)?)?;
+            Ok(())
+        },
         |staged, _| ensure_valid_document(staged),
     )?;
-    Ok(Some(hwp_model::WriteReport::new()))
+    Ok(hwp_model::WriteReport::new())
 }
 
 /// 데이터 구동 표 채우기. `data`는 다음 형태:
@@ -365,8 +402,8 @@ fn fill_tables_ir(
         if *count == 0 {
             unmatched_fields.push(k.clone());
         }
-        filled += count;
     }
+    filled += replaced_total(&fields, &field_counts);
 
     // 2) tables: 행 자동 증식 + 셀 채우기
     let tables = data
@@ -437,14 +474,10 @@ fn fill_tables_ir(
         ));
     }
 
-    let unchanged = if doc == original {
-        publish_unchanged(input, output)?
+    let writer_report = if doc == original {
+        publish_unchanged(input, output, &original)?
     } else {
-        None
-    };
-    let writer_report = match unchanged {
-        Some(report) => report,
-        None => write_ir_fill(input, output, &original, &doc, added > 0)?,
+        write_ir_fill(input, output, &original, &doc, added > 0)?
     };
     warnings.extend(writer_report.warnings);
 
@@ -508,7 +541,13 @@ fn fill_parts_ir(
         fields.insert(k.to_string(), v.to_string());
     }
     // Two part names for one anchor would splice the same paragraph twice.
-    hwp_model::slot_lookup(part_paths).map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
+    let mut anchor_names = std::collections::BTreeSet::new();
+    if let Some(name) = part_paths
+        .keys()
+        .find(|name| !anchor_names.insert(name.trim()))
+    {
+        anyhow::bail!("fill 실패: 부분 앵커 이름이 겹칩니다 (앞뒤 공백 무시): {name:?}");
+    }
     // 2) Anchor paragraphs, found on the unfilled document so that a field value spelling
     //    `{{name}}` is never taken for one (#362): values are literal.
     let mut anchors: Vec<(usize, usize, &String)> = Vec::new(); // (section, paragraph, part)
@@ -548,8 +587,8 @@ fn fill_parts_ir(
         if *count == 0 {
             unmatched.push(k.clone());
         }
-        filled += count;
     }
+    filled += replaced_total(&fields, &field_counts);
 
     // 4) parts: 앵커 문단 → 부분 블록 교체. A part with no anchor is not imported.
     let mut counts = BTreeMap::new();
@@ -615,14 +654,10 @@ fn fill_parts_ir(
         warnings.push(format!("미치환 자리표시자: {}", unmatched.join(", ")));
     }
 
-    let unchanged = if doc == original {
-        publish_unchanged(input, output)?
+    let writer_report = if doc == original {
+        publish_unchanged(input, output, &original)?
     } else {
-        None
-    };
-    let writer_report = match unchanged {
-        Some(report) => report,
-        None => write_ir_fill(input, output, &original, &doc, true)?,
+        write_ir_fill(input, output, &original, &doc, true)?
     };
     warnings.extend(writer_report.warnings);
 
@@ -834,5 +869,30 @@ fn value_to_string(v: &serde_json::Value) -> String {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, usize)]) -> BTreeMap<String, usize> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+    }
+
+    /// A slot the filled document still shows is a leftover only beyond what inserted values
+    /// spell: here `a={{b}}` was inserted once, so one `{{b}}` is allowed and a second is not,
+    /// whatever count the raw pass credited to `b` (#363 review).
+    #[test]
+    fn leftover_slots_allows_only_what_values_spell() {
+        let values = BTreeMap::from([
+            ("a".to_string(), "{{b}}".to_string()),
+            ("b".to_string(), "B".to_string()),
+        ]);
+        let doc = hwp_convert::from_markdown("{{b}} 그리고 {{b}}\n");
+        let leftover = leftover_slots(&doc, &values, &map(&[("a", 1), ("b", 1)])).unwrap();
+        assert_eq!(leftover, ["b"]);
+        let leftover = leftover_slots(&doc, &values, &map(&[("a", 2), ("b", 1)])).unwrap();
+        assert!(leftover.is_empty(), "two insertions of a spell two b");
     }
 }

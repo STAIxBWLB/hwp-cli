@@ -426,8 +426,8 @@ pub fn scan_placeholders(doc: &Document) -> Vec<PlaceholderInfo> {
 /// Replace every requested `{{ name }}` of the body, table cells and text boxes with its value
 /// in one pass over the original text: a value is literal and never scanned again, and each
 /// token is filled once whatever its spelling. Keys are trimmed like names
-/// ([`hwp_model::slot_lookup`]). Returns the count per key as the caller spelled it, every key
-/// included.
+/// ([`hwp_model::slot_lookup`]); keys naming one slot with equal values each count its tokens.
+/// Returns the count per key as the caller spelled it, every key included.
 pub fn replace_slots(
     doc: &mut Document,
     values: &BTreeMap<String, String>,
@@ -446,17 +446,19 @@ pub fn replace_slots(
 /// a text box on the way drops its now stale raw XML.
 fn replace_slots_in(
     para: &mut Paragraph,
-    lookup: &BTreeMap<&str, (&str, &String)>,
+    lookup: &BTreeMap<&str, hwp_model::SlotRequest<'_, String>>,
     counts: &mut BTreeMap<String, usize>,
 ) -> bool {
     let mut edits = Vec::new();
     for (start, seg) in text_segments(para) {
         for token in hwp_model::slot_tokens(&seg) {
-            if let Some((key, value)) = lookup.get(token.name) {
+            if let Some(request) = lookup.get(token.name) {
                 let from = start + seg[..token.range.start].chars().count();
                 let to = from + seg[token.range.clone()].chars().count();
-                edits.push((from..to, (*value).clone()));
-                *counts.entry((*key).to_string()).or_default() += 1;
+                edits.push((from..to, request.value.clone()));
+                for key in &request.keys {
+                    *counts.entry((*key).to_string()).or_default() += 1;
+                }
             }
         }
     }
