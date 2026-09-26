@@ -1907,7 +1907,7 @@
           "type": "boolean"
         },
         "forms": {
-          "description": "true면 values로 양식 필드(레이블 셀 옆·아래 칸, \"라벨: 값\", 빈칸, 확인란)도 채우고 unmatched를 보고(hwpx, parts와 함께 불가); 기본 false",
+          "description": "true면 values로 양식 필드(레이블 셀 옆·아래 칸, \"라벨: 값\", 빈칸, 확인란)도 채우고 unmatched를 보고(hwpx 입출력, parts와 함께 불가). 비어 있지 않은 값 칸과 \"라벨:\" 뒤 텍스트는 덮어쓰고(칸마다 경고) 누름틀·그림·표가 든 칸은 쓰지 않음; 기본 false",
           "type": "boolean"
         },
         "input": {

@@ -428,10 +428,13 @@ counts.
 (성명, 연락처, ...), inline `라벨: 값` text and slots, each with a key, label, source, confidence
 and occurrence count. `hwp fill --forms` fills them from the same `--data` or `--set` values in one
 pass: the cell next to or below a label cell, the text after an inline label, `학년(  )반` blanks,
-`□동의` checkboxes and `(비고:   )` blanks. Keys match with spaces, colons and parentheses ignored,
-and `--json` adds the `unmatched` keys. The rules are ported from
-[kordoc](https://github.com/chrisryugj/kordoc) (MIT). This path goes through the IR, so the section
-XML is rewritten the way `hwp edit` writes it; every other package entry is copied byte for byte.
+`□동의` checkboxes and `(비고:   )` blanks. A non-empty value cell, and the inline text after
+`라벨:` (up to a comma, semicolon, the next `라벨:` or the line end), is overwritten, as kordoc does;
+the report warns for each overwritten cell. A cell holding a field (누름틀), picture or table is
+never written. Keys match with spaces, colons and parentheses ignored, and `--json` adds the
+`unmatched` keys. The rules are ported from [kordoc](https://github.com/chrisryugj/kordoc) (MIT).
+This path goes through the IR and writes `.hwpx` only: the sections it changed are rewritten the
+way `hwp edit` writes them, and every other section and package entry is copied byte for byte.
 
 **Linting** `hwp lint` applies ten rules to `.md`, `.hwp` and `.hwpx` files (or to stdin markdown
 with `-`): seven notation rules (date `2026. 8. 20.`, time, money, the `붙임:` colon and its

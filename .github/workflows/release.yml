@@ -149,6 +149,10 @@ jobs:
           # Empty for the native targets — the action then picks its own default.
           build-tool: ${{ matrix.build-tool }}
           archive: $bin-$tag-$target
+          # The binary carries third-party code under its own notice (NOTICE: kordoc, MIT),
+          # so the licenses travel with it. Next to the binary at the archive root, where
+          # install.sh, `hwp update` and the Homebrew formula only pick up `hwp`.
+          include: LICENSE-MIT,LICENSE-APACHE,NOTICE
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -183,8 +187,9 @@ jobs:
           cp skills/hwp/SKILL.md "$bundle/SKILL.md"
           cp skills/hwp/claude-web/bootstrap.sh "$bundle/bootstrap.sh"
           cp "$work/hwp" "$bundle/bin/hwp"
+          cp LICENSE-MIT LICENSE-APACHE NOTICE "$bundle/"
           chmod +x "$bundle/bin/hwp" "$bundle/bootstrap.sh"
-          (cd "$bundle" && zip -r "$work/hwp-skill-claude-web.zip" SKILL.md bootstrap.sh bin/hwp)
+          (cd "$bundle" && zip -r "$work/hwp-skill-claude-web.zip" SKILL.md bootstrap.sh bin/hwp LICENSE-MIT LICENSE-APACHE NOTICE)
           (cd "$work" && sha256sum hwp-skill-claude-web.zip > hwp-skill-claude-web.zip.sha256)
           gh release upload "$GITHUB_REF_NAME" \
             "$work/hwp-skill-claude-web.zip" \

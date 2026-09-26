@@ -338,7 +338,7 @@ Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, 
 | `--data` | `<DATA>` |  | JSON object file mapping slot name to value (bulk fill; names are trimmed like `{{ name }}`; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows) |
 | `--json` |  |  | Print the replacement summary as JSON ({output, replaced, counts}) |
 | `--allow-partial` |  |  | Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced). If none matched, the input is published unchanged with every count 0 |
-| `--forms` |  |  | Also fill Korean form fields from the same values (hwpx): the cell next to or below a label cell, inline "label: value", "label( )" blanks, "□option" checkboxes and "(label: )" blanks. Keys match with spaces, colons and parentheses ignored; the report adds "unmatched" |
+| `--forms` |  |  | Also fill Korean form fields from the same values (hwpx): the cell next to or below a label cell, inline "label: value", "label( )" blanks, "□option" checkboxes and "(label: )" blanks. A non-empty value cell, and the inline text after "label:", is overwritten (a warning names each overwritten cell); a cell holding a field, picture or table is never written. Keys match with spaces, colons and parentheses ignored; the report adds "unmatched". Output must be .hwpx |
 
 ## `hwp validate`
 

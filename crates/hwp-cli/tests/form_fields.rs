@@ -204,7 +204,158 @@ fn fill_forms_refuses_tables_parts_and_hwp_input() {
         .args(["--forms", "--set", "성명=x", "-o"])
         .arg(dir.join("out.hwp")));
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("HWPX"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("양식 채우기(--forms)는 HWPX 입력 전용"),
+        "{}",
+        stderr(&output)
+    );
+
+    // `--forms` writes hwpx only.
+    let output = run(hwp()
+        .arg("fill")
+        .arg(&form)
+        .args(["--forms", "--set", "성명=x", "-o"])
+        .arg(dir.join("out.hwp")));
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains(".hwpx"), "{}", stderr(&output));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 32x24 IHDR-only PNG, the shape the insert-image tests use.
+fn tiny_png(path: &Path) {
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend([0, 0, 0, 13]);
+    png.extend(b"IHDR");
+    png.extend(32u32.to_be_bytes());
+    png.extend(24u32.to_be_bytes());
+    png.extend([0u8; 8]);
+    std::fs::write(path, &png).unwrap();
+}
+
+/// A value cell holding a 누름틀 or a picture is never written; the fill says so.
+#[test]
+fn fill_forms_leaves_cells_with_fields_and_pictures_alone() {
+    let (dir, form) = template("controls", "| 성명 | 누름 |\n|---|---|\n| 주소 | 그림 |\n");
+    let png = dir.join("tiny.png");
+    tiny_png(&png);
+    let edited = dir.join("edited.hwpx");
+    let output = run(hwp()
+        .arg("edit")
+        .arg(&form)
+        .args(["--create-field", "누름=>이름란", "--insert-image"])
+        .arg(format!("그림=>{}", png.display()))
+        .arg("-o")
+        .arg(&edited));
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let filled = dir.join("filled.hwpx");
+    let output = run(hwp()
+        .arg("fill")
+        .arg(&edited)
+        .args([
+            "--forms",
+            "--json",
+            "--allow-partial",
+            "--set",
+            "성명=홍길동",
+            "--set",
+            "주소=제주",
+            "-o",
+        ])
+        .arg(&filled));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["unmatched"],
+        serde_json::json!(["성명", "주소"]),
+        "{report}"
+    );
+    let warnings = report["warnings"].to_string();
+    assert!(
+        warnings.contains("표0 (0,1)") && warnings.contains("표0 (1,1)"),
+        "{report}"
+    );
+    assert_eq!(
+        std::fs::read(&filled).unwrap(),
+        std::fs::read(&edited).unwrap(),
+        "nothing was written, so the input is published unchanged"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Copy an hwpx package, putting an XML comment into section 1. The writer never emits one,
+/// so the comment survives only if that section is copied instead of re-serialized.
+fn mark_second_section(from: &Path, to: &Path) {
+    use std::io::{Read, Write};
+    use zip::write::SimpleFileOptions;
+    let mut source = zip::ZipArchive::new(std::fs::File::open(from).unwrap()).unwrap();
+    let mut out = zip::ZipWriter::new(std::fs::File::create(to).unwrap());
+    for i in 0..source.len() {
+        let mut entry = source.by_index(i).unwrap();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if entry.name() == "Contents/section1.xml" {
+            let xml = String::from_utf8(data).unwrap();
+            let at = xml.find("?>").unwrap() + 2;
+            data = format!("{}<!-- untouched -->{}", &xml[..at], &xml[at..]).into_bytes();
+        }
+        let method = if entry.name() == "mimetype" {
+            zip::CompressionMethod::Stored
+        } else {
+            zip::CompressionMethod::Deflated
+        };
+        out.start_file(
+            entry.name(),
+            SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        out.write_all(&data).unwrap();
+    }
+    out.finish().unwrap();
+}
+
+/// Only the sections the fill changed are re-serialized; the others are copied byte for byte.
+#[test]
+fn fill_forms_rewrites_only_the_changed_sections() {
+    let (dir, first) = template("sections", "| 성명 | |\n|---|---|\n");
+    let source = dir.join("second.md");
+    std::fs::write(&source, "작성자: 미정\n").unwrap();
+    let second = dir.join("second.hwpx");
+    let output = run(hwp()
+        .args(["new", "--from"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&second));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let merged = dir.join("merged.hwpx");
+    let output = run(hwp()
+        .arg("merge")
+        .arg(&first)
+        .arg(&second)
+        .arg("-o")
+        .arg(&merged));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let marked = dir.join("marked.hwpx");
+    mark_second_section(&merged, &marked);
+
+    let filled = dir.join("filled.hwpx");
+    let output = run(hwp()
+        .arg("fill")
+        .arg(&marked)
+        .args(["--forms", "--set", "성명=홍길동", "-o"])
+        .arg(&filled));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(text(&filled).contains("성명\t홍길동"));
+    let (before, after) = (entries(&marked), entries(&filled));
+    for ((name, a), (_, b)) in before.iter().zip(&after) {
+        if name == "Contents/section0.xml" {
+            assert_ne!(a, b, "the filled section is rewritten");
+        } else {
+            assert_eq!(a, b, "{name} changed");
+        }
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }

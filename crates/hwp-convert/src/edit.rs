@@ -239,7 +239,6 @@ fn replace_in_para(para: &mut Paragraph, from: &str, to: &str, budget: &mut usiz
 fn replace_in_chars(para: &mut Paragraph, from: &str, to: &str, budget: &mut usize) -> usize {
     let from_w = utf16_len(from);
     let from_chars = from.chars().count();
-    let to_chars = to.chars().count();
     let mut count = 0;
     // 삽입한 `to` 다음부터 이어서 탐색한다 — `to`가 `from`을 포함하면(예:
     // "한라대학교"→"제주한라대학교") 처음부터 재탐색 시 삽입한 텍스트 안에서
@@ -249,38 +248,46 @@ fn replace_in_chars(para: &mut Paragraph, from: &str, to: &str, budget: &mut usi
         let Some((char_idx, wpos)) = find_match(&para.chars, from, start) else {
             break;
         };
-        splice_text(para, char_idx..char_idx + from_chars, wpos, from_w, to);
+        let inserted = splice_text(para, char_idx..char_idx + from_chars, wpos, from_w, to);
         count += 1;
         *budget -= 1;
-        start = char_idx + to_chars;
+        start = char_idx + inserted;
     }
     count
 }
 
 /// Replace the text characters `range` of `para` (starting at WCHAR offset `wpos`, `from_w`
-/// WCHARs wide) with `to`. The new text takes the char shape active at `wpos`, later run
-/// boundaries shift by the length change, `\n` becomes a line break, and the now stale line
-/// layout is dropped for the writer to rebuild.
+/// WCHARs wide) with `to`, and return how many characters went in. The new text takes the char
+/// shape active at `wpos`, later run boundaries shift by the length change, and the now stale
+/// line layout is dropped for the writer to rebuild. `to` is normalized the way markdown import
+/// stores text: CRLF and LF become a line break, a tab the 8-WCHAR inline tab control, and
+/// other C0 controls are dropped.
 pub(crate) fn splice_text(
     para: &mut Paragraph,
     range: std::ops::Range<usize>,
     wpos: u32,
     from_w: u32,
     to: &str,
-) {
+) -> usize {
     let to_hwp: Vec<HwpChar> = to
+        .replace("\r\n", "\n")
         .chars()
-        .map(|c| {
-            if c == '\n' {
-                HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
-            } else {
-                HwpChar::Text(c)
-            }
+        .filter_map(|c| match c {
+            '\n' => Some(HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)),
+            '\t' => Some(HwpChar::InlineCtrl {
+                code: hwp_model::ctrl_char::TAB,
+                payload: vec![0; 12],
+            }),
+            c if (c as u32) < 0x20 => None,
+            c => Some(HwpChar::Text(c)),
         })
         .collect();
+    let to_w = to_hwp.iter().map(HwpChar::wchar_width).sum();
+    let inserted = to_hwp.len();
     para.chars.splice(range, to_hwp);
-    adjust_runs(&mut para.char_shape_runs, wpos, from_w, utf16_len(to));
+    adjust_runs(&mut para.char_shape_runs, wpos, from_w, to_w);
     para.line_segs.clear();
+    inserted
 }
 
 /// Apply `edits` (character ranges of `para`, in order and not overlapping, with their

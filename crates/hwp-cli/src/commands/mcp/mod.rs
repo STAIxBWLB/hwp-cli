@@ -2783,7 +2783,7 @@ fn tool_defs() -> Vec<Value> {
                 "parts": {"type": "object", "additionalProperties": {"type": "string"},
                     "description": "{앵커이름: 부분 파일 경로(md+HTML)} 객체 — 앵커 문단을 부분 블록으로 교체"},
                 "allow_partial": {"type": "boolean", "description": "미발견 키가 있어도 일치한 값만 게시(하나도 없으면 입력을 그대로 게시하고 건수 0 보고); 기본 false"},
-                "forms": {"type": "boolean", "description": "true면 values로 양식 필드(레이블 셀 옆·아래 칸, \"라벨: 값\", 빈칸, 확인란)도 채우고 unmatched를 보고(hwpx, parts와 함께 불가); 기본 false"}
+                "forms": {"type": "boolean", "description": "true면 values로 양식 필드(레이블 셀 옆·아래 칸, \"라벨: 값\", 빈칸, 확인란)도 채우고 unmatched를 보고(hwpx 입출력, parts와 함께 불가). 비어 있지 않은 값 칸과 \"라벨:\" 뒤 텍스트는 덮어쓰고(칸마다 경고) 누름틀·그림·표가 든 칸은 쓰지 않음; 기본 false"}
             }, "required": ["input", "output", "values"]}
         }),
         json!({

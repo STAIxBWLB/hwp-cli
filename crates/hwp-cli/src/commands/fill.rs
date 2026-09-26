@@ -24,6 +24,8 @@ pub struct FillReport {
     pub mode: &'static str,
     pub replaced: usize,
     pub counts: BTreeMap<String, usize>,
+    /// Requested keys that matched nothing (`--forms` report only).
+    pub unmatched: Vec<String>,
     pub filled: usize,
     pub rows_added: usize,
     pub warnings: Vec<String>,
@@ -184,6 +186,10 @@ pub fn execute(
         );
     }
 
+    if forms {
+        return execute_forms(input, output, &values, allow_partial);
+    }
+
     // 자리표시자 치환은 HWPX(ZIP) 패키지 외과 수술 전용 — .hwp는 모호한 ZIP 오류 대신 명확히 거절.
     // (.hwp 표 채우기는 위 --data tables 경로가 IR로 처리한다.)
     if crate::format::detect(input)? != crate::format::FileFormat::Hwpx {
@@ -192,15 +198,11 @@ pub fn execute(
             input.display()
         );
     }
-
-    if forms {
-        return execute_forms(input, output, &values, allow_partial);
-    }
     execute_values(input, output, &values, allow_partial)
 }
 
 /// `--forms`: fill the slots and Korean form fields of an hwpx template in one IR pass, then
-/// write it the way `hwp edit` writes hwpx (sections re-serialized, other entries raw-copied).
+/// write it the way `hwp edit` writes hwpx, re-serializing only the sections that changed.
 /// Counts are per key as the caller spelled it; a key that matched nothing fails the fill
 /// unless `allow_partial`, and then a fill that changed nothing publishes the input unchanged.
 pub fn execute_forms(
@@ -218,20 +220,25 @@ pub fn execute_forms(
             input.display()
         );
     }
+    if !output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("hwpx"))
+    {
+        anyhow::bail!(
+            "{}: 양식 채우기(--forms) 출력은 .hwpx여야 합니다",
+            output.display()
+        );
+    }
     let original = load_document(input)?;
     let mut doc = original.clone();
-    let counts = hwp_convert::fill_form_fields(&mut doc, values)
+    let fill = hwp_convert::fill_form_fields(&mut doc, values)
         .map_err(|e| anyhow::anyhow!("fill 실패: {e}"))?;
-    let missing: Vec<String> = counts
-        .iter()
-        .filter(|(_, count)| **count == 0)
-        .map(|(name, _)| name.clone())
-        .collect();
-    if !missing.is_empty() && !allow_partial {
+    if !fill.unmatched.is_empty() && !allow_partial {
         anyhow::bail!(
             "요청한 자리표시자·양식 필드를 찾지 못했습니다: {} \
              (--allow-partial로 일치한 값만 적용 가능)",
-            missing.join(", ")
+            fill.unmatched.join(", ")
         );
     }
 
@@ -241,21 +248,22 @@ pub fn execute_forms(
     } else {
         write_ir_fill(input, output, &original, &doc, false, true)?
     };
-    let mut warnings = writer_report.warnings;
-    let preservation = writer_report.preservation;
-    if !missing.is_empty() {
-        warnings.push(format!("미치환 키: {}", missing.join(", ")));
+    let mut warnings = fill.warnings;
+    warnings.extend(writer_report.warnings);
+    if !fill.unmatched.is_empty() {
+        warnings.push(format!("미치환 키: {}", fill.unmatched.join(", ")));
     }
-    let total = counts.values().sum();
+    let total = fill.counts.values().sum();
     Ok(FillReport {
         output: output.display().to_string(),
         mode: "forms",
         replaced: total,
-        counts,
+        counts: fill.counts,
+        unmatched: fill.unmatched,
         filled: total,
         rows_added: 0,
         warnings,
-        preservation,
+        preservation: writer_report.preservation,
     })
 }
 
@@ -332,6 +340,7 @@ pub fn execute_values(
         counts,
         filled: total,
         rows_added: 0,
+        unmatched: Vec::new(),
         warnings: report_warnings,
         preservation: hwp_model::PreservationReport::new(),
     })
@@ -583,6 +592,7 @@ fn fill_tables_ir(
             .collect(),
         filled,
         rows_added: added,
+        unmatched: Vec::new(),
         warnings,
         preservation: writer_report.preservation,
     })
@@ -755,6 +765,7 @@ fn fill_parts_ir(
         counts,
         filled,
         rows_added: 0,
+        unmatched: Vec::new(),
         warnings,
         preservation: writer_report.preservation,
     })
@@ -883,7 +894,13 @@ fn write_ir_fill(
 ) -> anyhow::Result<hwp_model::WriteReport> {
     let write_staged = |source: &Path, staged: &Path| {
         let mut report = if surgical_hwpx {
-            crate::commands::edit::write_hwpx_surgical(source, original, edited, staged)?
+            // Only the sections the fill changed are re-serialized; the rest stay byte-identical.
+            let changed = (original.sections.len() == edited.sections.len()).then(|| {
+                (0..edited.sections.len())
+                    .filter(|&i| original.sections[i] != edited.sections[i])
+                    .collect()
+            });
+            crate::commands::edit::write_hwpx_surgical(source, original, edited, staged, changed)?
         } else {
             write_table_fill(Some((source, original)), edited, staged, structural)?
         };
@@ -953,12 +970,7 @@ pub fn report_json(report: &FillReport) -> serde_json::Value {
             "warnings": report.warnings,
         });
         if report.mode == "forms" {
-            json["unmatched"] = report
-                .counts
-                .iter()
-                .filter(|(_, count)| **count == 0)
-                .map(|(name, _)| name.as_str())
-                .collect();
+            json["unmatched"] = serde_json::json!(report.unmatched);
         }
         json
     }

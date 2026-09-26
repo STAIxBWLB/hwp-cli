@@ -159,7 +159,8 @@ over an existing skill directory is safe.
 
 The claude.ai code-execution sandbox has a registry-restricted network, so the binary cannot
 be downloaded at runtime. Every release therefore attaches `hwp-skill-claude-web.zip`, which
-contains `SKILL.md` at the zip root, `bootstrap.sh`, and the Linux x86_64 `bin/hwp`:
+contains `SKILL.md` at the zip root, `bootstrap.sh`, the Linux x86_64 `bin/hwp`, and the
+license files (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`):
 
 1. Download `hwp-skill-claude-web.zip` from the
    [latest release](https://github.com/STAIxBWLB/hwp-cli/releases), along with the

@@ -155,7 +155,8 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 
 claude.ai 코드 실행 샌드박스는 네트워크가 레지스트리로 제한되어 런타임에 바이너리를 받을
 수 없다. 그래서 매 릴리스에 `hwp-skill-claude-web.zip`을 함께 올린다. zip 루트의
-`SKILL.md`, `bootstrap.sh`, Linux x86_64 `bin/hwp`가 포함된다.
+`SKILL.md`, `bootstrap.sh`, Linux x86_64 `bin/hwp`, 라이선스 파일(`LICENSE-MIT`, `LICENSE-APACHE`,
+`NOTICE`)이 포함된다.
 
 1. [최신 릴리스](https://github.com/STAIxBWLB/hwp-cli/releases)에서
    `hwp-skill-claude-web.zip`과 그 옆에 함께 게시되는 `hwp-skill-claude-web.zip.sha256`을 받아
