@@ -111,8 +111,8 @@
             }
           }
         },
-        "issues": { "type": "array", "maxItems": 24, "uniqueItems": true, "items": { "$ref": "#/$defs/renderIssueNonInfo" } },
-        "info": { "type": "array", "maxItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/renderIssueInfo" } },
+        "issues": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/renderIssueNonInfo" }, "description": "The emitter writes one entry per issue code, so the code enum bounds the length. That bound is an emitter guarantee the schema does not enforce (uniqueItems compares whole entries), and no count cap is set because one would have to track every new code." },
+        "info": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/renderIssueInfo" }, "description": "One entry per info code, bounded by the emitter the same way as issues." },
         "issue_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
         "info_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
         "issue_log_complete": { "type": "boolean" },
@@ -281,18 +281,21 @@
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "checkStatus": { "enum": ["passed", "failed", "skipped"] },
-    "lossCount": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "lossCount": { "type": "integer", "minimum": 1, "maximum": 1000000000, "description": "Exact sum of a code's event counts: at most 1000 events of at most 1,000,000 each." },
     "preservationLossCodes": {
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
-      "maxProperties": 14,
+      "maxProperties": 19,
       "properties": {
         "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
         "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
         "control_metadata_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "control_removed": { "$ref": "#/$defs/lossCount" },
+        "document_metadata_superseded": { "$ref": "#/$defs/lossCount" },
+        "document_package_passthrough_dropped": { "$ref": "#/$defs/lossCount" },
         "gso_header_unrepresentable": { "$ref": "#/$defs/lossCount" },
+        "gso_object_id_renumbered": { "$ref": "#/$defs/lossCount" },
         "gso_shape_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "hwp_container_storage_removed": { "$ref": "#/$defs/lossCount" },
         "hwp_container_stream_removed": { "$ref": "#/$defs/lossCount" },
@@ -301,7 +304,9 @@
         "hwpx_package_entry_removed": { "$ref": "#/$defs/lossCount" },
         "metadata_value_removed": { "$ref": "#/$defs/lossCount" },
         "opaque_control_unrepresentable": { "$ref": "#/$defs/lossCount" },
-        "picture_control_removed": { "$ref": "#/$defs/lossCount" }
+        "page_range_paragraph_rounded": { "$ref": "#/$defs/lossCount" },
+        "picture_control_removed": { "$ref": "#/$defs/lossCount" },
+        "section_border_fill_ref_unresolvable": { "$ref": "#/$defs/lossCount" }
       }
     },
     "receiptShortString": {
@@ -322,7 +327,7 @@
       "properties": {
         "status": { "$ref": "#/$defs/checkStatus" },
         "reason_codes": { "$ref": "#/$defs/reasons" },
-        "loss_code_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "loss_code_count": { "type": "integer", "minimum": 0, "maximum": 1000000000, "description": "Exact sum of every event count: at most 1000 events of at most 1,000,000 each." },
         "loss_codes": { "$ref": "#/$defs/preservationLossCodes" }
       },
       "oneOf": [
@@ -389,7 +394,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["code", "severity", "stage", "count", "sample_sha256", "samples_complete"],
       "properties": {
-        "code": { "enum": ["parse_budget_exceeded", "render_execution_failed", "pagination_drift_detected", "font_matched", "font_substituted", "font_missing", "font_manifest_load_failed", "font_resolution_budget_exceeded", "shaping_failed", "page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "page_number_shaping_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "image_decode_placeholder", "image_decode_budget_exceeded", "picture_effects_unsupported", "invalid_table_cell_omitted", "table_split_across_pages", "table_cell_fragmentation_incomplete", "table_row_too_tall_clipped", "table_cell_content_overflow", "paragraph_line_content_overflow", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted", "font_subset_fallback", "layout_budget_exceeded"] },
+        "code": { "enum": ["parse_budget_exceeded", "render_execution_failed", "pagination_drift_detected", "font_matched", "font_substituted", "font_missing", "font_manifest_load_failed", "font_resolution_budget_exceeded", "shaping_failed", "page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "page_number_shaping_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "image_decode_placeholder", "image_decode_budget_exceeded", "picture_effects_unsupported", "invalid_table_cell_omitted", "table_split_across_pages", "table_cell_fragmentation_incomplete", "table_row_too_tall_clipped", "table_cell_content_overflow", "paragraph_line_content_overflow", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted", "font_subset_fallback", "layout_budget_exceeded", "wmf_parse_invalid_placeholder", "wmf_unsupported_record_omitted", "wmf_budget_exceeded"] },
         "severity": { "enum": ["info", "warning", "incomplete", "fatal"] },
         "stage": { "enum": ["input_parse", "font_resolution", "layout", "shaping", "rasterization", "pdf_export"] },
         "count": { "type": "integer", "minimum": 1, "maximum": 1000000 },
@@ -398,7 +403,7 @@
       },
       "oneOf": [
         { "properties": { "code": { "const": "parse_budget_exceeded" }, "severity": { "const": "fatal" }, "stage": { "const": "input_parse" } } },
-        { "properties": { "code": { "enum": ["render_execution_failed", "pagination_drift_detected", "layout_budget_exceeded"] }, "severity": { "const": "fatal" }, "stage": { "const": "layout" } } },
+        { "properties": { "code": { "enum": ["render_execution_failed", "pagination_drift_detected", "layout_budget_exceeded", "wmf_budget_exceeded"] }, "severity": { "const": "fatal" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "const": "font_matched" }, "severity": { "const": "info" }, "stage": { "const": "font_resolution" } } },
         { "properties": { "code": { "const": "table_split_across_pages" }, "severity": { "const": "info" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "const": "font_substituted" }, "severity": { "const": "warning" }, "stage": { "const": "font_resolution" } } },
@@ -406,7 +411,7 @@
         { "properties": { "code": { "const": "font_manifest_load_failed" }, "severity": { "const": "fatal" }, "stage": { "const": "font_resolution" } } },
         { "properties": { "code": { "const": "font_resolution_budget_exceeded" }, "severity": { "const": "fatal" }, "stage": { "const": "font_resolution" } } },
         { "properties": { "code": { "enum": ["shaping_failed", "page_number_shaping_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "shaping" } } },
-        { "properties": { "code": { "enum": ["page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "invalid_table_cell_omitted", "table_cell_fragmentation_incomplete", "table_row_too_tall_clipped", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "layout" } } },
+        { "properties": { "code": { "enum": ["page_definition_fallback", "page_control_payload_omitted", "page_number_format_fallback", "page_number_position_omitted", "unsupported_control_omitted", "image_size_missing_omitted", "image_data_missing_omitted", "invalid_table_cell_omitted", "table_cell_fragmentation_incomplete", "table_row_too_tall_clipped", "text_box_geometry_invalid_omitted", "shape_depth_limit_omitted", "shape_style_invalid_omitted", "shape_geometry_invalid_omitted", "wmf_parse_invalid_placeholder", "wmf_unsupported_record_omitted"] }, "severity": { "const": "incomplete" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "const": "image_decode_placeholder" }, "severity": { "const": "incomplete" }, "stage": { "const": "rasterization" } } },
         { "properties": { "code": { "const": "picture_effects_unsupported" }, "severity": { "const": "warning" }, "stage": { "const": "layout" } } },
         { "properties": { "code": { "enum": ["table_cell_content_overflow", "paragraph_line_content_overflow"] }, "severity": { "const": "warning" }, "stage": { "const": "layout" } } },

@@ -19,6 +19,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `reason` description changed, which moves the hash for consumers that pin it. The label's
   wording is not covered by SemVer beyond being a string, so match on `op` and `status`, not on
   it.
+- The bytes of `certification-report-v1.schema.json` and `render-report-v1.schema.json` changed,
+  for consumers that pin schema hashes. `render-report-v1` changed in descriptions only;
+  `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
+  that validated before still validates.
 
 **Security**
 
@@ -37,6 +41,39 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- A certification report could fail its own published schema in six ways
+  ([#347](https://github.com/STAIxBWLB/hwp-cli/issues/347)). Four were schema gaps, now loosened:
+  - Certification lays pages out through the same renderer as `hwp render`, but
+    `certification-report-v1` never listed the three WMF issue codes
+    (`wmf_parse_invalid_placeholder`, `wmf_unsupported_record_omitted`, `wmf_budget_exceeded`),
+    the gap #284 closed in `render-report-v1`. They are now in the enum with their severity and
+    stage.
+  - `render.issues` was capped at 24 entries and `render.info` at one, below the 33 non-info and
+    two info codes the renderer emits. Both arrays lose the count cap; a test validates one entry
+    per renderer code.
+  - The preservation section echoes every loss code a `preservation-report-v1` artifact carries,
+    but its `loss_codes` object admitted 14 of the 19 codes: `document_metadata_superseded`,
+    `document_package_passthrough_dropped`, `gso_object_id_renumbered`,
+    `page_range_paragraph_rounded` and `section_border_fill_ref_unresolvable` were rejected. All
+    19 are now admitted, and the test that mirrors them enumerates the model's variants instead
+    of a hand-written list, so a new code cannot go missing again.
+  - Each event's count is capped at 1,000,000, but the per-code sums and `loss_code_count`, which
+    add events up exactly, carried the same 1,000,000 maximum: two events of 1,000,000 for one
+    code made the report invalid. Both maxima are now 1,000,000,000, the most 1,000 events at the
+    cap can add up to, and a test pins them to that bound.
+
+  Two were counts with no emitter bound at all, because an HWP5 paragraph's text can hold millions
+  of characters within the parse budget. Both keep the schema's 1,000,000 maximum, stay exact
+  below it and now fail closed above it with `inspection_incomplete`, the code a presence rule
+  already uses for an inspection it could not finish:
+  - The package check's `issue_count` is the reader's warning count (one unpaired surrogate, or one
+    field character with no control, is one warning). Above the maximum the package check fails
+    with `inspection_incomplete` and an `issue_count` of 1.
+  - The `unresolved_fields` rule's `observed_count` counts field-start characters. Above the
+    maximum the rule fails with `inspection_incomplete` and an `observed_count` of 0.
+- The `issues`/`info` descriptions in `certification-report-v1` and `render-report-v1` now say that
+  one entry per code is an emitter guarantee, not something the schema enforces (`uniqueItems`
+  compares whole entries) ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
 - Two test runs at the same time, for example `scripts/check.sh` in two worktrees, no longer
   collide: every test temp path now has a per-process name (the process id, or the nanosecond
   timestamp some sites already used), where 41 sites used a fixed name. Those 41 sites also
