@@ -1641,19 +1641,18 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         };
         if let TypedEditOperation::SetCellByLabel { .. } = operation
             && let Some(Some(resolved)) = resolved_label_edits.peek()
+            && let Some(changed) = tables_changed_by
         {
-            if let Some(changed) = tables_changed_by {
-                anyhow::bail!(
-                    "op[{changed}] {}이(가) 표를 더하거나 빼거나, 표의 행·열을 바꾸거나, 표가 든 문단을 옮겨, \
-                     op[{index}] set_cell_by_label이 사전 검증에서 찾은 칸(표{} ({},{}))이 다른 칸일 수 있습니다 \
-                     (레이블 편집을 앞에 두거나, 편집을 두 번으로 나누세요. \
-                     MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
-                    typed_op_kind(&plan.typed_operations[changed]),
-                    resolved.candidate.table,
-                    resolved.candidate.row,
-                    resolved.candidate.col
-                );
-            }
+            anyhow::bail!(
+                "op[{changed}] {}이(가) 표를 더하거나 빼거나, 표의 행·열을 바꾸거나, 표가 든 문단을 옮겨, \
+                 op[{index}] set_cell_by_label이 사전 검증에서 찾은 칸(표{} ({},{}))이 다른 칸일 수 있습니다 \
+                 (레이블 편집을 앞에 두거나, 편집을 두 번으로 나누세요. \
+                 MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
+                typed_op_kind(&plan.typed_operations[changed]),
+                resolved.candidate.table,
+                resolved.candidate.row,
+                resolved.candidate.col
+            );
         }
         let tables_before = (tables_changed_by.is_none()
             && last_label_edit.is_some_and(|last| index < last))
