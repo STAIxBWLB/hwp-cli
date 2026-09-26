@@ -342,9 +342,15 @@ fn list_identity(path: &SegmentPath) -> (usize, &[usize]) {
 ///
 /// Refuses when: the source paragraph carries `Control::SectionDef` (matching
 /// `delete_paragraph`'s existing invariant — relocating a section's own definition paragraph is
-/// exactly as unsafe as deleting it); the source list would be left empty; or `to_index` lands
-/// beyond the destination list's length, computed AFTER accounting for the source's removal when
-/// both paths name the same list (T-07-11: a checked bound, never a silent clamp).
+/// exactly as unsafe as deleting it); the source list would be left empty; the destination list
+/// lies inside the moved paragraph; or `to_index` lands beyond the destination list's length,
+/// computed AFTER accounting for the source's removal when both paths name the same list
+/// (T-07-11: a checked bound, never a silent clamp).
+///
+/// `to_list` names the destination as the document is before the move. When the destination list
+/// is nested under a later paragraph of the source's list (a cell of a table further down), the
+/// source's removal shifts that paragraph up by one, and the destination is found at its shifted
+/// path (#358).
 pub fn move_paragraph(
     doc: &mut Document,
     from: &SegmentPath,
@@ -370,6 +376,22 @@ pub fn move_paragraph(
         }
     }
 
+    // Validated non-empty by `list_at_mut` above.
+    let depth = from.indices.len() - 1;
+    let mut dst = to_list.clone();
+    if from.section == to_list.section
+        && to_list.indices.len() > from.indices.len()
+        && to_list.indices[..depth] == from.indices[..depth]
+    {
+        match to_list.indices[depth].cmp(&from.indices[depth]) {
+            std::cmp::Ordering::Greater => dst.indices[depth] -= 1,
+            std::cmp::Ordering::Equal => {
+                return Err("문단을 그 문단 안의 위치로 이동할 수 없습니다".to_string());
+            }
+            std::cmp::Ordering::Less => {}
+        }
+    }
+
     let dst_len = {
         let (dst_list, _) = list_at_mut(doc, to_list)
             .ok_or_else(|| "이동 대상 위치를 찾을 수 없습니다".to_string())?;
@@ -387,12 +409,12 @@ pub fn move_paragraph(
         src_list.remove(src_idx)
     };
     {
-        let (dst_list, _) = list_at_mut(doc, to_list).expect("validated above");
+        let (dst_list, _) = list_at_mut(doc, &dst).expect("validated above");
         dst_list.insert(to_index, moved);
     }
 
     {
-        let (list, _) = list_at_mut(doc, to_list).expect("just inserted into this list");
+        let (list, _) = list_at_mut(doc, &dst).expect("just inserted into this list");
         crate::edit::fixup_last_para_flag(list);
     }
     if !same_list {
@@ -401,7 +423,7 @@ pub fn move_paragraph(
     }
 
     crate::address::invalidate_ancestors(doc, from);
-    crate::address::invalidate_ancestors(doc, to_list);
+    crate::address::invalidate_ancestors(doc, &dst);
     Ok(())
 }
 

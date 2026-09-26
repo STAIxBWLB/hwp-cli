@@ -19,6 +19,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `reason` description changed, which moves the hash for consumers that pin it. The label's
   wording is not covered by SemVer beyond being a string, so match on `op` and `status`, not on
   it.
+- An edit batch that puts an op with no address before an addressed op whose path it changes is
+  now refused instead of applied: it used to edit the wrong paragraph (#358, below). Put the op
+  with no address after the addressed ones, address it, or split the batch.
 - The bytes of `certification-report-v1.schema.json` and `render-report-v1.schema.json` changed,
   for consumers that pin schema hashes. `render-report-v1` changed in descriptions only;
   `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
@@ -116,6 +119,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   the renderer now decide which paragraphs always have a segment with one rule, mirrored in both
   crates and pinned by `segment_id_parity`
   ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+- `hwp edit --ops` and MCP `hwp_edit` could edit a different paragraph than the one an address
+  named, and report success ([#358](https://github.com/STAIxBWLB/hwp-cli/issues/358)). Addresses
+  are resolved against the document before the batch, and a structural op earlier in the batch
+  moves the paragraphs after it:
+  - An addressed `insert_para`, `delete_para` or `move_para` shifted every later address in the
+    same list by one, including those before it, and never shifted a cell or text-box paragraph
+    below it. A later address is now shifted exactly: only at or after the splice, at any depth.
+  - An op with no address (a pattern, anchor or index form such as `delete_para` with
+    `matching`, `insert_para` with `anchor` or `add_table`) was not tracked at all. A batch in
+    which such an op adds or removes a paragraph, control or cell along a later addressed op's
+    path is now refused before anything is written, with an error naming both ops. The same ops
+    in the other order, or in lists the address does not pass through, still apply.
+  - `move_para` into a cell or text box below its source, in the same list, panicked. The
+    destination is now found where the removal left it.
 
 ## [1.1.0]
 

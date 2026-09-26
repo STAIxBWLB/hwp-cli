@@ -4174,6 +4174,235 @@ fn cell_path_prefix(doc: &hwp_model::Document, row: u16, col: u16) -> Vec<usize>
     panic!("cell ({row},{col}) not found");
 }
 
+// ── #358: structural ops shift later addresses exactly, or the batch is refused ─────────
+
+/// Runs `hwp edit --ops` with `ops` on `base` in `dir`; returns the output path, whether the run
+/// succeeded, and its stderr.
+fn run_ops_batch(dir: &Path, base: &Path, ops: &str) -> (PathBuf, bool, String) {
+    let ops_path = dir.join("ops.json");
+    std::fs::write(&ops_path, ops).unwrap();
+    let output = dir.join("out.hwpx");
+    let _ = std::fs::remove_file(&output);
+    let run = hwp()
+        .arg("edit")
+        .arg(base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops_path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    (output, run.status.success(), stderr)
+}
+
+/// The texts of the paragraphs in cell (`row`, `col`) of the first table.
+fn cell_texts(doc: &hwp_model::Document, row: u16, col: u16) -> Vec<String> {
+    let prefix = cell_path_prefix(doc, row, col);
+    let Control::Table(table) = &doc.sections[0].paragraphs[prefix[0]].controls[prefix[1]] else {
+        panic!("not a table");
+    };
+    table.cells[prefix[2]]
+        .paragraphs
+        .iter()
+        .map(|p| p.plain_text())
+        .collect()
+}
+
+/// The id of the first paragraph of cell (`row`, `col`) of the first table.
+fn cell_paragraph_id(doc: &hwp_model::Document, row: u16, col: u16) -> String {
+    let mut indices = cell_path_prefix(doc, row, col);
+    let Control::Table(table) = &doc.sections[0].paragraphs[indices[0]].controls[indices[1]] else {
+        panic!("not a table");
+    };
+    let paragraph = &table.cells[indices[2]].paragraphs[0];
+    indices.push(0);
+    hwp_convert::paragraph_id(
+        &hwp_convert::SegmentPath {
+            section: 0,
+            indices,
+        },
+        paragraph,
+    )
+}
+
+/// A splice moves only the paragraphs at or after it: an addressed op on a paragraph before an
+/// earlier insert, delete or move in the same list still edits the paragraph preflight resolved.
+/// Before #358 the tracker added one delta to every index in the list, so each of these batches
+/// edited the paragraph next to the target or missed it.
+#[test]
+fn drift_splice_leaves_earlier_paragraphs_in_place() {
+    let dir = test_dir("drift-earlier-paragraphs");
+    let base = drift_base(&dir);
+    let cases = [
+        (
+            r#"[
+              {"op":"insert_para","address":{"at":{"section":0,"paragraph":5}},"text":"NEW"},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":2}},"from":"bravo","to":"BRAVO"}
+            ]"#,
+            vec![
+                "1. T", "alpha", "BRAVO", "charlie", "delta", "echo", "NEW", "foxtrot", "golf",
+            ],
+        ),
+        (
+            r#"[
+              {"op":"delete_para","address":{"at":{"section":0,"paragraph":5}}},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":2}},"from":"bravo","to":"BRAVO"}
+            ]"#,
+            vec![
+                "1. T", "alpha", "BRAVO", "charlie", "delta", "foxtrot", "golf",
+            ],
+        ),
+        // A same-list move shifts the paragraphs between its source and destination by one.
+        (
+            r#"[
+              {"op":"move_para","address":{"at":{"section":0,"paragraph":6}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":2}},"from":"bravo","to":"BRAVO"},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":7}},"from":"golf","to":"GOLF"}
+            ]"#,
+            vec![
+                "1. T", "foxtrot", "alpha", "BRAVO", "charlie", "delta", "echo", "GOLF",
+            ],
+        ),
+    ];
+    for (ops, expected) in cases {
+        let (output, success, stderr) = run_ops_batch(&dir, &base, ops);
+        assert!(success, "{ops}: {stderr}");
+        let after = hwpx::read_document(&output).unwrap().document;
+        assert_eq!(plain_texts(&after), expected, "{ops}");
+    }
+}
+
+/// A splice in the body shifts every path that passes through the body at or after it, not only
+/// body paragraphs: after deleting "table probe", the cell paragraphs of the table below it are
+/// one body index up. Before #358 only a path's last index moved, so the replace missed.
+#[test]
+fn drift_body_splice_shifts_the_cell_paths_below_it() {
+    let (dir, base) = table_base_for("drift-body-splice-cell");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[
+              {{"op":"delete_para","address":{{"at":{{"section":0,"paragraph":1}}}}}},
+              {{"op":"replace","address":{{"id":"{id}"}},"from":"2","to":"Z"}}
+            ]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert!(
+        !plain_texts(&after).iter().any(|text| text == "table probe"),
+        "{:?}",
+        plain_texts(&after)
+    );
+    assert_eq!(cell_texts(&after, 1, 1), vec!["Z"]);
+}
+
+/// Moving a body paragraph into a cell of a table below it: the removal shifts the table's own
+/// body index, and the move finds the cell at the shifted path. Before #358 it looked the cell up
+/// at the old path after the removal and panicked.
+#[test]
+fn move_para_into_a_cell_of_a_later_table() {
+    let (dir, base) = table_base_for("move-into-later-cell");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"at":{{"section":0,"paragraph":1}}}},"to":{{"address":{{"id":"{id}"}},"position":"after"}}}}]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert!(
+        !plain_texts(&after).iter().any(|text| text == "table probe"),
+        "{:?}",
+        plain_texts(&after)
+    );
+    assert_eq!(cell_texts(&after, 1, 1), vec!["2", "table probe"]);
+}
+
+/// An op with no address (pattern, anchor or index form) that adds or removes a paragraph in the
+/// list a later addressed op points into is refused, naming both ops: the tracker cannot follow
+/// it, and the address would land on a different paragraph. Nothing is written. The same ops in
+/// the other order apply.
+#[test]
+fn unaddressed_structural_op_before_an_address_in_its_list_is_refused() {
+    let dir = test_dir("unaddressed-structural-refused");
+    let base = drift_base(&dir);
+    let set_foxtrot =
+        r#"{"op":"set_para","address":{"at":{"section":0,"paragraph":6}},"align":"center"}"#;
+    for (structural, kind) in [
+        (r#"{"op":"delete_para","matching":"alpha"}"#, "delete_para"),
+        (
+            r#"{"op":"insert_para","anchor":"alpha","text":"NEW"}"#,
+            "insert_para",
+        ),
+        (
+            r#"{"op":"add_table","anchor":"alpha","rows":[["x"]]}"#,
+            "add_table",
+        ),
+    ] {
+        let (output, success, stderr) =
+            run_ops_batch(&dir, &base, &format!("[{structural},{set_foxtrot}]"));
+        assert!(!success, "{kind} must be refused: {stderr}");
+        assert!(!output.exists(), "{kind}: no output may be written");
+        assert!(
+            stderr.contains(&format!("op[0] {kind}")) && stderr.contains("op[1] set_para"),
+            "{kind}: the error must name both ops: {stderr}"
+        );
+
+        let (output, success, stderr) =
+            run_ops_batch(&dir, &base, &format!("[{set_foxtrot},{structural}]"));
+        assert!(success, "{kind} after the address must apply: {stderr}");
+        let after = hwpx::read_document(&output).unwrap().document;
+        let foxtrot = after.sections[0]
+            .paragraphs
+            .iter()
+            .find(|p| p.plain_text() == "foxtrot")
+            .unwrap();
+        assert_eq!(
+            after.header.para_shapes[foxtrot.para_shape.0 as usize].alignment(),
+            3,
+            "{kind}: set_para must restyle foxtrot"
+        );
+    }
+}
+
+/// An op with no address that changes a list no later address passes through leaves the batch
+/// alone: an insert into cell (0,1) does not move the body paragraph or the cell (1,1) paragraph
+/// the later ops address.
+#[test]
+fn unaddressed_structural_op_in_a_sibling_list_leaves_addresses_alone() {
+    let (dir, base) = table_base_for("unaddressed-structural-sibling");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[
+              {{"op":"insert_para","anchor":"나","text":"NEW"}},
+              {{"op":"replace","address":{{"at":{{"section":0,"paragraph":1}}}},"from":"probe","to":"PROBE"}},
+              {{"op":"replace","address":{{"id":"{id}"}},"from":"2","to":"Z"}}
+            ]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(cell_texts(&after, 0, 1), vec!["나", "NEW"]);
+    assert_eq!(cell_texts(&after, 1, 1), vec!["Z"]);
+    assert!(
+        plain_texts(&after).iter().any(|text| text == "table PROBE"),
+        "{:?}",
+        plain_texts(&after)
+    );
+}
+
 // ── Phase 7 plan 07-04: list indent/outdent (EDT-05) ────────────────────────────
 
 /// A numbered list of four level-1 items (0-based paragraphs 1..=4); items 2 and 4 carry
