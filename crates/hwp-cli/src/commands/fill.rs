@@ -205,8 +205,10 @@ pub fn execute_values(
                 .map_err(|e| anyhow::anyhow!("fill 실패: {e}"))
         },
         |staged, counts| {
+            // --allow-partial covers a zero total too: the input is published unchanged and
+            // the report shows every count at 0 (#362).
             let total: usize = counts.values().sum();
-            if total == 0 {
+            if total == 0 && !allow_partial {
                 anyhow::bail!("요청한 자리표시자를 하나도 찾지 못해 출력을 게시하지 않습니다");
             }
             let missing: Vec<&str> = counts
@@ -308,7 +310,7 @@ fn fill_tables_ir(
         fields.insert(k.to_string(), v.to_string());
     }
     for (k, v) in &fields {
-        let count = hwp_convert::replace_text(&mut doc, &format!("{{{{{k}}}}}"), v, true);
+        let count = hwp_convert::replace_slot(&mut doc, k, v);
         if count == 0 {
             unmatched_fields.push(k.clone());
         }
@@ -447,7 +449,7 @@ fn fill_parts_ir(
         fields.insert(k.to_string(), v.to_string());
     }
     for (k, v) in &fields {
-        let count = hwp_convert::replace_text(&mut doc, &format!("{{{{{k}}}}}"), v, true);
+        let count = hwp_convert::replace_slot(&mut doc, k, v);
         if count == 0 {
             unmatched.push(k.clone());
         }
@@ -488,11 +490,15 @@ fn fill_parts_ir(
             let mut i = 0usize;
             while i < section.paragraphs.len() {
                 let text = paragraph_text(&section.paragraphs[i]);
-                if text.trim() == anchor {
+                let tokens = hwp_model::slot_tokens(text.trim());
+                if tokens.len() == 1
+                    && tokens[0].name == name.as_str()
+                    && tokens[0].range == (0..text.trim().len())
+                {
                     section.paragraphs.splice(i..=i, blocks.iter().cloned());
                     hits += 1;
                     i += blocks.len();
-                } else if text.contains(&anchor) {
+                } else if tokens.iter().any(|token| token.name == name.as_str()) {
                     // 앵커 문단은 자리표시자만으로 구성돼야 한다 — 문장 중간의
                     // {{name}}은 블록 교체가 성립하지 않으므로 필드 치환으로 안내.
                     if !allow_partial {

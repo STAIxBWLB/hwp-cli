@@ -22,6 +22,7 @@ pub mod list;
 pub mod opaque;
 pub mod paragraph;
 pub mod preservation;
+pub mod slot;
 pub mod text;
 pub mod units;
 
@@ -44,6 +45,7 @@ pub use preservation::{
     PRESERVATION_REPORT_CONTRACT, PreservationCode, PreservationDisposition, PreservationEvent,
     PreservationReport, PreservationResourceKind, WriteReport,
 };
+pub use slot::{SlotToken, is_slot_name_char, slot_tokens};
 pub use text::TextOptions;
 pub use units::{
     HwpUnit, filetime_to_iso8601_utc, filetime_to_korean_kst, iso8601_utc_to_filetime,

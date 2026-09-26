@@ -453,7 +453,7 @@ pub enum Cmd {
         /// Output file path
         #[arg(short, long)]
         output: PathBuf,
-        /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@'
+        /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`, padded `{{ name }}` too). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@'
         #[arg(long)]
         set: Vec<String>,
         /// JSON object file mapping name to value (bulk fill; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows)
@@ -462,7 +462,7 @@ pub enum Cmd {
         /// Print the replacement summary as JSON ({output, replaced, counts})
         #[arg(long)]
         json: bool,
-        /// Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced)
+        /// Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced). If none matched, the input is published unchanged with every count 0
         #[arg(long = "allow-partial")]
         allow_partial: bool,
     },

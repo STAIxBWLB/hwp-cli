@@ -416,8 +416,10 @@ pre-filled with `{{slots}}`.
 `--preset` and the frame flags **override** a template's own defaults instead of being refused.
 
 **Filling** A generated document is itself a template. `hwp slots` lists what is still unfilled and
-`hwp fill` replaces `{{name}}`, preserving the rest of the hwpx package byte for byte. An unmatched
-slot is an error and nothing is written unless `--allow-partial` is given.
+`hwp fill` replaces `{{name}}`, preserving the rest of the hwpx package byte for byte. Padding
+inside the braces (`{{ name }}`) is the same slot, in both commands. An unmatched slot is an error
+and nothing is written unless `--allow-partial` is given; with it, even a fill that matched nothing
+publishes the input unchanged and reports zero counts.
 
 **Linting** `hwp lint` applies ten rules to `.md`, `.hwp` and `.hwpx` files (or to stdin markdown
 with `-`): seven notation rules (date `2026. 8. 20.`, time, money, the `붙임:` colon and its

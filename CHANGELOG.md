@@ -80,6 +80,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `hwp fill` now fills every slot `hwp slots` lists. Both commands, the MCP `hwp_slots` and
+  `hwp_fill` tools, the `--data` table and part fills and `hwp template` read a slot with one
+  grammar (`hwp_model::slot_tokens`): `{{`, optional whitespace, the name, optional whitespace,
+  `}}`. A padded `{{ 제목 }}` used to be listed as `제목` and then refused by
+  `fill --set 제목=...`; it is now filled, split across runs or not, and the whole token is
+  replaced. Replacement is one pass, so a value that itself contains a slot is no longer filled
+  again by a later name. `hwp slots` also lists a slot that follows a stray `{{` (`{{ {{이름}}`),
+  which `fill` already filled ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
+- `hwp fill --allow-partial` (and MCP `hwp_fill` with `allow_partial`) now publishes when no
+  requested name is a slot: the output is the input unchanged, and the `--json` report gives
+  every count as 0. Without the flag such a fill still fails and publishes nothing
+  ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
 - A certification report could fail its own published schema in six ways
   ([#347](https://github.com/STAIxBWLB/hwp-cli/issues/347)). Four were schema gaps, now loosened:
   - Certification lays pages out through the same renderer as `hwp render`, but

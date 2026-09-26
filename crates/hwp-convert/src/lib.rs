@@ -45,7 +45,7 @@ pub use edit::{
 };
 pub use field::{
     FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, list_fields,
-    scan_placeholders, set_field,
+    replace_slot, scan_placeholders, set_field,
 };
 pub use format::{
     CharFormat, PageProps, ParaProps, apply_para_props_at, restyle_range_at, set_cell_para_props,

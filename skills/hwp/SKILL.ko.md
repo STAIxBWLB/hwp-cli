@@ -91,7 +91,8 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   (마크다운 + HTML 표 블록)을 앵커 문단에 이어 붙입니다 — 큰 문서를 위한 부분 기반
   조립 (`@@`는 리터럴 `@` 이스케이프); `--data {file.json}` 일괄 채우기
   (`"parts": {...}` 이어 붙이기, `"tables": [...]` 행 채우기); `--json`은 요약 출력;
-  `--allow-partial`은 일치한 부분만 발행. 먼저 `hwp slots`로 슬롯을 확인하세요.
+  `--allow-partial`은 일치한 부분만 발행 (하나도 없으면 입력 그대로, 건수 0). 공백을 넣은
+  `{{ name }}`도 같은 슬롯. 먼저 `hwp slots`로 슬롯을 확인하세요.
 - `hwp compose {spec.json|yaml} -o {output}` — DocumentSpec v1/v2로부터의 결정적 조립.
   `--dry-run`은 쓰기 없이 검증만; `--report`는 실행 보고서를 JSON으로 출력.
 - `hwp template {template} --data {data} -o {output}` — TemplateSpec/Data v1로부터의

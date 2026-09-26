@@ -404,61 +404,73 @@ pub struct PlaceholderInfo {
     pub occurrences: usize,
 }
 
-/// 본문(표 셀·글상자 재귀)에서 `{{name}}` 텍스트 자리표시자를 등장 순서로 수집한다.
+/// Collect the `{{ name }}` text slots of the body, table cells and text boxes, in order of
+/// appearance.
 ///
-/// 누름틀(form field, [`list_fields`])과 별개 — 순수 텍스트 `{{...}}` 템플릿용.
-/// `name`은 `[\w가-힣.-]`(영숫자·한글·`.`·`-`·`_`)만 허용하며, 한 문단 내 연속된
-/// 텍스트만 이어 스캔하므로 제어문자/줄나눔을 가로지르는 패턴은 매칭하지 않는다.
-/// 채우기는 `set_field`가 아니라 [`replace_text`](crate::replace_text)`("{{name}}", v)` 로 한다.
+/// Separate from form fields ([`list_fields`]): these are plain-text template slots. The
+/// grammar is [`hwp_model::slot_tokens`], the one `hwp fill` matches with. Only contiguous text
+/// inside one paragraph is scanned, so a slot never spans a control character or a line break.
+/// Fill a slot with [`replace_slot`].
 pub fn scan_placeholders(doc: &Document) -> Vec<PlaceholderInfo> {
     let mut out: Vec<PlaceholderInfo> = Vec::new();
     for section in &doc.sections {
         for para in &section.paragraphs {
-            collect_placeholders(para, &mut out);
+            for_each_text_segment(para, &mut |seg| scan_segment(seg, &mut out));
         }
     }
     out
 }
 
-fn collect_placeholders(para: &Paragraph, out: &mut Vec<PlaceholderInfo>) {
+/// Replace every spelling of slot `name` (`{{name}}`, `{{ name }}`, ...) with `value` in the
+/// body, table cells and text boxes. Returns the number of tokens replaced.
+pub fn replace_slot(doc: &mut Document, name: &str, value: &str) -> usize {
+    let mut spellings = std::collections::BTreeSet::new();
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            for_each_text_segment(para, &mut |seg| {
+                for token in hwp_model::slot_tokens(seg) {
+                    if token.name == name {
+                        spellings.insert(seg[token.range].to_string());
+                    }
+                }
+            });
+        }
+    }
+    spellings
+        .iter()
+        .map(|spelling| crate::replace_text(doc, spelling, value, true))
+        .sum()
+}
+
+/// Hand `f` each run of contiguous text characters of `para` and of its nested paragraphs.
+fn for_each_text_segment(para: &Paragraph, f: &mut impl FnMut(&str)) {
     let mut seg = String::new();
     for ch in &para.chars {
         match ch {
             HwpChar::Text(c) => seg.push(*c),
             _ => {
-                scan_segment(&seg, out);
+                f(&seg);
                 seg.clear();
             }
         }
     }
-    scan_segment(&seg, out);
+    f(&seg);
     for ctrl in &para.controls {
-        for_each_nested(ctrl, &mut |p| collect_placeholders(p, out));
+        for_each_nested(ctrl, &mut |p| for_each_text_segment(p, f));
     }
 }
 
 fn scan_segment(seg: &str, out: &mut Vec<PlaceholderInfo>) {
-    let mut rest = seg;
-    while let Some(open) = rest.find("{{") {
-        let after = &rest[open + 2..];
-        let Some(close) = after.find("}}") else { break };
-        let name = after[..close].trim();
-        if !name.is_empty() && name.chars().all(is_name_char) {
-            if let Some(p) = out.iter_mut().find(|p| p.name == name) {
-                p.occurrences += 1;
-            } else {
-                out.push(PlaceholderInfo {
-                    name: name.to_string(),
-                    occurrences: 1,
-                });
-            }
+    for token in hwp_model::slot_tokens(seg) {
+        if let Some(p) = out.iter_mut().find(|p| p.name == token.name) {
+            p.occurrences += 1;
+        } else {
+            out.push(PlaceholderInfo {
+                name: token.name.to_string(),
+                occurrences: 1,
+            });
         }
-        rest = &after[close + 2..];
     }
-}
-
-fn is_name_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '.' | '-' | '_')
 }
 
 /// 컨트롤의 중첩 문단(표 셀·글상자 리스트)에 f를 적용한다(읽기 전용).

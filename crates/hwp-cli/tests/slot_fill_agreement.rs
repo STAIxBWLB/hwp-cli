@@ -164,3 +164,153 @@ fn coalescing_a_split_slot_preserves_its_neighbouring_text() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Build `doc.hwpx` from markdown in a fresh test dir.
+fn template(name: &str, markdown: &str) -> (PathBuf, PathBuf) {
+    let dir = test_dir(name);
+    let source = dir.join("source.md");
+    std::fs::write(&source, markdown).unwrap();
+    let created = dir.join("doc.hwpx");
+    let run = hwp()
+        .args(["new", "--from"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&created)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "hwp new failed\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    (dir, created)
+}
+
+/// A padded `{{ name }}` is one slot: `slots` lists it trimmed and `fill` fills it, padded-only,
+/// mixed with the unpadded spelling, split across runs, and inside a table cell (#362).
+#[test]
+fn padded_slots_are_listed_and_filled() {
+    let (dir, created) = template(
+        "padded",
+        "제목  {{ 제목 }}\n\n\
+         이름: {{ 이*름* }}\n\n\
+         기관: {{기관}} 그리고 {{ 기관 }}\n\n\
+         | 부서 | {{ 부서 }} |\n|---|---|\n| 가 | 나 |\n",
+    );
+    let reported = reported_slots(&created);
+    let expected: BTreeSet<String> = ["제목", "이름", "기관", "부서"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(reported, expected);
+
+    let filled = dir.join("filled.hwpx");
+    let mut fill = hwp();
+    fill.arg("fill")
+        .arg(&created)
+        .arg("-o")
+        .arg(&filled)
+        .arg("--json");
+    for name in &reported {
+        fill.arg("--set").arg(format!("{name}=값-{name}"));
+    }
+    let run = fill.output().unwrap();
+    assert!(
+        run.status.success(),
+        "fill refused a padded slot\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(report["counts"]["기관"], 2, "both spellings: {report}");
+    assert_eq!(report["replaced"], 5, "{report}");
+
+    assert!(reported_slots(&filled).is_empty());
+    let text = document_text(&filled);
+    assert!(text.contains("기관: 값-기관 그리고 값-기관"), "{text}");
+    assert!(text.contains("이름: 값-이름"), "{text}");
+    assert!(!text.contains("{{"), "{text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The IR fill paths (`--data` with `tables`) use the same grammar.
+#[test]
+fn table_fill_fills_a_padded_slot() {
+    let (dir, created) = template(
+        "padded-table",
+        "부서: {{ 부서 }}\n\n| 품목 | 수량 |\n|---|---|\n| | |\n",
+    );
+    let data = dir.join("data.json");
+    std::fs::write(
+        &data,
+        r#"{"fields": {"부서": "기획팀"}, "tables": [{"table": 0, "rows": [["노트북", "5"]]}]}"#,
+    )
+    .unwrap();
+    let filled = dir.join("filled.hwpx");
+    let run = hwp()
+        .arg("fill")
+        .arg(&created)
+        .arg("--data")
+        .arg(&data)
+        .arg("-o")
+        .arg(&filled)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "table fill refused a padded slot\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(document_text(&filled).contains("부서: 기획팀"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With `--allow-partial`, a request where no name is a slot publishes the input unchanged and
+/// reports zero counts; without it the fill still fails closed and publishes nothing (#362).
+#[test]
+fn allow_partial_publishes_a_zero_match_fill() {
+    let (dir, created) = template("zero", "제목  {{제목}}\n");
+
+    let partial = dir.join("partial.hwpx");
+    let run = hwp()
+        .arg("fill")
+        .arg(&created)
+        .args(["--set", "성명=홍길동", "--set", "소속=기획팀"])
+        .arg("-o")
+        .arg(&partial)
+        .args(["--json", "--allow-partial"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "--allow-partial must publish a zero-match fill\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(report["replaced"], 0, "{report}");
+    assert_eq!(
+        report["counts"],
+        serde_json::json!({"성명": 0, "소속": 0}),
+        "{report}"
+    );
+    assert_eq!(
+        std::fs::read(&partial).unwrap(),
+        std::fs::read(&created).unwrap(),
+        "a zero-match fill publishes the input unchanged"
+    );
+
+    let strict = dir.join("strict.hwpx");
+    let run = hwp()
+        .arg("fill")
+        .arg(&created)
+        .args(["--set", "성명=홍길동"])
+        .arg("-o")
+        .arg(&strict)
+        .output()
+        .unwrap();
+    assert!(!run.status.success(), "without --allow-partial it fails");
+    assert!(!strict.exists(), "a failed fill publishes nothing");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

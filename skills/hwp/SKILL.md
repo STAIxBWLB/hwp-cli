@@ -94,7 +94,8 @@ syntax (used by `fill`, `slots` and the template tools).
   part file (markdown + HTML table blocks) into the anchor paragraph — part-based composition
   for large documents (`@@` escapes a literal `@`); `--data {file.json}` bulk fill
   (`"parts": {...}` splicing, `"tables": [...]` row fill); `--json` prints the summary;
-  `--allow-partial` publishes the matched subset. List slots first with `hwp slots`.
+  `--allow-partial` publishes the matched subset (nothing matched: the input unchanged, counts
+  0). `{{ name }}` with padding is the same slot. List slots first with `hwp slots`.
 - `hwp compose {spec.json|yaml} -o {output}` — deterministic composition from DocumentSpec
   v1/v2. `--dry-run` validates without writing; `--report` prints the run report as JSON.
 - `hwp template {template} --data {data} -o {output}` — typed native HWP/HWPX generation from
