@@ -407,19 +407,6 @@ pub fn table_dims(doc: &mut Document, table_index: usize) -> Option<(u16, u16)> 
     with_nth_table_readonly(doc, table_index, |t| (t.rows, t.cols))
 }
 
-/// The cell grid of table `table_index` (0-based, recursive order): row, column and spans of
-/// every cell, in cell order. A form-label edit records it at preflight and refuses to write when
-/// an earlier op in the batch reshaped the table (#358).
-pub fn table_grid(doc: &mut Document, table_index: usize) -> Option<Vec<[u16; 4]>> {
-    with_nth_table_readonly(doc, table_index, |table| {
-        table
-            .cells
-            .iter()
-            .map(|cell| [cell.row, cell.col, cell.row_span, cell.col_span])
-            .collect()
-    })
-}
-
 /// `table_index`번째 표(0-기반)의 `row`행을 삭제한다(이후 행 재번호, row_cell_counts
 /// 갱신). 병합 셀이 있거나 세로 병합에 덮인 행은 그리드가 깨지므로 거부한다.
 pub fn delete_table_row(doc: &mut Document, table_index: usize, row: u16) -> Result<(), String> {

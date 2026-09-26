@@ -23,13 +23,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   is now `applied` with `pieces_touched` 0 instead of `failed` (below). The `pieces_touched`
   description says so, which moves the hash again; the shape is unchanged.
 - An `--ops` or MCP `hwp_edit` batch that puts an op with no address before an addressed op
-  whose path it changes is now refused, and so is an `--ops` `set_cell_by_label` after an op that
-  adds or removes a table, moves a paragraph holding one, or reshapes its table (#358, below).
-  Both checks are conservative: a change after the addressed paragraph in the same list, or a
-  table added after the form, is refused too, although such a batch used to apply correctly. Put
-  the other op after the addressed and label ones, address it, or split the batch in two. MCP
-  `hwp_edit` applies op kinds in a fixed order, so there the remedy is two calls; it already runs
-  label edits before every op that changes tables, as the flag channel does.
+  whose path it changes is now refused. So is a `set_cell_by_label` after an op that adds or
+  removes a table (a `set_cell` that rewrites a cell holding one included), moves a paragraph
+  holding one, or changes any table's rows, columns or merges, and a `--set-cell-by-label` after a
+  `--set-cell` that dropped a nested table (#358, below). The checks are conservative: a change
+  after the addressed paragraph in the same list, or to a table other than the form, is refused
+  too, although such a batch used to apply correctly. Put the other op after the addressed and
+  label ones, address it, or split the edit in two. MCP `hwp_edit` applies op kinds in a fixed
+  order, so there the remedy is two calls.
 - The bytes of `certification-report-v1.schema.json` and `render-report-v1.schema.json` changed,
   for consumers that pin schema hashes. `render-report-v1` changed in descriptions only;
   `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
@@ -150,10 +151,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
     rewrites a cell's paragraphs without changing their number (`set_cell`) is not caught: the
     later address then names the new paragraph at the same position.
   - A `set_cell_by_label` wrote the table index, row and column preflight found, so an earlier
-    op that moved a form above another, cloned or added a table ahead of it, or inserted a row
-    above its label wrote the value into another form or another cell. In an `--ops` batch, a
-    label edit after an op that adds or removes a table or moves a paragraph holding one is now
-    refused, and so is one whose table's cell grid changed since preflight.
+    op that moved a form above another, cloned or added a table ahead of it, inserted a row above
+    its label, or rewrote a cell holding a nested table wrote the value into another form or
+    another cell. A label edit after any op that adds or removes a table, moves a paragraph
+    holding one, or changes a table's rows, columns or merges is now refused (on the flag channel,
+    where only `--replace` and `--set-cell` run first, after a `--set-cell` that dropped a table).
   - `move_para` into a cell or text box below its source, in the same list, panicked, and so did
     the reverse, a cell paragraph moved out to before its own table. Both now find the
     destination and the source where the other half of the move left them, and a destination

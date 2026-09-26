@@ -41,7 +41,7 @@ pub use edit::{
     add_table_column, add_table_columns, apply_meta, clone_table, delete_object,
     delete_table_column, delete_table_row, find_form_cells_by_label, merge_cells,
     normalize_form_label, replace_text, replace_text_at, set_cell, set_table_placement, split_cell,
-    table_dims, table_grid, table_placement_stats,
+    table_dims, table_placement_stats,
 };
 pub use field::{
     FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, list_fields,

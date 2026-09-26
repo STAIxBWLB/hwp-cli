@@ -419,7 +419,7 @@ fn kind_coverage_all_33() {
         .sum();
     assert_eq!(
         label_hits, 1,
-        "the cloned table must be gone — 라벨값 may appear in exactly one cell"
+        "라벨값 must appear in exactly one cell, the form's value cell"
     );
     assert!(
         table_has_text(&tables[1], "라벨값") && table_has_text(&tables[1], "1"),
@@ -4461,9 +4461,10 @@ const TWO_FORMS_MD: &str =
     "# F\n\n| 성명 |  |\n|---|---|\n| x | y |\n\nmid\n\n| 주소 |  |\n|---|---|\n| z | w |\n";
 
 /// A label edit names its cell by the table index, row and column preflight found. An earlier op
-/// that adds or removes a table, moves a paragraph holding one, or reshapes the target table can
-/// make that another table's cell, or another cell: the batch is refused. Before, each of these
-/// wrote into the wrong cell and exited 0. The same ops with the label edit first apply.
+/// that adds or removes a table, moves a paragraph holding one, or changes a table's rows can make
+/// that another table's cell, or another cell, even when a later op restores the grid: the batch
+/// is refused. Before, each of these wrote into the wrong cell and exited 0. The same ops with the
+/// label edit first apply.
 #[test]
 fn label_edit_after_a_table_change_is_refused() {
     let dir = test_dir("label-edit-table-change");
@@ -4501,15 +4502,18 @@ fn label_edit_after_a_table_change_is_refused() {
             r#"{"op":"add_row","table":1,"at":0}"#,
             r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
         ),
+        // The grid ends where it started, but the label row moved down.
+        (
+            &two_forms,
+            r#"{"op":"add_row","table":1,"at":0},{"op":"delete_row","table":1,"row":2}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
     ];
     for (base, change, fill) in cases {
         let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{change},{fill}]"));
         assert!(!success, "{change}: {stderr}");
         assert!(!output.exists(), "{change}");
-        assert!(
-            stderr.contains("op[1] set_cell_by_label"),
-            "{change}: {stderr}"
-        );
+        assert!(stderr.contains("set_cell_by_label이"), "{change}: {stderr}");
 
         let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{fill},{change}]"));
         assert!(success, "{change}: {stderr}");
@@ -4523,6 +4527,70 @@ fn label_edit_after_a_table_change_is_refused() {
         let form = if base == &twins { "B\tb" } else { "주소" };
         assert!(filled.contains(form), "{change}: filled {filled:?}");
     }
+}
+
+/// The flag channel runs `--set-cell` before `--set-cell-by-label`. Rewriting a cell that holds a
+/// nested table drops that table and renumbers the tables after it, so the label edit preflight
+/// resolved would fill the next form. It is refused. Before, it filled "전화" and exited 0.
+#[test]
+fn flag_label_edit_after_a_set_cell_drops_a_nested_table_is_refused() {
+    let dir = test_dir("flag-label-nested-table");
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "# F\n\n| 바깥 | 칸 |\n|---|---|\n| a | b |\n\n| 주소 |  |\n|---|---|\n| z | w |\n\n\
+         | 성명 |  |\n|---|---|\n| x | y |\n\n| 전화 |  |\n|---|---|\n| p | q |\n",
+    )
+    .unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    // Nest the 주소 form (body paragraph 2) in the outer table's cell (0,0).
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 0, 0);
+    let (nested, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"at":{{"section":0,"paragraph":2}}}},"to":{{"address":{{"id":"{id}"}},"position":"after"}}}}]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let nested_base = dir.join("nested.hwpx");
+    std::fs::rename(&nested, &nested_base).unwrap();
+
+    let run = |set_cell: &str, output: &Path| {
+        hwp()
+            .arg("edit")
+            .arg(&nested_base)
+            .arg("-o")
+            .arg(output)
+            .args(["--set-cell", set_cell, "--set-cell-by-label", "성명=SEOUL"])
+            .output()
+            .unwrap()
+    };
+    let refused = dir.join("refused.hwpx");
+    let run_refused = run("0:0:0=X", &refused);
+    let stderr = String::from_utf8_lossy(&run_refused.stderr);
+    assert!(!run_refused.status.success(), "{stderr}");
+    assert!(!refused.exists());
+    assert!(stderr.contains("--set-cell-by-label"), "{stderr}");
+
+    // Rewriting a cell with no nested table leaves the numbering alone.
+    let applied = dir.join("applied.hwpx");
+    let run_applied = run("0:1:0=X", &applied);
+    assert!(
+        run_applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run_applied.stderr)
+    );
+    let after = hwpx::read_document(&applied).unwrap().document;
+    assert!(
+        plain_texts(&after)
+            .iter()
+            .any(|text| text.starts_with("성명\tSEOUL")),
+        "{:?}",
+        plain_texts(&after)
+    );
 }
 
 /// Filling several labels of one form in one batch still applies when an earlier fill completes
