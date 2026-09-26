@@ -52,6 +52,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   tail of the text after the block. It is now a point at the start of its contribution. Markdown,
   the v1 envelope and rendered PNG, SVG and PDF bytes are byte-identical.
 
+**Documentation**
+
+- `deploy/aws/README.md` (and `README.ko.md`): a runbook for running `hwp serve` as an MCP server
+  on AWS Bedrock AgentCore Runtime, from image build and IAM role to runtime creation, IAM and
+  Cognito JWT invocation, release updates, teardown and cost. The Tier B framing gate is passed:
+  AgentCore forwards `/mcp` bodies length-framed on platforms V1 and V2 and de-chunks an HTTP/1.1
+  chunked client body, so `hwp serve` needs no chunked request decoding
+  ([#318](https://github.com/STAIxBWLB/hwp-cli/issues/318)). `docs/design/22-remote-mcp-deployment`
+  §6.3 records the result.
+
 **Security**
 
 - A failed op's `reason` no longer carries the request's own strings. It used to repeat a

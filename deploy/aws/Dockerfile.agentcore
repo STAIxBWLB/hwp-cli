@@ -24,9 +24,10 @@
 # published beside the tarball as hwp-<version>-<target>.sha256, and a mismatch fails
 # the build, which is the point.
 #
-# Since v0.20.1 `hwp serve` answers 411 to any Transfer-Encoding request body. Before
-# the first Tier B runtime goes live, confirm AgentCore forwards /mcp with
-# Content-Length (issue #318); chunked forwarding would fail every call.
+# Since v0.20.1 `hwp serve` answers 411 to any Transfer-Encoding request body.
+# AgentCore forwards /mcp length-framed on platforms V1 and V2, and de-chunks a
+# client's HTTP/1.1 chunked body, so the 411 never fires there (verified
+# 2026-09-26, issue #318). Deploy procedure: README.md in this directory.
 
 # The platform is pinned, and through an ARG of our own name rather than buildkit's
 # predefined TARGETPLATFORM, which buildkit overrides so a default there would do

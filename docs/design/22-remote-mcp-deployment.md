@@ -347,13 +347,13 @@ administrative act, whereas Tier A's self-service clients need it.
 - Verification before committing to a region: whether AgentCore and Quick MCP integration are both
   available in the intended region, and the runtime's current idle and maximum session lifetimes
   against the values in doc 20 §7.
-- A go-live gate on request framing (#318). Since v0.20.1 `hwp serve` frames request bodies with
-  `Content-Length` only and answers `411` to any `Transfer-Encoding`, and AWS does not document how
-  `InvokeAgentRuntime` frames the body it forwards to `/mcp`. After the first runtime deploy and
-  before the Quick connector is registered, send `initialize` and `tools/list` through
-  `InvokeAgentRuntime`. A normal `tools/list` result confirms the framing. A `411`, or a `length required`
-  body (the AWS layer may wrap the container's status), means chunked forwarding, and chunked
-  request decoding must land before go-live.
+- A go-live gate on request framing (#318), **passed on 2026-09-26**. Since v0.20.1 `hwp serve`
+  frames request bodies with `Content-Length` only and answers `411` to any `Transfer-Encoding`, and
+  AWS does not document how `InvokeAgentRuntime` frames the body it forwards to `/mcp`. The check
+  ran against real runtimes on platforms V1 and V2: `initialize` and `tools/list` through
+  `InvokeAgentRuntime` returned the 22 tools, and a client body sent chunked over HTTP/1.1 reached
+  the container de-chunked and length-framed. No chunked request decoding is needed. The deploy
+  procedure and the result table are in [deploy/aws/README.md](../../deploy/aws/README.md).
 
 ## 7. File authority
 
