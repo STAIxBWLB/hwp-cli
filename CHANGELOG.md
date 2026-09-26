@@ -10,8 +10,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.2.0]
+
 **Compatibility**
 
+- Most changes to the surfaces the 1.0 SemVer scope covers (CLI, MCP tool arguments, schemas)
+  are additive or loosenings. Three narrow behavior on purpose, to stop silent corruption, and
+  each entry below names its remedy: an `--ops` or MCP `hwp_edit` batch that an earlier op would
+  shift under a later address is refused
+  ([#358](https://github.com/STAIxBWLB/hwp-cli/issues/358)); `hwp fill` inserts values
+  literally, so a value spelling `{{name}}` is no longer filled again
+  ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)); and MCP `hwp_fill` with `parts`
+  treats `values` as literal text. Six schemas changed bytes, so their pinned hashes moved:
+  `template-spec-v1`, `edit-report-v1`, `certification-report-v1`, `render-report-v1`,
+  `render-layout-v1` and `segment-envelope-v2`; every document that validated before still
+  validates except a TemplateSpec binding whose name is only whitespace, which never matched a
+  slot.
 - `template-spec-v1.schema.json` changed its bytes, so its pinned hash moved
   (`f9285b9e39d7983382357a5c9b255a8d6c43687e240a936c6ed7cae27122bc19`). A binding `name` now also
   excludes C1 control characters and must hold a non-space character, which the validator
