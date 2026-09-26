@@ -60,7 +60,7 @@
         },
         "reason": {
           "type": ["string", "null"],
-          "description": "Populated only when status is \"failed\"; null when applied."
+          "description": "Populated only when status is \"failed\"; null when applied. A fixed label naming the op kind and the failure class, `<op>: <cause>` (for example `replace: no match`, `create_field: anchor not found`). It never repeats the request's patterns, replacement strings, anchors, names or urls, nor any document text (#348). Its wording may change between releases; match on `op` and `status`, not on this text."
         }
       }
     },

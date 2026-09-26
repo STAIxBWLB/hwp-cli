@@ -5126,6 +5126,72 @@ mod tests {
         }
     }
 
+    /// #348: the MCP report file and the response's `ops` carry a fixed `<op>: <cause>` reason
+    /// for a failed op, never the caller's patterns, anchors, names or urls. (`warnings` still
+    /// names the unapplied request, like the CLI's stderr.)
+    #[test]
+    fn mcp_failed_op_reason_carries_no_request_text() {
+        let source = temp_file("reason-content-free-source.hwpx");
+        let mcp_out = temp_file("reason-content-free-mcp.hwpx");
+        let report_path = temp_file("reason-content-free-report.json");
+        create_hwpx(&source, "있는 본문\n");
+
+        let content = tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "report": report_path,
+                "allow_partial": true,
+                "replace": [
+                    {"from": "있는 본문", "to": "바뀐 본문"},
+                    {"from": "LEAK-replace-from", "to": "LEAK-replace-to"}
+                ],
+                "set_format": [{"pattern": "LEAK-format-pattern", "bold": true}],
+                "create_hyperlink": [{
+                    "anchor": "LEAK-link-anchor",
+                    "url": "https://example.com/LEAK-link-url",
+                    "display": "LEAK-link-display"
+                }]
+            }),
+            &ctx(),
+        )
+        .expect("MCP 부분 편집");
+        let response: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+        let report_text = std::fs::read_to_string(&report_path).unwrap();
+        for (label, text) in [
+            ("response ops", response["ops"].to_string()),
+            ("report", report_text.clone()),
+        ] {
+            assert!(
+                !text.contains("LEAK"),
+                "{label}에 요청 문자열이 새어 나갔다: {text}"
+            );
+        }
+        let report: Value = serde_json::from_str(&report_text).unwrap();
+        assert!(edit_report_v1_validator().is_valid(&report), "{report}");
+        assert_eq!(report["ops"], response["ops"], "{report}");
+        let mut reasons = report["ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|op| op["reason"].as_str())
+            .collect::<Vec<_>>();
+        reasons.sort_unstable();
+        assert_eq!(
+            reasons,
+            [
+                "create_hyperlink: anchor not found",
+                "replace: no match",
+                "set_format: no match or no change",
+            ],
+            "{report}"
+        );
+
+        for path in [&source, &mcp_out, &report_path] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     /// #332: a replace-only hwpx -> hwpx batch runs on the package-preserving fast path. Its MCP
     /// report now carries one applied outcome per replace (it used to report `applied_count: 0`
     /// with empty `ops`) and still equals the CLI `--ops --report` report for the same batch.
@@ -5656,6 +5722,13 @@ mod tests {
                 std::fs::read(&legacy_out).unwrap(),
                 std::fs::read(&cli_legacy_out).unwrap(),
                 "{arm}: {key}-only MCP 출력이 CLI --ops와 다르다"
+            );
+            // The selector alone picks a different target than the address, so the
+            // "both == address-only" check above really shows the address winning.
+            assert_ne!(
+                std::fs::read(&legacy_out).unwrap(),
+                std::fs::read(&address_out).unwrap(),
+                "{arm}: {key}-only 출력이 address-only와 같으면 both 검증이 무의미하다"
             );
 
             let error = mcp_edit(arm, fields.clone(), &neither_out).unwrap_err();
