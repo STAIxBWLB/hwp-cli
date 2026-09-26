@@ -281,18 +281,21 @@
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "checkStatus": { "enum": ["passed", "failed", "skipped"] },
-    "lossCount": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "lossCount": { "type": "integer", "minimum": 1, "maximum": 1000000000, "description": "Exact sum of a code's event counts: at most 1000 events of at most 1,000,000 each." },
     "preservationLossCodes": {
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
-      "maxProperties": 14,
+      "maxProperties": 19,
       "properties": {
         "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
         "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
         "control_metadata_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "control_removed": { "$ref": "#/$defs/lossCount" },
+        "document_metadata_superseded": { "$ref": "#/$defs/lossCount" },
+        "document_package_passthrough_dropped": { "$ref": "#/$defs/lossCount" },
         "gso_header_unrepresentable": { "$ref": "#/$defs/lossCount" },
+        "gso_object_id_renumbered": { "$ref": "#/$defs/lossCount" },
         "gso_shape_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "hwp_container_storage_removed": { "$ref": "#/$defs/lossCount" },
         "hwp_container_stream_removed": { "$ref": "#/$defs/lossCount" },
@@ -301,7 +304,9 @@
         "hwpx_package_entry_removed": { "$ref": "#/$defs/lossCount" },
         "metadata_value_removed": { "$ref": "#/$defs/lossCount" },
         "opaque_control_unrepresentable": { "$ref": "#/$defs/lossCount" },
-        "picture_control_removed": { "$ref": "#/$defs/lossCount" }
+        "page_range_paragraph_rounded": { "$ref": "#/$defs/lossCount" },
+        "picture_control_removed": { "$ref": "#/$defs/lossCount" },
+        "section_border_fill_ref_unresolvable": { "$ref": "#/$defs/lossCount" }
       }
     },
     "receiptShortString": {
@@ -322,7 +327,7 @@
       "properties": {
         "status": { "$ref": "#/$defs/checkStatus" },
         "reason_codes": { "$ref": "#/$defs/reasons" },
-        "loss_code_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "loss_code_count": { "type": "integer", "minimum": 0, "maximum": 1000000000, "description": "Exact sum of every event count: at most 1000 events of at most 1,000,000 each." },
         "loss_codes": { "$ref": "#/$defs/preservationLossCodes" }
       },
       "oneOf": [
