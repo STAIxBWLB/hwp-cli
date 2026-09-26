@@ -1631,13 +1631,33 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             });
             continue;
         }
+        if edits == edits_before
+            && matches!(
+                operation,
+                TypedEditOperation::StyleTables { .. }
+                    | TypedEditOperation::SetTablePlacement { .. }
+            )
+        {
+            // #359: a table op whose result is already in effect is a successful no-op
+            // (D-08, #296), not a miss: nothing changed, so nothing was touched.
+            ops_outcomes.push(OpOutcome {
+                index,
+                op,
+                status: OpStatus::Applied,
+                pieces_touched: 0,
+                changed: Vec::new(),
+                reason: None,
+            });
+            continue;
+        }
         if edits == edits_before {
             // `set_cell_by_label` whose label was already found unresolvable during
             // `preflight_label_edits` (which runs BEFORE this loop, so its miss is already
             // baked into `unapplied_before`) returns early without touching `edits` or
-            // `unapplied` on ITS OWN call — the only op kind not covered by the
-            // "advanced edits xor pushed unapplied" invariant every other arm keeps. Report it
-            // honestly as failed rather than silently claiming success.
+            // `unapplied` on ITS OWN call. Apart from the table no-ops above, it is the only op
+            // kind not covered by the "advanced edits xor pushed unapplied" invariant every
+            // other arm keeps. Report it honestly as failed rather than silently claiming
+            // success.
             ops_outcomes.push(OpOutcome {
                 index,
                 op,

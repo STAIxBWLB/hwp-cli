@@ -19,6 +19,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `reason` description changed, which moves the hash for consumers that pin it. The label's
   wording is not covered by SemVer beyond being a string, so match on `op` and `status`, not on
   it.
+- In the same report, a `style_tables` or `set_table_placement` whose result is already in effect
+  is now `applied` with `pieces_touched` 0 instead of `failed` (below). The `pieces_touched`
+  description says so, which moves the hash again; the shape is unchanged.
 - The bytes of `certification-report-v1.schema.json` and `render-report-v1.schema.json` changed,
   for consumers that pin schema hashes. `render-report-v1` changed in descriptions only;
   `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
@@ -116,6 +119,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   the renderer now decide which paragraphs always have a segment with one rule, mirrored in both
   crates and pinned by `segment_id_parity`
   ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+- The edit report marked a successful no-op `failed`: a `style_tables` on tables that are already
+  styled, or a `set_table_placement` to the placement a table already has, applied (stderr says
+  it is already in effect, and the output is byte-stable) but reported `status: failed` with the
+  notice meant for a `set_cell_by_label` label preflight could not resolve. Both now report
+  `applied` with `pieces_touched` 0, on the CLI and MCP paths; the notice again only means a
+  preflight miss ([#359](https://github.com/STAIxBWLB/hwp-cli/issues/359)).
 
 ## [1.1.0]
 

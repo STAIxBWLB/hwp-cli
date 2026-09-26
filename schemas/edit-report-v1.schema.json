@@ -50,7 +50,7 @@
         "pieces_touched": {
           "type": "integer",
           "minimum": 0,
-          "description": "How many IR nodes this op actually mutated: the number of canonical runs whose shape id changed for a run-range char-format op, the number of segment ids (paragraph and/or run) an addressed op's own target touched otherwise, and never less than 1 for an applied op — an \"applied: 1\" summary must never hide a multi-piece write (D-02)."
+          "description": "How many IR nodes this op actually mutated: the number of canonical runs whose shape id changed for a run-range char-format op, the number of segment ids (paragraph and/or run) an addressed op's own target touched otherwise, and never less than 1 for an applied op that changed the document — an \"applied: 1\" summary must never hide a multi-piece write (D-02). An applied op whose result was already in effect (a `style_tables` on already-styled tables, or a `set_table_placement` to the placement the table already has) changed nothing and reports 0 (#359)."
         },
         "changed": {
           "type": "array",
