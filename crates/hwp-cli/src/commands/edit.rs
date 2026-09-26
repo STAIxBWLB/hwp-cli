@@ -1627,7 +1627,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Failed,
                 pieces_touched: 0,
                 changed: Vec::new(),
-                reason: unapplied.last().cloned(),
+                reason: Some(failure_reason(operation)),
             });
             continue;
         }
@@ -2547,30 +2547,81 @@ struct PatchReport {
     ops: Vec<OpOutcome>,
 }
 
-/// The unapplied-request label a pattern-form typed `replace` records; also its failed
-/// `OpOutcome.reason`, so the fast path and the apply loop report the same string (#332).
+/// The unapplied-request label a pattern-form typed `replace` records, for the stderr summary
+/// and the abort message. The report's `reason` comes from [`failure_reason`] instead.
 fn replace_request(from: &str, to: &str) -> String {
     format!("replace from={from:?} to={to:?}")
+}
+
+/// #348: a failed op's `edit-report-v1` `reason`: the op kind and a fixed cause, never the
+/// request's patterns, anchors, names, urls or text, so the report stays content-free
+/// (T-07-22). The fast path and the apply loop both call this, so they report the same string
+/// (#332). `unapplied` keeps the full request for the operator-facing stderr and abort messages.
+fn failure_reason(operation: &TypedEditOperation) -> String {
+    use TypedEditOperation as Op;
+    let cause = match operation {
+        Op::Replace { from, to, .. } if from.is_empty() || from == to => {
+            "empty pattern or identical replacement"
+        }
+        Op::Replace {
+            address: Some(_), ..
+        } => "no match at the address",
+        Op::Replace { .. }
+        | Op::DeletePara { .. }
+        | Op::DeleteImage { .. }
+        | Op::DeleteTable { .. }
+        | Op::DeleteField { .. }
+        | Op::DeleteBookmark { .. } => "no match",
+        Op::CreateField { .. }
+        | Op::CreateBookmark { .. }
+        | Op::CreateHyperlink { .. }
+        | Op::InsertPara { .. } => "anchor not found",
+        Op::SetAlign {
+            address: Some(_), ..
+        } => "paragraph not found at the address",
+        Op::SetPara {
+            address: Some(_), ..
+        } => "paragraph not found at the address, or no change",
+        Op::SetField { .. } | Op::SetFormat { .. } | Op::SetAlign { .. } | Op::SetPara { .. } => {
+            "no match or no change"
+        }
+        Op::StyleTables { .. } => "no styleable table",
+        Op::SetTablePlacement { .. } => "table not found",
+        Op::SetCell { .. }
+        | Op::SetCellByLabel { .. }
+        | Op::SetMeta { .. }
+        | Op::SetCellPara { .. }
+        | Op::SetPage { .. } => "no change",
+        // These fail with an error rather than an unapplied request; listed so a new op kind
+        // has to pick its cause here.
+        Op::InsertImage { .. }
+        | Op::Seal { .. }
+        | Op::MoveParagraph { .. }
+        | Op::IndentPara { .. }
+        | Op::OutdentPara { .. }
+        | Op::AddRow { .. }
+        | Op::AddCol { .. }
+        | Op::DeleteRow { .. }
+        | Op::DeleteCol { .. }
+        | Op::MergeCells { .. }
+        | Op::SplitCell { .. }
+        | Op::AddTable { .. }
+        | Op::CloneTable { .. } => "not applied",
+    };
+    format!("{}: {cause}", typed_op_kind(operation))
 }
 
 /// #332: the fast path's `edit-report-v1` ops, one per typed replace, equal to what the apply
 /// loop reports for a pattern-form replace: no resolved address, so `changed` is empty and an
 /// applied op touches `changed.len().max(1)` = 1 piece. The per-entry match counts are not
 /// used, since the apply loop does not report them either. Empty for the legacy `--replace`
-/// flags, which carry no per-op outcomes on either path.
-fn fast_path_outcomes(
-    plan: &EditPlan,
-    pairs: &[(String, String)],
-    matched: &[bool],
-) -> Vec<OpOutcome> {
-    if plan.typed_operations.is_empty() {
-        return Vec::new();
-    }
-    pairs
+/// flags, which carry no per-op outcomes on either path (`typed_operations` is empty there).
+fn fast_path_outcomes(plan: &EditPlan, matched: &[bool]) -> Vec<OpOutcome> {
+    plan.typed_operations
         .iter()
         .zip(matched)
         .enumerate()
-        .map(|(index, ((from, to), &matched))| OpOutcome {
+        .map(|(index, (operation, &matched))| OpOutcome {
             index,
             op: "replace".to_string(),
             status: if matched {
@@ -2580,7 +2631,7 @@ fn fast_path_outcomes(
             },
             pieces_touched: usize::from(matched),
             changed: Vec::new(),
-            reason: (!matched).then(|| replace_request(from, to)),
+            reason: (!matched).then(|| failure_reason(operation)),
         })
         .collect()
 }
@@ -2652,7 +2703,7 @@ fn patch_replacements_staged(
         applied_requests += 1;
     }
 
-    let ops = fast_path_outcomes(plan, pairs, &matched);
+    let ops = fast_path_outcomes(plan, &matched);
     // EDT-06/D-14 on the fast path: every abort below carries the report, so `--report` (CLI)
     // and `report` (MCP) still get a diagnosable artifact, as on the apply-loop path.
     let abort = |reason: String| -> anyhow::Error {

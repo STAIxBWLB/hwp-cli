@@ -2475,7 +2475,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "4efc46905e50906b1881532917fec885a7a42e3731633c44d135d1006fda8db7",
+        actual, "eadf17b0c09e77189fc26f9b90cb9145146b3eacd8cdde60691a484216a4a8b5",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2804,6 +2804,175 @@ fn failed_op_under_allow_partial_reports_status_failed() {
     );
     assert_eq!(ops[1]["pieces_touched"], 0);
     assert!(ops[1]["changed"].as_array().unwrap().is_empty());
+}
+
+/// #348: a failed op's `reason` is a fixed `<op>: <cause>` label. None of the request's own
+/// strings (patterns, replacements, anchors, names, urls, values, text) reach the report, while
+/// the operator-facing stderr summary still names the request in full.
+#[test]
+fn failed_op_reason_carries_no_request_text() {
+    let dir = test_dir("report-reason-content-free");
+    let md = dir.join("doc.md");
+    // A one-column table after the paragraphs: a vertical form ("소속" over "학교") that
+    // `set_cell_by_label` resolves, and that `style_tables` skips as unstyleable.
+    std::fs::write(
+        &md,
+        format!("{DUPLICATE_TEXT_MD}\n| 소속 |\n|---|\n| 학교 |\n"),
+    )
+    .unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    // Every failing op below carries its own "LEAK-" string, or fails by changing nothing;
+    // the first op applies so the batch publishes under --allow-partial. An addressed
+    // `set_align` cannot fail softly (preflight resolves the paragraph, and applying an
+    // alignment it already has still counts as applied), so it is not listed.
+    let cases = [
+        (r#"{"op":"set_meta","key":"title","value":"applied"}"#, None),
+        (
+            r#"{"op":"replace","from":"LEAK-replace-from","to":"LEAK-replace-to"}"#,
+            Some("replace: no match"),
+        ),
+        (
+            r#"{"op":"replace","from":"LEAK-same","to":"LEAK-same"}"#,
+            Some("replace: empty pattern or identical replacement"),
+        ),
+        (
+            r#"{"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"LEAK-addr-from","to":"LEAK-addr-to"}"#,
+            Some("replace: no match at the address"),
+        ),
+        (
+            r#"{"op":"set_cell_by_label","label":"LEAK-label","text":"LEAK-label-text"}"#,
+            Some("적용되지 않음 (사전 검증 단계에서 이미 확인됨)"),
+        ),
+        (
+            r#"{"op":"create_field","anchor":"LEAK-field-anchor","name":"LEAK-field-name","value":"LEAK-field-value"}"#,
+            Some("create_field: anchor not found"),
+        ),
+        (
+            r#"{"op":"create_bookmark","anchor":"LEAK-bookmark-anchor","name":"LEAK-bookmark-name"}"#,
+            Some("create_bookmark: anchor not found"),
+        ),
+        (
+            r#"{"op":"create_hyperlink","anchor":"LEAK-link-anchor","display":"LEAK-link-display","url":"https://example.com/LEAK-link-url"}"#,
+            Some("create_hyperlink: anchor not found"),
+        ),
+        (
+            r#"{"op":"set_field","name":"LEAK-setfield-name","value":"LEAK-setfield-value"}"#,
+            Some("set_field: no match or no change"),
+        ),
+        (
+            r#"{"op":"set_format","pattern":"LEAK-format-pattern","bold":"on"}"#,
+            Some("set_format: no match or no change"),
+        ),
+        (
+            r#"{"op":"set_align","pattern":"LEAK-align-pattern","align":"left"}"#,
+            Some("set_align: no match or no change"),
+        ),
+        (
+            r#"{"op":"set_para","pattern":"LEAK-setpara-pattern","align":"center"}"#,
+            Some("set_para: no match or no change"),
+        ),
+        (
+            r#"{"op":"insert_para","anchor":"LEAK-insert-anchor","text":"LEAK-insert-text"}"#,
+            Some("insert_para: anchor not found"),
+        ),
+        (
+            r#"{"op":"delete_para","matching":"LEAK-delete-matching"}"#,
+            Some("delete_para: no match"),
+        ),
+        (
+            r#"{"op":"delete_image","anchor":"LEAK-image-anchor"}"#,
+            Some("delete_image: no match"),
+        ),
+        (
+            r#"{"op":"delete_table","anchor":"LEAK-table-anchor"}"#,
+            Some("delete_table: no match"),
+        ),
+        (
+            r#"{"op":"delete_field","name":"LEAK-delfield-name"}"#,
+            Some("delete_field: no match"),
+        ),
+        (
+            r#"{"op":"delete_bookmark","name":"LEAK-delbookmark-name"}"#,
+            Some("delete_bookmark: no match"),
+        ),
+        (
+            r#"{"op":"set_meta","key":"title","value":"applied"}"#,
+            Some("set_meta: no change"),
+        ),
+        // The first set_cell rewrites the cell into its edited form, even with the same text;
+        // a repeat, and the label edit of the same cell, then change nothing.
+        (
+            r#"{"op":"set_cell","table":0,"row":1,"col":0,"text":"학교"}"#,
+            None,
+        ),
+        (
+            r#"{"op":"set_cell","table":0,"row":1,"col":0,"text":"학교"}"#,
+            Some("set_cell: no change"),
+        ),
+        (
+            r#"{"op":"set_cell_by_label","label":"소속","text":"학교"}"#,
+            Some("set_cell_by_label: no change"),
+        ),
+        (
+            r#"{"op":"set_cell_para","table":0,"row":1,"col":0}"#,
+            Some("set_cell_para: no change"),
+        ),
+        (r#"{"op":"set_page"}"#, Some("set_page: no change")),
+        (
+            r#"{"op":"set_para","address":{"at":{"section":0,"paragraph":2}}}"#,
+            Some("set_para: paragraph not found at the address, or no change"),
+        ),
+        (
+            r#"{"op":"style_tables","preset":"official"}"#,
+            Some("style_tables: no styleable table"),
+        ),
+        (
+            r#"{"op":"set_table_placement","placement":"inline","table":9}"#,
+            Some("set_table_placement: table not found"),
+        ),
+    ];
+    let ops = dir.join("ops.json");
+    let batch = cases.iter().map(|(op, _)| *op).collect::<Vec<_>>();
+    std::fs::write(&ops, format!("[{}]", batch.join(","))).unwrap();
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(dir.join("out.hwpx"))
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--allow-partial")
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("LEAK-replace-from"),
+        "stderr keeps naming the unapplied request: {stderr}"
+    );
+
+    let text = std::fs::read_to_string(&report_path).unwrap();
+    assert!(
+        !text.contains("LEAK"),
+        "request text leaked into the report: {text}"
+    );
+    let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(edit_report_v1_validator().is_valid(&report), "{report}");
+    let outcomes = report["ops"].as_array().unwrap();
+    assert_eq!(outcomes.len(), cases.len(), "{report}");
+    for (outcome, (op, reason)) in outcomes.iter().zip(&cases) {
+        match reason {
+            None => assert_eq!(outcome["status"], "applied", "{op}: {outcome}"),
+            Some(reason) => {
+                assert_eq!(outcome["status"], "failed", "{op}: {outcome}");
+                assert_eq!(outcome["reason"], *reason, "{op}: {outcome}");
+            }
+        }
+    }
 }
 
 /// A run whose only op matches nothing still writes `--report`'s file when given, even though
@@ -3137,6 +3306,14 @@ fn fast_path_replace_report_matches_the_apply_loop_report() {
     assert_eq!(fast_report["applied_count"], 2, "{fast_report}");
     assert_eq!(fast_report["failed_count"], 1, "{fast_report}");
     assert_eq!(fast_report["ops"][1]["status"], "failed", "{fast_report}");
+    assert_eq!(
+        fast_report["ops"][1]["reason"], "replace: no match",
+        "{fast_report}"
+    );
+    assert!(
+        !fast_report.to_string().contains("NO_SUCH_TEXT_ANYWHERE"),
+        "the fast path's reason must not echo the pattern (#348): {fast_report}"
+    );
     assert_eq!(
         fast_report, slow_report,
         "the fast path must report what the apply loop reports for the same batch"
