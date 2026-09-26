@@ -90,7 +90,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
     publishes the input unchanged.
   - As in kordoc, a non-empty value cell and the inline text after `라벨:` are overwritten. The
     inline text ends at a comma, semicolon, line end, the next `라벨:` on the line or 100
-    characters. Each overwritten cell and inline text is named in the warnings. A cell that holds
+    characters, and at brackets that are not its own: the closer of a bracket the label sits in
+    stays (`(한문:   )`), and so does a bracketed note set off by a space (`(서명/인)`)
+    ([#367](https://github.com/STAIxBWLB/hwp-cli/issues/367)). Each overwritten cell and inline text is named in the warnings. A cell that holds
     a field, picture or table is never written (kordoc never removed markup), and neither is a
     value cell whose requested slot, blank or checkbox a text edit fills: a slot and a label on
     one place fill it once, and when two keys reach one place the first keeps it, with a warning.
