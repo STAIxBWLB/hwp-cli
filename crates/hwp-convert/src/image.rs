@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn 이미지_삽입_구조() {
         let mut doc = crate::from_markdown::from_markdown("사진: 여기");
-        let dir = std::env::temp_dir().join("hwp-img-test");
+        let dir = std::env::temp_dir().join(format!("hwp-img-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = dir.join("t.png");
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn 도장_부유_삽입_구조() {
         let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
-        let dir = std::env::temp_dir().join("hwp-seal-test");
+        let dir = std::env::temp_dir().join(format!("hwp-seal-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = dir.join("s.png");
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -803,7 +803,10 @@ mod tests {
     #[test]
     fn 도장_실측_메트릭_위치_정확() {
         let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
-        let dir = std::env::temp_dir().join("hwp-seal-metrics-small-test");
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-seal-metrics-small-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = dir.join("s.png");
         std::fs::write(&png_path, make_square_png(200)).unwrap();
@@ -846,7 +849,8 @@ mod tests {
     #[test]
     fn 도장_실측_메트릭_줄보다_크면_세로오프셋_음수() {
         let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
-        let dir = std::env::temp_dir().join("hwp-seal-metrics-tall-test");
+        let dir =
+            std::env::temp_dir().join(format!("hwp-seal-metrics-tall-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = dir.join("s.png");
         std::fs::write(&png_path, make_square_png(200)).unwrap();
@@ -894,7 +898,8 @@ mod tests {
         let mut doc = crate::from_markdown::from_markdown(
             "| 결재 | 담당 |\n|---|---|\n| 과장 | 홍길동 (인) |",
         );
-        let png_path = std::env::temp_dir().join("hwp-seal-cell-test.png");
+        let png_path =
+            std::env::temp_dir().join(format!("hwp-seal-cell-test-{}.png", std::process::id()));
         std::fs::write(&png_path, make_square_png(96)).unwrap();
 
         // Premise: the anchor is reachable through an outer paragraph's recursive text
@@ -952,7 +957,8 @@ mod tests {
 
     fn seal_offsets(md: &str, anchor: &str) -> (i32, i32, i32, i32) {
         let mut doc = crate::from_markdown::from_markdown(md);
-        let dir = std::env::temp_dir().join("hwp-seal-fallback-test");
+        let dir =
+            std::env::temp_dir().join(format!("hwp-seal-fallback-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // One file per call: tests run in parallel, and a shared path can be read while
         // another test truncates it.
@@ -1013,7 +1019,8 @@ mod tests {
         let para = &doc.sections[0].paragraphs[0];
         let id = para.char_shape_runs[0].1.0 as usize;
         doc.header.char_shapes[id].base_size = 2000;
-        let dir = std::env::temp_dir().join("hwp-seal-fallback-scale");
+        let dir =
+            std::env::temp_dir().join(format!("hwp-seal-fallback-scale-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = dir.join("s.png");
         std::fs::write(&png_path, make_square_png(96)).unwrap();

@@ -346,6 +346,8 @@ jobs:
             # A ref from before the accounting existed writes no log; 0 would be a false claim.
             tally="skipped-for-missing-fixtures=unknown (the evaluated ref predates #275)"
           fi
+          # A failed run stopped early, so its count is partial (#350).
+          [ "$status" -eq 0 ] || tally="$tally (partial)"
           echo "$tally" | tee -a "$RUNNER_TEMP/gates/test-workspace/log"
           exit "$status"
 

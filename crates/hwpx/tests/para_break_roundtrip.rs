@@ -21,7 +21,8 @@
 use std::path::PathBuf;
 
 fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("hwpx-para-break-roundtrip");
+    let dir =
+        std::env::temp_dir().join(format!("hwpx-para-break-roundtrip-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
 }

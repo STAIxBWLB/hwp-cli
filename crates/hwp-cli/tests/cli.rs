@@ -320,7 +320,7 @@ fn validate_valid_hwpx_exit_zero() {
 
 #[test]
 fn validate_corrupt_exit_nonzero_json() {
-    let bad = std::env::temp_dir().join("hwp_cli_bad.hwpx");
+    let bad = tmp("hwp_cli_bad.hwpx");
     std::fs::write(&bad, b"this is not a valid hwp/hwpx file").unwrap();
 
     let out = hwp()

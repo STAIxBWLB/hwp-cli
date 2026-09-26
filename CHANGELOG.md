@@ -10,6 +10,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- After a failed test step, `scripts/check.sh` labels the fixture-skip tally on its `check:
+  FAILED` line `(partial)`, and the CI and release-readiness test steps do the same: `cargo test`
+  stops at the first failing test binary, so that count is not the full tally. The `check: OK`
+  line is unchanged ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+
+**Fixed**
+
+- Two test runs at the same time, for example `scripts/check.sh` in two worktrees, no longer
+  collide: every test temp path now carries the process id, where 41 sites used a fixed name.
+  The special-file destination test uses a FIFO instead of a Unix socket, so a long `TMPDIR` no
+  longer fails it on the socket path length limit
+  ([#349](https://github.com/STAIxBWLB/hwp-cli/issues/349)).
+
 ## [1.1.0]
 
 **Compatibility**

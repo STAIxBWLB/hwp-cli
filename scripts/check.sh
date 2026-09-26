@@ -30,12 +30,15 @@ export HWP_FIXTURE_SKIP_LOG="$skip_log"
 fail=0
 run() {
     echo "== $*"
-    "$@" || fail=1
+    "$@" || { fail=1; return 1; }
 }
 
 run $CARGO fmt --all --check
 run $CARGO clippy --workspace --all-targets -- -D warnings
-run $CARGO test --workspace
+# cargo test stops at the first failing test binary, and a strict-mode failure panics before
+# it logs, so after a failed test step the fixture-skip tally is a partial count (#350).
+partial=""
+run $CARGO test --workspace || partial=" (partial)"
 run python3 -m unittest tools/test_pdf_parity.py
 run bash scripts/tests/hancom-regression.sh
 run bash scripts/check-structured-corpus.sh
@@ -84,7 +87,7 @@ fi
 tally="skipped-for-missing-fixtures=$skipped (optional=$optional)"
 
 if [ "$fail" -ne 0 ]; then
-    echo "== check: FAILED (위 게이트 중 실패 있음) $tally =="
+    echo "== check: FAILED (위 게이트 중 실패 있음) $tally$partial =="
     exit 1
 fi
 echo "== check: OK (fmt/clippy/test/crate-edges/pdf-runner/structured-corpus/claims/doc-surface/release-block/readiness-selfcheck/skip-accounting/public-parity=$parity_result) $tally =="

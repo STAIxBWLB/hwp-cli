@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("hwp5-synth-tests");
+    let dir = std::env::temp_dir().join(format!("hwp5-synth-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
 }
@@ -286,7 +286,7 @@ fn hwp5_numbering_id_0기반_경계왕복() {
 #[test]
 fn md_이미지_코드_hwp5_왕복() {
     use std::io::Write;
-    let dir = std::env::temp_dir().join("hwp5-md-imgcode");
+    let dir = std::env::temp_dir().join(format!("hwp5-md-imgcode-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // 최소 PNG(16×16 치수 헤더).
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();

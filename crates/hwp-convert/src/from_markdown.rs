@@ -2255,7 +2255,7 @@ mod tests {
     /// GI-3: local image `![alt](fig.png)` → inline Picture + BinStream (natural size).
     #[test]
     fn 이미지_로컬_임베드() {
-        let dir = std::env::temp_dir().join("hwp-md-img-embed");
+        let dir = std::env::temp_dir().join(format!("hwp-md-img-embed-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         write_png(&dir, "fig.png", 96, 48);
         let doc = from_markdown_with(
@@ -2287,7 +2287,7 @@ mod tests {
     /// GI-3: missing files, remote URLs, and relative paths (no base) keep the alt text after a warning.
     #[test]
     fn 이미지_실패는_alt_보존() {
-        let dir = std::env::temp_dir().join("hwp-md-img-fail");
+        let dir = std::env::temp_dir().join(format!("hwp-md-img-fail-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Missing file.
         let d1 = from_markdown_with(
@@ -2313,7 +2313,7 @@ mod tests {
     /// GI-3 round-trip: image data is preserved on re-export through md(image)→IR→#8 exporter (media_dir).
     #[test]
     fn 이미지_왕복_exporter_데이터보존() {
-        let dir = std::env::temp_dir().join("hwp-md-img-rt");
+        let dir = std::env::temp_dir().join(format!("hwp-md-img-rt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = write_png(&dir, "rt.png", 32, 32);
         let orig = std::fs::read(&png_path).unwrap();

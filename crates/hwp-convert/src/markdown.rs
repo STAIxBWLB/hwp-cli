@@ -3309,7 +3309,9 @@ mod tests {
     }
 
     fn write_temp(name: &str, data: &[u8]) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(name);
+        let dir = std::env::temp_dir().join(format!("hwp-md-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
         std::fs::write(&p, data).unwrap();
         p
     }

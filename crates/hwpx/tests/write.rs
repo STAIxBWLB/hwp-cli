@@ -20,7 +20,7 @@ fn skip_if_no_fixtures() -> bool {
 }
 
 fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("hwpx-write-tests");
+    let dir = std::env::temp_dir().join(format!("hwpx-write-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
 }
@@ -648,7 +648,7 @@ fn margin_sentinel_hwpx_round_trip() {
 #[test]
 fn md_이미지_코드_hwpx_왕복() {
     use std::io::Write as _;
-    let dir = std::env::temp_dir().join("hwpx-md-imgcode");
+    let dir = std::env::temp_dir().join(format!("hwpx-md-imgcode-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
     png.extend([0, 0, 0, 13]);
@@ -706,7 +706,7 @@ fn md_이미지_코드_hwpx_왕복() {
 #[test]
 fn 부유_그림_배치_hwpx_방출() {
     use std::io::Write as _;
-    let dir = std::env::temp_dir().join("hwpx-ge9-float");
+    let dir = std::env::temp_dir().join(format!("hwpx-ge9-float-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fig = dir.join("g.png");
     std::fs::File::create(&fig)
@@ -786,7 +786,7 @@ fn 부유_그림_배치_hwpx_방출() {
 #[test]
 fn floating_picture_negative_offset_emits_unsigned_and_round_trips() {
     use std::io::Write as _;
-    let dir = std::env::temp_dir().join("hwpx-neg-pos-offset");
+    let dir = std::env::temp_dir().join(format!("hwpx-neg-pos-offset-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::File::create(dir.join("g.png"))
         .unwrap()
@@ -3038,7 +3038,7 @@ fn 각주_미주_왕복() {
 #[test]
 fn 그림_변환_보정_속성_hwpx_왕복() {
     use std::io::Write as _;
-    let dir = std::env::temp_dir().join("hwpx-gg15-pic-fx");
+    let dir = std::env::temp_dir().join(format!("hwpx-gg15-pic-fx-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fig = dir.join("g.png");
     std::fs::File::create(&fig)

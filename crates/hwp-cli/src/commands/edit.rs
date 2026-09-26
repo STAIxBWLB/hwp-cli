@@ -5200,7 +5200,7 @@ mod tests {
     /// puts it.
     #[test]
     fn seal_measurer_falls_back_without_the_requested_face() {
-        let dir = std::env::temp_dir().join("hwp-seal-no-fonts");
+        let dir = std::env::temp_dir().join(format!("hwp-seal-no-fonts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let empty_fonts = dir.join("fonts");
         std::fs::create_dir_all(&empty_fonts).unwrap();
@@ -5237,7 +5237,8 @@ mod tests {
     /// this D1 text equal to the placement measured with locally held genuine fonts.
     #[test]
     fn seal_fallback_offsets_are_host_independent() {
-        let dir = std::env::temp_dir().join("hwp-seal-host-independent");
+        let dir =
+            std::env::temp_dir().join(format!("hwp-seal-host-independent-{}", std::process::id()));
         let empty_fonts = dir.join("fonts");
         std::fs::create_dir_all(&empty_fonts).unwrap();
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
