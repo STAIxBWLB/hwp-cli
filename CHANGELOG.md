@@ -34,8 +34,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
-- A certification report could fail its own published schema in four ways
-  ([#347](https://github.com/STAIxBWLB/hwp-cli/issues/347)):
+- A certification report could fail its own published schema in six ways
+  ([#347](https://github.com/STAIxBWLB/hwp-cli/issues/347)). Four were schema gaps, now loosened:
   - Certification lays pages out through the same renderer as `hwp render`, but
     `certification-report-v1` never listed the three WMF issue codes
     (`wmf_parse_invalid_placeholder`, `wmf_unsupported_record_omitted`, `wmf_budget_exceeded`),
@@ -55,16 +55,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
     code made the report invalid. Both maxima are now 1,000,000,000, the most 1,000 events at the
     cap can add up to, and a test pins them to that bound.
 
-  Two counts had no emitter bound at all, because an HWP5 paragraph's text can hold millions of
-  characters within the parse budget. The package check's `issue_count` is the reader's warning
-  count (one unpaired surrogate, or one field character with no control, is one warning), and the
-  `unresolved_fields` rule's `observed_count` counts field-start characters. Both keep the
-  schema's 1,000,000 maximum and stay exact below it; above it they now fail closed instead of
-  reporting a count the schema rejects: the package check with `parse_budget_exceeded`, a rule
-  with `inspection_incomplete` and an `observed_count` of 0, as a presence rule reports an
-  inspection it could not finish. The `issues`/`info` descriptions in both report schemas now say
-  that one entry per code is an emitter guarantee, not something the schema enforces
-  ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+  Two were counts with no emitter bound at all, because an HWP5 paragraph's text can hold millions
+  of characters within the parse budget. Both keep the schema's 1,000,000 maximum, stay exact
+  below it and now fail closed above it with `inspection_incomplete`, the code a presence rule
+  already uses for an inspection it could not finish:
+  - The package check's `issue_count` is the reader's warning count (one unpaired surrogate, or one
+    field character with no control, is one warning). Above the maximum the package check fails
+    with `inspection_incomplete` and an `issue_count` of 1.
+  - The `unresolved_fields` rule's `observed_count` counts field-start characters. Above the
+    maximum the rule fails with `inspection_incomplete` and an `observed_count` of 0.
+- The `issues`/`info` descriptions in `certification-report-v1` and `render-report-v1` now say that
+  one entry per code is an emitter guarantee, not something the schema enforces (`uniqueItems`
+  compares whole entries) ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
 
 ## [1.1.0]
 

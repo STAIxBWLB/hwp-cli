@@ -52,7 +52,7 @@ const MAX_PRESERVATION_LOSS_COUNT: usize = 1_000_000;
 /// `loss_code_count` maxima are this value.
 const MAX_PRESERVATION_LOSS_TOTAL: usize = MAX_PRESERVATION_EVENTS * MAX_PRESERVATION_LOSS_COUNT;
 /// The report schema's `check.issue_count` maximum. A package with more reader warnings than
-/// this fails closed as `parse_budget_exceeded` instead of reporting a count the schema rejects.
+/// this fails closed as `inspection_incomplete` instead of reporting a count the schema rejects.
 const MAX_CHECK_ISSUE_COUNT: usize = 1_000_000;
 const MAX_LOG_BYTES_RECORDED: u64 = 64 * 1024;
 const MAX_PARSE_XML_DEPTH: usize = 128;
@@ -454,8 +454,10 @@ fn package_check_from_warnings(warnings: &[String]) -> CheckResult {
     }
     if warnings.len() > MAX_CHECK_ISSUE_COUNT {
         // Nothing else bounds the reader's warning count (one unpaired surrogate is one warning),
-        // and the report counts issues exactly, so a count it cannot carry fails closed.
-        return fixed_check(CheckStatus::Failed, "parse_budget_exceeded");
+        // and the report counts issues exactly, so a count it cannot carry fails closed with the
+        // code rule_from_reasons uses for the same overflow. parse_budget_exceeded stays reserved
+        // for input the preflight refused.
+        return fixed_check(CheckStatus::Failed, "inspection_incomplete");
     }
     CheckResult::with_issue_digest(
         CheckStatus::Failed,
@@ -5649,7 +5651,8 @@ exit 2"#,
         let above = package_check_from_warnings(&vec![String::new(); MAX_CHECK_ISSUE_COUNT + 1]);
         assert_eq!(errors(&above), Vec::<String>::new());
         assert_eq!(above.status, CheckStatus::Failed);
-        assert_eq!(above.reason_codes, ["parse_budget_exceeded"]);
+        assert_eq!(above.reason_codes, ["inspection_incomplete"]);
+        assert_eq!(above.issue_count, 1);
     }
 
     /// A rule's `observed_count` is exact up to the report schema's maximum. `unresolved_fields`
