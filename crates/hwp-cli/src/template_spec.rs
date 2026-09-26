@@ -1640,8 +1640,9 @@ fn validate_reference_contract(template: &TemplateSpec, issues: &mut Vec<Templat
         }
         validate_reference_target(&binding.name, &format!("{pointer}/name"), issues);
         let key = match binding.target {
+            // A slot name is trimmed (#362), so `" 성명"` and `"성명"` are one target.
             ReferenceTarget::Placeholder => {
-                format!("placeholder:{}", binding.name)
+                format!("placeholder:{}", binding.name.trim())
             }
             ReferenceTarget::Field => {
                 format!("field:{}", binding.name)
@@ -2463,7 +2464,7 @@ fn validate_name(name: &str, pointer: &str, issues: &mut Vec<TemplateIssue>) {
 }
 
 fn validate_reference_target(name: &str, pointer: &str, issues: &mut Vec<TemplateIssue>) {
-    if name.is_empty()
+    if name.trim().is_empty()
         || name.chars().count() > 128
         || name
             .chars()
@@ -2473,7 +2474,7 @@ fn validate_reference_target(name: &str, pointer: &str, issues: &mut Vec<Templat
             issues,
             "invalid_target",
             pointer,
-            "reference target must contain 1..=128 non-control characters without braces",
+            "reference target must contain 1..=128 non-control characters without braces, not only whitespace",
         );
     }
 }
@@ -3001,7 +3002,7 @@ source:
         for (bytes, expected) in [
             (
                 include_bytes!("../../../schemas/template-spec-v1.schema.json").as_slice(),
-                "268fc0cbb9881510d40b533b32342cbd7d5b106dc529f819f53ba1415a9e3337",
+                "f9285b9e39d7983382357a5c9b255a8d6c43687e240a936c6ed7cae27122bc19",
             ),
             (
                 include_bytes!("../../../schemas/template-data-v1.schema.json").as_slice(),

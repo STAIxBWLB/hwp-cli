@@ -328,3 +328,123 @@ fn strict_reference_regeneration_is_explicit_and_validated() {
     assert!(String::from_utf8_lossy(&cat.stdout).contains("재생성 결과"));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Write a reference compose spec whose one paragraph is `text`, and a TemplateSpec binding one
+/// string variable per placeholder name in `names` (#362).
+fn wide_name_contract(dir: &Path, text: &str, names: &[&str]) -> (PathBuf, PathBuf) {
+    let spec = dir.join("reference-document.json");
+    std::fs::write(
+        &spec,
+        serde_json::json!({
+            "version": "1.0",
+            "sections": [{"blocks": [{"type": "paragraph", "runs": [
+                {"type": "text", "text": text}
+            ]}]}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let reference = dir.join("reference.hwpx");
+    let result = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&reference)
+        .output()
+        .unwrap();
+    assert_success(&result);
+    let mut variables = serde_json::Map::new();
+    let mut values = serde_json::Map::new();
+    let mut bindings = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        let variable = format!("v{index}");
+        variables.insert(
+            variable.clone(),
+            serde_json::json!({"type": "string", "required": true}),
+        );
+        values.insert(variable.clone(), serde_json::json!(format!("값{index}")));
+        bindings.push(serde_json::json!({
+            "region": format!("r{index}"),
+            "variable": variable,
+            "target": "placeholder",
+            "name": name,
+        }));
+    }
+    let template = dir.join("template.json");
+    std::fs::write(
+        &template,
+        serde_json::json!({
+            "version": "1.0",
+            "variables": variables,
+            "source": {"mode": "reference_hwpx", "path": "reference.hwpx", "bindings": bindings}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let data = dir.join("data.json");
+    std::fs::write(
+        &data,
+        serde_json::json!({"version": "1.0", "values": values}).to_string(),
+    )
+    .unwrap();
+    (template, data)
+}
+
+fn run_template(template: &Path, data: &Path, output: &Path) -> Output {
+    hwp()
+        .arg("template")
+        .arg(template)
+        .arg("--data")
+        .arg(data)
+        .arg("-o")
+        .arg(output)
+        .output()
+        .unwrap()
+}
+
+/// A binding name is any text without braces or controls, matched the way `hwp slots` reads
+/// the document: `R&D`, `<`, `>` and `"` are escaped in the XML but still match (#362).
+#[test]
+fn reference_bindings_match_wide_and_escaped_names() {
+    let dir = test_dir("wide-names");
+    let names = ["성명(한글)", "R&D 과제명", "a<1> \"b\""];
+    let (template, data) = wide_name_contract(
+        &dir,
+        "{{성명(한글)}} / {{R&D 과제명}} / {{ a<1> \"b\" }}",
+        &[names[0], names[1], &format!(" {} ", names[2])],
+    );
+    let output = dir.join("filled.hwpx");
+    assert_success(&run_template(&template, &data, &output));
+    let cat = hwp().arg("cat").arg(&output).output().unwrap();
+    assert_success(&cat);
+    assert_eq!(
+        String::from_utf8_lossy(&cat.stdout).trim(),
+        "값0 / 값1 / 값2"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A whitespace-only name, or two names that trim to one slot, are refused before anything is
+/// written, with the binding's pointer.
+#[test]
+fn reference_bindings_refuse_blank_and_duplicate_trimmed_names() {
+    for (case, names) in [
+        ("blank", vec!["  "]),
+        ("duplicate", vec!["기관명", " 기관명 "]),
+    ] {
+        let dir = test_dir(case);
+        let (template, data) = wide_name_contract(&dir, "{{기관명}}", &names);
+        let output = dir.join("filled.hwpx");
+        let result = run_template(&template, &data, &output);
+        assert!(!result.status.success(), "{case} must be refused");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        let expected = if case == "blank" {
+            "/source/bindings/0/name"
+        } else {
+            "duplicate_target"
+        };
+        assert!(stderr.contains(expected), "{case}: {stderr}");
+        assert!(!output.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

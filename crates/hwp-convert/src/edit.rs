@@ -140,7 +140,10 @@ fn is_explicit_form_value(cell: &hwp_model::Cell, wanted: &str) -> bool {
         .collect::<Vec<_>>()
         .join("\n");
     let normalized = normalize_form_label(&visible);
-    normalized.is_empty() || normalized == format!("{{{{{wanted}}}}}")
+    let tokens = hwp_model::slot_tokens(&normalized);
+    normalized.is_empty()
+        || matches!(tokens.as_slice(), [token]
+            if token.range == (0..normalized.len()) && token.name == wanted)
 }
 
 /// 문서 전체에서 `from`을 `to`로 치환한다(본문·표 셀·글상자 문단 재귀).
@@ -218,25 +221,54 @@ fn replace_in_chars(para: &mut Paragraph, from: &str, to: &str, budget: &mut usi
         let Some((char_idx, wpos)) = find_match(&para.chars, from, start) else {
             break;
         };
-        let to_hwp: Vec<HwpChar> = to
-            .chars()
-            .map(|c| {
-                if c == '\n' {
-                    HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
-                } else {
-                    HwpChar::Text(c)
-                }
-            })
-            .collect();
-        let to_w = utf16_len(to);
-        para.chars.splice(char_idx..char_idx + from_chars, to_hwp);
-        adjust_runs(&mut para.char_shape_runs, wpos, from_w, to_w);
-        para.line_segs.clear();
+        splice_text(para, char_idx..char_idx + from_chars, wpos, from_w, to);
         count += 1;
         *budget -= 1;
         start = char_idx + to_chars;
     }
     count
+}
+
+/// Replace the text characters `range` of `para` (starting at WCHAR offset `wpos`, `from_w`
+/// WCHARs wide) with `to`. The new text takes the char shape active at `wpos`, later run
+/// boundaries shift by the length change, `\n` becomes a line break, and the now stale line
+/// layout is dropped for the writer to rebuild.
+pub(crate) fn splice_text(
+    para: &mut Paragraph,
+    range: std::ops::Range<usize>,
+    wpos: u32,
+    from_w: u32,
+    to: &str,
+) {
+    let to_hwp: Vec<HwpChar> = to
+        .chars()
+        .map(|c| {
+            if c == '\n' {
+                HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
+            } else {
+                HwpChar::Text(c)
+            }
+        })
+        .collect();
+    para.chars.splice(range, to_hwp);
+    adjust_runs(&mut para.char_shape_runs, wpos, from_w, utf16_len(to));
+    para.line_segs.clear();
+}
+
+/// Apply `edits` (character ranges of `para`, in order and not overlapping, with their
+/// replacements) back to front, so each range still names the original text when it is spliced.
+pub(crate) fn splice_edits(para: &mut Paragraph, edits: Vec<(std::ops::Range<usize>, String)>) {
+    for (range, replacement) in edits.into_iter().rev() {
+        let wpos = para.chars[..range.start]
+            .iter()
+            .map(HwpChar::wchar_width)
+            .sum();
+        let from_w = para.chars[range.clone()]
+            .iter()
+            .map(HwpChar::wchar_width)
+            .sum();
+        splice_text(para, range, wpos, from_w, &replacement);
+    }
 }
 
 /// Address-driven entry point for a text-replace edit (EDT-05, 07-02): resolves the target

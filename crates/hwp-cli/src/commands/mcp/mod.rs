@@ -2750,21 +2750,21 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_slots",
-            "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환.",
+            "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환. 이름은 중괄호·제어문자를 뺀 임의 텍스트이며 `{{ name }}`의 안쪽 공백은 제거(hwp_fill과 같은 문법).",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"}
             }, "required": ["path"]}
         }),
         json!({
             "name": "hwp_fill",
-            "description": "템플릿의 `{{name}}`를 채운다. values는 평문 치환(hwpx 패키지 보존), parts는 부분(md+HTML, 계약 docs/design/18) 파일을 앵커 문단에 블록 이식(.hwp/.hwpx).",
+            "description": "템플릿의 `{{name}}`(`{{ name }}` 포함)를 채운다. values는 평문 치환(hwpx 패키지 보존), parts는 부분(md+HTML, 계약 docs/design/18) 파일을 앵커 문단에 블록 이식(.hwp/.hwpx).",
             "inputSchema": {"type": "object", "properties": {
                 "input": {"type": "string"}, "output": {"type": "string"},
                 "values": {"type": "object", "additionalProperties": {"type": "string"},
                     "description": "{자리표시자이름: 값} 객체"},
                 "parts": {"type": "object", "additionalProperties": {"type": "string"},
                     "description": "{앵커이름: 부분 파일 경로(md+HTML)} 객체 — 앵커 문단을 부분 블록으로 교체"},
-                "allow_partial": {"type": "boolean", "description": "미발견 키가 있어도 일치한 값만 게시; 기본 false"}
+                "allow_partial": {"type": "boolean", "description": "미발견 키가 있어도 일치한 값만 게시(하나도 없으면 입력을 그대로 게시하고 건수 0 보고); 기본 false"}
             }, "required": ["input", "output", "values"]}
         }),
         json!({
