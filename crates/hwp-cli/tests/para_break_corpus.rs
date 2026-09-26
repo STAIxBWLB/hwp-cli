@@ -5,13 +5,13 @@
 //! Lives in `hwp-cli` rather than `hwpx` because it needs both
 //! `hwp5::read_document` (parse the real `.hwp` file) and `hwpx` (convert
 //! and read back), and `hwp5`/`hwpx` do not depend on each other
-//! (hub-and-spoke, CLAUDE.md Invariant 1) - only `hwp-cli` legitimately
+//! (hub-and-spoke, AGENTS.md Invariant 1) - only `hwp-cli` legitimately
 //! depends on both. The synthetic tracer test that does not need a real
 //! `.hwp` file lives in `crates/hwpx/tests/para_break_roundtrip.rs`.
 //!
 //! Skips cleanly (never fails) when `HWP_CORPUS_DIR` is unset, mirroring
 //! `crates/hwp5/tests/distdoc_corpus.rs`'s idiom. This suite cannot run in
-//! CI - the ground-truth corpus is never committed (CLAUDE.md Data policy).
+//! CI - the ground-truth corpus is never committed (AGENTS.md Data policy).
 //!
 //! ```text
 //! HWP_CORPUS_DIR=~/Documents/hwp_samples cargo test -p hwp-cli --test para_break_corpus -- --nocapture

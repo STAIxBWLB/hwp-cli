@@ -83,7 +83,7 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/check-structured-corpus.sh
-      # CLAUDE.md invariant 1 as a gate: hwp-convert and hwp-render must stay off each
+      # AGENTS.md invariant 1 as a gate: hwp-convert and hwp-render must stay off each
       # other's normal dependency graph, which is the whole reason the segment id rule is
       # duplicated rather than shared.
       - name: Crate edges (hub-and-spoke invariant)

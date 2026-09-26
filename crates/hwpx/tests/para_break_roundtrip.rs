@@ -15,7 +15,7 @@
 //! The corpus-gated proof against the genuine document that exposed the
 //! defect lives in `crates/hwp-cli/tests/para_break_corpus.rs` instead of
 //! here: it needs `hwp5::read_document` to parse a real `.hwp` file, and the
-//! `hwpx` crate does not depend on `hwp5` (hub-and-spoke, CLAUDE.md
+//! `hwpx` crate does not depend on `hwp5` (hub-and-spoke, AGENTS.md
 //! Invariant 1) - only `hwp-cli` legitimately depends on both.
 
 use std::path::PathBuf;

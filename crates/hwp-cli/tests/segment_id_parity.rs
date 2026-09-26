@@ -3,7 +3,7 @@
 //!
 //! `hwp-convert` owns one (`crates/hwp-convert/src/segment_id.rs`) and `hwp-render` owns the
 //! other (`crates/hwp-render/src/segment_id.rs`). Neither crate may depend on the other
-//! (CLAUDE.md invariant 1), and the owner chose duplication over relocating the rule to a
+//! (AGENTS.md invariant 1), and the owner chose duplication over relocating the rule to a
 //! shared crate. **Nothing at compile time makes the two agree.**
 //!
 //! `hwp cat --segments v2` publishes ids from the first and the render side's geometry rows

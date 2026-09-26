@@ -39,7 +39,7 @@
 //!
 //! `crates/hwp-render/src/segment_id.rs` carries a second, independent copy of this rule with
 //! the identical signatures, because `hwp-render` and `hwp-convert` may not depend on each
-//! other (CLAUDE.md invariant 1). The two are kept in step by the cross-crate per-kind equality
+//! other (AGENTS.md invariant 1). The two are kept in step by the cross-crate per-kind equality
 //! test in `crates/hwp-cli/tests/` — that test is the *only* thing standing between the two
 //! crates and a silent divergence, so it is the one to look at first if a reader wonders why
 //! one rule exists twice.

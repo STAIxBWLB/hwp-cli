@@ -14,7 +14,7 @@
 //! It is never regenerated: a later regeneration would silently weaken D-04 rather than fail.
 //!
 //! The source sample is `fixtures/samples/report-tables.hwpx`, which is committed (the
-//! `fixtures/samples/` exception in CLAUDE.md's data policy). So these tests fail loudly when
+//! `fixtures/samples/` exception in AGENTS.md's data policy). So these tests fail loudly when
 //! something is wrong instead of skipping the way the gitignored-corpus tests do. It carries
 //! Korean text and tables, so the pin is not ASCII-only.
 //!

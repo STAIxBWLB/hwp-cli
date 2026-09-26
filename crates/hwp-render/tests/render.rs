@@ -1270,7 +1270,7 @@ fn 쪽_테두리_렌더() {
 /// and the first line's text clears it. Hangul places the marker at `left`, never
 /// left of the paragraph, which is what the oracle raster shows.
 /// Depth 1 uses the ladder rung `□` (#125). Glyph presence depends on font
-/// availability (CLAUDE.md CI rule) — skip if none.
+/// availability (AGENTS.md CI rule) — skip if none.
 #[test]
 fn 목록_마커_내어쓰기_배치() {
     use hwp_render::display::Item;
@@ -1323,7 +1323,7 @@ fn 목록_마커_내어쓰기_배치() {
 /// the wrap width must be measured against the width left after the indent. Doing
 /// it against the full segment pushed right-aligned and wrapped lines one hanging
 /// width past the paragraph's right edge.
-/// Glyph presence depends on font availability (CLAUDE.md CI rule) — skip if none.
+/// Glyph presence depends on font availability (AGENTS.md CI rule) — skip if none.
 #[test]
 fn 내어쓰기_문단의_줄은_우변을_넘지_않는다() {
     use hwp_model::{ParaShape, ParaShapeId};

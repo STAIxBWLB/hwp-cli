@@ -3,7 +3,7 @@
 //! # Why this file exists twice
 //!
 //! `crates/hwp-convert/src/segment_id.rs` carries the original. `hwp-render` may not depend on
-//! `hwp-convert` and `hwp-convert` may not depend on `hwp-render` (CLAUDE.md invariant 1: the
+//! `hwp-convert` and `hwp-convert` may not depend on `hwp-render` (AGENTS.md invariant 1: the
 //! IR is the hub and the two spokes never touch), and the owner chose duplication over moving
 //! the rule into a shared crate. So there is no shared code path here to fall back on, and
 //! **nothing at compile time makes the two copies agree**.

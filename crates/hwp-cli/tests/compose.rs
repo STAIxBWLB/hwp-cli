@@ -22,7 +22,7 @@ fn temp(name: &str) -> PathBuf {
     dir.join(name)
 }
 
-/// 폰트 가용성은 CI 러너마다 다르므로(`CLAUDE.md`: CI 테스트는 폰트 의존 단언 금지)
+/// 폰트 가용성은 CI 러너마다 다르므로(`AGENTS.md`: CI 테스트는 폰트 의존 단언 금지)
 /// font_resolution 경고를 뺀 나머지가 비어 있는지만 본다.
 fn assert_no_warnings_besides_fonts(report: &serde_json::Value) {
     let rest: Vec<_> = report["warnings"]

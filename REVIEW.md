@@ -1,7 +1,7 @@
 # Review instructions
 
 Read by `/codex:review`, `/code-review`, and human reviewers alike. English only, per the language
-policy in `CLAUDE.md`.
+policy in `AGENTS.md`.
 
 ## Passes
 
@@ -13,7 +13,7 @@ Run these passes and tag every finding with its pass:
 - **Compliance**: the change matches the issue spec and the approved plan, and respects the
   invariants and data policy below.
 
-## Repo focus (from CLAUDE.md)
+## Repo focus (from AGENTS.md)
 
 - **Crate direction**: `hwp-model` depends on no other internal crate; `hwp5` and `hwpx` never depend
   on each other and go through the IR.
@@ -24,7 +24,7 @@ Run these passes and tag every finding with its pass:
   backed by a genuine file or a spec section number.
 - **No new external HWP crates**; infrastructure crates only.
 - **Data policy**: never commit the ground-truth corpus, the Hancom specification or derivatives, or
-  private fixtures. The narrow committed exceptions are listed in `CLAUDE.md`.
+  private fixtures. The narrow committed exceptions are listed in `AGENTS.md`.
 - **Bilingual docs**: user-facing `NAME.md` and `NAME.ko.md` change in the same commit; the `KO`
   overlay in `crates/hwp-cli/src/i18n.rs` gains an entry whenever a command or flag is added.
 - **No font-dependent assertions in CI-run tests**: CI render glyphs come from system fonts, so a
@@ -51,9 +51,9 @@ Report at most 5 nits per review; summarize the rest as a count.
 
 Font-dependent test expectations are the opposite case: report them, see the focus list above.
 
-## Feedback into CLAUDE.md
+## Feedback into AGENTS.md
 
-When the same finding appears twice, the correction goes into `CLAUDE.md` in the same PR, under
+When the same finding appears twice, the correction goes into `AGENTS.md` in the same PR, under
 conventions or the invariants list.
 
 ---

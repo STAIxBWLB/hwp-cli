@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CLAUDE.md invariant 1 as a runnable gate.
+# AGENTS.md invariant 1 as a runnable gate.
 #
 # `hwp-model` is the hub and every other crate is a spoke: `hwp5` and `hwpx` do not depend on
 # each other, and neither do `hwp-convert` and `hwp-render`. That last pair is why the segment
@@ -29,7 +29,7 @@ forbid() {
     local crate="$1" forbidden="$2" count
     count="$(deps "$crate" | grep -Ecx "$forbidden")"
     if [ "$count" -ne 0 ]; then
-        echo "FAIL: $crate has a normal dependency on $forbidden (CLAUDE.md invariant 1)" >&2
+        echo "FAIL: $crate has a normal dependency on $forbidden (AGENTS.md invariant 1)" >&2
         fail=1
     else
         echo "ok: $crate does not depend on $forbidden"

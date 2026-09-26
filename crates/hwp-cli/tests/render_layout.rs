@@ -985,7 +985,7 @@ fn join_orphans(
 ///
 /// # Coverage, and the trap in reading a green run
 ///
-/// `fixtures/hwp5/` and `fixtures/hwpx/` are gitignored (CLAUDE.md's data policy), so ON CI
+/// `fixtures/hwp5/` and `fixtures/hwpx/` are gitignored (AGENTS.md's data policy), so ON CI
 /// THIS TEST SEES ONLY THE COMMITTED FIXTURES and the rest silently do not run - the #275
 /// shape, where a skipped case reports `ok`. Every `.hwp` and `.hwpx` a checkout does have in
 /// those two directories is covered, not a fixed list, so a developer host checks all of them.

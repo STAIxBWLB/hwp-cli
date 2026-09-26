@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 A Rust workspace that implements HWP 5.0 (binary) and HWPX (OWPML) **directly**, with no external
 HWP library. Code comments are English by default (since 2026-08 - existing Korean comments move to
@@ -9,7 +9,7 @@ Korean tone.
 
 - **Everything an AI agent reads as development context is English only**: commit messages, PR
   titles/bodies, release notes (`CHANGELOG.md`, GitHub Release bodies), issue text, code comments,
-  and internal working docs (`CLAUDE.md`).
+  and internal working docs (`AGENTS.md`).
 - User-facing documentation stays bilingual, but **English is canonical**: `NAME.md` (English) and
   `NAME.ko.md` (Korean).
 - Both files carry a **language link on the first line**:

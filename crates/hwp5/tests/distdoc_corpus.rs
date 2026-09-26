@@ -11,7 +11,7 @@
 //! ```
 //!
 //! **This suite cannot run in continuous integration**: the ground-truth
-//! corpus lives outside the repository and is never committed (CLAUDE.md
+//! corpus lives outside the repository and is never committed (AGENTS.md
 //! §Data policy). Its pass/fail state must be recorded by hand in the phase's
 //! verification notes (`02-VALIDATION.md`), since a green CI run alone cannot
 //! attest to it.

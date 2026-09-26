@@ -5,7 +5,7 @@
 //! Assertions stay at the structural level (SVG markup / PDF content-stream operators / "did
 //! the PNG render complete"), never on rendered letterforms, counted pages or pixels, since CI
 //! resolves text from whichever typefaces happen to be installed on each runner (repo
-//! CLAUDE.md's CI text-rendering-independence rule).
+//! AGENTS.md's CI text-rendering-independence rule).
 
 use std::io::Read;
 
