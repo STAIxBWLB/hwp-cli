@@ -753,7 +753,9 @@ fi
 # GA-2 distribution-document read. The source is a genuine corpus document; it is
 # never copied into the destination and its path never reaches the index.
 if [[ -n "${HWP_CORPUS_DIR:-}" && -d "${HWP_CORPUS_DIR:-}" ]]; then
-  distdoc="$(find "$HWP_CORPUS_DIR" -type f -name 'dist-*.hwp' 2>/dev/null | sort | head -1)"
+  # head -1 can SIGPIPE sort, and find fails on an unreadable directory; under set -e and
+  # pipefail either would abort the run with 141 or 1 instead of choosing no document.
+  distdoc="$(find "$HWP_CORPUS_DIR" -type f -name 'dist-*.hwp' 2>/dev/null | sort | head -1 || true)"
   if [[ -n "$distdoc" ]]; then
     emit P4_distdoc_read "$STAGE/P4_distdoc.hwpx" \
       "$HWP" convert "$distdoc" -o "$STAGE/P4_distdoc.hwpx"
