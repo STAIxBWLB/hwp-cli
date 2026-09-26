@@ -22,12 +22,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - In the same report, a `style_tables` or `set_table_placement` whose result is already in effect
   is now `applied` with `pieces_touched` 0 instead of `failed` (below). The `pieces_touched`
   description says so, which moves the hash again; the shape is unchanged.
-- An edit batch that puts an op with no address before an addressed op whose path it changes is
-  now refused, and so is a `set_cell_by_label` after an op that moved its cell (#358, below). The
-  check is conservative: a change after the addressed paragraph in the same list is refused too,
-  although such a batch used to apply correctly. Put the op with no address after the addressed
-  ones, address it, or split the batch in two. MCP `hwp_edit` applies op kinds in a fixed order,
-  so there the remedy is two calls.
+- An `--ops` or MCP `hwp_edit` batch that puts an op with no address before an addressed op
+  whose path it changes is now refused, and so is an `--ops` `set_cell_by_label` after an op that
+  adds or removes a table, moves a paragraph holding one, or reshapes its table (#358, below).
+  Both checks are conservative: a change after the addressed paragraph in the same list, or a
+  table added after the form, is refused too, although such a batch used to apply correctly. Put
+  the other op after the addressed and label ones, address it, or split the batch in two. MCP
+  `hwp_edit` applies op kinds in a fixed order, so there the remedy is two calls; it already runs
+  label edits before every op that changes tables, as the flag channel does.
 - The bytes of `certification-report-v1.schema.json` and `render-report-v1.schema.json` changed,
   for consumers that pin schema hashes. `render-report-v1` changed in descriptions only;
   `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
@@ -136,9 +138,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Addresses and form labels are resolved against the document before the batch, and a structural
   op earlier in the batch moves what comes after it:
   - An addressed `insert_para` or `delete_para` shifted every later address in the same list by
-    one, including those before it; a same-list `move_para` shifted none of the paragraphs
-    between its ends; and none of them shifted the cell or text-box paragraphs below a body
-    paragraph. A later address is now shifted exactly: only at or after the splice, at any depth.
+    one, including those before it. A same-list `move_para` shifted none of the paragraphs
+    between its ends, and a cross-list one shifted every address in both lists by one. None of
+    them shifted the cell or text-box paragraphs below a body paragraph. A later address is now
+    shifted exactly: only at or after the splice, at any depth.
   - An op with no address (a pattern, anchor or index form such as `delete_para` with
     `matching`, `insert_para` with `anchor` or `add_table`) was not tracked at all. A batch in
     which such an op adds or removes a paragraph, control or cell along a later addressed op's
@@ -147,9 +150,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
     rewrites a cell's paragraphs without changing their number (`set_cell`) is not caught: the
     later address then names the new paragraph at the same position.
   - A `set_cell_by_label` wrote the table index, row and column preflight found, so an earlier
-    op that reordered tables (moving one form above another) wrote the value into the other form.
-    The label is now looked up again in the table at that index right before the write, and the
-    batch is refused unless it still resolves to the same cell.
+    op that moved a form above another, cloned or added a table ahead of it, or inserted a row
+    above its label wrote the value into another form or another cell. In an `--ops` batch, a
+    label edit after an op that adds or removes a table or moves a paragraph holding one is now
+    refused, and so is one whose table's cell grid changed since preflight.
   - `move_para` into a cell or text box below its source, in the same list, panicked, and so did
     the reverse, a cell paragraph moved out to before its own table. Both now find the
     destination and the source where the other half of the move left them, and a destination

@@ -116,6 +116,12 @@
     "size_mm": "18mm"
   },
   {
+    "op": "set_cell_by_label",
+    "label": "항목",
+    "text": "라벨값",
+    "table": 0
+  },
+  {
     "op": "add_table",
     "anchor": "table anchor para",
     "rows": [
@@ -130,12 +136,6 @@
     "row": 1,
     "col": 1,
     "text": "수정값"
-  },
-  {
-    "op": "set_cell_by_label",
-    "label": "항목",
-    "text": "라벨값",
-    "table": 0
   },
   {
     "op": "set_cell_para",

@@ -348,9 +348,9 @@ struct ResolvedLabelEdit {
     text: String,
     candidate: hwp_convert::FormCellCandidate,
     request: String,
-    /// #358: the normalized label, resolved again right before the write
-    /// ([`check_label_target`]).
-    label: String,
+    /// #358: the target table's [`hwp_convert::table_grid`] at preflight, compared again right
+    /// before the write.
+    grid: Vec<[u16; 4]>,
 }
 
 struct LabelEditRequest {
@@ -1004,7 +1004,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     let resolved_move_destinations_for_report = resolved_move_destinations.clone();
     let mut resolved_addresses = resolved_addresses.into_iter();
     let mut resolved_move_destinations = resolved_move_destinations.into_iter();
-    let mut resolved_label_edits = label_preflight.resolved.into_iter();
+    let mut resolved_label_edits = label_preflight.resolved.into_iter().peekable();
     let mut edits = 0usize;
     let mut unapplied = label_preflight.unapplied;
     // Index-drift tracker (planner decision 3, #358): threaded through the apply loop below so
@@ -1092,7 +1092,6 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let Some(resolved) = resolved else {
                         continue;
                     };
-                    check_label_target(&mut doc, &resolved)?;
                     let before = doc.clone();
                     hwp_convert::set_cell(
                         &mut doc,
@@ -1601,6 +1600,14 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         &resolved_addresses_for_report,
         &resolved_move_destinations_for_report,
     );
+    // #358: a label edit names its cell by the table index preflight found. The first op that
+    // adds or removes a table, or moves a paragraph holding one, may make that index name another
+    // table; label edits after it are refused. Only tracked while a label edit is still ahead.
+    let last_label_edit = plan
+        .typed_operations
+        .iter()
+        .rposition(|operation| matches!(operation, TypedEditOperation::SetCellByLabel { .. }));
+    let mut tables_changed_by: Option<usize> = None;
     for (index, operation) in plan.typed_operations.iter().enumerate() {
         let target_before = resolved_addresses_for_report[index].clone();
         let to_target_before = resolved_move_destinations_for_report[index].clone();
@@ -1622,6 +1629,40 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         } else {
             Vec::new()
         };
+        if let TypedEditOperation::SetCellByLabel { .. } = operation
+            && let Some(Some(resolved)) = resolved_label_edits.peek()
+        {
+            let table = resolved.candidate.table;
+            if let Some(changed) = tables_changed_by {
+                anyhow::bail!(
+                    "op[{changed}] {}이(가) 표를 더하거나 빼거나 표가 든 문단을 옮겨, \
+                     op[{index}] set_cell_by_label이 사전 검증에서 찾은 표{table}가 다른 표일 수 있습니다 \
+                     (레이블 편집을 앞에 두거나, 편집을 두 번으로 나누세요)",
+                    typed_op_kind(&plan.typed_operations[changed])
+                );
+            }
+            if hwp_convert::table_grid(&mut doc, table).as_ref() != Some(&resolved.grid) {
+                anyhow::bail!(
+                    "op[{index}] set_cell_by_label: 앞선 연산이 표{table}의 행·열 구성을 바꿔, \
+                     사전 검증에서 찾은 칸({},{})이 다른 칸일 수 있습니다 \
+                     (레이블 편집을 앞에 두거나, 편집을 두 번으로 나누세요)",
+                    resolved.candidate.row,
+                    resolved.candidate.col
+                );
+            }
+        }
+        let tables_before = (tables_changed_by.is_none()
+            && last_label_edit.is_some_and(|last| index < last))
+        .then(|| table_count(&doc));
+        if tables_before.is_some()
+            && matches!(operation, TypedEditOperation::MoveParagraph { .. })
+            && target_current_path
+                .as_ref()
+                .and_then(|path| hwp_convert::address::paragraph_at_mut(&mut doc, path))
+                .is_some_and(|paragraph| tables_in(paragraph) > 0)
+        {
+            tables_changed_by = Some(index);
+        }
         let edits_before = edits;
         let unapplied_before = unapplied.len();
         apply_typed_operation(
@@ -1634,6 +1675,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut resolved_move_destinations,
             &mut offsets,
         )?;
+        if tables_before.is_some_and(|before| table_count(&doc) != before) {
+            tables_changed_by.get_or_insert(index);
+        }
         let op = typed_op_kind(operation).to_string();
         if let Some(moved) = later_shapes
             .iter()
@@ -1911,7 +1955,7 @@ fn preflight_label_edits(
                     text: request.text,
                     candidate: *candidate,
                     request: "set_cell_by_label".to_string(),
-                    label: request.label,
+                    grid: hwp_convert::table_grid(doc, candidate.table).unwrap_or_default(),
                 }));
             }
             many => anyhow::bail!(
@@ -2925,28 +2969,38 @@ fn patch_replacements_staged(
     })
 }
 
-/// #358: a label edit names its cell by table index, row and column, resolved at preflight. An
-/// earlier op in the batch that adds, removes or reorders tables, or rows and columns of this
-/// one, can make that a cell of another table, or another cell. The edit is refused unless the
-/// label, looked up again in the table at that index, still resolves to the same cell.
-fn check_label_target(
-    doc: &mut hwp_model::Document,
-    resolved: &ResolvedLabelEdit,
-) -> anyhow::Result<()> {
-    let candidate = resolved.candidate;
-    let now = hwp_convert::find_form_cells_by_label(doc, &resolved.label, Some(candidate.table));
-    if !now.contains(&candidate) {
-        anyhow::bail!(
-            "set_cell_by_label: 앞선 연산이 표의 순서나 구성을 바꿔, 사전 검증에서 찾은 셀(표{} ({},{}))이 \
-             더 이상 레이블 {:?}의 값 칸이 아닙니다 (레이블 편집을 표를 바꾸는 연산보다 앞에 두거나, \
-             편집을 두 번으로 나누세요. MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
-            resolved.candidate.table,
-            resolved.candidate.row,
-            resolved.candidate.col,
-            resolved.label
-        );
-    }
-    Ok(())
+/// #358: the tables in `paragraph`, nested ones included, counted the way
+/// `hwp_convert`'s recursive table index counts them (table cells and generic-control lists).
+fn tables_in(paragraph: &hwp_model::Paragraph) -> usize {
+    paragraph
+        .controls
+        .iter()
+        .map(|control| match control {
+            hwp_model::Control::Table(table) => {
+                1 + table
+                    .cells
+                    .iter()
+                    .flat_map(|cell| &cell.paragraphs)
+                    .map(tables_in)
+                    .sum::<usize>()
+            }
+            hwp_model::Control::Generic(generic) => generic
+                .paragraph_lists
+                .iter()
+                .flat_map(|list| &list.paragraphs)
+                .map(tables_in)
+                .sum(),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn table_count(doc: &hwp_model::Document) -> usize {
+    doc.sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .map(tables_in)
+        .sum()
 }
 
 fn record_effect(
@@ -3038,7 +3092,6 @@ fn apply_typed_operation(
             let Some(resolved) = resolved else {
                 return Ok(());
             };
-            check_label_target(doc, &resolved)?;
             let before = doc.clone();
             hwp_convert::set_cell(
                 doc,

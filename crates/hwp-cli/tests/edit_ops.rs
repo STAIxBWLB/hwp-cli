@@ -220,8 +220,8 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
 /// set_page, set_format/set_align/set_para, indent_para/outdent_para, row/col
 /// surgery, set_cell_para, style_tables, delete_field, delete_bookmark). The text-
 /// and model-level assertions mirror the verified binary drive: replace payloads,
-/// field/hyperlink display text, the 라벨값/수정값 row on the first table, the
-/// untouched input form table as the second table, the clone removed, the doomed
+/// field/hyperlink display text, 수정값 on the added (first) table, 라벨값 in the
+/// input form table (second), the clone removed, the doomed
 /// para gone, the inserted picture deleted from its anchor paragraph, the seal left
 /// as a floating Picture with both image parts shipped in the package, and the
 /// indent/outdent round trip leaving the list paragraph back at its original level.
@@ -313,8 +313,8 @@ fn kind_coverage_all_33() {
 
     let dir = test_dir("kind-coverage");
     // The verified input document: the markdown form table feeds the label preflight
-    // (set_cell_by_label resolves against the ORIGINAL input document) and survives
-    // untouched as the second table.
+    // (set_cell_by_label resolves against the ORIGINAL input document) and ends up as the
+    // second table, holding the label edit's value.
     let md = dir.join("doc.md");
     std::fs::write(&md, KIND_COVERAGE_MD).unwrap();
     // insert_image/seal read their relative paths from the subprocess cwd.
@@ -396,9 +396,12 @@ fn kind_coverage_all_33() {
         2,
         "add_table + clone_table + delete_table(index 1) must leave exactly two tables"
     );
+    // set_cell_by_label resolves against the ORIGINAL document, so its label 항목 names the form
+    // table, and it runs before add_table puts a table ahead of that form (#358: after it, the
+    // preflight table index would name the added table and the batch is refused).
     assert!(
-        table_has_text(&tables[0], "라벨값") && table_has_text(&tables[0], "수정값"),
-        "set_cell + set_cell_by_label must land on the first table"
+        table_has_text(&tables[0], "수정값") && !table_has_text(&tables[0], "라벨값"),
+        "set_cell (table 0 once add_table ran) must land on the added table"
     );
     let label_hits: usize = tables
         .iter()
@@ -419,8 +422,8 @@ fn kind_coverage_all_33() {
         "the cloned table must be gone — 라벨값 may appear in exactly one cell"
     );
     assert!(
-        table_has_text(&tables[1], "가") && table_has_text(&tables[1], "1"),
-        "the input form table must survive untouched as the second table"
+        table_has_text(&tables[1], "라벨값") && table_has_text(&tables[1], "1"),
+        "set_cell_by_label must fill the input form's 항목 value cell, now the second table"
     );
 
     // Model-level proxies for the image kinds: the inserted inline picture was
@@ -4457,39 +4460,99 @@ fn move_para_into_its_own_cell_is_refused() {
 const TWO_FORMS_MD: &str =
     "# F\n\n| 성명 |  |\n|---|---|\n| x | y |\n\nmid\n\n| 주소 |  |\n|---|---|\n| z | w |\n";
 
-/// A label edit names its cell by table index, row and column at preflight. An earlier op that
-/// reorders the tables (here, moving the "주소" form above the "성명" form) would make that index
-/// name the other form, so the edit is refused instead of writing into "성명". Before, it wrote
-/// there and exited 0. The same ops in the other order apply.
+/// A label edit names its cell by the table index, row and column preflight found. An earlier op
+/// that adds or removes a table, moves a paragraph holding one, or reshapes the target table can
+/// make that another table's cell, or another cell: the batch is refused. Before, each of these
+/// wrote into the wrong cell and exited 0. The same ops with the label edit first apply.
 #[test]
-fn label_edit_after_a_table_reorder_is_refused() {
-    let dir = test_dir("label-edit-reorder");
-    let md = dir.join("doc.md");
+fn label_edit_after_a_table_change_is_refused() {
+    let dir = test_dir("label-edit-table-change");
+    let two_forms = dir.join("two.hwpx");
+    let md = dir.join("two.md");
     std::fs::write(&md, TWO_FORMS_MD).unwrap();
+    new_from(&md, &two_forms);
+    // Two identical forms: moving the second above the first swaps what table index 1 names.
+    let twins = dir.join("twins.hwpx");
+    let md = dir.join("twins.md");
+    std::fs::write(
+        &md,
+        "# F\n\nA\n\n| 성명 |  |\n|---|---|\n| A | a |\n\nB\n\n| 성명 |  |\n|---|---|\n| B | b |\n",
+    )
+    .unwrap();
+    new_from(&md, &twins);
+    let cases = [
+        (
+            &two_forms,
+            r#"{"op":"move_para","address":{"at":{"section":0,"paragraph":3}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
+        (
+            &twins,
+            r#"{"op":"move_para","address":{"at":{"section":0,"paragraph":4}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}}"#,
+            r#"{"op":"set_cell_by_label","label":"성명","text":"SEOUL","table":1}"#,
+        ),
+        (
+            &two_forms,
+            r#"{"op":"clone_table","source_table":1,"anchor":"F","text_mode":"keep"}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
+        (
+            &two_forms,
+            r#"{"op":"add_row","table":1,"at":0}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
+    ];
+    for (base, change, fill) in cases {
+        let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{change},{fill}]"));
+        assert!(!success, "{change}: {stderr}");
+        assert!(!output.exists(), "{change}");
+        assert!(
+            stderr.contains("op[1] set_cell_by_label"),
+            "{change}: {stderr}"
+        );
+
+        let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{fill},{change}]"));
+        assert!(success, "{change}: {stderr}");
+        let after = hwpx::read_document(&output).unwrap().document;
+        let filled = after.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .find(|text| text.contains("SEOUL"))
+            .unwrap_or_else(|| panic!("{change}: nothing filled"));
+        let form = if base == &twins { "B\tb" } else { "주소" };
+        assert!(filled.contains(form), "{change}: filled {filled:?}");
+    }
+}
+
+/// Filling several labels of one form in one batch still applies when an earlier fill completes
+/// the header row (every row-0 cell non-empty), which changes how a later row-0 label would be
+/// looked up from scratch. The label edit does not look its label up again; it checks that the
+/// table is unchanged.
+#[test]
+fn several_label_edits_on_one_form_apply() {
+    let dir = test_dir("label-edits-one-form");
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "# F\n\n| 성명 |  | 생년월일 | 년 월 일 |\n|---|---|---|---|\n| 주소 |  | 전화 |  |\n",
+    )
+    .unwrap();
     let base = dir.join("base.hwpx");
     new_from(&md, &base);
-    let move_address_form = r#"{"op":"move_para","address":{"at":{"section":0,"paragraph":3}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}}"#;
-    let fill_address = r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#;
-
     let (output, success, stderr) = run_ops_batch(
         &dir,
         &base,
-        &format!("[{move_address_form},{fill_address}]"),
-    );
-    assert!(!success, "{stderr}");
-    assert!(!output.exists());
-    assert!(stderr.contains("set_cell_by_label"), "{stderr}");
-
-    let (output, success, stderr) = run_ops_batch(
-        &dir,
-        &base,
-        &format!("[{fill_address},{move_address_form}]"),
+        r#"[
+          {"op":"set_cell_by_label","label":"성명","text":"홍길동"},
+          {"op":"set_cell_by_label","label":"생년월일","text":"1990년 1월 1일"}
+        ]"#,
     );
     assert!(success, "{stderr}");
     let after = hwpx::read_document(&output).unwrap().document;
     assert_eq!(
-        plain_texts(&after),
-        vec!["1. F", "주소\tSEOUL\nz\tw\n", "성명\t\nx\ty\n", "mid"]
+        plain_texts(&after)[1],
+        "성명\t홍길동\t생년월일\t1990년 1월 1일\n주소\t\t전화\t\n"
     );
 }
 
