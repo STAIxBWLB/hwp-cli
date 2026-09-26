@@ -133,7 +133,7 @@ pub fn execute(
             Some(path) if !path.starts_with('@') => {
                 part_paths.insert(k.to_string(), PathBuf::from(path));
             }
-            Some(literal) => plain_set.push(format!("{k}=@{literal}")), // '@@' → 리터럴
+            Some(literal) => plain_set.push(format!("{k}={literal}")), // `@@x` is the literal `@x`
             None => plain_set.push(pair.clone()),
         }
     }
@@ -174,7 +174,8 @@ pub fn execute(
     } else if data_value.is_some() {
         anyhow::bail!("--data 최상위는 객체({{...}})여야 합니다");
     }
-    for pair in set {
+    // The parsed pairs, so `@@` means a literal `@` here too; no part path reaches this path.
+    for pair in &plain_set {
         let (k, v) = pair
             .split_once('=')
             .ok_or_else(|| anyhow::anyhow!("--set 형식은 name=value 여야 합니다: {pair}"))?;

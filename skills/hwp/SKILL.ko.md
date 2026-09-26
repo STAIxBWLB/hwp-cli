@@ -89,7 +89,7 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 - `hwp fill {template.hwpx} -o {output}` — 충실도 보존 `{{name}}` 템플릿 채우기
   (패키지 보존). `--set "name=value"` (반복 가능); `--set "name=@part.md"`는 부분 파일
   (마크다운 + HTML 표 블록)을 앵커 문단에 이어 붙입니다 — 큰 문서를 위한 부분 기반
-  조립 (`@@`는 리터럴 `@` 이스케이프); `--data {file.json}` 일괄 채우기
+  조립 (`@@`는 리터럴 `@` 이스케이프, `=`가 든 이름은 `--data`로); `--data {file.json}` 일괄 채우기
   (`"parts": {...}` 이어 붙이기, `"tables": [...]` 행 채우기); `--json`은 요약 출력;
   `--allow-partial`은 일치한 부분만 발행 (하나도 없으면 입력 그대로, 건수 0). 슬롯 이름은
   중괄호·제어문자를 뺀 임의 텍스트이며, `{{ name }}`의 공백과 요청한 이름의 앞뒤 공백은

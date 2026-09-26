@@ -334,7 +334,7 @@ Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, 
 |---|---|---|---|
 | `<INPUT>` |  |  | Input HWPX template |
 | `-o, --output` | `<OUTPUT>` |  | Output file path |
-| `--set` | `<SET>` |  | Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`, padded `{{ name }}` too). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@' |
+| `--set` | `<SET>` |  | Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`, padded `{{ name }}` too). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@'. The name ends at the first '=': a name holding '=' goes through --data |
 | `--data` | `<DATA>` |  | JSON object file mapping slot name to value (bulk fill; names are trimmed like `{{ name }}`; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows) |
 | `--json` |  |  | Print the replacement summary as JSON ({output, replaced, counts}) |
 | `--allow-partial` |  |  | Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced). If none matched, the input is published unchanged with every count 0 |

@@ -656,3 +656,44 @@ fn zero_match_ir_fill_publishes_hwp_unchanged_or_converts() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `@@` in a `--set` value is a literal `@`, on the default path and beside a part.
+#[test]
+fn a_doubled_at_sign_is_a_literal_at_sign() {
+    let (dir, created) = template("at-escape", "# 제목\n\n{{본문}}\n\n메일: {{x}}\n");
+
+    let plain = dir.join("plain.hwpx");
+    let run = fill(
+        &created,
+        &plain,
+        &["--set", "본문=본문", "--set", "x=@@example"],
+    );
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let text = document_text(&plain);
+    assert!(text.contains("메일: @example"), "{text}");
+    assert!(!text.contains("@@"), "{text}");
+
+    let part = dir.join("part.md");
+    std::fs::write(&part, "부분\n").unwrap();
+    let part_arg = format!("본문=@{}", part.display());
+    let with_part = dir.join("with-part.hwpx");
+    let run = fill(
+        &created,
+        &with_part,
+        &["--set", &part_arg, "--set", "x=@@example"],
+    );
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let text = document_text(&with_part);
+    assert!(text.contains("메일: @example"), "{text}");
+    assert!(!text.contains("@@"), "{text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

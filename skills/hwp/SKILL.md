@@ -92,7 +92,8 @@ syntax (used by `fill`, `slots` and the template tools).
 - `hwp fill {template.hwpx} -o {output}` — fidelity-preserving `{{name}}` template fill
   (package preserved). `--set "name=value"` (repeatable); `--set "name=@part.md"` splices a
   part file (markdown + HTML table blocks) into the anchor paragraph — part-based composition
-  for large documents (`@@` escapes a literal `@`); `--data {file.json}` bulk fill
+  for large documents (`@@` escapes a literal `@`; a name holding `=` goes through `--data`);
+  `--data {file.json}` bulk fill
   (`"parts": {...}` splicing, `"tables": [...]` row fill); `--json` prints the summary;
   `--allow-partial` publishes the matched subset (nothing matched: the input unchanged, counts
   0). A slot name is any text without braces or control characters; `{{ name }}` padding

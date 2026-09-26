@@ -759,23 +759,28 @@ fn tool_fill(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             arg_bool(args, "allow_partial", false)?,
         )
         .map_err(|error| format!("{error:#}"))?
-    } else if let Some(parts) = parts_obj {
-        if parts.is_empty() && values.is_empty() {
-            return Err("values와 parts가 모두 비어 있습니다".into());
-        }
-        let mut set: Vec<String> = values.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    } else if parts_obj.is_some_and(|parts| parts.is_empty()) && values.is_empty() {
+        return Err("values와 parts가 모두 비어 있습니다".into());
+    } else if let Some(parts) = parts_obj.filter(|parts| !parts.is_empty()) {
+        // Values and part paths reach the fill as data, never as `name=value` strings: a value
+        // is literal text (a leading `@` is not a part path) and a name may hold `=`.
+        let mut checked_parts = serde_json::Map::new();
         for (k, v) in parts {
             let path = v
                 .as_str()
                 .ok_or("parts 값은 부분 파일 경로 문자열이어야 합니다")?;
             let path = checked_read_path(ctx, path)?;
-            set.push(format!("{k}=@{}", path.display()));
+            let path = path
+                .to_str()
+                .ok_or("parts 경로를 UTF-8로 읽을 수 없습니다")?
+                .to_string();
+            checked_parts.insert(k.clone(), Value::String(path));
         }
         crate::commands::fill::execute(
             &input,
             &output,
-            &set,
-            None,
+            &[],
+            Some(&json!({"fields": values, "parts": checked_parts})),
             arg_bool(args, "allow_partial", false)?,
             false,
             ctx.roots(),
@@ -4221,6 +4226,40 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// With `parts`, `values` stay literal text: a value starting with `@` is not read as a
+    /// part path (so nothing outside the roots is read), and a name holding `=` keeps its key.
+    #[test]
+    fn mcp_fill_values_stay_literal_beside_parts() {
+        let (base, root, outside) = sandbox_dirs("fill-literal");
+        let secret = outside.join("secret.md");
+        std::fs::write(&secret, "OUTSIDE-CONTENT\n").unwrap();
+        let template = root.join("template.hwpx");
+        create_hwpx(&template, "# 제목\n\n{{본문}}\n\n값: {{x}}\n\n식: {{a=b}}");
+        let part = root.join("part.md");
+        std::fs::write(&part, "부분 본문\n").unwrap();
+        let out = root.join("out.hwpx");
+        let sandbox = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
+        let at_secret = format!("@{}", secret.display());
+        tool_fill(
+            &json!({
+                "input": template,
+                "output": out,
+                "values": {"x": at_secret, "a=b": "v"},
+                "parts": {"본문": part.display().to_string()}
+            }),
+            &sandbox,
+        )
+        .expect("fill with parts and literal values");
+        let plain = crate::commands::cat::load_document(&out)
+            .unwrap()
+            .plain_text();
+        assert!(plain.contains("부분 본문"), "{plain}");
+        assert!(plain.contains(&format!("값: {at_secret}")), "{plain}");
+        assert!(!plain.contains("OUTSIDE-CONTENT"), "{plain}");
+        assert!(plain.contains("식: v"), "{plain}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
