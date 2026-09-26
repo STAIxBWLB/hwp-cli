@@ -49,7 +49,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "a00a18ec339fa0dcadbd21e78cda5736a392c7f20dfb06eedccc0cb5d2e44ce0",
+        actual, "7ca6e6d9a9c1b84d1f3df1fecb21879d96a5651dce25a12a1acdb82e9fb3fbd1",
         "render-layout-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -243,7 +243,10 @@ fn the_load_bearing_descriptions_are_present_in_the_published_text() {
             "that cells and nested tables are covered",
             "AT ANY NESTING DEPTH",
         ),
-        ("what has no row by place", "the text of a drawing object"),
+        (
+            "that drawing-object text has rows",
+            "THE TEXT OF A DRAWING OBJECT HAS ROWS TOO",
+        ),
         (
             "that the join is total within the subset",
             "WITHIN THAT SUBSET THE JOIN IS TOTAL IN BOTH DIRECTIONS",
@@ -904,28 +907,13 @@ fn two_rows_of_one_id_on_one_page_survive_serialization_and_the_schema() {
 /// Both directions of the join between one document's two published artifacts.
 ///
 /// Returns the row ids that name no envelope segment, and the envelope `para`, `table`, `cell`
-/// and `bookmark` ids that lie in the body's table tree and have no row. "The body's table
-/// tree" is the subset `render-layout-v1`'s `kind` description publishes: every control step
-/// on a segment's path (path lengths 2, 5, 8, ...) is a table. A drawing object's text runs
-/// through some other control, and has no row by contract.
+/// and `bookmark` ids that have no row - wherever they lie, the text of a drawing object
+/// included (#350).
 fn join_orphans(
     layout: &serde_json::Value,
     envelope: &serde_json::Value,
 ) -> (Vec<String>, Vec<String>) {
     let segments = envelope["segments"].as_array().expect("segments");
-    let path = |s: &serde_json::Value| -> Vec<u64> {
-        s["path"]["indices"]
-            .as_array()
-            .expect("path indices")
-            .iter()
-            .map(|index| index.as_u64().expect("index"))
-            .collect()
-    };
-    let tables: std::collections::HashSet<Vec<u64>> = segments
-        .iter()
-        .filter(|s| s["kind"] == "table")
-        .map(path)
-        .collect();
     let envelope_ids: std::collections::HashSet<&str> = segments
         .iter()
         .map(|s| s["id"].as_str().expect("segment id"))
@@ -951,12 +939,6 @@ fn join_orphans(
                 Some("para" | "table" | "cell" | "bookmark")
             )
         })
-        .filter(|s| {
-            let indices = path(s);
-            (2..indices.len())
-                .step_by(3)
-                .all(|len| tables.contains(&indices[..len]))
-        })
         .map(|s| s["id"].as_str().expect("segment id"))
         .filter(|id| !row_ids.contains(id))
         .map(str::to_string)
@@ -977,22 +959,22 @@ fn join_orphans(
 ///
 /// EQUALITY over the subset `render-layout-v1` publishes, not containment: every layout row id
 /// names an envelope segment (#285: a paragraph that shapes no text but is drawn is a point
-/// `para` segment there), and every envelope `para`, `table`, `cell` and `bookmark` segment in
-/// the body's table tree has a row (#283: cell paragraphs and nested tables at any depth). Any
-/// new divergence, in either direction, on any document covered here fails it. The unit-level
-/// twin, `segment_map`'s `*_join_the_envelope_*` tests, builds each case the join depends on so
-/// it runs on every host.
+/// `para` segment there), and every envelope `para`, `table`, `cell` and `bookmark` segment
+/// has a row (#283: cell paragraphs and nested tables at any depth; #350: the text of drawing
+/// objects and the tables inside it, with no place excluded). Any new divergence, in either
+/// direction, on any document covered here fails it. The unit-level twin, `segment_map`'s
+/// `*_join_the_envelope_*` tests, builds each case the join depends on so it runs on every host.
 ///
 /// # Coverage, and the trap in reading a green run
 ///
 /// `fixtures/hwp5/` and `fixtures/hwpx/` are gitignored (AGENTS.md's data policy), so ON CI
-/// THIS TEST SEES ONLY THE COMMITTED FIXTURES and the rest silently do not run - the #275
-/// shape, where a skipped case reports `ok`. Every `.hwp` and `.hwpx` a checkout does have in
-/// those two directories is covered, not a fixed list, so a developer host checks all of them.
-/// A green run means "the join held on every document this host has", and the coverage it
-/// achieved is printed; an absent fixture directory is also counted in `scripts/check.sh`'s
-/// `skipped-for-missing-fixtures` tally (#275). The committed fixtures are asserted present rather than skipped, so
-/// the test cannot degrade to checking nothing at all.
+/// THIS TEST SEES ONLY THE COMMITTED FIXTURES and skips the rest - the #275 shape, where a
+/// skipped case still reports `ok`. Every `.hwp` and `.hwpx` a checkout does have in those two
+/// directories is covered, not a fixed list, so a developer host checks all of them. A green
+/// run means "the join held on every document this host has", and the coverage it achieved is
+/// printed; an absent fixture directory is also counted in `scripts/check.sh`'s
+/// `skipped-for-missing-fixtures` tally (#275). The committed fixtures are asserted present
+/// rather than skipped, so the test cannot degrade to checking nothing at all.
 ///
 /// Opt-in soak, never on CI: `HWP_CORPUS_DIR=<dir>` adds every `.hwp` and `.hwpx` in that
 /// directory, the convention the other corpus tests use. A corpus document that does not open

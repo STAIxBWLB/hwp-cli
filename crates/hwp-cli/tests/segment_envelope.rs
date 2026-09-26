@@ -50,7 +50,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "f4d74837c3d63a5a39fd49ea40eb05ef887427930c6644f15335cb389858e1ba",
+        actual, "ad2ac26c36207d90b5d8647135ebe0dce72ea191ede1470a3226aeb54572ee0a",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -391,7 +391,7 @@ fn the_load_bearing_descriptions_are_published() {
             "A `field` COUNT IS A FLOOR, NEVER A CENSUS",
         ),
         ("the repeating run id", "SEGMENT IDS ARE NOT UNIQUE"),
-        ("the interrupted paragraph", "HAS NO SINGLE `para` SEGMENT"),
+        ("the interrupted paragraph", "HAS NO `para` RANGE"),
         (
             "the textless point paragraph",
             "A `para` SEGMENT CAN ADDRESS NO TEXT",

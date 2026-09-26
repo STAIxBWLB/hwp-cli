@@ -27,7 +27,10 @@ use hwp_model::{
     TextOptions, ctrl_char,
 };
 
-use crate::segment::{RawSeg, Segment, SegmentKind, SegmentStyle, char_shape_id_at, summarize};
+use crate::segment::{
+    RawSeg, Segment, SegmentKind, SegmentStyle, always_has_para_segment, char_shape_id_at,
+    summarize,
+};
 use crate::segment_id::{
     SegmentPath, canonical_char_shape_runs, cell_id, control_id, paragraph_id, picture_id, run_id,
     table_id,
@@ -1222,8 +1225,8 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
 /// 안의 문단에도 붙는다 — 셀 안 문단을 지목할 수 없으면 "일곱 종류"가 최상위에서만 참이 된다.
 ///
 /// `[start, end)` is what the paragraph emitted. Nothing emitted means no segment, unless the
-/// renderer still draws the paragraph (see [`drawn_without_text`]): then it is a point at
-/// `start`, so the render layout artifact's row for it has an id to join to (#285).
+/// paragraph always has one (see [`always_has_para_segment`]): then it is a point at `start`,
+/// so the render layout artifact's row for it has an id to join to (#285).
 fn para_segment(
     doc: &Document,
     para: &Paragraph,
@@ -1232,7 +1235,7 @@ fn para_segment(
     end: usize,
 ) -> Option<RawSeg> {
     let point = end == start;
-    if end < start || (point && !drawn_without_text(para)) {
+    if end < start || (point && !always_has_para_segment(para)) {
         return None;
     }
     Some(RawSeg {
@@ -1246,16 +1249,6 @@ fn para_segment(
         end,
         point,
     })
-}
-
-/// Whether the renderer draws something for a paragraph whose markdown is empty: text that is
-/// all whitespace, which it shapes, or a drawing object (`gso `), which it draws.
-fn drawn_without_text(para: &Paragraph) -> bool {
-    para.chars.iter().any(|ch| matches!(ch, HwpChar::Text(_)))
-        || para
-            .controls
-            .iter()
-            .any(|control| matches!(control, Control::Generic(g) if g.ctrl_id == *b"gso "))
 }
 
 /// 열려 있던 런을 닫고 새 런을 연다(v2 전용). id는 이 크레이트의 `segment_id` 진입점에서만
@@ -1491,6 +1484,7 @@ fn render_control(
                     }
                     seq += 1;
                     let para_start = body.s.len();
+                    let mut interrupted = false;
                     for fragment in render_fragments(doc, p, ctx) {
                         match fragment {
                             Fragment::Inline(inline) => {
@@ -1507,14 +1501,29 @@ fn render_control(
                                 }
                             }
                             Fragment::Block(block) => {
+                                // The block flushes `body`, resetting its coordinates, so this
+                                // paragraph's contribution is not one range. It is a point at
+                                // the start of that contribution instead, recorded while
+                                // `para_start` still indexes the buffer it was taken from.
+                                if ctx.v2
+                                    && !interrupted
+                                    && let Some(seg) = para_segment(
+                                        doc,
+                                        p,
+                                        ctx.path.clone(),
+                                        para_start,
+                                        para_start,
+                                    )
+                                {
+                                    body.segs.push(seg);
+                                }
+                                interrupted = true;
                                 push_block(body, marks, ctx.html_mode, fragments, block, span);
                             }
                         }
                     }
-                    // 블록이 중간에 플러시했다면 좌표계가 초기화되어 이 문단의 기여가
-                    // 연속이 아니다 — 그때는 문단 세그먼트를 내지 않는다.
                     if ctx.v2
-                        && body.s.len() > para_start
+                        && !interrupted
                         && let Some(seg) =
                             para_segment(doc, p, ctx.path.clone(), para_start, body.s.len())
                     {

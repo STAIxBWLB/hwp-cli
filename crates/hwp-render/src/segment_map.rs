@@ -30,8 +30,8 @@
 //!
 //! # The join is total, in both directions
 //!
-//! Within the subset below, every row's id names an envelope segment and every envelope
-//! `para`, `table`, `cell` and `bookmark` segment has a row. The two crates derive ids
+//! Every row's id names an envelope segment and every envelope `para`, `table`, `cell` and
+//! `bookmark` segment has a row, wherever it lies. The two crates derive ids
 //! independently, so this holds because both sides follow the same rules, not because they
 //! share code, and the cross-artifact join test in `crates/hwp-cli/tests/render_layout.rs`
 //! checks it on every document the host has.
@@ -49,19 +49,25 @@
 //! into the row of the paragraph that carries it, and a `field` does likewise. A consumer
 //! hit-testing an image or a field resolves it through its enclosing paragraph's row.
 //!
-//! **Places: the body and its table tree, at any depth.** A body paragraph opens its span in
-//! the body loop ([`SegmentRecorder::begin_paragraph`]); a table and its cells open theirs
-//! wherever the table is laid out, and a cell's paragraphs open theirs in
+//! **Places: everywhere the envelope has a paragraph, at any depth.** A body paragraph opens
+//! its span in the body loop ([`SegmentRecorder::begin_paragraph`]); a table and its cells open
+//! theirs wherever the table is laid out, and a cell's paragraphs open theirs in
 //! `layout_box_para_iter` ([`SegmentRecorder::begin_cell_paragraph`]), whose objects - a
-//! nested table, a bookmark - then nest under that span. Each path is built the way the
-//! envelope builds it, one `child(base_path(), index)` at a time (#283).
+//! nested table, a bookmark, a drawing object - then nest under that span (#283).
+//!
+//! The text of a drawing object - a text box, an HWPX shape or container - opens its spans in
+//! `layout_box_para_iter` too ([`SegmentRecorder::begin_drawing_paragraph`]). The envelope
+//! numbers it `[para, control, n]` across ALL of the object's lists, so a caller that lays it
+//! out in pieces - a linked text box split into columns, a container's lists each in its own
+//! box - passes the offset of each piece's first paragraph (#350). Text the renderer never lays
+//! out - an object it cannot place, a kind no layout arm draws - still gets its rows, empty,
+//! through [`SegmentRecorder::unlaid`]. Each path is built the way the envelope builds it, one
+//! `child(base_path(), index)` at a time.
 //!
 //! Everything else `layout_box_para_iter` lays out passes it no recorder, and each call site
-//! says why: the text of a drawing object, which the envelope numbers across all of the
-//! object's lists in a way these boxes do not reproduce; captions and notes, which have no
-//! envelope segment; headers and footers, which the default envelope excludes; and the
-//! measurement pass, which draws on a scratch page. Such content resolves through the
-//! enclosing paragraph's row, whose span contains it.
+//! says why: captions and notes, which have no envelope segment; headers and footers, which
+//! the default envelope excludes; and the measurement pass, which draws on a scratch page.
+//! Such content resolves through the enclosing paragraph's row, whose span contains it.
 //!
 //! **Segments that produce nothing at all.** A paragraph row with *nothing measured* - no box
 //! and no range - would join to nothing: `hwp-convert` emits no envelope segment for the
@@ -78,8 +84,9 @@
 //! so their ids never join to nothing. Adding a kind whose `chars` is structurally `None`
 //! means adding it to that exemption, not writing a new special case.
 //!
-//! A paragraph the envelope ALWAYS has a segment for - one with any text, or one holding an
-//! object (a table, a picture, an equation, a drawing) - is exempt for the same reason, once.
+//! A paragraph the envelope ALWAYS has a segment for ([`always_has_para_segment`]) - one with
+//! any text, or one holding an object (a table, a picture, an equation, a drawing) - is exempt
+//! for the same reason, once.
 //! Two ordinary things make such a paragraph draw nothing: its object drew nothing (the
 //! paragraph anchoring that borderless empty table), or every line of a cell paragraph was
 //! clipped at the cell's edge, which `layout_box_para_iter` does to a line that a shift would
@@ -168,11 +175,12 @@ pub struct SegmentRow {
     /// Two different things produce a `None`. Always on `table` and `cell` rows: they span
     /// several source paragraphs, so no single paragraph's offsets describe them. Also on a
     /// `para` row whose paragraph shapes no text of its own because its content is entirely an
-    /// anchored object - the paragraph carrying a table, or one holding only a drawing. That
-    /// second case is not rare: on `fixtures/samples/report-tables.hwpx`, 9 of the 182
-    /// published `para` ids carry `None` here, and they are exactly the nine table-anchoring
-    /// paragraphs, six of them inside cells. A consumer must check this on every kind, `para`
-    /// included.
+    /// anchored object - the paragraph carrying a table, or one holding only a drawing, text
+    /// box included: a text box's glyphs belong to the rows of its own paragraphs. That second
+    /// case is not rare: on `fixtures/samples/report-tables.hwpx`, 11 of the 219 published
+    /// `para` ids carry `None` here - the ten table-anchoring paragraphs, six of them inside
+    /// cells and one inside a text box, and the paragraph holding that text box. A consumer
+    /// must check this on every kind, `para` included.
     pub chars: Option<CharRange>,
     /// How many display items this row's span covers on this page, nested child segments
     /// included. Diagnostic: it is a count, never an index — the indices themselves are
@@ -262,7 +270,7 @@ pub(crate) struct SegmentRecorder {
     /// the page bottom and polluting its character range with `start_wchar` values from a
     /// different source paragraph.
     content_end: std::collections::HashMap<usize, usize>,
-    /// Ids of paragraphs the envelope always has a segment for (see [`has_envelope_segment`]),
+    /// Ids of paragraphs the envelope always has a segment for (see [`always_has_para_segment`]),
     /// which `finish` keeps one row for even when nothing was measured.
     segmented: std::collections::HashSet<String>,
     map: SegmentMap,
@@ -280,8 +288,8 @@ impl SegmentRecorder {
 
     /// A no-op recorder. Every ordinary render uses one, and so does every layout pass whose
     /// paragraphs this module does not record - a scratch or measurement page, page furniture,
-    /// a caption, a drawing object's text (see `layout_box_para_iter`'s callers) - because
-    /// recording there would attribute geometry to a segment that has no row by contract.
+    /// a caption (see `layout_box_para_iter`'s callers) - because recording there would
+    /// attribute geometry to a segment that has no row by contract.
     pub(crate) fn disabled() -> Self {
         Self {
             enabled: false,
@@ -381,9 +389,84 @@ impl SegmentRecorder {
         self.begin_para(child(self.base_path(), para_index), para, page);
     }
 
+    /// Opens the span of a paragraph of a drawing object's text: the `seq`-th paragraph of the
+    /// object at `control_index` of the innermost open paragraph, counted across ALL of the
+    /// object's lists, so the path is the envelope's own `[..., para, control, seq]`. A caller
+    /// that lays the text out in pieces - per column, per list - passes each piece's offset.
+    pub(crate) fn begin_drawing_paragraph(
+        &mut self,
+        control_index: usize,
+        seq: usize,
+        para: &Paragraph,
+        page: &PageList,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let path = child(&child(self.base_path(), control_index), seq);
+        self.begin_para(path, para, page);
+    }
+
+    /// Records the text of a drawing object that layout skips entirely - a `gso ` whose
+    /// geometry header is too short to place, or an object kind no arm draws - so every
+    /// envelope id under it still has a row. Nothing is drawn, so every row is unmeasured and
+    /// `finish` keeps it exactly when the envelope has a segment for it. Headers, footers,
+    /// notes and hidden comments are skipped, as the default envelope skips them.
+    pub(crate) fn unlaid(
+        &mut self,
+        control_index: usize,
+        control: &GenericControl,
+        page: &PageList,
+    ) {
+        if !self.enabled
+            || matches!(
+                &control.ctrl_id,
+                b"head" | b"foot" | b"fn  " | b"en  " | b"tcmt"
+            )
+        {
+            return;
+        }
+        let paragraphs = control
+            .paragraph_lists
+            .iter()
+            .flat_map(|list| &list.paragraphs);
+        for (seq, para) in paragraphs.enumerate() {
+            self.begin_drawing_paragraph(control_index, seq, para, page);
+            self.unlaid_objects(para, page);
+            self.end_segment(page);
+        }
+    }
+
+    /// The objects of a paragraph [`Self::unlaid`] records: its bookmarks, its tables with
+    /// their cells and cell paragraphs, and the text of drawing objects nested in it.
+    fn unlaid_objects(&mut self, para: &Paragraph, page: &PageList) {
+        for (control_index, control) in para.controls.iter().enumerate() {
+            match control {
+                Control::Generic(g) if g.ctrl_id == *b"bokm" => {
+                    self.bookmark(control_index, g, para)
+                }
+                Control::Generic(g) => self.unlaid(control_index, g, page),
+                Control::Table(table) => {
+                    self.begin_table(control_index, table, page);
+                    for (cell_index, cell) in table.cells.iter().enumerate() {
+                        self.begin_cell(cell_index, cell, page);
+                        for (para_index, cell_para) in cell.paragraphs.iter().enumerate() {
+                            self.begin_cell_paragraph(para_index, cell_para, page);
+                            self.unlaid_objects(cell_para, page);
+                            self.end_segment(page);
+                        }
+                        self.end_segment(page);
+                    }
+                    self.end_segment(page);
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn begin_para(&mut self, path: SegmentPath, para: &Paragraph, page: &PageList) {
         let id = segment_id::paragraph_id(&path, para);
-        if has_envelope_segment(para) {
+        if always_has_para_segment(para) {
             self.segmented.insert(id.clone());
         }
         self.begin(kind::PARA, id, path, page);
@@ -822,12 +905,21 @@ fn child(path: &SegmentPath, index: usize) -> SegmentPath {
 /// Whether the envelope always has a `para` segment for `para`, wherever this module records
 /// it: any text (a range, or a point when it is only whitespace), or an object the envelope
 /// addresses without text - a table, a picture, an equation (each always emits markup) or a
-/// drawing object (a point, #285).
-fn has_envelope_segment(para: &Paragraph) -> bool {
+/// drawing object, HWP5 `gso ` or an HWPX shape or container (a point, #285).
+///
+/// `hwp-convert`'s `segment::always_has_para_segment` is a deliberate second copy of this rule
+/// (the two crates may not depend on each other); `crates/hwp-cli/tests/segment_id_parity.rs`
+/// pins them together.
+pub fn always_has_para_segment(para: &Paragraph) -> bool {
     para.chars.iter().any(|ch| matches!(ch, HwpChar::Text(_)))
         || para.controls.iter().any(|control| match control {
             Control::Table(_) | Control::Picture(_) => true,
-            Control::Generic(g) => g.ctrl_id == *b"gso " || g.equation.is_some(),
+            Control::Generic(g) => {
+                g.ctrl_id == *b"gso "
+                    || g.container_box.is_some()
+                    || !g.gso_shapes.is_empty()
+                    || g.equation.is_some()
+            }
             _ => false,
         })
 }
@@ -1855,27 +1947,14 @@ mod tests {
         id.split('.').count() - 2
     }
 
-    /// Whether `indices` lies in the body's table tree: every control step on the way down
-    /// (path lengths 2, 5, 8, ...) is a table. A drawing object's text runs through some other
-    /// control, and has no row by contract.
-    fn in_table_tree(indices: &[usize], tables: &std::collections::HashSet<Vec<usize>>) -> bool {
-        (2..indices.len())
-            .step_by(3)
-            .all(|len| tables.contains(&indices[..len]))
-    }
-
     /// Both directions of the join on one document: row ids that name no envelope segment, and
-    /// envelope `para`/`table`/`cell`/`bookmark` ids in the table tree that have no row.
+    /// envelope `para`/`table`/`cell`/`bookmark` ids that have no row - anywhere, drawing-object
+    /// text included.
     fn join_orphans(doc: &Document) -> (Vec<String>, Vec<String>) {
         use hwp_convert::SegmentKind;
         let (_, map) = lay_out(doc);
         let (_, segments) =
             hwp_convert::to_markdown_with_segments_v2(doc, &Default::default()).expect("no IO");
-        let tables: std::collections::HashSet<Vec<usize>> = segments
-            .iter()
-            .filter(|s| s.kind == SegmentKind::Table)
-            .map(|s| s.path.indices.clone())
-            .collect();
         let envelope: std::collections::HashSet<&str> =
             segments.iter().map(|s| s.id.as_str()).collect();
         let rows: std::collections::HashSet<&str> =
@@ -1895,8 +1974,7 @@ mod tests {
                         | SegmentKind::Table
                         | SegmentKind::Cell
                         | SegmentKind::Bookmark
-                ) && in_table_tree(&s.path.indices, &tables)
-                    && !rows.contains(s.id.as_str())
+                ) && !rows.contains(s.id.as_str())
             })
             .map(|s| s.id.clone())
             .collect();
@@ -2217,6 +2295,391 @@ mod tests {
             },
         );
         assert_joins(&doc, "an empty paragraph after a list");
+    }
+
+    // --- drawing-object text (#350) ---------------------------------------------------------
+
+    /// A body document whose last paragraph is a plain text template for the ones built below.
+    fn prose() -> Document {
+        hwp_convert::from_markdown("첫 문단.\n\n둘째 문단.\n")
+    }
+
+    /// A paragraph of `text` shaped like `template`, with no controls and no cached lines.
+    fn text_like(template: &Paragraph, text: &str) -> Paragraph {
+        Paragraph {
+            chars: text.chars().map(HwpChar::Text).collect(),
+            controls: Vec::new(),
+            line_segs: Vec::new(),
+            ..template.clone()
+        }
+    }
+
+    fn lists(paragraphs: Vec<Vec<Paragraph>>) -> Vec<hwp_model::ParagraphList> {
+        paragraphs
+            .into_iter()
+            .map(|paragraphs| hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs,
+            })
+            .collect()
+    }
+
+    /// An HWP5 text box: a floating `gso ` whose 20-byte geometry header places it.
+    fn text_box(text: Vec<Vec<Paragraph>>) -> Control {
+        let mut control = bookmark_control();
+        control.ctrl_id = *b"gso ";
+        for field in [0i32, 1_000, 1_000, 20_000, 10_000] {
+            control.data.extend_from_slice(&field.to_le_bytes());
+        }
+        control.paragraph_lists = lists(text);
+        Control::Generic(control)
+    }
+
+    /// An HWPX shape carrying text: the arm that lays text inside the first shape's box.
+    fn shape_with_text(text: Vec<Vec<Paragraph>>) -> Control {
+        let Control::Generic(mut control) = drawing(true) else {
+            unreachable!("drawing builds a generic control")
+        };
+        control.ctrl_id = *b"rect";
+        control.paragraph_lists = lists(text);
+        Control::Generic(control)
+    }
+
+    /// `doc` with a paragraph of "앞" holding `control` appended to the body; its index.
+    fn host(doc: &mut Document, control: Control) -> usize {
+        let template = doc.sections[0].paragraphs.last().expect("a body").clone();
+        let mut para = text_like(&template, "앞");
+        attach(&mut para, hwp_model::paragraph::ctrl_char::OBJECT, control);
+        doc.sections[0].paragraphs.push(para);
+        doc.sections[0].paragraphs.len() - 1
+    }
+
+    /// The ids of the `para` rows whose path is `[.., control, n]` under `prefix`.
+    fn rows_under<'m>(map: &'m SegmentMap, prefix: &str) -> Vec<&'m SegmentRow> {
+        map.rows
+            .iter()
+            .filter(|row| {
+                row.kind == kind::PARA
+                    && row
+                        .id
+                        .split('.')
+                        .skip(1)
+                        .collect::<Vec<_>>()
+                        .join(".")
+                        .starts_with(prefix)
+            })
+            .collect()
+    }
+
+    /// The text of a text box, of an HWPX shape, and of a text box inside a cell has rows,
+    /// under the paths the envelope gives them.
+    #[test]
+    fn drawing_object_text_joins_the_envelope_both_ways() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let text = || {
+            vec![vec![
+                text_like(&template, "가나"),
+                text_like(&template, "다라"),
+            ]]
+        };
+
+        for (what, control) in [
+            ("a text box", text_box(text())),
+            ("an HWPX shape with text", shape_with_text(text())),
+        ] {
+            let mut doc = prose();
+            let at = host(&mut doc, control);
+            let (_, map) = lay_out(&doc);
+            let rows = rows_under(&map, &format!("0.{at}.0."));
+            assert_eq!(
+                rows.len(),
+                2,
+                "{what}: one row per paragraph: {:?}",
+                map.rows
+            );
+            assert!(
+                rows.iter().all(|row| depth(&row.id) == 3),
+                "{what}: {rows:?}"
+            );
+            assert_joins(&doc, what);
+        }
+
+        let mut doc = table_markdown();
+        let mut para = text_like(&template, "");
+        attach(
+            &mut para,
+            hwp_model::paragraph::ctrl_char::OBJECT,
+            text_box(text()),
+        );
+        first_table(&mut doc).cells[0].paragraphs.push(para);
+        let (_, map) = lay_out(&doc);
+        assert!(
+            map.rows
+                .iter()
+                .any(|row| row.kind == kind::PARA && depth(&row.id) == 6),
+            "a text box in a cell: [para, table, cell, cell paragraph, control, n]"
+        );
+        assert_joins(&doc, "a text box in a cell");
+    }
+
+    /// Hancom continues a linked text box in a new column where a paragraph's cached `v_pos`
+    /// restarts. Each column is laid out on its own, but the paragraphs are numbered across the
+    /// whole box, so the second column's first paragraph is `n = 2`, not 0.
+    #[test]
+    fn a_column_split_text_box_numbers_its_paragraphs_across_columns() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let cached = |text: &str, v_pos: i32| {
+            let mut para = text_like(&template, text);
+            para.line_segs = vec![hwp_model::paragraph::LineSeg {
+                text_start: 0,
+                v_pos,
+                line_height: 1_000,
+                text_height: 1_000,
+                baseline_gap: 850,
+                line_spacing: 0,
+                col_start: 0,
+                seg_width: 18_000,
+                flags: 0,
+            }];
+            para
+        };
+        let mut doc = prose();
+        let at = host(
+            &mut doc,
+            text_box(vec![vec![
+                cached("가", 0),
+                cached("나", 1_000),
+                cached("다", 0), // v_pos restarts: a second column
+                cached("라", 1_000),
+            ]]),
+        );
+        let (_, map) = lay_out(&doc);
+        for n in 0..4 {
+            assert_eq!(
+                rows_under(&map, &format!("0.{at}.0.{n}")).len(),
+                1,
+                "paragraph {n} has one row: {:?}",
+                map.rows
+            );
+        }
+        assert_joins(&doc, "a column-split text box");
+    }
+
+    /// An HWPX container laying each list out in its own box still numbers the paragraphs
+    /// across all of its lists.
+    #[test]
+    fn a_containers_lists_are_numbered_across_all_of_them() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let mut control = bookmark_control();
+        control.ctrl_id = *b"cont";
+        control.paragraph_lists = lists(vec![
+            vec![text_like(&template, "가"), text_like(&template, "나")],
+            vec![text_like(&template, "다")],
+        ]);
+        control.container_box = Some(hwp_model::ContainerBox {
+            x: 1_000,
+            y: 1_000,
+            w: 20_000,
+            h: 10_000,
+            anchored: false,
+            skipped_objects: 0,
+            text_boxes: vec![Some([0, 0, 10_000, 5_000]), Some([0, 5_000, 10_000, 5_000])],
+        });
+        let mut doc = prose();
+        let at = host(&mut doc, Control::Generic(control));
+        let (_, map) = lay_out(&doc);
+        assert_eq!(
+            rows_under(&map, &format!("0.{at}.0.2")).len(),
+            1,
+            "the second list's first paragraph is n = 2: {:?}",
+            map.rows
+        );
+        assert_joins(&doc, "a container with two lists");
+    }
+
+    /// A table and a bookmark in a text box nest under the text box paragraph that holds them.
+    #[test]
+    fn a_table_and_a_bookmark_in_a_text_box_have_rows() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let mut inner = text_like(&template, "가");
+        attach(
+            &mut inner,
+            hwp_model::paragraph::ctrl_char::OBJECT,
+            Control::Table(first_table(&mut table_markdown()).clone()),
+        );
+        attach(
+            &mut inner,
+            hwp_model::paragraph::ctrl_char::BOOKMARK,
+            Control::Generic(bookmark_control()),
+        );
+        let mut doc = prose();
+        host(&mut doc, text_box(vec![vec![inner]]));
+        let (_, map) = lay_out(&doc);
+        for (kind, at) in [
+            (kind::TABLE, 4),    // [para, control, n, control]
+            (kind::CELL, 5),     // ... cell
+            (kind::PARA, 6),     // ... cell paragraph
+            (kind::BOOKMARK, 4), // [para, control, n, control]
+        ] {
+            assert!(
+                map.rows
+                    .iter()
+                    .any(|row| row.kind == kind && depth(&row.id) == at),
+                "no {kind} row at depth {at}: {:?}",
+                map.rows
+            );
+        }
+        assert_joins(&doc, "a table and a bookmark in a text box");
+    }
+
+    /// A table in a text box paragraph flushes the envelope's output, so that paragraph is a
+    /// point there; its row still joins.
+    #[test]
+    fn a_block_interrupted_drawing_paragraph_joins_the_envelope() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let mut inner = text_like(&template, "전");
+        attach(
+            &mut inner,
+            hwp_model::paragraph::ctrl_char::OBJECT,
+            Control::Table(first_table(&mut table_markdown()).clone()),
+        );
+        inner
+            .chars
+            .extend("표 뒤에 오는 긴 문장".chars().map(HwpChar::Text));
+        let mut doc = prose();
+        host(&mut doc, text_box(vec![vec![inner]]));
+        assert_joins(&doc, "a block-interrupted text box paragraph");
+    }
+
+    /// A text-less HWPX shape is drawn but shapes no text, in the body and in a text box; both
+    /// paragraphs have a row and a point segment to join it to.
+    #[test]
+    fn a_textless_hwpx_shape_joins_in_the_body_and_in_a_text_box() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let shape_alone = || {
+            let mut para = text_like(&template, "");
+            let Control::Generic(mut control) = drawing(true) else {
+                unreachable!("drawing builds a generic control")
+            };
+            control.ctrl_id = *b"rect";
+            attach(
+                &mut para,
+                hwp_model::paragraph::ctrl_char::OBJECT,
+                Control::Generic(control),
+            );
+            para
+        };
+        let mut doc = prose();
+        doc.sections[0].paragraphs.push(shape_alone());
+        host(&mut doc, text_box(vec![vec![shape_alone()]]));
+        assert_joins(&doc, "a text-less HWPX shape");
+    }
+
+    /// Text the renderer never lays out - a text box whose geometry header is too short to
+    /// place it, or an object kind no arm draws - still has one unmeasured row per paragraph,
+    /// its table included, so the join stays total. The object carries two lists, so the
+    /// numbering must run across them: the second list's paragraph is `n = 2`, not 0.
+    #[test]
+    fn drawing_text_the_renderer_skips_still_has_rows() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let text = || {
+            let mut with_table = text_like(&template, "나");
+            attach(
+                &mut with_table,
+                hwp_model::paragraph::ctrl_char::OBJECT,
+                Control::Table(first_table(&mut table_markdown()).clone()),
+            );
+            vec![
+                vec![text_like(&template, "가"), with_table],
+                vec![text_like(&template, "다")],
+            ]
+        };
+        let Control::Generic(mut short) = text_box(text()) else {
+            unreachable!("text_box builds a generic control")
+        };
+        short.data.truncate(10);
+        let mut unknown = bookmark_control();
+        unknown.ctrl_id = *b"conn";
+        unknown.paragraph_lists = lists(text());
+        for (what, control) in [
+            ("a text box that cannot be placed", short),
+            ("an object kind no arm draws", unknown),
+        ] {
+            let mut doc = prose();
+            let at = host(&mut doc, Control::Generic(control));
+            let (_, map) = lay_out(&doc);
+            let rows = rows_under(&map, &format!("0.{at}.0."));
+            assert!(
+                rows.iter().any(|row| depth(&row.id) == 3)
+                    && rows.iter().all(|row| row.bbox.is_none()),
+                "{what}: unmeasured rows under the object: {:?}",
+                map.rows
+            );
+            assert_eq!(
+                rows_under(&map, &format!("0.{at}.0.2")).len(),
+                1,
+                "{what}: the second list's paragraph is numbered on from the first list: {:?}",
+                map.rows
+            );
+            assert_joins(&doc, what);
+        }
+    }
+
+    /// The paragraph holding a text box claims its own characters only: the text box's glyphs
+    /// belong to the text box paragraphs' rows, whose offsets index a different string.
+    #[test]
+    fn the_paragraph_holding_a_text_box_claims_none_of_its_characters() {
+        let template = prose().sections[0].paragraphs[1].clone();
+        let mut doc = prose();
+        let at = host(
+            &mut doc,
+            text_box(vec![vec![text_like(&template, "가나다라마바사")]]),
+        );
+        let (_, map) = lay_out(&doc);
+        let inner = rows_under(&map, &format!("0.{at}.0.0"));
+        assert!(
+            inner.iter().any(|row| row.chars.is_some()),
+            "the text box paragraph must draw text, or this test proves nothing: {inner:?}"
+        );
+        let own = map
+            .rows
+            .iter()
+            .find(|row| {
+                row.kind == kind::PARA && depth(&row.id) == 1 && row.id.ends_with(&format!(".{at}"))
+            })
+            .expect("the host paragraph's row");
+        assert_eq!(
+            own.chars,
+            Some(CharRange { start: 0, end: 1 }),
+            "the host shaped \"앞\" and nothing else: {own:?}"
+        );
+    }
+
+    /// `finish` keeps an unmeasured row for a segmented paragraph only when the paragraph has
+    /// no measured row anywhere: a cell paragraph drawn in one fragment and replayed as nothing
+    /// in the next - every continuation line clipped - publishes the fragment it drew, alone.
+    #[test]
+    fn a_paragraph_measured_in_one_fragment_keeps_no_empty_row_from_another() {
+        let para = text_like(&prose().sections[0].paragraphs[1], "가나");
+        let mut rec = SegmentRecorder::new();
+        let mut first = page_with(0);
+        rec.begin_paragraph(0, 0, &para, &first);
+        first.items.push(glyphs(0, "가나"));
+        rec.end_segment(&first);
+        rec.page_pushed();
+        let second = page_with(0);
+        rec.begin_paragraph(0, 0, &para, &second);
+        rec.end_segment(&second);
+        rec.resolve(&[first, second]);
+        let map = rec.finish();
+        assert_eq!(
+            map.rows.len(),
+            1,
+            "the drawn fragment alone: {:?}",
+            map.rows
+        );
+        assert_eq!(map.rows[0].page, 0);
+        assert!(map.rows[0].chars.is_some());
     }
 
     /// Recording is opt-in: an ordinary render records nothing at all.

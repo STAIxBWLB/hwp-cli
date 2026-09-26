@@ -2812,6 +2812,7 @@ fn layout_para_objects(
             Control::Generic(g) if g.ctrl_id == *b"gso " && !g.paragraph_lists.is_empty() => {
                 let Some(b) = crate::gso::parse_gso_box(&g.data) else {
                     warnings.push(RenderIssueCode::TextBoxGeometryInvalidOmitted, b"gso");
+                    rec.unlaid(control_index, g, page);
                     continue;
                 };
                 let bw = (b.width as f32 / 100.0).max(8.0);
@@ -2883,12 +2884,11 @@ fn layout_para_objects(
                         None,
                         0,
                         None,
-                        // A drawing object's text has no geometry row by contract
-                        // (`schemas/render-layout-v1.schema.json`, `kind`): the envelope numbers
-                        // it `[para, control, n]` across all of the object's lists, which this
-                        // box's own index does not reproduce once a linked box splits it into
-                        // columns. It resolves through the enclosing paragraph's row.
-                        None,
+                        // The envelope numbers a drawing object's text `[para, control, n]`
+                        // across all of its lists, so a column continues where the one before
+                        // it stopped.
+                        Some(&mut *rec),
+                        Some((control_index, range.start)),
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -3002,10 +3002,14 @@ fn layout_para_objects(
                             None,
                             0,
                             None,
-                            None, // Drawing-object text: no row, as for the text box above.
+                            Some(&mut *rec),
+                            Some((control_index, 0)),
                         );
                         flow_end = flow_end.max(inner);
                     } else {
+                        // Laid out per list, but numbered across all of them, as for the
+                        // text box above.
+                        let mut first = 0;
                         for (i, list) in g.paragraph_lists.iter().enumerate() {
                             // 소유 상자는 컨테이너 원점 기준 — 페이지 절대로 옮긴다.
                             // None(컨테이너 자체 소유)이면 컨테이너 상자에 조판.
@@ -3033,10 +3037,10 @@ fn layout_para_objects(
                                 None,
                                 0,
                                 None,
-                                // Drawing-object text: no row, as for the text box above. Laid
-                                // out per list here, so the index restarts at every list.
-                                None,
+                                Some(&mut *rec),
+                                Some((control_index, first)),
                             );
+                            first += list.paragraphs.len();
                             flow_end = flow_end.max(inner);
                         }
                     }
@@ -3106,7 +3110,8 @@ fn layout_para_objects(
                         None,
                         0,
                         None,
-                        None, // Drawing-object text: no row, as for the text box above.
+                        Some(&mut *rec),
+                        Some((control_index, 0)),
                     );
                     flow_end = flow_end.max(inner);
                 }
@@ -3172,6 +3177,10 @@ fn layout_para_objects(
                     object_y += h;
                     bottom = bottom.max(by + h);
                 }
+            }
+            // A control with text that no arm above draws still has envelope segments.
+            Control::Generic(g) if !g.paragraph_lists.is_empty() => {
+                rec.unlaid(control_index, g, page);
             }
             _ => {}
         }
@@ -4367,6 +4376,7 @@ fn draw_table_cell_fragment(
             // the flow floor pushes down may never be drawn outside the cell.
             Some(cy + ch - mb),
             Some(rec),
+            None,
         );
     }
 
@@ -4500,6 +4510,7 @@ fn draw_table_rows(
             // must stay inside the cell instead of running into the row below.
             Some(cy + ch - mb),
             Some(rec),
+            None,
         );
 
         // 3) Borders (left, right, top, bottom).
@@ -4585,6 +4596,7 @@ fn layout_box_paragraphs(
         // (notes and captions never, headers and footers unless asked for), so a row would join
         // to nothing, and a measurement page is scratch that no page ever receives.
         None,
+        None,
     )
 }
 
@@ -4643,9 +4655,14 @@ fn layout_box_para_iter<'a>(
     page_number: Option<u32>,
     v_origin: i32,
     content_limit: Option<f32>,
-    // `Some` only for a table cell's paragraphs, whose paths the recorder derives from the open
-    // cell. Every other box passes `None`, each call site saying why.
+    // `Some` for a table cell's paragraphs and a drawing object's text, whose paths the recorder
+    // derives from the open cell or paragraph. Every other box passes `None`, each call site
+    // saying why.
     mut rec: Option<&mut SegmentRecorder>,
+    // For a drawing object's text: the object's control index in the enclosing paragraph and
+    // the position, across all of its lists, of the first paragraph laid out here. `None`
+    // records the paragraphs as a cell's.
+    drawing: Option<(usize, usize)>,
 ) -> f32 {
     let mut content_bottom = origin_y;
     // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
@@ -4657,7 +4674,12 @@ fn layout_box_para_iter<'a>(
             continue;
         }
         if let Some(rec) = rec.as_deref_mut() {
-            rec.begin_cell_paragraph(para_index, para, page);
+            match drawing {
+                Some((control_index, first)) => {
+                    rec.begin_drawing_paragraph(control_index, first + para_index, para, page)
+                }
+                None => rec.begin_cell_paragraph(para_index, para, page),
+            }
         }
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
@@ -4924,8 +4946,8 @@ fn layout_box_para_iter<'a>(
                 (origin_x, origin_y), // Nested shapes are relative to this box's own origin.
                 None,                 // Nested objects inside a cell/text box do not cross pages.
                 warnings,
-                // A cell paragraph's own tables and bookmarks nest under its open span; any
-                // other box records nothing, so neither do its objects.
+                // A recorded paragraph's own tables, bookmarks and drawing objects nest under
+                // its open span; any other box records nothing, so neither do its objects.
                 match rec.as_deref_mut() {
                     Some(rec) => rec,
                     None => &mut disabled,
