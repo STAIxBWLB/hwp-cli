@@ -4,9 +4,10 @@
 
 [docs/design/22-remote-mcp-deployment.ko.md](../../docs/design/22-remote-mcp-deployment.ko.md)의
 AgentCore tier(Tier B)다. `hwp serve`를 AgentCore Runtime에서 MCP 서버로 돌린다. 아래 명령은
-2026-09-26 이슈 #318을 확인할 때 us-east-1에서 v1.1.0으로 실제로 실행했다. 예외는 두 가지다. 버전
-교체 명령은 `UpdateAgentRuntime` API 문서로만 확인했고, 실행 역할의 로그 권한은 검증 뒤 AWS 실행
-역할 예시에 맞춰 좁혔다(검증 때는 `log-group:*`).
+2026-09-26 이슈 #318을 확인할 때 us-east-1에서 v1.1.0으로 실제로 실행했다. 검증 뒤에 더한 예외는
+세 가지다. 버전 교체 명령은 `UpdateAgentRuntime` API 문서로만 확인했고, 실행 역할의 로그 권한은 AWS
+실행 역할 예시에 맞춰 좁혔으며(검증 때는 `log-group:*`), 계정 값이 든 파일을 체크아웃 밖에 두는
+`mktemp` 작업 디렉터리를 더했다.
 
 ## 요약
 
@@ -225,7 +226,7 @@ rm -f auth.hdr
 ## 새 릴리스로 교체
 
 [Dockerfile.agentcore](Dockerfile.agentcore)의 `HWP_VERSION`과 `HWP_SHA256`을 함께 올리고(sha256은
-tarball 옆 `hwp-<version>-aarch64-unknown-linux-gnu.sha256`), 새 태그로 빌드·푸시한 뒤 런타임이 새
+tarball 옆 `hwp-<version>-aarch64-unknown-linux-gnu.sha256`), 저장소 루트에서 새 태그로 빌드·푸시한 뒤 런타임이 새
 이미지를 가리키게 한다. `update-agent-runtime`에는 생성 때 준 설정을 모두 다시 넘긴다.
 아티팩트·역할·네트워크·프로토콜에 더해, JWT 런타임은 인증 설정을, V2 런타임은 플랫폼 버전을 넘긴다.
 

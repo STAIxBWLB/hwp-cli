@@ -5,10 +5,10 @@
 The AgentCore tier (Tier B) of
 [docs/design/22-remote-mcp-deployment.md](../../docs/design/22-remote-mcp-deployment.md): `hwp serve`
 running as an MCP server on AgentCore Runtime. Every command below ran on 2026-09-26 against
-v1.1.0 in us-east-1, when issue #318 was checked, with two exceptions: the update command was
-checked only against the `UpdateAgentRuntime` API reference, and the execution role's log
-statements were narrowed afterwards to the AWS execution-role example (the check granted
-`log-group:*`).
+v1.1.0 in us-east-1, when issue #318 was checked, with three exceptions added afterwards: the
+update command, checked only against the `UpdateAgentRuntime` API reference; the execution role's
+log statements, narrowed to the AWS execution-role example (the check granted `log-group:*`); and
+the `mktemp` working directory that keeps account-bound files out of the checkout.
 
 ## At a glance
 
@@ -235,7 +235,7 @@ rm -f auth.hdr
 
 Bump `HWP_VERSION` and `HWP_SHA256` in [Dockerfile.agentcore](Dockerfile.agentcore) together (the
 sha256 is published beside the tarball as `hwp-<version>-aarch64-unknown-linux-gnu.sha256`), build
-and push under the new tag, then point the runtime at it. Pass `update-agent-runtime` every setting
+from the repository root and push under the new tag, then point the runtime at it. Pass `update-agent-runtime` every setting
 the runtime was created with: the artifact, role, network and protocol, plus the authorizer for a
 JWT runtime and the platform version for a V2 runtime.
 
