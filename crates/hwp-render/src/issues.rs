@@ -109,9 +109,11 @@ pub enum RenderIssueCode {
 }
 
 impl RenderIssueCode {
-    /// Every code, in declaration order. The published `render-report-v1` schema's code enum
-    /// is tested against this list, so a new variant must be added here as well (the
-    /// exhaustive match in `all_lists_every_code` fails to compile until it is).
+    /// Every code, in declaration order. The published `render-report-v1` and
+    /// `certification-report-v1` schemas are tested against this list, so a new variant must be
+    /// added here as well. The exhaustive match in `all_lists_every_code` fails to compile until
+    /// the new variant has a match arm there, which is the prompt to add it here; the match arm
+    /// does not itself force this entry.
     pub const ALL: [RenderIssueCode; 35] = [
         Self::ParseBudgetExceeded,
         Self::RenderExecutionFailed,

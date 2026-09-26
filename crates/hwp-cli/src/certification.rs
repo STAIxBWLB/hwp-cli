@@ -22,6 +22,8 @@ pub const MAX_POLICY_BYTES: u64 = 1024 * 1024;
 pub const MAX_SELECTED_PAGES: usize = 256;
 pub const MAX_POLICY_NAMES: usize = 512;
 pub const MAX_DEFINITION_INDEXES: usize = 4096;
+/// Bound on policy counts and the report schema's rule `observed_count` maximum; a larger
+/// observed count fails its rule closed (`rule_from_reasons`).
 pub const MAX_RULE_COUNT: usize = 1_000_000;
 pub const MAX_PAGE_NUMBER: usize = hwp_render::layout::CERTIFICATION_MAX_PAGES;
 pub const MAX_FONT_FILES: usize = 128;
@@ -43,8 +45,15 @@ const MAX_ORACLE_RESULT_BYTES: u64 = 64 * 1024;
 const MAX_EVIDENCE_ARTIFACT_BYTES: u64 = 64 * 1024;
 /// Mirrors `preservation-report-v1` `events.maxItems`.
 const MAX_PRESERVATION_EVENTS: usize = 1000;
-/// Per-event and per-code loss bound shared with the report schema's `lossCount`.
+/// Per-event loss bound: an artifact event above it fails closed.
 const MAX_PRESERVATION_LOSS_COUNT: usize = 1_000_000;
+/// The largest per-code or total loss a preservation section can report: every accepted event
+/// at the per-event bound. Counts are summed exactly, so the report schema's `lossCount` and
+/// `loss_code_count` maxima are this value.
+const MAX_PRESERVATION_LOSS_TOTAL: usize = MAX_PRESERVATION_EVENTS * MAX_PRESERVATION_LOSS_COUNT;
+/// The report schema's `check.issue_count` maximum. A package with more reader warnings than
+/// this fails closed as `inspection_incomplete` instead of reporting a count the schema rejects.
+const MAX_CHECK_ISSUE_COUNT: usize = 1_000_000;
 const MAX_LOG_BYTES_RECORDED: u64 = 64 * 1024;
 const MAX_PARSE_XML_DEPTH: usize = 128;
 const MAX_PARSE_XML_NODES: usize = 1_000_000;
@@ -439,6 +448,25 @@ fn fixed_check(status: CheckStatus, reason: &'static str) -> CheckResult {
     )
 }
 
+fn package_check_from_warnings(warnings: &[String]) -> CheckResult {
+    if warnings.is_empty() {
+        return passed_check();
+    }
+    if warnings.len() > MAX_CHECK_ISSUE_COUNT {
+        // Nothing else bounds the reader's warning count (one unpaired surrogate is one warning),
+        // and the report counts issues exactly, so a count it cannot carry fails closed with the
+        // code rule_from_reasons uses for the same overflow. parse_budget_exceeded stays reserved
+        // for input the preflight refused.
+        return fixed_check(CheckStatus::Failed, "inspection_incomplete");
+    }
+    CheckResult::with_issue_digest(
+        CheckStatus::Failed,
+        vec!["package_or_import_warnings".to_string()],
+        warnings.len(),
+        hash_string_list(warnings),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
@@ -631,17 +659,7 @@ pub fn execute(
     let mut document = None;
     if let Ok(info) = package {
         format = info.format;
-        let package_warnings = info.warnings;
-        package_check = if package_warnings.is_empty() {
-            passed_check()
-        } else {
-            CheckResult::with_issue_digest(
-                CheckStatus::Failed,
-                vec!["package_or_import_warnings".to_string()],
-                package_warnings.len(),
-                hash_string_list(&package_warnings),
-            )
-        };
+        package_check = package_check_from_warnings(&info.warnings);
         let preflight = preflight
             .as_ref()
             .expect("successful package inspection requires preflight");
@@ -1911,6 +1929,17 @@ fn rule_from_reasons(
     observed_count: usize,
     reason_codes: Vec<String>,
 ) -> RuleResult {
+    if observed_count > MAX_RULE_COUNT {
+        // The report counts exactly and caps observed_count at MAX_RULE_COUNT. A count past it
+        // (field-start characters are counted per character, not per record) fails closed, the
+        // way presence_rule reports an inspection it could not finish.
+        return RuleResult {
+            id,
+            status: CheckStatus::Failed,
+            observed_count: 0,
+            reason_codes: vec!["inspection_incomplete".to_string()],
+        };
+    }
     RuleResult {
         id,
         status: if reason_codes.is_empty() {
@@ -2156,8 +2185,9 @@ fn evaluate_preservation_evidence(
     let Ok(report) = serde_json::from_slice::<PreservationReportArtifact>(&bytes) else {
         return invalid();
     };
-    // Per-event counts stay inside the report schema's lossCount range so a huge or wrapping
-    // artifact can never mint a schema-invalid section.
+    // Per-event counts stay within MAX_PRESERVATION_LOSS_COUNT and events within
+    // MAX_PRESERVATION_EVENTS, so the exact sums stay within the report schema's bound and a huge
+    // or wrapping artifact can never mint a schema-invalid section.
     if report.contract != hwp_model::preservation::PRESERVATION_REPORT_CONTRACT
         || report.events.len() > MAX_PRESERVATION_EVENTS
         || report
@@ -2184,6 +2214,7 @@ fn evaluate_preservation_evidence(
         };
         loss_code_count = total;
     }
+    debug_assert!(loss_code_count <= MAX_PRESERVATION_LOSS_TOTAL);
     let passed = loss_code_count <= policy.max_loss_codes;
     PreservationCheckReport {
         status: if passed {
@@ -4689,6 +4720,18 @@ mod tests {
             schema["properties"]["render"]["properties"]["fonts"]["maxItems"],
             hwp_render::fonts::MAX_FONT_RESOLUTIONS
         );
+        assert_eq!(
+            schema["$defs"]["lossCount"]["maximum"],
+            MAX_PRESERVATION_LOSS_TOTAL
+        );
+        assert_eq!(
+            schema["$defs"]["preservationCheck"]["properties"]["loss_code_count"]["maximum"],
+            MAX_PRESERVATION_LOSS_TOTAL
+        );
+        assert_eq!(
+            schema["$defs"]["check"]["properties"]["issue_count"]["maximum"],
+            MAX_CHECK_ISSUE_COUNT
+        );
     }
 
     #[test]
@@ -4868,6 +4911,20 @@ exit 2"#,
         assert!(!serialized.contains("secret/team"));
         assert!(!serialized.contains(client));
         assert!(!serialized.contains(server));
+    }
+
+    /// Every `PreservationCode` variant, in declaration order. It is enumerated through serde's
+    /// variant-index deserializer rather than listed by hand, so a new variant reaches the
+    /// schema tests without anyone remembering to add it here (a hand-written list is how
+    /// five codes went missing from `preservationLossCodes`, #347).
+    fn every_preservation_code() -> Vec<hwp_model::preservation::PreservationCode> {
+        use serde::de::{Deserialize, IntoDeserializer, value};
+        (0u32..)
+            .map_while(|index| {
+                let variant: value::U32Deserializer<value::Error> = index.into_deserializer();
+                hwp_model::preservation::PreservationCode::deserialize(variant).ok()
+            })
+            .collect()
     }
 
     fn evidence_scratch_dir(label: &str) -> PathBuf {
@@ -5060,7 +5117,7 @@ exit 2"#,
                 .to_string()
                 .into_bytes(),
             ),
-            // Counts above the report schema's lossCount bound fail closed.
+            // Counts above the per-event bound fail closed.
             (
                 "oversized-count",
                 serde_json::json!({
@@ -5358,26 +5415,16 @@ exit 2"#,
             .cloned()
             .collect();
         schema_codes.sort();
-        let model_codes: Vec<&str> = [
-            hwp_model::preservation::PreservationCode::BinaryAssetRemoved,
-            hwp_model::preservation::PreservationCode::BinaryRelationshipRemoved,
-            hwp_model::preservation::PreservationCode::ControlMetadataUnrepresentable,
-            hwp_model::preservation::PreservationCode::ControlRemoved,
-            hwp_model::preservation::PreservationCode::GsoHeaderUnrepresentable,
-            hwp_model::preservation::PreservationCode::GsoShapeUnrepresentable,
-            hwp_model::preservation::PreservationCode::HwpContainerStorageRemoved,
-            hwp_model::preservation::PreservationCode::HwpContainerStreamRemoved,
-            hwp_model::preservation::PreservationCode::HwpOpaqueStreamChanged,
-            hwp_model::preservation::PreservationCode::HwpxOpaqueEntryChanged,
-            hwp_model::preservation::PreservationCode::HwpxPackageEntryRemoved,
-            hwp_model::preservation::PreservationCode::MetadataValueRemoved,
-            hwp_model::preservation::PreservationCode::OpaqueControlUnrepresentable,
-            hwp_model::preservation::PreservationCode::PictureControlRemoved,
-        ]
-        .into_iter()
-        .map(|code| code.as_str())
-        .collect();
+        let mut model_codes: Vec<&str> = every_preservation_code()
+            .into_iter()
+            .map(|code| code.as_str())
+            .collect();
+        model_codes.sort();
         assert_eq!(schema_codes, model_codes);
+        assert_eq!(
+            schema["$defs"]["preservationLossCodes"]["maxProperties"],
+            model_codes.len()
+        );
         let reason_codes = schema["$defs"]["reasonCode"]["enum"].to_string();
         for reason in [
             "preservation_loss_detected",
@@ -5528,6 +5575,186 @@ exit 2"#,
         assert!(value["checks"].get("hancom_open").is_none());
         let validator = certification_report_validator();
         assert!(validator.is_valid(&value), "schema rejected {value}");
+    }
+
+    /// Certification lays out through the same `layout_document` as `hwp render`, so every code
+    /// the renderer emits, one entry each with its own severity and stage, must fit
+    /// `render.issues`/`render.info` (#347: the WMF codes were missing, and both arrays were
+    /// capped below the code count).
+    #[test]
+    fn report_admits_one_entry_per_render_issue_code() {
+        let entry = |code: &hwp_render::RenderIssueCode| {
+            serde_json::json!({
+                "code": code.as_str(),
+                "severity": code.severity().as_str(),
+                "stage": code.stage().as_str(),
+                "count": 1,
+                "sample_sha256": ["0".repeat(64)],
+                "samples_complete": true,
+            })
+        };
+        let (info, issues): (Vec<_>, Vec<_>) = hwp_render::RenderIssueCode::ALL
+            .iter()
+            .partition(|code| code.severity() == hwp_render::RenderIssueSeverity::Info);
+        let mut value = passing_report_value();
+        value["render"]["issues"] =
+            serde_json::json!(issues.into_iter().map(entry).collect::<Vec<_>>());
+        value["render"]["info"] =
+            serde_json::json!(info.into_iter().map(entry).collect::<Vec<_>>());
+        let errors: Vec<String> = certification_report_validator()
+            .iter_errors(&value)
+            .map(|error| format!("{} at {}", error, error.instance_path))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "the certification report schema rejects a code the renderer emits: {errors:?}"
+        );
+    }
+
+    /// A check's `issue_count` is exact up to the report schema's maximum. The package check's
+    /// count is the reader's warning count, which nothing else bounds (one unpaired surrogate is
+    /// one warning), so above the maximum it fails closed instead of emitting a count the schema
+    /// rejects (#347).
+    #[test]
+    fn package_check_fails_closed_above_the_issue_count_maximum() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/certification-report-v1.schema.json"
+        ))
+        .unwrap();
+        let defs = &schema["$defs"];
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&serde_json::json!({
+                "$defs": {
+                    "check": defs["check"].clone(),
+                    "checkStatus": defs["checkStatus"].clone(),
+                    "reasons": defs["reasons"].clone(),
+                    "reasonCode": defs["reasonCode"].clone(),
+                    "sha256": defs["sha256"].clone(),
+                },
+                "$ref": "#/$defs/check"
+            }))
+            .unwrap();
+        let errors = |check: &CheckResult| -> Vec<String> {
+            validator
+                .iter_errors(&serde_json::to_value(check).unwrap())
+                .map(|error| format!("{} at {}", error, error.instance_path))
+                .collect()
+        };
+
+        let at_the_maximum =
+            package_check_from_warnings(&vec![String::new(); MAX_CHECK_ISSUE_COUNT]);
+        assert_eq!(at_the_maximum.issue_count, MAX_CHECK_ISSUE_COUNT);
+        assert_eq!(at_the_maximum.reason_codes, ["package_or_import_warnings"]);
+        assert_eq!(errors(&at_the_maximum), Vec::<String>::new());
+
+        let above = package_check_from_warnings(&vec![String::new(); MAX_CHECK_ISSUE_COUNT + 1]);
+        assert_eq!(errors(&above), Vec::<String>::new());
+        assert_eq!(above.status, CheckStatus::Failed);
+        assert_eq!(above.reason_codes, ["inspection_incomplete"]);
+        assert_eq!(above.issue_count, 1);
+    }
+
+    /// A rule's `observed_count` is exact up to the report schema's maximum. `unresolved_fields`
+    /// counts field-start characters, not records, so one HWP5 paragraph can carry millions of
+    /// them; a count above the maximum fails the rule closed instead of emitting a count the
+    /// schema rejects (#347).
+    #[test]
+    fn rule_fails_closed_above_the_observed_count_maximum() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/certification-report-v1.schema.json"
+        ))
+        .unwrap();
+        let mut item = schema["properties"]["checks"]["properties"]["rules"]["items"].clone();
+        assert_eq!(
+            item["properties"]["observed_count"]["maximum"],
+            MAX_RULE_COUNT
+        );
+        let defs = &schema["$defs"];
+        item["$defs"] = serde_json::json!({
+            "checkStatus": defs["checkStatus"].clone(),
+            "reasons": defs["reasons"].clone(),
+            "reasonCode": defs["reasonCode"].clone(),
+        });
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&item)
+            .unwrap();
+        let errors = |rule: &RuleResult| -> Vec<String> {
+            validator
+                .iter_errors(&serde_json::to_value(rule).unwrap())
+                .map(|error| format!("{} at {}", error, error.instance_path))
+                .collect()
+        };
+
+        let at_the_maximum = rule_from_reasons("unresolved_fields", MAX_RULE_COUNT, Vec::new());
+        assert_eq!(at_the_maximum.status, CheckStatus::Passed);
+        assert_eq!(at_the_maximum.observed_count, MAX_RULE_COUNT);
+        assert_eq!(errors(&at_the_maximum), Vec::<String>::new());
+
+        let above = rule_from_reasons("unresolved_fields", MAX_RULE_COUNT + 1, Vec::new());
+        assert_eq!(errors(&above), Vec::<String>::new());
+        assert_eq!(above.status, CheckStatus::Failed);
+        assert_eq!(above.reason_codes, ["inspection_incomplete"]);
+        assert_eq!(above.observed_count, 0);
+    }
+
+    /// The preservation section echoes every code a `preservation-report-v1` artifact can carry
+    /// and sums per-event counts exactly, so the report schema must admit every
+    /// `PreservationCode` and totals above the per-event cap (#347).
+    #[test]
+    fn preservation_section_admits_every_code_and_totals_above_the_event_cap() {
+        let event = |code: &str, count: usize| serde_json::json!({"code": code, "resource": "control", "disposition": "removed", "count": count});
+        let codes = every_preservation_code();
+        let every_code_once: Vec<_> = codes.iter().map(|code| event(code.as_str(), 1)).collect();
+        let every_code_at_the_cap: Vec<_> = codes
+            .iter()
+            .map(|code| event(code.as_str(), MAX_PRESERVATION_LOSS_COUNT))
+            .collect();
+        let same_code_twice = vec![event("control_removed", MAX_PRESERVATION_LOSS_COUNT); 2];
+        let validator = certification_report_validator();
+        for (label, events, total) in [
+            ("every-code-once", every_code_once, codes.len()),
+            (
+                "same-code-twice",
+                same_code_twice,
+                2 * MAX_PRESERVATION_LOSS_COUNT,
+            ),
+            (
+                "every-code-at-the-cap",
+                every_code_at_the_cap,
+                codes.len() * MAX_PRESERVATION_LOSS_COUNT,
+            ),
+        ] {
+            let dir = evidence_scratch_dir(label);
+            fs::write(
+                dir.join("preservation.json"),
+                serde_json::json!({"contract": "hwp-preservation-report-v1", "events": events})
+                    .to_string(),
+            )
+            .unwrap();
+            let policy = PreservationPolicy {
+                report: "preservation.json".to_string(),
+                max_loss_codes: 0,
+            };
+            let check = evaluate_preservation_evidence(&policy, &dir);
+            fs::remove_dir_all(&dir).unwrap();
+            assert_eq!(
+                check.reason_codes,
+                ["preservation_loss_detected"],
+                "{label}"
+            );
+            assert_eq!(check.loss_code_count, total, "{label}: counts stay exact");
+            let mut value = passing_report_value();
+            value["overall"] = serde_json::json!("failed");
+            value["oracle"]["artifact_determinism"] = serde_json::json!("not_claimed");
+            value["checks"]["preservation"] = serde_json::to_value(&check).unwrap();
+            let errors: Vec<String> = validator
+                .iter_errors(&value)
+                .map(|error| format!("{} at {}", error, error.instance_path))
+                .collect();
+            assert!(errors.is_empty(), "{label}: {errors:?}");
+        }
     }
 
     #[test]

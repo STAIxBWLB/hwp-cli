@@ -70,13 +70,13 @@
       "type": "array",
       "items": { "$ref": "#/$defs/renderIssueNonInfo" },
       "uniqueItems": true,
-      "description": "One entry per issue code, so the code enum already bounds its length; a separate count cap would have to track every new code."
+      "description": "The emitter writes one entry per issue code, so the code enum bounds the length. That bound is an emitter guarantee the schema does not enforce (uniqueItems compares whole entries), and no count cap is set because one would have to track every new code."
     },
     "info": {
       "type": "array",
       "items": { "$ref": "#/$defs/renderIssueInfo" },
       "uniqueItems": true,
-      "description": "One entry per info code, bounded the same way as issues."
+      "description": "One entry per info code, bounded by the emitter the same way as issues."
     },
     "issue_count": { "type": "integer", "minimum": 0 },
     "info_count": { "type": "integer", "minimum": 0 },
