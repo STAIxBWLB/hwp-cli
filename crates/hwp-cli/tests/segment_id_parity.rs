@@ -22,6 +22,7 @@
 //! separately built documents that look alike can differ in exactly the bytes a divergence
 //! would hash, so comparing across them would prove nothing.
 
+use hwp_model::Control;
 use hwp_model::control::{BinRef, Cell, GenericControl, Picture, Table};
 use hwp_model::ids::CharShapeId;
 use hwp_model::paragraph::{HwpChar, Paragraph, ctrl_char};
@@ -293,4 +294,105 @@ fn the_canonical_run_list_agrees_across_both_implementations() {
         para.chars.last(),
         Some(HwpChar::CharCtrl(code)) if *code == ctrl_char::PARA_BREAK
     ));
+}
+
+/// Which paragraphs ALWAYS have a `para` segment is also a two-crate rule: the envelope emits a
+/// point for such a paragraph when it emits nothing, and the renderer keeps one unmeasured row
+/// for it when it draws nothing, so the two must agree on every case or the join breaks in one
+/// direction. Each case states its expected answer as well, so the list cannot pass against two
+/// implementations that agree on being wrong.
+#[test]
+fn which_paragraphs_always_have_a_para_segment_agrees_across_both_implementations() {
+    let with = |controls: Vec<Control>| Paragraph {
+        controls,
+        ..Default::default()
+    };
+    let generic = |ctrl_id: [u8; 4]| {
+        let mut g = control(ctrl_id, "");
+        g.paragraph_lists.clear();
+        g
+    };
+    let mut rect = generic(*b"rect");
+    rect.gso_shapes.push(hwp_model::ShapeGeom {
+        kind: hwp_model::ShapeKind::Rect,
+        x: 0,
+        y: 0,
+        w: 1_000,
+        h: 1_000,
+        points: Vec::new(),
+        fill: 0,
+        fill_gradient: None,
+        border_color: 0,
+        border_width: 10,
+        round_ratio: 0,
+        border_style: 0,
+        arrow_start: 0,
+        arrow_end: 0,
+        anchored: false,
+        description: None,
+    });
+    let mut container = generic(*b"cont");
+    container.container_box = Some(hwp_model::ContainerBox {
+        x: 0,
+        y: 0,
+        w: 1_000,
+        h: 1_000,
+        anchored: false,
+        skipped_objects: 0,
+        text_boxes: Vec::new(),
+    });
+    let mut equation = generic(*b"eqed");
+    equation.equation = Some(hwp_model::Equation {
+        script: "x".into(),
+        ..Default::default()
+    });
+    let whitespace = Paragraph {
+        chars: "   ".chars().map(HwpChar::Text).collect(),
+        ..Default::default()
+    };
+    let cases = [
+        ("an empty paragraph", Paragraph::default(), false),
+        ("whitespace", whitespace, true),
+        (
+            "a bookmark alone",
+            with(vec![Control::Generic(generic(*b"bokm"))]),
+            false,
+        ),
+        ("a table", with(vec![Control::Table(table())]), true),
+        ("a picture", with(vec![Control::Picture(picture())]), true),
+        ("an equation", with(vec![Control::Generic(equation)]), true),
+        (
+            "an HWP5 drawing object",
+            with(vec![Control::Generic(generic(*b"gso "))]),
+            true,
+        ),
+        ("an HWPX shape", with(vec![Control::Generic(rect)]), true),
+        (
+            "an HWPX container",
+            with(vec![Control::Generic(container)]),
+            true,
+        ),
+        (
+            "a bare HWPX ole",
+            with(vec![Control::Generic(generic(*b"ole "))]),
+            false,
+        ),
+        (
+            "a click-here field",
+            with(vec![Control::Generic(generic(*b"%clk"))]),
+            false,
+        ),
+    ];
+    for (what, para, expected) in cases {
+        assert_eq!(
+            hwp_convert::segment::always_has_para_segment(&para),
+            expected,
+            "hwp-convert, {what}"
+        );
+        assert_eq!(
+            hwp_render::segment_map::always_has_para_segment(&para),
+            expected,
+            "hwp-render, {what}"
+        );
+    }
 }
