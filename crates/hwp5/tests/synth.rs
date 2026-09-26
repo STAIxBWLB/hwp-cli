@@ -6,10 +6,11 @@
 
 use std::path::PathBuf;
 
-fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("hwp5-synth-tests");
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join(name)
+#[path = "../../hwp-cli/tests/common/temp_path.rs"]
+mod temp_path;
+
+fn tmp(name: &str) -> temp_path::TempPath {
+    temp_path::TempPath::new("hwp5-synth-tests", name)
 }
 
 /// 신규 HWP 합성은 경로와 실행 시각에 무관하게 바이트가 같고, 모든 CFB directory
@@ -286,7 +287,7 @@ fn hwp5_numbering_id_0기반_경계왕복() {
 #[test]
 fn md_이미지_코드_hwp5_왕복() {
     use std::io::Write;
-    let dir = std::env::temp_dir().join("hwp5-md-imgcode");
+    let dir = std::env::temp_dir().join(format!("hwp5-md-imgcode-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // 최소 PNG(16×16 치수 헤더).
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -358,6 +359,7 @@ fn md_이미지_코드_hwp5_왕복() {
             .any(|(_, id)| code_ids.contains(&id.0))
     });
     assert!(has_run, "코드 run 왕복");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 본문 탭이 md→hwp5 경로에서 8 WCHAR 인라인 컨트롤(코드 9)로 저장·복원돼야 한다.

@@ -283,5 +283,8 @@ jobs:
             skipped="$(awk 'END {print NR}' "$HWP_FIXTURE_SKIP_LOG")"
             optional="$(awk -F'\t' '$3 == "optional" {n++} END {print n+0}' "$HWP_FIXTURE_SKIP_LOG")"
           fi
-          echo "skipped-for-missing-fixtures=$skipped (optional=$optional)"
+          # A failed run stopped early, so its count is partial (#350).
+          partial=""
+          [ "$status" -eq 0 ] || partial=" (partial)"
+          echo "skipped-for-missing-fixtures=$skipped (optional=$optional)$partial"
           exit "$status"

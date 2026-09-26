@@ -566,6 +566,11 @@ for test_exit in 0 101; do
         FONT_PROBE="$font_probe" FONT_TEST_EXIT="$test_exit" \
         bash --noprofile --norc -e -o pipefail "$steps/target-test-workspace.sh" >"$tmp/font-test-$test_exit.log" 2>&1 || rc=$?
     same "workspace test exit $test_exit is preserved" "$rc" "$test_exit"
+    tally="skipped-for-missing-fixtures=0 (optional=0)"
+    [ "$test_exit" = 0 ] || tally="$tally (partial)"
+    tally_status=1
+    grep -qxF "$tally" "$tmp/font-test-$test_exit.log" && tally_status=0
+    check "the skip tally is printed, labeled partial after a failure (exit $test_exit)" "$tally_status"
     probe_status=1
     test -s "$font_probe" && probe_status=0
     check "workspace test receives an isolated font directory (exit $test_exit)" "$probe_status"

@@ -53,7 +53,7 @@ fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Vec<u8> {
 
 #[test]
 fn fill_preserves_preview_and_compat() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("fill-preview");
     let src = dir.join("hwpx_patch_src.hwpx");
     let out = dir.join("hwpx_patch_out.hwpx");
     build_fixture(&src);
@@ -83,11 +83,12 @@ fn fill_preserves_preview_and_compat() {
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn fill_reports_unfilled_as_zero() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("fill-unfilled");
     let src = dir.join("hwpx_patch_src2.hwpx");
     let out = dir.join("hwpx_patch_out2.hwpx");
     build_fixture(&src);
@@ -99,11 +100,12 @@ fn fill_reports_unfilled_as_zero() {
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn fill_동일_입출력_경로도_snapshot으로_안전하게_치환() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("fill-in-place");
     let f = dir.join("hwpx_patch_inplace.hwpx");
     build_fixture(&f);
 
@@ -119,6 +121,7 @@ fn fill_동일_입출력_경로도_snapshot으로_안전하게_치환() {
     );
 
     let _ = std::fs::remove_file(&f);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn build_template_field_fixture(path: &std::path::Path, field_values: &[&str]) {
@@ -286,7 +289,7 @@ fn raw_entry(path: &std::path::Path, name: &str) -> RawEntry {
 
 #[test]
 fn template_fill_changes_placeholder_and_simple_field_but_raw_copies_untouched_entries() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("template-fill");
     let src = dir.join("hwpx_template_fill_src.hwpx");
     let out = dir.join("hwpx_template_fill_out.hwpx");
     build_template_field_fixture(&src, &["<hp:t>old</hp:t>"]);
@@ -333,11 +336,12 @@ fn template_fill_changes_placeholder_and_simple_field_but_raw_copies_untouched_e
 
     let _ = std::fs::remove_file(src);
     let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn template_fill_rejects_placeholder_in_metadata_and_preserves_destination() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("template-metadata");
     let src = dir.join("hwpx_template_metadata_placeholder.hwpx");
     let out = dir.join("hwpx_template_metadata_placeholder_out.hwpx");
     build_placeholder_metadata_fixture(&src);
@@ -351,11 +355,12 @@ fn template_fill_rejects_placeholder_in_metadata_and_preserves_destination() {
 
     let _ = std::fs::remove_file(src);
     let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn template_fill_rejects_foreign_namespace_text_and_preserves_destination() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("template-foreign");
     let src = dir.join("hwpx_template_foreign_text.hwpx");
     let out = dir.join("hwpx_template_foreign_text_out.hwpx");
     build_foreign_text_fixture(&src);
@@ -369,11 +374,12 @@ fn template_fill_rejects_foreign_namespace_text_and_preserves_destination() {
 
     let _ = std::fs::remove_file(src);
     let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn template_fill_rejects_ambiguous_or_non_text_field_and_preserves_destination() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("template-reject");
     let ambiguous = dir.join("hwpx_template_ambiguous.hwpx");
     let non_text = dir.join("hwpx_template_non_text.hwpx");
     let out = dir.join("hwpx_template_reject_out.hwpx");
@@ -392,6 +398,7 @@ fn template_fill_rejects_ambiguous_or_non_text_field_and_preserves_destination()
     let _ = std::fs::remove_file(ambiguous);
     let _ = std::fs::remove_file(non_text);
     let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- patch::replace_texts ----
@@ -432,7 +439,7 @@ fn build_replace_fixture(path: &std::path::Path) {
 
 #[test]
 fn replace_texts_바이트보존_순차치환() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("replace");
     let src = dir.join("hwpx_repl_src.hwpx");
     let out = dir.join("hwpx_repl_out.hwpx");
     build_replace_fixture(&src);
@@ -466,11 +473,12 @@ fn replace_texts_바이트보존_순차치환() {
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn replace_texts_xml_이스케이프() {
-    let dir = std::env::temp_dir();
+    let dir = surgical_dir("replace-escape");
     let src = dir.join("hwpx_repl_esc_src.hwpx");
     let out = dir.join("hwpx_repl_esc_out.hwpx");
     build_replace_fixture(&src);
@@ -492,6 +500,7 @@ fn replace_texts_xml_이스케이프() {
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- patch::rewrite_document_staged (IR 외과 수술 재작성) ----

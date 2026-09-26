@@ -96,7 +96,7 @@ fn read_entries(path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
 
 #[test]
 fn 무수정_왕복은_개체_바이너리_패키지엔트리를_보존한다() {
-    let dir = std::env::temp_dir().join("hwpx-roundtrip-preserve");
+    let dir = std::env::temp_dir().join(format!("hwpx-roundtrip-preserve-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("src.hwpx");
     let out = dir.join("out.hwpx");
@@ -171,6 +171,7 @@ fn 무수정_왕복은_개체_바이너리_패키지엔트리를_보존한다() 
         section.contains(r#"<hp:chartex version="9">"#),
         "chartex 원문 유실: {section}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 원문 캡처된 개체는 write_section_with_report에서 그대로 방출되고,
@@ -258,7 +259,10 @@ fn 컨테이너_자식도형_파싱후에도_원문_왕복_보존() {
         r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>본문</hp:t>{CONTAINER_XML}</hp:run></hp:p></hs:sec>"##
     );
 
-    let dir = std::env::temp_dir().join("hwpx-roundtrip-container-shapes");
+    let dir = std::env::temp_dir().join(format!(
+        "hwpx-roundtrip-container-shapes-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("src.hwpx");
     let out = dir.join("out.hwpx");
@@ -313,6 +317,7 @@ fn 컨테이너_자식도형_파싱후에도_원문_왕복_보존() {
         out_section.contains(CONTAINER_XML),
         "container 원문이 바이트 동일하게 방출돼야 한다: {out_section}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 원문 XML이 무효화된(edit 헬퍼가 지운) 컨테이너는 자식 도형 좌표가 컨테이너
@@ -452,7 +457,10 @@ fn manifest_bin_map(xml: &str) -> std::collections::BTreeMap<String, String> {
 /// 가리켜야 한다 — 원문 캡처 컨테이너 안의 참조·id≠stem 매니페스트 항목까지.
 #[test]
 fn 전체_재작성은_원본_manifest_id로_binary참조를_보존한다() {
-    let dir = std::env::temp_dir().join("hwpx-roundtrip-manifest-seed");
+    let dir = std::env::temp_dir().join(format!(
+        "hwpx-roundtrip-manifest-seed-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("src.hwpx");
     let out = dir.join("out.hwpx");
@@ -532,6 +540,7 @@ fn 전체_재작성은_원본_manifest_id로_binary참조를_보존한다() {
         ),
         "재생성 매니페스트에 확장 파트 항목 유지: {out_hpf}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// content.hpf에 BinData 항목이 없어(매니페스트 슬롯 빔) 시드되지 않는 문서에서,
@@ -539,7 +548,10 @@ fn 전체_재작성은_원본_manifest_id로_binary참조를_보존한다() {
 /// 원본 이름으로 보존돼야 한다. pic 참조는 출력 매니페스트에서 같은 바이트로 해석된다.
 #[test]
 fn 미시드_경로도_이름_다른_동일바이트_bin_data를_모두_보존한다() {
-    let dir = std::env::temp_dir().join("hwpx-roundtrip-unseeded-dup");
+    let dir = std::env::temp_dir().join(format!(
+        "hwpx-roundtrip-unseeded-dup-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("src.hwpx");
     let out = dir.join("out.hwpx");
@@ -608,6 +620,7 @@ fn 미시드_경로도_이름_다른_동일바이트_bin_data를_모두_보존�
         .get(pic_ref)
         .unwrap_or_else(|| panic!("출력 매니페스트에 {pic_ref} 없음"));
     assert_eq!(bytes_of(href), PNG_DUP, "pic 참조 바이트 보존");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 루트에만 선언된 벤더 접두어(xmlns:vnd)를 쓰는 원문 캡처 개체는, 재직렬화된
@@ -615,7 +628,7 @@ fn 미시드_경로도_이름_다른_동일바이트_bin_data를_모두_보존�
 /// 기존과 바이트 동일해야 한다(표준 hs/hp/hc만).
 #[test]
 fn 전체_재작성은_루트의_확장_xmlns_선언을_보존한다() {
-    let dir = std::env::temp_dir().join("hwpx-roundtrip-xmlns");
+    let dir = std::env::temp_dir().join(format!("hwpx-roundtrip-xmlns-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("src.hwpx");
     let out = dir.join("out.hwpx");
@@ -703,4 +716,5 @@ fn 전체_재작성은_루트의_확장_xmlns_선언을_보존한다() {
         mark_bound,
         "vnd:mark가 urn:example에 바인드돼야 한다: {section}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }

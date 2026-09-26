@@ -2255,7 +2255,7 @@ mod tests {
     /// GI-3: local image `![alt](fig.png)` → inline Picture + BinStream (natural size).
     #[test]
     fn 이미지_로컬_임베드() {
-        let dir = std::env::temp_dir().join("hwp-md-img-embed");
+        let dir = std::env::temp_dir().join(format!("hwp-md-img-embed-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         write_png(&dir, "fig.png", 96, 48);
         let doc = from_markdown_with(
@@ -2282,12 +2282,13 @@ mod tests {
         assert_eq!(pic.width.0, 96 * 7200 / 96, "자연 크기(96px→7200)");
         // The alt text of a successfully embedded image is suppressed.
         assert!(!doc.plain_text().contains("대체텍스트"), "alt 억제");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// GI-3: missing files, remote URLs, and relative paths (no base) keep the alt text after a warning.
     #[test]
     fn 이미지_실패는_alt_보존() {
-        let dir = std::env::temp_dir().join("hwp-md-img-fail");
+        let dir = std::env::temp_dir().join(format!("hwp-md-img-fail-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Missing file.
         let d1 = from_markdown_with(
@@ -2308,12 +2309,13 @@ mod tests {
         let d3 = from_markdown("![상대alt](fig.png)\n");
         assert!(d3.bin_streams.is_empty());
         assert!(d3.plain_text().contains("상대alt"), "기준없음은 alt 보존");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// GI-3 round-trip: image data is preserved on re-export through md(image)→IR→#8 exporter (media_dir).
     #[test]
     fn 이미지_왕복_exporter_데이터보존() {
-        let dir = std::env::temp_dir().join("hwp-md-img-rt");
+        let dir = std::env::temp_dir().join(format!("hwp-md-img-rt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let png_path = write_png(&dir, "rt.png", 32, 32);
         let orig = std::fs::read(&png_path).unwrap();
@@ -2339,6 +2341,7 @@ mod tests {
         let extracted = std::fs::read(media.join("image1.png")).expect("추출 이미지");
         assert_eq!(extracted, orig, "추출 이미지 바이트 == 원본(무손실)");
         let _ = std::fs::remove_dir_all(&media);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #56: with sandbox roots set, an image reference resolving outside every root (absolute

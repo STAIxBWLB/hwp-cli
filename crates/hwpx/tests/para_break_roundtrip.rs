@@ -21,9 +21,10 @@
 use std::path::PathBuf;
 
 fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("hwpx-para-break-roundtrip");
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join(name)
+    std::env::temp_dir().join(format!(
+        "hwpx-para-break-roundtrip-{}-{name}",
+        std::process::id()
+    ))
 }
 
 /// Two paragraphs, two ParaShapes differing only in attr1 bit 7 (Korean word
@@ -71,4 +72,5 @@ fn break_setting_survives_hwp5_to_hwpx_round_trip() {
         bit7_set(1),
         "paragraph 1 (KEEP_WORD) must round-trip with bit 7 set"
     );
+    let _ = std::fs::remove_file(&out);
 }

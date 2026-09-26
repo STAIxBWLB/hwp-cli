@@ -229,7 +229,8 @@ fn serve_runs_tools_inside_the_root() {
     assert_eq!(result["isError"], false, "hwp_info: {result}");
 
     // Writes outside --root are refused, the same as over stdio.
-    let outside = std::env::temp_dir().join("hwp-serve-escape.hwpx");
+    let outside =
+        std::env::temp_dir().join(format!("hwp-serve-escape-{}.hwpx", std::process::id()));
     let result = call_tool(
         addr,
         "hwp_new",

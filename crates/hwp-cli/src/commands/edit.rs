@@ -5251,7 +5251,7 @@ mod tests {
     /// puts it.
     #[test]
     fn seal_measurer_falls_back_without_the_requested_face() {
-        let dir = std::env::temp_dir().join("hwp-seal-no-fonts");
+        let dir = std::env::temp_dir().join(format!("hwp-seal-no-fonts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let empty_fonts = dir.join("fonts");
         std::fs::create_dir_all(&empty_fonts).unwrap();
@@ -5281,6 +5281,7 @@ mod tests {
         let mut fallback = source.clone();
         hwp_convert::insert_seal(&mut fallback, "(인)", &png_path, None, |_, _| None).unwrap();
         assert_eq!(measured, fallback, "identical to the constant fallback");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// With no exact face the measurer answers `None` and the seal takes the width-class
@@ -5288,7 +5289,8 @@ mod tests {
     /// this D1 text equal to the placement measured with locally held genuine fonts.
     #[test]
     fn seal_fallback_offsets_are_host_independent() {
-        let dir = std::env::temp_dir().join("hwp-seal-host-independent");
+        let dir =
+            std::env::temp_dir().join(format!("hwp-seal-host-independent-{}", std::process::id()));
         let empty_fonts = dir.join("fonts");
         std::fs::create_dir_all(&empty_fonts).unwrap();
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -5319,5 +5321,6 @@ mod tests {
             .unwrap();
         // anchor_start 3730 + anchor_width 1610 / 2 - seal 5102 / 2; (line 1000 - 5102) / 2.
         assert_eq!((pic.horz_offset, pic.vert_offset), (1984, -2051));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

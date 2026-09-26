@@ -60,6 +60,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   tables against the envelope's 219, 126 and 10 (182, 112 and 9 before), and the schema's `kind`
   description no longer names an excluded place (part of
   [#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+- After a failed test step, `scripts/check.sh` labels the fixture-skip tally on its `check:
+  FAILED` line `(partial)`, and the CI and release-readiness test steps do the same: `cargo test`
+  stops at the first failing test binary, so that count is not the full tally. The `check: OK`
+  line is unchanged ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
 
 **Fixed**
 
@@ -96,6 +100,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - The `issues`/`info` descriptions in `certification-report-v1` and `render-report-v1` now say that
   one entry per code is an emitter guarantee, not something the schema enforces (`uniqueItems`
   compares whole entries) ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
+- Two test runs at the same time, for example `scripts/check.sh` in two worktrees, no longer
+  collide: every test temp path now has a per-process name (the process id, or the nanosecond
+  timestamp some sites already used), where 41 sites used a fixed name. Those 41 sites also
+  remove what they wrote when the test passes; a failed test leaves its files for debugging.
+  The special-file destination test uses a FIFO instead of a Unix socket, so a long `TMPDIR` no
+  longer fails it on the socket path length limit
+  ([#349](https://github.com/STAIxBWLB/hwp-cli/issues/349)).
 
 - `--segments v2`: a text-box paragraph that a table or block equation interrupts is one point
   `para` segment at the start of its contribution. It used to get no segment at all or, when its

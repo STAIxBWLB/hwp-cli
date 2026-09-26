@@ -755,7 +755,7 @@ mod tests {
         png.extend(96u32.to_be_bytes());
         png.extend(96u32.to_be_bytes());
         png.extend([0u8; 8]);
-        let p = std::env::temp_dir().join("html_img_embed.png");
+        let p = std::env::temp_dir().join(format!("html_img_embed-{}.png", std::process::id()));
         std::fs::write(&p, &png).unwrap();
         crate::image::insert_image(&mut doc, "사진:", &p, crate::image::ImageSize::Natural)
             .unwrap();
@@ -765,6 +765,7 @@ mod tests {
             crate::base64::encode(&png)
         );
         assert!(html.contains(&expect), "data URI 임베드: {html}");
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

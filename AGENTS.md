@@ -79,7 +79,8 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
   held (guarded by `optional_fixture_missing`), which stay counted but never fail the run.
   CI and the release-readiness workflow have no fixtures by the data policy, so they do not set
   it (it would always fail) and only print the count; the strict local run is a release-readiness
-  checklist item instead. New fixture guards go through
+  checklist item instead. After a failed test step the count stops early, so a `check: FAILED`
+  line labels it `(partial)`. New fixture guards go through
   `crates/hwp-cli/tests/common/fixture_skip.rs` (`fixture_missing`), never a bare `exists()`.
 - **Run it before reporting a task complete, and paste the output.** For a partial run during development,
   call the single command directly (clippy only, test only) - but the full script is what gates the PR.

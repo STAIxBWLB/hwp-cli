@@ -3434,8 +3434,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_hardlink_and_special_destinations_are_rejected() {
+        use std::os::unix::ffi::OsStrExt;
         use std::os::unix::fs::symlink;
-        use std::os::unix::net::UnixListener;
 
         let dir = test_dir("unsafe-targets");
         let original = dir.join("original.hwpx");
@@ -3465,16 +3465,22 @@ mod tests {
             .is_err()
         );
 
-        let socket_path = dir.join("socket.hwpx");
-        let _listener = UnixListener::bind(&socket_path).unwrap();
+        // A FIFO, not a Unix socket: binding a socket fails once the path exceeds
+        // SUN_LEN (~104 bytes), which a long TMPDIR reaches (#349).
+        let fifo_path = dir.join("fifo.hwpx");
+        let c_path = std::ffi::CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: CString::new rejected interior NULs, and c_path outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let err = write_validated(
+            &fifo_path,
+            None,
+            |staged| fs::write(staged, b"NEW").map_err(Into::into),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
         assert!(
-            write_validated(
-                &socket_path,
-                None,
-                |staged| fs::write(staged, b"NEW").map_err(Into::into),
-                |_, _| Ok(())
-            )
-            .is_err()
+            format!("{err:#}").contains("일반 파일이 아닙니다"),
+            "{err:#}"
         );
         assert_eq!(fs::read(&original).unwrap(), b"ORIGINAL");
         fs::remove_dir_all(dir).unwrap();
