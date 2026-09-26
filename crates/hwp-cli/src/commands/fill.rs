@@ -299,8 +299,9 @@ fn replaced_total(values: &BTreeMap<String, String>, counts: &BTreeMap<String, u
 /// `--allow-partial` with nothing to change on an IR path: publish the input unchanged, as the
 /// placeholder path does. When the output is the input's own format, the published bytes are a
 /// private, size-bound snapshot of the input, checked to still read as `original`, the document
-/// the fill examined. Another output format makes the fill a plain conversion, so it goes
-/// through `hwp convert` (the fill writer's re-read check does not hold across formats).
+/// the fill examined. The other HWP format (`.hwp`/`.hwpx`) makes the fill a plain conversion,
+/// so it goes through `hwp convert` (the fill writer's re-read check does not hold across
+/// formats); any other extension is refused, as the writer refuses it.
 fn publish_unchanged(
     input: &Path,
     output: &Path,
