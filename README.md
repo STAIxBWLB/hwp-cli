@@ -430,8 +430,8 @@ and occurrence count. `hwp fill --forms` fills them from the same `--data` or `-
 pass: the cell next to or below a label cell, the text after an inline label, `학년(  )반` blanks,
 `□동의` checkboxes and `(비고:   )` blanks. A non-empty value cell, and the inline text after
 `라벨:` (up to a comma, semicolon, the next `라벨:` or the line end), is overwritten, as kordoc does;
-the report warns for each overwritten cell. A cell holding a field (누름틀), picture or table is
-never written. Keys match with spaces, colons and parentheses ignored, and `--json` adds the
+the report warns for each overwrite. A cell holding a field (누름틀), picture or table is never
+written, and values are inserted literally. Keys match with spaces, colons and parentheses ignored, and `--json` adds the
 `unmatched` keys. The rules are ported from [kordoc](https://github.com/chrisryugj/kordoc) (MIT).
 This path goes through the IR and writes `.hwpx` only: the sections it changed are rewritten the
 way `hwp edit` writes them, and every other section and package entry is copied byte for byte.

@@ -162,8 +162,8 @@ fn merge(fields: &mut BTreeMap<String, FormField>, label: &str, source: FormFiel
 /// What [`fill_form_fields`] did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FormFill {
-    /// Fills per key as the caller spelled it. A key that normalizes to nothing is left out,
-    /// as kordoc drops it.
+    /// Fills per key as the caller spelled it. A key that normalizes to nothing is left out
+    /// (kordoc drops it) and named in `warnings`.
     pub counts: BTreeMap<String, usize>,
     /// Keys that matched nothing. A checkbox left unchecked by a falsy value did match.
     pub unmatched: Vec<String>,
@@ -174,20 +174,24 @@ pub struct FormFill {
 /// Fill the slots and form fields of `doc` from `values` in one pass.
 ///
 /// Keys are compared after [`normalize_label`], and two keys that normalize alike are refused.
-/// Every edit reads the unfilled text, so a value is never rewritten by a later step:
+/// Every edit is found on the unfilled text and applied once, so a value is literal: nothing a
+/// value inserts is read again.
 ///
 /// 1. The value cell of every label cell whose normalized text matches a key (kordoc's
 ///    `find_matching_key`) is resolved: the adjacent cell when it is blank (empty or one slot),
 ///    else the cell below a complete header row when that is blank, else the adjacent cell
-///    unless it is itself a keyword label. A non-blank cell is overwritten with a warning; a
-///    cell holding controls (a field, a picture, a table) is never written, with a warning.
-/// 2. Outside table cells, the text after `라벨:` is replaced: up to a comma, semicolon, line
-///    end, the next `라벨:` on the line, or 100 characters. Inside cells, `라벨(  )` blanks,
-///    `□옵션` checkboxes (checked when the value is truthy; a falsy value leaves the box but
-///    counts as matched) and `(라벨:  )` annotations are filled.
-/// 3. `{{ name }}` slots, matched by normalized name as in kordoc, in one literal pass
-///    ([`crate::replace_slots`]).
-/// 4. The value cells from step 1, written with [`crate::set_cell`].
+///    unless it is itself a keyword label. A cell that a text edit of step 2 fills in place (a
+///    requested slot, blank, checkbox or annotation) is left to that edit. A non-blank cell is
+///    overwritten with a warning; a cell holding controls (a field, a picture, a table) is never
+///    written, with a warning.
+/// 2. In every text segment, candidate edits are collected on the unfilled text in this order,
+///    and one that overlaps an accepted edit is dropped with a warning:
+///    - `{{ name }}` slots, matched by normalized name as in kordoc;
+///    - outside table cells, the text after `라벨:`, up to a comma, semicolon, line end, the
+///      next `라벨:` on the line, or 100 characters;
+///    - inside table cells, `라벨(  )` blanks, `□옵션` checkboxes (checked when the value is
+///      truthy; a falsy value leaves the box but counts as matched) and `(라벨:  )` annotations.
+/// 3. The value cells from step 1, written with [`crate::set_cell`]. No text edit reached them.
 ///
 /// A slot owns its text: a label whose value text or value cell holds a requested slot is left
 /// to the slot, so one place is filled once. When two keys reach one place, the first keeps it
@@ -198,9 +202,13 @@ pub fn fill_form_fields(
 ) -> Result<FormFill, String> {
     let mut lookup: BTreeMap<String, String> = BTreeMap::new();
     let mut spelled: BTreeMap<String, &str> = BTreeMap::new();
+    let mut warnings = Vec::new();
     for (name, value) in values {
         let key = normalize_label(name);
         if key.is_empty() {
+            warnings.push(format!(
+                "키 {name:?}는 공백·쌍점·괄호를 빼면 비어 있어 쓰지 않습니다"
+            ));
             continue;
         }
         if let Some(other) = spelled.insert(key.clone(), name) {
@@ -213,7 +221,7 @@ pub fn fill_form_fields(
     let mut run = FillRun {
         values: &lookup,
         counts: BTreeMap::new(),
-        warnings: Vec::new(),
+        warnings,
     };
 
     // 1. Value cells, on the unfilled document.
@@ -236,7 +244,7 @@ pub fn fill_form_fields(
             key,
             controls: has_controls(cell),
             blank: is_blank_value(&text),
-            slot_keys: requested_slot_keys(&text, &lookup),
+            edit_keys: cell_edit_keys(cell, &lookup),
             text,
         };
         Some((target_cell, target))
@@ -260,11 +268,11 @@ pub fn fill_form_fields(
                 "{place}: 누름틀·그림·표 같은 개체가 있는 칸이라 {:?} 값을 쓰지 않습니다",
                 cell.key
             ));
-        } else if !cell.slot_keys.is_empty() {
-            // The slot in the cell fills it (step 3).
-            if !cell.slot_keys.contains(&cell.key) {
+        } else if !cell.edit_keys.is_empty() {
+            // A slot or blank in the cell fills it in place (step 2).
+            if !cell.edit_keys.contains(&cell.key) {
                 run.warnings.push(format!(
-                    "{place}: 자리표시자가 있는 칸이라 {:?} 값 대신 자리표시자를 채웁니다",
+                    "{place}: 칸 안의 자리표시자·빈칸을 채우므로 {:?} 값은 쓰지 않습니다",
                     cell.key
                 ));
             }
@@ -280,26 +288,14 @@ pub fn fill_form_fields(
         }
     }
 
-    // 2. Inline labels and cell blanks, on the unfilled text.
+    // 2. Slots, inline labels and cell blanks, on the unfilled text.
     for section in &mut doc.sections {
         for para in &mut section.paragraphs {
             run.fill_text(para, false);
         }
     }
 
-    // 3. Slots, keyed the kordoc way (`{{성 명}}` is key `성명`).
-    let slot_values: BTreeMap<String, String> = crate::scan_placeholders(doc)
-        .into_iter()
-        .filter_map(|slot| {
-            let value = lookup.get(&normalize_label(&slot.name))?.clone();
-            Some((slot.name, value))
-        })
-        .collect();
-    for (name, count) in crate::replace_slots(doc, &slot_values)? {
-        *run.counts.entry(normalize_label(&name)).or_default() += count;
-    }
-
-    // 4. Value cells.
+    // 3. Value cells. Step 1 kept every cell a text edit fills out of `targets`.
     for (key, at) in &targets {
         crate::set_cell(doc, at.table, at.row, at.col, &lookup[key])?;
         *run.counts.entry(key.clone()).or_default() += 1;
@@ -329,8 +325,8 @@ struct TargetCell {
     text: String,
     controls: bool,
     blank: bool,
-    /// Requested keys of the slots the cell holds.
-    slot_keys: Vec<String>,
+    /// Keys a text edit fills inside the cell: its requested slots, blanks and checkboxes.
+    edit_keys: Vec<String>,
 }
 
 /// Normalized keys of the requested slots in `text`.
@@ -339,6 +335,17 @@ fn requested_slot_keys(text: &str, values: &BTreeMap<String, String>) -> Vec<Str
         .into_iter()
         .map(|token| normalize_label(token.name))
         .filter(|key| values.contains_key(key))
+        .collect()
+}
+
+/// Keys that step 2 of [`fill_form_fields`] fills inside `cell`, found the way it finds them.
+fn cell_edit_keys(cell: &Cell, values: &BTreeMap<String, String>) -> Vec<String> {
+    let mut ignored = Vec::new();
+    cell.paragraphs
+        .iter()
+        .flat_map(text_segments)
+        .flat_map(|(_, seg)| segment_candidates(&seg, true, values, &mut ignored))
+        .map(|candidate| candidate.key)
         .collect()
 }
 
@@ -355,22 +362,20 @@ struct FillRun<'a> {
 }
 
 impl FillRun<'_> {
-    fn count(&mut self, key: &str, n: usize) {
-        *self.counts.entry(key.to_string()).or_default() += n;
-    }
-
     /// Step 2 of [`fill_form_fields`] on `para` and its nested paragraphs. Returns whether
     /// anything changed, so a text box on the way drops its now stale raw XML.
     fn fill_text(&mut self, para: &mut Paragraph, in_cell: bool) -> bool {
-        let mut changed = if in_cell {
-            // In turn, as kordoc chains them on one cell's text.
-            let paren = splice_segments(para, |seg| self.paren_blanks(seg));
-            let checkbox = splice_segments(para, |seg| self.checkboxes(seg));
-            let annotation = splice_segments(para, |seg| self.annotations(seg));
-            paren | checkbox | annotation
-        } else {
-            splice_segments(para, |seg| self.inline_values(seg))
-        };
+        let values = self.values;
+        let mut changed = splice_segments(para, |seg| {
+            let mut edits = Vec::new();
+            for candidate in segment_candidates(seg, in_cell, values, &mut self.warnings) {
+                *self.counts.entry(candidate.key).or_default() += candidate.fills;
+                self.warnings.extend(candidate.warning);
+                edits.extend(candidate.edits);
+            }
+            edits.sort_by_key(|(range, _)| range.start);
+            edits
+        });
         for ctrl in &mut para.controls {
             match ctrl {
                 Control::Table(table) => {
@@ -397,112 +402,214 @@ impl FillRun<'_> {
         }
         changed
     }
+}
 
-    /// `라벨: ...` becomes `라벨: 값`. The separator and the old value are spliced apart, so
-    /// the value keeps the char shape of the text it replaces, not of the colon.
-    fn inline_values(&mut self, seg: &str) -> Vec<(Range<usize>, String)> {
-        let mut edits = Vec::new();
-        for inline in inline_labels(seg) {
-            let key = normalize_label(&seg[inline.label.clone()]);
-            let Some(value) = self.values.get(&key) else {
-                continue;
-            };
-            let slot_keys = requested_slot_keys(&seg[inline.value.clone()], self.values);
-            if !slot_keys.is_empty() {
-                // The slot after the label fills it (step 3).
-                if !slot_keys.contains(&key) {
-                    self.warnings.push(format!(
-                        "\"{}:\" 뒤에 자리표시자가 있어 {key:?} 값 대신 자리표시자를 채웁니다",
-                        &seg[inline.label]
-                    ));
-                }
-                continue;
-            }
-            self.count(&key, 1);
-            if inline.value.is_empty() {
-                edits.push((inline.separator, format!(": {value}")));
-            } else {
-                if &seg[inline.separator.clone()] != ": " {
-                    edits.push((inline.separator, ": ".to_string()));
-                }
-                edits.push((inline.value, value.clone()));
-            }
-        }
-        edits
+/// One field a text pass found in a segment of unfilled text.
+struct Candidate {
+    key: String,
+    /// The text it covers. A later candidate overlapping an accepted one is dropped.
+    span: Range<usize>,
+    /// Byte ranges of the segment with their replacements, in order.
+    edits: Vec<(Range<usize>, String)>,
+    /// Fills it counts. A box left unchecked counts 0 and still matched.
+    fills: usize,
+    warning: Option<String>,
+}
+
+/// The accepted candidates of one segment, all found on its unfilled text: slots first, then
+/// inline labels outside cells, or paren blanks, checkboxes and annotations inside them. A
+/// candidate that overlaps an accepted one is dropped with a warning in `warnings`, which also
+/// takes a label's note that it yields to another key's slot.
+fn segment_candidates(
+    seg: &str,
+    in_cell: bool,
+    values: &BTreeMap<String, String>,
+    warnings: &mut Vec<String>,
+) -> Vec<Candidate> {
+    let mut found = slot_candidates(seg, values);
+    if in_cell {
+        found.extend(paren_candidates(seg, values));
+        found.extend(checkbox_candidates(seg, values));
+        found.extend(annotation_candidates(seg, values));
+    } else {
+        found.extend(inline_candidates(seg, values, warnings));
     }
-
-    /// `라벨(  )접미` becomes `라벨(값)접미`, keyed `라벨접미`, else `라벨`.
-    fn paren_blanks(&mut self, seg: &str) -> Vec<(Range<usize>, String)> {
-        let mut edits = Vec::new();
-        for caps in PAREN_BLANK.captures_iter(seg) {
-            let (Some(whole), Some(prefix)) = (caps.get(0), caps.get(1)) else {
-                continue;
-            };
-            let suffix = caps.get(2).map_or("", |m| m.as_str());
-            let both = normalize_label(&format!("{}{suffix}", prefix.as_str()));
-            let key = if self.values.contains_key(&both) {
-                both
-            } else {
-                normalize_label(prefix.as_str())
-            };
-            let Some(value) = self.values.get(&key) else {
-                continue;
-            };
-            // The blank between `(` and `)`.
-            edits.push((
-                prefix.end() + 1..whole.end() - suffix.len() - 1,
-                value.clone(),
+    let mut accepted: Vec<Candidate> = Vec::new();
+    for candidate in found {
+        let span = &candidate.span;
+        if accepted
+            .iter()
+            .any(|a| a.span.start < span.end && span.start < a.span.end)
+        {
+            warnings.push(format!(
+                "{:?}: 먼저 채운 자리와 겹쳐 {:?} 값을 쓰지 않습니다",
+                &seg[span.clone()],
+                candidate.key
             ));
-            self.count(&key, 1);
+            continue;
         }
-        edits
+        accepted.push(candidate);
     }
+    accepted
+}
 
-    /// `□옵션` becomes `☑옵션` when the value is truthy.
-    fn checkboxes(&mut self, seg: &str) -> Vec<(Range<usize>, String)> {
+/// `{{ name }}` becomes the value of its normalized name.
+fn slot_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidate> {
+    hwp_model::slot_tokens(seg)
+        .into_iter()
+        .filter_map(|token| {
+            let key = normalize_label(token.name);
+            let value = values.get(&key)?.clone();
+            Some(Candidate {
+                key,
+                span: token.range.clone(),
+                edits: vec![(token.range, value)],
+                fills: 1,
+                warning: None,
+            })
+        })
+        .collect()
+}
+
+/// `라벨: ...` becomes `라벨: 값`. The separator and the old value are spliced apart, so the
+/// value keeps the char shape of the text it replaces, not of the colon.
+fn inline_candidates(
+    seg: &str,
+    values: &BTreeMap<String, String>,
+    warnings: &mut Vec<String>,
+) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for inline in inline_labels(seg) {
+        let label = &seg[inline.label.clone()];
+        let key = normalize_label(label);
+        let Some(value) = values.get(&key) else {
+            continue;
+        };
+        let old = &seg[inline.value.clone()];
+        let slot_keys = requested_slot_keys(old, values);
+        if !slot_keys.is_empty() {
+            // The slot after the label fills it.
+            if !slot_keys.contains(&key) {
+                warnings.push(format!(
+                    "\"{label}:\" 뒤에 자리표시자가 있어 {key:?} 값 대신 자리표시자를 채웁니다"
+                ));
+            }
+            continue;
+        }
+        let old = old.trim();
+        let warning = (!old.is_empty() && old != value.trim())
+            .then(|| format!("\"{label}:\" 뒤의 기존 내용을 {key:?} 값으로 덮어씁니다: {old:?}"));
         let mut edits = Vec::new();
-        for caps in CHECKBOX.captures_iter(seg) {
-            let Some(whole) = caps.get(0) else {
-                continue;
-            };
-            let key = normalize_label(&caps[1]);
-            let Some(value) = self.values.get(&key) else {
-                continue;
-            };
-            if is_truthy_checkbox(value) {
-                edits.push((
+        if inline.value.is_empty() {
+            // A blank value keeps a space before a following label.
+            let space = if inline.before_label { " " } else { "" };
+            edits.push((inline.separator.clone(), format!(": {value}{space}")));
+        } else {
+            if &seg[inline.separator.clone()] != ": " {
+                edits.push((inline.separator.clone(), ": ".to_string()));
+            }
+            edits.push((inline.value.clone(), value.clone()));
+        }
+        found.push(Candidate {
+            key,
+            span: inline.label.start..inline.value.end.max(inline.separator.end),
+            edits,
+            fills: 1,
+            warning,
+        });
+    }
+    found
+}
+
+/// `라벨(  )접미` becomes `라벨(값)접미`, keyed `라벨접미`, else `라벨`.
+fn paren_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for caps in PAREN_BLANK.captures_iter(seg) {
+        let (Some(whole), Some(prefix)) = (caps.get(0), caps.get(1)) else {
+            continue;
+        };
+        let suffix = caps.get(2).map_or("", |m| m.as_str());
+        let both = normalize_label(&format!("{}{suffix}", prefix.as_str()));
+        let key = if values.contains_key(&both) {
+            both
+        } else {
+            normalize_label(prefix.as_str())
+        };
+        let Some(value) = values.get(&key) else {
+            continue;
+        };
+        // The blank between `(` and `)`.
+        let blank = prefix.end() + 1..whole.end() - suffix.len() - 1;
+        found.push(Candidate {
+            key,
+            span: whole.range(),
+            edits: vec![(blank, value.clone())],
+            fills: 1,
+            warning: None,
+        });
+    }
+    found
+}
+
+/// `□옵션` becomes `☑옵션` when the value is truthy.
+fn checkbox_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for caps in CHECKBOX.captures_iter(seg) {
+        let Some(whole) = caps.get(0) else {
+            continue;
+        };
+        let key = normalize_label(&caps[1]);
+        let Some(value) = values.get(&key) else {
+            continue;
+        };
+        found.push(if is_truthy_checkbox(value) {
+            Candidate {
+                key,
+                span: whole.range(),
+                edits: vec![(
                     whole.start()..whole.start() + '□'.len_utf8(),
                     "☑".to_string(),
-                ));
-                self.count(&key, 1);
-            } else {
-                // Found and deliberately left unchecked: matched, not missing.
-                self.count(&key, 0);
-                self.warnings.push(format!(
+                )],
+                fills: 1,
+                warning: None,
+            }
+        } else {
+            // Found and deliberately left unchecked: matched, not missing.
+            Candidate {
+                key,
+                span: whole.range(),
+                edits: Vec::new(),
+                fills: 0,
+                warning: Some(format!(
                     "{}: 값 {value:?}이 참이 아니라 체크하지 않습니다",
                     whole.as_str()
-                ));
+                )),
             }
-        }
-        edits
+        });
     }
+    found
+}
 
-    /// `(라벨:  )` becomes `(라벨: 값)`.
-    fn annotations(&mut self, seg: &str) -> Vec<(Range<usize>, String)> {
-        let mut edits = Vec::new();
-        for caps in ANNOTATION_BLANK.captures_iter(seg) {
-            let (Some(whole), Some(label)) = (caps.get(0), caps.get(1)) else {
-                continue;
-            };
-            let key = normalize_label(label.as_str());
-            let Some(value) = self.values.get(&key) else {
-                continue;
-            };
-            edits.push((label.end()..whole.end() - 1, format!(": {value}")));
-            self.count(&key, 1);
-        }
-        edits
+/// `(라벨:  )` becomes `(라벨: 값)`.
+fn annotation_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for caps in ANNOTATION_BLANK.captures_iter(seg) {
+        let (Some(whole), Some(label)) = (caps.get(0), caps.get(1)) else {
+            continue;
+        };
+        let key = normalize_label(label.as_str());
+        let Some(value) = values.get(&key) else {
+            continue;
+        };
+        found.push(Candidate {
+            key,
+            span: whole.range(),
+            edits: vec![(label.end()..whole.end() - 1, format!(": {value}"))],
+            fills: 1,
+            warning: None,
+        });
     }
+    found
 }
 
 /// One inline `라벨: 값` in a text segment, as byte ranges.
@@ -513,10 +620,16 @@ struct InlineLabel {
     /// kordoc's value: up to a comma, semicolon, line end or 100 characters. It also stops at
     /// the next `라벨:` on the line, so filling one label never deletes the next (#365 review).
     value: Range<usize>,
+    /// The value was cut short by a following `라벨:`.
+    before_label: bool,
 }
 
 fn inline_labels(seg: &str) -> Vec<InlineLabel> {
+    // Both lists are in text order and each is read with a forward cursor or a binary search,
+    // so a long segment costs linear work, not a scan to its end per label.
     let slots = hwp_model::slot_tokens(seg);
+    let next_labels: Vec<Range<usize>> = NEXT_LABEL.find_iter(seg).map(|m| m.range()).collect();
+    let mut next_at = 0usize;
     let mut labels = Vec::new();
     let mut at = 0usize;
     while let Some(caps) = INLINE_HEAD.captures_at(seg, at) {
@@ -524,7 +637,8 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
             break;
         };
         // `라벨:` inside a slot name (`{{기간: 시작}}`) is part of the slot.
-        if slots.iter().any(|slot| slot.range.contains(&label.start())) {
+        let before = slots.partition_point(|slot| slot.range.start <= label.start());
+        if before > 0 && slots[before - 1].range.contains(&label.start()) {
             at = whole.end();
             continue;
         }
@@ -535,28 +649,44 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
             .take_while(|(_, c)| !matches!(c, '\n' | ',' | ';'))
             .last()
             .map_or(start, |(i, c)| start + i + c.len_utf8());
-        if let Some(next) = NEXT_LABEL
-            .find_at(seg, start)
-            .filter(|next| next.start() < end)
+        while next_labels
+            .get(next_at)
+            .is_some_and(|next| next.start < start)
         {
-            end = start + seg[start..next.start()].trim_end().len();
+            next_at += 1;
+        }
+        let mut before_label = false;
+        if let Some(next) = next_labels.get(next_at).filter(|next| next.start < end) {
+            // The pattern takes at most 10 letters, so a longer label matches mid-word: cut
+            // before the whole word, never inside the next label.
+            let cut = start
+                + seg[start..next.start]
+                    .trim_end_matches(is_label_letter)
+                    .len();
+            end = start + seg[start..cut].trim_end().len();
+            before_label = true;
         }
         // A slot later in the value is a field of its own. One right after the label is the
         // label's value, which the slot fills.
-        if let Some(slot) = slots
-            .iter()
-            .find(|slot| slot.range.start > start && slot.range.start < end)
-        {
+        let later = slots.partition_point(|slot| slot.range.start <= start);
+        if let Some(slot) = slots.get(later).filter(|slot| slot.range.start < end) {
             end = start + seg[start..slot.range.start].trim_end().len();
+            before_label = false;
         }
         labels.push(InlineLabel {
             label: label.range(),
             separator: label.end()..start,
             value: start..end,
+            before_label,
         });
         at = end.max(whole.end());
     }
     labels
+}
+
+/// A letter of kordoc's label pattern, `[가-힣A-Za-z]`.
+fn is_label_letter(ch: char) -> bool {
+    ('가'..='힣').contains(&ch) || ch.is_ascii_alphabetic()
 }
 
 /// Splice, in each text segment of `para`, the edits `find` returns for it: byte ranges of
@@ -1085,12 +1215,102 @@ mod tests {
         assert_eq!(para.plain_text(), "담당자: A\tB\nC");
     }
 
-    /// A key that normalizes to nothing is dropped, as kordoc does, not reported unmatched.
+    /// A key that normalizes to nothing is dropped, as kordoc does, not reported unmatched,
+    /// and a warning names it.
     #[test]
     fn a_key_that_normalizes_to_nothing_is_dropped() {
         let mut doc = from_markdown("담당자: 미정\n");
         let fill = fill_form_fields(&mut doc, &values(&[(" : ", "x"), ("담당자", "A")])).unwrap();
         assert!(!fill.counts.contains_key(" : "));
         assert!(fill.unmatched.is_empty());
+        assert!(
+            fill.warnings.iter().any(|w| w.contains("\" : \"")),
+            "{fill:?}"
+        );
+    }
+
+    /// Every edit is found on the unfilled text: a value that spells a slot, a checkbox or a
+    /// blank is inserted literally and never filled again.
+    #[test]
+    fn values_are_literal() {
+        let mut doc = from_markdown("담당자: 미정\n\n{{성명}}\n");
+        let fill = fill_form_fields(
+            &mut doc,
+            &values(&[("담당자", "{{성명}}"), ("성명", "홍길동")]),
+        )
+        .unwrap();
+        assert_eq!(fill.counts["성명"], 1, "{fill:?}");
+        assert_eq!(fill.counts["담당자"], 1, "{fill:?}");
+        let text = doc.plain_text();
+        assert!(text.contains("담당자: {{성명}}\n홍길동"), "{text}");
+
+        let mut doc = from_markdown("| 학년(   )반 |\n|---|\n| x |\n");
+        let fill =
+            fill_form_fields(&mut doc, &values(&[("학년반", "□확인"), ("확인", "v")])).unwrap();
+        assert_eq!(fill.counts["학년반"], 1);
+        assert_eq!(fill.unmatched, ["확인"], "{fill:?}");
+        assert!(doc.plain_text().contains("학년(□확인)반"));
+    }
+
+    /// A text edit never touches a value cell `set_cell` writes: a cell holding a requested
+    /// checkbox is left to the checkbox, and the label that pointed at it yields with a warning.
+    #[test]
+    fn a_value_cell_a_text_edit_fills_is_not_overwritten() {
+        let mut doc = from_markdown("| 구분 | □신규 □변경 |\n|---|---|\n");
+        let fill = fill_form_fields(&mut doc, &values(&[("구분", "신규"), ("신규", "v")])).unwrap();
+        assert_eq!(fill.counts["신규"], 1);
+        assert_eq!(fill.unmatched, ["구분"], "{fill:?}");
+        assert!(
+            fill.warnings.iter().any(|w| w.contains("\"구분\"")),
+            "{fill:?}"
+        );
+        assert!(doc.plain_text().contains("구분\t☑신규 □변경"));
+    }
+
+    /// A blank inline value keeps a space before a following label.
+    #[test]
+    fn a_blank_inline_value_keeps_the_next_label_apart() {
+        let mut doc = from_markdown("성명:    연락처: 010\n");
+        fill_form_fields(&mut doc, &values(&[("성명", "홍길동")])).unwrap();
+        assert_eq!(doc.plain_text().trim(), "성명: 홍길동 연락처: 010");
+    }
+
+    /// Replacing different inline text is warned; the same text is not.
+    #[test]
+    fn an_inline_overwrite_is_warned() {
+        let mut doc = from_markdown("보존기간 : 5년\n");
+        let fill = fill_form_fields(&mut doc, &values(&[("보존기간", "10년")])).unwrap();
+        assert!(
+            fill.warnings
+                .iter()
+                .any(|w| w.contains("보존기간") && w.contains("5년")),
+            "{fill:?}"
+        );
+        assert_eq!(doc.plain_text().trim(), "보존기간: 10년");
+
+        let mut doc = from_markdown("보존기간: 10년\n");
+        let fill = fill_form_fields(&mut doc, &values(&[("보존기간", "10년")])).unwrap();
+        assert!(fill.warnings.is_empty(), "{fill:?}");
+    }
+
+    /// A following label longer than the pattern's 10 letters is cut before, never inside.
+    #[test]
+    fn a_long_next_label_stays_whole() {
+        let mut doc = from_markdown("비고: 미정 가나다라마바사아자차카: x\n");
+        fill_form_fields(&mut doc, &values(&[("비고", "없음")])).unwrap();
+        assert_eq!(
+            doc.plain_text().trim(),
+            "비고: 없음 가나다라마바사아자차카: x"
+        );
+    }
+
+    /// Many inline labels with no `라벨: ` after them: each value search stays local. A search
+    /// to the end of the segment per label made this quadratic.
+    #[test]
+    fn many_inline_labels_scan_in_linear_time() {
+        let seg = "ab:x, ".repeat(20_000);
+        let labels = inline_labels(&seg);
+        assert_eq!(labels.len(), 20_000);
+        assert!(labels.iter().all(|label| !label.before_label));
     }
 }

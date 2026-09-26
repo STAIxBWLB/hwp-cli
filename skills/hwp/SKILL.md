@@ -101,8 +101,8 @@ syntax (used by `fill`, `slots` and the template tools).
   `--forms` also fills Korean form fields from the same values (hwpx): the cell next to or below
   a label cell, inline `라벨: 값`, `라벨(  )` blanks, `□옵션` checkboxes, `(라벨:  )` blanks;
   keys match with spaces, colons and parentheses ignored, and `--json` adds `unmatched`.
-  A non-empty value cell and the text after `라벨:` are overwritten (warned per cell); cells
-  holding a field, picture or table are never written.
+  A non-empty value cell and the text after `라벨:` are overwritten (each overwrite is warned);
+  cells holding a field, picture or table are never written, and values are inserted literally.
 - `hwp compose {spec.json|yaml} -o {output}` — deterministic composition from DocumentSpec
   v1/v2. `--dry-run` validates without writing; `--report` prints the run report as JSON.
 - `hwp template {template} --data {data} -o {output}` — typed native HWP/HWPX generation from

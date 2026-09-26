@@ -97,7 +97,8 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   `--forms`는 같은 값으로 한국 공문서 양식 필드도 채웁니다 (hwpx): 레이블 셀 옆·아래 칸,
   본문의 `라벨: 값`, `라벨(  )` 빈칸, `□항목` 확인란, `(라벨:  )` 빈칸. 키는 공백·쌍점·괄호를
   무시하고 비교하며, `--json`에 `unmatched`가 추가됩니다. 비어 있지 않은 값 칸과 `라벨:` 뒤
-  텍스트는 덮어쓰고(칸마다 경고), 누름틀·그림·표가 든 칸은 쓰지 않습니다.
+  텍스트는 덮어쓰고(덮어쓸 때마다 경고), 누름틀·그림·표가 든 칸은 쓰지 않으며, 값은 그대로
+  넣습니다.
 - `hwp compose {spec.json|yaml} -o {output}` — DocumentSpec v1/v2로부터의 결정적 조립.
   `--dry-run`은 쓰기 없이 검증만; `--report`는 실행 보고서를 JSON으로 출력.
 - `hwp template {template} --data {data} -o {output}` — TemplateSpec/Data v1로부터의
