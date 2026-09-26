@@ -163,6 +163,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
     destination and the source where the other half of the move left them, and a destination
     inside the moved paragraph is refused.
 
+**Documentation**
+
+- `deploy/aws/README.md` (and `README.ko.md`): a runbook for running `hwp serve` as an MCP server
+  on AWS Bedrock AgentCore Runtime, from image build and IAM role to runtime creation, IAM and
+  Cognito JWT invocation, release updates, teardown and cost. The Tier B framing gate is passed:
+  AgentCore forwards `/mcp` bodies length-framed on platforms V1 and V2 and de-chunks an HTTP/1.1
+  chunked client body, so `hwp serve` needs no chunked request decoding
+  ([#318](https://github.com/STAIxBWLB/hwp-cli/issues/318)). `docs/design/22-remote-mcp-deployment`
+  §6.3 records the result.
+
 ## [1.1.0]
 
 **Compatibility**
