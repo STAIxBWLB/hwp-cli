@@ -4228,25 +4228,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
     }
 
-    /// With `parts`, `values` stay literal text: a value starting with `@` is not read as a
-    /// part path (so nothing outside the roots is read), and a name holding `=` keeps its key.
-    #[test]
-    fn mcp_fill_values_stay_literal_beside_parts() {
-        let (base, root, outside) = sandbox_dirs("fill-literal");
-        let secret = outside.join("secret.md");
-        std::fs::write(&secret, "OUTSIDE-CONTENT\n").unwrap();
+    /// Fill `template` (markdown) with `values` beside one inside part, under `--root`, and
+    /// return the output text.
+    fn fill_beside_a_part(tag: &str, template_md: &str, values: Value) -> (PathBuf, String) {
+        let (base, root, _) = sandbox_dirs(tag);
         let template = root.join("template.hwpx");
-        create_hwpx(&template, "# 제목\n\n{{본문}}\n\n{{x}}\n\n식: {{a=b}}");
+        create_hwpx(&template, template_md);
         let part = root.join("part.md");
         std::fs::write(&part, "부분 본문\n").unwrap();
         let out = root.join("out.hwpx");
         let sandbox = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
-        let at_secret = format!("@{}", secret.display());
         tool_fill(
             &json!({
                 "input": template,
                 "output": out,
-                "values": {"x": at_secret, "a=b": "v"},
+                "values": values,
                 "parts": {"본문": part.display().to_string()}
             }),
             &sandbox,
@@ -4256,9 +4252,35 @@ mod tests {
             .unwrap()
             .plain_text();
         assert!(plain.contains("부분 본문"), "{plain}");
-        // `{{x}}` stands alone, so reading the value as a part would splice the outside file.
-        assert!(plain.contains(&at_secret), "{plain}");
+        (base, plain)
+    }
+
+    /// With `parts`, a value starting with `@` is literal text, never a part path, so nothing
+    /// outside the roots is read. `{{x}}` stands alone, so the old reading would splice the file.
+    #[test]
+    fn mcp_fill_values_stay_literal_beside_parts() {
+        let (_, _, outside) = sandbox_dirs("fill-literal");
+        let secret = outside.join("secret.md");
+        std::fs::write(&secret, "OUTSIDE-CONTENT\n").unwrap();
+        let at_secret = format!("@{}", secret.display());
+        let (base, plain) = fill_beside_a_part(
+            "fill-literal",
+            "# 제목\n\n{{본문}}\n\n{{x}}\n",
+            json!({"x": at_secret}),
+        );
         assert!(!plain.contains("OUTSIDE-CONTENT"), "{plain}");
+        assert!(plain.contains(&at_secret), "{plain}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// With `parts`, a value name holding `=` keeps its whole name.
+    #[test]
+    fn mcp_fill_names_keep_an_equals_sign_beside_parts() {
+        let (base, plain) = fill_beside_a_part(
+            "fill-equals",
+            "# 제목\n\n{{본문}}\n\n식: {{a=b}}\n",
+            json!({"a=b": "v"}),
+        );
         assert!(plain.contains("식: v"), "{plain}");
         let _ = std::fs::remove_dir_all(&base);
     }
