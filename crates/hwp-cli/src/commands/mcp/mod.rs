@@ -5261,6 +5261,32 @@ mod tests {
         }
     }
 
+    /// #358: MCP runs the CLI's apply loop, so a pattern-form `delete_para` that changes the list a
+    /// later addressed op points into is refused the same way, naming both ops, with no output.
+    #[test]
+    fn mcp_pattern_delete_before_an_address_in_its_list_is_refused() {
+        let source = temp_file("pattern-delete-address-source.hwpx");
+        let output = temp_file("pattern-delete-address-out.hwpx");
+        create_hwpx(&source, "첫째 문단\n\n둘째 문단\n\n셋째 문단\n");
+
+        let error = tool_edit(
+            &json!({
+                "input": source,
+                "output": output,
+                "delete_para": [{"matching": "둘째 문단"}],
+                "set_para": [{"address": {"at": {"section": 0, "paragraph": 2}}, "align": "center"}]
+            }),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("op[0] delete_para") && error.contains("op[1] set_para"),
+            "두 op를 모두 이름지어야 한다: {error}"
+        );
+        assert!(!output.exists(), "거부 시 출력을 쓰면 안 된다");
+        let _ = std::fs::remove_file(&source);
+    }
+
     /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
     /// through the CLI `--ops` channel — the two surfaces share one engine, not two parsers.
     #[test]

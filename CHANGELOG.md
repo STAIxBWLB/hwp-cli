@@ -22,6 +22,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - In the same report, a `style_tables` or `set_table_placement` whose result is already in effect
   is now `applied` with `pieces_touched` 0 instead of `failed` (below). The `pieces_touched`
   description says so, which moves the hash again; the shape is unchanged.
+- An `--ops` or MCP `hwp_edit` batch that puts an op with no address before an addressed op
+  whose path it changes is now refused. So is a `set_cell_by_label` after an op that adds or
+  removes a table (a `set_cell` that rewrites a cell holding one included), moves a paragraph
+  holding one, or changes any table's rows, columns or merges, and a `--set-cell-by-label` after a
+  cell write (`--set-cell` or an earlier label edit) that dropped a nested table (#358, below).
+  The checks are conservative: a change after the addressed paragraph in the same list, or to a
+  table other than the form, is refused too, although such a batch used to apply correctly. Put
+  the other op after the addressed and label ones, give an op with no address an address (this
+  only answers the first check), or split the edit in two. MCP `hwp_edit` applies op kinds in a
+  fixed order, so there the remedy is two calls.
 - The bytes of `certification-report-v1.schema.json` and `render-report-v1.schema.json` changed,
   for consumers that pin schema hashes. `render-report-v1` changed in descriptions only;
   `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
@@ -125,6 +135,33 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   notice meant for a `set_cell_by_label` label preflight could not resolve. Both now report
   `applied` with `pieces_touched` 0, on the CLI and MCP paths; the notice again only means a
   preflight miss ([#359](https://github.com/STAIxBWLB/hwp-cli/issues/359)).
+- `hwp edit --ops` and MCP `hwp_edit` could edit a different paragraph or cell than the one an
+  op named, and report success ([#358](https://github.com/STAIxBWLB/hwp-cli/issues/358)).
+  Addresses and form labels are resolved against the document before the batch, and a structural
+  op earlier in the batch moves what comes after it:
+  - An addressed `insert_para` or `delete_para` shifted every later address in the same list by
+    one, including those before it. A same-list `move_para` shifted none of the paragraphs
+    between its ends, and a cross-list one shifted every address in both lists by one. None of
+    them shifted the cell or text-box paragraphs below a body paragraph. A later address is now
+    shifted exactly: only at or after the splice, at any depth.
+  - An op with no address (a pattern, anchor or index form such as `delete_para` with
+    `matching`, `insert_para` with `anchor` or `add_table`) was not tracked at all. A batch in
+    which such an op adds or removes a paragraph, control or cell along a later addressed op's
+    path is now refused before anything is written, with an error naming both ops. The same ops
+    in the other order, or in lists the address does not pass through, still apply. An op that
+    rewrites a cell's paragraphs without changing their number (`set_cell`) is not caught: the
+    later address then names the new paragraph at the same position.
+  - A `set_cell_by_label` wrote the table index, row and column preflight found, so an earlier
+    op that moved a form above another, cloned or added a table ahead of it, inserted a row above
+    its label, or rewrote a cell holding a nested table wrote the value into another form or
+    another cell. A label edit after any op that adds or removes a table, moves a paragraph
+    holding one, or changes a table's rows, columns or merges is now refused (on the flag channel,
+    where only `--replace`, `--set-cell` and earlier label edits run first, after a cell write that
+    dropped a table).
+  - `move_para` into a cell or text box below its source, in the same list, panicked, and so did
+    the reverse, a cell paragraph moved out to before its own table. Both now find the
+    destination and the source where the other half of the move left them, and a destination
+    inside the moved paragraph is refused.
 
 ## [1.1.0]
 

@@ -220,8 +220,8 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
 /// set_page, set_format/set_align/set_para, indent_para/outdent_para, row/col
 /// surgery, set_cell_para, style_tables, delete_field, delete_bookmark). The text-
 /// and model-level assertions mirror the verified binary drive: replace payloads,
-/// field/hyperlink display text, the 라벨값/수정값 row on the first table, the
-/// untouched input form table as the second table, the clone removed, the doomed
+/// field/hyperlink display text, 수정값 on the added (first) table, 라벨값 in the
+/// input form table (second), the clone removed, the doomed
 /// para gone, the inserted picture deleted from its anchor paragraph, the seal left
 /// as a floating Picture with both image parts shipped in the package, and the
 /// indent/outdent round trip leaving the list paragraph back at its original level.
@@ -313,8 +313,8 @@ fn kind_coverage_all_33() {
 
     let dir = test_dir("kind-coverage");
     // The verified input document: the markdown form table feeds the label preflight
-    // (set_cell_by_label resolves against the ORIGINAL input document) and survives
-    // untouched as the second table.
+    // (set_cell_by_label resolves against the ORIGINAL input document) and ends up as the
+    // second table, holding the label edit's value.
     let md = dir.join("doc.md");
     std::fs::write(&md, KIND_COVERAGE_MD).unwrap();
     // insert_image/seal read their relative paths from the subprocess cwd.
@@ -396,9 +396,12 @@ fn kind_coverage_all_33() {
         2,
         "add_table + clone_table + delete_table(index 1) must leave exactly two tables"
     );
+    // set_cell_by_label resolves against the ORIGINAL document, so its label 항목 names the form
+    // table, and it runs before add_table puts a table ahead of that form (#358: after it, the
+    // preflight table index would name the added table and the batch is refused).
     assert!(
-        table_has_text(&tables[0], "라벨값") && table_has_text(&tables[0], "수정값"),
-        "set_cell + set_cell_by_label must land on the first table"
+        table_has_text(&tables[0], "수정값") && !table_has_text(&tables[0], "라벨값"),
+        "set_cell (table 0 once add_table ran) must land on the added table"
     );
     let label_hits: usize = tables
         .iter()
@@ -416,11 +419,11 @@ fn kind_coverage_all_33() {
         .sum();
     assert_eq!(
         label_hits, 1,
-        "the cloned table must be gone — 라벨값 may appear in exactly one cell"
+        "라벨값 must appear in exactly one cell, the form's value cell"
     );
     assert!(
-        table_has_text(&tables[1], "가") && table_has_text(&tables[1], "1"),
-        "the input form table must survive untouched as the second table"
+        table_has_text(&tables[1], "라벨값") && table_has_text(&tables[1], "1"),
+        "set_cell_by_label must fill the input form's 항목 value cell, now the second table"
     );
 
     // Model-level proxies for the image kinds: the inserted inline picture was
@@ -4230,6 +4233,478 @@ fn cell_path_prefix(doc: &hwp_model::Document, row: u16, col: u16) -> Vec<usize>
         }
     }
     panic!("cell ({row},{col}) not found");
+}
+
+// ── #358: structural ops shift later addresses exactly, or the batch is refused ─────────
+
+/// Runs `hwp edit --ops` with `ops` on `base` in `dir`; returns the output path, whether the run
+/// succeeded, and its stderr.
+fn run_ops_batch(dir: &Path, base: &Path, ops: &str) -> (PathBuf, bool, String) {
+    let ops_path = dir.join("ops.json");
+    std::fs::write(&ops_path, ops).unwrap();
+    let output = dir.join("out.hwpx");
+    let _ = std::fs::remove_file(&output);
+    let run = hwp()
+        .arg("edit")
+        .arg(base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops_path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    (output, run.status.success(), stderr)
+}
+
+/// The texts of the paragraphs in cell (`row`, `col`) of the first table.
+fn cell_texts(doc: &hwp_model::Document, row: u16, col: u16) -> Vec<String> {
+    let prefix = cell_path_prefix(doc, row, col);
+    let Control::Table(table) = &doc.sections[0].paragraphs[prefix[0]].controls[prefix[1]] else {
+        panic!("not a table");
+    };
+    table.cells[prefix[2]]
+        .paragraphs
+        .iter()
+        .map(|p| p.plain_text())
+        .collect()
+}
+
+/// The id of the first paragraph of cell (`row`, `col`) of the first table.
+fn cell_paragraph_id(doc: &hwp_model::Document, row: u16, col: u16) -> String {
+    let mut indices = cell_path_prefix(doc, row, col);
+    let Control::Table(table) = &doc.sections[0].paragraphs[indices[0]].controls[indices[1]] else {
+        panic!("not a table");
+    };
+    let paragraph = &table.cells[indices[2]].paragraphs[0];
+    indices.push(0);
+    hwp_convert::paragraph_id(
+        &hwp_convert::SegmentPath {
+            section: 0,
+            indices,
+        },
+        paragraph,
+    )
+}
+
+/// A splice moves only the paragraphs at or after it: an addressed op on a paragraph before an
+/// earlier insert, delete or move in the same list still edits the paragraph preflight resolved.
+/// Before #358 the tracker added one delta to every index in the list, so each of these batches
+/// edited the paragraph next to the target or missed it.
+#[test]
+fn drift_splice_leaves_earlier_paragraphs_in_place() {
+    let dir = test_dir("drift-earlier-paragraphs");
+    let base = drift_base(&dir);
+    let cases = [
+        (
+            r#"[
+              {"op":"insert_para","address":{"at":{"section":0,"paragraph":5}},"text":"NEW"},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":2}},"from":"bravo","to":"BRAVO"}
+            ]"#,
+            vec![
+                "1. T", "alpha", "BRAVO", "charlie", "delta", "echo", "NEW", "foxtrot", "golf",
+            ],
+        ),
+        (
+            r#"[
+              {"op":"delete_para","address":{"at":{"section":0,"paragraph":5}}},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":2}},"from":"bravo","to":"BRAVO"}
+            ]"#,
+            vec![
+                "1. T", "alpha", "BRAVO", "charlie", "delta", "foxtrot", "golf",
+            ],
+        ),
+        // A same-list move shifts the paragraphs between its source and destination by one.
+        (
+            r#"[
+              {"op":"move_para","address":{"at":{"section":0,"paragraph":6}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":2}},"from":"bravo","to":"BRAVO"},
+              {"op":"replace","address":{"at":{"section":0,"paragraph":7}},"from":"golf","to":"GOLF"}
+            ]"#,
+            vec![
+                "1. T", "foxtrot", "alpha", "BRAVO", "charlie", "delta", "echo", "GOLF",
+            ],
+        ),
+    ];
+    for (ops, expected) in cases {
+        let (output, success, stderr) = run_ops_batch(&dir, &base, ops);
+        assert!(success, "{ops}: {stderr}");
+        let after = hwpx::read_document(&output).unwrap().document;
+        assert_eq!(plain_texts(&after), expected, "{ops}");
+    }
+}
+
+/// A splice in the body shifts every path that passes through the body at or after it, not only
+/// body paragraphs: after deleting "table probe", the cell paragraphs of the table below it are
+/// one body index up. Before #358 only a path's last index moved, so the replace missed.
+#[test]
+fn drift_body_splice_shifts_the_cell_paths_below_it() {
+    let (dir, base) = table_base_for("drift-body-splice-cell");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[
+              {{"op":"delete_para","address":{{"at":{{"section":0,"paragraph":1}}}}}},
+              {{"op":"replace","address":{{"id":"{id}"}},"from":"2","to":"Z"}}
+            ]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert!(
+        !plain_texts(&after).iter().any(|text| text == "table probe"),
+        "{:?}",
+        plain_texts(&after)
+    );
+    assert_eq!(cell_texts(&after, 1, 1), vec!["Z"]);
+}
+
+/// Moving a body paragraph into a cell of a table below it: the removal shifts the table's own
+/// body index, and the move finds the cell at the shifted path. Before #358 it looked the cell up
+/// at the old path after the removal and panicked.
+#[test]
+fn move_para_into_a_cell_of_a_later_table() {
+    let (dir, base) = table_base_for("move-into-later-cell");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"at":{{"section":0,"paragraph":1}}}},"to":{{"address":{{"id":"{id}"}},"position":"after"}}}}]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert!(
+        !plain_texts(&after).iter().any(|text| text == "table probe"),
+        "{:?}",
+        plain_texts(&after)
+    );
+    assert_eq!(cell_texts(&after, 1, 1), vec!["2", "table probe"]);
+}
+
+/// The mirror of `move_para_into_a_cell_of_a_later_table`: a cell paragraph moved out to the body
+/// before its own table. The insertion shifts the table's body index, and the move fixes up the
+/// cell at the shifted path. Before, it looked the cell up at the old path and panicked.
+#[test]
+fn move_para_out_of_a_cell_to_before_its_own_table() {
+    let (dir, base) = table_base_for("move-out-of-cell");
+    // A cell keeps at least one paragraph, so give cell (0,1) a second one to move.
+    let grown = dir.join("grown.hwpx");
+    let (setup, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        r#"[{"op":"insert_para","anchor":"나","text":"NEW"}]"#,
+    );
+    assert!(success, "{stderr}");
+    std::fs::rename(&setup, &grown).unwrap();
+    let before = hwpx::read_document(&grown).unwrap().document;
+    assert_eq!(cell_texts(&before, 0, 1), vec!["나", "NEW"]);
+    let mut indices = cell_path_prefix(&before, 0, 1);
+    let host = indices[0];
+    let Control::Table(table) = &before.sections[0].paragraphs[host].controls[indices[1]] else {
+        panic!("not a table");
+    };
+    let moved = &table.cells[indices[2]].paragraphs[1];
+    indices.push(1);
+    let id = hwp_convert::paragraph_id(
+        &hwp_convert::SegmentPath {
+            section: 0,
+            indices,
+        },
+        moved,
+    );
+
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &grown,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"id":"{id}"}},"to":{{"address":{{"at":{{"section":0,"paragraph":{host}}}}},"position":"before"}}}}]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(plain_texts(&after)[host], "NEW");
+    assert!(matches!(
+        after.sections[0].paragraphs[host + 1].controls.first(),
+        Some(Control::Table(_))
+    ));
+    assert_eq!(cell_texts(&after, 0, 1), vec!["나"]);
+}
+
+/// A destination inside the paragraph being moved has nowhere to go: `move_para` of a table's
+/// host paragraph into one of its own cells is an error, and nothing is written.
+#[test]
+fn move_para_into_its_own_cell_is_refused() {
+    let (dir, base) = table_base_for("move-into-own-cell");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let host = cell_path_prefix(&before, 1, 1)[0];
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"at":{{"section":0,"paragraph":{host}}}}},"to":{{"address":{{"id":"{id}"}},"position":"after"}}}}]"#
+        ),
+    );
+    assert!(!success, "{stderr}");
+    assert!(!output.exists());
+    assert!(stderr.contains("그 문단 안의 위치"), "{stderr}");
+}
+
+/// Two one-row forms, "성명" then "주소".
+const TWO_FORMS_MD: &str =
+    "# F\n\n| 성명 |  |\n|---|---|\n| x | y |\n\nmid\n\n| 주소 |  |\n|---|---|\n| z | w |\n";
+
+/// A label edit names its cell by the table index, row and column preflight found. An earlier op
+/// that adds or removes a table, moves a paragraph holding one, or changes a table's rows can make
+/// that another table's cell, or another cell, even when a later op restores the grid: the batch
+/// is refused. Before, each of these wrote into the wrong cell and exited 0. The same ops with the
+/// label edit first apply.
+#[test]
+fn label_edit_after_a_table_change_is_refused() {
+    let dir = test_dir("label-edit-table-change");
+    let two_forms = dir.join("two.hwpx");
+    let md = dir.join("two.md");
+    std::fs::write(&md, TWO_FORMS_MD).unwrap();
+    new_from(&md, &two_forms);
+    // Two identical forms: moving the second above the first swaps what table index 1 names.
+    let twins = dir.join("twins.hwpx");
+    let md = dir.join("twins.md");
+    std::fs::write(
+        &md,
+        "# F\n\nA\n\n| 성명 |  |\n|---|---|\n| A | a |\n\nB\n\n| 성명 |  |\n|---|---|\n| B | b |\n",
+    )
+    .unwrap();
+    new_from(&md, &twins);
+    let cases = [
+        (
+            &two_forms,
+            r#"{"op":"move_para","address":{"at":{"section":0,"paragraph":3}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
+        (
+            &twins,
+            r#"{"op":"move_para","address":{"at":{"section":0,"paragraph":4}},"to":{"address":{"at":{"section":0,"paragraph":1}},"position":"before"}}"#,
+            r#"{"op":"set_cell_by_label","label":"성명","text":"SEOUL","table":1}"#,
+        ),
+        (
+            &two_forms,
+            r#"{"op":"clone_table","source_table":1,"anchor":"F","text_mode":"keep"}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
+        (
+            &two_forms,
+            r#"{"op":"add_row","table":1,"at":0}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
+        // The grid ends where it started, but the label row moved down.
+        (
+            &two_forms,
+            r#"{"op":"add_row","table":1,"at":0},{"op":"delete_row","table":1,"row":2}"#,
+            r#"{"op":"set_cell_by_label","label":"주소","text":"SEOUL"}"#,
+        ),
+    ];
+    for (base, change, fill) in cases {
+        let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{change},{fill}]"));
+        assert!(!success, "{change}: {stderr}");
+        assert!(!output.exists(), "{change}");
+        // The label edit is the op after the change ops; the first change op is blamed.
+        let label_index = change.matches(r#""op""#).count();
+        assert!(
+            stderr.contains(&format!("op[{label_index}] set_cell_by_label이"))
+                && stderr.contains("op[0] "),
+            "{change}: {stderr}"
+        );
+
+        let (output, success, stderr) = run_ops_batch(&dir, base, &format!("[{fill},{change}]"));
+        assert!(success, "{change}: {stderr}");
+        let after = hwpx::read_document(&output).unwrap().document;
+        let filled = after.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .find(|text| text.contains("SEOUL"))
+            .unwrap_or_else(|| panic!("{change}: nothing filled"));
+        let form = if base == &twins { "B\tb" } else { "주소" };
+        assert!(filled.contains(form), "{change}: filled {filled:?}");
+    }
+}
+
+/// The flag channel runs `--set-cell` before `--set-cell-by-label`. Rewriting a cell that holds a
+/// nested table drops that table and renumbers the tables after it, so the label edit preflight
+/// resolved would fill the next form. It is refused. Before, it filled "전화" and exited 0.
+#[test]
+fn flag_label_edit_after_a_set_cell_drops_a_nested_table_is_refused() {
+    let dir = test_dir("flag-label-nested-table");
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "# F\n\n| 바깥 | 칸 |\n|---|---|\n| a | b |\n\n| 주소 |  |\n|---|---|\n| z | w |\n\n\
+         | 성명 |  |\n|---|---|\n| x | y |\n\n| 전화 |  |\n|---|---|\n| p | q |\n",
+    )
+    .unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    // Nest the 주소 form (body paragraph 2) in the outer table's cell (0,0).
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 0, 0);
+    let (nested, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[{{"op":"move_para","address":{{"at":{{"section":0,"paragraph":2}}}},"to":{{"address":{{"id":"{id}"}},"position":"after"}}}}]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let nested_base = dir.join("nested.hwpx");
+    std::fs::rename(&nested, &nested_base).unwrap();
+
+    let run = |set_cell: &str, output: &Path| {
+        hwp()
+            .arg("edit")
+            .arg(&nested_base)
+            .arg("-o")
+            .arg(output)
+            .args(["--set-cell", set_cell, "--set-cell-by-label", "성명=SEOUL"])
+            .output()
+            .unwrap()
+    };
+    let refused = dir.join("refused.hwpx");
+    let run_refused = run("0:0:0=X", &refused);
+    let stderr = String::from_utf8_lossy(&run_refused.stderr);
+    assert!(!run_refused.status.success(), "{stderr}");
+    assert!(!refused.exists());
+    assert!(stderr.contains("--set-cell-by-label"), "{stderr}");
+
+    // Rewriting a cell with no nested table leaves the numbering alone.
+    let applied = dir.join("applied.hwpx");
+    let run_applied = run("0:1:0=X", &applied);
+    assert!(
+        run_applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run_applied.stderr)
+    );
+    let after = hwpx::read_document(&applied).unwrap().document;
+    assert!(
+        plain_texts(&after)
+            .iter()
+            .any(|text| text.starts_with("성명\tSEOUL")),
+        "{:?}",
+        plain_texts(&after)
+    );
+}
+
+/// Filling several labels of one form in one batch still applies when an earlier fill completes
+/// the header row (every row-0 cell non-empty), which changes how a later row-0 label would be
+/// looked up from scratch. The label edit does not look its label up again; it checks that the
+/// table is unchanged.
+#[test]
+fn several_label_edits_on_one_form_apply() {
+    let dir = test_dir("label-edits-one-form");
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "# F\n\n| 성명 |  | 생년월일 | 년 월 일 |\n|---|---|---|---|\n| 주소 |  | 전화 |  |\n",
+    )
+    .unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        r#"[
+          {"op":"set_cell_by_label","label":"성명","text":"홍길동"},
+          {"op":"set_cell_by_label","label":"생년월일","text":"1990년 1월 1일"}
+        ]"#,
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        plain_texts(&after)[1],
+        "성명\t홍길동\t생년월일\t1990년 1월 1일\n주소\t\t전화\t\n"
+    );
+}
+
+/// An op with no address (pattern, anchor or index form) that adds or removes a paragraph in the
+/// list a later addressed op points into is refused, naming both ops: the tracker cannot follow
+/// it, and the address would land on a different paragraph. Nothing is written. The same ops in
+/// the other order apply.
+#[test]
+fn unaddressed_structural_op_before_an_address_in_its_list_is_refused() {
+    let dir = test_dir("unaddressed-structural-refused");
+    let base = drift_base(&dir);
+    let set_foxtrot =
+        r#"{"op":"set_para","address":{"at":{"section":0,"paragraph":6}},"align":"center"}"#;
+    for (structural, kind) in [
+        (r#"{"op":"delete_para","matching":"alpha"}"#, "delete_para"),
+        (
+            r#"{"op":"insert_para","anchor":"alpha","text":"NEW"}"#,
+            "insert_para",
+        ),
+        (
+            r#"{"op":"add_table","anchor":"alpha","rows":[["x"]]}"#,
+            "add_table",
+        ),
+    ] {
+        let (output, success, stderr) =
+            run_ops_batch(&dir, &base, &format!("[{structural},{set_foxtrot}]"));
+        assert!(!success, "{kind} must be refused: {stderr}");
+        assert!(!output.exists(), "{kind}: no output may be written");
+        assert!(
+            stderr.contains(&format!("op[0] {kind}")) && stderr.contains("op[1] set_para"),
+            "{kind}: the error must name both ops: {stderr}"
+        );
+
+        let (output, success, stderr) =
+            run_ops_batch(&dir, &base, &format!("[{set_foxtrot},{structural}]"));
+        assert!(success, "{kind} after the address must apply: {stderr}");
+        let after = hwpx::read_document(&output).unwrap().document;
+        let foxtrot = after.sections[0]
+            .paragraphs
+            .iter()
+            .find(|p| p.plain_text() == "foxtrot")
+            .unwrap();
+        assert_eq!(
+            after.header.para_shapes[foxtrot.para_shape.0 as usize].alignment(),
+            3,
+            "{kind}: set_para must restyle foxtrot"
+        );
+    }
+}
+
+/// An op with no address that changes a list no later address passes through leaves the batch
+/// alone: an insert into cell (0,1) does not move the body paragraph or the cell (1,1) paragraph
+/// the later ops address.
+#[test]
+fn unaddressed_structural_op_in_a_sibling_list_leaves_addresses_alone() {
+    let (dir, base) = table_base_for("unaddressed-structural-sibling");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let id = cell_paragraph_id(&before, 1, 1);
+    let (output, success, stderr) = run_ops_batch(
+        &dir,
+        &base,
+        &format!(
+            r#"[
+              {{"op":"insert_para","anchor":"나","text":"NEW"}},
+              {{"op":"replace","address":{{"at":{{"section":0,"paragraph":1}}}},"from":"probe","to":"PROBE"}},
+              {{"op":"replace","address":{{"id":"{id}"}},"from":"2","to":"Z"}}
+            ]"#
+        ),
+    );
+    assert!(success, "{stderr}");
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(cell_texts(&after, 0, 1), vec!["나", "NEW"]);
+    assert_eq!(cell_texts(&after, 1, 1), vec!["Z"]);
+    assert!(
+        plain_texts(&after).iter().any(|text| text == "table PROBE"),
+        "{:?}",
+        plain_texts(&after)
+    );
 }
 
 // ── Phase 7 plan 07-04: list indent/outdent (EDT-05) ────────────────────────────

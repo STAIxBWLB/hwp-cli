@@ -1001,13 +1001,13 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     let resolved_move_destinations_for_report = resolved_move_destinations.clone();
     let mut resolved_addresses = resolved_addresses.into_iter();
     let mut resolved_move_destinations = resolved_move_destinations.into_iter();
-    let mut resolved_label_edits = label_preflight.resolved.into_iter();
+    let mut resolved_label_edits = label_preflight.resolved.into_iter().peekable();
+    let tables_at_preflight = table_count(&doc);
     let mut edits = 0usize;
     let mut unapplied = label_preflight.unapplied;
-    // Per-list index-drift tracker (planner decision 3): threaded through the apply loop below
-    // so an addressed insert_para/delete_para/move_para computes its CURRENT index from its
-    // preflight-resolved ORIGINAL index plus whatever earlier structural ops in this batch have
-    // already done to the same list.
+    // Index-drift tracker (planner decision 3, #358): threaded through the apply loop below so
+    // every addressed op maps its preflight-resolved ORIGINAL path through whatever paragraphs
+    // earlier addressed insert_para/delete_para/move_para ops in this batch inserted or removed.
     let mut offsets = IndexOffsets::default();
     // EDT-06/D-13: the document state addresses were resolved against (D-06) — the "before"
     // reference for re-deriving every touched paragraph/run's id once the typed-op loop below
@@ -1090,6 +1090,19 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let Some(resolved) = resolved else {
                         continue;
                     };
+                    // #358: only --replace, --set-cell and earlier label edits run before this,
+                    // and a cell write can drop a table nested in the cell it rewrites, which
+                    // renumbers later tables.
+                    if table_count(&doc) != tables_at_preflight {
+                        anyhow::bail!(
+                            "--set-cell-by-label: 앞선 셀 쓰기(--set-cell 또는 앞선 --set-cell-by-label)가 \
+                             셀 안의 표를 지워, 사전 검증에서 찾은 칸(표{} ({},{}))이 다른 표의 칸일 수 있습니다 \
+                             (편집을 두 번으로 나누세요)",
+                            resolved.candidate.table,
+                            resolved.candidate.row,
+                            resolved.candidate.col
+                        );
+                    }
                     let before = doc.clone();
                     hwp_convert::set_cell(
                         &mut doc,
@@ -1594,6 +1607,19 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // reusing the SAME `edits`/`unapplied` accounting the stderr summary uses (before/after
     // deltas around each call), not a second, independently-derived count.
     let mut ops_outcomes: Vec<OpOutcome> = Vec::with_capacity(plan.typed_operations.len());
+    let address_lists = addresses_by_list(
+        &resolved_addresses_for_report,
+        &resolved_move_destinations_for_report,
+    );
+    // #358: a label edit names its cell by the table index, row and column preflight found. The
+    // first op that adds or removes a table, moves a paragraph holding one, or changes a table's
+    // rows, columns or merges may make that another cell; label edits after it are refused. Only
+    // tracked while a label edit is still ahead.
+    let last_label_edit = plan
+        .typed_operations
+        .iter()
+        .rposition(|operation| matches!(operation, TypedEditOperation::SetCellByLabel { .. }));
+    let mut tables_changed_by: Option<usize> = None;
     for (index, operation) in plan.typed_operations.iter().enumerate() {
         let target_before = resolved_addresses_for_report[index].clone();
         let to_target_before = resolved_move_destinations_for_report[index].clone();
@@ -1607,6 +1633,49 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         let to_target_current_path = to_target_before
             .as_ref()
             .and_then(|target| offsets.current_path(&target.path).ok());
+        // #358: an op with no address (a pattern, anchor or index form) is invisible to
+        // `offsets`. If it adds or removes anything along a later addressed op's path, that
+        // address would silently land on a different paragraph, so the batch is refused instead.
+        let later_shapes = if target_before.is_none() {
+            later_address_shapes(index, &address_lists, &offsets, &doc)?
+        } else {
+            Vec::new()
+        };
+        if let TypedEditOperation::SetCellByLabel { .. } = operation
+            && let Some(Some(resolved)) = resolved_label_edits.peek()
+            && let Some(changed) = tables_changed_by
+        {
+            anyhow::bail!(
+                "op[{changed}] {}이(가) 표를 더하거나 빼거나, 표의 행·열을 바꾸거나, 표가 든 문단을 옮겨, \
+                 op[{index}] set_cell_by_label이 사전 검증에서 찾은 칸(표{} ({},{}))이 다른 칸일 수 있습니다 \
+                 (op[{index}]을(를) op[{changed}]보다 앞에 두거나, 편집을 두 번으로 나누세요. \
+                 MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
+                typed_op_kind(&plan.typed_operations[changed]),
+                resolved.candidate.table,
+                resolved.candidate.row,
+                resolved.candidate.col
+            );
+        }
+        let tables_before = (tables_changed_by.is_none()
+            && last_label_edit.is_some_and(|last| index < last))
+        .then(|| table_count(&doc));
+        let reshapes_a_table = matches!(
+            operation,
+            TypedEditOperation::AddRow { .. }
+                | TypedEditOperation::AddCol { .. }
+                | TypedEditOperation::DeleteRow { .. }
+                | TypedEditOperation::DeleteCol { .. }
+                | TypedEditOperation::MergeCells { .. }
+                | TypedEditOperation::SplitCell { .. }
+        );
+        let moves_a_table = matches!(operation, TypedEditOperation::MoveParagraph { .. })
+            && target_current_path
+                .as_ref()
+                .and_then(|path| hwp_convert::address::paragraph_at_mut(&mut doc, path))
+                .is_some_and(|paragraph| tables_in(paragraph) > 0);
+        if tables_before.is_some() && (reshapes_a_table || moves_a_table) {
+            tables_changed_by = Some(index);
+        }
         let edits_before = edits;
         let unapplied_before = unapplied.len();
         apply_typed_operation(
@@ -1619,7 +1688,24 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut resolved_move_destinations,
             &mut offsets,
         )?;
+        if tables_before.is_some_and(|before| table_count(&doc) != before) {
+            tables_changed_by.get_or_insert(index);
+        }
         let op = typed_op_kind(operation).to_string();
+        if let Some(moved) = later_shapes
+            .iter()
+            .find(|later| path_shape(&doc, &later.current) != later.shape)
+        {
+            anyhow::bail!(
+                "op[{index}] {op}이(가) op[{}] {}의 주소({})가 지나는 문단·개체 목록을 바꿉니다. \
+                 주소는 배치 적용 전 문서 기준이라 이 순서로는 다른 문단을 편집하게 됩니다 \
+                 (주소 없는 연산을 뒤로 옮기거나, 주소 형식으로 쓰거나, 편집을 두 번으로 나누세요. \
+                 MCP hwp_edit는 연산을 종류별 고정 순서로 적용하므로 두 번 호출하세요)",
+                moved.later,
+                typed_op_kind(&plan.typed_operations[moved.later]),
+                moved.original
+            );
+        }
         if unapplied.len() > unapplied_before {
             ops_outcomes.push(OpOutcome {
                 index,
@@ -2028,90 +2114,220 @@ fn preflight_move_destinations(
     Ok(resolved)
 }
 
-/// Per-list running index delta for addressed structural ops (planner decision 3, T-07-10/
-/// T-07-11). Keys on list identity — the resolved path above the paragraph's own index: the
-/// section for a top-level list, or the chain down to the containing cell/control for a nested
-/// one — so a delete/insert/move in one list never perturbs a sibling list's indices. Owned by
-/// `execute()`, threaded through the apply loop. Only address-driven `insert_para`/`delete_para`/
-/// `move_para` read and update it: pattern-form structural ops are unaddressed and always
-/// re-search the current document by content, so they carry no tracked offset.
+/// One paragraph splice an addressed structural op made, as the path of the paragraph inserted
+/// or removed in the document at that moment.
+enum Splice {
+    Inserted(hwp_convert::SegmentPath),
+    Removed(hwp_convert::SegmentPath),
+}
+
+/// Index-drift tracker for addressed structural ops (planner decision 3, T-07-10/T-07-11, #358):
+/// every paragraph an addressed `insert_para`/`delete_para`/`move_para` inserted or removed, in
+/// batch order. Owned by `execute()`, threaded through the apply loop. A later addressed op maps
+/// its preflight path through the splices in order: a splice shifts the path only in the list it
+/// happened in, only when the path passes through that list at or after the splice, and at any
+/// depth (deleting a body paragraph shifts the cell paragraphs of every table below it).
+///
+/// Ops without an address are never recorded here. `execute()` refuses a batch in which one of
+/// them changes the structure along a later addressed op's path (see [`path_shape`]).
 #[derive(Default)]
-struct IndexOffsets(std::collections::HashMap<(usize, Vec<usize>), i64>);
+struct IndexOffsets(Vec<Splice>);
 
 impl IndexOffsets {
-    fn list_id(path: &hwp_convert::SegmentPath) -> (usize, Vec<usize>) {
-        (path.section, list_prefix(path).to_vec())
-    }
-
-    /// The CURRENT index of the paragraph resolved (during preflight) at `original_path`,
-    /// against the pre-batch document: its original trailing index plus its list's accumulated
-    /// delta so far. Checked (T-07-11): an internal error aborts the run rather than clamping.
-    fn current_index(&self, original_path: &hwp_convert::SegmentPath) -> anyhow::Result<usize> {
-        let original = *original_path
-            .indices
-            .last()
-            .ok_or_else(|| anyhow::anyhow!("내부 오류: 빈 주소 경로"))?;
-        let delta = self
-            .0
-            .get(&Self::list_id(original_path))
-            .copied()
-            .unwrap_or(0);
-        let current = i64::try_from(original)
-            .ok()
-            .and_then(|original| original.checked_add(delta))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "내부 오류: 문단 오프셋 계산이 범위를 벗어났습니다 (원래={original}, delta={delta})"
-                )
-            })?;
-        usize::try_from(current).map_err(|_| {
-            anyhow::anyhow!(
-                "내부 오류: 문단 오프셋 계산이 음수 인덱스를 만들었습니다 (원래={original}, delta={delta})"
-            )
-        })
-    }
-
-    /// `original_path` with its trailing index replaced by [`Self::current_index`]'s result.
+    /// Where the paragraph preflight resolved at `original_path` (against the pre-batch document)
+    /// is now. Checked (T-07-11): a path whose paragraph, or an ancestor of it, an earlier op
+    /// removed aborts the run rather than landing somewhere else. The removal clause of
+    /// `detect_conflicts` rejects such a batch during preflight, so this is an internal error.
     fn current_path(
         &self,
         original_path: &hwp_convert::SegmentPath,
     ) -> anyhow::Result<hwp_convert::SegmentPath> {
-        let current = self.current_index(original_path)?;
-        let mut indices = original_path.indices.clone();
-        *indices
-            .last_mut()
-            .expect("checked non-empty in current_index") = current;
-        Ok(hwp_convert::SegmentPath {
-            section: original_path.section,
-            indices,
-        })
+        let mut path = original_path.clone();
+        if !shift_through_splices(&self.0, path.section, &mut path.indices) {
+            anyhow::bail!(
+                "내부 오류: 앞선 연산이 제거한 문단을 가리키는 주소입니다 (원래={original_path})"
+            );
+        }
+        Ok(path)
     }
 
-    fn record_insert(&mut self, list_path: &hwp_convert::SegmentPath) {
-        *self.0.entry(Self::list_id(list_path)).or_insert(0) += 1;
+    fn record_insert(&mut self, inserted: &hwp_convert::SegmentPath) {
+        self.0.push(Splice::Inserted(inserted.clone()));
     }
 
-    fn record_delete(&mut self, list_path: &hwp_convert::SegmentPath) {
-        *self.0.entry(Self::list_id(list_path)).or_insert(0) -= 1;
+    fn record_delete(&mut self, removed: &hwp_convert::SegmentPath) {
+        self.0.push(Splice::Removed(removed.clone()));
     }
 
-    /// A same-list move nets to zero for the list's OWN running delta (the list's total length
-    /// is unchanged); a cross-list move debits the source list and credits the destination.
-    /// (Known limitation, out of this plan's tested scope: a same-list move does not correct
-    /// the delta of paragraphs strictly BETWEEN its source and destination, since this tracker
-    /// is a single scalar per list, not a full per-position remap — see 07-03-SUMMARY.)
+    /// A move is a removal at `from` and an insertion where [`moved_paragraph_path`] says.
     fn record_move(
         &mut self,
-        from_path: &hwp_convert::SegmentPath,
-        to_list: &hwp_convert::SegmentPath,
+        from: &hwp_convert::SegmentPath,
+        to_ref: &hwp_convert::SegmentPath,
+        to_index: usize,
     ) {
-        let src = Self::list_id(from_path);
-        let dst = Self::list_id(to_list);
-        if src != dst {
-            *self.0.entry(src).or_insert(0) -= 1;
-            *self.0.entry(dst).or_insert(0) += 1;
+        self.record_delete(from);
+        self.record_insert(&moved_paragraph_path(from, to_ref, to_index));
+    }
+}
+
+/// Where `hwp_convert::move_paragraph` puts the paragraph it moves from `from` to `to_index` of
+/// the list `to_ref` belongs to. It finds that list after the removal, so the list's own path
+/// shifts with the removal first; `to_index` already counts it (see [`move_to_index`]).
+fn moved_paragraph_path(
+    from: &hwp_convert::SegmentPath,
+    to_ref: &hwp_convert::SegmentPath,
+    to_index: usize,
+) -> hwp_convert::SegmentPath {
+    let mut indices = list_prefix(to_ref).to_vec();
+    // move_paragraph refuses a destination inside the moved paragraph, so this cannot fail.
+    shift_through_splices(
+        &[Splice::Removed(from.clone())],
+        to_ref.section,
+        &mut indices,
+    );
+    indices.push(to_index);
+    hwp_convert::SegmentPath {
+        section: to_ref.section,
+        indices,
+    }
+}
+
+/// Moves `indices` (a path in `section`) through `splices` in order. Returns false when a splice
+/// removed the paragraph `indices` names or one of its ancestors.
+fn shift_through_splices(splices: &[Splice], section: usize, indices: &mut [usize]) -> bool {
+    for splice in splices {
+        let (at, inserted) = match splice {
+            Splice::Inserted(at) => (at, true),
+            Splice::Removed(at) => (at, false),
+        };
+        let depth = list_prefix(at).len();
+        if at.section != section
+            || indices.len() <= depth
+            || indices[..depth] != at.indices[..depth]
+        {
+            continue;
+        }
+        let spliced = at.indices[depth];
+        let index = &mut indices[depth];
+        if inserted {
+            if *index >= spliced {
+                *index += 1;
+            }
+        } else if *index > spliced {
+            *index -= 1;
+        } else if *index == spliced {
+            return false;
         }
     }
+    true
+}
+
+/// #358: the length of every sequence `path` indexes into, from the section's paragraph list down
+/// to the list holding the paragraph itself (a paragraph's controls, a table's cells, a cell's
+/// paragraphs, a generic control's flat paragraph sequence), following `address::resolve`'s
+/// descent. An op that adds to or removes from any of them changes the shape. A change after the
+/// path's own index changes it too, so the check is conservative. One gap: an op that replaces a
+/// sequence's elements one for one (`set_cell` rewriting a cell's paragraphs without changing
+/// their number) keeps the shape, and the path then names the new paragraph at that position.
+fn path_shape(doc: &hwp_model::Document, path: &hwp_convert::SegmentPath) -> Vec<usize> {
+    use hwp_model::Control;
+
+    let mut shape = Vec::new();
+    let Some(section) = doc.sections.get(path.section) else {
+        return shape;
+    };
+    shape.push(section.paragraphs.len());
+    let mut para = path
+        .indices
+        .first()
+        .and_then(|&index| section.paragraphs.get(index));
+    let mut i = 1;
+    while let Some(current) = para
+        && i < path.indices.len()
+    {
+        shape.push(current.controls.len());
+        para = match current.controls.get(path.indices[i]) {
+            Some(Control::Table(table)) => {
+                shape.push(table.cells.len());
+                let cell = path
+                    .indices
+                    .get(i + 1)
+                    .and_then(|&index| table.cells.get(index));
+                shape.extend(cell.map(|cell| cell.paragraphs.len()));
+                let next = path.indices.get(i + 2);
+                i += 3;
+                cell.zip(next)
+                    .and_then(|(cell, &index)| cell.paragraphs.get(index))
+            }
+            Some(Control::Generic(generic)) if generic.raw_children.is_empty() => {
+                let mut flat = generic
+                    .paragraph_lists
+                    .iter()
+                    .flat_map(|list| &list.paragraphs);
+                shape.push(flat.clone().count());
+                let next = path.indices.get(i + 1);
+                i += 2;
+                next.and_then(|&index| flat.nth(index))
+            }
+            _ => None,
+        };
+    }
+    shape
+}
+
+struct LaterAddressShape {
+    later: usize,
+    original: hwp_convert::SegmentPath,
+    current: hwp_convert::SegmentPath,
+    shape: Vec<usize>,
+}
+
+/// #358: every address in the batch (op targets and `move_para` destinations), grouped by the
+/// list it points into as the document is before the batch, each group in op order. Two paths
+/// into one list map to one list at any point in the batch, and have one [`path_shape`].
+fn addresses_by_list(
+    resolved: &[Option<hwp_convert::address::ResolvedTarget>],
+    resolved_move_destinations: &[Option<hwp_convert::address::ResolvedTarget>],
+) -> Vec<Vec<(usize, hwp_convert::SegmentPath)>> {
+    let mut lists = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for (index, targets) in resolved.iter().zip(resolved_move_destinations).enumerate() {
+        for target in [targets.0, targets.1].into_iter().flatten() {
+            lists
+                .entry((target.path.section, list_prefix(&target.path).to_vec()))
+                .or_default()
+                .push((index, target.path.clone()));
+        }
+    }
+    lists.into_values().collect()
+}
+
+/// #358: for each list an addressed op after `index` points into, the first such op, its
+/// preflight path, the path it names now, and that path's [`path_shape`].
+fn later_address_shapes(
+    index: usize,
+    lists: &[Vec<(usize, hwp_convert::SegmentPath)>],
+    offsets: &IndexOffsets,
+    doc: &hwp_model::Document,
+) -> anyhow::Result<Vec<LaterAddressShape>> {
+    // ponytail: one pass over every list per op with no address, times the splices so far; keep
+    // a per-list cursor if batches with thousands of distinct lists get slow.
+    let mut shapes = Vec::new();
+    for list in lists {
+        let first_later = list.partition_point(|(op, _)| *op <= index);
+        let Some((later, original)) = list.get(first_later) else {
+            continue;
+        };
+        let current = offsets.current_path(original)?;
+        let shape = path_shape(doc, &current);
+        shapes.push(LaterAddressShape {
+            later: *later,
+            original: original.clone(),
+            current,
+            shape,
+        });
+    }
+    Ok(shapes)
 }
 
 /// The list a path belongs to: section plus every index except the paragraph's own trailing
@@ -2182,10 +2398,9 @@ fn default_shape_at(
 /// to re-derive the pre-batch run-id list for the run-split cascade (Pitfall 2).
 ///
 /// Structural ops (`insert_para`/`delete_para`/`move_para`) are handled directly here, using the
-/// SAME private helpers (`move_to_index`, `list_prefix`) their own `apply_typed_operation` arms
-/// use — correct as long as no LATER op in the same batch further disturbs the SAME list, a
-/// known, documented limitation shared with the `IndexOffsets` scalar model itself (see its own
-/// doc comment on `record_move`). Every non-structural addressed kind uses
+/// SAME private helpers (`move_to_index`, `moved_paragraph_path`) their own
+/// `apply_typed_operation` arms use; the ids are the ones right after this op. Every
+/// non-structural addressed kind uses
 /// `target_current_path` directly (already correct for any EARLIER structural op in the batch,
 /// since none of these kinds change list length themselves).
 fn report_changed_ids(
@@ -2245,12 +2460,7 @@ fn report_changed_ids(
                 return Vec::new();
             };
             let to_index = move_to_index(from_current, to_ref_current, *before);
-            let mut moved_indices = list_prefix(to_ref_current).to_vec();
-            moved_indices.push(to_index);
-            let moved_path = hwp_convert::SegmentPath {
-                section: to_ref_current.section,
-                indices: moved_indices,
-            };
+            let moved_path = moved_paragraph_path(from_current, to_ref_current, to_index);
             let Some(paragraph) = hwp_convert::address::paragraph_at_mut(doc, &moved_path) else {
                 return Vec::new();
             };
@@ -2771,6 +2981,40 @@ fn patch_replacements_staged(
     })
 }
 
+/// #358: the tables in `paragraph`, nested ones included, counted the way
+/// `hwp_convert`'s recursive table index counts them (table cells and generic-control lists).
+fn tables_in(paragraph: &hwp_model::Paragraph) -> usize {
+    paragraph
+        .controls
+        .iter()
+        .map(|control| match control {
+            hwp_model::Control::Table(table) => {
+                1 + table
+                    .cells
+                    .iter()
+                    .flat_map(|cell| &cell.paragraphs)
+                    .map(tables_in)
+                    .sum::<usize>()
+            }
+            hwp_model::Control::Generic(generic) => generic
+                .paragraph_lists
+                .iter()
+                .flat_map(|list| &list.paragraphs)
+                .map(tables_in)
+                .sum(),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn table_count(doc: &hwp_model::Document) -> usize {
+    doc.sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .map(tables_in)
+        .sum()
+}
+
 fn record_effect(
     before: &hwp_model::Document,
     after: &hwp_model::Document,
@@ -3073,7 +3317,7 @@ fn apply_typed_operation(
                     }
                 }
                 eprintln!("문단 삽입(주소): {current_path} before={before} text={text:?}");
-                offsets.record_insert(&current_path);
+                offsets.record_insert(&new_path);
                 *edits += 1;
             } else if hwp_convert::insert_paragraph(doc, anchor, text, *before) {
                 eprintln!("문단 삽입: {anchor:?}, before={before}, text={text:?}");
@@ -3122,7 +3366,7 @@ fn apply_typed_operation(
             hwp_convert::move_paragraph(doc, &from_current, &to_list, to_index)
                 .map_err(|error| anyhow::anyhow!(error))?;
             eprintln!("문단 이동(주소): {from_current} → {to_list} index={to_index}");
-            offsets.record_move(&from_current, &to_list);
+            offsets.record_move(&from_current, &to_list, to_index);
             *edits += 1;
         }
         TypedEditOperation::IndentPara { .. } => {
