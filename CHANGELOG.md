@@ -114,8 +114,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   matched, on the default path and on the `--data` table and part fills: the output is the input
   unchanged, and the `--json` report gives every count as 0. The table and part fills publish a
   private, size-bound snapshot of the input checked against the document they read; when the
-  output extension names the other format they convert through `hwp convert`. Without the flag such a fill still
-  fails and publishes nothing ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
+  output extension names the other format they convert through `hwp convert`, and any output
+  other than `.hwp` or `.hwpx` is refused, as on the writer path. Without the flag such a fill
+  still fails and publishes nothing ([#362](https://github.com/STAIxBWLB/hwp-cli/issues/362)).
 - A certification report could fail its own published schema in six ways
   ([#347](https://github.com/STAIxBWLB/hwp-cli/issues/347)). Four were schema gaps, now loosened:
   - Certification lays pages out through the same renderer as `hwp render`, but

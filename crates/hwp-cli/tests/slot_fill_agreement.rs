@@ -639,5 +639,20 @@ fn zero_match_ir_fill_publishes_hwp_unchanged_or_converts() {
         document_text(&created).trim()
     );
 
+    // Like the writer path, a zero-match fill writes only .hwp or .hwpx.
+    let markdown = dir.join("converted.md");
+    let run = fill(
+        &created,
+        &markdown,
+        &["--data", &data_arg, "--allow-partial"],
+    );
+    assert!(!run.status.success(), "a .md output must be refused");
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("fill 출력은 .hwp 또는 .hwpx만"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(!markdown.exists());
+
     let _ = std::fs::remove_dir_all(&dir);
 }

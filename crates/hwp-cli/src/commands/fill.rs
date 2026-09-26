@@ -314,6 +314,13 @@ fn publish_unchanged(
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
+    // The same output contract as the writer path: a zero-match fill is no way into `convert`.
+    if !matches!(output_ext.as_deref(), Some("hwp" | "hwpx")) {
+        anyhow::bail!(
+            "fill 출력은 .hwp 또는 .hwpx만 지원합니다 (확장자: {:?})",
+            output_ext.as_deref()
+        );
+    }
     if output_ext.as_deref() != Some(same_format) {
         let report = crate::commands::convert::execute(
             input,
