@@ -5,8 +5,10 @@
 The AgentCore tier (Tier B) of
 [docs/design/22-remote-mcp-deployment.md](../../docs/design/22-remote-mcp-deployment.md): `hwp serve`
 running as an MCP server on AgentCore Runtime. Every command below ran on 2026-09-26 against
-v1.1.0 in us-east-1, when issue #318 was checked; the update command is the one exception, checked
-only against the CLI's help.
+v1.1.0 in us-east-1, when issue #318 was checked, with two exceptions: the update command was
+checked only against the `UpdateAgentRuntime` API reference, and the execution role's log
+statements were narrowed afterwards to the AWS execution-role example (the check granted
+`log-group:*`).
 
 ## At a glance
 
@@ -101,6 +103,7 @@ buildx pushes, attestation included.
 The runtime assumes this role to pull the image and write logs, metrics and traces.
 
 ```bash
+WORK=$(mktemp -d) && cd "$WORK"   # keeps the account-bound files and the token out of the checkout
 cat > trust.json <<EOF
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
   "Principal":{"Service":"bedrock-agentcore.amazonaws.com"},"Action":"sts:AssumeRole",
@@ -112,10 +115,12 @@ cat > exec-policy.json <<EOF
  {"Sid":"EcrPull","Effect":"Allow","Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer"],
   "Resource":"arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${REPO}"},
  {"Sid":"EcrToken","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
- {"Sid":"Logs","Effect":"Allow","Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents",
-  "logs:DescribeLogStreams","logs:DescribeLogGroups"],
-  "Resource":["arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/*",
-   "arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:*"]},
+ {"Sid":"LogGroups","Effect":"Allow","Action":["logs:CreateLogGroup","logs:DescribeLogStreams"],
+  "Resource":"arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/*"},
+ {"Sid":"LogDescribe","Effect":"Allow","Action":"logs:DescribeLogGroups",
+  "Resource":"arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:*"},
+ {"Sid":"LogEvents","Effect":"Allow","Action":["logs:CreateLogStream","logs:PutLogEvents"],
+  "Resource":"arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*"},
  {"Sid":"Metrics","Effect":"Allow","Action":"cloudwatch:PutMetricData","Resource":"*",
   "Condition":{"StringEquals":{"cloudwatch:namespace":"bedrock-agentcore"}}},
  {"Sid":"Xray","Effect":"Allow","Action":["xray:PutTraceSegments","xray:PutTelemetryRecords",
@@ -132,12 +137,22 @@ aws iam put-role-policy --role-name hwp-mcp-exec --policy-name hwp-mcp-exec \
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/hwp-mcp-exec"
 ```
 
+- Trust: only `bedrock-agentcore.amazonaws.com` assumes the role, and only for a runtime in this
+  account (`aws:SourceAccount`, `aws:SourceArn`).
+- Permissions: pull from the one ECR repository and get its auth token, create and write log groups
+  and streams under `/aws/bedrock-agentcore/runtimes/*` (listing log groups is the only log action
+  on `log-group:*`), metrics in the `bedrock-agentcore` namespace, X-Ray, and workload tokens from
+  the default workload identity directory.
+
 ## Inbound auth
 
 - **IAM (SigV4)** is the default when no authorizer is given. It suits internal checks and
   automation that call through the AWS CLI or an SDK.
 - **JWT** is what MCP clients and an Amazon Quick connector use, and what Tier B runs in
-  production (a Cognito user pool, later with Google as a federated IdP). A test pool:
+  production (a Cognito user pool, later with Google as a federated IdP). A test pool follows.
+  The password lives only in a shell variable and never reaches a file, but it shows in the process
+  list while the two calls that take it run. The token goes to a mode-600 file and expires after an
+  hour.
 
   ```bash
   umask 077
@@ -220,14 +235,19 @@ rm -f auth.hdr
 
 Bump `HWP_VERSION` and `HWP_SHA256` in [Dockerfile.agentcore](Dockerfile.agentcore) together (the
 sha256 is published beside the tarball as `hwp-<version>-aarch64-unknown-linux-gnu.sha256`), build
-and push under the new tag, then point the runtime at it. `update-agent-runtime` takes the artifact
-and role again; pass the auth and protocol settings as at creation.
+and push under the new tag, then point the runtime at it. Pass `update-agent-runtime` every setting
+the runtime was created with: the artifact, role, network and protocol, plus the authorizer for a
+JWT runtime and the platform version for a V2 runtime.
 
 ```bash
-aws bedrock-agentcore-control update-agent-runtime --agent-runtime-id <id> \
+ID=$(aws bedrock-agentcore-control list-agent-runtimes \
+  --query 'agentRuntimes[?agentRuntimeName==`hwp_mcp_jwt`].agentRuntimeId' --output text)
+aws bedrock-agentcore-control update-agent-runtime --agent-runtime-id "$ID" \
   --agent-runtime-artifact "{\"containerConfiguration\":{\"containerUri\":\"${IMAGE}\"}}" \
   --role-arn ${ROLE_ARN} --network-configuration networkMode=PUBLIC \
-  --protocol-configuration serverProtocol=MCP --authorizer-configuration "$JWT"
+  --protocol-configuration serverProtocol=MCP --authorizer-configuration "$JWT" \
+  --platform-version V2
+# The IAM runtime (hwp_mcp_iam): the same without --authorizer-configuration and --platform-version.
 ```
 
 ## Tear down
@@ -246,7 +266,7 @@ aws iam delete-role-policy --role-name hwp-mcp-exec --policy-name hwp-mcp-exec
 aws iam delete-role --role-name hwp-mcp-exec
 aws ecr delete-repository --repository-name ${REPO} --force
 aws cognito-idp delete-user-pool --user-pool-id $POOL
-rm -f token
+cd && rm -rf "$WORK"   # trust.json, exec-policy.json, token, out.json, h.txt
 ```
 
 Check `aws bedrock-agentcore-control list-workload-identities` for identities a JWT runtime may

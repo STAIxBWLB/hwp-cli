@@ -4,8 +4,9 @@
 
 [docs/design/22-remote-mcp-deployment.ko.md](../../docs/design/22-remote-mcp-deployment.ko.md)의
 AgentCore tier(Tier B)다. `hwp serve`를 AgentCore Runtime에서 MCP 서버로 돌린다. 아래 명령은
-모두 2026-09-26 이슈 #318을 확인할 때 us-east-1에서 v1.1.0으로 실제로 실행했다. 버전 교체 명령만
-예외로, CLI 도움말로만 확인했다.
+2026-09-26 이슈 #318을 확인할 때 us-east-1에서 v1.1.0으로 실제로 실행했다. 예외는 두 가지다. 버전
+교체 명령은 `UpdateAgentRuntime` API 문서로만 확인했고, 실행 역할의 로그 권한은 검증 뒤 AWS 실행
+역할 예시에 맞춰 좁혔다(검증 때는 `log-group:*`).
 
 ## 요약
 
@@ -98,6 +99,7 @@ docker push ${IMAGE}
 런타임은 이 역할로 이미지를 받고 로그·지표·추적을 쓴다.
 
 ```bash
+WORK=$(mktemp -d) && cd "$WORK"   # 계정 값이 든 파일과 토큰을 체크아웃 밖에 둔다
 cat > trust.json <<EOF
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
   "Principal":{"Service":"bedrock-agentcore.amazonaws.com"},"Action":"sts:AssumeRole",
@@ -109,10 +111,12 @@ cat > exec-policy.json <<EOF
  {"Sid":"EcrPull","Effect":"Allow","Action":["ecr:BatchGetImage","ecr:GetDownloadUrlForLayer"],
   "Resource":"arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${REPO}"},
  {"Sid":"EcrToken","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
- {"Sid":"Logs","Effect":"Allow","Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents",
-  "logs:DescribeLogStreams","logs:DescribeLogGroups"],
-  "Resource":["arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/*",
-   "arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:*"]},
+ {"Sid":"LogGroups","Effect":"Allow","Action":["logs:CreateLogGroup","logs:DescribeLogStreams"],
+  "Resource":"arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/*"},
+ {"Sid":"LogDescribe","Effect":"Allow","Action":"logs:DescribeLogGroups",
+  "Resource":"arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:*"},
+ {"Sid":"LogEvents","Effect":"Allow","Action":["logs:CreateLogStream","logs:PutLogEvents"],
+  "Resource":"arn:aws:logs:${AWS_REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*"},
  {"Sid":"Metrics","Effect":"Allow","Action":"cloudwatch:PutMetricData","Resource":"*",
   "Condition":{"StringEquals":{"cloudwatch:namespace":"bedrock-agentcore"}}},
  {"Sid":"Xray","Effect":"Allow","Action":["xray:PutTraceSegments","xray:PutTelemetryRecords",
@@ -131,16 +135,18 @@ ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/hwp-mcp-exec"
 
 - 신뢰 정책: `bedrock-agentcore.amazonaws.com`만, 이 계정(`aws:SourceAccount`)의 런타임
   (`aws:SourceArn`)에서만 역할을 맡는다.
-- 권한: 해당 ECR 저장소 pull과 인증 토큰, `/aws/bedrock-agentcore/runtimes/*` 로그, `bedrock-agentcore`
-  네임스페이스 지표, X-Ray, 기본 워크로드 ID 디렉터리의 워크로드 토큰.
+- 권한: 해당 ECR 저장소 pull과 인증 토큰, `/aws/bedrock-agentcore/runtimes/*` 아래 로그 그룹·스트림
+  생성과 기록(로그 그룹 목록 조회만 `log-group:*`), `bedrock-agentcore` 네임스페이스 지표, X-Ray,
+  기본 워크로드 ID 디렉터리의 워크로드 토큰.
 
 ## 인바운드 인증
 
 - **IAM(SigV4)**: 인증 설정을 생략하면 기본값이다. AWS CLI나 SDK로 부르는 내부 검증과 자동화에
   맞다.
 - **JWT**: MCP 클라이언트와 Amazon Quick 커넥터가 쓰는 방식이고 Tier B 본 가동도 이쪽이다(Cognito
-  사용자 풀, 나중에 Google을 연합 IdP로). 시험용 풀은 다음과 같다. 비밀번호는 셸 안에서만 쓰고,
-  토큰은 권한 600 파일에 두며, 1시간 뒤 만료된다.
+  사용자 풀, 나중에 Google을 연합 IdP로). 시험용 풀은 다음과 같다. 비밀번호는 셸 변수로만 두고
+  파일에 쓰지 않지만, 이를 받는 두 호출이 도는 동안에는 프로세스 목록에 보인다. 토큰은 권한 600
+  파일에 두며 1시간 뒤 만료된다.
 
   ```bash
   umask 077
@@ -220,14 +226,18 @@ rm -f auth.hdr
 
 [Dockerfile.agentcore](Dockerfile.agentcore)의 `HWP_VERSION`과 `HWP_SHA256`을 함께 올리고(sha256은
 tarball 옆 `hwp-<version>-aarch64-unknown-linux-gnu.sha256`), 새 태그로 빌드·푸시한 뒤 런타임이 새
-이미지를 가리키게 한다. `update-agent-runtime`은 아티팩트와 역할을 다시 받으므로 인증·프로토콜
-설정도 생성 때처럼 넘긴다.
+이미지를 가리키게 한다. `update-agent-runtime`에는 생성 때 준 설정을 모두 다시 넘긴다.
+아티팩트·역할·네트워크·프로토콜에 더해, JWT 런타임은 인증 설정을, V2 런타임은 플랫폼 버전을 넘긴다.
 
 ```bash
-aws bedrock-agentcore-control update-agent-runtime --agent-runtime-id <id> \
+ID=$(aws bedrock-agentcore-control list-agent-runtimes \
+  --query 'agentRuntimes[?agentRuntimeName==`hwp_mcp_jwt`].agentRuntimeId' --output text)
+aws bedrock-agentcore-control update-agent-runtime --agent-runtime-id "$ID" \
   --agent-runtime-artifact "{\"containerConfiguration\":{\"containerUri\":\"${IMAGE}\"}}" \
   --role-arn ${ROLE_ARN} --network-configuration networkMode=PUBLIC \
-  --protocol-configuration serverProtocol=MCP --authorizer-configuration "$JWT"
+  --protocol-configuration serverProtocol=MCP --authorizer-configuration "$JWT" \
+  --platform-version V2
+# IAM 런타임(hwp_mcp_iam)은 --authorizer-configuration과 --platform-version 없이 같은 명령.
 ```
 
 ## 삭제
@@ -246,7 +256,7 @@ aws iam delete-role-policy --role-name hwp-mcp-exec --policy-name hwp-mcp-exec
 aws iam delete-role --role-name hwp-mcp-exec
 aws ecr delete-repository --repository-name ${REPO} --force
 aws cognito-idp delete-user-pool --user-pool-id $POOL
-rm -f token
+cd && rm -rf "$WORK"   # trust.json, exec-policy.json, token, out.json, h.txt
 ```
 
 JWT 런타임이 만든 워크로드 ID는 `aws bedrock-agentcore-control list-workload-identities`로 확인한다.
