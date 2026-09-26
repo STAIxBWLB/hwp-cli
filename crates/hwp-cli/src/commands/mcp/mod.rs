@@ -759,23 +759,28 @@ fn tool_fill(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             arg_bool(args, "allow_partial", false)?,
         )
         .map_err(|error| format!("{error:#}"))?
-    } else if let Some(parts) = parts_obj {
-        if parts.is_empty() && values.is_empty() {
-            return Err("values와 parts가 모두 비어 있습니다".into());
-        }
-        let mut set: Vec<String> = values.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    } else if parts_obj.is_some_and(|parts| parts.is_empty()) && values.is_empty() {
+        return Err("values와 parts가 모두 비어 있습니다".into());
+    } else if let Some(parts) = parts_obj.filter(|parts| !parts.is_empty()) {
+        // Values and part paths reach the fill as data, never as `name=value` strings: a value
+        // is literal text (a leading `@` is not a part path) and a name may hold `=`.
+        let mut checked_parts = serde_json::Map::new();
         for (k, v) in parts {
             let path = v
                 .as_str()
                 .ok_or("parts 값은 부분 파일 경로 문자열이어야 합니다")?;
             let path = checked_read_path(ctx, path)?;
-            set.push(format!("{k}=@{}", path.display()));
+            let path = path
+                .to_str()
+                .ok_or("parts 경로를 UTF-8로 읽을 수 없습니다")?
+                .to_string();
+            checked_parts.insert(k.clone(), Value::String(path));
         }
         crate::commands::fill::execute(
             &input,
             &output,
-            &set,
-            None,
+            &[],
+            Some(&json!({"fields": values, "parts": checked_parts})),
             arg_bool(args, "allow_partial", false)?,
             false,
             ctx.roots(),
@@ -4221,6 +4226,63 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// Fill `template` (markdown) with `values` beside one inside part, under `--root`, and
+    /// return the output text.
+    fn fill_beside_a_part(tag: &str, template_md: &str, values: Value) -> (PathBuf, String) {
+        let (base, root, _) = sandbox_dirs(tag);
+        let template = root.join("template.hwpx");
+        create_hwpx(&template, template_md);
+        let part = root.join("part.md");
+        std::fs::write(&part, "부분 본문\n").unwrap();
+        let out = root.join("out.hwpx");
+        let sandbox = ctx_with_roots(vec![canonicalize_mcp_path(&root).unwrap()]);
+        tool_fill(
+            &json!({
+                "input": template,
+                "output": out,
+                "values": values,
+                "parts": {"본문": part.display().to_string()}
+            }),
+            &sandbox,
+        )
+        .expect("fill with parts and literal values");
+        let plain = crate::commands::cat::load_document(&out)
+            .unwrap()
+            .plain_text();
+        assert!(plain.contains("부분 본문"), "{plain}");
+        (base, plain)
+    }
+
+    /// With `parts`, a value starting with `@` is literal text, never a part path, so nothing
+    /// outside the roots is read. `{{x}}` stands alone, so the old reading would splice the file.
+    #[test]
+    fn mcp_fill_values_stay_literal_beside_parts() {
+        let (_, _, outside) = sandbox_dirs("fill-literal");
+        let secret = outside.join("secret.md");
+        std::fs::write(&secret, "OUTSIDE-CONTENT\n").unwrap();
+        let at_secret = format!("@{}", secret.display());
+        let (base, plain) = fill_beside_a_part(
+            "fill-literal",
+            "# 제목\n\n{{본문}}\n\n{{x}}\n",
+            json!({"x": at_secret}),
+        );
+        assert!(!plain.contains("OUTSIDE-CONTENT"), "{plain}");
+        assert!(plain.contains(&at_secret), "{plain}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// With `parts`, a value name holding `=` keeps its whole name.
+    #[test]
+    fn mcp_fill_names_keep_an_equals_sign_beside_parts() {
+        let (base, plain) = fill_beside_a_part(
+            "fill-equals",
+            "# 제목\n\n{{본문}}\n\n식: {{a=b}}\n",
+            json!({"a=b": "v"}),
+        );
+        assert!(plain.contains("식: v"), "{plain}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

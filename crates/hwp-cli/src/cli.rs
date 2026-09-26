@@ -456,7 +456,7 @@ pub enum Cmd {
         /// Output file path
         #[arg(short, long)]
         output: PathBuf,
-        /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`, padded `{{ name }}` too). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@'
+        /// Fill a placeholder, "name=value" (repeatable; replaces `{{name}}`, padded `{{ name }}` too). "name=@part.md" splices a part file (markdown + HTML table blocks, docs/design/18 contract) into the `{{name}}` anchor paragraph instead — part-based composition for large documents. "@@" escapes a literal '@'. The name ends at the first '=': a name holding '=' goes through --data
         #[arg(long)]
         set: Vec<String>,
         /// JSON object file mapping slot name to value (bulk fill; names are trimmed like `{{ name }}`; "parts": {"name": "path"} splices part files, "tables": [...] fills table rows)

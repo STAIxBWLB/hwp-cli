@@ -69,6 +69,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   schema promises a content-free report, one that may be written to a file or returned over MCP.
   The stderr summary, the abort message and the MCP response's `warnings` still name the request
   for the operator ([#348](https://github.com/STAIxBWLB/hwp-cli/issues/348)).
+- MCP `hwp_fill` with `parts` passes `values` to the fill as literal text and `parts` as
+  root-checked paths, instead of re-encoding both as `name=value` strings (which also cut a
+  name holding `=` at the `=`). Upgrade if you run `hwp mcp` or `hwp serve` with `--root`.
 
 **Added**
 
@@ -126,6 +129,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `hwp fill --set name=@@text` now fills the literal `@text`, as the help says. The `@@` escape
+  was kept as `@@` on every path. A `--set` name ends at the first `=`, so a name holding `=`
+  goes through `--data` (help and SKILL say so).
 - A `hwp edit` text replacement (`--replace`, the `replace` op and MCP `hwp_edit`) stored a tab
   in the replacement as a raw text character, which HWP files cannot hold, and kept a CR from a
   CRLF. The replacement text is now normalized the way markdown import stores it: a tab becomes
