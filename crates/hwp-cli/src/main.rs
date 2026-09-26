@@ -314,7 +314,7 @@ fn real_main() -> anyhow::Result<()> {
         }
         Cmd::Fields { file, json } => commands::fields::run(&file, json),
         Cmd::Bookmarks { file, json } => commands::bookmarks::run(&file, json),
-        Cmd::Slots { file, json } => commands::slots::run(&file, json),
+        Cmd::Slots { file, json, forms } => commands::slots::run(&file, json, forms),
         Cmd::Fill {
             input,
             output,
@@ -322,7 +322,16 @@ fn real_main() -> anyhow::Result<()> {
             data,
             json,
             allow_partial,
-        } => commands::fill::run(&input, &output, &set, data.as_deref(), json, allow_partial),
+            forms,
+        } => commands::fill::run(
+            &input,
+            &output,
+            &set,
+            data.as_deref(),
+            json,
+            allow_partial,
+            forms,
+        ),
         Cmd::Validate { file, json } => commands::validate::run(&file, json),
         Cmd::Lint {
             file,

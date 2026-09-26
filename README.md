@@ -424,6 +424,18 @@ filled again. An unmatched slot is an error and nothing is written unless `--all
 given; with it, even a fill that matched nothing publishes the input unchanged and reports zero
 counts.
 
+**Form fields** Korean public forms rarely carry slots. `hwp slots --forms` also lists label cells
+(성명, 연락처, ...), inline `라벨: 값` text and slots, each with a key, label, source, confidence
+and occurrence count. `hwp fill --forms` fills them from the same `--data` or `--set` values in one
+pass: the cell next to or below a label cell, the text after an inline label, `학년(  )반` blanks,
+`□동의` checkboxes and `(비고:   )` blanks. A non-empty value cell, and the inline text after
+`라벨:` (up to a comma, semicolon, the next `라벨:` or the line end), is overwritten, as kordoc does;
+the report warns for each overwrite. A cell holding a field (누름틀), picture or table is never
+written, and values are inserted literally. Keys match with spaces, colons and parentheses ignored, and `--json` adds the
+`unmatched` keys. The rules are ported from [kordoc](https://github.com/chrisryugj/kordoc) (MIT).
+This path goes through the IR and writes `.hwpx` only: the sections it changed are rewritten the
+way `hwp edit` writes them, and every other section and package entry is copied byte for byte.
+
 **Linting** `hwp lint` applies ten rules to `.md`, `.hwp` and `.hwpx` files (or to stdin markdown
 with `-`): seven notation rules (date `2026. 8. 20.`, time, money, the `붙임:` colon and its
 numbering, the closing `끝.`, punctuation), one against decorative item marks (`■ ▶ ▲ ◆ ● ※`, which
@@ -640,7 +652,9 @@ so this repository does not bundle the specification or derivatives of it (extra
 captures) and links only to the official distribution point. See [docs/README.md](docs/README.md).
 
 Some test fixtures come from [hahnlee/hwp-rs](https://github.com/hahnlee/hwp-rs) (Apache-2.0); see
-`fixtures/README.md` and the root `NOTICE`.
+`fixtures/README.md` and the root `NOTICE`. The form-field rules of `hwp slots --forms` and
+`hwp fill --forms` are ported from [chrisryugj/kordoc](https://github.com/chrisryugj/kordoc) (MIT);
+see the root `NOTICE`.
 
 ## License
 

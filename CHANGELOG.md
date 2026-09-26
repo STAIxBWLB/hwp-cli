@@ -70,6 +70,42 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   The stderr summary, the abort message and the MCP response's `warnings` still name the request
   for the operator ([#348](https://github.com/STAIxBWLB/hwp-cli/issues/348)).
 
+**Added**
+
+- Korean form fields, ported from [kordoc](https://github.com/chrisryugj/kordoc) (MIT, see
+  `NOTICE`) so Maru can drop its `kordoc_lite` module
+  ([#364](https://github.com/STAIxBWLB/hwp-cli/issues/364)):
+  - `hwp slots --forms` (and MCP `hwp_slots` with `forms`) adds a `fields` array beside
+    `placeholders`: every slot, label cell and inline `라벨: 값`, each with `key`, `label`,
+    `source` (`placeholder`, `formLabel`, `inlineLabel`), `confidence` (1.0, 0.72, 0.64),
+    `occurrences` and `required` (true for a key that is also a slot). The `slots` output without
+    the flag is unchanged.
+  - `hwp fill --forms` (and MCP `hwp_fill` with `forms`) fills slots and form fields from one
+    `--data`/`--set` set of values in one pass (hwpx in, hwpx out). It fills the cell next to or
+    below a label cell, the text after an inline label, `학년(  )반` blanks, `□동의` checkboxes
+    (for a truthy value; a falsy one leaves the box and still counts as matched) and
+    `(비고:   )` blanks. Keys match with spaces, colons and parentheses ignored; a key that
+    normalizes to nothing is dropped with a warning. The `--json` report adds `unmatched`. `--allow-partial`
+    works as for slots: without it an unmatched key fails, and with it a fill that matched nothing
+    publishes the input unchanged.
+  - As in kordoc, a non-empty value cell and the inline text after `라벨:` are overwritten. The
+    inline text ends at a comma, semicolon, line end, the next `라벨:` on the line or 100
+    characters. Each overwritten cell and inline text is named in the warnings. A cell that holds
+    a field, picture or table is never written (kordoc never removed markup), and neither is a
+    value cell whose requested slot, blank or checkbox a text edit fills: a slot and a label on
+    one place fill it once, and when two keys reach one place the first keeps it, with a warning.
+    Every edit is found on the unfilled text, so a value is inserted literally and never filled
+    again, and a blank inline value keeps a space before a following label.
+  - Each edit splices only the text it replaces, so the value keeps the char shape of that text,
+    not of the label or colon. Inserted text follows the IR rules: CRLF and LF become line
+    breaks, a tab the tab control. The path goes through the IR and writes hwpx the way
+    `hwp edit` does, but re-serializes only the sections it changed; every other section and
+    package entry is copied byte for byte.
+  - The label finder of `hwp edit --set-cell-by-label` now shares its table walk with the form
+    fill. Its own matching and target rules are unchanged.
+  - Release archives and the claude.ai skill bundle now include `LICENSE-MIT`, `LICENSE-APACHE`
+    and `NOTICE`, since the binary carries kordoc's MIT-licensed rules.
+
 **Changed**
 
 - `hwp render --layout-json` now records the text of drawing objects - text boxes, HWPX shapes
@@ -90,6 +126,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- A `hwp edit` text replacement (`--replace`, the `replace` op and MCP `hwp_edit`) stored a tab
+  in the replacement as a raw text character, which HWP files cannot hold, and kept a CR from a
+  CRLF. The replacement text is now normalized the way markdown import stores it: a tab becomes
+  the tab control, CRLF and LF a line break, and other control characters are dropped. The same
+  rule applies to `hwp fill --forms` values ([#364](https://github.com/STAIxBWLB/hwp-cli/issues/364)).
 - `hwp fill` now fills every slot `hwp slots` lists. Both commands, the MCP `hwp_slots` and
   `hwp_fill` tools, the `--data` table and part fills, part anchors and `hwp template` read a
   slot with one grammar (`hwp_model::slot_tokens`): `{{`, a name, `}}`. The name is any text

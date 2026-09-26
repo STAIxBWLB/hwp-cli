@@ -3650,21 +3650,7 @@ fn write_output(
             if let Some((source_path, original)) = source
                 && original.meta.source_format == "hwpx"
             {
-                // dirty 판정은 편집 전후 IR 비교로 계산한다(op별 수동 매핑보다
-                // 누락 위험이 없다). 섹션 지정은 앵커/패턴/전역 표 인덱스 기반 op의
-                // 대상 섹션을 값싸게 증명할 수 없어 항상 전체 섹션을 dirty로 둔다.
-                let dirty = hwpx::patch::DirtyEntries {
-                    sections: None,
-                    header: doc.header != original.header,
-                    content_hpf: doc.metadata != original.metadata,
-                };
-                return Ok(hwpx::patch::rewrite_document_staged(
-                    source_path,
-                    output,
-                    doc,
-                    &dirty,
-                    &hwpx::PackageLimits::default(),
-                )?);
+                return write_hwpx_surgical(source_path, original, doc, output, None);
             }
             Ok(hwpx::write_document_with_report(doc, output)?)
         }
@@ -3677,6 +3663,33 @@ fn write_output(
             Ok(hwp_model::WriteReport::new())
         }
     }
+}
+
+/// Same-format hwpx write: re-serialize the content entries from the edited IR and raw-copy
+/// every other entry of `source_path` (BinData, META-INF, Preview, DocOptions, ...).
+/// `sections` names the sections to re-serialize; `None` means all of them.
+pub(crate) fn write_hwpx_surgical(
+    source_path: &Path,
+    original: &hwp_model::Document,
+    doc: &hwp_model::Document,
+    output: &Path,
+    sections: Option<Vec<usize>>,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    // dirty 판정은 편집 전후 IR 비교로 계산한다(op별 수동 매핑보다
+    // 누락 위험이 없다). `hwp edit`는 앵커/패턴/전역 표 인덱스 기반 op의
+    // 대상 섹션을 값싸게 증명할 수 없어 항상 전체 섹션(None)을 dirty로 둔다.
+    let dirty = hwpx::patch::DirtyEntries {
+        sections,
+        header: doc.header != original.header,
+        content_hpf: doc.metadata != original.metadata,
+    };
+    Ok(hwpx::patch::rewrite_document_staged(
+        source_path,
+        output,
+        doc,
+        &dirty,
+        &hwpx::PackageLimits::default(),
+    )?)
 }
 
 /// "bold=on,size=16,color=#FF0000" → CharFormat.
