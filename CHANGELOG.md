@@ -24,6 +24,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `certification-report-v1` only loosens (new codes, higher or removed maxima), so every report
   that validated before still validates.
 
+- `render-layout-v1` and `segment-envelope-v2` changed in descriptions only, so their pinned
+  hashes moved and everything that validated before still validates. The content of both
+  artifacts changed, which the 1.0 SemVer scope does not cover: the layout artifact gains rows
+  for the text of drawing objects, and the v2 envelope gains point `para` segments (below). Two
+  published values also change instead of being added, and both were wrong before. In the layout
+  artifact, a paragraph holding a text box used to report the text box's own characters as its
+  `source_chars`, offsets into a different paragraph's string (on `report-tables.hwpx`, the
+  paragraph holding its text box claimed `0..213`); it now claims none of them, which revises
+  1.1.0's "every row published before is published unchanged". In the v2 envelope, a text-box
+  paragraph that a table or block equation interrupts, and whose text after the block is longer
+  than the paragraph's own start offset, used to get a `para` range read off the wrong buffer:
+  it started at the paragraph's offset in the buffer before the block, so it covered only the
+  tail of the text after the block. It is now a point at the start of its contribution. Markdown,
+  the v1 envelope and rendered PNG, SVG and PDF bytes are byte-identical.
+
 **Security**
 
 - A failed op's `reason` no longer carries the request's own strings. It used to repeat a
@@ -34,6 +49,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Changed**
 
+- `hwp render --layout-json` now records the text of drawing objects - text boxes, HWPX shapes
+  and containers - and the tables, cells and bookmarks inside it, under the paths the segment
+  envelope gives them: `[..., para, control, n]`, with `n` counted across all of the object's
+  paragraph lists, a linked text box the renderer splits into columns included. Text an object
+  carries that the renderer does not lay out (a text box whose geometry header is too short to
+  place it, an object kind no layout arm draws) keeps one row per paragraph with a null `box`.
+  The join with the envelope is now total in both directions with no exclusion: on
+  `fixtures/samples/report-tables.hwpx` the artifact publishes 219 paragraphs, 126 cells and 10
+  tables against the envelope's 219, 126 and 10 (182, 112 and 9 before), and the schema's `kind`
+  description no longer names an excluded place (part of
+  [#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
 - After a failed test step, `scripts/check.sh` labels the fixture-skip tally on its `check:
   FAILED` line `(partial)`, and the CI and release-readiness test steps do the same: `cargo test`
   stops at the first failing test binary, so that count is not the full tally. The `check: OK`
@@ -81,6 +107,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   The special-file destination test uses a FIFO instead of a Unix socket, so a long `TMPDIR` no
   longer fails it on the socket path length limit
   ([#349](https://github.com/STAIxBWLB/hwp-cli/issues/349)).
+
+- `--segments v2`: a text-box paragraph that a table or block equation interrupts is one point
+  `para` segment at the start of its contribution. It used to get no segment at all or, when its
+  text after the block was longer than its own start offset, a range read off the wrong buffer.
+  A paragraph holding only an HWPX shape or container with no text (a `rect`, a `cont`) now gets
+  the point segment a `gso ` drawing got in #285, so its geometry row resolves. The envelope and
+  the renderer now decide which paragraphs always have a segment with one rule, mirrored in both
+  crates and pinned by `segment_id_parity`
+  ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
 
 ## [1.1.0]
 

@@ -4,7 +4,8 @@
 //!
 //! One segment ties a range of the emitted markdown to the IR node that produced it. The kinds
 //! are `para`, `run`, `table`, `cell`, `image`, `field` and `bookmark`. Ranges nest: a `run`
-//! range lies inside its `para` range, a `cell` range inside its `table` range, and siblings at
+//! range lies inside its `para` range (but for the interrupted drawing-object paragraph below),
+//! a `cell` range inside its `table` range, and siblings at
 //! one level do not overlap. The vector is ordered by `start`, ties broken so the containing
 //! segment precedes the contained one — including where the two ranges are *identical*, which
 //! `end` alone cannot separate (a single-run cell is exactly its run); see [`finalize`].
@@ -13,15 +14,22 @@
 //! `Generic` control's paragraph lists carry their own `para` segment, not only the top-level
 //! ones, or an editor could not address the paragraph in a cell.
 //!
-//! A paragraph that emits nothing has no `para` segment - with one exception (#285). A body or
-//! table-cell paragraph that emits no markdown but that the renderer still draws, because it
-//! holds a drawing object (`gso `) or whitespace text the markdown trims away, is published as
-//! a **point** `para` segment (`start == end`) at the position its text would occupy. The render
+//! A paragraph that emits nothing has no `para` segment - with one exception (#285). A
+//! paragraph that emits no markdown but that the renderer still draws, because it holds
+//! whitespace text the markdown trims away or an object ([`always_has_para_segment`]: a table,
+//! a picture, an equation, a drawing object), is published as a **point** `para` segment
+//! (`start == end`) at the position its text would occupy. The render
 //! layout artifact records a geometry row for such a paragraph, joined by id; an envelope with
 //! no segment for it left that row's id resolving to nothing. The empty range is how the
 //! envelope already spells "no text" (a bookmark), so no field changes, and the markdown does
 //! not change either. Only the paragraph's OWN emission decides this: a blank line that closes
 //! the list block above an empty paragraph is a separator, not that paragraph's content.
+//!
+//! A drawing object's paragraph that a block interrupts is a point too (#350). A table or a
+//! block equation in a text box flushes the ENCLOSING paragraph's output, which resets the
+//! coordinate system, so the drawing paragraph's contribution is not one range. It is one point
+//! at the start of that contribution, recorded before the flush, and its runs are the one place
+//! a `run` does not lie inside its `para` range.
 //!
 //! Offsets are **Unicode scalar** offsets into the cleaned markdown, not bytes — the same
 //! discipline [`crate::markdown::to_markdown_with_segments`] (v1) already uses: byte spans are
@@ -106,7 +114,8 @@
 //!   [`crate::bookmark`] rather than by widening the field predicate.
 
 use hwp_model::header::{CharShape, ParaShape};
-use hwp_model::{Document, Paragraph};
+use hwp_model::paragraph::HwpChar;
+use hwp_model::{Control, Document, Paragraph};
 
 use crate::markdown::MarkdownOptions;
 use crate::segment_id::{SegmentPath, canonical_char_shape_runs};
@@ -329,6 +338,28 @@ pub(crate) fn summarize(
         ),
         direct: level(doc, char_shape_id, Some(para.para_shape.0)),
     }
+}
+
+/// Whether a paragraph always has a `para` segment: any text (a range, or a point when it is
+/// only whitespace the markdown trims away), or an object the renderer draws without text - a
+/// table, a picture, an equation, or a drawing object, HWP5 `gso ` or an HWPX shape or
+/// container. Nothing emitted and none of these means no segment.
+///
+/// `hwp-render`'s `segment_map::always_has_para_segment` is a deliberate second copy of this
+/// rule, deciding which geometry rows survive with nothing measured (the two crates may not
+/// depend on each other); `crates/hwp-cli/tests/segment_id_parity.rs` pins them together.
+pub fn always_has_para_segment(para: &Paragraph) -> bool {
+    para.chars.iter().any(|ch| matches!(ch, HwpChar::Text(_)))
+        || para.controls.iter().any(|control| match control {
+            Control::Table(_) | Control::Picture(_) => true,
+            Control::Generic(g) => {
+                g.ctrl_id == *b"gso "
+                    || g.container_box.is_some()
+                    || !g.gso_shapes.is_empty()
+                    || g.equation.is_some()
+            }
+            _ => false,
+        })
 }
 
 /// The character shape id in force at WCHAR position `pos`, off the canonical run list.
@@ -1172,6 +1203,149 @@ mod tests {
             drawn.start >= first.end,
             "a point sits where its text would be, after the paragraph before it"
         );
+    }
+
+    /// A drawing object carrying `lists` as its text.
+    fn drawing_with(ctrl_id: [u8; 4], lists: Vec<Vec<Paragraph>>) -> Control {
+        let mut g = generic(ctrl_id);
+        g.paragraph_lists = lists
+            .into_iter()
+            .map(|paragraphs| hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs,
+            })
+            .collect();
+        Control::Generic(g)
+    }
+
+    /// A paragraph holding one text box, `lists` its text.
+    fn text_box_host(lists: Vec<Vec<Paragraph>>) -> Paragraph {
+        let mut host = para("앞");
+        attach(
+            &mut host,
+            ctrl_char::OBJECT,
+            *b"gso ",
+            drawing_with(*b"gso ", lists),
+        );
+        host
+    }
+
+    fn para_paths(segs: &[Segment]) -> Vec<Vec<usize>> {
+        of(segs, SegmentKind::Para)
+            .iter()
+            .map(|s| s.path.indices.clone())
+            .collect()
+    }
+
+    /// #350: a drawing object's paragraphs are numbered `[para, control, n]` across ALL of its
+    /// lists, the scheme the render layout artifact's rows for them follow.
+    #[test]
+    fn a_drawing_objects_paragraphs_are_numbered_across_all_of_its_lists() {
+        let doc = doc_of(vec![text_box_host(vec![
+            vec![para("가"), para("나")],
+            vec![para("다")],
+        ])]);
+        let (_, segs) = emit(&doc);
+        assert_eq!(
+            para_paths(&segs),
+            vec![vec![0], vec![0, 0, 0], vec![0, 0, 1], vec![0, 0, 2]],
+            "{segs:#?}"
+        );
+    }
+
+    /// A table in a text box flushes the enclosing paragraph's output, so the drawing paragraph
+    /// holding it is not one range. It is ONE point at the start of its contribution - never a
+    /// range read off the flushed buffer, which is what the paragraph got when its text after
+    /// the table was longer than its start offset.
+    #[test]
+    fn an_interrupted_drawing_paragraph_is_one_point_at_its_start() {
+        let mut inner = para("전");
+        attach(
+            &mut inner,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell_of(0, 0, "칸")], 1, 1)),
+        );
+        inner
+            .chars
+            .extend("표 뒤에 오는 훨씬 긴 문장입니다".chars().map(HwpChar::Text));
+        let doc = doc_of(vec![text_box_host(vec![vec![inner]])]);
+        let (md, segs) = emit(&doc);
+        let own: Vec<&Segment> = of(&segs, SegmentKind::Para)
+            .into_iter()
+            .filter(|s| s.path.indices == [0, 0, 0])
+            .collect();
+        assert_eq!(own.len(), 1, "one segment for the paragraph: {segs:#?}");
+        assert_eq!(own[0].start, own[0].end, "a point: {:?}", own[0]);
+        let from: String = md.chars().skip(own[0].start).collect();
+        assert!(
+            from.trim_start().starts_with("전"),
+            "the point is where the paragraph's contribution starts: {from:?}"
+        );
+        assert_eq!(
+            md,
+            to_markdown_with(&doc, &MarkdownOptions::default()).unwrap(),
+            "the markdown is unchanged by the point"
+        );
+    }
+
+    /// A drawing paragraph whose first object is a table and which has no text before it is
+    /// interrupted at once: still one point, and the table nests under its path.
+    #[test]
+    fn a_table_only_drawing_paragraph_is_a_point() {
+        let mut inner = para("");
+        attach(
+            &mut inner,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell_of(0, 0, "칸")], 1, 1)),
+        );
+        let (_, segs) = emit(&doc_of(vec![text_box_host(vec![vec![inner]])]));
+        let own: Vec<&Segment> = of(&segs, SegmentKind::Para)
+            .into_iter()
+            .filter(|s| s.path.indices == [0, 0, 0])
+            .collect();
+        assert_eq!(own.len(), 1, "{segs:#?}");
+        assert_eq!(own[0].start, own[0].end);
+        assert_eq!(only(&segs, SegmentKind::Table).path.indices, [0, 0, 0, 0]);
+    }
+
+    /// A text-less HWPX shape (`rect`, not `gso `) is drawn, so the paragraph holding it is a
+    /// point, in the body and inside a text box alike.
+    #[test]
+    fn a_textless_hwpx_shape_is_a_point_para_segment() {
+        let rect = || {
+            let mut g = generic(*b"rect");
+            g.gso_shapes.push(hwp_model::ShapeGeom {
+                kind: hwp_model::ShapeKind::Rect,
+                x: 0,
+                y: 0,
+                w: 1_000,
+                h: 1_000,
+                points: Vec::new(),
+                fill: 0,
+                fill_gradient: None,
+                border_color: 0,
+                border_width: 10,
+                round_ratio: 0,
+                border_style: 0,
+                arrow_start: 0,
+                arrow_end: 0,
+                anchored: false,
+                description: None,
+            });
+            let mut p = para("");
+            attach(&mut p, ctrl_char::OBJECT, *b"rect", Control::Generic(g));
+            p
+        };
+        let doc = doc_of(vec![rect(), text_box_host(vec![vec![rect()]])]);
+        let (_, segs) = emit(&doc);
+        let points: Vec<Vec<usize>> = of(&segs, SegmentKind::Para)
+            .iter()
+            .filter(|s| s.start == s.end)
+            .map(|s| s.path.indices.clone())
+            .collect();
+        assert_eq!(points, vec![vec![0], vec![1, 0, 0]], "{segs:#?}");
     }
 
     /// An empty paragraph right after a list has no `para` segment. The blank line emitted at
