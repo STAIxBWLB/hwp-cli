@@ -4236,7 +4236,7 @@ mod tests {
         let secret = outside.join("secret.md");
         std::fs::write(&secret, "OUTSIDE-CONTENT\n").unwrap();
         let template = root.join("template.hwpx");
-        create_hwpx(&template, "# 제목\n\n{{본문}}\n\n값: {{x}}\n\n식: {{a=b}}");
+        create_hwpx(&template, "# 제목\n\n{{본문}}\n\n{{x}}\n\n식: {{a=b}}");
         let part = root.join("part.md");
         std::fs::write(&part, "부분 본문\n").unwrap();
         let out = root.join("out.hwpx");
@@ -4256,7 +4256,8 @@ mod tests {
             .unwrap()
             .plain_text();
         assert!(plain.contains("부분 본문"), "{plain}");
-        assert!(plain.contains(&format!("값: {at_secret}")), "{plain}");
+        // `{{x}}` stands alone, so reading the value as a part would splice the outside file.
+        assert!(plain.contains(&at_secret), "{plain}");
         assert!(!plain.contains("OUTSIDE-CONTENT"), "{plain}");
         assert!(plain.contains("식: v"), "{plain}");
         let _ = std::fs::remove_dir_all(&base);
