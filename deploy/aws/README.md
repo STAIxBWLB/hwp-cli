@@ -52,7 +52,7 @@ path modifier and silently breaks the ARN.
 export AWS_PROFILE=<profile> AWS_REGION=us-east-1
 ACCOUNT_ID=<12-digit account id>
 REPO=hwp-agentcore
-TAG=v1.1.0
+TAG=v1.2.0
 IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO}:${TAG}"
 ```
 

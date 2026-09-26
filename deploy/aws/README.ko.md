@@ -49,7 +49,7 @@ AgentCore tier(Tier B)다. `hwp serve`를 AgentCore Runtime에서 MCP 서버로 
 export AWS_PROFILE=<profile> AWS_REGION=us-east-1
 ACCOUNT_ID=<12자리 계정 ID>
 REPO=hwp-agentcore
-TAG=v1.1.0
+TAG=v1.2.0
 IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO}:${TAG}"
 ```
 
