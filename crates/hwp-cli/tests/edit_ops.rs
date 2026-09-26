@@ -2475,7 +2475,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "eadf17b0c09e77189fc26f9b90cb9145146b3eacd8cdde60691a484216a4a8b5",
+        actual, "8abbf7ff610c5c21a37b9235c584289f5f15c3fe8a0b1b8cfce40248d93d77d7",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2973,6 +2973,64 @@ fn failed_op_reason_carries_no_request_text() {
             }
         }
     }
+}
+
+/// #359: `style_tables` on already-styled tables and `set_table_placement` to the placement a
+/// table already has are successful no-ops, reported `applied` with nothing touched. Only a
+/// `set_cell_by_label` whose label preflight could not resolve carries the fixed notice.
+#[test]
+fn table_noops_report_applied_with_nothing_touched() {
+    // The GFM table is styled at import time and placed inline.
+    let (dir, base) = table_base_for("report-table-noops");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"style_tables","preset":"official"},
+          {"op":"set_table_placement","placement":"inline","table":0},
+          {"op":"set_cell_by_label","label":"없는 라벨","text":"x"}
+        ]"#,
+    )
+    .unwrap();
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(dir.join("out.hwpx"))
+        .arg("--ops")
+        .arg(&ops)
+        .arg("--allow-partial")
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+    assert_eq!(
+        stderr.matches("이미 적용되어 있습니다").count(),
+        2,
+        "both table ops must be no-ops here: {stderr}"
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert!(edit_report_v1_validator().is_valid(&report), "{report}");
+    assert_eq!(report["applied_count"], 2, "{report}");
+    assert_eq!(report["failed_count"], 1, "{report}");
+    let ops = report["ops"].as_array().unwrap();
+    for noop in &ops[..2] {
+        assert_eq!(noop["status"], "applied", "{noop}");
+        assert_eq!(noop["pieces_touched"], 0, "{noop}");
+        assert!(noop["changed"].as_array().unwrap().is_empty(), "{noop}");
+        assert!(noop["reason"].is_null(), "{noop}");
+    }
+    assert_eq!(ops[2]["status"], "failed", "{}", ops[2]);
+    assert_eq!(
+        ops[2]["reason"], "적용되지 않음 (사전 검증 단계에서 이미 확인됨)",
+        "{}",
+        ops[2]
+    );
 }
 
 /// A run whose only op matches nothing still writes `--report`'s file when given, even though
