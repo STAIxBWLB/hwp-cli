@@ -12,6 +12,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Compatibility**
 
+- A failed op's `reason` in `edit-report-v1` (`hwp edit --report` and `--dry-run`, and the MCP
+  `hwp_edit` report and response `ops`) is now a fixed, content-free label, usually
+  `<op>: <cause>` such as `replace: no match`, instead of a copy of the request. An op whose miss
+  preflight already reported keeps its fixed notice. The schema's shape is unchanged; only the
+  `reason` description changed, which moves the hash for consumers that pin it. The label's
+  wording is not covered by SemVer beyond being a string, so match on `op` and `status`, not on
+  it.
+
 - `render-layout-v1` and `segment-envelope-v2` changed in descriptions only, so their pinned
   hashes moved and everything that validated before still validates. The content of both
   artifacts changed, which the 1.0 SemVer scope does not cover: the layout artifact gains rows
@@ -22,6 +30,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   (on `report-tables.hwpx`, the paragraph holding its text box claimed `0..213`). It now claims
   none of them. The old value was wrong. Markdown, the v1 envelope and rendered PNG, SVG and PDF
   bytes are byte-identical.
+
+**Security**
+
+- A failed op's `reason` no longer carries the request's own strings. It used to repeat a
+  replace's pattern and replacement, an anchor, a field or bookmark name, or a url, although the
+  schema promises a content-free report, one that may be written to a file or returned over MCP.
+  The stderr summary, the abort message and the MCP response's `warnings` still name the request
+  for the operator ([#348](https://github.com/STAIxBWLB/hwp-cli/issues/348)).
 
 **Changed**
 
