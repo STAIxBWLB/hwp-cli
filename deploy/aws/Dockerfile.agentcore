@@ -36,9 +36,9 @@
 # binary, which AgentCore rejects. Override only to test another architecture.
 ARG HWP_PLATFORM=linux/arm64
 
-ARG HWP_VERSION=v1.3.0
+ARG HWP_VERSION=v1.3.1
 ARG HWP_TARGET=aarch64-unknown-linux-gnu
-ARG HWP_SHA256=51583ce588b51b8ed4bf7cb098cd0843856641bd3698341fd314ccd4680d685d
+ARG HWP_SHA256=3c721f2548c4c74aba2ffb38fa09888d15610edaecc9fe33f81b1d7c42d222e4
 
 # Fetch stage. ADD downloads over the builder's own network stack, so no curl and
 # no CA bundle are ever installed; keeping it in a discarded stage also keeps the
