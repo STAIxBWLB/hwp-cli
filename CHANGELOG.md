@@ -38,6 +38,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   numbering, header and footer) onto the part's first paragraph, and the output keeps the
   template's page settings
   ([#376](https://github.com/STAIxBWLB/hwp-cli/issues/376)).
+- `hwp merge` to `.hwp` with an `.hwp` first input and an `.hwpx` input wrote a file Hancom
+  Office refuses as corrupt. The merge kept the first input's non-synthesis write, which skips
+  the HWP5 paragraph invariants the `.hwpx` input's paragraphs lack (the paragraph terminator,
+  the last-paragraph flag, the section-break bits and instance ids). A merge with any non-HWP5
+  input now writes through the structural path, which leaves the `.hwp` input's own paragraph
+  shapes as they are; an HWP5-only merge is unchanged. A paragraph id the HWP5 writer assigns
+  now skips the ids a document already has; a merge with an hwp-cli-made `.hwp` input, and a
+  part filled into an hwp-cli `.hwp` template, gave new paragraphs ids already in use
+  ([#381](https://github.com/STAIxBWLB/hwp-cli/issues/381)).
 
 ## [1.2.0]
 

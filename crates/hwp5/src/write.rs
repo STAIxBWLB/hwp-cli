@@ -649,7 +649,12 @@ fn materialize_document(
             // 경로에서만 정상 표본 기준값을 보정 주입한다 — hwp5 무수정 왕복
             // (synthesize=false)은 거치지 않으므로 바이트 동일 게이트 무영향.
             if !source_preserving {
-                ensure_para_shape_defaults(&mut d.header);
+                // An HWP5 source's own para shapes are genuine: a border_fill_id of 0 there
+                // means "no border", and 5.0.2.x files use it (#381 review). Only a converted
+                // document lost these fields; a merge's grafted HWPX shapes carry them.
+                if d.meta.source_format != "hwp5" {
+                    ensure_para_shape_defaults(&mut d.header);
+                }
                 materialize_evidenced_official_numbering(&mut d)?;
             }
             for section in &mut d.sections {
@@ -673,26 +678,38 @@ fn materialize_document(
     // (sample_m6 5.1.0.1·halla 5.1.1.0 실증). pre-5.0.3.2(work_report 5.0.2.4)는
     // 22B가 정답이므로 게이트 false.
     let add_tracking_tail = parse_version(&doc.meta.source_version).to_u32() >= 0x05_00_03_02;
-    // 문단 고유 ID 카운터 — 합성 문단(instance_id=0)에 non-zero 유니크 값 부여.
-    // 한글은 instance_id=0을 비정상으로 보고 '손상/변조' 판정(표본은 전부 non-zero).
-    // hwp5 원본 왕복은 원본 instance_id(0 포함)를 보존해야 바이트 동일하므로 제외.
+    // Paragraph instance id counter: a synthesized paragraph (instance_id 0) gets a non-zero id.
+    // Hancom judges instance_id 0 abnormal ("corrupt/tampered", A8; every sample is non-zero).
+    // An hwp5 round trip keeps the source ids (0 included) for byte identity, so it is skipped.
+    // A new id also skips every id the document already carries (an HWP5 section merged with
+    // HWPX paragraphs, a part spliced into an hwp-cli template), keeping new ids off existing
+    // ones; existing duplicates are left as they are.
     let mut inst_counter = 0x1000_0000u32;
-    let sections: Vec<Vec<u8>> = doc
+    let mut section_roots: Vec<Vec<RecordNode>> = doc
         .sections
         .iter()
         .map(|s| {
-            let mut roots = emit_section(
+            emit_section(
                 s,
                 synthesize,
                 opts.preserve_linesegs,
                 add_tracking_tail,
                 &mut report,
-            );
-            if synthesize {
-                assign_instance_ids(&mut roots, &mut inst_counter);
-            }
-            RecordNode::serialize_forest(&roots)
+            )
         })
+        .collect();
+    if synthesize {
+        let mut used = BTreeSet::new();
+        for roots in &section_roots {
+            collect_instance_ids(roots, &mut used);
+        }
+        for roots in &mut section_roots {
+            assign_instance_ids(roots, &mut inst_counter, &used);
+        }
+    }
+    let sections: Vec<Vec<u8>> = section_roots
+        .iter()
+        .map(|roots| RecordNode::serialize_forest(roots))
         .collect();
 
     // FileHeader
@@ -1078,19 +1095,35 @@ fn replace_cfb_stream(
     Ok(())
 }
 
-/// PARA_HEADER instance_id(offset 18~22)가 0이면 유니크 non-zero 값을 부여.
-/// 레코드 트리를 재귀 순회 — 표 셀/글상자 안 문단도 포함.
-fn assign_instance_ids(roots: &mut [RecordNode], counter: &mut u32) {
+/// The instance id (offset 18..22) of a PARA_HEADER record.
+fn para_header_instance_id(node: &RecordNode) -> Option<u32> {
+    (node.tag == tag::PARA_HEADER && node.data.len() >= 22)
+        .then(|| u32::from_le_bytes([node.data[18], node.data[19], node.data[20], node.data[21]]))
+}
+
+fn collect_instance_ids(roots: &[RecordNode], used: &mut BTreeSet<u32>) {
     for node in roots {
-        if node.tag == tag::PARA_HEADER && node.data.len() >= 22 {
-            let inst =
-                u32::from_le_bytes([node.data[18], node.data[19], node.data[20], node.data[21]]);
-            if inst == 0 {
-                *counter = counter.wrapping_add(1);
-                node.data[18..22].copy_from_slice(&counter.to_le_bytes());
-            }
+        if let Some(inst) = para_header_instance_id(node).filter(|&inst| inst != 0) {
+            used.insert(inst);
         }
-        assign_instance_ids(&mut node.children, counter);
+        collect_instance_ids(&node.children, used);
+    }
+}
+
+/// Gives every PARA_HEADER with instance id 0 the next id past `counter` that is not in `used`
+/// and not 0, walking the record tree recursively (table cells and text boxes included).
+fn assign_instance_ids(roots: &mut [RecordNode], counter: &mut u32, used: &BTreeSet<u32>) {
+    for node in roots {
+        if para_header_instance_id(node) == Some(0) {
+            loop {
+                *counter = counter.wrapping_add(1);
+                if *counter != 0 && !used.contains(counter) {
+                    break;
+                }
+            }
+            node.data[18..22].copy_from_slice(&counter.to_le_bytes());
+        }
+        assign_instance_ids(&mut node.children, counter, used);
     }
 }
 

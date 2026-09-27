@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "common/fixture_skip.rs"]
+mod fixture_skip;
+
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn hwp() -> Command {
@@ -172,6 +175,126 @@ fn merge_into_hwp_writes_a_record_for_every_list_definition() {
             usize::from(shape.numbering_id) < records,
             "definition id {} has no record ({records} written)",
             shape.numbering_id
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An `.hwp` first input merged with an `.hwpx` input writes the HWP5 paragraph invariants on
+/// every paragraph, the HWPX input's included (#381): Hancom refused the file when that input's
+/// paragraphs had no terminator, no last-paragraph flag, no section-break bits and instance id 0.
+#[test]
+fn merge_of_an_hwpx_input_into_hwp_writes_the_paragraph_invariants() {
+    let dir = scratch_dir("merge-hwpx-into-hwp");
+    let first = write_input_hwp(&dir, "first", "# 제목\n\n본문\n");
+    let md = dir.join("second.md");
+    std::fs::write(&md, "둘째 문서\n\n마지막 문단\n").unwrap();
+    let second = dir.join("second.hwpx");
+    let status = hwp()
+        .args(["new", "--from"])
+        .arg(&md)
+        .arg("-o")
+        .arg(&second)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp new --from second.md 실패");
+    let merged = dir.join("merged.hwp");
+    let status = hwp()
+        .arg("merge")
+        .arg(&first)
+        .arg(&second)
+        .arg("-o")
+        .arg(&merged)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp merge 실패");
+
+    let doc = hwp5::read_document(&merged).unwrap().document;
+    assert_eq!(doc.sections.len(), 2);
+    // Instance ids are unique document-wide (A8): the first input, made by hwp-cli, already
+    // numbers its paragraphs from 0x10000001, so the HWPX input's must not reuse those.
+    let mut ids = std::collections::BTreeSet::new();
+    for para in doc.sections.iter().flat_map(|section| &section.paragraphs) {
+        assert!(
+            ids.insert(para.header.instance_id),
+            "duplicate instance id {:#x}",
+            para.header.instance_id
+        );
+    }
+    for (s, section) in doc.sections.iter().enumerate() {
+        let last = section.paragraphs.len() - 1;
+        for (p, para) in section.paragraphs.iter().enumerate() {
+            let at = format!("section {s} paragraph {p}");
+            assert_eq!(
+                para.chars.last(),
+                Some(&hwp_model::HwpChar::CharCtrl(
+                    hwp_model::ctrl_char::PARA_BREAK
+                )),
+                "{at}: paragraph terminator"
+            );
+            assert_eq!(
+                para.header.chars_flags & 0x80 != 0,
+                p == last,
+                "{at}: last-paragraph flag"
+            );
+            assert_ne!(para.header.instance_id, 0, "{at}: instance id");
+        }
+        assert_eq!(
+            section.paragraphs[0].header.break_type & 0x03,
+            0x03,
+            "section {s}: section-break bits"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A mixed merge leaves the `.hwp` input's own paragraph shapes as they are (#381 review): a
+/// genuine 5.0.2.x file uses `border_fill_id` 0 for "no border", which the conversion defaults
+/// would turn into a solid border box around its cell paragraphs.
+#[test]
+fn a_mixed_merge_keeps_the_hwp_inputs_paragraph_shapes() {
+    let genuine =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/hwp5/work_report.hwp");
+    if fixture_skip::fixture_missing(&genuine) {
+        return;
+    }
+    let dir = scratch_dir("merge-genuine-shapes");
+    let md = dir.join("second.md");
+    std::fs::write(&md, "둘째 문서\n").unwrap();
+    let second = dir.join("second.hwpx");
+    let status = hwp()
+        .args(["new", "--from"])
+        .arg(&md)
+        .arg("-o")
+        .arg(&second)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp new --from second.md 실패");
+    let merged = dir.join("merged.hwp");
+    let status = hwp()
+        .arg("merge")
+        .arg(&genuine)
+        .arg(&second)
+        .arg("-o")
+        .arg(&merged)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp merge 실패");
+
+    let source = hwp5::read_document(&genuine).unwrap().document.header;
+    let output = hwp5::read_document(&merged).unwrap().document.header;
+    assert!(
+        source
+            .para_shapes
+            .iter()
+            .any(|shape| shape.border_fill_id == 0)
+    );
+    for (index, shape) in source.para_shapes.iter().enumerate() {
+        let written = &output.para_shapes[index];
+        assert_eq!(
+            (written.border_fill_id, written.line_spacing_old),
+            (shape.border_fill_id, shape.line_spacing_old),
+            "para shape {index}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
