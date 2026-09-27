@@ -610,13 +610,12 @@ impl OpsEntry {
                 color,
                 font,
             } => {
-                if pattern.is_some() == address.is_some() {
-                    return Err(if pattern.is_some() {
-                        "set_format 항목은 pattern과 address 중 하나만 지정해야 합니다".to_string()
-                    } else {
-                        "set_format 항목에 pattern 또는 address가 필요합니다".to_string()
-                    });
-                }
+                exactly_one_selector(
+                    "set_format",
+                    "pattern",
+                    pattern.is_some(),
+                    address.is_some(),
+                )?;
                 let format = char_format(RawCharProps {
                     bold,
                     italic,
@@ -638,13 +637,7 @@ impl OpsEntry {
                 address,
                 align,
             } => {
-                if pattern.is_some() == address.is_some() {
-                    return Err(if pattern.is_some() {
-                        "set_align 항목은 pattern과 address 중 하나만 지정해야 합니다".to_string()
-                    } else {
-                        "set_align 항목에 pattern 또는 address가 필요합니다".to_string()
-                    });
-                }
+                exactly_one_selector("set_align", "pattern", pattern.is_some(), address.is_some())?;
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 Ok(TypedEditOperation::SetAlign {
                     pattern: pattern.unwrap_or_default(),
@@ -660,13 +653,7 @@ impl OpsEntry {
                 style,
                 char,
             } => {
-                if anchor.is_some() == address.is_some() {
-                    return Err(if anchor.is_some() {
-                        "insert_para 항목은 anchor와 address 중 하나만 지정해야 합니다".to_string()
-                    } else {
-                        "insert_para 항목에 anchor 또는 address가 필요합니다".to_string()
-                    });
-                }
+                exactly_one_selector("insert_para", "anchor", anchor.is_some(), address.is_some())?;
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 let style = style
                     .map(|raw| para_props("insert_para", raw))
@@ -682,14 +669,12 @@ impl OpsEntry {
                 })
             }
             OpsEntry::DeletePara { matching, address } => {
-                if matching.is_some() == address.is_some() {
-                    return Err(if matching.is_some() {
-                        "delete_para 항목은 matching과 address 중 하나만 지정해야 합니다"
-                            .to_string()
-                    } else {
-                        "delete_para 항목에 matching 또는 address가 필요합니다".to_string()
-                    });
-                }
+                exactly_one_selector(
+                    "delete_para",
+                    "matching",
+                    matching.is_some(),
+                    address.is_some(),
+                )?;
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 Ok(TypedEditOperation::DeletePara {
                     matching: matching.unwrap_or_default(),
@@ -797,13 +782,7 @@ impl OpsEntry {
                 bottom_mm,
                 align,
             } => {
-                if pattern.is_some() == address.is_some() {
-                    return Err(if pattern.is_some() {
-                        "set_para 항목은 pattern과 address 중 하나만 지정해야 합니다".to_string()
-                    } else {
-                        "set_para 항목에 pattern 또는 address가 필요합니다".to_string()
-                    });
-                }
+                exactly_one_selector("set_para", "pattern", pattern.is_some(), address.is_some())?;
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 Ok(TypedEditOperation::SetPara {
                     pattern: pattern.unwrap_or_default(),
@@ -916,6 +895,26 @@ impl OpsEntry {
             }
         }
     }
+}
+
+/// The exactly-one rule between a legacy text selector (`key`: `pattern`, `anchor` or
+/// `matching`) and `address`. Shared by `into_typed` and the MCP `tool_edit` arms (#350), so both
+/// channels refuse the same items with the same text.
+pub(crate) fn exactly_one_selector(
+    op: &str,
+    key: &str,
+    has_selector: bool,
+    has_address: bool,
+) -> Result<(), String> {
+    if has_selector != has_address {
+        return Ok(());
+    }
+    let particle = if key == "anchor" { "와" } else { "과" };
+    Err(if has_selector {
+        format!("{op} 항목은 {key}{particle} address 중 하나만 지정해야 합니다")
+    } else {
+        format!("{op} 항목에 {key} 또는 address가 필요합니다")
+    })
 }
 
 /// 평면 문단 속성 원시 값 → ParaProps. line_spacing_pct/pt 상호 배타는 여기서
