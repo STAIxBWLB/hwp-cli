@@ -833,8 +833,10 @@ jobs:
       # `pending` and fails the job; it is never a pass. One exception: ci.yml deduplicates a
       # main push whose tree a merged PR head already verified, so such a commit has no own
       # check runs — the identical-tree fallback below accepts the PR head's green runs, with
-      # the evidence naming the PR head it relied on. Controller step: it queries the API, it
-      # runs nothing from the evaluated ref.
+      # the evidence naming the PR head it relied on. The fallback applies ONLY when every
+      # gate job on the evaluated commit is absent or skipped (the dedup signature): a failed,
+      # cancelled, succeeded-but-partial or pending own job is never overridden by earlier PR
+      # evidence. Controller step: it queries the API, it runs nothing from the evaluated ref.
       - name: Gate ci-matrix
         id: gate-ci-matrix
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
@@ -857,6 +859,11 @@ jobs:
           : >"$CHECK_RUNS_FILE"
           status=pass
           problems=""
+          # The PR-head fallback is gated on the dedup signature: every one of the five
+          # names absent or completed/skipped (neutral counts as skipped). Any real own
+          # result — success included, when partial — disables it, so a failed or pending
+          # own run is never overridden by earlier PR evidence.
+          fallback_ok=true
           for name in "${expected[@]}"; do
             state="$(jq -r --arg n "$name" \
               '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
@@ -864,14 +871,32 @@ jobs:
             echo "$name: $state"
             printf '%s\t%s\n' "$name" "$state" >>"$CHECK_RUNS_FILE"
             case "$state" in
-            completed/success) ;;
+            completed/success)
+              fallback_ok=false
+              ;;
+            absent|completed/skipped|completed/neutral)
+              # The dedup signature; the fallback stays available. The outcome
+              # classification is unchanged from before #403: completed/skipped was
+              # already a fail, absent already a pending.
+              case "$state" in
+              absent)
+                [ "$status" = fail ] || status=pending
+                ;;
+              *)
+                status=fail
+                ;;
+              esac
+              problems="${problems:+$problems, }$name=$state"
+              ;;
             completed/*)
               status=fail
+              fallback_ok=false
               problems="${problems:+$problems, }$name=$state"
               ;;
             *)
-              # absent, queued or in_progress: no conclusion exists to cite.
+              # queued or in_progress: no conclusion exists to cite.
               [ "$status" = fail ] || status=pending
+              fallback_ok=false
               problems="${problems:+$problems, }$name=$state"
               ;;
             esac
@@ -882,9 +907,13 @@ jobs:
             evidence="check-runs API for $READINESS_SHA: $problems"
             # Identical-tree fallback (same rule as release.yml verify-ci): a main commit
             # deduplicated by ci.yml's decision job has no own check runs; accept the merged
-            # PR head's green runs when the trees match. Inline, not a repository script:
-            # this is a controller step and must not execute code from the evaluated ref.
-            if pulls="$(gh api "repos/$GITHUB_REPOSITORY/commits/$READINESS_SHA/pulls?per_page=100")"; then
+            # PR head's green runs when the trees match. Only when the dedup signature
+            # holds — never over a failed, partial or pending own run. Inline, not a
+            # repository script: this is a controller step and must not execute code from
+            # the evaluated ref.
+            if [ "$fallback_ok" != "true" ]; then
+              echo "own run has real job results (failed, partial or pending); the PR-head fallback is disabled"
+            elif pulls="$(gh api "repos/$GITHUB_REPOSITORY/commits/$READINESS_SHA/pulls?per_page=100")"; then
               pr="$(jq -c --arg sha "$READINESS_SHA" \
                 '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | sort_by(.number) | last // empty' \
                 <<<"$pulls")"

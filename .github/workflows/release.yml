@@ -38,7 +38,10 @@ jobs:
   # duplicated ~25 runner-minutes per release; reading the check-runs API gives the same
   # guarantee. ci.yml may deduplicate a main push whose tree a merged PR head already
   # verified, leaving the commit with no own check runs — the identical-tree fallback below
-  # accepts that PR head's green runs. The job names below must stay in sync with ci.yml.
+  # accepts that PR head's green runs, but ONLY when every gate job on the tagged commit is
+  # absent or skipped (the dedup signature): a failed, cancelled or pending own job must
+  # never be overridden by earlier PR evidence. The job names below must stay in sync with
+  # ci.yml.
   verify-ci:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -67,12 +70,45 @@ jobs:
             done
             return "$failed"
           }
-          if check_green "$GITHUB_SHA"; then
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100")"
+          all_green=true
+          fallback_ok=true
+          for name in "${expected[@]}"; do
+            state="$(jq -r --arg n "$name" \
+              '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+              <<<"$runs")"
+            echo "$name: $state"
+            case "$state" in
+            completed/success)
+              # A real own result exists. It counts toward the pass above, but the dedup
+              # signature is all five absent/skipped, so a partial own result also
+              # disqualifies the PR-head fallback.
+              fallback_ok=false
+              ;;
+            absent|completed/skipped|completed/neutral)
+              # The dedup signature: ci.yml's decision job skipped the matrix, so the
+              # commit legitimately has no own runs — the PR-head fallback stays available.
+              all_green=false
+              ;;
+            *)
+              # An own job failed, was cancelled, or is still pending: refuse. Falling
+              # back to the PR head here would let a release proceed on a failed tree.
+              all_green=false
+              fallback_ok=false
+              ;;
+            esac
+          done
+          if [ "$all_green" = "true" ]; then
             echo "CI evidence: own check runs"
             exit 0
           fi
+          if [ "$fallback_ok" != "true" ]; then
+            echo "::error::Tagged commit $GITHUB_SHA has no green CI. Let the CI workflow pass on main, then re-run this workflow."
+            exit 1
+          fi
           # Identical-tree fallback: a main commit deduplicated by ci.yml's decision job has
-          # no own check runs; accept the merged PR head's green runs when the trees match.
+          # no own check runs (only absent/skipped, verified above); accept the merged PR
+          # head's green runs when the trees match.
           pulls="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100")"
           pr="$(jq -c --arg sha "$GITHUB_SHA" \
             '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | sort_by(.number) | last // empty' \
