@@ -31,6 +31,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   keeps the start. `hwp merge` no longer attaches an `.hwp` input's numbering or bullet records
   to another input's definitions; an `.hwp` input merged after an `.hwpx` one gets the default
   records for its own definitions instead ([#377](https://github.com/STAIxBWLB/hwp-cli/issues/377)).
+- `hwp fill` with a part (`--set name=@part.md`, `--data` `"parts"`, MCP `hwp_fill` `parts`) now
+  fills an anchor in a section's first paragraph. That paragraph holds the section definition,
+  which the fill replaced along with the anchor, so the output verification refused to publish.
+  The fill now carries the section's own controls (section and column definitions, page
+  numbering, header and footer) onto the part's first paragraph, and the output keeps the
+  template's page settings
+  ([#376](https://github.com/STAIxBWLB/hwp-cli/issues/376)).
 
 ## [1.2.0]
 

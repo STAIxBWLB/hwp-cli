@@ -732,10 +732,10 @@ fn fill_parts_ir(
     }
     // Back to front, so the earlier anchors keep their paragraph indices.
     for (section_index, para_index, name) in anchors.iter().rev() {
-        let blocks = &blocks_by_name[name];
-        doc.sections[*section_index]
-            .paragraphs
-            .splice(*para_index..=*para_index, blocks.iter().cloned());
+        let mut blocks = blocks_by_name[name].clone();
+        let paragraphs = &mut doc.sections[*section_index].paragraphs;
+        carry_section_controls(&paragraphs[*para_index], &mut blocks);
+        paragraphs.splice(*para_index..=*para_index, blocks);
     }
 
     if !unmatched.is_empty() && !allow_partial {
@@ -851,6 +851,83 @@ fn strip_section_controls(para: &mut hwp_model::Paragraph) {
     para.char_shape_runs.dedup();
     // 4) ExtCtrl ↔ controls 등장순서 재연결.
     hwp_convert::field::relink_ctrl_index(para);
+}
+
+/// The controls a section's first paragraph holds for the whole section (#376): the section and
+/// column definitions and the page-scoped controls beside them (page number position,
+/// header/footer, hide, odd/even adjust, new number).
+fn is_section_scoped(control: &hwp_model::Control) -> bool {
+    match control {
+        hwp_model::Control::SectionDef(_) => true,
+        hwp_model::Control::Generic(g) => matches!(
+            &g.ctrl_id,
+            b"cold" | b"pgnp" | b"head" | b"foot" | b"pghd" | b"pgct" | b"nwno"
+        ),
+        _ => false,
+    }
+}
+
+/// Carries an anchor paragraph's section-scoped controls onto the first paragraph spliced in
+/// for it, unchanged and ahead of that paragraph's own controls (#376), the inverse of
+/// `strip_section_controls`. Without it a part spliced over a section's first paragraph drops
+/// the section definition: the HWPX writer then writes a default A4 one and the HWP5 writer
+/// none. An anchor without a `SectionDef` leaves `blocks` as they are.
+fn carry_section_controls(anchor: &hwp_model::Paragraph, blocks: &mut Vec<hwp_model::Paragraph>) {
+    use hwp_model::HwpChar;
+    if !anchor
+        .controls
+        .iter()
+        .any(|c| matches!(c, hwp_model::Control::SectionDef(_)))
+    {
+        return;
+    }
+    // Each carried control goes with the extended-control character that references it.
+    let (chars, controls): (Vec<HwpChar>, Vec<hwp_model::Control>) = anchor
+        .chars
+        .iter()
+        .filter_map(|ch| match ch {
+            HwpChar::ExtCtrl {
+                ctrl_index: Some(i),
+                ..
+            } => anchor
+                .controls
+                .get(*i as usize)
+                .filter(|c| is_section_scoped(c))
+                .map(|c| (ch.clone(), c.clone())),
+            _ => None,
+        })
+        .unzip();
+    if blocks.is_empty() {
+        blocks.push(hwp_model::Paragraph {
+            para_shape: anchor.para_shape,
+            style: anchor.style,
+            char_shape_runs: anchor
+                .char_shape_runs
+                .iter()
+                .take(1)
+                .map(|&(_, id)| (0, id))
+                .collect(),
+            ..Default::default()
+        });
+    }
+    let first = &mut blocks[0];
+    let width: u32 = chars.iter().map(HwpChar::wchar_width).sum();
+    for (pos, _) in &mut first.char_shape_runs {
+        *pos += width;
+    }
+    for seg in &mut first.line_segs {
+        seg.text_start += width;
+    }
+    // The first run reaches back over the carried characters, so runs still start at 0.
+    if let Some(run) = first.char_shape_runs.first_mut() {
+        run.0 = 0;
+    }
+    first.chars.splice(0..0, chars);
+    first.controls.splice(0..0, controls);
+    hwp_convert::field::relink_ctrl_index(first);
+    // The PARA_HEADER control mask is recomputed from the new controls.
+    first.header.ctrl_mask = 0;
+    first.header.break_type = (first.header.break_type & !0x03) | (anchor.header.break_type & 0x03);
 }
 
 fn write_table_fill(
@@ -1008,5 +1085,116 @@ mod tests {
         assert_eq!(leftover, ["b"]);
         let leftover = leftover_slots(&doc, &values, &map(&[("a", 2), ("b", 1)])).unwrap();
         assert!(leftover.is_empty(), "two insertions of a spell two b");
+    }
+
+    /// A section's first paragraph from markdown import (secd, cold) plus a page-number control
+    /// and a bookmark, so both carried and dropped controls are present (#376).
+    fn section_anchor() -> hwp_model::Paragraph {
+        use hwp_model::{Control, HwpChar};
+        let mut anchor = hwp_convert::from_markdown("{{본문}}\n").sections[0].paragraphs[0].clone();
+        let Some(Control::Generic(cold)) = anchor.controls.get(1).cloned() else {
+            panic!("markdown import puts cold second: {:?}", anchor.controls);
+        };
+        let ext = |ctrl_id: [u8; 4]| HwpChar::ExtCtrl {
+            code: 21,
+            ctrl_id,
+            payload: vec![0; 12],
+            ctrl_index: None,
+        };
+        // pgnp right after cold, a bookmark after the anchor text.
+        anchor.chars.insert(2, ext(*b"pgnp"));
+        anchor.chars.push(ext(*b"bokm"));
+        for (pos, _) in anchor.char_shape_runs.iter_mut().skip(1) {
+            *pos += 8;
+        }
+        let with_id = |ctrl_id: [u8; 4]| {
+            let mut control = cold.clone();
+            control.ctrl_id = ctrl_id;
+            Control::Generic(control)
+        };
+        anchor.controls.insert(2, with_id(*b"pgnp"));
+        anchor.controls.push(with_id(*b"bokm"));
+        hwp_convert::field::relink_ctrl_index(&mut anchor);
+        anchor.header.break_type = 0x03;
+        anchor
+    }
+
+    fn ctrl_ids(para: &hwp_model::Paragraph) -> Vec<String> {
+        para.chars
+            .iter()
+            .filter_map(|ch| match ch {
+                hwp_model::HwpChar::ExtCtrl { ctrl_id, .. } => {
+                    Some(String::from_utf8_lossy(ctrl_id).into_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn carry_section_controls_moves_the_section_controls_onto_the_first_block() {
+        let anchor = section_anchor();
+        let part = hwp_convert::from_markdown("본문\n\n둘째\n");
+        let mut blocks = part.sections[0].paragraphs.clone();
+        for para in &mut blocks {
+            strip_section_controls(para);
+        }
+        let second = blocks[1].clone();
+        let own_text = blocks[0].chars.clone();
+        let own_shape = blocks[0].char_shape_runs[0].1;
+        carry_section_controls(&anchor, &mut blocks);
+
+        let first = &blocks[0];
+        assert_eq!(
+            ctrl_ids(first),
+            ["secd", "cold", "pgnp"],
+            "the bookmark stays behind"
+        );
+        assert_eq!(first.controls[..3], anchor.controls[..3]);
+        assert_eq!(first.controls.len(), 3);
+        assert_eq!(first.chars[3..], own_text[..]);
+        let indices: Vec<_> = first
+            .chars
+            .iter()
+            .filter_map(|ch| match ch {
+                hwp_model::HwpChar::ExtCtrl { ctrl_index, .. } => *ctrl_index,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(indices, [0, 1, 2]);
+        assert_eq!(first.char_shape_runs[0], (0, own_shape));
+        assert_eq!(first.header.break_type & 0x03, 0x03);
+        assert_eq!(blocks[1], second, "only the first block changes");
+    }
+
+    #[test]
+    fn carry_section_controls_keeps_an_empty_paragraph_for_an_empty_part() {
+        let anchor = section_anchor();
+        let mut blocks = Vec::new();
+        carry_section_controls(&anchor, &mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(ctrl_ids(&blocks[0]), ["secd", "cold", "pgnp"]);
+        assert_eq!(
+            blocks[0].chars.len(),
+            3,
+            "nothing of the anchor text survives"
+        );
+        assert_eq!(blocks[0].para_shape, anchor.para_shape);
+        assert_eq!(
+            blocks[0].char_shape_runs,
+            [(0, anchor.char_shape_runs[0].1)]
+        );
+    }
+
+    #[test]
+    fn carry_section_controls_leaves_other_anchors_alone() {
+        let doc = hwp_convert::from_markdown("# 제목\n\n{{본문}}\n");
+        let anchor = &doc.sections[0].paragraphs[1];
+        let part = hwp_convert::from_markdown("본문\n");
+        let mut blocks = part.sections[0].paragraphs.clone();
+        strip_section_controls(&mut blocks[0]);
+        let before = blocks.clone();
+        carry_section_controls(anchor, &mut blocks);
+        assert_eq!(blocks, before);
     }
 }

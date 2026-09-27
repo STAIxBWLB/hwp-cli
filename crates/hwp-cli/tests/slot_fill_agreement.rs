@@ -740,6 +740,90 @@ fn a_part_list_starting_past_one_is_refused_for_hwp() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The first paragraph's section-scoped controls: the section and column definitions and the
+/// page number position, in order.
+fn section_controls(path: &Path) -> Vec<hwp_model::Control> {
+    let doc = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("hwp") => hwp5::read_document(path).unwrap().document,
+        _ => hwpx::read_document(path).unwrap().document,
+    };
+    doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .filter(|control| match control {
+            hwp_model::Control::SectionDef(_) => true,
+            hwp_model::Control::Generic(g) => matches!(&g.ctrl_id, b"cold" | b"pgnp"),
+            _ => false,
+        })
+        .cloned()
+        .collect()
+}
+
+/// A part anchor in the document's first paragraph fills (#376). That paragraph holds the
+/// section definition; the fill carries it onto the part's first paragraph, so the output keeps
+/// the template's page settings (a 30 mm top margin, not the writer's default A4) and its page
+/// number.
+#[test]
+fn a_part_anchor_in_the_first_paragraph_keeps_the_section_definition() {
+    let dir = test_dir("part-first");
+    let source = dir.join("source.md");
+    std::fs::write(&source, "{{본문}}\n\n메일: {{x}}\n").unwrap();
+    let hwpx = dir.join("template.hwpx");
+    let run = hwp()
+        .args(["new", "--preset", "report", "--margin-top", "30", "--from"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&hwpx)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let hwp5 = dir.join("template.hwp");
+    let run = hwp()
+        .arg("convert")
+        .arg(&hwpx)
+        .args(["--to", "hwp", "-o"])
+        .arg(&hwp5)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let part = dir.join("part.md");
+    std::fs::write(&part, "부분\n").unwrap();
+    let set_part = format!("본문=@{}", part.display());
+
+    for (template, out) in [(&hwpx, dir.join("out.hwpx")), (&hwp5, dir.join("out.hwp"))] {
+        let run = fill(template, &out, &["--set", &set_part, "--set", "x=v"]);
+        assert!(
+            run.status.success(),
+            "{}: {}",
+            template.display(),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let validate = hwp().arg("validate").arg(&out).output().unwrap();
+        assert!(
+            validate.status.success(),
+            "{}",
+            String::from_utf8_lossy(&validate.stdout)
+        );
+        let text = document_text(&out);
+        assert!(
+            text.contains("부분") && text.contains("메일: v"),
+            "{text:?}"
+        );
+        let expected = section_controls(template);
+        assert_eq!(expected.len(), 3, "secd, cold and pgnp in the template");
+        assert_eq!(section_controls(&out), expected, "{}", out.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--allow-partial` with nothing to change on the IR path: `.hwp` to `.hwp` publishes the input
 /// byte for byte; a different output format still goes through the writer, which converts.
 #[test]
