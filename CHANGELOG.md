@@ -43,7 +43,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 <!-- verification:begin -->
 **Verification**
 
-- Release-readiness run: https://github.com/STAIxBWLB/hwp-cli/actions/runs/36307403853
+- Release-readiness run: https://github.com/STAIxBWLB/hwp-cli/actions/runs/36309366056
 - The private PDF-parity profile excludes four gates. The public one-page gate declares none
   (docs/design/21-pdf-parity.md section 4.3), so these exclusions describe the private profile
   only.
