@@ -830,7 +830,10 @@ jobs:
       # Checklist line 12, read rather than re-run (D-07): the evaluated commit's own CI check
       # runs are the 3-OS evidence. The expected job names below must stay in sync with ci.yml,
       # exactly as release.yml's verify-ci job already requires. An absent or incomplete run is
-      # `pending` and fails the job; it is never a pass. Controller step: it queries the API, it
+      # `pending` and fails the job; it is never a pass. One exception: ci.yml deduplicates a
+      # main push whose tree a merged PR head already verified, so such a commit has no own
+      # check runs — the identical-tree fallback below accepts the PR head's green runs, with
+      # the evidence naming the PR head it relied on. Controller step: it queries the API, it
       # runs nothing from the evaluated ref.
       - name: Gate ci-matrix
         id: gate-ci-matrix
@@ -877,6 +880,41 @@ jobs:
             evidence="check-runs API for $READINESS_SHA: all five ci.yml jobs are completed/success"
           else
             evidence="check-runs API for $READINESS_SHA: $problems"
+            # Identical-tree fallback (same rule as release.yml verify-ci): a main commit
+            # deduplicated by ci.yml's decision job has no own check runs; accept the merged
+            # PR head's green runs when the trees match. Inline, not a repository script:
+            # this is a controller step and must not execute code from the evaluated ref.
+            if pulls="$(gh api "repos/$GITHUB_REPOSITORY/commits/$READINESS_SHA/pulls?per_page=100")"; then
+              pr="$(jq -c --arg sha "$READINESS_SHA" \
+                '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | sort_by(.number) | last // empty' \
+                <<<"$pulls")"
+              if [ -n "$pr" ]; then
+                pr_number="$(jq -r .number <<<"$pr")"
+                head_sha="$(jq -r .head.sha <<<"$pr")"
+                if evaluated_tree="$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$READINESS_SHA" --jq .tree.sha)" \
+                  && head_tree="$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$head_sha" --jq .tree.sha)" \
+                  && [ "$evaluated_tree" = "$head_tree" ] \
+                  && head_runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$head_sha/check-runs?filter=latest&per_page=100")"; then
+                  head_green=true
+                  head_problems=""
+                  for name in "${expected[@]}"; do
+                    state="$(jq -r --arg n "$name" \
+                      '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+                      <<<"$head_runs")"
+                    echo "$name (PR #$pr_number head): $state"
+                    [ "$state" = "completed/success" ] || { head_green=false; head_problems="${head_problems:+$head_problems, }$name=$state"; }
+                  done
+                  if [ "$head_green" = "true" ]; then
+                    status=pass
+                    evidence="check-runs API for $READINESS_SHA: PR #$pr_number head $head_sha validated identical tree $evaluated_tree; all five ci.yml jobs are completed/success on the PR head"
+                  else
+                    echo "PR #$pr_number head $head_sha shares the tree but is not green: $head_problems"
+                  fi
+                fi
+              fi
+            else
+              echo "the pulls API call failed; keeping the own-check-runs outcome" >&2
+            fi
           fi
           printf '%s\t%s\t%s\n' ci-matrix "$status" "$evidence" >>"$GATES_FILE"
           {

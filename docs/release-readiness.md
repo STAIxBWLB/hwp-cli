@@ -9,7 +9,9 @@ package upload or release publication.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
 - [ ] `scripts/check-structured-corpus.sh`
-- [ ] Linux, macOS and Windows CI matrix all green from local source builds
+- [ ] Linux, macOS and Windows CI matrix all green from local source builds (the green signal
+      can be the commit's own check runs or, for a main push that ci.yml deduplicated, a merged
+      PR head's green runs on the identical tree)
 - [ ] corpus manifest/run/artifact JSON valid against their frozen schemas
 - [ ] all manifest pins and `corpus/structured-v1/TRACKED_FILES.txt` present in the Git index
 - [ ] no ambient font install or `HWP_FONT_DIR` dependency in the corpus job
