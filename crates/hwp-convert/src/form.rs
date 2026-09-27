@@ -74,7 +74,8 @@ pub struct FormField {
 }
 
 /// List the form fields of `doc`: `{{ }}` slots, inline `라벨: 값` outside table cells, and
-/// table cells that read as labels. Sorted by key.
+/// table cells that read as labels. An inline label whose value is only slot(s) is left out:
+/// the slot is already a field of its own. Sorted by key.
 pub fn scan_form_fields(doc: &Document) -> Vec<FormField> {
     let mut paragraphs = Vec::new();
     let mut cells = Vec::new();
@@ -92,6 +93,12 @@ pub fn scan_form_fields(doc: &Document) -> Vec<FormField> {
             }
             if !in_cell {
                 for inline in inline_labels(&seg) {
+                    // `라벨: {{자리표시자}}`: the slot is already listed as its own field, and a
+                    // fill defers the label to it, so listing the label too only earns the
+                    // caller an unmatched key it could never fill (#385).
+                    if is_only_slots(&seg[inline.value.clone()]) {
+                        continue;
+                    }
                     merge(
                         &mut fields,
                         &seg[inline.label],
@@ -867,6 +874,20 @@ fn is_blank_value(text: &str) -> bool {
     text.is_empty() || (tokens.len() == 1 && tokens[0].range == (0..text.len()))
 }
 
+/// Nothing but slots and whitespace: `{{a}}`, `{{a}} {{b}}`.
+fn is_only_slots(text: &str) -> bool {
+    let mut at = 0usize;
+    let mut seen = false;
+    for token in hwp_model::slot_tokens(text) {
+        if !text[at..token.range.start].trim().is_empty() {
+            return false;
+        }
+        at = token.range.end;
+        seen = true;
+    }
+    seen && text[at..].trim().is_empty()
+}
+
 /// kordoc's key normalization: whitespace, colons, parentheses and `·` removed.
 pub fn normalize_label(label: &str) -> String {
     label.trim().replace(
@@ -1070,6 +1091,39 @@ mod tests {
                 .any(|f| f.key == "작성일" && f.source == FormFieldSource::InlineLabel),
             "{fields:?}"
         );
+    }
+
+    /// #385: `라벨: {{자리표시자}}` lists the slot, not the label — the label's fill defers to
+    /// the slot, so listing it too earns the caller an unmatched key it could never fill. A
+    /// label with text of its own next to the slot stays.
+    #[test]
+    fn skips_an_inline_label_whose_value_is_only_slots() {
+        let mut doc = from_markdown(
+            "목표: {{최종목표}}\n\n효과: {{정량효과}} {{정성효과}}\n\n전략: 올해 {{추진전략}} 중심\n",
+        );
+        let fields = scan_form_fields(&doc);
+        assert!(
+            !fields.iter().any(|f| f.key == "목표" || f.key == "효과"),
+            "the slots are the fields, not their labels: {fields:?}"
+        );
+        assert_eq!(
+            field(&fields, "최종목표").source,
+            FormFieldSource::Placeholder
+        );
+        assert_eq!(field(&fields, "전략").source, FormFieldSource::InlineLabel);
+
+        let fill = fill_form_fields(
+            &mut doc,
+            &values(&[
+                ("최종목표", "a"),
+                ("정량효과", "b"),
+                ("정성효과", "c"),
+                ("추진전략", "d"),
+                ("전략", "e"),
+            ]),
+        )
+        .unwrap();
+        assert!(fill.unmatched.is_empty(), "{fill:?}");
     }
 
     /// kordoc_lite `fills_placeholders_adjacent_cells_and_inline_labels`.

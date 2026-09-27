@@ -86,6 +86,48 @@ fn slots_forms_lists_slots_labels_and_inline_labels() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #385: a label whose value is only slot(s) is not listed — the slot already is. A fill that
+/// sends a value for every field the scan listed then reports no unmatched key.
+#[test]
+fn slots_forms_skips_a_label_that_only_names_a_slot() {
+    let (dir, form) = template(
+        "slotlabel",
+        "목표: {{최종목표}}\n\n효과: {{정량효과}} {{정성효과}}\n\n전략: 올해 {{추진전략}} 중심\n",
+    );
+    let output = run(hwp().args(["slots", "--json", "--forms"]).arg(&form));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let fields = report["fields"].as_array().unwrap();
+    let keys: Vec<&str> = fields.iter().map(|f| f["key"].as_str().unwrap()).collect();
+    assert_eq!(
+        keys,
+        ["전략", "정량효과", "정성효과", "최종목표", "추진전략"],
+        "{report}"
+    );
+
+    let data = dir.join("data.json");
+    std::fs::write(
+        &data,
+        r#"{"최종목표": "a", "정량효과": "b", "정성효과": "c", "추진전략": "d", "전략": "e"}"#,
+    )
+    .unwrap();
+    let filled = dir.join("filled.hwpx");
+    let output = run(hwp()
+        .arg("fill")
+        .arg(&form)
+        .args(["--forms", "--json", "--allow-partial", "--data"])
+        .arg(&data)
+        .arg("-o")
+        .arg(&filled));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["unmatched"], serde_json::json!([]), "{report}");
+    let filled_text = text(&filled);
+    assert!(filled_text.contains("목표: a"), "{filled_text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn fill_forms_fills_slots_and_form_fields_in_one_pass() {
     let (dir, form) = template("fill", FORM);

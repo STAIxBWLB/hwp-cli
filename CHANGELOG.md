@@ -27,6 +27,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Cross-format part fills first convert the unedited template with strict preservation checks,
   then verify edits against that target-format baseline. Conversion or editing failure leaves
   the destination unchanged ([#392](https://github.com/STAIxBWLB/hwp-cli/issues/392)).
+- `hwp slots --forms` no longer lists an inline label whose value text is only placeholder(s)
+  (`목표: {{최종목표}}`). The placeholder is already listed as its own field, and a fill defers
+  such a label to it, so a caller that sent a value for every scanned field always got those
+  labels back as `unmatched` (counts 0) with a warning. A label with text of its own next to a
+  slot (`전략: 올해 {{추진전략}} 중심`) is still listed
+  ([#385](https://github.com/STAIxBWLB/hwp-cli/issues/385)).
 
 ## [1.3.0]
 
