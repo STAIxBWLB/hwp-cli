@@ -634,14 +634,23 @@ fn fill_parts_ir(
         hwp_cli::certification::MAX_INPUT_BYTES,
         crate::commands::output::SnapshotOutputMode::Publish,
         |snapshot, staged, _| {
+            // Nested native transactions use Win32 filesystem calls. Canonicalizing the
+            // existing private directory gives them extended-length paths on Windows.
+            let workspace = std::fs::canonicalize(
+                staged
+                    .parent()
+                    .context("fill 임시 작업공간을 확인할 수 없습니다")?,
+            )?;
+            let staged = workspace.join(
+                staged
+                    .file_name()
+                    .context("fill 임시 출력 파일 이름을 확인할 수 없습니다")?,
+            );
             let (format, name) = match target {
                 FileFormat::Hwp5 => (ConvertFormat::Hwp, "template.hwp"),
                 FileFormat::Hwpx => (ConvertFormat::Hwpx, "template.hwpx"),
             };
-            let baseline_dir = staged
-                .parent()
-                .context("fill 임시 작업공간을 확인할 수 없습니다")?
-                .join("template-baseline");
+            let baseline_dir = workspace.join("template-baseline");
             std::fs::create_dir(&baseline_dir)?;
             let baseline = baseline_dir.join(name);
             let conversion = crate::commands::convert::execute(
@@ -657,7 +666,7 @@ fn fill_parts_ir(
             )?;
             let mut report = fill_parts_same_format(
                 &baseline,
-                staged,
+                &staged,
                 data,
                 set,
                 part_paths,
