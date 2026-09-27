@@ -18,10 +18,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   MCP `hwp_edit` refuses a text selector together with `address` (below). Everything else is a
   fix, and no schema in `schemas/` changed bytes. Written files change where they were wrong, for
   example: `hwp merge` to `.hwp` writes every numbering and bullet definition it references and
-  the HWP5 paragraph invariants of an `.hwpx` input's paragraphs; a new paragraph id no longer
-  repeats one in use; numbered lists imported from markdown or HTML draw Hancom's default ladder
-  in `.hwpx`; and `.docx` numbers Hangul levels `가`/`ㄱ` instead of `일`/`이`/`삼`. Part fills into
-  `.hwp` that were refused now publish.
+  the HWP5 paragraph invariants of an `.hwpx` input's paragraphs; a new paragraph id in `.hwp`
+  output no longer repeats one in use; numbered lists imported from markdown or HTML draw
+  Hancom's default ladder in `.hwpx`; and `.docx` numbers Hangul levels `가`/`ㄱ` instead of
+  `일`/`이`/`삼`. Part fills that were refused now publish: an anchor in a section's first
+  paragraph, and a part from a `.hwp` template into `.hwp` (except a numbered list starting past
+  1).
 - MCP `hwp_edit` now refuses a text selector (`pattern`, `anchor` or `matching`) together with
   `address` on `set_format`, `set_align`, `insert_para`, `delete_para` and `set_para`, as
   `hwp edit --ops` already does, with the ops channel's error; the published input schema states
