@@ -207,7 +207,14 @@ pub(crate) fn execute(
 
     let write_staged = |staged: &Path| -> anyhow::Result<hwp_model::WriteReport> {
         let mut report = match format {
-            MergeFormat::Hwp => crate::commands::convert::write_hwp(&merged, staged, false)?,
+            // Paragraphs from an HWPX input carry none of the HWP5 paragraph invariants (the
+            // 0x0d terminator, the last-paragraph flag, the section-break bits, instance ids),
+            // and Hancom refuses the file without them; the structural write materializes them
+            // (#381). An HWP5-only merge keeps the non-synthesis write.
+            MergeFormat::Hwp if source_formats.iter().all(|f| *f == FileFormat::Hwp5) => {
+                crate::commands::convert::write_hwp(&merged, staged, false)?
+            }
+            MergeFormat::Hwp => crate::commands::convert::write_hwp_structural(&merged, staged)?,
             MergeFormat::Hwpx => hwpx::write::write_document_with_report_with(
                 &merged,
                 staged,
