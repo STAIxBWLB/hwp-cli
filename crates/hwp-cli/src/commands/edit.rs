@@ -4375,6 +4375,29 @@ fn canonical_document(
             canonical.header.tab_defs.clear();
             canonical.header.tab_stops.clear();
         }
+        // An edit may graft definitions past an HWP5 source's raw records. The writer emits a
+        // record for each (#377): the default NUMBERING, which re-reads as the default levels.
+        // Project the same records, and the levels of a grafted definition the default record
+        // stands for: every level counts from 1, in digits or in the record's own format for
+        // that level (a markdown list takes Hancom's default ladder, #382). Any other start or
+        // format is lost in the default record, so it is left to fail the comparison.
+        if !canonical.header.numberings.is_empty() {
+            let raw = canonical.header.numberings.len();
+            canonical.header.numberings = hwp5::write::numbering_records(&canonical.header);
+            for levels in canonical.header.numbering_levels.iter_mut().skip(raw) {
+                if levels.iter().enumerate().all(|(index, level)| {
+                    level.start <= 1
+                        && (level.fmt == hwp_model::NumFmt::Digit
+                            || hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
+                                == Some(&level.fmt))
+                }) {
+                    *levels = hwp5::write::synthesized_numbering_levels();
+                }
+            }
+        }
+        if !canonical.header.bullets.is_empty() {
+            canonical.header.bullets = hwp5::write::bullet_records(&canonical.header);
+        }
         if hwp5::write::is_materialized_default_numberings(
             &canonical.header.numberings,
             &canonical.header.numbering_levels,

@@ -19,6 +19,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   deliberate one-time exception to the SemVer policy in the README (owner decision). Migrate by
   sending `address` alone ([#350](https://github.com/STAIxBWLB/hwp-cli/issues/350)).
 
+**Fixed**
+
+- Numbering and bullet definitions an edit adds to a document read from `.hwp` are now written
+  to `.hwp` output. The HWP5 writer wrote only the definitions the source file already had, so
+  `hwp fill` with a part from a `.hwp` template into `.hwp` always failed its output
+  verification, and `hwp merge` into `.hwp` silently wrote a paragraph shape pointing at a
+  numbering definition that did not exist. A definition past the source's own gets the default
+  record a document made from markdown gets. A part whose numbered list starts at a number
+  other than 1 is still refused for `.hwp` output, because that record counts from 1; `.hwpx`
+  keeps the start. `hwp merge` no longer attaches an `.hwp` input's numbering or bullet records
+  to another input's definitions; an `.hwp` input merged after an `.hwpx` one gets the default
+  records for its own definitions instead ([#377](https://github.com/STAIxBWLB/hwp-cli/issues/377)).
+
 ## [1.2.0]
 
 **Compatibility**

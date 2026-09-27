@@ -183,3 +183,28 @@ fn write_slot(writer: &mut ByteWriter, selector: u32, template: &str) {
         writer.write_u16(unit);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default NUMBERING record's level selectors are the official slots' selectors for levels
+    /// 1 to 7, so the formats it draws are `write::DEFAULT_NUMBERING_FORMATS` (#379 review). Each
+    /// level is attr u32 (the selector), width u16, distance u16, char shape u32, then the
+    /// template as a length-prefixed WCHAR string.
+    #[test]
+    fn default_numbering_formats_follow_the_default_record_selectors() {
+        let data = &crate::write::DEFAULT_NUMBERING_DATA;
+        let mut offset = 0;
+        for (index, format) in crate::write::DEFAULT_NUMBERING_FORMATS.iter().enumerate() {
+            let selector = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+            let slot = OFFICIAL_SLOTS
+                .iter()
+                .find(|slot| slot.selector == selector)
+                .unwrap_or_else(|| panic!("level {}: unknown selector {selector:#x}", index + 1));
+            assert_eq!(slot.format, *format, "level {}", index + 1);
+            let len = usize::from(u16::from_le_bytes([data[offset + 12], data[offset + 13]]));
+            offset += 14 + 2 * len;
+        }
+    }
+}

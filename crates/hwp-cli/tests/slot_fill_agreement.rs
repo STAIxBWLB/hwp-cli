@@ -578,6 +578,168 @@ fn keys_naming_one_slot_need_equal_values() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Every numbering and bullet id a paragraph shape references has a record in the header.
+fn assert_list_definitions_resolve(header: &hwp_model::DocHeader) {
+    for shape in &header.para_shapes {
+        let (kind, records) = match shape.head_type() {
+            2 => ("NUMBERING", header.numberings.len()),
+            3 => ("BULLET", header.bullets.len()),
+            _ => continue,
+        };
+        assert!(
+            usize::from(shape.numbering_id) < records,
+            "{kind} id {} has no record ({records} written)",
+            shape.numbering_id
+        );
+    }
+}
+
+/// A part fills into a `.hwp` template, lists included (#377). The part's numbering and bullet
+/// definitions sit past the template's own records, and the HWP5 writer used to drop them, so
+/// every part fill into `.hwp` failed its output verification.
+#[test]
+fn a_part_with_lists_fills_into_hwp() {
+    // The template's own bullet list gives it raw BULLET records, so the part's bullet is
+    // grafted past them.
+    let (dir, created) = template("part-hwp", "# 제목\n\n- 기존\n\n{{본문}}\n\n메일: {{x}}\n");
+    let hwp5 = dir.join("template.hwp");
+    let run = hwp()
+        .arg("convert")
+        .arg(&created)
+        .args(["--to", "hwp", "-o"])
+        .arg(&hwp5)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let part = dir.join("part.md");
+    std::fs::write(&part, "부분\n\n- 가\n- 나\n\n1. 하나\n2. 둘\n").unwrap();
+    let out = dir.join("out.hwp");
+    let set_part = format!("본문=@{}", part.display());
+    let run = fill(&hwp5, &out, &["--set", &set_part, "--set", "x=v"]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let validate = hwp().arg("validate").arg(&out).output().unwrap();
+    assert!(
+        validate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validate.stdout)
+    );
+    let text = document_text(&out);
+    for expected in ["부분", "가", "하나", "메일: v"] {
+        assert!(
+            text.contains(expected),
+            "{expected:?} missing from {text:?}"
+        );
+    }
+    let header = hwp5::read_document(&out).unwrap().document.header;
+    assert_list_definitions_resolve(&header);
+    assert!(
+        header.bullets.len() == 2 && header.numberings.len() > 1,
+        "the part's definitions follow the template's own"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A part fills into an official-profile `.hwp` template that has its own numbered list (#379
+/// review). The template's eight official NUMBERING records are followed by the part's own, and
+/// the re-read must still restore the official list levels, or the verification refuses.
+#[test]
+fn a_part_fills_into_an_official_hwp_template_with_a_numbered_list() {
+    let dir = test_dir("part-official");
+    let source = dir.join("source.md");
+    std::fs::write(&source, "# 제목\n\n1. 하나\n    1. 가\n\n{{본문}}\n").unwrap();
+    let hwp5 = dir.join("template.hwp");
+    let run = hwp()
+        .args(["new", "--preset", "official", "--from"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&hwp5)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let part = dir.join("part.md");
+    std::fs::write(&part, "부분\n\n1. 셋\n").unwrap();
+    let out = dir.join("out.hwp");
+    let set_part = format!("본문=@{}", part.display());
+    let run = fill(&hwp5, &out, &["--set", &set_part]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let levels = |path: &Path| -> Vec<Option<u8>> {
+        let header = hwp5::read_document(path).unwrap().document.header;
+        header
+            .para_shapes
+            .iter()
+            .filter(|shape| shape.head_type() == 2 && shape.numbering_id < 8)
+            .map(|shape| shape.list_level)
+            .collect()
+    };
+    let template_levels = levels(&hwp5);
+    assert!(template_levels.iter().any(Option::is_some));
+    assert_eq!(
+        levels(&out),
+        template_levels,
+        "official list levels survive"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A numbered list that starts at a number other than 1 cannot be written to `.hwp` yet: the
+/// synthesized NUMBERING record counts from 1, so the output verification refuses the fill
+/// rather than renumber the list (#377 review). `.hwpx` keeps the start number.
+#[test]
+fn a_part_list_starting_past_one_is_refused_for_hwp() {
+    let (dir, created) = template("part-start", "# 제목\n\n{{본문}}\n");
+    let hwp5 = dir.join("template.hwp");
+    let run = hwp()
+        .arg("convert")
+        .arg(&created)
+        .args(["--to", "hwp", "-o"])
+        .arg(&hwp5)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let part = dir.join("part.md");
+    std::fs::write(&part, "3. 셋째\n4. 넷째\n").unwrap();
+    let set_part = format!("본문=@{}", part.display());
+
+    let out = dir.join("out.hwp");
+    let run = fill(&hwp5, &out, &["--set", &set_part]);
+    assert!(!run.status.success(), "a renumbered list must not publish");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("의미 불변식"),
+        "refused by the output verification: {stderr}"
+    );
+    assert!(!out.exists());
+
+    let out = dir.join("out.hwpx");
+    let run = fill(&created, &out, &["--set", &set_part]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--allow-partial` with nothing to change on the IR path: `.hwp` to `.hwp` publishes the input
 /// byte for byte; a different output format still goes through the writer, which converts.
 #[test]

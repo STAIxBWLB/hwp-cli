@@ -60,10 +60,12 @@ pub fn parse_doc_info(roots: &[RecordNode]) -> (DocHeader, Vec<String>) {
 
     // The direct eight-level contract is intentionally narrower than generic
     // NUMBERING parsing. Only eight complete observed records may restore the
-    // semantic level carried by the level-8 definition reference.
-    if header.numberings.len() == 8
-        && header
-            .numberings
+    // semantic level carried by the level-8 definition reference. Records past
+    // the eighth (definitions appended after the official eight, such as a fill
+    // part or a merged input, #377) leave the eight and the ids below 8 as they
+    // are.
+    if header.numberings.len() >= 8
+        && header.numberings[..8]
             .iter()
             .all(|entry| crate::numbering::is_official_eight_level_data(&entry.data))
     {
@@ -499,7 +501,7 @@ fn parse_tab_def(data: &[u8]) -> hwp_model::TabDef {
 /// 수준마다 `[속성 u32, 너비보정 u16, 본문거리 u16, 글자모양ref u32(=0xFFFFFFFF), 템플릿(HWP string)]`.
 /// 구조가 어긋나면 그 수준부터 기본값(빈 템플릿)으로 폴백한다(회귀 없음). 시작번호(대개 1)는
 /// 템플릿 뒤 오프셋이 유동적이라 v1은 start=1 유지(문서화).
-fn parse_numbering_levels(data: &[u8]) -> Vec<hwp_model::NumLevel> {
+pub(crate) fn parse_numbering_levels(data: &[u8]) -> Vec<hwp_model::NumLevel> {
     if let Some(levels) = crate::numbering::parse_official_eight_level_data(data) {
         return levels;
     }

@@ -2277,7 +2277,7 @@ pub fn is_materialized_default_column_def(generic: &hwp_model::GenericControl) -
 /// 문단 머리 7수준(^1.~^7) + 시작번호 7개 + 5.1.x 확장 3수준. PARA_SHAPE가
 /// numbering_id=0 을 참조하므로 테이블이 비면 dangling reference가 되어 한글이
 /// '손상/변조'로 거부한다 — 합성/hwpx 출신 안전망의 기본값.
-const DEFAULT_NUMBERING_DATA: [u8; 226] = [
+pub(crate) const DEFAULT_NUMBERING_DATA: [u8; 226] = [
     0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0xff, 0xff, 0xff, 0xff, 0x03, 0x00, 0x5e, 0x00,
     0x31, 0x00, 0x2e, 0x00, 0x0c, 0x01, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0xff, 0xff, 0xff, 0xff,
     0x03, 0x00, 0x5e, 0x00, 0x32, 0x00, 0x2e, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00,
@@ -2313,6 +2313,58 @@ pub fn is_materialized_default_tab_defs(raw: &[RawEntry], modeled: &[hwp_model::
             .iter()
             .zip(expected_attrs)
             .all(|(tab, attr)| tab.attr == attr && tab.items.is_empty())
+}
+
+/// The NUMBERING records the writer emits: one per `numbering_levels` entry. An entry with a raw
+/// record keeps it; an entry past the raw records (a definition an edit grafted onto an
+/// HWP5-sourced document, #377) gets the default record a synthetic document gets. A synthetic
+/// document (md 출신) has no raw records, so every entry gets the default; at least one, because
+/// every PARA_SHAPE references numbering_id=0 and an empty table is a dangling reference.
+pub fn numbering_records(h: &hwp_model::DocHeader) -> Vec<RawEntry> {
+    let count = h.numbering_levels.len().max(h.numberings.len()).max(1);
+    let mut records = h.numberings.clone();
+    records.resize_with(count, || RawEntry {
+        data: DEFAULT_NUMBERING_DATA.to_vec(),
+        children: Vec::new(),
+    });
+    records
+}
+
+/// The number format of each level of the default NUMBERING record, from its level selectors
+/// (0x0c digit, 0x010c Hangul syllable, 0x2c circled digit; the pairing `numbering::OFFICIAL_SLOTS`
+/// records): Hancom draws `1. 가. 1) 가) (1) (가) ①`. The reader drops the selectors and reports
+/// every level as a digit, so this is what the record draws, not what it re-reads as.
+pub const DEFAULT_NUMBERING_FORMATS: [hwp_model::NumFmt; 7] = [
+    hwp_model::NumFmt::Digit,
+    hwp_model::NumFmt::HangulSyllable,
+    hwp_model::NumFmt::Digit,
+    hwp_model::NumFmt::HangulSyllable,
+    hwp_model::NumFmt::Digit,
+    hwp_model::NumFmt::HangulSyllable,
+    hwp_model::NumFmt::CircledDigit,
+];
+
+/// The levels the HWP5 reader parses from a NUMBERING record [`numbering_records`] synthesized:
+/// what a modeled definition without a raw record becomes in HWP5 output (#377).
+pub fn synthesized_numbering_levels() -> Vec<hwp_model::NumLevel> {
+    crate::doc_info::parse_numbering_levels(&DEFAULT_NUMBERING_DATA)
+}
+
+/// The BULLET records the writer emits: one per `bullet_chars` entry, the raw record where there
+/// is one and a synthesized one past them (#377). An empty table would leave a bulleted
+/// paragraph's numbering_id dangling, which Hangul judges corrupt.
+pub fn bullet_records(h: &hwp_model::DocHeader) -> Vec<RawEntry> {
+    let mut records = h.bullets.clone();
+    records.extend(
+        h.bullet_chars
+            .iter()
+            .skip(h.bullets.len())
+            .map(|&ch| RawEntry {
+                data: make_bullet_data(ch),
+                children: Vec::new(),
+            }),
+    );
+    records
 }
 
 /// 합성 DocInfo에 writer가 주입한 기본 NUMBERING과 그 의미 파싱 결과인지 확인한다.
@@ -2596,32 +2648,8 @@ fn emit_doc_info(doc: &Document, _warnings: &mut WriteReport) -> Vec<RecordNode>
     } else {
         h.tab_defs.clone()
     };
-    let numberings_owned: Vec<RawEntry> = if h.numberings.is_empty() {
-        // 합성 문서(md 출신): 참조되는 번호 정의 수(numbering_levels)만큼 기본 번호를
-        // 만든다. 최소 1개 — 모든 PARA_SHAPE가 numbering_id=0을 참조하므로 dangling 방지.
-        let count = h.numbering_levels.len().max(1);
-        (0..count)
-            .map(|_| RawEntry {
-                data: DEFAULT_NUMBERING_DATA.to_vec(),
-                children: Vec::new(),
-            })
-            .collect()
-    } else {
-        h.numberings.clone()
-    };
-    // 글머리표: 합성 문서는 bullet_chars만큼 BULLET 레코드를 만든다(head_type=3 참조처).
-    // 비면 글머리 목록 문단의 numbering_id가 dangling → 한글 '손상' 판정.
-    let bullets_owned: Vec<RawEntry> = if h.bullets.is_empty() {
-        h.bullet_chars
-            .iter()
-            .map(|&ch| RawEntry {
-                data: make_bullet_data(ch),
-                children: Vec::new(),
-            })
-            .collect()
-    } else {
-        h.bullets.clone()
-    };
+    let numberings_owned = numbering_records(h);
+    let bullets_owned = bullet_records(h);
 
     // DOCUMENT_PROPERTIES — 구역 수는 실제 섹션 수에서 유도
     let mut w = ByteWriter::new();
@@ -3647,6 +3675,47 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #377: a definition past the raw records (one an edit grafted onto an HWP5 source) gets a
+    /// synthesized record; the raw ones stay as they are, and an empty header keeps its single
+    /// default NUMBERING.
+    #[test]
+    fn records_cover_definitions_grafted_past_the_raw_ones() {
+        let raw = |byte: u8| RawEntry {
+            data: vec![byte; 4],
+            children: Vec::new(),
+        };
+        let mut h = hwp_model::DocHeader::default();
+        assert_eq!(numbering_records(&h).len(), 1);
+        assert!(bullet_records(&h).is_empty());
+
+        h.numberings = vec![raw(1)];
+        h.numbering_levels = vec![Vec::new(), Vec::new()];
+        h.bullets = vec![raw(2)];
+        h.bullet_chars = vec!['x', 'y'];
+        let numberings = numbering_records(&h);
+        assert_eq!(numberings.len(), 2);
+        assert_eq!(numberings[0], raw(1));
+        assert_eq!(numberings[1].data, DEFAULT_NUMBERING_DATA);
+        let bullets = bullet_records(&h);
+        assert_eq!(
+            bullets,
+            vec![
+                raw(2),
+                RawEntry {
+                    data: make_bullet_data('y'),
+                    children: Vec::new()
+                }
+            ]
+        );
+        assert_eq!(synthesized_numbering_levels().len(), 7);
+
+        // An HWP5 source reads one modeled entry per raw record: nothing is synthesized.
+        h.numbering_levels.truncate(1);
+        h.bullet_chars.truncate(1);
+        assert_eq!(numbering_records(&h), vec![raw(1)]);
+        assert_eq!(bullet_records(&h), vec![raw(2)]);
+    }
 
     /// #225: the attr1 fold and the tail patch must be byte-level no-ops for a shape whose
     /// stored bits already agree with the IR spacing fields - that is exactly what keeps the

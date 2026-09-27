@@ -335,7 +335,7 @@ hoist 시 제거된 컨트롤의 ExtCtrl 문자를 `chars.retain`으로 삭제�
 
 ### emit_doc_info (write.rs:1109) 루트 순서
 
-1. **안전망**: `tab_defs` 비면 3개 기본(`[0..]`,`[1..]`,`[2..]` 8B), `numberings` 비면 `DEFAULT_NUMBERING_DATA` 226B 주입. **모든 PARA_SHAPE가 tab_def_id=0·numbering_id=0을 참조하므로 테이블이 비면 dangling reference가 되어 한글이 손상 거부**(halla 실증). `synth.rs`가 non-empty 단정.
+1. **안전망**: `tab_defs` 비면 3개 기본(`[0..]`,`[1..]`,`[2..]` 8B), `numberings` 비면 `DEFAULT_NUMBERING_DATA` 226B 주입. **모든 PARA_SHAPE가 tab_def_id=0·numbering_id=0을 참조하므로 테이블이 비면 dangling reference가 되어 한글이 손상 거부**(halla 실증). `synth.rs`가 non-empty 단정. NUMBERING·BULLET 레코드는 `numbering_records`/`bullet_records`가 만든다: `numbering_levels`/`bullet_chars` 항목마다 하나씩, 원본에 raw 레코드가 있으면 그것을, 그 뒤 항목은 합성 레코드(기본 NUMBERING, `make_bullet_data(ch)`)를 쓴다. 그렇지 않으면 HWP5 원본에 정의를 이식하는 편집(fill 부분, `hwp merge`)이 정의를 잃고 dangling reference를 남긴다(#377). Hwp 출력 검증도 같은 레코드를 투영한다.
 2. `DOCUMENT_PROPERTIES`(0x10): section_count `max(1)`, 시작번호 6개 각 `max(1)`(쪽번호 0은 비정상), caret 3×u32.
 3. `ID_MAPPINGS`(0x11): §4의 카운트 배열 + 자식 테이블(bin_data → fonts 7슬롯 → border_fills → char_shapes → tab_defs → numberings → bullets → para_shapes → styles → id_extras).
 4. `COMPATIBLE_DOCUMENT`(§5, 합성+미보유 시).

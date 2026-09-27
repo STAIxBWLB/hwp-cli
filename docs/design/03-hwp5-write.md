@@ -464,7 +464,11 @@ The `hwp_string` helper is `u16 length (in UTF-16 units) + UTF-16LE bytes`.
    each); when `numberings` is empty, inject the 226B `DEFAULT_NUMBERING_DATA`. **Every PARA_SHAPE
    references tab_def_id=0 and numbering_id=0, so an empty table becomes a dangling reference and
    Hancom refuses the file as corrupt** (demonstrated by halla). `synth.rs` asserts they are
-   non-empty.
+   non-empty. NUMBERING and BULLET records come from `numbering_records`/`bullet_records`: one
+   per `numbering_levels`/`bullet_chars` entry, the raw record where the source had one and a
+   synthesized one (the default NUMBERING, `make_bullet_data(ch)`) past them. An edit that grafts
+   definitions onto an HWP5 source (a fill part, `hwp merge`) would otherwise lose them and leave
+   a dangling reference (#377). The Hwp output verification projects the same records.
 2. `DOCUMENT_PROPERTIES` (0x10): section_count `max(1)`, each of the six start numbers `max(1)` (page
    number 0 is abnormal), and the caret as three u32.
 3. `ID_MAPPINGS` (0x11): the count array from §4 plus the child tables (bin_data → fonts, seven slots
