@@ -125,6 +125,58 @@ fn merge_then_split_reproduces_each_input_section() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Merging into `.hwp` writes a NUMBERING and a BULLET record for every definition a paragraph
+/// shape references (#377). The second input's definitions sit past the first input's raw
+/// records, and the HWP5 writer used to drop them, leaving a dangling numbering reference.
+#[test]
+fn merge_into_hwp_writes_a_record_for_every_list_definition() {
+    let dir = scratch_dir("merge-lists");
+    let first = write_input_hwp(&dir, "first", "# 제목\n\n본문\n");
+    let md = dir.join("lists.md");
+    std::fs::write(&md, "# 둘째\n\n- 가\n- 나\n\n1. 하나\n2. 둘\n").unwrap();
+    let lists = dir.join("lists.hwpx");
+    let status = hwp()
+        .args(["new", "--from"])
+        .arg(&md)
+        .arg("-o")
+        .arg(&lists)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp new --from lists.md 실패");
+    let merged = dir.join("merged.hwp");
+    let status = hwp()
+        .arg("merge")
+        .arg(&first)
+        .arg(&lists)
+        .arg("-o")
+        .arg(&merged)
+        .status()
+        .unwrap();
+    assert!(status.success(), "hwp merge 실패");
+
+    let header = hwp5::read_document(&merged).unwrap().document.header;
+    assert!(
+        header
+            .para_shapes
+            .iter()
+            .any(|shape| shape.head_type() == 2 && shape.numbering_id > 0),
+        "the second input's numbering follows the first input's record"
+    );
+    for shape in &header.para_shapes {
+        let records = match shape.head_type() {
+            2 => header.numberings.len(),
+            3 => header.bullets.len(),
+            _ => continue,
+        };
+        assert!(
+            usize::from(shape.numbering_id) < records,
+            "definition id {} has no record ({records} written)",
+            shape.numbering_id
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn split_publishes_all_fragments_or_none() {
     let dir = scratch_dir("atomicity");

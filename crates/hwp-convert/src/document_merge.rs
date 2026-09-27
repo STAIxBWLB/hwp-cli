@@ -607,21 +607,24 @@ fn graft_header_general(
         .header
         .tab_stops
         .extend(input.header.tab_stops.iter().cloned());
-    target
-        .header
-        .numberings
-        .extend(input.header.numberings.iter().cloned());
-    target
-        .header
-        .numbering_levels
+    // A raw NUMBERING/BULLET record stands for the modeled entry at its index, and the HWP5
+    // writer synthesizes records past the raw ones (#377). Append the input's raw records only
+    // while both sides are aligned; otherwise they would land on another input's definitions,
+    // and the input's definitions get synthesized records like an HWPX input's do.
+    let h = &mut target.header;
+    if h.numberings.len() == h.numbering_levels.len()
+        && input.header.numberings.len() == input.header.numbering_levels.len()
+    {
+        h.numberings.extend(input.header.numberings.iter().cloned());
+    }
+    h.numbering_levels
         .extend(input.header.numbering_levels.iter().cloned());
-    target
-        .header
-        .bullets
-        .extend(input.header.bullets.iter().cloned());
-    target
-        .header
-        .bullet_chars
+    if h.bullets.len() == h.bullet_chars.len()
+        && input.header.bullets.len() == input.header.bullet_chars.len()
+    {
+        h.bullets.extend(input.header.bullets.iter().cloned());
+    }
+    h.bullet_chars
         .extend(input.header.bullet_chars.iter().copied());
 
     // Styles carry `para_shape`/`char_shape` fields too, but neither is read
@@ -984,6 +987,55 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    /// #377: raw NUMBERING/BULLET records stay index-aligned with the modeled entries. A target
+    /// whose definitions have no raw records (read from HWPX) takes no raw records from an HWP5
+    /// input, which would otherwise stand for the target's own definitions.
+    #[test]
+    fn general_graft_keeps_raw_records_aligned_with_the_modeled_entries() {
+        let raw = |byte: u8| hwp_model::RawEntry {
+            data: vec![byte; 4],
+            children: Vec::new(),
+        };
+        let mut hwpx_like = non_palette_compatible(from_markdown("가\n"));
+        hwpx_like.header.numberings.clear();
+        hwpx_like.header.bullets.clear();
+        hwpx_like.header.bullet_chars = vec!['x'];
+        let mut hwp5_like = non_palette_compatible(from_markdown("나\n"));
+        hwp5_like.header.numberings = vec![raw(1); hwp5_like.header.numbering_levels.len()];
+        hwp5_like.header.bullet_chars = vec!['y'];
+        hwp5_like.header.bullets = vec![raw(2)];
+
+        let merged = merge_documents(&[hwpx_like.clone(), hwp5_like.clone()])
+            .unwrap()
+            .document;
+        assert!(
+            merged.header.numberings.is_empty(),
+            "no raw record for the HWPX definitions"
+        );
+        assert!(merged.header.bullets.is_empty());
+        assert_eq!(merged.header.bullet_chars, ['x', 'y']);
+
+        // Both aligned: the HWP5 input's records follow the target's, each at its own index.
+        let merged = merge_documents(&[hwp5_like.clone(), hwp5_like.clone()])
+            .unwrap()
+            .document;
+        assert_eq!(
+            merged.header.numberings.len(),
+            merged.header.numbering_levels.len()
+        );
+        assert_eq!(merged.header.bullets, [raw(2), raw(2)]);
+
+        // Once an HWPX input breaks the alignment, a later HWP5 input's records stay out too.
+        let merged = merge_documents(&[hwp5_like.clone(), hwpx_like, hwp5_like.clone()])
+            .unwrap()
+            .document;
+        assert_eq!(
+            merged.header.numberings.len(),
+            hwp5_like.header.numberings.len()
+        );
+        assert_eq!(merged.header.bullets, [raw(2)]);
     }
 
     /// Mutates a `from_markdown` document's header so
