@@ -874,7 +874,7 @@ fn is_blank_value(text: &str) -> bool {
     text.is_empty() || (tokens.len() == 1 && tokens[0].range == (0..text.len()))
 }
 
-/// Nothing but slots and whitespace: `{{a}}`, `{{a}} {{b}}`.
+/// Only slots and whitespace, with at least one slot exposed as a usable form key.
 fn is_only_slots(text: &str) -> bool {
     let mut at = 0usize;
     let mut seen = false;
@@ -883,7 +883,7 @@ fn is_only_slots(text: &str) -> bool {
             return false;
         }
         at = token.range.end;
-        seen = true;
+        seen |= !normalize_label(token.name).is_empty();
     }
     seen && text[at..].trim().is_empty()
 }
@@ -1124,6 +1124,38 @@ mod tests {
         )
         .unwrap();
         assert!(fill.unmatched.is_empty(), "{fill:?}");
+    }
+
+    #[test]
+    fn keeps_labels_when_slots_have_no_usable_form_key() {
+        for value in ["{{()}}", "{{·}}", "{{()}} {{·}}"] {
+            let mut doc = from_markdown(&format!("성명: {value}\n"));
+            let fields = scan_form_fields(&doc);
+            assert_eq!(fields.len(), 1, "{value}: {fields:?}");
+            assert_eq!(fields[0].key, "성명");
+            assert_eq!(fields[0].source, FormFieldSource::InlineLabel);
+            let fill = fill_form_fields(&mut doc, &values(&[("성명", "홍길동")])).unwrap();
+            assert!(fill.unmatched.is_empty(), "{fill:?}");
+            assert_eq!(fill.counts["성명"], 1);
+        }
+
+        // The later slot is independent: the label owns only the first slot's span.
+        let mut doc = from_markdown("성명: {{()}} {{이름}}\n");
+        let fields = scan_form_fields(&doc);
+        assert_eq!(fields.len(), 2, "{fields:?}");
+        assert_eq!(field(&fields, "성명").source, FormFieldSource::InlineLabel);
+        assert_eq!(field(&fields, "이름").source, FormFieldSource::Placeholder);
+        let fill =
+            fill_form_fields(&mut doc, &values(&[("성명", "홍길동"), ("이름", "김철수")])).unwrap();
+        assert!(fill.unmatched.is_empty(), "{fill:?}");
+        assert_eq!(fill.counts["성명"], 1);
+        assert_eq!(fill.counts["이름"], 1);
+
+        let doc = from_markdown("성명: {{이름}} {{()}}\n");
+        let fields = scan_form_fields(&doc);
+        assert_eq!(fields.len(), 1, "{fields:?}");
+        assert_eq!(fields[0].key, "이름");
+        assert_eq!(fields[0].source, FormFieldSource::Placeholder);
     }
 
     /// kordoc_lite `fills_placeholders_adjacent_cells_and_inline_labels`.

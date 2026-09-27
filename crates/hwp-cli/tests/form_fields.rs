@@ -129,6 +129,46 @@ fn slots_forms_skips_a_label_that_only_names_a_slot() {
 }
 
 #[test]
+fn slots_forms_keeps_labels_for_slots_without_usable_keys() {
+    let (dir, form) = template(
+        "empty-slot-key",
+        "성명: {{()}}\n\n주소: {{·}}\n\n기관: {{()}} {{기관명}}\n",
+    );
+    let output = run(hwp().args(["slots", "--json", "--forms"]).arg(&form));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let keys: Vec<&str> = report["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["기관", "기관명", "성명", "주소"], "{report}");
+    let data = dir.join("data.json");
+    std::fs::write(
+        &data,
+        r#"{"성명":"홍길동","주소":"제주","기관":"연구소","기관명":"대학"}"#,
+    )
+    .unwrap();
+    let filled = dir.join("filled.hwpx");
+    let output = run(hwp()
+        .arg("fill")
+        .arg(&form)
+        .args(["--forms", "--json", "--allow-partial", "--data"])
+        .arg(&data)
+        .arg("-o")
+        .arg(&filled));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["unmatched"], serde_json::json!([]), "{report}");
+    let filled_text = text(&filled);
+    assert!(filled_text.contains("성명: 홍길동"), "{filled_text}");
+    assert!(filled_text.contains("주소: 제주"), "{filled_text}");
+    assert!(filled_text.contains("대학"), "{filled_text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fill_forms_fills_slots_and_form_fields_in_one_pass() {
     let (dir, form) = template("fill", FORM);
     let data = dir.join("data.json");

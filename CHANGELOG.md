@@ -31,7 +31,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   (`목표: {{최종목표}}`). The placeholder is already listed as its own field, and a fill defers
   such a label to it, so a caller that sent a value for every scanned field always got those
   labels back as `unmatched` (counts 0) with a warning. A label with text of its own next to a
-  slot (`전략: 올해 {{추진전략}} 중심`) is still listed
+  slot (`전략: 올해 {{추진전략}} 중심`) is still listed. Labels also stay available when
+  all slot names normalize to empty form keys (`성명: {{()}}`)
   ([#385](https://github.com/STAIxBWLB/hwp-cli/issues/385)).
 
 ## [1.3.0]
