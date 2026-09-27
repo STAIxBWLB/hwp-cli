@@ -74,8 +74,8 @@ pub struct FormField {
 }
 
 /// List the form fields of `doc`: `{{ }}` slots, inline `라벨: 값` outside table cells, and
-/// table cells that read as labels. An inline label whose value is only slot(s) is left out:
-/// the slot is already a field of its own. Sorted by key.
+/// table cells that read as labels. An inline label whose value is only differently-keyed
+/// slot(s) is left out: the slot is already a field of its own. Sorted by key.
 pub fn scan_form_fields(doc: &Document) -> Vec<FormField> {
     let mut paragraphs = Vec::new();
     let mut cells = Vec::new();
@@ -93,10 +93,15 @@ pub fn scan_form_fields(doc: &Document) -> Vec<FormField> {
             }
             if !in_cell {
                 for inline in inline_labels(&seg) {
-                    // `라벨: {{자리표시자}}`: the slot is already listed as its own field, and a
+                    // `라벨: {{다른키}}`: the slot is already listed as its own field, and a
                     // fill defers the label to it, so listing the label too only earns the
-                    // caller an unmatched key it could never fill (#385).
-                    if is_only_slots(&seg[inline.value.clone()]) {
+                    // caller an unmatched key it could never fill (#385). A same-key sighting
+                    // (`담당자: {{담당자}}`) creates no extra field — the two sightings merge —
+                    // so it stays, keeping occurrences and source accurate.
+                    if defers_to_a_different_key(
+                        &seg[inline.label.clone()],
+                        &seg[inline.value.clone()],
+                    ) {
                         continue;
                     }
                     merge(
@@ -888,6 +893,21 @@ fn is_only_slots(text: &str) -> bool {
     seen && text[at..].trim().is_empty()
 }
 
+/// True when the label's fill would defer to slot(s) keyed differently from the label: the
+/// value is only slot(s) and at least one usable slot normalizes to another key (#385). A
+/// same-key sighting (`담당자: {{담당자}}`) merges label and slot into one field, so the label
+/// stays and the field's occurrences and source remain accurate.
+fn defers_to_a_different_key(label: &str, value: &str) -> bool {
+    if !is_only_slots(value) {
+        return false;
+    }
+    let key = normalize_label(label);
+    hwp_model::slot_tokens(value)
+        .iter()
+        .map(|token| normalize_label(token.name))
+        .any(|slot_key| !slot_key.is_empty() && slot_key != key)
+}
+
 /// kordoc's key normalization: whitespace, colons, parentheses and `·` removed.
 pub fn normalize_label(label: &str) -> String {
     label.trim().replace(
@@ -1124,6 +1144,22 @@ mod tests {
         )
         .unwrap();
         assert!(fill.unmatched.is_empty(), "{fill:?}");
+    }
+
+    /// #385 review: a same-key sighting (`담당자: {{담당자}}`) creates no extra field, so the
+    /// label stays and the merged field keeps its occurrences and source.
+    #[test]
+    fn keeps_an_inline_label_whose_slot_has_the_same_key() {
+        let mut doc = from_markdown("담당자: {{담당자}}\n");
+        let fields = scan_form_fields(&doc);
+        assert_eq!(fields.len(), 1, "{fields:?}");
+        assert_eq!(fields[0].key, "담당자");
+        assert_eq!(fields[0].source, FormFieldSource::InlineLabel);
+        assert_eq!(fields[0].occurrences, 2, "{fields:?}");
+
+        let fill = fill_form_fields(&mut doc, &values(&[("담당자", "홍길동")])).unwrap();
+        assert!(fill.unmatched.is_empty(), "{fill:?}");
+        assert_eq!(fill.counts["담당자"], 1, "{fill:?}");
     }
 
     #[test]
