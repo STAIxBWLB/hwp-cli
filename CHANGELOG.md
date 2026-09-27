@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.3.1]
+
 **Fixed**
 
 - `hwp merge` to `.hwp` keeps genuine HWP5 paragraph shapes in either input order. Conversion
