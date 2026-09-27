@@ -10,6 +10,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `hwp merge` to `.hwp` keeps genuine HWP5 paragraph shapes in either input order. Conversion
+  defaults now apply to each non-HWP5 input before header references are shifted, preserving
+  native zero border-fill values and old line spacing and resolving converted border fills
+  against their own palette. Converted inputs with zero or one border fill receive the missing
+  canonical no-border entries before grafting ([#390](https://github.com/STAIxBWLB/hwp-cli/issues/390)).
+- `hwp merge` to `.hwp` assigns distinct nonzero paragraph instance IDs when inputs already share
+  IDs. The first occurrence keeps its ID; later duplicates and zeros receive unused IDs across
+  sections and nested record trees, including raw-backed text boxes. Unmerged HWP5 round trips
+  keep their original IDs ([#393](https://github.com/STAIxBWLB/hwp-cli/issues/393)).
+
 ## [1.3.0]
 
 **Compatibility**

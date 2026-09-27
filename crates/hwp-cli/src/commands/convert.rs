@@ -970,7 +970,7 @@ pub fn write_hwp(
     output: &std::path::Path,
     preserve_layout: bool,
 ) -> anyhow::Result<hwp_model::WriteReport> {
-    write_hwp_impl(doc, output, preserve_layout, false, None, None)
+    write_hwp_impl(doc, output, preserve_layout, false, false, None, None)
 }
 
 /// Writes an HWP edit against an immutable source snapshot. The low-level
@@ -989,6 +989,7 @@ pub fn write_hwp_preserving_source(
         output,
         preserve_layout,
         structural,
+        false,
         None,
         Some((source, original)),
     )
@@ -1010,9 +1011,9 @@ pub fn write_hwp_edited(
 ) -> anyhow::Result<hwp_model::WriteReport> {
     if doc.meta.source_format == "hwp5" {
         // 원본 줄 배치 보존(preserve), 합성 정규화 없음 — 편집 문단만 count=0.
-        write_hwp_impl(doc, output, true, false, None, None)
+        write_hwp_impl(doc, output, true, false, false, None, None)
     } else {
-        write_hwp_impl(doc, output, false, true, None, None)
+        write_hwp_impl(doc, output, false, true, false, None, None)
     }
 }
 
@@ -1025,7 +1026,17 @@ pub fn write_hwp_structural(
     doc: &hwp_model::Document,
     output: &std::path::Path,
 ) -> anyhow::Result<hwp_model::WriteReport> {
-    write_hwp_impl(doc, output, false, true, None, None)
+    write_hwp_impl(doc, output, false, true, false, None, None)
+}
+
+/// Writes a merge whose converted inputs had their paragraph shapes prepared before grafting.
+/// Mixed inputs need structural materialization; every HWP merge needs unique paragraph IDs.
+pub(crate) fn write_hwp_merged(
+    doc: &hwp_model::Document,
+    output: &std::path::Path,
+    structural: bool,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    write_hwp_impl(doc, output, false, structural, true, None, None)
 }
 
 /// 구조 문서를 시스템 글꼴 없이 명시된 파일만으로 HWP로 쓴다.
@@ -1041,7 +1052,7 @@ pub fn write_hwp_structural_isolated(
     if font_files.is_empty() {
         anyhow::bail!("isolated HWP writer requires at least one explicit font file");
     }
-    write_hwp_impl(doc, output, false, true, Some(font_files), None)
+    write_hwp_impl(doc, output, false, true, false, Some(font_files), None)
 }
 
 fn write_hwp_impl(
@@ -1049,6 +1060,7 @@ fn write_hwp_impl(
     output: &std::path::Path,
     preserve_layout: bool,
     edited: bool,
+    merged: bool,
     isolated_font_files: Option<&[std::path::PathBuf]>,
     source: Option<(&std::path::Path, &hwp_model::Document)>,
 ) -> anyhow::Result<hwp_model::WriteReport> {
@@ -1167,6 +1179,8 @@ fn write_hwp_impl(
         prv_image,
         preserve_linesegs: preserve_layout,
         edited,
+        para_shape_defaults_prepared: merged,
+        deduplicate_instance_ids: merged,
     };
     let writer_report = if let Some((source, original)) = source {
         hwp5::rewrite_document_with_report(source, original, doc, output, &options)?

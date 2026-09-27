@@ -58,6 +58,103 @@ fn cat_plain(path: &Path) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+/// Includes every modeled paragraph list, including captions and generic-control lists.
+fn paragraph_lists<'a>(
+    paragraphs: &'a [hwp_model::Paragraph],
+    at: String,
+    out: &mut Vec<(String, &'a [hwp_model::Paragraph])>,
+) {
+    out.push((at.clone(), paragraphs));
+    for (p, para) in paragraphs.iter().enumerate() {
+        for (c, control) in para.controls.iter().enumerate() {
+            let caption = match control {
+                hwp_model::Control::Table(table) => {
+                    for (k, cell) in table.cells.iter().enumerate() {
+                        paragraph_lists(
+                            &cell.paragraphs,
+                            format!("{at} p{p} table{c} cell{k}"),
+                            out,
+                        );
+                    }
+                    &table.caption
+                }
+                hwp_model::Control::Picture(picture) => &picture.caption,
+                hwp_model::Control::Generic(generic) => {
+                    for (k, list) in generic.paragraph_lists.iter().enumerate() {
+                        paragraph_lists(
+                            &list.paragraphs,
+                            format!("{at} p{p} ctrl{c} list{k}"),
+                            out,
+                        );
+                    }
+                    &generic.caption
+                }
+                hwp_model::Control::SectionDef(_) => continue,
+            };
+            if let Some(caption) = caption {
+                paragraph_lists(
+                    &caption.paragraphs,
+                    format!("{at} p{p} ctrl{c} caption"),
+                    out,
+                );
+            }
+        }
+    }
+}
+
+/// Produces external-style HWPX input that our writer's defaults would otherwise hide:
+/// zero conversion fields and, optionally, a border collection shorter than two entries.
+fn write_hwpx_border_fixture(document: &hwp_model::Document, path: &Path, count: Option<usize>) {
+    use std::io::{Read, Write};
+
+    hwpx::write_document(document, path).unwrap();
+    let original = std::fs::read(path).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(original)).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let references = regex::Regex::new(r#"borderFillIDRef="[0-9]+""#).unwrap();
+    let spacing = regex::Regex::new(r#"(<hh:lineSpacing[^>]*value=")[0-9]+(")"#).unwrap();
+    let fill_elements =
+        regex::Regex::new(r#"(?s)<hh:borderFill id="[0-9]+".*?</hh:borderFill>"#).unwrap();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().to_string();
+        let method = entry.compression();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        if name == "Contents/header.xml" || name.starts_with("Contents/section") {
+            let xml = String::from_utf8(bytes).unwrap();
+            let mut xml = references
+                .replace_all(&xml, r#"borderFillIDRef="0""#)
+                .into_owned();
+            xml = spacing.replace_all(&xml, "${1}0${2}").into_owned();
+            if name == "Contents/header.xml"
+                && let Some(count) = count
+            {
+                let begin = xml.find("<hh:borderFills ").unwrap();
+                let end = xml.find("</hh:borderFills>").unwrap() + "</hh:borderFills>".len();
+                let fills = fill_elements
+                    .find_iter(&xml[begin..end])
+                    .take(count)
+                    .map(|fill| fill.as_str())
+                    .collect::<String>();
+                xml.replace_range(
+                    begin..end,
+                    &format!(r#"<hh:borderFills itemCnt="{count}">{fills}</hh:borderFills>"#),
+                );
+            }
+            bytes = xml.into_bytes();
+        }
+        writer
+            .start_file(
+                name,
+                zip::write::SimpleFileOptions::default().compression_method(method),
+            )
+            .unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
 fn fragment_paths(dir: &Path, stem: &str, ext: &str) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap()
@@ -215,35 +312,9 @@ fn merge_of_an_hwpx_input_into_hwp_writes_the_paragraph_invariants() {
 
     let doc = hwp5::read_document(&merged).unwrap().document;
     assert_eq!(doc.sections.len(), 2);
-    // Every paragraph list: each section, and the lists nested in its controls (table cells,
-    // text boxes), since the writer materializes the invariants recursively.
-    fn lists<'a>(
-        paragraphs: &'a [hwp_model::Paragraph],
-        at: String,
-        out: &mut Vec<(String, &'a [hwp_model::Paragraph])>,
-    ) {
-        out.push((at.clone(), paragraphs));
-        for (p, para) in paragraphs.iter().enumerate() {
-            for (c, control) in para.controls.iter().enumerate() {
-                match control {
-                    hwp_model::Control::Table(table) => {
-                        for (k, cell) in table.cells.iter().enumerate() {
-                            lists(&cell.paragraphs, format!("{at} p{p} table{c} cell{k}"), out);
-                        }
-                    }
-                    hwp_model::Control::Generic(generic) => {
-                        for (k, list) in generic.paragraph_lists.iter().enumerate() {
-                            lists(&list.paragraphs, format!("{at} p{p} ctrl{c} list{k}"), out);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
     let mut all = Vec::new();
     for (s, section) in doc.sections.iter().enumerate() {
-        lists(&section.paragraphs, format!("section {s}"), &mut all);
+        paragraph_lists(&section.paragraphs, format!("section {s}"), &mut all);
         assert_eq!(
             section.paragraphs[0].header.break_type & 0x03,
             0x03,
@@ -284,6 +355,235 @@ fn merge_of_an_hwpx_input_into_hwp_writes_the_paragraph_invariants() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Two generated HWP files already share IDs, including their table-cell paragraphs (#393).
+#[test]
+fn merge_existing_hwp_paragraph_ids_are_unique_across_sections_and_cells() {
+    let dir = scratch_dir("merge-existing-ids");
+    let markdown = "본문\n\n| 가 | 나 |\n|---|---|\n| 다 | 라 |\n\n마지막\n";
+    let first = write_input_hwp(&dir, "first", markdown);
+    let second = write_input_hwp(&dir, "second", markdown);
+    let merged = dir.join("merged.hwp");
+    let status = hwp()
+        .arg("merge")
+        .args([&first, &second])
+        .arg("-o")
+        .arg(&merged)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let original = hwp5::read_document(&first).unwrap().document;
+    let written = hwp5::read_document(&merged).unwrap().document;
+    assert_eq!(written.sections.len(), 2);
+    let ids = |section: &hwp_model::Section| {
+        let mut lists = Vec::new();
+        paragraph_lists(&section.paragraphs, "section".to_string(), &mut lists);
+        assert!(lists.iter().any(|(at, _)| at.contains("cell")));
+        lists
+            .into_iter()
+            .flat_map(|(_, paragraphs)| {
+                paragraphs
+                    .iter()
+                    .map(|paragraph| paragraph.header.instance_id)
+            })
+            .collect::<Vec<_>>()
+    };
+    let first_ids = ids(&original.sections[0]);
+    assert_eq!(
+        ids(&written.sections[0]),
+        first_ids,
+        "first occurrences keep their IDs"
+    );
+    let output_ids = written.sections.iter().flat_map(ids).collect::<Vec<_>>();
+    assert!(!output_ids.contains(&0));
+    assert_eq!(
+        output_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        output_ids.len(),
+        "every section and cell paragraph has a distinct ID",
+    );
+    assert_eq!(
+        written.plain_text(),
+        format!("{}{}", original.plain_text(), original.plain_text())
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Conversion defaults must be applied before header offsets, and only for HWP output (#390).
+#[test]
+fn merge_prepares_converted_shapes_before_grafting_their_border_references() {
+    let dir = scratch_dir("merge-shape-provenance");
+    let native_path = write_input_hwp(&dir, "native", "원본 문단\n");
+    let mut native = hwp5::read_document(&native_path).unwrap().document;
+    // A distinct style signature requires the general graft, as a genuine file does.
+    native.header.styles[0].name = "native-style".to_string();
+    native.header.para_shapes[0].border_fill_id = 0;
+    native.header.para_shapes[0].line_spacing_old = 0;
+    hwp5::write_document_with_report(
+        &native,
+        &native_path,
+        &hwp5::WriteOptions {
+            preserve_linesegs: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let converted_path = dir.join("converted.hwpx");
+    let mut converted = hwp_convert::from_markdown("변환 문단\n");
+    converted.header.para_shapes[0].border_fill_id = 0;
+    converted.header.border_fills[1].fill_type = 1;
+    converted.header.border_fills[1].bg_color = Some(0x0001_0203);
+    write_hwpx_border_fixture(&converted, &converted_path, None);
+    let converted = hwpx::read_document(&converted_path).unwrap().document;
+    assert_eq!(converted.header.para_shapes[0].border_fill_id, 0);
+    assert_eq!(converted.header.para_shapes[0].line_spacing_old, 0);
+
+    for native_first in [true, false] {
+        let inputs = if native_first {
+            [&native_path, &converted_path]
+        } else {
+            [&converted_path, &native_path]
+        };
+        for extension in ["hwp", "hwpx"] {
+            let output = dir.join(format!("merged-{native_first}.{extension}"));
+            let status = hwp()
+                .arg("merge")
+                .args(inputs)
+                .arg("-o")
+                .arg(&output)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let header = if extension == "hwp" {
+                hwp5::read_document(&output).unwrap().document.header
+            } else {
+                hwpx::read_document(&output).unwrap().document.header
+            };
+            let native_offset = if native_first {
+                0
+            } else {
+                converted.header.para_shapes.len()
+            };
+            let converted_offset = if native_first {
+                native.header.para_shapes.len()
+            } else {
+                0
+            };
+            let border_offset = if native_first {
+                native.header.border_fills.len()
+            } else {
+                0
+            };
+            let genuine_shape = &header.para_shapes[native_offset];
+            assert_eq!(
+                genuine_shape.border_fill_id,
+                if extension == "hwp" { 0 } else { 2 }
+            );
+            assert_eq!(
+                genuine_shape.line_spacing_old,
+                if extension == "hwp" {
+                    0
+                } else {
+                    native.header.para_shapes[0].line_spacing
+                },
+            );
+            let converted_shape = &header.para_shapes[converted_offset];
+            if extension == "hwp" {
+                assert_eq!(converted_shape.line_spacing_old, 160);
+                assert_eq!(converted_shape.border_fill_id, border_offset as u16 + 2);
+                assert_eq!(
+                    header.border_fills[border_offset + 1].bg_color,
+                    Some(0x0001_0203)
+                );
+            } else {
+                assert_eq!(
+                    converted_shape.border_fill_id, 2,
+                    "HWPX keeps its existing zero-reference serialization, without HWP5 pre-graft offsets"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn merge_converted_inputs_with_missing_border_defaults_own_their_fallback() {
+    let dir = scratch_dir("merge-short-border-palette");
+    let native_path = write_input_hwp(&dir, "native", "원본 문단\n");
+    let mut native = hwp5::read_document(&native_path).unwrap().document;
+    native.header.para_shapes[0].border_fill_id = 0;
+    hwp5::write_document_with_report(&native, &native_path, &Default::default()).unwrap();
+    for original_count in [0, 1] {
+        let converted_path = dir.join(format!("converted-{original_count}.hwpx"));
+        let mut converted = hwp_convert::from_markdown("변환 문단\n");
+        converted.header.border_fills.truncate(original_count);
+        for shape in &mut converted.header.para_shapes {
+            shape.border_fill_id = 0;
+        }
+        for shape in &mut converted.header.char_shapes {
+            shape.border_fill_id = 0;
+        }
+        if let Some(fill) = converted.header.border_fills.first_mut() {
+            fill.fill_type = 1;
+            fill.bg_color = Some(0x0004_0506);
+        }
+        write_hwpx_border_fixture(&converted, &converted_path, Some(original_count));
+        let converted = hwpx::read_document(&converted_path).unwrap().document;
+        assert_eq!(converted.header.border_fills.len(), original_count);
+        for native_first in [true, false] {
+            let inputs = if native_first {
+                [&native_path, &converted_path]
+            } else {
+                [&converted_path, &native_path]
+            };
+            let output = dir.join(format!("merged-{original_count}-{native_first}.hwp"));
+            assert!(
+                hwp()
+                    .arg("merge")
+                    .args(inputs)
+                    .arg("-o")
+                    .arg(&output)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let header = hwp5::read_document(&output).unwrap().document.header;
+            let (native_offset, converted_offset, border_offset) = if native_first {
+                (
+                    0,
+                    native.header.para_shapes.len(),
+                    native.header.border_fills.len(),
+                )
+            } else {
+                (converted.header.para_shapes.len(), 0, 0)
+            };
+            assert_eq!(header.para_shapes[native_offset].border_fill_id, 0);
+            assert_eq!(
+                header.para_shapes[converted_offset].border_fill_id,
+                border_offset as u16 + 2
+            );
+            assert_eq!(
+                header.border_fills.len(),
+                native.header.border_fills.len() + 2
+            );
+            let fallback = &header.border_fills[border_offset + 1];
+            assert_eq!(fallback.fill_type, 0);
+            assert!(fallback.sides.iter().all(|side| side.line_type == 0));
+            if original_count == 1 {
+                assert_eq!(
+                    header.border_fills[border_offset].bg_color,
+                    Some(0x0004_0506),
+                    "existing source fill stays intact"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A mixed merge leaves the `.hwp` input's own paragraph shapes as they are (#381 review): a
 /// genuine 5.0.2.x file uses `border_fill_id` 0 for "no border", which the conversion defaults
 /// would turn into a solid border box around its cell paragraphs.
@@ -306,32 +606,52 @@ fn a_mixed_merge_keeps_the_hwp_inputs_paragraph_shapes() {
         .status()
         .unwrap();
     assert!(status.success(), "hwp new --from second.md 실패");
-    let merged = dir.join("merged.hwp");
-    let status = hwp()
-        .arg("merge")
-        .arg(&genuine)
-        .arg(&second)
-        .arg("-o")
-        .arg(&merged)
-        .status()
-        .unwrap();
-    assert!(status.success(), "hwp merge 실패");
-
     let source = hwp5::read_document(&genuine).unwrap().document.header;
-    let output = hwp5::read_document(&merged).unwrap().document.header;
+    let converted = hwpx::read_document(&second).unwrap().document.header;
     assert!(
         source
             .para_shapes
             .iter()
             .any(|shape| shape.border_fill_id == 0)
     );
-    for (index, shape) in source.para_shapes.iter().enumerate() {
-        let written = &output.para_shapes[index];
-        assert_eq!(
-            (written.border_fill_id, written.line_spacing_old),
-            (shape.border_fill_id, shape.line_spacing_old),
-            "para shape {index}"
-        );
+    for genuine_first in [true, false] {
+        let merged = dir.join(format!("merged-{genuine_first}.hwp"));
+        let inputs = if genuine_first {
+            [&genuine, &second]
+        } else {
+            [&second, &genuine]
+        };
+        let status = hwp()
+            .arg("merge")
+            .args(inputs)
+            .arg("-o")
+            .arg(&merged)
+            .status()
+            .unwrap();
+        assert!(status.success(), "hwp merge failed");
+
+        let output = hwp5::read_document(&merged).unwrap().document.header;
+        let (shape_offset, border_offset) = if genuine_first {
+            (0, 0)
+        } else {
+            (
+                converted.para_shapes.len(),
+                converted.border_fills.len() as u16,
+            )
+        };
+        for (index, shape) in source.para_shapes.iter().enumerate() {
+            let written = &output.para_shapes[shape_offset + index];
+            let border_fill_id = if shape.border_fill_id == 0 {
+                0
+            } else {
+                shape.border_fill_id + border_offset
+            };
+            assert_eq!(
+                (written.border_fill_id, written.line_spacing_old),
+                (border_fill_id, shape.line_spacing_old),
+                "para shape {index}, genuine first: {genuine_first}",
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
