@@ -1000,10 +1000,8 @@ impl Parser<'_> {
             Some(s) => {
                 let start = from_markdown::normalize_authored_list_start(s)?;
                 let def_id = self.numbering_levels.len() as u16;
-                let mut levels =
-                    vec![NumLevel::default(); from_markdown::MAX_OFFICIAL_LIST_DEPTH as usize];
-                levels[level as usize - 1].start = start;
-                self.numbering_levels.push(levels);
+                self.numbering_levels
+                    .push(from_markdown::authored_ordered_levels(level, start));
                 self.push_list_para_shape(2, level, def_id)
             }
             None => {

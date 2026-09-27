@@ -929,12 +929,14 @@ fn numbering_xml(doc: &Document) -> String {
 fn num_fmt(level: &hwp_model::NumLevel) -> (&'static str, String) {
     let fmt = match level.fmt {
         NumFmt::Digit => "decimal",
-        NumFmt::HangulSyllable => "koreanCounting",
-        NumFmt::HangulJamo => "koreanDigital",
+        // ECMA-376 §17.18.59 ST_NumberFormat: `ganada` is 가, 나, 다 and `chosung` is ㄱ, ㄴ, ㄷ;
+        // `koreanCounting` (일, 이, 삼) and `koreanDigital` are Sino-Korean numerals (#383 review).
+        NumFmt::HangulSyllable => "ganada",
+        NumFmt::HangulJamo => "chosung",
         NumFmt::CircledDigit => "decimalEnclosedCircle",
         // OOXML has no circled-Hangul-syllable numFmt. Keep the syllable family
         // rather than silently substituting circled decimal glyphs.
-        NumFmt::CircledHangulSyllable => "koreanCounting",
+        NumFmt::CircledHangulSyllable => "ganada",
         NumFmt::LatinUpper => "upperLetter",
         NumFmt::LatinLower => "lowerLetter",
         NumFmt::RomanUpper => "upperRoman",
@@ -1020,6 +1022,23 @@ fn core_xml(doc: &Document) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hangul syllable and jamo levels map to the OOXML sequences Hancom draws, `ganada` (가, 나,
+    /// 다) and `chosung` (ㄱ, ㄴ, ㄷ), not the Sino-Korean numerals `koreanCounting` (#383).
+    #[test]
+    fn hangul_number_formats_map_to_the_ooxml_letter_sequences() {
+        let level = |fmt| hwp_model::NumLevel {
+            fmt,
+            template: "^2.".to_string(),
+            ..hwp_model::NumLevel::default()
+        };
+        assert_eq!(num_fmt(&level(NumFmt::HangulSyllable)).0, "ganada");
+        assert_eq!(num_fmt(&level(NumFmt::HangulJamo)).0, "chosung");
+        assert_eq!(
+            num_fmt(&level(NumFmt::Digit)),
+            ("decimal", "%2.".to_string())
+        );
+    }
     use std::io::Read as _;
 
     fn unzip(bytes: &[u8], name: &str) -> Option<String> {

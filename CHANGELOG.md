@@ -47,6 +47,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   now skips the ids a document already has; a merge with an hwp-cli-made `.hwp` input, and a
   part filled into an hwp-cli `.hwp` template, gave new paragraphs ids already in use
   ([#381](https://github.com/STAIxBWLB/hwp-cli/issues/381)).
+- A numbered list imported from markdown or HTML (`hwp new --from`, a `hwp fill` part, MCP
+  `hwp_new`) now shows its numbers in Hancom Office in `.hwpx` output. Its numbering definition
+  had empty level templates, which Hancom draws as nothing; `.hwp` output was unaffected. Every
+  level now takes Hancom's default ladder, the one `.hwp` output already draws: `1.`, `가.`,
+  `1)`, `가)`, `(1)`, `(가)`, `①`, and a plain number at the eighth level. Nested lists in
+  `hwp render`, PDF and `.docx` output follow the same ladder (they fell back to `1.1.` or `1.`
+  before). `.docx` output now numbers a Hangul-syllable level `가, 나, 다` (OOXML `ganada`) and a
+  jamo level `ㄱ, ㄴ, ㄷ` (`chosung`); it wrote the Sino-Korean numerals `일, 이, 삼` before, which
+  the official profiles' lists also showed ([#382](https://github.com/STAIxBWLB/hwp-cli/issues/382)).
 
 ## [1.2.0]
 
