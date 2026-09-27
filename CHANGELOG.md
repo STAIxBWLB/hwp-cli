@@ -10,8 +10,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.3.0]
+
 **Compatibility**
 
+- One change narrows a surface the 1.0 SemVer scope covers (CLI, MCP tool arguments, schemas):
+  MCP `hwp_edit` refuses a text selector together with `address` (below). Everything else is a
+  fix, and no schema in `schemas/` changed bytes. Written files change where they were wrong, for
+  example: `hwp merge` to `.hwp` writes every numbering and bullet definition it references and
+  the HWP5 paragraph invariants of an `.hwpx` input's paragraphs; a new paragraph id in `.hwp`
+  output no longer repeats one in use; numbered lists imported from markdown or HTML draw
+  Hancom's default ladder in `.hwpx`; and `.docx` numbers Hangul levels `가`/`ㄱ` instead of
+  `일`/`이`/`삼`. Part fills that were refused now publish: an anchor in a section's first
+  paragraph, and a part from a `.hwp` template into `.hwp` (except a numbered list starting past
+  1).
 - MCP `hwp_edit` now refuses a text selector (`pattern`, `anchor` or `matching`) together with
   `address` on `set_format`, `set_align`, `insert_para`, `delete_para` and `set_para`, as
   `hwp edit --ops` already does, with the ops channel's error; the published input schema states
@@ -53,9 +65,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   level now takes Hancom's default ladder, the one `.hwp` output already draws: `1.`, `가.`,
   `1)`, `가)`, `(1)`, `(가)`, `①`, and a plain number at the eighth level. Nested lists in
   `hwp render`, PDF and `.docx` output follow the same ladder (they fell back to `1.1.` or `1.`
-  before). `.docx` output now numbers a Hangul-syllable level `가, 나, 다` (OOXML `ganada`) and a
-  jamo level `ㄱ, ㄴ, ㄷ` (`chosung`); it wrote the Sino-Korean numerals `일, 이, 삼` before, which
-  the official profiles' lists also showed ([#382](https://github.com/STAIxBWLB/hwp-cli/issues/382)).
+  before). `.docx` output now numbers a Hangul-syllable level `가, 나, 다` (OOXML `ganada`, also
+  for a circled one, which OOXML lacks) and a jamo level `ㄱ, ㄴ, ㄷ` (`chosung`); it wrote the
+  Sino-Korean numerals `일, 이, 삼` before, which the official profiles' lists also showed
+  ([#382](https://github.com/STAIxBWLB/hwp-cli/issues/382)).
 
 ## [1.2.0]
 
