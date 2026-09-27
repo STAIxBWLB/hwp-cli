@@ -188,7 +188,11 @@ fn merge_of_an_hwpx_input_into_hwp_writes_the_paragraph_invariants() {
     let dir = scratch_dir("merge-hwpx-into-hwp");
     let first = write_input_hwp(&dir, "first", "# 제목\n\n본문\n");
     let md = dir.join("second.md");
-    std::fs::write(&md, "둘째 문서\n\n마지막 문단\n").unwrap();
+    std::fs::write(
+        &md,
+        "둘째 문서\n\n| 가 | 나 |\n|---|---|\n| 다 | 라 |\n\n마지막 문단\n",
+    )
+    .unwrap();
     let second = dir.join("second.hwpx");
     let status = hwp()
         .args(["new", "--from"])
@@ -211,20 +215,52 @@ fn merge_of_an_hwpx_input_into_hwp_writes_the_paragraph_invariants() {
 
     let doc = hwp5::read_document(&merged).unwrap().document;
     assert_eq!(doc.sections.len(), 2);
-    // Instance ids are unique document-wide (A8): the first input, made by hwp-cli, already
-    // numbers its paragraphs from 0x10000001, so the HWPX input's must not reuse those.
-    let mut ids = std::collections::BTreeSet::new();
-    for para in doc.sections.iter().flat_map(|section| &section.paragraphs) {
-        assert!(
-            ids.insert(para.header.instance_id),
-            "duplicate instance id {:#x}",
-            para.header.instance_id
+    // Every paragraph list: each section, and the lists nested in its controls (table cells,
+    // text boxes), since the writer materializes the invariants recursively.
+    fn lists<'a>(
+        paragraphs: &'a [hwp_model::Paragraph],
+        at: String,
+        out: &mut Vec<(String, &'a [hwp_model::Paragraph])>,
+    ) {
+        out.push((at.clone(), paragraphs));
+        for (p, para) in paragraphs.iter().enumerate() {
+            for (c, control) in para.controls.iter().enumerate() {
+                match control {
+                    hwp_model::Control::Table(table) => {
+                        for (k, cell) in table.cells.iter().enumerate() {
+                            lists(&cell.paragraphs, format!("{at} p{p} table{c} cell{k}"), out);
+                        }
+                    }
+                    hwp_model::Control::Generic(generic) => {
+                        for (k, list) in generic.paragraph_lists.iter().enumerate() {
+                            lists(&list.paragraphs, format!("{at} p{p} ctrl{c} list{k}"), out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut all = Vec::new();
+    for (s, section) in doc.sections.iter().enumerate() {
+        lists(&section.paragraphs, format!("section {s}"), &mut all);
+        assert_eq!(
+            section.paragraphs[0].header.break_type & 0x03,
+            0x03,
+            "section {s}: section-break bits"
         );
     }
-    for (s, section) in doc.sections.iter().enumerate() {
-        let last = section.paragraphs.len() - 1;
-        for (p, para) in section.paragraphs.iter().enumerate() {
-            let at = format!("section {s} paragraph {p}");
+    assert!(
+        all.iter().any(|(at, _)| at.contains("cell")),
+        "the HWPX input's table cells are covered"
+    );
+    // New instance ids never repeat one in use: the first input, made by hwp-cli, already
+    // numbers its paragraphs from 0x10000001, so the HWPX input's must not reuse those.
+    let mut ids = std::collections::BTreeSet::new();
+    for (at, paragraphs) in &all {
+        let last = paragraphs.len() - 1;
+        for (p, para) in paragraphs.iter().enumerate() {
+            let at = format!("{at} paragraph {p}");
             assert_eq!(
                 para.chars.last(),
                 Some(&hwp_model::HwpChar::CharCtrl(
@@ -238,12 +274,12 @@ fn merge_of_an_hwpx_input_into_hwp_writes_the_paragraph_invariants() {
                 "{at}: last-paragraph flag"
             );
             assert_ne!(para.header.instance_id, 0, "{at}: instance id");
+            assert!(
+                ids.insert(para.header.instance_id),
+                "{at}: duplicate instance id {:#x}",
+                para.header.instance_id
+            );
         }
-        assert_eq!(
-            section.paragraphs[0].header.break_type & 0x03,
-            0x03,
-            "section {s}: section-break bits"
-        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
