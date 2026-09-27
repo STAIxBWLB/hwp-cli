@@ -133,10 +133,14 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
 
 ## Code navigation (ripwire)
 
-`ripwire` (redhat-et/ripwire, installed in `~/.local/bin`; adopted 2026-09-19, see `dev/CLAUDE.md`)
-gives a ranked, deterministic call-graph map of this workspace in under two seconds. Map first, read
-only what it ranks; `layout.rs` alone is ~7,000 lines, so grep-and-read tours are the main token sink
-here.
+`ripwire` (redhat-et/ripwire; adopted 2026-09-19, see the parent `dev/AGENTS.md`) is an optional
+navigation tool. Check `command -v ripwire` and `ripwire --version` in the current session before
+using it; installation and PATH availability vary between development hosts.
+
+When available, map first and read the relevant ranked symbols. If the executable is missing or
+cannot run, report that limitation once and continue with targeted `rg`, `rg --files`, and source
+reads. Missing ripwire does not block development, tests, or review, and is not a reason to install
+host tooling as part of a repository fix. The examples below require a working executable.
 
 ```bash
 ripwire . --for="<the change you are about to make, in words>"   # entry points, with a confidence attr

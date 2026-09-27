@@ -599,10 +599,101 @@ fn fill_tables_ir(
     })
 }
 
-/// 부분(part) 채우기 — `{{name}}`만 담긴 앵커 문단을 부분 파일(md+HTML 혼합,
-/// 계약 docs/design/18)의 블록으로 교체한다. 대규모 문서의 부분별 작성·조합 워크플로.
-/// 템플릿과 부분 모두 hwp-cli 생성 문서(기본 팔레트 계열)여야 한다(merge::part_paragraphs).
+/// Cross-format parts compose strict template conversion with same-format editing. The
+/// unedited target-format snapshot is the baseline; inserted content still passes the full
+/// semantic verifier, rather than being normalized through the writer under test (#392).
 fn fill_parts_ir(
+    input: &Path,
+    output: &Path,
+    data: Option<&serde_json::Value>,
+    set: &[String],
+    part_paths: &BTreeMap<String, PathBuf>,
+    allow_partial: bool,
+    roots: &[PathBuf],
+) -> anyhow::Result<FillReport> {
+    use crate::format::FileFormat;
+    use hwp_cli::cli::ConvertFormat;
+
+    let target = match output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("hwp") => FileFormat::Hwp5,
+        Some("hwpx") => FileFormat::Hwpx,
+        other => anyhow::bail!("fill 출력은 .hwp 또는 .hwpx만 지원합니다 (확장자: {other:?})"),
+    };
+    let source = crate::format::detect(input)?;
+    if source == target {
+        return fill_parts_same_format(input, output, data, set, part_paths, allow_partial, roots);
+    }
+    let snapshot_limit = match source {
+        FileFormat::Hwp5 => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
+        FileFormat::Hwpx => hwpx::NATIVE_PACKAGE_LIMITS.max_total_uncompressed_bytes,
+    };
+
+    let (_, mut report) = crate::commands::output::write_with_private_input_snapshot(
+        output,
+        input,
+        snapshot_limit,
+        crate::commands::output::SnapshotOutputMode::Publish,
+        |snapshot, staged, _| {
+            // Nested native transactions use Win32 filesystem calls. Canonicalizing the
+            // existing private directory gives them extended-length paths on Windows.
+            let workspace = std::fs::canonicalize(
+                staged
+                    .parent()
+                    .context("fill 임시 작업공간을 확인할 수 없습니다")?,
+            )?;
+            let staged = workspace.join(
+                staged
+                    .file_name()
+                    .context("fill 임시 출력 파일 이름을 확인할 수 없습니다")?,
+            );
+            let (format, name) = match target {
+                FileFormat::Hwp5 => (ConvertFormat::Hwp, "template.hwp"),
+                FileFormat::Hwpx => (ConvertFormat::Hwpx, "template.hwpx"),
+            };
+            let baseline_dir = workspace.join("template-baseline");
+            std::fs::create_dir(&baseline_dir)?;
+            let baseline = baseline_dir.join(name);
+            let conversion = crate::commands::convert::execute(
+                snapshot,
+                &baseline,
+                Some(format),
+                true,
+                None,
+                false,
+                false,
+                &crate::commands::convert::MdOpts::default(),
+                Vec::new(),
+            )?;
+            let mut report = fill_parts_same_format(
+                &baseline,
+                &staged,
+                data,
+                set,
+                part_paths,
+                allow_partial,
+                roots,
+            )?;
+            report.warnings.splice(0..0, conversion.warnings);
+            report.preservation.extend(conversion.preservation);
+            Ok(report)
+        },
+        |staged, report| {
+            crate::commands::reject_preservation_loss("fill", &report.preservation)?;
+            ensure_valid_document(staged)
+        },
+    )?;
+    report.output = output.display().to_string();
+    Ok(report)
+}
+
+/// Replaces standalone part anchors with imported blocks. Template and parts must belong to
+/// the generated default-palette family (merge::part_paragraphs).
+fn fill_parts_same_format(
     input: &Path,
     output: &Path,
     data: Option<&serde_json::Value>,

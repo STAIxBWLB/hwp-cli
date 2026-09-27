@@ -10,6 +10,35 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.3.1]
+
+**Fixed**
+
+- `hwp merge` to `.hwp` keeps genuine HWP5 paragraph shapes in either input order. Conversion
+  defaults now apply to each non-HWP5 input before header references are shifted, preserving
+  native zero border-fill values and old line spacing and resolving converted border fills
+  against their own palette. Converted inputs with zero or one border fill receive the missing
+  canonical no-border entries before grafting ([#390](https://github.com/STAIxBWLB/hwp-cli/issues/390)).
+- `hwp merge` to `.hwp` assigns distinct nonzero paragraph instance IDs when inputs already share
+  IDs. The first occurrence keeps its ID; later duplicates and zeros receive unused IDs across
+  sections and nested record trees, including raw-backed text boxes. Unmerged HWP5 round trips
+  keep their original IDs ([#393](https://github.com/STAIxBWLB/hwp-cli/issues/393)).
+- Part fills with hyperlinks or notes into `.hwp` retain their control content and pass semantic
+  verification. Generated note list headers are now materialized independently of picture
+  synthesis ([#391](https://github.com/STAIxBWLB/hwp-cli/issues/391)).
+- Cross-format part fills first convert the unedited template with strict preservation checks,
+  then verify edits against that target-format baseline. Conversion or editing failure leaves
+  the destination unchanged. The outer snapshot follows the source format's native container
+  limit. Nested private transactions use extended-length paths on Windows
+  ([#392](https://github.com/STAIxBWLB/hwp-cli/issues/392)).
+- `hwp slots --forms` no longer lists an inline label whose value text is only placeholder(s)
+  (`목표: {{최종목표}}`). The placeholder is already listed as its own field, and a fill defers
+  such a label to it, so a caller that sent a value for every scanned field always got those
+  labels back as `unmatched` (counts 0) with a warning. A label with text of its own next to a
+  slot (`전략: 올해 {{추진전략}} 중심`) is still listed. Labels also stay available when
+  all slot names normalize to empty form keys (`성명: {{()}}`)
+  ([#385](https://github.com/STAIxBWLB/hwp-cli/issues/385)).
+
 ## [1.3.0]
 
 **Compatibility**

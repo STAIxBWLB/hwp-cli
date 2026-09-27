@@ -306,6 +306,12 @@ hwp5 출신 GenericControl은 원본 자식 서브트리를 `raw_children`(Opaqu
 
 `raw_children`가 없을 때만 `paragraph_lists`(LIST_HEADER + 문단들) + `extras`를 조합해 CTRL_HEADER를 만든다. ctrl_id는 **역순 저장**(`reversed`, `b"secd"→"dces"`). `cold`(단 정의)는 data 비면 `DEFAULT_COLD_DATA` 12B로 대체.
 
+합성 각주·미주 리스트(`fn  `/`en  `)의 빈 LIST_HEADER는 그림 합성과 독립적으로
+`emit_control`에서 채운다. 기존 비어 있지 않은 헤더와 raw 서브트리는 그대로 보존한다.
+의미 검증에서는 재방출 결과가 모델의 문단과 바이트 단위로 일치할 때만 각주·미주의
+중복 raw 서브트리를 제외하고, 보존된 raw 레코드와 완전히 같은 필드 extras만 제외한다.
+주석 본문·서식·사용자 헤더·미지 레코드는 계속 비교 대상이다(#391).
+
 ### hwpx-출신 구조화 도형: 안전 저하
 
 hwpx reader가 만든 도형(`ctrl_id != "gso "` + `gso_shapes` 보유)은 hwp5 SHAPE_COMPONENT가 없다. 정품 템플릿 역합성(㉒)은 한글 실기에서 손상 판정났다(라인 252B 템플릿을 사각형에 사용 → 정품 239B와 13B 어긋남). 자가검증 불가로 **안전 저하**로 전환(`degrade_hwpx_gso`, write.rs:467):

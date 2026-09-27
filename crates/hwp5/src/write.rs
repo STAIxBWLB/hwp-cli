@@ -39,6 +39,14 @@ pub struct WriteOptions {
     /// 세워야 한글이 수용한다. 단 그림은 이미 hwp5 도형 레코드를 가지므로
     /// 재합성(synthesize_pictures)은 **하지 않는다**(출처 기준으로만 수행).
     pub edited: bool,
+    /// Conversion defaults were applied to each non-HWP5 input before merging.
+    /// Skip document-wide paragraph-shape defaults so grafted HWP5 shapes keep
+    /// their original values, including a zero border-fill sentinel.
+    pub para_shape_defaults_prepared: bool,
+    /// Assign unique, nonzero paragraph IDs across the emitted record forests.
+    /// Merge enables this even without synthesis; ordinary HWP5 round trips
+    /// leave it false to preserve source IDs and byte identity.
+    pub deduplicate_instance_ids: bool,
 }
 
 #[derive(Debug)]
@@ -652,7 +660,7 @@ fn materialize_document(
                 // An HWP5 source's own para shapes are genuine: a border_fill_id of 0 there
                 // means "no border", and 5.0.2.x files use it (#381 review). Only a converted
                 // document lost these fields; a merge's grafted HWPX shapes carry them.
-                if d.meta.source_format != "hwp5" {
+                if d.meta.source_format != "hwp5" && !opts.para_shape_defaults_prepared {
                     ensure_para_shape_defaults(&mut d.header);
                 }
                 materialize_evidenced_official_numbering(&mut d)?;
@@ -683,7 +691,8 @@ fn materialize_document(
     // An hwp5 round trip keeps the source ids (0 included) for byte identity, so it is skipped.
     // A new id also skips every id the document already carries (an HWP5 section merged with
     // HWPX paragraphs, a part spliced into an hwp-cli template), keeping new ids off existing
-    // ones; existing duplicates are left as they are.
+    // ones. Merge also repairs existing duplicates, including paragraphs in raw
+    // Generic subtrees, without changing the source-preserving default behavior.
     let mut inst_counter = 0x1000_0000u32;
     let mut section_roots: Vec<Vec<RecordNode>> = doc
         .sections
@@ -698,13 +707,20 @@ fn materialize_document(
             )
         })
         .collect();
-    if synthesize {
+    if synthesize || opts.deduplicate_instance_ids {
         let mut used = BTreeSet::new();
         for roots in &section_roots {
             collect_instance_ids(roots, &mut used);
         }
+        let mut seen = BTreeSet::new();
         for roots in &mut section_roots {
-            assign_instance_ids(roots, &mut inst_counter, &used);
+            assign_instance_ids(
+                roots,
+                &mut inst_counter,
+                &mut used,
+                &mut seen,
+                opts.deduplicate_instance_ids,
+            )?;
         }
     }
     let sections: Vec<Vec<u8>> = section_roots
@@ -1110,21 +1126,44 @@ fn collect_instance_ids(roots: &[RecordNode], used: &mut BTreeSet<u32>) {
     }
 }
 
-/// Gives every PARA_HEADER with instance id 0 the next id past `counter` that is not in `used`
-/// and not 0, walking the record tree recursively (table cells and text boxes included).
-fn assign_instance_ids(roots: &mut [RecordNode], counter: &mut u32, used: &BTreeSet<u32>) {
-    for node in roots {
-        if para_header_instance_id(node) == Some(0) {
-            loop {
-                *counter = counter.wrapping_add(1);
-                if *counter != 0 && !used.contains(counter) {
-                    break;
-                }
-            }
-            node.data[18..22].copy_from_slice(&counter.to_le_bytes());
-        }
-        assign_instance_ids(&mut node.children, counter, used);
+/// Allocates past `counter`, skipping zero and all original or newly allocated IDs.
+/// Wrapping searches the remaining nonzero space instead of overflowing or reusing an ID.
+fn next_instance_id(counter: &mut u32, used: &mut BTreeSet<u32>) -> Result<u32> {
+    if used.len() >= u32::MAX as usize {
+        return Err(crate::error::Hwp5Error::StructureLimitExceeded {
+            resource: "문단 인스턴스 id".to_string(),
+            limit: u32::MAX as usize,
+        });
     }
+    loop {
+        *counter = counter.wrapping_add(1).max(1);
+        if used.insert(*counter) {
+            return Ok(*counter);
+        }
+    }
+}
+
+/// Fills zero IDs and, for merges, keeps only the first occurrence of each nonzero ID.
+/// The record forest is authoritative for raw-backed controls as well as modeled paragraphs.
+fn assign_instance_ids(
+    roots: &mut [RecordNode],
+    counter: &mut u32,
+    used: &mut BTreeSet<u32>,
+    seen: &mut BTreeSet<u32>,
+    deduplicate: bool,
+) -> Result<()> {
+    for node in roots {
+        if let Some(id) = para_header_instance_id(node) {
+            let duplicate = !seen.insert(id);
+            if id == 0 || (deduplicate && duplicate) {
+                let replacement = next_instance_id(counter, used)?;
+                seen.insert(replacement);
+                node.data[18..22].copy_from_slice(&replacement.to_le_bytes());
+            }
+        }
+        assign_instance_ids(&mut node.children, counter, used, seen, deduplicate)?;
+    }
+    Ok(())
 }
 
 /// 리스트(문단 목록)의 마지막 문단에만 nchars bit31(chars_flags 0x80)을 세팅한다.
@@ -1156,11 +1195,14 @@ fn set_last_para_flag(paras: &mut [Paragraph]) {
     }
 }
 
-/// 합성(md/hwpx 출신) 문서의 ParaShape에 누락 기준값만 보정한다.
-/// (attr1 의 줄나눔·줄격자 비트는 hwpx reader가 실제 값으로 채우므로 강제하지
-/// 않는다 — 강제하면 BREAK_WORD 문단까지 KEEP_WORD가 돼 줄바꿈이 느슨해지고
-/// 페이지가 밀린다. markdown은 from_markdown이 attr1을 직접 설정.)
-fn ensure_para_shape_defaults(header: &mut hwp_model::DocHeader) {
+/// Restores missing HWP5 defaults on paragraph shapes from a non-HWP5 source.
+/// Merge callers apply this per converted input before grafting, so border-fill
+/// references receive that input's offset, then set `para_shape_defaults_prepared`.
+/// The input palette must contain fill 2; merge supplies missing canonical no-border fills.
+/// Do not apply it to genuine HWP5 shapes: zero can be their original no-border value.
+/// The reader already restores `attr1` line-break/grid bits; forcing those would
+/// change BREAK_WORD to KEEP_WORD and alter wrapping and pagination.
+pub fn ensure_para_shape_defaults(header: &mut hwp_model::DocHeader) {
     for ps in &mut header.para_shapes {
         if ps.line_spacing_old == 0 {
             ps.line_spacing_old = 160;
@@ -2066,19 +2108,6 @@ fn synth_pictures_para(
                     if g.data.is_empty() {
                         g.data = vec![0, 0, 0, 0];
                     }
-                    for list in &mut g.paragraph_lists {
-                        if list.header_data.is_empty() {
-                            let mut lh = hex_to_bytes(HEADER_LIST_HEADER_TEMPLATE);
-                            let npara = list.paragraphs.len().max(1) as u16;
-                            lh[0..2].copy_from_slice(&npara.to_le_bytes());
-                            list.header_data = lh;
-                        }
-                    }
-                }
-                // 합성 각주/미주(md 출신): LIST_HEADER 헤더가 없으면 검증된 텍스트 리스트
-                // 헤더 템플릿(paraCount 패치)으로 채운다. 비면 emit_control이 빈 LIST_HEADER를
-                // 써 문단 리스트를 잃는다. (각주 전용 리스트 헤더 필드는 실기 확인 대상 — 보고.)
-                if (g.ctrl_id == *b"fn  " || g.ctrl_id == *b"en  ") && g.raw_children.is_empty() {
                     for list in &mut g.paragraph_lists {
                         if list.header_data.is_empty() {
                             let mut lh = hex_to_bytes(HEADER_LIST_HEADER_TEMPLATE);
@@ -3348,7 +3377,7 @@ fn emit_control(
             for list in &g.paragraph_lists {
                 children.push(RecordNode {
                     tag: tag::LIST_HEADER,
-                    data: list.header_data.clone(),
+                    data: generic_list_header(g.ctrl_id, list),
                     children: Vec::new(),
                 });
                 for p in &list.paragraphs {
@@ -3375,6 +3404,44 @@ fn emit_control(
             }
         }
     }
+}
+
+fn generic_list_header(ctrl_id: [u8; 4], list: &hwp_model::ParagraphList) -> Vec<u8> {
+    // New notes need a list header even in an HWP5 template without pictures. Native raw
+    // subtrees bypass this materialization in emit_control.
+    if matches!(&ctrl_id, b"fn  " | b"en  ") && list.header_data.is_empty() {
+        synthesized_note_list_header(list.paragraphs.len())
+    } else {
+        list.header_data.clone()
+    }
+}
+
+/// The existing generated note LIST_HEADER, independent of picture synthesis (#391).
+/// Native or custom nonempty headers remain owned by their source document.
+pub fn synthesized_note_list_header(paragraph_count: usize) -> Vec<u8> {
+    let mut header = hex_to_bytes(HEADER_LIST_HEADER_TEMPLATE);
+    let count = paragraph_count.max(1) as u16;
+    header[0..2].copy_from_slice(&count.to_le_bytes());
+    header
+}
+
+/// Whether a note's raw subtree is exactly the serialized modeled view. The comparison keeps
+/// source paragraph caches and tails; raw-only records or different nesting prevent equivalence.
+/// Represented opaque extras remain in the modeled view. Call before canonicalizing caches.
+pub fn note_has_redundant_raw_children(note: &hwp_model::GenericControl) -> bool {
+    if !matches!(&note.ctrl_id, b"fn  " | b"en  ") || note.raw_children.is_empty() {
+        return false;
+    }
+    let mut modeled = note.clone();
+    modeled.raw_children.clear();
+    let mut report = WriteReport::new();
+    let emitted = emit_control(&Control::Generic(modeled), false, true, false, &mut report);
+    emitted.children
+        == note
+            .raw_children
+            .iter()
+            .map(opaque_to_node)
+            .collect::<Vec<_>>()
 }
 
 fn emit_section_def(def: &SectionDef) -> RecordNode {
@@ -3708,6 +3775,158 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn paragraph_id_record(id: u32) -> RecordNode {
+        let mut data = vec![0x5a; 24];
+        data[18..22].copy_from_slice(&id.to_le_bytes());
+        RecordNode {
+            tag: tag::PARA_HEADER,
+            data,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn instance_id_allocation_reserves_later_ids_and_preserves_first_occurrences() {
+        let original = vec![
+            paragraph_id_record(7),
+            paragraph_id_record(7),
+            paragraph_id_record(0),
+            paragraph_id_record(0x1000_0001),
+            paragraph_id_record(0x1000_0002),
+        ];
+        for (deduplicate, expected) in [
+            (false, vec![7, 7, 0x1000_0003, 0x1000_0001, 0x1000_0002]),
+            (
+                true,
+                vec![7, 0x1000_0003, 0x1000_0004, 0x1000_0001, 0x1000_0002],
+            ),
+        ] {
+            let mut roots = original.clone();
+            let mut used = BTreeSet::new();
+            collect_instance_ids(&roots, &mut used);
+            assign_instance_ids(
+                &mut roots,
+                &mut 0x1000_0000,
+                &mut used,
+                &mut BTreeSet::new(),
+                deduplicate,
+            )
+            .unwrap();
+            assert_eq!(
+                roots
+                    .iter()
+                    .filter_map(para_header_instance_id)
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn instance_id_allocation_wraps_without_zero_or_reuse() {
+        let mut used = BTreeSet::from([1, 2, u32::MAX]);
+        let mut counter = u32::MAX - 1;
+        assert_eq!(next_instance_id(&mut counter, &mut used).unwrap(), 3);
+        assert_eq!(next_instance_id(&mut counter, &mut used).unwrap(), 4);
+        assert!(!used.contains(&0));
+    }
+
+    #[test]
+    fn merge_instance_ids_cover_raw_control_trees_without_rewriting_other_bytes() {
+        let mut document = hwp_convert::from_markdown("body\n");
+        document.meta.source_format = "hwp5".to_string();
+        let paragraph = &mut document.sections[0].paragraphs[0];
+        paragraph.header.instance_id = 7;
+        let raw = OpaqueRecord {
+            tag: tag::SHAPE_COMPONENT,
+            data: vec![0x31; 17],
+            children: vec![OpaqueRecord {
+                tag: tag::LIST_HEADER,
+                data: vec![0x42; 10],
+                children: [7, 0]
+                    .into_iter()
+                    .map(|id| OpaqueRecord {
+                        tag: tag::PARA_HEADER,
+                        data: paragraph_id_record(id).data,
+                        children: Vec::new(),
+                    })
+                    .collect(),
+            }],
+        };
+        let control_index = paragraph.controls.len() as u32;
+        paragraph.chars.push(HwpChar::ExtCtrl {
+            code: hwp_model::ctrl_char::OBJECT,
+            ctrl_id: *b"gso ",
+            payload: vec![0; 12],
+            ctrl_index: Some(control_index),
+        });
+        paragraph
+            .controls
+            .push(Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"gso ",
+                data: vec![0; 36],
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: vec![raw],
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            }));
+        document.sections.push(document.sections[0].clone());
+
+        let original =
+            materialize_document(&document, &WriteOptions::default(), false, false).unwrap();
+        let options = WriteOptions {
+            deduplicate_instance_ids: true,
+            ..WriteOptions::default()
+        };
+        let merged = materialize_document(&document, &options, false, false).unwrap();
+        let repeated = materialize_document(&document, &options, false, false).unwrap();
+        assert_eq!(
+            merged.streams, repeated.streams,
+            "allocation is deterministic"
+        );
+
+        fn collect_and_clear(roots: &mut [RecordNode], ids: &mut Vec<u32>) {
+            for node in roots {
+                if let Some(id) = para_header_instance_id(node) {
+                    ids.push(id);
+                    node.data[18..22].fill(0);
+                }
+                collect_and_clear(&mut node.children, ids);
+            }
+        }
+        let mut original_ids = Vec::new();
+        let mut merged_ids = Vec::new();
+        for (path, bytes) in &original.streams {
+            let written = &merged.streams[path];
+            if path.starts_with("/BodyText/") {
+                let mut before = scan_stream(bytes, ScanMode::Strict).unwrap().roots;
+                let mut after = scan_stream(written, ScanMode::Strict).unwrap().roots;
+                collect_and_clear(&mut before, &mut original_ids);
+                collect_and_clear(&mut after, &mut merged_ids);
+                assert_eq!(before, after, "only paragraph ID bytes change: {path}");
+            } else {
+                assert_eq!(bytes, written, "unrelated stream: {path}");
+            }
+        }
+        assert_eq!(original_ids, vec![7, 7, 0, 7, 7, 0]);
+        assert_eq!(
+            merged_ids,
+            vec![
+                7,
+                0x1000_0001,
+                0x1000_0002,
+                0x1000_0003,
+                0x1000_0004,
+                0x1000_0005
+            ],
+        );
+    }
 
     /// #377: a definition past the raw records (one an edit grafted onto an HWP5 source) gets a
     /// synthesized record; the raw ones stay as they are, and an empty header keeps its single

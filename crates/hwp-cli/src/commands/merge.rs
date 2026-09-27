@@ -141,6 +141,22 @@ fn reject_unsupported_inputs(inputs: &[PathBuf]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Gives a converted input its own canonical no-border fallback before references are shifted.
+/// HWPX may carry fewer than two fills, while HWP5 conversion defaults use fill 2.
+fn prepare_hwp_merge_input(document: &mut hwp_model::Document) {
+    let fills = &mut document.header.border_fills;
+    if fills.len() < 2 {
+        fills.extend(
+            hwp_convert::from_markdown::default_header()
+                .border_fills
+                .into_iter()
+                .take(2)
+                .skip(fills.len()),
+        );
+    }
+    hwp5::write::ensure_para_shape_defaults(&mut document.header);
+}
+
 /// `hwp merge` entry point. Resolves the password once and applies it uniformly
 /// to every input (matching `commands::convert::run_multi_with_password`'s
 /// single-password-per-batch precedent).
@@ -196,8 +212,16 @@ pub(crate) fn execute(
             .with_context(|| format!("입력 파일 크기를 확인할 수 없습니다: {}", input.display()))?
             .len();
         reserved_bytes = accumulate_input_reservation(reserved_bytes, size)?;
-        source_formats.push(crate::format::detect(input)?);
-        documents.push(load_document_with_options(input, options).map_err(anyhow::Error::new)?);
+        let source_format = crate::format::detect(input)?;
+        let mut document =
+            load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+        if format == MergeFormat::Hwp && source_format != FileFormat::Hwp5 {
+            // Defaults belong to this converted input's palette. Apply them before the
+            // graft shifts nonzero references, and never normalize genuine HWP5 shapes.
+            prepare_hwp_merge_input(&mut document);
+        }
+        source_formats.push(source_format);
+        documents.push(document);
     }
 
     let outcome = hwp_convert::document_merge::merge_documents(&documents)
@@ -211,10 +235,11 @@ pub(crate) fn execute(
             // 0x0d terminator, the last-paragraph flag, the section-break bits, instance ids),
             // and Hancom refuses the file without them; the structural write materializes them
             // (#381). An HWP5-only merge keeps the non-synthesis write.
-            MergeFormat::Hwp if source_formats.iter().all(|f| *f == FileFormat::Hwp5) => {
-                crate::commands::convert::write_hwp(&merged, staged, false)?
-            }
-            MergeFormat::Hwp => crate::commands::convert::write_hwp_structural(&merged, staged)?,
+            MergeFormat::Hwp => crate::commands::convert::write_hwp_merged(
+                &merged,
+                staged,
+                source_formats.iter().any(|f| *f != FileFormat::Hwp5),
+            )?,
             MergeFormat::Hwpx => hwpx::write::write_document_with_report_with(
                 &merged,
                 staged,

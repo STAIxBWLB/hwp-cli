@@ -8,6 +8,11 @@ etc.) are written as HTML fragments under this contract. It is the exchange form
 workflows that write large documents (business plans, final reports) part-by-part and
 compose them.
 
+`hwp fill` accepts `.hwp` and `.hwpx` templates and outputs. When the formats differ, it first
+converts the unedited template with strict preservation checks inside private staging, then
+applies the parts and verifies their output against that target-format baseline. Conversion loss
+or a failed fill leaves the destination unchanged; no intermediate template is published (#392).
+
 - **Producer**: `hwp-convert/src/html.rs` (`to_html`, `to_html_fragment`)
 - **Consumers**: `hwp-convert/src/from_html.rs` (contract parser), the HTML block path in
   `from_markdown.rs`

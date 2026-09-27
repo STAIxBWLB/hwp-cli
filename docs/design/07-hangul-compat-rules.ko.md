@@ -68,7 +68,18 @@ code, resource class, disposition은 닫힌 enum이며 개수만 집계한다. �
 | A10 | 손상 유발 잔가지 | PARA_HEADER `ctrl_mask`에 CharCtrl(문단끝13 등 문자형) 포함 → 잘못된 bit13; ID_MAPPINGS 무조건 18패딩(구버전=16); secd에 FOOTNOTE_SHAPE×2·PAGE_BORDER_FILL×3 누락; TAB_DEF/NUMBERING dangling ref | ctrl_mask에서 CharCtrl 제외, 버전별 ID_MAPPINGS(5.0.2.x=16/5.0.3.2+=18), secd 필수 자식 합성, TAB 3개+NUMBERING 1개 기본값 합성 | 정품 hello_world 실측 바이트 | `hwp5/src/write.rs` (75fb581, 1f0139b) |
 | A11 | **hwpx** 문서를 열면 한글 전체 **먹통(무한 행)** — 팝업조차 없음 | **★원인 확정(2026-07-18, Phase 2 감사 C15)**: 본문 탭이 IR에서 `Text('\t')`로 모델링돼 `<hp:t>` 안에 **raw 0x09 바이트**가 그대로 방출됨 — 한글은 hp:t 내 raw 제어문자를 만나면 먹통. 탭 정의(tabPr)는 완전 무죄(E/F/G 이분탐색: 탭 수술 없는 베이스 F1도 먹통, 실문서 왕복 E1은 정상 — 베이스에만 탭 문자 존재). 1차 가설(naked tabItem)은 반증됐으나 그때 확립한 `hp:switch>case(HWPUNIT, pos=X)/default(pos=2X)` 구조는 정품 실측 사실로 유지 | 탭은 항상 `InlineCtrl(9)`→`<hp:tab/>` 불변식: from_markdown 유입 차단 + write 방어선(제어문자 정화) + read 정규화(오염 파일 하위호환) | 실기 3회 이분탐색(D3→E→F/G) + F1↔C1 전 파트 diff + 정품 삼각 대조 | `hwp-convert/from_markdown.rs`, `hwpx/write/section.rs·templates.rs(esc)`, `read/section.rs` |
 | A12 | **hwpx** 본문 탭이 **폭 0으로 무시**(텍스트 밀착 — 파일은 정상 열림) | `<hp:tab/>`을 `<hp:t>` **밖** 형제로, 속성 없이 방출. 한글은 **`<hp:t>` 안 mixed content** 탭만 인식: `<hp:t>개요<hp:tab width=".." leader=".." type=".."/>1</hp:t>` | in-t 중첩 방출 + 속성 유도: **type=hwp5 탭종류+1**(LEFT→1, RIGHT→2 실측; CENTER→3, DECIMAL→4 외삽), **leader**: NONE→0·DASH→3 실측(표 25 코드와 순서 다름 — SOLID→1·DOT→2는 자기일관 근사, 미확인 코드는 DASH 강등), **width**=저장 시점 레이아웃 실측값이나 한글이 열 때 재계산(정품에서 폭이 텍스트 길이에 반비례함으로 입증) → 근사값(4000) 허용 | 실기(D3 폭0 밀착) → 정품 " .hwpx" 인라인 탭 91개 전수 역산(type2/leader3=RIGHT/DASH 51개, type1/leader0=기본 40개) | `hwpx/src/write/section.rs`(tab_xml), `read/section.rs`(in-t tab arm) |
-| A13 | **hwp** 첫 입력 뒤에 **hwpx** 입력을 합친 `hwp merge` **hwp** 출력이 "손상"(HWPX끼리, HWP5끼리 합친 출력은 열림) | 병합 문서는 첫 입력의 원본 형식을 이어받아 원본 보존 쓰기를 탔고, 이 경로는 합성 경로의 문단 정규화를 건너뛴다. hwpx 입력의 문단이 그대로 쓰였다: `0x0d` 종결자 없음, 마지막 문단 bit31 없음(B4), 구역 첫 문단 break_type 0, instance_id 0(A8) | 병합 입력 중 하나라도 HWP5가 아니면 구조 경로(`write_hwp_structural`)로 쓴다. HWP5끼리의 병합은 원본 보존 쓰기를 유지한다 | 거부된 `merge a.hwp h.hwpx`와 열리는 `merge a.hwp h.hwp`는 BodyText/Section1만 다르고, 그 네 필드만 고치면 바이트까지 같아진다. 한글 실기(Mac, 2026-09-27): v1.2.0 출력은 거부, 수정본의 네 조합은 열림 | `hwp-cli/commands/merge.rs` (#381) |
+| A13 | **hwp** 첫 입력 뒤에 **hwpx** 입력을 합친 `hwp merge` **hwp** 출력이 "손상"(HWPX끼리, HWP5끼리 합친 출력은 열림) | 병합 문서는 첫 입력의 원본 형식을 이어받아 원본 보존 쓰기를 탔고, 이 경로는 합성 경로의 문단 정규화를 건너뛴다. hwpx 입력의 문단이 그대로 쓰였다: `0x0d` 종결자 없음, 마지막 문단 bit31 없음(B4), 구역 첫 문단 break_type 0, instance_id 0(A8) | 병합 입력 중 하나라도 HWP5가 아니면 병합 쓰기(`write_hwp_merged`)의 구조 경로로 쓴다. HWP5끼리의 병합은 합성 없이 쓰되 아래의 병합 전용 ID 정규화를 적용한다 | 거부된 `merge a.hwp h.hwpx`와 열리는 `merge a.hwp h.hwp`는 BodyText/Section1만 다르고, 그 네 필드만 고치면 바이트까지 같아진다. 한글 실기(Mac, 2026-09-27): v1.2.0 출력은 거부, 수정본의 네 조합은 열림 | `hwp-cli/commands/merge.rs` (#381) |
+
+**병합 구현 후속 조치(#390/#393):** 문단 모양 변환 기본값은 graft 전에 HWP5가 아닌
+입력마다 적용한다. 정품 HWP5의 0 테두리 참조와 구버전 줄 간격은 입력 순서와 무관하게
+보존하며, 변환된 테두리 참조에는 해당 입력의 오프셋을 적용한다. 변환 입력의 테두리
+정의가 두 개 미만이면 정규화 전에 기존 기본 팔레트의 누락된 무테두리 항목을 추가하여
+기본 참조 2가 다른 입력을 가리키거나 존재하지 않는 항목을 참조하지 않게 한다. `.hwp` 병합 출력은
+별도 레코드 트리 순회로 처음 등장한 0 아닌 문단 ID를 보존하고, 이후 중복과 0을 모든
+구역 및 원본 레코드를 가진 컨트롤 내부까지 치환한다. 두 동작은 명시적인 병합 옵션이며,
+일반 HWP5 왕복은 원본 값을 유지한다. 자동 검증은 양쪽 입력 순서, 중첩 레코드, ID 이외
+바이트의 보존을 확인한다. 이는 구현 계약의 확장이며, A8/A13의 기존 한글 실기 수용
+근거를 새 버전의 실기 검증으로 확대하지 않는다.
 
 **A 계층 교훈 — 왜 정적분석이 아니라 실기였나:**
 - pyhwp/olefile은 **관대한 파서**라 V4 컨테이너·nparas=0·PARA_TEXT=[0x0d]·시작번호 0을 전부 통과시킨다. 외부 검증 통과가 곧 한글 통과를 의미하지 않는다는 것을 A1(CFB V3)에서 뼈저리게 확인.
