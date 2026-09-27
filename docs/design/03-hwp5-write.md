@@ -416,6 +416,13 @@ Only when `raw_children` is absent does it assemble a CTRL_HEADER from `paragrap
 plus paragraphs) and `extras`. The ctrl_id is **stored reversed** (`reversed`, `b"secd"` → `"dces"`).
 For `cold` (column definition), an empty data is replaced with the 12B `DEFAULT_COLD_DATA`.
 
+Generated footnote/endnote lists (`fn  `/`en  `) receive their missing LIST_HEADER directly in
+`emit_control`, independently of picture synthesis. Existing nonempty headers and raw subtrees
+remain unchanged. Semantic output verification omits a note's redundant raw subtree only after
+exact re-emission proves it matches the modeled paragraphs, and omits field extras only when they
+duplicate retained raw records byte-for-byte. Note text, formatting, custom headers, and unknown
+records remain part of the comparison (#391).
+
 ### hwpx-origin structured shapes: safe degradation
 
 Shapes created by the hwpx reader (`ctrl_id != "gso "` with `gso_shapes`) have no hwp5

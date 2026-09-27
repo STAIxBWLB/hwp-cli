@@ -4058,6 +4058,27 @@ enum SemanticTarget {
     Hwpx,
 }
 
+fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
+    if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
+        // HWP5 exposes CTRL_DATA both as raw and as an extracted extra.
+        // Keep the raw bytes and any extra that is not an exact duplicate.
+        generic
+            .extras
+            .retain(|extra| !generic.raw_children.contains(extra));
+    }
+    if hwp5::write::note_has_redundant_raw_children(generic) {
+        generic.raw_children.clear();
+    }
+    if matches!(&generic.ctrl_id, b"fn  " | b"en  ") {
+        for list in &mut generic.paragraph_lists {
+            if list.header_data == hwp5::write::synthesized_note_list_header(list.paragraphs.len())
+            {
+                list.header_data.clear();
+            }
+        }
+    }
+}
+
 fn canonical_document(
     doc: &hwp_model::Document,
     target: Option<SemanticTarget>,
@@ -4223,6 +4244,9 @@ fn canonical_document(
                     }
                 }
                 hwp_model::Control::Generic(generic) => {
+                    if matches!(target, Some(SemanticTarget::Hwp)) {
+                        canonicalize_hwp_generic(generic);
+                    }
                     if matches!(target, Some(SemanticTarget::Hwpx)) {
                         if (generic.ctrl_id == *b"head" || generic.ctrl_id == *b"foot")
                             && generic.data.len() == 8
@@ -5018,6 +5042,128 @@ mod tests {
         paragraph.header.chars_flags = 1;
         paragraph.header.tail = vec![9, 9];
         assert_eq!(semantic_signature(&base), semantic_signature(&changed));
+    }
+
+    #[test]
+    fn hwp_control_projection_keeps_content_formatting_and_unknown_records() {
+        let source = hwp_convert::from_markdown(
+            "[링크](https://example.com) 본문[^1] 미주[^e1]\n\n[^1]: **각주 내용**\n\n[^e1]: 미주 내용\n",
+        );
+        let output =
+            std::env::temp_dir().join(format!("hwp-control-projection-{}.hwp", std::process::id()));
+        hwp5::write_document(&source, &output, &hwp5::WriteOptions::default()).unwrap();
+        let actual = hwp5::read_document(&output).unwrap().document;
+        std::fs::remove_file(output).unwrap();
+        let signature = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let generic =
+            |doc: &mut hwp_model::Document,
+             id: [u8; 4],
+             change: &mut dyn FnMut(&mut hwp_model::GenericControl)| {
+                let control = doc
+                    .sections
+                    .iter_mut()
+                    .flat_map(|section| &mut section.paragraphs)
+                    .flat_map(|paragraph| &mut paragraph.controls)
+                    .find_map(|control| match control {
+                        hwp_model::Control::Generic(g) if g.ctrl_id == id => Some(g),
+                        _ => None,
+                    })
+                    .expect("generated control");
+                change(control);
+            };
+        let mut modeled = actual.clone();
+        generic(&mut modeled, *b"%hlk", &mut |g| g.extras.clear());
+        for id in [*b"fn  ", *b"en  "] {
+            generic(&mut modeled, id, &mut |g| {
+                assert!(hwp5::write::note_has_redundant_raw_children(g));
+                for list in &mut g.paragraph_lists {
+                    assert_eq!(
+                        list.header_data,
+                        hwp5::write::synthesized_note_list_header(list.paragraphs.len())
+                    );
+                    list.header_data.clear();
+                }
+                g.raw_children.clear();
+            });
+        }
+        assert_eq!(signature(&modeled), signature(&actual));
+
+        let mut changed = actual.clone();
+        generic(&mut changed, *b"%hlk", &mut |g| g.data[7] ^= 1);
+        assert_ne!(
+            signature(&modeled),
+            signature(&changed),
+            "URL bytes remain significant"
+        );
+
+        let mut changed = modeled.clone();
+        generic(&mut changed, *b"fn  ", &mut |g| {
+            g.paragraph_lists[0].paragraphs[0].chars[0] = hwp_model::HwpChar::Text('변');
+        });
+        assert_ne!(
+            signature(&modeled),
+            signature(&changed),
+            "note text remains significant"
+        );
+
+        let mut changed = modeled.clone();
+        generic(&mut changed, *b"fn  ", &mut |g| {
+            g.paragraph_lists[0].paragraphs[0].char_shape_runs[0].1.0 += 1;
+        });
+        assert_ne!(
+            signature(&modeled),
+            signature(&changed),
+            "note formatting remains significant"
+        );
+
+        let unknown = hwp_model::OpaqueRecord {
+            tag: 0x3ff,
+            data: vec![42],
+            children: Vec::new(),
+        };
+        let mut changed = actual.clone();
+        generic(&mut changed, *b"fn  ", &mut |g| {
+            g.raw_children.push(unknown.clone())
+        });
+        assert_ne!(
+            signature(&modeled),
+            signature(&changed),
+            "unknown raw child remains significant"
+        );
+
+        let mut changed = actual.clone();
+        generic(&mut changed, *b"fn  ", &mut |g| {
+            g.extras.push(unknown.clone());
+            g.raw_children.push(unknown.clone());
+            assert!(hwp5::write::note_has_redundant_raw_children(g));
+        });
+        assert_ne!(
+            signature(&modeled),
+            signature(&changed),
+            "represented opaque extras survive raw-subtree projection"
+        );
+
+        let mut changed = actual.clone();
+        generic(&mut changed, *b"%hlk", &mut |g| {
+            g.extras.push(unknown.clone())
+        });
+        assert_ne!(
+            signature(&modeled),
+            signature(&changed),
+            "nonduplicate field extra remains significant"
+        );
+
+        let mut changed = modeled.clone();
+        generic(&mut changed, *b"fn  ", &mut |g| {
+            g.paragraph_lists[0].header_data =
+                hwp5::write::synthesized_note_list_header(g.paragraph_lists[0].paragraphs.len());
+            g.paragraph_lists[0].header_data[4] ^= 1
+        });
+        assert_ne!(
+            signature(&modeled),
+            signature(&changed),
+            "custom list header remains significant"
+        );
     }
 
     #[test]

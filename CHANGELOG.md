@@ -21,6 +21,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   IDs. The first occurrence keeps its ID; later duplicates and zeros receive unused IDs across
   sections and nested record trees, including raw-backed text boxes. Unmerged HWP5 round trips
   keep their original IDs ([#393](https://github.com/STAIxBWLB/hwp-cli/issues/393)).
+- Part fills with hyperlinks or notes into `.hwp` retain their control content and pass semantic
+  verification. Generated note list headers are now materialized independently of picture
+  synthesis ([#391](https://github.com/STAIxBWLB/hwp-cli/issues/391)).
+- Cross-format part fills first convert the unedited template with strict preservation checks,
+  then verify edits against that target-format baseline. Conversion or editing failure leaves
+  the destination unchanged ([#392](https://github.com/STAIxBWLB/hwp-cli/issues/392)).
 
 ## [1.3.0]
 

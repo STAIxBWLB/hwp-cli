@@ -2117,19 +2117,6 @@ fn synth_pictures_para(
                         }
                     }
                 }
-                // 합성 각주/미주(md 출신): LIST_HEADER 헤더가 없으면 검증된 텍스트 리스트
-                // 헤더 템플릿(paraCount 패치)으로 채운다. 비면 emit_control이 빈 LIST_HEADER를
-                // 써 문단 리스트를 잃는다. (각주 전용 리스트 헤더 필드는 실기 확인 대상 — 보고.)
-                if (g.ctrl_id == *b"fn  " || g.ctrl_id == *b"en  ") && g.raw_children.is_empty() {
-                    for list in &mut g.paragraph_lists {
-                        if list.header_data.is_empty() {
-                            let mut lh = hex_to_bytes(HEADER_LIST_HEADER_TEMPLATE);
-                            let npara = list.paragraphs.len().max(1) as u16;
-                            lh[0..2].copy_from_slice(&npara.to_le_bytes());
-                            list.header_data = lh;
-                        }
-                    }
-                }
                 for list in &mut g.paragraph_lists {
                     for lp in &mut list.paragraphs {
                         synth_pictures_para(
@@ -3390,7 +3377,7 @@ fn emit_control(
             for list in &g.paragraph_lists {
                 children.push(RecordNode {
                     tag: tag::LIST_HEADER,
-                    data: list.header_data.clone(),
+                    data: generic_list_header(g.ctrl_id, list),
                     children: Vec::new(),
                 });
                 for p in &list.paragraphs {
@@ -3417,6 +3404,44 @@ fn emit_control(
             }
         }
     }
+}
+
+fn generic_list_header(ctrl_id: [u8; 4], list: &hwp_model::ParagraphList) -> Vec<u8> {
+    // New notes need a list header even in an HWP5 template without pictures. Native raw
+    // subtrees bypass this materialization in emit_control.
+    if matches!(&ctrl_id, b"fn  " | b"en  ") && list.header_data.is_empty() {
+        synthesized_note_list_header(list.paragraphs.len())
+    } else {
+        list.header_data.clone()
+    }
+}
+
+/// The existing generated note LIST_HEADER, independent of picture synthesis (#391).
+/// Native or custom nonempty headers remain owned by their source document.
+pub fn synthesized_note_list_header(paragraph_count: usize) -> Vec<u8> {
+    let mut header = hex_to_bytes(HEADER_LIST_HEADER_TEMPLATE);
+    let count = paragraph_count.max(1) as u16;
+    header[0..2].copy_from_slice(&count.to_le_bytes());
+    header
+}
+
+/// Whether a note's raw subtree is exactly the serialized modeled view. The comparison keeps
+/// source paragraph caches and tails; raw-only records or different nesting prevent equivalence.
+/// Represented opaque extras remain in the modeled view. Call before canonicalizing caches.
+pub fn note_has_redundant_raw_children(note: &hwp_model::GenericControl) -> bool {
+    if !matches!(&note.ctrl_id, b"fn  " | b"en  ") || note.raw_children.is_empty() {
+        return false;
+    }
+    let mut modeled = note.clone();
+    modeled.raw_children.clear();
+    let mut report = WriteReport::new();
+    let emitted = emit_control(&Control::Generic(modeled), false, true, false, &mut report);
+    emitted.children
+        == note
+            .raw_children
+            .iter()
+            .map(opaque_to_node)
+            .collect::<Vec<_>>()
 }
 
 fn emit_section_def(def: &SectionDef) -> RecordNode {

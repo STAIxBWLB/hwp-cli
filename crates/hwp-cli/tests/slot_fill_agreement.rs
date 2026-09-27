@@ -647,6 +647,186 @@ fn a_part_with_lists_fills_into_hwp() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Parts keep their controls through same-format fills and strict template conversion (#391,
+/// #392). The assertions inspect content and styling, not only command exit status.
+#[test]
+fn parts_keep_links_and_notes_in_every_native_format_pair() {
+    let (dir, hwpx) = template("parts-format-matrix", "# 제목\n\n{{본문}}\n\n메일: {{x}}\n");
+    let hwp5 = dir.join("template.hwp");
+    let conversion = hwp()
+        .arg("convert")
+        .arg(&hwpx)
+        .args(["--to", "hwp", "-o"])
+        .arg(&hwp5)
+        .output()
+        .unwrap();
+    assert!(
+        conversion.status.success(),
+        "{}",
+        String::from_utf8_lossy(&conversion.stderr)
+    );
+
+    for (name, markdown) in [
+        ("plain", "부분\n"),
+        ("link", "[링크](https://example.com) 부분\n"),
+        (
+            "notes",
+            "부분[^1] 미주[^e1]\n\n[^1]: **각주 내용**\n\n[^e1]: 미주 내용\n",
+        ),
+    ] {
+        let part = dir.join(format!("{name}.md"));
+        std::fs::write(&part, markdown).unwrap();
+        let set_part = format!("본문=@{}", part.display());
+        for (source, input) in [("hwp", &hwp5), ("hwpx", &hwpx)] {
+            for target in ["hwp", "hwpx"] {
+                // The requested filename may equal the private converted template's filename.
+                let output_dir = dir.join(format!("{name}-{source}-{target}"));
+                std::fs::create_dir(&output_dir).unwrap();
+                let output = output_dir.join(format!("template.{target}"));
+                let run = fill(
+                    input,
+                    &output,
+                    &["--set", &set_part, "--set", "x=v", "--json"],
+                );
+                assert!(
+                    run.status.success(),
+                    "{name} {source} -> {target}: {}",
+                    String::from_utf8_lossy(&run.stderr)
+                );
+                let report: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+                assert_eq!(report["output"], output.display().to_string());
+                assert_eq!(report["replaced"], 2);
+                let validation = hwp().arg("validate").arg(&output).output().unwrap();
+                assert!(
+                    validation.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&validation.stdout)
+                );
+                let doc = if target == "hwp" {
+                    hwp5::read_document(&output).unwrap().document
+                } else {
+                    hwpx::read_document(&output).unwrap().document
+                };
+                assert!(doc.plain_text().contains("부분"));
+                assert!(doc.plain_text().contains("메일: v"));
+                let controls: Vec<_> = doc
+                    .sections
+                    .iter()
+                    .flat_map(|section| &section.paragraphs)
+                    .flat_map(|paragraph| &paragraph.controls)
+                    .collect();
+                if name == "link" {
+                    let urls: Vec<_> = controls
+                        .iter()
+                        .filter_map(|control| hwp_convert::hyperlink_url(control))
+                        .collect();
+                    assert_eq!(urls, ["https://example.com"]);
+                    assert!(doc.header.char_shapes.iter().any(|shape| shape.text_color
+                        == 0x00ff_0000
+                        && shape.underline_kind() == 1));
+                }
+                if name == "notes" {
+                    for (id, text) in [(*b"fn  ", "각주 내용"), (*b"en  ", "미주 내용")] {
+                        let note = controls
+                            .iter()
+                            .find_map(|control| match control {
+                                hwp_model::Control::Generic(g) if g.ctrl_id == id => Some(g),
+                                _ => None,
+                            })
+                            .expect("note control survives");
+                        let list = &note.paragraph_lists[0];
+                        if target == "hwp" {
+                            assert_eq!(
+                                list.header_data,
+                                hwp5::write::synthesized_note_list_header(list.paragraphs.len())
+                            );
+                        }
+                        let paragraph = &list.paragraphs[0];
+                        let actual: String = paragraph
+                            .chars
+                            .iter()
+                            .filter_map(|ch| match ch {
+                                hwp_model::HwpChar::Text(ch) => Some(*ch),
+                                _ => None,
+                            })
+                            .collect();
+                        assert_eq!(actual, text);
+                        if id == *b"fn  " {
+                            let shape = paragraph.char_shape_runs[0].1.0 as usize;
+                            assert!(
+                                doc.header.char_shapes[shape].is_bold(),
+                                "note formatting survives"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cross_format_part_failures_preserve_destination_and_clean_private_staging() {
+    let (dir, hwpx) = template("parts-cross-failure", "# 제목\n\n{{본문}}\n");
+    let hwp5 = dir.join("template.hwp");
+    let conversion = hwp()
+        .arg("convert")
+        .arg(&hwpx)
+        .args(["--to", "hwp", "-o"])
+        .arg(&hwp5)
+        .output()
+        .unwrap();
+    assert!(
+        conversion.status.success(),
+        "{}",
+        String::from_utf8_lossy(&conversion.stderr)
+    );
+    let part = dir.join("part.md");
+    std::fs::write(&part, "부분\n").unwrap();
+    let missing_anchor = format!("없는앵커=@{}", part.display());
+    let output_hwp = dir.join("out.hwp");
+    let output_hwpx = dir.join("out.hwpx");
+    for output in [&output_hwp, &output_hwpx] {
+        std::fs::write(output, b"ORIGINAL").unwrap();
+    }
+    let entries = || -> BTreeSet<_> {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    };
+    let before = entries();
+    for (input, output) in [(&hwpx, &output_hwp), (&hwp5, &output_hwpx)] {
+        let run = fill(input, output, &["--set", &missing_anchor]);
+        assert!(
+            !run.status.success(),
+            "unmatched anchor must fail after conversion"
+        );
+        assert!(String::from_utf8_lossy(&run.stderr).contains("부분 앵커를 찾지 못했습니다"));
+        assert_eq!(std::fs::read(output).unwrap(), b"ORIGINAL");
+        assert_eq!(entries(), before, "no public intermediate output remains");
+    }
+
+    let mut opaque = hwpx::read_document(&hwpx).unwrap().document;
+    opaque
+        .hwpx_extra_entries
+        .push(("SyntheticOpaque/entry.bin".into(), b"opaque".to_vec()));
+    let source = dir.join("opaque.hwpx");
+    hwpx::write_document(&opaque, &source).unwrap();
+    let set_part = format!("본문=@{}", part.display());
+    let before = entries();
+    let run = fill(&source, &output_hwp, &["--set", &set_part]);
+    assert!(
+        !run.status.success(),
+        "strict template conversion must reject package loss"
+    );
+    assert!(String::from_utf8_lossy(&run.stderr).contains("hwpx_package_entry_removed"));
+    assert_eq!(std::fs::read(&output_hwp).unwrap(), b"ORIGINAL");
+    assert_eq!(entries(), before);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A part fills into an official-profile `.hwp` template that has its own numbered list (#379
 /// review). The template's eight official NUMBERING records are followed by the part's own, and
 /// the re-read must still restore the official list levels, or the verification refuses.
