@@ -767,6 +767,61 @@ fn parts_keep_links_and_notes_in_every_native_format_pair() {
 }
 
 #[test]
+fn cross_format_parts_accept_native_templates_above_the_certification_limit() {
+    let (dir, created) = template("large-native-part", "{{본문}}\n");
+    let input = dir.join("template.hwp");
+    let run = hwp()
+        .arg("convert")
+        .arg(&created)
+        .args(["--to", "hwp", "-o"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // Unreferenced CFB padding enlarges the native container without allocating a large
+    // document model. Prove strict conversion accepts it before testing the composed fill.
+    let size = hwp_cli::certification::MAX_INPUT_BYTES + 512;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&input)
+        .unwrap()
+        .set_len(size)
+        .unwrap();
+    let baseline = dir.join("baseline.hwpx");
+    let run = hwp()
+        .arg("convert")
+        .arg(&input)
+        .args(["--to", "hwpx", "--strict", "-o"])
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let part = dir.join("part.md");
+    std::fs::write(&part, "큰 컨테이너의 부분 채우기\n").unwrap();
+    let output = dir.join("filled.hwpx");
+    let set_part = format!("본문=@{}", part.display());
+    let run = fill(&input, &output, &["--set", &set_part]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(document_text(&output).contains("큰 컨테이너의 부분 채우기"));
+    assert_eq!(std::fs::metadata(&input).unwrap().len(), size);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn cross_format_part_failures_preserve_destination_and_clean_private_staging() {
     let (dir, hwpx) = template("parts-cross-failure", "# 제목\n\n{{본문}}\n");
     let hwp5 = dir.join("template.hwp");

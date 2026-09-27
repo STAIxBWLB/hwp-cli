@@ -28,7 +28,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   synthesis ([#391](https://github.com/STAIxBWLB/hwp-cli/issues/391)).
 - Cross-format part fills first convert the unedited template with strict preservation checks,
   then verify edits against that target-format baseline. Conversion or editing failure leaves
-  the destination unchanged. Nested private transactions use extended-length paths on Windows
+  the destination unchanged. The outer snapshot follows the source format's native container
+  limit. Nested private transactions use extended-length paths on Windows
   ([#392](https://github.com/STAIxBWLB/hwp-cli/issues/392)).
 - `hwp slots --forms` no longer lists an inline label whose value text is only placeholder(s)
   (`목표: {{최종목표}}`). The placeholder is already listed as its own field, and a fill defers

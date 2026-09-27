@@ -624,14 +624,19 @@ fn fill_parts_ir(
         Some("hwpx") => FileFormat::Hwpx,
         other => anyhow::bail!("fill 출력은 .hwp 또는 .hwpx만 지원합니다 (확장자: {other:?})"),
     };
-    if crate::format::detect(input)? == target {
+    let source = crate::format::detect(input)?;
+    if source == target {
         return fill_parts_same_format(input, output, data, set, part_paths, allow_partial, roots);
     }
+    let snapshot_limit = match source {
+        FileFormat::Hwp5 => hwp5::SUPPORTED_CONTAINER_MAX_BYTES,
+        FileFormat::Hwpx => hwpx::NATIVE_PACKAGE_LIMITS.max_total_uncompressed_bytes,
+    };
 
     let (_, mut report) = crate::commands::output::write_with_private_input_snapshot(
         output,
         input,
-        hwp_cli::certification::MAX_INPUT_BYTES,
+        snapshot_limit,
         crate::commands::output::SnapshotOutputMode::Publish,
         |snapshot, staged, _| {
             // Nested native transactions use Win32 filesystem calls. Canonicalizing the
