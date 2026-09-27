@@ -613,3 +613,35 @@ fn aliases_margins_and_input_failures_are_shipped_binary_gates() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+/// An unprofiled document's numbered lists take Hancom's default ladder (#382) but must not
+/// match the official eight-level contract: two separate lists at the same depth are an
+/// unproven topology on the official path, so `.hwp` output would be refused.
+#[test]
+fn an_unprofiled_document_with_two_numbered_lists_writes_hwp() {
+    let dir = temp_dir("two-lists");
+    let source = dir.join("two.md");
+    fs::write(&source, "1. 하나\n2. 둘\n\n문단\n\n1. 다시\n   1. 가지\n").unwrap();
+    for ext in ["hwp", "hwpx"] {
+        let output = dir.join(format!("two.{ext}"));
+        let run = command_output(
+            hwp()
+                .args(["new", "--from"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&output),
+            "hwp new",
+        );
+        assert_success(&run, &format!("hwp new -o two.{ext}"));
+    }
+    let doc = hwpx::read_document(&dir.join("two.hwpx")).unwrap().document;
+    let formats: Vec<NumFmt> = doc.header.numbering_levels[0]
+        .iter()
+        .map(|level| level.fmt)
+        .collect();
+    assert_eq!(
+        formats[..3],
+        [NumFmt::Digit, NumFmt::HangulSyllable, NumFmt::Digit]
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

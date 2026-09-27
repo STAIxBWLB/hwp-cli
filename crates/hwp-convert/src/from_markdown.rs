@@ -31,6 +31,38 @@ pub(crate) const BASE_PARA_SHAPES: u16 = 5;
 /// Maximum authored list depth for official-document profiles.
 pub(crate) const MAX_OFFICIAL_LIST_DEPTH: u16 = 8;
 
+/// The numbering definition of an authored ordered list, one level per list depth, counting
+/// `start` at `level` (1-based) (#382). Levels 1 to 7 take Hancom's default ladder,
+/// `1. 가. 1) 가) (1) (가) ①`: the format selectors of the default NUMBERING record the HWP5
+/// writer emits, and the default numbering of genuine HWPX files, so `.hwpx` output numbers a
+/// list as `.hwp` output does. The eighth level stays a digit (`^8`): the default record has no
+/// eighth level, and the official profile's circled Hangul syllable there would make an
+/// unprofiled document match the official numbering contract. An empty template, which the
+/// default `NumLevel` holds, draws no number in Hancom.
+pub(crate) fn authored_ordered_levels(level: u16, start: u32) -> Vec<NumLevel> {
+    use hwp_model::NumFmt::{CircledDigit, Digit, HangulSyllable};
+    const LADDER: [(hwp_model::NumFmt, &str); MAX_OFFICIAL_LIST_DEPTH as usize] = [
+        (Digit, "^1."),
+        (HangulSyllable, "^2."),
+        (Digit, "^3)"),
+        (HangulSyllable, "^4)"),
+        (Digit, "(^5)"),
+        (HangulSyllable, "(^6)"),
+        (CircledDigit, "^7"),
+        (Digit, "^8"),
+    ];
+    let mut levels: Vec<NumLevel> = LADDER
+        .iter()
+        .map(|(fmt, template)| NumLevel {
+            fmt: *fmt,
+            template: (*template).to_string(),
+            ..NumLevel::default()
+        })
+        .collect();
+    levels[usize::from(level) - 1].start = start;
+    levels
+}
+
 /// A rejected authored-list depth, shared by Markdown and embedded HTML importers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AuthoredListDepthError {
@@ -1134,10 +1166,9 @@ impl Builder {
             Some(s) => {
                 let start = normalize_authored_list_start(s)?;
                 let def_id = self.numbering_levels.len() as u16;
-                let mut levels = vec![NumLevel::default(); 8];
-                // Preserves this list level's start number (the exporter reflects start).
-                levels[level as usize - 1].start = start;
-                self.numbering_levels.push(levels);
+                // Keeps this list level's start number (the exporter reflects start).
+                self.numbering_levels
+                    .push(authored_ordered_levels(level, start));
                 self.push_list_para_shape(2, level, def_id)
             }
             // Bullet list: bullet char + BULLET head. The bullet chars follow the gaejo-style
@@ -2780,6 +2811,39 @@ mod tests {
         );
     }
 
+    /// #382: an authored ordered list's numbering definition draws a number at every level; the
+    /// empty templates it used to carry draw nothing in Hancom. The start number stays on the
+    /// list's own level.
+    #[test]
+    fn ordered_list_levels_carry_templates() {
+        let doc = from_markdown("1. 하나\n2. 둘\n   3. 셋\n");
+        let levels = &doc.header.numbering_levels;
+        assert!(!levels.is_empty());
+        for definition in levels {
+            assert_eq!(definition.len(), usize::from(MAX_OFFICIAL_LIST_DEPTH));
+            assert!(definition.iter().all(|level| !level.template.is_empty()));
+        }
+        use hwp_model::NumFmt::{CircledDigit, Digit, HangulSyllable};
+        let formats: Vec<_> = levels[0].iter().map(|level| level.fmt).collect();
+        assert_eq!(
+            formats,
+            [
+                Digit,
+                HangulSyllable,
+                Digit,
+                HangulSyllable,
+                Digit,
+                HangulSyllable,
+                CircledDigit,
+                Digit
+            ]
+        );
+        assert_eq!(levels[0][0].template, "^1.");
+        assert_eq!(levels[0][2].template, "^3)");
+        let nested = authored_ordered_levels(2, 3);
+        assert_eq!((nested[0].start, nested[1].start), (1, 3));
+    }
+
     /// Official profiles apply their locked typography, margins, numbering, and page-number policy.
     #[test]
     fn 공문서_프리셋() {
@@ -2814,7 +2878,7 @@ mod tests {
             (8504, 5668, 8504, 4252)
         );
         assert_eq!(plain.header.char_shapes[0].base_size, 1000);
-        assert!(plain.header.numbering_levels[0][1].template.is_empty());
+        assert_eq!(plain.header.numbering_levels[0][1].template, "^2.");
         assert!(
             !plain.sections[0].paragraphs[0]
                 .controls
