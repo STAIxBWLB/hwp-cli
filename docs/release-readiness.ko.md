@@ -9,7 +9,9 @@
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
 - [ ] `scripts/check-structured-corpus.sh`
-- [ ] 로컬 소스 빌드 기준으로 Linux·macOS·Windows CI 매트릭스 전부 green
+- [ ] 로컬 소스 빌드 기준으로 Linux·macOS·Windows CI 매트릭스 전부 green (green 신호는 커밋
+      자체의 check run이거나, ci.yml이 중복 제거한 main 푸시의 경우 트리가 동일한 병합 PR
+      head의 green run일 수 있음)
 - [ ] 코퍼스 manifest·run·artifact JSON이 고정 스키마를 통과
 - [ ] manifest의 모든 pin과 `corpus/structured-v1/TRACKED_FILES.txt`가 Git 인덱스에 존재
 - [ ] 코퍼스 잡이 시스템 폰트 설치나 `HWP_FONT_DIR`에 의존하지 않음

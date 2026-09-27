@@ -44,18 +44,107 @@ env:
 
 # A new push on the same branch cancels the previous run (less waste, less latency).
 # main is never cancelled — per-commit CI signal on consecutive merges is the bisect basis
-# (and the release gate reads it via the check-runs API).
+# (and the release gate reads it via the check-runs API). A main push whose tree a merged PR
+# head already verified runs only the `decision` job below: the deduplicated commit borrows
+# the identical tree's PR signal, so the bisect basis is preserved in substance.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# Gate layout: platform-independent checks run ONCE in `lint`; the 3-OS matrix in `test`
-# runs only cargo test; the fixed Ubuntu PDF-parity job runs the committed public oracle.
-# Same command set as scripts/check.sh (local mirror) plus the structured-corpus and public
-# parity gates — keep them in sync or "local green, CI red" drift comes back.
 jobs:
+  # Skip re-verifying an already verified tree: a main push runs the full matrix unless the
+  # pushed commit is the merge_commit_sha of a merged PR, its tree SHA equals the PR head's
+  # tree SHA, and the five gate check runs on the PR head are all completed/success — the same
+  # five names release.yml's verify-ci and release-readiness.yml's Gate ci-matrix require, so
+  # one contract holds across the three files. Any API failure falls back to run_full=true
+  # with a warning (never silently skip). Direct pushes, multi-commit pushes, merges whose
+  # tree differs, and workflow_dispatch always run the full matrix.
+  decision:
+    name: decision
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    outputs:
+      run_full: ${{ steps.dedupe.outputs.run_full }}
+    steps:
+      - name: Deduplicate an already verified main tree
+        id: dedupe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          run_full=true
+          reason="this event requires full validation"
+          expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
+
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            reason="no merged PR with an already verified identical tree was found"
+
+            if ! pulls=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100"); then
+              echo "::warning::Could not resolve associated pull requests; running full CI."
+            else
+              pr=$(jq -c --arg sha "$GITHUB_SHA" \
+                '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | sort_by(.number) | last // empty' \
+                <<<"$pulls")
+
+              if [ -n "$pr" ]; then
+                pr_number=$(jq -r .number <<<"$pr")
+                head_sha=$(jq -r .head.sha <<<"$pr")
+
+                if push_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha) \
+                  && head_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$head_sha" --jq .tree.sha) \
+                  && runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head_sha/check-runs?filter=latest&per_page=100"); then
+                  if [ "$push_tree" != "$head_tree" ]; then
+                    reason="the merged tree differs from PR #$pr_number head $head_sha"
+                  else
+                    all_green=true
+                    for name in "${expected[@]}"; do
+                      state="$(jq -r --arg n "$name" \
+                        '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+                        <<<"$runs")"
+                      echo "$name: $state"
+                      [ "$state" = "completed/success" ] || all_green=false
+                    done
+                    if [ "$all_green" = "true" ]; then
+                      run_full=false
+                      reason="PR #$pr_number head $head_sha validated the identical tree $push_tree"
+                    else
+                      reason="the five gate check runs on PR #$pr_number head $head_sha are not all green"
+                    fi
+                  fi
+                else
+                  echo "::warning::Could not verify the associated PR tree and check runs; running full CI."
+                fi
+              fi
+            fi
+          fi
+
+          echo "run_full=$run_full" >> "$GITHUB_OUTPUT"
+          echo "CI decision: $reason"
+          {
+            if [ "$run_full" = "false" ]; then
+              echo "### CI deduplicated"
+              echo "$reason. The full matrix is skipped for this main push."
+            else
+              echo "### CI full run"
+              echo "$reason."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Gate layout: platform-independent checks run ONCE in `lint`; the 3-OS matrix in `test`
+  # runs only cargo test; the fixed Ubuntu PDF-parity job runs the committed public oracle.
+  # Same command set as scripts/check.sh (local mirror) plus the structured-corpus and public
+  # parity gates — keep them in sync or "local green, CI red" drift comes back.
   lint:
     name: lint
+    needs: decision
+    if: needs.decision.outputs.run_full == 'true'
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
@@ -144,6 +233,8 @@ jobs:
 
   pdf-parity:
     name: pdf-parity
+    needs: decision
+    if: needs.decision.outputs.run_full == 'true'
     timeout-minutes: 30
     # The manifest pins the Poppler binary, so do not use ubuntu-latest here.
     runs-on: ubuntu-24.04
@@ -212,6 +303,8 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
+    needs: decision
+    if: needs.decision.outputs.run_full == 'true'
     timeout-minutes: 30
     strategy:
       fail-fast: false
