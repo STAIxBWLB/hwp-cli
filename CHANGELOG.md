@@ -10,8 +10,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.3.0]
+
 **Compatibility**
 
+- One change narrows a surface the 1.0 SemVer scope covers (CLI, MCP tool arguments, schemas):
+  MCP `hwp_edit` refuses a text selector together with `address` (below). It ships in this minor
+  release by owner decision, a one-time exception to the SemVer policy in the README. Everything
+  else is a fix, and no schema in `schemas/` changed bytes. Written files change where they were
+  wrong: `.hwp` output from a fill part or a merge now carries every numbering and bullet
+  definition it references, and numbered lists imported from markdown or HTML draw Hancom's
+  default ladder in `.hwpx` and `.docx` output.
 - MCP `hwp_edit` now refuses a text selector (`pattern`, `anchor` or `matching`) together with
   `address` on `set_format`, `set_align`, `insert_para`, `delete_para` and `set_para`, as
   `hwp edit --ops` already does, with the ops channel's error; the published input schema states
