@@ -10,27 +10,7 @@
       "url": "https://github.com/STAIxBWLB/hwp-cli",
       "provider": "github",
       "revision": "1989573f62ae1db4176caa43d232c8094dc0673a"
-    },
-    "views": [
-      {
-        "id": "read-path",
-        "label": "Read, convert and fill",
-        "focus": ["user", "cli", "commands", "codecs", "model", "convert", "fs"],
-        "note": "A command loads hwp/hwpx through a codec into the IR, converts, edits or fills it, then publishes atomically."
-      },
-      {
-        "id": "render-path",
-        "label": "Render path",
-        "focus": ["commands", "codecs", "model", "render", "fs"],
-        "note": "IR to shaped, laid-out pages: PNG/SVG/PDF/JPEG/WebP plus optional render-layout-v1 geometry JSON."
-      },
-      {
-        "id": "mcp-path",
-        "label": "MCP and remote hop",
-        "focus": ["user", "edge", "cli", "mcp", "commands", "fs"],
-        "note": "22 tools over stdio or POST /mcp; the edge authenticates, and tools reuse the command layer."
-      }
-    ]
+    }
   },
   "components": [
     {
@@ -225,7 +205,7 @@
       "dot": "emerald",
       "title": "MCP and deployment",
       "items": [
-        "22 tools; stdio and HTTP share one handle_request core",
+        "22 tools run the CLI's command code; stdio and HTTP share one handle_request core",
         "hwp serve: close-per-request POST /mcp on httparse, 1 MiB body cap, private hop behind a trusted edge",
         "hwp mcp without --root is unrestricted (warns); hwp serve always requires --root",
         "Tier A Cloudflare (OAuth or PAT, /files sideband) and Tier B AgentCore (/mcp only) images pin v1.3.1"

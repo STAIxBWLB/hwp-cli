@@ -5494,7 +5494,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>MCP and deployment</h3>
         </div>
         <ul>
-          <li>22 tools; stdio and HTTP share one handle_request core</li>
+          <li>22 tools run the CLI&#39;s command code; stdio and HTTP share one handle_request core</li>
           <li>hwp serve: close-per-request POST /mcp on httparse, 1 MiB body cap, private hop behind a trusted edge</li>
           <li>hwp mcp without --root is unrestricted (warns); hwp serve always requires --root</li>
           <li>Tier A Cloudflare (OAuth or PAT, /files sideband) and Tier B AgentCore (/mcp only) images pin v1.3.1</li>

@@ -6,11 +6,11 @@
   "status": "pass",
   "visualReview": "pending",
   "provenance": "current",
-  "deliveryReceiptId": "d90fcd65-bbca-42da-9fc2-c60f0dd67b7b",
+  "deliveryReceiptId": "0b3ac45e-8b7d-4e70-a819-d4de55e362d5",
   "artifact": {
     "path": "docs/architecture/hwp-cli-rendered.html",
-    "sha256": "5547d02096b47e63920021f0fbb7ec8e998edf05777e6634e92d2a1cba40f9a3",
-    "bytes": 778396
+    "sha256": "134b692540dd8bd0d45ed25d792b2c0233cd894a4df3b4b99df6ae793e9aee53",
+    "bytes": 778427
   },
   "state": {
     "detail": "read",
@@ -937,8 +937,8 @@
         "file": "hwp-cli-rendered.visual-check.html"
       },
       {
-        "sha256": "cc1bd96493b1e6d7f95b71eeec364f5f29c4053156d23d84e6d3aee9a4d2c9d6",
-        "bytes": 112260,
+        "sha256": "5281f82bdc8a6f0126be1f613e7a7b5138e0528b2511c2940be3474ac774b0de",
+        "bytes": 112151,
         "file": "hwp-cli-rendered.visual-check.1440x900.light.png"
       },
       {
