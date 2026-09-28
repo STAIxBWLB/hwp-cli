@@ -49,7 +49,7 @@
       "sources": [
         { "path": "crates/hwp-cli/src/commands/cat.rs", "line": 177, "end_line": 210, "label": "load_document picks a codec" },
         { "path": "crates/hwp-cli/src/commands/output.rs", "line": 17, "end_line": 40, "label": "write_validated atomic publish" },
-        { "path": "crates/hwp-cli/src/commands/fill.rs", "line": 209, "end_line": 260, "label": "fill --forms in one IR pass" }
+        { "path": "crates/hwp-cli/src/commands/render.rs", "line": 640, "end_line": 672, "label": "JPEG/WebP encoded from raster" }
       ]
     },
     {
@@ -62,8 +62,8 @@
       "size": [140, 60],
       "sources": [
         { "path": "crates/hwp-cli/src/commands/mcp/mod.rs", "line": 2346, "end_line": 2891, "label": "tool_defs: 22 tools" },
-        { "path": "crates/hwp-cli/src/commands/mcp/stdio.rs", "line": 1, "end_line": 28, "label": "stdio adapter, password zeroize" },
-        { "path": "crates/hwp-cli/src/commands/mcp/http.rs", "line": 1, "end_line": 29, "label": "close-per-request POST /mcp" }
+        { "path": "crates/hwp-cli/src/commands/mcp/mod.rs", "line": 1, "end_line": 16, "label": "core; stdio + http adapters" },
+        { "path": "crates/hwp-cli/src/commands/mcp/http.rs", "line": 364, "end_line": 456, "label": "/files writes root.join(name)" }
       ]
     },
     {
@@ -85,13 +85,13 @@
       "type": "backend",
       "label": "Document codecs",
       "sublabel": "hwp5 CFB + hwpx OWPML",
-      "tag": "byte-exact hwp5",
+      "tag": "unedited hwp5 lossless",
       "pos": [760, 430],
       "size": [160, 60],
       "sources": [
         { "path": "crates/hwp5/src/lib.rs", "line": 1, "end_line": 16, "label": "HWP 5.0 CFB reader/writer" },
         { "path": "crates/hwpx/src/lib.rs", "line": 1, "end_line": 9, "label": "HWPX ZIP + XML reader/writer" },
-        { "path": "crates/hwpx/src/read/section.rs", "line": 96, "end_line": 112, "label": "256-deep nesting cap" }
+        { "path": "crates/hwp5/tests/identity.rs", "line": 1, "end_line": 5, "label": "identity gate, decompressed streams" }
       ]
     },
     {
@@ -126,12 +126,12 @@
       "type": "backend",
       "label": "hwp-render",
       "sublabel": "rustybuzz + tiny-skia",
-      "tag": "PNG/SVG/PDF/JPEG/WebP",
+      "tag": "PNG/SVG/PDF pages",
       "pos": [760, 80],
       "size": [160, 60],
       "sources": [
         { "path": "crates/hwp-render/src/lib.rs", "line": 1, "end_line": 5, "label": "IR to layout to backends" },
-        { "path": "crates/hwp-render/src/segment_map.rs", "line": 1, "end_line": 12, "label": "render-layout-v1 geometry rows" },
+        { "path": "crates/hwp-render/src/segment_map.rs", "line": 1, "end_line": 12, "label": "per-page segment geometry rows" },
         { "path": "crates/hwp-render/src/segment_map.rs", "line": 58, "end_line": 62, "label": "drawing-object text rows" }
       ]
     },
@@ -146,7 +146,7 @@
       "sources": [
         { "path": "crates/hwp-cli/src/commands/output.rs", "line": 1, "end_line": 40, "label": "stage beside target, verify, rename" },
         { "path": "crates/hwp5/src/write.rs", "line": 75, "label": "hwp5 write_document(path)" },
-        { "path": "crates/hwpx/src/write/mod.rs", "line": 40, "label": "hwpx write_document(path)" }
+        { "path": "crates/hwp-cli/src/commands/mcp/mod.rs", "line": 1028, "end_line": 1060, "label": "hwp_get_file reads directly" }
       ]
     }
   ],
@@ -159,7 +159,7 @@
     },
     {
       "kind": "security-group",
-      "label": "Path checks under --root",
+      "label": "--root gate",
       "wraps": ["mcp"],
       "pad": 12
     }
@@ -176,6 +176,7 @@
     { "id": "codecs-to-fs", "from": "codecs", "to": "fs", "label": "read + write", "fromSide": "bottom", "toSide": "top" },
     { "id": "commands-to-fs", "from": "commands", "to": "fs", "label": "atomic publish", "fromSide": "bottom", "toSide": "left" },
     { "id": "cli-to-mcp", "from": "cli", "to": "mcp", "label": "hwp mcp | serve", "fromSide": "bottom", "toSide": "top" },
+    { "id": "mcp-to-fs", "from": "mcp", "to": "fs", "label": "/files, get_file", "fromSide": "bottom", "toSide": "left" },
     { "id": "mcp-to-commands", "from": "mcp", "to": "commands", "label": "tools/call", "fromSide": "right", "toSide": "bottom" },
     { "id": "user-to-edge", "from": "user", "to": "edge", "label": "remote MCP", "fromSide": "bottom", "toSide": "top" },
     { "id": "edge-to-mcp", "from": "edge", "to": "mcp", "label": "POST /mcp", "variant": "security" }
@@ -187,8 +188,8 @@
       "items": [
         "6-crate workspace at v1.3.1, edition 2024; SemVer covers commands, flags, MCP tools and schemas",
         "hwp5 and hwpx never depend on each other: both go through the hwp-model IR",
-        "hwp5 identity re-serialization stays byte-identical; unknown records kept as OpaqueRecord",
-        "Codecs open inputs by path; every output is staged, verified, then renamed into place"
+        "Unedited hwp-origin files re-serialize byte-identically (decompressed streams); edited or hwpx/markdown input is rewritten semantically equivalent",
+        "Codecs open inputs by path; command outputs and hwp_put_file are staged, verified, renamed; serve /files writes in place"
       ]
     },
     {
@@ -196,7 +197,7 @@
       "title": "Formats and forms",
       "items": [
         "cat: plain/markdown/JSON/HTML/CSV; convert to hwp, hwpx, md, json, html, pdf, odt, txt, csv, docx",
-        "render: PNG/SVG/PDF/JPEG/WebP; --layout-json rows include drawing-object text",
+        "hwp-render draws PNG/SVG/PDF; the command layer encodes JPEG/WebP from the raster; render-layout-v1 rows include drawing-object text",
         "slots --forms and fill --forms: Korean form fields (label cells, label: value, blanks, checkboxes)",
         "lint: 10 rule ids; 6 official-document profiles"
       ]
@@ -205,7 +206,7 @@
       "dot": "emerald",
       "title": "MCP and deployment",
       "items": [
-        "22 tools run the CLI's command code; stdio and HTTP share one handle_request core",
+        "22 tools reuse the command modules' execute and publish helpers (not their stdout run paths); stdio and HTTP share one handle_request core",
         "hwp serve: close-per-request POST /mcp on httparse, 1 MiB body cap, private hop behind a trusted edge",
         "hwp mcp without --root is unrestricted (warns); hwp serve always requires --root",
         "Tier A Cloudflare (OAuth or PAT, /files sideband) and Tier B AgentCore (/mcp only) images pin v1.3.1"

@@ -6,11 +6,11 @@
   "status": "pass",
   "visualReview": "pending",
   "provenance": "current",
-  "deliveryReceiptId": "0b3ac45e-8b7d-4e70-a819-d4de55e362d5",
+  "deliveryReceiptId": "2a291fda-1d4d-4534-a74b-5c8cd8d99ef5",
   "artifact": {
     "path": "docs/architecture/hwp-cli-rendered.html",
-    "sha256": "134b692540dd8bd0d45ed25d792b2c0233cd894a4df3b4b99df6ae793e9aee53",
-    "bytes": 778427
+    "sha256": "511cd77a51b0283eb6a36fa3bc55af3436c7c97a34a9e817e656627901bd6e73",
+    "bytes": 779693
   },
   "state": {
     "detail": "read",
@@ -937,23 +937,23 @@
         "file": "hwp-cli-rendered.visual-check.html"
       },
       {
-        "sha256": "5281f82bdc8a6f0126be1f613e7a7b5138e0528b2511c2940be3474ac774b0de",
-        "bytes": 112151,
+        "sha256": "d42aee6008b251993a472cb949d41474342d1a92ae6a2473686d6c205e5b2fc8",
+        "bytes": 112861,
         "file": "hwp-cli-rendered.visual-check.1440x900.light.png"
       },
       {
-        "sha256": "b0b83961626218334e312a69487a1e8f2c6ce4bf83424b0c4876a389ae9d2977",
-        "bytes": 120516,
+        "sha256": "696a8422d35921debe966d092800abc8b4c2e3cf5baa476b8f767631837a6d7d",
+        "bytes": 121793,
         "file": "hwp-cli-rendered.visual-check.1440x900.dark.png"
       },
       {
-        "sha256": "01765ecc418df8515e2fc0f409343203e8ecf4f0e56e794abb7029d052c587de",
-        "bytes": 169314,
+        "sha256": "adbe8473b45c7b9c6efa96ead5ac55694f5768c7f15aff28346e39f38ea63161",
+        "bytes": 170740,
         "file": "hwp-cli-rendered.visual-check.2048x1320.light.png"
       },
       {
-        "sha256": "ed421df5a32c89e2cb41eaaf3ebf2d685eda6370f5284998f7579c55343bc7f3",
-        "bytes": 183230,
+        "sha256": "3c55911f66c6b7e82ac41e99305376b7d7bd6de24767b1a12d1f33b79f6b77c3",
+        "bytes": 185202,
         "file": "hwp-cli-rendered.visual-check.2048x1320.dark.png"
       }
     ]
