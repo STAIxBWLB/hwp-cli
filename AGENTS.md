@@ -122,16 +122,23 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
 `ripwire` is optional. Check `command -v ripwire` and `ripwire --version` in the current session
 before using it. If it is missing or cannot run, report that once and continue with `rg`,
 `rg --files`, and source reads; it never blocks development, tests, or review, and is not a reason
-to install host tooling in a repository fix. When to query it first, the core verbs, how to read its
-counts, and CLI-only use: the workspace `dev/AGENTS.md`. Repo-specific use:
+to install host tooling in a repository fix. When it runs, query it before reading files whole or
+sweeping with `rg`. CLI only: never start `--mcp`. Optional extra context for workspace sessions:
+the workspace `dev/AGENTS.md`.
 
 ```bash
+ripwire . --for="<the change you are about to make, in words>"   # entry points, with a confidence attr
+ripwire . --callers=SYM      # who calls it; --uses=SYM lists call sites as file:line
+ripwire . --impact=SYM       # transitive blast radius, tested/untested split
+ripwire . --situ             # after editing: changed symbols, blast radius, tests to run
 ripwire . --edit-check=SYM   # did the edit change a contract (arity, public surface)
 ripwire . --quality-delta    # the "am I done" checkpoint: what got WORSE vs HEAD (exit 2 = a
                              # pre-existing symbol regressed materially; new-symbol rows are advisory)
 ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answer it
 ```
 
+- Counts are floors (name-based static extraction; ambiguous calls are listed as `declined`): a zero
+  means "none found", never "none exists".
 - Known floors on this repo: `#[test]` functions read as `dead-code` in `--quality-delta`, and
   CLI-level tests that run the built binary are invisible to `tested=`.
 - `--quality-delta` is advisory, not a gate; `scripts/check.sh` stays the only gate. Do not add
@@ -153,3 +160,20 @@ ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answ
    (Hancom Office) opens the file.
 4. No new external HWP-related crates (only infrastructure crates such as cfb/zip/quick-xml/
    tiny-skia).
+
+## Things the agent gets wrong
+
+- 2026-09-26, #370 and #384: new regression tests could not catch their regression (on the old code
+  one failed before reaching its assertion; another walked only section paragraphs while the change
+  also wrote cell, caption and text-box paragraphs). Run a new test against the pre-fix code, confirm
+  it fails at the assertion it was written for, and make it visit every path the change touches.
+  Revisit when: reviews stop reporting it, or the model changes.
+- 2026-09-26, #368, then the same class in #369's review: under `set -o pipefail`, a pipeline whose
+  consumer exits early (`grep -q`, `head`) fails when the producer dies of SIGPIPE, so under load a
+  match reads as a miss or the script aborts. In `pipefail` scripts let `grep` read all of its input
+  (`grep ... >/dev/null`, not `grep -q`), and add `|| true` where `| head` may legitimately cut the
+  stream. Revisit when: the scripts stop using `pipefail`.
+- 2026-09-26, #363, #371 and #372: prose lagged the final code (a doc comment kept the old behavior,
+  a stale or missing CHANGELOG entry, a PR body grouped differently from the CHANGELOG). Before review
+  and after each fix round, re-read the changed functions' doc comments, the CHANGELOG entry and the
+  PR body against the final diff. Revisit when: reviews stop reporting it, or the model changes.
