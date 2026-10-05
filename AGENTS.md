@@ -151,8 +151,9 @@ ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answ
 
 1. **hwp-model depends on no other internal crate** (hub and spoke). `hwp5` and `hwpx` do not depend
    on each other either; they go through the IR. `hwp-convert` and `hwp-render` do not depend on
-   each other. These are normal-dependency edges; dev-dependencies are allowed (hwp5's tests use
-   hwpx, hwp-render's use hwp-convert). `scripts/check-crate-edges.sh` checks them.
+   each other. These are normal-dependency edges, direct or transitive; dev-dependencies are
+   allowed (hwp5's tests use hwpx, hwp-render's use hwp-convert). `scripts/check-crate-edges.sh`
+   checks them.
 2. **Lossless round-trip gate**: hwp5 → hwp5 identity re-serialization must be byte-identical
    (`crates/hwp5/tests/identity.rs`). Do not drop unknown records; preserve them as `OpaqueRecord`.
 3. **Ground-truth methodology - no guessing**: format behavior is established only by comparing

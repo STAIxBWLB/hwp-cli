@@ -8,6 +8,9 @@
 # added between them would quietly make the duplication pointless. Until now nothing in the
 # repository stopped one; the invariant lived only in prose.
 #
+# The whole normal-dependency tree is checked, not only direct edges (#407): hwp-render taking a
+# normal dependency on hwpx would pull in hwp-convert through hwpx -> hwp-convert.
+#
 # Dev-dependencies are deliberately out of scope (`-e normal`): hwp-render's tests already use
 # hwp-convert to build documents, which does not put either crate in the other's build graph.
 #
@@ -18,18 +21,20 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 
 fail=0
+manifest=Cargo.toml
 
-# Direct normal dependencies of a crate, one name per line.
+# Normal dependencies of a crate, direct and transitive, one name per line.
 deps() {
-    cargo tree -p "$1" -e normal --depth 1 --prefix none 2>/dev/null |
-        tail -n +2 | awk '{print $1}'
+    cargo tree --manifest-path "$manifest" -p "$1" -e normal --prefix none 2>/dev/null |
+        tail -n +2 | awk '{print $1}' | sort -u
 }
 
 forbid() {
     local crate="$1" forbidden="$2" count
     count="$(deps "$crate" | grep -Ecx "$forbidden")"
     if [ "$count" -ne 0 ]; then
-        echo "FAIL: $crate has a normal dependency on $forbidden (AGENTS.md invariant 1)" >&2
+        echo "FAIL: $crate depends on $forbidden, directly or transitively" \
+            "(AGENTS.md invariant 1)" >&2
         fail=1
     else
         echo "ok: $crate does not depend on $forbidden"
@@ -42,6 +47,27 @@ if [ "${1:-}" = "--self-test" ]; then
         echo "FAIL: self-test could not see hwp-cli -> hwp-render, so the matcher is broken" >&2
         exit 1
     fi
+    # No internal crate reaches another only transitively today, so a throwaway workspace
+    # supplies the case: edge-a -> edge-b -> edge-c, with no direct edge-a -> edge-c.
+    fixture="$(mktemp -d)"
+    trap 'rm -rf "$fixture"' EXIT
+    printf '[workspace]\nmembers = ["edge-a", "edge-b", "edge-c"]\nresolver = "2"\n' \
+        >"$fixture/Cargo.toml"
+    for c in a b c; do
+        mkdir -p "$fixture/edge-$c/src"
+        : >"$fixture/edge-$c/src/lib.rs"
+        printf '[package]\nname = "edge-%s"\nversion = "0.0.0"\nedition = "2021"\n' "$c" \
+            >"$fixture/edge-$c/Cargo.toml"
+    done
+    printf '[dependencies]\nedge-b = { path = "../edge-b" }\n' >>"$fixture/edge-a/Cargo.toml"
+    printf '[dependencies]\nedge-c = { path = "../edge-c" }\n' >>"$fixture/edge-b/Cargo.toml"
+    manifest="$fixture/Cargo.toml"
+    forbid edge-a edge-c 2>/dev/null
+    if [ "$fail" -eq 0 ]; then
+        echo "FAIL: self-test missed the transitive edge edge-a -> edge-b -> edge-c" >&2
+        exit 1
+    fi
+    echo "ok: self-test caught the transitive edge edge-a -> edge-b -> edge-c"
     echo "== crate-edges self-test: OK =="
     exit 0
 fi
