@@ -7,8 +7,8 @@ HWP library. Background for revising these rules: [docs/agents-background.md](do
 
 - **Everything an AI agent reads as development context is English only**: commit messages, PR
   titles/bodies, release notes (`CHANGELOG.md`, GitHub Release bodies), issue text, code comments,
-  and internal working docs (`AGENTS.md`). Move existing Korean comments to English in files you
-  touch.
+  and internal working docs (`AGENTS.md`, `docs/agents-background.md`, `REVIEW.md`). Move existing
+  Korean comments to English in files you touch.
 - User-facing strings (CLI output, error messages) keep their existing Korean tone.
 - User-facing documentation stays bilingual, but **English is canonical**: `NAME.md` (English) and
   `NAME.ko.md` (Korean). Both carry a **language link on the first line**:
@@ -35,7 +35,7 @@ cargo build                    # debug build (bin: hwp)
 HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus + self-verification harness
 ```
 
-- Local runs use the same commands as the CI gates (`.github/workflows/ci.yml`):
+- Local runs **must use the same commands** as the CI gates (`.github/workflows/ci.yml`):
   `cargo fmt --all --check` → `cargo clippy --workspace --all-targets -- -D warnings` →
   `cargo test --workspace`. For a partial run during development (clippy only, test only), call one
   of them directly; the full `scripts/check.sh` is what gates the PR.
@@ -71,8 +71,8 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
   lists them. `HWP_REQUIRE_FIXTURES=1 scripts/check.sh` turns every such skip into a failure, except
   the `<M>` optional ones (ground-truth sets `fixtures/README.md` lists as not currently held,
   guarded by `optional_fixture_missing`). CI and the release-readiness workflow never set it; the
-  strict local run is a release-readiness checklist item. After a failed test step the count is
-  labelled `(partial)`.
+  strict local run is a release-readiness checklist item. After a failed test step the count stops
+  early and the `check: FAILED` line labels it `(partial)`.
 - New fixture guards go through `crates/hwp-cli/tests/common/fixture_skip.rs` (`fixture_missing`),
   never a bare `exists()`.
 - **Run it before reporting a task complete, and paste the output.**
@@ -150,9 +150,9 @@ ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answ
 ## Invariants (do not break)
 
 1. **hwp-model depends on no other internal crate** (hub and spoke). `hwp5` and `hwpx` do not depend
-   on each other either; they go through the IR. `hwp-convert` and `hwp-render` take no normal
-   dependency on each other (dev-dependencies are allowed). `scripts/check-crate-edges.sh` checks
-   these edges.
+   on each other either; they go through the IR. `hwp-convert` and `hwp-render` do not depend on
+   each other. These are normal-dependency edges; dev-dependencies are allowed (hwp5's tests use
+   hwpx, hwp-render's use hwp-convert). `scripts/check-crate-edges.sh` checks them.
 2. **Lossless round-trip gate**: hwp5 → hwp5 identity re-serialization must be byte-identical
    (`crates/hwp5/tests/identity.rs`). Do not drop unknown records; preserve them as `OpaqueRecord`.
 3. **Ground-truth methodology - no guessing**: format behavior is established only by comparing
@@ -163,7 +163,7 @@ ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answ
 
 ## Things the agent gets wrong
 
-- 2026-09-26, #370 and #384: new regression tests could not catch their regression (on the old code
+- 2026-09-26 (#370) and 2026-09-27 (#384): new regression tests could not catch their regression (on the old code
   one failed before reaching its assertion; another walked only section paragraphs while the change
   also wrote cell, caption and text-box paragraphs). Run a new test against the pre-fix code, confirm
   it fails at the assertion it was written for, and make it visit every path the change touches.
