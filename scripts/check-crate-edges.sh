@@ -23,27 +23,43 @@ cd "$(dirname "$0")/.." || exit
 fail=0
 manifest=Cargo.toml
 
-# Normal dependencies of a crate, direct and transitive, one name per line.
+# Normal dependencies of a crate, direct and transitive, one name per line. A cargo failure is a
+# nonzero status with cargo's error left on stderr, never an empty list that reads as "ok".
 deps() {
-    cargo tree --manifest-path "$manifest" -p "$1" -e normal --prefix none 2>/dev/null |
-        tail -n +2 | awk '{print $1}' | sort -u
+    local tree
+    tree="$(cargo tree -q --manifest-path "$manifest" -p "$1" -e normal --prefix none)" || return
+    printf '%s\n' "$tree" | tail -n +2 | awk '{print $1}' | sort -u
+}
+
+# Status 0 if the crate depends on a name matching the pattern, 1 if not, 2 if cargo tree failed.
+# The match reads a here-string, not a pipe: under pipefail `... | grep -q` can turn a hit into a
+# failure (SIGPIPE upstream), and `grep -c` exits 1 on a zero count.
+has_dep() {
+    local names
+    names="$(deps "$1")" || return 2
+    grep -Eqx "$2" <<<"$names"
 }
 
 forbid() {
-    local crate="$1" forbidden="$2" count
-    count="$(deps "$crate" | grep -Ecx "$forbidden")"
-    if [ "$count" -ne 0 ]; then
+    local crate="$1" forbidden="$2"
+    has_dep "$crate" "$forbidden"
+    case $? in
+    0)
         echo "FAIL: $crate depends on $forbidden, directly or transitively" \
             "(AGENTS.md invariant 1)" >&2
         fail=1
-    else
-        echo "ok: $crate does not depend on $forbidden"
-    fi
+        ;;
+    1) echo "ok: $crate does not depend on $forbidden" ;;
+    *)
+        echo "FAIL: cargo tree failed for $crate, so its edges were not checked" >&2
+        fail=1
+        ;;
+    esac
 }
 
 if [ "${1:-}" = "--self-test" ]; then
     # The gate must be able to fail: a dependency that demonstrably exists has to be caught.
-    if deps hwp-cli | grep -Ecx 'hwp-render' | grep -qx 0; then
+    if ! has_dep hwp-cli hwp-render; then
         echo "FAIL: self-test could not see hwp-cli -> hwp-render, so the matcher is broken" >&2
         exit 1
     fi
@@ -62,8 +78,7 @@ if [ "${1:-}" = "--self-test" ]; then
     printf '[dependencies]\nedge-b = { path = "../edge-b" }\n' >>"$fixture/edge-a/Cargo.toml"
     printf '[dependencies]\nedge-c = { path = "../edge-c" }\n' >>"$fixture/edge-b/Cargo.toml"
     manifest="$fixture/Cargo.toml"
-    forbid edge-a edge-c 2>/dev/null
-    if [ "$fail" -eq 0 ]; then
+    if ! has_dep edge-a edge-c; then
         echo "FAIL: self-test missed the transitive edge edge-a -> edge-b -> edge-c" >&2
         exit 1
     fi
