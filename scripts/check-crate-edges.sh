@@ -83,6 +83,21 @@ if [ "${1:-}" = "--self-test" ]; then
         exit 1
     fi
     echo "ok: self-test caught the transitive edge edge-a -> edge-b -> edge-c"
+    # forbid() must turn both a hit and a cargo failure into a gate failure. The hit case is only
+    # meaningful after has_dep above has shown cargo works on the fixture.
+    fail=0
+    forbid edge-a edge-c 2>/dev/null
+    if [ "$fail" -ne 1 ]; then
+        echo "FAIL: self-test: forbid() did not fail on a forbidden edge" >&2
+        exit 1
+    fi
+    fail=0
+    forbid no-such-crate edge-c 2>/dev/null
+    if [ "$fail" -ne 1 ]; then
+        echo "FAIL: self-test: forbid() did not fail when cargo tree failed" >&2
+        exit 1
+    fi
+    echo "ok: self-test saw forbid() fail on a forbidden edge and on a cargo tree failure"
     echo "== crate-edges self-test: OK =="
     exit 0
 fi
