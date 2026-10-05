@@ -16,7 +16,8 @@ Run these passes and tag every finding with its pass:
 ## Repo focus (from AGENTS.md)
 
 - **Crate direction**: `hwp-model` depends on no other internal crate; `hwp5` and `hwpx` never depend
-  on each other and go through the IR.
+  on each other and go through the IR; `hwp-convert` and `hwp-render` never depend on each other.
+  These are normal-dependency edges; dev-dependencies are allowed.
 - **Lossless round-trip**: hwp5 -> hwp5 identity re-serialization stays byte-identical; unknown
   records are preserved as `OpaqueRecord`, never dropped.
 - **Ground truth, no guessing**: format behavior is established against bytes written by Hangul, and
