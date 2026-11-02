@@ -8,6 +8,7 @@ policy in `AGENTS.md`.
 Run these passes and tag every finding with its pass:
 
 - **Bugs**: logic errors, broken edge cases, regressions in parsing, writing, rendering, or conversion.
+- Error messages: a new or changed error, refusal or failure message a person or agent sees names the cause (what failed and why) and the next step (the command, setting or target that fixes it). When secrets, ids or paths must stay out, it names the cause class and how to check it. A message missing either is a finding; Important when it is the only signal of a blocked action (a CLI exit, a refused tool call), otherwise a nit.
 - **Security**: path traversal on archive entries, unchecked sizes and offsets on untrusted input,
   panics reachable from a malformed document, secrets or absolute local paths in committed files.
 - **Compliance**: the change matches the issue spec and the approved plan, and respects the
