@@ -10,6 +10,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- Cache-less HWPX and synthesized HWP5 rendering share table-cell line geometry and honor
+  paragraph line spacing. Synthesized floating-table anchors now follow the renderer's legal
+  row/cell fragments, including the final fragment's page-relative cursor, and explicit page
+  breaks restart the body cache. Saved line caches and untouched HWP5 bytes retain their
+  existing paths. With the pinned #410 font, the synthetic probe now renders as four pages
+  in both formats; the previous HWPX eight-page result used fixed 160% fallback spacing despite
+  its declared 120%. This is native-render evidence, with Hancom Office opening unverified
+  ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
+
 ## [1.3.1]
 
 **Fixed**

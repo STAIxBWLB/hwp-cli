@@ -847,7 +847,7 @@ pub fn layout_document(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) -> DisplayList {
-    layout_document_inner(doc, store, warnings, &mut SegmentRecorder::disabled())
+    layout_document_inner(doc, store, warnings, &mut SegmentRecorder::disabled(), None)
 }
 
 /// Lays the document out **and** records where each source segment landed, as the
@@ -863,8 +863,27 @@ pub fn layout_document_with_segments(
     warnings: &mut RenderIssueAccumulator,
 ) -> (DisplayList, SegmentMap) {
     let mut rec = SegmentRecorder::new();
-    let list = layout_document_inner(doc, store, warnings, &mut rec);
+    let list = layout_document_inner(doc, store, warnings, &mut rec, None);
     (list, rec.finish())
+}
+
+/// Obtain body anchors from the same flow that plans floating-table fragments.
+/// The caller supplies cell caches and clears body caches before this measurement.
+pub(crate) fn synthesized_body_anchors(doc: &Document, store: &mut FontStore) -> Vec<Vec<i32>> {
+    let mut anchors: Vec<Vec<i32>> = doc
+        .sections
+        .iter()
+        .map(|section| vec![0; section.paragraphs.len()])
+        .collect();
+    let mut warnings = RenderIssueAccumulator::new();
+    layout_document_inner(
+        doc,
+        store,
+        &mut warnings,
+        &mut SegmentRecorder::disabled(),
+        Some(&mut anchors),
+    );
+    anchors
 }
 
 fn layout_document_inner(
@@ -872,12 +891,13 @@ fn layout_document_inner(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
+    anchors: Option<&mut [Vec<i32>]>,
 ) -> DisplayList {
     // Memoized cell heights are keyed by addresses inside `doc`; never let one
     // document's entries answer for another's, and do not keep them past the
     // borrow (#321).
     store.measured_cells.clear();
-    let list = layout_document_pages(doc, store, warnings, rec);
+    let list = layout_document_pages(doc, store, warnings, rec, anchors);
     store.measured_cells.clear();
     list
 }
@@ -887,6 +907,7 @@ fn layout_document_pages(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
+    mut anchors: Option<&mut [Vec<i32>]>,
 ) -> DisplayList {
     let mut pages = Vec::new();
     let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
@@ -1137,8 +1158,12 @@ fn layout_document_pages(
             let mut bg_slice_col_x = 0.0f32;
             let mut bg_first_slice = true;
 
+            if let Some(anchors) = anchors.as_deref_mut() {
+                anchors[section_index][para_index] =
+                    ((content_bottom + geom.spacing_top - body_top) * 100.0).round() as i32;
+            }
             if para.line_segs.is_empty() {
-                // 폴백: 본문 폭에서 그리디 줄바꿈
+                // Greedy body layout uses the same metrics as synthesized caches.
                 // Set when the greedy wrap itself crossed a page boundary (#282).
                 let mut para_split = false;
                 if para.chars.is_empty() {
@@ -1210,7 +1235,12 @@ fn layout_document_pages(
                     // place_wrapped의 우변은 x0 + max_width라, 들여쓴 만큼 폭을 줄여야
                     // 문단 원래 오른쪽 끝(left + avail)이 유지된다.
                     let wrap_width = (left + avail - x0).max(1.0);
-                    let line_advance = max_size * 1.6;
+                    let line_advance = crate::lineseg::paragraph_advance(
+                        doc,
+                        para,
+                        (max_size * 100.0).round() as i32,
+                    ) as f32
+                        / 100.0;
                     let descent = max_size * 0.4;
                     let mut lines: Vec<(usize, f32)> = Vec::new();
                     let last_y = place_wrapped(
@@ -2889,6 +2919,7 @@ fn layout_para_objects(
                         // it stopped.
                         Some(&mut *rec),
                         Some((control_index, range.start)),
+                        false,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -3004,6 +3035,7 @@ fn layout_para_objects(
                             None,
                             Some(&mut *rec),
                             Some((control_index, 0)),
+                            false,
                         );
                         flow_end = flow_end.max(inner);
                     } else {
@@ -3039,6 +3071,7 @@ fn layout_para_objects(
                                 None,
                                 Some(&mut *rec),
                                 Some((control_index, first)),
+                                false,
                             );
                             first += list.paragraphs.len();
                             flow_end = flow_end.max(inner);
@@ -3112,6 +3145,7 @@ fn layout_para_objects(
                         None,
                         Some(&mut *rec),
                         Some((control_index, 0)),
+                        false,
                     );
                     flow_end = flow_end.max(inner);
                 }
@@ -3368,17 +3402,24 @@ fn layout_table(
                 items: Vec::new(),
             };
             let mut scratch_warn = RenderIssueAccumulator::new();
-            let measured = layout_box_paragraphs(
+            let measured = layout_box_para_iter(
                 doc,
                 store,
                 &mut scratch,
-                &cell.paragraphs,
+                cell.paragraphs
+                    .iter()
+                    .map(|para| (para, BoxParaSelection::All)),
                 0.0,
                 0.0,
                 content_w,
                 &mut scratch_warn,
-                None, // 측정 패스: 마커 미표시(counter 미증가)
                 None,
+                None,
+                0,
+                None,
+                None,
+                None,
+                true,
             );
             store.measured_cells.insert(measured_key, measured);
             measured
@@ -4377,6 +4418,7 @@ fn draw_table_cell_fragment(
             Some(cy + ch - mb),
             Some(rec),
             None,
+            true,
         );
     }
 
@@ -4511,6 +4553,7 @@ fn draw_table_rows(
             Some(cy + ch - mb),
             Some(rec),
             None,
+            true,
         );
 
         // 3) Borders (left, right, top, bottom).
@@ -4597,6 +4640,7 @@ fn layout_box_paragraphs(
         // to nothing, and a measurement page is scratch that no page ever receives.
         None,
         None,
+        false,
     )
 }
 
@@ -4646,7 +4690,7 @@ fn layout_box_para_iter<'a>(
     doc: &Document,
     store: &mut FontStore,
     page: &mut PageList,
-    paras: impl Iterator<Item = (&'a Paragraph, BoxParaSelection)>,
+    paras: impl Iterator<Item = (&'a Paragraph, BoxParaSelection)> + Clone,
     origin_x: f32,
     origin_y: f32,
     width: f32,
@@ -4663,10 +4707,16 @@ fn layout_box_para_iter<'a>(
     // the position, across all of its lists, of the first paragraph laid out here. `None`
     // records the paragraphs as a cell's.
     drawing: Option<(usize, usize)>,
+    cacheless_cells: bool,
 ) -> f32 {
     let mut content_bottom = origin_y;
-    // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
+    // Only flow-placed content raises this floor; saved cache positions stay authoritative.
     let mut flow_floor = origin_y;
+    let mut uncached_next_v = v_origin;
+    // A mixed list still uses its saved cache and existing flow-floor contract.
+    // Only wholly cache-less lists receive ephemeral synthesized geometry.
+    let synthesize_uncached =
+        cacheless_cells && paras.clone().all(|(para, _)| para.line_segs.is_empty());
     // Enumerated before the `Empty` skip: the index is the paragraph's own position in the
     // cell, which is what the envelope's path component for it is.
     for (para_index, (para, selection)) in paras.enumerate() {
@@ -4681,6 +4731,26 @@ fn layout_box_para_iter<'a>(
                 None => rec.begin_cell_paragraph(para_index, para, page),
             }
         }
+        let synthesized;
+        let was_uncached = para.line_segs.is_empty();
+        let para = if synthesize_uncached && !para.chars.is_empty() {
+            let mut owned = para.clone();
+            let mut v = (((content_bottom - origin_y) * 100.0).round() as i32 + v_origin)
+                .max(uncached_next_v);
+            owned.line_segs = crate::lineseg::compute_linesegs(
+                store,
+                doc,
+                para,
+                (width * 100.0).round() as i32,
+                i32::MAX,
+                &mut v,
+                warnings,
+            );
+            synthesized = owned;
+            &synthesized
+        } else {
+            para
+        };
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
         // Do not advance a list counter for a completely empty box paragraph.
@@ -4967,6 +5037,11 @@ fn layout_box_para_iter<'a>(
         // would otherwise stack every paragraph of a cell on the first one
         // (#222). No-op for cell-cumulative caches, which already sit below.
         flow_floor = flow_floor.max(content_bottom);
+        if was_uncached && let Some(last) = para.line_segs.last() {
+            uncached_next_v = last
+                .v_pos
+                .saturating_add(crate::lineseg::paragraph_metrics(doc, para).advance);
+        }
     }
     content_bottom
 }

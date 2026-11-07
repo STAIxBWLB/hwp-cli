@@ -31,6 +31,40 @@ pub fn synthesize_linesegs(
     warnings: &mut RenderIssueAccumulator,
 ) {
     let snap = doc.clone();
+    let has_floating_tables = doc
+        .sections
+        .iter()
+        .flat_map(|s| &s.paragraphs)
+        .flat_map(|p| &p.controls)
+        .any(|c| {
+            matches!(c,
+            Control::Table(t) if t.placement.as_ref().is_some_and(|p| !p.treat_as_char))
+        });
+    // Floating tables split at legal row/cell boundaries. Reuse the renderer's
+    // actual final-fragment cursor instead of treating a table as one tall line.
+    // Keep the measured Hancom inline-table advance on its existing path.
+    let flow_anchors = if has_floating_tables {
+        for section in &mut doc.sections {
+            let width = section
+                .section_def()
+                .and_then(|d| d.page.as_ref())
+                .map_or(42520, |pg| {
+                    pg.width.0 - pg.margin_left.0 - pg.margin_right.0
+                });
+            for para in &mut section.paragraphs {
+                fill_nested(para, width, &snap, store, warnings);
+            }
+        }
+        let mut flow = doc.clone();
+        for section in &mut flow.sections {
+            for para in &mut section.paragraphs {
+                para.line_segs.clear();
+            }
+        }
+        Some(crate::layout::synthesized_body_anchors(&flow, store))
+    } else {
+        None
+    };
     for si in 0..doc.sections.len() {
         let page = snap.sections[si]
             .section_def()
@@ -60,17 +94,23 @@ pub fn synthesize_linesegs(
                 .para_shapes
                 .get(snap.sections[si].paragraphs[pi].para_shape.0 as usize)
                 .map_or((0, 0), |ps| (ps.spacing_top, ps.spacing_bottom));
-            if pi > 0 {
+            let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
+            if explicit_break {
+                v_pos = 0;
+            }
+            if pi > 0 && !explicit_break {
                 v_pos += sp_top;
             }
-            // 셀 안 문단 줄 배치를 먼저 채운다(셀 줄 수를 표 높이 계산이 읽어야 한다).
-            fill_nested(
-                &mut doc.sections[si].paragraphs[pi],
-                body_width,
-                &snap,
-                store,
-                warnings,
-            );
+            // Floating-table measurement already populated nested caches.
+            if flow_anchors.is_none() {
+                fill_nested(
+                    &mut doc.sections[si].paragraphs[pi],
+                    body_width,
+                    &snap,
+                    store,
+                    warnings,
+                );
+            }
             // 이 문단의 표 총높이.
             let mut table_total = 0i32;
             for ctrl in &doc.sections[si].paragraphs[pi].controls {
@@ -79,11 +119,18 @@ pub fn synthesize_linesegs(
                 }
             }
             // 표가 현재 페이지 잔여 공간에 안 들어가면 표 전체를 다음 페이지로 내린다.
-            if table_total > 0 && v_pos > 0 && v_pos + table_total > content_h {
+            if flow_anchors.is_none()
+                && table_total > 0
+                && v_pos > 0
+                && v_pos + table_total > content_h
+            {
                 v_pos = 0;
             }
             // 표 앵커 문단의 줄 배치는 진입 시점 커서(=직전 문단 누적 후)에 놓인다.
             // 정품 첫째문단.hwp: 본문 문단(advance 1600) → 표 앵커 문단 v_pos=1600.
+            if let Some(anchors) = &flow_anchors {
+                v_pos = anchors[si][pi];
+            }
             let anchor_v = v_pos;
             let src = &snap.sections[si].paragraphs[pi];
             let segs = compute_linesegs(
@@ -317,19 +364,14 @@ fn source_wchar_len(source: &str) -> u32 {
     })
 }
 
-/// 한 문단의 줄 배치를 계산한다. `v_pos`는 섹션/셀 내 세로 누적 커서.
-/// 빈 문단도 줄 배치 1개를 가진다(한글 본문 표시 전제).
-fn compute_linesegs(
-    store: &mut FontStore,
-    doc: &Document,
-    para: &Paragraph,
-    body_width: i32,
-    content_h: i32,
-    v_pos: &mut i32,
-    warnings: &mut RenderIssueAccumulator,
-) -> Vec<LineSeg> {
-    // 줄 높이/간격은 문단 첫 글자 모양의 기준 크기에서 유도(정품 가나다 실측:
-    // line_height=base, baseline_gap=base*0.85, line_spacing=base*0.6=줄간격 160%).
+/// Shared fallback and cache metrics, in HWPUNIT.
+pub(crate) struct ParagraphMetrics {
+    pub height: i32,
+    pub advance: i32,
+    pub baseline_gap: i32,
+}
+
+pub(crate) fn paragraph_metrics(doc: &Document, para: &Paragraph) -> ParagraphMetrics {
     let base = para
         .char_shape_runs
         .first()
@@ -338,23 +380,48 @@ fn compute_linesegs(
             1000,
             |cs| if cs.base_size > 0 { cs.base_size } else { 1000 },
         );
-    // Derive synthesized line spacing from the version-aware ParaShape fields
-    // (GG-18, specification table 46). Length-based modes serialize at twice
-    // the HWPUNIT value. An unspecified percentage retains the observed 160% default.
-    let (line_advance, line_spacing) = {
-        let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
-        let ls_type = ps.map_or(0, |p| p.line_spacing_type);
-        let ls_val = ps.map_or(0, |p| {
-            if p.line_spacing_type != 0 || p.line_spacing != 0 {
-                p.line_spacing
-            } else {
-                p.line_spacing_old
-            }
-        });
-        let advance = line_advance_hu(base, ls_type, ls_val);
-        (advance, advance.saturating_sub(base).max(0))
-    };
+    let advance = paragraph_advance(doc, para, base);
     let baseline_gap = (i64::from(base) * 85 / 100).clamp(0, i64::from(i32::MAX)) as i32;
+    ParagraphMetrics {
+        height: base,
+        advance,
+        baseline_gap,
+    }
+}
+
+// Derive synthesized line spacing from the version-aware ParaShape fields
+// (GG-18, specification table 46). Length-based modes serialize at twice
+// the HWPUNIT value. An unspecified percentage retains the observed 160% default.
+pub(crate) fn paragraph_advance(doc: &Document, para: &Paragraph, base: i32) -> i32 {
+    let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
+    let ls_type = ps.map_or(0, |p| p.line_spacing_type);
+    let ls_val = ps.map_or(0, |p| {
+        if p.line_spacing_type != 0 || p.line_spacing != 0 {
+            p.line_spacing
+        } else {
+            p.line_spacing_old
+        }
+    });
+    line_advance_hu(base, ls_type, ls_val)
+}
+
+/// Compute one paragraph's cache using a page-relative or cell-local cursor.
+/// Empty paragraphs still receive one line, as required by the HWP5 writer.
+pub(crate) fn compute_linesegs(
+    store: &mut FontStore,
+    doc: &Document,
+    para: &Paragraph,
+    body_width: i32,
+    content_h: i32,
+    v_pos: &mut i32,
+    warnings: &mut RenderIssueAccumulator,
+) -> Vec<LineSeg> {
+    // Preserve the measured height/baseline formula and the paragraph's line spacing.
+    let metrics = paragraph_metrics(doc, para);
+    let base = metrics.height;
+    let line_advance = metrics.advance;
+    let line_spacing = line_advance.saturating_sub(base).max(0);
+    let baseline_gap = metrics.baseline_gap;
     let seg_width = body_width.max(1);
     // 줄 폭은 렌더러가 줄 안에서 주는 들여쓰기(layout::line_indents)만큼 좁다:
     // 들여쓰기(양수)는 첫 줄, 내어쓰기(음수)는 둘째 줄부터. 여기서 빼지 않으면
