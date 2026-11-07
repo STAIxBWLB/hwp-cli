@@ -38,8 +38,8 @@ fn synthetic_form_breaks_restart_page_relative_cache() {
     run(&["compose","probe.json","-o","probe.hwpx"], &dir);
     run(&["edit","probe.hwpx","-o","probe.hwpx","--table-placement","floating","--verify"], &dir);
     run(&["convert","probe.hwpx","-o","probe.hwp","--strict","--loss-report","loss.json"], &dir);
-    let before = hwpx::read_document(dir.join("probe.hwpx")).unwrap();
-    let after = hwp5::read_document(dir.join("probe.hwp")).unwrap().document;
+    let before = hwpx::read_document(&dir.join("probe.hwpx")).unwrap().document;
+    let after = hwp5::read_document(&dir.join("probe.hwp")).unwrap().document;
     let source_paras = &before.sections[0].paragraphs;
     let output_paras = &after.sections[0].paragraphs;
     assert_eq!(source_paras.len(), output_paras.len());
