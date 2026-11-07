@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)
+  and `--locked`, with `cargo-zigbuild` 0.23.4 and zig 0.16.0 pinned. The release `verify-ci`
+  gate now waits (up to 45 minutes) for a tag commit's still-running CI instead of failing, and
+  every release archive and checksum file carries a build provenance attestation
+  (`gh attestation verify <asset> -R STAIxBWLB/hwp-cli`)
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+
 ## [1.3.1]
 
 **Fixed**

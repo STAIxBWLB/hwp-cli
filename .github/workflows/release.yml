@@ -27,7 +27,7 @@ permissions:
   contents: write
   pull-requests: write
   checks: read # verify-ci reads the tagged commit's check runs
-  actions: read # verify-ci reads the readiness run cited by the CHANGELOG
+  actions: read # verify-ci reads the readiness run cited by the CHANGELOG and polls CI runs
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,9 +42,14 @@ jobs:
   # absent or skipped (the dedup signature): a failed, cancelled or pending own job must
   # never be overridden by earlier PR evidence. The job names below must stay in sync with
   # ci.yml.
+  #
+  # A tag pushed right after the merge used to fail here because the tagged commit's CI was
+  # still running (v1.2.0, #412). The gate now polls: while a CI workflow run for the commit is
+  # unfinished, or any gate job is queued/in progress, it waits and re-reads, up to
+  # CI_WAIT_DEADLINE seconds. Only settled states are judged, so the rules below are unchanged.
   verify-ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,6 +59,7 @@ jobs:
       - name: Tagged commit has green CI
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_WAIT_DEADLINE: "2700" # seconds; inside the job's 60-minute timeout
         run: |
           set -euo pipefail
           expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
@@ -70,7 +76,26 @@ jobs:
             done
             return "$failed"
           }
-          runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100")"
+          # Poll until CI on the tagged commit has settled: no ci.yml run for the commit is
+          # unfinished and no gate job is queued or in progress. The dedup case settles too
+          # (its decision job finishes and the matrix stays absent/skipped).
+          deadline=$(( $(date +%s) + ${CI_WAIT_DEADLINE:-2700} ))
+          while :; do
+            runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100")"
+            pending_jobs="$(jq -r --argjson names "$(printf '%s\n' "${expected[@]}" | jq -R . | jq -s .)" \
+              '[.check_runs[] | select(.name as $n | $names | index($n)) | select(.status != "completed")] | length' <<<"$runs")"
+            pending_wf="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=20" \
+              --jq '[.workflow_runs[] | select(.status != "completed")] | length')"
+            if [ "$pending_jobs" = "0" ] && [ "$pending_wf" = "0" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::CI on $GITHUB_SHA is still running after the wait deadline. Re-run this workflow once it settles."
+              exit 1
+            fi
+            echo "CI on $GITHUB_SHA not settled yet (pending gate jobs: $pending_jobs, unfinished CI runs: $pending_wf); waiting 30s"
+            sleep 30
+          done
           all_green=true
           fallback_ok=true
           for name in "${expected[@]}"; do
@@ -208,20 +233,26 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      # Release binaries build on stable (latest optimizations); MSRV compatibility is
-      # already guaranteed by CI, which builds and tests on the pinned MSRV toolchain.
-      - uses: dtolnay/rust-toolchain@stable
+      # Release binaries build with the toolchain CI tested (rust-toolchain.toml, which
+      # rustup honors for every cargo call in this checkout), not a floating @stable (#412).
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
       # Ahead of the action, whose own fallback is a bare `pip3 install` that PEP 668
-      # rejects on ubuntu-24.04. The PyPI package depends on `ziglang`, so this also
-      # provides zig — no separate toolchain step.
+      # rejects on ubuntu-24.04. Both versions are pinned (the ones v1.3.x shipped with), so
+      # a new cargo-zigbuild or zig release cannot change a release build unannounced.
       - if: matrix.build-tool == 'cargo-zigbuild'
-        run: pip3 install --break-system-packages cargo-zigbuild
+        run: pip3 install --break-system-packages cargo-zigbuild==0.23.4 ziglang==0.16.0
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: hwp
           target: ${{ matrix.target }}
           # Empty for the native targets — the action then picks its own default.
           build-tool: ${{ matrix.build-tool }}
+          # Build exactly the dependency set in Cargo.lock that CI tested.
+          locked: true
           archive: $bin-$tag-$target
           # The binary carries third-party code under its own notice (NOTICE: kordoc, MIT),
           # so the licenses travel with it. Next to the binary at the archive root, where
@@ -274,8 +305,37 @@ jobs:
   # Everything is uploaded and gated — make the release public. Any earlier job failing
   # leaves the release a draft, so a broken or serverless-incompatible asset is never the
   # release install.sh and `hwp update` resolve to.
-  publish-release:
+  # Build provenance for every archive and checksum file on the draft release (the platform
+  # archives and the skill bundle), so `gh attestation verify <asset> -R STAIxBWLB/hwp-cli`
+  # ties a download to this workflow run. Runs before publish, so a release is never public
+  # without its attestations.
+  attest:
     needs: skill-bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern '*.tar.gz' --pattern '*.zip' --pattern '*.sha256'
+          ls -l assets
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            assets/*.tar.gz
+            assets/*.zip
+            assets/*.sha256
+
+  publish-release:
+    needs: [skill-bundle, attest]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
