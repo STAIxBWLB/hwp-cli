@@ -12,8 +12,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
-- Cache-less HWPX and synthesized HWP5 rendering share table-cell line geometry and honor
-  paragraph line spacing. Synthesized floating-table anchors now follow the renderer's legal
+- Cache-less HWPX and synthesized HWP5 rendering share table-cell line geometry, paragraph
+  margins and spacing. Regenerated cell minima retain final paragraph after-spacing. Synthesized floating-table anchors now follow the renderer's legal
   row/cell fragments, including the final fragment's page-relative cursor, and explicit page
   breaks restart the body cache. Saved line caches and untouched HWP5 bytes retain their
   existing paths. With the pinned #410 font, the synthetic probe now renders as four pages

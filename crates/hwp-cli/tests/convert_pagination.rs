@@ -29,7 +29,7 @@ fn run(args: &[&str], dir: &Path) -> Vec<u8> {
     output.stdout
 }
 
-fn layout(doc: &Document) -> SegmentMap {
+fn layout(doc: &Document) -> (SegmentMap, String) {
     let mut store = hwp_render::FontStore::new();
     if let Some(font_dir) = std::env::var_os("HWP_FONT_DIR") {
         store.load_dir(Path::new(&font_dir));
@@ -43,12 +43,52 @@ fn layout(doc: &Document) -> SegmentMap {
         store.resolutions
     );
     assert!(!map.truncated);
-    map
+    let mut drawn = String::new();
+    for item in display.pages.iter().flat_map(|page| &page.items) {
+        if let hwp_render::display::Item::Glyphs { run, .. } = item {
+            drawn.push_str(&run.text);
+        }
+    }
+    (map, drawn)
 }
 
 fn assert_anchors_match(before: &Document, after: &Document) {
-    let before_map = layout(before);
-    let after_map = layout(after);
+    let (before_map, before_text) = layout(before);
+    let (after_map, after_text) = layout(after);
+    // The CLI text check below covers marker retention without any font. If the
+    // host draws glyphs, also forbid suffix duplication in multiline cell layout.
+    let rows = before.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            hwp_model::Control::Table(t) => Some(t.rows),
+            _ => None,
+        })
+        .unwrap();
+    for drawn in [&before_text, &after_text] {
+        if before_text.is_empty() && after_text.is_empty() {
+            continue;
+        }
+        for n in 0..4 {
+            for j in 0..rows {
+                let marker = format!("Second paragraph with an explicit test marker {n}-{j}");
+                let count = drawn
+                    .match_indices(&marker)
+                    .filter(|(at, _)| {
+                        drawn[at + marker.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(|ch| !ch.is_ascii_digit())
+                    })
+                    .count();
+                assert!(
+                    count == 1,
+                    "drawn marker must survive exactly once: {marker} count={count}"
+                );
+            }
+        }
+    }
     for (pi, paragraph) in before.sections[0].paragraphs.iter().enumerate() {
         let address = hwp_render::segment_id::SegmentPath {
             section: 0,

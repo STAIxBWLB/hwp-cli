@@ -3223,7 +3223,7 @@ fn layout_para_objects(
 }
 
 /// 셀 여백 (왼/오른/위/아래) pt — 셀 지정 → 표 기본 → 한글 기본.
-fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
+pub(crate) fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
     // HWP5 uses 0xffff in a cell LIST_HEADER to mean "use the table
     // default".  It is important that the sentinel remains in the IR for a
     // lossless hwp5 -> hwp5 round trip, so resolve it only at render time.
@@ -4733,28 +4733,25 @@ fn layout_box_para_iter<'a>(
         }
         let synthesized;
         let was_uncached = para.line_segs.is_empty();
-        let para = if synthesize_uncached && !para.chars.is_empty() {
-            let mut owned = para.clone();
+        let line_segs = if synthesize_uncached && !para.chars.is_empty() {
             let mut v = (((content_bottom - origin_y) * 100.0).round() as i32 + v_origin)
                 .max(uncached_next_v);
-            owned.line_segs = crate::lineseg::compute_linesegs(
+            synthesized = crate::lineseg::compute_box_linesegs(
                 store,
                 doc,
                 para,
                 (width * 100.0).round() as i32,
-                i32::MAX,
                 &mut v,
                 warnings,
             );
-            synthesized = owned;
-            &synthesized
+            synthesized.as_slice()
         } else {
-            para
+            para.line_segs.as_slice()
         };
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
         // Do not advance a list counter for a completely empty box paragraph.
-        let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
+        let marker = if line_segs.is_empty() && para.chars.is_empty() {
             None
         } else {
             list_state
@@ -4762,7 +4759,7 @@ fn layout_box_para_iter<'a>(
                 .and_then(|ls| ls.marker_for_render(doc, para))
         };
 
-        if para.line_segs.is_empty() {
+        if line_segs.is_empty() {
             if para.chars.is_empty() {
                 content_bottom += 12.0;
             } else {
@@ -4835,11 +4832,11 @@ fn layout_box_para_iter<'a>(
             // 폴백(캐시 없는) 문단은 흐름 배치 — 이후 캐시 문단이 넘지 않게 바닥을 올린다.
             flow_floor = flow_floor.max(content_bottom);
         } else {
-            let last_content = last_content_seg(para);
+            let last_content = last_content_seg_in(para, line_segs);
             let selected = match &selection {
-                BoxParaSelection::All => 0..para.line_segs.len(),
+                BoxParaSelection::All => 0..line_segs.len(),
                 BoxParaSelection::Segments(range) => {
-                    range.start.min(para.line_segs.len())..range.end.min(para.line_segs.len())
+                    range.start.min(line_segs.len())..range.end.min(line_segs.len())
                 }
                 BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
             };
@@ -4848,7 +4845,7 @@ fn layout_box_para_iter<'a>(
             // Clamping each line to the floor on its own would fold every line
             // of the paragraph onto the floor and re-create the overlap this
             // guard exists to remove (#222). Zero for a well-formed cache.
-            let para_shift = para.line_segs.get(selected.start).map_or(0.0, |first| {
+            let para_shift = line_segs.get(selected.start).map_or(0.0, |first| {
                 let v_pos = first.v_pos.saturating_sub(v_origin);
                 let stored = origin_y + (v_pos + first.baseline_gap) as f32 / 100.0;
                 (flow_floor + first.baseline_gap as f32 / 100.0 - stored).max(0.0)
@@ -4860,10 +4857,9 @@ fn layout_box_para_iter<'a>(
             let mut run_shift = 0.0f32;
             let mut previous_v: Option<i32> = None;
             for i in selected {
-                let seg = &para.line_segs[i];
+                let seg = &line_segs[i];
                 let line_start = seg.text_start;
-                let line_end = para
-                    .line_segs
+                let line_end = line_segs
                     .get(i + 1)
                     .map_or(para.wchar_len(), |next| next.text_start);
                 if line_end <= line_start {
@@ -4959,7 +4955,7 @@ fn layout_box_para_iter<'a>(
                 );
                 let x = box_x + indent + shift;
                 // 본문 경로와 같은 규칙 (`CACHE_OVERFLOW_TOLERANCE`).
-                let wrap_width = if para.line_segs.len() == 1
+                let wrap_width = if line_segs.len() == 1
                     && natural_width > text_width * CACHE_OVERFLOW_TOLERANCE
                 {
                     text_width.max(4.0)
@@ -5037,10 +5033,16 @@ fn layout_box_para_iter<'a>(
         // would otherwise stack every paragraph of a cell on the first one
         // (#222). No-op for cell-cumulative caches, which already sit below.
         flow_floor = flow_floor.max(content_bottom);
-        if was_uncached && let Some(last) = para.line_segs.last() {
-            uncached_next_v = last
-                .v_pos
-                .saturating_add(crate::lineseg::paragraph_metrics(doc, para).advance);
+        if synthesize_uncached && was_uncached {
+            let spacing_bottom = para_geometry(doc, para).spacing_bottom;
+            content_bottom += spacing_bottom;
+            flow_floor = flow_floor.max(content_bottom);
+            if let Some(last) = line_segs.last() {
+                uncached_next_v = last
+                    .v_pos
+                    .saturating_add(crate::lineseg::paragraph_metrics(doc, para).advance)
+                    .saturating_add((spacing_bottom * 100.0).round() as i32);
+            }
         }
     }
     content_bottom
@@ -5124,15 +5126,16 @@ fn prefix_sums(values: &[f32], start: f32) -> Vec<f32> {
 
 /// 문단에서 텍스트가 있는(line_end>line_start) 마지막 seg 인덱스. 빈 trailing seg 방어.
 fn last_content_seg(para: &Paragraph) -> usize {
-    let n = para.line_segs.len();
+    last_content_seg_in(para, &para.line_segs)
+}
+
+fn last_content_seg_in(para: &Paragraph, segs: &[hwp_model::LineSeg]) -> usize {
+    let n = segs.len();
     (0..n)
         .rev()
         .find(|&j| {
-            let ls = para.line_segs[j].text_start;
-            let le = para
-                .line_segs
-                .get(j + 1)
-                .map_or(para.wchar_len(), |s| s.text_start);
+            let ls = segs[j].text_start;
+            let le = segs.get(j + 1).map_or(para.wchar_len(), |s| s.text_start);
             le > ls
         })
         .unwrap_or(n.saturating_sub(1))

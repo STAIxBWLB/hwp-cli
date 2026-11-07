@@ -31,19 +31,23 @@ pub fn synthesize_linesegs(
     warnings: &mut RenderIssueAccumulator,
 ) {
     let snap = doc.clone();
-    let has_floating_tables = doc
+    let floating_sections: Vec<bool> = doc
         .sections
         .iter()
-        .flat_map(|s| &s.paragraphs)
-        .flat_map(|p| &p.controls)
-        .any(|c| {
-            matches!(c,
+        .map(|section| {
+            section
+                .paragraphs
+                .iter()
+                .flat_map(|p| &p.controls)
+                .any(|c| {
+                    matches!(c,
             Control::Table(t) if t.placement.as_ref().is_some_and(|p| !p.treat_as_char))
-        });
-    // Floating tables split at legal row/cell boundaries. Reuse the renderer's
-    // actual final-fragment cursor instead of treating a table as one tall line.
-    // Keep the measured Hancom inline-table advance on its existing path.
-    let flow_anchors = if has_floating_tables {
+                })
+        })
+        .collect();
+    // Floating-table sections reuse the renderer's legal row/cell fragment flow.
+    // Other sections keep their measured Hancom inline-table advance.
+    let flow_anchors = if floating_sections.iter().any(|floating| *floating) {
         for section in &mut doc.sections {
             let width = section
                 .section_def()
@@ -66,6 +70,7 @@ pub fn synthesize_linesegs(
         None
     };
     for si in 0..doc.sections.len() {
+        let section_anchors = flow_anchors.as_ref().filter(|_| floating_sections[si]);
         let page = snap.sections[si]
             .section_def()
             .and_then(|d| d.page.as_ref());
@@ -102,7 +107,7 @@ pub fn synthesize_linesegs(
                 v_pos += sp_top;
             }
             // Floating-table measurement already populated nested caches.
-            if flow_anchors.is_none() {
+            if section_anchors.is_none() {
                 fill_nested(
                     &mut doc.sections[si].paragraphs[pi],
                     body_width,
@@ -119,7 +124,7 @@ pub fn synthesize_linesegs(
                 }
             }
             // 표가 현재 페이지 잔여 공간에 안 들어가면 표 전체를 다음 페이지로 내린다.
-            if flow_anchors.is_none()
+            if section_anchors.is_none()
                 && table_total > 0
                 && v_pos > 0
                 && v_pos + table_total > content_h
@@ -128,7 +133,7 @@ pub fn synthesize_linesegs(
             }
             // 표 앵커 문단의 줄 배치는 진입 시점 커서(=직전 문단 누적 후)에 놓인다.
             // 정품 첫째문단.hwp: 본문 문단(advance 1600) → 표 앵커 문단 v_pos=1600.
-            if let Some(anchors) = &flow_anchors {
+            if let Some(anchors) = section_anchors {
                 v_pos = anchors[si][pi];
             }
             let anchor_v = v_pos;
@@ -180,10 +185,13 @@ fn fill_nested(
                         warnings,
                     );
                 }
-                for cell in &mut t.cells {
-                    let w =
-                        (cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]))
-                            .max(1);
+                let margins: Vec<_> = t
+                    .cells
+                    .iter()
+                    .map(|cell| crate::layout::cell_margins(t, cell))
+                    .collect();
+                for (cell, (ml, mr, mt, mb)) in t.cells.iter_mut().zip(margins) {
+                    let w = (cell.width.0 - ((ml + mr) * 100.0).round() as i32).max(1);
                     // 셀은 기존 동작대로 항상 재계산한다 — 셀 줄 수가 표 높이의 입력이고,
                     // 편집으로 낡은 줄 배치를 그대로 두면 표가 어긋난다.
                     fill_list(
@@ -195,6 +203,7 @@ fn fill_nested(
                         store,
                         warnings,
                     );
+                    materialize_cell_after_spacing(cell, snap, mt, mb);
                 }
             }
             Control::Picture(pic) => {
@@ -246,6 +255,26 @@ fn fill_nested(
     }
 }
 
+/// A following cache line records paragraph gaps; the last gap needs a cell floor.
+/// This runs only while regenerating cells, leaving saved-cache rendering unchanged.
+fn materialize_cell_after_spacing(cell: &mut hwp_model::Cell, doc: &Document, mt: f32, mb: f32) {
+    let Some(last) = cell.paragraphs.last() else {
+        return;
+    };
+    let after = doc
+        .header
+        .para_shapes
+        .get(last.para_shape.0 as usize)
+        .map_or(0, |p| p.spacing_bottom.max(0) / 2);
+    if after == 0 {
+        return;
+    }
+    let minimum = para_line_block(last)
+        .saturating_add(after)
+        .saturating_add(((mt + mb) * 100.0).round() as i32);
+    cell.height.0 = cell.height.0.max(minimum);
+}
+
 /// 캡션 본문 폭. `None`은 "여백까지 넓힘"이라 본문 폭으로 본다.
 fn caption_width(width: Option<u32>, body_width: i32) -> i32 {
     width
@@ -274,7 +303,7 @@ fn fill_list(
         }
         // 리스트 안쪽은 페이지 분할 안 함(content_h=MAX): 페이지 넘침은 표/개체
         // 단위로 synthesize_linesegs가 처리한다.
-        let segs = compute_linesegs(store, snap, para, width, i32::MAX, &mut v, warnings);
+        let segs = compute_box_linesegs(store, snap, para, width, &mut v, warnings);
         para.line_segs = segs;
     }
 }
@@ -403,6 +432,35 @@ pub(crate) fn paragraph_advance(doc: &Document, para: &Paragraph, base: i32) -> 
         }
     });
     line_advance_hu(base, ls_type, ls_val)
+}
+
+/// Cell-local geometry includes paragraph margins and additive before/after spacing.
+pub(crate) fn compute_box_linesegs(
+    store: &mut FontStore,
+    doc: &Document,
+    para: &Paragraph,
+    width: i32,
+    v: &mut i32,
+    warnings: &mut RenderIssueAccumulator,
+) -> Vec<LineSeg> {
+    let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
+    let left = ps.map_or(0, |p| p.margin_left.max(0) / 2);
+    let right = ps.map_or(0, |p| p.margin_right.max(0) / 2);
+    *v = v.saturating_add(ps.map_or(0, |p| p.spacing_top.max(0) / 2));
+    let mut segs = compute_linesegs(
+        store,
+        doc,
+        para,
+        width.saturating_sub(left).saturating_sub(right).max(1),
+        i32::MAX,
+        v,
+        warnings,
+    );
+    for seg in &mut segs {
+        seg.col_start = left;
+    }
+    *v = v.saturating_add(ps.map_or(0, |p| p.spacing_bottom.max(0) / 2));
+    segs
 }
 
 /// Compute one paragraph's cache using a page-relative or cell-local cursor.
