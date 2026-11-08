@@ -6,6 +6,26 @@ use super::{
 use hwp_model::{Control, Document, HwpChar, HwpUnit, Paragraph};
 
 #[test]
+fn prepare_refuses_inconsistent_totals_before_any_clone_or_splice() {
+    let mut doc = document();
+    doc.sections[0].paragraphs[1] = paragraph("{{ key }}");
+    let item = occurrence(&doc, "placeholder", "key");
+    let (mut plan, values) = plan(&doc, &item, "1", true);
+    plan.constraints
+        .push(super::contract::BindingConstraint::Sum {
+            keys: vec!["literal-key".into(), "literal-key".into()],
+            total: "literal-key".into(),
+        });
+    let before = doc.clone();
+    let error = prepare_binding_plan(&doc, &source_hash(), &plan, &values)
+        .err()
+        .expect("a supplied total must match the checked sum");
+    assert!(error.contains("규칙 0"));
+    assert!(!error.contains("literal-key"));
+    assert_eq!(doc, before);
+}
+
+#[test]
 fn prepare_apply_refuses_intervening_binary_and_preview_changes_omitted_by_json() {
     for preview in [false, true] {
         let mut doc = document();
