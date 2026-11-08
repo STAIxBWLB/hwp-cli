@@ -5033,6 +5033,37 @@ mod tests {
         }
     }
 
+    /// PR #442's HWPX writer emits CHAR only for kind bits 1, and its reader restores 1.
+    /// Losing that distinction must fail verification even if all shape references match.
+    #[test]
+    fn hwpx_projection_preserves_stated_character_vs_paragraph_style_kind() {
+        let mut paragraph = hwp_convert::from_markdown("Style kind probe.");
+        paragraph.header.styles[0].attr = 0;
+        let mut character = paragraph.clone();
+        character.header.styles[0].attr = 1;
+        let signature = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwpx));
+        assert_ne!(
+            signature(&paragraph),
+            signature(&character),
+            "HWPX verification must detect a CHAR-to-PARA substitution"
+        );
+
+        let mut metadata = character.clone();
+        metadata.header.styles[0].attr = 0xa1;
+        assert_eq!(
+            signature(&character),
+            signature(&metadata),
+            "HWPX stores kind bits, not unrelated HWP5 attr metadata"
+        );
+        let mut reserved = paragraph.clone();
+        reserved.header.styles[0].attr = 7;
+        assert_eq!(
+            signature(&paragraph),
+            signature(&reserved),
+            "PR #442's writer emits PARA for reserved kind bits"
+        );
+    }
+
     #[test]
     fn canonical_semantics_cover_page_sections_resources_and_pass_through() {
         let base = hwp_convert::from_markdown("본문");
