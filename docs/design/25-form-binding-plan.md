@@ -32,6 +32,7 @@ pass. Pagination/style work belongs to #420 and the complete workflow to #421.
 | `table_id`, `table_index`, `row`, `col` | Nullable containing-table identity, discovery table ordinal and owning cell origin; merged covered coordinates are not separate owners |
 | `start`, `end` | Half-open `Paragraph::chars` indices, not UTF-8 offsets, WCHAR offsets or rendered Markdown ranges |
 | `label`, `old_text`, `prior_sha256` | Local review evidence, exact prior text and its digest |
+| `label_occurrences`, `label_ambiguous` | Exact same-kind label count (including unsupported occurrences), and whether label-only selection is ambiguous; empty labels have count 0 and explicit IDs remain required |
 | `bindable`, `cause`, `next_step` | Target capability, bounded refusal cause and next action; unsupported occurrences retain IDs and evidence |
 
 Every cell paragraph is an inventory target, not an inferred label-value assignment. Neighboring

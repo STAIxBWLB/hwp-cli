@@ -64,7 +64,8 @@ fn read_bounded(reader: impl std::io::Read, cap: u64) -> anyhow::Result<String> 
 
 /// Read operation input, validate its schema, deserialize OpsEntry, then convert into Op.
 /// Refuse input, schema and semantic-constraint failures with Korean errors. Schema
-/// Legacy violations retain jsonschema wording. Binding-plan failures omit payloads because
+/// Malformed envelopes and binding-bearing failures omit payloads; other legacy violations
+/// retain jsonschema wording. Redaction is required because
 /// values, keys and unknown property names may contain private document content.
 pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     let raw = read_ops_source(path)?;
@@ -146,7 +147,7 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-/// Tag one named-style payload. The transport chooses its operation, not a nested `op`.
+/// Tag one typed MCP payload. The transport chooses its operation, not a nested `op`.
 pub(crate) fn named_style_item(
     mut value: serde_json::Value,
     operation: &str,
@@ -163,8 +164,8 @@ pub(crate) fn named_style_item(
     Ok(value)
 }
 
-/// Publish the same style-item vocabulary over MCP without exposing external schema refs.
-/// Only the three embedded named-style schemas are selected; every local reference is inlined.
+/// Publish an embedded edit-op vocabulary without external schema refs. Named-style callers
+/// use the array wrapper; the compound binding caller takes its inlined item schema.
 pub(crate) fn named_style_schema(operation: &str) -> serde_json::Value {
     use serde_json::Value;
     fn expand(value: &Value, root: &Value, depth: usize) -> Value {

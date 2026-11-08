@@ -32,6 +32,7 @@
 | `table_id`, `table_index`, `row`, `col` | null 가능한 상위 표 식별자·발견 목록의 표 순번·소유 셀 시작 좌표. 병합에 덮인 좌표는 별도 소유 셀이 아님 |
 | `start`, `end` | 반열린 `Paragraph::chars` 인덱스. UTF-8·WCHAR·렌더된 Markdown 오프셋이 아님 |
 | `label`, `old_text`, `prior_sha256` | 로컬 검토 근거, 정확한 이전 텍스트와 다이제스트 |
+| `label_occurrences`, `label_ambiguous` | 미지원 위치를 포함한 같은 종류·동일 레이블 횟수와 레이블 단독 선택의 모호성. 빈 레이블은 0이며 개별 ID는 계속 필수 |
 | `bindable`, `cause`, `next_step` | 대상 지원 여부, 유계 거부 원인과 다음 행동. 미지원 위치도 ID와 근거 유지 |
 
 모든 셀 문단은 목록의 대상이며 추론된 레이블-값 소유 관계가 아니다. `label`의 이웃 셀
