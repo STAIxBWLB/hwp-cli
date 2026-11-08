@@ -1,10 +1,10 @@
-//! `hwp edit` — 기존 문서를 인메모리로 편집해 다시 쓴다.
+//! `hwp edit`: edit an existing document in memory and write it back.
 //!
-//! 원본을 IR로 읽어(이미지·opaque 보존) 텍스트 치환·표 셀 설정을 적용한 뒤
-//! 출력 포맷으로 저장한다. hwp 출력은 합성 경로(`write_hwp_edited`)를 거쳐
-//! 편집으로 낡은 줄 배치·문단 불변식을 다시 세운다. 같은 포맷 hwpx→hwpx는
-//! 패키지 외과 수술 경로(`hwpx::patch::rewrite_document_staged`)로, 편집된
-//! 콘텐츠 엔트리만 재직렬화하고 나머지 엔트리는 raw 복사로 바이트 보존한다.
+//! Read the source into IR, retaining images and opaque data, then apply text replacements
+//! and table-cell edits before saving in the output format. HWP output follows
+//! write_hwp_edited to restore stale line caches and paragraph invariants after edits.
+//! Same-format HWPX uses hwpx::patch::rewrite_document_staged for package surgery:
+//! reserialize edited content entries and raw-copy all other entries byte-for-byte.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -59,11 +59,19 @@ enum EditOperation {
     },
 }
 
-/// MCP처럼 이미 구조화된 호출자가 CLI mini-language를 거치지 않고 전달하는 편집.
+/// Structured edits from callers such as MCP, bypassing the CLI mini-language.
 ///
-/// 문자열 안의 `=>`, `=`, `:`, `@`는 데이터 그대로 유지된다. CLI 전용 문자열
-/// 파서는 `EditOperation`에만 남기고, JSON/MCP 경계에서는 이 타입만 사용한다.
+/// Separators =>, =, : and @ inside strings remain data. Keep CLI-only string parsers
+/// on EditOperation; use this type at JSON/MCP boundaries.
 pub(crate) enum TypedEditOperation {
+    CreateStyle {
+        request: hwp_convert::styles::edit::CreateStyle,
+    },
+    ApplyStyle {
+        address: hwp_convert::address::Address,
+        style: hwp_convert::styles::edit::StyleSelector,
+        clear_direct: bool,
+    },
     Replace {
         from: String,
         to: String,
@@ -246,8 +254,8 @@ pub(crate) enum TypedEditOperation {
         #[allow(dead_code)]
         preset: hwp_convert::OfficialPreset,
     },
-    /// #296: 표 배치 전환(글자처럼 취급 on/off). `table`은 0-기반 재귀 표 인덱스,
-    /// None이면 문서의 모든 표.
+    /// #296: switch table placement (inline treatment on/off). table is a zero-based recursive
+    /// table index; None selects every table in the document.
     SetTablePlacement {
         placement: hwp_convert::TablePlacement,
         table: Option<usize>,
@@ -277,7 +285,7 @@ impl TypedEditOperation {
                 | Self::DeleteTable { .. }
                 | Self::DeleteField { .. }
                 | Self::DeleteBookmark { .. }
-                // 배치 전환은 레이아웃을 바꾸므로 합성 쓰기 경로를 강제한다.
+                // Placement changes layout, so force the synthesis write path.
                 | Self::SetTablePlacement { .. }
         )
     }
@@ -322,10 +330,10 @@ impl EditOperation {
     }
 }
 
-/// CLI 편집 인자를 실행 순서의 타입화된 작업 목록으로 정규화한다.
+/// Normalize CLI edit arguments into typed operations in execution order.
 ///
-/// `EditArgs`를 `..` 없이 해체하고 `EditOperation`을 실행할 때도 전수 매칭하므로,
-/// 새 편집 플래그나 작업 종류를 추가하면 계획·실행을 함께 갱신할 때까지 컴파일되지 않는다.
+/// Destructure EditArgs without .. and exhaustively match EditOperation during execution,
+/// so new edit flags/kinds require updating planning and execution together to compile.
 pub struct EditPlan {
     operations: Vec<EditOperation>,
     typed_operations: Vec<TypedEditOperation>,
@@ -383,6 +391,8 @@ pub struct EditReport {
 /// symmetry), so a consumer never has to learn a second vocabulary for the same op kinds.
 fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
     match operation {
+        TypedEditOperation::CreateStyle { .. } => "create_style",
+        TypedEditOperation::ApplyStyle { .. } => "apply_style",
         TypedEditOperation::Replace { .. } => "replace",
         TypedEditOperation::SetCell { .. } => "set_cell",
         TypedEditOperation::SetCellByLabel { .. } => "set_cell_by_label",
@@ -536,7 +546,7 @@ impl EditPlan {
         let EditArgs {
             input,
             output,
-            // --ops는 from_ops 전용 — 개별 플래그 경로에서는 무의미하다.
+            // --ops is exclusive to from_ops; it has no meaning on the individual-flag path.
             ops: _,
             replace,
             set_cell,
@@ -647,11 +657,11 @@ impl EditPlan {
         )
     }
 
-    /// `--ops` 편집 계획: 연산 파일을 읽어 타입화된 작업 목록으로 정규화한다.
+    /// --ops edit plan: read the operation file and normalize it into typed operations.
     ///
-    /// 파일 읽기·스키마 검증·의미 제약 위반은 [`crate::edit_ops::load_ops`]가
-    /// 한국어 오류로 거부한다. `verify`/`allow_partial`는 개별 플래그 값을 그대로
-    /// 쓴다. `ops`는 `--ops`가 주어진 호출에서만 만들어지므로 Some이 보장된다.
+    /// crate::edit_ops::load_ops refuses read, schema and semantic-constraint failures
+    /// with Korean errors. Keep verify/allow_partial from the individual flags unchanged.
+    /// ops is guaranteed Some because this plan is built only for calls supplying --ops.
     pub fn from_ops(
         args: EditArgs,
     ) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf, Self)> {
@@ -912,9 +922,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         );
     }
 
-    // 고속 경로: hwpx→hwpx이고 --replace뿐이면 패키지 보존 패치로 처리한다(IR 재작성 시
-    // 미리보기·hp:switch 호환 블록·미모델 엔트리가 손실). 한계: <hp:t> 런 분절을
-    // 가로지르는 문자열은 매칭되지 않는다(경고 출력).
+    // Fast path: HWPX-to-HWPX with --replace only uses a package-preserving patch; an IR rewrite
+    // loses previews, hp:switch compatibility blocks and unmodeled entries. Limitation:
+    // strings crossing hp:t run boundaries do not match and produce a warning.
     let replacement_pairs = plan.replacement_pairs()?;
     if let Some(pairs) = replacement_pairs
         && output_format == OutputFormat::Hwpx
@@ -1015,8 +1025,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // per-op) and read via `&mut` reborrows since `paragraph_at_mut` needs mutable access even
     // though every use here is read-only.
     let mut doc_before_typed_ops = (!plan.typed_operations.is_empty()).then(|| doc.clone());
-    // 구조 편집(문단/행 추가·삭제·이미지 삽입)은 합성 경로로 써야 한다 — 삽입 문단/행
-    // 불변식 + 그림 도형 레코드 합성(빈-extras Picture)이 적용되도록.
+    // Structural edits (paragraph/row insertion/deletion and image insertion) require synthesis
+    // to restore inserted paragraph/row invariants and synthesize empty-extras picture records.
     let structural = plan.operations.iter().any(EditOperation::is_structural)
         || plan
             .typed_operations
@@ -1027,8 +1037,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // output is EXPECTED to equal its input byte-for-byte. The generic "no visible effect"
     // publish guard below must not treat that as an error the way it does for a --replace/
     // --set-* request that silently matched nothing. `--table-placement` (#296) follows the
-    // same contract: reapplying an already-applied placement is a byte-identical no-op.
-    let requested_idempotent_table_op = plan.operations.iter().any(|op| {
+    // same contract. Named apply_style (#427) likewise succeeds without rewriting when
+    // the paragraph already has the requested style and direct-format policy.
+    let requested_idempotent_op = plan.operations.iter().any(|op| {
         matches!(
             op,
             EditOperation::StyleTables(_) | EditOperation::SetTablePlacement { .. }
@@ -1036,7 +1047,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     }) || plan.typed_operations.iter().any(|op| {
         matches!(
             op,
-            TypedEditOperation::StyleTables { .. } | TypedEditOperation::SetTablePlacement { .. }
+            TypedEditOperation::StyleTables { .. }
+                | TypedEditOperation::SetTablePlacement { .. }
+                | TypedEditOperation::ApplyStyle { .. }
         )
     });
 
@@ -1119,7 +1132,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     record_effect(&before, &doc, resolved.request, &mut edits, &mut unapplied);
                 }
             }
-            // 누름틀 생성은 set_field보다 먼저 — 같은 호출에서 생성한 필드를 바로 채울 수 있게.
+            // Create form fields before set_field so the same call can immediately fill a new field.
             EditOperation::CreateField(specs) => {
                 for spec in specs {
                     let (anchor, rest) = spec.split_once("=>").with_context(|| {
@@ -1153,7 +1166,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             }
             EditOperation::CreateHyperlink(specs) => {
                 for spec in specs {
-                    // "앵커=>URL"(표시=URL) 또는 "앵커=>표시=>URL". URL 쿼리의 '='와 충돌 없게 "=>"로 분할.
+                    // Parse anchor=>URL (display=URL) or anchor=>display=>URL; split on => to preserve query-string =.
                     let parts: Vec<&str> = spec.split("=>").collect();
                     let (anchor, display, url) = match parts.as_slice() {
                         [a, u] => (*a, *u, *u),
@@ -1687,6 +1700,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut resolved_addresses,
             &mut resolved_move_destinations,
             &mut offsets,
+            output_format,
         )?;
         if tables_before.is_some_and(|before| table_count(&doc) != before) {
             tables_changed_by.get_or_insert(index);
@@ -1722,10 +1736,11 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 operation,
                 TypedEditOperation::StyleTables { .. }
                     | TypedEditOperation::SetTablePlacement { .. }
+                    | TypedEditOperation::ApplyStyle { .. }
             )
         {
-            // #359: a table op whose result is already in effect is a successful no-op
-            // (D-08, #296), not a miss: nothing changed, so nothing was touched.
+            // #359/#427: table styling, placement and named-style reapplication are
+            // successful no-ops when already in effect: no changes mean no pieces touched.
             ops_outcomes.push(OpOutcome {
                 index,
                 op,
@@ -1791,11 +1806,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         }
         .into());
     }
-    // `--style-tables` on an already-styled document legitimately produces zero edits and a
-    // document equal to the original: that IS D-08's guarantee, and refusing to publish would
-    // make the second of two identical runs fail. Every other operation still has to change
-    // something to earn an output.
-    if !requested_idempotent_table_op && (edits == 0 || doc == original_doc) {
+    // Table styling/placement and named apply_style may legitimately produce zero edits
+    // and an unchanged document. Publish these idempotent requests so identical repetition
+    // succeeds; other operations still have to change something to earn an output.
+    if !requested_idempotent_op && (edits == 0 || doc == original_doc) {
         // EDT-06: still leave a diagnosable artifact when `--report`/`--dry-run` was given (a
         // caller needs `ops` to see WHY nothing applied, not just this error string) — write
         // it BEFORE this guard aborts, per the plan's own instruction, rather than after
@@ -2029,7 +2043,8 @@ fn preflight_addressed_ops(
             }
             | TypedEditOperation::MoveParagraph { address, .. }
             | TypedEditOperation::IndentPara { address }
-            | TypedEditOperation::OutdentPara { address } => {
+            | TypedEditOperation::OutdentPara { address }
+            | TypedEditOperation::ApplyStyle { address, .. } => {
                 Some((address, hwp_convert::address::Granularity::Paragraph))
             }
             _ => None,
@@ -2824,7 +2839,9 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         | Op::SetPage { .. } => "no change",
         // These fail with an error rather than an unapplied request; listed so a new op kind
         // has to pick its cause here.
-        Op::InsertImage { .. }
+        Op::CreateStyle { .. }
+        | Op::ApplyStyle { .. }
+        | Op::InsertImage { .. }
         | Op::Seal { .. }
         | Op::MoveParagraph { .. }
         | Op::IndentPara { .. }
@@ -3041,6 +3058,7 @@ fn apply_typed_operation(
         Item = Option<hwp_convert::address::ResolvedTarget>,
     >,
     offsets: &mut IndexOffsets,
+    output_format: OutputFormat,
 ) -> anyhow::Result<()> {
     // One slot per `plan.typed_operations` entry (`preflight_addressed_ops`), consumed in
     // lockstep with this loop regardless of operation kind so the position alignment holds.
@@ -3052,6 +3070,41 @@ fn apply_typed_operation(
         .next()
         .expect("resolved_move_destinations is aligned 1:1 with typed_operations");
     match operation {
+        TypedEditOperation::CreateStyle { request } => {
+            // hwp5/src/write.rs::emit_paragraph narrows StyleId to one byte.
+            // Reject before mutation rather than allowing the writer's narrowing cast.
+            if output_format == OutputFormat::Hwp && doc.header.styles.len() > u8::MAX as usize {
+                anyhow::bail!(
+                    "새 스타일 번호를 HWP의 1바이트 범위에 저장할 수 없습니다. HWPX 출력으로 다시 시도해 보세요"
+                );
+            }
+            let id = hwp_convert::styles::edit::create_style(doc, request)?;
+            eprintln!("스타일 생성: {}", id.0);
+            *edits += 1;
+        }
+        TypedEditOperation::ApplyStyle {
+            style,
+            clear_direct,
+            ..
+        } => {
+            let id = style.resolve(doc)?;
+            if output_format == OutputFormat::Hwp && id.0 > u8::MAX as u16 {
+                anyhow::bail!(
+                    "스타일 번호를 HWP의 1바이트 범위에 저장할 수 없습니다. HWPX 출력으로 다시 시도해 보세요"
+                );
+            }
+            let target = resolved_target.expect("preflight resolved every apply_style address");
+            let current_path = offsets.current_path(&target.path)?;
+            if hwp_convert::styles::edit::apply_style_at(
+                doc,
+                &current_path,
+                &hwp_convert::styles::edit::StyleSelector::Id(id.0),
+                *clear_direct,
+            )? {
+                eprintln!("스타일 적용: {} ({current_path})", id.0);
+                *edits += 1;
+            }
+        }
         TypedEditOperation::Replace { from, to, address } => {
             if from.is_empty() || from == to {
                 unapplied.push(replace_request(from, to));
@@ -3589,8 +3642,8 @@ fn apply_typed_operation(
     Ok(())
 }
 
-/// #296 표 배치 전환의 공용 적용 — CLI(`--table-placement`)와 typed(--ops/MCP) 경로가 같은
-/// 계정 규칙을 쓴다: 대상 표가 없으면 미적용, 이미 요청 배치면 성공 no-op(재적용 바이트 안정).
+/// #296 shared placement application: CLI --table-placement and typed --ops/MCP use the
+/// same accounting. Missing tables are unapplied; already-matching placement is a byte-stable no-op.
 fn apply_table_placement_op(
     doc: &mut hwp_model::Document,
     placement: hwp_convert::TablePlacement,
@@ -3638,15 +3691,15 @@ fn write_output(
                 structural,
             )
         }
-        // 구조 편집은 삽입 문단/행에 불변식을 세우려 합성 경로를 강제한다.
+        // Structural edits force synthesis to establish inserted paragraph/row invariants.
         OutputFormat::Hwp if structural => {
             crate::commands::convert::write_hwp_structural(doc, output)
         }
         OutputFormat::Hwp => crate::commands::convert::write_hwp_edited(doc, output),
         OutputFormat::Hwpx => {
-            // 같은 포맷(hwpx→hwpx)이면 패키지 외과 수술 경로: dirty 콘텐츠 엔트리만
-            // IR에서 재직렬화하고 나머지 엔트리(BinData·META-INF·미리보기·DocOptions 등)는
-            // 원본 패키지에서 raw 복사로 바이트 보존한다.
+            // Same-format HWPX uses package surgery: reserialize only dirty content entries from IR,
+            // and retain all other entries (BinData, META-INF, previews, DocOptions, etc.) through
+            // raw copies from the source package.
             if let Some((source_path, original)) = source
                 && original.meta.source_format == "hwpx"
             {
@@ -3675,9 +3728,9 @@ pub(crate) fn write_hwpx_surgical(
     output: &Path,
     sections: Option<Vec<usize>>,
 ) -> anyhow::Result<hwp_model::WriteReport> {
-    // dirty 판정은 편집 전후 IR 비교로 계산한다(op별 수동 매핑보다
-    // 누락 위험이 없다). `hwp edit`는 앵커/패턴/전역 표 인덱스 기반 op의
-    // 대상 섹션을 값싸게 증명할 수 없어 항상 전체 섹션(None)을 dirty로 둔다.
+    // Compute dirty state from before/after IR comparisons, avoiding omissions from manual
+    // per-operation mapping. hwp edit cannot cheaply prove target sections for anchor,
+    // pattern or global-table-index operations, so always mark every section dirty (None).
     let dirty = hwpx::patch::DirtyEntries {
         sections,
         header: doc.header != original.header,
@@ -3732,7 +3785,7 @@ fn parse_on(v: &str) -> bool {
     )
 }
 
-/// "#RRGGBB" 또는 색 이름 → COLORREF(0x00BBGGRR).
+/// Parse #RRGGBB or a color name into COLORREF (0x00BBGGRR).
 pub(crate) fn parse_color(s: &str) -> Option<u32> {
     let s = s.trim();
     let rgb = match s.to_ascii_lowercase().as_str() {
@@ -3755,8 +3808,8 @@ pub(crate) fn parse_color(s: &str) -> Option<u32> {
     Some((b << 16) | (g << 8) | r)
 }
 
-/// "경로" 또는 "경로@너비x높이"(mm) → (경로, ImageSize).
-/// `@` 뒤가 "너비x높이"로 파싱될 때만 크기로 보고, 아니면 경로 일부(자연 크기)로 둔다.
+/// Parse path or path@widthxheight (mm) into a path and ImageSize.
+/// Only treat the suffix as dimensions when it parses as widthxheight; otherwise retain it as path text.
 fn parse_image_size(rhs: &str) -> anyhow::Result<(&str, ImageSize)> {
     if let Some((path, dims)) = rhs.rsplit_once('@')
         && let Some((w, h)) = dims.split_once(['x', 'X'])
@@ -3767,8 +3820,8 @@ fn parse_image_size(rhs: &str) -> anyhow::Result<(&str, ImageSize)> {
     Ok((rhs, ImageSize::Natural))
 }
 
-/// "경로" 또는 "경로@크기mm"(또는 "경로@크기") → (경로, Option<f32> mm).
-/// `@` 뒤가 수치로 파싱될 때만 크기로 보고, 아니면 경로 일부(기본 20mm)로 둔다.
+/// Parse path or path@sizemm (also path@size) into a path and optional millimeter size.
+/// Only use a numeric suffix as size; otherwise retain it as path text with default 20 mm.
 fn parse_seal_size(rhs: &str) -> (&str, Option<f32>) {
     if let Some((path, raw)) = rhs.rsplit_once('@') {
         let num = raw.trim().strip_suffix("mm").unwrap_or(raw.trim());
@@ -3875,7 +3928,7 @@ fn seal_faces_exact(store: &hwp_render::FontStore) -> bool {
             .all(|r| r.outcome == hwp_render::FontResolutionOutcome::Matched)
 }
 
-/// 정렬 이름 → 코드(0=양쪽,1=왼쪽,2=오른쪽,3=가운데,4=배분,5=나눔).
+/// Alignment name to code: justify=0, left=1, right=2, center=3, distribute=4, divide=5.
 pub(crate) fn parse_align(name: &str) -> anyhow::Result<u8> {
     Ok(match name.trim().to_ascii_lowercase().as_str() {
         "left" | "왼쪽" => 1,
@@ -4041,13 +4094,13 @@ struct SemanticCounts {
 
 #[derive(Debug, Eq, PartialEq)]
 struct SemanticSignature {
-    /// writer가 의도적으로 재계산하는 캐시/포맷 출처만 정규화한 전체 IR.
-    /// PageDef/SectionDef, first·odd·even 머리말/꼬리말, 모든 header resource,
-    /// section/paragraph/control opaque extras, BinData, settings/version pass-through를
-    /// 포함하므로 부분 필드 목록이 새 모델 필드를 조용히 빠뜨리지 않는다.
-    /// 전체 clone을 signature에 붙잡아 두거나 오류에 Debug 출력하지 않고, streaming
-    /// JSON 직렬화를 SHA-256으로 요약한다. 따라서 BinData/opaque 본문도 비교하되
-    /// mismatch 응답에는 원문 byte/string이 노출되지 않는다.
+    /// Full IR normalized only for caches and format provenance deliberately recalculated by writers.
+    /// Includes PageDef/SectionDef, first/odd/even headers and footers, every header resource,
+    /// section/paragraph/control opaque extras, BinData and settings/version pass-through,
+    /// avoiding silent omissions when a partial field list misses new model fields.
+    /// Stream JSON into SHA-256 instead of retaining a full clone in the signature or printing
+    /// Debug data in errors. BinData and opaque payloads participate in comparison, while
+    /// mismatch responses expose no source bytes or strings.
     canonical_sha256: [u8; 32],
     counts: SemanticCounts,
 }
@@ -4139,16 +4192,16 @@ fn canonical_document(
         target: Option<SemanticTarget>,
         source_doc: &hwp_model::Document,
     ) {
-        // 줄 배치와 PARA_HEADER 캐시는 편집 후 writer가 재계산하는 비의미 상태다.
+        // Line layout and PARA_HEADER caches are nonsemantic state recalculated after edits.
         paragraph.line_segs.clear();
         paragraph.header.chars_flags = 0;
         paragraph.header.ctrl_mask = 0;
         paragraph.header.instance_id = 0;
         paragraph.header.tail.clear();
         paragraph.header.hwp5_child_order.clear();
-        // HWP5 writer는 모든 문단을 PARA_BREAK로 닫지만 HWPX는 문단 경계 자체가
-        // 같은 의미를 표현하고 reader가 이 문자를 만들지 않는다. 포맷 간 검증에서
-        // 이 writer 정규화만 의미 차이로 보지 않는다.
+        // HWP5 closes every paragraph with PARA_BREAK; HWPX expresses the same meaning through
+        // paragraph boundaries, and its reader does not create that character. Cross-format
+        // verification ignores only this writer normalization as a semantic difference.
         if paragraph.chars.last()
             == Some(&hwp_model::HwpChar::CharCtrl(
                 hwp_model::ctrl_char::PARA_BREAK,
@@ -4157,14 +4210,14 @@ fn canonical_document(
             paragraph.chars.pop();
         }
         if matches!(target, Some(SemanticTarget::Hwpx)) {
-            // OWPML p는 pageBreak/columnBreak만 표현한다. hwp5 합성 첫 문단의
-            // 구역/다단 표식 bits0-1은 secPr/colPr 자체가 같은 의미를 보존한다.
+            // OWPML p expresses only pageBreak/columnBreak. HWP5's synthetic first-paragraph
+            // section/column marker bits 0-1 retain their meaning through secPr/colPr themselves.
             paragraph.header.break_type &= 0x0c;
 
-            // HWPX writer는 charPr run 경계를 실제 Text를 방출하는 시점에만 연다.
-            // 필드/책갈피/그림 같은 폭 8의 제어문자 사이에 있는 경계는 다음 보이는
-            // Text 위치로 이동하고, 뒤따르는 Text가 없으면 사라진다. 같은 투영을
-            // 적용하되 Text에 실제 적용되는 shape ID 변화는 그대로 비교한다.
+            // The HWPX writer opens charPr run boundaries only when emitting actual Text.
+            // A boundary among eight-WCHAR field/bookmark/picture controls shifts to the next
+            // visible Text position or disappears if none follows. Apply the same projection,
+            // but still compare shape-ID changes that actually affect Text.
             let source_runs = paragraph.char_shape_runs.clone();
             let first_shape = source_runs.first().map(|(_, id)| *id).unwrap_or_default();
             let shape_at = |position: u32| {
@@ -4251,10 +4304,10 @@ fn canonical_document(
                         if (generic.ctrl_id == *b"head" || generic.ctrl_id == *b"foot")
                             && generic.data.len() == 8
                         {
-                            // HWPX writer는 머리말/꼬리말 id를 문서 전역 순번으로
-                            // 재부여한다. 적용쪽(data[0..4])과 본문은 의미지만 뒤의
-                            // writer-generated id는 아니므로 정확한 8B 형식에서만 0으로
-                            // 정규화한다.
+                            // The HWPX writer reassigns header/footer IDs in global document order. The apply-page
+                            // value (data[0..4]) and body are semantic; the following writer-generated ID is not.
+                            // Normalize that ID to zero only for the exact eight-byte layout,
+                            // retaining all other payload forms.
                             generic.data[4..8].fill(0);
                         }
                         if generic.ctrl_id == *b"cold"
@@ -4266,14 +4319,14 @@ fn canonical_document(
                             generic.column_def = None;
                         }
                         if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
-                            // command 없는 합성 필드의 11-byte HWP5 header 기본값은
-                            // HWPX fieldBegin에 대응 필드가 없어 reader가 빈 Vec로 돌려준다.
+                            // A synthetic field without a command has an 11-byte HWP5 default header with no
+                            // corresponding HWPX fieldBegin fields; the reader therefore returns an empty Vec.
                             if generic.data == vec![0_u8; 11] {
                                 generic.data.clear();
                             }
-                            // HWPX fieldBegin은 name=""도 명시하므로 reader가 빈 이름의
-                            // CTRL_DATA를 합성한다. 정확한 합성 레코드만 제거하고 비어 있지
-                            // 않은 이름 및 다른 opaque child는 그대로 검증한다.
+                            // HWPX fieldBegin explicitly includes even an empty name, so the reader synthesizes
+                            // empty-name CTRL_DATA. Remove only that exact synthesized record, retaining nonempty
+                            // names and other opaque children for verification.
                             let empty_name = hwp_convert::field::make_field_ctrl_data("");
                             if generic.raw_children.len() == 1 {
                                 let child = &generic.raw_children[0];
@@ -4350,9 +4403,9 @@ fn canonical_document(
     canonical.header.properties.section_count =
         u16::try_from(canonical.sections.len()).unwrap_or(u16::MAX);
     if matches!(target, Some(SemanticTarget::Hwp)) {
-        // HWP5 writer가 합성 문서를 유효한 5.1.x 파일로 만들며 채우는 기본값을
-        // writer와 동일한 projection으로 정규화한다. raw payload/tail은 정확한
-        // 생성 바이트와 일치할 때만 제거하므로 사용자 opaque 데이터는 보존된다.
+        // Normalize defaults the HWP5 writer adds to make synthetic documents valid 5.1.x files,
+        // using the writer's own projection. Remove raw payloads/tails only when they match
+        // exact generated bytes, preserving user opaque data.
         for start in &mut canonical.header.properties.start_numbers {
             *start = (*start).max(1);
         }
@@ -4488,8 +4541,8 @@ fn canonical_document(
             style.kind_unknown = false;
         }
     } else if matches!(target, Some(SemanticTarget::Hwpx)) {
-        // HWPX header writer는 beginNum의 0 값을 1로 materialize한다. reader가
-        // beginNum을 의미 파싱하므로 동일한 exact writer projection을 양쪽에 적용한다.
+        // The HWPX header writer materializes zero beginNum values as one. Its reader parses
+        // beginNum semantically, so apply the same exact writer projection to both sides.
         for start in &mut canonical.header.properties.start_numbers {
             *start = (*start).max(1);
         }
@@ -4521,7 +4574,7 @@ fn canonical_document(
                 .cmp(&right.name)
                 .then_with(|| left.data.cmp(&right.data))
         });
-        // HWPX writer는 같은 bytes를 한 package item으로 재사용한다. 이름/등장
+        // The HWPX writer reuses identical bytes as one package item.
         // Name/appearance order is not meaningful, so bytes are compared after sorting and deduplication.
         canonical
             .bin_streams
@@ -4532,9 +4585,9 @@ fn canonical_document(
         canonical
             .hwpx_version_xml
             .get_or_insert_with(|| hwpx::DEFAULT_VERSION_XML.to_string());
-        // 매니페스트 (id, href)는 writer가 bin_streams에서 결정론적으로 재배정하는
-        // 이름 메타다(편집으로 bin이 추가/삭제되면 원본 슬롯과 달라진다). 바이트
-        // 정체성은 위의 content-hash bin_streams 비교가 담당하므로 digest에서는 제외.
+        // Manifest id/href pairs are names reassigned deterministically from bin_streams by the writer;
+        // adding or removing binaries changes them from original slots. The content-hash bin_streams
+        // comparison above handles byte identity, so exclude these names from the digest.
         canonical.hwpx_bin_manifest.clear();
         canonical
             .metadata
@@ -4542,8 +4595,8 @@ fn canonical_document(
             .get_or_insert_with(|| "hwp-cli".to_string());
         for language in &mut canonical.header.fonts {
             for font in language {
-                // HWPX writer는 name과 OWPML typeInfo만 방출한다. 나머지는 HWP5
-                // FACE_NAME 전용 payload라 HWPX 재읽기에서 존재하지 않는다.
+                // The HWPX writer emits only name and OWPML typeInfo. Other FACE_NAME payload fields
+                // are HWP5-specific and absent after HWPX rereading.
                 font.attr = 0;
                 font.alt_kind = None;
                 font.alt_name = None;
@@ -4553,7 +4606,7 @@ fn canonical_document(
             }
         }
         for shape in &mut canonical.header.char_shapes {
-            // HWPX writer가 raw attr를 그대로 쓰지 않고 각 의미 태그로 재구성한다.
+            // The HWPX writer reconstructs semantic tags instead of emitting raw attr unchanged.
             let mut attr = 0_u32;
             attr |= u32::from(shape.is_italic());
             attr |= u32::from(shape.is_bold()) << 1;
@@ -4576,8 +4629,8 @@ fn canonical_document(
             attr |= ((shape.attr >> 30) & 1) << 30;
             shape.attr = attr;
 
-            // 스키마 필수 기본을 materialize하는 항목. reader가 돌려주는 값으로
-            // 맞추되 활성 underline/shadow의 실제 색·간격은 그대로 유지한다.
+            // Materialize schema-required defaults to the values returned by the reader while
+            // retaining actual colors/spacing for active underline and shadow effects.
             if shape.border_fill_id == 0 {
                 shape.border_fill_id = 2;
             }
@@ -4604,9 +4657,9 @@ fn canonical_document(
             .len()
             .max(canonical.header.numberings.len())
             .max(1);
-        // HWP5 reader가 raw와 modeled 수준을 병렬로 모두 채운 경우 raw는 중복
-        // 표현이다. modeled 정의가 모자라 writer가 raw-only custom 내용을 기본값으로
-        // 잃게 되는 경우에는 raw를 남겨 semantic mismatch가 드러나게 한다.
+        // When HWP5 read populates both raw and modeled levels, raw is a duplicate representation.
+        // Retain raw when modeled definitions are incomplete and the writer would otherwise replace
+        // raw-only custom content with defaults, exposing that loss as a semantic mismatch.
         if canonical.header.numbering_levels.len() >= canonical.header.numberings.len() {
             canonical.header.numberings.clear();
         }
@@ -4638,8 +4691,8 @@ fn canonical_document(
             .len()
             .max(canonical.header.tab_defs.len())
             .max(1);
-        // numbering과 동일하게 모든 raw 탭에 modeled 짝이 있을 때만 중복 raw를
-        // 제거한다. raw-only 사용자 탭은 HWPX writer 손실 검증 대상이다.
+        // As with numbering, discard duplicate raw tabs only when every entry has a modeled
+        // counterpart. Raw-only custom tabs remain subject to HWPX writer loss verification.
         if canonical.header.tab_stops.len() >= canonical.header.tab_defs.len() {
             canonical.header.tab_defs.clear();
         }
@@ -4648,10 +4701,17 @@ fn canonical_document(
             .tab_stops
             .resize_with(tab_count, hwp_model::TabDef::default);
         for style in &mut canonical.header.styles {
-            style.attr = 0;
+            // Match PR #442's HWPX writer/reader pair: low kind bits 1 emit CHAR,
+            // which reads back as 1; every other stated kind emits PARA and reads as 0.
+            // An unstated kind omits type and reads as attr 0, retaining kind_unknown.
+            style.attr = if !style.kind_unknown && style.attr & 0x7 == 1 {
+                1
+            } else {
+                0
+            };
             style.tail.clear();
             if style.lang_id <= 0 {
-                // writer는 0/음수 언어 ID를 한국어(1042)로 materialize한다.
+                // The writer materializes zero/negative language IDs as Korean (1042).
                 style.lang_id = 1042;
             }
         }
@@ -4764,8 +4824,8 @@ fn semantic_signature_for(
     let mut writer = HashWriter(Sha256::new());
     serde_json::to_writer(&mut writer, &canonical)
         .expect("hwp-model Document의 JSON 직렬화는 실패하지 않음");
-    // BinStream.data는 일반 JSON 출력 비대 방지를 위해 serde(skip)이다. 검증 digest에는
-    // 반드시 포함해 이미지/첨부 byte 손실도 semantic mismatch로 잡는다.
+    // BinStream.data uses serde(skip) to avoid bloating ordinary JSON. The verification digest
+    // must include it to detect image/attachment byte loss as a semantic mismatch.
     for stream in &canonical.bin_streams {
         writer.0.update((stream.name.len() as u64).to_le_bytes());
         writer.0.update(stream.name.as_bytes());
@@ -4846,7 +4906,7 @@ fn semantic_mismatch_summary(expected: &SemanticSignature, actual: &SemanticSign
     )
 }
 
-/// 쓰기 후 재읽기로 자기 검증하고, 요청 결과의 핵심 의미 불변식도 대조한다.
+/// Self-verify by rereading after writing and checking the request's key semantic invariants.
 fn verify_output(output: &Path, expected: Option<&hwp_model::Document>) -> anyhow::Result<()> {
     verify_output_with_success_log(output, expected, true)
 }
@@ -4983,6 +5043,107 @@ mod tests {
                 "{loc}: {error}"
             );
         }
+    }
+
+    /// PR #442's HWPX writer emits CHAR only for kind bits 1, and its reader restores 1.
+    /// Losing that distinction must fail verification even if all shape references match.
+    #[test]
+    fn hwpx_projection_preserves_stated_character_vs_paragraph_style_kind() {
+        let mut paragraph = hwp_convert::from_markdown("Style kind probe.");
+        paragraph.header.styles[0].attr = 0;
+        let mut character = paragraph.clone();
+        character.header.styles[0].attr = 1;
+        let signature = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwpx));
+        assert_ne!(
+            signature(&paragraph),
+            signature(&character),
+            "HWPX verification must detect a CHAR-to-PARA substitution"
+        );
+
+        let mut metadata = character.clone();
+        metadata.header.styles[0].attr = 0xa1;
+        assert_eq!(
+            signature(&character),
+            signature(&metadata),
+            "HWPX stores kind bits, not unrelated HWP5 attr metadata"
+        );
+        let mut reserved = paragraph.clone();
+        reserved.header.styles[0].attr = 7;
+        assert_eq!(
+            signature(&paragraph),
+            signature(&reserved),
+            "PR #442's writer emits PARA for reserved kind bits"
+        );
+    }
+
+    /// The HWPX writer omits type when kind_unknown, and its reader then restores attr 0.
+    #[test]
+    fn hwpx_projection_keeps_unknown_kind_but_drops_its_unwritten_attr_bits() {
+        let mut unknown = hwp_convert::from_markdown("Unknown style kind probe.");
+        unknown.header.styles[0].kind_unknown = true;
+        unknown.header.styles[0].attr = 0;
+        let mut unwritten = unknown.clone();
+        unwritten.header.styles[0].attr = 1;
+        let signature = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwpx));
+        assert_eq!(
+            signature(&unknown),
+            signature(&unwritten),
+            "an omitted type reads back as attr0 regardless of the unwritten bits"
+        );
+        let mut stated = unknown.clone();
+        stated.header.styles[0].kind_unknown = false;
+        assert_ne!(
+            signature(&unknown),
+            signature(&stated),
+            "an unstated kind must remain distinct from a stated PARA kind in HWPX"
+        );
+    }
+
+    /// Isolate the native kind projection from unrelated cross-format package conversion.
+    #[test]
+    fn named_style_creation_from_unknown_ir_verifies_as_hwp() {
+        use hwp_convert::styles::edit::{CreateStyle, StyleSelector, apply_style_at, create_style};
+        let source = hwp_convert::from_markdown("Native kind projection probe.");
+        let native = std::env::temp_dir().join(format!(
+            "hwp-t3-kind-calibration-{}.hwp",
+            std::process::id()
+        ));
+        hwp5::write_document(&source, &native, &hwp5::WriteOptions::default()).unwrap();
+        let mut doc = hwp5::read_document(&native).unwrap().document;
+        std::fs::remove_file(&native).unwrap();
+        let old = doc.sections[0].paragraphs[0].style;
+        doc.header.styles[usize::from(old.0)].kind_unknown = true;
+        doc.meta.source_format = "json".into();
+        let id = create_style(
+            &mut doc,
+            &CreateStyle {
+                name: "Explicit paragraph".into(),
+                based_on: Some(StyleSelector::Id(old.0)),
+                kind: hwp_convert::StyleKind::Paragraph,
+                character: hwp_convert::CharFormat {
+                    size_pt: Some(13.0),
+                    ..Default::default()
+                },
+                paragraph: hwp_convert::ParaProps::default(),
+            },
+        )
+        .unwrap();
+        apply_style_at(
+            &mut doc,
+            &hwp_convert::segment_id::SegmentPath {
+                section: 0,
+                indices: vec![0],
+            },
+            &StyleSelector::Id(id.0),
+            false,
+        )
+        .unwrap();
+        crate::commands::convert::write_hwp_edited(&doc, &native).unwrap();
+        verify_output(&native, Some(&doc)).unwrap();
+        let actual = hwp5::read_document(&native).unwrap().document;
+        std::fs::remove_file(&native).unwrap();
+        assert!(!actual.header.styles[usize::from(id.0)].kind_unknown);
+        assert!(!actual.header.styles[usize::from(old.0)].kind_unknown);
     }
 
     #[test]

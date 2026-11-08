@@ -1,10 +1,10 @@
-//! `hwp edit --ops <file.json>` — 타입화된 편집 연산 파일의 검증·변환 계층 (D-10).
+//! hwp edit --ops <file.json>: validation and conversion for typed operation files (D-10).
 //!
-//! 규범 스키마는 `schemas/edit-ops-v1.schema.json`이고, 이 모듈은 그 serde 구현
-//! ([`OpsEntry`])와 런타임 검증기를 담는다. 스키마는 모양만 검사한다 — 선택자
-//! exactly-one, 짝 단위 이미지 크기, count 하한, 줄 간격 상호 배타 같은 의미 제약은
-//! [`OpsEntry::into_typed`]가 스키마 통과 뒤에 강제한다. MCP `tool_edit` 경계와 같은
-//! 2단 계약이며, 제약 오류는 같은 한국어 문구를 쓴다.
+//! The normative schema is schemas/edit-ops-v1.schema.json. This module contains its
+//! serde representation (OpsEntry) and runtime validator. The schema checks shape only;
+//! OpsEntry::into_typed enforces semantic constraints afterward: exactly one selector,
+//! paired image dimensions, minimum counts and mutually exclusive line-spacing fields.
+//! This matches the MCP tool_edit boundary's two-stage contract and Korean error wording.
 
 use std::io::Read as _;
 use std::path::Path;
@@ -16,9 +16,9 @@ use crate::commands::edit::TypedEditOperation;
 use crate::commands::edit::{mm_to_hwpunit, parse_align, parse_color};
 use crate::commands::mcp::checked_cli_read_path;
 
-/// 편집 연산 입력 크기 상한 — MCP `MAX_READ_BYTES` 규약(16 MiB)과 같다.
+/// Operation-file byte limit, matching MCP MAX_READ_BYTES (16 MiB).
 pub(crate) const MAX_OPS_BYTES: u64 = 16 * 1024 * 1024;
-/// 편집 연산 항목 수 상한. 스키마 maxItems와 같은 값 — 파싱 뒤 한 번 더 검사한다.
+/// Operation-count limit, matching schema maxItems and checked again after parsing.
 pub(crate) const MAX_OPS_ITEMS: usize = 10_000;
 
 /// Upper bound for `*_mm` fields (WR-02). The schema's `unit` pattern
@@ -33,7 +33,7 @@ const PT_MAX: f32 = 1000.0;
 /// Upper bound for `*_pct` fields (line-spacing ratio). A negative ratio is meaningless.
 const PCT_MAX: f32 = 1000.0;
 
-/// 편집 연산 파일(`"-"`는 stdin)을 상한 안에서 UTF-8로 읽는다.
+/// Read an operation file, or stdin for -, as bounded UTF-8.
 fn read_ops_source(path: &Path) -> anyhow::Result<String> {
     if path.as_os_str() == "-" {
         return read_bounded(std::io::stdin(), MAX_OPS_BYTES);
@@ -47,9 +47,9 @@ fn read_ops_source(path: &Path) -> anyhow::Result<String> {
     read_bounded(std::io::BufReader::new(file), MAX_OPS_BYTES)
 }
 
-/// Bounded UTF-8 read (lint.rs의 read_bounded와 같은 규약): 상한 초과 입력은 한국어
-/// 오류로 거부 — 조용한 잘라내기가 아니다. non-UTF-8 입력도 패닉 없이 읽기 오류로
-/// 표면화한다.
+/// Bounded UTF-8 read, matching lint.rs read_bounded: oversized input is refused with
+/// a Korean error rather than silently truncated. Non-UTF-8 input becomes a read error
+/// without panicking.
 fn read_bounded(reader: impl std::io::Read, cap: u64) -> anyhow::Result<String> {
     let mut buf = String::new();
     reader
@@ -62,9 +62,9 @@ fn read_bounded(reader: impl std::io::Read, cap: u64) -> anyhow::Result<String> 
     Ok(buf)
 }
 
-/// 편집 연산 파일을 읽고 스키마 검증 → [`OpsEntry`] 역직렬화 → [`Op`] 변환까지
-/// 수행한다. 입력 오류·스키마 위반·의미 제약 위반 모두 한국어 오류로 거부하며,
-/// 스키마 위반 메시지는 인스턴스 경로와 jsonschema 오류 문구를 그대로 담는다.
+/// Read operation input, validate its schema, deserialize OpsEntry, then convert into Op.
+/// Refuse input, schema and semantic-constraint failures with Korean errors. Schema
+/// violations retain the instance path and jsonschema error wording.
 pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     let raw = read_ops_source(path)?;
     let value: serde_json::Value = serde_json::from_str(&raw)
@@ -94,7 +94,7 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-/// "10.5mm" → mm 값 (f32). `*_mm` 필드의 단위 문자열 문법.
+/// Parse 10.5mm into an f32 millimeter value, the unit-string grammar for *_mm fields.
 fn parse_mm_f32(value: &str) -> anyhow::Result<f32> {
     let mm: f32 = value
         .trim()
@@ -108,12 +108,12 @@ fn parse_mm_f32(value: &str) -> anyhow::Result<f32> {
     Ok(mm)
 }
 
-/// "10.5mm" → HWPUNIT (1mm = 7200/25.4). CLI `parse_mm`(edit.rs)와 같은 문법·단위.
+/// Parse 10.5mm into HWPUNIT (1 mm = 7200/25.4), matching CLI parse_mm in edit.rs.
 pub(crate) fn parse_mm(value: &str) -> anyhow::Result<i32> {
     Ok(mm_to_hwpunit(parse_mm_f32(value)?))
 }
 
-/// "160%" → 백분율 값 (f32). `line_spacing_pct` 등 백분율 필드의 문법.
+/// Parse 160% into an f32 percentage, used by line_spacing_pct and similar fields.
 pub(crate) fn parse_pct(value: &str) -> anyhow::Result<f32> {
     let pct: f32 = value
         .trim()
@@ -127,8 +127,8 @@ pub(crate) fn parse_pct(value: &str) -> anyhow::Result<f32> {
     Ok(pct)
 }
 
-/// 크기 단위 문자열 → pt (f32). "12pt"는 그대로, "10mm"는 1in=72pt=25.4mm로 환산.
-/// "%"는 절대 pt 기준이 없어 거부한다 (스키마 `unit` 문법과의 차이는 파서 강제).
+/// Convert a size string into points: 12pt stays unchanged; 10mm uses 1 in = 72 pt = 25.4 mm.
+/// Refuse percent because no absolute point reference exists; the parser narrows schema unit syntax.
 pub(crate) fn parse_pt(value: &str) -> anyhow::Result<f32> {
     let trimmed = value.trim();
     let pt = if let Some(pt) = trimmed.strip_suffix("pt") {
@@ -150,9 +150,9 @@ pub(crate) fn parse_pt(value: &str) -> anyhow::Result<f32> {
     Ok(pt)
 }
 
-/// set_para/set_cell_para의 평면 문단 속성 원시 값, 그리고 insert_para.style의 중첩
-/// 객체(D-08, 스키마 `paraPropsFields` $def와 같은 필드셋 — 개념당 한 표기)로도 그대로
-/// 역직렬화된다. 단위 문자열 해석은 [`para_props`]가 맡는다.
+/// Raw flat paragraph properties for set_para/set_cell_para, also deserialized as the
+/// nested insert_para.style object. Fields match schema paraPropsFields (D-08), with
+/// one spelling per concept. para_props interprets unit strings.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawParaProps {
@@ -166,11 +166,11 @@ pub(crate) struct RawParaProps {
     align: Option<String>,
 }
 
-/// set_format의 평면 문자 서식 원시 값, 그리고 insert_para.char의 중첩 객체(D-08,
-/// 스키마 `charPropsFields` $def와 같은 필드셋)로도 그대로 역직렬화된다.
-/// `#[serde(flatten)]`은 쓰지 않는다(06-01: 편집 연산 파일은 평면 태그 항목의 평면
-/// 배열이어야 한다) — `set_format`의 개별 필드는 그대로 두고, [`char_format`]이 두
-/// 사용처의 변환 로직을 하나로 모은다.
+/// Raw flat character properties for set_format, also deserialized as the nested
+/// insert_para.char object with the same schema charPropsFields set (D-08).
+/// Do not use serde(flatten): operation files must remain a flat array of flat tagged
+/// entries (06-01). Keep individual set_format fields; char_format shares conversion
+/// logic across the two use sites.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawCharProps {
@@ -183,8 +183,35 @@ pub(crate) struct RawCharProps {
     font: Option<String>,
 }
 
-/// [`RawCharProps`] → `CharFormat`. `set_format`(평면 필드)과 `insert_para.char`(중첩
-/// 객체) 양쪽이 이 한 함수를 거친다 — 오류 문구도 하나로 공유한다.
+/// A primary style name or its explicit header-table index; strings are never coerced to ids.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum RawStyleSelector {
+    Name(String),
+    Id(u16),
+}
+impl RawStyleSelector {
+    fn into_selector(self) -> hwp_convert::styles::edit::StyleSelector {
+        match self {
+            Self::Name(name) => hwp_convert::styles::edit::StyleSelector::Name(name),
+            Self::Id(id) => hwp_convert::styles::edit::StyleSelector::Id(id),
+        }
+    }
+}
+
+fn named_style_kind(value: &str) -> Result<hwp_convert::styles::StyleKind, String> {
+    match value {
+        "paragraph" => Ok(hwp_convert::styles::StyleKind::Paragraph),
+        "character" => Ok(hwp_convert::styles::StyleKind::Character),
+        _ => Err(
+            "create_style.kind는 paragraph 또는 character여야 합니다. 지원되는 종류를 지정하세요"
+                .into(),
+        ),
+    }
+}
+
+/// Convert RawCharProps into CharFormat. Both flat set_format fields and nested
+/// insert_para.char go through this function and share the same error wording.
 fn char_format(raw: RawCharProps) -> Result<hwp_convert::CharFormat, String> {
     Ok(hwp_convert::CharFormat {
         bold: parse_switch(raw.bold.as_deref())?,
@@ -238,8 +265,8 @@ pub(crate) struct AddressSpec {
 }
 
 impl AddressSpec {
-    /// 의미 제약(`id`/`at` 중 하나만)과 `id` 문자열 파싱을 여기서 강제한다 — 스키마는
-    /// 모양만 검사한다(D-10 계약과 같은 2단 구조).
+    /// Enforce exactly one of id/at and parse id here. The schema checks shape only,
+    /// following the same two-stage structure as the D-10 contract.
     fn into_address(self) -> Result<hwp_convert::address::Address, String> {
         match (self.id, self.at) {
             (Some(_), Some(_)) => {
@@ -271,9 +298,9 @@ impl AddressSpec {
     }
 }
 
-/// `<checksum>.<section>.<index>[.<index>...]` 형태의 segment id를 체크섬·섹션·인덱스
-/// 체인으로 나눈다(`segment_id.rs`의 `join()`이 만드는 정확히 그 모양). 32개 초과
-/// 인덱스와 정수가 아닌 성분을 한국어 오류로 거부한다(T-07-03).
+/// Split checksum.section.index[.index...] into checksum, section and index chain,
+/// matching segment_id.rs join(). Refuse more than 32 indices or noninteger
+/// components with Korean errors (T-07-03).
 fn parse_segment_id(id: &str) -> Result<(String, usize, Vec<usize>), String> {
     let mut parts = id.split('.');
     let checksum = parts
@@ -318,8 +345,8 @@ pub(crate) struct MoveToSpec {
     position: String,
 }
 
-/// 스키마 항목 그대로의 원시 표현 — 단위·색·정렬·스위치는 문자열로 받고
-/// [`OpsEntry::into_typed`]에서 해석한다. 알 수 없는 키는 거부한다.
+/// Raw schema-entry representation: units/colors/alignment/switches arrive as strings
+/// and OpsEntry::into_typed interprets them. Unknown keys are refused.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum OpsEntry {
@@ -376,6 +403,31 @@ pub(crate) enum OpsEntry {
     SetMeta {
         key: String,
         value: String,
+    },
+    CreateStyle {
+        name: String,
+        based_on: Option<RawStyleSelector>,
+        kind: String,
+        bold: Option<String>,
+        italic: Option<String>,
+        underline: Option<String>,
+        strike: Option<String>,
+        size: Option<String>,
+        color: Option<String>,
+        font: Option<String>,
+        line_spacing_pct: Option<String>,
+        line_spacing_pt: Option<String>,
+        indent_mm: Option<String>,
+        left_mm: Option<String>,
+        right_mm: Option<String>,
+        top_mm: Option<String>,
+        bottom_mm: Option<String>,
+        align: Option<String>,
+    },
+    ApplyStyle {
+        address: AddressSpec,
+        style: RawStyleSelector,
+        clear_direct: Option<bool>,
     },
     SetFormat {
         pattern: Option<String>,
@@ -509,8 +561,8 @@ pub(crate) enum OpsEntry {
     StyleTables {
         preset: String,
     },
-    /// #296 표 배치 전환. `placement`는 "inline"|"floating", `table`은 0-기반 재귀 표
-    /// 인덱스(생략 시 모든 표).
+    /// #296 table placement: placement is inline or floating; table is a zero-based recursive
+    /// table index, omitted to select all tables.
     SetTablePlacement {
         placement: String,
         table: Option<usize>,
@@ -518,9 +570,9 @@ pub(crate) enum OpsEntry {
 }
 
 impl OpsEntry {
-    /// 스키마를 통과한 원시 항목을 [`Op`]로 변환한다. 의미 제약(exactly-one 선택자,
-    /// 짝 단위 크기, count 하한, 줄 간격 상호 배타)은 여기서 강제하며 오류 문구는
-    /// MCP `tool_edit` 경계와 같다.
+    /// Convert a schema-valid raw entry into Op. Enforce semantic constraints here:
+    /// exactly one selector, paired dimensions, minimum counts and exclusive line spacing.
+    /// Error wording matches the MCP tool_edit boundary.
     pub(crate) fn into_typed(self) -> Result<TypedEditOperation, String> {
         match self {
             OpsEntry::Replace { from, address, to } => {
@@ -599,6 +651,63 @@ impl OpsEntry {
             }),
             OpsEntry::SetField { name, value } => Ok(TypedEditOperation::SetField { name, value }),
             OpsEntry::SetMeta { key, value } => Ok(TypedEditOperation::SetMeta { key, value }),
+            OpsEntry::CreateStyle {
+                name,
+                based_on,
+                kind,
+                bold,
+                italic,
+                underline,
+                strike,
+                size,
+                color,
+                font,
+                line_spacing_pct,
+                line_spacing_pt,
+                indent_mm,
+                left_mm,
+                right_mm,
+                top_mm,
+                bottom_mm,
+                align,
+            } => Ok(TypedEditOperation::CreateStyle {
+                request: hwp_convert::styles::edit::CreateStyle {
+                    name,
+                    based_on: based_on.map(RawStyleSelector::into_selector),
+                    kind: named_style_kind(&kind)?,
+                    character: char_format(RawCharProps {
+                        bold,
+                        italic,
+                        underline,
+                        strike,
+                        size,
+                        color,
+                        font,
+                    })?,
+                    paragraph: para_props(
+                        "create_style",
+                        RawParaProps {
+                            line_spacing_pct,
+                            line_spacing_pt,
+                            indent_mm,
+                            left_mm,
+                            right_mm,
+                            top_mm,
+                            bottom_mm,
+                            align,
+                        },
+                    )?,
+                },
+            }),
+            OpsEntry::ApplyStyle {
+                address,
+                style,
+                clear_direct,
+            } => Ok(TypedEditOperation::ApplyStyle {
+                address: address.into_address()?,
+                style: style.into_selector(),
+                clear_direct: clear_direct.unwrap_or(false),
+            }),
             OpsEntry::SetFormat {
                 pattern,
                 address,
@@ -917,8 +1026,8 @@ pub(crate) fn exactly_one_selector(
     })
 }
 
-/// 평면 문단 속성 원시 값 → ParaProps. line_spacing_pct/pt 상호 배타는 여기서
-/// 강제하며, 오류 문구는 MCP `para_props_item`과 같다.
+/// Convert raw flat paragraph properties into ParaProps. Enforce exclusive
+/// line_spacing_pct/pt here, sharing error wording with MCP para_props_item.
 fn para_props(op: &str, raw: RawParaProps) -> Result<hwp_convert::ParaProps, String> {
     let RawParaProps {
         line_spacing_pct,
@@ -954,7 +1063,7 @@ fn para_props(op: &str, raw: RawParaProps) -> Result<hwp_convert::ParaProps, Str
     })
 }
 
-/// "on"/"off" → bool. 스키마 `switch` 문법.
+/// Convert on/off into bool, matching schema switch syntax.
 fn parse_switch(value: Option<&str>) -> Result<Option<bool>, String> {
     match value {
         None => Ok(None),
@@ -964,12 +1073,12 @@ fn parse_switch(value: Option<&str>) -> Result<Option<bool>, String> {
     }
 }
 
-/// `*_mm` 단위 문자열 → HWPUNIT.
+/// Convert *_mm unit strings into HWPUNIT.
 fn mm_opt(value: Option<String>) -> Result<Option<i32>, String> {
     string_error(value.as_deref().map(parse_mm).transpose())
 }
 
-/// anyhow 오류를 into_typed의 String 오류로 맞춘다 — MCP 경계와 같은 String 계약.
+/// Convert anyhow errors to into_typed String errors, matching the MCP boundary contract.
 fn string_error<T>(result: anyhow::Result<T>) -> Result<T, String> {
     result.map_err(|error| format!("{error:#}"))
 }
@@ -978,9 +1087,9 @@ fn string_error<T>(result: anyhow::Result<T>) -> Result<T, String> {
 mod tests {
     use super::*;
 
-    /// ops 경계의 읽기 경로 검사: `..` 구성요소는 한국어 오류로 거부한다.
-    /// `checked_cli_read_path`가 pub(crate)이라 통합 테스트는 닿을 수 없어
-    /// 크레이트 안에서 검사한다.
+    /// Read-path checks at the ops boundary: refuse parent-directory components with Korean errors.
+    /// Integration tests cannot reach pub(crate) checked_cli_read_path, so test it
+    /// inside the crate.
     #[test]
     fn checked_cli_read_path_rejects_parent_dir() {
         let error =
