@@ -360,6 +360,18 @@ fn explicit_break_keeps_prior_space_before_in_both_section_paths() {
         source.sections[0].paragraphs[0]
             .controls
             .push(Control::Table(object));
+        let mut zero_before = source.clone();
+        zero_before
+            .header
+            .para_shapes
+            .last_mut()
+            .unwrap()
+            .spacing_top = 0;
+        synthesize(&mut zero_before);
+        assert_eq!(
+            zero_before.sections[0].paragraphs[1].line_segs[0].v_pos, 0,
+            "zero space-before control starts at the reset cursor (floating={floating})"
+        );
         synthesize(&mut source);
         assert_eq!(
             source.sections[0].paragraphs[1].line_segs[0].v_pos,
