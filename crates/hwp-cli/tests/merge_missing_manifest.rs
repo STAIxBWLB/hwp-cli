@@ -85,6 +85,11 @@ fn replace_manifest_href(path: &Path) {
         let mut entry = archive.by_index(index).unwrap();
         let name = entry.name().unwrap().into_owned();
         let method = entry.compression();
+        // Remove the old payload too: an unrelated orphan loss must not satisfy the
+        // BinaryAssetRemoved assertion intended for B's missing picture.
+        if name == "BinData/p2.png" {
+            continue;
+        }
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
         if name == "Contents/content.hpf" {
@@ -124,9 +129,8 @@ fn sources(dir: &Path, general: bool) {
         "source B's manifest target must already be missing"
     );
     assert!(
-        b.bin_streams
-            .iter()
-            .all(|stream| !stream.name.ends_with("logo.png"))
+        b.bin_streams.is_empty(),
+        "B must have no orphan payload that could mask the picture loss"
     );
     assert_eq!(
         hwp_convert::document_merge::merge_documents(&[a, b])
