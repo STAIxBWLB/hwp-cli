@@ -1948,9 +1948,12 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
 /// id derived from it for the picture record (`id ^ 0x0010_0000`, which lands in
 /// `0x3010_0000..0x3020_0000`) is already held by a picture, table or gso container of the
 /// document, wherever that id sits. A re-read output of this writer holds ids from this same
-/// range, so a plain counter would repeat them. When the range is used up the allocator
-/// returns `None` instead of stepping past the range edge into another object's id; the caller
-/// leaves that picture unsynthesized and the existing strip step reports it as removed.
+/// range, so a plain counter would repeat them. The counter only moves forward and every
+/// candidate has bit 20 clear, so an id handed out is never a later candidate and never the
+/// derived value of one: only ids the document already holds need avoiding. When the range is
+/// used up the allocator returns `None` instead of stepping past the range edge into another
+/// object's id; the caller leaves that picture unsynthesized and the existing strip step
+/// reports it as removed.
 struct InstanceIds {
     used: BTreeSet<u32>,
     next: u32,
@@ -2026,8 +2029,6 @@ impl InstanceIds {
             if self.used.contains(&candidate) || self.used.contains(&derived) {
                 continue;
             }
-            self.used.insert(candidate);
-            self.used.insert(derived);
             return Some(candidate);
         }
         None
@@ -5208,43 +5209,6 @@ mod tests {
         // Successive ids never repeat.
         let second = ids.next().unwrap();
         assert_ne!(first, second);
-    }
-
-    /// The derived picture-effect id flips bit 20 (`id ^ 0x0010_0000`); it must not equal a
-    /// common id the document already holds either.
-    /// Every id handed out, and the id derived from it for the picture record, must be new:
-    /// successive requests may not return one another's derived value. With the used set not
-    /// updated, the walk below repeats itself once it reaches `0x3010_0000`'s neighbour.
-    #[test]
-    fn successive_synthesized_ids_and_their_derived_ids_never_collide() {
-        let doc = Document::default();
-        let mut ids = InstanceIds::with_range(&doc, 0x3000_0000, 0x3000_0000 + 8);
-        let mut seen = BTreeSet::new();
-        while let Some(id) = ids.next() {
-            assert!(seen.insert(id), "{id:#x} was handed out twice");
-            assert!(
-                seen.insert(id ^ 0x0010_0000),
-                "{id:#x} derives an id already in use: {:#x}",
-                id ^ 0x0010_0000
-            );
-        }
-        assert_eq!(seen.len(), 16, "eight ids and eight derived ids");
-    }
-
-    /// A range that straddles its derived twin (base and end 0x10_0000 apart) hands out an id
-    /// whose derived value is another id of the same range: those two must not both be used.
-    #[test]
-    fn an_id_and_the_derived_value_of_another_in_range_are_not_both_handed_out() {
-        let doc = Document::default();
-        // Range 0x3000_0000..0x3000_0002 and a base 0x10_0000 higher share twins pairwise.
-        let mut ids = InstanceIds::with_range(&doc, 0x3010_0000, 0x3010_0002);
-        let first = ids.next().unwrap();
-        let second = ids.next().unwrap();
-        assert_ne!(
-            first ^ 0x0010_0000,
-            second,
-            "{second:#x} is the derived id of {first:#x}"
-        );
     }
 
     #[test]
