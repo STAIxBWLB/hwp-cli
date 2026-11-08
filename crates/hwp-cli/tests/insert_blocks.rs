@@ -2211,3 +2211,92 @@ fn hwp_list_format_guard_sees_list_levels_used_only_inside_table_cells() {
         }
     }
 }
+
+fn column_def_of(doc: &Document) -> Option<hwp_model::ColumnDef> {
+    doc.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Generic(g) => g.column_def.clone(),
+            _ => None,
+        })
+}
+
+/// The fixture with its section set to `count` equal columns separated by a 10 mm gap, written
+/// back in its own format. The 170 mm text column becomes (170 - 10 * (count - 1)) / count.
+fn columned(fixture: &Fixture, count: u16) -> PathBuf {
+    let mut doc = read(&fixture.base);
+    for control in doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|p| &mut p.controls)
+    {
+        if let Control::Generic(g) = control
+            && let Some(def) = &mut g.column_def
+        {
+            def.count = count;
+            def.same_width = true;
+            def.gap = 2835;
+            def.widths.clear();
+            // The HWP5 writer emits the raw payload, not the model: attr (count in bits 2..10,
+            // same-width in bit 12) then the gap (spec table 138 layout, read back by
+            // `parse_coldef`), padded to the 12 bytes the writer's own default uses.
+            let attr: u16 = (count << 2) | (1 << 12);
+            g.data = [attr.to_le_bytes().as_slice(), &2835i16.to_le_bytes(), &[0u8; 8]].concat();
+        }
+    }
+    let path = fixture.path("columned");
+    if fixture.extension == "hwp" {
+        hwp5::write_document(&doc, &path, &hwp5::write::WriteOptions::default()).unwrap();
+    } else {
+        hwpx::write_document(&doc, &path).unwrap();
+    }
+    let def = column_def_of(&read(&path)).expect("the column definition survives a rewrite");
+    assert_eq!(def.count, count, "{}: fixture columns", fixture.extension);
+    path
+}
+
+#[test]
+fn blocks_are_measured_against_the_target_column_of_a_multi_column_section() {
+    let wide_table = json!([{"type":"table","columns":[{"width_mm":120}],
+        "rows":[{"cells":[{"blocks":[block("body","Too wide for 80 mm.")]}]}]}]);
+    let fits = json!([{"type":"table","columns":[{"width_mm":70}],
+        "rows":[{"cells":[{"blocks":[block("body","Fits 80 mm.")]}]}]}]);
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("two-columns", extension);
+        write_png(&fixture.dir, "logo.png");
+        let source = columned(&fixture, 2);
+        let before = read(&source);
+        let wide_image = json!([{"type":"image","path":"logo.png","width_mm":120}]);
+        for (label, blocks) in [("table", &wide_table), ("image", &wide_image)] {
+            let diagnostic = fixture.refuse(
+                &source,
+                &format!("column-wide-{label}"),
+                json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks.clone())]),
+                false,
+            );
+            assert!(
+                diagnostic.contains("layout_overflow") && diagnostic.contains("80."),
+                "{extension} {label}: a 120 mm block in an 80 mm column must name the column width: {diagnostic}"
+            );
+        }
+        let (output, run) = fixture.edit(
+            &source,
+            "column-fits",
+            json!([insert(at(&before, ANCHOR), "after", "create", json!({}), fits.clone())]),
+            false,
+        );
+        success(run, "a table narrower than the column");
+        validates(&output);
+        // The same 120 mm table is fine in the one-column original.
+        let single = read(&fixture.base);
+        let (_, run) = fixture.edit(
+            &fixture.base,
+            "single-wide",
+            json!([insert(at(&single, ANCHOR), "after", "create", json!({}), wide_table.clone())]),
+            false,
+        );
+        success(run, "a 120 mm table in a single 170 mm column");
+    }
+}
