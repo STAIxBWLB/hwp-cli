@@ -7,7 +7,7 @@ name: Dependency policy
 # lockfile or the policy changes on main, on demand, and when release.yml calls it.
 on:
   schedule:
-    - cron: "17 21 * * 1" # Mondays 06:17 KST
+    - cron: "17 21 * * 0" # Sundays 21:17 UTC = Mondays 06:17 KST (GitHub cron is UTC)
   push:
     branches: [main]
     paths:
@@ -26,7 +26,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Pinned to a full commit SHA: this job is the release gate, and a mutable tag would let
+      # a moved tag run unreviewed code with the release's context. Bump with the reviewed tag.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
           arguments: --locked
