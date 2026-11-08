@@ -1,0 +1,7 @@
+# The toolchain CI tests on (ci.yml pins dtolnay/rust-toolchain@1.93.0 = Cargo.toml rust-version).
+# release.yml builds the shipped binaries from this file, so a released asset comes from the
+# toolchain the tests used. Bump it together with the ci.yml and release-readiness.yml pins.
+[toolchain]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
