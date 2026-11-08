@@ -12,4 +12,5 @@ pub mod document_spec_v2;
 pub mod i18n;
 pub mod render_layout;
 pub mod segment_envelope;
+pub mod styles_report;
 pub mod template_spec;

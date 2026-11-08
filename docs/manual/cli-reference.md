@@ -23,6 +23,7 @@ This document is generated from the clap definitions of the `hwp` CLI. Do not ed
 - [`hwp edit`](#hwp-edit)
 - [`hwp fields`](#hwp-fields)
 - [`hwp bookmarks`](#hwp-bookmarks)
+- [`hwp styles`](#hwp-styles)
 - [`hwp slots`](#hwp-slots)
 - [`hwp fill`](#hwp-fill)
 - [`hwp validate`](#hwp-validate)
@@ -311,6 +312,17 @@ List bookmarks (name)
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
+
+## `hwp styles`
+
+List named styles (resolved attributes; `used_by` is the paragraph segment ids `cat --with-segments --segments v2` publishes)
+
+**Usage:** `hwp styles [OPTIONS] <FILE>`
+
+| Argument/flag | Value | Default | Description |
+|---|---|---|---|
+| `<FILE>` |  |  | Target HWP/HWPX file |
+| `--format` | `text` \| `json` | `text` | Output format |
 
 ## `hwp slots`
 

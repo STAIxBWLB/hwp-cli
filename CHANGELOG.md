@@ -10,7 +10,24 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
+  styles with their resolved character and paragraph attributes and `used_by`, the `para`
+  segment ids that `hwp cat --with-segments --segments v2` publishes. The JSON form is the new
+  `hwp-styles-v1` contract (`schemas/styles-v1.schema.json`), whose `attrs` reuse the segment
+  envelope's `style` level. `kind` is `null` when the document does not state it: always for
+  HWPX, whose reader does not read `hh:style@type` yet (GE-13)
+  ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
+
 **Changed**
+
+- CI publishes a stable `ci-ok` gate for every PR, including lightweight docs/formula changes.
+  Bundled skill and corpus Markdown always run full gates. The aggregate rejects failed,
+  cancelled or unexpectedly skipped jobs; releases require it,
+  and formula PR auto-merge waits for its successful exact-head CI. GitHub's clean-status
+  auto-merge refusal uses a checked head-matched merge only after a fresh clean/mergeable proof
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
 
 - Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)
   and `--locked`, with `cargo-zigbuild` 0.23.4 and zig 0.16.0 pinned. The release `verify-ci`
@@ -23,6 +40,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   main, and as a required prerequisite of the release workflow; it is not a pull request check.
   Dependabot now opens weekly grouped cargo update PRs
   ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+
+- Update the archive/Markdown/crypto dependency chain to fixed versions: zip 9.1.2,
+  pulldown-cmark 0.13.6, ctutils 0.4.8 and the patched zstd stack. The YAML dependency now
+  uses the maintained serde_norway fork under the existing serde_yaml crate alias.
+  ZIP entry-name failures propagate through the existing archive error path. Two advisory-specific
+  font-crate maintenance exceptions were accepted by the owner on 2026-11-08; the font
+  shaping/parser implementation is unchanged ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
 
 **Fixed**
 
@@ -41,6 +65,25 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   [#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)-[#426](https://github.com/STAIxBWLB/hwp-cli/issues/426),
   including native width/height sentinel interpretation and multiline body bounds. Hancom Office
   verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
+
+**Added**
+
+- A reproducible owner-authored original-form fixture set and layered test contract cover
+  repeated labels, merged/signature cells, four profile tables and retained/outside images.
+  Shared helpers compare expected cells, grid/width/style/resource projections, relative anchors
+  and observed font identities; corruption self-checks exercise their failure boundaries.
+  Semantic control atoms distinguish character/inline controls and preserve extended-control
+  codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
+  resolution collections are rejected rather than accepted as equal observations.
+  Named-style references are validated and compared by resolved names; formatting runs after
+  interior paragraph-break controls remain in the WCHAR-bounded style projection. Table styles
+  include semantic page-break policy. Anchor collection requires document-derived table IDs to
+  match observed table rows, with at least one row per expected table; relative geometry remains
+  font-environment evidence. Retained-image checks resolve the authored table identity and cell,
+  rejecting an identical image moved to the same coordinates in another table. These bounded
+  checks do not prove complete table-fragment rendering or Hancom pagination.
+  This adds regression evidence and a bilingual design contract, not production extraction,
+  binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
 
 ## [1.3.1]
 

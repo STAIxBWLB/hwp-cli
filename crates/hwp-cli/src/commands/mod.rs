@@ -22,6 +22,7 @@ pub mod render;
 pub mod skill;
 pub mod slots;
 pub mod split;
+pub mod styles;
 pub mod template;
 pub mod update;
 pub mod validate;

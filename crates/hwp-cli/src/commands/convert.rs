@@ -1,7 +1,7 @@
-//! `hwp convert` — 포맷 변환.
+//! `hwp convert`: format conversion.
 //!
-//! M2 범위: hwp/hwpx → markdown/JSON. hwpx 쓰기(M4)와 hwp 쓰기(M6)는
-//! 이후 마일스톤.
+//! M2 scope: hwp/hwpx to Markdown/JSON. HWPX writing (M4) and HWP writing (M6)
+//! belong to later milestones.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -13,18 +13,18 @@ use anyhow::Context as _;
 use hwp_cli::cli::{ConvertFormat, PasswordArgs};
 use sha2::{Digest as _, Sha256};
 
-/// markdown 출력 전용 추가 옵션 (다른 포맷에서는 무시).
+/// Additional options for Markdown output only; ignored for other formats.
 #[derive(Default)]
 pub struct MdOpts<'a> {
-    /// 이미지 추출 디렉터리 (기본: "<출력스템>.media").
+    /// Image extraction directory (default: <output-stem>.media).
     pub media_dir: Option<&'a Path>,
-    /// 머리말/꼬리말 텍스트 포함.
+    /// Include header/footer text.
     pub with_header_footer: bool,
-    /// 숨은 설명 텍스트 포함.
+    /// Include hidden descriptive text.
     pub with_hidden: bool,
 }
 
-/// 프로그래밍 가능한 변환 서비스의 결과. CLI와 MCP가 같은 경고 계약을 공유한다.
+/// Programmable conversion result; CLI and MCP share the same warning contract.
 #[derive(Debug, Default)]
 pub struct ConvertReport {
     pub warnings: Vec<String>,
@@ -472,14 +472,14 @@ fn target_extension(target: ConvertFormat) -> &'static str {
     }
 }
 
-/// `hwp convert`와 MCP가 함께 쓰는 변환 서비스.
+/// Conversion service shared by hwp convert and MCP.
 ///
-/// 출력은 검증이 끝날 때까지 destination에 게시하지 않으며, Markdown 이미지 sidecar도
-/// 본문과 같은 복구 journal에 참여한다. 사용자 메시지 출력은 호출자가 담당한다.
+/// Do not publish destination until validation finishes. Markdown image sidecars share
+/// the body's recovery journal. The caller handles user-visible messages.
 ///
-/// `loss_report`가 주어지면 preservation 검사 직후(strict 거부 전)에 typed ledger
-/// (`hwp-preservation-report-v1`)를 무손실이어도 항상 JSON으로 게시한다 — 자동화가
-/// 성공/실패와 무관하게 같은 경로에서 판정 근거를 읽을 수 있게 하기 위함이다.
+/// When loss_report is given, publish the typed hwp-preservation-report-v1 ledger as JSON
+/// immediately after preservation checks, before strict refusal, even without loss.
+/// Automation can then read the same evidence path regardless of success or failure.
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     input: &Path,
@@ -559,11 +559,11 @@ fn execute_with_preloaded_document(
         None => infer_format(output)?,
     };
     if let Some(report_path) = loss_report {
-        // 경로 정규화(canonicalize 기반 — `.`/`..`/심볼릭 링크 철자 변형 해소) +
-        // output.rs의 identity 기반 별칭 탐지를 함께 쓴다. raw Path 비교만으로는
-        // `sub/../in.hwpx` 같은 철자 변형을 놓치고, 경로 비교만으로는 하드 링크
-        // 별칭을 놓친다. 리포트는 입력을 덮어쓰면 안 되고, 출력과 같으면 문서
-        // 게시가 리포트를 조용히 덮어쓰므로 둘 다 거부한다.
+        // Combine canonicalization, resolving dot segments and symlink spellings, with
+        // output.rs identity-based alias detection. Raw Path comparison misses spellings
+        // such as sub/../in.hwpx; path comparison alone misses hard-link aliases.
+        // Reports must not overwrite the input; matching the output would let document
+        // publication silently overwrite the report. Refuse both cases.
         let report_normalized = normalize_for_alias_compare(report_path);
         for other in [input, output] {
             if report_normalized == normalize_for_alias_compare(other) {
@@ -741,8 +741,8 @@ fn execute_with_preloaded_document(
                     crate::commands::preservation::inspect_same_format_container(source, staged)?,
                 );
             } else {
-                // 크로스 포맷: IR이 원본 컨테이너에서 보존한 패키지/컨테이너 수준
-                // 자산 중 대상 포맷이 표현 못 하는 것을 typed event로 계상한다.
+                // Cross-format: record typed events for preserved package/container assets
+                // that the target format cannot represent.
                 let target_format = match target {
                     ConvertFormat::Hwp => crate::format::FileFormat::Hwp5,
                     _ => crate::format::FileFormat::Hwpx,
@@ -764,7 +764,7 @@ fn execute_with_preloaded_document(
         Ok(report)
     };
     let verify_staged = |staged: &std::path::Path, report: &hwp_model::WriteReport| {
-        // strict 거부 전에 기록해야 실패한 변환의 판정 근거가 파일로 남는다.
+        // Record before strict refusal so failed conversions leave decision evidence.
         if let Some(report_path) = loss_report {
             write_loss_report(report_path, &report.preservation)?;
         }
@@ -860,17 +860,17 @@ fn markdown_media_paths(
     }
 }
 
-/// 경고 목록을 stderr로 출력.
+/// Print warnings to stderr.
 pub(crate) fn print_warnings(warnings: &[String]) {
     for w in warnings {
         eprintln!("경고: {w}");
     }
 }
 
-/// `--loss-report` 별칭 가드용 경로 정규화. 존재하는 경로는 canonicalize하고,
-/// 아직 없는 경로(새 리포트 파일)는 부모 디렉터리만 canonicalize해 파일명을
-/// 붙인다 — `.`/`..`/심볼릭 링크 철자 변형이 같은 파일을 가리키면 같아진다.
-/// 정규화가 불가능하면 절대경로로, 그마저 실패하면 원본 경로로 되돌아간다.
+/// Normalize paths for the --loss-report alias guard. Canonicalize existing paths;
+/// for a new report, canonicalize its parent and append the filename. Dot segments
+/// and symlink spellings resolving to the same file then compare equal.
+/// Fall back to an absolute path, then the original path, if normalization fails.
 pub(crate) fn normalize_for_alias_compare(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
@@ -883,9 +883,9 @@ pub(crate) fn normalize_for_alias_compare(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// `--loss-report` 산출물 — 다른 출력과 같은 staged/검증 트랜잭션으로 게시한다
-/// (렌더 `--report`의 write_report와 같은 규율). 보고서는 content-free 계약이라
-/// 입력·출력 경로를 싣지 않는다.
+/// Publish --loss-report through the same staged/validated transaction as other output,
+/// following render --report's write_report discipline. Reports are content-free
+/// and contain neither input nor output paths.
 pub(crate) fn write_loss_report(
     path: &Path,
     report: &hwp_model::PreservationReport,
@@ -915,9 +915,9 @@ pub(crate) fn write_loss_report(
     Ok(())
 }
 
-/// `--font-dir`가 비었으면 `HWP_FONT_DIR`(없으면 `fonts/`)로 기본 폰트 디렉터리를 정한다.
-/// render·diff·convert(PDF)가 번들 함초롬 글꼴을 명시 인자 없이도 로드하도록 —
-/// 안 그러면 한글 기본 글꼴을 못 찾아 시스템 폰트로 대체돼 렌더 충실도가 크게 떨어진다.
+/// When --font-dir is empty, use HWP_FONT_DIR or fonts/ as the default font directory.
+/// This lets render, diff and PDF conversion load the local HCR fonts without explicit arguments;
+/// otherwise missing Korean defaults cause system-font substitution and reduce fidelity.
 pub fn resolve_font_dirs(given: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
     if !given.is_empty() {
         return given;
@@ -927,8 +927,8 @@ pub fn resolve_font_dirs(given: Vec<std::path::PathBuf>) -> Vec<std::path::PathB
     )]
 }
 
-/// PDF 렌더 옵션 — 폰트는 `given`(`--font-dir`)이 비었으면 `HWP_FONT_DIR`
-/// (없으면 `fonts/`)에서 해석.
+/// PDF render options: when given (--font-dir) is empty, resolve fonts from HWP_FONT_DIR,
+/// falling back to fonts/.
 fn pdf_render_opts(given: Vec<PathBuf>) -> hwp_render::RenderOptions {
     hwp_render::RenderOptions {
         dpi: 96.0,
@@ -959,12 +959,12 @@ fn infer_format(output: &Path) -> anyhow::Result<ConvertFormat> {
     }
 }
 
-/// hwp 바이너리 저장 (1쪽 렌더를 PrvImage로 동봉).
+/// Write an HWP binary with a first-page render embedded as PrvImage.
 ///
-/// 합성 문서(md/hwpx 출신)는 줄 배치(PARA_LINE_SEG)가 없으면 5.1.x 한글이
-/// 본문을 못 그린다(검은 바/빈 내용/손상). 폰트 셰이핑으로 정확한 줄바꿈을
-/// 계산해 IR에 채운 뒤 쓴다 — 한글과 동일한 함초롬바탕 폰트가 필요하다
-/// (HWP_FONT_DIR 환경변수 또는 프로젝트 `fonts/`).
+/// Synthesized Markdown/HWPX documents need PARA_LINE_SEG for Hangul 5.1.x to render
+/// the body correctly, avoiding black bars, empty content or corruption. Shape fonts
+/// to calculate line breaks and fill the IR before writing; matching Hangul requires
+/// HCR Batang from HWP_FONT_DIR or the project's fonts/ directory.
 pub fn write_hwp(
     doc: &hwp_model::Document,
     output: &std::path::Path,
@@ -995,33 +995,33 @@ pub fn write_hwp_preserving_source(
     )
 }
 
-/// 편집된 문서를 hwp로 다시 쓴다.
+/// Rewrite an edited document as HWP.
 ///
-/// hwp5 원본 편집은 **외과적**으로 처리한다: 편집된 문단만 줄 배치를 비워 한글이
-/// 그 문단만 재계산하게 하고(편집 프리미티브가 이미 비움), 미편집 문단은 원본 줄
-/// 배치를 보존한다. 줄 배치를 전부 비우면 한글이 모든 문단을 재계산하면서 표 셀의
-/// 빈 문단까지 큰 글자 크기로 한 줄을 잡아 행 높이가 부풀어 빈 칸이 생긴다(실측).
-/// 한글 자신이 편집 시 바뀐 문단만 다시 배치하는 것과 같은 동작.
+/// Treat HWP5 edits surgically: clear caches only in edited paragraphs, as the edit
+/// primitives already do, for Hangul to reflow them; retain untouched paragraph caches.
+/// Clearing every cache makes Hangul reflow every paragraph, including empty table-cell
+/// paragraphs at large sizes, inflating row heights and producing observed blank gaps.
+/// This matches Hangul's own behavior of relaying out only changed paragraphs.
 ///
-/// hwpx/md 출신은 보존할 원본 줄 배치가 한글 hwp 레이아웃과 다르므로 합성 경로
-/// (`edited`=true: 줄 배치 비우고 para_shape 복원 후 한글 재계산)를 쓴다.
+/// HWPX/Markdown caches differ from HWP layout, so use the synthesis path with edited=true:
+/// clear line caches, restore para_shape and let Hangul recalculate.
 pub fn write_hwp_edited(
     doc: &hwp_model::Document,
     output: &std::path::Path,
 ) -> anyhow::Result<hwp_model::WriteReport> {
     if doc.meta.source_format == "hwp5" {
-        // 원본 줄 배치 보존(preserve), 합성 정규화 없음 — 편집 문단만 count=0.
+        // Retain original caches without synthesis normalization; only edited paragraphs have count=0.
         write_hwp_impl(doc, output, true, false, false, None, None)
     } else {
         write_hwp_impl(doc, output, false, true, false, None, None)
     }
 }
 
-/// 구조 편집(문단/표 행 추가·삭제)본을 hwp로 쓴다.
+/// Write structurally edited documents with inserted/deleted paragraphs or table rows as HWP.
 ///
-/// 모든 출처에 합성 경로(edited=true)를 강제한다 — 삽입된 문단/행에 문단끝 0x0d·
-/// 마지막문단 비트·PARA/셀 카운트 같은 불변식이 적용돼야 하기 때문(convert/new와
-/// 동일한 한글 수용 검증 경로). hwp5 무수정용 surgical `write_hwp_edited`와 분리한다.
+/// Force edited=true synthesis for every origin so inserted paragraphs/rows receive
+/// paragraph terminators, last-paragraph bits and PARA/cell counts through the same
+/// Hangul-acceptance path as convert/new. Separate this from surgical write_hwp_edited.
 pub fn write_hwp_structural(
     doc: &hwp_model::Document,
     output: &std::path::Path,
@@ -1039,11 +1039,11 @@ pub(crate) fn write_hwp_merged(
     write_hwp_impl(doc, output, false, structural, true, None, None)
 }
 
-/// 구조 문서를 시스템 글꼴 없이 명시된 파일만으로 HWP로 쓴다.
+/// Write a structured document as HWP using only specified font files, without system fonts.
 ///
-/// 인증 코퍼스처럼 환경 독립성이 필요한 경로가 사용한다. `font_files`의 순서는
-/// manifest 순서여야 하며 빈 목록은 거부한다. 일반 사용자 경로의 기존 ambient
-/// 글꼴 동작과 의도적으로 분리한다.
+/// Used by environment-independent paths such as certification corpora. font_files must
+/// follow manifest order, and an empty list is refused. Keep this separate from the
+/// existing ambient-font behavior of ordinary user paths.
 pub fn write_hwp_structural_isolated(
     doc: &hwp_model::Document,
     output: &std::path::Path,
@@ -1109,21 +1109,21 @@ fn write_hwp_impl(
         owned = d;
         &owned
     } else if source.is_some() || !synthesize || preserve_layout {
-        // hwp5 무수정/preserve-layout: 원본 줄 배치 그대로.
+        // Unchanged HWP5/preserve-layout: keep original line caches.
         doc
     } else if has_source_linesegs {
-        // hwpx 출신 또는 편집된 hwp5: 저장된 줄 배치는 (편집으로) 내용과 어긋나거나
-        // 한글의 hwpx 내보내기 레이아웃이라 hwp 저장본과 다를 수 있다(예: 같은
-        // 문서가 hwpx 6쪽, hwp 5쪽). 줄 배치를 제거하면 한글이 열 때 문단/글자
-        // 모양 기준으로 재계산해 hwp 저장본과 같은 페이지로 흐른다(문단 모양을
-        // 정품과 일치시킨 게 핵심). 편집본도 이 경로를 그대로 쓴다(편집으로 낡은
-        // 줄 배치를 비우고 한글이 재계산 — convert hwpx→hwp와 동일한 검증된 동작).
+        // HWPX or edited HWP5 caches may be stale after edits or reflect Hangul's HWPX export
+        // layout, which can differ from its HWP save layout (for example, the same document
+        // has six HWPX pages and five HWP pages). Removing caches lets Hangul recalculate
+        // using paragraph/character shapes and flow like its HWP save. Matching genuine
+        // paragraph shapes is essential. Edited documents follow this same established
+        // conversion path: clear stale caches and let Hangul reflow them on opening.
         let mut d = doc.clone();
         clear_linesegs(&mut d);
         owned = d;
         &owned
     } else {
-        // markdown 등 줄 배치 없는 출처: 폰트 셰이핑으로 합성.
+        // Sources without line caches, such as Markdown: synthesize through font shaping.
         let mut d = doc.clone();
         let mut store = if isolated_font_files.is_some() {
             hwp_render::FontStore::new_isolated()
@@ -1345,8 +1345,8 @@ fn render_issue_messages(report: &hwp_render::RenderIssueReport) -> Vec<String> 
     messages
 }
 
-/// 모든 문단(표 셀·머리말 등 중첩 포함)의 줄 배치를 제거한다 — 한글이 열 때
-/// 문단/글자 모양 기준으로 재계산하도록(hwpx 내보내기 줄배치가 hwp와 다른 문제 회피).
+/// Clear caches in every paragraph, including nested cells and headers, so Hangul
+/// recalculates from paragraph/character shapes instead of differing HWPX export caches.
 fn clear_linesegs(doc: &mut hwp_model::Document) {
     fn clear_para(para: &mut hwp_model::Paragraph) {
         para.line_segs.clear();
@@ -1433,9 +1433,9 @@ mod tests {
 
     #[test]
     fn same_format_opaque_package_entry_is_preserved() {
-        // 예전에는 writer 고정 목록 밖 엔트리가 silently drop돼 fail-closed로
-        // 거부됐다. 이제 같은 포맷 재작성은 잉여 엔트리를 바이트 그대로 보존하므로
-        // 변환이 성공하고 엔트리가 살아 있어야 한다(epic #90).
+        // Previously, entries outside the writer's fixed list were silently dropped and
+        // triggered fail-closed refusal. Same-format rewriting now preserves extra entry
+        // bytes, so conversion must succeed and retain the entry (epic #90).
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "hwp-convert-preservation-test-{}-{sequence}",
@@ -1489,7 +1489,7 @@ mod tests {
             let mut entry = archive.by_index(index).unwrap();
             let options =
                 zip::write::SimpleFileOptions::default().compression_method(entry.compression());
-            writer.start_file(entry.name(), options).unwrap();
+            writer.start_file(entry.name().unwrap(), options).unwrap();
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
             writer.write_all(&bytes).unwrap();
@@ -1505,10 +1505,10 @@ mod tests {
         writer.finish().unwrap();
     }
 
-    /// 크로스 포맷(hwpx→hwp) 변환에서 패키지 수준 잉여 엔트리(DocOptions 등)는
-    /// hwp 컨테이너에 대응 슬롯이 없어 사라진다. strict는 fail-closed로 게시를
-    /// 거부하고 기존 destination을 보존해야 하며, --loss-report는 거부 전에도
-    /// typed ledger를 남겨야 한다(epic #90 PR 3).
+    /// Cross-format HWPX-to-HWP conversion loses extra package entries such as DocOptions,
+    /// which have no matching HWP container slot. Strict mode must fail closed, refuse
+    /// publication and retain destination; --loss-report must still leave its typed
+    /// ledger before refusal (epic #90 PR 3).
     #[test]
     fn strict_cross_format_hwpx_to_hwp_fails_closed_with_loss_report() {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1564,8 +1564,8 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// 비-strict 크로스 포맷 변환은 손실을 ledger에 남기고 게시한다.
-    /// --loss-report는 실행 결과와 같은 이벤트를 스키마 적합 JSON으로 기록한다.
+    /// Non-strict cross-format conversion publishes and records loss in the ledger.
+    /// --loss-report emits the same events as the execution result in schema-valid JSON.
     #[test]
     fn non_strict_cross_format_hwpx_to_hwp_publishes_with_loss_report() {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1621,7 +1621,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// --loss-report가 무손실 변환에서도 유효한(빈 events) 보고서를 쓰는지 확인.
+    /// Check --loss-report emits a valid report with empty events for lossless conversion.
     #[test]
     fn loss_report_is_written_even_when_conversion_is_lossless() {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1663,9 +1663,9 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// --loss-report가 입력의 lexical 변형(`./in.hwpx`, `sub/../in.hwpx`)이어도
-    /// 거부하고 입력을 보존한다. raw Path 비교는 `.`는 걸러도 `..` 철자는 놓친다
-    /// (epic #90 PR 3 후속).
+    /// Refuse --loss-report aliases of the input, including ./in.hwpx and sub/../in.hwpx,
+    /// and preserve the input. Raw Path comparison catches dot but misses parent segments
+    /// (epic #90 PR 3 follow-up).
     #[test]
     fn loss_report_lexical_alias_of_input_is_rejected() {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1713,8 +1713,8 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// --loss-report가 출력(-o)과 같으면 거부한다 — 리포트를 게시한 뒤 문서 게시가
-    /// 조용히 덮어쓰는 순서 버그 방지.
+    /// Refuse --loss-report matching output (-o), preventing document publication from
+    /// silently overwriting a report published earlier in the transaction.
     #[test]
     fn loss_report_same_as_output_is_rejected() {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1754,8 +1754,8 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// 생성된 loss report가 공개 스키마(`schemas/preservation-report-v1`)에
-    /// 부합하는지 검증한다 — 렌더 보고서 테스트(tests/cli.rs)와 같은 게이트.
+    /// Validate generated loss reports against schemas/preservation-report-v1,
+    /// using the same gate as render-report tests in tests/cli.rs.
     fn assert_loss_report_schema_valid(value: &serde_json::Value) {
         let schema: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../schemas/preservation-report-v1.schema.json"
