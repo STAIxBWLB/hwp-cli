@@ -1,6 +1,8 @@
-//! Copy-on-write named-style creation and paragraph-scoped application (#427 T3).
+//! Copy-on-write named-style creation, paragraph application and document-wide updates (#427 T3/T4).
 //! Native publication guards and format-specific style limits belong to callers.
-use hwp_model::{CharShapeId, Document, StyleId};
+use hwp_model::{
+    CharShapeId, Control, DocHeader, Document, LANG_COUNT, ParaShapeId, Paragraph, StyleId,
+};
 
 use super::StyleKind;
 use crate::format::{
@@ -34,13 +36,27 @@ pub enum StyleEditError {
     DuplicateName(String),
     UnknownStyle(StyleSelector),
     AmbiguousName(String),
-    MissingShape { table: &'static str, id: u16 },
-    Capacity { table: &'static str },
+    MissingShape {
+        table: &'static str,
+        id: u16,
+    },
+    DanglingReference {
+        owner: String,
+        table: String,
+        id: u16,
+    },
+    Capacity {
+        table: &'static str,
+    },
     InvalidAddress,
     UnsupportedKind(u8),
     UnknownStyleKind,
     CharacterStylesUnsupported,
     InvalidCharacterProperties,
+    UnwritableStyleUser {
+        count: usize,
+        locations: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for StyleEditError {
@@ -66,6 +82,10 @@ impl std::fmt::Display for StyleEditError {
                 f,
                 "스타일의 {table} 참조 {id}를 찾을 수 없습니다. 원본 문서의 서식 참조를 확인해 보세요"
             ),
+            Self::DanglingReference { owner, table, id } => write!(
+                f,
+                "{owner}의 {table} 참조 {id}가 원본 정의 표에 없습니다. 새 정의 추가로 이 참조에 다른 의미가 생길 수 있어 스타일 변경을 거부했습니다. 원본 문서의 해당 서식 참조를 복구한 뒤 다시 시도하세요"
+            ),
             Self::Capacity { table } => write!(
                 f,
                 "{table} 표가 스타일 편집의 번호 범위를 넘습니다. 문서의 서식 정의 수를 확인해 보세요"
@@ -86,6 +106,20 @@ impl std::fmt::Display for StyleEditError {
                 f,
                 "종류 {kind}인 스타일은 문단에 적용할 수 없습니다. 문단 스타일을 지정해 보세요"
             ),
+            Self::UnwritableStyleUser { count, locations } => {
+                write!(
+                    f,
+                    "보존 개체는 원본 레코드/XML을 그대로 다시 내보내며 내부 문단을 재생성할 수 없어 스타일 변경을 거부했습니다. 변경이 필요한 문단 {count}개. 위치: {}",
+                    locations.join("; ")
+                )?;
+                if *count > locations.len() {
+                    write!(f, " (위치 {}/{count}개 표시)", locations.len())?;
+                }
+                write!(
+                    f,
+                    ". hwp styles로 문서의 스타일을 확인하고 해당 보존 개체에 사용되지 않는 다른 스타일(문단 스타일)을 선택하세요"
+                )
+            }
             Self::InvalidCharacterProperties => write!(
                 f,
                 "스타일의 글자 크기나 글꼴 이름이 유효하지 않습니다. 유한한 글자 크기와 유효한 글꼴 이름을 지정해 보세요"
@@ -186,6 +220,41 @@ fn check_shapes(doc: &Document, style: &hwp_model::Style) -> Result<(), StyleEdi
     Ok(())
 }
 
+fn resolve_style_font(
+    header: &mut DocHeader,
+    format: &CharFormat,
+) -> Result<Option<[u16; LANG_COUNT]>, StyleEditError> {
+    if format
+        .size_pt
+        .is_some_and(|size| !size.is_finite() || size * 100.0 > i32::MAX as f32)
+        || format
+            .font
+            .as_ref()
+            .is_some_and(|name| name.is_empty() || name.chars().any(char::is_control))
+    {
+        return Err(StyleEditError::InvalidCharacterProperties);
+    }
+    let Some(name) = format.font.as_deref() else {
+        return Ok(None);
+    };
+    for fonts in &header.fonts {
+        check_rows(fonts.len(), "fonts")?;
+        if fonts.len() == MAX_ROWS && !fonts.iter().any(|face| face.name == name) {
+            return Err(StyleEditError::Capacity { table: "fonts" });
+        }
+    }
+    Ok(Some(resolve_font_faces(&mut header.fonts, name)))
+}
+
+fn require_paragraph_style(style: &hwp_model::Style) -> Result<(), StyleEditError> {
+    match super::style_kind(style) {
+        Some(StyleKind::Paragraph) => Ok(()),
+        Some(StyleKind::Character) => Err(StyleEditError::CharacterStylesUnsupported),
+        None if style.kind_unknown => Err(StyleEditError::UnknownStyleKind),
+        None => Err(StyleEditError::UnsupportedKind(style.attr & 0x7)),
+    }
+}
+
 /// Append one paragraph style, reusing equal shapes or appending changed copies. All fallible
 /// work happens on a header candidate, leaving every original reference untouched.
 pub fn create_style(doc: &mut Document, request: &CreateStyle) -> Result<StyleId, StyleEditError> {
@@ -215,30 +284,8 @@ pub fn create_style(doc: &mut Document, request: &CreateStyle) -> Result<StyleId
         .resolve(doc)?;
     let mut style = doc.header.styles[usize::from(base_id.0)].clone();
     check_shapes(doc, &style)?;
-    if request
-        .character
-        .size_pt
-        .is_some_and(|size| !size.is_finite() || size * 100.0 > i32::MAX as f32)
-        || request
-            .character
-            .font
-            .as_ref()
-            .is_some_and(|name| name.is_empty() || name.chars().any(char::is_control))
-    {
-        return Err(StyleEditError::InvalidCharacterProperties);
-    }
     let mut header = doc.header.clone();
-    let resolved_font = if let Some(name) = request.character.font.as_deref() {
-        for fonts in &header.fonts {
-            check_rows(fonts.len(), "fonts")?;
-            if fonts.len() == MAX_ROWS && !fonts.iter().any(|face| face.name == name) {
-                return Err(StyleEditError::Capacity { table: "fonts" });
-            }
-        }
-        Some(resolve_font_faces(&mut header.fonts, name))
-    } else {
-        None
-    };
+    let resolved_font = resolve_style_font(&mut header, &request.character)?;
     let character = apply_format(
         header.char_shapes[usize::from(style.char_shape.0)].clone(),
         &request.character,
@@ -272,12 +319,7 @@ pub fn apply_style_at(
 ) -> Result<bool, StyleEditError> {
     let target_id = selector.resolve(doc)?;
     let target = doc.header.styles[usize::from(target_id.0)].clone();
-    match super::style_kind(&target) {
-        Some(StyleKind::Paragraph) => {}
-        Some(StyleKind::Character) => return Err(StyleEditError::CharacterStylesUnsupported),
-        None if target.kind_unknown => return Err(StyleEditError::UnknownStyleKind),
-        None => return Err(StyleEditError::UnsupportedKind(target.attr & 0x7)),
-    }
+    require_paragraph_style(&target)?;
     check_shapes(doc, &target)?;
     let (before_style, before_para_shape, before_runs) = {
         let paragraph =
@@ -341,7 +383,10 @@ pub fn apply_style_at(
             })
             .collect()
     };
-    if before_style == target_id && before_para_shape == para_shape && before_runs == runs {
+    if before_style == target_id
+        && before_para_shape == para_shape
+        && effective_runs == runs.as_slice()
+    {
         return Ok(false);
     }
     let paragraph =
@@ -351,5 +396,435 @@ pub fn apply_style_at(
     paragraph.char_shape_runs = runs;
     paragraph.line_segs.clear();
     crate::address::invalidate_ancestors(doc, path);
+    Ok(true)
+}
+
+/// Change a named paragraph style while keeping every old shape definition intact.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateStyle {
+    pub style: StyleSelector,
+    pub character: CharFormat,
+    /// Dimensions use the HWPUNIT input convention of `set_para_props`.
+    pub paragraph: ParaProps,
+}
+
+#[derive(Clone, Copy)]
+struct RepointStyle {
+    style: StyleId,
+    old_char: CharShapeId,
+    new_char: CharShapeId,
+    old_para: ParaShapeId,
+    new_para: ParaShapeId,
+}
+
+impl RepointStyle {
+    fn affects(&self, paragraph: &Paragraph) -> bool {
+        paragraph.style == self.style
+            && ((self.old_para != self.new_para && paragraph.para_shape == self.old_para)
+                || (self.old_char != self.new_char
+                    && if paragraph.char_shape_runs.is_empty() {
+                        self.old_char == CharShapeId(0)
+                    } else {
+                        paragraph
+                            .char_shape_runs
+                            .iter()
+                            .any(|(_, id)| *id == self.old_char)
+                    }))
+    }
+
+    fn apply(&self, paragraph: &mut Paragraph) -> bool {
+        if !self.affects(paragraph) {
+            return false;
+        }
+        if self.old_para != self.new_para && paragraph.para_shape == self.old_para {
+            paragraph.para_shape = self.new_para;
+        }
+        if self.old_char != self.new_char {
+            if paragraph.char_shape_runs.is_empty() {
+                // Same effective shape0 convention as apply_style_at; leave direct empty runs alone.
+                if self.old_char == CharShapeId(0) {
+                    paragraph.char_shape_runs.push((0, self.new_char));
+                }
+            } else {
+                for (_, id) in &mut paragraph.char_shape_runs {
+                    if *id == self.old_char {
+                        *id = self.new_char;
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
+fn check_existing_ref(
+    owner: String,
+    table: &str,
+    id: u16,
+    rows: usize,
+) -> Result<(), StyleEditError> {
+    if usize::from(id) >= rows {
+        return Err(StyleEditError::DanglingReference {
+            owner,
+            table: table.to_owned(),
+            id,
+        });
+    }
+    Ok(())
+}
+
+fn check_paragraph_shape_refs(
+    paragraph: &Paragraph,
+    header: &DocHeader,
+    route: &str,
+) -> Result<(), StyleEditError> {
+    check_existing_ref(
+        format!("{route}.para_shape"),
+        "para_shapes",
+        paragraph.para_shape.0,
+        header.para_shapes.len(),
+    )?;
+    for (index, (_, id)) in paragraph.char_shape_runs.iter().enumerate() {
+        check_existing_ref(
+            format!("{route}.char_shape_runs[{index}]"),
+            "char_shapes",
+            id.0,
+            header.char_shapes.len(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Mirror the typed Generic arms in hwpx::write::section after captured XML is removed.
+/// Containers cannot use write_ir_shapes: their child coordinates are container-relative.
+/// Native raw_children are separately preserved verbatim by the HWP5 writer.
+fn preserves_original_children(generic: &hwp_model::GenericControl) -> bool {
+    if !generic.raw_children.is_empty() {
+        return true;
+    }
+    if generic.hwpx_raw_xml.is_none() {
+        return false;
+    }
+    let id = &generic.ctrl_id;
+    let can_regenerate = matches!(
+        id,
+        b"cold" | b"head" | b"foot" | b"bokm" | b"atno" | b"gso " | b"fn  " | b"en  "
+    ) || crate::field::is_field_ctrl_id(id)
+        || (id == b"pgnp" && generic.data.len() >= 12)
+        || (id == b"pghd" && generic.data.len() >= 4)
+        || (id == b"nwno" && generic.data.len() >= 6)
+        || (!generic.gso_shapes.is_empty() && generic.container_box.is_none())
+        || generic.equation.is_some();
+    !can_regenerate
+}
+
+/// A model route plus the closest paragraph that the existing address resolver can reach.
+/// Captions and raw-preserved descendants do not receive invented editable segment IDs.
+#[derive(Clone)]
+struct StyleUserScope {
+    route: String,
+    path: Option<SegmentPath>,
+    paragraph_offset: usize,
+    ancestor: Option<SegmentPath>,
+    inside_raw: bool,
+}
+
+impl StyleUserScope {
+    fn section(index: usize) -> Self {
+        Self {
+            route: format!("sections[{index}]"),
+            path: Some(SegmentPath {
+                section: index,
+                indices: Vec::new(),
+            }),
+            paragraph_offset: 0,
+            ancestor: None,
+            inside_raw: false,
+        }
+    }
+
+    fn paragraph(&self, index: usize) -> Self {
+        let mut at = self.clone();
+        at.route = format!("{}.paragraphs[{index}]", self.route);
+        if let Some(path) = &mut at.path {
+            path.indices.push(index + self.paragraph_offset);
+            at.ancestor = Some(path.clone());
+        }
+        at.paragraph_offset = 0;
+        at
+    }
+
+    fn child(
+        &self,
+        suffix: String,
+        steps: &[usize],
+        offset: usize,
+        raw: bool,
+        addressable: bool,
+    ) -> Self {
+        let inside_raw = self.inside_raw || raw;
+        let path = if inside_raw || !addressable {
+            None
+        } else {
+            self.path.clone().map(|mut path| {
+                path.indices.extend_from_slice(steps);
+                path
+            })
+        };
+        Self {
+            route: format!("{}.{}", self.route, suffix),
+            path,
+            paragraph_offset: offset,
+            ancestor: self.ancestor.clone(),
+            inside_raw,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RawStyleUsers {
+    count: usize,
+    locations: Vec<String>,
+}
+
+impl RawStyleUsers {
+    fn record(&mut self, doc: &Document, scope: &StyleUserScope) {
+        self.count += 1;
+        if self.locations.len() == 8 {
+            return;
+        }
+        let ancestor = scope.ancestor.as_ref().and_then(|path| {
+            crate::address::resolve(
+                doc,
+                &crate::address::Address {
+                    section: path.section,
+                    indices: path.indices.clone(),
+                    checksum: None,
+                    chars: None,
+                },
+                crate::address::Granularity::Paragraph,
+            )
+            .ok()
+        });
+        self.locations.push(match ancestor {
+            Some(target) => format!("{} (상위 문단 주소: {})", scope.route, target.before_id),
+            None => scope.route.clone(),
+        });
+    }
+}
+
+fn preflight_style_users(
+    paragraphs: &[Paragraph],
+    rule: RepointStyle,
+    doc: &Document,
+    scope: &StyleUserScope,
+    raw_users: &mut RawStyleUsers,
+) -> Result<(), StyleEditError> {
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        // New definitions must not give an unrelated dangling reference a new meaning.
+        let at = scope.paragraph(index);
+        check_paragraph_shape_refs(paragraph, &doc.header, &at.route)?;
+        if at.inside_raw && rule.affects(paragraph) {
+            raw_users.record(doc, &at);
+        }
+        for (control_index, control) in paragraph.controls.iter().enumerate() {
+            let control_route = format!("controls[{control_index}]");
+            match control {
+                Control::Table(table) => {
+                    for (cell_index, cell) in table.cells.iter().enumerate() {
+                        let child = at.child(
+                            format!("{control_route}.cells[{cell_index}]"),
+                            &[control_index, cell_index],
+                            0,
+                            false,
+                            true,
+                        );
+                        preflight_style_users(&cell.paragraphs, rule, doc, &child, raw_users)?;
+                    }
+                    if let Some(caption) = &table.caption {
+                        let child =
+                            at.child(format!("{control_route}.caption"), &[], 0, false, false);
+                        preflight_style_users(&caption.paragraphs, rule, doc, &child, raw_users)?;
+                    }
+                }
+                Control::Picture(picture) => {
+                    if let Some(caption) = &picture.caption {
+                        let child =
+                            at.child(format!("{control_route}.caption"), &[], 0, false, false);
+                        preflight_style_users(&caption.paragraphs, rule, doc, &child, raw_users)?;
+                    }
+                }
+                Control::Generic(generic) => {
+                    let raw = preserves_original_children(generic);
+                    let mut offset = 0;
+                    for (list_index, list) in generic.paragraph_lists.iter().enumerate() {
+                        let child = at.child(
+                            format!("{control_route}.paragraph_lists[{list_index}]"),
+                            &[control_index],
+                            offset,
+                            raw,
+                            true,
+                        );
+                        preflight_style_users(&list.paragraphs, rule, doc, &child, raw_users)?;
+                        offset += list.paragraphs.len();
+                    }
+                    if let Some(caption) = &generic.caption {
+                        let child =
+                            at.child(format!("{control_route}.caption"), &[], 0, raw, false);
+                        preflight_style_users(&caption.paragraphs, rule, doc, &child, raw_users)?;
+                    }
+                }
+                Control::SectionDef(_) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn repoint_style_users(paragraphs: &mut [Paragraph], rule: RepointStyle) -> bool {
+    let mut changed = false;
+    for paragraph in paragraphs {
+        let mut here = rule.apply(paragraph);
+        for control in &mut paragraph.controls {
+            match control {
+                Control::Table(table) => {
+                    for cell in &mut table.cells {
+                        here |= repoint_style_users(&mut cell.paragraphs, rule);
+                    }
+                    if let Some(caption) = &mut table.caption {
+                        here |= repoint_style_users(&mut caption.paragraphs, rule);
+                    }
+                }
+                Control::Picture(picture) => {
+                    if let Some(caption) = &mut picture.caption {
+                        here |= repoint_style_users(&mut caption.paragraphs, rule);
+                    }
+                }
+                // Preflight refuses affected descendants whose preserved records/XML cannot
+                // publish modeled edits; never invalidate their pass-through source.
+                Control::Generic(generic) if !preserves_original_children(generic) => {
+                    let mut inner = false;
+                    for list in &mut generic.paragraph_lists {
+                        inner |= repoint_style_users(&mut list.paragraphs, rule);
+                    }
+                    if let Some(caption) = &mut generic.caption {
+                        inner |= repoint_style_users(&mut caption.paragraphs, rule);
+                    }
+                    if inner {
+                        generic.hwpx_raw_xml = None;
+                    }
+                    here |= inner;
+                }
+                Control::Generic(_) | Control::SectionDef(_) => {}
+            }
+        }
+        if here {
+            paragraph.line_segs.clear();
+        }
+        changed |= here;
+    }
+    changed
+}
+
+/// Append fresh changed shapes and repoint only the selected style's inheriting users.
+/// All refusal checks precede document mutation; equal repeated requests add no definitions.
+pub fn update_style(doc: &mut Document, request: &UpdateStyle) -> Result<bool, StyleEditError> {
+    let id = request.style.resolve(doc)?;
+    let old = doc.header.styles[usize::from(id.0)].clone();
+    require_paragraph_style(&old)?;
+    check_shapes(doc, &old)?;
+    let mut header = doc.header.clone();
+    let font = resolve_style_font(&mut header, &request.character)?;
+    let character = apply_format(
+        header.char_shapes[usize::from(old.char_shape.0)].clone(),
+        &request.character,
+        font,
+    );
+    let paragraph = apply_para_shape_props(
+        header.para_shapes[usize::from(old.para_shape.0)].clone(),
+        &to_ir_units(&request.paragraph),
+    );
+    let char_changed = character != doc.header.char_shapes[usize::from(old.char_shape.0)];
+    let para_changed = paragraph != doc.header.para_shapes[usize::from(old.para_shape.0)];
+    if !char_changed && !para_changed && header.fonts == doc.header.fonts {
+        return Ok(false);
+    }
+    if header.fonts != doc.header.fonts {
+        // Appending a face must not fill a previously dangling face index used elsewhere.
+        for (index, shape) in doc.header.char_shapes.iter().enumerate() {
+            for (slot, face) in shape.face_ids.iter().enumerate() {
+                check_existing_ref(
+                    format!("header.char_shapes[{index}].face_ids[{slot}]"),
+                    &format!("fonts[{slot}]"),
+                    *face,
+                    doc.header.fonts[slot].len(),
+                )?;
+            }
+        }
+    }
+    let new_char = if char_changed {
+        let index =
+            u16::try_from(header.char_shapes.len()).map_err(|_| StyleEditError::Capacity {
+                table: "char_shapes",
+            })?;
+        // Reusing an equal direct/shared ID would make that direct user inherit the next update.
+        header.char_shapes.push(character);
+        CharShapeId(index)
+    } else {
+        old.char_shape
+    };
+    let new_para = if para_changed {
+        let index =
+            u16::try_from(header.para_shapes.len()).map_err(|_| StyleEditError::Capacity {
+                table: "para_shapes",
+            })?;
+        header.para_shapes.push(paragraph);
+        ParaShapeId(index)
+    } else {
+        old.para_shape
+    };
+    let rule = RepointStyle {
+        style: id,
+        old_char: old.char_shape,
+        new_char,
+        old_para: old.para_shape,
+        new_para,
+    };
+    for (index, style) in doc.header.styles.iter().enumerate() {
+        check_existing_ref(
+            format!("header.styles[{index}].char_shape"),
+            "char_shapes",
+            style.char_shape.0,
+            doc.header.char_shapes.len(),
+        )?;
+        check_existing_ref(
+            format!("header.styles[{index}].para_shape"),
+            "para_shapes",
+            style.para_shape.0,
+            doc.header.para_shapes.len(),
+        )?;
+    }
+    let mut raw_users = RawStyleUsers::default();
+    for (index, section) in doc.sections.iter().enumerate() {
+        preflight_style_users(
+            &section.paragraphs,
+            rule,
+            doc,
+            &StyleUserScope::section(index),
+            &mut raw_users,
+        )?;
+    }
+    if raw_users.count > 0 {
+        return Err(StyleEditError::UnwritableStyleUser {
+            count: raw_users.count,
+            locations: raw_users.locations,
+        });
+    }
+    header.styles[usize::from(id.0)].char_shape = new_char;
+    header.styles[usize::from(id.0)].para_shape = new_para;
+    doc.header = header;
+    for section in &mut doc.sections {
+        repoint_style_users(&mut section.paragraphs, rule);
+    }
     Ok(true)
 }
