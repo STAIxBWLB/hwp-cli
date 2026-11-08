@@ -274,7 +274,13 @@ fn update_mcp_matches_ops_hwpx() {
 
 fn repeated(extension: &'static str, operation: Value) {
     let op = operation["op"].as_str().unwrap();
-    let fixture = Fixture::new(&format!("repeat-{op}"), extension);
+    let fixture = Fixture::new(
+        &format!(
+            "repeat-{op}-clear-{}",
+            operation["clear_direct"].as_bool().unwrap_or(false)
+        ),
+        extension,
+    );
     let source = if op == "apply_style" {
         fixture.ops(&fixture.source, "created", json!([create()]))
     } else {
