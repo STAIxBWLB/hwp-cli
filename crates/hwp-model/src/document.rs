@@ -1,4 +1,4 @@
-//! 최상위 문서 모델.
+//! Top-level document model.
 
 use serde::{Deserialize, Serialize};
 
@@ -8,68 +8,68 @@ use crate::paragraph::Paragraph;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Document {
-    /// 출처 정보 (원본 포맷/버전 등)
+    /// Source information, including original format and version.
     pub meta: DocMeta,
-    /// 문서 속성 (제목/지은이/주제/키워드). hwp5 `\x05HwpSummaryInformation`,
-    /// hwpx `Contents/content.hpf`(OPF dc:*)에 대응.
+    /// Document properties (title/author/subject/keywords): HWP5 `\x05HwpSummaryInformation`,
+    /// and HWPX `Contents/content.hpf` (OPF dc:*).
     #[serde(default)]
     pub metadata: Metadata,
     pub header: DocHeader,
     pub sections: Vec<Section>,
-    /// 첨부 바이너리 (이미지 등). 키는 원본 컨테이너 항목 이름
+    /// Attached binaries, such as images, keyed by their original container entry names.
     /// (hwp5: "BIN0001.png", hwpx: "BinData/image1.png").
     pub bin_streams: Vec<BinStream>,
-    /// hwpx `settings.xml` 원문(앱 설정·캐럿 위치). IR 경유 되쓰기에서 원본을
-    /// 그대로 통과시키기 위한 슬롯. hwp5 출신 문서는 `None`(쓰기 시 기본 상수).
+    /// Original HWPX `settings.xml` (application settings and caret position), passed through
+    /// unchanged when rewriting through the IR. HWP5 inputs use `None` and writer defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hwpx_settings_xml: Option<String>,
-    /// hwpx `version.xml` 원문(버전 메타). IR 경유 되쓰기에서 원본을 그대로
-    /// 통과시키기 위한 슬롯. hwp5 출신 문서는 `None`(쓰기 시 기본 상수).
+    /// Original HWPX `version.xml` (version metadata), passed through unchanged when rewriting
+    /// through the IR. HWP5 inputs use `None` and writer defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hwpx_version_xml: Option<String>,
     /// Raw HWPX preview image bytes. The payload is intentionally excluded from
     /// JSON, like [`BinStream::data`], and exists only for same-format pass-through.
     #[serde(skip)]
     pub hwpx_preview_image: Option<Vec<u8>>,
-    /// hwp5 `/XMLTemplate` 스토리지의 스트림 원문(스트림 CFB 경로 + 압축 미해제
-    /// 바이트). XML 스키마 바인딩 문서(전자정부 서식 등, §3.2.10)의 부속 파트를 IR
-    /// 경유 되쓰기에서 그대로 통과시키는 슬롯. 내용은 해석하지 않는다. hwpx 출신·해당
-    /// 스토리지가 없는 hwp5 문서는 빈 벡터.
+    /// Original streams from HWP5 `/XMLTemplate` storage (CFB stream paths and bytes before
+    /// decompression). Passes through XML schema binding parts (such as electronic-government
+    /// forms, §3.2.10) unchanged when rewriting through the IR; their content is not interpreted.
+    /// Empty for HWPX inputs and HWP5 documents without this storage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwp5_xml_template: Vec<(String, Vec<u8>)>,
-    /// hwp5 `/DocHistory` 스토리지의 스트림 원문(스트림 CFB 경로 + 압축 미해제
-    /// 바이트). 문서 이력(§3.2.11·§4.4)을 되쓰기에서 그대로 통과시키는 슬롯. 내용은
-    /// 해석하지 않는다(§4.4 파서는 범위 밖). hwpx 출신·이력이 없는 문서는 빈 벡터.
+    /// Original streams from HWP5 `/DocHistory` storage (CFB stream paths and bytes before
+    /// decompression). Passes through document history (§3.2.11 and §4.4) unchanged on rewrite;
+    /// content is not interpreted (§4.4 parsing is out of scope). Empty for HWPX or absent history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwp5_doc_history: Vec<(String, Vec<u8>)>,
-    /// hwpx 원본 패키지 중 writer가 재생성하지 않는 엔트리(원본 순서·바이트 보존).
-    /// 예: DocOptions, 스크립트, 추가 Preview, 원본 META-INF/*. hwpx 출신이 아니면 비어 있다.
+    /// Original HWPX package entries the writer does not regenerate, preserving order and bytes.
+    /// Examples: DocOptions, scripts, extra Preview and original META-INF/*. Empty for non-HWPX inputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwpx_extra_entries: Vec<(String, Vec<u8>)>,
-    /// hwpx 원본 `Contents/content.hpf`의 OPF manifest 중 BinData 항목의
-    /// (id, href) 매핑. 전체 재작성 경로에서 BinCollector id를 원본 manifest id로
-    /// 시드해, 원문 캡처된 개체 안의 `binaryItemIDRef`가 원본 바이트를 계속
-    /// 가리키게 한다. hwp5 출신·합성 문서는 빈 벡터(기존 image{N} 할당 유지).
+    /// BinData (id, href) mappings from the original HWPX `Contents/content.hpf` OPF manifest.
+    /// A full rewrite seeds BinCollector ids from the original manifest so `binaryItemIDRef`
+    /// attributes in captured objects continue to reference the original bytes. Empty for HWP5
+    /// and synthesized documents, which retain the existing image{N} allocation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwpx_bin_manifest: Vec<(String, String)>,
-    /// hwpx 원본 OPF manifest 중 writer가 재생성하지 않는 확장 파트 항목의
-    /// (id, href, media-type) — BinData/header/section/settings 외 항목(예:
-    /// DocOptions/Layout.xml). content.hpf 재생성 시 그대로 다시 등재해 패키지
-    /// 엔트리가 고아(미등재)가 되지 않게 한다. hwp5 출신·합성 문서는 빈 벡터.
+    /// Extension-part (id, href, media-type) entries from the original HWPX OPF manifest that
+    /// the writer does not regenerate: entries outside BinData/header/section/settings, such as
+    /// DocOptions/Layout.xml. Re-registers them when regenerating content.hpf so package entries
+    /// do not become orphaned. Empty for HWP5 and synthesized documents.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwpx_opf_extra_items: Vec<(String, String, String)>,
-    /// hwpx 원본 섹션 루트의 추가 xmlns 선언(원문 속성 문자열 `xmlns:foo="uri"`,
-    /// writer 표준 hs/hp/hc 제외, 전 섹션 합집합). 원문 캡처 개체가 루트에만
-    /// 선언된 확장 접두어(hp10:, 벤더 접두어 등)를 쓸 수 있어, 재직렬화된 섹션
-    /// 루트에 그대로 실어야 namespace-well-formed하다. hwp5 출신·합성 문서는 빈 벡터.
+    /// Additional xmlns declarations from original HWPX section roots (raw attribute strings
+    /// such as `xmlns:foo="uri"`, excluding the writer standard hs/hp/hc, unioned across sections).
+    /// Captured objects may use extension prefixes (hp10: or vendor prefixes) declared only at
+    /// the root; retain them on rewritten roots for namespace validity. Empty for HWP5 or synthesized inputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hwpx_section_xmlns: Vec<String>,
 }
 
-/// 문서 수준 메타데이터 (요약 정보 / OPF 메타).
+/// Document-level metadata (summary information / OPF metadata).
 ///
-/// 모든 필드가 `Option`이며 `#[serde(default)]`이라 JSON 왕복 호환을 깨지 않는다.
-/// 비어 있으면 쓰기 시 빈 문자열로 직렬화(표본 구조 유지).
+/// All fields are `Option` with `#[serde(default)]`, preserving JSON round-trip compatibility.
+/// Missing values serialize as empty strings on write, retaining the sample structure.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Metadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,23 +80,23 @@ pub struct Metadata {
     pub subject: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keywords: Option<String>,
-    /// 설명(comments). hwp5 요약정보 PIDSI 6, hwpx OPF `meta[name=description]`.
+    /// Description (comments): HWP5 summary information PIDSI 6, HWPX OPF `meta[name=description]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// 마지막 저장자. hwp5 요약정보 PIDSI 8, hwpx OPF `meta[name=lastsaveby]`.
+    /// Last saved by: HWP5 summary information PIDSI 8, HWPX OPF `meta[name=lastsaveby]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_saved_by: Option<String>,
-    /// 작성 일시. hwp5 요약정보 PIDSI 12(VT_FILETIME)의 **raw u64** 그대로 보존한다
-    /// (1601-01-01 UTC 기준 100ns 단위). 무손실 우선 — 시간대 변환·문자열화 금지.
+    /// Creation time, preserving the HWP5 summary information PIDSI 12 (VT_FILETIME) **raw u64**
+    /// in 100 ns units since 1601-01-01 UTC. Preserve losslessly: no timezone conversion or stringification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create_time: Option<u64>,
-    /// 수정(마지막 저장) 일시. hwp5 요약정보 PIDSI 13(VT_FILETIME)의 **raw u64** 그대로 보존.
+    /// Modification (last-save) time: preserves HWP5 summary information PIDSI 13 (VT_FILETIME) as **raw u64**.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modify_time: Option<u64>,
 }
 
 impl Metadata {
-    /// 모든 필드가 비었는가.
+    /// Whether every field is empty.
     pub fn is_empty(&self) -> bool {
         self.title.is_none()
             && self.author.is_none()
@@ -109,7 +109,7 @@ impl Metadata {
     }
 }
 
-/// 첨부 바이너리 하나. 바이트는 JSON 직렬화에서 제외한다 (L2 출력 비대 방지).
+/// One attached binary. Bytes are omitted from JSON serialization to avoid oversized L2 output.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinStream {
     pub name: String,
@@ -156,7 +156,7 @@ impl Document {
         }
     }
 
-    /// Picture의 BinRef를 실제 바이트로 해석한다.
+    /// Resolves a Picture BinRef to its actual bytes.
     pub fn resolve_bin(&self, bin_ref: &BinRef) -> Option<&[u8]> {
         self.bin_stream_index(bin_ref)
             .map(|index| self.bin_streams[index].data.as_slice())
@@ -167,19 +167,19 @@ impl Document {
 pub struct DocMeta {
     /// "hwp5" | "hwpx"
     pub source_format: String,
-    /// 원본 파일 버전 (예: "5.1.0.1")
+    /// Original file version, such as "5.1.0.1".
     pub source_version: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Section {
     pub paragraphs: Vec<Paragraph>,
-    /// 문단이 아닌 최상위 레코드 (잘 형성된 파일에서는 비어 있음)
+    /// Top-level records outside paragraphs (empty in well-formed files).
     pub extras: Vec<crate::opaque::OpaqueRecord>,
 }
 
 impl Section {
-    /// 이 구역의 구역 정의 컨트롤 (보통 첫 문단의 첫 컨트롤).
+    /// Section definition control, normally the first control of the first paragraph.
     pub fn section_def(&self) -> Option<&SectionDef> {
         self.paragraphs
             .iter()
