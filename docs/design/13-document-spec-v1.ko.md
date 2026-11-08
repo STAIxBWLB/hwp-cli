@@ -8,6 +8,14 @@
 `hwp_cli::document_spec`이 그 버전 고정 Rust/serde 구현이다. 어느 한쪽을 바꾸면 다른 쪽과 예제,
 계약 테스트를 **같은 커밋에서** 함께 바꿔야 한다.
 
+`schemas/edit-ops-v1.schema.json`을 컴파일하는 소비자는
+`schemas/document-spec-v1.schema.json`도 읽고 `$id`인
+`https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json`으로 등록해야 한다.
+EditOps는 이 리소스의 블록·스타일·목록 정의를 참조한다. `insert_blocks`가 없는 배치도
+스키마 컴파일 시 참조 해석이 필요할 수 있으므로 두 스키마를 같은 번들에서 함께 읽는다.
+CLI는 두 리소스를 내장·등록하므로 검증에 네트워크 요청이 필요하지 않다. 현재 삽입은
+연산마다 바이너리 스트림을 포함한 문서 전체를 복제하므로 T3 자산 staging에서 이 비용을 재검토한다.
+
 계약은 의도적으로 닫혀 있다.
 
 - 루트 `version`은 정확히 `"1.0"`이다.

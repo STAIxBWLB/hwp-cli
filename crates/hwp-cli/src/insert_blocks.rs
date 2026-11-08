@@ -144,9 +144,24 @@ fn check_target(doc: &Document, target: &SegmentPath) -> Result<(), String> {
 /// Compare its actual templates/starts and the format selectors the reader does not retain;
 /// do not project away a list setting that the requested output cannot represent.
 fn check_hwp_lists(
+    original: &Document,
     request: &InsertBlocks,
     lists: &BTreeMap<String, ListSpec>,
 ) -> Result<(), String> {
+    // Match materialize_evidenced_official_numbering's ORIGINAL-document gate.
+    // An appended seven-level definition disables that all-definitions contract,
+    // making the writer replace existing official definitions with defaults too.
+    if original.meta.source_format != "hwp5"
+        && original.header.numberings.is_empty()
+        && hwp5::numbering::is_official_eight_level_contract(&original.header.numbering_levels)
+        && let Some((name, _)) = lists
+            .iter()
+            .find(|(_, list)| list.kind == ListKind::Ordered)
+    {
+        return Err(format!(
+            "목록 '{name}'의 새 번호 정의를 추가하면 기존 8수준 official 번호의 HWP 직렬화 계약이 깨져 기존 번호 인코딩이 변경됩니다. 기존 번호를 보존하려면 HWPX 출력으로 다시 시도하세요"
+        ));
+    }
     let defaults = hwp5::write::synthesized_numbering_levels();
     for (name, list) in lists {
         if list.kind != ListKind::Ordered {
@@ -286,6 +301,8 @@ pub fn apply(
         char_shape: default.char_shape,
         border_fill: BorderFillId(0),
     };
+    // T2 stages a whole-document clone per op, including binary payloads. T3 must
+    // revisit that cost along with real asset base paths and sandbox roots.
     let mut compiler = BlockCompiler::over_document(doc.clone(), defaults, Path::new("."), &[]);
     compiler
         .register_target_style("", StyleId(0))
@@ -335,7 +352,7 @@ pub fn apply(
     };
     validate_spec(&validation, Path::new(".")).map_err(|error| format!("insert_blocks 블록/스타일/목록 정의가 유효하지 않습니다: {error}. DocumentSpec v1 정의를 수정한 뒤 다시 시도하세요"))?;
     if hwp_output {
-        check_hwp_lists(request, &lists)?;
+        check_hwp_lists(doc, request, &lists)?;
     }
     compiler
         .compile_lists(&lists)
