@@ -314,7 +314,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      # Draft releases are listed only with push access; the release is still a draft here.
+      # https://docs.github.com/en/rest/releases/releases#list-releases
+      contents: write
       id-token: write
       attestations: write
     steps:
