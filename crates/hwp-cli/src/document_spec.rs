@@ -1826,6 +1826,7 @@ impl<'a> BlockCompiler<'a> {
                 name: name.clone(),
                 english_name: name.clone(),
                 attr: 0,
+                kind_unknown: false,
                 next_style: 0,
                 lang_id: 1042,
                 para_shape: para_shape_id,

@@ -637,7 +637,18 @@ fn write_styles(out: &mut String, header: &DocHeader) {
     for (i, s) in header.styles.iter().enumerate() {
         let _ = write!(
             out,
-            r##"<hh:style id="{i}" type="PARA" name="{}" engName="{}" paraPrIDRef="{}" charPrIDRef="{}" nextStyleIDRef="{}" langID="{}" lockForm="0"/>"##,
+            r##"<hh:style id="{i}"{} name="{}" engName="{}" paraPrIDRef="{}" charPrIDRef="{}" nextStyleIDRef="{}" langID="{}" lockForm="0"/>"##,
+            // The kind is the low three bits of the HWP5 STYLE.attr the IR carries: 1 is a
+            // character style, 0 and reserved values are written as PARA. A style the source
+            // never gave a kind (`kind_unknown`) is written without a `type` attribute, as it
+            // was read, instead of being given a kind it never had.
+            if s.kind_unknown {
+                ""
+            } else if s.attr & 0x7 == 1 {
+                r#" type="CHAR""#
+            } else {
+                r#" type="PARA""#
+            },
             esc(&s.name),
             esc(&s.english_name),
             (s.para_shape.0 as usize).min(para_count - 1),

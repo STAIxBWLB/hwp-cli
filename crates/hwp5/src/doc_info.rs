@@ -356,6 +356,7 @@ fn parse_style(data: &[u8]) -> Result<Style> {
         name,
         english_name,
         attr,
+        kind_unknown: false,
         next_style,
         lang_id,
         para_shape,

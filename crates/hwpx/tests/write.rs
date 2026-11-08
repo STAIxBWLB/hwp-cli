@@ -234,6 +234,72 @@ fn 왕복_의미_동등() {
     );
 }
 
+/// A character style survives HWPX write and read: the writer used to emit `type="PARA"` for
+/// every style, so `쪽 번호` came back as a paragraph style even from an HWPX → HWPX round trip
+/// (GE-13). Reserved attr values are written as `PARA`, not invented as a kind, and a style whose
+/// kind the source never stated is written without a `type`, so it reads back as unknown rather
+/// than as a paragraph style.
+#[test]
+fn character_style_kind_round_trips() {
+    use hwp_model::header::Style;
+    let mut doc = hwp_convert::from_markdown("본문\n");
+    doc.header.styles = [
+        (0u8, false, "바탕글"),
+        (1, false, "쪽 번호"),
+        (0x81, false, "비트 위"),
+        (2, false, "예약"),
+        (0, true, "종류 미상"),
+    ]
+    .into_iter()
+    .map(|(attr, kind_unknown, name)| Style {
+        name: name.to_string(),
+        english_name: name.to_string(),
+        attr,
+        kind_unknown,
+        ..Style::default()
+    })
+    .collect();
+    let out = tmp("style-kind-round-trip.hwpx");
+    hwpx::write_document(&doc, &out).expect("write");
+    let header = {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&*out).unwrap()).unwrap();
+        let mut xml = String::new();
+        zip.by_name("Contents/header.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        xml
+    };
+    for (id, kind) in [(0, "PARA"), (1, "CHAR"), (2, "CHAR"), (3, "PARA")] {
+        assert!(
+            header.contains(&format!(r#"<hh:style id="{id}" type="{kind}""#)),
+            "style {id} should be written as {kind}: {header}"
+        );
+    }
+    assert!(
+        header.contains(r#"<hh:style id="4" name="종류 미상""#),
+        "an unstated kind is written without a type attribute: {header}"
+    );
+    let reread = hwpx::read_document(&out).expect("read").document;
+    let attrs: Vec<u8> = reread.header.styles.iter().map(|s| s.attr).collect();
+    assert_eq!(
+        attrs,
+        [0, 1, 1, 0, 0],
+        "kind survives; the reserved value reads as PARA"
+    );
+    let unknown: Vec<bool> = reread
+        .header
+        .styles
+        .iter()
+        .map(|s| s.kind_unknown)
+        .collect();
+    assert_eq!(
+        unknown,
+        [false, false, false, false, true],
+        "the unstated kind stays unstated through a write and a read"
+    );
+}
+
 /// Package rule: mimetype is first and uncompressed.
 #[test]
 fn 패키지_mimetype_규칙() {
