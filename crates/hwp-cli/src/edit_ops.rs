@@ -76,10 +76,10 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
 /// Validate every JSON channel against the same closed vocabulary before normalization.
 pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
     let entries = value.as_array().ok_or_else(|| anyhow::anyhow!(
-        "편집 연산 JSON의 최상위 값은 배열이어야 합니다. 연산 객체를 [ ... ]로 감싸세요 (입력 내용 생략)"))?;
+        "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: 최상위 값은 배열이어야 합니다. 연산 객체를 [ ... ]로 감싸세요 (입력 내용 생략)"))?;
     if entries.iter().any(|entry| !entry.is_object()) {
         anyhow::bail!(
-            "편집 연산 배열의 모든 항목은 객체여야 합니다. 중첩 배열/문자열 포장을 제거하고 op 속성을 가진 객체를 지정하세요 (입력 내용 생략)"
+            "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: 모든 배열 항목은 객체여야 합니다. 중첩 배열/문자열 포장을 제거하고 op 속성을 가진 객체를 지정하세요 (입력 내용 생략)"
         );
     }
     fn contains_binding(value: &serde_json::Value) -> bool {
@@ -97,7 +97,10 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
         }
     }
     let binding_input = contains_binding(&value);
-    if binding_input && value.as_array().is_some_and(|entries| entries.len() != 1) {
+    if entries.iter().any(|entry| {
+        entry.get("op").and_then(serde_json::Value::as_str) == Some("apply_form_bindings")
+    }) && entries.len() != 1
+    {
         anyhow::bail!(
             "apply_form_bindings는 단독 compound 연산이어야 합니다. 다른 연산을 별도 요청으로 분리하세요 (입력 내용 생략)"
         );
@@ -121,7 +124,7 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
     if let Some(error) = validator.iter_errors(&value).next() {
         if binding_input {
             anyhow::bail!(
-                "양식 바인딩 연산이 닫힌 edit-ops-v1 계약과 다릅니다. apply_form_bindings의 plan/values/receipt/preview 속성을 스키마와 비교해 수정하세요 (입력 내용 생략)"
+                "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: 닫힌 연산 계약과 다릅니다. 필수 속성과 자료형을 스키마와 비교해 수정하세요 (입력 내용 생략)"
             );
         }
         anyhow::bail!(

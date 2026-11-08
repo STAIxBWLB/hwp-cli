@@ -428,6 +428,38 @@ fn mixed_mcp_binding_requests_never_echo_legacy_values() {
 }
 
 #[test]
+fn a_component_style_named_values_does_not_turn_a_legacy_batch_into_a_binding() {
+    let workspace = Workspace::new("legacy-values-style");
+    let source = workspace.source("hwpx");
+    let output = workspace.0.join("legacy.hwpx");
+    let ops = workspace.0.join("legacy.json");
+    std::fs::write(&ops, serde_json::to_vec(&json!([
+        {"op":"insert_blocks","address":{"at":{"section":0,"paragraph":1}},"position":"after","missing_style":"create",
+         "styles":{"values":{"font_size_pt":10}},"blocks":[{"type":"paragraph","style":"values","runs":[{"type":"text","text":"Legacy component"}]}]},
+        {"op":"replace","from":"Application","to":"Reviewed application"}
+    ])).unwrap()).unwrap();
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(ops)
+        .arg("--verify")
+        .output()
+        .unwrap();
+    success(
+        &result,
+        "ordinary component keys do not declare the compound operation",
+    );
+    let result = hwp().arg("cat").arg(output).output().unwrap();
+    success(&result, "legacy read-back");
+    let text = String::from_utf8_lossy(&result.stdout);
+    assert!(text.contains("Legacy component"));
+    assert!(text.contains("Reviewed application"));
+}
+
+#[test]
 fn embedded_binding_plan_schema_matches_the_standalone_contract() {
     fn normalize(value: &Value) -> Value {
         match value {
