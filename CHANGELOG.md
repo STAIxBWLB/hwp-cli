@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- A reproducible owner-authored original-form fixture set and layered test contract cover
+  repeated labels, merged/signature cells, four profile tables and retained/outside images.
+  Shared helpers compare expected cells, grid/width/style/resource projections, relative anchors
+  and observed font identities; corruption self-checks exercise their failure boundaries.
+  This adds regression evidence and a bilingual design contract, not production extraction,
+  binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
+
 **Fixed**
 
 - For HWPX/Markdown/JSON synthesis, floating-table body anchors now follow the renderer's
