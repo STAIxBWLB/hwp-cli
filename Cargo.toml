@@ -24,7 +24,7 @@ serde_yaml = { package = "serde_norway", version = "0.9.42" }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
-cfb = "0.14"
+cfb = "0.16"
 flate2 = "1"
 quick-xml = "0.41"
 libc = "0.2"
