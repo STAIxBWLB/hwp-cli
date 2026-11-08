@@ -44,6 +44,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- HWPX edit verification compares stated character versus paragraph style kinds instead of
+  erasing that distinction, so a CHAR-to-PARA substitution fails semantic verification
+  ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 - For HWPX/Markdown/JSON synthesis, floating-table body anchors now follow the renderer's
   fragment planner and resolved first-line page boundaries; explicit page breaks reset the body
   cursor while retaining prior space-before. Native HWP5 sources keep the base cursor path,

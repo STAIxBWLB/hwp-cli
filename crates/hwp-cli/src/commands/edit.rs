@@ -4696,7 +4696,9 @@ fn canonical_document(
             .tab_stops
             .resize_with(tab_count, hwp_model::TabDef::default);
         for style in &mut canonical.header.styles {
-            style.attr = 0;
+            // Match PR #442's HWPX writer/reader pair: low kind bits 1 emit CHAR,
+            // which reads back as 1; every other stated kind emits PARA and reads as 0.
+            style.attr = if style.attr & 0x7 == 1 { 1 } else { 0 };
             style.tail.clear();
             if style.lang_id <= 0 {
                 // The writer materializes zero/negative language IDs as Korean (1042).
