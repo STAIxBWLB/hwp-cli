@@ -12,15 +12,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
-- Cache-less HWPX and synthesized HWP5 rendering share table-cell line geometry and paragraph
-  gaps. Following compatibility rules C2/B5, cell height ends at the last line bottom, without
-  a trailing paragraph after-gap; stored cell minima and saved-cache row floors stay unchanged.
-  Floating-table anchors follow the renderer's legal row/cell fragments and final page-relative
-  cursor; first-line page moves record the resolved top and page-start boundary, and explicit
-  page breaks restart the body cache. The pinned synthetic probe now renders
-  as four pages, with form starts on 1/2/3/4 in both formats. The earlier eight-page candidate
-  included an unbacked trailing after-gap. These are CLI render observations; Hancom Office
-  verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
+- Floating-table body anchors now follow the renderer's fragment planner and resolved first-line
+  page boundaries; explicit page breaks restart the body cache. Nonempty cacheless cell paragraphs
+  reuse the prior nested-cache line metrics, without extending body paragraph gaps or narrowing
+  the supplied width by paragraph margins. Stored cell minima and saved-cache row floors remain
+  unchanged. Nested-cache preparation also covers table/picture captions and text-box lists.
+  Unchanged native HWP5 paragraphs retain their source representation; edited floating-section
+  paragraphs can receive new positions and page-start flags. Empty-cell advancement and body
+  header/footer bounds remain separate follow-ups ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422),
+  [#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)). Explicit-break space-before is omitted
+  consistently in floating and inline sections as an internal convention, unverified against
+  Hangul. Hancom Office verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
 
 ## [1.3.1]
 

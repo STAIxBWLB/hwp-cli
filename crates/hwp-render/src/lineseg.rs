@@ -96,7 +96,8 @@ pub fn synthesize_linesegs(
             // cached v_pos for vertical placement; omitting spacing compresses paragraphs
             // together and loses heading space-before, causing vertical displacement.
             // Paragraph gaps add the preceding space-after and current space-before. Omit
-            // space-before at a section's first paragraph, which starts at page top (genuine v_pos=0).
+            // space-before at a section's first paragraph (genuine v_pos=0). Explicit
+            // breaks also omit it for consistency; that case is unverified against Hangul.
             let (sp_top, sp_bottom) = snap
                 .header
                 .para_shapes
@@ -147,7 +148,7 @@ pub fn synthesize_linesegs(
             if section_anchors.is_some_and(|anchors| anchors[si][pi].starts_page)
                 && let Some(first) = segs.first_mut()
             {
-                // Existing LineSeg bit0 declares a first line moved to a new page.
+                // HWP 5.0 §4.3.4 (PARA_LINE_SEG): bit0 marks the first line of a page.
                 first.flags |= 0x1;
             }
             doc.sections[si].paragraphs[pi].line_segs = segs;
@@ -304,7 +305,7 @@ fn fill_list(
 /// ```text
 /// Row height rowH = cell.top_margin + cell.bottom_margin + line block.
 /// Line block of N lines = last line.v_pos + last line.line_height.
-///            = (N-1)*line_advance + line_height
+/// With uniform line metrics: (N-1)*line_advance + line_height.
 /// Table height = sum over rows of max(rowH among that row's cells) + TABLE_BLOCK_PADDING(566).
 /// ```
 ///
@@ -348,8 +349,9 @@ fn table_height(table: &Table) -> i32 {
 }
 
 /// One cell paragraph's line-block height (HWPUNIT): last line.v_pos + last line.line_height.
-/// Cell-local v_pos accumulates from zero in fill_nested, so the final v_pos is
-/// (line count - 1) * line_advance; adding final line height gives cumulative cell extent.
+/// Cell-local v_pos accumulates across paragraphs in fill_nested. The uniform-line
+/// shortcut (line count - 1) * line_advance applies only when all line metrics match;
+/// mixed sizes use the actual final v_pos plus line height.
 fn para_line_block(para: &Paragraph) -> i32 {
     match para.line_segs.last() {
         Some(seg) => seg.v_pos + seg.line_height,
@@ -422,7 +424,9 @@ pub(crate) fn paragraph_advance(doc: &Document, para: &Paragraph, base: i32) -> 
     line_advance_hu(base, ls_type, ls_val)
 }
 
-/// Cell-local geometry includes paragraph margins and additive before/after spacing.
+/// Retain the prior nested-list synthesis convention: full supplied box width,
+/// list-cumulative line advances, and no body paragraph before/after gaps.
+/// This compatibility fallback is not evidence for additional native cell geometry.
 pub(crate) fn compute_box_linesegs(
     store: &mut FontStore,
     doc: &Document,
@@ -431,24 +435,7 @@ pub(crate) fn compute_box_linesegs(
     v: &mut i32,
     warnings: &mut RenderIssueAccumulator,
 ) -> Vec<LineSeg> {
-    let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
-    let left = ps.map_or(0, |p| p.margin_left.max(0) / 2);
-    let right = ps.map_or(0, |p| p.margin_right.max(0) / 2);
-    *v = v.saturating_add(ps.map_or(0, |p| p.spacing_top.max(0) / 2));
-    let mut segs = compute_linesegs(
-        store,
-        doc,
-        para,
-        width.saturating_sub(left).saturating_sub(right).max(1),
-        i32::MAX,
-        v,
-        warnings,
-    );
-    for seg in &mut segs {
-        seg.col_start = left;
-    }
-    *v = v.saturating_add(ps.map_or(0, |p| p.spacing_bottom.max(0) / 2));
-    segs
+    compute_linesegs(store, doc, para, width, i32::MAX, v, warnings)
 }
 
 /// Compute one paragraph's cache using a page-relative or cell-local cursor.

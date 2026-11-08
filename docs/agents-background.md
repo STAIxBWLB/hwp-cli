@@ -66,3 +66,10 @@ AGENTS.md. This file holds rationale and history only, no directives.
   living in a shared crate. A normal dependency between them would make that duplication
   pointless. Dev-dependencies are out of scope: `hwp-render`'s tests already use `hwp-convert` to
   build documents without putting either crate in the other's build graph.
+
+## Things the agent gets wrong
+
+- On 2026-11-08, #410 twice extended geometry without matching genuine-byte evidence: first
+  persisted cell heights, then nested-list margins and paragraph gaps inferred from body text.
+  Synthetic render parity demonstrated internal agreement, not native-format validity. The
+  revision removed the added cell-height floor and restored the prior nested-cache convention.

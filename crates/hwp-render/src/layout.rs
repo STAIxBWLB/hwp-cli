@@ -1146,7 +1146,12 @@ fn layout_document_pages(
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
-            let geom = para_geometry(doc, para);
+            let mut geom = para_geometry(doc, para);
+            if para.line_segs.is_empty() && para.header.break_type & 0x04 != 0 {
+                // Match inline cache synthesis at an explicit break. This omission
+                // of space-before is an internal convention, unverified in Hangul.
+                geom.spacing_top = 0.0;
+            }
             let links = crate::shape::hyperlink_ranges(para);
             // Do not consume a list counter for a paragraph that has no visible line at all.
             let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
@@ -5061,14 +5066,12 @@ fn layout_box_para_iter<'a>(
         // (#222). No-op for cell-cumulative caches, which already sit below.
         flow_floor = flow_floor.max(content_bottom);
         if synthesize_uncached && was_uncached {
-            let spacing_bottom = para_geometry(doc, para).spacing_bottom;
-            // B5 carries this gap to the next paragraph. C2 ends the final
-            // cell block at its last line bottom, without a trailing after-gap.
+            // Retain the prior nested-list cursor: line advance only. Body
+            // paragraph before/after gaps are not established for native cells.
             if let Some(last) = line_segs.last() {
                 uncached_next_v = last
                     .v_pos
-                    .saturating_add(crate::lineseg::paragraph_metrics(doc, para).advance)
-                    .saturating_add((spacing_bottom * 100.0).round() as i32);
+                    .saturating_add(crate::lineseg::paragraph_metrics(doc, para).advance);
             }
         }
     }
