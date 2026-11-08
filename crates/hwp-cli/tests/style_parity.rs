@@ -468,3 +468,53 @@ fn identical_clear_direct_apply_is_byte_stable_hwpx() {
     operation["clear_direct"] = json!(true);
     repeated("hwpx", operation);
 }
+
+#[test]
+fn malformed_mcp_style_items_refuse_with_cause_and_remedy_before_publication() {
+    let fixture = Fixture::new("malformed-mcp", "hwpx");
+    let source_bytes = std::fs::read(&fixture.source).unwrap();
+    for (index, operation, item, cause, remedy) in [
+        (
+            0,
+            "create_style",
+            json!({"name":"Body","kind":"paragraph","size":13}),
+            "스키마",
+            "수정",
+        ),
+        (
+            1,
+            "create_style",
+            json!({"name":"Body","kind":"paragraph","surprise":true}),
+            "스키마",
+            "수정",
+        ),
+        (
+            2,
+            "update_style",
+            json!({"style":0,"op":"replace"}),
+            "op",
+            "제거",
+        ),
+        (
+            3,
+            "apply_style",
+            json!({"style":0,"address":{"at":{"section":0,"paragraph":0,"run":0}}}),
+            "스키마",
+            "수정",
+        ),
+    ] {
+        let output = fixture.output(&format!("invalid-{index}"));
+        std::fs::write(&output, b"prior output").unwrap();
+        let mut arguments = json!({"input":fixture.source,"output":output});
+        arguments[operation] = json!([item]);
+        let response = mcp_tool("hwp_edit", arguments);
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let error = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            error.contains(cause) && error.contains(remedy),
+            "cause and next step required: {error}"
+        );
+        assert_eq!(std::fs::read(output).unwrap(), b"prior output");
+        assert_eq!(std::fs::read(&fixture.source).unwrap(), source_bytes);
+    }
+}

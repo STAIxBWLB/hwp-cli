@@ -1451,8 +1451,9 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     let mut operations = if style_items.is_empty() {
         Vec::new()
     } else {
-        crate::edit_ops::parse_ops_value(Value::Array(style_items))
-            .map_err(|error| format!("{error:#}"))?
+        crate::edit_ops::parse_ops_value(Value::Array(style_items)).map_err(|error| {
+            format!("{error:#}. 이름 있는 스타일 항목을 schemas/edit-ops-v1.schema.json과 --ops 예제에 맞게 수정한 뒤 다시 실행하세요")
+        })?
     };
 
     for item in arg_array(args, "replace")? {
