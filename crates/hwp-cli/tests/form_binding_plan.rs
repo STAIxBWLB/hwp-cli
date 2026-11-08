@@ -335,6 +335,31 @@ fn malformed_binding_payload_refuses_without_echoing_private_values() {
 }
 
 #[test]
+fn a_missing_ops_array_wrapper_never_echoes_binding_content() {
+    let workspace = Workspace::new("wrong-wrapper");
+    let source = workspace.source("hwpx");
+    let output = workspace.0.join("filled.hwpx");
+    let operation = binding_operation(&workspace, &source, "PRIVATE_WRAPPER_VALUE");
+    let ops = workspace.0.join("wrong.json");
+    std::fs::write(&ops, serde_json::to_vec(&operation).unwrap()).unwrap();
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(ops)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        !String::from_utf8_lossy(&result.stderr).contains("PRIVATE_WRAPPER_VALUE"),
+        "wrong-wrapper refusals must omit private payloads"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
 fn embedded_binding_plan_schema_matches_the_standalone_contract() {
     fn normalize(value: &Value) -> Value {
         match value {
@@ -524,9 +549,8 @@ fn mcp_tool(name: &str, arguments: Value) -> Value {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(
+    assert!(
         errors.is_empty(),
-        true,
         "MCP {name} request must satisfy its advertised-schema expectation: {errors:?}"
     );
     result

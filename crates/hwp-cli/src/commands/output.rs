@@ -97,6 +97,48 @@ pub(crate) fn write_with_private_input_snapshot<T>(
     Ok((hash, value))
 }
 
+/// Snapshot-bound multi-file counterpart of the single-output transaction.
+/// The first entry supplies the native stage; false entries are verified but not published.
+pub(crate) fn write_snapshot_output_set<T>(
+    input: &Path,
+    max_bytes: u64,
+    destinations: &[(PathBuf, bool)],
+    writer: impl FnOnce(&Path, &[PathBuf], &str) -> anyhow::Result<T>,
+) -> anyhow::Result<(String, T)> {
+    let first = destinations
+        .first()
+        .context("출력 집합이 비어 있습니다. native 출력과 receipt 경로를 지정하세요")?;
+    write_with_private_input_snapshot(
+        &first.0,
+        input,
+        max_bytes,
+        SnapshotOutputMode::PlanOnly,
+        |snapshot, native_stage, hash| {
+            let mut paths = vec![native_stage.to_owned()];
+            for index in 1..destinations.len() {
+                paths.push(
+                    native_stage
+                        .parent()
+                        .expect("private stage parent")
+                        .join(format!("artifact-{index}.json")),
+                );
+            }
+            let value = writer(snapshot, &paths, hash)?;
+            let outputs = destinations
+                .iter()
+                .zip(&paths)
+                .filter(|((_, publish), _)| *publish)
+                .map(|((destination, _), stage)| Ok((destination.clone(), fs::read(stage)?)))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if let Some(warning) = write_validated_files(&outputs, Some(input))? {
+                eprintln!("경고: {warning}");
+            }
+            Ok(value)
+        },
+        |_, _| Ok(()),
+    )
+}
+
 fn copy_input_snapshot(
     input: &Path,
     max_bytes: u64,
@@ -2507,6 +2549,47 @@ fn publish_with_recovery(
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn snapshot_output_set_rejects_each_destination_changed_during_prepare() {
+        for changed in 0..3 {
+            let dir = test_dir(&format!("snapshot-output-set-{changed}"));
+            let input = dir.join("source.hwpx");
+            fs::write(&input, b"source").unwrap();
+            let destinations: Vec<_> = ["result.hwpx", "receipt.json", "preview.json"]
+                .iter()
+                .map(|name| (dir.join(name), true))
+                .collect();
+            for (destination, _) in &destinations {
+                fs::write(destination, b"original").unwrap();
+            }
+            let result =
+                write_snapshot_output_set(&input, 1024, &destinations, |snapshot, stages, _| {
+                    assert_eq!(fs::read(snapshot)?, b"source");
+                    fs::write(&destinations[changed].0, b"external update")?;
+                    for stage in stages {
+                        fs::write(stage, b"candidate")?;
+                    }
+                    Ok(())
+                });
+            assert!(
+                result.is_err(),
+                "command-start destination {changed} must not be overwritten after external mutation"
+            );
+            for (index, (destination, _)) in destinations.iter().enumerate() {
+                assert_eq!(
+                    fs::read(destination).unwrap(),
+                    if index == changed {
+                        b"external update".as_slice()
+                    } else {
+                        b"original".as_slice()
+                    }
+                );
+            }
+            assert_no_debris(&dir);
+            fs::remove_dir_all(&dir).unwrap();
+        }
+    }
 
     fn test_dir(name: &str) -> PathBuf {
         let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
