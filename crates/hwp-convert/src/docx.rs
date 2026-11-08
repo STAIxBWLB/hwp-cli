@@ -1,7 +1,7 @@
 //! IR → DOCX (OOXML) one-way export (GJ-1).
 //!
 //! Mapping (content fidelity, no page-layout reproduction):
-//! - "개요 N" style paragraphs → HeadingN paragraph styles
+//! - Outline-level style paragraphs map to HeadingN paragraph styles.
 //! - CharShape → run properties (b/i/u/strike/vertAlign, sz, color, shd, rFonts, spacing)
 //! - ParaShape → pPr (jc, line spacing, ind, spacing before/after, numPr)
 //! - Tables → `w:tbl` with gridSpan (colspan) and vMerge (rowspan); nested tables kept
@@ -147,7 +147,7 @@ impl Builder<'_> {
         let mut spacing = String::new();
         let mut ind_attrs = String::new();
         let mut jc_xml = String::new();
-        // "개요 N" style → HeadingN.
+        // Outline-level styles map to HeadingN.
         if let Some(level) = self
             .doc
             .header
@@ -929,8 +929,8 @@ fn numbering_xml(doc: &Document) -> String {
 fn num_fmt(level: &hwp_model::NumLevel) -> (&'static str, String) {
     let fmt = match level.fmt {
         NumFmt::Digit => "decimal",
-        // ECMA-376 §17.18.59 ST_NumberFormat: `ganada` is 가, 나, 다 and `chosung` is ㄱ, ㄴ, ㄷ;
-        // `koreanCounting` (일, 이, 삼) and `koreanDigital` are Sino-Korean numerals (#383 review).
+        // ECMA-376 §17.18.59 ST_NumberFormat: `ganada` uses Hangul syllables and `chosung` uses initial jamo;
+        // `koreanCounting` and `koreanDigital` use Sino-Korean numerals (#383 review).
         NumFmt::HangulSyllable => "ganada",
         NumFmt::HangulJamo => "chosung",
         NumFmt::CircledDigit => "decimalEnclosedCircle",
@@ -1023,8 +1023,8 @@ fn core_xml(doc: &Document) -> String {
 mod tests {
     use super::*;
 
-    /// Hangul syllable and jamo levels map to the OOXML sequences Hancom draws, `ganada` (가, 나,
-    /// 다) and `chosung` (ㄱ, ㄴ, ㄷ), not the Sino-Korean numerals `koreanCounting` (#383).
+    /// Hangul syllable and jamo levels map to the OOXML sequences Hancom draws, `ganada`
+    /// and `chosung`, rather than Sino-Korean `koreanCounting` numerals (#383).
     #[test]
     fn hangul_number_formats_map_to_the_ooxml_letter_sequences() {
         let level = |fmt| hwp_model::NumLevel {
@@ -1268,7 +1268,7 @@ mod tests {
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         for i in 0..zip.len() {
             let mut f = zip.by_index(i).unwrap();
-            if !f.name().ends_with(".xml") && !f.name().ends_with(".rels") {
+            if !f.name().unwrap().ends_with(".xml") && !f.name().unwrap().ends_with(".rels") {
                 continue;
             }
             let mut s = String::new();

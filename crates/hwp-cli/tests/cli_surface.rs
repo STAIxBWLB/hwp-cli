@@ -33,8 +33,8 @@ fn fixture() -> PathBuf {
     p
 }
 
-/// 테스트별 전용 임시 디렉토리 — 시작 시 비우고 재생성한다(PID 재사용·이전 실행
-/// 잔재로 인한 오염 방지; render 테스트는 디렉토리 파일 개수를 검사하므로 필수).
+/// Each test gets a dedicated temporary directory, cleared and recreated at startup to avoid
+/// PID reuse or prior-run residue; render tests count directory files.
 fn tmp_dir(test: &str) -> PathBuf {
     let dir = std::env::temp_dir()
         .join(format!("hwp-cli-surface-{}", std::process::id()))
@@ -44,10 +44,10 @@ fn tmp_dir(test: &str) -> PathBuf {
     dir
 }
 
-/// `--pages 1` 렌더는 정확히 out.png 1개, PNG 시그니처 + IHDR 794×1123(A4@96dpi —
-/// 크기는 secPr 유래라 폰트 비의존이라 CI 폰트 환경에서도 동일).
-/// 파일 크기 하한은 "빈 흰 페이지" 회귀 방지 — 794×1123 순백 PNG는 수 KB로 압축되므로
-/// 실제 잉크(표 괘선·글리프)가 있으면 훨씬 커진다.
+/// --pages 1 emits exactly out.png, with PNG signature and A4@96dpi IHDR dimensions 794x1123.
+/// Dimensions come from secPr rather than fonts, so CI font selection does not affect them.
+/// The minimum size rejects blank-white-page regressions: a pure white image compresses
+/// to a few KB, whereas actual ink from rules and glyphs makes the file much larger.
 #[test]
 fn render_png_page1_smoke() {
     let dir = tmp_dir("render_png");
@@ -65,7 +65,7 @@ fn render_png_page1_smoke() {
         "render: {}",
         String::from_utf8_lossy(&r.stderr)
     );
-    // 정확히 out.png 단일 파일(다중 페이지면 out-N.png로 갈리는지 확인).
+    // Exactly one out.png; multiple pages would use out-N.png.
     let siblings = dir.read_dir().unwrap().count();
     assert_eq!(siblings, 1, "단일 페이지 출력 파일 1개");
 
@@ -81,10 +81,10 @@ fn render_png_page1_smoke() {
     );
 }
 
-/// 자기 렌더를 기준 PNG로 되먹는 diff — 지표는 전부 완전 일치여야 한다
-/// (diff는 불일치여도 exit 0이므로 **출력 지표 문자열이 검증 대상**).
-/// 2부: 다른 쪽(2쪽)을 기준으로 주면 0.00%가 **아니어야** 한다 — 렌더러가 전부
-/// 백지를 내도 자기일치가 통과하는 상호 승인 맹점을 막는 네거티브 게이트.
+/// Feed rendered output back as its reference PNG; every diff metric must match exactly.
+/// Diff exits zero even on mismatches, so assert its output metric strings.
+/// Then compare page 1 with a page-2 reference and require a nonzero difference,
+/// preventing a blank renderer from passing through self-comparison alone.
 #[test]
 fn diff_self_consistency() {
     let dir = tmp_dir("diff_self");
@@ -121,7 +121,7 @@ fn diff_self_consistency() {
         );
         String::from_utf8_lossy(&r.stdout).into_owned()
     };
-    // 1) 자기 일치: 완전 0.
+    // 1. Self-comparison: exactly zero.
     let same = diff(&p1);
     for needle in [
         "잉크 적용률(완전성): 100.0%",
@@ -130,7 +130,7 @@ fn diff_self_consistency() {
     ] {
         assert!(same.contains(needle), "자기 일치 지표: {needle}\n{same}");
     }
-    // 2) 교차(1쪽 vs 2쪽 기준): 차이가 검출돼야 한다.
+    // 2. Cross-page comparison must detect a difference.
     let cross = diff(&p2);
     assert!(
         !cross.contains("픽셀 차이율: 0.00%"),
@@ -138,9 +138,9 @@ fn diff_self_consistency() {
     );
 }
 
-/// PDF 두 경로(convert 위임·render 직접) 모두 구조적으로 유효한 PDF를 낸다.
-/// 정확한 페이지 수는 폰트 리플로우로 달라질 수 있어 단언하지 않는다.
-/// startxref 오프셋이 실제 xref 자리를 가리키는지까지 확인한다(깨진 트레일러 회귀 방지).
+/// Both PDF paths, delegated convert and direct render, emit structurally valid PDFs.
+/// Do not pin page counts, which depend on font reflow.
+/// Check startxref points to the actual xref location, rejecting broken trailers.
 #[test]
 fn pdf_smoke_convert_and_render_paths() {
     let dir = tmp_dir("pdf_smoke");
@@ -156,7 +156,7 @@ fn pdf_smoke_convert_and_render_paths() {
         let page = data.windows(11).filter(|w| *w == b"/Type /Page").count();
         assert!(page >= 2, "{label}: /Type /Page 마커(루트+페이지들) >= 2");
         assert!(data.len() > 10_000, "{label}: 내용 있는 크기 (>10KB)");
-        // startxref → 오프셋이 파일 안의 xref 테이블 또는 xref 스트림 객체를 가리켜야 한다.
+        // startxref must point within the file to an xref table or xref-stream object.
         let tail = String::from_utf8_lossy(&data[data.len().saturating_sub(2048)..]);
         let off: usize = tail
             .rsplit_once("startxref")
@@ -171,7 +171,7 @@ fn pdf_smoke_convert_and_render_paths() {
             String::from_utf8_lossy(at)
         );
     };
-    // convert 위임 경로 (hwp convert -o x.pdf → render 경로 위임).
+    // Delegated convert path: hwp convert -o x.pdf delegates to render.
     let c = dir.join("conv.pdf");
     let r1 = hwp()
         .arg("convert")
@@ -186,7 +186,7 @@ fn pdf_smoke_convert_and_render_paths() {
         String::from_utf8_lossy(&r1.stderr)
     );
     check(c, "convert");
-    // render 직접 경로.
+    // Direct render path.
     let d = dir.join("rend.pdf");
     let r2 = hwp()
         .arg("render")
@@ -203,9 +203,9 @@ fn pdf_smoke_convert_and_render_paths() {
     check(d, "render");
 }
 
-/// MCP stdio 세션 — 라인 단위 JSON-RPC(실측: Content-Length 프레이밍 아님).
-/// initialize → initialized → tools/list → tools/call(hwp_validate) 후 stdin EOF로 종료.
-/// 수신은 스레드+채널 recv_timeout(60s), 종료는 try_wait 루프+kill(30s) — CI 행 방지.
+/// MCP stdio session uses line-delimited JSON-RPC, as observed, rather than Content-Length framing.
+/// initialize, initialized, tools/list, tools/call(hwp_validate), then EOF on stdin to terminate.
+/// Read via a thread/channel with recv_timeout(60s), and exit via try_wait/kill(30s), avoiding CI hangs.
 #[test]
 fn mcp_stdio_session() {
     use std::sync::mpsc;
@@ -306,7 +306,7 @@ fn mcp_stdio_session() {
     let v: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(v["valid"], true, "hwp_validate 결과: {text}");
 
-    // hwp_lint: 루트 안 위반 markdown → findings 비어있지 않고 rule_id/line/message 보유.
+    // hwp_lint: violating Markdown inside the root yields findings with rule_id/line/message.
     let dir = tmp_dir("mcp_lint_call");
     let violating = dir.join("violating.md");
     std::fs::write(&violating, "시행일: 2020.7.8\n").unwrap();
@@ -328,7 +328,7 @@ fn mcp_stdio_session() {
         assert!(f["message"].is_string(), "message 누락: {f}");
     }
 
-    // stdin EOF = 종료 신호. try_wait 루프(최대 30s) 후 kill.
+    // EOF on stdin signals exit; try_wait for up to 30 seconds, then kill.
     drop(stdin);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -344,8 +344,8 @@ fn mcp_stdio_session() {
     }
 }
 
-/// hwp_lint 샌드박스: --root 안의 파일은 검사되고, 루트 밖 경로는
-/// checked_read_path가 거부한다(isError=true). D-09/T-02.3-01 고정.
+/// hwp_lint sandbox: inspect files inside --root; checked_read_path refuses external paths
+/// with isError=true. Pins D-09/T-02.3-01.
 #[test]
 fn mcp_hwp_lint_root_sandbox() {
     use std::sync::mpsc;
@@ -398,7 +398,7 @@ fn mcp_hwp_lint_root_sandbox() {
     recv("initialize");
     send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
 
-    // 루트 안: findings가 돌아와야 한다.
+    // Inside the root: findings must be returned.
     send(
         serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
         "name":"hwp_lint","arguments":{"path": in_root.to_string_lossy()}}}),
@@ -412,7 +412,7 @@ fn mcp_hwp_lint_root_sandbox() {
         "in-root 위반 파일에 findings 없음: {text}"
     );
 
-    // 루트 밖: checked_read_path 거부(isError=true).
+    // Outside the root: checked_read_path refuses with isError=true.
     send(
         serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
         "name":"hwp_lint","arguments":{"path": fixture().to_string_lossy()}}}),
@@ -438,8 +438,8 @@ fn mcp_hwp_lint_root_sandbox() {
     }
 }
 
-/// hwp5 합성 왕복 게이트: hwpx 픽스처 → a.hwp → `convert a.hwp -o b.hwp --preserve-layout`
-/// 후 **스트림 단위 바이트 동일** 단언.
+/// HWP5 synthesis round-trip gate: convert the HWPX fixture to a.hwp, then convert it to
+/// b.hwp with --preserve-layout and assert exact stream-level byte identity.
 ///
 /// This CI-safe synthetic case complements the local genuine-file identity
 /// gate. A same-format no-op now copies the immutable HWP source snapshot, so
@@ -493,11 +493,11 @@ fn hwp5_synthetic_identity_gate() {
     }
 }
 
-// --- GATE-02: 보호 문서 거부를 출시 바이너 end-to-end로 고정한다. ---
+// --- GATE-02: protection refusal through the release binary, end to end. ---
 
-/// hwp5 FileHeader 속성 비트 (36..40 DWORD) — crates/hwp5/src/file_header.rs의
-/// 비공개 `attr` 모듈과 동기화 유지. 라이브러리 쪽이 바뀌면 이 상수들도 바뀌어야
-/// 하는 게 맞다(테스트가 게이트의 실제 전선을 미러링).
+/// HWP5 FileHeader attribute bits (DWORD at 36..40), synchronized with the private
+/// attr module in crates/hwp5/src/file_header.rs. Library changes must update these
+/// constants because this test mirrors the gate's actual wiring.
 mod gate_bits {
     pub const ENCRYPTED: u32 = 1 << 1;
     pub const DRM: u32 = 1 << 4;
@@ -506,9 +506,9 @@ mod gate_bits {
     pub const CERT_DRM: u32 = 1 << 10;
 }
 
-/// 보호 비트 픽스처 합성: 커밋된 hwpx 샘플을 hwp5로 변환한 뒤 FileHeader 스트림의
-/// 속성 DWORD(36..40, LE)에 `bits`를 OR해 다시 쓴다. 라이터가 항상 세우는 압축
-/// 비트는 보존된다. 새 거부 브랜치 추가 시 이 함수 한 번 호출로 픽스처 하나.
+/// Synthesize protection fixtures by converting the committed HWPX sample to HWP5,
+/// then OR bits into the FileHeader attribute DWORD (36..40, LE). Retain the writer's
+/// compression bit. One call creates a fixture for each new refusal branch.
 fn protected_hwp5_fixture(dir: &Path, name: &str, bits: u32) -> PathBuf {
     let base = dir.join(format!("{name}.hwp"));
     let r = hwp()
@@ -540,9 +540,9 @@ fn protected_hwp5_fixture(dir: &Path, name: &str, bits: u32) -> PathBuf {
     base
 }
 
-/// `hwp cat`이 거부로 실패하고, stderr가 그 조건을 이름 붙인 정확한 한국어 문장을
-/// 담는지 단언한다. 전체 문장(조건+해결 힌트)을 단언해 형제 변형과 구분되게 한다
-/// (D-06). stderr 전문을 반환해 호출자가 추가 단언을 얹을 수 있게 한다.
+/// Assert hwp cat refuses and stderr includes the exact Korean condition sentence.
+/// Check the full condition and remedy to distinguish sibling variants (D-06);
+/// return all stderr so callers can add assertions.
 fn assert_refusal_names_condition(file: &Path, sentence: &str) -> String {
     let r = hwp().arg("cat").arg(file).output().unwrap();
     assert!(!r.status.success(), "거부 기대: {}", file.display());
@@ -604,9 +604,9 @@ fn signed_document_refuses_by_name() {
     );
 }
 
-/// hwpx 쪽 게이트: 커밋된 샘플의 매니페스트를 encryption-data를 담은 것으로
-/// 다시 써서 재포장(mimetype은 첫 엔트리·무압축 — OPC 규약)하면 암호화 거부가
-/// 뜨고, GATE-02 이전의 하류 XML 파싱 오류는 뜨지 않는다.
+/// HWPX gate: repack the committed sample after adding encryption-data to its manifest.
+/// Keep mimetype first and uncompressed under OPC rules; require encryption refusal
+/// rather than the downstream XML parsing error seen before GATE-02.
 #[test]
 fn encrypted_package_refuses_by_name() {
     let dir = tmp_dir("refuse_encrypted_package");
@@ -624,7 +624,7 @@ fn encrypted_package_refuses_by_name() {
         .unwrap();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).unwrap();
-        let name = entry.name().to_string();
+        let name = entry.name().unwrap().into_owned();
         if name == "mimetype" {
             continue;
         }
@@ -654,9 +654,9 @@ fn encrypted_package_refuses_by_name() {
     );
 }
 
-/// 여섯 거부 모두 조건 문장 뒤에 해결 힌트 문장이 따라오는지(D-08) 구조로 단언한다
-/// — 힌트의 정확한 문구가 아니라 "둘째 문장이 존재한다"는 사실만 고정해, 문구 수정은
-/// 허용하되 힌트 삭제는 깨지게 한다.
+/// For all six refusals, structurally assert a remedy sentence follows the condition (D-08).
+/// Pin the presence of a second sentence rather than its exact wording, allowing
+/// copy changes while rejecting removal of the hint.
 #[test]
 fn every_refusal_carries_a_remedy_hint() {
     let dir = tmp_dir("refusal_hints");
@@ -687,7 +687,7 @@ fn every_refusal_carries_a_remedy_hint() {
         let stderr = assert_refusal_names_condition(&file, prefix);
         // Every refusal names its condition and then a remedy. Split on the
         // first sentence end rather than one refusal's wording, so a message
-        // that stops saying "지원하지 않습니다" is still held to the contract.
+        // that stops using the original Korean refusal phrase remains held to the contract.
         let after_condition = stderr
             .split_once(". ")
             .map(|(_, rest)| rest.trim())

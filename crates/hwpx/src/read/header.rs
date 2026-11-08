@@ -690,6 +690,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         header.styles.push(Style {
                             name: attr(e, "name").unwrap_or_default(),
                             english_name: attr(e, "engName").unwrap_or_default(),
+                            attr: style_kind_attr(attr(e, "type").as_deref()).unwrap_or(0),
+                            kind_unknown: style_kind_attr(attr(e, "type").as_deref()).is_none(),
                             para_shape: ParaShapeId(attr_u16(e, "paraPrIDRef").unwrap_or(0)),
                             char_shape: CharShapeId(attr_u16(e, "charPrIDRef").unwrap_or(0)),
                             next_style: attr_u32(e, "nextStyleIDRef").unwrap_or(0) as u8,
@@ -796,4 +798,29 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
     }
 
     Ok((header, warnings))
+}
+
+/// The HWP5 `STYLE.attr` value for `hh:style@type`: 0 for `PARA`, 1 for `CHAR`, and `None` when
+/// the file does not state a kind this reader knows.
+///
+/// The IR carries the style kind the way the HWP5 reader does (low three bits of `attr`, 한글문서
+/// 파일 형식 5.0 §4.2.11 table 48), so one reader-independent rule serves both formats. Genuine
+/// Hangul-saved HWPX states `type` on every style: `fixtures/hwpx/minimal.hwpx` (Hangul 13,
+/// Windows) has `쪽 번호` and `줄 번호` as `CHAR`, and `fixtures/hwpx/seal-groundtruth.hwpx`
+/// (Hangul 12.30, macOS) has `쪽 번호` as `CHAR`, which is the style the genuine HWP5 files carry at
+/// attr 1.
+///
+/// The format's own value set is exactly `PARA` and `CHAR` (Hancom's OWPML model
+/// `hancom-io/hwpx-owpml-model` @ 1453388, `OWPML/Class/enumdef.h` `g_StyleList`). Its reader
+/// leaves the member at 0 when the attribute is absent or unmatched (`CStyleType`, `Util.cpp`
+/// `GetAttribute` returns false without assigning), but that is an implementation default of one
+/// reader, not a statement by the format that a missing `type` means a paragraph style, and an
+/// unmatched value is not even that. So neither is answered: `None` makes the caller keep attr 0
+/// (so no reserved value reaches an HWP5 record) and flag the kind as unknown instead.
+fn style_kind_attr(value: Option<&str>) -> Option<u8> {
+    match value {
+        Some("PARA") => Some(0),
+        Some("CHAR") => Some(1),
+        _ => None,
+    }
 }

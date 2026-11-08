@@ -4534,6 +4534,11 @@ fn canonical_document(
             if hwp5::write::is_materialized_generated_style_tail(style) {
                 style.tail.clear();
             }
+            // The HWP5 STYLE record has no way to say "kind not stated", so the flag does not
+            // survive the write and the re-read always has `false` (the attr stays 0, which the
+            // record does carry). The HWPX target keeps the flag: its writer omits `type` and its
+            // reader restores it.
+            style.kind_unknown = false;
         }
     } else if matches!(target, Some(SemanticTarget::Hwpx)) {
         // The HWPX header writer materializes zero beginNum values as one. Its reader parses
@@ -5128,6 +5133,54 @@ mod tests {
         paragraph.header.chars_flags = 1;
         paragraph.header.tail = vec![9, 9];
         assert_eq!(semantic_signature(&base), semantic_signature(&changed));
+    }
+
+    /// A style whose source never stated a kind (`kind_unknown`, from an HWPX `hh:style` with no
+    /// or an unrecognized `type`) cannot keep that flag through an HWP5 write: the HWP5 STYLE
+    /// record has no way to say it, and the re-read always has `false`. The HWP5 projection must
+    /// drop the flag from the expected side, or `--verify` refuses a faithful HWP5 output (T27-F4).
+    /// The HWPX target keeps it: its writer omits `type` and its reader restores the flag.
+    ///
+    /// The two documents compared differ in that one flag and nothing else: the expected side is
+    /// the real HWP5 re-read with the flag set, the actual side is the re-read as it is.
+    #[test]
+    fn hwp_projection_drops_the_unknown_style_kind_flag_the_hwp5_record_cannot_carry() {
+        let source = hwp_convert::from_markdown("본문\n");
+        assert!(
+            source.header.styles.len() > 1,
+            "a style besides the default exists"
+        );
+        let output = std::env::temp_dir().join(format!(
+            "hwp-unknown-kind-projection-{}.hwp",
+            std::process::id()
+        ));
+        hwp5::write_document(&source, &output, &hwp5::WriteOptions::default()).unwrap();
+        let actual = hwp5::read_document(&output).unwrap().document;
+        std::fs::remove_file(output).unwrap();
+        assert!(
+            actual.header.styles.iter().all(|style| !style.kind_unknown),
+            "the premise: the HWP5 re-read never has the flag"
+        );
+
+        // What an HWPX source with a type-less style looks like on the expected side.
+        let mut expected = actual.clone();
+        expected.header.styles[1].kind_unknown = true;
+
+        let hwp = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        assert_eq!(
+            hwp(&expected),
+            hwp(&actual),
+            "the flag the HWP5 record cannot carry must not make a faithful write look different"
+        );
+
+        // The flag stays significant where it can be carried, so this is a projection of the HWP5
+        // target and not a blanket removal.
+        let hwpx = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwpx));
+        assert_ne!(
+            hwpx(&expected),
+            hwpx(&actual),
+            "an unstated kind is not the same document as a stated one in HWPX"
+        );
     }
 
     #[test]

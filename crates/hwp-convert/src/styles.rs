@@ -11,6 +11,7 @@
 pub mod edit;
 
 use hwp_model::Document;
+use hwp_model::header::Style;
 
 use crate::segment::{Segment, SegmentKind, StyleLevel, level};
 
@@ -54,16 +55,21 @@ pub struct NamedStyle {
 
 /// The style kind the document states, or `None` where it does not.
 ///
-/// HWP5 `STYLE.attr` carries the kind in its low three bits: 0 paragraph, 1 character (the
-/// genuine saved `fixtures/hwp5/bookmark.hwp` has `쪽 번호` at attr 1 and every other style at
-/// 0). The HWPX reader never reads `hh:style@type` (gap GE-13), so every HWPX style arrives with
-/// attr 0 and would read as a paragraph style even when the file says `CHAR`; for a document
-/// read from HWPX the kind is unknown rather than a guess. A reserved value is unknown too.
-fn style_kind(doc: &Document, attr: u8) -> Option<StyleKind> {
-    if doc.meta.source_format == "hwpx" {
+/// The low three bits of `STYLE.attr` carry the kind: 0 paragraph, 1 character. HWP5 stores them
+/// there (한글문서 파일 형식 5.0 §4.2.11 table 48; the genuine saved `fixtures/hwp5/bookmark.hwp` has
+/// `쪽 번호` at attr 1 and every other style at 0), and the HWPX reader maps `hh:style@type`
+/// `PARA`/`CHAR` onto the same bits (genuine `fixtures/hwpx/seal-groundtruth.hwpx` has `쪽 번호`
+/// as `CHAR`).
+///
+/// Two cases are unknown rather than a paragraph style: a reserved value in those bits, and a
+/// style flagged `kind_unknown`, which the HWPX reader sets for a `type` that is absent or not
+/// one of the format's two values. For those the attr is 0 only to keep it a valid HWP5 value,
+/// and reading it as "paragraph" would answer a question the document never answered.
+fn style_kind(style: &Style) -> Option<StyleKind> {
+    if style.kind_unknown {
         return None;
     }
-    match attr & 0x7 {
+    match style.attr & 0x7 {
         0 => Some(StyleKind::Paragraph),
         1 => Some(StyleKind::Character),
         _ => None,
@@ -116,7 +122,7 @@ pub fn list_named_styles(
                 })?,
                 name: style.name.clone(),
                 english_name: style.english_name.clone(),
-                kind: style_kind(doc, style.attr),
+                kind: style_kind(style),
                 next_style: style.next_style,
                 attrs: level(doc, Some(style.char_shape.0), Some(style.para_shape.0)),
                 used_by: Vec::new(),
@@ -172,15 +178,34 @@ mod tests {
         );
     }
 
+    /// The kind is a property of the style record, not of the format that carried it: the same
+    /// attr reads the same from a document read out of HWPX, which used to answer `None` for
+    /// every style because its reader dropped `hh:style@type`.
     #[test]
-    fn a_hwpx_document_does_not_claim_a_kind_the_reader_never_read() {
-        let doc = doc_with_styles("hwpx", &[0, 0]);
-        assert!(
-            list_named_styles(&doc, &[])
+    fn the_kind_does_not_depend_on_the_source_format() {
+        for source in ["hwp5", "hwpx", "markdown"] {
+            let doc = doc_with_styles(source, &[0, 1]);
+            let kinds: Vec<_> = list_named_styles(&doc, &[])
                 .unwrap()
                 .iter()
-                .all(|s| s.kind.is_none())
-        );
+                .map(|s| s.kind.map(StyleKind::as_str))
+                .collect();
+            assert_eq!(kinds, [Some("paragraph"), Some("character")], "{source}");
+        }
+    }
+
+    /// A style whose source never stated a kind is unknown whatever its attr bits say: attr 0 is
+    /// only the valid HWP5 value kept for it, and must not read as "paragraph" (T27-F1).
+    #[test]
+    fn a_style_flagged_kind_unknown_is_not_a_paragraph_style() {
+        let mut doc = doc_with_styles("hwpx", &[0, 0, 1]);
+        doc.header.styles[1].kind_unknown = true;
+        let kinds: Vec<_> = list_named_styles(&doc, &[])
+            .unwrap()
+            .iter()
+            .map(|s| s.kind.map(StyleKind::as_str))
+            .collect();
+        assert_eq!(kinds, [Some("paragraph"), None, Some("character")]);
     }
 
     /// The largest table `StyleId` can address lists with distinct, in-order ids; one row more

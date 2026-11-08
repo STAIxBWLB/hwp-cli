@@ -1,14 +1,14 @@
-//! IR → ODT (OpenDocument Text) 단방향 내보내기.
+//! IR to ODT (OpenDocument Text), one-way export.
 //!
-//! 단락/개요(제목)/표/이미지/굵게·기울임·밑줄·취소선 + 문서 메타데이터를 옮긴다.
-//! **내용·구조 충실도**이며 페이지 레이아웃(여백·단·머리말 위치)은 재현하지 않는다.
-//! 패키징은 hwpx 작성기와 같은 mimetype-우선 STORED 규칙을 따른다.
+//! Transfers paragraphs, outline headings, tables, images, character formatting and document metadata.
+//! Preserves content and structure, without reproducing page layout (margins, columns or header positions).
+//! Packaging follows the HWPX writer's mimetype-first, STORED rule.
 
 use std::io::Write as _;
 
 use hwp_model::{CharShape, Control, Document, HwpChar, Paragraph, ctrl_char};
 
-/// 문서를 ODT 바이트(zip)로 직렬화한다.
+/// Serialize a document to ODT bytes (ZIP).
 pub fn to_odt(doc: &Document) -> std::io::Result<Vec<u8>> {
     let mut b = Builder {
         doc,
@@ -32,7 +32,7 @@ pub fn to_odt(doc: &Document) -> std::io::Result<Vec<u8>> {
         .compression_method(zip::CompressionMethod::Deflated);
     let map_err = |e: zip::result::ZipError| std::io::Error::other(e);
 
-    // mimetype은 반드시 첫 엔트리 + 무압축.
+    // mimetype must be the first entry and uncompressed.
     zip.start_file("mimetype", stored).map_err(map_err)?;
     zip.write_all(b"application/vnd.oasis.opendocument.text")?;
 
@@ -58,7 +58,7 @@ struct ImageItem {
     data: Vec<u8>,
     ext: &'static str,
     mime: &'static str,
-    /// cm 단위 표시 크기 (0이면 생략).
+    /// Display size in centimeters (omitted when zero).
     w_cm: f64,
     h_cm: f64,
 }
@@ -103,7 +103,7 @@ impl Builder<'_> {
         self.body.push_str(&blocks);
     }
 
-    /// 문단의 인라인 내용을 ODF로 만든다. 표 등 블록은 `blocks`로 분리.
+    /// Build ODF inline paragraph content; collect tables and other blocks in `blocks`.
     fn inline(&mut self, para: &Paragraph, out: &mut String, blocks: &mut String) {
         let mut wchar_pos = 0u32;
         let mut style = Style::default();
@@ -181,7 +181,7 @@ impl Builder<'_> {
             }
             Control::Table(table) => self.table(table, blocks),
             Control::Generic(g) => {
-                // 각주/미주 → text:note (GH-3) — 본문 마커는 note-citation이 그린다.
+                // Footnotes/endnotes become text:note (GH-3); note-citation draws the body marker.
                 if code == ctrl_char::FOOTNOTE_ENDNOTE && matches!(&g.ctrl_id, b"fn  " | b"en  ") {
                     self.footnote_n += 1;
                     let n = self.footnote_n;
@@ -214,7 +214,7 @@ impl Builder<'_> {
                 if code == ctrl_char::HEADER_FOOTER || code == ctrl_char::HIDDEN_COMMENT {
                     return;
                 }
-                // 글상자 등: 내부 문단 텍스트를 인라인으로 흡수.
+                // Absorb internal paragraph text from text boxes and similar objects into inline content.
                 for list in &g.paragraph_lists {
                     for p in &list.paragraphs {
                         let mut sub = String::new();
@@ -232,12 +232,12 @@ impl Builder<'_> {
         }
     }
 
-    /// 표 — 병합 셀이 덮는 칸은 `covered-table-cell`, origin 셀은 number-*-spanned(GH-4).
-    /// 셀 내용은 문단 인라인 + 블록(중첩 표·그림)을 보존한다(GH-5 — 이전엔 블록 버퍼 폐기).
+    /// Tables: merged cells cover `covered-table-cell` positions; origins use number-*-spanned (GH-4).
+    /// Cell content retains paragraph inlines and blocks (nested tables/images), formerly discarded (GH-5).
     fn table(&mut self, table: &hwp_model::Table, blocks: &mut String) {
         let rows = table.rows.max(1) as usize;
         let cols = table.cols.max(1) as usize;
-        // 병합 셀이 덮는 칸 표시 격자.
+        // Grid marking positions covered by merged cells.
         let mut covered = vec![vec![false; cols]; rows];
         blocks.push_str("<table:table table:style-name=\"Tbl\">");
         blocks.push_str(&format!(
@@ -324,7 +324,7 @@ impl Style {
             strike: s.has_strike(),
         }
     }
-    /// 적용할 ODF 텍스트 스타일 이름들 (중첩 span).
+    /// ODF text style names to apply as nested spans.
     fn span_styles(self) -> Vec<&'static str> {
         let mut v = Vec::new();
         if self.bold {
@@ -408,7 +408,7 @@ xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" \
 xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" \
 xmlns:xlink=\"http://www.w3.org/1999/xlink\"";
 
-/// content.xml — 자동 스타일 + 본문.
+/// content.xml: automatic styles and body.
 fn content_xml(body: &str) -> String {
     let heading_sizes = [20, 18, 16, 14, 13, 12];
     let mut styles = String::from("<style:style style:name=\"Body\" style:family=\"paragraph\"/>");
@@ -499,10 +499,10 @@ mod tests {
             "# 제목\n\n본문 단락\n\n| a | b |\n| - | - |\n| 1 | 2 |\n",
         );
         let bytes = to_odt(&doc).unwrap();
-        // mimetype이 첫 엔트리 + STORED.
+        // mimetype is the first entry and STORED.
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
         let first = zip.by_index(0).unwrap();
-        assert_eq!(first.name(), "mimetype");
+        assert_eq!(first.name().unwrap(), "mimetype");
         assert_eq!(first.compression(), zip::CompressionMethod::Stored);
         drop(first);
         let content = unzip(&bytes, "content.xml").unwrap();
