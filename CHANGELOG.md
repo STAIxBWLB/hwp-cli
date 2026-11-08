@@ -47,7 +47,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
   resolution collections are rejected rather than accepted as equal observations.
   Named-style references are validated and compared by resolved names; formatting runs after
-  interior paragraph-break controls remain in the WCHAR-bounded style projection.
+  interior paragraph-break controls remain in the WCHAR-bounded style projection. Table styles
+  include semantic page-break policy. Anchor collection requires document-derived table IDs to
+  match observed table rows, with at least one row per expected table; relative geometry remains
+  font-environment evidence. Retained-image checks resolve the authored table identity and cell,
+  rejecting an identical image moved to the same coordinates in another table. These bounded
+  checks do not prove complete table-fragment rendering or Hancom pagination.
   This adds regression evidence and a bilingual design contract, not production extraction,
   binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
 

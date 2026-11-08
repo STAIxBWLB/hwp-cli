@@ -206,6 +206,11 @@ fn assert_manifest(doc: &Document, manifest: &Value) -> FormProjection {
             "declared form break is missing"
         );
     }
+    assert_image_roles(&projected, manifest);
+    projected
+}
+// Authored image roles bind payload identity to the manifest table and cell.
+fn assert_image_roles(projected: &FormProjection, manifest: &Value) {
     let mut resources: Vec<_> = manifest["images"]
         .as_array()
         .unwrap()
@@ -230,19 +235,39 @@ fn assert_manifest(doc: &Document, manifest: &Value) -> FormProjection {
             "each distinct authored image must resolve once"
         );
         if image["role"] == "retained" {
+            let location = &image["location"];
+            let authored = manifest["tables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|table| table["id"] == location["table_id"])
+                .expect(
+                    "retained image references an unknown authored table; regenerate the manifest",
+                );
+            let table = &projected.tables[authored["table_index"].as_u64().unwrap() as usize];
+            let prefix = format!(
+                "{}/r{}c{}/",
+                table.key,
+                location["row"].as_u64().unwrap(),
+                location["col"].as_u64().unwrap()
+            );
             assert!(
-                resolved[0].key.contains("/r3c1/"),
-                "in-form image left its cell"
+                resolved[0].key.starts_with(&prefix),
+                "in-form image no longer matches its authored table/cell; inspect or regenerate the fixture"
             );
         } else {
             assert!(
-                resolved[0].key.starts_with("s0/p2/"),
+                resolved[0].key.starts_with(&format!(
+                    "s{}/p{}/",
+                    image["location"]["section"].as_u64().unwrap(),
+                    image["location"]["paragraph"].as_u64().unwrap()
+                )),
                 "outside image left its source paragraph"
             );
         }
     }
-    projected
 }
+
 fn observe(
     doc: &Document,
     selected: &[(usize, usize)],
@@ -845,4 +870,81 @@ fn contract_rejects_style_change_after_interior_paragraph_break() {
             "the run at WCHAR 2 belongs to b and must not be discarded at an interior break",
         );
     assert_eq!(error.layer, "style");
+}
+
+#[test]
+fn contract_rejects_changed_table_page_break_policy() {
+    let Some(fixture) = Fixture::new("table-policy") else {
+        return;
+    };
+    let baseline = assert_manifest(&fixture.doc, &fixture.expected);
+    let mut broken = fixture.doc.clone();
+    let table = table_mut(&mut broken, 0);
+    let before = table.page_break_policy();
+    table.attr = (table.attr & !3) | if table.attr & 3 == 1 { 2 } else { 1 };
+    assert_ne!(before, table.page_break_policy());
+    assert_eq!(
+        contract::compare_form_contract(&baseline, &contract::project_form(&broken))
+            .expect_err("changing the authored table page-break policy must fail")
+            .layer,
+        "style"
+    );
+}
+
+#[test]
+fn contract_rejects_missing_table_rows_with_paragraph_rows_intact() {
+    let Some(fixture) = Fixture::new("missing-tables") else {
+        return;
+    };
+    let mut store = hwp_render::FontStore::new();
+    let mut issues = hwp_render::RenderIssueAccumulator::new();
+    let (_, map) =
+        hwp_render::layout::layout_document_with_segments(&fixture.doc, &mut store, &mut issues);
+    let selected = fixture.forms();
+    contract::anchor_positions(&fixture.doc, &map, &selected).unwrap();
+    let id = map
+        .rows
+        .iter()
+        .find(|row| row.kind == "table")
+        .unwrap()
+        .id
+        .clone();
+    for remove_all in [true, false] {
+        let mut broken = map.clone();
+        broken
+            .rows
+            .retain(|row| row.kind != "table" || (!remove_all && row.id != id));
+        assert!(broken.rows.iter().any(|row| row.kind == "para"));
+        assert!(
+            contract::anchor_positions(&fixture.doc, &broken, &selected).is_err(),
+            "each expected table needs evidence even when both maps lose the same table rows"
+        );
+    }
+}
+
+#[test]
+fn contract_rejects_retained_image_in_same_cell_of_wrong_table() {
+    let Some(fixture) = Fixture::new("image-table") else {
+        return;
+    };
+    let baseline = assert_manifest(&fixture.doc, &fixture.expected);
+    assert_image_roles(&baseline, &fixture.expected);
+    let mut broken = fixture.doc.clone();
+    let source = cell_mut(&mut broken, 0, 3, 1);
+    let index = source
+        .paragraphs
+        .iter()
+        .position(|para| {
+            para.controls
+                .iter()
+                .any(|control| matches!(control, Control::Picture(_)))
+        })
+        .unwrap();
+    let image = source.paragraphs.remove(index);
+    cell_mut(&mut broken, 1, 3, 1).paragraphs.push(image);
+    let changed = contract::project_form(&broken);
+    assert!(
+        std::panic::catch_unwind(|| assert_image_roles(&changed, &fixture.expected)).is_err(),
+        "a retained image at the same coordinates in another table must fail its authored role"
+    );
 }

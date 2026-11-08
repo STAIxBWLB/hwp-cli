@@ -99,7 +99,9 @@ Source/output address mapping after extraction or cloning is a later package's r
 Resolve references through each document's own header and compare values, not numeric palette IDs.
 The common subset comprises paragraph alignment, indent, left/right margins and before/after/line
 spacing; each character run's requested face names, size, bold/italic state and text color; resolved
-border/fill values; and cell vertical-alignment attributes. Named-style assignments resolve through
+border/fill values; cell vertical-alignment attributes; and the table's semantic page-break policy
+(`none`, `table` or `cell`, resolved by `Table::page_break_policy`). This compares the policy
+meaning rather than every raw table-attribute bit. Named-style assignments resolve through
 `header.styles` and compare their name/English-name identity, even when direct formatting is equal;
 a dangling `StyleId` is an unresolved reference, not an unnamed default. This is a bounded named-style
 identity check, not a universal comparison of every native style payload.
@@ -135,6 +137,13 @@ fixture/manifest identifies those roles; it does not silently prune resources or
 closure. A missing referenced asset is a failure, distinct from planned exclusion. Hash resolved
 payload bytes rather than HWP/HWPX container names, which may change on conversion.
 
+The authored fixture checks the retained image's table identity as well as its cell: resolve the
+manifest location's `table_id` through the authored table list, use that entry's `table_index` in
+the projection, and require the image path to have that table's key and row/column prefix. The same
+row/column in another table is a failure even if its payload hash matches. The outside image is
+checked against its manifest section/paragraph address. These are source-fixture role checks, not
+a production mapping of addresses after extraction.
+
 The JSON export path `convert --to json --embed-bin` is the existing self-contained path. A JSON
 dump without payload bytes is not a complete image round-trip. Passing a semantic/resource
 projection also does not permit dropping unrelated opaque package entries to make strict
@@ -148,6 +157,13 @@ segment map. Compare corresponding source/output observations in one font enviro
 all expected anchors to exist, and reject incomplete maps. Do not let two empty anchor sets pass
 as equal. Missing text, repeated headers or a total page count cannot substitute for complete
 body-cell marker coverage.
+
+Before comparing geometry, `anchor_positions` derives the expected table-ID set from the existing
+`to_markdown_with_segments_v2` document walk with default options, without image extraction or
+image I/O. The observed `table` rows must have exactly that ID set, giving each expected table
+at least one observed row and rejecting missing or unexpected table evidence even when both
+render maps omit the same table. This is a bounded table-presence check; it does not prove that
+every table row or continuation fragment rendered, or that pagination matches Hancom.
 
 CI comparisons are relative: the two artifacts use the same available font environment, and the
 checks compare their corresponding anchors rather than a hardcoded page count or pixel image.
@@ -195,7 +211,10 @@ The following separate investigations constrain broader claims:
 - #426: discarded anchor-prepass diagnostics and incomplete/default anchors.
 
 Self-checks deliberately change an expected cell, a merge span and a form-start observation; each
-must yield a layer-specific `ContractViolation`. Grid/style/resource checks must likewise detect
+must yield a layer-specific `ContractViolation`. Negative checks also change a table's page-break
+policy, remove table evidence from otherwise usable render maps, and move the retained image to
+the same cell coordinates in another table. Each must fail its corresponding bounded check.
+Grid/style/resource checks must likewise detect
 relevant mutations rather than relying on one aggregate document-text equality. Test-only broken
 copies demonstrate the helper's rejection boundary; they are not production extraction or binding
 features. Full `scripts/check.sh`, hosted CI, fixture skips and native/oracle evidence are reported

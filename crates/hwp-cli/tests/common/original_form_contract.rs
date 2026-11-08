@@ -1,5 +1,5 @@
 //! Test-only original-form contract. No writer rules or production editing engine.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hwp_model::{Control, Document, HwpChar, Paragraph};
@@ -366,7 +366,11 @@ fn visit_paragraph(doc: &Document, para: &Paragraph, key: &str, result: &mut For
                     }
                 }).collect();
                 result.tables.push(TableProjection {key:key.clone(),rows:table.rows,cols:table.cols,cells:projected_cells,
-                    style:json!({"inner_margins":table.inner_margins,"cell_spacing":table.cell_spacing,"border":border(doc,table.border_fill.0)})});
+                    style:json!({"page_break":match table.page_break_policy() {
+                        hwp_model::control::TablePageBreak::None => "none",
+                        hwp_model::control::TablePageBreak::Table => "table",
+                        hwp_model::control::TablePageBreak::Cell => "cell",
+                    },"inner_margins":table.inner_margins,"cell_spacing":table.cell_spacing,"border":border(doc,table.border_fill.0)})});
                 for cell in cells {
                     for (index, para) in cell.paragraphs.iter().enumerate() {
                         visit_paragraph(
@@ -593,6 +597,28 @@ pub fn anchor_positions(
             return Err(condition("anchors", "missing", "selection"));
         }
         body_pages.push(rows);
+    }
+    // Reuse the public document walk, which already traverses cells/captions/text boxes
+    // with the same canonical IDs as the renderer. Defaults perform no image extraction.
+    let (_, segments) = hwp_convert::to_markdown_with_segments_v2(doc, &Default::default())
+        .map_err(|_| condition("table_anchors", "document_evidence_unavailable", "tables"))?;
+    let expected_tables: BTreeSet<_> = segments
+        .iter()
+        .filter(|segment| segment.kind == hwp_convert::SegmentKind::Table)
+        .map(|segment| segment.id.as_str())
+        .collect();
+    let observed_tables: BTreeSet<_> = map
+        .rows
+        .iter()
+        .filter(|row| row.kind == "table")
+        .map(|row| row.id.as_str())
+        .collect();
+    if expected_tables != observed_tables {
+        return Err(condition(
+            "table_anchors",
+            "table_evidence_mismatch",
+            "tables",
+        ));
     }
     let table_fragments: Vec<_> = map
         .rows
