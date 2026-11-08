@@ -29,7 +29,7 @@ quick-xml = "0.41"
 libc = "0.2"
 resvg = { version = "=0.47.0", default-features = false }
 regex = "1.11"
-zip = "8"
+zip = "9"
 # Checksum verification for self-update (hwp update) release archives — already
 # pulled in via zip, so the dependency graph does not grow.
 sha2 = "0.11"
