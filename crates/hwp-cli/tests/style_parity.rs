@@ -131,13 +131,13 @@ fn mcp(arguments: Value) -> Value {
 }
 
 fn create() -> Value {
-    json!({"op":"create_style","name":"Body","kind":"paragraph","based_on":0,"size":13})
+    json!({"op":"create_style","name":"Body","kind":"paragraph","based_on":0,"size":"13pt"})
 }
 fn apply() -> Value {
     json!({"op":"apply_style","style":"Body","address":{"at":{"section":0,"paragraph":0}}})
 }
 fn update() -> Value {
-    json!({"op":"update_style","style":0,"size":13})
+    json!({"op":"update_style","style":0,"size":"13pt"})
 }
 
 fn channel_parity(extension: &'static str, operation: Value) {
