@@ -6,6 +6,29 @@ use super::{
 use hwp_model::{Control, Document, HwpChar, HwpUnit, Paragraph};
 
 #[test]
+fn even_an_empty_reviewed_plan_refuses_a_different_source_snapshot() {
+    let doc = document();
+    let catalogue = scan_form_occurrences(&doc, &source_hash()).unwrap();
+    let plan = BindingPlan {
+        version: 1,
+        source_sha256: source_hash(),
+        structural_sha256: catalogue.structural_sha256,
+        bindings: vec![],
+        repeats: vec![],
+        constraints: vec![],
+    };
+    assert!(
+        prepare_binding_plan(
+            &doc,
+            &digest(b"different native bytes"),
+            &plan,
+            &Values::new()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn prepare_refuses_inconsistent_totals_before_any_clone_or_splice() {
     let mut doc = document();
     doc.sections[0].paragraphs[1] = paragraph("{{ key }}");

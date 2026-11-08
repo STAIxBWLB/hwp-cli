@@ -340,23 +340,30 @@ fn a_missing_ops_array_wrapper_never_echoes_binding_content() {
     let source = workspace.source("hwpx");
     let output = workspace.0.join("filled.hwpx");
     let operation = binding_operation(&workspace, &source, "PRIVATE_WRAPPER_VALUE");
-    let ops = workspace.0.join("wrong.json");
-    std::fs::write(&ops, serde_json::to_vec(&operation).unwrap()).unwrap();
-    let result = hwp()
-        .arg("edit")
-        .arg(&source)
-        .arg("-o")
-        .arg(&output)
-        .arg("--ops")
-        .arg(ops)
-        .output()
-        .unwrap();
-    assert!(!result.status.success());
-    assert!(
-        !String::from_utf8_lossy(&result.stderr).contains("PRIVATE_WRAPPER_VALUE"),
-        "wrong-wrapper refusals must omit private payloads"
-    );
-    assert!(!output.exists());
+    for payload in [
+        operation.clone(),
+        json!({"ops":[operation.clone()]}),
+        json!([[operation.clone()]]),
+        json!(serde_json::to_string(&operation).unwrap()),
+    ] {
+        let ops = workspace.0.join("wrong.json");
+        std::fs::write(&ops, serde_json::to_vec(&payload).unwrap()).unwrap();
+        let result = hwp()
+            .arg("edit")
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&ops)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            !String::from_utf8_lossy(&result.stderr).contains("PRIVATE_WRAPPER_VALUE"),
+            "wrong-wrapper refusals must omit private payloads"
+        );
+        assert!(!output.exists());
+    }
 }
 
 #[test]
