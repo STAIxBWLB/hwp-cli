@@ -16,7 +16,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   gaps. Following compatibility rules C2/B5, cell height ends at the last line bottom, without
   a trailing paragraph after-gap; stored cell minima and saved-cache row floors stay unchanged.
   Floating-table anchors follow the renderer's legal row/cell fragments and final page-relative
-  cursor; explicit page breaks restart the body cache. The pinned synthetic probe now renders
+  cursor; first-line page moves record the resolved top and page-start boundary, and explicit
+  page breaks restart the body cache. The pinned synthetic probe now renders
   as four pages, with form starts on 1/2/3/4 in both formats. The earlier eight-page candidate
   included an unbacked trailing after-gap. These are CLI render observations; Hancom Office
   verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).

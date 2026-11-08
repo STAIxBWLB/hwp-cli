@@ -137,13 +137,19 @@ pub fn synthesize_linesegs(
             // A table anchor's cache starts at the incoming cursor after the preceding paragraph.
             // Genuine first-paragraph sample: body advance 1600, then table-anchor v_pos=1600.
             if let Some(anchors) = section_anchors {
-                v_pos = anchors[si][pi];
+                v_pos = anchors[si][pi].v_pos;
             }
             let anchor_v = v_pos;
             let src = &snap.sections[si].paragraphs[pi];
-            let segs = compute_linesegs(
+            let mut segs = compute_linesegs(
                 store, &snap, src, body_width, content_h, &mut v_pos, warnings,
             );
+            if section_anchors.is_some_and(|anchors| anchors[si][pi].starts_page)
+                && let Some(first) = segs.first_mut()
+            {
+                // Existing LineSeg bit0 declares a first line moved to a new page.
+                first.flags |= 0x1;
+            }
             doc.sections[si].paragraphs[pi].line_segs = segs;
             // A table paragraph advances by table height rather than one line_advance, keeping
             // following text from overlapping the table (which Hangul flags as corruption).

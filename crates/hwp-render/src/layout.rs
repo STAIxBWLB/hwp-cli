@@ -867,13 +867,24 @@ pub fn layout_document_with_segments(
     (list, rec.finish())
 }
 
+/// Resolved first-line placement, relative to the page body.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BodyAnchor {
+    pub v_pos: i32,
+    /// Only the first line's own page move, never an earlier table continuation.
+    pub starts_page: bool,
+}
+
 /// Obtain body anchors from the same flow that plans floating-table fragments.
 /// The caller supplies cell caches and clears body caches before this measurement.
-pub(crate) fn synthesized_body_anchors(doc: &Document, store: &mut FontStore) -> Vec<Vec<i32>> {
-    let mut anchors: Vec<Vec<i32>> = doc
+pub(crate) fn synthesized_body_anchors(
+    doc: &Document,
+    store: &mut FontStore,
+) -> Vec<Vec<BodyAnchor>> {
+    let mut anchors: Vec<Vec<BodyAnchor>> = doc
         .sections
         .iter()
-        .map(|section| vec![0; section.paragraphs.len()])
+        .map(|section| vec![BodyAnchor::default(); section.paragraphs.len()])
         .collect();
     let mut warnings = RenderIssueAccumulator::new();
     layout_document_inner(
@@ -891,7 +902,7 @@ fn layout_document_inner(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
-    anchors: Option<&mut [Vec<i32>]>,
+    anchors: Option<&mut [Vec<BodyAnchor>]>,
 ) -> DisplayList {
     // Memoized cell heights are keyed by addresses inside `doc`; never let one
     // document's entries answer for another's, and do not keep them past the
@@ -907,7 +918,7 @@ fn layout_document_pages(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
-    mut anchors: Option<&mut [Vec<i32>]>,
+    mut anchors: Option<&mut [Vec<BodyAnchor>]>,
 ) -> DisplayList {
     let mut pages = Vec::new();
     let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
@@ -1159,8 +1170,10 @@ fn layout_document_pages(
             let mut bg_first_slice = true;
 
             if let Some(anchors) = anchors.as_deref_mut() {
-                anchors[section_index][para_index] =
-                    ((content_bottom + geom.spacing_top - body_top) * 100.0).round() as i32;
+                anchors[section_index][para_index] = BodyAnchor {
+                    v_pos: ((content_bottom + geom.spacing_top - body_top) * 100.0).round() as i32,
+                    starts_page: false,
+                };
             }
             if para.line_segs.is_empty() {
                 // Greedy body layout uses the same metrics as synthesized caches.
@@ -1310,6 +1323,21 @@ fn layout_document_pages(
                         lines_on_page += 1;
                         plan.push((start_item, dy, opens_page));
                     }
+                    // Pagination may move the first line away from the entry cursor.
+                    // Record its resolved top and only the break this line opened;
+                    // a preceding table continuation already advanced the page.
+                    if let (
+                        Some(anchors),
+                        Some(&(_, first_dy, first_opens_page)),
+                        Some(&(_, first_baseline)),
+                    ) = (anchors.as_deref_mut(), plan.first(), lines.first())
+                    {
+                        anchors[section_index][para_index] = BodyAnchor {
+                            v_pos: ((first_baseline + first_dy - max_size * 1.2 - body_top) * 100.0)
+                                .round() as i32,
+                            starts_page: first_opens_page.is_some(),
+                        };
+                    }
                     para_split = plan.iter().any(|&(_, _, opens)| opens.is_some());
                     let mut src = scratch.items.into_iter();
                     let mut page_budget_spent = false;
@@ -1436,10 +1464,9 @@ fn layout_document_pages(
 
             let last_content = last_content_seg(para);
             for (i, seg) in para.line_segs.iter().enumerate() {
-                // Hancom-saved linesegs use bit0 (first line of a page) and
-                // bit1 (first line of a column) as authoritative boundaries.
-                // Synthesized linesegs use 0x0006_0000 and therefore fall back
-                // to the v_pos-reset heuristic.
+                // Bits0/1 declare authoritative page/column starts in saved
+                // and synthesized caches. Without either boundary flag, use
+                // the v_pos-reset heuristic.
                 let (is_boundary, page_break) = if seg.flags & 0x3 != 0 {
                     (true, seg.flags & 0x1 != 0)
                 } else if seg.v_pos < prev_v_pos {

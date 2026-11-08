@@ -273,3 +273,69 @@ fn saved_cache_keeps_row_height_and_following_row_origin() {
         "after-spacing must not move the following saved-cache row: {rows:?}"
     );
 }
+
+#[test]
+fn first_line_pushed_after_floating_table_uses_resolved_page_anchor() {
+    let mut source = hwp_convert::from_markdown("Anchor\n\nFollowing\n");
+    for control in &mut source.sections[0].paragraphs[0].controls {
+        if let Control::SectionDef(definition) = control {
+            let page = definition.page.as_mut().unwrap();
+            page.margin_header = HwpUnit(0);
+            page.margin_footer = HwpUnit(0);
+        }
+    }
+    let page = source.sections[0].section_def().unwrap().page.unwrap();
+    let content_height = page.height.0 - page.margin_top.0 - page.margin_bottom.0;
+    let fill = add_fill(&mut source, 0x0001_3456);
+    // The row leaves 12pt: a 10pt cache line fits, but the fallback line's
+    // baseline plus descent requires 16pt and must move to the next page.
+    let floating = table(vec![Paragraph::default()], fill, content_height - 1200);
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(floating));
+    let address = hwp_render::segment_id::SegmentPath {
+        section: 0,
+        indices: vec![1],
+    };
+    let id = hwp_render::segment_id::paragraph_id(&address, &source.sections[0].paragraphs[1]);
+    let mut store = FontStore::new();
+    let mut issues = RenderIssueAccumulator::new();
+    let (_, source_map) =
+        hwp_render::layout::layout_document_with_segments(&source, &mut store, &mut issues);
+    let source_pages: Vec<_> = source_map
+        .rows
+        .iter()
+        .filter(|row| row.id == id)
+        .map(|row| row.page)
+        .collect();
+    assert_eq!(
+        source_pages,
+        vec![1],
+        "fixture's first line must move to a new page"
+    );
+
+    let mut cached = source.clone();
+    hwp_render::lineseg::synthesize_linesegs(&mut cached, &mut store, &mut issues);
+    let anchor = &cached.sections[0].paragraphs[1].line_segs[0];
+    assert_eq!(
+        anchor.v_pos, 0,
+        "synthesized anchor must use the resolved first-line top, not the near-bottom entry cursor"
+    );
+    assert_ne!(
+        anchor.flags & 1,
+        0,
+        "resolved first-line page break must be explicit in the cache"
+    );
+    let (_, cached_map) =
+        hwp_render::layout::layout_document_with_segments(&cached, &mut store, &mut issues);
+    let cached_pages: Vec<_> = cached_map
+        .rows
+        .iter()
+        .filter(|row| row.id == id)
+        .map(|row| row.page)
+        .collect();
+    assert_eq!(
+        cached_pages, source_pages,
+        "conversion must retain the resolved page anchor"
+    );
+}
