@@ -338,8 +338,9 @@ jobs:
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
 
   # Homebrew formula updates open a PR and wait for its exact-head ci-ok before enabling
-  # squash auto-merge. There is no unchecked immediate-merge fallback. If automation cannot
-  # pass the gate, inspect CI and merge the formula PR manually after its checks pass.
+  # squash auto-merge. GitHub's clean-status refusal can use a checked head-matched merge
+  # after a fresh PR seal; every other error refuses. If automation cannot pass the gate,
+  # inspect CI and merge the formula PR manually after its checks pass.
   update-formula:
     needs: publish-release
     runs-on: ubuntu-latest

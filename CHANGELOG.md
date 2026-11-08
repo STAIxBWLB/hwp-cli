@@ -14,7 +14,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - CI publishes a stable `ci-ok` gate for every PR, including lightweight docs/formula changes.
   The aggregate rejects failed, cancelled or unexpectedly skipped jobs; releases require it,
-  and formula PR auto-merge waits for its successful exact-head CI without an unchecked fallback
+  and formula PR auto-merge waits for its successful exact-head CI. GitHub's clean-status
+  auto-merge refusal uses a checked head-matched merge only after a fresh clean/mergeable proof
   ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
 
 - Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)

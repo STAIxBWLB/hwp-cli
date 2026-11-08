@@ -114,6 +114,29 @@ def aggregate(needs):
             raise GateError(f"{name} did not report expected {expected}; inspect its job and rerun CI")
 
 
+
+def merge_verified_formula(repo, number, branch, head):
+    """Called only after successful exact-head ci-ok; seal both possible merge attempts."""
+    endpoint = f"repos/{repo}/pulls/{number}"
+    check_formula_pr(api(endpoint), repo, branch, head)
+    try:
+        gh("pr", "merge", str(number), "--repo", repo, "--auto", "--squash",
+           "--match-head-commit", head)
+    except GateError as error:
+        cause = error.__cause__
+        if (not isinstance(cause, subprocess.CalledProcessError)
+                or "pull request is in clean status" not in (cause.stderr or "").lower()):
+            raise
+        # No required-check configuration: GitHub refuses auto-merge on a clean PR.
+        # CI has already succeeded, but identity and mergeability must still be current.
+        current = api(endpoint)
+        check_formula_pr(current, repo, branch, head)
+        if current.get("mergeable") is not True or current.get("mergeable_state") != "clean":
+            raise GateError("formula PR is not clean and mergeable; inspect its checks and rerun release") from error
+        gh("pr", "merge", str(number), "--repo", repo, "--squash",
+           "--match-head-commit", head)
+
+
 def formula_gate(repo, branch, head, timeout=600, poll=10, clock=time.monotonic, sleep=time.sleep):
     """Dispatch CI and merge only its successful exact-head ci-ok, never an unchecked fallback."""
     if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
@@ -148,10 +171,7 @@ def formula_gate(repo, branch, head, timeout=600, poll=10, clock=time.monotonic,
                         or checks[0].get("status") != "completed"
                         or checks[0].get("conclusion") != "success"):
                     raise GateError("formula ci-ok did not succeed; inspect its CI run and rerun release")
-                # Seal against a new push between observation and merge. No immediate fallback.
-                check_formula_pr(api(f"repos/{repo}/pulls/{number}"), repo, branch, head)
-                gh("pr", "merge", str(number), "--repo", repo, "--auto", "--squash",
-                   "--match-head-commit", head)
+                merge_verified_formula(repo, number, branch, head)
                 return
         print("Waiting for exact-head formula ci-ok", flush=True)
         sleep(poll)

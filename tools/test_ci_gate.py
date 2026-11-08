@@ -354,7 +354,7 @@ class FormulaGateTests(unittest.TestCase):
             fake.invoke()
         self.assertEqual(fake.merges, [])
 
-    def test_failed_auto_merge_has_no_immediate_fallback(self):
+    def test_generic_auto_merge_error_has_no_fallback(self):
         fake = FormulaHarness()
         fake.fail_gh = lambda args: args[:2] == ("pr", "merge")
         with self.assertRaises(gate.GateError):
@@ -362,6 +362,139 @@ class FormulaGateTests(unittest.TestCase):
         self.assertEqual(len(fake.merges), 1)
         self.assertIn("--auto", fake.merges[0])
         self.assertIn("--match-head-commit", fake.merges[0])
+
+
+class CheckedFormulaFallbackTests(unittest.TestCase):
+    """A direct merge is allowed only after exact-head CI and the known clean-status error."""
+
+    @staticmethod
+    def ready_pr(**updates):
+        value = pr()
+        value.update(mergeable=True, mergeable_state="clean")
+        value.update(updates)
+        return value
+
+    @staticmethod
+    def command_error(args, stderr):
+        cause = subprocess.CalledProcessError(1, ["gh", *args], output="", stderr=stderr)
+        raise gate.GateError("gh command failed; inspect authentication/network and rerun CI") from cause
+
+    def clean_auto_error(self, args):
+        if args[:2] == ("pr", "merge") and "--auto" in args:
+            self.command_error(args, "GraphQL: Pull request is in clean status (enablePullRequestAutoMerge)")
+        return False
+
+    def test_clean_status_error_uses_two_exact_head_merges_with_fresh_seal(self):
+        fake = FormulaHarness(current=[pr(), pr(), self.ready_pr()])
+        merge_observations = []
+
+        def errors(args):
+            if args[:2] == ("pr", "merge"):
+                merge_observations.append(("--auto" in args, fake.pr_reads, list(fake.api_calls)))
+            return self.clean_auto_error(args)
+
+        fake.fail_gh = errors
+        try:
+            fake.invoke()
+        except gate.GateError as error:
+            self.fail(f"successful exact-head ci-ok plus a freshly sealed clean PR must permit the checked fallback: {error}")
+        self.assertEqual(fake.merges, [
+            ("pr", "merge", "17", "--repo", REPO, "--auto", "--squash", "--match-head-commit", HEAD),
+            ("pr", "merge", "17", "--repo", REPO, "--squash", "--match-head-commit", HEAD),
+        ])
+        self.assertEqual(len(merge_observations), 2)
+        self.assertGreaterEqual(merge_observations[0][1], 2, "auto merge follows an exact-head PR seal")
+        self.assertGreater(merge_observations[1][1], merge_observations[0][1],
+                           "the checked fallback must refresh identity after the auto-merge error")
+        for _, _, api_calls in merge_observations:
+            self.assertIn(f"repos/{REPO}/actions/runs/101/jobs?filter=latest&per_page=100", api_calls,
+                          "neither merge attempt may bypass the successful exact-head ci-ok proof")
+
+    def test_other_chained_command_errors_do_not_get_a_fallback(self):
+        for stderr in ["permission denied", "Auto merge is not allowed for this repository",
+                       "Pull request is not mergeable", "network request timed out"]:
+            with self.subTest(stderr=stderr):
+                fake = FormulaHarness(current=[pr(), pr(), self.ready_pr()])
+
+                def errors(args):
+                    if args[:2] == ("pr", "merge"):
+                        self.command_error(args, stderr)
+                    return False
+
+                fake.fail_gh = errors
+                with self.assertRaises(gate.GateError):
+                    fake.invoke()
+                self.assertEqual(len(fake.merges), 1)
+                self.assertIn("--auto", fake.merges[0])
+
+    def test_clean_text_without_chained_called_process_error_is_not_sufficient(self):
+        for other_cause in [False, True]:
+            with self.subTest(other_cause=other_cause):
+                fake = FormulaHarness(current=[pr(), pr(), self.ready_pr()])
+
+                def errors(args):
+                    if args[:2] == ("pr", "merge"):
+                        if other_cause:
+                            raise gate.GateError("gh command failed") from RuntimeError("Pull request is in clean status")
+                        raise gate.GateError("Pull request is in clean status")
+                    return False
+
+                fake.fail_gh = errors
+                with self.assertRaises(gate.GateError):
+                    fake.invoke()
+                self.assertEqual(len(fake.merges), 1)
+
+    def test_unmergeable_nonclean_or_unknown_refresh_never_gets_a_fallback(self):
+        cases = [dict(mergeable=False), dict(mergeable=None), dict(mergeable_state="blocked"),
+                 dict(mergeable_state="dirty"), dict(mergeable_state="unknown"),
+                 dict(mergeable_state=None)]
+        for updates in cases:
+            with self.subTest(updates=updates):
+                fake = FormulaHarness(current=[pr(), pr(), self.ready_pr(**updates)])
+                fake.fail_gh = self.clean_auto_error
+                with self.assertRaises(gate.GateError):
+                    fake.invoke()
+                self.assertEqual(len(fake.merges), 1)
+        fake = FormulaHarness(current=[pr(), pr(), pr()])
+        fake.fail_gh = self.clean_auto_error
+        with self.assertRaises(gate.GateError):
+            fake.invoke()
+        self.assertEqual(len(fake.merges), 1, "absent mergeability fields are not a clean PR proof")
+
+    def test_head_change_after_auto_merge_error_never_gets_a_fallback(self):
+        stale = self.ready_pr()
+        stale["head"]["sha"] = "d" * 40
+        fake = FormulaHarness(current=[pr(), pr(), stale])
+        fake.fail_gh = self.clean_auto_error
+        with self.assertRaises(gate.GateError):
+            fake.invoke()
+        self.assertEqual(len(fake.merges), 1)
+
+    def test_refresh_api_failure_after_auto_merge_error_never_gets_a_fallback(self):
+        fake = FormulaHarness(current=[pr(), pr(), self.ready_pr()])
+        fake.fail_gh = self.clean_auto_error
+        fake.fail_api = lambda endpoint: endpoint.endswith("/pulls/17") and fake.pr_reads >= 2
+        with self.assertRaises(gate.GateError):
+            fake.invoke()
+        self.assertEqual(len(fake.merges), 1)
+
+    def test_checked_fallback_command_failure_has_no_retry(self):
+        fake = FormulaHarness(current=[pr(), pr(), self.ready_pr()])
+
+        def errors(args):
+            if args[:2] == ("pr", "merge"):
+                if "--auto" in args:
+                    return self.clean_auto_error(args)
+                self.command_error(args, "permission denied during checked fallback")
+            return False
+
+        fake.fail_gh = errors
+        with self.assertRaises(gate.GateError):
+            fake.invoke()
+        self.assertEqual(len(fake.merges), 2, "no third merge attempt after checked-fallback failure")
+        self.assertIn("--auto", fake.merges[0])
+        self.assertNotIn("--auto", fake.merges[1])
+        self.assertIn("--match-head-commit", fake.merges[1])
 
 
 class WorkflowTests(unittest.TestCase):
