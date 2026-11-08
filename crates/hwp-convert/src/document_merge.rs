@@ -2765,4 +2765,90 @@ mod tests {
         );
         assert_eq!(inserted, vec![Paragraph::default()]);
     }
+
+    fn caption_with(controls: Vec<Control>) -> hwp_model::Caption {
+        hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![Paragraph {
+                controls,
+                ..Default::default()
+            }],
+        }
+    }
+
+    /// Objects hosted in a table or picture caption are inserted content too: their tables and
+    /// fields need the same fresh identities as the ones in cells.
+    #[test]
+    fn inserted_objects_in_table_and_picture_captions_are_renumbered() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![placement_table(0), field_control(9, "existing")],
+                ..Default::default()
+            },
+        );
+        let Control::Table(mut outer) = placement_table(0) else {
+            unreachable!()
+        };
+        outer.caption = Some(caption_with(vec![
+            placement_table(0),
+            field_control(0, "in-table-caption"),
+        ]));
+        let picture = hwp_model::Picture {
+            common_data: Vec::new(),
+            width: hwp_model::HwpUnit(100),
+            height: hwp_model::HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: Some(caption_with(vec![field_control(0, "in-picture-caption")])),
+            bin_ref: BinRef::ItemRef("x".into()),
+            extras: Vec::new(),
+        };
+        let mut inserted = vec![Paragraph {
+            controls: vec![Control::Table(outer), Control::Picture(picture)],
+            ..Default::default()
+        }];
+        let renumbered = renumber_inserted_objects(&target, &mut inserted).unwrap();
+        assert_eq!(
+            renumbered, 4,
+            "outer table, caption table, two caption fields"
+        );
+        let Control::Table(outer) = &inserted[0].controls[0] else {
+            unreachable!()
+        };
+        let caption = outer.caption.as_ref().unwrap();
+        let nested_table_z = placement_z(&caption.paragraphs[0].controls[0]);
+        let outer_z = outer.placement.as_ref().unwrap().z_order;
+        assert_ne!(
+            nested_table_z, outer_z,
+            "caption table shares the outer table's id"
+        );
+        assert_ne!(
+            nested_table_z, 0,
+            "caption table kept the compiler's z-order 0"
+        );
+        let table_field = stored_field_id(&caption.paragraphs[0].controls[1]);
+        let Control::Picture(picture) = &inserted[0].controls[1] else {
+            unreachable!()
+        };
+        let picture_field =
+            stored_field_id(&picture.caption.as_ref().unwrap().paragraphs[0].controls[0]);
+        assert!(table_field > 9 && picture_field > 9);
+        assert_ne!(table_field, picture_field);
+    }
 }
