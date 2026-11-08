@@ -2001,6 +2001,35 @@ fn next_synthesized_instance_id(doc: &Document) -> u32 {
     next
 }
 
+/// Allocator for synthesized gso instance ids (placeholder, old behaviour).
+struct InstanceIds {
+    next: u32,
+    end: u32,
+    exhausted: bool,
+}
+impl InstanceIds {
+    fn new(doc: &Document) -> Self {
+        Self {
+            next: next_synthesized_instance_id(doc),
+            end: u32::MAX,
+            exhausted: false,
+        }
+    }
+    fn with_range(doc: &Document, _base: u32, end: u32) -> Self {
+        let mut ids = Self::new(doc);
+        ids.end = end;
+        ids
+    }
+    fn next(&mut self) -> Option<u32> {
+        let id = self.next;
+        self.next += 1;
+        Some(id)
+    }
+    fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
+
 /// 구역의 PageDef를 찾는다 (SectionDef 컨트롤).
 fn section_page_def(section: &Section) -> Option<hwp_model::PageDef> {
     section
@@ -5131,6 +5160,57 @@ mod tests {
             extras: Vec::new(),
         });
         assert_eq!(next_synthesized_instance_id(&doc), 0x3000_0005);
+    }
+
+    fn doc_with_picture_ids(ids: &[u32]) -> Document {
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            paragraphs: vec![Paragraph {
+                controls: ids.iter().map(|id| picture_with_instance_id(*id)).collect(),
+                ..Paragraph::default()
+            }],
+            extras: Vec::new(),
+        });
+        doc
+    }
+
+    /// An id handed out must be inside the synthesized range and not already used by any
+    /// picture, table or container. `max + 1` of the in-range ids steps over the range edge:
+    /// with `0x300fffff` present it returns `0x30100000`, which another object already holds.
+    #[test]
+    fn a_synthesized_picture_id_stays_in_range_and_avoids_every_used_id() {
+        let doc = doc_with_picture_ids(&[0x300f_ffff, 0x3010_0000]);
+        let mut ids = InstanceIds::new(&doc);
+        let first = ids.next().expect("the range has room");
+        assert!(
+            (0x3000_0000..0x3010_0000).contains(&first),
+            "{first:#x} is outside the synthesized range"
+        );
+        assert!(first != 0x300f_ffff && first != 0x3010_0000, "{first:#x} is already used");
+        // Successive ids never repeat.
+        let second = ids.next().unwrap();
+        assert_ne!(first, second);
+    }
+
+    /// The derived picture-effect id flips bit 20 (`id ^ 0x0010_0000`); it must not equal a
+    /// common id the document already holds either.
+    #[test]
+    fn a_synthesized_picture_id_does_not_derive_a_used_effect_id() {
+        let doc = doc_with_picture_ids(&[0x3010_0000]);
+        let mut ids = InstanceIds::new(&doc);
+        let first = ids.next().unwrap();
+        assert_ne!(first ^ 0x0010_0000, 0x3010_0000, "{first:#x} derives a used id");
+    }
+
+    #[test]
+    fn an_exhausted_synthesized_range_is_reported_not_wrapped() {
+        let doc = doc_with_picture_ids(&[0x3000_0002]);
+        // A range of three ids with one already used leaves two, then none.
+        let mut ids = InstanceIds::with_range(&doc, 0x3000_0000, 0x3000_0003);
+        assert!(ids.next().is_some());
+        assert!(ids.next().is_some());
+        assert!(ids.next().is_none(), "the third request has nothing left");
+        assert!(ids.exhausted());
     }
 
     #[test]

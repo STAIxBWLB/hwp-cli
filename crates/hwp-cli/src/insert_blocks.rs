@@ -197,7 +197,7 @@ fn column_width_hwp(section: &hwp_model::Section, at: usize, body: i32) -> i32 {
 /// Limit this phase to the body and table cells, and return the width in mm of the text column
 /// or table cell the blocks will land in. Opaque Generic objects need a writer regeneration
 /// proof, not merely a readable address into their extracted model lists.
-fn check_target(doc: &Document, target: &SegmentPath) -> Result<f32, String> {
+fn check_target(doc: &Document, target: &SegmentPath, _before: bool) -> Result<f32, String> {
     let invalid = || {
         "insert_blocks 삽입 위치가 본문 또는 표 셀 문단이 아닙니다. 최신 문서에서 본문/표 셀 문단 주소를 다시 선택하세요".to_owned()
     };
@@ -424,7 +424,7 @@ pub fn apply(
     hwp_output: bool,
     assets: &AssetContext,
 ) -> Result<usize, String> {
-    let container_mm = check_target(doc, target)?;
+    let container_mm = check_target(doc, target, request.before())?;
     if request.styles.len() > 256 || request.lists.len() > 256 {
         return Err(
             "insert_blocks의 styles/lists 정의가 상한 256개를 넘습니다. 정의를 나누어 요청하세요"
@@ -892,7 +892,7 @@ mod tests {
         let width_with = |page: hwp_model::PageDef| {
             let mut doc = hwp_convert::from_markdown("anchor\n");
             set_page(&mut doc, page);
-            check_target(&doc, &at).expect("body paragraph target")
+            check_target(&doc, &at, false).expect("body paragraph target")
         };
         let portrait = width_with(a4_page(59528, 84189, 0));
         assert!(
@@ -955,6 +955,7 @@ mod tests {
                     section: 0,
                     indices: vec![paragraph],
                 },
+                false,
             )
             .unwrap()
         };
@@ -1053,5 +1054,76 @@ mod tests {
             "the picture resolved to the older stream that shares its file name"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `position: before` puts the blocks ahead of the target paragraph, and with them ahead of
+    /// any column control that paragraph carries, so they flow under the PREVIOUS layout.
+    /// `after` lands under the target's own.
+    #[test]
+    fn a_before_insertion_is_measured_against_the_layout_preceding_the_target() {
+        let width = |doc: &Document, paragraph: usize, before: bool| {
+            check_target(
+                doc,
+                &SegmentPath {
+                    section: 0,
+                    indices: vec![paragraph],
+                },
+                before,
+            )
+            .unwrap()
+        };
+        // One column, then a change to two columns carried by paragraph 1.
+        let mut to_two = hwp_convert::from_markdown("first\n\nsecond\n\nthird\n");
+        to_two.sections[0].paragraphs[1].controls.push(column_control(2));
+        assert!(width(&to_two, 1, true) > 150.0, "before the change: the one-column layout");
+        assert!(width(&to_two, 1, false) < 90.0, "after the change paragraph: two columns");
+        // Two columns, then a change back to one carried by paragraph 2.
+        let mut to_one = hwp_convert::from_markdown("first\n\nsecond\n\nthird\n");
+        to_one.sections[0].paragraphs[1].controls.push(column_control(2));
+        to_one.sections[0].paragraphs[2].controls.push(column_control(1));
+        assert!(width(&to_one, 2, true) < 90.0, "before the change back: still two columns");
+        assert!(width(&to_one, 2, false) > 150.0, "after it: one column");
+        // The first paragraph has no preceding layout of its own, so `before` falls back to the
+        // section default rather than reading a definition that follows the block.
+        assert!(width(&to_two, 0, true) > 150.0);
+    }
+
+    fn insert_table_request(position: &str, width_mm: u32) -> InsertBlocks {
+        serde_json::from_value(serde_json::json!({
+            "position": position,
+            "blocks": [{"type": "table", "columns": [{"width_mm": width_mm}],
+                "rows": [{"cells": [{"blocks": [{"type": "paragraph", "runs": [
+                    {"type": "text", "text": "x"}]}]}]}]}]
+        }))
+        .expect("request")
+    }
+
+    /// The same check through `apply`, so the position the caller passes is the one measured.
+    #[test]
+    fn apply_passes_the_position_to_the_width_check() {
+        let make = || {
+            let mut doc = hwp_convert::from_markdown("first\n\nsecond\n\nthird\n");
+            doc.sections[0].paragraphs[1].controls.push(column_control(2));
+            doc
+        };
+        let at = SegmentPath {
+            section: 0,
+            indices: vec![1],
+        };
+        let none = AssetContext {
+            base_dir: None,
+            roots: &[],
+        };
+        // Before the 2-column change a 120 mm table sits in the 170 mm one-column layout.
+        let mut doc = make();
+        apply(&mut doc, &at, &insert_table_request("before", 120), false, &none)
+            .expect("fits the preceding one-column layout");
+        // After the paragraph that starts two columns it does not.
+        let mut doc = make();
+        let before = doc.clone();
+        let error = apply(&mut doc, &at, &insert_table_request("after", 120), false, &none)
+            .expect_err("120 mm exceeds an 80 mm column");
+        assert!(error.contains("layout_overflow"), "{error}");
+        assert_eq!(doc, before);
     }
 }

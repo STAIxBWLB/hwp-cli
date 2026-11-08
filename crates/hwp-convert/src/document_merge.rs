@@ -2978,4 +2978,54 @@ mod tests {
             "the error must name the exhausted id space and the object: {error}"
         );
     }
+
+    fn text_paragraph() -> Paragraph {
+        Paragraph::default()
+    }
+
+    /// Inserting only text needs no object id, so a target whose field ids or table z-orders
+    /// are already at their ceiling must still accept it (it did before the remapper existed).
+    #[test]
+    fn a_text_only_insert_is_not_refused_by_exhausted_id_floors() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![field_control(u32::MAX, "last"), placement_table(i32::MAX)],
+                ..Default::default()
+            },
+        );
+        let mut inserted = vec![text_paragraph()];
+        assert_eq!(
+            renumber_inserted_objects(&target, &mut inserted).expect("text needs no id"),
+            0
+        );
+        assert_eq!(inserted, vec![text_paragraph()]);
+    }
+
+    /// The same target still refuses an insert that does need the exhausted allocator, with a
+    /// named error rather than a wrapped or duplicated id.
+    #[test]
+    fn an_insert_that_needs_an_exhausted_id_floor_is_still_refused_by_name() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![field_control(u32::MAX, "last"), placement_table(i32::MAX)],
+                ..Default::default()
+            },
+        );
+        let mut field = vec![Paragraph {
+            controls: vec![field_control(0, "new")],
+            ..Default::default()
+        }];
+        let error = renumber_inserted_objects(&target, &mut field).expect_err("no field id left");
+        assert!(error.contains("필드"), "{error}");
+        let mut table = vec![Paragraph {
+            controls: vec![placement_table(0)],
+            ..Default::default()
+        }];
+        let error = renumber_inserted_objects(&target, &mut table).expect_err("no z-order left");
+        assert!(error.contains("z-order"), "{error}");
+    }
 }
