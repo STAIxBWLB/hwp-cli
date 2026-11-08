@@ -635,7 +635,12 @@ impl FontIdentity {
                     resolved: entry.resolved.clone(),
                     sha256: entry.resolved_sha256.clone(),
                     face_index: entry.resolved_face_index,
-                    outcome: format!("{:?}", entry.outcome),
+                    outcome: match entry.outcome {
+                        hwp_render::fonts::FontResolutionOutcome::Matched => "matched",
+                        hwp_render::fonts::FontResolutionOutcome::Substituted => "substituted",
+                        hwp_render::fonts::FontResolutionOutcome::Missing => "missing",
+                    }
+                    .into(),
                 })
                 .collect(),
         }
