@@ -479,17 +479,113 @@ pub fn apply(
             ));
         }
     }
+    let renames = manifest_safe_names(doc, &compiled.bin_streams);
+    if !renames.is_empty() {
+        for paragraph in &mut paragraphs {
+            rename_item_refs(paragraph, &renames);
+        }
+    }
     hwp_convert::document_merge::renumber_inserted_objects(doc, &mut paragraphs)?;
     // The only fallible step that touches the target: it validates before it splices, so a
     // refusal leaves `doc` exactly as it was.
     hwp_convert::structure::insert_paragraphs_at(doc, target, request.before(), paragraphs)?;
     doc.header = compiled.header;
-    for stream in compiled.bin_streams {
+    for mut stream in compiled.bin_streams {
+        if let Some(new_name) = renames.get(&stream.name) {
+            stream.name.clone_from(new_name);
+        }
         if !doc.bin_streams.iter().any(|have| have.name == stream.name) {
             doc.bin_streams.push(stream);
         }
     }
     Ok(count)
+}
+
+/// Since the manifest became authoritative (`Document::bin_stream_index`), an `ItemRef` that
+/// equals a manifest id resolves to that id's href and nothing else. A compiled stream whose
+/// name the target manifest already lists for a different href would send its pictures to
+/// another stream's bytes, so it is renamed to a name no manifest id, href or stream uses.
+/// Returns old name -> new name for the streams that needed it.
+fn manifest_safe_names(
+    doc: &Document,
+    streams: &[hwp_model::BinStream],
+) -> BTreeMap<String, String> {
+    let taken = |candidate: &str, renamed: &BTreeMap<String, String>| {
+        doc.hwpx_bin_manifest
+            .iter()
+            .any(|(id, href)| id == candidate || href == candidate)
+            || doc.bin_streams.iter().any(|have| have.name == candidate)
+            || streams.iter().any(|have| have.name == candidate)
+            || renamed.values().any(|name| name == candidate)
+    };
+    let mut renames = BTreeMap::new();
+    for stream in streams {
+        let listed_elsewhere = doc
+            .hwpx_bin_manifest
+            .iter()
+            .any(|(id, href)| *id == stream.name && *href != stream.name);
+        if !listed_elsewhere {
+            continue;
+        }
+        let (stem, extension) = match stream.name.rsplit_once('.') {
+            Some((stem, extension)) => (stem.to_owned(), format!(".{extension}")),
+            None => (stream.name.clone(), String::new()),
+        };
+        let mut n = 2u32;
+        let new_name = loop {
+            let candidate = format!("{stem}-{n}{extension}");
+            if !taken(&candidate, &renames) {
+                break candidate;
+            }
+            n += 1;
+        };
+        renames.insert(stream.name.clone(), new_name);
+    }
+    renames
+}
+
+fn rename_item_refs(paragraph: &mut hwp_model::Paragraph, renames: &BTreeMap<String, String>) {
+    for control in &mut paragraph.controls {
+        match control {
+            Control::Picture(picture) => {
+                if let hwp_model::BinRef::ItemRef(name) = &mut picture.bin_ref
+                    && let Some(new_name) = renames.get(name)
+                {
+                    name.clone_from(new_name);
+                }
+                if let Some(caption) = &mut picture.caption {
+                    for p in &mut caption.paragraphs {
+                        rename_item_refs(p, renames);
+                    }
+                }
+            }
+            Control::Table(table) => {
+                if let Some(caption) = &mut table.caption {
+                    for p in &mut caption.paragraphs {
+                        rename_item_refs(p, renames);
+                    }
+                }
+                for cell in &mut table.cells {
+                    for p in &mut cell.paragraphs {
+                        rename_item_refs(p, renames);
+                    }
+                }
+            }
+            Control::Generic(generic) => {
+                for list in &mut generic.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        rename_item_refs(p, renames);
+                    }
+                }
+                if let Some(caption) = &mut generic.caption {
+                    for p in &mut caption.paragraphs {
+                        rename_item_refs(p, renames);
+                    }
+                }
+            }
+            Control::SectionDef(_) => {}
+        }
+    }
 }
 
 #[cfg(test)]
