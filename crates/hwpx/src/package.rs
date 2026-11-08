@@ -1,7 +1,7 @@
-//! ZIP 패키지 수준 접근.
+//! ZIP package access.
 //!
-//! `hwp info`/`hwp dump`가 OWPML 파싱 없이도 동작하도록
-//! 컨테이너 계층만으로 메타데이터를 제공한다.
+//! Exposes container metadata so `hwp info` and `hwp dump` work
+//! without parsing OWPML.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -16,43 +16,43 @@ use crate::read::password;
 
 pub const MIMETYPE: &str = "application/hwp+zip";
 
-/// hwp-cli와 외부 오케스트레이터가 공유하는 단일 기본 ZIP 제한 프로파일 이름.
+/// Default ZIP-limit profile shared by hwp-cli and external orchestrators.
 pub const NATIVE_PACKAGE_LIMITS_PROFILE_NAME: &str = "hwp-cli-native-v1";
 
-/// 기본 제한값을 선택한 이유. [`NATIVE_PACKAGE_LIMITS_PROFILE`]과 함께 직렬화되어
-/// Maru 같은 외부 오케스트레이터가 정책 이름·값·근거를 한 번에 동기화할 수 있다.
+/// Rationale serialized with [`NATIVE_PACKAGE_LIMITS_PROFILE`] so external
+/// orchestrators such as Maru can synchronize the name, values and rationale.
 pub const NATIVE_PACKAGE_LIMITS_RATIONALE: &str = "일반적인 이미지 중심 HWPX는 허용하되 \
 ZIP bomb, 과도한 중앙 디렉터리 이름 메모리, 비정상적으로 큰 XML을 입력 파싱 전에 제한";
 
-/// 신뢰할 수 없는 HWPX 패키지를 처리할 때 적용하는 자원 제한.
+/// Resource limits for untrusted HWPX packages.
 ///
-/// ZIP 중앙 디렉터리의 선언값을 먼저 검사하고, 실제 압축 해제도 같은 한도로 다시
-/// 감싼다. [`serde::Serialize`]을 구현하므로 기본 프로파일을 JSON 같은 기계 판독
-/// 형식으로 그대로 노출할 수 있다.
+/// Check central-directory declarations before decompression, then bound the
+/// actual decompressed bytes too. [`serde::Serialize`] exposes the default
+/// profile in machine-readable formats such as JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PackageLimits {
-    /// 패키지 안의 최대 엔트리 수(디렉터리 엔트리 포함).
+    /// Maximum entry count, including directories.
     pub max_entries: usize,
-    /// 중앙 디렉터리 엔트리 이름 하나의 최대 원시 바이트 수.
+    /// Maximum raw byte length of a central-directory entry name.
     ///
-    /// ZIP의 `u16` 이름 길이 전체를 수용한다. 실질적인 메모리 상한은 아래 합계
-    /// 제한이 담당하며, 이 값도 이름 버퍼 할당 전에 검사한다.
+    /// Accept the full ZIP `u16` name-length range; the total below bounds memory.
+    /// Check this limit before allocating the name buffer.
     pub max_entry_name_bytes: u64,
-    /// 중앙 디렉터리 전체 엔트리 이름의 최대 원시 바이트 합계.
+    /// Maximum total raw bytes of central-directory entry names.
     pub max_total_name_bytes: u64,
-    /// 같은 이름의 엔트리를 거부할지 여부.
+    /// Whether duplicate entry names are rejected.
     pub reject_duplicate_names: bool,
-    /// 엔트리 하나의 최대 압축 해제 크기.
+    /// Maximum uncompressed bytes per entry.
     pub max_entry_uncompressed_bytes: u64,
-    /// 패키지 전체 엔트리의 최대 압축 해제 크기 합계.
+    /// Maximum total uncompressed bytes in the package.
     pub max_total_uncompressed_bytes: u64,
-    /// XML 계열 엔트리 하나의 최대 압축 해제 크기.
+    /// Maximum uncompressed bytes per XML entry.
     pub max_xml_uncompressed_bytes: u64,
-    /// `압축 해제 크기 / 압축 크기`의 최대 허용 배율.
+    /// Maximum uncompressed/compressed size ratio.
     pub max_compression_ratio: u64,
 }
 
-/// 외부 도구가 그대로 직렬화하여 동기화할 수 있는 기본 프로파일.
+/// Default profile that external tools can serialize and synchronize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PackageLimitsProfile {
     pub profile: &'static str,
@@ -60,11 +60,11 @@ pub struct PackageLimitsProfile {
     pub limits: PackageLimits,
 }
 
-/// hwp-cli가 읽기·검증·patch·쓰기에 공통 적용하는 단일 기본값.
+/// Defaults shared by reading, validation, patching and writing.
 ///
-/// 이름 하나는 ZIP 형식의 최대 범위(64 KiB)를 허용하되, 이름 합계는 16 MiB로
-/// 제한한다. 4,096개 엔트리, 엔트리당 512 MiB, 전체 2 GiB, XML당 64 MiB는
-/// 정상적인 대형 이미지 문서를 수용하면서 선언 크기 기반 ZIP bomb를 일찍 차단한다.
+/// Allow one name up to the ZIP format limit (64 KiB), but bound the total to 16 MiB.
+/// Limits of 4,096 entries, 512 MiB per entry, 2 GiB total and 64 MiB per XML entry
+/// accommodate large image documents while rejecting declared-size ZIP bombs early.
 pub const NATIVE_PACKAGE_LIMITS: PackageLimits = PackageLimits {
     max_entries: 4_096,
     max_entry_name_bytes: 64 * 1024,
@@ -144,7 +144,7 @@ impl PackageLimits {
             )));
         }
         if let Some(compressed) = compressed_size {
-            // raw copy도 무한정 큰 입력을 흘리지 않도록 같은 엔트리 예산으로 제한한다.
+            // Apply the same entry budget to raw copies so they cannot stream unbounded input.
             if compressed > self.max_entry_uncompressed_bytes {
                 return Err(limit_error(format!(
                     "'{name}' 엔트리의 압축 데이터 크기가 제한을 초과합니다 \
@@ -183,7 +183,7 @@ impl PackageLimits {
     }
 }
 
-/// ZIP 엔트리 메타데이터 (`hwp info`용).
+/// ZIP entry metadata for `hwp info`.
 #[derive(Debug, Clone)]
 pub struct EntryInfo {
     pub name: String,
@@ -206,12 +206,12 @@ pub struct HwpxPackage {
 }
 
 impl HwpxPackage {
-    /// 파일을 열고 mimetype을 검증한다.
+    /// Open a package and validate its mimetype.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_limits(path, &PackageLimits::default())
     }
 
-    /// 사용자 지정 자원 제한으로 파일을 열고 mimetype을 검증한다.
+    /// Open a package with caller-supplied limits and validate its mimetype.
     pub fn open_with_limits(path: &Path, limits: &PackageLimits) -> Result<Self> {
         let mut file = File::open(path)?;
         preflight_central_directory(&mut file, limits)?;
@@ -234,7 +234,7 @@ impl HwpxPackage {
         Ok(pkg)
     }
 
-    /// 모든 엔트리를 보관 순서대로 열거한다.
+    /// List entries in archive order.
     pub fn entries(&mut self) -> Result<Vec<EntryInfo>> {
         Ok(self.entries.clone())
     }
@@ -325,11 +325,11 @@ impl HwpxPackage {
         }
     }
 
-    /// 디렉터리를 제외한 모든 엔트리를 제한 안에서 EOF까지 스트리밍한다.
+    /// Stream every non-directory entry to EOF within its limits.
     ///
-    /// 바이트를 보관하지 않으면서 deflate 오류와 CRC 불일치를 검출한다. 중앙
-    /// 디렉터리 선언만 검사해서는 raw-copy 대상 `BinData/*` 손상을 알 수 없으므로,
-    /// 구조 검증과 보존 patch는 이 메서드를 먼저 통과해야 한다.
+    /// Detect decompression and CRC errors without retaining the bytes. Central-directory
+    /// declarations cannot detect corrupt raw-copy `BinData/*` payloads, so validation
+    /// and preservation patches must pass this check first.
     pub fn verify_integrity(&mut self) -> Result<()> {
         verify_archive_integrity(&mut self.zip, &self.entries, &self.limits)
     }
@@ -513,8 +513,8 @@ impl HwpxPackage {
         }
     }
 
-    /// `version.xml` 루트 요소의 속성들을 (이름, 값) 쌍으로 반환한다.
-    /// (스키마에 의존하지 않는 관용적 추출 — `hwp info` 표시용)
+    /// Return the `version.xml` root attributes as (name, value) pairs.
+    /// Tolerant, schema-independent extraction for `hwp info`.
     pub fn version_info(&mut self) -> Result<Vec<(String, String)>> {
         let xml = self.read_entry_string("version.xml")?;
         let mut reader = quick_xml::Reader::from_str(&xml);
@@ -541,7 +541,7 @@ impl HwpxPackage {
         }
     }
 
-    /// 본문 섹션 엔트리 이름 목록 (`Contents/section0.xml`, …).
+    /// List body-section entry names (`Contents/section0.xml`, ...).
     pub fn section_entries(&mut self) -> Result<Vec<String>> {
         let mut v: Vec<String> = self
             .entries()?
@@ -571,8 +571,8 @@ fn validate_protected_ciphertext_read(
         .ok_or(HwpxError::Encrypted)
 }
 
-/// zip 크레이트는 중앙 디렉터리를 이름-keyed map으로 만들며 중복 엔트리를 덮어쓴다.
-/// 따라서 `ZipArchive` 생성 전에 원시 중앙 디렉터리의 개수·중복·크기를 검사한다.
+/// The zip crate indexes the central directory by name and overwrites duplicates.
+/// Check raw counts, duplicates and sizes before constructing `ZipArchive`.
 pub(crate) fn preflight_central_directory<R: Read + Seek>(
     reader: &mut R,
     limits: &PackageLimits,
@@ -652,8 +652,8 @@ pub(crate) fn preflight_central_directory<R: Read + Seek>(
         ));
     }
 
-    // 자체압축해제 ZIP처럼 앞에 stub이 있으면 중앙 디렉터리 offset이 archive 기준일
-    // 수 있다. 선언 위치에 시그니처가 없을 때 실제 끝 위치에서 역산한다.
+    // A self-extracting stub can make the declared offset relative to the archive.
+    // If its signature is absent there, derive the position from the actual end.
     let mut central_start = central_offset;
     if entry_count > 0 && !has_signature(reader, central_start, b"PK\x01\x02")? {
         central_start = central_end
@@ -691,8 +691,8 @@ pub(crate) fn preflight_central_directory<R: Read + Seek>(
         let name_len = u64::from(le_u16(&fixed, 28));
         let extra_len = usize::from(le_u16(&fixed, 30));
         let comment_len = u64::from(le_u16(&fixed, 32));
-        // zip 크레이트가 중앙 디렉터리 이름을 소유 버퍼로 만들기 전에 원시
-        // 디렉터리를 직접 읽어 검사한다. 개별·합계 제한 모두 할당 전에 적용한다.
+        // Inspect the raw directory before zip allocates owned entry-name buffers.
+        // Enforce per-name and total limits before those allocations.
         limits.check_name_len(name_len)?;
         name_total = limits.add_name_total(name_total, name_len)?;
         let mut name = vec![0u8; name_len as usize];
@@ -750,7 +750,7 @@ pub(crate) fn preflight_central_directory<R: Read + Seek>(
     Ok(())
 }
 
-/// 중앙 디렉터리의 선언값을 전부 검사한다. 어떤 엔트리도 압축 해제하지 않는다.
+/// Inspect all central-directory declarations without decompressing entries.
 pub(crate) fn inspect_archive<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     limits: &PackageLimits,
@@ -774,7 +774,7 @@ pub(crate) fn inspect_archive<R: Read + Seek>(
         limits.check_name_len(raw_name.len() as u64)?;
         name_total = limits.add_name_total(name_total, raw_name.len() as u64)?;
         validate_entry_name(raw_name)?;
-        let name = entry.name().to_string();
+        let name = entry.name()?.into_owned();
         if limits.reject_duplicate_names && !names.insert(raw_name.into()) {
             return Err(limit_error(format!(
                 "중복 엔트리 이름을 허용하지 않습니다: '{name}'"
@@ -805,7 +805,7 @@ pub(crate) fn inspect_archive<R: Read + Seek>(
     Ok(entries)
 }
 
-/// 쓰기 전에 생성할 엔트리 이름과 크기를 동일 정책으로 검사한다.
+/// Check proposed entry names and sizes against the same policy before writing.
 pub(crate) fn validate_output_entries<I, S>(entries: I, limits: &PackageLimits) -> Result<()>
 where
     I: IntoIterator<Item = (S, u64)>,
@@ -840,9 +840,9 @@ where
     Ok(())
 }
 
-/// 중앙 디렉터리 검사를 마친 모든 비디렉터리 엔트리를 EOF까지 읽어 실제 압축
-/// 스트림과 CRC를 검증한다. `std::io::sink`로 흘리므로 BinData 크기에 비례한
-/// 메모리를 사용하지 않는다.
+/// Read every inspected non-directory entry to EOF to validate decompression and CRC.
+/// Sending bytes to `std::io::sink` avoids memory proportional to BinData size.
+/// No entry payload is retained.
 pub(crate) fn verify_archive_integrity<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     entries: &[EntryInfo],
@@ -859,8 +859,8 @@ pub(crate) fn verify_archive_integrity<R: Read + Seek>(
     Ok(())
 }
 
-/// 엔트리를 보관하지 않고 EOF까지 읽는다. EOF 읽기가 zip 크레이트의 CRC 검사를
-/// 발동시키므로, 선언 크기만 맞춘 손상 파일도 통과하지 못한다.
+/// Stream an entry without retaining its bytes. Reading to EOF triggers zip CRC checks,
+/// so matching declared sizes alone cannot admit a corrupt payload.
 pub(crate) fn stream_bounded(
     reader: &mut impl Read,
     name: &str,
@@ -895,7 +895,7 @@ pub(crate) fn stream_bounded(
     Ok(actual)
 }
 
-/// 선언 크기 검사 후 실제 압축 해제 바이트도 `limit + 1`로 감싸 이중 방어한다.
+/// Check declared sizes, then bound actual decompressed bytes to `limit + 1`.
 pub(crate) fn read_bounded(
     reader: &mut impl Read,
     name: &str,
@@ -908,7 +908,7 @@ pub(crate) fn read_bounded(
              ({expected_size} > {limit} 바이트)"
         )));
     }
-    // 거짓 중앙 디렉터리 크기로 큰 선할당을 유도하지 못하게 초기 예약은 작게 제한한다.
+    // Keep the initial allocation small despite an inflated declared size.
     let initial = expected_size.min(64 * 1024) as usize;
     let mut data = Vec::with_capacity(initial);
     reader
@@ -934,9 +934,9 @@ pub(crate) fn read_bounded(
     Ok(data)
 }
 
-/// HWPX/OPC part 이름은 UTF-8 상대 경로만 허용한다. 절대 경로, Windows
-/// 구분자, NUL, 빈/현재/상위 컴포넌트를 중앙 디렉터리 단계에서 거부해 읽기·patch·
-/// 쓰기가 같은 이름 의미를 사용하게 한다.
+/// HWPX/OPC part names must be UTF-8 relative paths. Reject absolute paths, Windows
+/// separators, NUL and empty/current/parent components at the central-directory stage
+/// so reading, patching and writing share the same name semantics.
 fn validate_entry_name(raw_name: &[u8]) -> Result<()> {
     let name = std::str::from_utf8(raw_name)
         .map_err(|_| limit_error("엔트리 이름이 유효한 UTF-8이 아닙니다".to_string()))?;

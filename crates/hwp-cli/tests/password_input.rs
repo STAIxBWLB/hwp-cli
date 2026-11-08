@@ -182,7 +182,7 @@ fn evidenced_hwpx_fixture(dir: &Path, password: &str) -> PathBuf {
     let mut manifest_entries = Vec::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_string();
+        let name = entry.name().unwrap().into_owned();
         if name == "mimetype" || name == "META-INF/manifest.xml" {
             continue;
         }

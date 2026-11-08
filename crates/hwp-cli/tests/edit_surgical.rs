@@ -1,7 +1,7 @@
-//! 같은 포맷 hwpx→hwpx `hwp edit`의 패키지 외과 수술 경로 통합 테스트 (epic #90 PR 3).
+//! Integration tests for same-format HWPX hwp edit surgical rewriting (epic #90 PR 3).
 //!
-//! 편집된 콘텐츠 엔트리(section/header/content.hpf)만 재직렬화되고 나머지 엔트리
-//! (BinData·META-INF·미리보기·settings 등)는 입력과 바이트 동일해야 한다.
+//! Only edited content entries (section/header/content.hpf) are reserialized; all other
+//! entries, including BinData/META-INF/previews/settings, must remain byte-identical.
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -22,8 +22,8 @@ fn fixture() -> PathBuf {
 }
 
 fn tmp(name: &str) -> PathBuf {
-    // PID 포함 — 같은 머신에서 cargo test가 동시에 돌면(다른 세션·CI 병렬) 고정 경로가
-    // 서로 산출물을 덮어써 플레이크가 난다(실측).
+    // Include the PID: concurrent cargo test sessions on the same machine otherwise
+    // overwrite artifacts at a fixed path and cause observed flakes.
     let dir = std::env::temp_dir().join(format!("hwp-cli-edit-surgical-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
@@ -45,11 +45,11 @@ fn read_zip_entry(path: &Path, name: &str) -> Vec<u8> {
 fn zip_entry_names(path: &Path) -> Vec<String> {
     let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
     (0..zip.len())
-        .map(|i| zip.by_index(i).unwrap().name().to_string())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
         .collect()
 }
 
-/// 외과 수술 계약: 비대상 엔트리가 입력과 바이트 동일해야 한다.
+/// Surgical contract: non-target entries remain byte-identical to the input.
 fn assert_entries_identical(src: &Path, out: &Path, names: &[&str]) {
     for name in names {
         assert_eq!(
@@ -60,9 +60,9 @@ fn assert_entries_identical(src: &Path, out: &Path, names: &[&str]) {
     }
 }
 
-/// hp:container(미해석 개체) + BinData + 미리보기 + META-INF 원본 바이트를 담은
-/// 합성 HWPX. 컨테이너 보존은 커밋된 표 픽스처(컨테이너 없음)로는 검증할 수 없어
-/// 직접 만든다.
+/// Synthetic HWPX containing captured hp:container XML, BinData, preview and original META-INF.
+/// The committed table fixture lacks containers, so it cannot establish container
+/// preservation; build a dedicated fixture here.
 fn build_container_fixture(path: &Path) {
     let file = std::fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -111,7 +111,7 @@ fn build_container_fixture(path: &Path) {
 }
 
 fn tiny_png(path: &Path) {
-    // 32x24 IHDR만 담은 최소 PNG (cli.rs의 insert-image 테스트와 같은 형태).
+    // Minimal PNG containing only a 32x24 IHDR, matching cli.rs insert-image tests.
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
     png.extend([0, 0, 0, 13]);
     png.extend(b"IHDR");
@@ -121,8 +121,8 @@ fn tiny_png(path: &Path) {
     std::fs::write(path, &png).unwrap();
 }
 
-/// hp:container(미해석 개체)의 subList 안에 1×1 표를 담은 합성 HWPX.
-/// 표 op이 컨테이너 안 표를 바꾸면 원문 XML이 낡으므로 fail-closed로 거부돼야 한다.
+/// Synthetic HWPX with a 1x1 table in an unparsed hp:container subList.
+/// Editing that table invalidates captured XML and must fail closed.
 fn build_container_table_fixture(path: &Path) {
     let file = std::fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -158,8 +158,8 @@ fn build_container_table_fixture(path: &Path) {
     zip.finish().unwrap();
 }
 
-/// 표 op(set-cell): 본문만 재직렬화되고 header/content.hpf/미리보기/META-INF는
-/// 입력과 바이트 동일해야 한다(전체 재작성이었다면 header.xml이 재합성된다).
+/// Table set-cell: reserialize only the body; header/content.hpf/previews/META-INF remain
+/// byte-identical, unlike a full rewrite that would synthesize header.xml again.
 #[test]
 fn table_op_preserves_non_target_entries() {
     let src = copy_fixture("surgical_tbl.hwpx");
@@ -207,8 +207,8 @@ fn table_op_preserves_non_target_entries() {
     );
 }
 
-/// #220: 빈 줄로 나뉘어 문단이 여러 개가 되는 set-cell 값도 여전히 비구조 편집이다 —
-/// 위 단일 블록 테스트와 같은 엔트리 목록이 바이트 동일해야 한다.
+/// #220: set-cell values containing blank lines create multiple paragraphs but remain nonstructural;
+/// the same entry set as the single-block case above must remain byte-identical.
 #[test]
 fn multi_paragraph_table_op_preserves_non_target_entries() {
     let src = copy_fixture("surgical_tbl_multi.hwpx");
@@ -257,8 +257,8 @@ fn multi_paragraph_table_op_preserves_non_target_entries() {
     );
 }
 
-/// 메타데이터 op(set-meta): content.hpf만 재생성되고 header/미리보기/META-INF는
-/// 바이트 동일. BinData가 없는 문서라 엔트리 수도 같아야 한다.
+/// Metadata set-meta regenerates only content.hpf; header/previews/META-INF remain
+/// byte-identical. With no BinData, the number of entries also stays unchanged.
 #[test]
 fn meta_op_regenerates_only_content_hpf() {
     let src = copy_fixture("surgical_meta.hwpx");
@@ -299,8 +299,8 @@ fn meta_op_regenerates_only_content_hpf() {
     );
 }
 
-/// 그림 삽입(insert-image): 새 BinData 엔트리가 추가되고 content.hpf 매니페스트가
-/// 갱신되며, 기존 엔트리는 바이트 보존. 제자리(in-place) 편집도 성공해야 한다.
+/// insert-image adds a BinData entry and updates the content.hpf manifest while preserving
+/// existing entry bytes. In-place editing must also succeed.
 #[test]
 fn image_insert_appends_bindata() {
     let md = tmp("surgical_img.md");
@@ -352,13 +352,13 @@ fn image_insert_appends_bindata() {
         std::fs::read(&image).unwrap(),
         "삽입 이미지 바이트"
     );
-    // 신규 항목이 매니페스트에 등록됐다.
+    // The new item is registered in the manifest.
     let hpf = String::from_utf8(read_zip_entry(&out, "Contents/content.hpf")).unwrap();
     assert!(
         hpf.contains(r#"id="image1" href="BinData/image1.png""#),
         "매니페스트 갱신: {hpf}"
     );
-    // 비대상 엔트리는 바이트 보존.
+    // Preserve non-target entry bytes.
     assert_entries_identical(&base, &out, &["Contents/header.xml", "settings.xml"]);
     assert!(
         hwp()
@@ -371,7 +371,7 @@ fn image_insert_appends_bindata() {
         "validate 통과"
     );
 
-    // 제자리 편집(입력=출력 경로)도 snapshot 덕분에 안전하게 성공해야 한다.
+    // Snapshotting must also make in-place editing (identical input/output path) safe.
     let inplace = tmp("surgical_img_inplace.hwpx");
     std::fs::copy(&base, &inplace).unwrap();
     let r = hwp()
@@ -396,8 +396,8 @@ fn image_insert_appends_bindata() {
     );
 }
 
-/// --replace와 표 op를 섞으면 고속 경로가 아니라 IR 외과 수술 경로를 타야 하고,
-/// 그래도 비대상 엔트리는 바이트 보존이어야 한다.
+/// Combining --replace with a table operation must use surgical IR rewriting instead of the fast path,
+/// while still preserving non-target entry bytes.
 #[test]
 fn mixed_replace_and_table_op_stays_surgical() {
     let src = copy_fixture("surgical_mixed.hwpx");
@@ -441,18 +441,18 @@ fn mixed_replace_and_table_op_stays_surgical() {
     assert!(section.contains("혼합편집"), "셀 편집 반영");
 }
 
-/// 미해석 개체(hp:container)를 담은 문서의 IR 외과 수술: 컨테이너 원문 XML과
-/// 기존 그림 참조가 유지되고 불투명 엔트리는 바이트 보존.
+/// Surgical rewriting with an unparsed hp:container retains captured XML and existing
+/// picture references, and preserves opaque entry bytes.
 #[test]
 fn container_and_picture_survive_surgical_edit() {
     let src = tmp("surgical_container.hwpx");
     build_container_fixture(&src);
     let out = tmp("surgical_container_out.hwpx");
 
-    // IR의 컨테이너 개수를 세는 도우미 (cat JSON에서 ctrl_id "cont" = [99,111,110,116]).
-    // 모든 Generic을 세면 안 된다 — 이 합성 픽스처는 secPr가 없어 writer가 기본
-    // 구역 정의를 주입하고, 그 colPr가 Generic(cold)으로 다시 읽힌다(전체 재작성
-    // 경로도 동일한 기존 동작).
+    // Count IR containers: cat JSON represents ctrl_id cont as [99,111,110,116].
+    // Do not count every Generic: this synthetic fixture lacks secPr, so the writer injects
+    // a default section definition whose colPr rereads as Generic(cold). The full rewrite
+    // path has the same existing behavior.
     fn collect_generic_ids(paras: &serde_json::Value, out: &mut Vec<Vec<u8>>) {
         for p in paras.as_array().unwrap() {
             for c in p["controls"].as_array().unwrap() {
@@ -492,8 +492,8 @@ fn container_and_picture_survive_surgical_edit() {
     let before = container_count(&src);
     assert!(before >= 1, "픽스처에 컨테이너 존재");
 
-    // set-meta는 본문과 무관하지만, 외과 수술 경로에서 본문은 항상 재직렬화된다 —
-    // 이 때 컨테이너 원문(hwpx_raw_xml)이 유지돼야 한다.
+    // Although set-meta does not edit the body, the surgical path always reserializes it;
+    // captured container XML (hwpx_raw_xml) must survive this step.
     let r = hwp()
         .arg("edit")
         .arg(&src)
@@ -531,10 +531,10 @@ fn container_and_picture_survive_surgical_edit() {
     );
 }
 
-/// 컨테이너(hp:container) 안의 표를 겨냥한 표 op은 컨테이너 원문 XML을 낡게 만든다.
-/// writer는 컨테이너를 재방출할 emitter가 없으므로 OpaqueControlUnrepresentable을
-/// 기록하고, fail-closed 보존 검사가 편집을 거부해야 한다(조용한 성공 = 편집 유실이
-/// 진짜 버그). 거부되면 출력은 게시되지 않고 입력도 그대로여야 한다.
+/// A table operation inside hp:container makes its captured XML stale. The writer
+/// cannot re-emit that container and records OpaqueControlUnrepresentable; the
+/// fail-closed preservation check must refuse editing, rather than silently lose it.
+/// Refusal must leave both the unpublished output and input untouched.
 #[test]
 fn table_op_inside_opaque_container_fails_closed() {
     let src = tmp("surgical_container_tbl.hwpx");
@@ -568,9 +568,9 @@ fn table_op_inside_opaque_container_fails_closed() {
     );
 }
 
-/// 확장 파트(DocOptions/Layout.xml)가 원본 OPF 매니페스트에 등재된 문서의 set-meta:
-/// content.hpf 재생성 후에도 확장 파트 항목이 매니페스트에 남아야 한다(엔트리는
-/// raw-copy되는데 등재가 사라지면 고아 파트가 된다).
+/// set-meta with an extension part (DocOptions/Layout.xml) in the original OPF manifest:
+/// after content.hpf regeneration the extension item must remain listed, avoiding an
+/// orphaned part whose bytes were raw-copied but whose manifest item disappeared.
 #[test]
 fn meta_edit_keeps_extension_manifest_items() {
     let src = tmp("surgical_ext_item.hwpx");
@@ -601,9 +601,9 @@ fn meta_edit_keeps_extension_manifest_items() {
     assert_entries_identical(&src, &out, &["DocOptions/Layout.xml"]);
 }
 
-/// 표 복제 op(clone-table, #78): section0.xml만 재직렬화되고 header/content.hpf/
-/// 미리보기/META-INF/settings는 입력과 바이트 동일해야 한다(keep 모드는 BinData를
-/// 새로 추가하지 않고 기존 참조를 재사용한다).
+/// clone-table (#78) reserializes only section0.xml; header/content.hpf/previews/META-INF/
+/// settings remain byte-identical. Keep mode adds no new BinData and reuses existing
+/// references.
 #[test]
 fn clone_table_preserves_non_target_entries() {
     let src = copy_fixture("surgical_clone.hwpx");
