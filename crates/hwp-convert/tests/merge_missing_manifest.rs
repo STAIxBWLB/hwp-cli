@@ -670,3 +670,110 @@ fn fast_canonical_bin_remint_avoids_preceding_orphan_carrier() {
 fn general_canonical_bin_remint_avoids_preceding_orphan_carrier() {
     canonical_bin_remint_case(true, true);
 }
+
+fn shared_storage_extensions_case(general: bool) {
+    // This is accepted model namespace behavior, not evidence of genuine native-file validity.
+    let mut a = input("BIN0001.png", None);
+    let mut missing_jpg = picture(&a, 0).clone();
+    missing_jpg.bin_ref = BinRef::ItemRef("missing-jpg".into());
+    a.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Picture(missing_jpg));
+    a.hwpx_bin_manifest
+        .push(("missing-jpg".into(), "BIN0002.jpg".into()));
+    let first_manifest = a.hwpx_bin_manifest.clone();
+    let primary_refs = section_picture_refs(&a, 0);
+    assert_eq!(primary_refs.len(), 2);
+    assert!(
+        primary_refs
+            .iter()
+            .all(|reference| a.resolve_bin(reference).is_none())
+    );
+    let mut b = input(
+        "BIN0001.png",
+        Some(b"owner-authored shared-storage PNG bytes"),
+    );
+    b.hwpx_bin_manifest.clear();
+    b.header.bin_data = ["png", "jpg"]
+        .into_iter()
+        .map(|extension| hwp_model::BinDataItem {
+            attr: 1,
+            storage_id: Some(1),
+            extension: Some(extension.into()),
+            ..Default::default()
+        })
+        .collect();
+    let mut jpg = picture(&b, 0).clone();
+    jpg.bin_ref = BinRef::Id(hwp_model::BinDataId(2));
+    let Control::Picture(png) = b.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find(|control| matches!(control, Control::Picture(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    png.bin_ref = BinRef::Id(hwp_model::BinDataId(1));
+    b.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Picture(jpg));
+    b.bin_streams.push(BinStream {
+        name: "BIN0001.jpg".into(),
+        data: b"owner-authored shared-storage JPG bytes".to_vec(),
+    });
+    if general {
+        b.header.styles.push(hwp_model::Style {
+            name: "ExtraStyle".into(),
+            english_name: "ExtraStyle".into(),
+            ..Default::default()
+        });
+        b.header.border_fills.push(Default::default());
+    }
+    let source_refs = section_picture_refs(&b, 0);
+    let expected = [
+        b"owner-authored shared-storage PNG bytes".as_slice(),
+        b"owner-authored shared-storage JPG bytes".as_slice(),
+    ];
+    assert_eq!(source_refs.len(), 2);
+    for (reference, bytes) in source_refs.iter().zip(expected) {
+        assert_eq!(b.resolve_bin(reference), Some(bytes));
+    }
+    let outcome = merge_documents(&[a, b]).unwrap();
+    assert_eq!(outcome.general_path_used, general);
+    let merged = &outcome.document;
+    assert_eq!(merged.hwpx_bin_manifest, first_manifest);
+    assert_eq!(section_picture_refs(merged, 0), primary_refs);
+    assert!(
+        primary_refs
+            .iter()
+            .all(|reference| merged.resolve_bin(reference).is_none()),
+        "one chosen storage ID must avoid the primary's reserved href for every extension"
+    );
+    let refs = section_picture_refs(merged, 1);
+    assert_eq!(refs.len(), 2);
+    let mut storage_ids = vec![];
+    for (reference, bytes) in refs.iter().zip(expected) {
+        let BinRef::Id(id) = reference else {
+            panic!("registered source references remain numeric")
+        };
+        assert_eq!(
+            merged.resolve_bin(reference),
+            Some(bytes),
+            "each extension must retain its own source payload"
+        );
+        storage_ids.push(merged.header.bin_data[usize::from(id.0) - 1].storage_id);
+    }
+    assert!(storage_ids[0].is_some());
+    assert_eq!(
+        storage_ids[0], storage_ids[1],
+        "rows sharing a source storage ID must share one collision-safe remap"
+    );
+}
+#[test]
+fn fast_shared_storage_id_remint_checks_every_extension() {
+    shared_storage_extensions_case(false);
+}
+#[test]
+fn general_shared_storage_id_remint_checks_every_extension() {
+    shared_storage_extensions_case(true);
+}
