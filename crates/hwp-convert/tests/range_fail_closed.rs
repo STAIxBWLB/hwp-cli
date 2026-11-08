@@ -550,3 +550,20 @@ fn known_reference_free_compatibility_record_allows_unused_stream_exclusion() {
     doc.header.extras.push(opaque(0x10 + 14, vec![]));
     assert_excluded(&doc);
 }
+
+#[test]
+fn typed_page_definition_slot_is_not_unreadable_xml() {
+    let mut doc = document();
+    doc.sections[0].paragraphs[1]
+        .controls
+        .push(Control::SectionDef(hwp_model::SectionDef {
+            data: vec![],
+            page: None,
+            extras: vec![],
+            secpr_raw_children: vec![hwp_model::SECPR_PAGEPR_SLOT.to_string()],
+            footnote_shape_raw: None,
+            endnote_shape_raw: None,
+            page_border_fills_raw: vec![],
+        }));
+    assert_excluded(&doc);
+}

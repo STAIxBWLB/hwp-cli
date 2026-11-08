@@ -239,7 +239,11 @@ fn assert_fragment_matches_source(
         .collect();
     want_hashes.sort();
     want_hashes.dedup();
-    assert_eq!(projected_fragment.resource_hashes, want_hashes);
+    assert_eq!(
+        projected_fragment.resource_hashes, want_hashes,
+        "resources: {}",
+        report["resources"]
+    );
     assert_eq!(
         report["resources"]["kept"].as_array().unwrap().len(),
         want_hashes.len()
@@ -680,10 +684,25 @@ fn the_schema_rejects_a_drifted_report() {
     }
 }
 
-/// `hwp-convert` copies three HWP5 tags because it cannot depend on `hwp5` (hub and spoke).
+/// `hwp-convert` copies the HWP5 tag catalog because it cannot depend on `hwp5` (hub and spoke).
 /// A drifted copy would silently stop recognizing a raw object, so pin them here.
 #[test]
 fn the_closure_tags_equal_the_hwp5_tags() {
+    assert_eq!(
+        hwp_convert::document_split::TAG_BORDER_FILL,
+        hwp5::record::tag::BORDER_FILL
+    );
+    let known: std::collections::BTreeSet<_> = (0..=u16::MAX)
+        .filter(|tag| hwp5::record::tag::tag_name(*tag).is_some())
+        .collect();
+    let copied: std::collections::BTreeSet<_> = hwp_convert::document_split::KNOWN_HWP5_RECORD_TAGS
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(
+        copied, known,
+        "new record tags require an explicit closure classification"
+    );
     assert_eq!(
         hwp_convert::document_split::TAG_SHAPE_COMPONENT,
         hwp5::record::tag::SHAPE_COMPONENT

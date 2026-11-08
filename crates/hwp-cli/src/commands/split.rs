@@ -295,9 +295,9 @@ fn hash_input(input: &Path) -> anyhow::Result<String> {
     Ok(hwp_convert::document_split::source_sha256(&bytes))
 }
 
-/// Runs `load` (which parses `input`) and returns its document with the hash of the file it
-/// parsed. The hash is taken before and after, and a file that changed meanwhile is refused:
-/// otherwise `--source-sha256` could pass for bytes other than the ones extracted from.
+/// Runs the path-based loader between two hashes and refuses differing snapshots.
+/// This is not an in-memory snapshot: an A-B-A replacement during parsing can evade the
+/// check. The public readers take paths, so callers must keep the source stable until done.
 fn load_with_stable_hash<T>(
     input: &Path,
     load: impl FnOnce() -> anyhow::Result<T>,
@@ -414,9 +414,8 @@ pub(crate) fn execute(
         )?;
     }
 
-    // A range run names its source by hash, so the hash must describe the bytes that were
-    // parsed. The loaders take a path, so the file is hashed before and after the parse and a
-    // file that changed in between is refused rather than extracted from.
+    // The path-based readers are bracketed by hashes; differing snapshots refuse the run.
+    // Keep the input stable: load_with_stable_hash documents the A-B-A replacement limit.
     let (document, source_sha256) = if range.is_some() {
         load_with_stable_hash(input, || {
             load_document_with_options(input, options).map_err(anyhow::Error::new)

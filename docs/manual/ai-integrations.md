@@ -36,7 +36,10 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
   it in its `range` field. A binary is excluded only when the whole fragment provably does not use
   it: when the fragment holds a reference the tool cannot read (an image fill, a bullet that may be an
   image bullet, a raw shape, OLE or video object, a carried package part that is not readable XML), every binary travels and the report
-  lists those sites. The report is content-free: anchors appear as a kind and a resolved address,
+  lists those sites. This includes settings/version XML, unreadable XML attributes, truncated
+  reference records and unknown raw tags. Keep the input stable during extraction: the source
+  hash checks before and after parsing cannot detect an A-B-A file replacement.
+  The report is content-free: anchors appear as a kind and a resolved address,
   never as the heading or bookmark text. The fragment carries the section's page, column, header,
   footer, page-number and new-number controls. When the range starts after the section's first
   paragraph, a hide or odd/even adjust control on that paragraph acts on its own source page, so

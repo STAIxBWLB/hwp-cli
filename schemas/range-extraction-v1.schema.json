@@ -25,7 +25,7 @@
     },
     "source_sha256": {
       "$ref": "#/$defs/sha256",
-      "description": "SHA-256 of the source file that was read. When the caller passed `--source-sha256` it equals that value, because a different file is refused."
+      "description": "SHA-256 checked before and after path-based parsing. A differing hash is refused, including a mismatch with --source-sha256. The source must remain stable: an A-B-A replacement during parsing is not detected."
     },
     "fragment_sha256": {
       "$ref": "#/$defs/sha256",
@@ -138,7 +138,7 @@
         },
         "unverified_sites": {
           "type": "array",
-          "description": "Places in the fragment that may reference a binary stream whose reference is not modeled, so it was not read. The bytes are never parsed or guessed.",
+          "description": "Places whose binary references cannot be proven absent or fully resolved, including unreadable XML and raw records. Known layouts may be probed; unknown or truncated content is never interpreted by guessing.",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -157,9 +157,10 @@
                   "raw_video",
                   "parameter_set",
                   "raw_xml_unparsed",
+                  "raw_record_unparsed",
                   "carried_part_unread"
                 ],
-                "description": "Why the site is unresolved: an image fill in a border fill, a bullet record that may be an image bullet, a raw HWP5 shape component, OLE object, picture component or video record, a raw Parameter Set that may hold a BinData item, raw XML that does not parse or holds a binary reference it cannot read, or a package part carried verbatim that is not readable XML."
+                "description": "Why the site is unresolved: an image fill in a border fill, a bullet record that may be an image bullet, a raw HWP5 shape component, OLE object, picture component or video record, a raw Parameter Set that may hold a BinData item, unclassified raw record tags, raw XML that is structurally incomplete or contains entities/attributes it cannot read, or a package part carried verbatim that is not readable XML."
               },
               "at": {
                 "type": "string",
