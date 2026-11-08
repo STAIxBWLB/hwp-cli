@@ -6,6 +6,16 @@ cd "$(dirname "$0")/.."
 font_dir="${HWP_PDF_PARITY_FONT_DIR:-fixtures/pdf-parity/fonts}"
 max_fetch_bytes=33554432
 
+# Download time budget, per font: a cold cache pays this, a warm one never reaches it.
+#   curl attempt   <= connect_timeout to connect, <= max_time in total
+#   whole retries  <= retry_max_time before a new attempt may start (--retry-max-time)
+#   worst case      = retry_max_time + max_time per font (the last attempt starts just inside the
+#                     retry window). Measured against a server that accepts and never answers.
+# The CI step that runs this must allow 2 fonts * (retry_max_time + max_time) = 2 * 270 s.
+connect_timeout=20
+max_time=120
+retry_max_time=150
+
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -30,7 +40,9 @@ fetch_font() {
   mkdir -p "$font_dir"
   staged_font="$(mktemp "$font_dir/.$filename.XXXXXX")"
   if ! curl --fail --silent --show-error --location --proto '=https' --retry 3 \
-    --max-time 120 --max-filesize "$max_fetch_bytes" --output "$staged_font" "$font_url"; then
+    --retry-delay 5 --retry-all-errors --connect-timeout "$connect_timeout" \
+    --max-time "$max_time" --retry-max-time "$retry_max_time" \
+    --max-filesize "$max_fetch_bytes" --output "$staged_font" "$font_url"; then
     rm -f "$staged_font"
     return 1
   fi
